@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/skills"
+	"github.com/bkclaw-ai/bkclaw/internal/skills"
 )
 
 // RegisterSkillInstall wires the per-agent skill search and install tools
@@ -14,7 +14,7 @@ import (
 //
 // agentSkillsDir is the per-agent skills directory (conventionally
 // <agentHome>/skills). Agent-initiated installs always land under that path —
-// never in the global ~/.fastclaw/skills/ — so one agent can't alter another
+// never in the global ~/.bkclaw/skills/ — so one agent can't alter another
 // agent's capabilities just by chatting.
 //
 // onReload is called after a successful install so the owning agent can

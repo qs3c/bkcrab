@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/toolproviders"
+	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
 )
 
 // SearxNG is the odd one out: no API key, just an endpoint URL of a
@@ -39,7 +39,7 @@ func (s *SearxNG) Execute(ctx context.Context, req toolproviders.Request) (toolp
 	q.Set("format", "json")
 	httpReq.URL.RawQuery = q.Encode()
 	// Most SearxNG deployments want a browser-like UA; an empty UA gets 403.
-	httpReq.Header.Set("User-Agent", "fastclaw/1.0")
+	httpReq.Header.Set("User-Agent", "bkclaw/1.0")
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {

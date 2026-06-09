@@ -2,7 +2,7 @@
 name: translation
 description: Translate text between languages. Use when the user asks to translate content, detect language, or work with multilingual text.
 metadata:
-  fastclaw:
+  bkclaw:
     always: false
 ---
 

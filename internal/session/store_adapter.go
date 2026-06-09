@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/provider"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/provider"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
 )
 
 // StoreAdapter adapts store.Store to the SessionStore interface for one

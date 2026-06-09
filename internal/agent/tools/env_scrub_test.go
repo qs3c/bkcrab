@@ -12,12 +12,12 @@ func TestIsSensitiveEnvKey(t *testing.T) {
 		want bool
 	}{
 		// Operator-only prefixes — the screenshot incident.
-		{"FASTCLAW_STORAGE_DSN", true},
-		{"FASTCLAW_OBJECT_STORE_ACCESSKEY", true},
-		{"FASTCLAW_OBJECT_STORE_SECRETKEY", true},
-		{"FASTCLAW_OBJECT_STORE_BUCKET", true},
-		{"FASTCLAW_OBJECT_STORE_ALIYUN_INTERNAL", true},
-		{"FASTCLAW_SANDBOX_BOXLITE_URL", true},
+		{"BKCLAW_STORAGE_DSN", true},
+		{"BKCLAW_OBJECT_STORE_ACCESSKEY", true},
+		{"BKCLAW_OBJECT_STORE_SECRETKEY", true},
+		{"BKCLAW_OBJECT_STORE_BUCKET", true},
+		{"BKCLAW_OBJECT_STORE_ALIYUN_INTERNAL", true},
+		{"BKCLAW_SANDBOX_BOXLITE_URL", true},
 		{"AWS_ACCESS_KEY_ID", true},
 		{"AWS_SECRET_ACCESS_KEY", true},
 		{"GOOGLE_APPLICATION_CREDENTIALS", true},
@@ -42,10 +42,10 @@ func TestIsSensitiveEnvKey(t *testing.T) {
 		{"LC_ALL", false},
 		{"TERM", false},
 		{"PWD", false}, // present working dir, NOT a password
-		{"FASTCLAW_HOME", false},
-		{"FASTCLAW_LOG_LEVEL", false},
-		{"FASTCLAW_DEPLOY", false},
-		{"FASTCLAW_ALLOW_HOST_EXEC", false},
+		{"BKCLAW_HOME", false},
+		{"BKCLAW_LOG_LEVEL", false},
+		{"BKCLAW_DEPLOY", false},
+		{"BKCLAW_ALLOW_HOST_EXEC", false},
 	}
 	for _, c := range cases {
 		got := isSensitiveEnvKey(c.name)
@@ -59,19 +59,19 @@ func TestScrubSensitiveEnv(t *testing.T) {
 	in := []string{
 		"PATH=/usr/bin",
 		"HOME=/home/x",
-		"FASTCLAW_STORAGE_DSN=postgres://user:pw@host/db",
-		"FASTCLAW_OBJECT_STORE_ACCESSKEY=AKIAEXAMPLE",
-		"FASTCLAW_OBJECT_STORE_SECRETKEY=secret",
+		"BKCLAW_STORAGE_DSN=postgres://user:pw@host/db",
+		"BKCLAW_OBJECT_STORE_ACCESSKEY=AKIAEXAMPLE",
+		"BKCLAW_OBJECT_STORE_SECRETKEY=secret",
 		"ANTHROPIC_API_KEY=sk-ant-x",
 		"AWS_ACCESS_KEY_ID=AKIA",
-		"FASTCLAW_HOME=/var/lib/fastclaw",
+		"BKCLAW_HOME=/var/lib/bkclaw",
 		"LANG=en_US.UTF-8",
 		"PWD=/tmp", // must NOT match the PASSWD substring
 	}
 	got := scrubSensitiveEnv(in)
 	sort.Strings(got)
 	want := []string{
-		"FASTCLAW_HOME=/var/lib/fastclaw",
+		"BKCLAW_HOME=/var/lib/bkclaw",
 		"HOME=/home/x",
 		"LANG=en_US.UTF-8",
 		"PATH=/usr/bin",
@@ -91,7 +91,7 @@ func TestBuildSubprocessEnvOverridesSkillKeys(t *testing.T) {
 	// just confirms skill env wins over a parent that already has the
 	// same key.)
 	t.Setenv("FAL_KEY", "from-parent")
-	t.Setenv("FASTCLAW_STORAGE_DSN", "must-be-stripped")
+	t.Setenv("BKCLAW_STORAGE_DSN", "must-be-stripped")
 	out := buildSubprocessEnv(map[string]string{"FAL_KEY": "from-skill"})
 
 	var sawFalKey, sawDSN bool
@@ -99,7 +99,7 @@ func TestBuildSubprocessEnvOverridesSkillKeys(t *testing.T) {
 		if kv == "FAL_KEY=from-skill" {
 			sawFalKey = true
 		}
-		if len(kv) >= len("FASTCLAW_STORAGE_DSN=") && kv[:len("FASTCLAW_STORAGE_DSN=")] == "FASTCLAW_STORAGE_DSN=" {
+		if len(kv) >= len("BKCLAW_STORAGE_DSN=") && kv[:len("BKCLAW_STORAGE_DSN=")] == "BKCLAW_STORAGE_DSN=" {
 			sawDSN = true
 		}
 	}
@@ -107,6 +107,6 @@ func TestBuildSubprocessEnvOverridesSkillKeys(t *testing.T) {
 		t.Errorf("expected skill env FAL_KEY to win over parent; not found in %v", out)
 	}
 	if sawDSN {
-		t.Errorf("FASTCLAW_STORAGE_DSN must be scrubbed; leaked in %v", out)
+		t.Errorf("BKCLAW_STORAGE_DSN must be scrubbed; leaked in %v", out)
 	}
 }

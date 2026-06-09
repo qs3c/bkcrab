@@ -8,9 +8,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fastclaw-ai/fastclaw/internal/agentcli"
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/daemon"
+	"github.com/qs3c/bkclaw/internal/agentcli"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/daemon"
 )
 
 // agentsCmd is a thin CLI front-end for the same agent CRUD the
@@ -56,7 +56,7 @@ func notifyGatewayReload() {
 		return
 	}
 	if err := daemon.SignalReload(st.PID); err != nil {
-		fmt.Fprintf(os.Stderr, "Note: gateway is running (PID %d) but reload signal failed: %v. Restart it with `fastclaw daemon restart` for changes to take effect.\n", st.PID, err)
+		fmt.Fprintf(os.Stderr, "Note: gateway is running (PID %d) but reload signal failed: %v. Restart it with `bkclaw daemon restart` for changes to take effect.\n", st.PID, err)
 		return
 	}
 	fmt.Fprintf(os.Stderr, "Reloaded gateway (PID %d).\n", st.PID)
@@ -66,7 +66,7 @@ func notifyGatewayReload() {
 // agent record into something the user can immediately chat with. If the
 // gateway is already up, we send SIGHUP so it picks up the new agent.
 // Otherwise we launch it in the background (same path as
-// `fastclaw daemon start`) and print the URL.
+// `bkclaw daemon start`) and print the URL.
 func ensureGatewayRunning() {
 	st, _ := daemon.GetStatus()
 	if st != nil && st.Running {
@@ -78,7 +78,7 @@ func ensureGatewayRunning() {
 		port = 18953
 	}
 	if err := daemon.Start(port); err != nil {
-		fmt.Fprintf(os.Stderr, "Note: failed to auto-start gateway: %v. Start it with `fastclaw daemon start`.\n", err)
+		fmt.Fprintf(os.Stderr, "Note: failed to auto-start gateway: %v. Start it with `bkclaw daemon start`.\n", err)
 		return
 	}
 	fmt.Printf("URL:      http://localhost:%d\n", port)
@@ -147,7 +147,7 @@ func agentsInitCmd() *cobra.Command {
 				model, _ := agentcli.GetConfig(ctx, st, res.Agent.ID, "model")
 				if model == nil || model == "" {
 					fmt.Fprintln(os.Stderr, "Hint: no model is configured for this agent. Set one with:")
-					fmt.Fprintf(os.Stderr, "  fastclaw agents config %s set model <provider>/<model>\n", res.Agent.Name)
+					fmt.Fprintf(os.Stderr, "  bkclaw agents config %s set model <provider>/<model>\n", res.Agent.Name)
 				}
 			}
 			if res.OwnerCreated && res.GeneratedPassword != "" {
@@ -215,7 +215,7 @@ func agentsConfigCmd() *cobra.Command {
 			switch args[1] {
 			case "get":
 				if len(args) > 3 {
-					return fmt.Errorf("usage: fastclaw agents config %s get [key]", args[0])
+					return fmt.Errorf("usage: bkclaw agents config %s get [key]", args[0])
 				}
 				key := ""
 				if len(args) == 3 {
@@ -228,7 +228,7 @@ func agentsConfigCmd() *cobra.Command {
 				return printValue(value)
 			case "set":
 				if len(args) != 4 {
-					return fmt.Errorf("usage: fastclaw agents config %s set <key> <value>", args[0])
+					return fmt.Errorf("usage: bkclaw agents config %s set <key> <value>", args[0])
 				}
 				if err := agentcli.SetConfig(ctx, st, rec.ID, args[2], args[3]); err != nil {
 					return err

@@ -9,7 +9,7 @@ import (
 )
 
 // New creates a Store. The database is mandatory; sqlite is the default
-// for zero-config installs and stores its file under ~/.fastclaw/fastclaw.db.
+// for zero-config installs and stores its file under ~/.bkclaw/bkclaw.db.
 // Postgres is the production target — pass a DSN.
 func New(cfg *StorageConfig, homeDir string) (Store, error) {
 	if cfg == nil || cfg.Type == "" {
@@ -30,7 +30,7 @@ func New(cfg *StorageConfig, homeDir string) (Store, error) {
 			// saw "database is locked (SQLITE_BUSY)" — fixed by enabling
 			// WAL (concurrent reads + one writer) and a 5s busy_timeout
 			// so contended writers wait instead of erroring out.
-			dsn = "file:" + filepath.Join(homeDir, "fastclaw.db") +
+			dsn = "file:" + filepath.Join(homeDir, "bkclaw.db") +
 				"?_pragma=journal_mode(WAL)" +
 				"&_pragma=busy_timeout(5000)" +
 				"&_pragma=synchronous(NORMAL)" +

@@ -3,9 +3,9 @@ package agent
 import (
 	"testing"
 
-	"github.com/fastclaw-ai/fastclaw/internal/agent/goal"
-	"github.com/fastclaw-ai/fastclaw/internal/agent/tools"
-	"github.com/fastclaw-ai/fastclaw/internal/bus"
+	"github.com/bkclaw-ai/bkclaw/internal/agent/goal"
+	"github.com/bkclaw-ai/bkclaw/internal/agent/tools"
+	"github.com/bkclaw-ai/bkclaw/internal/bus"
 )
 
 // newAgentForWireTest builds the minimal Agent skeleton the wiring

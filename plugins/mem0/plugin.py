@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mem0 Long-term Memory Plugin for FastClaw.
+Mem0 Long-term Memory Plugin for BkClaw.
 
 JSON-RPC server over stdin/stdout that provides hook-based memory integration.
 - before_model_call: searches mem0 for relevant memories, injects them into messages

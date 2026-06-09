@@ -1,31 +1,31 @@
-name: fastclaw
+name: bkclaw
 
 services:
-  fastclaw:
+  bkclaw:
     build:
       context: ../..
       dockerfile: Dockerfile
-    image: fastclaw/fastclaw:local
+    image: bkclaw/bkclaw:local
     restart: unless-stopped
     ports:
-      - "${FASTCLAW_PORT:-18953}:18953"
+      - "${BKCLAW_PORT:-18953}:18953"
     volumes:
-      - fastclaw-data:/data/.fastclaw
+      - bkclaw-data:/data/.bkclaw
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
-      FASTCLAW_HOME: /data/.fastclaw
-      FASTCLAW_BIND: all
-      FASTCLAW_PORT: "18953"
-      FASTCLAW_STORAGE_TYPE: postgres
-      FASTCLAW_STORAGE_DSN: "postgres://fastclaw:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/docker/.env}@postgres:5432/fastclaw?sslmode=disable"
-      FASTCLAW_STORAGE_AUTO_MIGRATE: "true"
-      FASTCLAW_OBJECT_STORE_TYPE: minio
-      FASTCLAW_OBJECT_STORE_ENDPOINT: minio:9000
-      FASTCLAW_OBJECT_STORE_BUCKET: "${MINIO_BUCKET:-fastclaw}"
-      FASTCLAW_OBJECT_STORE_PREFIX: "${MINIO_PREFIX:-}"
-      FASTCLAW_OBJECT_STORE_ACCESSKEY: "${MINIO_ROOT_USER:?set MINIO_ROOT_USER in deploy/docker/.env}"
-      FASTCLAW_OBJECT_STORE_SECRETKEY: "${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in deploy/docker/.env}"
-      FASTCLAW_OBJECT_STORE_USESSL: "false"
+      BKCLAW_HOME: /data/.bkclaw
+      BKCLAW_BIND: all
+      BKCLAW_PORT: "18953"
+      BKCLAW_STORAGE_TYPE: postgres
+      BKCLAW_STORAGE_DSN: "postgres://bkclaw:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/docker/.env}@postgres:5432/bkclaw?sslmode=disable"
+      BKCLAW_STORAGE_AUTO_MIGRATE: "true"
+      BKCLAW_OBJECT_STORE_TYPE: minio
+      BKCLAW_OBJECT_STORE_ENDPOINT: minio:9000
+      BKCLAW_OBJECT_STORE_BUCKET: "${MINIO_BUCKET:-bkclaw}"
+      BKCLAW_OBJECT_STORE_PREFIX: "${MINIO_PREFIX:-}"
+      BKCLAW_OBJECT_STORE_ACCESSKEY: "${MINIO_ROOT_USER:?set MINIO_ROOT_USER in deploy/docker/.env}"
+      BKCLAW_OBJECT_STORE_SECRETKEY: "${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in deploy/docker/.env}"
+      BKCLAW_OBJECT_STORE_USESSL: "false"
       DOCKER_HOST: tcp://sandbox-docker:2375
     depends_on:
       postgres:
@@ -47,13 +47,13 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     environment:
-      POSTGRES_DB: fastclaw
-      POSTGRES_USER: fastclaw
+      POSTGRES_DB: bkclaw
+      POSTGRES_USER: bkclaw
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/docker/.env}"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fastclaw -d fastclaw"]
+      test: ["CMD-SHELL", "pg_isready -U bkclaw -d bkclaw"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -85,7 +85,7 @@ services:
     environment:
       MINIO_ROOT_USER: "${MINIO_ROOT_USER:?set MINIO_ROOT_USER in deploy/docker/.env}"
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in deploy/docker/.env}"
-      MINIO_BUCKET: "${MINIO_BUCKET:-fastclaw}"
+      MINIO_BUCKET: "${MINIO_BUCKET:-bkclaw}"
     entrypoint:
       - /bin/sh
       - -ec
@@ -104,7 +104,7 @@ services:
       - --host=unix:///var/run/docker.sock
       - --tls=false
     volumes:
-      - fastclaw-data:/data/.fastclaw
+      - bkclaw-data:/data/.bkclaw
       - sandbox-docker-data:/var/lib/docker
     healthcheck:
       test: ["CMD", "docker", "info"]
@@ -114,7 +114,7 @@ services:
 
   migrate-storage:
     profiles: ["migration"]
-    image: fastclaw/fastclaw:local
+    image: bkclaw/bkclaw:local
     build:
       context: ../..
       dockerfile: Dockerfile
@@ -123,16 +123,16 @@ services:
         condition: service_healthy
     volumes:
       - ./.state:/migration:ro
-    entrypoint: ["fastclaw-migrate-storage"]
+    entrypoint: ["bkclaw-migrate-storage"]
     command:
       - --sqlite
-      - /migration/fastclaw.db
+      - /migration/bkclaw.db
       - --postgres
-      - "postgres://fastclaw:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/docker/.env}@postgres:5432/fastclaw?sslmode=disable"
+      - "postgres://bkclaw:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/docker/.env}@postgres:5432/bkclaw?sslmode=disable"
       - --replace
 
 volumes:
-  fastclaw-data:
+  bkclaw-data:
   postgres-data:
   minio-data:
   sandbox-docker-data:

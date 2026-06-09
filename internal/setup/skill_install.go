@@ -13,9 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/auth"
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/skills"
+	"github.com/bkclaw-ai/bkclaw/internal/auth"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/skills"
 )
 
 // handleInstallSkill installs a skill from skills.sh, clawhub.ai, or a

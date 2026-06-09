@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Echo plugin for FastClaw.
+Echo plugin for BkClaw.
 
 A minimal example demonstrating the JSON-RPC plugin protocol.
 This plugin provides a single "echo" tool that returns whatever text is sent to it.

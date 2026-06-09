@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/buildinfo"
-	"github.com/fastclaw-ai/fastclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/buildinfo"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
 )
 
 // bootstrapFiles are loaded in order to build the system prompt for
@@ -34,10 +34,10 @@ var bootstrapFiles = []string{
 // can't act on and shouldn't reference. The four files that DO matter
 // for chat:
 //
-//   BOOTSTRAP.md — first-turn greeting / name-onboarding hook
-//   SOUL.md      — voice, tone, principles
-//   USER.md      — what we know about the current chatter
-//   IDENTITY.md  — what the agent itself is
+//	BOOTSTRAP.md — first-turn greeting / name-onboarding hook
+//	SOUL.md      — voice, tone, principles
+//	USER.md      — what we know about the current chatter
+//	IDENTITY.md  — what the agent itself is
 //
 // (MEMORY.md is loaded separately further down so it can be per-chatter.)
 var chatbotBootstrapFiles = []string{
@@ -158,19 +158,18 @@ plan and the final deliverable.
 conversational replies. todo.md is for plans the user wants to track,
 not chat overhead.`
 
-
 // GroupContext holds information about the group chat environment for system prompt injection.
 type GroupContext struct {
 	BotUsername string   // this agent's bot username
-	Teammates  []string // other agent names in the group
+	Teammates   []string // other agent names in the group
 }
 
 // ContextBuilder assembles the system prompt and runtime context.
 type ContextBuilder struct {
-	home           string // agent's home: SOUL.md, IDENTITY.md, memory, sessions
-	workspace      string // working dir where agent creates user-facing files
-	memory         *Memory
-	skillsSummary  string
+	home          string // agent's home: SOUL.md, IDENTITY.md, memory, sessions
+	workspace     string // working dir where agent creates user-facing files
+	memory        *Memory
+	skillsSummary string
 	// displayName is the operator-given name from agents.name. Used as
 	// a fallback identity line when IDENTITY.md is empty so the model
 	// doesn't introduce itself as "Claude" / its base-model name.
@@ -186,9 +185,9 @@ type ContextBuilder struct {
 	// products (task delegation, todo tracking, tool-use discipline,
 	// workspace self-update, scheduling).
 	promptMode string
-	store   MemoryStore
-	userID  string
-	agentID string
+	store      MemoryStore
+	userID     string
+	agentID    string
 	// tzResolver maps a chatterUID to their effective *time.Location
 	// (chatter pref → agent default → system default, resolved through
 	// scope prefs). Wired by the manager when a relational store is
@@ -298,7 +297,7 @@ func (cb *ContextBuilder) BuildSystemPromptAs(chatterUID string, chatterMem *Mem
 	// tracking, tool-use discipline, workspace self-update, scheduling.
 	// Chatbot mode drops the agent-loop bits so persona files (SOUL.md
 	// / IDENTITY.md / USER.md / MEMORY.md) shape voice directly without
-	// "I'm an AI agent running on FastClaw" bleeding into a friend bot's
+	// "I'm an AI agent running on BkClaw" bleeding into a friend bot's
 	// tone. Minimal mode hands the floor entirely to the bootstrap
 	// files; only a date anchor is retained so the LLM doesn't guess
 	// time from its training cutoff.
@@ -332,8 +331,8 @@ func (cb *ContextBuilder) BuildSystemPromptAs(chatterUID string, chatterMem *Mem
 
 	case config.PromptModeChatbot:
 		// Slim identity scaffolding only. No "you are an AI agent on
-		// FastClaw" framing, no sandbox paths, no file-tool routing,
-		// no fastclaw branding. Persona files drive voice from here.
+		// BkClaw" framing, no sandbox paths, no file-tool routing,
+		// no bkclaw branding. Persona files drive voice from here.
 		const bt = "`"
 		const fence = "```"
 		// Identity-fallback line. When IDENTITY.md is empty (and SOUL.md
@@ -345,7 +344,7 @@ func (cb *ContextBuilder) BuildSystemPromptAs(chatterUID string, chatterMem *Mem
 		// present, still override via the bootstrap files section below.
 		identityHeader := ""
 		if cb.displayName != "" {
-			identityHeader = fmt.Sprintf("Your name is **%s** (this is the registered agent name in the FastClaw runtime). Introduce yourself as %s when asked \"你是谁\" / \"who are you\". If IDENTITY.md / SOUL.md below give a richer identity, use that on top of this; if they don't, this name stands.\n\n", cb.displayName, cb.displayName)
+			identityHeader = fmt.Sprintf("Your name is **%s** (this is the registered agent name in the BkClaw runtime). Introduce yourself as %s when asked \"你是谁\" / \"who are you\". If IDENTITY.md / SOUL.md below give a richer identity, use that on top of this; if they don't, this name stands.\n\n", cb.displayName, cb.displayName)
 		}
 		chatbotInfo := identityHeader + `Your identity (name, role, personality) is
 defined by IDENTITY.md and SOUL.md below. If those are empty, you do not
@@ -454,25 +453,25 @@ identity files.
 			homeDesc = cb.home
 		}
 
-		// Host OS — what the fastclaw binary itself runs on. Inside a
+		// Host OS — what the bkclaw binary itself runs on. Inside a
 		// sandbox (docker/e2b) the actual exec environment is Linux
 		// regardless; we label this line "Host OS" to keep the model
 		// from confidently answering "I'm on macOS" when it's about
 		// to run a command in a Linux container. The sandbox section
 		// below adds its own filesystem note when relevant.
 		//
-		// Deployment mode (FASTCLAW_DEPLOY env var) splits the build-
+		// Deployment mode (BKCLAW_DEPLOY env var) splits the build-
 		// info disclosure: self-hosted installs see the version + CLI
-		// hint so the agent can help with `fastclaw upgrade` etc.;
+		// hint so the agent can help with `bkclaw upgrade` etc.;
 		// hosted/multi-tenant deployments hide the version (no upside
 		// for the chatter, might prompt unfounded "I'll upgrade for
 		// you" offers) and substitute a redirect-to-admin note for
 		// upgrade questions.
-		var fastclawLine string
+		var bkclawLine string
 		if buildinfo.IsHostedDeploy() {
-			fastclawLine = "FastClaw: hosted deployment. The chatter does NOT operate this runtime — if they ask about the version, upgrades, or installing/changing skills at the platform level, tell them those are administrator-controlled and offer to help with what's actually in your reach (config, skills you can author, files in the workspace)."
+			bkclawLine = "BkClaw: hosted deployment. The chatter does NOT operate this runtime — if they ask about the version, upgrades, or installing/changing skills at the platform level, tell them those are administrator-controlled and offer to help with what's actually in your reach (config, skills you can author, files in the workspace)."
 		} else {
-			fastclawLine = fmt.Sprintf(`FastClaw: %s (commit %s, built %s). Self-hosted install — the chatter is the operator. If they ask about upgrading, tell them: run %sfastclaw upgrade%s in a terminal (and %sfastclaw version%s to verify). Don't try to run those yourself unless the chatter explicitly asks you to and you have host shell access (no sandbox).`,
+			bkclawLine = fmt.Sprintf(`BkClaw: %s (commit %s, built %s). Self-hosted install — the chatter is the operator. If they ask about upgrading, tell them: run %sbkclaw upgrade%s in a terminal (and %sbkclaw version%s to verify). Don't try to run those yourself unless the chatter explicitly asks you to and you have host shell access (no sandbox).`,
 				buildinfo.Version, buildinfo.Commit, buildinfo.Date,
 				"`", "`", "`", "`")
 		}
@@ -482,9 +481,9 @@ identity files.
 		// IDENTITY.md don't introduce themselves as Claude either.
 		agentIdentityHeader := ""
 		if cb.displayName != "" {
-			agentIdentityHeader = fmt.Sprintf("Your registered name in this FastClaw deployment is **%s**. Use that as your name unless IDENTITY.md / SOUL.md below give you a richer one.\n\n", cb.displayName)
+			agentIdentityHeader = fmt.Sprintf("Your registered name in this BkClaw deployment is **%s**. Use that as your name unless IDENTITY.md / SOUL.md below give you a richer one.\n\n", cb.displayName)
 		}
-		runtimeInfo := agentIdentityHeader + fmt.Sprintf(`You are an AI agent running on the FastClaw runtime.
+		runtimeInfo := agentIdentityHeader + fmt.Sprintf(`You are an AI agent running on the BkClaw runtime.
 Your identity (name, role, personality) is defined by IDENTITY.md and SOUL.md
 below — if those are empty, you do NOT yet have a name and must follow the
 bootstrap instructions in BOOTSTRAP.md before answering the user.
@@ -531,7 +530,7 @@ existing file — it's cheaper, can't accidentally drop unrelated content,
 and validates the replacement landed. Reserve write_file for creating
 new files or full rewrites. This matters most for MEMORY.md / SOUL.md /
 USER.md, which grow over time and would lose context if rewritten in full.`,
-			dateLine, fastclawLine,
+			dateLine, bkclawLine,
 			runtime.GOOS, runtime.GOARCH, workdir, homeDesc)
 		parts = append(parts, runtimeInfo)
 	}

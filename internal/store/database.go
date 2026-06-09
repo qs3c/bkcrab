@@ -1156,7 +1156,7 @@ func (d *DBStore) migrationSQL() []string {
 		// identify "which calling app, which of its end-users", and
 		// the partial UNIQUE makes provisioning idempotent on that
 		// pair so the same external user always resolves to the same
-		// fastclaw user_id.
+		// bkclaw user_id.
 		`CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
 			username TEXT NOT NULL UNIQUE,

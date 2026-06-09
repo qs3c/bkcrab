@@ -1,14 +1,14 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "fastclaw.fullname" . }}-config
+  name: {{ include "bkclaw.fullname" . }}-config
   labels:
-    {{- include "fastclaw.labels" . | nindent 4 }}
+    {{- include "bkclaw.labels" . | nindent 4 }}
 data:
-  FASTCLAW_PORT: {{ .Values.gateway.port | quote }}
-  FASTCLAW_BIND: "all"
-  FASTCLAW_STORAGE_TYPE: "postgres"
-  FASTCLAW_STORAGE_AUTO_MIGRATE: "true"
+  BKCLAW_PORT: {{ .Values.gateway.port | quote }}
+  BKCLAW_BIND: "all"
+  BKCLAW_STORAGE_TYPE: "postgres"
+  BKCLAW_STORAGE_AUTO_MIGRATE: "true"
   {{- with .Values.timezone }}
   ## Server default timezone — last fallback after chatter / agent /
   ## system prefs.
@@ -16,32 +16,32 @@ data:
   {{- end }}
 
   ## Object store
-  FASTCLAW_OBJECT_STORE_TYPE: {{ .Values.objectStore.type | quote }}
+  BKCLAW_OBJECT_STORE_TYPE: {{ .Values.objectStore.type | quote }}
   {{- with .Values.objectStore.bucket }}
-  FASTCLAW_OBJECT_STORE_BUCKET: {{ . | quote }}
+  BKCLAW_OBJECT_STORE_BUCKET: {{ . | quote }}
   {{- end }}
   {{- with .Values.objectStore.region }}
-  FASTCLAW_OBJECT_STORE_REGION: {{ . | quote }}
+  BKCLAW_OBJECT_STORE_REGION: {{ . | quote }}
   {{- end }}
   {{- with .Values.objectStore.endpoint }}
-  FASTCLAW_OBJECT_STORE_ENDPOINT: {{ . | quote }}
+  BKCLAW_OBJECT_STORE_ENDPOINT: {{ . | quote }}
   {{- end }}
   {{- with .Values.objectStore.accountId }}
-  FASTCLAW_OBJECT_STORE_ACCOUNTID: {{ . | quote }}
+  BKCLAW_OBJECT_STORE_ACCOUNTID: {{ . | quote }}
   {{- end }}
   {{- with .Values.objectStore.prefix }}
-  FASTCLAW_OBJECT_STORE_PREFIX: {{ . | quote }}
+  BKCLAW_OBJECT_STORE_PREFIX: {{ . | quote }}
   {{- end }}
-  FASTCLAW_OBJECT_STORE_USESSL: {{ .Values.objectStore.useSSL | quote }}
+  BKCLAW_OBJECT_STORE_USESSL: {{ .Values.objectStore.useSSL | quote }}
   {{- if .Values.objectStore.aliyunInternal }}
-  FASTCLAW_OBJECT_STORE_ALIYUN_INTERNAL: "true"
+  BKCLAW_OBJECT_STORE_ALIYUN_INTERNAL: "true"
   {{- end }}
 
   ## Sandbox
   {{- if .Values.sandbox.enabled }}
-  FASTCLAW_SANDBOX_BACKEND: {{ .Values.sandbox.backend | quote }}
+  BKCLAW_SANDBOX_BACKEND: {{ .Values.sandbox.backend | quote }}
   {{- with .Values.sandbox.image }}
-  FASTCLAW_SANDBOX_IMAGE: {{ . | quote }}
+  BKCLAW_SANDBOX_IMAGE: {{ . | quote }}
   {{- end }}
   {{- end }}
 

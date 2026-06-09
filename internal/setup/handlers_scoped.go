@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/fastclaw-ai/fastclaw/internal/auth"
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/scope"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
-	"github.com/fastclaw-ai/fastclaw/internal/users"
+	"github.com/bkclaw-ai/bkclaw/internal/auth"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/scope"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/users"
 )
 
 // Scope-aware CRUD for providers + channels (and a generic settings

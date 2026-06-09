@@ -8,14 +8,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fastclaw-ai/fastclaw/internal/daemon"
+	"github.com/qs3c/bkclaw/internal/daemon"
 )
 
 // daemonCmd handles daemon/service management subcommands.
 func daemonCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "daemon",
-		Short: "Manage the FastClaw gateway daemon",
+		Short: "Manage the BkClaw gateway daemon",
 	}
 	cmd.AddCommand(daemonStartCmd())
 	cmd.AddCommand(daemonStopCmd())
@@ -129,7 +129,7 @@ func daemonLogsCmd() *cobra.Command {
 func daemonInstallCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "install",
-		Short: "Install FastClaw as an OS service (launchd/systemd)",
+		Short: "Install BkClaw as an OS service (launchd/systemd)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return daemon.Install()
 		},
@@ -139,7 +139,7 @@ func daemonInstallCmd() *cobra.Command {
 func daemonUninstallCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "uninstall",
-		Short: "Remove the FastClaw OS service",
+		Short: "Remove the BkClaw OS service",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return daemon.Uninstall()
 		},

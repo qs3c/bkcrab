@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -24,7 +24,7 @@ import (
 // user can only touch their own resources. app_user is provisioned by an
 // api_key on behalf of a downstream application — these accounts have no
 // password and cannot log in via dashboard or password endpoints; they
-// exist purely to give external end-users a stable fastclaw user_id so
+// exist purely to give external end-users a stable bkclaw user_id so
 // sessions / agent_files / scope=user configs partition cleanly per
 // end-user. There is intentionally no fine-grained scheme — anything
 // more complex lives in the apikey ACL layer.
@@ -97,7 +97,7 @@ func (a *Accounts) Count(ctx context.Context) (int, error) {
 // auditable back to the provisioning key. Set ExternalID to the calling
 // app's own user identifier; the partial UNIQUE index on (apikey_id,
 // external_id) — see migrateUsersAppUserCols — means the same pair
-// always resolves to the same fastclaw user_id, so retries are safe.
+// always resolves to the same bkclaw user_id, so retries are safe.
 //
 // AvatarURL must be empty or a `data:image/*` URL ≤256KB; the handler
 // caller is responsible for that validation.
@@ -329,7 +329,7 @@ func (a *Accounts) SetPassword(ctx context.Context, id, newPassword string) erro
 	return a.store.UpdateUser(ctx, rec)
 }
 
-// EnsureAppUser returns the fastclaw user representing (apikeyID, externalID),
+// EnsureAppUser returns the bkclaw user representing (apikeyID, externalID),
 // creating one with role=app_user the first time it's seen. Idempotent:
 // later calls with the same pair return the existing row. The caller is
 // expected to be the api_key owner — Mint does not authenticate, that's
@@ -360,7 +360,7 @@ func (a *Accounts) EnsureAppUser(ctx context.Context, apikeyID, externalID, disp
 	rec := &store.UserRecord{
 		ID:           id,
 		Username:     "ext:" + syn,
-		Email:        syn + "@external.fastclaw.local",
+		Email:        syn + "@external.bkclaw.local",
 		PasswordHash: "",
 		DisplayName:  displayName,
 		Role:         RoleAppUser,

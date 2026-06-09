@@ -1,11 +1,11 @@
-## FastClaw Helm Chart — default values
+## BkClaw Helm Chart — default values
 ##
-## Same semantics as deploy/k8s/fastclaw.yaml: env-var driven, no
+## Same semantics as deploy/k8s/bkclaw.yaml: env-var driven, no
 ## init-container sed, workspace artifacts go to an object store
 ## (S3 / OSS / R2 / B2 / MinIO / …) so multi-replica scales horizontally.
 
 image:
-  repository: ghcr.io/fastclaw-ai/fastclaw
+  repository: ghcr.io/qs3c/bkclaw
   # In production, pin to :v0.x.y or a commit sha — don't use latest/dev.
   tag: dev
   pullPolicy: IfNotPresent
@@ -87,14 +87,14 @@ objectStore:
 sandbox:
   enabled: false
   backend: e2b                  # "e2b" only (docker not available in k8s)
-  image: thinkany/fastclaw-sandbox:latest
+  image: thinkany/bkclaw-sandbox:latest
   e2bApiKey: ""
 
 ## Ingress
 ingress:
   enabled: false
   className: nginx              # or "alb" (Aliyun ACK ALB)
-  host: fastclaw.example.com
+  host: bkclaw.example.com
   tls: false
   tlsSecret: ""
   certManagerIssuer: ""         # e.g. "letsencrypt-prod"
@@ -102,7 +102,7 @@ ingress:
   ## When using ALB Ingress (alb.ingress.kubernetes.io/*), override this map.
   annotations: {}
 
-## Extra FASTCLAW_* env vars passed through to the ConfigMap.
+## Extra BKCLAW_* env vars passed through to the ConfigMap.
 extraEnv: {}
-  # FASTCLAW_LOG_LEVEL: "info"
-  # FASTCLAW_DAEMON_IDLE_TIMEOUT_SECONDS: "300"
+  # BKCLAW_LOG_LEVEL: "info"
+  # BKCLAW_DAEMON_IDLE_TIMEOUT_SECONDS: "300"

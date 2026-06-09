@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/toolproviders"
+	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
 )
 
 // ElevenLabs posts to /v1/text-to-speech/{voice_id} with the API key in the

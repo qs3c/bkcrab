@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/workspace"
+	"github.com/bkclaw-ai/bkclaw/internal/workspace"
 	"github.com/gorilla/websocket"
 )
 
@@ -53,7 +53,7 @@ const (
 	defaultBoxliteURL      = "https://api.dev.boxlite.ai/api/v1"
 	defaultBoxliteClientID = "default"
 	defaultBoxlitePrefix   = "default"
-	defaultBoxliteImage    = "thinkany/fastclaw-sandbox:latest"
+	defaultBoxliteImage    = "thinkany/bkclaw-sandbox:latest"
 )
 
 // BoxliteExecutor implements Executor against a remote Boxlite REST API.

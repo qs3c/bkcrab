@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/privacy"
-	"github.com/fastclaw-ai/fastclaw/internal/provider"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/privacy"
+	"github.com/bkclaw-ai/bkclaw/internal/provider"
 )
 
 // MemoryStore is an optional interface for DB-backed memory persistence.

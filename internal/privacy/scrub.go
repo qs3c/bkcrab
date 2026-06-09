@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/provider"
+	"github.com/bkclaw-ai/bkclaw/internal/provider"
 )
 
 var (

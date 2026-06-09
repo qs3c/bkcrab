@@ -18,9 +18,9 @@ import (
 func versionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print FastClaw version",
+		Short: "Print BkClaw version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("FastClaw %s\n", version)
+			fmt.Printf("BkClaw %s\n", version)
 			fmt.Printf("  commit: %s\n", commit)
 			fmt.Printf("  built:  %s\n", date)
 			fmt.Printf("  go:     %s\n", runtime.Version())
@@ -34,7 +34,7 @@ func upgradeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "upgrade",
 		Aliases: []string{"update"},
-		Short:   "Upgrade FastClaw to the latest version",
+		Short:   "Upgrade BkClaw to the latest version",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return doUpgrade()
 		},
@@ -42,7 +42,7 @@ func upgradeCmd() *cobra.Command {
 }
 
 func doUpgrade() error {
-	const repo = "fastclaw-ai/fastclaw"
+	const repo = "bkclaw-ai/bkclaw"
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
 
 	fmt.Println("⚡ Checking for updates...")
@@ -82,9 +82,9 @@ func doUpgrade() error {
 	goarch := runtime.GOARCH
 	var suffix string
 	if goos == "windows" {
-		suffix = fmt.Sprintf("fastclaw_%s_%s.zip", goos, goarch)
+		suffix = fmt.Sprintf("bkclaw_%s_%s.zip", goos, goarch)
 	} else {
-		suffix = fmt.Sprintf("fastclaw_%s_%s.tar.gz", goos, goarch)
+		suffix = fmt.Sprintf("bkclaw_%s_%s.tar.gz", goos, goarch)
 	}
 
 	var downloadURL string
@@ -107,7 +107,7 @@ func doUpgrade() error {
 	}
 	defer dlResp.Body.Close()
 
-	tmpFile, err := os.CreateTemp("", "fastclaw-update-*")
+	tmpFile, err := os.CreateTemp("", "bkclaw-update-*")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
@@ -121,7 +121,7 @@ func doUpgrade() error {
 	tmpFile.Close()
 
 	// 5. Extract binary
-	tmpDir, err := os.MkdirTemp("", "fastclaw-extract-*")
+	tmpDir, err := os.MkdirTemp("", "bkclaw-extract-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
@@ -149,9 +149,9 @@ func doUpgrade() error {
 	}
 	currentBin, _ = filepath.EvalSymlinks(currentBin)
 
-	binaryName := "fastclaw"
+	binaryName := "bkclaw"
 	if goos == "windows" {
-		binaryName = "fastclaw.exe"
+		binaryName = "bkclaw.exe"
 	}
 	newBin := filepath.Join(tmpDir, binaryName)
 

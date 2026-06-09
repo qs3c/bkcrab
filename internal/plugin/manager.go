@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/bus"
+	"github.com/bkclaw-ai/bkclaw/internal/bus"
 )
 
 const shutdownTimeout = 5 * time.Second
@@ -23,7 +23,7 @@ const shutdownTimeout = 5 * time.Second
 const defaultChatSendDelay = 50 * time.Millisecond
 
 func pluginChatSendDelay() time.Duration {
-	v := os.Getenv("FASTCLAW_PLUGIN_CHAT_SEND_DELAY_MS")
+	v := os.Getenv("BKCLAW_PLUGIN_CHAT_SEND_DELAY_MS")
 	if v == "" {
 		return defaultChatSendDelay
 	}
@@ -416,7 +416,7 @@ func (m *Manager) handleNotification(pluginID string, n Notification) {
 		// The gateway's bus.Outbound enqueue is sub-millisecond once
 		// HandleMessage returns. A short async delay here is enough
 		// to let it win in practice. Async so the plugin's stdout
-		// reader isn't blocked. Tunable via FASTCLAW_PLUGIN_CHAT_SEND_DELAY_MS;
+		// reader isn't blocked. Tunable via BKCLAW_PLUGIN_CHAT_SEND_DELAY_MS;
 		// set 0 to disable the delay entirely.
 		delay := pluginChatSendDelay()
 		go func() {

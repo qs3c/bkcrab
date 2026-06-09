@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"github.com/fastclaw-ai/fastclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
 )
 
 // MemoryStoreAdapter exposes the agent's identity + memory files via the

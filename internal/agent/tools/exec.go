@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/buildinfo"
-	"github.com/fastclaw-ai/fastclaw/internal/sandbox"
+	"github.com/bkclaw-ai/bkclaw/internal/buildinfo"
+	"github.com/bkclaw-ai/bkclaw/internal/sandbox"
 )
 
 type execArgs struct {
@@ -196,7 +196,7 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 
 		// Always set cmd.Env explicitly. Default Go behavior is to
 		// inherit the parent's full env, which leaks daemon secrets
-		// (FASTCLAW_STORAGE_DSN, FASTCLAW_OBJECT_STORE_*, ...) into
+		// (BKCLAW_STORAGE_DSN, BKCLAW_OBJECT_STORE_*, ...) into
 		// every shell the model can run.
 		var skillEnv map[string]string
 		if envProvider != nil && skillDirs != nil {
@@ -299,13 +299,13 @@ const HostExecToolName = "host_exec"
 // registerHostExec adds an escape-hatch exec tool that bypasses the
 // sandbox executor and runs straight on the operator's host shell.
 // Gated by buildinfo.IsHostExecAllowed() — only registered when the
-// operator has explicitly opted in via FASTCLAW_ALLOW_HOST_EXEC=1
+// operator has explicitly opted in via BKCLAW_ALLOW_HOST_EXEC=1
 // AND a sandbox executor is present (otherwise `exec` already IS the
 // host shell and host_exec would be a duplicate).
 //
 // Tool description spells out the boundary loudly so the model picks
 // `exec` (sandbox) by default and only escapes to host_exec for
-// genuine operator-environment work (`fastclaw upgrade`, `~/Downloads`,
+// genuine operator-environment work (`bkclaw upgrade`, `~/Downloads`,
 // `launchctl`, system services, anything tied to the user's actual
 // machine). The dangerousCommands shortlist still applies — sandbox vs
 // host doesn't change the "no rm -rf /" rule.
@@ -317,7 +317,7 @@ const HostExecToolName = "host_exec"
 func registerHostExec(r *Registry, envProvider SkillEnvProvider, skillDirs []string) {
 	r.Register(HostExecToolName,
 		"Execute a shell command on the OPERATOR's host machine, bypassing the sandbox. "+
-			"Use this ONLY for tasks tied to the user's actual environment — `fastclaw upgrade`, "+
+			"Use this ONLY for tasks tied to the user's actual environment — `bkclaw upgrade`, "+
 			"reading their `~/Downloads`, listing host processes, running CLI tools they have "+
 			"installed locally, similar host-side ops. For everything else (running scripts, "+
 			"web requests, data processing, generating files for the user) use `exec` instead "+
@@ -368,7 +368,7 @@ func registerHostExec(r *Registry, envProvider SkillEnvProvider, skillDirs []str
 			cmd := exec.CommandContext(execCtx, "sh", "-c", command)
 			// host_exec is the operator's escape hatch — even so, scrub
 			// daemon secrets from the inherited env. The operator
-			// rarely needs FASTCLAW_STORAGE_DSN reachable from a host
+			// rarely needs BKCLAW_STORAGE_DSN reachable from a host
 			// shell, and never needs the model to be able to read it.
 			var skillEnv map[string]string
 			if envProvider != nil && skillDirs != nil {
@@ -479,7 +479,7 @@ func registerSandboxedExec(r *Registry, ex sandbox.Executor) {
 		// model. We probe by tool name so the check is decoupled from
 		// the deploy-mode flag — same answer, less coupling.
 		if err != nil && looksLikeSandboxAbsence(err, out) && buildinfo.IsHostExecAllowed() {
-			err = fmt.Errorf("%w\n[hint: this looks like a sandbox-environment miss (binary or path not present in the container). If the command needs the user's actual host machine — e.g. `fastclaw upgrade`, `~/Downloads`, host CLI tools — retry with the `host_exec` tool instead.]", err)
+			err = fmt.Errorf("%w\n[hint: this looks like a sandbox-environment miss (binary or path not present in the container). If the command needs the user's actual host machine — e.g. `bkclaw upgrade`, `~/Downloads`, host CLI tools — retry with the `host_exec` tool instead.]", err)
 		}
 		return MetaSandboxPrefix + out, err
 	})

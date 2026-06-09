@@ -5,7 +5,7 @@ package tools
 import "os/exec"
 
 // Windows has no Setpgid analogue exposed via syscall.SysProcAttr — job
-// objects exist but require non-trivial wiring. FastClaw's exec path is
+// objects exist but require non-trivial wiring. BkClaw's exec path is
 // already Unix-only in practice (uses `sh -c`), so a no-op here keeps
 // cross-compilation green without pretending to support Windows.
 //

@@ -1,17 +1,17 @@
 # Optional — in-cluster self-hosted Postgres, suitable for dev / single-node trials.
 # For production, prefer a managed service (Aliyun RDS / AWS RDS / etc.) and
-# point fastclaw.yaml's fastclaw-secrets.STORAGE_DSN at it; this file is not needed.
+# point bkclaw.yaml's bkclaw-secrets.STORAGE_DSN at it; this file is not needed.
 #
-# To use alongside fastclaw.yaml:
+# To use alongside bkclaw.yaml:
 #   1. kubectl apply -f postgres.yml          (creates the resources below)
-#   2. In fastclaw.yaml, set fastclaw-secrets.STORAGE_DSN to:
-#        postgres://fastclaw:<POSTGRES_PASSWORD above>@fastclaw-db:5432/fastclaw?sslmode=disable
-#   3. kubectl apply -f fastclaw.yaml
+#   2. In bkclaw.yaml, set bkclaw-secrets.STORAGE_DSN to:
+#        postgres://bkclaw:<POSTGRES_PASSWORD above>@bkclaw-db:5432/bkclaw?sslmode=disable
+#   3. kubectl apply -f bkclaw.yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  name: fastclaw-db
-  namespace: fastclaw
+  name: bkclaw-db
+  namespace: bkclaw
 type: Opaque
 stringData:
   POSTGRES_PASSWORD: "change-me-in-production"
@@ -19,8 +19,8 @@ stringData:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: fastclaw-db
-  namespace: fastclaw
+  name: bkclaw-db
+  namespace: bkclaw
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -30,17 +30,17 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: fastclaw-db
-  namespace: fastclaw
+  name: bkclaw-db
+  namespace: bkclaw
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: fastclaw-db
+      app: bkclaw-db
   template:
     metadata:
       labels:
-        app: fastclaw-db
+        app: bkclaw-db
     spec:
       containers:
       - name: postgres
@@ -49,34 +49,34 @@ spec:
         - containerPort: 5432
         env:
         - name: POSTGRES_DB
-          value: fastclaw
+          value: bkclaw
         - name: POSTGRES_USER
-          value: fastclaw
+          value: bkclaw
         - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: fastclaw-db
+              name: bkclaw-db
               key: POSTGRES_PASSWORD
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
         readinessProbe:
           exec:
-            command: ["pg_isready", "-U", "fastclaw"]
+            command: ["pg_isready", "-U", "bkclaw"]
           initialDelaySeconds: 5
           periodSeconds: 5
       volumes:
       - name: data
         persistentVolumeClaim:
-          claimName: fastclaw-db
+          claimName: bkclaw-db
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: fastclaw-db
-  namespace: fastclaw
+  name: bkclaw-db
+  namespace: bkclaw
 spec:
   selector:
-    app: fastclaw-db
+    app: bkclaw-db
   ports:
   - port: 5432

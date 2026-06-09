@@ -2,9 +2,9 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "fastclaw.fullname" . }}
+  name: {{ include "bkclaw.fullname" . }}
   labels:
-    {{- include "fastclaw.labels" . | nindent 4 }}
+    {{- include "bkclaw.labels" . | nindent 4 }}
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: {{ .Values.ingress.proxyBodySize | quote }}
     # SSE / WS are long-lived — the default 60s timeout disconnects clients constantly.
@@ -12,7 +12,7 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/affinity: "cookie"
-    nginx.ingress.kubernetes.io/session-cookie-name: "fastclaw-affinity"
+    nginx.ingress.kubernetes.io/session-cookie-name: "bkclaw-affinity"
     nginx.ingress.kubernetes.io/session-cookie-max-age: "86400"
     {{- with .Values.ingress.certManagerIssuer }}
     cert-manager.io/cluster-issuer: {{ . | quote }}
@@ -26,7 +26,7 @@ spec:
   tls:
   - hosts:
     - {{ .Values.ingress.host }}
-    secretName: {{ .Values.ingress.tlsSecret | default (printf "%s-tls" (include "fastclaw.fullname" .)) }}
+    secretName: {{ .Values.ingress.tlsSecret | default (printf "%s-tls" (include "bkclaw.fullname" .)) }}
   {{- end }}
   rules:
   - host: {{ .Values.ingress.host }}
@@ -36,7 +36,7 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: {{ include "fastclaw.fullname" . }}-gateway
+            name: {{ include "bkclaw.fullname" . }}-gateway
             port:
               number: {{ .Values.gateway.port }}
 {{- end }}

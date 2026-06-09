@@ -13,7 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fastclaw-ai/fastclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
 )
 
 // sessionPathPattern pulls the agent id and session key out of a chat
@@ -44,12 +44,12 @@ got stuck.
 
 The URL is the chat page URL from the browser; only its path matters
 (/agents/<agentId>/chat/<sessionKey>). The session data is always read
-from the LOCAL fastclaw.db — "online" sessions need their DB pulled
-down first (rsync ~/.fastclaw/fastclaw.db from the host).
+from the LOCAL bkclaw.db — "online" sessions need their DB pulled
+down first (rsync ~/.bkclaw/bkclaw.db from the host).
 
 Examples:
-  fastclaw session export http://localhost:18953/agents/agt_xxx/chat/s-yyy/
-  fastclaw session export https://app.fastclaw.ai/agents/agt_xxx/chat/s-yyy -o /tmp/run.json`,
+  bkclaw session export http://localhost:18953/agents/agt_xxx/chat/s-yyy/
+  bkclaw session export https://app.bkclaw.ai/agents/agt_xxx/chat/s-yyy -o /tmp/run.json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentID, sessionKey, err := parseChatURL(args[0])
@@ -103,9 +103,9 @@ Examples:
 		},
 	}
 	cmd.Flags().StringVarP(&outputPath, "output", "o", "",
-		"output JSON path (default ~/.fastclaw/logs/<sessionKey>.json)")
+		"output JSON path (default ~/.bkclaw/logs/<sessionKey>.json)")
 	cmd.Flags().StringVar(&dbPath, "db", "",
-		"sqlite DB path (default ~/.fastclaw/fastclaw.db)")
+		"sqlite DB path (default ~/.bkclaw/bkclaw.db)")
 	return cmd
 }
 
@@ -131,7 +131,7 @@ func parseChatURL(raw string) (string, string, error) {
 }
 
 // openStoreAt opens a DBStore at an explicit sqlite path. Empty
-// dbPath defaults to ~/.fastclaw/fastclaw.db with the same pragma
+// dbPath defaults to ~/.bkclaw/bkclaw.db with the same pragma
 // tuning the daemon uses, so a CLI export against a live db doesn't
 // hit lock contention.
 func openStoreAt(dbPath string) (*store.DBStore, func(), error) {
@@ -140,7 +140,7 @@ func openStoreAt(dbPath string) (*store.DBStore, func(), error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("resolve home dir: %w", err)
 		}
-		dbPath = filepath.Join(home, ".fastclaw", "fastclaw.db")
+		dbPath = filepath.Join(home, ".bkclaw", "bkclaw.db")
 	}
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil, nil, fmt.Errorf("db file: %w", err)
@@ -187,7 +187,7 @@ func lookupSessionUser(ctx context.Context, st *store.DBStore, agentID, sessionK
 }
 
 // resolveOutputPath returns the user's -o value if set, else
-// ~/.fastclaw/logs/<sessionKey>.json. Per-session filename so a
+// ~/.bkclaw/logs/<sessionKey>.json. Per-session filename so a
 // batch of exports doesn't overwrite each other; same parent dir as
 // the daemon's own logs so the analyzer can sweep one place.
 func resolveOutputPath(explicit, sessionKey string) (string, error) {
@@ -198,7 +198,7 @@ func resolveOutputPath(explicit, sessionKey string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve home dir: %w", err)
 	}
-	return filepath.Join(home, ".fastclaw", "logs", sessionKey+".json"), nil
+	return filepath.Join(home, ".bkclaw", "logs", sessionKey+".json"), nil
 }
 
 func writeJSON(path string, payload any) error {

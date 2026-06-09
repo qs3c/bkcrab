@@ -2,18 +2,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "fastclaw.fullname" . }}-db
+  name: {{ include "bkclaw.fullname" . }}-db
   labels:
-    {{- include "fastclaw.labels" . | nindent 4 }}
+    {{- include "bkclaw.labels" . | nindent 4 }}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: {{ include "fastclaw.fullname" . }}-db
+      app: {{ include "bkclaw.fullname" . }}-db
   template:
     metadata:
       labels:
-        app: {{ include "fastclaw.fullname" . }}-db
+        app: {{ include "bkclaw.fullname" . }}-db
     spec:
       containers:
       - name: postgres
@@ -22,9 +22,9 @@ spec:
         - containerPort: 5432
         env:
         - name: POSTGRES_DB
-          value: fastclaw
+          value: bkclaw
         - name: POSTGRES_USER
-          value: fastclaw
+          value: bkclaw
         - name: POSTGRES_PASSWORD
           value: {{ .Values.postgres.password | quote }}
         volumeMounts:
@@ -32,20 +32,20 @@ spec:
           mountPath: /var/lib/postgresql/data
         readinessProbe:
           exec:
-            command: ["pg_isready", "-U", "fastclaw"]
+            command: ["pg_isready", "-U", "bkclaw"]
           initialDelaySeconds: 5
           periodSeconds: 5
       volumes:
       - name: data
         persistentVolumeClaim:
-          claimName: {{ include "fastclaw.fullname" . }}-db
+          claimName: {{ include "bkclaw.fullname" . }}-db
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "fastclaw.fullname" . }}-db
+  name: {{ include "bkclaw.fullname" . }}-db
   labels:
-    {{- include "fastclaw.labels" . | nindent 4 }}
+    {{- include "bkclaw.labels" . | nindent 4 }}
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -55,12 +55,12 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "fastclaw.fullname" . }}-db
+  name: {{ include "bkclaw.fullname" . }}-db
   labels:
-    {{- include "fastclaw.labels" . | nindent 4 }}
+    {{- include "bkclaw.labels" . | nindent 4 }}
 spec:
   selector:
-    app: {{ include "fastclaw.fullname" . }}-db
+    app: {{ include "bkclaw.fullname" . }}-db
   ports:
   - port: 5432
 {{- end }}

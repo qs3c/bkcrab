@@ -15,7 +15,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/fastclaw-ai/fastclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
 )
 
 type column struct {

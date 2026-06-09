@@ -7,7 +7,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/workspace"
+	"github.com/bkclaw-ai/bkclaw/internal/workspace"
 )
 
 // hydrateWorkspace copies every object from the workspace Store (S3 / local

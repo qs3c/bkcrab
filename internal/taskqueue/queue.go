@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/bus"
+	"github.com/bkclaw-ai/bkclaw/internal/bus"
 )
 
 // TaskStatus represents the current state of a task.

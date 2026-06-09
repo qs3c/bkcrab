@@ -100,7 +100,7 @@ func TestOutputBuffer_ConcurrentWriteRead(t *testing.T) {
 // =====================================================================
 //
 // These spawn real `sh -c` processes. They run on every CI environment
-// FastClaw cares about. Tests use short sleeps (≤ 200ms) so the suite
+// BkClaw cares about. Tests use short sleeps (≤ 200ms) so the suite
 // stays fast.
 
 func waitDone(t *testing.T, s *bashSession, timeout time.Duration) {

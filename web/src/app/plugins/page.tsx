@@ -91,7 +91,7 @@ export default function PluginsPage() {
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Plugins</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Extend FastClaw with custom plugins
+            Extend BkClaw with custom plugins
           </p>
         </div>
         <Button variant="outline">

@@ -24,7 +24,7 @@ COPY --from=web-builder /src/web/out internal/setup/web
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG DATE=unknown
-# Stamp BOTH symbol sets — `main.*` for the legacy `fastclaw version` CLI
+# Stamp BOTH symbol sets — `main.*` for the legacy `bkclaw version` CLI
 # consumer and `internal/buildinfo.*` for the agent runtime + the About
 # page in the web UI. Mirrors the Makefile / scripts/release.sh ldflags
 # so a docker-built image identifies itself the same way the released
@@ -33,28 +33,28 @@ ARG DATE=unknown
 RUN CGO_ENABLED=0 go build \
     -ldflags "-s -w \
       -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE} \
-      -X github.com/fastclaw-ai/fastclaw/internal/buildinfo.Version=${VERSION} \
-      -X github.com/fastclaw-ai/fastclaw/internal/buildinfo.Commit=${COMMIT} \
-      -X github.com/fastclaw-ai/fastclaw/internal/buildinfo.Date=${DATE}" \
-    -o /fastclaw ./cmd/fastclaw
-RUN CGO_ENABLED=0 go build -o /fastclaw-migrate-storage ./tools/migrate-storage
+      -X github.com/qs3c/bkclaw/internal/buildinfo.Version=${VERSION} \
+      -X github.com/qs3c/bkclaw/internal/buildinfo.Commit=${COMMIT} \
+      -X github.com/qs3c/bkclaw/internal/buildinfo.Date=${DATE}" \
+    -o /bkclaw ./cmd/bkclaw
+RUN CGO_ENABLED=0 go build -o /bkclaw-migrate-storage ./tools/migrate-storage
 
 # --- Stage 3: Runtime ---
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates docker-cli tzdata
-COPY --from=go-builder /fastclaw /usr/local/bin/fastclaw
-COPY --from=go-builder /fastclaw-migrate-storage /usr/local/bin/fastclaw-migrate-storage
+COPY --from=go-builder /bkclaw /usr/local/bin/bkclaw
+COPY --from=go-builder /bkclaw-migrate-storage /usr/local/bin/bkclaw-migrate-storage
 
-# Default data directory. Override at runtime with FASTCLAW_HOME, but the
-# default value here lets `docker run fastclaw/fastclaw` work with no env.
-ENV FASTCLAW_HOME=/data/.fastclaw \
+# Default data directory. Override at runtime with BKCLAW_HOME, but the
+# default value here lets `docker run bkclaw/bkclaw` work with no env.
+ENV BKCLAW_HOME=/data/.bkclaw \
     HOME=/data
-RUN mkdir -p /data/.fastclaw /data/.fastclaw/skills
-VOLUME /data/.fastclaw
+RUN mkdir -p /data/.bkclaw /data/.bkclaw/skills
+VOLUME /data/.bkclaw
 
 # Bundle built-in skills
-COPY skills/ /data/.fastclaw/skills/
+COPY skills/ /data/.bkclaw/skills/
 
 EXPOSE 18953
-ENTRYPOINT ["fastclaw"]
+ENTRYPOINT ["bkclaw"]
 CMD ["gateway"]

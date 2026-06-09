@@ -101,7 +101,7 @@ func (c *HTTPClient) sendRequest(method string, params interface{}) (*jsonRPCRes
 func (c *HTTPClient) Connect() error {
 	_, err := c.sendRequest("initialize", initializeParams{
 		ProtocolVersion: "2024-11-05",
-		ClientInfo:      clientInfo{Name: "fastclaw", Version: "0.1.0"},
+		ClientInfo:      clientInfo{Name: "bkclaw", Version: "0.1.0"},
 	})
 	return err
 }

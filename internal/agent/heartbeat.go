@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/bus"
+	"github.com/bkclaw-ai/bkclaw/internal/bus"
 )
 
 const (

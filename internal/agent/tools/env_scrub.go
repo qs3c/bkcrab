@@ -7,14 +7,14 @@ import (
 
 // sensitiveEnvPrefixes are NAME prefixes (case-insensitive) that mark
 // an env var as operator-only and never inherited by LLM-driven
-// subprocesses. FASTCLAW_STORAGE_* and FASTCLAW_OBJECT_STORE_* carry
-// the daemon's DSN + object-store credentials; FASTCLAW_SANDBOX_BOXLITE_*
+// subprocesses. BKCLAW_STORAGE_* and BKCLAW_OBJECT_STORE_* carry
+// the daemon's DSN + object-store credentials; BKCLAW_SANDBOX_BOXLITE_*
 // carries the sandbox provider's apikey. The model has no business
 // reading any of these.
 var sensitiveEnvPrefixes = []string{
-	"FASTCLAW_STORAGE_",
-	"FASTCLAW_OBJECT_STORE_",
-	"FASTCLAW_SANDBOX_BOXLITE_",
+	"BKCLAW_STORAGE_",
+	"BKCLAW_OBJECT_STORE_",
+	"BKCLAW_SANDBOX_BOXLITE_",
 	"AWS_",
 	"GOOGLE_APPLICATION_CREDENTIALS",
 }

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/bus"
+	"github.com/bkclaw-ai/bkclaw/internal/bus"
 )
 
 // mockStore implements StoreInterface for testing

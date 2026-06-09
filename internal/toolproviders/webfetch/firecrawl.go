@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/toolproviders"
+	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
 )
 
 // Firecrawl calls api.firecrawl.dev's /v1/scrape endpoint, which renders

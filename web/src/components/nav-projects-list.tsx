@@ -90,7 +90,7 @@ export function NavProjectsList({
   projects: ProjectEntry[];
   sessions: ProjectChatItem[];
   // Caller refetches projects + sessions when this fires (rename, delete,
-  // create chat). Same pattern as the `fastclaw:sessions-changed` event
+  // create chat). Same pattern as the `bkclaw:sessions-changed` event
   // NavSessions broadcasts; we keep it as a callback prop because the
   // Project state lives one level up in AppSidebar.
   onChanged: () => void;

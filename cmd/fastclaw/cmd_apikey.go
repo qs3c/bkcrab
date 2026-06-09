@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fastclaw-ai/fastclaw/internal/users"
+	"github.com/qs3c/bkclaw/internal/users"
 )
 
 func apikeyCmd() *cobra.Command {
@@ -30,7 +30,7 @@ func apikeyCreateCmd() *cobra.Command {
 
 Key types:
   admin  — full platform access (only super_admin should own these)
-  user   — scoped to owner's resources; supports X-Fastclaw-End-User for app_user provisioning
+  user   — scoped to owner's resources; supports X-Bkclaw-End-User for app_user provisioning
   agent  — locked to explicit agent list (requires --agents)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			st, err := openStoreFromEnv()

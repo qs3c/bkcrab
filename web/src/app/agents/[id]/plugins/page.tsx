@@ -102,7 +102,7 @@ export default function AgentPluginsPage() {
             </p>
             <p className="text-xs text-muted-foreground/60 max-w-sm text-center">
               Drop a plugin directory into{" "}
-              <code className="text-[10px]">~/.fastclaw/plugins/</code>{" "}
+              <code className="text-[10px]">~/.bkclaw/plugins/</code>{" "}
               with <code className="text-[10px]">type: &quot;hook&quot;</code> in
               its <code className="text-[10px]">plugin.json</code>, then
               restart the daemon.

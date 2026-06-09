@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/agent"
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/skills"
+	"github.com/bkclaw-ai/bkclaw/internal/agent"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/skills"
 )
 
 // --- Skills ---
@@ -68,7 +68,7 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListAgentSkills lists skills installed into an agent's own home
-// directory (~/.fastclaw/agents/<id>/skills/). Loader "Layer 1" picks
+// directory (~/.bkclaw/agents/<id>/skills/). Loader "Layer 1" picks
 // these up at the highest precedence — they're exclusive to the agent.
 func (s *Server) handleListAgentSkills(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -129,7 +129,7 @@ func scanSkillsDir(dir string) []map[string]any {
 					desc = fm.Description
 				}
 				// Top-level `env:` shortcut wins; fall back to the
-				// namespaced metadata.fastclaw|openclaw.env form.
+				// namespaced metadata.bkclaw|openclaw.env form.
 				if len(fm.Env) > 0 {
 					envSpec = fm.Env
 				} else if meta := agent.ParseSkillMetadata(&fm.Metadata); meta != nil && meta.Meta() != nil {

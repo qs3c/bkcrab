@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/workspace"
+	"github.com/bkclaw-ai/bkclaw/internal/workspace"
 )
 
 // bytesReader wraps a byte slice as an io.Reader — inlined helper so flush

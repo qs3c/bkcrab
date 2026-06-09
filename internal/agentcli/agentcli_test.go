@@ -6,15 +6,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fastclaw-ai/fastclaw/internal/store"
-	"github.com/fastclaw-ai/fastclaw/internal/users"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/users"
 )
 
 // freshStore opens an in-memory sqlite store for the test, migrated and
 // ready to use.
 func freshStore(t *testing.T) store.Store {
 	t.Helper()
-	t.Setenv("FASTCLAW_HOME", t.TempDir())
+	t.Setenv("BKCLAW_HOME", t.TempDir())
 	st, err := store.New(&store.StorageConfig{
 		Type:        store.StorageSQLite,
 		AutoMigrate: true,
@@ -513,9 +513,9 @@ func TestParseValueTypes(t *testing.T) {
 
 func TestSettingKeyRouting(t *testing.T) {
 	cases := []struct {
-		key           string
-		ns            string
-		path          []string
+		key            string
+		ns             string
+		path           []string
 		wantAgentScope bool
 	}{
 		{"model", "agents.defaults", []string{"model"}, true},

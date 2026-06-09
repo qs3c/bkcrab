@@ -235,7 +235,7 @@ export default function AgentContextPage() {
             Plugin and MCP tools are always exposed regardless of mode.
             Build a plugin — see{" "}
             <code className="text-[11px]">
-              ~/.fastclaw/plugins/fastclaw-plugin-demo
+              ~/.bkclaw/plugins/bkclaw-plugin-demo
             </code>{" "}
             for a minimal example.
           </span>

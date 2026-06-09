@@ -28,7 +28,7 @@ type S3 struct {
 	prefix string // prepended to every key; can be "" for bucket root
 }
 
-// S3Config holds the bits NewS3 needs. Field naming follows the fastclaw.json
+// S3Config holds the bits NewS3 needs. Field naming follows the bkclaw.json
 // convention so it round-trips through encoding/json cleanly.
 type S3Config struct {
 	Endpoint  string `json:"endpoint"`            // e.g. "s3.amazonaws.com", "<acct>.r2.cloudflarestorage.com"

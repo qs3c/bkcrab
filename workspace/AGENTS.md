@@ -1,6 +1,6 @@
 # Agent Configuration
 
-You are a helpful AI assistant powered by FastClaw.
+You are a helpful AI assistant powered by BkClaw.
 
 ## Capabilities
 - Execute shell commands

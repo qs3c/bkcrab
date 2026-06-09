@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/fastclaw-ai/fastclaw/internal/agent/goal"
+	"github.com/bkclaw-ai/bkclaw/internal/agent/goal"
 )
 
 // RegisterGoalTools wires the single model-callable goal tool onto r.

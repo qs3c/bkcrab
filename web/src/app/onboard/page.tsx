@@ -158,7 +158,7 @@ export default function OnboardPage() {
   // Sandbox (optional — disabled by default; user can flip and configure)
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
   const [sandboxBackend, setSandboxBackend] = useState("docker");
-  const [sandboxDockerImage, setSandboxDockerImage] = useState("thinkany/fastclaw-sandbox:latest");
+  const [sandboxDockerImage, setSandboxDockerImage] = useState("thinkany/bkclaw-sandbox:latest");
   const [sandboxE2BTemplate, setSandboxE2BTemplate] = useState("base");
   const [sandboxE2BKey, setSandboxE2BKey] = useState("");
   const [sandboxBoxliteImage, setSandboxBoxliteImage] = useState("");
@@ -449,7 +449,7 @@ function WelcomeStep() {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <PartyPopper className="size-5 text-primary" />
-          Welcome to FastClaw
+          Welcome to BkClaw
         </CardTitle>
         <CardDescription>
           A few quick steps to set up your platform — admin account, first LLM
@@ -882,7 +882,7 @@ function SandboxStep(props: {
                     <Input
                       value={props.boxliteImage}
                       onChange={(e) => props.setBoxliteImage(e.target.value)}
-                      placeholder="fastclaw-sandbox"
+                      placeholder="bkclaw-sandbox"
                       className="font-mono text-sm"
                     />
                     <p className="text-xs text-muted-foreground">
@@ -906,7 +906,7 @@ function SandboxStep(props: {
                   <Input
                     value={props.dockerImage}
                     onChange={(e) => props.setDockerImage(e.target.value)}
-                    placeholder="thinkany/fastclaw-sandbox:latest"
+                    placeholder="thinkany/bkclaw-sandbox:latest"
                     className="font-mono text-sm"
                   />
                 </div>

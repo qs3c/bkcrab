@@ -16,14 +16,14 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/agent/tools"
-	"github.com/fastclaw-ai/fastclaw/internal/auth"
-	"github.com/fastclaw-ai/fastclaw/internal/buildinfo"
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/scope"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
-	"github.com/fastclaw-ai/fastclaw/internal/users"
-	"github.com/fastclaw-ai/fastclaw/internal/workspace"
+	"github.com/bkclaw-ai/bkclaw/internal/agent/tools"
+	"github.com/bkclaw-ai/bkclaw/internal/auth"
+	"github.com/bkclaw-ai/bkclaw/internal/buildinfo"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/scope"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/users"
+	"github.com/bkclaw-ai/bkclaw/internal/workspace"
 )
 
 // agentShareModelConfig reports whether the agent's owner has opted to
@@ -398,7 +398,7 @@ func (s *Server) requireAgentOwner(w http.ResponseWriter, r *http.Request, agent
 // the URL can chat under their own user_id namespace, while the
 // agent's identity (SOUL/IDENTITY/skills) is reused from the owner's
 // row. This is the same gate /api/chat/history uses, so app_user
-// requests proxied through an integration with X-Fastclaw-End-User
+// requests proxied through an integration with X-Bkclaw-End-User
 // can read artifacts for sessions they own without 403'ing on the
 // strict ownership check.
 // callerOwnsAgent returns true when the caller is the agent's owner, a
@@ -460,11 +460,11 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name              string    `json:"name,omitempty"`
-		Description       *string   `json:"description,omitempty"` // ptr so empty-string clears it
-		Model             *string   `json:"model,omitempty"`       // ptr so empty-string clears the agent-scope override
-		IsPublic          *bool     `json:"isPublic,omitempty"`    // ptr so caller can leave it unchanged
-		ShareModelConfig  *bool     `json:"shareModelConfig,omitempty"`
+		Name             string  `json:"name,omitempty"`
+		Description      *string `json:"description,omitempty"` // ptr so empty-string clears it
+		Model            *string `json:"model,omitempty"`       // ptr so empty-string clears the agent-scope override
+		IsPublic         *bool   `json:"isPublic,omitempty"`    // ptr so caller can leave it unchanged
+		ShareModelConfig *bool   `json:"shareModelConfig,omitempty"`
 		// PromptMode is a ptr so the caller can distinguish "leave
 		// unchanged" (omitted / null) from "clear override" (empty
 		// string). Allowed string values: "agent" | "chatbot" |
@@ -945,15 +945,15 @@ func (s *Server) handleAgentFileList(w http.ResponseWriter, r *http.Request) {
 // file browser / zip filter. acceptPath returns true for paths the
 // scope considers in-bounds:
 //
-//   loose chat:  paths under sessions/<chat_id>/
-//   project chat: paths under projects/<pid>/<chat_id>/ (the chat's
-//                 own files), PLUS files directly at projects/<pid>/
-//                 (project-root "shared/legacy" files — pre-subdir
-//                 layout still lives there, and operators may
-//                 deliberately drop shared files at the root). Other
-//                 chats' subdirs (projects/<pid>/<other-sid>/...)
-//                 are excluded — those belong to that chat's panel.
-//   no session:  everything (admin browser).
+//	loose chat:  paths under sessions/<chat_id>/
+//	project chat: paths under projects/<pid>/<chat_id>/ (the chat's
+//	              own files), PLUS files directly at projects/<pid>/
+//	              (project-root "shared/legacy" files — pre-subdir
+//	              layout still lives there, and operators may
+//	              deliberately drop shared files at the root). Other
+//	              chats' subdirs (projects/<pid>/<other-sid>/...)
+//	              are excluded — those belong to that chat's panel.
+//	no session:  everything (admin browser).
 //
 // archiveSuffix returns the human-readable scope id used in the zip
 // filename — chat_id for loose chats, "<pid>-<chat_id>" for project
@@ -1272,7 +1272,7 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 	}
 	// Workspace store not configured — fall back to direct FS read.
 	// The local FS layout mirrors the workspace store's:
-	// ~/.fastclaw/workspaces/<agent_id>/<path>.
+	// ~/.bkclaw/workspaces/<agent_id>/<path>.
 	home, err := config.HomeDir()
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})

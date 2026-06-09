@@ -11,11 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/auth"
-	"github.com/fastclaw-ai/fastclaw/internal/channels"
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/scope"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/auth"
+	"github.com/bkclaw-ai/bkclaw/internal/channels"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/scope"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
 )
 
 // Per-agent IM channel CRUD. Wraps the existing scope.SaveChannel +

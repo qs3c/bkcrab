@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/toolproviders"
+	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
 )
 
 // Brave calls api.search.brave.com. Requires an X-Subscription-Token API key.

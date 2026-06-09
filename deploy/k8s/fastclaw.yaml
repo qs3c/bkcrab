@@ -1,16 +1,16 @@
-# FastClaw — single-file K8s deployment.
+# BkClaw — single-file K8s deployment.
 #
 # ┌─ ONE-SHOT DEPLOY ──────────────────────────────────────────────────────┐
-# │  1. Edit the 3 (or 4) values in `fastclaw-secrets`                     │
+# │  1. Edit the 3 (or 4) values in `bkclaw-secrets`                     │
 # │     (DSN + object-store AK/SK, optionally E2B key).                    │
-# │  2. In `fastclaw-config`, pick ONE object-store provider block;        │
+# │  2. In `bkclaw-config`, pick ONE object-store provider block;        │
 # │     leave the rest commented out.                                      │
 # │  3. Edit the Ingress host (or delete the whole Ingress section if      │
 # │     you don't need public access).                                     │
-# │  4. kubectl apply -f fastclaw.yaml                                     │
+# │  4. kubectl apply -f bkclaw.yaml                                     │
 # │  5. Create a super-admin:                                              │
-# │     kubectl -n fastclaw exec deploy/fastclaw -- \                      │
-# │       fastclaw admin create-user --username alice \                    │
+# │     kubectl -n bkclaw exec deploy/bkclaw -- \                      │
+# │       bkclaw admin create-user --username alice \                    │
 # │         --email alice@example.com --password 'hunter2' \               │
 # │         --role super_admin                                             │
 # │     Then sign in at /login — no admin token needed.                    │
@@ -19,28 +19,28 @@
 # Prerequisites:
 #   - Managed PostgreSQL 16+ (Aliyun RDS / AWS RDS / etc.)
 #   - One object-store bucket (AWS S3 / R2 / B2 / OSS / MinIO — your pick)
-#   - Image: ghcr.io/fastclaw-ai/fastclaw:dev (auto-pushed by GitHub Actions, public)
+#   - Image: ghcr.io/qs3c/bkclaw:dev (auto-pushed by GitHub Actions, public)
 #   - Optional: cert-manager + ClusterIssuer (if you want HTTPS)
 #
-# Configuration is fully driven by FASTCLAW_* env vars — there is no
+# Configuration is fully driven by BKCLAW_* env vars — there is no
 # config file. Users / agents / providers / channels all live in Postgres.
 
 ---
 apiVersion: v1
 kind: Namespace
-metadata: { name: fastclaw }
+metadata: { name: bkclaw }
 
 ---
 # ========================= EDIT HERE (secrets) =========================
 apiVersion: v1
 kind: Secret
 metadata:
-  name: fastclaw-secrets
-  namespace: fastclaw
+  name: bkclaw-secrets
+  namespace: bkclaw
 type: Opaque
 stringData:
   # Postgres DSN. Use sslmode=require for managed RDS-style endpoints.
-  STORAGE_DSN: "postgres://fastclaw:PASS@rm-xxxxx.pg.rds.aliyuncs.com:5432/fastclaw?sslmode=require"
+  STORAGE_DSN: "postgres://bkclaw:PASS@rm-xxxxx.pg.rds.aliyuncs.com:5432/bkclaw?sslmode=require"
 
   # Object-store credentials. Same two fields for every provider:
   #   AWS S3:       Access Key ID / Secret Access Key
@@ -59,7 +59,7 @@ stringData:
 # =================== EDIT HERE (object store provider) ==================
 # Pick ONE provider — uncomment its block and leave the others commented.
 #
-# FASTCLAW_OBJECT_STORE_TYPE accepts:
+# BKCLAW_OBJECT_STORE_TYPE accepts:
 #   local          pod-local disk (single node / dev only)
 #   aws-s3         AWS S3
 #   cloudflare-r2  Cloudflare R2 (requires ACCOUNTID)
@@ -70,13 +70,13 @@ stringData:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: fastclaw-config
-  namespace: fastclaw
+  name: bkclaw-config
+  namespace: bkclaw
 data:
-  FASTCLAW_PORT: "18953"
-  FASTCLAW_BIND: "all"
-  FASTCLAW_STORAGE_TYPE: "postgres"
-  FASTCLAW_STORAGE_AUTO_MIGRATE: "true"
+  BKCLAW_PORT: "18953"
+  BKCLAW_BIND: "all"
+  BKCLAW_STORAGE_TYPE: "postgres"
+  BKCLAW_STORAGE_AUTO_MIGRATE: "true"
 
   # Server default timezone (IANA name) — the LAST fallback in the chain
   # chatter pref → agent default → system default → TZ. Without it pods
@@ -85,81 +85,81 @@ data:
   TZ: "Asia/Shanghai"
 
   # ─── Provider 1: Aliyun OSS (default example) ───
-  FASTCLAW_OBJECT_STORE_TYPE: "aliyun-oss"
-  FASTCLAW_OBJECT_STORE_REGION: "cn-hangzhou"
-  FASTCLAW_OBJECT_STORE_BUCKET: "your-fastclaw-bucket"
-  FASTCLAW_OBJECT_STORE_ALIYUN_INTERNAL: "true"    # same-region ACK uses the internal endpoint, saves egress
+  BKCLAW_OBJECT_STORE_TYPE: "aliyun-oss"
+  BKCLAW_OBJECT_STORE_REGION: "cn-hangzhou"
+  BKCLAW_OBJECT_STORE_BUCKET: "your-bkclaw-bucket"
+  BKCLAW_OBJECT_STORE_ALIYUN_INTERNAL: "true"    # same-region ACK uses the internal endpoint, saves egress
 
   # ─── Provider 2: AWS S3 ───
-  # FASTCLAW_OBJECT_STORE_TYPE: "aws-s3"
-  # FASTCLAW_OBJECT_STORE_REGION: "us-east-1"
-  # FASTCLAW_OBJECT_STORE_BUCKET: "your-fastclaw-bucket"
+  # BKCLAW_OBJECT_STORE_TYPE: "aws-s3"
+  # BKCLAW_OBJECT_STORE_REGION: "us-east-1"
+  # BKCLAW_OBJECT_STORE_BUCKET: "your-bkclaw-bucket"
 
   # ─── Provider 3: Cloudflare R2 ───
-  # FASTCLAW_OBJECT_STORE_TYPE: "cloudflare-r2"
-  # FASTCLAW_OBJECT_STORE_ACCOUNTID: "<cloudflare-account-id>"
-  # FASTCLAW_OBJECT_STORE_BUCKET: "your-fastclaw-bucket"
+  # BKCLAW_OBJECT_STORE_TYPE: "cloudflare-r2"
+  # BKCLAW_OBJECT_STORE_ACCOUNTID: "<cloudflare-account-id>"
+  # BKCLAW_OBJECT_STORE_BUCKET: "your-bkclaw-bucket"
 
   # ─── Provider 4: Backblaze B2 ───
-  # FASTCLAW_OBJECT_STORE_TYPE: "backblaze-b2"
-  # FASTCLAW_OBJECT_STORE_REGION: "us-west-004"
-  # FASTCLAW_OBJECT_STORE_BUCKET: "your-fastclaw-bucket"
+  # BKCLAW_OBJECT_STORE_TYPE: "backblaze-b2"
+  # BKCLAW_OBJECT_STORE_REGION: "us-west-004"
+  # BKCLAW_OBJECT_STORE_BUCKET: "your-bkclaw-bucket"
 
   # ─── Provider 5: self-hosted MinIO (in-cluster) ───
-  # FASTCLAW_OBJECT_STORE_TYPE: "minio"
-  # FASTCLAW_OBJECT_STORE_ENDPOINT: "minio.default.svc.cluster.local:9000"
-  # FASTCLAW_OBJECT_STORE_BUCKET: "fastclaw"
-  # FASTCLAW_OBJECT_STORE_USESSL: "false"
+  # BKCLAW_OBJECT_STORE_TYPE: "minio"
+  # BKCLAW_OBJECT_STORE_ENDPOINT: "minio.default.svc.cluster.local:9000"
+  # BKCLAW_OBJECT_STORE_BUCKET: "bkclaw"
+  # BKCLAW_OBJECT_STORE_USESSL: "false"
 
   # ─── Provider 6: generic S3-compatible (DigitalOcean Spaces / Wasabi / …) ───
-  # FASTCLAW_OBJECT_STORE_TYPE: "s3"
-  # FASTCLAW_OBJECT_STORE_ENDPOINT: "nyc3.digitaloceanspaces.com"
-  # FASTCLAW_OBJECT_STORE_REGION: "nyc3"
-  # FASTCLAW_OBJECT_STORE_BUCKET: "your-fastclaw-bucket"
+  # BKCLAW_OBJECT_STORE_TYPE: "s3"
+  # BKCLAW_OBJECT_STORE_ENDPOINT: "nyc3.digitaloceanspaces.com"
+  # BKCLAW_OBJECT_STORE_REGION: "nyc3"
+  # BKCLAW_OBJECT_STORE_BUCKET: "your-bkclaw-bucket"
 
   # Optional: prefix to share one bucket across multiple environments.
-  # FASTCLAW_OBJECT_STORE_PREFIX: "prod"
+  # BKCLAW_OBJECT_STORE_PREFIX: "prod"
 
   # ─── Sandbox (optional) ───
   # k8s pods don't have a docker daemon, so the only sandbox backend
   # is E2B (remote) — or leave it disabled. To enable: set the
-  # E2B_API_KEY in fastclaw-secrets above and uncomment the lines below.
-  # FASTCLAW_SANDBOX_BACKEND: "e2b"
-  # FASTCLAW_SANDBOX_IMAGE: "thinkany/fastclaw-sandbox:latest"   # used when running an E2B custom template
+  # E2B_API_KEY in bkclaw-secrets above and uncomment the lines below.
+  # BKCLAW_SANDBOX_BACKEND: "e2b"
+  # BKCLAW_SANDBOX_IMAGE: "thinkany/bkclaw-sandbox:latest"   # used when running an E2B custom template
 
 ---
 # =================== Application (usually no edits) =====================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: fastclaw
-  namespace: fastclaw
-  labels: { app: fastclaw }
+  name: bkclaw
+  namespace: bkclaw
+  labels: { app: bkclaw }
 spec:
   replicas: 2
   strategy:
     type: RollingUpdate
     rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
-  selector: { matchLabels: { app: fastclaw } }
+  selector: { matchLabels: { app: bkclaw } }
   template:
-    metadata: { labels: { app: fastclaw } }
+    metadata: { labels: { app: bkclaw } }
     spec:
       containers:
-        - name: fastclaw
-          image: ghcr.io/fastclaw-ai/fastclaw:dev    # production: pin to :<sha7> or :vX.Y.Z
+        - name: bkclaw
+          image: ghcr.io/qs3c/bkclaw:dev    # production: pin to :<sha7> or :vX.Y.Z
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 18953 }
           envFrom:
-            - configMapRef: { name: fastclaw-config }
+            - configMapRef: { name: bkclaw-config }
           env:
-            - { name: FASTCLAW_HOME,                    value: "/data/.fastclaw" }
-            - { name: FASTCLAW_STORAGE_DSN,             valueFrom: { secretKeyRef: { name: fastclaw-secrets, key: STORAGE_DSN } } }
-            - { name: FASTCLAW_OBJECT_STORE_ACCESSKEY,  valueFrom: { secretKeyRef: { name: fastclaw-secrets, key: OBJECT_STORE_ACCESSKEY } } }
-            - { name: FASTCLAW_OBJECT_STORE_SECRETKEY,  valueFrom: { secretKeyRef: { name: fastclaw-secrets, key: OBJECT_STORE_SECRETKEY } } }
-            # - { name: E2B_API_KEY, valueFrom: { secretKeyRef: { name: fastclaw-secrets, key: E2B_API_KEY } } }
+            - { name: BKCLAW_HOME,                    value: "/data/.bkclaw" }
+            - { name: BKCLAW_STORAGE_DSN,             valueFrom: { secretKeyRef: { name: bkclaw-secrets, key: STORAGE_DSN } } }
+            - { name: BKCLAW_OBJECT_STORE_ACCESSKEY,  valueFrom: { secretKeyRef: { name: bkclaw-secrets, key: OBJECT_STORE_ACCESSKEY } } }
+            - { name: BKCLAW_OBJECT_STORE_SECRETKEY,  valueFrom: { secretKeyRef: { name: bkclaw-secrets, key: OBJECT_STORE_SECRETKEY } } }
+            # - { name: E2B_API_KEY, valueFrom: { secretKeyRef: { name: bkclaw-secrets, key: E2B_API_KEY } } }
           volumeMounts:
-            - { name: data, mountPath: /data/.fastclaw }
+            - { name: data, mountPath: /data/.bkclaw }
           # /healthz and /readyz skip the auth middleware so kubelet can probe
           # them directly. Don't use /api/status — it sits behind userAuth and
           # 401s every anonymous request.
@@ -182,8 +182,8 @@ spec:
               exec: { command: ["sh", "-c", "sleep 15"] }
       terminationGracePeriodSeconds: 30
       volumes:
-        # /data/.fastclaw only holds pod-local ephemeral state (sandbox cache,
-        # etc.). Workspace artifacts go to the object store (FASTCLAW_OBJECT_STORE_*)
+        # /data/.bkclaw only holds pod-local ephemeral state (sandbox cache,
+        # etc.). Workspace artifacts go to the object store (BKCLAW_OBJECT_STORE_*)
         # so they're shared across pods and survive horizontal scaling.
         - { name: data, emptyDir: {} }
 
@@ -191,11 +191,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: fastclaw
-  namespace: fastclaw
+  name: bkclaw
+  namespace: bkclaw
 spec:
   type: ClusterIP
-  selector: { app: fastclaw }
+  selector: { app: bkclaw }
   # SSE / WebSocket connections must stick to the same pod until they close.
   # The Ingress already does cookie affinity; this is a ClientIP fallback for
   # load balancers that bypass the Ingress and hit the Service directly,
@@ -211,10 +211,10 @@ spec:
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: fastclaw
-  namespace: fastclaw
+  name: bkclaw
+  namespace: bkclaw
 spec:
-  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: fastclaw }
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: bkclaw }
   minReplicas: 2
   maxReplicas: 10
   metrics:
@@ -227,11 +227,11 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: fastclaw
-  namespace: fastclaw
+  name: bkclaw
+  namespace: bkclaw
 spec:
   minAvailable: 1
-  selector: { matchLabels: { app: fastclaw } }
+  selector: { matchLabels: { app: bkclaw } }
 
 ---
 # ========================= EDIT HERE (host) ============================
@@ -239,8 +239,8 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: fastclaw
-  namespace: fastclaw
+  name: bkclaw
+  namespace: bkclaw
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
     nginx.ingress.kubernetes.io/proxy-body-size: "32m"
@@ -253,7 +253,7 @@ metadata:
     # Pin clients to the same pod under multi-replica — SSE/WS can't
     # resume across pods.
     nginx.ingress.kubernetes.io/affinity: "cookie"
-    nginx.ingress.kubernetes.io/session-cookie-name: "fastclaw-affinity"
+    nginx.ingress.kubernetes.io/session-cookie-name: "bkclaw-affinity"
     nginx.ingress.kubernetes.io/session-cookie-max-age: "86400"
     # Aliyun ACK ships nginx-ingress by default; if you use ALB Ingress
     # instead, swap the annotations above for their alb.ingress.kubernetes.io/*
@@ -261,13 +261,13 @@ metadata:
 spec:
   ingressClassName: nginx
   tls:
-    - hosts: [fastclaw.example.com]
-      secretName: fastclaw-tls
+    - hosts: [bkclaw.example.com]
+      secretName: bkclaw-tls
   rules:
-    - host: fastclaw.example.com
+    - host: bkclaw.example.com
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
-              service: { name: fastclaw, port: { number: 80 } }
+              service: { name: bkclaw, port: { number: 80 } }

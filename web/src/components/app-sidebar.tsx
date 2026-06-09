@@ -178,7 +178,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   // When the active agent isn't in the caller's owned list — e.g. a
   // super_admin chatting with another user's agent — fetch its name
   // separately and splice it in so the switcher header shows the real
-  // name instead of falling back to "FastClaw". The single-agent
+  // name instead of falling back to "BkClaw". The single-agent
   // endpoint also returns role, so capture it here too.
   React.useEffect(() => {
     if (!activeAgentId) return;
@@ -204,7 +204,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 
   // Sessions + projects only matter while a specific agent is selected.
   // We re-run both whenever the active agent changes *or* the chat page
-  // broadcasts a `fastclaw:sessions-changed` event (e.g. after rename /
+  // broadcasts a `bkclaw:sessions-changed` event (e.g. after rename /
   // new chat / project create) so the sidebar stays in sync without a
   // page refresh. Projects are bundled with sessions because creating a
   // chat in a project also affects which sessions appear under it.
@@ -239,9 +239,9 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
         refetch();
       }
     };
-    window.addEventListener("fastclaw:sessions-changed", onChange);
+    window.addEventListener("bkclaw:sessions-changed", onChange);
     return () => {
-      window.removeEventListener("fastclaw:sessions-changed", onChange);
+      window.removeEventListener("bkclaw:sessions-changed", onChange);
     };
   }, [activeAgentId]);
 
@@ -252,7 +252,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const broadcastSessionsChanged = React.useCallback(() => {
     if (typeof window !== "undefined" && activeAgentId) {
       window.dispatchEvent(
-        new CustomEvent("fastclaw:sessions-changed", {
+        new CustomEvent("bkclaw:sessions-changed", {
           detail: { agentId: activeAgentId },
         }),
       );

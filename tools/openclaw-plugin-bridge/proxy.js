@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 "use strict";
 /**
- * openclaw-proxy: Bridge OpenClaw TypeScript plugins to FastClaw JSON-RPC protocol.
+ * openclaw-proxy: Bridge OpenClaw TypeScript plugins to BkClaw JSON-RPC protocol.
  *
  * Usage:
  *   node proxy.js <path-to-openclaw-plugin>
  *
  * The proxy loads an OpenClaw plugin, captures its register() calls,
- * and exposes the registered capabilities via FastClaw's JSON-RPC stdin/stdout protocol.
+ * and exposes the registered capabilities via BkClaw's JSON-RPC stdin/stdout protocol.
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;

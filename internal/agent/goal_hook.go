@@ -5,8 +5,8 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/fastclaw-ai/fastclaw/internal/agent/goal"
-	"github.com/fastclaw-ai/fastclaw/internal/bus"
+	"github.com/bkclaw-ai/bkclaw/internal/agent/goal"
+	"github.com/bkclaw-ai/bkclaw/internal/bus"
 )
 
 // NewTokenAccountingHook returns an AfterModelCall hook that folds

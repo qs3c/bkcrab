@@ -10,11 +10,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/plugin"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/plugin"
 )
 
-const hubRepo = "fastclaw-ai/fastclaw"
+const hubRepo = "qs3c/bkclaw"
 
 // pluginCmd handles plugin management subcommands.
 func pluginCmd() *cobra.Command {
@@ -73,13 +73,13 @@ func pluginListCmd() *cobra.Command {
 func pluginInstallCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "install <name|github-url|npm-package|path>",
-		Short: "Install a plugin from FastClaw Hub, GitHub, npm, or local path",
+		Short: "Install a plugin from BkClaw Hub, GitHub, npm, or local path",
 		Long: `Install a plugin. The source is auto-detected:
 
-  fastclaw plugins install telegram                        # FastClaw Hub
-  fastclaw plugins install github.com/user/repo            # GitHub repo
-  fastclaw plugins install @ollama/web-search              # npm plugin (bridged)
-  fastclaw plugins install ./my-plugin                     # local directory`,
+  bkclaw plugins install telegram                        # BkClaw Hub
+  bkclaw plugins install github.com/user/repo            # GitHub repo
+  bkclaw plugins install @ollama/web-search              # npm plugin (bridged)
+  bkclaw plugins install ./my-plugin                     # local directory`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			source := args[0]
@@ -157,7 +157,7 @@ func installFromGitHub(source, pluginsDir string) error {
 	repoURL := "https://github.com/" + repo
 
 	// Clone to temp dir
-	tmpDir, err := os.MkdirTemp("", "fastclaw-plugin-*")
+	tmpDir, err := os.MkdirTemp("", "bkclaw-plugin-*")
 	if err != nil {
 		return err
 	}
@@ -173,13 +173,13 @@ func installFromGitHub(source, pluginsDir string) error {
 }
 
 func installFromHub(name, pluginsDir string) error {
-	tmpDir, err := os.MkdirTemp("", "fastclaw-plugin-*")
+	tmpDir, err := os.MkdirTemp("", "bkclaw-plugin-*")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(tmpDir)
 
-	fmt.Printf("Installing %q from FastClaw Hub...\n", name)
+	fmt.Printf("Installing %q from BkClaw Hub...\n", name)
 
 	tarballURL := fmt.Sprintf("https://github.com/%s/archive/refs/heads/main.tar.gz", hubRepo)
 
@@ -200,14 +200,14 @@ func installFromHub(name, pluginsDir string) error {
 		return fmt.Errorf("extract failed: %s: %w", string(out), err)
 	}
 
-	// Find top-level dir (name varies: fastclaw-main, fastclaw-v0.16.0, etc.)
+	// Find top-level dir (name varies: bkclaw-main, bkclaw-v0.16.0, etc.)
 	entries, _ := os.ReadDir(extractDir)
 	if len(entries) == 0 {
 		return fmt.Errorf("extract failed: empty archive")
 	}
 	pluginDir := filepath.Join(extractDir, entries[0].Name(), "plugins", name)
 	if _, err := os.Stat(pluginDir); os.IsNotExist(err) {
-		return fmt.Errorf("plugin %q not found in FastClaw Hub", name)
+		return fmt.Errorf("plugin %q not found in BkClaw Hub", name)
 	}
 
 	// Check if it has plugin.json (standard plugin) or is a utility
@@ -236,10 +236,10 @@ func installFromNpm(pkg, pluginsDir string) error {
 	if i := strings.LastIndex(pluginID, "/"); i >= 0 {
 		pluginID = pluginID[i+1:]
 	}
-	pluginID = strings.TrimPrefix(pluginID, "fastclaw-")
+	pluginID = strings.TrimPrefix(pluginID, "bkclaw-")
 
 	// 1. npm install to temp dir to inspect the package
-	tmpDir, err := os.MkdirTemp("", "fastclaw-npm-*")
+	tmpDir, err := os.MkdirTemp("", "bkclaw-npm-*")
 	if err != nil {
 		return err
 	}
@@ -252,21 +252,21 @@ func installFromNpm(pkg, pluginsDir string) error {
 		return fmt.Errorf("npm install failed: %s: %w", string(out), err)
 	}
 
-	// 2. Check if it's a compatible plugin (supports fastclaw or openclaw plugin format)
+	// 2. Check if it's a compatible plugin (supports bkclaw or openclaw plugin format)
 	pkgDir := filepath.Join(tmpDir, "node_modules", pkg)
 	isPlugin := false
-	for _, marker := range []string{"fastclaw.plugin.json", "openclaw.plugin.json"} {
+	for _, marker := range []string{"bkclaw.plugin.json", "openclaw.plugin.json"} {
 		if _, err := os.Stat(filepath.Join(pkgDir, marker)); err == nil {
 			isPlugin = true
 			break
 		}
 	}
-	// Also check package.json for fastclaw/openclaw field
+	// Also check package.json for bkclaw/openclaw field
 	if !isPlugin {
 		if data, err := os.ReadFile(filepath.Join(pkgDir, "package.json")); err == nil {
 			var pj map[string]json.RawMessage
 			if json.Unmarshal(data, &pj) == nil {
-				for _, key := range []string{"fastclaw", "openclaw"} {
+				for _, key := range []string{"bkclaw", "openclaw"} {
 					if _, ok := pj[key]; ok {
 						isPlugin = true
 						break
@@ -295,7 +295,7 @@ func installFromNpm(pkg, pluginsDir string) error {
 	proxyDir := filepath.Join(homeDir, "tools", "plugin-bridge")
 	proxyJS := filepath.Join(proxyDir, "proxy.js")
 	if _, err := os.Stat(proxyJS); os.IsNotExist(err) {
-		fmt.Println("Installing plugin-bridge from FastClaw Hub...")
+		fmt.Println("Installing plugin-bridge from BkClaw Hub...")
 		if err := installFromHub("plugin-bridge", pluginsDir); err != nil {
 			return fmt.Errorf("failed to install plugin-bridge: %w", err)
 		}
@@ -342,9 +342,9 @@ func installFromNpm(pkg, pluginsDir string) error {
 
 	if testErr != nil && toolCount == 0 {
 		if hasChannel {
-			return fmt.Errorf("cannot install %s: this is a channel plugin that requires a separate runtime. Consider writing a native FastClaw plugin instead", pkg)
+			return fmt.Errorf("cannot install %s: this is a channel plugin that requires a separate runtime. Consider writing a native BkClaw plugin instead", pkg)
 		}
-		return fmt.Errorf("cannot install %s: plugin is not compatible with FastClaw bridge", pkg)
+		return fmt.Errorf("cannot install %s: plugin is not compatible with BkClaw bridge", pkg)
 	}
 
 	if toolCount == 0 {

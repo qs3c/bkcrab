@@ -1,5 +1,5 @@
-// Package agentcli provides the data-layer operations that fastclaw's
-// `agents …` CLI subcommands run against the operator's own FastClaw
+// Package agentcli provides the data-layer operations that bkclaw's
+// `agents …` CLI subcommands run against the operator's own BkClaw
 // store. The CLI is a thin convenience wrapper over the same store the
 // gateway and dashboard use — agents created here are indistinguishable
 // from agents created via the web UI.
@@ -16,10 +16,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/scope"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
-	"github.com/fastclaw-ai/fastclaw/internal/users"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/scope"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/users"
 )
 
 // validateName mirrors the dashboard's only check: non-empty after trim.
@@ -215,7 +215,7 @@ func ensureOwner(ctx context.Context, st store.Store, opts InitOptions) (*users.
 		}
 		generated = password
 	}
-	email := defaultStr(opts.Email, username+"@local.fastclaw")
+	email := defaultStr(opts.Email, username+"@local.bkclaw")
 	acct, err := accts.Create(ctx, users.CreateInput{
 		Username:    username,
 		Email:       email,
@@ -709,7 +709,7 @@ var systemSettingNamespaces = []string{
 // Agent-scope keys cover model/temperature/sandbox; everything else is
 // a system-wide namespace. The bool return is "isAgentScope" — true
 // means the row's agent_id should be set to the active agentID; false
-// means a system row (user_id='', agent_id='').
+// means a system row (user_id=”, agent_id=”).
 func settingKey(key string) (string, []string, bool, error) {
 	if ns, ok := agentScopeKeys[key]; ok {
 		path := []string{key}

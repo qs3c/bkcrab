@@ -31,7 +31,7 @@ const geistMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "FastClaw",
+  title: "BkClaw",
   description: "AI Agent Framework",
 };
 
@@ -45,7 +45,7 @@ export default function RootLayout({
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem('fastclaw-theme');if(t==='light')return;document.documentElement.classList.add('dark')}catch(e){document.documentElement.classList.add('dark')}})()`,
+            __html: `(function(){try{var t=localStorage.getItem('bkclaw-theme');if(t==='light')return;document.documentElement.classList.add('dark')}catch(e){document.documentElement.classList.add('dark')}})()`,
           }}
         />
       </head>

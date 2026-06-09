@@ -17,18 +17,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/agent"
-	"github.com/fastclaw-ai/fastclaw/internal/api"
-	"github.com/fastclaw-ai/fastclaw/internal/auth"
-	"github.com/fastclaw-ai/fastclaw/internal/buildinfo"
-	"github.com/fastclaw-ai/fastclaw/internal/bus"
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/provider"
-	"github.com/fastclaw-ai/fastclaw/internal/scope"
-	"github.com/fastclaw-ai/fastclaw/internal/session"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
-	"github.com/fastclaw-ai/fastclaw/internal/users"
-	"github.com/fastclaw-ai/fastclaw/internal/workspace"
+	"github.com/bkclaw-ai/bkclaw/internal/agent"
+	"github.com/bkclaw-ai/bkclaw/internal/api"
+	"github.com/bkclaw-ai/bkclaw/internal/auth"
+	"github.com/bkclaw-ai/bkclaw/internal/buildinfo"
+	"github.com/bkclaw-ai/bkclaw/internal/bus"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/provider"
+	"github.com/bkclaw-ai/bkclaw/internal/scope"
+	"github.com/bkclaw-ai/bkclaw/internal/session"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/users"
+	"github.com/bkclaw-ai/bkclaw/internal/workspace"
 )
 
 type agentChatEvent = agent.ChatEvent
@@ -1636,7 +1636,7 @@ func (s *Server) handleMoveSessionProject(w http.ResponseWriter, r *http.Request
 }
 
 // handleFeishuWebhook receives Feishu / Feishu event POSTs. The route is
-// public (Feishu doesn't auth via fastclaw bearer); per-event security
+// public (Feishu doesn't auth via bkclaw bearer); per-event security
 // is enforced inside the Feishu adapter by validating the payload's
 // header.token against the verification token stored at connect time.
 //
@@ -1677,7 +1677,7 @@ func (s *Server) handleFeishuWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleLINEWebhook receives LINE Messaging API event POSTs. The route
-// is public (LINE doesn't auth via fastclaw bearer); per-event security
+// is public (LINE doesn't auth via bkclaw bearer); per-event security
 // comes from the HMAC-SHA256 signature in `x-line-signature` which the
 // adapter validates against channel_secret + the raw body.
 //
@@ -1806,7 +1806,7 @@ func newRandID() (string, error) {
 func generateRandomToken(length int) string {
 	b := make([]byte, length)
 	if _, err := rand.Read(b); err != nil {
-		return "fastclaw-default-token"
+		return "bkclaw-default-token"
 	}
 	return hex.EncodeToString(b)
 }

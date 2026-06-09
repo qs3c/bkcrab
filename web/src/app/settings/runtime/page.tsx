@@ -218,7 +218,7 @@ export default function RuntimeSettingsPage() {
                     <Input
                       value={sandboxBoxliteImage}
                       onChange={(e) => setSandboxBoxliteImage(e.target.value)}
-                      placeholder="fastclaw-sandbox"
+                      placeholder="bkclaw-sandbox"
                       className="font-mono text-sm"
                     />
                     <p className="text-xs text-muted-foreground">
@@ -242,7 +242,7 @@ export default function RuntimeSettingsPage() {
                   <Input
                     value={sandboxDockerImage}
                     onChange={(e) => setSandboxDockerImage(e.target.value)}
-                    placeholder="thinkany/fastclaw-sandbox:latest"
+                    placeholder="thinkany/bkclaw-sandbox:latest"
                     className="font-mono text-sm"
                   />
                 </div>

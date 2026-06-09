@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/toolproviders"
+	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
 )
 
 // RegisterImageGenChain registers the image_gen tool against a provider
@@ -18,7 +18,7 @@ func RegisterImageGenChain(r *Registry, chain *toolproviders.Chain) {
 		return
 	}
 	// "none" is a sentinel meaning the admin explicitly opted out of
-	// fastclaw's image_gen. Detected anywhere in the chain → don't
+	// bkclaw's image_gen. Detected anywhere in the chain → don't
 	// register the tool at all so the model falls back to its own
 	// native image-generation capability (or does without).
 	for _, ref := range chain.Order {

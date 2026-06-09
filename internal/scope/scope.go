@@ -23,8 +23,8 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
 )
 
 // HTTP-layer scope identifiers. The storage layer keys configs by

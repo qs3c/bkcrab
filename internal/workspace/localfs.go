@@ -16,7 +16,7 @@ import (
 // is the default backend for single-host deployments — same on-disk layout
 // the agent tools already use, so existing agents upgrade in place.
 type LocalFS struct {
-	// root is usually ~/.fastclaw/workspaces. Objects for agent foo go to
+	// root is usually ~/.bkclaw/workspaces. Objects for agent foo go to
 	// <root>/foo/<path>.
 	root string
 }
@@ -28,10 +28,10 @@ func NewLocalFS(root string) *LocalFS {
 }
 
 // Root returns the on-disk root the LocalFS was constructed with
-// (typically ~/.fastclaw/workspaces). Exposed so callers that need
+// (typically ~/.bkclaw/workspaces). Exposed so callers that need
 // to compute a host path for an external tool — e.g. "open in
 // Finder" / shelling out — can join from the same anchor LocalFS
-// uses internally without re-deriving it from FASTCLAW_HOME.
+// uses internally without re-deriving it from BKCLAW_HOME.
 func (f *LocalFS) Root() string {
 	return f.root
 }

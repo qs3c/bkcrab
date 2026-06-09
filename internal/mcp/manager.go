@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
 )
 
 // Manager manages connections to multiple MCP servers.

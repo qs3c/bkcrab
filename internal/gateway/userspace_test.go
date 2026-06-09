@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/fastclaw-ai/fastclaw/internal/scope"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/scope"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
 )
 
 // readUserScopeAgentDefaults must distinguish "user has no row" from

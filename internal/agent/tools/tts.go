@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/toolproviders"
+	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
 )
 
 // RegisterTTSChain registers the tts tool against a provider chain. Absent
@@ -16,7 +16,7 @@ func RegisterTTSChain(r *Registry, chain *toolproviders.Chain) {
 		return
 	}
 	// "none" is a sentinel meaning the admin explicitly opted out of
-	// fastclaw's tts. Detected anywhere in the chain → don't register
+	// bkclaw's tts. Detected anywhere in the chain → don't register
 	// the tool at all so the model falls back to its own native audio
 	// capability (or does without).
 	for _, ref := range chain.Order {

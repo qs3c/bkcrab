@@ -43,7 +43,7 @@ func BundledSkillNames() []string {
 }
 
 // InstallBundledSkills syncs every skill embedded under bundled_skills/ to
-// the managed skills directory. Honors FASTCLAW_HOME so per-product
+// the managed skills directory. Honors BKCLAW_HOME so per-product
 // instances each get their own copy.
 //
 // Upgrade behavior is governed by a per-skill .bundled-hash sidecar:
@@ -255,18 +255,18 @@ func writeBundledHash(targetDir, hash string) error {
 	return os.WriteFile(filepath.Join(targetDir, bundledHashFile), []byte(hash+"\n"), 0o644)
 }
 
-// managedSkillsDir is the per-FastClaw-instance global skills location.
-// Mirrors fastclawManagedDir in internal/agent/skills.go but kept local
+// managedSkillsDir is the per-BkClaw-instance global skills location.
+// Mirrors bkclawManagedDir in internal/agent/skills.go but kept local
 // here so this file's only dependency is os/filepath.
 func managedSkillsDir() string {
-	if h := os.Getenv("FASTCLAW_HOME"); h != "" {
+	if h := os.Getenv("BKCLAW_HOME"); h != "" {
 		return filepath.Join(h, "skills")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".fastclaw", "skills")
+	return filepath.Join(home, ".bkclaw", "skills")
 }
 
 // copyEmbedTree walks src in the embed.FS and writes every regular file under

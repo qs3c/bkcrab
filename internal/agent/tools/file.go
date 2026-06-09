@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/sandbox"
-	"github.com/fastclaw-ai/fastclaw/internal/skills"
+	"github.com/bkclaw-ai/bkclaw/internal/sandbox"
+	"github.com/bkclaw-ai/bkclaw/internal/skills"
 )
 
 type readFileArgs struct {
@@ -123,16 +123,16 @@ func applyEdit(path, content, oldStr, newStr string, replaceAll bool) (string, i
 var errOutsideSandbox = fmt.Errorf("access denied: path is outside the allowed sandbox directory")
 
 // globalSkillsDirSuffix is used to detect attempts to write into the
-// admin-managed global skills directory (~/.fastclaw/skills/). Reads are
+// admin-managed global skills directory (~/.bkclaw/skills/). Reads are
 // fine — the skills layer already exposes this content — but writes from
 // chat would let agents silently install/overwrite skills for every other
 // agent on the host.
-const globalSkillsDirSuffix = "/.fastclaw/skills"
+const globalSkillsDirSuffix = "/.bkclaw/skills"
 
 // errGlobalSkillsDirWrite is returned when write_file targets
-// ~/.fastclaw/skills/ from inside an agent chat. The message tells the model
+// ~/.bkclaw/skills/ from inside an agent chat. The message tells the model
 // exactly how to recover.
-var errGlobalSkillsDirWrite = fmt.Errorf("access denied: ~/.fastclaw/skills/ is the admin-managed global skills directory. To create a new skill, load the \"skill-creator\" skill and follow its workflow (it scaffolds into this agent's private skills dir). To install an existing one, use the install_skill tool")
+var errGlobalSkillsDirWrite = fmt.Errorf("access denied: ~/.bkclaw/skills/ is the admin-managed global skills directory. To create a new skill, load the \"skill-creator\" skill and follow its workflow (it scaffolds into this agent's private skills dir). To install an existing one, use the install_skill tool")
 
 // systemFiles are the agent metadata/identity files. When a relative path
 // references one of these by basename, file tools resolve it against the
@@ -183,8 +183,8 @@ func (r *Registry) isWorkspacePath(path string) bool {
 // the daemon's filesystem so exposing it would be a privilege leak.
 //
 // Returns ("", false) when the path is not a host-home reference, OR
-// when it falls under one of the FastClaw-managed roots
-// (~/.fastclaw/...) — those are runtime internals and should keep
+// when it falls under one of the BkClaw-managed roots
+// (~/.bkclaw/...) — those are runtime internals and should keep
 // flowing through their existing routing (workspaceStore, identity
 // store, etc.) so chat writes can't, say, smash the agents' DB file.
 func hostHomePath(path string) (string, bool) {
@@ -192,18 +192,18 @@ func hostHomePath(path string) (string, bool) {
 		return "", false
 	}
 	if path == "~" || strings.HasPrefix(path, "~/") {
-		// Sandbox-only / FastClaw-internal subtrees: skip host expansion
+		// Sandbox-only / BkClaw-internal subtrees: skip host expansion
 		// so the read/write falls through to the sandbox executor instead
 		// of trying (and failing) on host disk where the path doesn't
 		// exist. Symmetric to the absolute-path guard below.
-		//   ~/.fastclaw/... — runtime internals (db, workspaces, …)
+		//   ~/.bkclaw/... — runtime internals (db, workspaces, …)
 		//   ~/.agents/...   — sandbox bind-mount target for npx skills.
-		//                     Host has these at <FASTCLAW_HOME>/users/<uid>/skills/,
+		//                     Host has these at <BKCLAW_HOME>/users/<uid>/skills/,
 		//                     not under ~. After `ls ~/.agents/skills/<x>/` runs
 		//                     in-sandbox the model naturally calls
 		//                     read_file with the same path; that path only
 		//                     resolves inside the container.
-		if strings.HasPrefix(path, "~/.fastclaw") || strings.HasPrefix(path, "~/.agents") {
+		if strings.HasPrefix(path, "~/.bkclaw") || strings.HasPrefix(path, "~/.agents") {
 			return "", false
 		}
 		home, err := os.UserHomeDir()
@@ -219,12 +219,12 @@ func hostHomePath(path string) (string, bool) {
 		return "", false
 	}
 	if strings.HasPrefix(path, "/Users/") || strings.HasPrefix(path, "/home/") {
-		// Refuse FastClaw-internal subpaths even when the chatter
+		// Refuse BkClaw-internal subpaths even when the chatter
 		// reaches them via the host-home channel. Same guard as
 		// errGlobalSkillsDirWrite, broader scope.
 		if home, err := os.UserHomeDir(); err == nil {
-			fastclawDir := filepath.Join(home, ".fastclaw")
-			if path == fastclawDir || strings.HasPrefix(path, fastclawDir+string(filepath.Separator)) {
+			bkclawDir := filepath.Join(home, ".bkclaw")
+			if path == bkclawDir || strings.HasPrefix(path, bkclawDir+string(filepath.Separator)) {
 				return "", false
 			}
 		}
@@ -312,7 +312,7 @@ func (r *Registry) writeSkillToHost(ctx context.Context, path, content string) (
 
 // rootForPath returns the root a relative path should resolve against:
 //   - systemRoot (agent home) for identity files (SOUL.md, IDENTITY.md, …);
-//   - userSkillsRoot (~/.fastclaw/users/<uid>/skills/) for `skills/...`
+//   - userSkillsRoot (~/.bkclaw/users/<uid>/skills/) for `skills/...`
 //     writes when the chatter's user-skills dir is wired (default in
 //     multi-user installs). Routes here so chat-created skills accumulate
 //     in the chatter's personal bucket — shared across every agent they
@@ -394,7 +394,7 @@ func resolvePath(root, path string) string {
 }
 
 // isGlobalSkillsPath reports whether absPath points at or under the
-// admin-managed ~/.fastclaw/skills/ directory. Works across user home
+// admin-managed ~/.bkclaw/skills/ directory. Works across user home
 // locations by matching the stable suffix.
 func isGlobalSkillsPath(absPath string) bool {
 	clean := filepath.Clean(absPath)
@@ -521,7 +521,7 @@ func makeReadFile(r *Registry) ToolFunc {
 			}
 			// Store miss: try the agent's systemRoot on disk directly,
 			// bypassing resolvePathSandboxed. systemRoot is the agent
-			// metadata dir (e.g. ~/.fastclaw/agents/<id>/agent) which
+			// metadata dir (e.g. ~/.bkclaw/agents/<id>/agent) which
 			// in K8s deployments lives OUTSIDE sandboxRoot, so the
 			// sandbox bound would always reject identity files even
 			// though the filename is a fixed whitelist with no escape
@@ -888,7 +888,7 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		// (lenient) instead of the strict isSingleSegmentSystemFile that
 		// routeFor uses. Need to be checked separately for reads so an
 		// LLM-emitted absolute path like
-		// /data/.fastclaw/workspaces/<id>/IDENTITY.md still hits the DB.
+		// /data/.bkclaw/workspaces/<id>/IDENTITY.md still hits the DB.
 		if r.systemFileStore != nil && r.agentID != "" && basenameIsSystemFile(args.Path) {
 			name := filepath.Base(filepath.Clean(args.Path))
 			if data, err := r.readSystemFileForUser(ctx, r.systemFileUserID(name), name); err == nil {

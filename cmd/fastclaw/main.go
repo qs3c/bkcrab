@@ -10,14 +10,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fastclaw-ai/fastclaw/internal/agent"
-	"github.com/fastclaw-ai/fastclaw/internal/api"
-	"github.com/fastclaw-ai/fastclaw/internal/auth"
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/daemon"
-	"github.com/fastclaw-ai/fastclaw/internal/gateway"
-	"github.com/fastclaw-ai/fastclaw/internal/setup"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/agent"
+	"github.com/bkclaw-ai/bkclaw/internal/api"
+	"github.com/bkclaw-ai/bkclaw/internal/auth"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/daemon"
+	"github.com/bkclaw-ai/bkclaw/internal/gateway"
+	"github.com/bkclaw-ai/bkclaw/internal/setup"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
 )
 
 // apiResolver adapts *gateway.Gateway to api.UserResolver.
@@ -83,8 +83,8 @@ func (a *apiResolver) DispatchLINEWebhook(accountID string, body []byte, signatu
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "fastclaw",
-		Short: "FastClaw - Multi-User AI Agent Platform",
+		Use:   "bkclaw",
+		Short: "BkClaw - Multi-User AI Agent Platform",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runGateway(18953)
 		},
@@ -113,7 +113,7 @@ func gatewayCmd() *cobra.Command {
 	var port int
 	cmd := &cobra.Command{
 		Use:   "gateway",
-		Short: "Start the FastClaw gateway",
+		Short: "Start the BkClaw gateway",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runGateway(port)
 		},

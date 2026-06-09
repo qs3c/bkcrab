@@ -3,7 +3,7 @@ package goal
 import (
 	"context"
 
-	"github.com/fastclaw-ai/fastclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
 )
 
 // ErrAlreadyExists is returned by CreateGoal when the (agent,

@@ -1,11 +1,11 @@
 version: 2
 
-project_name: fastclaw
+project_name: bkclaw
 
 builds:
-  - id: fastclaw
-    main: ./cmd/fastclaw
-    binary: fastclaw
+  - id: bkclaw
+    main: ./cmd/bkclaw
+    binary: bkclaw
     env:
       - CGO_ENABLED=0
     goos:
@@ -31,8 +31,8 @@ checksum:
 
 release:
   github:
-    owner: fastclaw-ai
-    name: fastclaw
+    owner: qs3c
+    name: bkclaw
 
 changelog:
   sort: asc

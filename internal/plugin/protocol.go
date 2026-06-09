@@ -37,11 +37,11 @@ func (e *RPCError) Error() string { return e.Message }
 
 // Standard JSON-RPC methods.
 const (
-	MethodInitialize     = "initialize"
-	MethodShutdown       = "shutdown"
-	MethodChannelSend    = "channel.send"
-	MethodToolList       = "tool.list"
-	MethodToolExecute    = "tool.execute"
+	MethodInitialize  = "initialize"
+	MethodShutdown    = "shutdown"
+	MethodChannelSend = "channel.send"
+	MethodToolList    = "tool.list"
+	MethodToolExecute = "tool.execute"
 	// MethodProviderList asks a plugin which tool-provider slots it fills
 	// (e.g. `{"category":"web_search","name":"kagi"}`). Plugins that don't
 	// implement it return an empty list or "method not found".
@@ -51,10 +51,10 @@ const (
 	// providers, so plugins compete with in-process providers on an equal
 	// footing (priority, fallback).
 	MethodProviderExecute = "provider.execute"
-	MethodHookRegister   = "hook.register"
-	MethodHookFire       = "hook.fire"
-	MethodMessageInbound = "message.inbound"
-	// MethodChatSend: plugin → fastclaw notification that delivers a
+	MethodHookRegister    = "hook.register"
+	MethodHookFire        = "hook.fire"
+	MethodMessageInbound  = "message.inbound"
+	// MethodChatSend: plugin → bkclaw notification that delivers a
 	// new outbound message to a specific chat. Used by hook plugins
 	// (post-turn TTS, translation, etc.) to add follow-up content to
 	// the same chat the agent just replied to. Unlike message.inbound
@@ -112,7 +112,7 @@ type ProviderListResult struct {
 
 // ProviderExecuteParams carries the per-call args and the resolved tenant
 // config (API key, endpoint, extra options, model id). The plugin process
-// must not cache credentials — FastClaw re-sends them every call so any
+// must not cache credentials — BkClaw re-sends them every call so any
 // tenant can use the same plugin process safely.
 type ProviderExecuteParams struct {
 	Category string                 `json:"category"`
@@ -163,20 +163,20 @@ type HookRegisterResult struct {
 // only read AgentName / ChatID / UserID keep working since the new
 // fields are additive.
 type HookFireParams struct {
-	Point      string             `json:"point"`
-	AgentName  string             `json:"agentName"`
-	Channel    string             `json:"channel,omitempty"`
-	AccountID  string             `json:"accountId,omitempty"`
-	ChatID     string             `json:"chatId"`
-	UserID     string             `json:"userId,omitempty"`
-	Messages   []HookMessage      `json:"messages,omitempty"`
-	Response   *HookResponseData  `json:"response,omitempty"`
-	ToolName   string             `json:"toolName,omitempty"`
-	ToolArgs   string             `json:"toolArgs,omitempty"`
-	ToolResult string             `json:"toolResult,omitempty"`
+	Point      string            `json:"point"`
+	AgentName  string            `json:"agentName"`
+	Channel    string            `json:"channel,omitempty"`
+	AccountID  string            `json:"accountId,omitempty"`
+	ChatID     string            `json:"chatId"`
+	UserID     string            `json:"userId,omitempty"`
+	Messages   []HookMessage     `json:"messages,omitempty"`
+	Response   *HookResponseData `json:"response,omitempty"`
+	ToolName   string            `json:"toolName,omitempty"`
+	ToolArgs   string            `json:"toolArgs,omitempty"`
+	ToolResult string            `json:"toolResult,omitempty"`
 }
 
-// ChatSendParams: plugin → fastclaw push of an outbound message to a
+// ChatSendParams: plugin → bkclaw push of an outbound message to a
 // specific chat. The plugin manager constructs a bus.OutboundMessage
 // from these fields and pushes it onto bus.Outbound — same path a
 // channel adapter or the agent loop would use. Distinct from
@@ -218,8 +218,8 @@ type HookMessage struct {
 
 // HookResponseData is a simplified response for hook communication.
 type HookResponseData struct {
-	Content   string `json:"content"`
-	HasTools  bool   `json:"hasTools"`
+	Content  string `json:"content"`
+	HasTools bool   `json:"hasTools"`
 }
 
 // HookFireResult is returned from hook.fire (for synchronous hooks).

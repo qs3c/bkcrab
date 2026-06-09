@@ -1,9 +1,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "fastclaw.fullname" . }}-gateway
+  name: {{ include "bkclaw.fullname" . }}-gateway
   labels:
-    {{- include "fastclaw.labels" . | nindent 4 }}
+    {{- include "bkclaw.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.gateway.replicas }}
   strategy:
@@ -11,11 +11,11 @@ spec:
     rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
   selector:
     matchLabels:
-      app: {{ include "fastclaw.fullname" . }}-gateway
+      app: {{ include "bkclaw.fullname" . }}-gateway
   template:
     metadata:
       labels:
-        app: {{ include "fastclaw.fullname" . }}-gateway
+        app: {{ include "bkclaw.fullname" . }}-gateway
     spec:
       {{- with .Values.image.imagePullSecrets }}
       imagePullSecrets:
@@ -30,37 +30,37 @@ spec:
           name: http
         envFrom:
         - configMapRef:
-            name: {{ include "fastclaw.fullname" . }}-config
+            name: {{ include "bkclaw.fullname" . }}-config
         env:
-        - name: FASTCLAW_HOME
-          value: "/data/.fastclaw"
-        - name: FASTCLAW_STORAGE_DSN
+        - name: BKCLAW_HOME
+          value: "/data/.bkclaw"
+        - name: BKCLAW_STORAGE_DSN
           valueFrom:
             secretKeyRef:
-              name: {{ include "fastclaw.fullname" . }}-secrets
+              name: {{ include "bkclaw.fullname" . }}-secrets
               key: STORAGE_DSN
         {{- if and (ne .Values.objectStore.type "local") .Values.objectStore.accessKey }}
-        - name: FASTCLAW_OBJECT_STORE_ACCESSKEY
+        - name: BKCLAW_OBJECT_STORE_ACCESSKEY
           valueFrom:
             secretKeyRef:
-              name: {{ include "fastclaw.fullname" . }}-secrets
+              name: {{ include "bkclaw.fullname" . }}-secrets
               key: OBJECT_STORE_ACCESSKEY
-        - name: FASTCLAW_OBJECT_STORE_SECRETKEY
+        - name: BKCLAW_OBJECT_STORE_SECRETKEY
           valueFrom:
             secretKeyRef:
-              name: {{ include "fastclaw.fullname" . }}-secrets
+              name: {{ include "bkclaw.fullname" . }}-secrets
               key: OBJECT_STORE_SECRETKEY
         {{- end }}
         {{- if and .Values.sandbox.enabled .Values.sandbox.e2bApiKey }}
         - name: E2B_API_KEY
           valueFrom:
             secretKeyRef:
-              name: {{ include "fastclaw.fullname" . }}-secrets
+              name: {{ include "bkclaw.fullname" . }}-secrets
               key: E2B_API_KEY
         {{- end }}
         volumeMounts:
         - name: data
-          mountPath: /data/.fastclaw
+          mountPath: /data/.bkclaw
         resources:
           {{- toYaml .Values.gateway.resources | nindent 10 }}
         # /readyz and /livez bypass auth — they probe reliably both before
@@ -84,7 +84,7 @@ spec:
               command: ["sh", "-c", "sleep {{ .Values.gateway.preStopSleepSeconds }}"]
       terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
       volumes:
-      # /data/.fastclaw only holds pod-local ephemeral state; workspace
+      # /data/.bkclaw only holds pod-local ephemeral state; workspace
       # artifacts go to the object store.
       - name: data
         emptyDir: {}
@@ -92,13 +92,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "fastclaw.fullname" . }}-gateway
+  name: {{ include "bkclaw.fullname" . }}-gateway
   labels:
-    {{- include "fastclaw.labels" . | nindent 4 }}
+    {{- include "bkclaw.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
   selector:
-    app: {{ include "fastclaw.fullname" . }}-gateway
+    app: {{ include "bkclaw.fullname" . }}-gateway
   # SSE/WS connections must stick to the same pod under multi-replica.
   # The Ingress already does cookie affinity; ClientIP here is a fallback
   # for load balancers that hit the Service directly.
@@ -115,14 +115,14 @@ spec:
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ include "fastclaw.fullname" . }}-gateway
+  name: {{ include "bkclaw.fullname" . }}-gateway
   labels:
-    {{- include "fastclaw.labels" . | nindent 4 }}
+    {{- include "bkclaw.labels" . | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: {{ include "fastclaw.fullname" . }}-gateway
+    name: {{ include "bkclaw.fullname" . }}-gateway
   minReplicas: {{ .Values.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.autoscaling.maxReplicas }}
   metrics:
@@ -138,12 +138,12 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "fastclaw.fullname" . }}-gateway
+  name: {{ include "bkclaw.fullname" . }}-gateway
   labels:
-    {{- include "fastclaw.labels" . | nindent 4 }}
+    {{- include "bkclaw.labels" . | nindent 4 }}
 spec:
   minAvailable: {{ .Values.pdb.minAvailable }}
   selector:
     matchLabels:
-      app: {{ include "fastclaw.fullname" . }}-gateway
+      app: {{ include "bkclaw.fullname" . }}-gateway
 {{- end }}

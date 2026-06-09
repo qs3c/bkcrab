@@ -48,7 +48,7 @@ type Request struct {
 }
 
 // ProviderConfig holds the credentials/endpoint resolved for a single call.
-// It comes from fastclaw.json toolProviders.<name>, optionally overridden by
+// It comes from bkclaw.json toolProviders.<name>, optionally overridden by
 // the agent's own config.
 type ProviderConfig struct {
 	APIKey   string

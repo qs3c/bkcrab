@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/bus"
+	"github.com/bkclaw-ai/bkclaw/internal/bus"
 )
 
 // JobType defines the type of cron schedule.
@@ -32,7 +32,7 @@ type Job struct {
 	Channel     string  `json:"channel"`               // channel to send results back through
 	ChatID      string  `json:"chatId"`                // chat to send results to
 	Message     string  `json:"message"`               // message to send to the agent
-	OwnerUserID string  `json:"ownerUserId,omitempty"` // fastclaw user that owns this job
+	OwnerUserID string  `json:"ownerUserId,omitempty"` // bkclaw user that owns this job
 }
 
 // CronConfig holds cron job configuration.

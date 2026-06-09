@@ -20,7 +20,7 @@ import {
 import { Bot, ChevronsUpDownIcon, PlusIcon } from "lucide-react";
 
 // AgentAvatar shows the agent's uploaded /api/agents/{id}/files/avatar.png
-// when available, falls back to the FastClaw logo for the platform header
+// when available, falls back to the BkClaw logo for the platform header
 // (no agent), and falls back to a Bot icon when an agent has no custom
 // avatar yet (the image 404s).
 function AgentAvatar({
@@ -39,7 +39,7 @@ function AgentAvatar({
     return (
       <img
         src="/logo.png"
-        alt="FastClaw"
+        alt="BkClaw"
         width={size}
         height={size}
         className="rounded-lg"
@@ -81,7 +81,7 @@ export interface AgentSwitcherItem {
 //
 //   activeAgentId set     → show that agent's display name + id, dropdown
 //                           lists every agent for quick switching
-//   activeAgentId unset   → show "FastClaw" (platform brand). The dropdown
+//   activeAgentId unset   → show "BkClaw" (platform brand). The dropdown
 //                           still lists agents so users can jump in from
 //                           any non-agent page.
 //
@@ -118,7 +118,7 @@ export function AgentSwitcher({
     [onSelect, router],
   );
 
-  const headerLabel = active ? active.name || active.id : "FastClaw";
+  const headerLabel = active ? active.name || active.id : "BkClaw";
 
   if (locked) {
     return (

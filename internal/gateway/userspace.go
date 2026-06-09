@@ -11,18 +11,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/agent"
-	"github.com/fastclaw-ai/fastclaw/internal/bus"
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/plugin"
-	"github.com/fastclaw-ai/fastclaw/internal/provider"
-	"github.com/fastclaw-ai/fastclaw/internal/sandbox"
-	"github.com/fastclaw-ai/fastclaw/internal/scope"
-	"github.com/fastclaw-ai/fastclaw/internal/session"
-	"github.com/fastclaw-ai/fastclaw/internal/skills"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
-	"github.com/fastclaw-ai/fastclaw/internal/usage"
-	"github.com/fastclaw-ai/fastclaw/internal/workspace"
+	"github.com/bkclaw-ai/bkclaw/internal/agent"
+	"github.com/bkclaw-ai/bkclaw/internal/bus"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/plugin"
+	"github.com/bkclaw-ai/bkclaw/internal/provider"
+	"github.com/bkclaw-ai/bkclaw/internal/sandbox"
+	"github.com/bkclaw-ai/bkclaw/internal/scope"
+	"github.com/bkclaw-ai/bkclaw/internal/session"
+	"github.com/bkclaw-ai/bkclaw/internal/skills"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/usage"
+	"github.com/bkclaw-ai/bkclaw/internal/workspace"
 )
 
 // loadAgentSkillEntries collects every agent-scope skills.entries row
@@ -68,7 +68,7 @@ func ensureAgentHome(rc config.ResolvedAgent) {
 	}
 }
 
-// globalSkillsDirPath returns ~/.fastclaw/skills.
+// globalSkillsDirPath returns ~/.bkclaw/skills.
 func globalSkillsDirPath() (string, error) {
 	home, err := config.HomeDir()
 	if err != nil {

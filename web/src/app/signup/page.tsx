@@ -88,7 +88,7 @@ export default function SignupPage() {
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center space-y-2">
           <h1 className="text-2xl font-bold text-zinc-100">Create your account</h1>
-          <p className="text-sm text-zinc-500">Sign up to start using FastClaw</p>
+          <p className="text-sm text-zinc-500">Sign up to start using BkClaw</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <input

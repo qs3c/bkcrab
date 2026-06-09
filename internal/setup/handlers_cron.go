@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
 )
 
 // --- Per-agent cron jobs (DB-backed) ---
 //
 // The legacy /api/cron set below reads jobs out of the user's flat
-// fastclaw.json (cfg.CronJobs) — that's the install-time, statically-
+// bkclaw.json (cfg.CronJobs) — that's the install-time, statically-
 // configured catalog. Agents that schedule work at runtime via the
 // create_cron_job tool persist into the cron_jobs DB table instead, and
 // the cron.Scheduler (which actually fires them) only watches the DB.

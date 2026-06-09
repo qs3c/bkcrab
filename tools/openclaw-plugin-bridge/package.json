@@ -1,7 +1,7 @@
 {
-  "name": "@fastclaw/openclaw-plugin-bridge",
+  "name": "@bkclaw/openclaw-plugin-bridge",
   "version": "0.1.0",
-  "description": "Bridge OpenClaw plugins to FastClaw JSON-RPC protocol",
+  "description": "Bridge OpenClaw plugins to BkClaw JSON-RPC protocol",
   "main": "proxy.js",
   "bin": {
     "openclaw-plugin-bridge": "proxy.js"

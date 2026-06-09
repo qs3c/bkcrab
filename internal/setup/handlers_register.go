@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/scope"
-	"github.com/fastclaw-ai/fastclaw/internal/users"
+	"github.com/bkclaw-ai/bkclaw/internal/scope"
+	"github.com/bkclaw-ai/bkclaw/internal/users"
 )
 
 // registrationSettingNamespace is the configs-table key for the public

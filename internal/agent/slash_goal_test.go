@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/agent/goal"
-	"github.com/fastclaw-ai/fastclaw/internal/agent/tools"
-	"github.com/fastclaw-ai/fastclaw/internal/bus"
-	"github.com/fastclaw-ai/fastclaw/internal/session"
+	"github.com/bkclaw-ai/bkclaw/internal/agent/goal"
+	"github.com/bkclaw-ai/bkclaw/internal/agent/tools"
+	"github.com/bkclaw-ai/bkclaw/internal/bus"
+	"github.com/bkclaw-ai/bkclaw/internal/session"
 )
 
 // newSlashTestAgent builds an Agent wired enough to exercise the

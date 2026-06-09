@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fastclaw-ai/fastclaw/internal/provider"
+	"github.com/bkclaw-ai/bkclaw/internal/provider"
 )
 
 // fakeSummarizer captures the summarize-call prompt so tests can

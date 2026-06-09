@@ -3,7 +3,7 @@ package imagegen
 import (
 	"context"
 
-	"github.com/fastclaw-ai/fastclaw/internal/toolproviders"
+	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
 )
 
 // None is a sentinel provider meaning "do not expose image_gen to the model."

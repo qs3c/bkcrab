@@ -2,7 +2,7 @@
 // (generated PDFs/images/audio, downloaded files, intermediate data, ...).
 //
 // The two implementations currently shipped are:
-//   - LocalFS: writes under ~/.fastclaw/workspaces/<agent>/. Default; used by
+//   - LocalFS: writes under ~/.bkclaw/workspaces/<agent>/. Default; used by
 //     single-host deployments and keeps existing filesystem semantics intact.
 //   - S3: writes to any S3-compatible bucket (AWS S3, MinIO, R2, B2, ...).
 //     Required for stateless multi-pod deployments — any pod can read/write

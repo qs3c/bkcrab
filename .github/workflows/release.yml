@@ -39,8 +39,8 @@ jobs:
           for pair in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64 windows/arm64 windows/amd64; do
             GOOS="${pair%/*}" GOARCH="${pair#*/}" CGO_ENABLED=0 \
               go build -ldflags "${{ env.LDFLAGS }}" \
-              -o "dist/fastclaw_${pair%/*}_${pair#*/}/fastclaw$( [ "${pair%/*}" = windows ] && echo .exe )" \
-              ./cmd/fastclaw
+              -o "dist/bkclaw_${pair%/*}_${pair#*/}/bkclaw$( [ "${pair%/*}" = windows ] && echo .exe )" \
+              ./cmd/bkclaw
           done
         env:
           LDFLAGS: -s -w -X main.version=${{ github.ref_name }} -X main.commit=${{ github.sha }} -X main.date=${{ github.event.head_commit.timestamp }}
@@ -48,11 +48,11 @@ jobs:
       - name: Package artifacts
         run: |
           cd dist
-          for d in fastclaw_darwin_* fastclaw_linux_*; do
-            tar -czf "${d}.tar.gz" -C "$d" fastclaw
+          for d in bkclaw_darwin_* bkclaw_linux_*; do
+            tar -czf "${d}.tar.gz" -C "$d" bkclaw
           done
-          for d in fastclaw_windows_*; do
-            (cd "$d" && zip -q "../${d}.zip" fastclaw.exe)
+          for d in bkclaw_windows_*; do
+            (cd "$d" && zip -q "../${d}.zip" bkclaw.exe)
           done
 
       - name: Create release

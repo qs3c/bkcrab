@@ -10,7 +10,7 @@
 #   pod A           http://localhost:18953  (admin token: dev-admin-token)
 #   pod B           http://localhost:18954  (same state, different pod)
 #   MinIO console   http://localhost:9001   (user: minioadmin / pass: minioadmin)
-#   Postgres        postgres://fastclaw:fastclaw@localhost:5432/fastclaw
+#   Postgres        postgres://bkclaw:bkclaw@localhost:5432/bkclaw
 #
 # Smoke test checklist (curl examples use pod A, then read from pod B):
 #   1. curl POST /api/agents via A          — creates agent in shared DB
@@ -27,15 +27,15 @@ services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_USER: fastclaw
-      POSTGRES_PASSWORD: fastclaw
-      POSTGRES_DB: fastclaw
+      POSTGRES_USER: bkclaw
+      POSTGRES_PASSWORD: bkclaw
+      POSTGRES_DB: bkclaw
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fastclaw"]
+      test: ["CMD-SHELL", "pg_isready -U bkclaw"]
       interval: 2s
       timeout: 1s
       retries: 20
@@ -68,12 +68,12 @@ services:
     entrypoint: >
       sh -c "
         mc alias set local http://minio:9000 minioadmin minioadmin;
-        mc mb --ignore-existing local/fastclaw;
+        mc mb --ignore-existing local/bkclaw;
         echo 'bucket ready';
       "
 
   pod-a:
-    image: fastclaw:local
+    image: bkclaw:local
     build:
       context: ../..
       dockerfile: Dockerfile
@@ -82,17 +82,17 @@ services:
       # TZ included so cross-pod runs exercise the server-default
       # timezone fallback the same way single-pod deploys do.
       TZ: Asia/Shanghai
-      FASTCLAW_STORAGE_TYPE: postgres
-      FASTCLAW_STORAGE_DSN: postgres://fastclaw:fastclaw@db:5432/fastclaw?sslmode=disable
-      FASTCLAW_MODE: cloud
-      FASTCLAW_AUTH_TOKEN: dev-admin-token
+      BKCLAW_STORAGE_TYPE: postgres
+      BKCLAW_STORAGE_DSN: postgres://bkclaw:bkclaw@db:5432/bkclaw?sslmode=disable
+      BKCLAW_MODE: cloud
+      BKCLAW_AUTH_TOKEN: dev-admin-token
       # Object store → MinIO. The keys mirror config.ObjectStoreCfg.
-      FASTCLAW_OBJECT_STORE_TYPE: minio
-      FASTCLAW_OBJECT_STORE_ENDPOINT: minio:9000
-      FASTCLAW_OBJECT_STORE_BUCKET: fastclaw
-      FASTCLAW_OBJECT_STORE_ACCESSKEY: minioadmin
-      FASTCLAW_OBJECT_STORE_SECRETKEY: minioadmin
-      FASTCLAW_OBJECT_STORE_USESSL: "false"
+      BKCLAW_OBJECT_STORE_TYPE: minio
+      BKCLAW_OBJECT_STORE_ENDPOINT: minio:9000
+      BKCLAW_OBJECT_STORE_BUCKET: bkclaw
+      BKCLAW_OBJECT_STORE_ACCESSKEY: minioadmin
+      BKCLAW_OBJECT_STORE_SECRETKEY: minioadmin
+      BKCLAW_OBJECT_STORE_USESSL: "false"
     depends_on:
       db:
         condition: service_healthy
@@ -102,22 +102,22 @@ services:
       - "18953:18953"
 
   pod-b:
-    image: fastclaw:local
+    image: bkclaw:local
     build:
       context: ../..
       dockerfile: Dockerfile
     environment:
       TZ: Asia/Shanghai
-      FASTCLAW_STORAGE_TYPE: postgres
-      FASTCLAW_STORAGE_DSN: postgres://fastclaw:fastclaw@db:5432/fastclaw?sslmode=disable
-      FASTCLAW_MODE: cloud
-      FASTCLAW_AUTH_TOKEN: dev-admin-token
-      FASTCLAW_OBJECT_STORE_TYPE: minio
-      FASTCLAW_OBJECT_STORE_ENDPOINT: minio:9000
-      FASTCLAW_OBJECT_STORE_BUCKET: fastclaw
-      FASTCLAW_OBJECT_STORE_ACCESSKEY: minioadmin
-      FASTCLAW_OBJECT_STORE_SECRETKEY: minioadmin
-      FASTCLAW_OBJECT_STORE_USESSL: "false"
+      BKCLAW_STORAGE_TYPE: postgres
+      BKCLAW_STORAGE_DSN: postgres://bkclaw:bkclaw@db:5432/bkclaw?sslmode=disable
+      BKCLAW_MODE: cloud
+      BKCLAW_AUTH_TOKEN: dev-admin-token
+      BKCLAW_OBJECT_STORE_TYPE: minio
+      BKCLAW_OBJECT_STORE_ENDPOINT: minio:9000
+      BKCLAW_OBJECT_STORE_BUCKET: bkclaw
+      BKCLAW_OBJECT_STORE_ACCESSKEY: minioadmin
+      BKCLAW_OBJECT_STORE_SECRETKEY: minioadmin
+      BKCLAW_OBJECT_STORE_USESSL: "false"
     depends_on:
       db:
         condition: service_healthy

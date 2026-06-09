@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/cron"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/cron"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
 )
 
 // cronStoreAdapter bridges store.Store to cron.StoreInterface. The cron

@@ -32,7 +32,7 @@ type InboundMessage struct {
 	// projects/<id>/ instead of sessions/<chat>/.
 	ProjectID   string
 	UserID      string // user identifier
-	OwnerUserID string // fastclaw user that owns the agent (for multi-user routing)
+	OwnerUserID string // bkclaw user that owns the agent (for multi-user routing)
 	// AgentID is an *explicit* agent target. Non-empty when the source
 	// of the message already knows which agent should handle it (cron
 	// jobs, web chat, sub-agent spawns) — bypasses binding lookup +

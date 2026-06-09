@@ -11,15 +11,15 @@ import (
 	"time"
 )
 
-// Paths returns the daemon directory paths under ~/.fastclaw.
+// Paths returns the daemon directory paths under ~/.bkclaw.
 func Paths() (pidFile, logFile, logDir string, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", "", "", err
 	}
-	base := filepath.Join(home, ".fastclaw")
+	base := filepath.Join(home, ".bkclaw")
 	logDir = filepath.Join(base, "logs")
-	pidFile = filepath.Join(base, "fastclaw.pid")
+	pidFile = filepath.Join(base, "bkclaw.pid")
 	logFile = filepath.Join(logDir, "gateway.log")
 	return
 }

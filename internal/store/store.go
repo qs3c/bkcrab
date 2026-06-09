@@ -1,4 +1,4 @@
-// Package store is the single persistence layer for FastClaw. The database
+// Package store is the single persistence layer for BkClaw. The database
 // is mandatory (sqlite by default; postgres for production); there is no
 // file-only fallback. Every per-user table requires a real users.id row;
 // callers that haven't resolved a user must 401, not invent a placeholder.
@@ -262,7 +262,7 @@ var ErrGoalAlreadyExists = errors.New("goal already exists for this session")
 // a downstream application; for these rows APIKeyID identifies the key
 // that minted them and ExternalID is the calling app's own user
 // identifier (free-form). Together they give each external end-user a
-// stable fastclaw user_id without anyone logging in.
+// stable bkclaw user_id without anyone logging in.
 type UserRecord struct {
 	ID           string `json:"id"`
 	Username     string `json:"username"`
@@ -586,7 +586,7 @@ const (
 	StorageSQLite   StorageType = "sqlite"
 )
 
-// StorageConfig holds DB credentials. Populated from FASTCLAW_STORAGE_* env vars at boot.
+// StorageConfig holds DB credentials. Populated from BKCLAW_STORAGE_* env vars at boot.
 type StorageConfig struct {
 	Type        StorageType `json:"type"`
 	DSN         string      `json:"dsn,omitempty"`

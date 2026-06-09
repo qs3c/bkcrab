@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fastclaw-ai/fastclaw/internal/policy"
+	"github.com/bkclaw-ai/bkclaw/internal/policy"
 )
 
 // policyCmd handles policy management subcommands.

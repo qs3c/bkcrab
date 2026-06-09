@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/fastclaw-ai/fastclaw/internal/bus"
+	"github.com/bkclaw-ai/bkclaw/internal/bus"
 )
 
 // memStore is the in-memory goal.Store used by continue_test.go to

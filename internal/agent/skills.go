@@ -12,9 +12,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/skills"
-	"github.com/fastclaw-ai/fastclaw/internal/workspace"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/skills"
+	"github.com/bkclaw-ai/bkclaw/internal/workspace"
 	"gopkg.in/yaml.v3"
 )
 
@@ -33,9 +33,9 @@ type Skill struct {
 // SkillFrontmatter represents the YAML frontmatter of a SKILL.md file.
 //
 // Env is the ergonomic shortcut for declaring configurable environment
-// variables — equivalent to writing them under metadata.fastclaw.env
+// variables — equivalent to writing them under metadata.bkclaw.env
 // but spares skill authors the namespace nesting when they don't need
-// to publish their skill to a non-fastclaw runtime. The HTTP layer
+// to publish their skill to a non-bkclaw runtime. The HTTP layer
 // merges both sources, top-level Env wins on conflict.
 type SkillFrontmatter struct {
 	Name        string         `yaml:"name"`
@@ -46,16 +46,16 @@ type SkillFrontmatter struct {
 }
 
 // SkillMetadata represents the skill metadata block.
-// Supports both "fastclaw" and "openclaw" keys for backward compatibility.
+// Supports both "bkclaw" and "openclaw" keys for backward compatibility.
 type SkillMetadata struct {
-	FastClaw *OpenClawMeta `json:"fastclaw"`
+	BkClaw   *OpenClawMeta `json:"bkclaw"`
 	OpenClaw *OpenClawMeta `json:"openclaw"`
 }
 
-// Meta returns the effective metadata, preferring fastclaw over openclaw.
+// Meta returns the effective metadata, preferring bkclaw over openclaw.
 func (m *SkillMetadata) Meta() *OpenClawMeta {
-	if m.FastClaw != nil {
-		return m.FastClaw
+	if m.BkClaw != nil {
+		return m.BkClaw
 	}
 	return m.OpenClaw
 }
@@ -84,7 +84,7 @@ type OpenClawMeta struct {
 // have to set it.
 //
 // Carries both json and yaml tags so it round-trips via the
-// metadata.fastclaw.env path (yaml→generic→json→struct, json tags) AND
+// metadata.bkclaw.env path (yaml→generic→json→struct, json tags) AND
 // via the new top-level frontmatter.Env shortcut (yaml→struct directly,
 // yaml tags).
 type SkillEnvSpec struct {
@@ -117,7 +117,7 @@ type SkillsLoader struct {
 	workspaceStore workspace.Store
 	agentID        string
 	// userID is the chatter. When set, LoadSkills also scans the
-	// per-user skills dir (~/.fastclaw/users/<uid>/skills/) so skills
+	// per-user skills dir (~/.bkclaw/users/<uid>/skills/) so skills
 	// the user creates while chatting any agent are reusable on every
 	// other agent they chat with. Empty disables this layer (legacy /
 	// single-user installs that pre-date per-user skills).
@@ -150,7 +150,7 @@ func (sl *SkillsLoader) WithObjectStore(ws workspace.Store, agentID string) *Ski
 	return sl
 }
 
-// WithUserID enables the per-user skill layer (~/.fastclaw/users/<uid>/skills).
+// WithUserID enables the per-user skill layer (~/.bkclaw/users/<uid>/skills).
 // When set together with WithObjectStore, hydrate also pulls the user's
 // pseudo-owner namespace so skills created on another pod are mirrored to
 // this pod's disk. Empty userID disables the layer.
@@ -168,7 +168,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 	// store does "skip if size matches" per object.
 	if sl.workspaceStore != nil {
 		ctx := context.Background()
-		managedDir := fastclawManagedDir()
+		managedDir := bkclawManagedDir()
 		if managedDir != "" {
 			keep := BundledSkillNames()
 			if err := skills.HydrateSkillsDown(ctx, sl.workspaceStore, skills.GlobalSkillOwner, managedDir, keep...); err != nil {
@@ -223,15 +223,15 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 		}
 	}
 
-	// Layer 3: managed skills (~/.fastclaw/skills/)
-	managedDir := fastclawManagedDir()
+	// Layer 3: managed skills (~/.bkclaw/skills/)
+	managedDir := bkclawManagedDir()
 	for name, skill := range discoverSkillsEnhanced(managedDir, "managed") {
 		if !disabled[name] {
 			skillsMap[name] = skill
 		}
 	}
 
-	// Layer 2: user installed (~/.fastclaw/skills/)
+	// Layer 2: user installed (~/.bkclaw/skills/)
 	userDir := filepath.Join(sl.homeDir, "skills")
 	for name, skill := range discoverSkillsEnhanced(userDir, "user") {
 		if !disabled[name] {
@@ -466,19 +466,19 @@ func (sl *SkillsLoader) allSkillDirs() []string {
 		dirs = append(dirs, userDir)
 	}
 	dirs = append(dirs, filepath.Join(sl.homeDir, "skills"))
-	dirs = append(dirs, fastclawManagedDir())
+	dirs = append(dirs, bkclawManagedDir())
 	dirs = append(dirs, sl.globalCfg.Load.ExtraDirs...)
 	return dirs
 }
 
-// userSkillsDir returns ~/.fastclaw/users/<uid>/skills (FASTCLAW_HOME-aware).
+// userSkillsDir returns ~/.bkclaw/users/<uid>/skills (BKCLAW_HOME-aware).
 // Empty when no userID is set so the loader skips the layer entirely on
 // single-user installs / legacy paths.
 func (sl *SkillsLoader) userSkillsDir() string {
 	if sl.userID == "" {
 		return ""
 	}
-	base := fastclawBaseDir()
+	base := bkclawBaseDir()
 	if base == "" {
 		return ""
 	}
@@ -486,7 +486,7 @@ func (sl *SkillsLoader) userSkillsDir() string {
 }
 
 // userSkillsRootDir is the host parent dir of the per-user skills/
-// subtree (~/.fastclaw/users/<uid>/). Returned form leaves "skills/"
+// subtree (~/.bkclaw/users/<uid>/). Returned form leaves "skills/"
 // off the end so file.go's path resolver can join a relative
 // "skills/foo/SKILL.md" against it the same way it handles agent
 // home; the SkillsLoader layer reaches the actual subdir via
@@ -495,7 +495,7 @@ func userSkillsRootDir(userID string) string {
 	if userID == "" {
 		return ""
 	}
-	base := fastclawBaseDir()
+	base := bkclawBaseDir()
 	if base == "" {
 		return ""
 	}
@@ -769,24 +769,24 @@ func checkGating(meta *SkillMetadata) (bool, string) {
 	return false, ""
 }
 
-// fastclawBaseDir returns $FASTCLAW_HOME or $HOME/.fastclaw. Used as
-// the parent for skills/, users/<uid>/skills/, etc. Honors FASTCLAW_HOME
+// bkclawBaseDir returns $BKCLAW_HOME or $HOME/.bkclaw. Used as
+// the parent for skills/, users/<uid>/skills/, etc. Honors BKCLAW_HOME
 // so multi-instance dev (one stack per product) stays isolated.
-func fastclawBaseDir() string {
-	if h := os.Getenv("FASTCLAW_HOME"); h != "" {
+func bkclawBaseDir() string {
+	if h := os.Getenv("BKCLAW_HOME"); h != "" {
 		return h
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".fastclaw")
+	return filepath.Join(home, ".bkclaw")
 }
 
-// fastclawManagedDir returns the FastClaw managed skills directory
-// (~/.fastclaw/skills/, host-shared).
-func fastclawManagedDir() string {
-	base := fastclawBaseDir()
+// bkclawManagedDir returns the BkClaw managed skills directory
+// (~/.bkclaw/skills/, host-shared).
+func bkclawManagedDir() string {
+	base := bkclawBaseDir()
 	if base == "" {
 		return ""
 	}

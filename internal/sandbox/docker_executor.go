@@ -193,7 +193,7 @@ type DockerExecutorPool struct {
 	executors map[string]*DockerExecutor // key = poolKey(agentID, sessionID)
 	image     string
 	policy    *Policy
-	// workspaceRoot is FASTCLAW_HOME — each session gets a private mount
+	// workspaceRoot is BKCLAW_HOME — each session gets a private mount
 	// rooted at workspaceRoot/workspaces/<agentID>/sessions/<sessionID>/.
 	workspaceRoot string
 }
@@ -227,7 +227,7 @@ func (p *DockerExecutorPool) Backend() string { return "docker" }
 // NewDockerExecutorPool creates a pool of Docker-backed executors.
 func NewDockerExecutorPool(image, workspaceRoot string, policy *Policy) *DockerExecutorPool {
 	if image == "" {
-		image = "thinkany/fastclaw-sandbox:latest"
+		image = "thinkany/bkclaw-sandbox:latest"
 	}
 	return &DockerExecutorPool{
 		executors:     make(map[string]*DockerExecutor),
@@ -296,10 +296,10 @@ func (p *DockerExecutorPool) Get(ctx context.Context, agentID, projectID, sessio
 	// (set by HandleMessage / HandleMessageStream); empty just skips
 	// the mount, which is the right fallback for non-chat callers.
 	if uid := UserIDFromContext(ctx); uid != "" {
-		base := os.Getenv("FASTCLAW_HOME")
+		base := os.Getenv("BKCLAW_HOME")
 		if base == "" {
 			if h, err := os.UserHomeDir(); err == nil {
-				base = filepath.Join(h, ".fastclaw")
+				base = filepath.Join(h, ".bkclaw")
 			}
 		}
 		if base != "" {

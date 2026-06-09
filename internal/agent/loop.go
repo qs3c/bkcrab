@@ -12,21 +12,21 @@ import (
 
 	"github.com/codeany-ai/open-agent-sdk-go/costtracker"
 
-	"github.com/fastclaw-ai/fastclaw/internal/agent/goal"
-	"github.com/fastclaw-ai/fastclaw/internal/agent/tools"
-	"github.com/fastclaw-ai/fastclaw/internal/bus"
-	"github.com/fastclaw-ai/fastclaw/internal/channels"
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/mcp"
-	"github.com/fastclaw-ai/fastclaw/internal/privacy"
-	"github.com/fastclaw-ai/fastclaw/internal/provider"
-	"github.com/fastclaw-ai/fastclaw/internal/sandbox"
-	"github.com/fastclaw-ai/fastclaw/internal/scope"
-	"github.com/fastclaw-ai/fastclaw/internal/session"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
-	"github.com/fastclaw-ai/fastclaw/internal/toolproviders"
-	"github.com/fastclaw-ai/fastclaw/internal/usage"
-	"github.com/fastclaw-ai/fastclaw/internal/workspace"
+	"github.com/qs3c/bkclaw/internal/agent/goal"
+	"github.com/qs3c/bkclaw/internal/agent/tools"
+	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/channels"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/mcp"
+	"github.com/qs3c/bkclaw/internal/privacy"
+	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/sandbox"
+	"github.com/qs3c/bkclaw/internal/scope"
+	"github.com/qs3c/bkclaw/internal/session"
+	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkclaw/internal/usage"
+	"github.com/qs3c/bkclaw/internal/workspace"
 )
 
 // Agent is the ReAct agent loop.
@@ -51,11 +51,11 @@ type Agent struct {
 	// even after the operator explicitly chose chatbot/customize.
 	// PromptMode also drives the per-turn tool filter via
 	// builtinAllowForMode below.
-	promptMode string
-	homePath        string // agent's home: SOUL.md, sessions, memory, skills
-	workspacePath   string // working dir where agent creates user files
-	homeDir         string // FastClaw root, ~/.fastclaw
-	ownerUserID     string // the user that owns this agent (for hook namespacing)
+	promptMode    string
+	homePath      string // agent's home: SOUL.md, sessions, memory, skills
+	workspacePath string // working dir where agent creates user files
+	homeDir       string // BkClaw root, ~/.bkclaw
+	ownerUserID   string // the user that owns this agent (for hook namespacing)
 	// admins is the per-channel allowlist of chatters who can run write-
 	// mode slash commands (/new /undo /retry /compact /model /personality).
 	// Keyed by channel name (e.g. "discord" → ["123...", "456..."]). Empty
@@ -308,15 +308,15 @@ func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *
 		maxParallelToolCalls: rc.MaxParallelToolCalls,
 		thinking:             rc.Thinking,
 		promptMode:           rc.PromptMode,
-		homePath:        rc.Home,
-		workspacePath:   workspace,
-		homeDir:         homeDir,
-		admins:          rc.Admins,
-		skillsCfg:       rc.Skills,
-		globalSkillsCfg: globalSkillsCfg,
-		messageBus:      mb,
-		engine:          eng,
-		costTracker:     eng.costTracker,
+		homePath:             rc.Home,
+		workspacePath:        workspace,
+		homeDir:              homeDir,
+		admins:               rc.Admins,
+		skillsCfg:            rc.Skills,
+		globalSkillsCfg:      globalSkillsCfg,
+		messageBus:           mb,
+		engine:               eng,
+		costTracker:          eng.costTracker,
 	}
 
 	// Multi-bubble split-replies: per-agent only — system-level toggle
@@ -1105,8 +1105,8 @@ func (a *Agent) CostTracker() *costtracker.Tracker {
 }
 
 // dumpLLMRequest appends the full LLM-bound payload to a dedicated file
-// when FASTCLAW_DUMP_LLM is set. Default path is ~/.fastclaw/logs/llm-dump.log
-// (overridable via FASTCLAW_DUMP_LLM_FILE) — separate from gateway.log so
+// when BKCLAW_DUMP_LLM is set. Default path is ~/.bkclaw/logs/llm-dump.log
+// (overridable via BKCLAW_DUMP_LLM_FILE) — separate from gateway.log so
 // the multi-thousand-line system prompt doesn't drown structured slog
 // entries, and tail-able regardless of whether the gateway runs under air,
 // daemon, or as a foreground process.
@@ -1114,15 +1114,15 @@ func (a *Agent) CostTracker() *costtracker.Tracker {
 // Multi-line content is written as one block per turn (not per-line slog
 // calls) so timestamps don't shred the system prompt.
 func dumpLLMRequest(agentName, model string, messages []provider.Message, tools []provider.Tool) {
-	if os.Getenv("FASTCLAW_DUMP_LLM") == "" {
+	if os.Getenv("BKCLAW_DUMP_LLM") == "" {
 		return
 	}
-	path := os.Getenv("FASTCLAW_DUMP_LLM_FILE")
+	path := os.Getenv("BKCLAW_DUMP_LLM_FILE")
 	if path == "" {
-		home := os.Getenv("FASTCLAW_HOME")
+		home := os.Getenv("BKCLAW_HOME")
 		if home == "" {
 			if h, err := os.UserHomeDir(); err == nil {
-				home = h + "/.fastclaw"
+				home = h + "/.bkclaw"
 			}
 		}
 		if home == "" {
@@ -2941,20 +2941,20 @@ func (a *Agent) RegisteredTools() []tools.ToolInfo {
 // support / role-play products:
 //
 //   - image_gen     : self-generated images (registered only if a
-//                     provider is configured; absence is fine)
+//     provider is configured; absence is fine)
 //   - tts           : voice messages (same conditional registration)
 //   - write_file    : persist USER.md / MEMORY.md when the LLM learns
-//                     something worth keeping. Routing in
-//                     systemFileUserID sends USER.md/MEMORY.md to the
-//                     per-chatter row, so each chatter accrues their
-//                     own profile / memory. Path resolution rejects
-//                     arbitrary paths via identityFileBlocked +
-//                     workspace scoping, so this isn't a general
-//                     "let the chatbot write anywhere" hole — just
-//                     the canonical per-chatter notes.
+//     something worth keeping. Routing in
+//     systemFileUserID sends USER.md/MEMORY.md to the
+//     per-chatter row, so each chatter accrues their
+//     own profile / memory. Path resolution rejects
+//     arbitrary paths via identityFileBlocked +
+//     workspace scoping, so this isn't a general
+//     "let the chatbot write anywhere" hole — just
+//     the canonical per-chatter notes.
 //   - edit_file     : same rationale; preferred over write_file when
-//                     surgically updating MEMORY.md so the model
-//                     doesn't accidentally clobber prior entries.
+//     surgically updating MEMORY.md so the model
+//     doesn't accidentally clobber prior entries.
 //
 // Notably absent: `read_file` / `list_dir` — chatbot mode shouldn't
 // browse the filesystem; USER.md / MEMORY.md content is already loaded
@@ -3042,7 +3042,7 @@ func (a *Agent) UpdateConfig(rc config.ResolvedAgent) {
 	// propagation an agent that existed before sandbox was enabled keeps
 	// telling the LLM its home is the host absolute path, even after the
 	// executor itself has been swapped to Docker — model dutifully calls
-	// list_dir /Users/idoubi/.fastclaw/agents/<id>/agent and 404s in the
+	// list_dir /Users/idoubi/.bkclaw/agents/<id>/agent and 404s in the
 	// container.
 	a.ctxBuilder.sandboxEnabled = rc.Sandbox.Enabled
 	a.ctxBuilder.sandboxBackend = rc.Sandbox.Backend

@@ -69,7 +69,7 @@ export default function ChannelsPage() {
             </div>
             <p className="text-sm text-muted-foreground mb-1">No channels configured</p>
             <p className="text-xs text-muted-foreground/60">
-              Configure channels in Settings or fastclaw.json
+              Configure channels in Settings or bkclaw.json
             </p>
           </div>
         </div>

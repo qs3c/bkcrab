@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/provider"
+	"github.com/bkclaw-ai/bkclaw/internal/provider"
 )
 
 // SkillsLearner observes complex tasks and extracts reusable skill patterns.
@@ -84,7 +84,7 @@ func (sl *SkillsLearner) MaybeExtract(ctx context.Context, messages []provider.M
 func (sl *SkillsLearner) loadSkillLearnerPrompt() string {
 	// Search skill directories for skill-learner SKILL.md
 	for _, dir := range sl.skillDirs {
-		path := filepath.Join(dir, "fastclaw-skill-learner", "SKILL.md")
+		path := filepath.Join(dir, "bkclaw-skill-learner", "SKILL.md")
 		if data, err := os.ReadFile(path); err == nil {
 			slog.Debug("loaded skill-learner prompt from file", "path", path)
 			return string(data)

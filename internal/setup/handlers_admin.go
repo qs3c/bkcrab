@@ -7,13 +7,13 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/auth"
-	"github.com/fastclaw-ai/fastclaw/internal/buildinfo"
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/scope"
-	"github.com/fastclaw-ai/fastclaw/internal/session"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
-	"github.com/fastclaw-ai/fastclaw/internal/users"
+	"github.com/bkclaw-ai/bkclaw/internal/auth"
+	"github.com/bkclaw-ai/bkclaw/internal/buildinfo"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/scope"
+	"github.com/bkclaw-ai/bkclaw/internal/session"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/users"
 )
 
 // --- Login / logout / me ---
@@ -364,7 +364,7 @@ type createUserReq struct {
 	// ExternalID is the calling app's own user identifier. Combined
 	// with the auth-derived apikey_id (NOT taken from the body) it
 	// makes provisioning idempotent: the same upstream user always
-	// resolves to the same fastclaw user_id. Optional for session
+	// resolves to the same bkclaw user_id. Optional for session
 	// callers (web admin clicks); typical for upstream apikey
 	// provisioning where the caller wants a stable mapping back to
 	// their own user table.

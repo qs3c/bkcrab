@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/toolproviders"
+	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
 )
 
 // Category is the tool category these providers plug into.

@@ -1,8 +1,8 @@
 {
-  "id": "fastclaw-plugin-demo",
-  "name": "FastClaw Plugin Demo",
+  "id": "bkclaw-plugin-demo",
+  "name": "BkClaw Plugin Demo",
   "version": "0.1.0",
-  "description": "A demo plugin showing how to build a FastClaw native plugin",
+  "description": "A demo plugin showing how to build a BkClaw native plugin",
   "type": "tool",
   "command": "python3 plugin.py",
   "capabilities": ["tool"],

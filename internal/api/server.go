@@ -6,9 +6,9 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/fastclaw-ai/fastclaw/internal/agent"
-	"github.com/fastclaw-ai/fastclaw/internal/auth"
-	"github.com/fastclaw-ai/fastclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/agent"
+	"github.com/bkclaw-ai/bkclaw/internal/auth"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
 )
 
 // UserResolver looks up a user space by user ID.
@@ -78,7 +78,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Always available — any api_key call can use the same identity-
 	// switch (header or `user` body field) without precreating, this
 	// endpoint just exists for callers that prefer to mint up front and
-	// store the returned fastclaw user_id locally.
+	// store the returned bkclaw user_id locally.
 	mux.HandleFunc("POST /v1/users",
 		s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleProvisionAppUser)))
 }
@@ -91,7 +91,7 @@ func (s *Server) RegisterAdminRoutes(mux *http.ServeMux) {}
 func (s *Server) handleCORS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, x-fastclaw-agent-id, x-fastclaw-session-key")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, x-bkclaw-agent-id, x-bkclaw-session-key")
 	w.Header().Set("Access-Control-Max-Age", "86400")
 	w.WriteHeader(http.StatusNoContent)
 }

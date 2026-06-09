@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fastclaw-ai/fastclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
 )
 
 // fakeMemoryStore is a deterministic in-memory MemoryStore for the

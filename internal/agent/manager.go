@@ -5,14 +5,14 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/fastclaw-ai/fastclaw/internal/agent/tools"
-	"github.com/fastclaw-ai/fastclaw/internal/bus"
-	"github.com/fastclaw-ai/fastclaw/internal/config"
-	"github.com/fastclaw-ai/fastclaw/internal/provider"
-	"github.com/fastclaw-ai/fastclaw/internal/session"
-	"github.com/fastclaw-ai/fastclaw/internal/store"
-	"github.com/fastclaw-ai/fastclaw/internal/usage"
-	"github.com/fastclaw-ai/fastclaw/internal/workspace"
+	"github.com/bkclaw-ai/bkclaw/internal/agent/tools"
+	"github.com/bkclaw-ai/bkclaw/internal/bus"
+	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/bkclaw-ai/bkclaw/internal/provider"
+	"github.com/bkclaw-ai/bkclaw/internal/session"
+	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/bkclaw-ai/bkclaw/internal/usage"
+	"github.com/bkclaw-ai/bkclaw/internal/workspace"
 )
 
 // providerForAgent picks an LLM provider for a single agent. Resolution:
@@ -166,7 +166,7 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 	ag := NewAgentWithSkillsCfg(rc, providerForAgent(rc, prov), mb, homeDir, m.opts.globalSkillsCfg)
 	ag.SetOwnerUserID(m.uid)
 	// Per-user skills bucket: chat-time `skills/...` writes route to
-	// ~/.fastclaw/users/<uid>/, where SkillsLoader's "personal" layer
+	// ~/.bkclaw/users/<uid>/, where SkillsLoader's "personal" layer
 	// also scans (see SkillsLoader.WithUserID). Set userID on the
 	// registry up front (the systemFileStore branch below also sets
 	// it, but only when memoryStore is wired — without this hoist a

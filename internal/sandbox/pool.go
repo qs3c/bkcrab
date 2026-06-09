@@ -24,8 +24,8 @@ func NewPool() *SandboxPool {
 //
 // On creation we wire BOTH skill dirs into the sandbox so the LLM's
 // `python /skills/<name>/main.py` resolves whether the skill lives in
-// the global $FASTCLAW_HOME/skills/ tree or this agent's private
-// $FASTCLAW_HOME/agents/<agentID>/agent/skills/. Without the per-agent
+// the global $BKCLAW_HOME/skills/ tree or this agent's private
+// $BKCLAW_HOME/agents/<agentID>/agent/skills/. Without the per-agent
 // mount, skills the operator dropped into agents/<id>/agent/skills/
 // (e.g. via SkillsLoader's per-agent layer) silently fail to load
 // inside the container.
@@ -65,7 +65,7 @@ func homeFromWorkspace(workspace, agentID string) string {
 // sandbox. Per-agent dir comes first so its skills override
 // same-named global ones, matching SkillsLoader precedence.
 //
-// home is the resolved FASTCLAW_HOME (the pool's workspaceRoot), not
+// home is the resolved BKCLAW_HOME (the pool's workspaceRoot), not
 // the process env — keeps tests / multi-instance debug honest.
 func skillDirsForAgent(home, agentID string) []string {
 	if home == "" {

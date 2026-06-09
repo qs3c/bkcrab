@@ -3,7 +3,7 @@ package websearch
 import (
 	"context"
 
-	"github.com/fastclaw-ai/fastclaw/internal/toolproviders"
+	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
 )
 
 // None is a sentinel provider meaning "do not expose web_search to the model."

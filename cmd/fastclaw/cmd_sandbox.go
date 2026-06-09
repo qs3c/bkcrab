@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fastclaw-ai/fastclaw/internal/sandbox"
+	"github.com/bkclaw-ai/bkclaw/internal/sandbox"
 )
 
 // sandboxCmd handles sandbox management subcommands.
@@ -37,7 +37,7 @@ func sandboxCreateCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&image, "image", "thinkany/fastclaw-sandbox:latest", "Docker image to use")
+	cmd.Flags().StringVar(&image, "image", "thinkany/bkclaw-sandbox:latest", "Docker image to use")
 	return cmd
 }
 
@@ -46,7 +46,7 @@ func sandboxListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List running sandbox containers",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			listCmd := exec.Command("docker", "ps", "--filter", "label=fastclaw=sandbox", "--format",
+			listCmd := exec.Command("docker", "ps", "--filter", "label=bkclaw=sandbox", "--format",
 				"table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Names}}")
 			listCmd.Stdout = os.Stdout
 			listCmd.Stderr = os.Stderr
