@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Build web UI
+        run: make build-web
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          for pair in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64 windows/arm64 windows/amd64; do
+            GOOS="${pair%/*}" GOARCH="${pair#*/}" CGO_ENABLED=0 \
+              go build -ldflags "${{ env.LDFLAGS }}" \
+              -o "dist/fastclaw_${pair%/*}_${pair#*/}/fastclaw$( [ "${pair%/*}" = windows ] && echo .exe )" \
+              ./cmd/fastclaw
+          done
+        env:
+          LDFLAGS: -s -w -X main.version=${{ github.ref_name }} -X main.commit=${{ github.sha }} -X main.date=${{ github.event.head_commit.timestamp }}
+
+      - name: Package artifacts
+        run: |
+          cd dist
+          for d in fastclaw_darwin_* fastclaw_linux_*; do
+            tar -czf "${d}.tar.gz" -C "$d" fastclaw
+          done
+          for d in fastclaw_windows_*; do
+            (cd "$d" && zip -q "../${d}.zip" fastclaw.exe)
+          done
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip

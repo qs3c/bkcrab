@@ -1,0 +1,112 @@
+package tools
+
+import (
+	"reflect"
+	"sort"
+	"testing"
+)
+
+func TestIsSensitiveEnvKey(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		// Operator-only prefixes — the screenshot incident.
+		{"FASTCLAW_STORAGE_DSN", true},
+		{"FASTCLAW_OBJECT_STORE_ACCESSKEY", true},
+		{"FASTCLAW_OBJECT_STORE_SECRETKEY", true},
+		{"FASTCLAW_OBJECT_STORE_BUCKET", true},
+		{"FASTCLAW_OBJECT_STORE_ALIYUN_INTERNAL", true},
+		{"FASTCLAW_SANDBOX_BOXLITE_URL", true},
+		{"AWS_ACCESS_KEY_ID", true},
+		{"AWS_SECRET_ACCESS_KEY", true},
+		{"GOOGLE_APPLICATION_CREDENTIALS", true},
+
+		// Substring matchers.
+		{"ANTHROPIC_API_KEY", true},
+		{"OPENAI_API_KEY", true},
+		{"GITHUB_TOKEN", true},
+		{"DB_PASSWORD", true},
+		{"MYAPP_DSN", true},
+		{"DATABASE_URL", true},
+		{"SOMETHING_SECRET", true},
+		{"PRIVATE_KEY", true},
+		{"FOO_CREDENTIAL", true},
+		{"apikey_lowercase", true}, // case-insensitive
+
+		// Things that must NOT be scrubbed — needed by every child.
+		{"PATH", false},
+		{"HOME", false},
+		{"USER", false},
+		{"LANG", false},
+		{"LC_ALL", false},
+		{"TERM", false},
+		{"PWD", false}, // present working dir, NOT a password
+		{"FASTCLAW_HOME", false},
+		{"FASTCLAW_LOG_LEVEL", false},
+		{"FASTCLAW_DEPLOY", false},
+		{"FASTCLAW_ALLOW_HOST_EXEC", false},
+	}
+	for _, c := range cases {
+		got := isSensitiveEnvKey(c.name)
+		if got != c.want {
+			t.Errorf("isSensitiveEnvKey(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestScrubSensitiveEnv(t *testing.T) {
+	in := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/x",
+		"FASTCLAW_STORAGE_DSN=postgres://user:pw@host/db",
+		"FASTCLAW_OBJECT_STORE_ACCESSKEY=AKIAEXAMPLE",
+		"FASTCLAW_OBJECT_STORE_SECRETKEY=secret",
+		"ANTHROPIC_API_KEY=sk-ant-x",
+		"AWS_ACCESS_KEY_ID=AKIA",
+		"FASTCLAW_HOME=/var/lib/fastclaw",
+		"LANG=en_US.UTF-8",
+		"PWD=/tmp", // must NOT match the PASSWD substring
+	}
+	got := scrubSensitiveEnv(in)
+	sort.Strings(got)
+	want := []string{
+		"FASTCLAW_HOME=/var/lib/fastclaw",
+		"HOME=/home/x",
+		"LANG=en_US.UTF-8",
+		"PATH=/usr/bin",
+		"PWD=/tmp",
+	}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("scrubSensitiveEnv mismatch\n got:  %v\n want: %v", got, want)
+	}
+}
+
+func TestBuildSubprocessEnvOverridesSkillKeys(t *testing.T) {
+	// Make a minimal "parent env" by passing through scrubSensitiveEnv
+	// and confirming a skill-provided FAL_KEY lands in the result even
+	// though FAL_KEY would match the _API_KEY substring at first glance.
+	// (FAL_KEY itself doesn't match any pattern — that's fine; this test
+	// just confirms skill env wins over a parent that already has the
+	// same key.)
+	t.Setenv("FAL_KEY", "from-parent")
+	t.Setenv("FASTCLAW_STORAGE_DSN", "must-be-stripped")
+	out := buildSubprocessEnv(map[string]string{"FAL_KEY": "from-skill"})
+
+	var sawFalKey, sawDSN bool
+	for _, kv := range out {
+		if kv == "FAL_KEY=from-skill" {
+			sawFalKey = true
+		}
+		if len(kv) >= len("FASTCLAW_STORAGE_DSN=") && kv[:len("FASTCLAW_STORAGE_DSN=")] == "FASTCLAW_STORAGE_DSN=" {
+			sawDSN = true
+		}
+	}
+	if !sawFalKey {
+		t.Errorf("expected skill env FAL_KEY to win over parent; not found in %v", out)
+	}
+	if sawDSN {
+		t.Errorf("FASTCLAW_STORAGE_DSN must be scrubbed; leaked in %v", out)
+	}
+}

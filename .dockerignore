@@ -1,0 +1,14 @@
+bin/
+dist/
+tmp/
+web/node_modules/
+web/.next/
+web/out/
+internal/setup/web/
+.git/
+.env
+.env.*
+!deploy/docker/.env.example
+deploy/docker/.state/
+*.tar.gz
+*.zip

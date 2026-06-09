@@ -1,0 +1,131 @@
+# Two-pod shared-Postgres + MinIO smoke test for the stateless-gateway
+# architecture. This is the reference environment for verifying that
+# sessions/memory/identity/workspace are truly shared across pods and
+# survive pod restart.
+#
+# Run:
+#   docker compose -f deploy/multi-pod/docker-compose.yaml up --build
+#
+# After ~10s:
+#   pod A           http://localhost:18953  (admin token: dev-admin-token)
+#   pod B           http://localhost:18954  (same state, different pod)
+#   MinIO console   http://localhost:9001   (user: minioadmin / pass: minioadmin)
+#   Postgres        postgres://fastclaw:fastclaw@localhost:5432/fastclaw
+#
+# Smoke test checklist (curl examples use pod A, then read from pod B):
+#   1. curl POST /api/agents via A          — creates agent in shared DB
+#   2. curl GET /api/agents via B           — B sees it without restart
+#   3. write SOUL.md via A, read via B      — identity file crosses pod
+#   4. chat an agent via A (no exec)        — sandbox not created
+#   5. chat with exec via A                 — sandbox created lazily
+#   6. wait 10+ min or edit IdleTTLSec      — sandbox evicted, DB intact
+#   7. kill pod A                           — B keeps serving all state
+
+version: "3.8"
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: fastclaw
+      POSTGRES_PASSWORD: fastclaw
+      POSTGRES_DB: fastclaw
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fastclaw"]
+      interval: 2s
+      timeout: 1s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  # Bootstraps a bucket inside MinIO so the gateway doesn't crash on first
+  # use. Runs once, exits — compose waits for "healthy" not "exited", so
+  # both gateway pods start after this is done via depends_on.
+  minio-bootstrap:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        mc alias set local http://minio:9000 minioadmin minioadmin;
+        mc mb --ignore-existing local/fastclaw;
+        echo 'bucket ready';
+      "
+
+  pod-a:
+    image: fastclaw:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      # Same config on both pods — that's the whole point of "stateless".
+      # TZ included so cross-pod runs exercise the server-default
+      # timezone fallback the same way single-pod deploys do.
+      TZ: Asia/Shanghai
+      FASTCLAW_STORAGE_TYPE: postgres
+      FASTCLAW_STORAGE_DSN: postgres://fastclaw:fastclaw@db:5432/fastclaw?sslmode=disable
+      FASTCLAW_MODE: cloud
+      FASTCLAW_AUTH_TOKEN: dev-admin-token
+      # Object store → MinIO. The keys mirror config.ObjectStoreCfg.
+      FASTCLAW_OBJECT_STORE_TYPE: minio
+      FASTCLAW_OBJECT_STORE_ENDPOINT: minio:9000
+      FASTCLAW_OBJECT_STORE_BUCKET: fastclaw
+      FASTCLAW_OBJECT_STORE_ACCESSKEY: minioadmin
+      FASTCLAW_OBJECT_STORE_SECRETKEY: minioadmin
+      FASTCLAW_OBJECT_STORE_USESSL: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+      minio-bootstrap:
+        condition: service_completed_successfully
+    ports:
+      - "18953:18953"
+
+  pod-b:
+    image: fastclaw:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      TZ: Asia/Shanghai
+      FASTCLAW_STORAGE_TYPE: postgres
+      FASTCLAW_STORAGE_DSN: postgres://fastclaw:fastclaw@db:5432/fastclaw?sslmode=disable
+      FASTCLAW_MODE: cloud
+      FASTCLAW_AUTH_TOKEN: dev-admin-token
+      FASTCLAW_OBJECT_STORE_TYPE: minio
+      FASTCLAW_OBJECT_STORE_ENDPOINT: minio:9000
+      FASTCLAW_OBJECT_STORE_BUCKET: fastclaw
+      FASTCLAW_OBJECT_STORE_ACCESSKEY: minioadmin
+      FASTCLAW_OBJECT_STORE_SECRETKEY: minioadmin
+      FASTCLAW_OBJECT_STORE_USESSL: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+      minio-bootstrap:
+        condition: service_completed_successfully
+    ports:
+      - "18954:18953"
+
+volumes:
+  pgdata:
+  miniodata:

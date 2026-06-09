@@ -1,0 +1,9 @@
+{
+  "id": "post-turn-echo-demo",
+  "name": "PostTurn Echo Demo",
+  "version": "0.1.0",
+  "type": "hook",
+  "description": "Demo hook plugin: on every agent post_turn, sends a fixed follow-up message back to the same chat via chat.send. Skeleton for richer plugins (audio replies, translations, etc).",
+  "command": "python3 plugin.py",
+  "capabilities": ["hook"]
+}

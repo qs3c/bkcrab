@@ -1,0 +1,138 @@
+name: fastclaw
+
+services:
+  fastclaw:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: fastclaw/fastclaw:local
+    restart: unless-stopped
+    ports:
+      - "${FASTCLAW_PORT:-18953}:18953"
+    volumes:
+      - fastclaw-data:/data/.fastclaw
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      FASTCLAW_HOME: /data/.fastclaw
+      FASTCLAW_BIND: all
+      FASTCLAW_PORT: "18953"
+      FASTCLAW_STORAGE_TYPE: postgres
+      FASTCLAW_STORAGE_DSN: "postgres://fastclaw:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/docker/.env}@postgres:5432/fastclaw?sslmode=disable"
+      FASTCLAW_STORAGE_AUTO_MIGRATE: "true"
+      FASTCLAW_OBJECT_STORE_TYPE: minio
+      FASTCLAW_OBJECT_STORE_ENDPOINT: minio:9000
+      FASTCLAW_OBJECT_STORE_BUCKET: "${MINIO_BUCKET:-fastclaw}"
+      FASTCLAW_OBJECT_STORE_PREFIX: "${MINIO_PREFIX:-}"
+      FASTCLAW_OBJECT_STORE_ACCESSKEY: "${MINIO_ROOT_USER:?set MINIO_ROOT_USER in deploy/docker/.env}"
+      FASTCLAW_OBJECT_STORE_SECRETKEY: "${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in deploy/docker/.env}"
+      FASTCLAW_OBJECT_STORE_USESSL: "false"
+      DOCKER_HOST: tcp://sandbox-docker:2375
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-bootstrap:
+        condition: service_completed_successfully
+      sandbox-docker:
+        condition: service_healthy
+    command: ["gateway"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:18953/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: fastclaw
+      POSTGRES_USER: fastclaw
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/docker/.env}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fastclaw -d fastclaw"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?set MINIO_ROOT_USER in deploy/docker/.env}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in deploy/docker/.env}"
+    ports:
+      - "${MINIO_API_PORT:-19000}:9000"
+      - "${MINIO_CONSOLE_PORT:-19001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio-bootstrap:
+    image: minio/mc:latest
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?set MINIO_ROOT_USER in deploy/docker/.env}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in deploy/docker/.env}"
+      MINIO_BUCKET: "${MINIO_BUCKET:-fastclaw}"
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mc mb --ignore-existing "local/$${MINIO_BUCKET}"
+
+  sandbox-docker:
+    image: docker:28-dind
+    privileged: true
+    restart: unless-stopped
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    command:
+      - --host=tcp://0.0.0.0:2375
+      - --host=unix:///var/run/docker.sock
+      - --tls=false
+    volumes:
+      - fastclaw-data:/data/.fastclaw
+      - sandbox-docker-data:/var/lib/docker
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  migrate-storage:
+    profiles: ["migration"]
+    image: fastclaw/fastclaw:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./.state:/migration:ro
+    entrypoint: ["fastclaw-migrate-storage"]
+    command:
+      - --sqlite
+      - /migration/fastclaw.db
+      - --postgres
+      - "postgres://fastclaw:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/docker/.env}@postgres:5432/fastclaw?sslmode=disable"
+      - --replace
+
+volumes:
+  fastclaw-data:
+  postgres-data:
+  minio-data:
+  sandbox-docker-data:

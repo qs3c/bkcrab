@@ -1,0 +1,108 @@
+## FastClaw Helm Chart — default values
+##
+## Same semantics as deploy/k8s/fastclaw.yaml: env-var driven, no
+## init-container sed, workspace artifacts go to an object store
+## (S3 / OSS / R2 / B2 / MinIO / …) so multi-replica scales horizontally.
+
+image:
+  repository: ghcr.io/fastclaw-ai/fastclaw
+  # In production, pin to :v0.x.y or a commit sha — don't use latest/dev.
+  tag: dev
+  pullPolicy: IfNotPresent
+  # imagePullSecrets:
+  #   - name: regcred
+
+## Server default timezone (IANA name) — the LAST fallback in the chain
+## chatter pref → agent default → system default → TZ. Empty = container
+## default (UTC): agents whose chatters never set a timezone then see UTC
+## wall clocks and get UTC-fired schedules.
+timezone: "Asia/Shanghai"
+
+## Gateway
+gateway:
+  replicas: 2
+  port: 18953
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+  # Drain budget for SSE/WS. preStop sleep takes the bulk of it; the
+  # remainder is for Go's graceful shutdown.
+  preStopSleepSeconds: 15
+  terminationGracePeriodSeconds: 30
+
+## HPA
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 60
+
+## PodDisruptionBudget
+pdb:
+  enabled: true
+  minAvailable: 1
+
+## Postgres
+##
+## Prefer a managed service (RDS / Aliyun PG) and set externalDSN.
+## The built-in pod is only suitable for dev / single-node trials.
+postgres:
+  enabled: false                # default off — use managed PG in production
+  image: postgres:16-alpine
+  password: ""                  # required when enabled=true
+  storage: 10Gi
+externalDSN: ""                 # postgres://user:pass@host:5432/db?sslmode=require
+
+## Object store — workspace artifacts, uploads, generated images/PDFs all
+## land here. Required for multi-replica: without it, the same session
+## sees different files on different pods.
+##
+## type accepts:
+##   local           pod-local disk (single-replica dev only — never in production)
+##   aws-s3          AWS S3
+##   cloudflare-r2   Cloudflare R2 (requires accountId)
+##   backblaze-b2    Backblaze B2 (S3-compatible)
+##   aliyun-oss      Aliyun OSS
+##   minio           self-hosted MinIO (requires endpoint)
+##   s3              generic S3-compatible (requires endpoint — e.g. DO Spaces / Wasabi)
+objectStore:
+  type: local
+  bucket: ""
+  region: ""
+  endpoint: ""                  # set for MinIO / generic S3-compatible
+  accountId: ""                 # set for Cloudflare R2
+  accessKey: ""                 # injected via Secret — don't commit real values
+  secretKey: ""
+  prefix: ""                    # prefix when sharing one bucket across environments
+  useSSL: true
+  aliyunInternal: false         # ACK same-region uses the OSS internal endpoint
+
+## Sandbox (skill execution container)
+##
+## k8s pods have no docker daemon — only e2b (remote) or disabled.
+sandbox:
+  enabled: false
+  backend: e2b                  # "e2b" only (docker not available in k8s)
+  image: thinkany/fastclaw-sandbox:latest
+  e2bApiKey: ""
+
+## Ingress
+ingress:
+  enabled: false
+  className: nginx              # or "alb" (Aliyun ACK ALB)
+  host: fastclaw.example.com
+  tls: false
+  tlsSecret: ""
+  certManagerIssuer: ""         # e.g. "letsencrypt-prod"
+  proxyBodySize: "32m"
+  ## When using ALB Ingress (alb.ingress.kubernetes.io/*), override this map.
+  annotations: {}
+
+## Extra FASTCLAW_* env vars passed through to the ConfigMap.
+extraEnv: {}
+  # FASTCLAW_LOG_LEVEL: "info"
+  # FASTCLAW_DAEMON_IDLE_TIMEOUT_SECONDS: "300"
