@@ -70,5 +70,4 @@ env.toml
 
 # Local data
 web/node_modules/
-web/pnpm-lock.yaml
 bkclaw-patched

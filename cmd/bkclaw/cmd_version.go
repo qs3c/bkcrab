@@ -42,7 +42,7 @@ func upgradeCmd() *cobra.Command {
 }
 
 func doUpgrade() error {
-	const repo = "bkclaw-ai/bkclaw"
+	const repo = "qs3c/bkclaw"
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
 
 	fmt.Println("⚡ Checking for updates...")
