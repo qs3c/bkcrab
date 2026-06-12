@@ -98,7 +98,7 @@ export default function AdminUsersPage() {
       setRegOpen(!!r.open);
     } catch {
       setRegOpen(!next);
-      setError("Failed to update registration setting");
+      setError("更新注册设置失败");
     }
   }
 
@@ -157,14 +157,14 @@ export default function AdminUsersPage() {
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Users</h2>
+          <h2 className="text-2xl font-semibold tracking-tight">用户</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Manage platform members. Each user gets isolated agents, sessions, and keys.
+            管理平台成员。每位用户都拥有相互隔离的智能体、会话和密钥。
           </p>
         </div>
         <Button onClick={openCreateDialog}>
           <Plus className="h-4 w-4 mr-2" />
-          Add User
+          添加用户
         </Button>
       </div>
 
@@ -172,17 +172,17 @@ export default function AdminUsersPage() {
         <CardContent>
           <div className="flex items-center justify-between gap-4">
             <div className="space-y-1">
-              <p className="text-sm font-medium">Open registration</p>
+              <p className="text-sm font-medium">开放注册</p>
               <p className="text-xs text-muted-foreground">
-                When on, anyone with the URL can create an account via /signup.
-                When off, only you can add users from this page.
+                开启后，任何获得 URL 的人都可通过 /signup 创建账户。
+                关闭后，只有你能在此页面添加用户。
               </p>
             </div>
             <Switch
               checked={!!regOpen}
               onCheckedChange={toggleRegistration}
               disabled={regOpen === null}
-              aria-label="Toggle public registration"
+              aria-label="切换公开注册"
             />
           </div>
         </CardContent>
@@ -202,13 +202,13 @@ export default function AdminUsersPage() {
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 mb-4">
               <Users className="h-7 w-7 text-primary" />
             </div>
-            <p className="text-sm text-muted-foreground mb-1">No users yet</p>
+            <p className="text-sm text-muted-foreground mb-1">暂无用户</p>
             <p className="text-xs text-muted-foreground/60 mb-4">
-              Add a user to give them their own scoped workspace
+              添加用户，为其创建独立范围的工作区
             </p>
             <Button variant="outline" size="sm" onClick={openCreateDialog}>
               <Plus className="h-4 w-4 mr-2" />
-              Add User
+              添加用户
             </Button>
           </div>
         </div>
@@ -217,11 +217,11 @@ export default function AdminUsersPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Username</TableHead>
-                <TableHead>Email</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead>用户名</TableHead>
+                <TableHead>邮箱</TableHead>
+                <TableHead>角色</TableHead>
+                <TableHead>状态</TableHead>
+                <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -240,8 +240,8 @@ export default function AdminUsersPage() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="user">user</SelectItem>
-                        <SelectItem value="super_admin">super_admin</SelectItem>
+                        <SelectItem value="user">用户</SelectItem>
+                        <SelectItem value="super_admin">超级管理员</SelectItem>
                       </SelectContent>
                     </Select>
                   </TableCell>
@@ -251,8 +251,8 @@ export default function AdminUsersPage() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="active">active</SelectItem>
-                        <SelectItem value="disabled">disabled</SelectItem>
+                        <SelectItem value="active">启用</SelectItem>
+                        <SelectItem value="disabled">禁用</SelectItem>
                       </SelectContent>
                     </Select>
                   </TableCell>
@@ -265,7 +265,7 @@ export default function AdminUsersPage() {
                           setResetPwd("");
                           setResetTarget(u);
                         }}
-                        title="Reset password"
+                        title="重置密码"
                       >
                         <KeyRound className="size-4" />
                       </Button>
@@ -274,7 +274,7 @@ export default function AdminUsersPage() {
                         variant="ghost"
                         className="text-destructive hover:text-destructive"
                         onClick={() => setDeleteTarget(u)}
-                        title="Delete"
+                        title="删除"
                       >
                         <Trash2 className="size-4" />
                       </Button>
@@ -290,26 +290,26 @@ export default function AdminUsersPage() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Add User</DialogTitle>
+            <DialogTitle>添加用户</DialogTitle>
             <DialogDescription>
-              Create a new platform member. They&apos;ll get their own scoped agents, sessions, and keys.
+              创建新的平台成员。他们将拥有独立范围的智能体、会话和密钥。
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleCreate} className="space-y-4 py-2">
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label htmlFor="user-username">Username</Label>
+                <Label htmlFor="user-username">用户名</Label>
                 <Input
                   id="user-username"
                   required
                   value={form.username}
                   onChange={(e) => setForm({ ...form, username: e.target.value })}
-                  placeholder="e.g. alice"
+                  placeholder="例如 alice"
                   autoFocus
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="user-email">Email</Label>
+                <Label htmlFor="user-email">邮箱</Label>
                 <Input
                   id="user-email"
                   required
@@ -321,28 +321,28 @@ export default function AdminUsersPage() {
               </div>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="user-password">Password</Label>
+              <Label htmlFor="user-password">密码</Label>
               <Input
                 id="user-password"
                 required
                 type="password"
                 value={form.password}
                 onChange={(e) => setForm({ ...form, password: e.target.value })}
-                placeholder="Initial password"
+                placeholder="初始密码"
               />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label htmlFor="user-display">Display name</Label>
+                <Label htmlFor="user-display">显示名称</Label>
                 <Input
                   id="user-display"
                   value={form.displayName}
                   onChange={(e) => setForm({ ...form, displayName: e.target.value })}
-                  placeholder="Optional"
+                  placeholder="可选"
                 />
               </div>
               <div className="space-y-1.5">
-                <Label>Role</Label>
+                <Label>角色</Label>
                 <Select
                   value={form.role}
                   onValueChange={(v) => v && setForm({ ...form, role: v })}
@@ -351,21 +351,21 @@ export default function AdminUsersPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="user">user</SelectItem>
-                    <SelectItem value="super_admin">super_admin</SelectItem>
+                    <SelectItem value="user">用户</SelectItem>
+                    <SelectItem value="super_admin">超级管理员</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
-                Cancel
+                取消
               </Button>
               <Button
                 type="submit"
                 disabled={!form.username.trim() || !form.email.trim() || !form.password.trim()}
               >
-                Create user
+                创建用户
               </Button>
             </DialogFooter>
           </form>
@@ -383,17 +383,17 @@ export default function AdminUsersPage() {
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Reset password</DialogTitle>
+            <DialogTitle>重置密码</DialogTitle>
             <DialogDescription>
-              Set a new password for{" "}
+              为以下用户设置新密码：{" "}
               <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
                 {resetTarget?.username}
               </code>
-              . They&apos;ll need this to log in next time.
+              。他们下次登录时需要使用此密码。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1.5 py-2">
-            <Label htmlFor="reset-pwd">New password</Label>
+            <Label htmlFor="reset-pwd">新密码</Label>
             <Input
               id="reset-pwd"
               type="password"
@@ -411,10 +411,10 @@ export default function AdminUsersPage() {
                 setResetPwd("");
               }}
             >
-              Cancel
+              取消
             </Button>
             <Button onClick={handleResetPassword} disabled={!resetPwd.trim()}>
-              Reset password
+              重置密码
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -426,18 +426,18 @@ export default function AdminUsersPage() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete user?</AlertDialogTitle>
+            <AlertDialogTitle>删除用户？</AlertDialogTitle>
             <AlertDialogDescription>
               <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
                 {deleteTarget?.username}
               </code>{" "}
-              will be removed along with all of their agents, sessions, and API keys. This cannot be undone.
+              及其全部智能体、会话和 API 密钥都将被删除。此操作无法撤销。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction onClick={() => deleteTarget && handleDelete(deleteTarget)}>
-              Delete
+              删除
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

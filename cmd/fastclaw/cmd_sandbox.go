@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/bkclaw-ai/bkclaw/internal/sandbox"
+	"github.com/qs3c/bkclaw/internal/sandbox"
 )
 
 // sandboxCmd handles sandbox management subcommands.

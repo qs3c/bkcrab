@@ -32,7 +32,11 @@ const geistMono = localFont({
 
 export const metadata: Metadata = {
   title: "BkClaw",
-  description: "AI Agent Framework",
+  description: "AI 智能体框架",
+  icons: {
+    icon: "/favicon.ico?v=2",
+    shortcut: "/favicon.ico?v=2",
+  },
 };
 
 export default function RootLayout({
@@ -41,7 +45,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning className={cn("font-sans", nunitoSans.variable, figtreeHeading.variable)}>
+    <html lang="zh-CN" suppressHydrationWarning className={cn("font-sans", nunitoSans.variable, figtreeHeading.variable)}>
       <head>
         <script
           dangerouslySetInnerHTML={{

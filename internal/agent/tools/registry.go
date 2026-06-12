@@ -9,10 +9,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bkclaw-ai/bkclaw/internal/buildinfo"
-	"github.com/bkclaw-ai/bkclaw/internal/provider"
-	"github.com/bkclaw-ai/bkclaw/internal/sandbox"
-	"github.com/bkclaw-ai/bkclaw/internal/workspace"
+	"github.com/qs3c/bkclaw/internal/buildinfo"
+	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/sandbox"
+	"github.com/qs3c/bkclaw/internal/workspace"
 )
 
 // identityFiles is the canonical list of agent-owned files that key under

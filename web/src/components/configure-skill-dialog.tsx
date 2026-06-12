@@ -109,13 +109,13 @@ export function ConfigureSkillDialog({
         agentId,
       );
       if (resp && resp.ok === false) {
-        setError(resp.error || "Save failed");
+        setError(resp.error || "保存失败");
         setSaving(false);
         return;
       }
       onSaved();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Save failed");
+      setError(e instanceof Error ? e.message : "保存失败");
     } finally {
       setSaving(false);
     }
@@ -125,18 +125,17 @@ export function ConfigureSkillDialog({
     <Dialog open={!!skill} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>Configure {skill.name}</DialogTitle>
+          <DialogTitle>配置 {skill.name}</DialogTitle>
           <DialogDescription>
             {agentId ? (
               <>
-                Per-agent override for <strong>{agentName}</strong>.
-                Falls back to the global value when a field is empty here.
-                Other agents are unaffected.
+                以下智能体的专属覆盖设置： <strong>{agentName}</strong>.
+                此处字段留空时将使用全局值。
+                其他智能体不受影响。
               </>
             ) : (
               <>
-                Global default. Used by every agent that runs this skill
-                unless that agent has its own per-agent override set.
+                全局默认值。除非智能体设置了专属覆盖值，否则所有运行此技能的智能体都会使用它。
               </>
             )}
           </DialogDescription>
@@ -145,8 +144,8 @@ export function ConfigureSkillDialog({
         <div className="space-y-4 py-2">
           {declaredSpec.length === 0 && customRows.length === 0 && (
             <p className="text-sm text-muted-foreground/70">
-              This skill didn&apos;t declare any env vars in its SKILL.md
-              frontmatter. Add custom variables below if it reads any.
+              此技能未在 <code>SKILL.md</code> 的前置元数据中声明环境变量。
+              如果技能需要读取变量，请在下方添加。
             </p>
           )}
 
@@ -156,7 +155,7 @@ export function ConfigureSkillDialog({
               isSecret && existing?.env?.[spec.name]?.includes("****")
                 ? existing.env[spec.name]
                 : isSecret
-                ? "<not set>"
+                ? "<未设置>"
                 : "";
             return (
               <div key={spec.name} className="space-y-1.5">
@@ -164,12 +163,12 @@ export function ConfigureSkillDialog({
                   {spec.name}
                   {spec.required && (
                     <span className="text-[9px] uppercase tracking-wider text-amber-500">
-                      required
+                      必填
                     </span>
                   )}
                   {!spec.required && (
                     <span className="text-[9px] uppercase tracking-wider text-muted-foreground/60">
-                      optional
+                      可选
                     </span>
                   )}
                 </Label>
@@ -192,7 +191,7 @@ export function ConfigureSkillDialog({
           {customRows.length > 0 && (
             <div className="space-y-2 pt-2 border-t border-border/60">
               <Label className="text-xs uppercase tracking-wider text-muted-foreground/70">
-                Custom env vars
+                自定义环境变量
               </Label>
               {customRows.map((row, idx) => (
                 <div key={idx} className="flex items-center gap-2">
@@ -229,7 +228,7 @@ export function ConfigureSkillDialog({
             onClick={addCustomRow}
           >
             <Plus className="h-3 w-3 mr-1.5" />
-            Add custom env var
+            添加自定义环境变量
           </Button>
 
           {error && <p className="text-xs text-destructive">{error}</p>}
@@ -237,10 +236,10 @@ export function ConfigureSkillDialog({
 
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={onClose}>
-            Cancel
+            取消
           </Button>
           <Button onClick={handleSave} disabled={saving}>
-            {saving ? "Saving…" : "Save"}
+            {saving ? "正在保存…" : "保存"}
           </Button>
         </div>
       </DialogContent>

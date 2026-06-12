@@ -70,32 +70,32 @@ function extractAgentId(pathname: string): string | null {
 // its onClick is attached at render time so it can call into component
 // state.
 const OVERVIEW_ITEM: NavItem = {
-  title: "Overview",
+  title: "概览",
   url: "/overview/",
   icon: LayoutDashboardIcon,
 };
 
 const USER_AGENT_GROUP: NavItem[] = [
-  { title: "Agents", url: "/agents/", icon: BotIcon },
-  { title: "Models", url: "/models/", icon: BrainIcon },
+  { title: "智能体", url: "/agents/", icon: BotIcon },
+  { title: "模型", url: "/models/", icon: BrainIcon },
 ];
 
 const ADMIN_AGENT_GROUP: NavItem[] = [
-  { title: "Agents", url: "/agents/", icon: BotIcon },
-  { title: "Models", url: "/models/", icon: BrainIcon },
-  { title: "Skills", url: "/skills/", icon: SparklesIcon },
-  { title: "Tools", url: "/tools/", icon: WrenchIcon },
+  { title: "智能体", url: "/agents/", icon: BotIcon },
+  { title: "模型", url: "/models/", icon: BrainIcon },
+  { title: "技能", url: "/skills/", icon: SparklesIcon },
+  { title: "工具", url: "/tools/", icon: WrenchIcon },
 ];
 
 const USER_USER_GROUP: NavItem[] = [
-  { title: "API Keys", url: "/apikeys/", icon: KeyRoundIcon },
+  { title: "API 密钥", url: "/apikeys/", icon: KeyRoundIcon },
 ];
 
 const ADMIN_USER_GROUP: NavItem[] = [
-  { title: "Users", url: "/admin/users/", icon: UsersIcon },
-  { title: "Chats", url: "/admin/chats/", icon: MessagesSquareIcon },
-  { title: "Token Usage", url: "/admin/usage/", icon: CoinsIcon },
-  { title: "API Keys", url: "/apikeys/", icon: KeyRoundIcon },
+  { title: "用户", url: "/admin/users/", icon: UsersIcon },
+  { title: "对话", url: "/admin/chats/", icon: MessagesSquareIcon },
+  { title: "令牌用量", url: "/admin/usage/", icon: CoinsIcon },
+  { title: "API 密钥", url: "/apikeys/", icon: KeyRoundIcon },
 ];
 
 // "New chat" is active iff we're parked on the bare /chat/ page with
@@ -118,7 +118,7 @@ const AGENT_NAV = (
   const onNewChatRoute = pathname === base || pathname === `${base}/`;
   return [
     {
-      title: "New chat",
+      title: "新建对话",
       url: `${base}/`,
       icon: PlusIcon,
       active: onNewChatRoute && !hasSession,
@@ -294,7 +294,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
               items={isAdmin ? ADMIN_AGENT_GROUP : USER_AGENT_GROUP}
             />
             <NavMain
-              label="User"
+              label="用户"
               items={isAdmin ? ADMIN_USER_GROUP : USER_USER_GROUP}
             />
           </>
@@ -332,7 +332,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
               }}
             >
               <SettingsIcon />
-              <span>Settings</span>
+              <span>设置</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
@@ -340,9 +340,17 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
           name={
             me?.user?.displayName ||
             me?.user?.username ||
-            (isAdmin ? "Admin" : "User")
+            (isAdmin ? "管理员" : "用户")
           }
-          subtitle={me?.user?.role || (isAdmin ? "super_admin" : "user")}
+          subtitle={
+            me?.user?.role === "super_admin"
+              ? "超级管理员"
+              : me?.user?.role === "user"
+                ? "用户"
+                : isAdmin
+                  ? "超级管理员"
+                  : "用户"
+          }
         />
       </SidebarFooter>
       <SidebarRail />

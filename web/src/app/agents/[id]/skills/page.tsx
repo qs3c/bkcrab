@@ -121,7 +121,7 @@ export default function AgentSkillsPage() {
         // Backend rejects zips that don't contain SKILL.md at the
         // skill root — surface the message inside the dialog so the
         // user can fix the zip and retry without re-opening it.
-        setUploadError(resp.error || "upload failed");
+        setUploadError(resp.error || "上传失败");
         return;
       }
       // Success — close, reset, refresh the grid.
@@ -129,7 +129,7 @@ export default function AgentSkillsPage() {
       setUploadFile(null);
       fetchSkills();
     } catch (e) {
-      setUploadError(e instanceof Error ? e.message : "upload failed");
+      setUploadError(e instanceof Error ? e.message : "上传失败");
     } finally {
       setUploading(false);
       if (uploadInputRef.current) uploadInputRef.current.value = "";
@@ -170,20 +170,19 @@ export default function AgentSkillsPage() {
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Skills</h2>
+          <h2 className="text-2xl font-semibold tracking-tight">技能</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Skills scoped to <strong>{agentName}</strong> — only this
-            agent sees them
+            技能范围： <strong>{agentName}</strong> — 仅此智能体可见
           </p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => setUploadOpen(true)}>
             <Upload className="h-4 w-4 mr-2" />
-            Upload Skills
+            上传技能
           </Button>
           <Button variant="outline" onClick={() => setInstallOpen(true)}>
             <Download className="h-4 w-4 mr-2" />
-            Install Skill
+            安装技能
           </Button>
         </div>
       </div>
@@ -201,15 +200,14 @@ export default function AgentSkillsPage() {
               <Sparkles className="h-7 w-7 text-primary" />
             </div>
             <p className="text-sm text-muted-foreground mb-1">
-              No agent-scoped skills yet
+              暂无智能体专属技能
             </p>
             <p className="text-xs text-muted-foreground/60 mb-4 max-w-sm text-center">
-              Install a skill below — it lands in this agent's own skills
-              directory and only this agent sees it.
+              在下方安装技能。它会保存到此智能体自己的技能目录中，且仅此智能体可见。
             </p>
             <Button variant="outline" size="sm" onClick={() => setInstallOpen(true)}>
               <Download className="h-4 w-4 mr-2" />
-              Install Skill
+              安装技能
             </Button>
           </div>
         </div>
@@ -228,7 +226,7 @@ export default function AgentSkillsPage() {
                   <div>
                     <p className="text-sm font-medium">{skill.name}</p>
                     <Badge variant="outline" className="mt-1 text-[10px]">
-                      {skill.type || "skill"}
+                      {skill.type || "技能"}
                     </Badge>
                   </div>
                 </div>
@@ -238,7 +236,7 @@ export default function AgentSkillsPage() {
                     size="icon"
                     className="h-7 w-7 text-muted-foreground hover:text-foreground"
                     onClick={() => setConfigureTarget(skill)}
-                    title="Configure env / API keys"
+                    title="配置环境变量 / API 密钥"
                   >
                     <Settings className="h-3.5 w-3.5" />
                   </Button>
@@ -253,13 +251,13 @@ export default function AgentSkillsPage() {
                 </div>
               </div>
               <p className="text-sm text-muted-foreground line-clamp-2">
-                {skill.description || "No description"}
+                {skill.description || "暂无描述"}
               </p>
               {(skillEntries[skill.name]?.apiKey ||
                 Object.keys(skillEntries[skill.name]?.env || {}).length > 0) && (
                 <div className="mt-2 inline-flex items-center gap-1 text-[10px] text-emerald-500">
                   <Check className="h-3 w-3" />
-                  configured
+                  已配置
                 </div>
               )}
             </div>
@@ -270,7 +268,7 @@ export default function AgentSkillsPage() {
       <Dialog open={uploadOpen} onOpenChange={handleUploadOpenChange}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Upload skill</DialogTitle>
+            <DialogTitle>上传技能</DialogTitle>
           </DialogHeader>
 
           {/* Hidden input — both the drop zone click and the "click to upload"
@@ -315,31 +313,30 @@ export default function AgentSkillsPage() {
               <div className="space-y-1">
                 <p className="text-sm font-medium break-all">{uploadFile.name}</p>
                 <p className="text-xs text-muted-foreground">
-                  {(uploadFile.size / 1024).toFixed(1)} KB · click to choose a different file
+                  {(uploadFile.size / 1024).toFixed(1)} KB · 点击选择其他文件
                 </p>
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">
-                Drag and drop or click to upload
+                拖放文件或点击上传
               </p>
             )}
           </button>
 
           <div className="space-y-2">
-            <p className="text-sm font-medium">File requirements</p>
+            <p className="text-sm font-medium">文件要求</p>
             <ul className="space-y-1.5 text-sm text-muted-foreground">
               <li className="flex gap-2">
                 <span className="text-muted-foreground/60">•</span>
                 <span>
-                  <code className="text-foreground">.zip</code> file that includes a{" "}
-                  <code className="text-foreground">SKILL.md</code> at the root level
+                  <code className="text-foreground">.zip</code> 文件，其中包含{" "}
+                  <code className="text-foreground">SKILL.md</code> 位于根目录
                 </span>
               </li>
               <li className="flex gap-2">
                 <span className="text-muted-foreground/60">•</span>
                 <span>
-                  <code className="text-foreground">SKILL.md</code> contains a skill name
-                  and description formatted in YAML
+                  <code className="text-foreground">SKILL.md</code> 包含以 YAML 格式编写的技能名称和描述
                 </span>
               </li>
             </ul>
@@ -353,7 +350,7 @@ export default function AgentSkillsPage() {
               rel="noreferrer"
               className="underline hover:text-foreground"
             >
-              Read more about creating skills
+              了解更多技能创建方法
             </a>
           </div>
 
@@ -369,7 +366,7 @@ export default function AgentSkillsPage() {
               onClick={() => handleUploadOpenChange(false)}
               disabled={uploading}
             >
-              Cancel
+              取消
             </Button>
             <Button
               onClick={handleUploadConfirm}
@@ -378,10 +375,10 @@ export default function AgentSkillsPage() {
               {uploading ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Uploading…
+                  正在上传…
                 </>
               ) : (
-                "Upload"
+                "上传"
               )}
             </Button>
           </div>
@@ -391,20 +388,19 @@ export default function AgentSkillsPage() {
       <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove Skill</AlertDialogTitle>
+            <AlertDialogTitle>移除技能</AlertDialogTitle>
             <AlertDialogDescription>
-              Remove <strong>{deleteTarget}</strong> from{" "}
-              <strong>{agentName}</strong>? Other agents are
-              unaffected.
+              从 <strong>{agentName}</strong> 中移除{" "}
+              <strong>{deleteTarget}</strong>？其他智能体不受影响。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleDelete}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Remove
+              移除
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -499,12 +495,12 @@ function InstallSkillDialog({
         agent: agentId,
       });
       if (!resp.ok) {
-        setInstallError(resp.error || "install failed");
+        setInstallError(resp.error || "安装失败");
         return;
       }
       onInstalled();
     } catch (e) {
-      setInstallError(e instanceof Error ? e.message : "install failed");
+      setInstallError(e instanceof Error ? e.message : "安装失败");
     } finally {
       setInstallingId(null);
     }
@@ -514,13 +510,13 @@ function InstallSkillDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Install Skill for {agentName}</DialogTitle>
+          <DialogTitle>为以下智能体安装技能： {agentName}</DialogTitle>
           <DialogDescription>
-            Search skills.sh and install into{" "}
+            搜索 skills.sh 并安装到{" "}
             <code className="font-mono text-xs">
               ~/.bkclaw/agents/{agentId}/skills/
             </code>
-            . Only this agent will see the new skill.
+            . 只有此智能体能看到新技能。
           </DialogDescription>
         </DialogHeader>
 
@@ -528,7 +524,7 @@ function InstallSkillDialog({
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/70" />
           <Input
             autoFocus
-            placeholder="pdf, translation, web scraping…"
+            placeholder="PDF、翻译、网页抓取…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="pl-9"
@@ -540,7 +536,7 @@ function InstallSkillDialog({
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <Sparkles className="h-8 w-8 text-muted-foreground/40 mb-3" />
               <p className="text-sm text-muted-foreground">
-                Start typing to search skills.sh
+                输入内容以搜索 skills.sh
               </p>
             </div>
           ) : searching ? (
@@ -552,14 +548,14 @@ function InstallSkillDialog({
           ) : visible.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-10 text-center">
               <p className="text-sm text-muted-foreground mb-1">
-                No skills found for{" "}
+                未找到相关技能：{" "}
                 <strong className="text-foreground">{query}</strong>
               </p>
             </div>
           ) : (
             <>
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground/70 mb-1.5 px-1">
-                Results from skills.sh
+                skills.sh 搜索结果
               </p>
               <div className="space-y-1.5 py-1">
                 {visible.map((r) => {
@@ -578,7 +574,7 @@ function InstallSkillDialog({
                         <div className="flex items-center gap-2">
                           <p className="text-sm font-medium truncate">{r.skillId}</p>
                           <span className="text-[10px] text-muted-foreground">
-                            {r.installs.toLocaleString()} installs
+                            {r.installs.toLocaleString("zh-CN")} 次安装
                           </span>
                         </div>
                         <a
@@ -586,7 +582,7 @@ function InstallSkillDialog({
                           target="_blank"
                           rel="noopener noreferrer"
                           className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground font-mono truncate"
-                          title={`View on skills.sh: ${r.id}`}
+                          title={`在 skills.sh 上查看：${r.id}`}
                         >
                           {r.source}
                           <ExternalLink className="h-3 w-3 shrink-0" />
@@ -600,14 +596,14 @@ function InstallSkillDialog({
                       >
                         {already ? (
                           <>
-                            <Check className="h-3.5 w-3.5 mr-1.5" /> Installed
+                            <Check className="h-3.5 w-3.5 mr-1.5" /> 已安装
                           </>
                         ) : busy ? (
                           <>
-                            <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> Installing…
+                            <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> 正在安装…
                           </>
                         ) : (
-                          "Install"
+                          "安装"
                         )}
                       </Button>
                     </div>

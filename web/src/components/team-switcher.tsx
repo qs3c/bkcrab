@@ -42,7 +42,7 @@ function AgentAvatar({
         alt="BkClaw"
         width={size}
         height={size}
-        className="rounded-lg"
+        className="shrink-0 rounded-lg object-contain"
         style={{ width: size, height: size }}
       />
     );
@@ -163,7 +163,7 @@ export function AgentSwitcher({
               <>
                 <DropdownMenuGroup>
                   <DropdownMenuLabel className="text-xs text-muted-foreground">
-                    Agents
+                    智能体
                   </DropdownMenuLabel>
                   {agents.map((a) => (
                     <DropdownMenuItem
@@ -188,7 +188,7 @@ export function AgentSwitcher({
                   <PlusIcon className="size-4" />
                 </div>
                 <div className="font-medium text-muted-foreground">
-                  Manage agents
+                  管理智能体
                 </div>
               </DropdownMenuItem>
             </DropdownMenuGroup>

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/buildinfo"
-	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/buildinfo"
+	"github.com/qs3c/bkclaw/internal/config"
 )
 
 // bootstrapFiles are loaded in order to build the system prompt for

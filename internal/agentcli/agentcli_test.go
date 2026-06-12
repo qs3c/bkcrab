@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bkclaw-ai/bkclaw/internal/store"
-	"github.com/bkclaw-ai/bkclaw/internal/users"
+	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/users"
 )
 
 // freshStore opens an in-memory sqlite store for the test, migrated and

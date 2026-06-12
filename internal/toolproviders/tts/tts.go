@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
 // Category is the tool category these providers plug into.

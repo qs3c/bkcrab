@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/workspace"
+	"github.com/qs3c/bkclaw/internal/workspace"
 )
 
 // E2B API: https://e2b.dev/docs

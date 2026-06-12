@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/bus"
 )
 
 // LINE Messaging API adapter. Webhook-driven inbound + REST outbound,
@@ -38,26 +38,26 @@ import (
 // "extra account-scoped identifier" comment).
 
 const (
-	lineAPIBase         = "https://api.line.me"
-	lineReplyURL        = lineAPIBase + "/v2/bot/message/reply"
-	linePushURL         = lineAPIBase + "/v2/bot/message/push"
-	lineBotInfoURL      = lineAPIBase + "/v2/bot/info"
-	lineSendTimeout     = 15 * time.Second
-	lineReplyTokenTTL   = 4 * time.Minute // server-side limit is ~5min; refresh under to avoid races
+	lineAPIBase       = "https://api.line.me"
+	lineReplyURL      = lineAPIBase + "/v2/bot/message/reply"
+	linePushURL       = lineAPIBase + "/v2/bot/message/push"
+	lineBotInfoURL    = lineAPIBase + "/v2/bot/info"
+	lineSendTimeout   = 15 * time.Second
+	lineReplyTokenTTL = 4 * time.Minute // server-side limit is ~5min; refresh under to avoid races
 )
 
 // LINE implements the Channel interface for a LINE Messaging API bot.
 type LINE struct {
-	bus            *bus.MessageBus
-	accountID      string // == bot userId (Uxxxxxxxxxxxxxxxx)
-	channelToken   string
-	channelSecret  string
+	bus           *bus.MessageBus
+	accountID     string // == bot userId (Uxxxxxxxxxxxxxxxx)
+	channelToken  string
+	channelSecret string
 
 	httpClient *http.Client
 
-	mu        sync.Mutex
-	botName   string
-	basicID   string // "@xxx" handle, surfaced for display
+	mu      sync.Mutex
+	botName string
+	basicID string // "@xxx" handle, surfaced for display
 	// replyTokens caches the most recent inbound replyToken per chat.
 	// Single-use, ~5min TTL. First outbound after an inbound pops the
 	// token; subsequent messages in the same turn use the push API
@@ -169,13 +169,13 @@ type LINEEventEnvelope struct {
 }
 
 type LINEEvent struct {
-	Type       string         `json:"type"` // "message" | "follow" | "join" | "leave" | ...
-	Mode       string         `json:"mode,omitempty"`
-	Timestamp  int64          `json:"timestamp"`
-	ReplyToken string         `json:"replyToken,omitempty"`
-	Source     LINESource     `json:"source"`
-	Message    *LINEMessage   `json:"message,omitempty"`
-	WebhookEventID string     `json:"webhookEventId,omitempty"`
+	Type           string       `json:"type"` // "message" | "follow" | "join" | "leave" | ...
+	Mode           string       `json:"mode,omitempty"`
+	Timestamp      int64        `json:"timestamp"`
+	ReplyToken     string       `json:"replyToken,omitempty"`
+	Source         LINESource   `json:"source"`
+	Message        *LINEMessage `json:"message,omitempty"`
+	WebhookEventID string       `json:"webhookEventId,omitempty"`
 }
 
 type LINESource struct {

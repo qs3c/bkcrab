@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 // FTSSearcher is the interface for FTS5-based memory search.

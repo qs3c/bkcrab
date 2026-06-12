@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/config"
 )
 
 func TestBuildSkillsSummaryUsesProgressiveDisclosureByDefault(t *testing.T) {

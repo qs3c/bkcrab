@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/bkclaw-ai/bkclaw/internal/config"
-	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 // --- Per-agent cron jobs (DB-backed) ---

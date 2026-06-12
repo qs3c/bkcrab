@@ -79,7 +79,7 @@ export default function AgentChatsPage() {
       const list = await getChatSessions(agentId);
       setSessions(list);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load chats");
+      setError(e instanceof Error ? e.message : "加载对话失败");
     }
   }
   useEffect(() => {
@@ -120,10 +120,10 @@ export default function AgentChatsPage() {
         <div>
           <div className="flex items-center gap-2">
             <MessagesSquare className="size-5 text-muted-foreground" />
-            <h2 className="text-2xl font-semibold tracking-tight">Chats</h2>
+            <h2 className="text-2xl font-semibold tracking-tight">对话</h2>
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            All conversations with {agentName || "this agent"}.
+            与以下智能体的全部对话： {agentName || "此智能体"}.
           </p>
         </div>
       </div>
@@ -143,17 +143,17 @@ export default function AgentChatsPage() {
               <MessagesSquare className="h-7 w-7 text-primary" />
             </div>
             <p className="text-sm text-muted-foreground mb-1">
-              No chats yet
+              暂无对话
             </p>
             <p className="text-xs text-muted-foreground/60 mb-4">
-              Start a conversation to see it listed here.
+              开始对话后，它会显示在这里。
             </p>
             <Button
               variant="outline"
               size="sm"
               onClick={() => router.push(`/agents/${agentId}/chat/`)}
             >
-              Start a chat
+              开始对话
             </Button>
           </div>
         </div>
@@ -163,10 +163,10 @@ export default function AgentChatsPage() {
             <Table className="table-fixed w-full">
               <TableHeader>
                 <TableRow>
-                  <TableHead>Title</TableHead>
-                  <TableHead className="hidden md:table-cell w-[120px]">Channel</TableHead>
-                  <TableHead className="hidden sm:table-cell w-[160px]">Created</TableHead>
-                  <TableHead className="w-[100px] text-right">Actions</TableHead>
+                  <TableHead>标题</TableHead>
+                  <TableHead className="hidden md:table-cell w-[120px]">渠道</TableHead>
+                  <TableHead className="hidden sm:table-cell w-[160px]">创建时间</TableHead>
+                  <TableHead className="w-[100px] text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -217,7 +217,7 @@ export default function AgentChatsPage() {
                           size="icon"
                           variant="ghost"
                           onClick={() => setEditTarget(s)}
-                          title="Edit title"
+                          title="编辑标题"
                         >
                           <PencilIcon className="size-4" />
                         </Button>
@@ -226,7 +226,7 @@ export default function AgentChatsPage() {
                           variant="ghost"
                           className="text-destructive hover:text-destructive"
                           onClick={() => setDeleteTarget(s)}
-                          title="Delete"
+                          title="删除"
                         >
                           <Trash2 className="size-4" />
                         </Button>
@@ -242,7 +242,7 @@ export default function AgentChatsPage() {
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
                 {pageStart + 1}–{Math.min(pageStart + PAGE_SIZE, sorted.length)}{" "}
-                of {sorted.length}
+                ，共 {sorted.length} 条
               </span>
               <div className="flex items-center gap-1">
                 <Button
@@ -254,7 +254,7 @@ export default function AgentChatsPage() {
                   <ChevronLeft className="size-4" />
                 </Button>
                 <span className="px-3 text-muted-foreground">
-                  Page {safePage} / {totalPages}
+                  第 {safePage} / {totalPages} 页
                 </span>
                 <Button
                   variant="outline"
@@ -286,18 +286,17 @@ export default function AgentChatsPage() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete chat</AlertDialogTitle>
+            <AlertDialogTitle>删除对话</AlertDialogTitle>
             <AlertDialogDescription>
-              Delete{" "}
+              删除{" "}
               <strong>
                 {deleteTarget?.title || deleteTarget?.preview || deleteTarget?.id}
               </strong>
-              ? The full message history for this chat will be removed and cannot
-              be recovered.
+              ？此对话的全部消息历史将被删除且无法恢复。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
               onClick={async () => {
                 if (!deleteTarget || !agentId) return;
@@ -308,7 +307,7 @@ export default function AgentChatsPage() {
               }}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              删除
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -364,9 +363,9 @@ function EditTitleDialog({
     <Dialog open={!!target} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Edit chat title</DialogTitle>
+          <DialogTitle>编辑对话标题</DialogTitle>
           <DialogDescription>
-            Rename this chat so it&apos;s easier to find in the sidebar.
+            重命名此对话，以便在侧边栏中查找。
           </DialogDescription>
         </DialogHeader>
         <Input
@@ -382,14 +381,14 @@ function EditTitleDialog({
               save();
             }
           }}
-          placeholder="Chat title"
+          placeholder="对话标题"
         />
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={saving}>
-            Cancel
+            取消
           </Button>
           <Button onClick={save} disabled={saving || !draft.trim()}>
-            {saving ? "Saving…" : "Save"}
+            {saving ? "正在保存…" : "保存"}
           </Button>
         </DialogFooter>
       </DialogContent>

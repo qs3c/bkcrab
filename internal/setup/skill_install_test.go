@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bkclaw-ai/bkclaw/internal/auth"
-	"github.com/bkclaw-ai/bkclaw/internal/store"
-	"github.com/bkclaw-ai/bkclaw/internal/users"
+	"github.com/qs3c/bkclaw/internal/auth"
+	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/users"
 )
 
 func TestAuthorizeSkillInstallTargetRequiresAdminForGlobalInstalls(t *testing.T) {

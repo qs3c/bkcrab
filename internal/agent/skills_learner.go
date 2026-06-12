@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/provider"
 )
 
 // SkillsLearner observes complex tasks and extracts reusable skill patterns.
@@ -17,7 +17,7 @@ type SkillsLearner struct {
 	workspace    string
 	provider     provider.Provider
 	model        string
-	minToolCalls int    // minimum tool calls to consider extracting (default: 3)
+	minToolCalls int      // minimum tool calls to consider extracting (default: 3)
 	skillDirs    []string // directories to search for the skill-learner skill
 }
 

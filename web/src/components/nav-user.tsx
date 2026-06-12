@@ -26,8 +26,8 @@ import { useTheme } from "@/components/theme-provider";
 import { logout as doLogout } from "@/lib/auth";
 
 export function NavUser({
-  name = "Admin",
-  subtitle = "Gateway running",
+  name = "管理员",
+  subtitle = "网关运行中",
 }: {
   name?: string;
   subtitle?: string;
@@ -89,7 +89,7 @@ export function NavUser({
               }}
             >
               {resolvedTheme === "dark" ? <SunIcon /> : <MoonIcon />}
-              <span>{resolvedTheme === "dark" ? "Light mode" : "Dark mode"}</span>
+              <span>{resolvedTheme === "dark" ? "浅色模式" : "深色模式"}</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
@@ -99,7 +99,7 @@ export function NavUser({
               }}
             >
               <LogOutIcon />
-              <span>Log out</span>
+              <span>退出登录</span>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/bus"
 )
 
 const dedupTTL = 60 * time.Second

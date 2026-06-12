@@ -7,13 +7,13 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/auth"
-	"github.com/bkclaw-ai/bkclaw/internal/buildinfo"
-	"github.com/bkclaw-ai/bkclaw/internal/config"
-	"github.com/bkclaw-ai/bkclaw/internal/scope"
-	"github.com/bkclaw-ai/bkclaw/internal/session"
-	"github.com/bkclaw-ai/bkclaw/internal/store"
-	"github.com/bkclaw-ai/bkclaw/internal/users"
+	"github.com/qs3c/bkclaw/internal/auth"
+	"github.com/qs3c/bkclaw/internal/buildinfo"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/scope"
+	"github.com/qs3c/bkclaw/internal/session"
+	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/users"
 )
 
 // --- Login / logout / me ---
@@ -186,12 +186,12 @@ type onboardRequest struct {
 	Password    string `json:"password"`
 	DisplayName string `json:"displayName,omitempty"`
 
-	Provider  string `json:"provider"`
-	APIBase   string `json:"apiBase"`
-	APIKey    string `json:"apiKey"`
-	APIType   string `json:"apiType,omitempty"`
-	AuthType  string `json:"authType,omitempty"`
-	Model     string `json:"model"`
+	Provider string `json:"provider"`
+	APIBase  string `json:"apiBase"`
+	APIKey   string `json:"apiKey"`
+	APIType  string `json:"apiType,omitempty"`
+	AuthType string `json:"authType,omitempty"`
+	Model    string `json:"model"`
 
 	AgentName string `json:"agentName,omitempty"`
 

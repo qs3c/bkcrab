@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 // Pins the chatter-first precedence that makes Timezone different from

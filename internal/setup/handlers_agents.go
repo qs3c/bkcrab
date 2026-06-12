@@ -16,14 +16,14 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/agent/tools"
-	"github.com/bkclaw-ai/bkclaw/internal/auth"
-	"github.com/bkclaw-ai/bkclaw/internal/buildinfo"
-	"github.com/bkclaw-ai/bkclaw/internal/config"
-	"github.com/bkclaw-ai/bkclaw/internal/scope"
-	"github.com/bkclaw-ai/bkclaw/internal/store"
-	"github.com/bkclaw-ai/bkclaw/internal/users"
-	"github.com/bkclaw-ai/bkclaw/internal/workspace"
+	"github.com/qs3c/bkclaw/internal/agent/tools"
+	"github.com/qs3c/bkclaw/internal/auth"
+	"github.com/qs3c/bkclaw/internal/buildinfo"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/scope"
+	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/users"
+	"github.com/qs3c/bkclaw/internal/workspace"
 )
 
 // agentShareModelConfig reports whether the agent's owner has opted to

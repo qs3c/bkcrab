@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/bus"
 )
 
 // ChannelAdapter wraps a channel plugin to implement the channels.Channel interface.

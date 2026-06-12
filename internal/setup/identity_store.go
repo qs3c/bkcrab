@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/config"
-	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 // loadAgentFileConfig returns an agent's per-row override JSON from the

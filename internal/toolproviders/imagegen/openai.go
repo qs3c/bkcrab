@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
 // OpenAI generates via POST /v1/images/generations. Model (the suffix in

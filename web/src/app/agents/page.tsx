@@ -213,7 +213,7 @@ export default function AgentsPage() {
       description: newDescription.trim() || undefined,
     });
     if (resp && (resp.ok === false || resp.error)) {
-      setCreateError(resp.error || "Failed to create agent");
+      setCreateError(resp.error || "创建智能体失败");
       setSaving(false);
       return;
     }
@@ -241,7 +241,7 @@ export default function AgentsPage() {
       isPublic: editIsPublic,
     });
     if (resp && (resp.ok === false || resp.error)) {
-      setEditError(resp.error || "Failed to update agent");
+      setEditError(resp.error || "更新智能体失败");
       setSaving(false);
       return;
     }
@@ -269,15 +269,15 @@ export default function AgentsPage() {
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Agents</h2>
+          <h2 className="text-2xl font-semibold tracking-tight">智能体</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Manage your AI agents and their configurations
+            管理你的 AI 智能体及其配置
           </p>
         </div>
         {!quotaLocked && (
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="h-4 w-4 mr-2" />
-            New Agent
+            新建智能体
           </Button>
         )}
       </div>
@@ -296,8 +296,8 @@ export default function AgentsPage() {
             </div>
             <p className="text-sm text-muted-foreground">
               {quotaLocked
-                ? "No agent has been provisioned for your account yet — contact your admin."
-                : "No agents configured yet"}
+                ? "你的账户尚未分配智能体，请联系管理员。"
+                : "尚未配置智能体"}
             </p>
             {!quotaLocked && (
               <Button
@@ -305,7 +305,7 @@ export default function AgentsPage() {
                 variant="outline"
                 className="mt-4"
               >
-                Create your first agent
+                创建你的第一个智能体
               </Button>
             )}
           </div>
@@ -322,7 +322,7 @@ export default function AgentsPage() {
                   : "border-transparent text-muted-foreground hover:text-foreground"
               }`}
             >
-              Your agents
+              你的智能体
               <span className="ml-1.5 text-xs text-muted-foreground/70">
                 {ownedAgents.length}
               </span>
@@ -335,7 +335,7 @@ export default function AgentsPage() {
                   : "border-transparent text-muted-foreground hover:text-foreground"
               }`}
             >
-              Others&apos; agents
+              其他人的智能体
               <span className="ml-1.5 text-xs text-muted-foreground/70">
                 {otherAgents.length}
               </span>
@@ -358,14 +358,14 @@ export default function AgentsPage() {
                     className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
                   >
                     <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                    Public
+                    公开
                   </Badge>
                 ) : (
                   <Badge
                     variant="outline"
                     className="bg-muted/60 text-muted-foreground"
                   >
-                    Private
+                    私有
                   </Badge>
                 )}
               </div>
@@ -400,7 +400,7 @@ export default function AgentsPage() {
                     }}
                   >
                     <Pencil className="h-3 w-3 mr-1.5" />
-                    Edit
+                    编辑
                   </Button>
                   <Button
                     variant="ghost"
@@ -412,7 +412,7 @@ export default function AgentsPage() {
                     }}
                   >
                     <Trash2 className="h-3 w-3 mr-1.5" />
-                    Remove
+                    移除
                   </Button>
                 </div>
               )}
@@ -440,7 +440,7 @@ export default function AgentsPage() {
                       className="max-w-[60%] bg-muted/40 text-muted-foreground"
                     >
                       <span className="truncate">
-                        Owner: {agent.ownerDisplayName || agent.ownerUsername || agent.userId}
+                        所有者： {agent.ownerDisplayName || agent.ownerUsername || agent.userId}
                       </span>
                     </Badge>
                   </div>
@@ -461,7 +461,7 @@ export default function AgentsPage() {
                   )}
                   <div className="mt-auto pt-3 border-t border-border">
                     <p className="text-xs text-muted-foreground">
-                      Click to chat — only the owner can edit or remove this agent.
+                      点击开始聊天。只有所有者可以编辑或移除此智能体。
                     </p>
                   </div>
                 </div>
@@ -481,11 +481,11 @@ export default function AgentsPage() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Create New Agent</DialogTitle>
+            <DialogTitle>新建智能体</DialogTitle>
             <DialogDescription>
-              The system generates a globally unique id (e.g.{" "}
+              系统会生成全局唯一 ID（例如{" "}
               <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">agt_a1b2c3…</code>);
-              everything below is for display.
+              下方内容仅用于显示。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
@@ -494,7 +494,7 @@ export default function AgentsPage() {
                 type="button"
                 onClick={() => createAvatarInput.current?.click()}
                 className="group relative flex size-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-dashed bg-muted/40 transition hover:bg-muted"
-                aria-label="Upload avatar"
+                aria-label="上传头像"
               >
                 {newAvatarPreview ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -516,7 +516,7 @@ export default function AgentsPage() {
                 />
               </button>
               <div className="flex-1 space-y-2">
-                <Label htmlFor="agent-name">Name</Label>
+                <Label htmlFor="agent-name">名称</Label>
                 <Input
                   id="agent-name"
                   value={newName}
@@ -524,18 +524,18 @@ export default function AgentsPage() {
                     setNewName(e.target.value);
                     setCreateError(null);
                   }}
-                  placeholder="My Helper"
+                  placeholder="我的助手"
                   autoFocus
                 />
               </div>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="agent-desc">Description (optional)</Label>
+              <Label htmlFor="agent-desc">描述（可选）</Label>
               <Textarea
                 id="agent-desc"
                 value={newDescription}
                 onChange={(e) => setNewDescription(e.target.value)}
-                placeholder="What's this agent for? Shown in the agent list and on its profile."
+                placeholder="说明此智能体的用途，将显示在智能体列表和资料页中。"
                 rows={3}
               />
             </div>
@@ -545,10 +545,10 @@ export default function AgentsPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
-              Cancel
+              取消
             </Button>
             <Button onClick={handleCreate} disabled={!newName.trim() || saving}>
-              {saving ? "Creating..." : "Create Agent"}
+              {saving ? "正在创建..." : "创建智能体"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -566,9 +566,9 @@ export default function AgentsPage() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit Agent</DialogTitle>
+            <DialogTitle>编辑智能体</DialogTitle>
             <DialogDescription>
-              ID is locked —{" "}
+              ID 已锁定：{" "}
               <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
                 {editTarget?.id}
               </code>
@@ -580,7 +580,7 @@ export default function AgentsPage() {
                 type="button"
                 onClick={() => editAvatarInput.current?.click()}
                 className="group relative flex size-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-dashed bg-muted/40 transition hover:bg-muted"
-                aria-label="Upload avatar"
+                aria-label="上传头像"
               >
                 {editAvatarPreview ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -602,7 +602,7 @@ export default function AgentsPage() {
                 />
               </button>
               <div className="flex-1 space-y-2">
-                <Label htmlFor="agent-edit-name">Name</Label>
+                <Label htmlFor="agent-edit-name">名称</Label>
                 <Input
                   id="agent-edit-name"
                   value={editName}
@@ -610,17 +610,17 @@ export default function AgentsPage() {
                     setEditName(e.target.value);
                     setEditError(null);
                   }}
-                  placeholder="My Helper"
+                  placeholder="我的助手"
                 />
               </div>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="agent-edit-desc">Description</Label>
+              <Label htmlFor="agent-edit-desc">描述</Label>
               <Textarea
                 id="agent-edit-desc"
                 value={editDescription}
                 onChange={(e) => setEditDescription(e.target.value)}
-                placeholder="What's this agent for?"
+                placeholder="这个智能体用于什么？"
                 rows={3}
               />
             </div>
@@ -632,12 +632,12 @@ export default function AgentsPage() {
               <div className="flex items-start justify-between gap-4">
                 <div className="space-y-1">
                   <Label htmlFor="agent-edit-public" className="text-sm font-medium">
-                    Public access
+                    公开访问
                   </Label>
                   <p className="text-xs text-muted-foreground">
                     {editIsPublic
-                      ? "Anyone with the link can chat. Their history stays private to them."
-                      : "Only you can use this agent."}
+                      ? "任何获得链接的人都可以聊天，其对话历史仅本人可见。"
+                      : "只有你可以使用此智能体。"}
                   </p>
                 </div>
                 <Switch
@@ -679,12 +679,12 @@ export default function AgentsPage() {
                     {editLinkCopied ? (
                       <>
                         <Check className="h-4 w-4 mr-1.5" />
-                        Copied
+                        已复制
                       </>
                     ) : (
                       <>
                         <Copy className="h-4 w-4 mr-1.5" />
-                        Copy
+                        复制
                       </>
                     )}
                   </Button>
@@ -696,10 +696,10 @@ export default function AgentsPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditTarget(null)}>
-              Cancel
+              取消
             </Button>
             <Button onClick={handleEdit} disabled={!editName.trim() || saving}>
-              {saving ? "Saving..." : "Save"}
+              {saving ? "正在保存..." : "保存"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -709,19 +709,19 @@ export default function AgentsPage() {
       <AlertDialog open={!!deleteId} onOpenChange={() => setDeleteId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Agent</AlertDialogTitle>
+            <AlertDialogTitle>删除智能体</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete <strong>{deleteId}</strong>?
-              This action cannot be undone.
+              确定要删除 <strong>{deleteId}</strong>?
+              此操作无法撤销。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleDelete}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              删除
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

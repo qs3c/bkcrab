@@ -107,7 +107,7 @@ export function ChatRowActions({
           render={
             <button type="button" className={triggerClass}>
               <MoreHorizontalIcon />
-              <span className="sr-only">Chat actions</span>
+              <span className="sr-only">对话操作</span>
             </button>
           }
         />
@@ -118,7 +118,7 @@ export function ChatRowActions({
         >
           <DropdownMenuItem onClick={() => setEditOpen(true)}>
             <PencilIcon className="text-muted-foreground" />
-            <span>Edit</span>
+            <span>编辑</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
@@ -126,7 +126,7 @@ export function ChatRowActions({
             className="text-destructive focus:text-destructive"
           >
             <Trash2Icon className="text-destructive" />
-            <span>Delete</span>
+            <span>删除</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -142,20 +142,18 @@ export function ChatRowActions({
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete chat</AlertDialogTitle>
+            <AlertDialogTitle>删除对话</AlertDialogTitle>
             <AlertDialogDescription>
-              Delete <strong>{session.title || session.id}</strong>? The full
-              message history for this chat will be removed and cannot be
-              recovered.
+              删除 <strong>{session.title || session.id}</strong>？此对话的全部消息历史将被删除且无法恢复。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
               onClick={onConfirmDelete}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              删除
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -206,9 +204,9 @@ function EditTitleDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Edit chat title</DialogTitle>
+          <DialogTitle>编辑对话标题</DialogTitle>
           <DialogDescription>
-            Rename this chat so it&apos;s easier to find in the sidebar.
+            重命名此对话，以便在侧边栏中查找。
           </DialogDescription>
         </DialogHeader>
         <Input
@@ -225,7 +223,7 @@ function EditTitleDialog({
               save();
             }
           }}
-          placeholder="Chat title"
+          placeholder="对话标题"
         />
         <DialogFooter>
           <Button
@@ -233,10 +231,10 @@ function EditTitleDialog({
             onClick={() => onOpenChange(false)}
             disabled={saving}
           >
-            Cancel
+            取消
           </Button>
           <Button onClick={save} disabled={saving || !draft.trim()}>
-            {saving ? "Saving…" : "Save"}
+            {saving ? "正在保存…" : "保存"}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/bus"
 )
 
 // SplitMessageMarker is the on-the-wire control token the LLM emits to
@@ -39,13 +39,13 @@ const SplitMessageMarker = "<|split|>"
 //
 // Output shape:
 //
-//   2-column tables  → "header1: header2" line, then one
-//                      "cell1: cell2" line per row. This is the most
-//                      common shape LLMs emit (label / value lists)
-//                      and reads cleanly as plain text.
-//   3+ column tables → cells joined with " · " (middle dot) per row,
-//                      no separator. Loses alignment but stays on one
-//                      line per row and scans as tabular at a glance.
+//	2-column tables  → "header1: header2" line, then one
+//	                   "cell1: cell2" line per row. This is the most
+//	                   common shape LLMs emit (label / value lists)
+//	                   and reads cleanly as plain text.
+//	3+ column tables → cells joined with " · " (middle dot) per row,
+//	                   no separator. Loses alignment but stays on one
+//	                   line per row and scans as tabular at a glance.
 //
 // Cells are trimmed; the GFM escape `\|` round-trips back to a literal
 // `|` inside a cell. The separator row is dropped in every shape.

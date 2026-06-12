@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/config"
 )
 
 // --- Plugins ---

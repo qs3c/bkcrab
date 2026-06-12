@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/bkclaw-ai/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/provider"
 )
 
 func um(s string) provider.Message {

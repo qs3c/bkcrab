@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/bkclaw-ai/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/provider"
 )
 
 // providerCmd handles provider/credential management subcommands.

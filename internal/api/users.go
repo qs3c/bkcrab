@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/auth"
+	"github.com/qs3c/bkclaw/internal/auth"
 )
 
 // HandleProvisionAppUser handles POST /v1/users.

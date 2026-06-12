@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
 // RegisterTTSChain registers the tts tool against a provider chain. Absent

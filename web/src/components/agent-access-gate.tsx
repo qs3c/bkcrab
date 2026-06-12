@@ -88,11 +88,9 @@ export default function AgentAccessGate({
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-muted/60">
             <Bot className="h-7 w-7 text-muted-foreground" />
           </div>
-          <h2 className="text-lg font-semibold">No access to this agent</h2>
+          <h2 className="text-lg font-semibold">无权访问此智能体</h2>
           <p className="text-sm text-muted-foreground">
-            This agent is private to its owner, or the link is no longer
-            valid. If the owner shares it publicly, the chat URL will
-            start working for you automatically.
+            此智能体仅对所有者开放，或该链接已失效。所有者公开分享后，此对话链接会自动可用。
           </p>
         </div>
       </div>

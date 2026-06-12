@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/bus"
 )
 
 // Feishu (飞书) bot adapter. Webhook-driven: inbound messages arrive via
@@ -68,11 +68,11 @@ type Feishu struct {
 
 	httpClient *http.Client
 
-	mu          sync.Mutex
-	accessTok   string
+	mu           sync.Mutex
+	accessTok    string
 	accessTokExp time.Time
-	botName     string // populated on Start via /bot/v3/info; best-effort
-	botOpenID   string
+	botName      string // populated on Start via /bot/v3/info; best-effort
+	botOpenID    string
 }
 
 // NewFeishu creates a Feishu adapter. verificationToken matches the value
@@ -214,9 +214,9 @@ func (l *Feishu) SendTyping(_ string) error { return nil }
 // FeishuEventEnvelope is the v2 schema Feishu uses for event subscriptions.
 // We match on header.event_type == "im.message.receive_v1".
 type FeishuEventEnvelope struct {
-	Schema string         `json:"schema"`
+	Schema string            `json:"schema"`
 	Header FeishuEventHeader `json:"header"`
-	Event  json.RawMessage `json:"event"`
+	Event  json.RawMessage   `json:"event"`
 
 	// v1 url_verification challenge fields (also surfaced here for the
 	// initial subscribe-time handshake; Feishu's v2 events use
@@ -246,14 +246,14 @@ type feishuMessageEvent struct {
 		SenderType string `json:"sender_type"`
 	} `json:"sender"`
 	Message struct {
-		MessageID    string `json:"message_id"`
-		RootID       string `json:"root_id,omitempty"`
-		ParentID     string `json:"parent_id,omitempty"`
-		CreateTime   string `json:"create_time"`
-		ChatID       string `json:"chat_id"`
-		ChatType     string `json:"chat_type"` // "p2p" | "group"
-		MessageType  string `json:"message_type"`
-		Content      string `json:"content"`
+		MessageID   string `json:"message_id"`
+		RootID      string `json:"root_id,omitempty"`
+		ParentID    string `json:"parent_id,omitempty"`
+		CreateTime  string `json:"create_time"`
+		ChatID      string `json:"chat_id"`
+		ChatType    string `json:"chat_type"` // "p2p" | "group"
+		MessageType string `json:"message_type"`
+		Content     string `json:"content"`
 	} `json:"message"`
 }
 

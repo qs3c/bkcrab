@@ -8,9 +8,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/bkclaw-ai/bkclaw/internal/agent"
-	"github.com/bkclaw-ai/bkclaw/internal/config"
-	"github.com/bkclaw-ai/bkclaw/internal/skills"
+	"github.com/qs3c/bkclaw/internal/agent"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/skills"
 )
 
 // skillCmd handles skill management subcommands.

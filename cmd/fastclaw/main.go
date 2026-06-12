@@ -10,14 +10,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/bkclaw-ai/bkclaw/internal/agent"
-	"github.com/bkclaw-ai/bkclaw/internal/api"
-	"github.com/bkclaw-ai/bkclaw/internal/auth"
-	"github.com/bkclaw-ai/bkclaw/internal/config"
-	"github.com/bkclaw-ai/bkclaw/internal/daemon"
-	"github.com/bkclaw-ai/bkclaw/internal/gateway"
-	"github.com/bkclaw-ai/bkclaw/internal/setup"
-	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/agent"
+	"github.com/qs3c/bkclaw/internal/api"
+	"github.com/qs3c/bkclaw/internal/auth"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/daemon"
+	"github.com/qs3c/bkclaw/internal/gateway"
+	"github.com/qs3c/bkclaw/internal/setup"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 // apiResolver adapts *gateway.Gateway to api.UserResolver.

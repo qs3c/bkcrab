@@ -84,7 +84,7 @@ export default function AgentUsagePage() {
       const d = await getAgentTokenUsage(agentId, r, 50);
       setData(d);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load usage");
+      setError(e instanceof Error ? e.message : "加载用量失败");
     } finally {
       setLoading(false);
     }
@@ -96,7 +96,7 @@ export default function AgentUsagePage() {
   }, [agentId, range]);
 
   function renderSessionLabel(key: string): string {
-    if (!key) return "(untracked)";
+    if (!key) return "（未跟踪）";
     const t = sessionTitles[key];
     if (t) return t;
     // Keys are opaque hashes — truncate so the row stays readable.
@@ -109,9 +109,9 @@ export default function AgentUsagePage() {
     <div className="p-6 space-y-6 max-w-3xl">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold tracking-tight">Token Usage</h2>
+          <h2 className="text-xl font-semibold tracking-tight">令牌用量</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Token consumption per chat session for this agent.
+            此智能体按对话会话统计的令牌消耗。
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -144,19 +144,19 @@ export default function AgentUsagePage() {
             <div className="flex flex-col items-center justify-center py-10 text-center">
               <Coins className="h-8 w-8 text-muted-foreground mb-3" />
               <p className="text-sm text-muted-foreground">
-                No token usage recorded in this window yet.
+                当前时间范围内暂无令牌用量记录。
               </p>
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Session</TableHead>
-                  <TableHead className="text-right">Input</TableHead>
-                  <TableHead className="text-right">Output</TableHead>
-                  <TableHead className="text-right">Cache</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
-                  <TableHead className="text-right">Requests</TableHead>
+                  <TableHead>会话</TableHead>
+                  <TableHead className="text-right">输入</TableHead>
+                  <TableHead className="text-right">输出</TableHead>
+                  <TableHead className="text-right">缓存</TableHead>
+                  <TableHead className="text-right">总计</TableHead>
+                  <TableHead className="text-right">请求数</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>

@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
 // Fal posts to https://fal.run/<model-path>. The "<model>" part of the
@@ -20,9 +20,9 @@ func (Fal) Category() string { return Category }
 func (Fal) Name() string     { return "fal" }
 
 var falModelRoutes = map[string]string{
-	"flux-dev":   "fal-ai/flux/dev",
+	"flux-dev":     "fal-ai/flux/dev",
 	"flux-schnell": "fal-ai/flux/schnell",
-	"flux-pro":   "fal-ai/flux-pro",
+	"flux-pro":     "fal-ai/flux-pro",
 }
 
 func (f *Fal) Execute(ctx context.Context, req toolproviders.Request) (toolproviders.Response, error) {
@@ -47,8 +47,8 @@ func (f *Fal) Execute(ctx context.Context, req toolproviders.Request) (toolprovi
 	defer cancel()
 
 	body := map[string]any{
-		"prompt":       a.Prompt,
-		"num_images":   a.N,
+		"prompt":     a.Prompt,
+		"num_images": a.N,
 	}
 	if a.Size != "" {
 		body["image_size"] = a.Size

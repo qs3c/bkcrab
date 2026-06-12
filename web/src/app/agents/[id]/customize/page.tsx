@@ -12,12 +12,12 @@ import { useAgentName } from "@/hooks/use-agent-name";
 const CUSTOMIZE_FILES = [
   { name: "SOUL.md", label: "Soul" },
   { name: "IDENTITY.md", label: "Identity" },
-  { name: "USER.md", label: "User" },
-  { name: "TOOLS.md", label: "Tools" },
+  { name: "USER.md", label: "用户" },
+  { name: "TOOLS.md", label: "工具" },
   { name: "BOOTSTRAP.md", label: "Bootstrap" },
   { name: "HEARTBEAT.md", label: "Heartbeat" },
   { name: "MEMORY.md", label: "Memory" },
-  { name: "AGENTS.md", label: "Agents" },
+  { name: "AGENTS.md", label: "智能体" },
 ];
 
 // FileState mirrors the backend's GET response: `content` is what's
@@ -95,7 +95,7 @@ export default function AgentCustomizePage() {
   // AND a baseContent exists (otherwise the tab just becomes empty).
   const handleRevert = async () => {
     if (!active || active.source !== "db") return;
-    if (!confirm(`Revert ${activeTab} to the repo base? Your edits will be discarded.`)) return;
+    if (!confirm(`确定将 ${activeTab} 还原为仓库基础版本吗？当前编辑内容将被丢弃。`)) return;
     setSaving(true);
     try {
       await apiFetch(`/api/agents/${agentId}/system-files/${activeTab}`, {
@@ -119,14 +119,14 @@ export default function AgentCustomizePage() {
     if (source === "db") {
       return (
         <span className="text-xs px-2 py-0.5 rounded-md border border-amber-500/30 text-amber-600">
-          Edited
+          已编辑
         </span>
       );
     }
     if (source === "fs") {
       return (
         <span className="text-xs px-2 py-0.5 rounded-md border border-emerald-500/30 text-emerald-600">
-          From repo
+          来自仓库
         </span>
       );
     }
@@ -137,9 +137,9 @@ export default function AgentCustomizePage() {
     <div className="p-6 max-w-4xl mx-auto">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Customize</h2>
+          <h2 className="text-2xl font-semibold tracking-tight">自定义</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Personality, memory, and behavior files for <strong>{agentName}</strong>
+            以下智能体的人格、记忆和行为文件： <strong>{agentName}</strong>
           </p>
         </div>
         <div className="flex gap-2">
@@ -150,11 +150,11 @@ export default function AgentCustomizePage() {
               variant="outline"
               title={
                 active.baseContent
-                  ? "Discard your edits and revert to the file shipped in the repo"
-                  : "Discard your edits (no repo base for this file — tab will become empty)"
+                  ? "放弃修改并还原为仓库中提供的文件"
+                  : "放弃修改（此文件没有仓库基础版本，标签页将变为空白）"
               }
             >
-              <RotateCcw className="h-4 w-4 mr-2" /> Revert
+              <RotateCcw className="h-4 w-4 mr-2" /> 还原
             </Button>
           )}
           <Button
@@ -164,11 +164,11 @@ export default function AgentCustomizePage() {
             className={saved ? "border-emerald-500/30 text-emerald-600" : ""}
           >
             {saved ? (
-              <><Check className="h-4 w-4 mr-2" /> Saved</>
+              <><Check className="h-4 w-4 mr-2" /> 已保存</>
             ) : saving ? (
-              <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving...</>
+              <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> 正在保存...</>
             ) : (
-              <><Save className="h-4 w-4 mr-2" /> Save</>
+              <><Save className="h-4 w-4 mr-2" /> 保存</>
             )}
           </Button>
         </div>
@@ -201,10 +201,10 @@ export default function AgentCustomizePage() {
         <div className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
           {sourceBadge(active?.source)}
           {active?.source === "db" && active.baseContent && (
-            <span>Override active — repo base is {active.baseContent.length} chars.</span>
+            <span>覆盖已启用，仓库基础版本为 {active.baseContent.length} 个字符。</span>
           )}
           {active?.source === "fs" && (
-            <span>Loaded from <code>{`<agent home>/${activeTab}`}</code>. Editing creates a per-agent override.</span>
+            <span>加载来源： <code>{`<智能体 home>/${activeTab}`}</code>。编辑后会创建智能体专属覆盖版本。</span>
           )}
         </div>
       )}

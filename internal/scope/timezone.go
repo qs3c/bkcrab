@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 // PrefsNamespace is the kind=setting namespace for per-chatter
@@ -73,7 +73,7 @@ func LoadLocationOrLocal(name string) *time.Location {
 }
 
 // SaveUserTimezone records tz as userID's personal timezone at user
-// scope (agent_id='') so it follows the chatter across every agent
+// scope (agent_id=”) so it follows the chatter across every agent
 // they talk to. Other keys already present in the user's prefs row are
 // preserved. tz must be a valid IANA name — validate with
 // time.LoadLocation before calling.

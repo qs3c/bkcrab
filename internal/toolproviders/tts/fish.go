@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
 // Fish posts to https://api.fish.audio/v1/tts (a.k.a. fish.studio). Auth is

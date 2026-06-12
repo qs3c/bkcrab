@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/agent/goal"
-	"github.com/bkclaw-ai/bkclaw/internal/agent/tools"
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
-	"github.com/bkclaw-ai/bkclaw/internal/session"
+	"github.com/qs3c/bkclaw/internal/agent/goal"
+	"github.com/qs3c/bkclaw/internal/agent/tools"
+	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/session"
 )
 
 // newSlashTestAgent builds an Agent wired enough to exercise the

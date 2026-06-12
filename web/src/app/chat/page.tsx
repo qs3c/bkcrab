@@ -262,7 +262,7 @@ export default function ChatPage() {
             break;
           }
           case "error": {
-            const message = evt.data?.message || "Unknown error";
+            const message = evt.data?.message || "未知错误";
             setMessages((prev) => [
               ...prev,
               { id: `e-${Date.now()}`, role: "agent", content: `⚠️ ${message}`, timestamp: Date.now() },
@@ -275,7 +275,7 @@ export default function ChatPage() {
     } catch (err) {
       const errMsg = err instanceof Error && err.message
         ? err.message
-        : "Failed to get a response. Is the gateway running?";
+        : "获取响应失败，请确认网关是否正在运行。";
       setMessages((prev) => [
         ...prev,
         { id: `e-${Date.now()}`, role: "agent", content: errMsg, timestamp: Date.now() },
@@ -320,7 +320,7 @@ export default function ChatPage() {
       <div className="hidden w-56 flex-col border-r border-border bg-card/30 lg:flex">
         <div className="flex items-center justify-between border-b border-border p-3">
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            Agents
+            智能体
           </p>
         </div>
         <div className="overflow-auto p-2 space-y-1">
@@ -348,7 +348,7 @@ export default function ChatPage() {
           <>
             <div className="flex items-center justify-between border-t border-b border-border p-3">
               <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                History
+                历史记录
               </p>
             </div>
             <div className="flex-1 overflow-auto p-2 space-y-1">
@@ -380,7 +380,7 @@ export default function ChatPage() {
               <Bot className="h-4 w-4 text-primary" />
             </div>
             <span className="text-sm font-semibold">
-              {selectedAgent || "Select an agent"}
+              {selectedAgent || "选择智能体"}
             </span>
             {currentAgent && (
               <Badge variant="secondary" className="font-mono text-[10px]">
@@ -408,7 +408,7 @@ export default function ChatPage() {
             <button
               onClick={handleNewChat}
               className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-              title="New Chat"
+              title="新建对话"
             >
               <SquarePen className="h-4 w-4" />
             </button>
@@ -424,10 +424,10 @@ export default function ChatPage() {
                   <Bot className="h-8 w-8 text-muted-foreground" />
                 </div>
                 <p className="text-lg font-medium mb-1">
-                  Chat with {agentName || selectedAgent || "your agent"}
+                  与以下智能体对话： {agentName || selectedAgent || "你的智能体"}
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  Send a message to start a conversation
+                  发送消息以开始对话
                 </p>
               </div>
             )}
@@ -472,7 +472,7 @@ export default function ChatPage() {
                         <button
                           onClick={() => handleCopy(msg)}
                           className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
-                          title="Copy"
+                          title="复制"
                         >
                           {copiedId === msg.id ? (
                             <Check className="h-3 w-3 text-emerald-500" />
@@ -514,8 +514,8 @@ export default function ChatPage() {
                 onKeyDown={handleKeyDown}
                 placeholder={
                   selectedAgent
-                    ? `Message ${agentName || selectedAgent}...`
-                    : "Select an agent first"
+                    ? `消息 ${agentName || selectedAgent}...`
+                    : "请先选择智能体"
                 }
                 disabled={!selectedAgent || sending}
                 rows={1}
@@ -532,7 +532,7 @@ export default function ChatPage() {
               </Button>
             </div>
             <p className="text-center text-[11px] text-muted-foreground/50 mt-2">
-              Enter to send, Shift+Enter for new line
+              按 Enter 发送，按 Shift+Enter 换行
             </p>
           </div>
         </div>
@@ -580,7 +580,7 @@ function ToolCallGroup({ msg }: { msg: ChatMessage }) {
             <span className="font-medium text-foreground">
               {allDone
                 ? `Executed ${tools.length} tool${tools.length > 1 ? "s" : ""}`
-                : `Running tools (${doneCount}/${tools.length})...`}
+                : `Running 工具 (${doneCount}/${tools.length})...`}
             </span>
             <span className="text-muted-foreground/60 text-[11px] flex-1 text-left truncate">
               {tools.map((tc) => tc.name).join(", ")}
@@ -625,7 +625,7 @@ function ToolCallGroup({ msg }: { msg: ChatMessage }) {
                   {expandedTool[tc.id] && (
                     <div className="px-3 py-2 space-y-2 bg-muted/20">
                       <div>
-                        <p className="text-[10px] font-medium text-muted-foreground uppercase mb-1">Input</p>
+                        <p className="text-[10px] font-medium text-muted-foreground uppercase mb-1">输入</p>
                         <pre className="text-xs font-mono bg-muted/50 rounded p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-40">
                           {(() => {
                             try { return JSON.stringify(JSON.parse(tc.arguments), null, 2); }
@@ -635,13 +635,13 @@ function ToolCallGroup({ msg }: { msg: ChatMessage }) {
                       </div>
                       {tc.result != null ? (
                         <div>
-                          <p className="text-[10px] font-medium text-muted-foreground uppercase mb-1">Output</p>
+                          <p className="text-[10px] font-medium text-muted-foreground uppercase mb-1">输出</p>
                           <pre className="text-xs font-mono bg-muted/50 rounded p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-60">
                             {tc.result.length > 2000 ? tc.result.slice(0, 2000) + "..." : tc.result}
                           </pre>
                         </div>
                       ) : (
-                        <p className="text-xs text-muted-foreground/60 italic">Executing...</p>
+                        <p className="text-xs text-muted-foreground/60 italic">正在执行...</p>
                       )}
                     </div>
                   )}

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
 // Direct is the no-key built-in fetcher: net/http GET, strip HTML, truncate.

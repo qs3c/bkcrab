@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
-	"github.com/bkclaw-ai/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/provider"
 )
 
 // Origin tagging guards the compaction / WebChatHistory / FTS

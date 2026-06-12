@@ -22,9 +22,9 @@ import {
 } from "@/lib/api";
 
 const RANGES: { value: TokenUsageRange; label: string }[] = [
-  { value: "24h", label: "Last 24 hours" },
-  { value: "7d", label: "Last 7 days" },
-  { value: "30d", label: "Last 30 days" },
+  { value: "24h", label: "最近 24 小时" },
+  { value: "7d", label: "最近 7 天" },
+  { value: "30d", label: "最近 30 天" },
 ];
 
 // fmt collapses big counts into 12.3K / 4.5M / 1.2B so the cards stay
@@ -81,7 +81,7 @@ export default function AdminUsagePage() {
       const data = await adminGetTokenUsage(r, 10);
       setReport(data);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load usage");
+      setError(e instanceof Error ? e.message : "加载用量失败");
     } finally {
       setLoading(false);
     }
@@ -111,14 +111,14 @@ export default function AdminUsagePage() {
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Token Usage</h2>
+          <h2 className="text-2xl font-semibold tracking-tight">令牌用量</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Aggregate LLM token consumption across the platform.
+            汇总整个平台的大模型令牌消耗。
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={() => load(range)} disabled={loading}>
           <RefreshCcw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
-          Refresh
+          刷新
         </Button>
       </div>
 
@@ -141,24 +141,24 @@ export default function AdminUsagePage() {
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <SummaryCard label="Total tokens" value={fmt(totalTokens)} hint={`${totals?.requestCount ?? 0} requests`} />
-        <SummaryCard label="Input" value={fmt(totals?.inputTokens ?? 0)} />
-        <SummaryCard label="Output" value={fmt(totals?.outputTokens ?? 0)} />
+        <SummaryCard label="令牌总数" value={fmt(totalTokens)} hint={`${totals?.requestCount ?? 0} 次请求`} />
+        <SummaryCard label="输入" value={fmt(totals?.inputTokens ?? 0)} />
+        <SummaryCard label="输出" value={fmt(totals?.outputTokens ?? 0)} />
         <SummaryCard
-          label="Cache (read / write)"
+          label="缓存（读取 / 写入）"
           value={`${fmt(totals?.cacheReadTokens ?? 0)} / ${fmt(totals?.cacheCreationTokens ?? 0)}`}
         />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <RankCard
-          title="Top agents"
+          title="智能体排行"
           rows={report?.topAgents ?? []}
           resolve={(k) => renderKey(k, agentNames)}
           icon="agent"
         />
         <RankCard
-          title="Top users"
+          title="用户排行"
           rows={report?.topUsers ?? []}
           resolve={(k) => renderKey(k, userNames)}
           icon="user"
@@ -196,14 +196,14 @@ function RankCard({ title, rows, resolve }: RankCardProps) {
       <CardContent>
         <h3 className="text-sm font-medium mb-3">{title}</h3>
         {rows.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No usage recorded yet.</p>
+          <p className="text-sm text-muted-foreground">暂无用量记录。</p>
         ) : (
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead className="text-right">Tokens</TableHead>
-                <TableHead className="text-right">Requests</TableHead>
+                <TableHead>名称</TableHead>
+                <TableHead className="text-right">令牌数</TableHead>
+                <TableHead className="text-right">请求数</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

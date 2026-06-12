@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/agent"
-	"github.com/bkclaw-ai/bkclaw/internal/agent/tools"
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
-	"github.com/bkclaw-ai/bkclaw/internal/config"
-	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/agent"
+	"github.com/qs3c/bkclaw/internal/agent/tools"
+	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 // chatKey is the per-conversation serialization key used by the task
@@ -26,9 +26,10 @@ func chatKey(channel, accountID, chatID string) string {
 
 // processInbound consumes the message bus and routes each message to the
 // correct user's agent. Identity resolution order:
-//   1. msg.OwnerUserID set explicitly (cron, webhook with user_id)
-//   2. lookup the receiving channel's row in the channels table — its
-//      (scope, scope_id) tells us which user owns this conversation
+//  1. msg.OwnerUserID set explicitly (cron, webhook with user_id)
+//  2. lookup the receiving channel's row in the channels table — its
+//     (scope, scope_id) tells us which user owns this conversation
+//
 // If neither yields a user_id the message is dropped, never silently
 // routed to a default identity.
 func (g *Gateway) processInbound(ctx context.Context) {

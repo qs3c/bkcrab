@@ -7,7 +7,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/bkclaw-ai/bkclaw/internal/auth"
+	"github.com/qs3c/bkclaw/internal/auth"
 )
 
 var upgrader = websocket.Upgrader{

@@ -85,18 +85,24 @@ export default function PluginsPage() {
     return colors[type] || "bg-muted text-muted-foreground border-border";
   };
 
+  const typeLabel = (type: string) =>
+    ({ channel: "渠道", tool: "工具", provider: "服务商", hook: "钩子" } as Record<string, string>)[type] || type;
+
+  const statusLabel = (status: string) =>
+    ({ running: "运行中", stopped: "已停止" } as Record<string, string>)[status] || status;
+
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Plugins</h2>
+          <h2 className="text-2xl font-semibold tracking-tight">插件</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Extend BkClaw with custom plugins
+            使用自定义插件扩展 BkClaw
           </p>
         </div>
         <Button variant="outline">
           <Download className="h-4 w-4 mr-2" />
-          Install Plugin
+          安装插件
         </Button>
       </div>
 
@@ -112,9 +118,9 @@ export default function PluginsPage() {
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 mb-4">
               <Puzzle className="h-7 w-7 text-primary" />
             </div>
-            <p className="text-sm text-muted-foreground">No plugins installed</p>
+            <p className="text-sm text-muted-foreground">尚未安装插件</p>
             <p className="text-xs text-muted-foreground/60 mt-1">
-              Plugins add channels, tools, and providers
+              插件可以添加渠道、工具和服务商
             </p>
           </div>
         ) : (
@@ -122,12 +128,12 @@ export default function PluginsPage() {
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
-                <TableHead>Plugin</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Version</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Enabled</TableHead>
-                <TableHead className="text-right">Config</TableHead>
+                <TableHead>插件</TableHead>
+                <TableHead>类型</TableHead>
+                <TableHead>版本</TableHead>
+                <TableHead>状态</TableHead>
+                <TableHead>已启用</TableHead>
+                <TableHead className="text-right">配置</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -146,7 +152,7 @@ export default function PluginsPage() {
                   </TableCell>
                   <TableCell>
                     <Badge variant="outline" className={typeColor(plugin.type)}>
-                      {plugin.type}
+                      {typeLabel(plugin.type)}
                     </Badge>
                   </TableCell>
                   <TableCell>
@@ -156,7 +162,7 @@ export default function PluginsPage() {
                   </TableCell>
                   <TableCell>
                     <Badge variant="outline" className={statusColor(plugin.status)}>
-                      {plugin.status}
+                      {statusLabel(plugin.status)}
                     </Badge>
                   </TableCell>
                   <TableCell>
@@ -189,14 +195,14 @@ export default function PluginsPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Puzzle className="h-5 w-5 text-primary" />
-              {editPlugin?.id} Configuration
+              {editPlugin?.id} 配置
             </DialogTitle>
             <DialogDescription>
-              Edit plugin configuration as JSON
+              以 JSON 格式编辑插件配置
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <Label>Config JSON</Label>
+            <Label>配置 JSON</Label>
             <Textarea
               value={configJson}
               onChange={(e) => setConfigJson(e.target.value)}
@@ -206,10 +212,10 @@ export default function PluginsPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditPlugin(null)}>
-              Cancel
+              取消
             </Button>
             <Button onClick={handleSaveConfig} disabled={saving}>
-              {saving ? "Saving..." : "Save Config"}
+              {saving ? "正在保存..." : "保存配置"}
             </Button>
           </DialogFooter>
         </DialogContent>

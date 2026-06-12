@@ -6,9 +6,9 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/bkclaw-ai/bkclaw/internal/agent"
-	"github.com/bkclaw-ai/bkclaw/internal/auth"
-	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/agent"
+	"github.com/qs3c/bkclaw/internal/auth"
+	"github.com/qs3c/bkclaw/internal/config"
 )
 
 // UserResolver looks up a user space by user ID.
@@ -38,10 +38,10 @@ type UserSpaceView struct {
 
 // Server handles the OpenAI-compatible API and WebSocket gateway.
 type Server struct {
-	resolver   UserResolver
+	resolver     UserResolver
 	authResolver *auth.Resolver
-	gatewayCfg *config.GatewayCfg
-	limiter    *rateLimiter
+	gatewayCfg   *config.GatewayCfg
+	limiter      *rateLimiter
 }
 
 // NewServer creates a new API server. authResolver is mandatory — there is

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/scope"
-	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/scope"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 type setTimezoneArgs struct {

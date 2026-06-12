@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
-	"github.com/bkclaw-ai/bkclaw/internal/channels"
-	"github.com/bkclaw-ai/bkclaw/internal/config"
-	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/channels"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 // storeLeaser adapts store.Store to channels.Leaser. The method names
@@ -305,4 +305,3 @@ func purgeWeChatAccount(st store.Store, rowID, deadAccount string) error {
 	rec.Data = data
 	return st.SaveConfig(ctx, rec)
 }
-

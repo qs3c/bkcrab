@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/workspace"
 	"github.com/gorilla/websocket"
+	"github.com/qs3c/bkclaw/internal/workspace"
 )
 
 // Boxlite REST sandbox provider — talks the OpenAPI spec at

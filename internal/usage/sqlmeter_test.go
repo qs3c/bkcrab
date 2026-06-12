@@ -7,8 +7,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/bkclaw-ai/bkclaw/internal/store"
-	"github.com/bkclaw-ai/bkclaw/internal/usage"
+	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/usage"
 )
 
 // TestSQLMeterRecordAndQuery runs the meter end-to-end against an

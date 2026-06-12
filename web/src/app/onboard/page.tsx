@@ -39,10 +39,10 @@ import { getStatus, onboard, testProvider } from "@/lib/api";
 
 const STEPS = [
   { id: "welcome", label: "Welcome", icon: PartyPopper },
-  { id: "admin", label: "Admin", icon: UserPlus },
-  { id: "provider", label: "Provider", icon: KeyRound },
-  { id: "agent", label: "Agent", icon: Bot },
-  { id: "sandbox", label: "Sandbox", icon: Container },
+  { id: "admin", label: "管理员", icon: UserPlus },
+  { id: "provider", label: "服务商", icon: KeyRound },
+  { id: "agent", label: "智能体", icon: Bot },
+  { id: "sandbox", label: "沙箱", icon: Container },
   { id: "launch", label: "Launch", icon: Sparkles },
 ] as const;
 
@@ -56,17 +56,17 @@ const PROVIDER_LABELS: Record<string, string> = {
   anthropic: "Anthropic",
   deepseek: "DeepSeek",
   ollama: "Ollama",
-  custom: "Custom",
+  custom: "自定义",
 };
 
 const API_TYPE_LABELS: Record<string, string> = {
-  "openai-chat": "OpenAI Chat Completions",
-  "anthropic-messages": "Anthropic Messages",
+  "openai-chat": "OpenAI 聊天补全",
+  "anthropic-messages": "Anthropic 消息",
 };
 
 const AUTH_TYPE_LABELS: Record<string, string> = {
-  "bearer-token": "Bearer Token",
-  "api-key": "API Key Header",
+  "bearer-token": "Bearer 令牌",
+  "api-key": "API 密钥请求头",
 };
 
 // PROVIDERS holds the per-preset defaults the form pre-fills when the
@@ -199,7 +199,7 @@ export default function OnboardPage() {
       setTestStatus("ok");
     } else {
       setTestStatus("fail");
-      setTestError(res.error || "test failed");
+      setTestError(res.error || "测试失败");
     }
   }
 
@@ -245,7 +245,7 @@ export default function OnboardPage() {
     });
     setSubmitting(false);
     if (!res.ok) {
-      setSubmitError(res.error || "onboard failed");
+      setSubmitError(res.error || "初始化失败");
       setStep(1); // jump back to admin step where most errors come from
       return;
     }
@@ -363,14 +363,14 @@ export default function OnboardPage() {
               onClick={() => setStep((s) => Math.max(0, s - 1))}
               disabled={step === 0}
             >
-              <ArrowLeft className="mr-1 size-4" /> Back
+              <ArrowLeft className="mr-1 size-4" /> 返回
             </Button>
             {step < STEPS.length - 2 ? (
               <Button
                 onClick={() => setStep((s) => s + 1)}
                 disabled={!stepValid[step]}
               >
-                Next <ArrowRight className="ml-1 size-4" />
+                下一步 <ArrowRight className="ml-1 size-4" />
               </Button>
             ) : (
               <Button
@@ -379,11 +379,11 @@ export default function OnboardPage() {
               >
                 {submitting ? (
                   <>
-                    <Loader2 className="mr-1 size-4 animate-spin" /> Setting up
+                    <Loader2 className="mr-1 size-4 animate-spin" /> 正在设置
                   </>
                 ) : (
                   <>
-                    Create &amp; launch <Sparkles className="ml-1 size-4" />
+                    创建并启动 <Sparkles className="ml-1 size-4" />
                   </>
                 )}
               </Button>
@@ -449,17 +449,16 @@ function WelcomeStep() {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <PartyPopper className="size-5 text-primary" />
-          Welcome to BkClaw
+          欢迎使用 BkClaw
         </CardTitle>
         <CardDescription>
-          A few quick steps to set up your platform — admin account, first LLM
-          provider, and your first agent. Takes about a minute.
+          只需几个步骤即可完成平台设置：管理员账户、第一个大模型服务商和第一个智能体。大约需要一分钟。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3 text-sm text-muted-foreground">
-        <p>You&apos;ll be the super-admin once setup completes — you can add more users from the admin panel afterwards.</p>
+        <p>设置完成后，你将成为超级管理员，之后可在管理后台添加更多用户。</p>
         <p>
-          Everything user-facing (providers, channels, agents, settings) lives in the database and can be changed from the UI later.
+          所有面向用户的配置（服务商、渠道、智能体、设置）都会保存在数据库中，之后可在界面中修改。
         </p>
       </CardContent>
     </Card>
@@ -487,16 +486,16 @@ function AdminStep(props: {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <UserPlus className="size-5 text-primary" />
-          Create super-admin account
+          创建超级管理员账户
         </CardTitle>
         <CardDescription>
-          You can sign in with either username or email afterwards.
+          之后可使用用户名或邮箱登录。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label htmlFor="ob-username">Username</Label>
+            <Label htmlFor="ob-username">用户名</Label>
             <Input
               id="ob-username"
               value={props.username}
@@ -506,7 +505,7 @@ function AdminStep(props: {
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="ob-email">Email</Label>
+            <Label htmlFor="ob-email">邮箱</Label>
             <Input
               id="ob-email"
               type="email"
@@ -518,7 +517,7 @@ function AdminStep(props: {
           </div>
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="ob-display">Display Name (optional)</Label>
+          <Label htmlFor="ob-display">显示名称（可选）</Label>
           <Input
             id="ob-display"
             value={props.displayName}
@@ -528,21 +527,21 @@ function AdminStep(props: {
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label htmlFor="ob-password">Password</Label>
+            <Label htmlFor="ob-password">密码</Label>
             <Input
               id="ob-password"
               type="password"
               value={props.password}
               onChange={(e) => props.setPassword(e.target.value)}
               autoComplete="new-password"
-              placeholder="6+ characters"
+              placeholder="至少 6 个字符"
             />
             {passwordTooShort && (
-              <p className="text-xs text-destructive">at least 6 characters</p>
+              <p className="text-xs text-destructive">至少 6 个字符</p>
             )}
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="ob-password2">Confirm Password</Label>
+            <Label htmlFor="ob-password2">确认密码</Label>
             <Input
               id="ob-password2"
               type="password"
@@ -551,7 +550,7 @@ function AdminStep(props: {
               autoComplete="new-password"
             />
             {mismatch && (
-              <p className="text-xs text-destructive">passwords don&apos;t match</p>
+              <p className="text-xs text-destructive">两次输入的密码不一致</p>
             )}
           </div>
         </div>
@@ -587,20 +586,18 @@ function ProviderStep(props: {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <KeyRound className="size-5 text-primary" />
-          First LLM provider
+          第一个大模型服务商
         </CardTitle>
         <CardDescription>
-          Connect at least one model. You can add more (and per-user/per-agent
-          overrides) from the Providers page later — or skip and configure
-          everything from there.
+          请至少连接一个模型。之后可在“服务商”页面添加更多模型以及用户级、智能体级覆盖配置，也可以跳过并稍后统一配置。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm font-medium">Configure a provider now</p>
+            <p className="text-sm font-medium">立即配置服务商</p>
             <p className="text-xs text-muted-foreground">
-              Off = skip; you can add providers from the Providers page later.
+              关闭即跳过；之后可在“服务商”页面添加。
             </p>
           </div>
           <Switch checked={props.enabled} onCheckedChange={props.setEnabled} />
@@ -608,16 +605,15 @@ function ProviderStep(props: {
         {props.enabled && <Separator />}
         {!props.enabled && (
           <p className="text-xs text-muted-foreground">
-            Skipping — the admin account and agent will be created without a
-            default model. Add one from{" "}
-            <span className="font-mono">Providers</span> after launch.
+            已跳过。管理员账户和智能体将不配置默认模型，可稍后从以下位置添加：{" "}
+            <span className="font-mono">服务商</span> 启动后。
           </p>
         )}
         {props.enabled && (
         <>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label>Provider</Label>
+            <Label>服务商</Label>
             <Select
               value={props.providerKey}
               onValueChange={(v) => v && props.onProviderChange(v)}
@@ -633,12 +629,12 @@ function ProviderStep(props: {
                 <SelectItem value="anthropic">Anthropic</SelectItem>
                 <SelectItem value="deepseek">DeepSeek</SelectItem>
                 <SelectItem value="ollama">Ollama</SelectItem>
-                <SelectItem value="custom">Custom</SelectItem>
+                <SelectItem value="custom">自定义</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label>Provider Name</Label>
+            <Label>服务商名称</Label>
             <Input
               value={props.providerName}
               onChange={(e) => props.setProviderName(e.target.value)}
@@ -649,7 +645,7 @@ function ProviderStep(props: {
         </div>
 
         <div className="space-y-1.5">
-          <Label>Default Model</Label>
+          <Label>默认模型</Label>
           <Input
             value={props.model}
             onChange={(e) => props.setModel(e.target.value)}
@@ -658,7 +654,7 @@ function ProviderStep(props: {
           />
         </div>
         <div className="space-y-1.5">
-          <Label>API Base URL</Label>
+          <Label>API 基础地址</Label>
           <Input
             value={props.apiBase}
             onChange={(e) => props.setApiBase(e.target.value)}
@@ -666,7 +662,7 @@ function ProviderStep(props: {
           />
         </div>
         <div className="space-y-1.5">
-          <Label>API Key</Label>
+          <Label>API 密钥</Label>
           <Input
             type="password"
             value={props.apiKey}
@@ -677,7 +673,7 @@ function ProviderStep(props: {
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label>API Type</Label>
+            <Label>API 类型</Label>
             <Select value={props.apiType} onValueChange={(v) => v && props.setApiType(v)}>
               <SelectTrigger className="w-full">
                 <SelectValue>
@@ -685,13 +681,13 @@ function ProviderStep(props: {
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="openai-chat">OpenAI Chat Completions</SelectItem>
-                <SelectItem value="anthropic-messages">Anthropic Messages</SelectItem>
+                <SelectItem value="openai-chat">OpenAI 聊天补全</SelectItem>
+                <SelectItem value="anthropic-messages">Anthropic 消息</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label>Auth Type</Label>
+            <Label>认证类型</Label>
             <Select value={props.authType} onValueChange={(v) => v && props.setAuthType(v)}>
               <SelectTrigger className="w-full">
                 <SelectValue>
@@ -699,8 +695,8 @@ function ProviderStep(props: {
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="bearer-token">Bearer Token</SelectItem>
-                <SelectItem value="api-key">API Key Header</SelectItem>
+                <SelectItem value="bearer-token">Bearer 令牌</SelectItem>
+                <SelectItem value="api-key">API 密钥请求头</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -716,15 +712,15 @@ function ProviderStep(props: {
           >
             {props.testStatus === "running" ? (
               <>
-                <Loader2 className="mr-1 size-4 animate-spin" /> Testing
+                <Loader2 className="mr-1 size-4 animate-spin" /> 正在测试
               </>
             ) : (
-              "Test connection"
+              "测试连接"
             )}
           </Button>
           {props.testStatus === "ok" && (
             <Badge className="bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/15">
-              <Check className="mr-1 size-3" /> connected
+              <Check className="mr-1 size-3" /> 已连接
             </Badge>
           )}
           {props.testStatus === "fail" && (
@@ -747,26 +743,25 @@ function AgentStep(props: {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Bot className="size-5 text-primary" />
-          First agent
+          第一个智能体
         </CardTitle>
         <CardDescription>
-          Just a name for now — you can edit personality, skills, and tools
-          after launch.
+          现在只需填写名称，启动后可继续编辑人格、技能和工具。
         </CardDescription>
       </CardHeader>
       <CardContent>
         <div className="space-y-1.5">
-          <Label htmlFor="ob-agent">Agent Name</Label>
+          <Label htmlFor="ob-agent">智能体名称</Label>
           <Input
             id="ob-agent"
             value={props.agentName}
             onChange={(e) => props.setAgentName(e.target.value)}
-            placeholder="default"
+            placeholder="默认"
           />
           <p className="text-xs text-muted-foreground">
-            The agent gets a globally unique id (e.g.{" "}
+            智能体会获得全局唯一 ID（例如{" "}
             <code className="rounded bg-muted px-1 py-0.5 text-xs">agt_a1b2c3…</code>);
-            this name is just for display.
+            此名称仅用于显示。
           </p>
         </div>
       </CardContent>
@@ -794,27 +789,26 @@ function SandboxStep(props: {
 }) {
   const SANDBOX_BACKEND_LABELS: Record<string, string> = {
     docker: "Docker",
-    e2b: "E2B (cloud)",
-    boxlite: "BoxLite (cloud)",
+    e2b: "E2B（云端）",
+    boxlite: "BoxLite（云端）",
   };
   return (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Container className="size-5 text-primary" />
-          Sandbox (optional)
+          沙箱（可选）
         </CardTitle>
         <CardDescription>
-          Run agent-executed code in an isolated environment. Skip this if
-          you&apos;re unsure — you can flip it on later from Settings.
+          在隔离环境中运行智能体执行的代码。如果不确定，可以先跳过，之后可在“设置”中启用。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm font-medium">Enable sandbox</p>
+            <p className="text-sm font-medium">启用沙箱</p>
             <p className="text-xs text-muted-foreground">
-              Off by default — code runs in the agent&apos;s own workspace.
+              默认关闭。代码会在智能体自己的工作区中运行。
             </p>
           </div>
           <Switch checked={props.enabled} onCheckedChange={props.setEnabled} />
@@ -824,7 +818,7 @@ function SandboxStep(props: {
             <Separator />
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
-                <Label>Backend</Label>
+                <Label>后端</Label>
                 <Select
                   value={props.backend}
                   onValueChange={(v) => v && props.setBackend(v)}
@@ -838,15 +832,15 @@ function SandboxStep(props: {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="docker">Docker</SelectItem>
-                    <SelectItem value="e2b">E2B (cloud)</SelectItem>
-                    <SelectItem value="boxlite">BoxLite (cloud)</SelectItem>
+                    <SelectItem value="e2b">E2B（云端）</SelectItem>
+                    <SelectItem value="boxlite">BoxLite（云端）</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               {props.backend === "e2b" ? (
                 <>
                   <div className="space-y-1.5">
-                    <Label>E2B API Key</Label>
+                    <Label>E2B API 密钥</Label>
                     <Input
                       type="password"
                       value={props.e2bKey}
@@ -856,7 +850,7 @@ function SandboxStep(props: {
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label>E2B Template</Label>
+                    <Label>E2B 模板</Label>
                     <Input
                       value={props.e2bTemplate}
                       onChange={(e) => props.setE2BTemplate(e.target.value)}
@@ -868,7 +862,7 @@ function SandboxStep(props: {
               ) : props.backend === "boxlite" ? (
                 <>
                   <div className="space-y-1.5">
-                    <Label>BoxLite API Key</Label>
+                    <Label>BoxLite API 密钥</Label>
                     <Input
                       type="password"
                       value={props.boxliteKey}
@@ -878,7 +872,7 @@ function SandboxStep(props: {
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label>Snapshot</Label>
+                    <Label>快照</Label>
                     <Input
                       value={props.boxliteImage}
                       onChange={(e) => props.setBoxliteImage(e.target.value)}
@@ -886,12 +880,11 @@ function SandboxStep(props: {
                       className="font-mono text-sm"
                     />
                     <p className="text-xs text-muted-foreground">
-                      BoxLite snapshot name (imported via the BoxLite Dashboard),
-                      not a Docker Hub image reference.
+                      BoxLite 快照名称（通过 BoxLite 仪表盘导入），不是 Docker Hub 镜像地址。
                     </p>
                   </div>
                   <div className="space-y-1.5 sm:col-span-2">
-                    <Label>API URL (optional)</Label>
+                    <Label>API 地址（可选）</Label>
                     <Input
                       value={props.boxliteURL}
                       onChange={(e) => props.setBoxliteURL(e.target.value)}
@@ -902,7 +895,7 @@ function SandboxStep(props: {
                 </>
               ) : (
                 <div className="space-y-1.5">
-                  <Label>Docker Image</Label>
+                  <Label>Docker 镜像</Label>
                   <Input
                     value={props.dockerImage}
                     onChange={(e) => props.setDockerImage(e.target.value)}
@@ -925,21 +918,20 @@ function DoneStep({ onContinue }: { onContinue: () => void }) {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <PartyPopper className="size-5 text-emerald-500" />
-          You&apos;re in!
+          设置完成！
         </CardTitle>
         <CardDescription>
-          Admin account created, provider configured, first agent ready.
+          管理员账户已创建，服务商已配置，第一个智能体已就绪。
         </CardDescription>
       </CardHeader>
       <CardContent>
         <p className="text-sm text-muted-foreground">
-          The session cookie is already set — clicking continue takes you
-          straight to the dashboard.
+          会话 Cookie 已设置，点击继续即可进入仪表盘。
         </p>
       </CardContent>
       <CardFooter>
         <Button onClick={onContinue} className="w-full">
-          Open dashboard <ArrowRight className="ml-1 size-4" />
+          打开仪表盘 <ArrowRight className="ml-1 size-4" />
         </Button>
       </CardFooter>
     </Card>

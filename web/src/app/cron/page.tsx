@@ -52,6 +52,10 @@ import {
   type AgentDetail,
 } from "@/lib/api";
 
+function cronTypeLabel(type: string) {
+  return ({ cron: "Cron 表达式", interval: "固定间隔", once: "单次执行" } as Record<string, string>)[type] || type;
+}
+
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJobInfo[]>([]);
   const [agents, setAgents] = useState<AgentDetail[]>([]);
@@ -130,14 +134,14 @@ export default function CronPage() {
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Cron Jobs</h2>
+          <h2 className="text-2xl font-semibold tracking-tight">Cron 任务</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Schedule automated agent tasks
+            安排智能体自动任务
           </p>
         </div>
         <Button onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4 mr-2" />
-          New Job
+          新建任务
         </Button>
       </div>
 
@@ -153,13 +157,13 @@ export default function CronPage() {
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 mb-4">
               <Clock className="h-7 w-7 text-primary" />
             </div>
-            <p className="text-sm text-muted-foreground">No cron jobs configured</p>
+            <p className="text-sm text-muted-foreground">尚未配置 Cron 任务</p>
             <Button
               onClick={() => setCreateOpen(true)}
               variant="outline"
               className="mt-4"
             >
-              Create your first job
+              创建你的第一个任务
             </Button>
           </div>
         ) : (
@@ -167,13 +171,13 @@ export default function CronPage() {
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
-                <TableHead>Name</TableHead>
-                <TableHead>Schedule</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Agent</TableHead>
-                <TableHead>Last Run</TableHead>
-                <TableHead>Enabled</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead>名称</TableHead>
+                <TableHead>计划</TableHead>
+                <TableHead>类型</TableHead>
+                <TableHead>智能体</TableHead>
+                <TableHead>上次运行</TableHead>
+                <TableHead>已启用</TableHead>
+                <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -189,7 +193,7 @@ export default function CronPage() {
                   </TableCell>
                   <TableCell>
                     <Badge variant="outline" className={typeColor(job.type)}>
-                      {job.type}
+                      {cronTypeLabel(job.type)}
                     </Badge>
                   </TableCell>
                   <TableCell>
@@ -197,7 +201,7 @@ export default function CronPage() {
                   </TableCell>
                   <TableCell>
                     <span className="text-xs text-muted-foreground">
-                      {job.lastRun || "Never"}
+                      {job.lastRun || "从未"}
                     </span>
                   </TableCell>
                   <TableCell>
@@ -228,14 +232,14 @@ export default function CronPage() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Create Cron Job</DialogTitle>
+            <DialogTitle>创建 Cron 任务</DialogTitle>
             <DialogDescription>
-              Schedule an automated agent task
+              安排一个智能体自动任务
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label>Job Name</Label>
+              <Label>任务名称</Label>
               <Input
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
@@ -244,20 +248,20 @@ export default function CronPage() {
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>Type</Label>
+                <Label>类型</Label>
                 <Select value={newType} onValueChange={(v) => v && setNewType(v)}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="cron">Cron Expression</SelectItem>
-                    <SelectItem value="interval">Interval</SelectItem>
-                    <SelectItem value="exact">Exact Time</SelectItem>
+                    <SelectItem value="cron">Cron 表达式</SelectItem>
+                    <SelectItem value="interval">间隔</SelectItem>
+                    <SelectItem value="exact">指定时间</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Schedule</Label>
+                <Label>计划</Label>
                 <Input
                   value={newSchedule}
                   onChange={(e) => setNewSchedule(e.target.value)}
@@ -267,10 +271,10 @@ export default function CronPage() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label>Agent</Label>
+              <Label>智能体</Label>
               <Select value={newAgentId} onValueChange={(v) => v && setNewAgentId(v)}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select agent" />
+                  <SelectValue placeholder="选择智能体" />
                 </SelectTrigger>
                 <SelectContent>
                   {agents.map((a) => (
@@ -282,11 +286,11 @@ export default function CronPage() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Message</Label>
+              <Label>消息</Label>
               <Textarea
                 value={newMessage}
                 onChange={(e) => setNewMessage(e.target.value)}
-                placeholder="Generate a daily status report..."
+                placeholder="生成每日状态报告..."
                 rows={3}
                 className="resize-none"
               />
@@ -294,13 +298,13 @@ export default function CronPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
-              Cancel
+              取消
             </Button>
             <Button
               onClick={handleCreate}
               disabled={!newName.trim() || !newSchedule.trim() || saving}
             >
-              {saving ? "Creating..." : "Create Job"}
+              {saving ? "正在创建..." : "创建任务"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -310,18 +314,18 @@ export default function CronPage() {
       <AlertDialog open={!!deleteId} onOpenChange={() => setDeleteId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Cron Job</AlertDialogTitle>
+            <AlertDialogTitle>删除 Cron 任务</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete this job? This action cannot be undone.
+              确定要删除此任务吗？此操作无法撤销。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleDelete}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              删除
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

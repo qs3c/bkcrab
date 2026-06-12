@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/bus"
 )
 
 // slashResult holds the result of a slash command.

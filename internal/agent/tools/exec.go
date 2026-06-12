@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/buildinfo"
-	"github.com/bkclaw-ai/bkclaw/internal/sandbox"
+	"github.com/qs3c/bkclaw/internal/buildinfo"
+	"github.com/qs3c/bkclaw/internal/sandbox"
 )
 
 type execArgs struct {

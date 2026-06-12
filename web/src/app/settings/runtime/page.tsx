@@ -116,9 +116,9 @@ export default function RuntimeSettingsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-xl font-semibold tracking-tight">Runtime</h3>
+          <h3 className="text-xl font-semibold tracking-tight">运行环境</h3>
           <p className="text-sm text-muted-foreground mt-1">
-            Gateway and sandbox configuration.
+            网关和沙箱配置。
           </p>
         </div>
         <Button
@@ -130,12 +130,12 @@ export default function RuntimeSettingsPage() {
           {saved ? (
             <>
               <Check className="h-4 w-4 mr-2" />
-              Saved
+              已保存
             </>
           ) : (
             <>
               <Save className="h-4 w-4 mr-2" />
-              {saving ? "Saving..." : "Save"}
+              {saving ? "正在保存..." : "保存"}
             </>
           )}
         </Button>
@@ -147,10 +147,10 @@ export default function RuntimeSettingsPage() {
             <div>
               <div className="flex items-center gap-2 mb-1">
                 <Container className="h-4 w-4 text-purple-500" />
-                <h3 className="font-medium">Sandbox</h3>
+                <h3 className="font-medium">沙箱</h3>
               </div>
               <p className="text-sm text-muted-foreground">
-                Execute code in isolated sandbox environments
+                在隔离的沙箱环境中执行代码
               </p>
             </div>
             <Switch checked={sandboxEnabled} onCheckedChange={setSandboxEnabled} />
@@ -161,12 +161,12 @@ export default function RuntimeSettingsPage() {
             <Separator />
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>Backend</Label>
+                <Label>后端</Label>
                 <Select value={sandboxBackend} onValueChange={(v) => v && setSandboxBackend(v)}>
                   <SelectTrigger>
                     <SelectValue>
                       {(v: unknown) =>
-                        ({ docker: "Docker", e2b: "E2B (cloud)", boxlite: "BoxLite (cloud)" } as Record<string, string>)[
+                        ({ docker: "Docker", e2b: "E2B（云端）", boxlite: "BoxLite（云端）" } as Record<string, string>)[
                           v as string
                         ] ?? (v as string) ?? ""
                       }
@@ -174,15 +174,15 @@ export default function RuntimeSettingsPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="docker">Docker</SelectItem>
-                    <SelectItem value="e2b">E2B (cloud)</SelectItem>
-                    <SelectItem value="boxlite">BoxLite (cloud)</SelectItem>
+                    <SelectItem value="e2b">E2B（云端）</SelectItem>
+                    <SelectItem value="boxlite">BoxLite（云端）</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               {sandboxBackend === "e2b" ? (
                 <>
                   <div className="space-y-2">
-                    <Label>E2B API Key</Label>
+                    <Label>E2B API 密钥</Label>
                     <Input
                       type="password"
                       value={sandboxE2BKey}
@@ -192,7 +192,7 @@ export default function RuntimeSettingsPage() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>E2B Template</Label>
+                    <Label>E2B 模板</Label>
                     <Input
                       value={sandboxE2BTemplate}
                       onChange={(e) => setSandboxE2BTemplate(e.target.value)}
@@ -204,7 +204,7 @@ export default function RuntimeSettingsPage() {
               ) : sandboxBackend === "boxlite" ? (
                 <>
                   <div className="space-y-2">
-                    <Label>BoxLite API Key</Label>
+                    <Label>BoxLite API 密钥</Label>
                     <Input
                       type="password"
                       value={sandboxBoxliteKey}
@@ -214,7 +214,7 @@ export default function RuntimeSettingsPage() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>Snapshot</Label>
+                    <Label>快照</Label>
                     <Input
                       value={sandboxBoxliteImage}
                       onChange={(e) => setSandboxBoxliteImage(e.target.value)}
@@ -222,12 +222,11 @@ export default function RuntimeSettingsPage() {
                       className="font-mono text-sm"
                     />
                     <p className="text-xs text-muted-foreground">
-                      BoxLite snapshot name (imported via the BoxLite Dashboard),
-                      not a Docker Hub image reference.
+                      BoxLite 快照名称（通过 BoxLite 仪表盘导入），不是 Docker Hub 镜像地址。
                     </p>
                   </div>
                   <div className="space-y-2 sm:col-span-2">
-                    <Label>API URL (optional)</Label>
+                    <Label>API 地址（可选）</Label>
                     <Input
                       value={sandboxBoxliteURL}
                       onChange={(e) => setSandboxBoxliteURL(e.target.value)}
@@ -238,7 +237,7 @@ export default function RuntimeSettingsPage() {
                 </>
               ) : (
                 <div className="space-y-2">
-                  <Label>Docker Image</Label>
+                  <Label>Docker 镜像</Label>
                   <Input
                     value={sandboxDockerImage}
                     onChange={(e) => setSandboxDockerImage(e.target.value)}

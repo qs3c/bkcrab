@@ -58,7 +58,7 @@ export default function ToolsPage() {
         setTools(data.tools || {});
         if (data.categories.length > 0) setActive(data.categories[0].name);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : "load failed"))
+      .catch((e) => setError(e instanceof Error ? e.message : "加载失败"))
       .finally(() => setLoading(false));
   }, []);
 
@@ -84,13 +84,13 @@ export default function ToolsPage() {
       }
       const resp = await saveTools({ toolProviders: cleaned, tools });
       if (!resp.ok) {
-        setError(resp.error || "save failed");
+        setError(resp.error || "保存失败");
       } else {
         setSaved(true);
         setTimeout(() => setSaved(false), 2000);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "save failed");
+      setError(e instanceof Error ? e.message : "保存失败");
     } finally {
       setSaving(false);
     }
@@ -116,7 +116,7 @@ export default function ToolsPage() {
   return (
     <div className="flex flex-col md:flex-row md:gap-8 p-4 md:p-6 max-w-6xl mx-auto md:min-h-[calc(100vh-3.5rem)]">
       <aside className="md:w-48 md:shrink-0 mb-4 md:mb-0">
-        <h2 className="text-lg font-semibold tracking-tight mb-3 md:mb-4">Tools</h2>
+        <h2 className="text-lg font-semibold tracking-tight mb-3 md:mb-4">工具</h2>
         <CategoryRail
           categories={cfg?.categories || []}
           active={active}
@@ -140,7 +140,7 @@ export default function ToolsPage() {
           <div className="rounded-lg border border-border bg-card p-8 text-center">
             <Wrench className="h-8 w-8 text-muted-foreground/40 mx-auto mb-3" />
             <p className="text-sm text-muted-foreground">
-              No tool categories available in this build.
+              此版本中没有可用的工具分类。
             </p>
           </div>
         ) : activeCat ? (
@@ -154,11 +154,11 @@ export default function ToolsPage() {
             saveButton={
               <Button onClick={handleSave} disabled={saving} variant={saved ? "outline" : "default"}>
                 {saved ? (
-                  <><Check className="h-4 w-4 mr-2" /> Saved</>
+                  <><Check className="h-4 w-4 mr-2" /> 已保存</>
                 ) : saving ? (
-                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving…</>
+                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> 正在保存…</>
                 ) : (
-                  <><Save className="h-4 w-4 mr-2" /> Save</>
+                  <><Save className="h-4 w-4 mr-2" /> 保存</>
                 )}
               </Button>
             }
@@ -206,7 +206,7 @@ function CategoryRail({
         onClick={() => onSelect(RUNTIME_ACTIVE)}
         className={itemClass(active === RUNTIME_ACTIVE)}
       >
-        Runtime
+        运行环境
       </button>
     </nav>
   );
@@ -247,7 +247,7 @@ function CategoryPanel({
         <div>
           <h3 className="text-xl font-semibold tracking-tight">{catalog.label}</h3>
           <p className="text-sm text-muted-foreground mt-1">
-            Configure provider API keys and fallback order. Tools with no configured provider are hidden from agents.
+            配置服务商 API 密钥和回退顺序。未配置服务商的工具不会向智能体显示。
           </p>
         </div>
         {saveButton}
@@ -257,13 +257,13 @@ function CategoryPanel({
         <div className="rounded-lg border border-border bg-card">
           <div className="p-5 space-y-4">
             <div className="space-y-2">
-              <Label>Provider</Label>
+              <Label>服务商</Label>
               <Select
                 value={selectedProvider}
                 onValueChange={(v) => v && setSelectedProvider(v)}
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Pick a provider">
+                  <SelectValue placeholder="选择服务商">
                     {(v: unknown) =>
                       catalog.providers.find((p) => p.name === v)?.label ??
                       (v as string) ??
@@ -282,11 +282,9 @@ function CategoryPanel({
             </div>
             {selected && selected.name === "none" ? (
               <p className="text-xs text-muted-foreground pt-1">
-                No external backend. To take effect, make{" "}
-                <code className="font-mono">none/default</code> the only entry
-                in the fallback chain below — the <code className="font-mono">{catalog.name}</code>{" "}
-                tool will then be hidden from agents, and the model will fall
-                back to whatever native search capability it has (or do without).
+                没有外部后端。要使设置生效，请将{" "}
+                <code className="font-mono">none/default</code> 设为下方回退链中的唯一条目。届时 <code className="font-mono">{catalog.name}</code>{" "}
+                该工具将对智能体隐藏，模型会回退到自身具备的原生搜索能力，或不使用搜索。
               </p>
             ) : selected && (
               <ProviderFields
@@ -328,7 +326,7 @@ function ProviderFields({
     <div className="space-y-3 pt-1">
       {provider.needsKey && (
         <div className="space-y-2">
-          <Label>API key</Label>
+          <Label>API 密钥</Label>
           <Input
             type="password"
             placeholder="sk-…"
@@ -340,7 +338,7 @@ function ProviderFields({
       )}
       {provider.needsUrl && (
         <div className="space-y-2">
-          <Label>Endpoint</Label>
+          <Label>接口地址</Label>
           <Input
             type="url"
             placeholder="https://searxng.example.com"
@@ -352,7 +350,7 @@ function ProviderFields({
       )}
       {provider.models.length > 1 && (
         <div className="space-y-2">
-          <Label>Default model</Label>
+          <Label>默认模型</Label>
           <Input
             value={defaultModel}
             onChange={(e) => setOption("model", e.target.value)}
@@ -360,8 +358,8 @@ function ProviderFields({
             className="font-mono text-sm"
           />
           <p className="text-[10px] text-muted-foreground">
-            Used when the chain reference omits a model (e.g. just{" "}
-            <code className="font-mono">{provider.name}</code>). Suggested:{" "}
+            当回退链条目未指定模型时使用（例如仅填写{" "}
+            <code className="font-mono">{provider.name}</code>). 建议值：{" "}
             {provider.models.map((m, i) => (
               <span key={m}>
                 {i > 0 && ", "}
@@ -377,7 +375,7 @@ function ProviderFields({
         onClick={() => setShowAdvanced((v) => !v)}
         className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
       >
-        {showAdvanced ? "Hide" : "Show"} advanced options
+        {showAdvanced ? "隐藏" : "显示"}高级选项
       </button>
 
       {showAdvanced && (
@@ -418,11 +416,11 @@ function AdvancedOptionsEditor({
   return (
     <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-2">
       <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-        Provider-specific options
+        服务商专属选项
       </p>
       {entries.length === 0 && (
         <p className="text-[11px] text-muted-foreground italic">
-          No custom options. Provider uses its defaults.
+          没有自定义选项，将使用服务商默认设置。
         </p>
       )}
       {entries.map(([k, v]) => (
@@ -536,10 +534,10 @@ function ChainEditor({
     <div className="rounded-lg border border-border bg-card p-5">
       <div className="flex items-center justify-between mb-3">
         <Label className="text-xs uppercase tracking-wider text-muted-foreground">
-          Fallback chain (top → bottom)
+          回退链（从上到下）
         </Label>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Auto fallback</span>
+          <span className="text-xs text-muted-foreground">自动回退</span>
           <Switch
             checked={autoFallback}
             onCheckedChange={(v) => setTools({ autoFallback: v })}
@@ -550,8 +548,7 @@ function ChainEditor({
       <div className="space-y-1.5">
         {chain.length === 0 ? (
           <p className="text-xs text-muted-foreground italic px-2 py-4">
-            No providers selected. The <code className="font-mono">{catalog.name}</code> tool
-            won&apos;t be available to agents until you add at least one.
+            尚未选择服务商。至少添加一个服务商后， <code className="font-mono">{catalog.name}</code> 工具才会对智能体可用。
           </p>
         ) : (
           chain.map((ref, i) => {
@@ -588,7 +585,7 @@ function ChainEditor({
           <Plus className="h-3.5 w-3.5 text-muted-foreground" />
           <Select onValueChange={(v) => v && addToChain(v)} value="">
             <SelectTrigger className="w-64 h-8 text-xs">
-              <SelectValue placeholder="Add provider to chain…" />
+              <SelectValue placeholder="向回退链添加服务商…" />
             </SelectTrigger>
             <SelectContent>
               {unusedOptions.map((o) => (

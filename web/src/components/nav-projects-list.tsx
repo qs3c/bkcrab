@@ -237,9 +237,9 @@ export function NavProjectsList({
   return (
     <>
       <SidebarGroup className="group-data-[collapsible=icon]:hidden">
-        <SidebarGroupLabel>Projects</SidebarGroupLabel>
+        <SidebarGroupLabel>项目</SidebarGroupLabel>
         <SidebarGroupAction
-          aria-label="New project"
+          aria-label="新建项目"
           onClick={() => setCreateOpen(true)}
           render={
             <button>
@@ -251,7 +251,7 @@ export function NavProjectsList({
           {projects.length === 0 && (
             <SidebarMenuItem>
               <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                No projects yet
+                暂无项目
               </div>
             </SidebarMenuItem>
           )}
@@ -278,8 +278,8 @@ export function NavProjectsList({
                 agentId={agentId}
                 onMoved={() => {
                   // Auto-expand the destination project after a drop so
-                  // the user immediately sees their chat land in its
-                  // new home, then trigger a refetch.
+                  // the user immediately sees their chat land in its new home,
+                  // then trigger a refetch.
                   setExpanded((prev) => {
                     if (prev.has(p.id)) return prev;
                     const next = new Set(prev);
@@ -381,7 +381,7 @@ function ProjectRow({
     const res = await moveChatSessionToProject(agentId, sid, project.id);
     if (res?.error) {
       console.error("move chat to project failed:", res.error);
-      window.alert(`Failed to move chat: ${res.error}`);
+      window.alert(`移动会话失败：${res.error}`);
       return;
     }
     onMoved();
@@ -424,7 +424,7 @@ function ProjectRow({
           render={
             <SidebarMenuAction showOnHover>
               <MoreHorizontalIcon />
-              <span className="sr-only">Project actions</span>
+              <span className="sr-only">项目操作</span>
             </SidebarMenuAction>
           }
         />
@@ -435,19 +435,19 @@ function ProjectRow({
         >
           <DropdownMenuItem onClick={onNewChat}>
             <PlusIcon className="text-muted-foreground" />
-            <span>New chat in project</span>
+            <span>在项目中新建对话</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={onEdit}>
             <PencilIcon className="text-muted-foreground" />
-            <span>Edit</span>
+            <span>编辑</span>
           </DropdownMenuItem>
           <DropdownMenuItem
             onClick={onDelete}
             className="text-destructive focus:text-destructive"
           >
             <Trash2Icon className="text-destructive" />
-            <span>Delete</span>
+            <span>删除</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -535,30 +535,29 @@ function CreateProjectDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>New project</DialogTitle>
+          <DialogTitle>新建项目</DialogTitle>
           <DialogDescription>
-            Group chats that share research, files, or context. Every chat
-            in a project sees the same workspace folder.
+            将共享研究资料、文件或上下文的对话归为一组。同一项目内的所有对话共用工作区文件夹。
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div>
-            <label className="mb-1 block text-xs font-medium">Name</label>
+            <label className="mb-1 block text-xs font-medium">名称</label>
             <Input
               autoFocus
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. NLP survey"
+              placeholder="例如 NLP 调研"
             />
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium">
-              Description (optional)
+              描述（可选）
             </label>
             <Textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="What this project is for…"
+              placeholder="这个项目用于什么…"
               rows={3}
             />
           </div>
@@ -569,10 +568,10 @@ function CreateProjectDialog({
             onClick={() => onOpenChange(false)}
             disabled={saving}
           >
-            Cancel
+            取消
           </Button>
           <Button onClick={save} disabled={saving || !name.trim()}>
-            {saving ? "Creating…" : "Create"}
+            {saving ? "正在创建…" : "创建"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -623,15 +622,14 @@ function EditProjectDialog({
     <Dialog open={!!target} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Edit project</DialogTitle>
+          <DialogTitle>编辑项目</DialogTitle>
           <DialogDescription>
-            Rename or update the description. The workspace folder stays
-            the same — files aren&apos;t moved.
+            重命名或更新描述。工作区文件夹保持不变，文件不会移动。
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div>
-            <label className="mb-1 block text-xs font-medium">Name</label>
+            <label className="mb-1 block text-xs font-medium">名称</label>
             <Input
               autoFocus
               value={name}
@@ -640,7 +638,7 @@ function EditProjectDialog({
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium">
-              Description
+              描述
             </label>
             <Textarea
               value={description}
@@ -651,10 +649,10 @@ function EditProjectDialog({
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={saving}>
-            Cancel
+            取消
           </Button>
           <Button onClick={save} disabled={saving || !name.trim()}>
-            {saving ? "Saving…" : "Save"}
+            {saving ? "正在保存…" : "保存"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -690,7 +688,7 @@ function DeleteProjectDialog({
         // owns chats — surface a hint instead of just "delete failed".
         if (res.sessionCount && res.sessionCount > 0) {
           setError(
-            `This project still has ${res.sessionCount} chat${res.sessionCount === 1 ? "" : "s"}. Delete or move them first.`,
+            `This 项目 still has ${res.sessionCount} 对话${res.sessionCount === 1 ? "" : "s"}. 删除 or move them first.`,
           );
         } else {
           setError(res.error);
@@ -708,11 +706,9 @@ function DeleteProjectDialog({
     <AlertDialog open={!!target} onOpenChange={(v) => !v && onClose()}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete project</AlertDialogTitle>
+          <AlertDialogTitle>删除项目</AlertDialogTitle>
           <AlertDialogDescription>
-            Delete <strong>{target?.name}</strong>? Chats inside the project
-            must be removed first — this won&apos;t cascade. The workspace
-            folder on disk is left in place.
+            删除 <strong>{target?.name}</strong>？必须先移除项目内的对话，删除项目不会级联删除对话。磁盘上的工作区文件夹会保留。
           </AlertDialogDescription>
         </AlertDialogHeader>
         {error && (
@@ -721,13 +717,13 @@ function DeleteProjectDialog({
           </div>
         )}
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={busy}>取消</AlertDialogCancel>
           <AlertDialogAction
             onClick={onConfirm}
             disabled={busy}
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
           >
-            {busy ? "Deleting…" : "Delete"}
+            {busy ? "正在删除…" : "删除"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

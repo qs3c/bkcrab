@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
 // Exa calls api.exa.ai. The x-api-key header authenticates; the request body

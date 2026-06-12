@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/buildinfo"
+	"github.com/qs3c/bkclaw/internal/buildinfo"
 )
 
 // RouteTarget identifies which backend should handle a file/exec call.

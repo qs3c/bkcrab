@@ -115,7 +115,7 @@ export function NavSessions({
       // so a console error + alert keeps the user from silently losing
       // the action.
       console.error("move chat to loose failed:", res.error);
-      window.alert(`Failed to move chat: ${res.error}`);
+      window.alert(`移动会话失败：${res.error}`);
       return;
     }
     broadcastChange();
@@ -129,7 +129,7 @@ export function NavSessions({
         onDragLeave={onChatsDragLeave}
         onDrop={onChatsDrop}
       >
-        <SidebarGroupLabel>Chats</SidebarGroupLabel>
+        <SidebarGroupLabel>对话</SidebarGroupLabel>
         <SidebarMenu
           className={
             chatsDropActive
@@ -165,14 +165,14 @@ export function NavSessions({
                 className="text-muted-foreground"
               >
                 <MoreHorizontal className="size-4" />
-                <span>More</span>
+                <span>更多</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
           )}
           {sessions.length === 0 && (
             <SidebarMenuItem>
               <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                No chats yet
+                暂无对话
               </div>
             </SidebarMenuItem>
           )}

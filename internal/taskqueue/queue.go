@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/bus"
 )
 
 // TaskStatus represents the current state of a task.
@@ -51,14 +51,14 @@ type Queue struct {
 	taskTimeout   time.Duration
 	idleTimeout   time.Duration
 
-	mu        sync.Mutex
-	tasks     map[string]*Task      // taskID -> Task
+	mu         sync.Mutex
+	tasks      map[string]*Task      // taskID -> Task
 	chatQueues map[string]*chatQueue // chatKey -> chatQueue
-	sem       chan struct{}          // counting semaphore for global concurrency
-	handler   TaskHandler
-	seq       uint64 // task ID sequence
-	ctx       context.Context
-	cancel    context.CancelFunc
+	sem        chan struct{}         // counting semaphore for global concurrency
+	handler    TaskHandler
+	seq        uint64 // task ID sequence
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
 // NewQueue creates a new task queue.

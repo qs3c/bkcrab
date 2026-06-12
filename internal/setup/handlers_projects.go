@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 // Projects are per-(user, agent) named workspace folders that group
@@ -219,8 +219,8 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if n > 0 {
 		jsonResponse(w, http.StatusConflict, map[string]any{
-			"error":         "project still has chats",
-			"sessionCount":  n,
+			"error":        "project still has chats",
+			"sessionCount": n,
 		})
 		return
 	}
@@ -230,4 +230,3 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
-

@@ -12,9 +12,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/config"
-	"github.com/bkclaw-ai/bkclaw/internal/skills"
-	"github.com/bkclaw-ai/bkclaw/internal/workspace"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/skills"
+	"github.com/qs3c/bkclaw/internal/workspace"
 	"gopkg.in/yaml.v3"
 )
 

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/bkclaw-ai/bkclaw/internal/config"
-	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 // Verifies the agent → user → system precedence the dashboard promises

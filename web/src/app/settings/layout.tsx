@@ -6,10 +6,10 @@ import { useEffect, useState } from "react";
 import { getMe } from "@/lib/api";
 
 const items = [
-  { href: "/settings/general", label: "General", adminOnly: false },
-  { href: "/settings/account", label: "Account", adminOnly: false },
-  { href: "/settings/about", label: "About", adminOnly: false },
-  { href: "/settings/runtime", label: "Runtime", adminOnly: true },
+  { href: "/settings/general", label: "常规", adminOnly: false },
+  { href: "/settings/account", label: "账户", adminOnly: false },
+  { href: "/settings/about", label: "关于", adminOnly: false },
+  { href: "/settings/runtime", label: "运行环境", adminOnly: true },
 ];
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
@@ -27,7 +27,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   return (
     <div className="flex flex-col md:flex-row md:gap-8 p-4 md:p-6 max-w-6xl mx-auto md:min-h-[calc(100vh-3.5rem)]">
       <aside className="md:w-48 md:shrink-0 mb-4 md:mb-0">
-        <h2 className="text-lg font-semibold tracking-tight mb-3 md:mb-4">Settings</h2>
+        <h2 className="text-lg font-semibold tracking-tight mb-3 md:mb-4">设置</h2>
         {/* Horizontal scroll-tabs on mobile, vertical list on desktop. */}
         <nav className="flex flex-row md:flex-col gap-1 overflow-x-auto md:overflow-visible -mx-1 px-1 md:mx-0 md:px-0">
           {visible.map((it) => {

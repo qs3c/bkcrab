@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
 // OpenAI posts to /v1/audio/speech. Model (e.g. "openai/tts-1") defaults to

@@ -12,6 +12,16 @@ import {
 import { ScopePicker } from "@/components/scope-picker";
 
 const CHANNEL_TYPES = ["telegram", "discord", "slack"];
+const CHANNEL_LABELS: Record<string, string> = {
+  telegram: "Telegram",
+  discord: "Discord",
+  slack: "Slack",
+};
+const SCOPE_LABELS: Record<string, string> = {
+  system: "系统",
+  user: "用户",
+  agent: "智能体",
+};
 
 export default function ChannelsConfigPage() {
   const [scope, setScope] = useState<ScopeName>("system");
@@ -56,7 +66,7 @@ export default function ChannelsConfigPage() {
   }
 
   async function handleDelete(row: ChannelRow) {
-    if (!confirm(`Delete ${row.type} at ${row.scope}/${row.scopeId || "(global)"}?`)) return;
+    if (!confirm(`确定删除${SCOPE_LABELS[row.scope] || row.scope}/${row.scopeId || "全局"}范围内的${CHANNEL_LABELS[row.type] || row.type}吗？`)) return;
     const res = await deleteScopedChannel(row.id);
     if (res.error) setError(res.error);
     refresh();
@@ -71,9 +81,9 @@ export default function ChannelsConfigPage() {
 
   return (
     <div className="p-8 text-zinc-100">
-      <h1 className="mb-2 text-2xl font-bold">Channels</h1>
+      <h1 className="mb-2 text-2xl font-bold">渠道</h1>
       <p className="mb-6 text-sm text-zinc-500">
-        Add a Telegram / Discord / Slack bot at any scope. An inner-scope row with <code>enabled=false</code> hides the outer-scope channel for that user/agent.
+        可在任意范围添加 Telegram、Discord 或 Slack 机器人。内层范围中设置 <code>enabled=false</code> 后，可对该用户或智能体隐藏外层范围的渠道。
       </p>
 
       <div className="mb-6">
@@ -81,21 +91,21 @@ export default function ChannelsConfigPage() {
       </div>
 
       <form onSubmit={handleCreate} className="mb-6 space-y-3 rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-        <h2 className="font-semibold">Add channel</h2>
+        <h2 className="font-semibold">添加 渠道</h2>
         <div className="grid grid-cols-2 gap-3">
           <select value={draft.type} onChange={(e) => setDraft({ ...draft, type: e.target.value })} className="rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm">
-            {CHANNEL_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            {CHANNEL_TYPES.map((t) => <option key={t} value={t}>{CHANNEL_LABELS[t] || t}</option>)}
           </select>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={draft.enabled} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />
-            enabled
+            已启用
           </label>
         </div>
-        <input type="password" value={draft.botToken} onChange={(e) => setDraft({ ...draft, botToken: e.target.value })} placeholder="Bot token" className="w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" />
+        <input type="password" value={draft.botToken} onChange={(e) => setDraft({ ...draft, botToken: e.target.value })} placeholder="机器人令牌" className="w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" />
         {draft.type === "slack" && (
-          <input type="password" value={draft.appToken} onChange={(e) => setDraft({ ...draft, appToken: e.target.value })} placeholder="App token (Slack Socket Mode)" className="w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" />
+          <input type="password" value={draft.appToken} onChange={(e) => setDraft({ ...draft, appToken: e.target.value })} placeholder="应用令牌（Slack Socket 模式）" className="w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm" />
         )}
-        <button type="submit" className="rounded bg-violet-600 px-4 py-2 text-sm">Save</button>
+        <button type="submit" className="rounded bg-violet-600 px-4 py-2 text-sm">保存</button>
       </form>
 
       {error && <p className="mb-4 text-sm text-red-400">{error}</p>}
@@ -103,17 +113,17 @@ export default function ChannelsConfigPage() {
       <table className="w-full text-sm">
         <thead className="text-left text-zinc-400">
           <tr>
-            <th className="py-2">Type</th>
-            <th>Bot token</th>
-            <th>Enabled</th>
-            <th>Cred key</th>
+            <th className="py-2">类型</th>
+            <th>机器人令牌</th>
+            <th>已启用</th>
+            <th>凭据键</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
             <tr key={row.id} className="border-t border-zinc-800">
-              <td className="py-3 font-medium">{row.type}</td>
+              <td className="py-3 font-medium">{CHANNEL_LABELS[row.type] || row.type}</td>
               <td>
                 <input
                   type="password"
@@ -127,7 +137,7 @@ export default function ChannelsConfigPage() {
               </td>
               <td className="font-mono text-xs text-zinc-500">{row.credentialKey}</td>
               <td className="text-right">
-                <button onClick={() => handleDelete(row)} className="text-xs text-red-400 hover:underline">delete</button>
+                <button onClick={() => handleDelete(row)} className="text-xs text-red-400 hover:underline">删除</button>
               </td>
             </tr>
           ))}

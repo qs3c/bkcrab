@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/bkclaw-ai/bkclaw/internal/agent/goal"
+	"github.com/qs3c/bkclaw/internal/agent/goal"
 )
 
 // memGoalStore is the in-memory goal.Store implementation the tool

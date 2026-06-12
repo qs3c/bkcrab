@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/bkclaw-ai/bkclaw/internal/config"
-	"github.com/bkclaw-ai/bkclaw/internal/gateway"
-	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/gateway"
+	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
 // categoryCatalog is the admin UI's source of truth for which tool
@@ -15,17 +15,17 @@ import (
 // (once the new providers exist in the toolproviders package) makes them
 // appear in the UI automatically.
 type categoryCatalog struct {
-	Name      string           `json:"name"`  // e.g. "web_search"
-	Label     string           `json:"label"` // human-friendly name
+	Name      string            `json:"name"`  // e.g. "web_search"
+	Label     string            `json:"label"` // human-friendly name
 	Providers []providerCatalog `json:"providers"`
 }
 
 type providerCatalog struct {
-	Name      string   `json:"name"`         // "exa"
-	Label     string   `json:"label"`        // "Exa"
-	NeedsKey  bool     `json:"needsKey"`     // API key required?
-	NeedsURL  bool     `json:"needsUrl"`     // endpoint required (self-hosted)?
-	Models    []string `json:"models"`       // suggested "<provider>/<model>" suffixes
+	Name     string   `json:"name"`     // "exa"
+	Label    string   `json:"label"`    // "Exa"
+	NeedsKey bool     `json:"needsKey"` // API key required?
+	NeedsURL bool     `json:"needsUrl"` // endpoint required (self-hosted)?
+	Models   []string `json:"models"`   // suggested "<provider>/<model>" suffixes
 }
 
 // builtinCatalog lists every tool category + provider pair that the binary

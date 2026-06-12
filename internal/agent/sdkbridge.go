@@ -11,8 +11,8 @@ import (
 	sdktools "github.com/codeany-ai/open-agent-sdk-go/tools"
 	sdktypes "github.com/codeany-ai/open-agent-sdk-go/types"
 
-	"github.com/bkclaw-ai/bkclaw/internal/agent/tools"
-	"github.com/bkclaw-ai/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/agent/tools"
+	"github.com/qs3c/bkclaw/internal/provider"
 )
 
 // readOnlyTools lists tools that are safe to run concurrently.

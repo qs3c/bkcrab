@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
 // Brave calls api.search.brave.com. Requires an X-Subscription-Token API key.

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/cron"
-	"github.com/bkclaw-ai/bkclaw/internal/scope"
-	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/cron"
+	"github.com/qs3c/bkclaw/internal/scope"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 type createCronJobArgs struct {
@@ -148,14 +148,14 @@ func makeCreateCronJob(st store.Store, r *Registry, userID, agentID string) Tool
 		}
 
 		job := &store.CronJobRecord{
-			ID:        id,
-			AgentID:   agentID,
-			Name:      args.Name,
-			Type:      jobType,
-			Schedule:  args.Schedule,
-			Message:   args.Message,
-			Channel:   channel,
-			ChatID:    chatID,
+			ID:       id,
+			AgentID:  agentID,
+			Name:     args.Name,
+			Type:     jobType,
+			Schedule: args.Schedule,
+			Message:  args.Message,
+			Channel:  channel,
+			ChatID:   chatID,
 			// "" = server-local; the scheduler's LocationOf maps it
 			// the same way LoadLocationOrLocal did above, so creation
 			// and recurrence agree.

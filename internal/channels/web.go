@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/bus"
 )
 
 // WebChannel is the in-process fan-out for web chat clients. It satisfies

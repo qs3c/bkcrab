@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/provider"
-	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 // StoreAdapter adapts store.Store to the SessionStore interface for one

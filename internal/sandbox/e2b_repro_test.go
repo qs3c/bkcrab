@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/workspace"
+	"github.com/qs3c/bkclaw/internal/workspace"
 )
 
 func TestE2BReproWithRealWorkspace(t *testing.T) {

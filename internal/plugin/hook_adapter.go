@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/agent"
-	"github.com/bkclaw-ai/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/agent"
+	"github.com/qs3c/bkclaw/internal/provider"
 )
 
 // hookPointName maps HookPoint constants to snake_case protocol names.

@@ -99,7 +99,7 @@ export default function ApikeysPage() {
     setError("");
     if (!createName.trim()) return;
     if (createType === "agent" && createAgents.length === 0) {
-      setError("Select at least one agent");
+      setError("请至少选择一个智能体");
       return;
     }
     const res = await createApikey({
@@ -152,7 +152,7 @@ export default function ApikeysPage() {
   async function saveScope() {
     if (!scopeTarget) return;
     if (scopeAgents.length === 0) {
-      setError("type=agent keys need at least one agent");
+      setError("智能体类型密钥至少需要选择一个智能体");
       return;
     }
     await handleSetAgents(scopeTarget.id, scopeAgents);
@@ -180,25 +180,29 @@ export default function ApikeysPage() {
     return "outline";
   }
 
+  function typeLabel(t: ApikeyType): string {
+    return ({ admin: "管理员", user: "用户", agent: "智能体" } as Record<string, string>)[t] || t;
+  }
+
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">API Keys</h2>
+          <h2 className="text-2xl font-semibold tracking-tight">API 密钥</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Issue programmatic credentials. Each key is scoped to a subset of your agents.
+            签发程序化访问凭据。每个密钥仅适用于指定的部分智能体。
           </p>
         </div>
         <Button onClick={openCreateDialog}>
           <Plus className="h-4 w-4 mr-2" />
-          Add API Key
+          添加 API 密钥
         </Button>
       </div>
 
       {showToken && (
         <Card className="border-amber-500/40 bg-amber-500/5">
           <CardContent className="space-y-3 pt-6">
-            <p className="text-sm font-medium">Token issued — copy it now, you won&apos;t see it again.</p>
+            <p className="text-sm font-medium">令牌已签发，请立即复制，之后将无法再次查看。</p>
             <div className="flex items-center gap-2">
               <code className="flex-1 break-all rounded border bg-background px-3 py-2 font-mono text-xs">
                 {showToken.token}
@@ -208,7 +212,7 @@ export default function ApikeysPage() {
               </Button>
             </div>
             <Button size="sm" variant="ghost" onClick={() => setShowToken(null)}>
-              Got it
+              知道了
             </Button>
           </CardContent>
         </Card>
@@ -228,13 +232,13 @@ export default function ApikeysPage() {
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 mb-4">
               <KeyRound className="h-7 w-7 text-primary" />
             </div>
-            <p className="text-sm text-muted-foreground mb-1">No API keys yet</p>
+            <p className="text-sm text-muted-foreground mb-1">暂无 API 密钥</p>
             <p className="text-xs text-muted-foreground/60 mb-4">
-              Issue one to let an external client call your agents
+              签发密钥，让外部客户端调用你的智能体
             </p>
             <Button variant="outline" size="sm" onClick={openCreateDialog}>
               <Plus className="h-4 w-4 mr-2" />
-              Add API Key
+              添加 API 密钥
             </Button>
           </div>
         </div>
@@ -243,12 +247,12 @@ export default function ApikeysPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Key</TableHead>
-                <TableHead>Scope</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead>名称</TableHead>
+                <TableHead>类型</TableHead>
+                <TableHead>密钥</TableHead>
+                <TableHead>范围</TableHead>
+                <TableHead>创建时间</TableHead>
+                <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -257,7 +261,7 @@ export default function ApikeysPage() {
                   <TableCell className="font-medium">{k.name || k.id}</TableCell>
                   <TableCell>
                     <Badge variant={typeBadgeVariant(k.type)} className="text-xs">
-                      {k.type}
+                      {typeLabel(k.type)}
                     </Badge>
                   </TableCell>
                   <TableCell>
@@ -265,9 +269,9 @@ export default function ApikeysPage() {
                   </TableCell>
                   <TableCell>
                     {k.type === "admin" ? (
-                      <span className="text-xs text-muted-foreground">All agents (platform-wide)</span>
+                      <span className="text-xs text-muted-foreground">所有智能体（全平台）</span>
                     ) : k.type === "user" ? (
-                      <span className="text-xs text-muted-foreground">All your agents (auto-includes new ones)</span>
+                      <span className="text-xs text-muted-foreground">你的所有智能体（自动包含新建智能体）</span>
                     ) : (
                       <ScopeChips
                         selectedIds={k.agents || []}
@@ -281,7 +285,7 @@ export default function ApikeysPage() {
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
-                      <Button size="icon" variant="ghost" onClick={() => setRotateTarget(k)} title="Rotate">
+                      <Button size="icon" variant="ghost" onClick={() => setRotateTarget(k)} title="轮换">
                         <RotateCw className="size-4" />
                       </Button>
                       <Button
@@ -289,7 +293,7 @@ export default function ApikeysPage() {
                         variant="ghost"
                         className="text-destructive hover:text-destructive"
                         onClick={() => setDeleteTarget(k)}
-                        title="Delete"
+                        title="删除"
                       >
                         <Trash2 className="size-4" />
                       </Button>
@@ -305,56 +309,56 @@ export default function ApikeysPage() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Add API Key</DialogTitle>
+            <DialogTitle>添加 API 密钥</DialogTitle>
             <DialogDescription>
-              Issue a new bearer token scoped to a subset of your agents.
+              签发一个仅适用于指定智能体的 Bearer 令牌。
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleCreate} className="space-y-4 py-2">
             <div className="space-y-1.5">
-              <Label htmlFor="key-name">Name</Label>
+              <Label htmlFor="key-name">名称</Label>
               <Input
                 id="key-name"
                 value={createName}
                 onChange={(e) => setCreateName(e.target.value)}
-                placeholder="e.g. thinkany-web"
+                placeholder="例如 thinkany-web"
                 autoFocus
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Type</Label>
+              <Label>类型</Label>
               <div className="space-y-2">
                 {isSuperAdmin && (
                   <TypeOption
                     value="admin"
                     selected={createType}
                     onSelect={setCreateType}
-                    title="Admin"
-                    description="Full platform — manage users, providers, models, skills."
+                    title="管理员"
+                    description="拥有完整平台权限，可管理用户、服务商、模型和技能。"
                   />
                 )}
                 <TypeOption
                   value="user"
                   selected={createType}
                   onSelect={setCreateType}
-                  title="User"
-                  description="Access all your agents (auto-includes future ones). Can create new agents."
+                  title="用户"
+                  description="可访问你的全部智能体（自动包含今后创建的智能体），并可创建新智能体。"
                 />
                 <TypeOption
                   value="agent"
                   selected={createType}
                   onSelect={setCreateType}
-                  title="Agent"
-                  description="Locked to specific agents. Cannot create new ones."
+                  title="智能体"
+                  description="仅限指定智能体，不能创建新智能体。"
                 />
               </div>
             </div>
             {createType === "agent" && (
               <div className="space-y-1.5">
-                <Label>Allowed agents</Label>
+                <Label>允许的智能体</Label>
                 {agents.length === 0 ? (
                   <p className="text-xs text-muted-foreground">
-                    No agents yet — create one from the Agents page first.
+                    暂无智能体，请先在“智能体”页面创建。
                   </p>
                 ) : (
                   <div className="flex flex-wrap gap-2">
@@ -386,7 +390,7 @@ export default function ApikeysPage() {
             )}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
-                Cancel
+                取消
               </Button>
               <Button
                 type="submit"
@@ -394,7 +398,7 @@ export default function ApikeysPage() {
                   !createName.trim() || (createType === "agent" && createAgents.length === 0)
                 }
               >
-                Create key
+                创建密钥
               </Button>
             </DialogFooter>
           </form>
@@ -404,15 +408,15 @@ export default function ApikeysPage() {
       <AlertDialog open={deleteTarget !== null} onOpenChange={(o) => !o && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete API key?</AlertDialogTitle>
+            <AlertDialogTitle>删除 API 密钥？</AlertDialogTitle>
             <AlertDialogDescription>
               <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{deleteTarget?.name || deleteTarget?.id}</code>{" "}
-              will stop working immediately for any client using it.
+              使用此密钥的所有客户端都将立即失效。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => deleteTarget && handleDelete(deleteTarget)}>Delete</AlertDialogAction>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => deleteTarget && handleDelete(deleteTarget)}>删除</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -420,17 +424,17 @@ export default function ApikeysPage() {
       <AlertDialog open={rotateTarget !== null} onOpenChange={(o) => !o && setRotateTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Rotate API key?</AlertDialogTitle>
+            <AlertDialogTitle>轮换 API 密钥？</AlertDialogTitle>
             <AlertDialogDescription>
-              The current token for{" "}
+              当前令牌：{" "}
               <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{rotateTarget?.name || rotateTarget?.id}</code>{" "}
-              will stop working immediately. A new token will be issued and shown once.
+              将立即失效。系统会签发新令牌，并仅显示一次。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction onClick={() => rotateTarget && handleRotate(rotateTarget.id)}>
-              Rotate
+              轮换
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -439,14 +443,14 @@ export default function ApikeysPage() {
       <Dialog open={scopeTarget !== null} onOpenChange={(o) => !o && setScopeTarget(null)}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Edit allowed agents</DialogTitle>
+            <DialogTitle>编辑允许的智能体</DialogTitle>
             <DialogDescription>
-              {scopeTarget?.name || scopeTarget?.id} — toggle which agents this key may operate on.
+              {scopeTarget?.name || scopeTarget?.id} — 选择此密钥可以操作哪些智能体。
             </DialogDescription>
           </DialogHeader>
           <div className="py-2">
             {agents.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No agents available.</p>
+              <p className="text-xs text-muted-foreground">暂无可用智能体。</p>
             ) : (
               <div className="flex flex-wrap gap-2">
                 {agents.map((a) => {
@@ -476,10 +480,10 @@ export default function ApikeysPage() {
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setScopeTarget(null)}>
-              Cancel
+              取消
             </Button>
             <Button type="button" onClick={saveScope} disabled={scopeAgents.length === 0}>
-              Save
+              保存
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -508,10 +512,10 @@ function ScopeChips({
       type="button"
       onClick={onClick}
       className="flex flex-wrap items-center gap-1.5 rounded-md p-1 -m-1 hover:bg-muted/60 transition"
-      title="Edit allowed agents"
+      title="编辑允许的智能体"
     >
       {selected.length === 0 && (
-        <span className="text-xs text-muted-foreground italic">no agents — click to add</span>
+        <span className="text-xs text-muted-foreground italic">暂无智能体，点击添加</span>
       )}
       {shown.map((a) => (
         <Badge key={a.id} variant="default" className="text-xs">

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
 // Jina calls r.jina.ai, which proxies an arbitrary URL and returns

@@ -5,14 +5,14 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/agent/tools"
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
-	"github.com/bkclaw-ai/bkclaw/internal/config"
-	"github.com/bkclaw-ai/bkclaw/internal/provider"
-	"github.com/bkclaw-ai/bkclaw/internal/session"
-	"github.com/bkclaw-ai/bkclaw/internal/store"
-	"github.com/bkclaw-ai/bkclaw/internal/usage"
-	"github.com/bkclaw-ai/bkclaw/internal/workspace"
+	"github.com/qs3c/bkclaw/internal/agent/tools"
+	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/session"
+	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/usage"
+	"github.com/qs3c/bkclaw/internal/workspace"
 )
 
 // providerForAgent picks an LLM provider for a single agent. Resolution:

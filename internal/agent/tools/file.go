@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/sandbox"
-	"github.com/bkclaw-ai/bkclaw/internal/skills"
+	"github.com/qs3c/bkclaw/internal/sandbox"
+	"github.com/qs3c/bkclaw/internal/skills"
 )
 
 type readFileArgs struct {

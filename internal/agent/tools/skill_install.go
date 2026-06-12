@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/skills"
+	"github.com/qs3c/bkclaw/internal/skills"
 )
 
 // RegisterSkillInstall wires the per-agent skill search and install tools

@@ -147,20 +147,20 @@ interface UserAttachment {
 // in sync when commands are added/removed/renamed there.
 type SlashCommand = { name: string; description: string };
 const BUILTIN_COMMANDS: SlashCommand[] = [
-  { name: "new", description: "Clear session history" },
-  { name: "reset", description: "Clear session history" },
-  { name: "retry", description: "Re-run last message" },
-  { name: "undo", description: "Undo last turn" },
-  { name: "compact", description: "Compress context window" },
-  { name: "status", description: "Agent status & memory info" },
-  { name: "usage", description: "Session token/turn stats" },
-  { name: "insights", description: "Activity insights (last N days)" },
-  { name: "personality", description: "List or switch personality" },
-  { name: "model", description: "Show or switch LLM model" },
-  { name: "goal", description: "Persistent multi-turn objective" },
-  { name: "plan", description: "Draft a plan without running tools" },
-  { name: "help", description: "Show command help" },
-  { name: "version", description: "Show version" },
+  { name: "new", description: "清空会话历史" },
+  { name: "reset", description: "清空会话历史" },
+  { name: "retry", description: "重新运行上一条消息" },
+  { name: "undo", description: "撤销上一轮" },
+  { name: "compact", description: "压缩上下文窗口" },
+  { name: "status", description: "智能体状态和记忆信息" },
+  { name: "usage", description: "会话令牌和轮次统计" },
+  { name: "insights", description: "活动洞察（最近 N 天）" },
+  { name: "personality", description: "查看或切换人格" },
+  { name: "model", description: "查看或切换大模型" },
+  { name: "goal", description: "持续的多轮目标" },
+  { name: "plan", description: "仅拟定计划，不运行工具" },
+  { name: "help", description: "显示命令帮助" },
+  { name: "version", description: "显示版本" },
 ];
 type SlashItem =
   | ({ kind: "command" } & SlashCommand)
@@ -440,7 +440,7 @@ function TodoPanel({ items, active }: { items: TodoItem[]; active: boolean }) {
               {doneCount}/{total}
             </span>
             <span className="truncate flex-1">
-              {current ? current.text : "Plan checklist"}
+              {current ? current.text : "计划清单"}
             </span>
             {open ? (
               <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
@@ -898,7 +898,7 @@ export function ChatScreen() {
           }
           case "error": {
             claim();
-            const msg = data.data?.message || "Unknown error";
+            const msg = data.data?.message || "未知错误";
             setMessages((prev) => [
               ...prev,
               { id: `e-${Date.now()}`, role: "agent", content: `Error: ${msg}`, timestamp: Date.now() },
@@ -1090,11 +1090,11 @@ export function ChatScreen() {
               ? "bg-muted text-foreground"
               : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
           }`}
-          title={filesSheetOpen ? "Hide workspace" : "Show workspace"}
+          title={filesSheetOpen ? "隐藏工作区" : "显示工作区"}
           aria-pressed={filesSheetOpen}
         >
           <FolderOpen className="h-4 w-4" />
-          <span className="sr-only">Toggle workspace</span>
+          <span className="sr-only">切换工作区</span>
         </button>
       </div>
     ),
@@ -1289,7 +1289,7 @@ export function ChatScreen() {
       } catch (err) {
         setMessages((prev) => [
           ...prev,
-          { id: `e-${Date.now()}`, role: "agent", content: `File upload failed: ${err instanceof Error ? err.message : "unknown error"}`, timestamp: Date.now() },
+          { id: `e-${Date.now()}`, role: "agent", content: `文件上传失败：${err instanceof Error ? err.message : "未知错误"}`, timestamp: Date.now() },
         ]);
         return;
       }
@@ -1611,7 +1611,7 @@ export function ChatScreen() {
             // turn just hangs — the model failed (provider 4xx/5xx,
             // serialization mismatch, etc.) and the only signal was a
             // gateway log line the user can't see.
-            const msg = evt.data?.message || "Unknown error";
+            const msg = evt.data?.message || "未知错误";
             setMessages((prev) => [
               ...prev,
               { id: `e-${Date.now()}`, role: "agent", content: `Error: ${msg}`, timestamp: Date.now() },
@@ -1729,7 +1729,7 @@ export function ChatScreen() {
           }
           const errMsg = err instanceof Error && err.message
             ? err.message
-            : "Failed to get a response. Is the gateway running?";
+            : "获取响应失败，请确认网关是否正在运行。";
           return [
             ...prev,
             {
@@ -1779,7 +1779,7 @@ export function ChatScreen() {
     } catch (err) {
       setMessages((prev) => [
         ...prev.filter((m) => m.id !== optimisticId),
-        { id: `e-${Date.now()}`, role: "agent", content: `Steer failed: ${err instanceof Error ? err.message : "unknown error"}`, timestamp: Date.now() },
+        { id: `e-${Date.now()}`, role: "agent", content: `调整指令失败：${err instanceof Error ? err.message : "未知错误"}`, timestamp: Date.now() },
       ]);
       return;
     }
@@ -1931,7 +1931,7 @@ export function ChatScreen() {
   // render a small info card UNDER the hero (folder + name + meta)
   // instead of taking over the headline, so users always know which
   // agent they're chatting with first.
-  const heroTitle = "What can I do for you?";
+  const heroTitle = "我能为你做些什么？";
 
   return (
     <div className="flex h-[calc(100vh-3rem)] flex-row">
@@ -2141,7 +2141,7 @@ export function ChatScreen() {
                                 type="button"
                                 onClick={() => setLightboxSrc(att.previewUrl!)}
                                 className="block cursor-zoom-in"
-                                aria-label={`Preview ${att.name}`}
+                                aria-label={`预览 ${att.name}`}
                               >
                                 {/* eslint-disable-next-line @next/next/no-img-element */}
                                 <img
@@ -2178,18 +2178,18 @@ export function ChatScreen() {
                       )}
                       {msg.role === "agent" && msg.metadata?.iterationCapReached && (
                         <div className="mt-2 flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-900 dark:text-amber-200">
-                          <span className="font-medium">Iteration limit reached</span>
+                          <span className="font-medium">已达到迭代次数上限</span>
                           <span className="opacity-80">
-                            Agent hit the {msg.metadata.iterationCapValue ?? ""} tool-call budget before finishing. The answer above was synthesized from partial results — fields may be marked unknown / partial. Continue the conversation to push further.
+                            智能体已达到 {msg.metadata.iterationCapValue ?? ""} 工具调用预算上限，尚未完成任务。 上方回答由部分结果汇总生成 — 部分字段可能标记为未知或不完整。 可继续对话以推进任务。
                           </span>
                         </div>
                       )}
                       {msg.role === "agent" && msg.metadata?.planMode && (
                         <div className="mt-2 flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-900 dark:text-amber-200">
                           <ListChecks className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                          <span className="font-medium">Plan only — review before executing.</span>
+                          <span className="font-medium">仅生成计划，请在执行前确认。</span>
                           <span className="opacity-80">
-                            Tools were disabled for this turn. Reply with &quot;go&quot; (or edits) to run it.
+                            本轮已禁用工具。回复“执行”（或修改意见）即可运行。
                           </span>
                         </div>
                       )}
@@ -2202,7 +2202,7 @@ export function ChatScreen() {
                             className="h-8 gap-1.5"
                           >
                             <Check className="h-3.5 w-3.5" />
-                            Run plan
+                            执行计划
                           </Button>
                           <Button
                             size="sm"
@@ -2220,10 +2220,10 @@ export function ChatScreen() {
                             className="h-8 gap-1.5"
                           >
                             <X className="h-3.5 w-3.5" />
-                            Edit
+                            编辑
                           </Button>
                           <span className="text-xs text-muted-foreground">
-                            Run plan to authorize the agent end-to-end, or Edit to revise below.
+                            执行计划以授权智能体完成整个流程，或点击“编辑”修改下方内容。
                           </span>
                         </div>
                       )}
@@ -2246,7 +2246,7 @@ export function ChatScreen() {
                           <button
                             onClick={() => handleCopy(msg)}
                             className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
-                            title="Copy"
+                            title="复制"
                           >
                             {copiedId === msg.id ? (
                               <Check className="h-3 w-3 text-emerald-500" />
@@ -2257,7 +2257,7 @@ export function ChatScreen() {
                           <button
                             onClick={() => handleRetry(msg)}
                             className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
-                            title="Resend (refills the composer)"
+                            title="重新发送（回填到输入框）"
                           >
                             <RotateCcw className="h-3 w-3" />
                           </button>
@@ -2272,7 +2272,7 @@ export function ChatScreen() {
                           <button
                             onClick={() => handleCopy(msg)}
                             className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
-                            title="Copy"
+                            title="复制"
                           >
                             {copiedId === msg.id ? (
                               <Check className="h-3 w-3 text-emerald-500" />
@@ -2283,10 +2283,10 @@ export function ChatScreen() {
                           <button
                             onClick={() => setFilesSheetOpen(true)}
                             className="opacity-0 group-hover:opacity-100 inline-flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-all"
-                            title="View task files"
+                            title="查看任务文件"
                           >
                             <FolderOpen className="h-3 w-3" />
-                            <span>Files</span>
+                            <span>文件</span>
                           </button>
                         </>
                       )}
@@ -2336,12 +2336,11 @@ export function ChatScreen() {
               // Block the input outright and tell the user where to
               // reply.
               <div className="mb-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                This conversation lives on{" "}
+                此对话来自{" "}
                 <span className="font-medium text-foreground">
                   {channelLabel(currentChannel)}
                 </span>
-                . Reply from there — messages typed here won't reach the user on
-                the other side.
+                。请从对应平台回复，在此输入的消息不会发送给另一端用户。
               </div>
             )}
             {isActAsView && !isReadOnlyChannel && (
@@ -2350,8 +2349,7 @@ export function ChatScreen() {
               // read-only for the whole request, so any send would 403
               // — disable the composer and surface why.
               <div className="mb-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                Read-only — you&apos;re viewing another user&apos;s chat.
-                Sending messages here is disabled.
+                只读：你正在查看其他用户的对话，无法在此发送消息。
               </div>
             )}
             {slashOpen && filteredItems.length > 0 && (
@@ -2382,7 +2380,7 @@ export function ChatScreen() {
                             type="button"
                             onClick={() => setLightboxSrc(preview)}
                             className="block h-full w-full cursor-zoom-in"
-                            aria-label={`Preview ${f.name}`}
+                            aria-label={`预览 ${f.name}`}
                           >
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img
@@ -2395,7 +2393,7 @@ export function ChatScreen() {
                             type="button"
                             onClick={() => removeAttachment(i)}
                             className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-background/80 text-muted-foreground opacity-0 transition group-hover:opacity-100 hover:text-foreground"
-                            aria-label="Remove attachment"
+                            aria-label="移除附件"
                           >
                             <X className="h-3 w-3" />
                           </button>
@@ -2413,7 +2411,7 @@ export function ChatScreen() {
                           type="button"
                           onClick={() => removeAttachment(i)}
                           className="p-0.5 rounded hover:bg-muted-foreground/15 text-muted-foreground hover:text-foreground"
-                          aria-label="Remove attachment"
+                          aria-label="移除附件"
                         >
                           <X className="h-3 w-3" />
                         </button>
@@ -2436,12 +2434,12 @@ export function ChatScreen() {
                     onBlur={() => setTimeout(() => setSlashOpen(false), 120)}
                     placeholder={
                       isActAsView
-                        ? "Read-only — viewing another user's chat"
+                        ? "只读：正在查看其他用户的对话"
                         : isReadOnlyChannel
-                          ? `Read-only — reply from ${channelLabel(currentChannel)}`
+                          ? `只读 — reply from ${channelLabel(currentChannel)}`
                           : selectedAgent
-                            ? `Message ${agentName || selectedAgent}... ("/" to pick a skill)`
-                            : "Select an agent first"
+                            ? `消息 ${agentName || selectedAgent}... ("/" to pick a skill)`
+                            : "请先选择智能体"
                     }
                     disabled={!selectedAgent || isReadOnlyView}
                     rows={3}
@@ -2456,7 +2454,7 @@ export function ChatScreen() {
                             ? "opacity-50 cursor-not-allowed"
                             : "hover:bg-muted hover:text-foreground cursor-pointer"
                         }`}
-                        aria-label="Attach files"
+                        aria-label="添加附件"
                       >
                         <Paperclip className="h-4 w-4" />
                         <input
@@ -2474,8 +2472,8 @@ export function ChatScreen() {
                         disabled={!selectedAgent || sending || isReadOnlyView}
                         title={
                           planMode
-                            ? "Plan mode is on for the next message. Click to turn it off."
-                            : "Plan first: draft steps without running tools."
+                            ? "下一条消息将使用计划模式。点击可关闭。"
+                            : "先制定计划：仅拟定步骤，不运行工具。"
                         }
                         aria-pressed={planMode}
                         className={`flex h-9 shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
@@ -2485,7 +2483,7 @@ export function ChatScreen() {
                         }`}
                       >
                         <ListChecks className="h-3.5 w-3.5" />
-                        <span>Plan</span>
+                        <span>计划</span>
                       </button>
                       {urlProjectId && projectInfo && (
                         <div
@@ -2504,7 +2502,7 @@ export function ChatScreen() {
                         onClick={handleStop}
                         size="icon"
                         className="h-9 w-9 shrink-0 rounded-full"
-                        aria-label="Stop generating"
+                        aria-label="停止生成"
                       >
                         <Square className="h-3.5 w-3.5 fill-current" />
                       </Button>
@@ -2514,7 +2512,7 @@ export function ChatScreen() {
                         disabled={(!input.trim() && attachments.length === 0) || !selectedAgent || isReadOnlyView}
                         size="icon"
                         className="h-9 w-9 shrink-0 rounded-full"
-                        aria-label="Send message"
+                        aria-label="发送消息"
                       >
                         <Send className="h-4 w-4" />
                       </Button>
@@ -2529,7 +2527,7 @@ export function ChatScreen() {
                         ? "opacity-50 cursor-not-allowed"
                         : "hover:bg-muted hover:text-foreground cursor-pointer"
                     }`}
-                    aria-label="Attach files"
+                    aria-label="添加附件"
                   >
                     <Paperclip className="h-4 w-4" />
                     <input
@@ -2547,8 +2545,8 @@ export function ChatScreen() {
                     disabled={!selectedAgent || sending || isReadOnlyView}
                     title={
                       planMode
-                        ? "Plan mode is on for the next message. Click to turn it off."
-                        : "Plan first: draft steps without running tools."
+                        ? "下一条消息将使用计划模式。点击可关闭。"
+                        : "先制定计划：仅拟定步骤，不运行工具。"
                     }
                     aria-pressed={planMode}
                     className={`flex h-8 shrink-0 items-center gap-1 rounded-lg px-2 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
@@ -2558,7 +2556,7 @@ export function ChatScreen() {
                     }`}
                   >
                     <ListChecks className="h-3.5 w-3.5" />
-                    <span>Plan</span>
+                    <span>计划</span>
                   </button>
                   <textarea
                     ref={textareaRef}
@@ -2568,12 +2566,12 @@ export function ChatScreen() {
                     onBlur={() => setTimeout(() => setSlashOpen(false), 120)}
                     placeholder={
                       isActAsView
-                        ? "Read-only — viewing another user's chat"
+                        ? "只读：正在查看其他用户的对话"
                         : isReadOnlyChannel
-                          ? `Read-only — reply from ${channelLabel(currentChannel)}`
+                          ? `只读 — reply from ${channelLabel(currentChannel)}`
                           : selectedAgent
-                            ? `Message ${agentName || selectedAgent}... ("/" to pick a skill)`
-                            : "Select an agent first"
+                            ? `消息 ${agentName || selectedAgent}... ("/" to pick a skill)`
+                            : "请先选择智能体"
                     }
                     disabled={!selectedAgent || isReadOnlyView}
                     rows={1}
@@ -2585,7 +2583,7 @@ export function ChatScreen() {
                       onClick={handleStop}
                       size="icon"
                       className="h-8 w-8 shrink-0 rounded-lg"
-                      aria-label="Stop generating"
+                      aria-label="停止生成"
                     >
                       <Square className="h-3.5 w-3.5 fill-current" />
                     </Button>
@@ -2595,7 +2593,7 @@ export function ChatScreen() {
                       disabled={(!input.trim() && attachments.length === 0) || !selectedAgent || isReadOnlyView}
                       size="icon"
                       className="h-8 w-8 shrink-0 rounded-lg"
-                      aria-label="Send message"
+                      aria-label="发送消息"
                     >
                       <Send className="h-4 w-4" />
                     </Button>
@@ -2611,12 +2609,12 @@ export function ChatScreen() {
             onClick={() => setLightboxSrc(null)}
             role="dialog"
             aria-modal="true"
-            aria-label="Image preview"
+            aria-label="图片预览"
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={lightboxSrc}
-              alt="Preview"
+              alt="预览"
               className="max-h-full max-w-full rounded-lg shadow-2xl"
               onClick={(e) => e.stopPropagation()}
             />
@@ -2624,7 +2622,7 @@ export function ChatScreen() {
               type="button"
               onClick={() => setLightboxSrc(null)}
               className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-background/80 text-foreground hover:bg-background"
-              aria-label="Close preview"
+              aria-label="关闭预览"
             >
               <X className="h-5 w-5" />
             </button>
@@ -2790,7 +2788,7 @@ function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, 
             <span className="font-medium text-foreground">
               {allDone
                 ? `Executed ${tools.length} tool${tools.length > 1 ? "s" : ""}`
-                : `Running tools (${doneCount}/${tools.length})...`}
+                : `Running 工具 (${doneCount}/${tools.length})...`}
             </span>
             <span className="text-muted-foreground/60 text-[11px] flex-1 text-left truncate">
               {tools.map((tc) => tc.name).join(", ")}
@@ -2819,10 +2817,10 @@ function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, 
                     {tc.metadata?.sandbox && (
                       <span
                         className="flex items-center gap-0.5 rounded bg-emerald-500/10 px-1 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400"
-                        title="Executed inside a sandboxed container"
+                        title="在沙箱容器内执行"
                       >
                         <ShieldCheck className="h-2.5 w-2.5" />
-                        sandbox
+                        沙箱
                       </span>
                     )}
                     <span className="text-muted-foreground/50 font-mono truncate flex-1 text-left text-[11px]">
@@ -2857,7 +2855,7 @@ function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, 
                   {expandedTool[tc.id] && (
                     <div className="px-3 py-2 space-y-2 bg-muted/20">
                       <div>
-                        <p className="text-[10px] font-medium text-muted-foreground uppercase mb-1">Input</p>
+                        <p className="text-[10px] font-medium text-muted-foreground uppercase mb-1">输入</p>
                         <pre className="text-xs font-mono bg-muted/50 rounded p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-40">
                           {(() => {
                             try { return JSON.stringify(JSON.parse(tc.arguments), null, 2); }
@@ -2867,7 +2865,7 @@ function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, 
                       </div>
                       {tc.result != null ? (
                         <div>
-                          <p className="text-[10px] font-medium text-muted-foreground uppercase mb-1">Output</p>
+                          <p className="text-[10px] font-medium text-muted-foreground uppercase mb-1">输出</p>
                           <pre className="text-xs font-mono bg-muted/50 rounded p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-60">
                             {tc.result.length > 2000 ? tc.result.slice(0, 2000) + "..." : tc.result}
                           </pre>
@@ -2888,9 +2886,9 @@ function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, 
                           })()}
                         </div>
                       ) : tc.name === "delegate_task" && tc.result == null && tc.id !== activeDelegateId ? (
-                        <p className="text-xs text-muted-foreground/60 italic">Queued (waiting on prior sub-agent)…</p>
+                        <p className="text-xs text-muted-foreground/60 italic">已排队（等待前一个子智能体完成）…</p>
                       ) : (
-                        <p className="text-xs text-muted-foreground/60 italic">Executing...</p>
+                        <p className="text-xs text-muted-foreground/60 italic">正在执行...</p>
                       )}
                     </div>
                   )}
@@ -2954,7 +2952,7 @@ function ToolRoundsBundle({
             <span className="font-medium text-foreground">
               {allDone
                 ? `Used ${totalTools} tool${totalTools === 1 ? "" : "s"} across ${rounds.length} round${rounds.length === 1 ? "" : "s"}`
-                : `Running tools… (${doneCount}/${totalTools} across ${rounds.length} rounds)`}
+                : `Running 工具… (${doneCount}/${totalTools} across ${rounds.length} rounds)`}
             </span>
             <span className="ml-auto" />
             {open ? (
@@ -3043,7 +3041,7 @@ function FilesPanel({ agentId, files }: { agentId: string; files: ProducedFile[]
     <>
       <div className="mt-2 space-y-1.5 max-w-[85%]">
         <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
-          Your files
+          你的文件
         </p>
         <div className="flex flex-col gap-1.5">
           {files.map((f) => {
@@ -3059,7 +3057,7 @@ function FilesPanel({ agentId, files }: { agentId: string; files: ProducedFile[]
                 <button
                   onClick={() => setPreviewing(f)}
                   className="flex-1 min-w-0 text-left"
-                  title="Open preview"
+                  title="打开预览"
                 >
                   <div className="text-sm font-medium text-foreground truncate">{basename}</div>
                   {f.size !== undefined && (
@@ -3069,7 +3067,7 @@ function FilesPanel({ agentId, files }: { agentId: string; files: ProducedFile[]
                 <a
                   href={downloadUrl}
                   className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-                  title="Download"
+                  title="下载"
                 >
                   <Download className="h-4 w-4" />
                 </a>
@@ -3187,7 +3185,7 @@ function WorkspacePanel({
         // toast lib we don't have. The message comes from the
         // backend (e.g. "S3-backed store, no host path").
         // eslint-disable-next-line no-alert
-        alert(res.error || "Could not open workspace folder");
+        alert(res.error || "无法打开工作区文件夹");
       }
     } finally {
       setRevealing(false);
@@ -3229,7 +3227,7 @@ function WorkspacePanel({
         <div
           onMouseDown={(e) => { e.preventDefault(); setResizing(true); }}
           className={`absolute -left-1 top-0 bottom-0 w-2 cursor-col-resize z-10 group ${resizing ? "" : ""}`}
-          title="Drag to resize"
+          title="拖动以调整大小"
         >
           <div
             className={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors ${
@@ -3240,7 +3238,7 @@ function WorkspacePanel({
         <div className="flex items-center justify-between gap-2 px-4 h-12 border-b border-border">
           <div className="flex items-center gap-2 text-sm font-medium">
             <FolderOpen className="h-4 w-4" />
-            Workspace
+            工作区
           </div>
           <div className="flex items-center gap-1">
             <a
@@ -3255,7 +3253,7 @@ function WorkspacePanel({
                   ? "text-muted-foreground/40 pointer-events-none"
                   : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
               }`}
-              title="Download all as zip"
+              title="全部下载为 ZIP"
             >
               <Download className="h-4 w-4" />
             </a>
@@ -3269,7 +3267,7 @@ function WorkspacePanel({
                 onClick={handleReveal}
                 disabled={revealing || (!sessionId && !projectId)}
                 className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50"
-                title="Open folder in Finder"
+                title="在文件管理器中打开文件夹"
               >
                 <FolderSearch className="h-4 w-4" />
               </button>
@@ -3278,14 +3276,14 @@ function WorkspacePanel({
               onClick={refresh}
               disabled={loading}
               className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50"
-              title="Refresh"
+              title="刷新"
             >
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             </button>
             <button
               onClick={onClose}
               className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-              title="Close"
+              title="关闭"
             >
               <X className="h-4 w-4" />
             </button>
@@ -3295,15 +3293,15 @@ function WorkspacePanel({
           {!loading && files.length === 0 ? (
             <p className="px-3 py-8 text-center text-sm text-muted-foreground">
               {projectId
-                ? "No files in this project yet."
-                : "No files in this session yet."}
+                ? "此项目中暂无文件。"
+                : "此会话中暂无文件。"}
             </p>
           ) : (
             <div className="flex flex-col">
               <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 border-b">
-                <span>Name</span>
-                <span>Modified</span>
-                <span>Size</span>
+                <span>名称</span>
+                <span>修改时间</span>
+                <span>大小</span>
               </div>
               {files.map((f) => {
                 const { icon: Icon } = fileKind(f.path);
@@ -3317,7 +3315,7 @@ function WorkspacePanel({
                     <button
                       onClick={() => setPreviewing({ path: f.path, size: f.size })}
                       className="flex items-center gap-2 min-w-0 text-left"
-                      title="Open preview"
+                      title="打开预览"
                     >
                       <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
                       <span className="text-sm text-foreground truncate">{basename}</span>
@@ -3328,7 +3326,7 @@ function WorkspacePanel({
                     <a
                       href={downloadUrl}
                       className="text-[11px] text-muted-foreground/70 whitespace-nowrap hover:text-foreground"
-                      title="Download"
+                      title="下载"
                     >
                       {formatBytes(f.size)}
                     </a>
@@ -3355,11 +3353,11 @@ function formatRelativeTime(ts?: number): string {
   const d = new Date(ts * 1000);
   const now = Date.now();
   const diff = now - d.getTime();
-  if (diff < 60_000) return "just now";
-  if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}h ago`;
-  if (diff < 7 * 86400_000) return `${Math.floor(diff / 86400_000)}d ago`;
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86400_000) return `${Math.floor(diff / 3600_000)} 小时前`;
+  if (diff < 7 * 86400_000) return `${Math.floor(diff / 86400_000)} 天前`;
+  return d.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
 }
 
 function FilePreview({ agentId, file, onClose }: { agentId: string; file: ProducedFile; onClose: () => void }) {
@@ -3408,7 +3406,7 @@ function FilePreview({ agentId, file, onClose }: { agentId: string; file: Produc
               <button
                 onClick={() => setHtmlView(htmlView === "rendered" ? "source" : "rendered")}
                 className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                title={htmlView === "rendered" ? "View source" : "View rendered"}
+                title={htmlView === "rendered" ? "查看源码" : "查看渲染结果"}
               >
                 {htmlView === "rendered" ? <Code2 className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
@@ -3416,14 +3414,14 @@ function FilePreview({ agentId, file, onClose }: { agentId: string; file: Produc
             <a
               href={downloadUrl}
               className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted/50"
-              title="Download"
+              title="下载"
             >
               <Download className="h-4 w-4" />
             </a>
             <button
               onClick={onClose}
               className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted/50"
-              title="Close"
+              title="关闭"
             >
               <X className="h-4 w-4" />
             </button>
@@ -3437,8 +3435,8 @@ function FilePreview({ agentId, file, onClose }: { agentId: string; file: Produc
             <iframe src={src} className="h-full w-full border-0" title={basename} />
           )}
           {preview === "markdown" && (
-            error ? <p className="text-sm text-destructive">Failed to load: {error}</p>
-            : text === null ? <p className="text-sm text-muted-foreground">Loading…</p>
+            error ? <p className="text-sm text-destructive">加载失败： {error}</p>
+            : text === null ? <p className="text-sm text-muted-foreground">正在加载…</p>
             : (
               <div className="prose prose-sm dark:prose-invert max-w-none">
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ExternalAnchor }}>{text}</ReactMarkdown>
@@ -3446,8 +3444,8 @@ function FilePreview({ agentId, file, onClose }: { agentId: string; file: Produc
             )
           )}
           {preview === "text" && (
-            error ? <p className="text-sm text-destructive">Failed to load: {error}</p>
-            : text === null ? <p className="text-sm text-muted-foreground">Loading…</p>
+            error ? <p className="text-sm text-destructive">加载失败： {error}</p>
+            : text === null ? <p className="text-sm text-muted-foreground">正在加载…</p>
             : (
               <pre className="text-xs font-mono whitespace-pre-wrap break-all bg-muted/30 rounded p-3">{text}</pre>
             )
@@ -3463,8 +3461,8 @@ function FilePreview({ agentId, file, onClose }: { agentId: string; file: Produc
                 className="h-full w-full border-0 rounded bg-white"
                 title={basename}
               />
-            ) : error ? <p className="text-sm text-destructive">Failed to load: {error}</p>
-            : text === null ? <p className="text-sm text-muted-foreground">Loading…</p>
+            ) : error ? <p className="text-sm text-destructive">加载失败： {error}</p>
+            : text === null ? <p className="text-sm text-muted-foreground">正在加载…</p>
             : (
               <pre className="text-xs font-mono whitespace-pre-wrap break-all bg-muted/30 rounded p-3">{text}</pre>
             )
@@ -3472,9 +3470,9 @@ function FilePreview({ agentId, file, onClose }: { agentId: string; file: Produc
           {preview === "none" && (
             <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
               <File className="h-12 w-12 text-muted-foreground/50" />
-              <p className="text-sm text-muted-foreground">Preview not available for this file type.</p>
+              <p className="text-sm text-muted-foreground">此文件类型不支持预览。</p>
               <a href={downloadUrl} className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90">
-                <Download className="h-3.5 w-3.5" /> Download
+                <Download className="h-3.5 w-3.5" /> 下载
               </a>
             </div>
           )}
@@ -3540,7 +3538,7 @@ function SlashMenu({
         className="flex items-center gap-2 border-t border-border px-3 py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
       >
         <SlidersHorizontal className="h-3.5 w-3.5" />
-        Manage Skills
+        管理技能
       </Link>
     </div>
   );

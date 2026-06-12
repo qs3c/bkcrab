@@ -50,26 +50,26 @@ export type AgentSettingsTab =
 type TabIcon = React.ComponentType<{ className?: string }>;
 
 const AGENT_TABS: Array<{ id: AgentSettingsTab; label: string; icon: TabIcon }> = [
-  { id: "profile", label: "Profile", icon: IdCardIcon },
-  { id: "customize", label: "Customize", icon: Wand2Icon },
-  { id: "models", label: "Models", icon: BrainIcon },
-  { id: "context", label: "Context", icon: LayersIcon },
-  { id: "skills", label: "Skills", icon: SparklesIcon },
-  { id: "plugins", label: "Plugins", icon: Plug },
-  { id: "channels", label: "Channels", icon: RadioIcon },
-  { id: "scheduler", label: "Scheduler", icon: ClockIcon },
-  { id: "usage", label: "Token Usage", icon: CoinsIcon },
+  { id: "profile", label: "资料", icon: IdCardIcon },
+  { id: "customize", label: "自定义", icon: Wand2Icon },
+  { id: "models", label: "模型", icon: BrainIcon },
+  { id: "context", label: "上下文", icon: LayersIcon },
+  { id: "skills", label: "技能", icon: SparklesIcon },
+  { id: "plugins", label: "插件", icon: Plug },
+  { id: "channels", label: "渠道", icon: RadioIcon },
+  { id: "scheduler", label: "定时任务", icon: ClockIcon },
+  { id: "usage", label: "令牌用量", icon: CoinsIcon },
 ];
 
 // Runtime intentionally lives only on the standalone /settings/runtime
 // page (super_admin-gated) — it's a deployment-wide knob, not the kind
 // of thing the average chatter wants in their per-agent dialog.
 const USER_TABS: Array<{ id: AgentSettingsTab; label: string; icon: TabIcon }> = [
-  { id: "account", label: "Account", icon: UserCog },
-  { id: "general", label: "General", icon: Palette },
+  { id: "account", label: "账户", icon: UserCog },
+  { id: "general", label: "常规", icon: Palette },
   // About surfaces the gateway version + upgrade hint — only useful
   // to operators (super_admin), filtered out below for regular users.
-  { id: "about", label: "About", icon: InfoIcon },
+  { id: "about", label: "关于", icon: InfoIcon },
 ];
 
 // Tabbed configuration panel. Hosts both the per-agent pages
@@ -139,7 +139,7 @@ export function AgentSettingsDialog({
         <aside className="flex flex-col gap-1 border-r bg-muted/40 p-3 overflow-y-auto">
           {agentTabs.length > 0 && (
             <>
-              <SectionLabel>Agent</SectionLabel>
+              <SectionLabel>智能体</SectionLabel>
               {agentTabs.map((t) => (
                 <TabButton
                   key={t.id}
@@ -151,7 +151,7 @@ export function AgentSettingsDialog({
             </>
           )}
           <SectionLabel className={agentTabs.length > 0 ? "mt-3" : undefined}>
-            User
+            用户
           </SectionLabel>
           {userTabs.map((t) => (
             <TabButton

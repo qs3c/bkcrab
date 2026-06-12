@@ -8,7 +8,7 @@
 // goals.rs). See docs/design/goal.md for the rationale.
 package goal
 
-import "github.com/bkclaw-ai/bkclaw/internal/store"
+import "github.com/qs3c/bkclaw/internal/store"
 
 // Goal is the persisted record of an active or finished goal. One goal
 // per (agent, session) — enforced by a UNIQUE index on the underlying

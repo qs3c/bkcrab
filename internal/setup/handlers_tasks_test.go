@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/users"
+	"github.com/qs3c/bkclaw/internal/users"
 )
 
 var setupRouteTestHTTPClient = &http.Client{Timeout: 2 * time.Second}

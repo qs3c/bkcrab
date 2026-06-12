@@ -49,13 +49,13 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
     try {
       const res = await apiLogin(loginField.trim(), password);
       if (!res.ok) {
-        setError(res.error || "Invalid credentials");
+        setError(res.error || "用户名或密码错误");
         setLoading(false);
         return;
       }
       onSuccess();
     } catch {
-      setError("Cannot reach server");
+      setError("无法连接服务器");
       setLoading(false);
     }
   }
@@ -64,15 +64,15 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
     e.preventDefault();
     setError("");
     if (!signupUsername.trim() || !signupEmail.trim() || !password) {
-      setError("All fields are required");
+      setError("所有字段均为必填项");
       return;
     }
     if (password.length < 8) {
-      setError("Password must be at least 8 characters");
+      setError("密码至少需要 8 个字符");
       return;
     }
     if (password !== signupConfirm) {
-      setError("Passwords don't match");
+      setError("两次输入的密码不一致");
       return;
     }
     setLoading(true);
@@ -83,7 +83,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
         password,
       });
       if (!res.ok) {
-        setError(res.error || "Could not create account");
+        setError(res.error || "无法创建账户");
         setLoading(false);
         return;
       }
@@ -93,7 +93,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
       // route without any redirect.
       onSuccess();
     } catch {
-      setError("Cannot reach server");
+      setError("无法连接服务器");
       setLoading(false);
     }
   }
@@ -103,15 +103,15 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
       <div className="flex min-h-screen items-center justify-center bg-zinc-950 p-4">
         <div className="w-full max-w-sm space-y-6">
           <div className="text-center space-y-2">
-            <h1 className="text-2xl font-bold text-zinc-100">Create your account</h1>
-            <p className="text-sm text-zinc-500">Sign up to start using BkClaw</p>
+            <h1 className="text-2xl font-bold text-zinc-100">创建你的账户</h1>
+            <p className="text-sm text-zinc-500">注册后即可开始使用 BkClaw</p>
           </div>
           <form onSubmit={handleSignUp} className="space-y-4">
             <input
               type="text"
               value={signupUsername}
               onChange={(e) => setSignupUsername(e.target.value)}
-              placeholder="username"
+              placeholder="用户名"
               autoFocus
               autoComplete="username"
               className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
@@ -120,7 +120,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
               type="email"
               value={signupEmail}
               onChange={(e) => setSignupEmail(e.target.value)}
-              placeholder="email"
+              placeholder="邮箱"
               autoComplete="email"
               className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
             />
@@ -128,7 +128,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="password (min 8 chars)"
+              placeholder="密码（至少 8 个字符）"
               autoComplete="new-password"
               className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
             />
@@ -136,7 +136,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
               type="password"
               value={signupConfirm}
               onChange={(e) => setSignupConfirm(e.target.value)}
-              placeholder="confirm password"
+              placeholder="确认密码"
               autoComplete="new-password"
               className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
             />
@@ -146,17 +146,17 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
               disabled={loading || !signupUsername.trim() || !signupEmail.trim() || !password || !signupConfirm}
               className="w-full rounded-lg bg-violet-600 px-4 py-3 text-sm font-medium text-white transition hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? "Creating account..." : "Create account"}
+              {loading ? "正在创建账户..." : "创建账户"}
             </button>
           </form>
           <p className="text-center text-sm text-zinc-500">
-            Already have an account?{" "}
+            已有账户？{" "}
             <button
               type="button"
               onClick={() => switchMode("signin")}
               className="text-violet-400 hover:text-violet-300"
             >
-              Sign in
+              登录
             </button>
           </p>
         </div>
@@ -169,14 +169,14 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center space-y-2">
           <h1 className="text-2xl font-bold text-zinc-100">BkClaw</h1>
-          <p className="text-sm text-zinc-500">Sign in with your username or email</p>
+          <p className="text-sm text-zinc-500">使用用户名或邮箱登录</p>
         </div>
         <form onSubmit={handleSignIn} className="space-y-4">
           <input
             type="text"
             value={loginField}
             onChange={(e) => setLoginField(e.target.value)}
-            placeholder="username or email"
+            placeholder="用户名或邮箱"
             autoFocus
             autoComplete="username"
             className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
@@ -185,7 +185,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="password"
+            placeholder="密码"
             autoComplete="current-password"
             className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
           />
@@ -195,18 +195,18 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
             disabled={loading || !loginField.trim() || !password}
             className="w-full rounded-lg bg-violet-600 px-4 py-3 text-sm font-medium text-white transition hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? "Signing in..." : "Sign in"}
+            {loading ? "正在登录..." : "登录"}
           </button>
         </form>
         {registrationOpen && (
           <p className="text-center text-sm text-zinc-500">
-            Don&apos;t have an account?{" "}
+            还没有账户？{" "}
             <button
               type="button"
               onClick={() => switchMode("signup")}
               className="text-violet-400 hover:text-violet-300"
             >
-              Sign up
+              注册
             </button>
           </p>
         )}

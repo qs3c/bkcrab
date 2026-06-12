@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/bkclaw-ai/bkclaw/internal/agent/goal"
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
-	"github.com/bkclaw-ai/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/agent/goal"
+	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/provider"
 )
 
 // memGoalStore is the in-memory goal.Store the hook tests use.
@@ -62,6 +62,7 @@ func (m *memGoalStore) DeleteGoal(_ context.Context, goalID string) error {
 	}
 	return nil
 }
+
 // seedActiveGoal places a fresh active goal in the store. Returns
 // the agentID + sessionKey the hook context should reference.
 func seedActiveGoal(t *testing.T, st *memGoalStore, budget int64) (agentID, sessionKey string) {

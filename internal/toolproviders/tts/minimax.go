@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
 // MiniMax posts to /v1/t2a_v2. Model defaults to "speech-02-hd". Voice is

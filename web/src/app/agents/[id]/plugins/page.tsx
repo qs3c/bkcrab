@@ -81,13 +81,10 @@ export default function AgentPluginsPage() {
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Plugins</h2>
+        <h2 className="text-2xl font-semibold tracking-tight">插件</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Hook plugins discovered on this install — enable per-agent for{" "}
-          <strong>{agentName}</strong>. Off by default; plugins only
-          fire on agents you explicitly turn on. Follow-up messages flow
-          back through <code className="text-[10px]">chat.send</code> —
-          they don&apos;t trigger another agent turn.
+          此安装中发现的 Hook 插件，可按智能体启用：{" "}
+          <strong>{agentName}</strong>。默认关闭，插件仅对你明确启用的智能体生效。后续消息会通过 <code className="text-[10px]">chat.send</code> 返回，不会触发新一轮智能体运行。
         </p>
       </div>
 
@@ -98,14 +95,13 @@ export default function AgentPluginsPage() {
               <Plug className="h-7 w-7 text-primary" />
             </div>
             <p className="text-sm text-muted-foreground mb-1">
-              No hook plugins installed
+              尚未安装 Hook 插件
             </p>
             <p className="text-xs text-muted-foreground/60 max-w-sm text-center">
-              Drop a plugin directory into{" "}
+              将插件目录放入{" "}
               <code className="text-[10px]">~/.bkclaw/plugins/</code>{" "}
-              with <code className="text-[10px]">type: &quot;hook&quot;</code> in
-              its <code className="text-[10px]">plugin.json</code>, then
-              restart the daemon.
+              并在 <code className="text-[10px]">plugin.json</code> 中设置{" "}
+              <code className="text-[10px]">type: &quot;hook&quot;</code>，然后重启守护进程。
             </p>
           </div>
         </div>
@@ -139,7 +135,7 @@ export default function AgentPluginsPage() {
                     checked={enabled}
                     onCheckedChange={(v) => handleToggle(p.id, v)}
                     disabled={saving}
-                    aria-label={`Enable plugin ${p.id}`}
+                    aria-label={`启用插件 ${p.id}`}
                   />
                 </div>
                 {p.description && (

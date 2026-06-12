@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/provider"
 )
 
 // maybeRecoverToolCalls runs recoverToolCallsFromContent on the
@@ -195,9 +195,10 @@ var tagLeakHintRE = regexp.MustCompile(`<invoke|<\s*/?\s*[|｜]`)
 // it), so we let either noise group consume it.
 //
 // Captures:
-//   $1 = optional `/` for closing tags
-//   $2 = real tag name (invoke / parameter / tool_calls / function_calls / DSML)
-//   $3 = attributes that follow the tag name (e.g. ` name="exec"`)
+//
+//	$1 = optional `/` for closing tags
+//	$2 = real tag name (invoke / parameter / tool_calls / function_calls / DSML)
+//	$3 = attributes that follow the tag name (e.g. ` name="exec"`)
 //
 // Replacement `<${1}${2}${3}>` reconstructs `<invoke name="exec">` etc.
 // Clean inputs like `<DSML>` / `<invoke name="x">` round-trip unchanged

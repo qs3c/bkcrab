@@ -8,7 +8,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/store"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 // APIKey type tiers. Set on the apikey at create time; immutable.

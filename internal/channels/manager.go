@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bkclaw-ai/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/bus"
 )
 
 // Manager manages all channel instances and routes outbound messages.
@@ -228,15 +228,15 @@ func (m *Manager) routeOutbound(ctx context.Context) {
 // adapter sees one logical message per SendMessage call, regardless of
 // whether the agent decided to split.
 //
-//   AllowSplit && marker present  → split text by marker, send sequentially
-//                                   (media + buttons attach to the LAST
-//                                   chunk so they only appear once)
-//   AllowSplit && no marker       → send as-is
-//   !AllowSplit && marker present → collapse marker to newline first so the
-//                                   raw `<|split|>` token doesn't surface
-//                                   as literal text on stale system-prompt
-//                                   caches
-//   !AllowSplit && no marker      → send as-is
+//	AllowSplit && marker present  → split text by marker, send sequentially
+//	                                (media + buttons attach to the LAST
+//	                                chunk so they only appear once)
+//	AllowSplit && no marker       → send as-is
+//	!AllowSplit && marker present → collapse marker to newline first so the
+//	                                raw `<|split|>` token doesn't surface
+//	                                as literal text on stale system-prompt
+//	                                caches
+//	!AllowSplit && no marker      → send as-is
 //
 // Sequential dispatch is guaranteed by routeOutbound's single-goroutine
 // design — chunks arrive in order at the adapter.

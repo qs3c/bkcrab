@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/bkclaw-ai/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/provider"
 )
 
 // subagentDefaultTimeout caps the wall time one subagent can spend on

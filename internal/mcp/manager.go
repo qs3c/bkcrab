@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/bkclaw-ai/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/config"
 )
 
 // Manager manages connections to multiple MCP servers.

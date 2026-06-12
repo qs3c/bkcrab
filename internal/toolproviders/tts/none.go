@@ -3,7 +3,7 @@ package tts
 import (
 	"context"
 
-	"github.com/bkclaw-ai/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
 // None is a sentinel provider meaning "do not expose tts to the model."

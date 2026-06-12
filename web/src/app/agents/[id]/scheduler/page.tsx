@@ -40,13 +40,17 @@ import { useAgentName } from "@/hooks/use-agent-name";
 function fmtSchedule(job: AgentCronJob): string {
   switch (job.type) {
     case "interval":
-      return `every ${job.schedule}`;
+      return `每 ${job.schedule}`;
     case "once":
-      return `at ${job.schedule}`;
+      return `于 ${job.schedule}`;
     case "cron":
     default:
       return job.schedule;
   }
+}
+
+function typeLabel(type: string): string {
+  return ({ interval: "固定间隔", once: "单次执行", cron: "Cron 表达式" } as Record<string, string>)[type] || type;
 }
 
 function fmtRelative(iso?: string): string {
@@ -56,12 +60,12 @@ function fmtRelative(iso?: string): string {
   const diff = t - Date.now();
   const abs = Math.abs(diff);
   const mins = Math.round(abs / 60_000);
-  if (mins < 1) return diff > 0 ? "in <1m" : "just now";
-  if (mins < 60) return diff > 0 ? `in ${mins}m` : `${mins}m ago`;
+  if (mins < 1) return diff > 0 ? "不到 1 分钟后" : "刚刚";
+  if (mins < 60) return diff > 0 ? `${mins} 分钟后` : `${mins} 分钟前`;
   const hours = Math.round(mins / 60);
-  if (hours < 48) return diff > 0 ? `in ${hours}h` : `${hours}h ago`;
+  if (hours < 48) return diff > 0 ? `${hours} 小时后` : `${hours} 小时前`;
   const days = Math.round(hours / 24);
-  return diff > 0 ? `in ${days}d` : `${days}d ago`;
+  return diff > 0 ? `${days} 天后` : `${days} 天前`;
 }
 
 function typeIcon(type: string) {
@@ -96,7 +100,7 @@ export default function AgentSchedulerPage() {
         setJobs(list);
         setError("");
       })
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load jobs"))
+      .catch((e) => setError(e instanceof Error ? e.message : "加载任务失败"))
       .finally(() => setLoading(false));
   }, [agentId]);
 
@@ -119,7 +123,7 @@ export default function AgentSchedulerPage() {
       return rest;
     });
     if (res.error || !res.ok) {
-      setError(res.error || "Failed to update job");
+      setError(res.error || "更新任务失败");
       // Revert by refetching the canonical state.
       refresh();
     }
@@ -140,10 +144,10 @@ export default function AgentSchedulerPage() {
         <div>
           <div className="flex items-center gap-2">
             <Clock className="size-5 text-muted-foreground" />
-            <h2 className="text-2xl font-semibold tracking-tight">Scheduler</h2>
+            <h2 className="text-2xl font-semibold tracking-tight">定时任务</h2>
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            Scheduled tasks for <strong>{agentName || "this agent"}</strong>.
+            以下智能体的定时任务： <strong>{agentName || "此智能体"}</strong>.
           </p>
         </div>
       </div>
@@ -164,7 +168,7 @@ export default function AgentSchedulerPage() {
         <div className="rounded-lg border border-dashed border-border bg-card/50 p-10 text-center">
           <Clock className="mx-auto size-8 text-muted-foreground/50 mb-3" />
           <p className="text-sm text-muted-foreground">
-            No scheduled tasks yet.
+            暂无定时任务。
           </p>
         </div>
       ) : (
@@ -187,20 +191,18 @@ export default function AgentSchedulerPage() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete scheduled task</AlertDialogTitle>
+            <AlertDialogTitle>删除定时任务</AlertDialogTitle>
             <AlertDialogDescription>
-              Remove <strong>{deleteTarget?.name || deleteTarget?.id}</strong>?
-              This stops future runs and can&apos;t be undone. Existing chat
-              history is preserved.
+              移除 <strong>{deleteTarget?.name || deleteTarget?.id}</strong>？这会停止后续运行且无法撤销，现有对话历史会保留。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleDelete}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              删除
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -231,14 +233,14 @@ function JobRow({
               className="inline-flex items-center gap-1 text-[10px]"
             >
               {typeIcon(job.type)}
-              {job.type}
+              {typeLabel(job.type)}
             </Badge>
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
               {fmtSchedule(job)}
             </code>
             {job.channel && (
               <span className="text-[11px] text-muted-foreground">
-                via {job.channel}
+                通过 {job.channel}
               </span>
             )}
           </div>
@@ -248,11 +250,11 @@ function JobRow({
           </div>
           <div className="flex gap-4 text-[11px] text-muted-foreground/80">
             <span>
-              Last run:{" "}
+              上次运行：{" "}
               <span className="font-mono">{fmtRelative(job.lastRun)}</span>
             </span>
             <span>
-              Next run:{" "}
+              下次运行：{" "}
               <span className="font-mono">{fmtRelative(job.nextRun)}</span>
             </span>
           </div>
@@ -262,14 +264,14 @@ function JobRow({
             checked={job.enabled}
             disabled={busy}
             onCheckedChange={(v) => onToggle(v)}
-            aria-label={job.enabled ? "Disable" : "Enable"}
+            aria-label={job.enabled ? "禁用" : "启用"}
           />
           <Button
             size="icon"
             variant="ghost"
             className="text-destructive hover:text-destructive"
             onClick={onDelete}
-            title="Delete"
+            title="删除"
           >
             <Trash2 className="size-4" />
           </Button>

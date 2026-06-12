@@ -6,7 +6,7 @@ import { useTheme, type Theme } from "@/components/theme-provider";
 const choices: Array<{ value: Theme; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { value: "light", label: "Light", icon: Sun },
   { value: "dark", label: "Dark", icon: Moon },
-  { value: "system", label: "System", icon: Monitor },
+  { value: "system", label: "系统", icon: Monitor },
 ];
 
 export default function GeneralSettingsPage() {
@@ -15,16 +15,16 @@ export default function GeneralSettingsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-xl font-semibold tracking-tight">General</h3>
+        <h3 className="text-xl font-semibold tracking-tight">常规</h3>
         <p className="text-sm text-muted-foreground mt-1">
-          Appearance and per-device preferences.
+          外观和当前设备偏好设置。
         </p>
       </div>
 
       <div className="rounded-lg border border-border bg-card p-5">
-        <h4 className="font-medium mb-1">Theme</h4>
+        <h4 className="font-medium mb-1">主题</h4>
         <p className="text-sm text-muted-foreground mb-4">
-          Choose the dashboard color scheme. System follows your OS.
+          选择仪表盘配色方案。“系统”将跟随操作系统设置。
         </p>
         <div className="grid grid-cols-3 gap-3 max-w-md">
           {choices.map((c) => {

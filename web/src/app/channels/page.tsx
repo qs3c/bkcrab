@@ -29,6 +29,15 @@ const channelColors: Record<string, string> = {
   slack: "from-green-500 to-green-600",
 };
 
+const channelLabels: Record<string, string> = {
+  telegram: "Telegram",
+  discord: "Discord",
+  slack: "Slack",
+  line: "LINE",
+  wechat: "微信",
+  feishu: "飞书",
+};
+
 export default function ChannelsPage() {
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -49,9 +58,9 @@ export default function ChannelsPage() {
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Channels</h2>
+        <h2 className="text-2xl font-semibold tracking-tight">渠道</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Manage messaging platform connections
+          管理消息平台连接
         </p>
       </div>
 
@@ -67,9 +76,9 @@ export default function ChannelsPage() {
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-500/10 mb-4">
               <Radio className="h-7 w-7 text-blue-500" />
             </div>
-            <p className="text-sm text-muted-foreground mb-1">No channels configured</p>
+            <p className="text-sm text-muted-foreground mb-1">尚未配置渠道</p>
             <p className="text-xs text-muted-foreground/60">
-              Configure channels in Settings or bkclaw.json
+              在“设置”或 bkclaw.json 中配置渠道
             </p>
           </div>
         </div>
@@ -103,16 +112,16 @@ export default function ChannelsPage() {
                         isConnected ? "bg-emerald-500" : "bg-muted-foreground"
                       }`}
                     />
-                    {isConnected ? "Connected" : "Disconnected"}
+                    {isConnected ? "已连接" : "未连接"}
                   </Badge>
                 </div>
                 <p className="text-base font-medium capitalize mb-1">
-                  {channel.type}
+                  {channelLabels[channel.type] || channel.type}
                 </p>
                 <p className="text-sm text-muted-foreground">
                   {channel.botUsername
                     ? `@${channel.botUsername}`
-                    : "Click to configure"}
+                    : "点击配置"}
                 </p>
               </div>
             );
@@ -125,15 +134,15 @@ export default function ChannelsPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="capitalize">
-              {editChannel?.type} Configuration
+              {editChannel ? channelLabels[editChannel.type] || editChannel.type : ""} 配置
             </DialogTitle>
             <DialogDescription>
-              Update channel connection settings
+              更新渠道连接设置
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label>Bot Token</Label>
+              <Label>机器人令牌</Label>
               <Input
                 type="password"
                 defaultValue="••••••••••••"
@@ -142,7 +151,7 @@ export default function ChannelsPage() {
             </div>
             {editChannel?.botUsername && (
               <div className="space-y-2">
-                <Label>Bot Username</Label>
+                <Label>机器人用户名</Label>
                 <Input
                   value={editChannel.botUsername}
                   disabled
@@ -153,9 +162,9 @@ export default function ChannelsPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditChannel(null)}>
-              Cancel
+              取消
             </Button>
-            <Button>Save</Button>
+            <Button>保存</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

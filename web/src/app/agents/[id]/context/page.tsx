@@ -30,9 +30,9 @@ import { useAgentName } from "@/hooks/use-agent-name";
 type PromptModeValue = "" | "agent" | "chatbot" | "customize";
 
 const MODE_LABEL: Record<string, string> = {
-  agent: "Agent",
-  chatbot: "Chatbot",
-  customize: "Customize",
+  agent: "智能体",
+  chatbot: "聊天机器人",
+  customize: "自定义",
 };
 
 export default function AgentContextPage() {
@@ -144,19 +144,16 @@ export default function AgentContextPage() {
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Context</h2>
+          <h2 className="text-2xl font-semibold tracking-tight">上下文</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            What the LLM sees for{" "}
-            <strong>{agentName || "this agent"}</strong>. The prompt mode
-            picks both the framework prompt profile and the built-in tool
-            set. Custom tools come from plugins — always exposed
-            regardless of mode.
+            大模型看到的内容：{" "}
+            <strong>{agentName || "此智能体"}</strong>。提示词模式会同时选择框架提示词方案和内置工具集。自定义工具来自插件，无论使用何种模式都会提供。
           </p>
         </div>
         <div className="flex items-center gap-2">
           {saved && (
             <span className="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
-              <Check className="h-3.5 w-3.5" /> Saved
+              <Check className="h-3.5 w-3.5" /> 已保存
             </span>
           )}
         </div>
@@ -167,10 +164,10 @@ export default function AgentContextPage() {
         <div className="flex items-center justify-between gap-2 mb-3">
           <div className="flex items-center gap-2">
             <MessageSquare className="h-4 w-4 text-primary" />
-            <h3 className="font-medium">Prompt mode</h3>
+            <h3 className="font-medium">提示词模式</h3>
             {promptMode === "" || promptMode === "agent" ? (
               <Badge variant="outline" className="text-[10px]">
-                Default
+                默认
               </Badge>
             ) : (
               <Badge className="bg-primary/10 text-primary hover:bg-primary/10 text-[10px]">
@@ -195,49 +192,35 @@ export default function AgentContextPage() {
             <SelectValue>{MODE_LABEL[promptMode || "agent"]}</SelectValue>
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="agent">Agent</SelectItem>
-            <SelectItem value="chatbot">Chatbot</SelectItem>
-            <SelectItem value="customize">Customize</SelectItem>
+            <SelectItem value="agent">智能体</SelectItem>
+            <SelectItem value="chatbot">聊天机器人</SelectItem>
+            <SelectItem value="customize">自定义</SelectItem>
           </SelectContent>
         </Select>
         <div className="mt-3 text-xs text-muted-foreground space-y-1.5">
           <div>
-            <strong>Agent</strong> — full framework prompt (task delegation,
-            tool-use discipline, workspace self-update, scheduling) + all
-            built-in tools. Default for autonomous task agents.
+            <strong>智能体</strong> — 完整框架提示词（任务委派、工具使用规范、工作区自更新和定时任务）以及全部内置工具。这是自主任务智能体的默认模式。
           </div>
           <div>
-            <strong>Chatbot</strong> — slim framework so persona files
-            shape voice directly. Built-ins narrowed to{" "}
+            <strong>聊天机器人</strong> — 精简框架，让人格文件直接决定表达风格。内置工具缩减为{" "}
             <code className="text-[10px]">image_gen</code>,{" "}
             <code className="text-[10px]">tts</code>,{" "}
             <code className="text-[10px]">write_file</code>,{" "}
-            <code className="text-[10px]">edit_file</code> — the
-            last two let the LLM persist USER.md / MEMORY.md when it
-            learns about the chatter. Memory is the USER.md / MEMORY.md
-            sections inlined in the system prompt; no{" "}
-            <code className="text-[10px]">memory_search</code> escape
-            hatch (it scans logs chatbot mode doesn't write, returns
-            empty, and confuses the model). Main reply emits as plain
-            text, multi-bubble via the inline split marker. For
-            companion / role-play / customer-support bots.
+            <code className="text-[10px]">edit_file</code> — 后两个工具让大模型在了解聊天者后将信息持久化到 USER.md / MEMORY.md。记忆内容来自系统提示词中内嵌的 USER.md / MEMORY.md 段落，不提供{" "}
+            <code className="text-[10px]">memory_search</code> 备用检索通道（聊天机器人模式不会写入它所扫描的日志，结果为空并会干扰模型）。主回复以纯文本输出，多气泡回复通过内联分隔标记实现。适合陪伴、角色扮演和客服机器人。
           </div>
           <div>
-            <strong>Customize</strong> — only the date anchor + your
-            bootstrap files; NO built-in tools. You write the system
-            prompt completely via SOUL.md / IDENTITY.md and bring tools
-            via plugins.
+            <strong>自定义</strong> — 仅包含日期锚点和启动文件，不提供内置工具。你可以通过 SOUL.md / IDENTITY.md 完整编写系统提示词，并通过插件提供工具。
           </div>
         </div>
         <div className="mt-4 pt-3 border-t border-border flex items-start gap-2 text-xs text-muted-foreground">
           <Puzzle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
           <span>
-            Plugin and MCP tools are always exposed regardless of mode.
-            Build a plugin — see{" "}
+            插件和 MCP 工具不受模式影响，始终可用。创建插件请参阅{" "}
             <code className="text-[11px]">
               ~/.bkclaw/plugins/bkclaw-plugin-demo
             </code>{" "}
-            for a minimal example.
+            查看最小示例。
           </span>
         </div>
       </div>
@@ -250,14 +233,9 @@ export default function AgentContextPage() {
           <div className="flex items-start gap-3 min-w-0">
             <MessagesSquare className="h-4 w-4 text-primary mt-0.5 shrink-0" />
             <div className="min-w-0">
-              <h3 className="font-medium">Multi-bubble replies</h3>
+              <h3 className="font-medium">多气泡回复</h3>
               <p className="text-sm text-muted-foreground mt-1">
-                Let the agent split one reply into multiple chat bubbles
-                using a separator marker — natural for short, multi-beat
-                replies in IM. Applies to every IM channel
-                (WeChat / Telegram / Discord / Slack / LINE / Feishu);
-                ignored on web. Off by default — keeps each reply as a
-                single message.
+                允许智能体使用分隔标记将一次回复拆成多个对话气泡，更适合即时通讯中的简短分段回复。适用于所有即时通讯渠道（微信、Telegram、Discord、Slack、LINE、飞书），网页端会忽略此设置。默认关闭，每次回复保持为一条消息。
               </p>
             </div>
           </div>
@@ -265,7 +243,7 @@ export default function AgentContextPage() {
             checked={splitReplies}
             onCheckedChange={handleSplitRepliesChange}
             disabled={splitRepliesSaving}
-            aria-label="Multi-bubble replies"
+            aria-label="多气泡回复"
           />
         </div>
       </div>
@@ -278,18 +256,11 @@ export default function AgentContextPage() {
           <div className="flex items-start gap-3 min-w-0">
             <Brain className="h-4 w-4 text-primary mt-0.5 shrink-0" />
             <div className="min-w-0">
-              <h3 className="font-medium">Auto-remember chatter</h3>
+              <h3 className="font-medium">自动记住聊天者</h3>
               <p className="text-sm text-muted-foreground mt-1">
-                Backup persistence path: every 5 user-turns the runtime
-                fires a small LLM call that distills the recent
-                conversation into USER.md / MEMORY.md. The primary
-                path is the LLM writing those files directly via{" "}
+                备用持久化机制：每 5 轮用户消息，运行时会发起一次小型大模型调用，将近期对话提炼到 USER.md / MEMORY.md。主要机制仍是大模型通过以下工具直接写入这些文件：{" "}
                 <code className="text-[10px]">write_file</code> /{" "}
-                <code className="text-[10px]">edit_file</code> (now
-                available in Chatbot mode too) — this toggle just
-                makes sure something still gets persisted when the
-                model forgets to. Off by default to preserve the
-                stateless-across-sessions behavior.
+                <code className="text-[10px]">edit_file</code> （现在聊天机器人模式也可使用）。此开关用于在模型忘记写入时确保仍有内容被持久化。默认关闭，以保持跨会话无状态行为。
               </p>
             </div>
           </div>
@@ -297,7 +268,7 @@ export default function AgentContextPage() {
             checked={autoPersist}
             onCheckedChange={handleAutoPersistChange}
             disabled={autoPersistSaving}
-            aria-label="Auto-remember chatter"
+            aria-label="自动记住聊天者"
           />
         </div>
       </div>
