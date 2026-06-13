@@ -1,5 +1,5 @@
 // Package store is the single persistence layer for BkClaw. The database
-// is mandatory (sqlite by default; postgres for production); there is no
+// is mandatory (MySQL by default); there is no
 // file-only fallback. Every per-user table requires a real users.id row;
 // callers that haven't resolved a user must 401, not invent a placeholder.
 package store
@@ -582,6 +582,7 @@ type CronJobRecord struct {
 type StorageType string
 
 const (
+	StorageMySQL    StorageType = "mysql"
 	StoragePostgres StorageType = "postgres"
 	StorageSQLite   StorageType = "sqlite"
 )

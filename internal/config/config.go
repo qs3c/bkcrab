@@ -647,7 +647,7 @@ type TeamConfig struct {
 }
 
 // HomeDir returns the BkClaw root directory (default ~/.bkclaw).
-// Holds the sqlite db, sandbox roots, and FS-materialized agent caches.
+// Holds sandbox roots, local indexes, and FS-materialized agent caches.
 func HomeDir() (string, error) {
 	if h := os.Getenv("BKCLAW_HOME"); h != "" {
 		return h, nil

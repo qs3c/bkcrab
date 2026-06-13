@@ -7,7 +7,7 @@ metadata:
 data:
   BKCLAW_PORT: {{ .Values.gateway.port | quote }}
   BKCLAW_BIND: "all"
-  BKCLAW_STORAGE_TYPE: "postgres"
+  BKCLAW_STORAGE_TYPE: {{ include "bkclaw.storageType" . | quote }}
   BKCLAW_STORAGE_AUTO_MIGRATE: "true"
   {{- with .Values.timezone }}
   ## Server default timezone — last fallback after chatter / agent /

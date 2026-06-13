@@ -66,7 +66,7 @@ type Totals struct {
 
 // Rank is one row of a per-agent or per-user leaderboard.
 type Rank struct {
-	Key      string `json:"key"`   // agent_id or user_id ("" → "system" on render)
+	Key      string `json:"key"`    // agent_id or user_id ("" → "system" on render)
 	Tokens   int64  `json:"tokens"` // input+output+cache combined
 	Input    int64  `json:"inputTokens"`
 	Output   int64  `json:"outputTokens"`
@@ -275,7 +275,7 @@ func inRange(day time.Time, r Range) bool {
 // migrateTokenUsageDaily). SQLMeter is a thin query layer on top.
 type SQLMeter struct {
 	db      *sql.DB
-	dialect string // "postgres" | "sqlite"
+	dialect string // "mysql" | "postgres" | "sqlite"
 }
 
 // NewSQLMeter wraps an open *sql.DB. The caller (gateway boot) supplies
@@ -325,6 +325,23 @@ func (s *SQLMeter) dayParam(t time.Time) any {
 
 func (s *SQLMeter) RecordTokens(ctx context.Context, userID, agentID, sessionKey, provider, model string, t Tokens) error {
 	day := s.dayParam(dayBucket(time.Now()))
+	if s.dialect == "mysql" {
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO token_usage_daily
+				(day, user_id, agent_id, session_key, provider, model,
+				 input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, request_count)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+			ON DUPLICATE KEY UPDATE
+				input_tokens        = token_usage_daily.input_tokens        + VALUES(input_tokens),
+				output_tokens       = token_usage_daily.output_tokens       + VALUES(output_tokens),
+				cache_read_tokens   = token_usage_daily.cache_read_tokens   + VALUES(cache_read_tokens),
+				cache_create_tokens = token_usage_daily.cache_create_tokens + VALUES(cache_create_tokens),
+				request_count       = token_usage_daily.request_count + 1`,
+			day, userID, agentID, sessionKey, provider, model,
+			t.Input, t.Output, t.CacheRead, t.CacheCreation,
+		)
+		return err
+	}
 	// Both dialects support this six-column conflict target and the
 	// EXCLUDED reference. We additionally bump request_count by 1.
 	q := s.rebind(`

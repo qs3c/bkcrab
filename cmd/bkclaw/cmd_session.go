@@ -105,7 +105,7 @@ Examples:
 	cmd.Flags().StringVarP(&outputPath, "output", "o", "",
 		"output JSON path (default ~/.bkclaw/logs/<sessionKey>.json)")
 	cmd.Flags().StringVar(&dbPath, "db", "",
-		"sqlite DB path (default ~/.bkclaw/bkclaw.db)")
+		"legacy SQLite DB path (default: BKCLAW_STORAGE_* MySQL database)")
 	return cmd
 }
 
@@ -130,17 +130,20 @@ func parseChatURL(raw string) (string, string, error) {
 	return m[1], m[2], nil
 }
 
-// openStoreAt opens a DBStore at an explicit sqlite path. Empty
-// dbPath defaults to ~/.bkclaw/bkclaw.db with the same pragma
-// tuning the daemon uses, so a CLI export against a live db doesn't
-// hit lock contention.
+// openStoreAt uses the configured runtime database by default. An explicit
+// path is retained only for exporting data from a legacy SQLite database.
 func openStoreAt(dbPath string) (*store.DBStore, func(), error) {
 	if dbPath == "" {
-		home, err := os.UserHomeDir()
+		st, err := openStoreFromEnv()
 		if err != nil {
-			return nil, nil, fmt.Errorf("resolve home dir: %w", err)
+			return nil, nil, err
 		}
-		dbPath = filepath.Join(home, ".bkclaw", "bkclaw.db")
+		db, ok := st.(*store.DBStore)
+		if !ok {
+			_ = st.Close()
+			return nil, nil, fmt.Errorf("configured store does not expose SQL access")
+		}
+		return db, func() { _ = db.Close() }, nil
 	}
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil, nil, fmt.Errorf("db file: %w", err)
@@ -161,8 +164,12 @@ func openStoreAt(dbPath string) (*store.DBStore, func(), error) {
 // (extremely unlikely — session_key is timestamp-randomized — but
 // would lead to a silent wrong-user export, so flag it).
 func lookupSessionUser(ctx context.Context, st *store.DBStore, agentID, sessionKey string) (string, error) {
+	query := `SELECT user_id FROM sessions WHERE agent_id = ? AND session_key = ?`
+	if st.Dialect() == "postgres" {
+		query = `SELECT user_id FROM sessions WHERE agent_id = $1 AND session_key = $2`
+	}
 	rows, err := st.DB().QueryContext(ctx,
-		`SELECT user_id FROM sessions WHERE agent_id = ? AND session_key = ?`,
+		query,
 		agentID, sessionKey)
 	if err != nil {
 		return "", fmt.Errorf("query sessions: %w", err)

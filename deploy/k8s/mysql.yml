@@ -1,0 +1,90 @@
+# Optional in-cluster MySQL, suitable for development and single-node trials.
+# For production, prefer a managed MySQL 8.0+ service.
+#
+# To use alongside fastclaw.yaml:
+#   1. kubectl apply -f mysql.yml
+#   2. Set bkclaw-secrets.STORAGE_DSN to:
+#        bkclaw:<MYSQL_PASSWORD>@tcp(bkclaw-db:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4
+#   3. kubectl apply -f fastclaw.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bkclaw-db
+  namespace: bkclaw
+type: Opaque
+stringData:
+  MYSQL_PASSWORD: "change-me-in-production"
+  MYSQL_ROOT_PASSWORD: "change-root-password-too"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bkclaw-db
+  namespace: bkclaw
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bkclaw-db
+  namespace: bkclaw
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bkclaw-db
+  template:
+    metadata:
+      labels:
+        app: bkclaw-db
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.4
+        ports:
+        - containerPort: 3306
+        env:
+        - name: MYSQL_DATABASE
+          value: bkclaw
+        - name: MYSQL_USER
+          value: bkclaw
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: bkclaw-db
+              key: MYSQL_PASSWORD
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: bkclaw-db
+              key: MYSQL_ROOT_PASSWORD
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+        readinessProbe:
+          exec:
+            command:
+              - sh
+              - -c
+              - mysqladmin ping -h 127.0.0.1 -u bkclaw -p"$MYSQL_PASSWORD" --silent
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: bkclaw-db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bkclaw-db
+  namespace: bkclaw
+spec:
+  selector:
+    app: bkclaw-db
+  ports:
+  - port: 3306

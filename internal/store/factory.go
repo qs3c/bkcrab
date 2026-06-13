@@ -2,22 +2,26 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 )
 
-// New creates a Store. The database is mandatory; sqlite is the default
-// for zero-config installs and stores its file under ~/.bkclaw/bkclaw.db.
-// Postgres is the production target — pass a DSN.
+// New creates a Store. MySQL is the runtime default and requires an explicit
+// DSN. PostgreSQL and SQLite remain available only when explicitly selected;
+// there is no automatic fallback to SQLite.
 func New(cfg *StorageConfig, homeDir string) (Store, error) {
 	if cfg == nil || cfg.Type == "" {
-		cfg = &StorageConfig{Type: StorageSQLite, AutoMigrate: true}
+		cfg = &StorageConfig{Type: StorageMySQL, AutoMigrate: true}
 	}
 	switch cfg.Type {
-	case StoragePostgres, StorageSQLite:
+	case StorageMySQL, StoragePostgres, StorageSQLite:
 		dsn := cfg.DSN
+		if cfg.Type == StorageMySQL && dsn == "" {
+			return nil, errors.New("mysql storage requires BKCLAW_STORAGE_DSN; SQLite fallback is disabled")
+		}
 		if cfg.Type == StorageSQLite && dsn == "" {
 			if err := os.MkdirAll(homeDir, 0o755); err != nil {
 				return nil, fmt.Errorf("create %s: %w", homeDir, err)
@@ -50,7 +54,7 @@ func New(cfg *StorageConfig, homeDir string) (Store, error) {
 		}
 		return db, nil
 	default:
-		return nil, fmt.Errorf("unsupported storage type: %s (only sqlite/postgres supported)", cfg.Type)
+		return nil, fmt.Errorf("unsupported storage type: %s (supported: mysql, postgres, sqlite)", cfg.Type)
 	}
 }
 

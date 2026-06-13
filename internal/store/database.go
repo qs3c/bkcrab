@@ -16,14 +16,25 @@ import (
 	_ "modernc.org/sqlite" // SQLite driver (pure Go)
 )
 
-// DBStore implements Store using a SQL database (PostgreSQL or SQLite).
+// DBStore implements Store using a SQL database.
 type DBStore struct {
 	db      *sql.DB
-	dialect string // "postgres" or "sqlite"
+	dialect string // "mysql", "postgres", or "sqlite"
 }
 
 // NewDBStore creates a database-backed store.
 func NewDBStore(dialect, dsn string) (*DBStore, error) {
+	switch dialect {
+	case mysqlDialect:
+		var err error
+		dsn, err = normalizeMySQLDSN(dsn)
+		if err != nil {
+			return nil, err
+		}
+	case "postgres", "sqlite":
+	default:
+		return nil, fmt.Errorf("unsupported database dialect %q", dialect)
+	}
 	db, err := sql.Open(driverName(dialect), dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", dialect, err)
@@ -53,12 +64,14 @@ func NewDBStore(dialect, dsn string) (*DBStore, error) {
 // connection pool without re-opening the DSN.
 func (d *DBStore) DB() *sql.DB { return d.db }
 
-// Dialect returns "postgres" or "sqlite" so satellite packages can pick
-// the right placeholder syntax / upsert form for their queries.
+// Dialect returns the SQL dialect so satellite packages can pick the right
+// placeholder syntax and upsert form for their queries.
 func (d *DBStore) Dialect() string { return d.dialect }
 
 func driverName(dialect string) string {
 	switch dialect {
+	case mysqlDialect:
+		return "mysql"
 	case "postgres":
 		return "postgres"
 	case "sqlite":
@@ -79,8 +92,12 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 	if err := d.migrateRenameChatEventsToSessionEvents(ctx); err != nil {
 		return fmt.Errorf("migrate chat_events → session_events: %w", err)
 	}
-	for _, stmt := range d.migrationSQL() {
-		if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+	migrationSQL := d.migrationSQL()
+	if d.dialect == mysqlDialect {
+		migrationSQL = mysqlMigrationSQL()
+	}
+	for _, stmt := range migrationSQL {
+		if err := d.execDDL(ctx, stmt); err != nil {
 			return fmt.Errorf("migrate: %w\nSQL: %s", err, stmt)
 		}
 	}
@@ -178,8 +195,12 @@ func (d *DBStore) migrateSessionsAddChatterUserID(ctx context.Context) error {
 			return err
 		}
 		if !has {
+			columnType := "TEXT"
+			if d.dialect == mysqlDialect {
+				columnType = "VARCHAR(120)"
+			}
 			if _, err := d.db.ExecContext(ctx,
-				fmt.Sprintf(`ALTER TABLE %s ADD COLUMN chatter_user_id TEXT NOT NULL DEFAULT ''`, t)); err != nil {
+				fmt.Sprintf(`ALTER TABLE %s ADD COLUMN chatter_user_id %s NOT NULL DEFAULT ''`, t, columnType)); err != nil {
 				return fmt.Errorf("add column on %s: %w", t, err)
 			}
 		}
@@ -191,8 +212,15 @@ func (d *DBStore) migrateSessionsAddChatterUserID(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_session_messages_by_chatter ON session_messages (chatter_user_id, agent_id, session_key, seq) WHERE chatter_user_id <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_session_events_by_chatter ON session_events (chatter_user_id, agent_id, session_key, seq) WHERE chatter_user_id <> ''`,
 	}
+	if d.dialect == mysqlDialect {
+		indexSQL = []string{
+			`CREATE INDEX IF NOT EXISTS idx_sessions_by_chatter ON sessions (chatter_user_id, agent_id, updated_at DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_session_messages_by_chatter ON session_messages (chatter_user_id, agent_id, session_key, seq)`,
+			`CREATE INDEX IF NOT EXISTS idx_session_events_by_chatter ON session_events (chatter_user_id, agent_id, session_key, seq)`,
+		}
+	}
 	for _, stmt := range indexSQL {
-		if _, err := d.db.ExecContext(ctx, stmt); err != nil {
+		if err := d.execDDL(ctx, stmt); err != nil {
 			return fmt.Errorf("create chatter index: %w (sql: %s)", err, stmt)
 		}
 	}
@@ -214,8 +242,17 @@ func (d *DBStore) migrateAgentGoalsAddRouting(ctx context.Context) error {
 		if has {
 			continue
 		}
+		columnType := "TEXT"
+		if d.dialect == mysqlDialect {
+			columnType = "VARCHAR(191)"
+			if col == "channel" {
+				columnType = "VARCHAR(64)"
+			} else if col == "project_id" {
+				columnType = "VARCHAR(120)"
+			}
+		}
 		if _, err := d.db.ExecContext(ctx,
-			fmt.Sprintf(`ALTER TABLE agent_goals ADD COLUMN %s TEXT NOT NULL DEFAULT ''`, col)); err != nil {
+			fmt.Sprintf(`ALTER TABLE agent_goals ADD COLUMN %s %s NOT NULL DEFAULT ''`, col, columnType)); err != nil {
 			return fmt.Errorf("add column %s: %w", col, err)
 		}
 	}
@@ -235,8 +272,12 @@ func (d *DBStore) migrateSessionMessagesAddOrigin(ctx context.Context) error {
 	if has {
 		return nil
 	}
+	columnType := "TEXT"
+	if d.dialect == mysqlDialect {
+		columnType = "VARCHAR(64)"
+	}
 	if _, err := d.db.ExecContext(ctx,
-		`ALTER TABLE session_messages ADD COLUMN origin TEXT NOT NULL DEFAULT ''`); err != nil {
+		fmt.Sprintf(`ALTER TABLE session_messages ADD COLUMN origin %s NOT NULL DEFAULT ''`, columnType)); err != nil {
 		return fmt.Errorf("add column: %w", err)
 	}
 	return nil
@@ -276,7 +317,7 @@ func (d *DBStore) migrateTokenUsageAddProvider(ctx context.Context) error {
 	// migration step runs AFTER migrationSQL in the same Migrate()
 	// call ordering — so the table comes back with the right shape
 	// before any agent traffic hits it.
-	if _, err := d.db.ExecContext(ctx, `CREATE TABLE token_usage_daily (
+	createSQL := `CREATE TABLE token_usage_daily (
 		day DATE NOT NULL,
 		user_id TEXT NOT NULL DEFAULT '',
 		agent_id TEXT NOT NULL DEFAULT '',
@@ -289,14 +330,18 @@ func (d *DBStore) migrateTokenUsageAddProvider(ctx context.Context) error {
 		cache_create_tokens BIGINT NOT NULL DEFAULT 0,
 		request_count BIGINT NOT NULL DEFAULT 0,
 		PRIMARY KEY (day, user_id, agent_id, session_key, provider, model)
-	)`); err != nil {
+	)`
+	if d.dialect == mysqlDialect {
+		createSQL = mysqlTokenUsageTableSQL()
+	}
+	if _, err := d.db.ExecContext(ctx, createSQL); err != nil {
 		return fmt.Errorf("recreate token_usage_daily: %w", err)
 	}
-	if _, err := d.db.ExecContext(ctx,
+	if err := d.execDDL(ctx,
 		`CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage_daily (agent_id, day)`); err != nil {
 		return err
 	}
-	if _, err := d.db.ExecContext(ctx,
+	if err := d.execDDL(ctx,
 		`CREATE INDEX IF NOT EXISTS idx_token_usage_user ON token_usage_daily (user_id, day)`); err != nil {
 		return err
 	}
@@ -315,8 +360,12 @@ func (d *DBStore) migrateSessionsAddProjectID(ctx context.Context) error {
 	if has {
 		return nil
 	}
+	columnType := "TEXT"
+	if d.dialect == mysqlDialect {
+		columnType = "VARCHAR(120)"
+	}
 	if _, err := d.db.ExecContext(ctx,
-		`ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		fmt.Sprintf(`ALTER TABLE sessions ADD COLUMN project_id %s NOT NULL DEFAULT ''`, columnType)); err != nil {
 		return fmt.Errorf("add column: %w", err)
 	}
 	return nil
@@ -337,8 +386,12 @@ func (d *DBStore) migrateConfigsAddScopeColumn(ctx context.Context) error {
 	if has {
 		return nil
 	}
+	columnType := "TEXT"
+	if d.dialect == mysqlDialect {
+		columnType = "VARCHAR(32)"
+	}
 	if _, err := d.db.ExecContext(ctx,
-		`ALTER TABLE configs ADD COLUMN scope TEXT NOT NULL DEFAULT ''`); err != nil {
+		fmt.Sprintf(`ALTER TABLE configs ADD COLUMN scope %s NOT NULL DEFAULT ''`, columnType)); err != nil {
 		return fmt.Errorf("add column: %w", err)
 	}
 	// Backfill in one UPDATE — same CASE expression that
@@ -387,13 +440,16 @@ func (d *DBStore) migrateRenameChatEventsToSessionEvents(ctx context.Context) er
 	if d.dialect == "postgres" {
 		_, _ = d.db.ExecContext(ctx,
 			`ALTER INDEX IF EXISTS idx_chat_events_lookup RENAME TO idx_session_events_lookup`)
+	} else if d.dialect == mysqlDialect {
+		_, _ = d.db.ExecContext(ctx,
+			`ALTER TABLE session_events RENAME INDEX idx_chat_events_lookup TO idx_session_events_lookup`)
 	} else {
 		// SQLite has no ALTER INDEX RENAME on older versions; drop
 		// and recreate with the new name. The DROP is best-effort —
 		// it may already have been gone.
 		_, _ = d.db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_chat_events_lookup`)
 	}
-	if _, err := d.db.ExecContext(ctx,
+	if err := d.execDDL(ctx,
 		`CREATE INDEX IF NOT EXISTS idx_session_events_lookup ON session_events (user_id, agent_id, session_key, seq)`); err != nil {
 		return fmt.Errorf("recreate index: %w", err)
 	}
@@ -410,6 +466,13 @@ func (d *DBStore) tableExists(ctx context.Context, table string) (bool, error) {
 			return false, err
 		}
 		return name != nil, nil
+	}
+	if d.dialect == mysqlDialect {
+		var n int
+		err := d.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM information_schema.tables
+				WHERE table_schema = DATABASE() AND table_name = ?`, table).Scan(&n)
+		return n > 0, err
 	}
 	var name string
 	err := d.db.QueryRowContext(ctx,
@@ -460,6 +523,10 @@ func (d *DBStore) migrateConfigsScopeToUserAgent(ctx context.Context) error {
 				if err := d.migrateConfigsScopeToUserAgentPostgres(ctx); err != nil {
 					return err
 				}
+			} else if d.dialect == mysqlDialect {
+				if err := d.migrateConfigsScopeToUserAgentMySQL(ctx); err != nil {
+					return err
+				}
 			} else {
 				if err := d.migrateConfigsScopeToUserAgentSQLite(ctx); err != nil {
 					return err
@@ -469,7 +536,7 @@ func (d *DBStore) migrateConfigsScopeToUserAgent(ctx context.Context) error {
 	}
 	// Always assert the lookup index — both upgrade and fresh-install
 	// paths flow through here. CREATE INDEX IF NOT EXISTS is idempotent.
-	if _, err := d.db.ExecContext(ctx,
+	if err := d.execDDL(ctx,
 		`CREATE INDEX IF NOT EXISTS idx_configs_lookup ON configs (kind, user_id, agent_id)`); err != nil {
 		return fmt.Errorf("create configs index: %w", err)
 	}
@@ -578,8 +645,12 @@ func (d *DBStore) migrateCronJobsAddUserID(ctx context.Context) error {
 		return err
 	}
 	if !has {
+		columnType := "TEXT"
+		if d.dialect == mysqlDialect {
+			columnType = "VARCHAR(120)"
+		}
 		if _, err := d.db.ExecContext(ctx,
-			`ALTER TABLE cron_jobs ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			fmt.Sprintf(`ALTER TABLE cron_jobs ADD COLUMN user_id %s NOT NULL DEFAULT ''`, columnType)); err != nil {
 			return fmt.Errorf("add cron_jobs.user_id: %w", err)
 		}
 		if _, err := d.db.ExecContext(ctx,
@@ -589,7 +660,7 @@ func (d *DBStore) migrateCronJobsAddUserID(ctx context.Context) error {
 		}
 	}
 	// Always assert the lookup index — fresh installs flow through here too.
-	if _, err := d.db.ExecContext(ctx,
+	if err := d.execDDL(ctx,
 		`CREATE INDEX IF NOT EXISTS idx_cron_jobs_user ON cron_jobs (user_id, agent_id)`); err != nil {
 		return fmt.Errorf("index cron_jobs.user_id: %w", err)
 	}
@@ -601,7 +672,7 @@ func (d *DBStore) migrateCronJobsAddUserID(ctx context.Context) error {
 // `<channel>_<chatID>` convention (web_<sid>, wechat_<openid>, …), so the
 // backfill splits on the first underscore. account_id has no historical
 // source — pre-feature installs only ran one bot per channel anyway, so
-// leaving it ” is correct for those rows. New sessions written after
+// leaving it '' is correct for those rows. New sessions written after
 // this migration always populate the full triple explicitly.
 func (d *DBStore) migrateSessionsAddChannelTriple(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "sessions", "channel")
@@ -609,10 +680,16 @@ func (d *DBStore) migrateSessionsAddChannelTriple(ctx context.Context) error {
 		return err
 	}
 	if !has {
+		textType := "TEXT"
+		channelType := textType
+		if d.dialect == mysqlDialect {
+			textType = "VARCHAR(191)"
+			channelType = "VARCHAR(64)"
+		}
 		for _, stmt := range []string{
-			`ALTER TABLE sessions ADD COLUMN channel TEXT NOT NULL DEFAULT ''`,
-			`ALTER TABLE sessions ADD COLUMN account_id TEXT NOT NULL DEFAULT ''`,
-			`ALTER TABLE sessions ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''`,
+			fmt.Sprintf(`ALTER TABLE sessions ADD COLUMN channel %s NOT NULL DEFAULT ''`, channelType),
+			fmt.Sprintf(`ALTER TABLE sessions ADD COLUMN account_id %s NOT NULL DEFAULT ''`, textType),
+			fmt.Sprintf(`ALTER TABLE sessions ADD COLUMN chat_id %s NOT NULL DEFAULT ''`, textType),
 		} {
 			if _, err := d.db.ExecContext(ctx, stmt); err != nil {
 				return fmt.Errorf("add column: %w (sql: %s)", err, stmt)
@@ -646,7 +723,7 @@ func (d *DBStore) migrateSessionsAddChannelTriple(ctx context.Context) error {
 	// Always (re)assert the index — the CREATE INDEX in migrationSQL was
 	// removed because it would fire before the columns existed on legacy
 	// databases. IF NOT EXISTS makes it idempotent for fresh installs.
-	if _, err := d.db.ExecContext(ctx,
+	if err := d.execDDL(ctx,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_chat_active ON sessions (user_id, agent_id, channel, account_id, chat_id, updated_at DESC)`); err != nil {
 		return fmt.Errorf("create index: %w", err)
 	}
@@ -733,8 +810,12 @@ func (d *DBStore) migrateUsersAvatarURL(ctx context.Context) error {
 	if has {
 		return nil
 	}
+	columnDDL := "TEXT NOT NULL DEFAULT ''"
+	if d.dialect == mysqlDialect {
+		columnDDL = "LONGTEXT NOT NULL"
+	}
 	if _, err := d.db.ExecContext(ctx,
-		`ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''`); err != nil {
+		fmt.Sprintf(`ALTER TABLE users ADD COLUMN avatar_url %s`, columnDDL)); err != nil {
 		return fmt.Errorf("add avatar_url: %w", err)
 	}
 	return nil
@@ -752,8 +833,12 @@ func (d *DBStore) migrateAPIKeysAddType(ctx context.Context) error {
 	if has {
 		return nil
 	}
+	columnType := "TEXT"
+	if d.dialect == mysqlDialect {
+		columnType = "VARCHAR(32)"
+	}
 	if _, err := d.db.ExecContext(ctx,
-		`ALTER TABLE apikeys ADD COLUMN type TEXT NOT NULL DEFAULT 'agent'`); err != nil {
+		fmt.Sprintf(`ALTER TABLE apikeys ADD COLUMN type %s NOT NULL DEFAULT 'agent'`, columnType)); err != nil {
 		return fmt.Errorf("add type: %w", err)
 	}
 	return nil
@@ -771,8 +856,12 @@ func (d *DBStore) migrateUsersAppUserCols(ctx context.Context) error {
 		return err
 	}
 	if !hasAPIKey {
+		columnType := "TEXT"
+		if d.dialect == mysqlDialect {
+			columnType = "VARCHAR(120)"
+		}
 		if _, err := d.db.ExecContext(ctx,
-			`ALTER TABLE users ADD COLUMN apikey_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			fmt.Sprintf(`ALTER TABLE users ADD COLUMN apikey_id %s NOT NULL DEFAULT ''`, columnType)); err != nil {
 			return fmt.Errorf("add apikey_id: %w", err)
 		}
 	}
@@ -781,13 +870,19 @@ func (d *DBStore) migrateUsersAppUserCols(ctx context.Context) error {
 		return err
 	}
 	if !hasExt {
+		columnType := "TEXT"
+		if d.dialect == mysqlDialect {
+			columnType = "VARCHAR(120)"
+		}
 		if _, err := d.db.ExecContext(ctx,
-			`ALTER TABLE users ADD COLUMN external_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			fmt.Sprintf(`ALTER TABLE users ADD COLUMN external_id %s NOT NULL DEFAULT ''`, columnType)); err != nil {
 			return fmt.Errorf("add external_id: %w", err)
 		}
 	}
-	// CREATE UNIQUE INDEX IF NOT EXISTS is supported by both backends.
-	if _, err := d.db.ExecContext(ctx,
+	if d.dialect == mysqlDialect {
+		return d.ensureMySQLAppUserKey(ctx)
+	}
+	if err := d.execDDL(ctx,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apikey_external
 			ON users (apikey_id, external_id)
 			WHERE apikey_id <> '' AND external_id <> ''`); err != nil {
@@ -796,14 +891,14 @@ func (d *DBStore) migrateUsersAppUserCols(ctx context.Context) error {
 	return nil
 }
 
-// migrateAgentFilesDropTemplate clears the legacy user_id=” template
+// migrateAgentFilesDropTemplate clears the legacy user_id='' template
 // rows from agent_files. Each row is reparented to the agent's owner
 // when no per-user row already exists for that (agent_id, filename) —
 // preserves existing content as the owner's personal copy. After this
 // pass the table holds (agent_id, real_user_id, filename) tuples only;
 // any "shared SOUL.md across all users" use case should live in a local
 // FS file at <agent_home>/<name>, which the runtime falls back to.
-// Idempotent: re-runs find no user_id=” rows and exit clean.
+// Idempotent: re-runs find no user_id='' rows and exit clean.
 func (d *DBStore) migrateAgentFilesDropTemplate(ctx context.Context) error {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT agent_files.agent_id, agent_files.filename, agent_files.content, agents.user_id
@@ -1084,6 +1179,19 @@ func (d *DBStore) migrateAgentFilesUserID(ctx context.Context) error {
 		}
 		return nil
 	}
+	if d.dialect == mysqlDialect {
+		stmts := []string{
+			`ALTER TABLE agent_files ADD COLUMN user_id VARCHAR(120) NOT NULL DEFAULT '' AFTER agent_id`,
+			`ALTER TABLE agent_files DROP PRIMARY KEY`,
+			`ALTER TABLE agent_files ADD PRIMARY KEY (agent_id, user_id, filename)`,
+		}
+		for _, s := range stmts {
+			if _, err := d.db.ExecContext(ctx, s); err != nil {
+				return fmt.Errorf("mysql migrate agent_files: %w\nSQL: %s", err, s)
+			}
+		}
+		return nil
+	}
 	// SQLite: rebuild the table to widen the PK.
 	stmts := []string{
 		`CREATE TABLE agent_files_new (
@@ -1124,6 +1232,14 @@ func (d *DBStore) tableHasColumn(ctx context.Context, table, column string) (boo
 			return false, err
 		}
 		return true, nil
+	}
+	if d.dialect == mysqlDialect {
+		var n int
+		err := d.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM information_schema.columns
+				WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+			table, column).Scan(&n)
+		return n > 0, err
 	}
 	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, table))
 	if err != nil {
@@ -1890,6 +2006,16 @@ func (d *DBStore) SaveAgent(ctx context.Context, agent *AgentRecord) error {
 		agent.CreatedAt = now
 	}
 	agent.UpdatedAt = now
+	if d.dialect == mysqlDialect {
+		_, err := d.db.ExecContext(ctx,
+			`INSERT INTO agents (id, user_id, name, config, is_public, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE
+				  user_id=VALUES(user_id), name=VALUES(name), config=VALUES(config),
+				  is_public=VALUES(is_public), updated_at=VALUES(updated_at)`,
+			agent.ID, agent.UserID, agent.Name, string(cfgData), agent.IsPublic, agent.CreatedAt, agent.UpdatedAt)
+		return err
+	}
 	if d.dialect == "postgres" {
 		_, err := d.db.ExecContext(ctx,
 			`INSERT INTO agents (id, user_id, name, config, is_public, created_at, updated_at)
@@ -1997,6 +2123,20 @@ func (d *DBStore) SaveSession(ctx context.Context, userID, agentID, sessionKey s
 	// via ctx so this signature stays backward compatible. Empty when no
 	// upstream caller tagged ctx — readers fall back to user_id.
 	chatterID := ChatterUserIDFromContext(ctx)
+	if d.dialect == mysqlDialect {
+		_, err := d.db.ExecContext(ctx,
+			`INSERT INTO sessions (user_id, agent_id, session_key, channel, account_id, chat_id, project_id, messages, message_count, updated_at, chatter_user_id)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE
+				  messages=VALUES(messages), message_count=VALUES(message_count), updated_at=VALUES(updated_at),
+				  chatter_user_id=CASE
+					WHEN VALUES(chatter_user_id) <> '' THEN VALUES(chatter_user_id)
+					ELSE chatter_user_id
+				  END`,
+			userID, agentID, sessionKey, session.Channel, session.AccountID, session.ChatID, session.ProjectID,
+			string(msgsData), count, now, chatterID)
+		return err
+	}
 	if d.dialect == "postgres" {
 		_, err := d.db.ExecContext(ctx,
 			`INSERT INTO sessions (user_id, agent_id, session_key, channel, account_id, chat_id, project_id, messages, message_count, updated_at, chatter_user_id)
@@ -2455,6 +2595,14 @@ func (d *DBStore) SaveAgentFile(ctx context.Context, agentID, userID, filename s
 		return errors.New("store: SaveAgentFile requires user_id")
 	}
 	now := time.Now().UTC()
+	if d.dialect == mysqlDialect {
+		_, err := d.db.ExecContext(ctx,
+			`INSERT INTO agent_files (agent_id, user_id, filename, content, updated_at)
+				VALUES (?, ?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE content=VALUES(content), updated_at=VALUES(updated_at)`,
+			agentID, userID, filename, string(data), now)
+		return err
+	}
 	if d.dialect == "postgres" {
 		_, err := d.db.ExecContext(ctx,
 			`INSERT INTO agent_files (agent_id, user_id, filename, content, updated_at)
@@ -2604,6 +2752,16 @@ func (d *DBStore) SaveConfig(ctx context.Context, c *ConfigRecord) error {
 		c.ID = randomConfigID()
 	}
 	dataBytes, _ := json.Marshal(c.Data)
+	if d.dialect == mysqlDialect {
+		_, err := d.db.ExecContext(ctx,
+			`INSERT INTO configs (id, kind, scope, user_id, agent_id, name, enabled, credential_key, data, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE
+				  scope=VALUES(scope), enabled=VALUES(enabled), credential_key=VALUES(credential_key),
+				  data=VALUES(data), updated_at=VALUES(updated_at)`,
+			c.ID, c.Kind, c.Scope, c.UserID, c.AgentID, c.Name, c.Enabled, c.CredentialKey, string(dataBytes), c.CreatedAt, c.UpdatedAt)
+		return err
+	}
 	if d.dialect == "postgres" {
 		_, err := d.db.ExecContext(ctx,
 			`INSERT INTO configs (id, kind, scope, user_id, agent_id, name, enabled, credential_key, data, created_at, updated_at)
@@ -2766,6 +2924,18 @@ func (d *DBStore) SaveCronJob(ctx context.Context, job *CronJobRecord) error {
 	if job.CreatedAt.IsZero() {
 		job.CreatedAt = time.Now().UTC()
 	}
+	if d.dialect == mysqlDialect {
+		_, err := d.db.ExecContext(ctx,
+			`INSERT INTO cron_jobs (id, user_id, agent_id, name, type, schedule, message, channel, chat_id, account_id, timezone, enabled, last_run, next_run, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE
+				  user_id=VALUES(user_id), agent_id=VALUES(agent_id), name=VALUES(name), type=VALUES(type),
+				  schedule=VALUES(schedule), message=VALUES(message), channel=VALUES(channel),
+				  chat_id=VALUES(chat_id), account_id=VALUES(account_id), timezone=VALUES(timezone),
+				  enabled=VALUES(enabled), last_run=VALUES(last_run), next_run=VALUES(next_run)`,
+			job.ID, job.UserID, job.AgentID, job.Name, job.Type, job.Schedule, job.Message, job.Channel, job.ChatID, job.AccountID, job.Timezone, job.Enabled, job.LastRun, job.NextRun, job.CreatedAt)
+		return err
+	}
 	if d.dialect == "postgres" {
 		_, err := d.db.ExecContext(ctx,
 			`INSERT INTO cron_jobs (id, user_id, agent_id, name, type, schedule, message, channel, chat_id, account_id, timezone, enabled, last_run, next_run, created_at)
@@ -2876,8 +3046,8 @@ func (d *DBStore) IncrementCronJobFailure(ctx context.Context, jobID string) (in
 
 func (d *DBStore) GetNextDueTime(ctx context.Context) (time.Time, error) {
 	var q string
-	if d.dialect == "postgres" {
-		// Postgres returns a proper timestamp — sql.NullTime works.
+	if d.dialect != "sqlite" {
+		// Server databases return a proper timestamp; sql.NullTime works.
 		q = `SELECT MIN(next_run) FROM cron_jobs WHERE enabled = true AND next_run IS NOT NULL`
 		var t sql.NullTime
 		if err := d.db.QueryRowContext(ctx, q).Scan(&t); err != nil {
@@ -2916,6 +3086,20 @@ func (d *DBStore) GetNextDueTime(ctx context.Context) (time.Time, error) {
 func (d *DBStore) AcquireChannelLease(ctx context.Context, channel, accountID, holderID string, ttl time.Duration) (bool, error) {
 	now := time.Now()
 	expires := now.Add(ttl)
+	if d.dialect == mysqlDialect {
+		res, err := d.db.ExecContext(ctx,
+			`INSERT INTO channel_leases (channel, account_id, holder_id, expires_at)
+				VALUES (?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE
+				  holder_id=IF(channel_leases.expires_at < ?, VALUES(holder_id), channel_leases.holder_id),
+				  expires_at=IF(channel_leases.holder_id = VALUES(holder_id), VALUES(expires_at), channel_leases.expires_at)`,
+			channel, accountID, holderID, expires, now)
+		if err != nil {
+			return false, err
+		}
+		n, _ := res.RowsAffected()
+		return n > 0, nil
+	}
 	if d.dialect == "postgres" {
 		// ON CONFLICT updates the row only when the previous holder's
 		// lease has expired OR we already hold it (renew). The WHERE
@@ -3040,6 +3224,15 @@ func (d *DBStore) SaveProject(ctx context.Context, p *ProjectRecord) error {
 		return errors.New("store: SaveProject requires user_id, agent_id, project_id")
 	}
 	now := time.Now().UTC()
+	if d.dialect == mysqlDialect {
+		_, err := d.db.ExecContext(ctx,
+			`INSERT INTO projects (user_id, agent_id, project_id, name, description, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE
+				  name=VALUES(name), description=VALUES(description), updated_at=VALUES(updated_at)`,
+			p.UserID, p.AgentID, p.ID, p.Name, p.Description, now, now)
+		return err
+	}
 	if d.dialect == "postgres" {
 		_, err := d.db.ExecContext(ctx,
 			`INSERT INTO projects (user_id, agent_id, project_id, name, description, created_at, updated_at)
@@ -3227,6 +3420,9 @@ func scanGoal(row *sql.Row) (*GoalRecord, error) {
 func isUniqueViolation(err error) bool {
 	if err == nil {
 		return false
+	}
+	if isMySQLDuplicateKey(err) {
+		return true
 	}
 	msg := err.Error()
 	// Postgres lib/pq surfaces "pq: duplicate key value violates unique constraint"

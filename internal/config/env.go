@@ -26,8 +26,8 @@ type EnvGateway struct {
 }
 
 type EnvStorage struct {
-	Type        string // BKCLAW_STORAGE_TYPE  — "sqlite" (default) or "postgres"
-	DSN         string // BKCLAW_STORAGE_DSN   — empty = sqlite at $BKCLAW_HOME/bkclaw.db
+	Type        string // BKCLAW_STORAGE_TYPE  — "mysql" by default
+	DSN         string // BKCLAW_STORAGE_DSN   — required; no SQLite fallback
 	AutoMigrate bool   // BKCLAW_STORAGE_AUTO_MIGRATE — default true
 }
 
@@ -51,9 +51,9 @@ type EnvLog struct {
 // of the deployment manifest (systemd / docker-compose / k8s env).
 func LoadEnv() *EnvConfig {
 	cfg := &EnvConfig{
-		// Defaults — used when the env var isn't set. AutoMigrate=true
-		// makes a fresh sqlite install boot without manual schema steps.
-		Storage: EnvStorage{AutoMigrate: true},
+		// MySQL is mandatory by default. AutoMigrate creates a fresh schema,
+		// but a DSN is still required and startup never falls back to SQLite.
+		Storage: EnvStorage{Type: "mysql", AutoMigrate: true},
 	}
 
 	if v := os.Getenv("BKCLAW_PORT"); v != "" {

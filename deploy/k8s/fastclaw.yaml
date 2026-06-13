@@ -17,13 +17,13 @@
 # └────────────────────────────────────────────────────────────────────────┘
 #
 # Prerequisites:
-#   - Managed PostgreSQL 16+ (Aliyun RDS / AWS RDS / etc.)
+#   - Managed MySQL 8.0+ (Aliyun RDS / AWS RDS / etc.)
 #   - One object-store bucket (AWS S3 / R2 / B2 / OSS / MinIO — your pick)
 #   - Image: ghcr.io/qs3c/bkclaw:dev (auto-pushed by GitHub Actions, public)
 #   - Optional: cert-manager + ClusterIssuer (if you want HTTPS)
 #
 # Configuration is fully driven by BKCLAW_* env vars — there is no
-# config file. Users / agents / providers / channels all live in Postgres.
+# config file. Users / agents / providers / channels all live in MySQL.
 
 ---
 apiVersion: v1
@@ -39,8 +39,8 @@ metadata:
   namespace: bkclaw
 type: Opaque
 stringData:
-  # Postgres DSN. Use sslmode=require for managed RDS-style endpoints.
-  STORAGE_DSN: "postgres://bkclaw:PASS@rm-xxxxx.pg.rds.aliyuncs.com:5432/bkclaw?sslmode=require"
+  # MySQL DSN. Add tls=true or a registered TLS profile for managed services.
+  STORAGE_DSN: "bkclaw:PASS@tcp(rm-xxxxx.mysql.rds.aliyuncs.com:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4"
 
   # Object-store credentials. Same two fields for every provider:
   #   AWS S3:       Access Key ID / Secret Access Key
@@ -75,7 +75,7 @@ metadata:
 data:
   BKCLAW_PORT: "18953"
   BKCLAW_BIND: "all"
-  BKCLAW_STORAGE_TYPE: "postgres"
+  BKCLAW_STORAGE_TYPE: "mysql"
   BKCLAW_STORAGE_AUTO_MIGRATE: "true"
 
   # Server default timezone (IANA name) — the LAST fallback in the chain

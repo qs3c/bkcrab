@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/codeany-ai/open-agent-sdk-go v0.1.0
+	github.com/go-sql-driver/mysql v1.10.0
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
@@ -19,6 +20,7 @@ require (
 )
 
 require (
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect

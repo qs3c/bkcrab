@@ -45,8 +45,8 @@ RUN apk add --no-cache ca-certificates docker-cli tzdata
 COPY --from=go-builder /bkclaw /usr/local/bin/bkclaw
 COPY --from=go-builder /bkclaw-migrate-storage /usr/local/bin/bkclaw-migrate-storage
 
-# Default data directory. Override at runtime with BKCLAW_HOME, but the
-# default value here lets `docker run bkclaw/bkclaw` work with no env.
+# Default data directory. Database startup still requires an explicit MySQL
+# DSN via BKCLAW_STORAGE_DSN.
 ENV BKCLAW_HOME=/data/.bkclaw \
     HOME=/data
 RUN mkdir -p /data/.bkclaw /data/.bkclaw/skills

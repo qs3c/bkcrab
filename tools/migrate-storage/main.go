@@ -28,22 +28,28 @@ func main() {
 
 	var sqlitePath string
 	var postgresDSN string
+	var mysqlDSN string
 	var replace bool
 	flag.StringVar(&sqlitePath, "sqlite", "", "path to the source SQLite database")
 	flag.StringVar(&postgresDSN, "postgres", "", "destination PostgreSQL DSN")
-	flag.BoolVar(&replace, "replace", false, "truncate destination tables before copying")
+	flag.StringVar(&mysqlDSN, "mysql", "", "destination MySQL DSN")
+	flag.BoolVar(&replace, "replace", false, "clear destination tables before copying")
 	flag.Parse()
 
-	if sqlitePath == "" || postgresDSN == "" {
+	if sqlitePath == "" || (postgresDSN == "") == (mysqlDSN == "") {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := run(context.Background(), sqlitePath, postgresDSN, replace); err != nil {
+	dialect, dsn := "postgres", postgresDSN
+	if mysqlDSN != "" {
+		dialect, dsn = "mysql", mysqlDSN
+	}
+	if err := run(context.Background(), sqlitePath, dialect, dsn, replace); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(ctx context.Context, sqlitePath, postgresDSN string, replace bool) error {
+func run(ctx context.Context, sqlitePath, dialect, destinationDSN string, replace bool) error {
 	absPath, err := filepath.Abs(sqlitePath)
 	if err != nil {
 		return fmt.Errorf("resolve SQLite path: %w", err)
@@ -61,17 +67,17 @@ func run(ctx context.Context, sqlitePath, postgresDSN string, replace bool) erro
 		return fmt.Errorf("ping SQLite source: %w", err)
 	}
 
-	dstStore, err := store.NewDBStore("postgres", postgresDSN)
+	dstStore, err := store.NewDBStore(dialect, destinationDSN)
 	if err != nil {
-		return fmt.Errorf("open PostgreSQL destination: %w", err)
+		return fmt.Errorf("open %s destination: %w", dialect, err)
 	}
 	defer dstStore.Close()
 	if err := dstStore.Migrate(ctx); err != nil {
-		return fmt.Errorf("create PostgreSQL schema: %w", err)
+		return fmt.Errorf("create %s schema: %w", dialect, err)
 	}
 	dst := dstStore.DB()
 
-	tables, err := sharedTables(ctx, src, dst)
+	tables, err := sharedTables(ctx, src, dst, dialect)
 	if err != nil {
 		return err
 	}
@@ -81,7 +87,7 @@ func run(ctx context.Context, sqlitePath, postgresDSN string, replace bool) erro
 
 	if !replace {
 		for _, table := range tables {
-			n, err := countRows(ctx, dst, table)
+			n, err := countRows(ctx, dst, table, dialect)
 			if err != nil {
 				return err
 			}
@@ -93,23 +99,21 @@ func run(ctx context.Context, sqlitePath, postgresDSN string, replace bool) erro
 
 	tx, err := dst.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin PostgreSQL transaction: %w", err)
+		return fmt.Errorf("begin %s transaction: %w", dialect, err)
 	}
 	defer tx.Rollback()
 
 	if replace {
-		quoted := make([]string, 0, len(tables))
 		for _, table := range tables {
-			quoted = append(quoted, quoteIdent(table))
-		}
-		if _, err := tx.ExecContext(ctx, "TRUNCATE TABLE "+strings.Join(quoted, ", ")+" CASCADE"); err != nil {
-			return fmt.Errorf("truncate destination: %w", err)
+			if _, err := tx.ExecContext(ctx, "DELETE FROM "+quoteIdent(table, dialect)); err != nil {
+				return fmt.Errorf("clear destination table %s: %w", table, err)
+			}
 		}
 	}
 
 	sourceCounts := make(map[string]int64, len(tables))
 	for _, table := range tables {
-		n, err := copyTable(ctx, src, tx, table)
+		n, err := copyTable(ctx, src, tx, table, dialect)
 		if err != nil {
 			return err
 		}
@@ -117,11 +121,11 @@ func run(ctx context.Context, sqlitePath, postgresDSN string, replace bool) erro
 		log.Printf("copied %-24s %d rows", table, n)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit PostgreSQL migration: %w", err)
+		return fmt.Errorf("commit %s migration: %w", dialect, err)
 	}
 
 	for _, table := range tables {
-		got, err := countRows(ctx, dst, table)
+		got, err := countRows(ctx, dst, table, dialect)
 		if err != nil {
 			return err
 		}
@@ -133,14 +137,22 @@ func run(ctx context.Context, sqlitePath, postgresDSN string, replace bool) erro
 	return nil
 }
 
-func sharedTables(ctx context.Context, src, dst *sql.DB) ([]string, error) {
-	rows, err := dst.QueryContext(ctx, `
+func sharedTables(ctx context.Context, src, dst *sql.DB, dialect string) ([]string, error) {
+	query := `
 		SELECT table_name
 		FROM information_schema.tables
 		WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-		ORDER BY table_name`)
+		ORDER BY table_name`
+	if dialect == "mysql" {
+		query = `
+			SELECT table_name
+			FROM information_schema.tables
+			WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'
+			ORDER BY table_name`
+	}
+	rows, err := dst.QueryContext(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("list PostgreSQL tables: %w", err)
+		return nil, fmt.Errorf("list %s tables: %w", dialect, err)
 	}
 	defer rows.Close()
 
@@ -162,8 +174,8 @@ func sharedTables(ctx context.Context, src, dst *sql.DB) ([]string, error) {
 	return out, rows.Err()
 }
 
-func copyTable(ctx context.Context, src *sql.DB, dst *sql.Tx, table string) (int64, error) {
-	targetColumns, err := postgresColumns(ctx, dst, table)
+func copyTable(ctx context.Context, src *sql.DB, dst *sql.Tx, table, dialect string) (int64, error) {
+	targetColumns, err := destinationColumns(ctx, dst, table, dialect)
 	if err != nil {
 		return 0, err
 	}
@@ -185,22 +197,26 @@ func copyTable(ctx context.Context, src *sql.DB, dst *sql.Tx, table string) (int
 	names := make([]string, len(columns))
 	placeholders := make([]string, len(columns))
 	for i, col := range columns {
-		names[i] = quoteIdent(col.name)
-		placeholders[i] = "$" + strconv.Itoa(i+1)
+		names[i] = quoteIdent(col.name, dialect)
+		if dialect == "postgres" {
+			placeholders[i] = "$" + strconv.Itoa(i+1)
+		} else {
+			placeholders[i] = "?"
+		}
 	}
 
 	rows, err := src.QueryContext(ctx,
-		"SELECT "+strings.Join(names, ", ")+" FROM "+quoteIdent(table))
+		"SELECT "+strings.Join(sourceIdentifiers(columns), ", ")+" FROM "+quoteIdent(table, "sqlite"))
 	if err != nil {
 		return 0, fmt.Errorf("read SQLite table %s: %w", table, err)
 	}
 	defer rows.Close()
 
-	insertSQL := "INSERT INTO " + quoteIdent(table) + " (" + strings.Join(names, ", ") +
+	insertSQL := "INSERT INTO " + quoteIdent(table, dialect) + " (" + strings.Join(names, ", ") +
 		") VALUES (" + strings.Join(placeholders, ", ") + ")"
 	stmt, err := dst.PrepareContext(ctx, insertSQL)
 	if err != nil {
-		return 0, fmt.Errorf("prepare PostgreSQL table %s: %w", table, err)
+		return 0, fmt.Errorf("prepare %s table %s: %w", dialect, table, err)
 	}
 	defer stmt.Close()
 
@@ -221,7 +237,7 @@ func copyTable(ctx context.Context, src *sql.DB, dst *sql.Tx, table string) (int
 			}
 		}
 		if _, err := stmt.ExecContext(ctx, values...); err != nil {
-			return 0, fmt.Errorf("insert PostgreSQL table %s row %d: %w", table, count+1, err)
+			return 0, fmt.Errorf("insert %s table %s row %d: %w", dialect, table, count+1, err)
 		}
 		count++
 	}
@@ -231,14 +247,30 @@ func copyTable(ctx context.Context, src *sql.DB, dst *sql.Tx, table string) (int
 	return count, nil
 }
 
-func postgresColumns(ctx context.Context, tx *sql.Tx, table string) ([]column, error) {
-	rows, err := tx.QueryContext(ctx, `
+func sourceIdentifiers(columns []column) []string {
+	names := make([]string, len(columns))
+	for i, col := range columns {
+		names[i] = quoteIdent(col.name, "sqlite")
+	}
+	return names
+}
+
+func destinationColumns(ctx context.Context, tx *sql.Tx, table, dialect string) ([]column, error) {
+	query := `
 		SELECT column_name, data_type
 		FROM information_schema.columns
 		WHERE table_schema = 'public' AND table_name = $1
-		ORDER BY ordinal_position`, table)
+		ORDER BY ordinal_position`
+	if dialect == "mysql" {
+		query = `
+			SELECT column_name, data_type
+			FROM information_schema.columns
+			WHERE table_schema = DATABASE() AND table_name = ?
+			ORDER BY ordinal_position`
+	}
+	rows, err := tx.QueryContext(ctx, query, table)
 	if err != nil {
-		return nil, fmt.Errorf("list PostgreSQL columns for %s: %w", table, err)
+		return nil, fmt.Errorf("list %s columns for %s: %w", dialect, table, err)
 	}
 	defer rows.Close()
 
@@ -254,7 +286,7 @@ func postgresColumns(ctx context.Context, tx *sql.Tx, table string) ([]column, e
 }
 
 func sqliteColumns(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+quoteIdent(table)+")")
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+quoteIdent(table, "sqlite")+")")
 	if err != nil {
 		return nil, fmt.Errorf("list SQLite columns for %s: %w", table, err)
 	}
@@ -291,7 +323,7 @@ func convertValue(value any, dataType string) (any, error) {
 		case string:
 			return parseBool(v)
 		}
-	case "timestamp without time zone", "timestamp with time zone":
+	case "timestamp without time zone", "timestamp with time zone", "timestamp", "datetime":
 		switch v := value.(type) {
 		case time.Time:
 			return v, nil
@@ -307,7 +339,7 @@ func convertValue(value any, dataType string) (any, error) {
 		case []byte:
 			return string(v), nil
 		}
-	case "text", "character varying":
+	case "text", "character varying", "varchar", "longtext":
 		if v, ok := value.([]byte); ok {
 			return string(v), nil
 		}
@@ -344,14 +376,17 @@ func parseTime(value string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("invalid timestamp %q", value)
 }
 
-func countRows(ctx context.Context, db *sql.DB, table string) (int64, error) {
+func countRows(ctx context.Context, db *sql.DB, table, dialect string) (int64, error) {
 	var count int64
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+quoteIdent(table)).Scan(&count); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+quoteIdent(table, dialect)).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count table %s: %w", table, err)
 	}
 	return count, nil
 }
 
-func quoteIdent(value string) string {
+func quoteIdent(value, dialect string) string {
+	if dialect == "mysql" {
+		return "`" + strings.ReplaceAll(value, "`", "``") + "`"
+	}
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }

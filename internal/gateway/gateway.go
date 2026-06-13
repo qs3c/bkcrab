@@ -222,7 +222,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	st, err := store.New(&store.StorageConfig{
 		Type:        store.StorageType(env.Storage.Type),
 		DSN:         env.Storage.DSN,
-		AutoMigrate: env.Storage.AutoMigrate || env.Storage.Type == "" || env.Storage.Type == "sqlite",
+		AutoMigrate: env.Storage.AutoMigrate,
 	}, homeDir)
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)

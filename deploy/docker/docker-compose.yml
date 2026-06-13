@@ -16,8 +16,8 @@ services:
       BKCLAW_HOME: /data/.bkclaw
       BKCLAW_BIND: all
       BKCLAW_PORT: "18953"
-      BKCLAW_STORAGE_TYPE: postgres
-      BKCLAW_STORAGE_DSN: "postgres://bkclaw:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/docker/.env}@postgres:5432/bkclaw?sslmode=disable"
+      BKCLAW_STORAGE_TYPE: mysql
+      BKCLAW_STORAGE_DSN: "bkclaw:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in deploy/docker/.env}@tcp(mysql:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4"
       BKCLAW_STORAGE_AUTO_MIGRATE: "true"
       BKCLAW_OBJECT_STORE_TYPE: minio
       BKCLAW_OBJECT_STORE_ENDPOINT: minio:9000
@@ -28,7 +28,7 @@ services:
       BKCLAW_OBJECT_STORE_USESSL: "false"
       DOCKER_HOST: tcp://sandbox-docker:2375
     depends_on:
-      postgres:
+      mysql:
         condition: service_healthy
       minio-bootstrap:
         condition: service_completed_successfully
@@ -41,19 +41,20 @@ services:
       timeout: 3s
       retries: 20
 
-  postgres:
-    image: postgres:16-alpine
+  mysql:
+    image: mysql:8.4
     restart: unless-stopped
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:3306:3306"
     environment:
-      POSTGRES_DB: bkclaw
-      POSTGRES_USER: bkclaw
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/docker/.env}"
+      MYSQL_DATABASE: bkclaw
+      MYSQL_USER: bkclaw
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?set MYSQL_PASSWORD in deploy/docker/.env}"
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in deploy/docker/.env}"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - mysql-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bkclaw -d bkclaw"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u bkclaw -p$${MYSQL_PASSWORD} --silent"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -119,7 +120,7 @@ services:
       context: ../..
       dockerfile: Dockerfile
     depends_on:
-      postgres:
+      mysql:
         condition: service_healthy
     volumes:
       - ./.state:/migration:ro
@@ -127,12 +128,12 @@ services:
     command:
       - --sqlite
       - /migration/bkclaw.db
-      - --postgres
-      - "postgres://bkclaw:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/docker/.env}@postgres:5432/bkclaw?sslmode=disable"
+      - --mysql
+      - "bkclaw:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in deploy/docker/.env}@tcp(mysql:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4"
       - --replace
 
 volumes:
   bkclaw-data:
-  postgres-data:
+  mysql-data:
   minio-data:
   sandbox-docker-data:

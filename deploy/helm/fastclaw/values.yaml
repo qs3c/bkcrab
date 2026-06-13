@@ -46,16 +46,23 @@ pdb:
   enabled: true
   minAvailable: 1
 
-## Postgres
+## Database
 ##
-## Prefer a managed service (RDS / Aliyun PG) and set externalDSN.
-## The built-in pod is only suitable for dev / single-node trials.
+## Prefer managed MySQL and set externalDSN. The built-in database pods are
+## only suitable for development and single-node trials.
+externalDatabaseType: mysql
+mysql:
+  enabled: false
+  image: mysql:8.4
+  password: ""
+  rootPassword: ""
+  storage: 10Gi
 postgres:
   enabled: false                # default off — use managed PG in production
   image: postgres:16-alpine
   password: ""                  # required when enabled=true
   storage: 10Gi
-externalDSN: ""                 # postgres://user:pass@host:5432/db?sslmode=require
+externalDSN: ""                 # MySQL: user:pass@tcp(host:3306)/db?parseTime=true
 
 ## Object store — workspace artifacts, uploads, generated images/PDFs all
 ## land here. Required for multi-replica: without it, the same session

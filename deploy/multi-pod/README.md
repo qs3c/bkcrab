@@ -1,8 +1,8 @@
-# Multi-pod smoke test — stateless gateway + Postgres + S3 (MinIO)
+# Multi-pod smoke test — stateless gateway + MySQL + S3 (MinIO)
 
 This compose brings up:
 
-- **Postgres 16** — sessions, memory, identity files, agent metadata, bindings
+- **MySQL 8.4** — sessions, memory, identity files, agent metadata, bindings
 - **MinIO** — S3-compatible bucket for workspace artifacts (auto-creates `bkclaw` bucket)
 - **pod-a** on `:18953` and **pod-b** on `:18954` — identical gateway binaries, pointed at the same DB and S3
 
@@ -55,7 +55,7 @@ curl -s -H "Authorization: Bearer dev-admin-token" \
 # → {"content":"# Test Alpha\n\nI was written by pod A."}
 ```
 
-Identity files live in Postgres; every pod reads the same row.
+Identity files live in MySQL; every pod reads the same row.
 
 ### 4. Create API key, bind the agent, test per-key scoping
 
@@ -123,7 +123,7 @@ docker compose -f deploy/multi-pod/docker-compose.yaml stop pod-a
 Every request above still works against pod B — no state was lost. Sandbox
 sessions in-flight on pod A would need to be re-initiated (the sandbox
 itself is pod-local), but the agent's identity / sessions / memory /
-workspace files are all in Postgres + MinIO.
+workspace files are all in MySQL + MinIO.
 
 ## What this does NOT verify yet
 
@@ -144,4 +144,4 @@ workspace files are all in Postgres + MinIO.
 docker compose -f deploy/multi-pod/docker-compose.yaml down -v
 ```
 
-`-v` wipes Postgres + MinIO volumes so the next run starts clean.
+`-v` wipes MySQL + MinIO volumes so the next run starts clean.

@@ -1,4 +1,4 @@
-# Two-pod shared-Postgres + MinIO smoke test for the stateless-gateway
+# Two-pod shared-MySQL + MinIO smoke test for the stateless-gateway
 # architecture. This is the reference environment for verifying that
 # sessions/memory/identity/workspace are truly shared across pods and
 # survive pod restart.
@@ -10,7 +10,7 @@
 #   pod A           http://localhost:18953  (admin token: dev-admin-token)
 #   pod B           http://localhost:18954  (same state, different pod)
 #   MinIO console   http://localhost:9001   (user: minioadmin / pass: minioadmin)
-#   Postgres        postgres://bkclaw:bkclaw@localhost:5432/bkclaw
+#   MySQL           bkclaw:bkclaw@tcp(localhost:3306)/bkclaw
 #
 # Smoke test checklist (curl examples use pod A, then read from pod B):
 #   1. curl POST /api/agents via A          — creates agent in shared DB
@@ -25,17 +25,18 @@ version: "3.8"
 
 services:
   db:
-    image: postgres:16
+    image: mysql:8.4
     environment:
-      POSTGRES_USER: bkclaw
-      POSTGRES_PASSWORD: bkclaw
-      POSTGRES_DB: bkclaw
+      MYSQL_DATABASE: bkclaw
+      MYSQL_USER: bkclaw
+      MYSQL_PASSWORD: bkclaw
+      MYSQL_ROOT_PASSWORD: root
     ports:
-      - "5432:5432"
+      - "3306:3306"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - mysqldata:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bkclaw"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u bkclaw -pbkclaw --silent"]
       interval: 2s
       timeout: 1s
       retries: 20
@@ -82,8 +83,8 @@ services:
       # TZ included so cross-pod runs exercise the server-default
       # timezone fallback the same way single-pod deploys do.
       TZ: Asia/Shanghai
-      BKCLAW_STORAGE_TYPE: postgres
-      BKCLAW_STORAGE_DSN: postgres://bkclaw:bkclaw@db:5432/bkclaw?sslmode=disable
+      BKCLAW_STORAGE_TYPE: mysql
+      BKCLAW_STORAGE_DSN: "bkclaw:bkclaw@tcp(db:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4"
       BKCLAW_MODE: cloud
       BKCLAW_AUTH_TOKEN: dev-admin-token
       # Object store → MinIO. The keys mirror config.ObjectStoreCfg.
@@ -108,8 +109,8 @@ services:
       dockerfile: Dockerfile
     environment:
       TZ: Asia/Shanghai
-      BKCLAW_STORAGE_TYPE: postgres
-      BKCLAW_STORAGE_DSN: postgres://bkclaw:bkclaw@db:5432/bkclaw?sslmode=disable
+      BKCLAW_STORAGE_TYPE: mysql
+      BKCLAW_STORAGE_DSN: "bkclaw:bkclaw@tcp(db:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4"
       BKCLAW_MODE: cloud
       BKCLAW_AUTH_TOKEN: dev-admin-token
       BKCLAW_OBJECT_STORE_TYPE: minio
@@ -127,5 +128,5 @@ services:
       - "18954:18953"
 
 volumes:
-  pgdata:
+  mysqldata:
   miniodata:
