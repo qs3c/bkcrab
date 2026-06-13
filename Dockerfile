@@ -1,5 +1,5 @@
 # --- Stage 1: Build web UI ---
-FROM node:22-alpine AS web-builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web-builder
 WORKDIR /src/web
 # Pin pnpm: `latest` started pulling v11, which made
 # pnpm-workspace.yaml's onlyBuiltDependencies allow-list ineffective
@@ -13,7 +13,7 @@ COPY web/ .
 RUN pnpm build
 
 # --- Stage 2: Build Go binary ---
-FROM golang:1.25-alpine AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS go-builder
 RUN apk add --no-cache git
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -21,6 +21,8 @@ RUN go mod download
 COPY . .
 # Embed the built web UI
 COPY --from=web-builder /src/web/out internal/setup/web
+ARG TARGETOS
+ARG TARGETARCH
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG DATE=unknown
@@ -30,14 +32,15 @@ ARG DATE=unknown
 # so a docker-built image identifies itself the same way the released
 # binary does; without the buildinfo line the About page silently shows
 # "dev" on every published image (the symptom that triggered this fix).
-RUN CGO_ENABLED=0 go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags "-s -w \
       -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE} \
       -X github.com/qs3c/bkclaw/internal/buildinfo.Version=${VERSION} \
       -X github.com/qs3c/bkclaw/internal/buildinfo.Commit=${COMMIT} \
       -X github.com/qs3c/bkclaw/internal/buildinfo.Date=${DATE}" \
     -o /bkclaw ./cmd/bkclaw
-RUN CGO_ENABLED=0 go build -o /bkclaw-migrate-storage ./tools/migrate-storage
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -o /bkclaw-migrate-storage ./tools/migrate-storage
 
 # --- Stage 3: Runtime ---
 FROM alpine:3.21
