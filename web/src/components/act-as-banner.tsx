@@ -3,9 +3,9 @@
 import { useEffect, useState } from "react";
 import { getMe } from "@/lib/api";
 
-// ActAsBanner shows a sticky read-only warning whenever a super_admin is
-// browsing another user's resources via ?actAs=. It hides itself for
-// regular users and for super_admins viewing their own data.
+// ActAsBanner 在 super_admin 通过 ?actAs= 浏览其他用户资源时，
+// 显示一个粘性只读警告。普通用户和查看自身数据的 super_admin
+// 不会看到此横幅。
 export function ActAsBanner() {
   const [actAs, setActAs] = useState<string>("");
 

@@ -46,10 +46,10 @@ const STEPS = [
   { id: "launch", label: "Launch", icon: Sparkles },
 ] as const;
 
-// Display label maps. base-ui's <Select.Value /> renders the raw `value`
-// (the SelectItem's `value` prop) by default, not the SelectItem's
-// children — so we explicitly map keys to titles via the children render
-// prop on SelectValue. Keep these in sync with the SelectItem lists.
+// 显示标签映射。base-ui 的 <Select.Value /> 默认渲染原始
+// `value`（SelectItem 的 value 属性），而非 SelectItem 的子元素——
+// 因此我们通过 SelectValue 的 children 渲染属性显式映射键到标题。
+// 保持以下映射与 SelectItem 列表同步。
 const PROVIDER_LABELS: Record<string, string> = {
   openai: "OpenAI",
   openrouter: "OpenRouter",
@@ -69,11 +69,10 @@ const AUTH_TYPE_LABELS: Record<string, string> = {
   "api-key": "API 密钥请求头",
 };
 
-// PROVIDERS holds the per-preset defaults the form pre-fills when the
-// user picks a provider from the dropdown. `models[0]` is shown as the
-// placeholder in the Default model input — the user types over it.
-// authType is synced too so switching from Anthropic (api-key) to a
-// Bearer-token provider doesn't leave the form on the wrong auth.
+// PROVIDERS 保存用户从下拉列表选择服务商时表单预填的每预设默认值。
+// `models[0]` 作为默认模型输入的占位符显示——用户可以覆盖输入。
+// authType 也会同步，避免从 Anthropic（api-key）切换到
+// Bearer-token 服务商时表单停留在错误的认证方式上。
 const PROVIDERS: Record<
   string,
   { apiBase: string; apiType: string; authType: string; models: string[] }
@@ -115,10 +114,10 @@ export default function OnboardPage() {
   const router = useRouter();
   const [step, setStep] = useState(0);
 
-  // Already-onboarded probe — /api/status returns configured=true once
-  // any account exists, in which case the wizard has nothing to do and
-  // we kick the visitor to the dashboard. Redirect via router.replace so
-  // Back doesn't bounce them back into onboard.
+  // 已完成初始化检测——/api/status 在存在任何账户时返回
+  // configured=true，此情况下向导无需操作，直接将访客
+  // 跳转到仪表盘。使用 router.replace 进行重定向，
+  // 避免后退按钮将用户带回初始化页。
   useEffect(() => {
     let cancelled = false;
     getStatus()
@@ -131,14 +130,14 @@ export default function OnboardPage() {
     };
   }, [router]);
 
-  // Admin
+  // 管理员
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [displayName, setDisplayName] = useState("");
 
-  // Provider
+  // 服务商
   const [providerEnabled, setProviderEnabled] = useState(true);
   const [providerKey, setProviderKey] = useState("openai");
   const [providerName, setProviderName] = useState("openai");
@@ -152,10 +151,10 @@ export default function OnboardPage() {
   );
   const [testError, setTestError] = useState("");
 
-  // Agent
+  // 智能体
   const [agentName, setAgentName] = useState("default");
 
-  // Sandbox (optional — disabled by default; user can flip and configure)
+  // 沙箱（可选——默认关闭；用户可开启并配置）
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
   const [sandboxBackend, setSandboxBackend] = useState("docker");
   const [sandboxDockerImage, setSandboxDockerImage] = useState("thinkany/bkclaw-sandbox:latest");
@@ -165,7 +164,7 @@ export default function OnboardPage() {
   const [sandboxBoxliteKey, setSandboxBoxliteKey] = useState("");
   const [sandboxBoxliteURL, setSandboxBoxliteURL] = useState("");
 
-  // Submit state
+  // 提交状态
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
 
@@ -178,9 +177,9 @@ export default function OnboardPage() {
       setAuthType(preset.authType);
       if (preset.models[0]) setModel(preset.models[0]);
     }
-    // Provider name auto-fills with the preset key — user can still
-    // override (lets them rename "openai" to e.g. "production" before
-    // creating). Custom provider clears the field so the user types one.
+    // 服务商名称自动填充为预设键——用户仍可覆盖
+    // （如将 "openai" 重命名为 "production"）。
+    // 自定义服务商清空字段让用户自行输入。
     setProviderName(next === "custom" ? "" : next);
     setTestStatus("");
     setTestError("");
@@ -206,11 +205,11 @@ export default function OnboardPage() {
   async function handleSubmit() {
     setSubmitError("");
     setSubmitting(true);
-    // The user can rename a preset provider; we still slugify whatever
-    // they typed (lowercase, hyphens) so it's a clean key in the DB.
-    // When providerEnabled is false, send empty provider/apiKey/model so
-    // the backend's `if req.Provider != "" && req.APIKey != ""` guard skips
-    // the provider+defaults write entirely (handlers_admin.go:240).
+    // 用户可以重命名预设服务商；我们仍会对输入进行 slug 化
+    // （小写、连字符），使其成为数据库中的整洁键。
+    // 当 providerEnabled 为 false 时，发送空的服务商/apiKey/model，
+    // 使后端的 `if req.Provider != "" && req.APIKey != ""` 守卫完全
+    // 跳过服务商+默认值写入（handlers_admin.go:240）。
     const finalProviderName =
       providerName.trim().toLowerCase().replace(/\s+/g, "-") || providerKey;
     const res = await onboard({
@@ -246,13 +245,13 @@ export default function OnboardPage() {
     setSubmitting(false);
     if (!res.ok) {
       setSubmitError(res.error || "初始化失败");
-      setStep(1); // jump back to admin step where most errors come from
+      setStep(1); // 跳回管理员步骤，大多数错误来自此处
       return;
     }
     setStep(STEPS.length - 1);
   }
 
-  // Validation per step — drives the Next button's disabled state.
+  // 每步的验证——驱动"下一步"按钮的禁用状态。
   const sandboxValid =
     !sandboxEnabled ||
     (sandboxBackend === "docker"

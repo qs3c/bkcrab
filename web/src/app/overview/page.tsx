@@ -38,9 +38,8 @@ export default function OverviewPage() {
           getTools()
             .then(setTools)
             .catch(() => setTools(null));
-          // getConfig is super_admin-only on the backend; admins-but-not-
-          // super-admin will 403, in which case we just hide the Runtime
-          // row rather than treating it as an error.
+          // getConfig 在后端仅限 super_admin；非超级管理员会收到 403，
+          // 此时我们直接隐藏运行环境行，而不将其视为错误。
           getConfig()
             .then((cfg) => setRuntime(cfg.sandbox ?? null))
             .catch(() => setRuntime(null));
@@ -64,17 +63,17 @@ export default function OverviewPage() {
     );
   }
 
-  // Hide empty / not-yet-connected sections so the dashboard reflects
-  // what's actually configured: Channels stat when none connected.
+  // 隐藏空或尚未连接的部分，使仪表盘仅反映实际配置的内容：
+  // 例如未连接任何渠道时不显示渠道统计。
   const channelCount = status?.channels?.length || 0;
   const showChannels = channelCount > 0;
-  // Non-admins only need to see their agents — gateway plumbing (provider
-  // config, users, chats) is admin-only.
+  // 非管理员只需查看自己的智能体 — 网关基础设置
+  // （服务商配置、用户、对话）仅管理员可见。
   const isAdmin = status?.isAdmin ?? false;
 
-  // Pretty-print the configured fallback chain for each tool category as
-  // "Web Search: Exa, Brave". A category with no configured provider is
-  // hidden — the Tools panel only surfaces what's actually wired up.
+  // 以美观格式展示各工具类别已配置的回退链，如
+  // "网页搜索: Exa, Brave"。未配置服务商的类别将被隐藏 —
+  // 工具面板只展示实际已接入的内容。
   const toolSummary: { name: string; label: string; providers: string }[] = [];
   if (tools) {
     for (const cat of tools.categories) {
@@ -91,7 +90,7 @@ export default function OverviewPage() {
 
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
-      {/* Header */}
+      {/* 页头 */}
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">仪表盘</h2>
         <p className="text-sm text-muted-foreground mt-1">
@@ -99,8 +98,8 @@ export default function OverviewPage() {
         </p>
       </div>
 
-      {/* Stats Cards — Agents shown to everyone; Users + Chats +
-          Channels are gateway-management surfaces, admin-only. */}
+{/* 统计卡片 — 智能体对所有人可见；用户 + 对话 +
+           渠道为网关管理面板，仅管理员可见。 */}
       <div
         className={`grid gap-4 grid-cols-2 ${
           isAdmin
@@ -110,7 +109,7 @@ export default function OverviewPage() {
             : "md:grid-cols-2"
         }`}
       >
-        {/* Agents */}
+        {/* 智能体 */}
         <div className="rounded-lg border border-border bg-card p-5">
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm text-muted-foreground">智能体</span>
@@ -124,7 +123,7 @@ export default function OverviewPage() {
           <p className="text-xs text-muted-foreground mt-1">活跃智能体</p>
         </div>
 
-        {/* Users — admin-only */}
+        {/* 用户 — 仅管理员 */}
         {isAdmin && (
           <div className="rounded-lg border border-border bg-card p-5">
             <div className="flex items-center justify-between mb-3">
@@ -140,7 +139,7 @@ export default function OverviewPage() {
           </div>
         )}
 
-        {/* Chats — admin-only */}
+        {/* 对话 — 仅管理员 */}
         {isAdmin && (
           <div className="rounded-lg border border-border bg-card p-5">
             <div className="flex items-center justify-between mb-3">
@@ -156,7 +155,7 @@ export default function OverviewPage() {
           </div>
         )}
 
-        {/* Channels — admin-only */}
+        {/* 渠道 — 仅管理员 */}
         {isAdmin && showChannels && (
           <div className="rounded-lg border border-border bg-card p-5">
             <div className="flex items-center justify-between mb-3">
@@ -172,8 +171,8 @@ export default function OverviewPage() {
 
       </div>
 
-      {/* Configuration — admin-only summary of the configured LLM model
-          and the wired-up tool providers. Hidden for non-admins. */}
+{/* 配置 — 仅管理员可见的已配置 LLM 模型
+           和已接入工具服务商摘要。非管理员不可见。 */}
       {isAdmin && (
         <div className="rounded-lg border border-border bg-card">
           <div className="p-5 pb-3">

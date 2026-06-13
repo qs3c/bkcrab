@@ -16,16 +16,14 @@ import { getAgent, updateAgent } from "@/lib/api";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
 
-// Per-agent Context page — one knob (mode), one extension point (plugins).
+// 每个智能体的上下文页面——一个旋钮（模式），一个扩展点（插件）。
 //
-// "Context" rather than "Tools" because the page is really about how
-// the LLM's context window gets assembled: which framework sections
-// participate in the system prompt AND which built-in tools come
-// along. Prompt Mode picks both in one go. There's no per-agent
-// allowlist anymore — what each mode includes is documented inline
-// next to the dropdown; for the live tool list at runtime, look at
-// the agent's chat session (tool calls in the transcript) or the
-// /api/agents/{id}/tools/registered endpoint.
+// 叫"上下文"而非"工具"是因为此页面实际上是关于 LLM 的上下文窗口
+// 如何组装的：哪些框架段落参与系统提示词以及附带哪些内置工具。
+// 提示词模式一次性选择两者。不再有每智能体的工具白名单——每种
+// 模式包含的内容在下拉框旁有内联文档说明；运行时实时工具列表请查看
+// 智能体的聊天会话（对话中的工具调用）或
+// /api/agents/{id}/tools/registered 端点。
 
 type PromptModeValue = "" | "agent" | "chatbot" | "customize";
 
@@ -39,16 +37,15 @@ export default function AgentContextPage() {
   const agentId = useAgentIdFromURL();
   const agentName = useAgentName(agentId);
 
-  // "" = no override saved; runtime falls back to "agent".
+  // "" = 未保存覆盖；运行时回退到 "agent"。
   const [promptMode, setPromptMode] = useState<PromptModeValue>("");
-  // Per-agent multi-bubble toggle. Applies to every IM channel the
-  // agent is bound to. False is the default; null on the wire is
-  // treated as false here.
+  // 每个智能体的多气泡开关。适用于智能体绑定的每个即时通讯渠道。
+  // false 为默认值；线上 null 在此视为 false。
   const [splitReplies, setSplitReplies] = useState(false);
   const [splitRepliesSaving, setSplitRepliesSaving] = useState(false);
-  // Per-agent auto-persist toggle. Off by default; null on the wire is
-  // treated as false here. When on, every N turns the runtime fires an
-  // LLM-driven distill pass that appends to USER.md / MEMORY.md.
+  // 每个智能体的自动持久化开关。默认关闭；线上 null 在此视为 false。
+  // 开启后，每隔 N 轮运行时会发起一次小型 LLM 调用，将近期对话
+  // 提炼到 USER.md / MEMORY.md。
   const [autoPersist, setAutoPersist] = useState(false);
   const [autoPersistSaving, setAutoPersistSaving] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -96,9 +93,8 @@ export default function AgentContextPage() {
     }
   };
 
-  // Optimistic toggle for splitReplies. No "inherit" state anymore —
-  // system-level fallback was removed; false is the absolute default
-  // when nothing is saved.
+  // splitReplies 的乐观切换。不再有"继承"状态——
+  // 系统级回退已移除；false 是未保存时的绝对默认值。
   const handleSplitRepliesChange = async (next: boolean) => {
     const prev = splitReplies;
     setSplitReplies(next);
@@ -113,10 +109,9 @@ export default function AgentContextPage() {
     }
   };
 
-  // Optimistic toggle for autoPersist. Same shape as splitReplies; on
-  // failure roll back. The runtime falls back to system default (off
-  // in practice today, since the dead-code NewAgentWithFullCfg path
-  // never gets called) when no per-agent override is saved.
+  // autoPersist 的乐观切换。与 splitReplies 形状相同；失败时回滚。
+  // 运行时在没有每智能体覆盖时回退到系统默认值（实际上当前为关闭，
+  // 因为死代码 NewAgentWithFullCfg 路径永远不会被调用）。
   const handleAutoPersistChange = async (next: boolean) => {
     const prev = autoPersist;
     setAutoPersist(next);
@@ -159,7 +154,7 @@ export default function AgentContextPage() {
         </div>
       </div>
 
-      {/* Prompt Mode */}
+      {/* 提示词模式 */}
       <div className="rounded-lg border border-border bg-card p-5">
         <div className="flex items-center justify-between gap-2 mb-3">
           <div className="flex items-center gap-2">
@@ -186,9 +181,8 @@ export default function AgentContextPage() {
           disabled={saving}
         >
           <SelectTrigger className="text-sm max-w-[240px]">
-            {/* Explicit children override SelectValue's auto-extraction
-                from the active SelectItem — shadcn sometimes falls back
-                to rendering the raw `value` string. */}
+{/* 显式子元素覆盖 SelectValue 从活动 SelectItem 的自动提取——
+                  shadcn 有时会回退渲染原始 `value` 字符串。 */}
             <SelectValue>{MODE_LABEL[promptMode || "agent"]}</SelectValue>
           </SelectTrigger>
           <SelectContent>
@@ -225,9 +219,8 @@ export default function AgentContextPage() {
         </div>
       </div>
 
-      {/* Multi-bubble replies — applies to every IM channel. Lives here
-          rather than in the Channels tab because it's a property of how
-          the LLM communicates, not of the channel binding. */}
+      {/* 多气泡回复——适用于每个即时通讯渠道。放在这里而非"渠道"
+          标签页，因为它是关于 LLM 如何沟通的属性，而非渠道绑定。 */}
       <div className="rounded-lg border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-start gap-3 min-w-0">
@@ -248,9 +241,8 @@ export default function AgentContextPage() {
         </div>
       </div>
 
-      {/* Auto-remember chatter — lives here because it's about how the
-          agent retains context across turns / sessions, parallel to how
-          Multi-bubble is about how it emits replies. */}
+      {/* 自动记住聊天者——放在这里因为它是关于智能体如何跨轮次/会话
+          保留上下文的，与多气泡是关于如何发出回复并行。 */}
       <div className="rounded-lg border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-start gap-3 min-w-0">

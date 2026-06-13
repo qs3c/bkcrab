@@ -32,10 +32,10 @@ import {
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
 
-// Scheduler page: lists every cron job the agent has on file. The
-// `create_cron_job` tool the agent itself uses writes here, so anything
-// you said in chat ("每分钟讲笑话", "5 分钟后提醒我睡觉") shows up as a
-// row. Disable to pause without losing the job; delete to remove it.
+// 定时任务页面：列出智能体拥有的所有 cron 任务。
+// 智能体自身使用的 `create_cron_job` 工具会写入这里，
+// 因此你在对话中说的内容（"每分钟讲个笑话"、"5 分钟后提醒我睡觉"）
+// 会显示为一行。禁用可暂停但保留任务；删除则移除。
 
 function fmtSchedule(job: AgentCronJob): string {
   switch (job.type) {
@@ -88,8 +88,8 @@ export default function AgentSchedulerPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<AgentCronJob | null>(null);
-  // Track in-flight toggles by job id so the row reflects optimistic
-  // state and the switch doesn't double-fire while the request is open.
+  // 按任务 ID 追踪进行中的切换操作，使行显示乐观状态，
+  // 防止请求进行中开关重复触发。
   const [toggling, setToggling] = useState<Record<string, boolean>>({});
 
   const refresh = useCallback(() => {
@@ -111,8 +111,7 @@ export default function AgentSchedulerPage() {
   const handleToggle = async (job: AgentCronJob, enabled: boolean) => {
     if (!agentId || toggling[job.id]) return;
     setToggling((m) => ({ ...m, [job.id]: true }));
-    // Optimistic update — flip immediately, server is authoritative on
-    // refresh. Reverts on failure.
+    // 乐观更新——立即翻转，服务端在刷新时为权威数据。失败时回滚。
     setJobs((prev) =>
       prev.map((j) => (j.id === job.id ? { ...j, enabled } : j)),
     );
@@ -124,7 +123,7 @@ export default function AgentSchedulerPage() {
     });
     if (res.error || !res.ok) {
       setError(res.error || "更新任务失败");
-      // Revert by refetching the canonical state.
+      // 通过重新获取权威状态来回滚。
       refresh();
     }
   };

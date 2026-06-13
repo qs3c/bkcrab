@@ -13,30 +13,27 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { ExternalAnchor } from "@/components/markdown-link";
 
-// react-markdown's default urlTransform strips any protocol not in the
-// safe-list (http, https, mailto, ircs, xmpp) — including `data:`. We want
-// inline base64 images to render, so fall through to the default for
-// everything else.
+// react-markdown 的默认 urlTransform 会过滤不在安全列表（http、https、
+// mailto、ircs、xmpp）中的协议——包括 `data:`。我们希望内联 base64 图片
+// 能正常渲染，因此对其他情况回退到默认行为。
 function urlTransform(url: string, key: string): string {
   if (key === "src" && url.startsWith("data:image/")) return url;
   return defaultUrlTransform(url);
 }
 
-// makeUrlTransform builds a urlTransform that also remaps sandbox
-// `/workspace/<name>` paths to the authenticated file API URL for the
-// active agent. Skills that produce a file return a sandbox path like
-// /workspace/img_xxx.png; the LLM puts that in `![](/workspace/...)`.
-// The docker bind-mount is session-scoped (host:
-// ~/.bkclaw/workspaces/<agent>/sessions/<sid>/ ↔ container:/workspace),
-// so the workspace.Store sees the file at sessions/<sid>/<name>. We
-// must prepend that prefix or the file API resolves against the agent
-// root and 404s.
+// makeUrlTransform 构建一个 urlTransform，同时将沙箱路径
+// `/workspace/<name>` 重映射到活跃智能体的认证文件 API URL。
+// 产出文件的技能返回沙箱路径如 /workspace/img_xxx.png，LLM 将其写入
+// `![](/workspace/...)`。docker bind-mount 是会话级的（host:
+// ~/.bkclaw/workspaces/<agent>/sessions/<sid>/ ↔ container:/workspace），
+// 因此 workspace.Store 在 sessions/<sid>/<name> 处找到文件。我们必须
+// 预置该前缀，否则文件 API 会从智能体根目录解析并返回 404。
 function makeUrlTransform(agentId: string, sessionId: string) {
   return (url: string, key: string): string => {
     if (key === "src" && url.startsWith("data:image/")) return url;
-    // Remap sandbox `/workspace/<name>` for both image embeds (`src`) and
-    // hyperlinks (`href`). Without href handling the model's "点击预览"
-    // link points at the app origin instead of the file API and 404s.
+    // 将沙箱 `/workspace/<name>` 重映射，同时适用于图片嵌入（`src`）和
+    // 超链接（`href`）。如果不处理 href，模型的"点击预览"链接会指向
+    // 应用源而非文件 API 并返回 404。
     if ((key === "src" || key === "href") && url.startsWith("/workspace/")) {
       const rel = url.slice("/workspace/".length);
       const scoped = sessionId ? `sessions/${sessionId}/${rel}` : rel;
@@ -46,14 +43,12 @@ function makeUrlTransform(agentId: string, sessionId: string) {
   };
 }
 
-// Split a string on `![alt](data:image/...;base64,...)` markdown.
+// 在 `![alt](data:image/...;base64,...)` 标记上分割字符串。
 //
-// Real-world content from models is messier than the grammar: base64
-// payloads get wrapped with newlines/spaces, the closing `)` is
-// sometimes cut off by truncation, and `]` and `(` may sit on separate
-// lines. So we look for the header with a regex but consume the URL
-// body with a hand-rolled scan that tolerates whitespace inside base64
-// and a missing trailing `)`. Returns [...{type:"text"|"image", ...}].
+// 模型输出的实际内容比语法规则更凌乱：base64 载荷可能被换行/空格
+// 包裹，闭合括号 `)` 有时被截断，`]` 和 `(` 可能分处不同行。因此我们
+// 用正则匹配头部，但用手工扫描来消费 URL 主体——它容忍 base64 中的
+// 空白和缺失的尾部 `)`。返回 [...{type:"text"|"image", ...}]。
 function splitDataImages(s: string): Array<{ type: "text"; text: string } | { type: "image"; alt: string; src: string }> {
   const out: Array<{ type: "text"; text: string } | { type: "image"; alt: string; src: string }> = [];
   const headerRe = /!\[([^\]]*?)\]\s*\(\s*<?\s*(data:image\/[a-z0-9.+-]+;base64,)/gi;
@@ -62,14 +57,14 @@ function splitDataImages(s: string): Array<{ type: "text"; text: string } | { ty
   while ((m = headerRe.exec(s)) !== null) {
     const alt = m[1];
     const dataPrefix = m[2];
-    // Consume base64 body: A–Z a–z 0–9 + / = and any whitespace.
+    // 消费 base64 主体：A–Z a–z 0–9 + / = 及任意空白。
     let cursor = m.index + m[0].length;
     while (cursor < s.length && /[A-Za-z0-9+/=\s]/.test(s[cursor])) cursor++;
     const rawBody = s.slice(m.index + m[0].length, cursor);
     const body = rawBody.replace(/\s+/g, "");
     if (!body) continue;
     const src = dataPrefix + body;
-    // Step past optional `>` and `)` closers (or accept truncation).
+    // 跳过可选的 `>` 和 `)` 闭合符（或接受截断）。
     let after = cursor;
     while (after < s.length && /[\s>]/.test(s[after])) after++;
     if (s[after] === ")") after++;
@@ -83,21 +78,17 @@ function splitDataImages(s: string): Array<{ type: "text"; text: string } | { ty
   return out;
 }
 
-// Models sometimes emit markdown images with a line break between `]` and
-// `(`, or with very long base64 destinations that some commonmark parsers
-// give up on. Rather than fight the markdown parser, extract
-// `![alt](data:image/...)` (tolerating whitespace/newlines between `]`
-// and `(`) and render those as native <img>, letting ReactMarkdown
-// handle everything else. Returns null if no data-URL images are present
-// so the caller can fall through to a plain ReactMarkdown render.
-// When `suppressAllInlineImages` is true, every data-URL image inside
-// the content is dropped (used when the bubble has tool-output images
-// already attached at the top — the model often re-embeds an image in
-// its reply, and because LLMs can't reproduce base64 verbatim the
-// re-embedded bytes are either a duplicate we already showed or a
-// hallucination that renders as a different picture). `surfacedSrcs`
-// provides a narrower exact-src match for cases where nothing is
-// attached to this bubble but a prior bubble showed the same bytes.
+// 模型有时会输出 `]` 和 `(` 之间带换行的 markdown 图片，或输出很长的
+// base64 目标导致某些 commonmark 解析器放弃处理。与其与 markdown 解析器
+// 较劲，不如提取 `![alt](data:image/...)`（容忍 `]` 和 `(` 之间的空白/
+// 换行）并将其渲染为原生 <img>，其余内容交给 ReactMarkdown 处理。当
+// 内容中没有 data-URL 图片时返回 null，这样调用方可以直接回退到普通的
+// ReactMarkdown 渲染。当 `suppressAllInlineImages` 为 true 时，内容中
+// 所有 data-URL 图片都会被丢弃（用于气泡顶部已附加工具输出图片的情况——
+// 模型经常在回复中重新嵌入同一图片，而 LLM 无法逐字复现 base64，因此
+// 重新嵌入的字节要么是已显示的重复，要么是渲染为不同图片的幻觉）。
+// `surfacedSrcs` 为没有附件但之前的气泡已显示相同字节的情况提供更精确
+// 的精确匹配。
 function renderContentWithDataImages(
   content: string,
   surfacedSrcs?: ReadonlySet<string>,
@@ -130,21 +121,21 @@ import { usePageHeader } from "@/components/sidebar";
 import { channelLabel } from "@/components/channel-icon";
 
 interface ProducedFile {
-  path: string; // path relative to workspace
+  path: string; // 相对于工作区的路径
   size?: number;
 }
 
 interface UserAttachment {
   name: string;
   isImage: boolean;
-  // Local blob URL for instant in-bubble preview without a server round-trip.
-  // Only set on the live-send turn; reloaded history won't carry it.
+  // 用于即时气泡内预览的本地 blob URL，无需服务器往返。
+  // 仅在实时发送时设置；重新加载的历史记录不会携带它。
   previewUrl?: string;
 }
 
-// Built-in slash commands surfaced in the composer's `/` menu alongside
-// skills. Mirror of the dispatch table in internal/agent/slash.go — keep
-// in sync when commands are added/removed/renamed there.
+// 内置斜杠命令，在输入框的 `/` 菜单中与技能一起展示。
+// 与 internal/agent/slash.go 中的调度表镜像——在该文件中添加/
+// 删除/重命名命令时需保持同步。
 type SlashCommand = { name: string; description: string };
 const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: "new", description: "清空会话历史" },
@@ -174,19 +165,16 @@ interface ChatMessage {
   toolCalls?: { id: string; name: string; arguments: string; result?: string; metadata?: ToolResultMetadata }[];
   files?: ProducedFile[];
   attachments?: UserAttachment[];
-  // Optimistically-rendered steer bubble awaiting the server's persisted
-  // "steer" echo. Used only to dedup against that echo (cleared on
-  // match) — not rendered differently.
+  // 乐观渲染的转向气泡，等待服务器持久化的"steer"回显。仅用于与
+  // 该回显去重（匹配后清除）——不做差异化渲染。
   pendingSteer?: boolean;
-  // Assistant-side metadata (e.g. iteration-cap badge). Stamped from
-  // either the live content event's `metadata` payload or the
-  // ChatHistoryMessage.metadata on a refresh.
+  // 助手侧元数据（例如迭代上限徽章）。从实时内容事件的 `metadata`
+  // 载荷或刷新时的 ChatHistoryMessage.metadata 中写入。
   metadata?: ToolResultMetadata;
-  // IM-bridge sender identity, surfaced from session_messages metadata
-  // (set by the agent loop for Discord/Telegram/... routed turns).
-  // Present means: render an avatar + nickname header instead of an
-  // anonymous "you" bubble — the message came from a third party
-  // talking to the bot, not from the agent owner themselves.
+  // IM 桥接发送者身份，从 session_messages 元数据中提取（由智能体循环
+  // 为 Discord/Telegram/... 路由的轮次设置）。存在此字段表示：渲染
+  // 头像 + 昵称标题，而非匿名"你"气泡——消息来自与机器人对话的第三方，
+  // 而非智能体拥有者本人。
   sender?: {
     name: string;
     avatarUrl?: string;
@@ -195,15 +183,12 @@ interface ChatMessage {
   };
 }
 
-// Tailwind class string applied to every chat-bubble markdown wrapper
-// (assistant + user). The unmodified `prose prose-sm` defaults render
-// markdown like a long-form article — H1/H2 are huge, headings have
-// big top/bottom margins, and tables / code blocks introduce extra
-// vertical padding. In a conversational bubble those defaults make a
-// reply with `## Section` look out of proportion next to surrounding
-// plain text. This override clamps headings to slightly-larger-than-
-// body sizes, tightens table cell padding, and shrinks the gap above
-// each block element so the bubble reads as one coherent message.
+// 应用于每个聊天气泡 markdown 包装器（助手 + 用户）的 Tailwind 类字符串。
+// 原始 `prose prose-sm` 默认样式将 markdown 渲染为长文风格——H1/H2 巨大、
+// 标题有大的上下边距、表格/代码块引入额外的纵向内边距。在对话气泡中这些
+// 默认值会让带 `## 小节` 的回复与周围纯文本严重不成比例。此覆盖将标题
+// 限制为略大于正文字号、收紧表格单元格内边距、缩小各块元素上方间距，
+// 使气泡读起来像一个连贯消息。
 const CHAT_PROSE_CLASS =
   "text-[15px] leading-relaxed prose prose-sm max-w-none dark:prose-invert " +
   "prose-p:my-1 prose-pre:my-2 prose-ul:my-1 prose-ol:my-1 " +
@@ -214,25 +199,23 @@ const CHAT_PROSE_CLASS =
   "prose-th:py-1 prose-th:px-2 prose-td:py-1 prose-td:px-2 " +
   "prose-hr:my-3";
 
-// Wire token the agent emits to request a multi-bubble reply — must
-// match channels.SplitMessageMarker in internal/channels/base.go. On
-// IM channels the dispatcher (manager.dispatchOutbound) splits the
-// outbound text on this marker into separate platform messages; the
-// web UI renders one bubble per split chunk so the experience matches.
+// 智能体发出的分词标记，用于请求多气泡回复——必须与
+// internal/channels/base.go 中的 channels.SplitMessageMarker 匹配。
+// 在 IM 通道上，分发器（manager.dispatchOutbound）以此标记将出站
+// 文本拆分为多条平台消息；Web UI 将每个分块渲染为单独气泡以匹配体验。
 const SPLIT_MARKER = "<|split|>";
 
-// splitOnMarker breaks `s` on SPLIT_MARKER, trims each chunk, and
-// drops the empty ones. Used at render time so a streamed assistant
-// reply containing the marker becomes multiple bubbles without any
-// upstream content-event rewriting.
+// splitOnMarker 在 SPLIT_MARKER 处分割 `s`，修剪每个分块并丢弃空块。
+// 在渲染时使用，使包含该标记的流式助手回复变为多个气泡，无需上游
+// 内容事件重写。
 function splitOnMarker(s: string): string[] {
   if (!s.includes(SPLIT_MARKER)) return [s];
   const parts = s.split(SPLIT_MARKER).map((p) => p.trim()).filter((p) => p.length > 0);
   return parts.length > 0 ? parts : [s];
 }
 
-// Single-segment identity filenames that route to the agent's home dir
-// (not the workspace) — exclude from the "Your files" panel.
+// 路由到智能体主目录（而非工作区）的单段身份文件名——从
+// "你的文件"面板中排除。
 const SYSTEM_FILES = new Set([
   "SOUL.md", "IDENTITY.md", "USER.md", "BOOTSTRAP.md",
   "MEMORY.md", "HEARTBEAT.md", "AGENTS.md", "TOOLS.md", "agent.json",
@@ -251,9 +234,8 @@ interface ChatSession {
   id: string;
   title?: string;
   preview: string;
-  // channel/accountId/chatId travel with the listing so the chat
-  // page can decide whether composing into this session is allowed
-  // (only `web` is — IM channels have no reverse-send path).
+  // channel/accountId/chatId 随列表一起传递，以便聊天页面判断
+  // 是否允许在此会话中撰写（仅 `web` 允许——IM 通道没有反向发送路径）。
   channel?: string;
   accountId?: string;
   chatId?: string;
@@ -263,18 +245,17 @@ function generateSessionId() {
   return `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Convert raw history messages into UI ChatMessages, grouping tool calls with results. */
+/** 将原始历史消息转换为 UI ChatMessages，将工具调用与结果分组。 */
 function buildChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
   const msgs: ChatMessage[] = [];
   let i = 0;
   while (i < history.length) {
     const h = history[i];
     if (h.role === "user") {
-      // Surface image attachments on history-loaded user bubbles. The
-      // server emits `imageUrls` on user turns whose ContentParts had
-      // image_url blocks; map them into UserAttachment entries so the
-      // existing bubble renderer (live-send path) handles them with no
-      // additional branching.
+      // 在历史加载的用户气泡上展示图片附件。服务器在 ContentParts 包含
+      // image_url 块的用户轮次上发出 `imageUrls`；将它们映射为
+      // UserAttachment 条目，使现有气泡渲染器（实时发送路径）无需
+      // 额外分支即可处理。
       const attachments: UserAttachment[] | undefined =
         h.imageUrls && h.imageUrls.length > 0
           ? h.imageUrls.map((url, idx) => ({
@@ -294,14 +275,14 @@ function buildChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
       msgs.push({ id: `h-${i}`, role: "user", content: h.content || "", timestamp: 0, attachments, sender });
       i++;
     } else if (h.role === "assistant" && h.toolCalls && h.toolCalls.length > 0) {
-      // Group: assistant tool_calls + following tool results + final assistant content
+      // 分组：assistant tool_calls + 后续 tool results + 最终 assistant content
       const calls = h.toolCalls.map((tc) => ({
         ...tc,
         result: undefined as string | undefined,
         metadata: undefined as ToolResultMetadata | undefined,
       }));
       i++;
-      // Collect tool results
+      // 收集工具结果
       while (i < history.length && history[i].role === "tool") {
         const toolMsg = history[i];
         const call = calls.find((c) => c.id === toolMsg.toolCallId);
@@ -311,24 +292,20 @@ function buildChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
         }
         i++;
       }
-      // Defensive: any tool_use that still has no result by the time
-      // we leave the tool-result run got orphaned (client aborted, server
-      // crashed mid-turn, persistence path raced). Mark them stopped so
-      // the UI shows a terminal state instead of spinning forever.
-      // Newer turns will have these padded server-side via
-      // padOrphanToolResults; this catches sessions that pre-date the fix.
+      // 防御性处理：在离开工具结果序列时，如果某个 tool_use 仍没有结果，
+      // 说明它被孤立了（客户端中止、服务端中途崩溃、持久化路径竞争）。
+      // 将它们标记为已停止，使 UI 显示终止状态而非永远旋转。
+      // 较新的轮次已在服务端通过 padOrphanToolResults 填充；此处
+      // 捕获早于该修复的会话。
       for (const c of calls) {
         if (c.result === undefined) {
           c.result = "(stopped)";
         }
       }
-      // If this assistant turn produced text alongside its tool calls
-      // (common with "final answer + closing tool" patterns like text +
-      // update_goal), surface that text as its own agent bubble BEFORE
-      // the tool-group instead of folding it into the tool-group's
-      // content. Folded, the body reads as preamble to a collapsed tool
-      // block; split, the model's actual answer stands as a first-class
-      // reply.
+      // 如果此助手轮次在工具调用的同时产出了文本（常见于"最终答案 + 收尾
+      // 工具"模式如 text + update_goal），将该文本作为独立的助手气泡渲染
+      // 在工具组之前，而非折叠进工具组的 content。折叠后正文会变成折叠
+      // 工具块的前言；拆分后模型的实际答案则成为一等公民回复。
       if (h.content) {
         msgs.push({ id: `h-pre-${i}`, role: "agent", content: h.content, timestamp: 0, metadata: h.metadata });
       }
@@ -339,12 +316,10 @@ function buildChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
         timestamp: 0,
         toolCalls: calls,
       });
-      // If next is assistant with ONLY content and no tool calls (final
-      // answer), add it. Must skip when the next assistant also has tool
-      // calls — in a multi-turn conversation that's the *start of the next
-      // tool-group*, not a final answer, and consuming it here would drop
-      // its tool calls on the floor and leave subsequent tool-result
-      // messages orphaned.
+      // 如果下一条是仅含 content 且无工具调用的助手消息（最终答案），则添加。
+      // 必须跳过下一条助手消息也含工具调用的情况——在多轮对话中那是下一个
+      // 工具组的*开始*，而非最终答案，在此消费会丢弃其工具调用并使后续
+      // 工具结果消息成为孤立。
       if (
         i < history.length &&
         history[i].role === "assistant" &&
@@ -358,65 +333,57 @@ function buildChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
       msgs.push({ id: `h-${i}`, role: "agent", content: h.content || "", timestamp: 0, metadata: h.metadata });
       i++;
     } else {
-      i++; // skip unexpected
+      i++; // 跳过意外的消息
     }
   }
   return msgs;
 }
 
-// isPendingPlanContent recognises the closing line we instructed the
-// model to emit on plan-first turns ("Reply `go` to execute, or tell
-// me what to change." or its Chinese rendering). Used to decide
-// whether to show the inline approve / cancel buttons under an
-// assistant bubble. Loose match — model wording drifts but the
-// signal is always "go" near "execute / 执行" in the last few lines.
+// isPendingPlanContent 识别模型在计划优先轮次中发出的收尾行（"回复 `go` 执行"
+// 或其中文形式）。用于决定是否在助手气泡下方显示内联的确认/取消按钮。
+// 松散匹配——模型措辞会漂移，但信号总是在最后几行中出现 "go" 附近的
+// "execute / 执行"。
 function isPendingPlanContent(content: string): boolean {
   if (!content) return false;
-  // Tail-only check so a long plan with the word "go" in step 3 doesn't
-  // false-positive — the model only ever closes with the cue line, never
-  // opens with it.
+  // 仅检查尾部，以免第 3 步中出现 "go" 的冗长计划误报——模型只在
+  // 收尾时发出提示行，从不在开头。
   const lines = content.split("\n");
   const tail = lines.slice(Math.max(0, lines.length - 4)).join(" ");
-  // English: "Reply `go` to execute" / "Reply 'go' to run"
+  // 英语："Reply `go` to execute" / "Reply 'go' to run"
   if (/reply[^.]*?\bgo\b[^.]*?(execute|run)/i.test(tail)) return true;
-  // Chinese: "请回复 go 开始执行" / "回复 go 执行"
+  // 中文："请回复 go 开始执行" / "回复 go 执行"
   if (/回复[^。]*?go[^。]*?(执行|开始)/.test(tail)) return true;
-  // Generic safety net: closing imperative with `go` + execute keyword
-  // very close together. Tighter than just "go" appearing anywhere.
+  // 通用安全网：收尾祈使句中 `go` + execute 关键词非常接近。
+  // 比单独出现 "go" 更严格。
   if (/[`'"]go[`'"][^\n]{0,40}(execute|执行)/i.test(tail)) return true;
   return false;
 }
 
-// Parse the per-route ids out of the pathname. ChatScreen is mounted
-// once at the agent layout level and stays alive across these routes:
+// 从路径名解析路由 ID。ChatScreen 在智能体布局层级挂载一次，
+// 并在这些路由间保持活跃：
 //
-//   /agents/<aid>/                         — fresh loose chat
-//   /agents/<aid>/chat/                    — fresh loose chat
-//   /agents/<aid>/chat/<session>           — open existing chat by id
-//   /agents/<aid>/project/<pid>            — fresh chat in a project
+//   /agents/<aid>/                         — 新的松散聊天
+//   /agents/<aid>/chat/                    — 新的松散聊天
+//   /agents/<aid>/chat/<session>           — 按 ID 打开现有聊天
+//   /agents/<aid>/project/<pid>            — 项目内的新聊天
 //
-// Reading from `usePathname()` (instead of accepting props from the
-// TodoPanel renders the per-session todo.md the agent maintains as a
-// live progress checklist above the conversation. "Current step" is
-// the first unchecked item — we surface it as a single line with a
-// "<n>/<total>" counter, and the full list expands on click. Hidden
-// entirely when no items exist (caller's responsibility — keeps this
-// dumb-component pure).
+// 从 `usePathname()` 读取（而非从页面树接受 props）
+// TodoPanel 将智能体维护的每会话 todo.md 渲染为对话上方的实时
+// 进度清单。"当前步骤"是第一个未勾选项——我们将其显示为带
+// "<n>/<total>" 计数器的单行，完整列表点击展开。无条目时完全
+// 隐藏（由调用方负责——保持此纯组件的简洁）。
 function TodoPanel({ items, active }: { items: TodoItem[]; active: boolean }) {
   const [open, setOpen] = useState(true);
   const total = items.length;
   const doneCount = items.filter((i) => i.done).length;
   const allDone = doneCount === total;
-  // First unchecked item is the live "in progress" step. When the
-  // checklist is fully checked, fall through to the last item so the
-  // collapsed header still says something concrete.
+// 第一个未勾选项是实时"进行中"步骤。清单全部勾选后，回退到
+    // 最后一项，使折叠标题仍显示具体内容。
   const currentIdx = allDone ? total - 1 : items.findIndex((i) => !i.done);
   const current = currentIdx >= 0 ? items[currentIdx] : null;
   return (
-    // Wrapper keeps the panel aligned with the composer's max-w-2xl
-    // column. Only the inner div carries border/background, so the
-    // surrounding chat area stays clean — no full-width strip across
-    // the page.
+// 包装器将面板与输入框的 max-w-2xl 列对齐。仅内部 div 携带
+        // 边框/背景，使周围聊天区域保持简洁——没有横跨页面的全宽条带。
     <div className="shrink-0 px-4 pt-2">
       <div className="mx-auto max-w-2xl">
         <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 shadow-sm">
@@ -431,9 +398,8 @@ function TodoPanel({ items, active }: { items: TodoItem[]; active: boolean }) {
             ) : active ? (
               <div className="size-4 shrink-0 rounded-full border-2 border-amber-500 border-t-transparent animate-spin" />
             ) : (
-              // Paused: agent isn't streaming. Show a static amber ring
-              // so the "where we are" cue is visible without implying
-              // ongoing work.
+              // 暂停：智能体未在流式输出。显示静态琥珀色圆环，使"当前位置"
+                // 提示可见，但不会暗示正在进行中。
               <div className="size-4 shrink-0 rounded-full border-2 border-amber-500/70" />
             )}
             <span className="font-medium tabular-nums text-muted-foreground">
@@ -490,9 +456,8 @@ function TodoPanel({ items, active }: { items: TodoItem[]; active: boolean }) {
   );
 }
 
-// page tree) is what lets the component instance survive sidebar
-// navigations — sessionId / projectId become reactive values that
-// update in place rather than gating a remount.
+// 页面树）使组件实例在侧边栏导航中保持存活——sessionId /
+// projectId 变为响应式值，原地更新而非阻止重新挂载。
 function parseAgentRoute(pathname: string): {
   sessionId: string;
   projectId: string;
@@ -500,8 +465,8 @@ function parseAgentRoute(pathname: string): {
   const sessMatch = pathname.match(/^\/agents\/[^/]+\/chat\/([^/]+)/);
   if (sessMatch) {
     const sid = sessMatch[1];
-    // "_" is the build-time placeholder Next emits under output:'export'
-    // for the dynamic [session] segment. Treat it as "no session".
+    // "_" 是 Next 在 output:'export' 下为动态 [session] 段发出的
+    // 构建时占位符。将其视为"无会话"。
     return { sessionId: sid === "_" ? "" : sid, projectId: "" };
   }
   const projMatch = pathname.match(/^\/agents\/[^/]+\/project\/([^/]+)/);
@@ -516,27 +481,24 @@ export function ChatScreen() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  // When `?actAs=<uid>` is in the URL, this chat is being opened by a
-  // super_admin viewing another user's session (read-only by middleware).
-  // Forces the composer into a disabled state and surfaces a banner so
-  // the admin can't try to type and get a silent 403.
+  // 当 URL 中包含 `?actAs=<uid>` 时，表示超级管理员正在查看另一个
+  // 用户的会话（中间件设为只读）。强制输入框进入禁用状态并显示横幅，
+  // 以防管理员尝试输入后静默收到 403。
   const actAsUserId = searchParams?.get("actAs") || "";
   const isActAsView = !!actAsUserId;
   const { sessionId: urlSessionId, projectId: urlProjectId } = useMemo(
     () => parseAgentRoute(pathname || ""),
     [pathname],
   );
-  // Reactive: re-derives from pathname so switching agents (sidebar
-  // dropdown, browser back/forward) immediately updates downstream
-  // fetches. The previous useState(() => ...) flavor froze the id at
-  // mount, so background loads kept hitting the old agent and the
-  // panel showed stale history under the new URL.
+  // 响应式：从路径名重新派生，使切换智能体（侧边栏下拉、浏览器
+  // 前进/后退）立即更新下游请求。之前 useState(() => ...) 的写法在
+  // 挂载时冻结了 id，导致后台加载继续请求旧智能体而面板在新 URL 下
+  // 显示过期历史。
   const selectedAgent = useAgentIdFromURL();
   const [agentName, setAgentName] = useState<string>("");
-  // Resolved metadata for `urlProjectId`, surfaced as the
-  // empty-state info card on /agents/<aid>/project/<pid>. Null until
-  // the fetch lands; the card hides while loading rather than
-  // flashing a placeholder.
+  // urlProjectId 的已解析元数据，在 /agents/<aid>/project/<pid> 的
+  // 空状态信息卡中展示。获取前为 null；卡片在加载期间隐藏而非闪烁
+  // 占位符。
   const [projectInfo, setProjectInfo] = useState<{
     id: string;
     name: string;
@@ -551,18 +513,17 @@ export function ChatScreen() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  // One-shot composer mode: the next regular send drafts a plan with
-  // tools disabled, then resets so the following turn can execute it.
+  // 单次组合器模式：下一次常规发送将生成工具禁用的计划，然后重置，
+  // 以便后续轮次可以执行它。
   const [planMode, setPlanMode] = useState(false);
-  // todo.md state for the current session — agent maintains the file,
-  // we re-fetch on every write_file/edit_file event that touches
-  // todo.md plus once at mount. Empty `items` hides the panel.
+  // 当前会话的 todo.md 状态——智能体维护此文件，我们在每次
+  // 涉及 todo.md 的 write_file/edit_file 事件及挂载时重新获取。
+  // 空的 `items` 隐藏面板。
   const [todoItems, setTodoItems] = useState<TodoItem[]>([]);
-  // Last subagent_progress event from the active delegate_task run.
-  // Cleared when the subagent reports phase="done" or when sending
-  // turns off, so it never lingers across turns. Only one subagent
-  // runs at a time (delegate_task is registered serial) so we don't
-  // need to key this by tool_call_id.
+  // 当前活跃 delegate_task 运行的最近 subagent_progress 事件。
+  // 当子智能体报告 phase="done" 或发送轮次关闭时清除，因此不会跨轮次
+  // 残留。一次只运行一个子智能体（delegate_task 以串行方式注册），
+  // 无需按 tool_call_id 分键。
   const [subagentProgress, setSubagentProgress] = useState<null | {
     iteration?: number;
     max?: number;
@@ -573,12 +534,12 @@ export function ChatScreen() {
   const [filesSheetOpen, setFilesSheetOpen] = useState(false);
   const [sessionTitle, setSessionTitle] = useState<string>("");
   const [attachments, setAttachments] = useState<File[]>([]);
-  // Lightbox for clicking either an attachment thumbnail (compose box)
-  // or an inline image in a sent message bubble. `null` = closed.
+  // 灯箱：用于点击附件缩略图（输入框）或已发送消息气泡中的内联图片。
+  // `null` = 关闭。
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
-  // Object URLs for image attachments in the compose box. Keyed by file
-  // index so we can revoke on remove without re-computing for every
-  // chip on every keystroke. Re-derived whenever `attachments` changes.
+  // 输入框中图片附件的 Object URL。以文件索引为键，以便在移除时
+  // 撤销而无需在每次按键时为所有预览重新计算。当 `attachments` 变化时
+  // 重新派生。
   const attachmentPreviews = useMemo(
     () =>
       attachments.map((f) =>
@@ -593,61 +554,49 @@ export function ChatScreen() {
   }, [attachmentPreviews]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
-  // Auto-scroll only when the user is already pinned to the bottom.
-  // Toggled false the moment they scroll up so streaming agent output
-  // can't yank them back down mid-read, then flipped back to true once
-  // they return to the bottom (or hit the "scroll to latest" button).
+  // 仅当用户已固定在底部时自动滚动。用户上滚后立即切换为 false，
+  // 使流式助手输出不会在阅读中途将其拉回底部；用户回到底部
+  //（或点击"滚动到最新"按钮）后翻回 true。
   const stickToBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Dedupe events arriving on both the active POST stream and the
-  // parallel /api/chat/subscribe SSE — both subscribe to the same
-  // chat-events hub on the server. Tracks the highest seq we've
-  // already rendered for the current session.
+  // 去重：同时在活跃 POST 流和并行 /api/chat/subscribe SSE 上到达
+  // 的事件——两者在服务端订阅同一个 chat-events hub。跟踪当前会话中
+  // 已渲染的最高 seq。
   const maxSeqRef = useRef<number>(-1);
-  // Resume cursor handed to /api/chat/subscribe so a freshly reloaded
-  // page replays only deltas it didn't see. Captured from the chat
-  // history endpoint, refreshed when sessionId changes.
+  // 传递给 /api/chat/subscribe 的恢复游标，使刚重新加载的页面仅
+  // 重放其未见的增量。从聊天历史端点捕获，在 sessionId 变化时刷新。
   const subscribeSinceRef = useRef<number>(-1);
-  // Transient assistant bubble created from subscribe-replayed content
-  // events (i.e. when the user reloaded mid-turn and we're catching up
-  // before the agent's "done" lands). Cleared on the next history
-  // reload, which replaces the placeholder with the canonical message
-  // pulled from session_messages.
+  // 从订阅重放内容事件创建的临时助手气泡（即用户在轮次中途重新加载
+  // 并正在追赶时）。在下一次历史重新加载时清除，届时会用从
+  // session_messages 拉取的规范消息替换占位符。
   const transientBubbleIdRef = useRef<string | null>(null);
-  // streamingMsgIdRef holds the id of the assistant bubble currently
-  // accreting content_delta chunks via the active POST sendChatStream.
-  // Shared with the parallel /api/chat/subscribe SSE handler so that
-  // handler can detect "POST stream owns this turn" and skip its own
-  // bubble-creation path for the trailing `content` event — both
-  // handlers see the same content event from the hub, and if subscribe
-  // wins the race the dedup-by-seq guard won't fire on the POST side,
-  // producing a duplicate bubble. The ref is reset to null at startNewGroup
-  // and when a tool_call rolls the bubble into a tool-group.
+// streamingMsgIdRef 保存当前通过活跃 POST sendChatStream 累积
+  // content_delta 块的助手气泡 id。与并行 /api/chat/subscribe SSE
+  // 处理器共享，以便该处理器能检测到"POST 流拥有此轮次"并跳过
+  // 尾随 `content` 事件的自身气泡创建路径——两个处理器从同一 hub
+  // 看到相同的 content 事件，如果 subscribe 先到达，去重-by-seq
+  // 守卫不会在 POST 端触发，导致产生重复气泡。此 ref 在
+  // startNewGroup 和 tool_call 将气泡卷入工具组时重置为 null。
   const streamingMsgIdRef = useRef<string | null>(null);
-  // AbortController for the in-flight chat stream so the Stop button can
-  // cancel both the upload and the SSE connection. Reset on every new turn.
+  // 正在进行中的聊天流的 AbortController，以便停止按钮可以同时取消
+  // 上传和 SSE 连接。每次新轮次时重置。
   const abortRef = useRef<AbortController | null>(null);
 
-  // Gates the EventSource effect: holds the sessionId whose history has
-  // been fetched and whose `subscribeSinceRef` is now accurate. Without
-  // this gate, the SSE effect (declared earlier and therefore run first)
-  // would open `/api/chat/subscribe?since=-1` before the history fetch
-  // resolved — server-side that means "replay every session_event" and
-  // for a long deep-research chat the replay floods the client AND ties
-  // up the EventSource HTTP connection slot. Stack a few of those across
-  // rapid project↔chat navigations and the browser's 6-conn-per-origin
-  // limit pins everything `pending`, the page goes white, and clicks
-  // stop registering. Storing the loaded sessionId (not just a boolean)
-  // keeps the gate honest if sessionId changes again before history
-  // catches up.
+  // 控制 EventSource 效果的门：保存其历史已被获取且 subscribeSinceRef
+  // 现在准确的 sessionId。没有这个门，SSE 效果（声明更早因此先运行）
+  // 会在历史获取解析之前打开 `/api/chat/subscribe?since=-1`——服务端
+  // 这意味着"重放每一个 session_event"，对于深度研究的聊天，重放会
+  // 泛洪客户端并占据 EventSource 的 HTTP 连接槽。快速项目↔聊天导航
+  // 堆叠几个这样的连接，浏览器的 6 连接/源限制会将所有请求钉在
+  // `pending`，页面变白，点击不再响应。存储已加载的 sessionId
+  //（而不仅是布尔值）能在 sessionId 于历史追上之前再次变化时保持门控准确。
   const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null);
 
-  // Slash-command menu state. The menu opens when the textarea holds a
-  // token beginning with `/` at the caret; selecting a skill swaps that
-  // token for `/<skill-name> `, leaving the cursor after the space so the
-  // user can keep typing their prompt.
+// 斜杠命令菜单状态。当输入框中光标位置存在以 `/` 开头的标记时打开
+  // 菜单；选择技能会将该标记替换为 `/<skill-name> `，光标置于空格后
+  // 以便用户继续输入提示词。
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
@@ -657,13 +606,10 @@ export function ChatScreen() {
     getSkills().then(setSkills).catch(() => setSkills([]));
   }, []);
 
-  // Reset chat-pane state when the active agent changes. Without
-  // this, switching agents from the sidebar would briefly render the
-  // previous agent's history / sessions / title under the new URL
-  // until the load effects below replaced them. Clearing eagerly is
-  // cheaper than threading a "loading" flag through every render.
-  // We deliberately keep `input` so a half-typed message survives an
-  // accidental agent switch.
+// 活跃智能体变化时重置聊天面板状态。否则从侧边栏切换智能体会短暂
+  // 在新 URL 下渲染旧智能体的历史/会话/标题，直到下方加载数果替换它们。
+  // 提早清除比在每个渲染中传递"加载中"标志更经济。我们刻意保留 `input`，
+  // 使半输入的消息在意外切换智能体后不会丢失。
   const lastAgentRef = useRef(selectedAgent);
   useEffect(() => {
     if (lastAgentRef.current === selectedAgent) return;
@@ -675,11 +621,10 @@ export function ChatScreen() {
     setAttachments([]);
   }, [selectedAgent]);
 
-  // Resolve the agent's display name once. The chat title and any
-  // future header bits should show "Chat with My Helper", not the
-  // opaque agt_xxx id. Uses /api/agents/{id} (owner or super_admin) so
-  // an admin viewing another user's agent still gets the real name —
-  // /api/agents (list) is owner-scoped and would miss it.
+// 一次性解析智能体显示名称。聊天标题和未来可能的头部信息应显示
+  // "Chat with My Helper" 而非不透明的 agt_xxx id。使用 /api/agents/{id}
+  // （管理员或超级管理员），使管理员查看另一个用户的智能体仍能获得
+  // 真实名称——/api/agents（列表）仅限拥有者，会遗漏。
   useEffect(() => {
     if (!selectedAgent) return;
     let aborted = false;
@@ -696,10 +641,9 @@ export function ChatScreen() {
     };
   }, [selectedAgent]);
 
-  // Resolve project name for the hero title when the URL points at a
-  // project's empty new-chat state. Cheap enough to do via listProjects
-  // — projects per (user, agent) is small and the sidebar has already
-  // warmed the network cache.
+// 当 URL 指向项目的空新聊天状态时，解析项目名称作为主标题。
+  // 通过 listProjects 获取足够便宜——每个（用户、智能体）对的项目
+  // 数量少，且侧边栏已预热了网络缓存。
   useEffect(() => {
     if (!selectedAgent || !urlProjectId) {
       setProjectInfo(null);
@@ -720,20 +664,19 @@ export function ChatScreen() {
     };
   }, [selectedAgent, urlProjectId]);
 
-  // Detect whether the caret is inside a /token and, if so, what's been
-  // typed after the slash. Cheap enough to run every keystroke.
+// 检测光标是否在 /token 内部，如果是，则检测斜杠后输入了什么。
+  // 运行成本足够低，可以在每次按键时执行。
   const slashContext = (value: string, caret: number): { start: number; query: string } | null => {
     const before = value.slice(0, caret);
-    // Require the slash to be at start-of-message or preceded by whitespace
-    // so paths / URLs with slashes don't trigger the menu.
+    // 要求斜杠位于消息开头或前面有空白，以便包含斜杠的路径/URL
+    // 不会触发菜单。
     const match = /(^|\s)\/([\w-]*)$/.exec(before);
     if (!match) return null;
     return { start: caret - match[2].length - 1, query: match[2] };
   };
 
-  // Merged command + skill list for the slash menu. Commands first so
-  // built-ins are easy to find; query matches both name and description.
-  // Cap at 8 to keep the popover from outgrowing the composer.
+  // 合并的命令 + 技能列表用于斜杠菜单。命令在前以便快速找到内置项；
+  // 查询同时匹配名称和描述。上限 8 以保持弹出菜单不超出输入框。
   const filteredItems: SlashItem[] = slashOpen
     ? (() => {
         const q = slashQuery.toLowerCase();
@@ -773,7 +716,7 @@ export function ChatScreen() {
     [input],
   );
 
-  // Load sessions when agent changes
+  // 智能体变化时加载会话
   const loadSessions = useCallback((agentId: string) => {
     getChatSessions(agentId)
       .then((list) => setSessions(list || []))
@@ -785,25 +728,21 @@ export function ChatScreen() {
     loadSessions(selectedAgent);
   }, [selectedAgent, loadSessions]);
 
-  // Live + replay subscription. Two job:
-  //
-  //   1. Cron-fired (and other async) plain text messages routed
-  //      through the server's WebChannel — these arrive with shape
-  //      { text } and get appended as a new agent bubble.
-  //
-  //   2. Resume-on-reload of a turn that was in flight when the user
-  //      refreshed. The server replays chat_events with seq > since
-  //      and then keeps the connection live for new events. These
-  //      arrive with ChatStreamEvent shape ({ seq, type, data }).
-  //
-  // Dedupe across this connection AND the parallel POST sendChatStream
-  // (both subscribe to the same hub server-side) by skipping events
-  // whose seq is <= maxSeqRef.
+// 实时 + 重放订阅。两个任务：
+    //
+    //   1. 由定时任务（及其他异步）触发的纯文本消息，通过服务器的
+    //      WebChannel 路由——以 { text } 形式到达，追加为新的助手气泡。
+    //
+    //   2. 用户刷新时对正在进行的轮次进行恢复重放。服务器重放
+    //      seq > since 的 chat_events，然后保持连接以接收新事件。
+    //      以 ChatStreamEvent 形状（{ seq, type, data }）到达。
+    //
+    // 通过跳过 seq <= maxSeqRef 的事件，在此连接和并行 POST
+    // sendChatStream（两者服务端订阅同一 hub）之间去重。
   useEffect(() => {
     if (!selectedAgent || !sessionId) return;
-    // Wait for the history fetch to land for THIS sessionId before
-    // opening the SSE — see the loadedSessionId comment for the
-    // browser-connection-pool failure mode this prevents.
+// 等待此 sessionId 的历史获取落地后再打开 SSE——参见
+      // loadedSessionId 注释中此措施防止的浏览器连接池故障模式。
     if (loadedSessionId !== sessionId) return;
     const since = subscribeSinceRef.current;
     const url = `/api/chat/subscribe?agentId=${encodeURIComponent(selectedAgent)}&sessionId=${encodeURIComponent(sessionId)}&since=${since}`;
@@ -817,7 +756,7 @@ export function ChatScreen() {
           content?: string;
           message?: string;
           metadata?: ToolResultMetadata;
-          // subagent_progress fields
+          // 子智能体进度字段
           iteration?: number;
           max?: number;
           phase?: "thinking" | "running" | "final-delivery" | "done";
@@ -829,17 +768,15 @@ export function ChatScreen() {
       } catch {
         return;
       }
-      // Shape A: ChatStreamEvent (in-flight turn deltas).
+      // 形态 A：ChatStreamEvent（进行中轮次的增量）。
       if (typeof data.type === "string") {
         const seq = typeof data.seq === "number" ? data.seq : -1;
         if (seq >= 0 && seq <= maxSeqRef.current) return; // already rendered via POST stream
-        // CAREFUL: do NOT bump maxSeqRef before the switch. This handler
-        // intentionally drops tool_call / tool_result during catch-up
-        // (the post-`done` history reload renders them properly) — but
-        // a pre-switch bump would mark those seqs as "rendered" and the
-        // parallel POST sendChatStream callback would dedup-skip the
-        // very same events when it tries to actually render them. Bump
-        // only inside cases that really took ownership of this seq.
+// 注意：不要在 switch 之前提前更新 maxSeqRef。此处理器在追赶阶段
+          // 有意丢弃 tool_call / tool_result（后续的历史重新加载会正确渲染它们）
+          // ——但提前 bump 会将这些 seq 标记为"已渲染"，并行 POST sendChatStream
+          // 回调在尝试渲染时会去重跳过这些事件。仅在真正接管此 seq 的 case
+          // 内更新。
         const claim = () => {
           if (seq >= 0) maxSeqRef.current = seq;
         };
@@ -848,17 +785,15 @@ export function ChatScreen() {
             const content = data.data?.content || "";
             const meta = data.data?.metadata;
             if (!content && !meta) break;
-            // The active POST sendChatStream is rendering this turn
-            // via content_delta into streamingMsgIdRef. Both
-            // subscriptions sit on the same hub, so the `content`
-            // event reaches both handlers; if subscribe wins the
-            // race it would create a duplicate transient bubble
-            // before the POST callback can dedup. Bail when the
-            // POST handler is mid-stream — it will seal the bubble
-            // itself when it processes the event.
-            //
-            // Metadata-only events (no content) still go through so
-            // a forced-final-delivery retro-stamp lands.
+// 活跃的 POST sendChatStream 正通过 content_delta 渲染此轮次到
+              // streamingMsgIdRef。两个订阅监听同一 hub，因此 `content`
+              // 事件会同时到达两个处理器；如果 subscribe 先到达，
+              // 会创建重复的临时气泡，此后 POST 回调无法去重。当
+              // POST 处理器正在流式传输时退出——它将在处理该事件时
+              // 自行封口气泡。
+              //
+              // 仅含元数据的事件（无内容）仍需通过，以便强制最终交付
+              // 的追溯标记生效。
             if (streamingMsgIdRef.current && content) {
               claim();
               break;
@@ -877,9 +812,8 @@ export function ChatScreen() {
                   return updated;
                 }
               }
-              // Metadata-only retro-stamp event with no transient
-              // bubble: attach to the most recent agent bubble so the
-              // badge sticks across an active subscribe session.
+              // 仅含元数据的追溯标记事件且无临时气泡：附加到最近的助手气泡，
+              // 使徽章在活跃的订阅会话中持续保留。
               if (!content && meta) {
                 for (let i = prev.length - 1; i >= 0; i--) {
                   if (prev[i].role === "agent") {
@@ -926,21 +860,15 @@ export function ChatScreen() {
           }
           case "done": {
             claim();
-            // Defensive clear — content events should already have
-            // sealed the streaming bubble, but a turn that errors out
-            // before the trailing `content` event lands would leave
-            // the ref dangling and cause the next turn's first
-            // content_delta to write into the stale id.
+            // 防御性清理——content 事件应已封口流式气泡，但在 content 事件
+            // 到达之前出错的轮次会使 ref 悬空，导致下一轮的首个
+            // content_delta 写入过期的 id。
             streamingMsgIdRef.current = null;
-            // Only reload history when we actually built a transient
-            // bubble from subscribe-replayed content events (i.e. the
-            // user reloaded mid-turn and we need to swap the
-            // placeholder for the canonical message saved in
-            // session_messages). When the active POST stream rendered
-            // the turn directly, transient bubble is null — a reload
-            // here would clobber any rendered error bubbles too,
-            // because LLM-error turns never write an assistant
-            // message to session_messages.
+            // 仅当通过订阅重放内容事件实际构建了临时气泡时才重新加载历史
+            //（即用户在轮次中途重新加载，需要将占位符替换为 session_messages
+            // 中保存的规范消息）。当活跃 POST 流直接渲染了该轮次时，
+            // 临时气泡为 null——此时重新加载会覆盖任何已渲染的错误气泡，
+            // 因为 LLM 错误轮次从不向 session_messages 写入助手消息。
             if (transientBubbleIdRef.current) {
               transientBubbleIdRef.current = null;
               getChatHistoryWithCursor(selectedAgent, sessionId)
@@ -951,8 +879,7 @@ export function ChatScreen() {
                 })
                 .catch(() => {});
             }
-            // Tell the sidebar to refresh — the new turn may have
-            // produced an updated session title.
+            // 通知侧边栏刷新——新轮次可能产生了更新后的会话标题。
             if (typeof window !== "undefined") {
               window.dispatchEvent(
                 new CustomEvent("bkclaw:sessions-changed", {
@@ -962,13 +889,13 @@ export function ChatScreen() {
             }
             break;
           }
-          // tool_call / tool_result during catch-up are skipped here —
-          // the next history reload (on `done`) will render them
-          // properly via buildChatMessages.
+          // 追赶期间的 tool_call / tool_result 在此跳过——
+          // 下一次历史重新加载（在 `done` 时）会通过 buildChatMessages
+          // 正确渲染它们。
         }
         return;
       }
-      // Shape B: legacy WebChannel { text } — cron-fired async messages.
+      // 形态 B：传统 WebChannel { text } ——定时任务触发的异步消息。
       const text = data.text || "";
       if (!text) return;
       setMessages((prev) => [
@@ -982,26 +909,23 @@ export function ChatScreen() {
       ]);
     };
     es.onerror = () => {
-      // EventSource auto-reconnects on transient errors; only close on
-      // unmount. A persistent 404 (session removed, agent gone) will
-      // keep flapping but is harmless.
+      // EventSource 在瞬态错误时自动重连；仅在卸载时关闭。
+      // 持续的 404（会话已删除、智能体不存在）会不断重试但无害。
     };
     return () => {
       es.close();
     };
   }, [selectedAgent, sessionId, loadedSessionId]);
 
-  // Reactively swap sessionId when the URL changes underneath us.
-  // Three URL transitions matter, all handled by the same branch logic:
-  //   - /chat/A → /chat/B               : adopt the new session id
-  //   - /chat/A → /chat/ or /project/P  : mint a fresh id, clear messages
-  //   - /chat/  → /chat/A               : adopt the session id
-  // `prevHadSessionRef` keeps the initial mount from re-minting on top
-  // of the id useState() already picked, AND keeps two consecutive
-  // no-session URLs (e.g. /chat/ → /project/P/) from churning the id.
-  // Messages are cleared on any id change so the in-place swap doesn't
-  // briefly show the previous chat's content while the new history
-  // fetch is in flight.
+  // 当 URL 在底层变化时响应式切换 sessionId。
+  // 三个 URL 转换涉及，均由同一分支逻辑处理：
+  //   - /chat/A → /chat/B               ：采用新会话 id
+  //   - /chat/A → /chat/ 或 /project/P  ：生成新 id，清空消息
+  //   - /chat/  → /chat/A               ：采用该会话 id
+  // `prevHadSessionRef` 防止初始挂载在 useState() 已选取的 id 之上
+  // 重新生成，并防止连续两个无会话 URL（如 /chat/ → /project/P）
+  // 反复生成 id。消息在任意 id 变化时清除，使原地切换不会在新历史
+  // 获取期间短暂显示前一个聊天的内容。
   const prevHadSessionRef = useRef(false);
   useEffect(() => {
     if (urlSessionId) {
@@ -1019,28 +943,24 @@ export function ChatScreen() {
     }
   }, [urlSessionId, sessionId]);
 
-  // Keep the local sessionTitle in sync with the session list. Unknown
-  // sessions (brand-new, not saved yet) fall back to empty so the header
-  // can render "New chat".
+  // 保持本地 sessionTitle 与会话列表同步。未知会话
+  // （全新、尚未保存）回退为空，使标题可渲染"新聊天"。
   useEffect(() => {
     const s = sessions.find((x) => x.id === sessionId);
     setSessionTitle(s?.title || s?.preview || "");
   }, [sessionId, sessions]);
 
-  // Channel of the currently-open session, derived from the sessions
-  // list. Brand-new web chats don't have a row yet — the fallback to
-  // "web" keeps composing enabled for them. IM sessions get a banner +
-  // disabled input because composing here would write to the agent's
-  // session but never reach the upstream messenger.
+  // 当前会话的通道，从会话列表派生。全新的 web 聊天还没有行——回退到
+  // "web" 保持输入启用。IM 会话获得横幅 + 禁用输入，因为在此处写入会
+  // 发送到智能体会话但永远不会到达上游信使。
   const currentChannel = useMemo<string>(() => {
     const s = sessions.find((x) => x.id === sessionId);
     return s?.channel || "web";
   }, [sessions, sessionId]);
-  // isReadOnlyChannel locks the composer for IM-bound sessions (replies
-  // must come from the upstream channel). isActAsView locks it when a
-  // super_admin opened this URL to inspect another user's chat. Both
-  // collapse to the same disabled state on the textarea / send button;
-  // the banners differ so the user knows *why*.
+// isReadOnlyChannel 为 IM 绑定的会话锁定输入框（回复必须来自上游通道）。
+  // isActAsView 在超级管理员通过此 URL 查看另一用户的聊天时锁定。
+  // 两者归约为相同的禁用状态应用于输入框/发送按钮；横幅不同，以便
+  // 用户知道*原因*。
   const isReadOnlyChannel = currentChannel !== "web";
   const isReadOnlyView = isReadOnlyChannel || isActAsView;
 
@@ -1053,10 +973,9 @@ export function ChatScreen() {
         await renameChatSession(selectedAgent, sessionId, trimmed);
       } finally {
         loadSessions(selectedAgent);
-        // Tell the global sidebar to refetch its Chats list so the new
-        // title shows up without a full page reload. AppSidebar's own
-        // fetch only re-runs when activeAgentId changes, which doesn't
-        // happen on rename.
+        // 通知全局侧边栏重新获取其聊天列表，使新标题无需整页刷新即可显示。
+        // AppSidebar 自身的获取仅在 activeAgentId 变化时重新运行，
+        // 重命名不会触发。
         if (typeof window !== "undefined") {
           window.dispatchEvent(
             new CustomEvent("bkclaw:sessions-changed", {
@@ -1069,11 +988,9 @@ export function ChatScreen() {
     [selectedAgent, sessionId, sessionTitle, loadSessions],
   );
 
-  // Render the editable title + the workspace-panel toggle into the
-  // global sticky header (the chat container injects whatever JSX it
-  // wants here, next to the sidebar toggle). The toggle stays wired
-  // even when the panel is open so users can collapse it from the
-  // same control they used to expand it.
+  // 将可编辑标题 + 工作区面板切换按钮渲染到全局固定头部（聊天容器注入
+  // 任意 JSX 到此处，位于侧边栏切换按钮旁）。切换按钮在面板开启时
+  // 仍保持连接，以便用户从展开时使用的同一控件折叠它。
   const headerSlot = useMemo(
     () => (
       <div className="flex flex-1 items-center justify-between gap-2 min-w-0">
@@ -1102,32 +1019,28 @@ export function ChatScreen() {
   );
   usePageHeader(headerSlot, [headerSlot]);
 
-  // Load history when session changes. After rebuilding messages from
-  // server history we also re-attach this session's workspace files to
-  // the trailing assistant bubble so the "Your files" panel survives a
-  // refresh — server history doesn't carry per-turn file diffs, so we
-  // approximate by listing everything under sessions/<sid>/ once and
-  // hanging it off the last agent message.
+  // 会话变化时加载历史。从服务器历史重建消息后，我们还将此会话的工作区
+  // 文件重新附加到最后的助手气泡，使"你的文件"面板在刷新后依然显示——
+  // 服务器历史不携带每轮文件差异，因此我们通过一次列出 sessions/<sid>/
+  // 下的所有内容来近似，并挂到最后一个助手消息上。
   useEffect(() => {
     if (!selectedAgent || !sessionId) return;
-    // Reset dedup state when session changes — events from a previous
-    // session must not bias the new session's seq filter, and any
-    // transient placeholder is no longer relevant.
+// 会话变化时重置去重状态——前一会话的事件不得偏置新会话的
+      // seq 过滤器，临时占位符也不再相关。
     maxSeqRef.current = -1;
     subscribeSinceRef.current = -1;
     transientBubbleIdRef.current = null;
-    // Close the SSE gate for this sessionId; reopens once the history
-    // fetch lands and subscribeSinceRef has been set to the real cursor.
+// 关闭此 sessionId 的 SSE 门；历史获取落地且 subscribeSinceRef
+      // 设置为真实游标后重新开启。
     setLoadedSessionId(null);
-    // Reset the todo panel on session change so the previous chat's
-    // checklist doesn't briefly flash before the new one's fetch lands.
+// 会话变化时重置待办面板，使前一个聊天的清单不会在新数据获取到达之前
+      // 短暂闪烁。
     setTodoItems([]);
-    // Same for the subagent progress indicator — never carry it across
-    // sessions; a fresh load means no in-flight delegate_task to track.
+// 子智能体进度指示器同理——从不跨会话携带；全新加载意味着没有
+      // 正在进行的 delegate_task 需要跟踪。
     setSubagentProgress(null);
-    // Refresh todo.md alongside the history fetch. We don't gate the
-    // rest of the load on it — a 404 (no todo.md yet) is the normal
-    // empty-session case.
+// 与历史获取一同刷新 todo.md。我们不让其余加载等待它——
+      // 404（尚无 todo.md）是空白会话的正常情况。
     getChatTodo(selectedAgent, sessionId)
       .then((todo) => setTodoItems(todo.items))
       .catch(() => setTodoItems([]));
@@ -1144,11 +1057,10 @@ export function ChatScreen() {
         }
         const built = buildChatMessages(history);
         try {
-          // listAgentFiles(agentId, sessionId) lets the backend pick
-          // the right prefix — projects/<pid>/ for project chats,
-          // sessions/<chat>/ for loose ones — so we don't have to
-          // hard-code `sessions/<sid>/` here. The hard-coded prefix
-          // missed every file in a project chat.
+          // listAgentFiles(agentId, sessionId) 让后端选择正确的前缀——项目聊天
+          // 用 projects/<pid>/，松散聊天用 sessions/<chat>/——因此我们无需
+          // 在此处硬编码 `sessions/<sid>/`。硬编码的前缀会遗漏项目聊天中
+          // 的每个文件。
           const sessionFiles: ProducedFile[] = (
             await listAgentFiles(selectedAgent, sessionId)
           )
@@ -1162,7 +1074,7 @@ export function ChatScreen() {
               }
             }
           }
-        } catch { /* listing failed — fall back to no panel */ }
+        } catch { /* 列出失败 — 回退为无面板 */ }
         if (aborted) return;
         setMessages(built);
         setLoadedSessionId(sessionId);
@@ -1170,9 +1082,8 @@ export function ChatScreen() {
       .catch(() => {
         if (aborted) return;
         setMessages([]);
-        // History fetch failed — open the SSE anyway so live events
-        // still flow, but use seq=0 instead of -1 so we don't trigger a
-        // full server-side replay as a side effect.
+        // 历史获取失败——仍然打开 SSE 以接收实时事件，但使用 seq=0
+        // 而非 -1，以便不会触发全量服务端重放作为副作用。
         subscribeSinceRef.current = 0;
         setLoadedSessionId(sessionId);
       });
@@ -1186,10 +1097,9 @@ export function ChatScreen() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Watch the scroll container so we know whether to keep auto-scrolling
-  // as new content arrives. 64px slack absorbs streaming jitter — without
-  // it, a single token append can push the bottom past the viewport and
-  // flip us off "sticky" for one tick before the next auto-scroll fires.
+// 监听滚动容器以确定新内容到达时是否保持自动滚动。
+// 64px 宽容度吸收流式抖动——没有它，单个 token 追加可能将底部
+// 推出视口并在下一次自动滚动触发前暂时关闭"粘性"。
   useEffect(() => {
     const el = messagesScrollRef.current;
     if (!el) return;
@@ -1209,10 +1119,9 @@ export function ChatScreen() {
     }
   }, [input]);
 
-  // applySteerEvent renders a server "steer" echo as a user bubble,
-  // reconciling against the optimistic pendingSteer bubble (if any) so
-  // the message isn't duplicated. seq-dedup is already applied upstream
-  // by both event consumers.
+// applySteerEvent 将服务端"steer"回显渲染为用户气泡，
+// 与乐观的 pendingSteer 气泡（如果有）进行对账，避免消息重复。
+// seq-去重已在上游由两个事件消费者应用。
   const applySteerEvent = useCallback((content: string) => {
     if (!content) return;
     setMessages((prev) => {
@@ -1232,45 +1141,37 @@ export function ChatScreen() {
   }, []);
 
   const handleSend = useCallback(async (overrideText?: string, force?: boolean) => {
-    // overrideText lets caller post a message that didn't come from
-    // the composer (e.g. the plan-approval button clicking "go"). When
-    // present it bypasses the input field entirely — composer state
-    // stays as the user left it. force bypasses the in-flight guard;
-    // used by the steer 409 fallback (server confirmed no active turn).
+    // overrideText 允许调用方发送非来自输入框的消息（如计划确认按钮
+    // 点击"go"）。存在时完全绕过输入框——输入框状态保持原样。
+    // force 绕过进行中保护；由 steer 409 回退使用（服务端确认无活跃轮次）。
     const composerText = (overrideText ?? input).trim();
     const text = composerText;
-    // Allow sending with attachments only (no text), but require at least one.
+    // 允许仅发送附件（无文本），但至少需要一个。
     if ((!text && attachments.length === 0) || !selectedAgent || (sending && !force)) return;
 
-    // `/project/<pid>` is the lazy-create marker the sidebar dropped
-    // us at. Captured here so it can ride the first chat request body;
-    // once the session row exists, project_id is on the row and the URL
-    // drops back to the bare chat form.
+    // `/project/<pid>` 是侧边栏放置我们的懒创建标记。在此捕获以便
+    // 搭载到首次聊天请求体；会话行存在后，project_id 在行上，
+    // URL 回退到裸聊天形式。
     const projectIdHint = urlProjectId;
 
-    // Pin the sessionId into the URL on the first send so a refresh
-    // keeps the user in the same conversation. We use the native
-    // History API instead of `router.replace` because output:'export'
-    // only pre-renders the `_` placeholder for /chat/[session]; a
-    // router.replace to the real sid triggers an RSC fetch that the
-    // SPA fallback can't satisfy, and Next falls back to a hard
-    // window.location navigation — which kills the in-flight stream
-    // we're about to start. Next 16's app-router patches
-    // history.replaceState to dispatch ACTION_RESTORE, so usePathname /
-    // useSearchParams (and the sidebar's navigateOnce dedupe that
-    // derives from them) still see the new URL.
+    // 在首次发送时将 sessionId 固定到 URL 中，使刷新保持在同一会话。
+    // 使用原生 History API 而非 `router.replace`，因为 output:'export'
+    // 仅为 /chat/[session] 预渲染 `_` 占位符；router.replace 到真实 sid
+    // 会触发 RSC 请求，SPA 后备无法满足，Next 会回退到硬
+    // window.location 导航——这会杀死即将开始的流。Next 16 的 app-router
+    // 修补了 history.replaceState 以分发 ACTION_RESTORE，因此
+    // usePathname / useSearchParams（及从中派生的侧边栏 navigateOnce
+    // 去重）仍能看到新 URL。
     const target = `/agents/${selectedAgent}/chat/${sessionId}/`;
     if (pathname !== target) {
       window.history.replaceState(null, "", target);
     }
 
-    // Upload attachments first so the agent can read them by name on its
-    // first turn. Files land at sessions/<sid>/<basename> in the workspace
-    // store, which is the same dir the docker sandbox bind-mounts as
-    // /workspace. We also (a) build user-bubble preview metadata so images
-    // render inline in the user's bubble without waiting on the server
-    // round-trip, and (b) read images as data URLs so vision-capable
-    // models receive them as image_url content parts.
+    // 先上传附件，使智能体在首个轮次即能按名称读取。文件落至工作区存储中
+    // 的 sessions/<sid>/<basename>，与 docker 沙箱绑定挂载的 /workspace
+    // 是同一目录。我们还(a)构建用户气泡预览元数据，使图片无需等待服务器
+    // 往返即可在气泡中渲染，(b)将图片读取为 data URL，使视觉能力模型
+    // 接收它们为 image_url 内容部分。
     const filesToUpload = attachments;
     setAttachments([]);
 
@@ -1294,9 +1195,9 @@ export function ChatScreen() {
         return;
       }
 
-      // Read each image as a base64 data URL. We do this AFTER upload —
-      // upload only needs the File object; data URL conversion is for the
-      // provider call. Done in parallel for snappy UX on multi-attach.
+      // 将每张图片读取为 base64 data URL。我们在上传之后执行此操作——
+      // 上传只需要 File 对象；data URL 转换是为了提供者调用。并行执行以保证
+      // 多附件时的快速体验。
       imageDataUrls = (
         await Promise.all(
           filesToUpload.map(async (f) => {
@@ -1311,12 +1212,11 @@ export function ChatScreen() {
         )
       ).filter((s): s is string => !!s);
     }
-    // Build the prompt actually sent to the model. Images travel as
-    // `imageUrls` for vision, but the model also needs the on-disk path
-    // for skills like image-tool that take `input: "/workspace/<file>"`.
-    // We prepend `[Attached: /workspace/<name>]` lines for that — the
-    // server's StripAttachedPrefix removes them on history read so user
-    // bubbles, page titles, and sidebar previews stay clean.
+    // 构建实际发送给模型的提示词。图片以 `imageUrls` 形式发送用于视觉，
+    // 但模型还需要磁盘路径用于 image-tool 等技能（`input: "/workspace/<file>"`）。
+    // 我们在前面加上 `[Attached: /workspace/<name>]` 行——服务端的
+    // StripAttachedPrefix 在历史读取时移除它们，使用户气泡、页面标题
+    // 和侧边栏预览保持干净。
     const attachedPaths = filesToUpload.map((f) => `/workspace/${f.name}`);
     const breadcrumb = attachedPaths
       .map((p) => `[Attached: ${p}]`)
@@ -1325,22 +1225,20 @@ export function ChatScreen() {
       ? (text ? `${breadcrumb}\n${text}` : breadcrumb)
       : text;
 
-    // Only clear the composer when the send came from it. Override
-    // sends (plan-approval button etc.) leave whatever the user was
-    // typing alone.
+    // 仅当发送来自输入框时清空输入框。覆盖发送（计划确认按钮等）
+    // 保持用户正在输入的内容不变。
     if (overrideText === undefined) {
       setInput("");
     }
-    // Sending always means "I want to see what happens next" — re-pin
-    // to bottom even if the user had scrolled up to read earlier in the
-    // conversation.
+    // 发送总意味着"我想看看接下来发生什么"——即使用户上滚阅读
+    // 早期对话内容也重新固定到底部。
     stickToBottomRef.current = true;
     setMessages((prev) => [
       ...prev,
       {
         id: `u-${Date.now()}`,
         role: "user",
-        content: text, // bubble shows text only; attachments rendered separately above
+        content: text, // 气泡仅显示文本；附件在上方单独渲染
         timestamp: Date.now(),
         attachments: userBubbleAttachments.length > 0 ? userBubbleAttachments : undefined,
       },
@@ -1348,10 +1246,9 @@ export function ChatScreen() {
     setSending(true);
     abortRef.current = new AbortController();
 
-    // Snapshot the workspace before the turn so we can diff at `done` and
-    // attach newly-created / modified files (PDFs, images, …) to the
-    // final reply. Fire-and-forget; if the snapshot fails we just won't
-    // surface files this turn. `path → size|modTime` key.
+    // 在轮次前快照工作区，以便在 `done` 时对比并附加新创建/修改的文件
+    // （PDF、图片等）到最终回复。即发即弃；如果快照失败，我们只是不在此
+    // 轮次中显示文件。以 `路径 → 大小|修改时间` 为键。
     const preTurnFilesPromise = listAgentFiles(selectedAgent)
       .then((items) => {
         const m = new Map<string, string>();
@@ -1363,13 +1260,11 @@ export function ChatScreen() {
     let curGroupId = "";
     let curCalls: { id: string; name: string; arguments: string; result?: string; metadata?: ToolResultMetadata }[] = [];
     let curContent = "";
-    // streamingMsgIdRef tracks the in-flight assistant bubble for
-    // content_delta accretion. Stored on a ref (declared above) so
-    // the parallel /api/chat/subscribe SSE handler can observe it
-    // and skip duplicating the bubble when the trailing `content`
-    // event races through it ahead of the POST callback. Reset to
-    // null at startNewGroup, after the `content` seal, and on
-    // tool_call / done.
+    // streamingMsgIdRef 追踪正在进行的助手气泡以累积 content_delta。
+    // 存储在 ref（上面声明）以便并行的 /api/chat/subscribe SSE 处理器
+    // 可以观察它，并在尾随 `content` 事件先于 POST 回调到达时跳过重复
+    // 气泡创建。在 startNewGroup、`content` 封口和 tool_call/done 时
+    // 重置为 null。
     const turnFiles: ProducedFile[] = [];
     const seenPaths = new Set<string>();
 
@@ -1386,30 +1281,24 @@ export function ChatScreen() {
         overrideText === undefined && planMode ? { planMode: true } : undefined;
       if (requestParams) setPlanMode(false);
       await sendChatStream(selectedAgent, sessionId, fullText, (evt: ChatStreamEvent) => {
-        // Dedup against /api/chat/subscribe SSE, which subscribes to
-        // the same chat-events hub server-side. Whichever path arrives
-        // first renders; the other skips. seq < 0 means persistence
-        // failed for this event — fall through and accept the
-        // possibility of a double-render rather than dropping the
-        // event entirely.
+        // 去重 /api/chat/subscribe SSE，两者服务端订阅同一 chat-events hub。
+        // 先到达的路径渲染；另一方跳过。seq < 0 表示此事件持久化失败——
+        // 在此回退并接受可能的双重渲染，而非完全丢弃事件。
         if (typeof evt.seq === "number" && evt.seq >= 0) {
           if (evt.seq <= maxSeqRef.current) return;
           maxSeqRef.current = evt.seq;
         }
         switch (evt.type) {
           case "content_delta": {
-            // Incremental token chunk from the provider. Append to the
-            // in-flight assistant bubble — create one on the first
-            // delta of a round (and after a tool-group split). The
-            // final `content` event still arrives with the full text
-            // when the turn completes so refresh / replay paths stay
-            // intact even though deltas aren't persisted.
+            // 来自提供者的增量 token 块。追加到进行中的助手气泡——在
+            // 一轮（及工具组拆分后）的首个增量时创建。最终的 `content`
+            // 事件在轮次完成时仍会携带完整文本，因此刷新/重放路径保持
+            // 完整，即使增量不被持久化。
             const delta = evt.data?.delta || "";
             if (!delta) break;
             if (curCalls.length > 0 && !streamingMsgIdRef.current) {
-              // Content after tool calls = new round; reset state so
-              // the new bubble is its own message, not appended onto
-              // the previous tool-group's thinking text.
+              // 工具调用后的内容 = 新一轮；重置状态，使新气泡成为独立消息，
+              // 而非追加到前一个工具组的思考文本上。
               startNewGroup();
             }
             curContent += delta;
@@ -1440,10 +1329,9 @@ export function ChatScreen() {
               loadSessions(selectedAgent);
               return;
             }
-            // If the bubble was already streamed in via content_delta,
-            // the final `content` carries the same text — just seal
-            // the in-flight ID, optionally attach metadata, and skip
-            // creating a duplicate bubble.
+            // 如果气泡已通过 content_delta 流式传输，最终的 `content`
+            // 携带相同文本——只需封口进行中的 ID，可选附加元数据，
+            // 并跳过创建重复气泡。
             if (streamingMsgIdRef.current) {
               const id = streamingMsgIdRef.current;
               streamingMsgIdRef.current = null;
@@ -1459,12 +1347,9 @@ export function ChatScreen() {
               curContent = content;
               break;
             }
-            // Metadata-only event with empty content: the backend uses
-            // this to retro-stamp the previous bubble (e.g. for the
-            // streaming forced-final-delivery path where chunks flow
-            // through a separate channel and the metadata follows after).
-            // Apply to the last agent message instead of creating an
-            // empty new bubble.
+            // 仅含元数据且内容为空的事件：后端使用此来追溯标记前一个气泡
+            // （例如流式强制最终交付路径中，块通过单独通道流动后元数据
+            // 跟随而来）。应用到最近的助手消息而非创建空的新气泡。
             if (!content && meta) {
               setMessages((prev) => {
                 for (let i = prev.length - 1; i >= 0; i--) {
@@ -1479,10 +1364,10 @@ export function ChatScreen() {
               break;
             }
             if (curCalls.length > 0) {
-              // Content after tool calls = new round. Finalize current group, start fresh.
+              // 工具调用后的内容 = 新一轮。完成当前组，重新开始。
               startNewGroup();
             }
-            // Store as thinking content (may become part of next tool-group, or stay as final answer)
+            // 存储为思考内容（可能成为下一个工具组的一部分，或保留为最终答案）
             curContent = content;
             setMessages((prev) => [
               ...prev,
@@ -1491,19 +1376,14 @@ export function ChatScreen() {
             break;
           }
           case "tool_call": {
-            // The in-flight streamed bubble (if any) is about to be
-            // converted into a tool-group by the existing "replace
-            // last agent message" logic below. Clear the streaming
-            // ID so a subsequent content_delta on the next round
-            // spawns a fresh bubble instead of writing into the
-            // now-defunct ID.
+            // 正在流式传输的气泡（如果有）即将被下面的"替换最后一条助手消息"
+            // 逻辑转换为工具组。清除流式传输 ID，使下一轮的后续
+            // content_delta 生成新气泡，而非写入已失效的 ID。
             streamingMsgIdRef.current = null;
-            // New round starts if every tool in the current group has
-            // already resolved. Without this, two assistant turns that
-            // happen back-to-back with no intervening content event get
-            // merged into one visual group live — inconsistent with the
-            // refresh path (buildChatMessages) which correctly splits
-            // per assistant message.
+            // 如果当前组中的每个工具都已返回结果，则开始新一轮。没有此判断，
+            // 两个连续且无中间内容事件的助手轮次会在实时视图中合并为一个
+            // 视觉组——与刷新路径（buildChatMessages）按助手消息正确拆分
+            // 不一致。
             if (curCalls.length > 0 && curCalls.every((c) => c.result !== undefined)) {
               startNewGroup();
             }
@@ -1515,18 +1395,16 @@ export function ChatScreen() {
             const groupId = curGroupId;
             const calls = [...curCalls];
             setMessages((prev) => {
-              // Update existing tool-group for this round (additional
-              // tool_call within the same assistant turn).
+              // 更新本轮的现有工具组（同一助手轮次内的额外 tool_call）。
               const idx = prev.findIndex((m) => m.id === groupId);
               if (idx >= 0) {
                 const updated = [...prev];
                 updated[idx] = { ...updated[idx], toolCalls: calls };
                 return updated;
               }
-              // Leave any streamed agent bubble in place — don't fold
-              // its text into the tool-group. Mirrors the split applied
-              // in buildChatMessages on history reload, so live and
-              // reloaded views stay consistent.
+              // 保留已流式传输的助手气泡——不将其文本折叠进工具组。
+              // 与历史重载时 buildChatMessages 应用的拆分逻辑一致，
+              // 使实时和重载视图保持一致。
               return [
                 ...prev,
                 { id: groupId, role: "tool-group" as const, content: "", timestamp: Date.now(), toolCalls: calls },
@@ -1541,8 +1419,7 @@ export function ChatScreen() {
               tc.result = resultText;
               if (evt.data?.metadata) tc.metadata = evt.data.metadata;
             }
-            // Track successful write_file calls that landed in the workspace
-            // (i.e. a relative path that isn't a system identity file).
+            // 跟踪成功写入工作区的 write_file 调用（即相对路径且非系统身份文件）。
             if (tc && tc.name === "write_file" && /^Written \d+ bytes/.test(resultText)) {
               try {
                 const args = JSON.parse(tc.arguments);
@@ -1551,13 +1428,12 @@ export function ChatScreen() {
                   seenPaths.add(p);
                   turnFiles.push({ path: p, size: parseWrittenSize(resultText) });
                 }
-              } catch { /* ignore bad args */ }
+              } catch { /* 忽略错误参数 */ }
             }
-            // Refresh the todo panel whenever a file-mutation tool just
-            // touched todo.md. We inspect arguments rather than poll on
-            // every tool_result so the network cost stays proportional
-            // to actual updates (a long run with 50 web_search calls
-            // doesn't trigger 50 refetches).
+            // 当文件变更工具刚刚操作了 todo.md 时刷新待办面板。
+            // 我们检查参数而非在每个 tool_result 上轮询，
+            // 使网络开销与实际更新成正比（50 次 web_search 的长任务
+            // 不会触发 50 次重新获取）。
             if (tc && (tc.name === "write_file" || tc.name === "edit_file" || tc.name === "apply_patch")) {
               try {
                 const args = JSON.parse(tc.arguments);
@@ -1569,7 +1445,7 @@ export function ChatScreen() {
                     .then((todo) => setTodoItems(todo.items))
                     .catch(() => {});
                 }
-              } catch { /* ignore bad args */ }
+              } catch { /* 忽略错误参数 */ }
             }
             const groupId = curGroupId;
             const calls = [...curCalls];
@@ -1583,10 +1459,9 @@ export function ChatScreen() {
             break;
           }
           case "subagent_progress": {
-            // Subagent emitted a heartbeat. Stored as a single
-            // "current run state" since delegate_task is registered
-            // serial — only one subagent in flight at any time.
-            // phase="done" clears the indicator.
+            // 子智能体发出心跳。存储为单个"当前运行状态"，因为
+            // delegate_task 以串行注册——任何时刻只有一个子智能体在运行。
+            // phase="done" 清除指示器。
             if (evt.data?.phase === "done") {
               setSubagentProgress(null);
             } else {
@@ -1600,17 +1475,15 @@ export function ChatScreen() {
             break;
           }
           case "steer": {
-            // A message the user injected mid-turn was folded into the
-            // running turn server-side. Render it as a user bubble
-            // (reconciled against the optimistic pendingSteer bubble).
+            // 用户在轮次中途注入的消息被服务端折叠到正在进行的轮次中。
+            // 将其渲染为用户气泡（与乐观的 pendingSteer 气泡对账）。
             applySteerEvent(evt.data?.content || "");
             break;
           }
           case "error": {
-            // Surface backend errors as a chat bubble. Without this the
-            // turn just hangs — the model failed (provider 4xx/5xx,
-            // serialization mismatch, etc.) and the only signal was a
-            // gateway log line the user can't see.
+            // 将后端错误显示为聊天气泡。没有这个，轮次只会挂起——模型失败
+            // （提供者 4xx/5xx、序列化不匹配等）且唯一信号是用户看不到的
+            // 网关日志行。
             const msg = evt.data?.message || "未知错误";
             setMessages((prev) => [
               ...prev,
@@ -1620,11 +1493,9 @@ export function ChatScreen() {
           }
         }
       }, abortRef.current.signal, imageDataUrls, projectIdHint, requestParams);
-      // Diff the workspace against the pre-turn snapshot so files
-      // produced by *exec* (e.g. a Python script that saves PDFs) get
-      // surfaced too — `turnFiles` only catches write_file tool calls
-      // with relative, non-identity paths, which misses most real-
-      // world flows. Union both sources by path.
+      // 将工作区与轮次前快照对比，以便 *exec* 产出的文件（如保存 PDF 的
+      // Python 脚本）也能显示——`turnFiles` 仅捕获具有相对、非身份路径的
+      // write_file 工具调用，大多数真实流程都被遗漏。按路径合并两个来源。
       const postTurnFiles = await listAgentFiles(selectedAgent).catch(() => []);
       const preSnap = await preTurnFilesPromise;
       const diffFiles: ProducedFile[] = [];
@@ -1636,9 +1507,8 @@ export function ChatScreen() {
         diffFiles.push({ path: f.path, size: f.size });
       }
       const allFiles = [...turnFiles, ...diffFiles];
-      // Diagnostic: when sandbox-exec produces a file but the Files
-      // panel doesn't show, we need to know whether the API returned
-      // the file at all and where the diff dropped it. Cheap to keep.
+      // 诊断：当沙箱执行产出文件但文件面板不显示时，我们需要知道 API
+      // 是否返回了该文件以及差异在何处丢弃。保留成本低。
       if (typeof console !== "undefined") {
         console.log("[chat] post-turn files diff", {
           agent: selectedAgent,
@@ -1668,9 +1538,8 @@ export function ChatScreen() {
         });
       }
       loadSessions(selectedAgent);
-      // First-turn of a brand-new session just got persisted — tell the
-      // global sidebar to refetch its Chats list so the new title shows
-      // up without a full page reload.
+      // 新会话的首轮刚刚被持久化——通知全局侧边栏重新获取聊天列表，
+      // 使新标题无需整页刷新即可出现。
       if (typeof window !== "undefined") {
         window.dispatchEvent(
           new CustomEvent("bkclaw:sessions-changed", {
@@ -1679,29 +1548,23 @@ export function ChatScreen() {
         );
       }
     } catch (err) {
-      // AbortError from the user clicking Stop is expected — surface a
-      // brief "Stopped" line so they see the cancellation took effect,
-      // not a generic failure message.
+      // 用户点击停止按钮产生的 AbortError 是预期行为——显示简要的"已停止"
+      // 行，使用户看到取消已生效，而非通用失败消息。
       const isAbort = err instanceof DOMException && err.name === "AbortError";
-      // Surface the underlying error in DevTools so future "Failed to
-      // get a response" reports come with a concrete cause (network,
-      // parse, post-turn fetch, …) rather than the generic message.
+      // 在 DevTools 中输出底层错误，以便未来的"获取响应失败"报告附带
+      // 具体原因（网络、解析、轮次后获取等），而非通用消息。
       if (typeof console !== "undefined") {
         console.error("[chat] handleSend error", err);
       }
-      // Keyboard-stack abort + post-stream tear-down can both throw an
-      // AbortError after a successful turn (the SSE reader is
-      // released on `done`, then a stray reader.cancel() races with a
-      // late server EOF and surfaces as one). Both look identical to
-      // user-pressed-Stop here, so we additionally suppress the
-      // toast when at least one agent reply already landed for this
-      // turn — the user just got their answer; we shouldn't tack on
-      // a confusing failure bubble.
+      // 键盘中止栈 + 流后拆卸都可能在成功轮次后抛出 AbortError（SSE 读取器
+      // 在 `done` 后释放，然后滞留的 reader.cancel() 与延迟的服务端 EOF
+      // 竞争并浮出水面）。两者在此看起来与用户按下停止相同，因此我们
+      // 在当前轮次已有至少一条助手回复时额外抑制提示——用户已获得答案，
+      // 不应再附加令人困惑的失败气泡。
       if (isAbort) {
-        // Resolve any in-flight tools in the current tool-group so they
-        // stop spinning. Server-side padOrphanToolResults will write a
-        // matching record on its end; this just keeps the UI consistent
-        // until the next history fetch overwrites it.
+// 解决当前工具组中所有进行中的工具，使它们停止旋转。
+          // 服务端的 padOrphanToolResults 会写入匹配记录；此处只是保持
+          // UI 一致直到下一次历史获取覆盖它。
         setMessages((prev) =>
           prev.map((m) =>
             m.role === "tool-group" && m.toolCalls
@@ -1725,7 +1588,7 @@ export function ChatScreen() {
             const replyAfter = prev
               .slice(prev.length - lastUser)
               .some((m) => m.role === "agent" || m.role === "tool-group");
-            if (replyAfter) return prev; // turn already produced output
+            if (replyAfter) return prev; // 轮次已产出输出
           }
           const errMsg = err instanceof Error && err.message
             ? err.message
@@ -1744,9 +1607,9 @@ export function ChatScreen() {
     } finally {
       abortRef.current = null;
       setSending(false);
-      // Belt-and-suspenders: the subagent's done event clears this on
-      // the happy path, but if a network blip drops that event we don't
-      // want a stale "iteration 5/20" sitting under a finished turn.
+      // 双重保险：子智能体的 done 事件在正常路径上清除此状态，但
+      // 如果网络抖动丢失了该事件，我们不希望过时的"第 5/20 次迭代"
+      // 停留在已完成的轮次下。
       setSubagentProgress(null);
       textareaRef.current?.focus();
     }
@@ -1756,16 +1619,13 @@ export function ChatScreen() {
     abortRef.current?.abort();
   }, []);
 
-  // handleSteer fires while a turn is streaming: it buffers the message
-  // into the running turn (the agent folds it in between tool rounds and
-  // streams a "steer" echo on the existing SSE). On 409 (no active turn
-  // — the turn just ended) it falls back to a normal send so nothing is
-  // lost.
+  // handleSteer 在轮次流式传输期间触发：将消息缓冲到正在进行的轮次中
+  // （智能体在工具轮次之间折叠它并在现有 SSE 上流出"steer"回显）。在 409
+  // （无活跃轮次——轮次刚结束）时回退到普通发送，不会丢失任何内容。
   const handleSteer = useCallback(async () => {
     const text = input.trim();
-    // Only ever called from handleKeyDown's `if (sending)` branch;
-    // within one render React state is snapshot-consistent, so `sending`
-    // is necessarily true here.
+    // 仅在 handleKeyDown 的 `if (sending)` 分支中调用；在一次渲染中
+    // React 状态是快照一致的，因此 `sending` 在此处必然为 true。
     if (!text || !selectedAgent || !sending) return;
     setInput("");
     const optimisticId = `s-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -1792,12 +1652,11 @@ export function ChatScreen() {
   const handleFilePick = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const picked = e.target.files;
     if (!picked || picked.length === 0) return;
-    // Snapshot the FileList into a stable File[] BEFORE we reset the
-    // input. FileList is tied to the input element — setting value=""
-    // empties it. Under StrictMode React invokes the setState updater
-    // twice for purity checks; if the closure references the live
-    // FileList, the second invocation sees an empty list and the state
-    // ends up empty even though the user picked a file.
+    // 在重置输入框之前将 FileList 快照为稳定的 File[]。FileList
+    // 与输入元素绑定——设置 value="" 会清空它。在 StrictMode 下 React
+    // 为纯度检查会调用两次 setState 更新器；如果闭包引用了活
+    // FileList，第二次调用看到空列表，状态最终为空，即使用户选择
+    // 了文件。
     const newFiles = Array.from(picked);
     e.target.value = "";
     setAttachments((prev) => [...prev, ...newFiles]);
@@ -1808,14 +1667,13 @@ export function ChatScreen() {
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Don't submit while an IME composition is active — Enter in that state
-    // is the user confirming the IME candidate (e.g. pinyin → 好), not
-    // sending the message. keyCode 229 also signals "composing" on some
-    // browsers where isComposing isn't set.
+    // IME 组合激活时不要提交——此时 Enter 是确认 IME 候选（如拼音 → 好），
+    // 而非发送消息。keyCode 229 在某些不设置 isComposing 的浏览器中也
+    // 表示"正在组合"。
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
 
-    // Slash menu keyboard handling takes precedence when open: arrows move
-    // the selection, Enter confirms, Escape closes without sending.
+    // 斜杠菜单打开时，键盘处理优先：方向键移动选择，Enter 确认，
+    // Escape 关闭而不发送。
     if (slashOpen && filteredItems.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -1841,8 +1699,8 @@ export function ChatScreen() {
 
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      // While a turn is streaming, Enter steers the running turn instead
-      // of being blocked; otherwise it's a normal send.
+      // 轮次流式传输时，Enter 转向正在进行的轮次而非被阻止；
+      // 否则为正常发送。
       if (sending) {
         handleSteer();
       } else {
@@ -1851,7 +1709,7 @@ export function ChatScreen() {
     }
   };
 
-  // onChange wrapper: update input + slash menu visibility in one pass.
+  // onChange 包装：一次通过中更新输入 + 斜杠菜单可见性。
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const next = e.target.value;
     setInput(next);
@@ -1872,10 +1730,8 @@ export function ChatScreen() {
     setTimeout(() => setCopiedId(null), 1500);
   };
 
-  // handleRetry refills the composer with this message's content so the
-  // user can verify/edit before resending. Deliberately not auto-sending —
-  // a one-click resend that quietly discards the existing agent reply is
-  // too easy to fire by accident.
+// handleRetry 将此消息内容填回输入框，以便用户在重新发送前确认/编辑。
+// 故意不自动发送——一键重发会静默丢弃现有助手回复，太容易误触。
   const handleRetry = (msg: ChatMessage) => {
     setInput(msg.content);
     setTimeout(() => {
@@ -1897,40 +1753,34 @@ export function ChatScreen() {
 
   const handleSelectSession = (sid: string) => {
     setSessionId(sid);
-    // history.replaceState (not router.replace) for the same reason as
-    // handleSend: /chat/[session] is only pre-rendered for the `_`
-    // placeholder under output:'export', so router-driven navigation to
-    // a real sid hard-reloads. See the longer note in handleSend.
+    // history.replaceState（而非 router.replace）——原因与 handleSend 相同：
+    // /chat/[session] 在 output:'export' 下仅为 `_` 占位符预渲染，
+    // 因此 router 驱动的导航到真实 sid 会硬重载。详见 handleSend 中的
+    // 完整说明。
     window.history.replaceState(null, "", `/agents/${selectedAgent}/chat/${sid}/`);
   };
 
   const formatTime = (ts: number) =>
     new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-  // Empty new-chat state: collapse the messages scroll out of the
-  // flex-1 lane and center title + composer vertically, Manus-style.
-  // Once any message exists the layout swings back to the standard
-  // "scroll above, sticky composer at bottom" shape.
+// 空白新聊天状态：将消息滚动区从 flex-1 泳道折叠出来，垂直居中标题 + 输入框，
+// Manus 风格。有消息后布局切换回标准的"上方滚动，底部固定输入框"形态。
   const isEmpty = messages.length === 0;
-  // Compute the id of the latest agent bubble that's a pending plan
-  // (numbered plan + "Reply `go` to execute" footer), only when no
-  // user message has followed it. This is the single bubble that gets
-  // the inline approve/cancel buttons; older plans further up the
-  // history never get buttons re-rendered on them.
+// 计算最新助手气泡是否为待定计划（编号计划 + "回复 `go` 执行" 页脚），
+// 仅当没有后续用户消息时。这是获得内联确认/取消按钮的唯一个气泡；
+// 历史中更早的计划不会重新渲染按钮。
   const pendingPlanId: string | null = (() => {
     if (sending) return null;
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
-      if (m.role === "user") return null; // user already replied → plan is no longer pending
+      if (m.role === "user") return null; // 用户已回复 → 计划不再待定
       if (m.role === "agent" && isPendingPlanContent(m.content)) return m.id;
     }
     return null;
   })();
-  // Hero title is the same on both the bare agent home and a project
-  // landing page — Manus-style "what can I do" prompt. Project pages
-  // render a small info card UNDER the hero (folder + name + meta)
-  // instead of taking over the headline, so users always know which
-  // agent they're chatting with first.
+// 主标题在空白智能体主页和项目落地页上相同——Manus 风格的"我能做什么"提示。
+// 项目页面在主标题下方渲染小型信息卡（文件夹 + 名称 + 元数据）而非取代标题，
+// 使用户始终知道他们正在与哪个智能体聊天。
   const heroTitle = "我能为你做些什么？";
 
   return (
@@ -1938,18 +1788,14 @@ export function ChatScreen() {
       <div
         className={
           "flex flex-1 min-w-0 flex-col" +
-          // pb-12 (3rem) matches the header height we already subtracted
-          // from the parent's h-[calc(100vh-3rem)]. Without it `justify-
-          // center` centers content inside the post-header area, which
-          // sits visually ~24px below the true viewport mid-line — the
-          // user notices the hero + composer pair drifting low. Adding
-          // an equal bottom padding biases the centered group upward by
-          // half the header height so the optical centre lines up with
-          // the geometric centre of the screen.
+          // pb-12 (3rem) 匹配我们已从父元素 h-[calc(100vh-3rem)] 中减去的头部高度。
+          // 没有它，`justify-center` 在头部后区域内居中内容，视觉上偏下约 24px——
+          // 用户会注意到主标题 + 输入框组合向下偏移。添加相等的底部内边距使
+          // 居中组向上偏移半个头部高度，使视觉中心与几何中心对齐。
           (isEmpty ? " justify-center pb-12" : "")
         }
       >
-      {/* Messages */}
+      {/* 消息 */}
         <div
           ref={messagesScrollRef}
           className={
@@ -1967,14 +1813,12 @@ export function ChatScreen() {
             )}
 
             {(() => {
-              // Tool-group artefacts (e.g. an image rendered to base64 by
-              // a Python script inside the sandbox) are attached to the
-              // *next* agent reply bubble — so they appear as part of the
-              // assistant's answer, not inside the tool panel. If no agent
-              // reply follows (tool still running or chain didn't finish),
-              // we skip surfacing the image; it will show up with the next
-              // reply. `surfacedSrcs` tracks every image src we've
-              // surfaced so bubbles can suppress duplicate inline copies.
+              // 工具组产物（如沙箱内 Python 脚本渲染为 base64 的图片）附加到
+              // *下一个*助手回复气泡——使它们作为助手回答的一部分显示，
+              // 而非在工具面板内。如果没有后续助手回复（工具仍在运行或
+              // 链未完成），我们跳过显示图片；它将在下一次回复中显示。
+              // `surfacedSrcs` 追踪每个已显示的图片 src，气泡可据此抑制
+              // 重复的内联副本。
               const attachedImages = new Map<string, Array<{ alt: string; src: string }>>();
               const surfacedSrcs = new Set<string>();
               let pending: Array<{ alt: string; src: string }> = [];
@@ -1996,12 +1840,10 @@ export function ChatScreen() {
                   pending = [];
                 }
               }
-              // Walk messages once so we can bundle consecutive
-              // tool-group rounds into a single collapsible. Without
-              // this, a long ReAct turn with seven sequential rounds
-              // produces seven independently-collapsible boxes that
-              // dominate the chat — the bundle hides them behind one
-              // header until the user actually wants to dive in.
+              // 遍历消息一次，将连续的工具组回合打包为单个可折叠块。没有此逻辑，
+              // 长时间 ReAct 轮次中七个顺序回合会产生七个独立可折叠框，
+              // 占据整个聊天——打包将它们隐藏在一个标题后面，直到用户
+              // 实际想深入查看。
               const elements: React.ReactNode[] = [];
               for (let i = 0; i < messages.length; i++) {
                 const msg = messages[i];
@@ -2014,9 +1856,8 @@ export function ChatScreen() {
                     i++;
                   }
                   const rounds = messages.slice(start, i + 1);
-                  // Keep the surfacing of any per-round produced files
-                  // out here so each round's panel still renders below
-                  // the bundle in chronological order.
+// 将每个回合产出文件的展示保留在此处，使每个回合面板仍按时间
+                    // 顺序在打包下方渲染。
                   const filePanels = rounds
                     .filter((r) => r.files && r.files.length > 0)
                     .map((r) => (
@@ -2055,12 +1896,10 @@ export function ChatScreen() {
                   }
                   continue;
                 }
-                // Agent bubbles may carry the `<|split|>` marker the
-                // LLM emits for multi-bubble output (mirrors IM channel
-                // behavior). Expand into one bubble per chunk so the
-                // marker never surfaces as literal text. Attach files /
-                // metadata only to the last chunk to match the IM
-                // dispatcher's "attach to last chunk" rule.
+                // 助手气泡可能携带 LLM 为多气泡输出发出的 `<|split|>` 标记
+                //（镜像 IM 通道行为）。在每个分块处展开为单独气泡，
+                // 使标记不会显示为字面文本。文件/元数据仅附加到最后一个
+                // 分块，以匹配 IM 分发器的"附加到最后一个分块"规则。
                 if (msg.role === "agent" && msg.content.includes(SPLIT_MARKER)) {
                   const parts = splitOnMarker(msg.content);
                   parts.forEach((part, idx) => {
@@ -2208,11 +2047,8 @@ export function ChatScreen() {
                             size="sm"
                             variant="outline"
                             onClick={() => {
-                              // No payload sent — user is rejecting the
-                              // plan. Focus the composer with a hint so
-                              // they type what to change; the buttons
-                              // re-render once the next assistant reply
-                              // matches the pending-plan signal again.
+// 不发送载荷——用户拒绝计划。聚焦输入框并提示他们输入修改内容；
+                                // 按钮在下一个助手回复再次匹配待定计划信号时重新渲染。
                               setInput("");
                               textareaRef.current?.focus();
                             }}
@@ -2313,28 +2149,21 @@ export function ChatScreen() {
           </div>
         </div>
 
-        {/* Live progress panel: agent maintains a per-session `todo.md`
-            checklist and we render it here right above the composer so
-            the user's eye is on the next step they're about to authorize,
-            not buried at the top behind a long scroll history. Auto-
-            hides when the file doesn't exist or has no checkbox items. */}
+        {/* 实时进度面板：智能体维护按会话的 `todo.md` 清单，我们在输入框上方
+            渲染它，使用户视线聚焦在即将授权的下一步，而非埋在长滚动历史的顶部。
+            文件不存在或无复选框项时自动隐藏。 */}
         {!isEmpty && todoItems.length > 0 && (
           <TodoPanel items={todoItems} active={sending} />
         )}
 
-        {/* Input */}
+        {/* 输入 */}
         <div className="shrink-0 px-4 pb-6 pt-2">
           <div className="mx-auto max-w-2xl relative">
             {isReadOnlyChannel && (
-              // The web compose path can't deliver into upstream IM
-              // platforms (no reverse channel adapter, no outbound
-              // routing), so writing here would silently corrupt the
-              // session: the agent would process the turn, the IM
-              // user would never see it, and on refresh the original
-              // session's history wins because the orphan write
-              // landed under a triple lookup that didn't match.
-              // Block the input outright and tell the user where to
-              // reply.
+// Web 输入路径无法将消息送达上游 IM 平台（没有反向通道适配器，
+                // 没有出站路由），因此在此处写入会静默损坏会话：智能体会处理该轮次，
+                // IM 用户永远看不到它，刷新后原始会话历史胜出，因为孤立写入落在
+                // 不匹配的三重查找下。直接阻止输入并告诉用户在何处回复。
               <div className="mb-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
                 此对话来自{" "}
                 <span className="font-medium text-foreground">
@@ -2344,10 +2173,9 @@ export function ChatScreen() {
               </div>
             )}
             {isActAsView && !isReadOnlyChannel && (
-              // Super_admin viewing another user's chat via the admin
-              // Chats page (?actAs=<uid>). The middleware gates this as
-              // read-only for the whole request, so any send would 403
-              // — disable the composer and surface why.
+// 超级管理员通过管理聊天页面（?actAs=<uid>）查看另一用户的聊天。
+                // 中间件将整个请求设为只读，因此任何发送都会 403——禁用
+                // 输入框并说明原因。
               <div className="mb-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
                 只读：你正在查看其他用户的对话，无法在此发送消息。
               </div>
@@ -2420,10 +2248,8 @@ export function ChatScreen() {
                   })}
                 </div>
               )}
-              {/* Empty-state composer: Manus-style — textarea fills the
-                  top, action row sits below it. Once messages exist we
-                  swing back to the compact single-row layout so the
-                  composer doesn't dominate the chat. */}
+{/* 空状态输入框：Manus 风格——输入框填充顶部，操作行在下方。有消息后
+                   切回紧凑单行布局，使输入框不会占据聊天主体。 */}
               {isEmpty ? (
                 <>
                   <textarea
@@ -2632,11 +2458,10 @@ export function ChatScreen() {
       {filesSheetOpen && selectedAgent && (sessionId || urlProjectId) && (
         <WorkspacePanel
           agentId={selectedAgent}
-          // On a project landing (no urlSessionId), sessionId here is the
-          // synthetic id chat-screen mints for the upcoming "New chat" —
-          // it doesn't correspond to anything on disk, so we suppress it
-          // and let projectId drive the scope. Inside an actual chat,
-          // urlSessionId is set and we pass the real sessionId.
+          // 在项目落地页（无 urlSessionId）时，此处的 sessionId 是 chat-screen
+          // 为即将到来的"新聊天"生成的合成 id——它不对应磁盘上的任何内容，
+          // 因此我们抑制它并让 projectId 驱动范围。在实际聊天中，urlSessionId
+          // 已设置，我们传递真实的 sessionId。
           sessionId={urlSessionId ? sessionId : ""}
           projectId={!urlSessionId && urlProjectId ? urlProjectId : undefined}
           onClose={() => setFilesSheetOpen(false)}
@@ -2652,8 +2477,8 @@ interface ChatHeaderTitleProps {
   onSave: (next: string) => void | Promise<void>;
 }
 
-/** Editable chat title rendered into the global sticky header via
- *  usePageHeader. Click / focus to edit; Enter or blur commits. */
+/** 可编辑的聊天标题，通过 usePageHeader 渲染到全局固定头部。
+ *  点击/聚焦编辑；Enter 或失焦提交。 */
 function ChatHeaderTitle({ title, fallback, onSave }: ChatHeaderTitleProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
@@ -2675,19 +2500,17 @@ function ChatHeaderTitle({ title, fallback, onSave }: ChatHeaderTitleProps) {
   };
 
   if (editing) {
-    // field-sizing: content grows the input to match its text; min width
-    // keeps it reasonable right after entering edit mode even if the
-    // current title is very short.
+// field-sizing: content 使输入框随文本增长；min-width 在进入编辑模式后
+      // 即使当前标题很短也保持合理宽度。
     return (
       <input
         ref={inputRef}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
-          // Ignore Enter while the user is mid-composition (CJK IME). Both
-          // conditions matter: isComposing is the modern signal, keyCode 229
-          // is the legacy flag some browsers (and macOS Pinyin in particular)
-          // still emit without isComposing set.
+// 当用户正在组合输入时（CJK IME）忽略 Enter。两个条件都很重要：
+            // isComposing 是现代信号，keyCode 229 是某些浏览器（特别是 macOS 拼音）
+            // 在不设置 isComposing 时仍发出的旧标记。
           if (e.nativeEvent.isComposing || e.keyCode === 229) return;
           if (e.key === "Enter") {
             e.preventDefault();
@@ -2710,11 +2533,9 @@ function ChatHeaderTitle({ title, fallback, onSave }: ChatHeaderTitleProps) {
         setDraft(title);
         setEditing(true);
       }}
-      // Cap the title width responsively so a long auto-summary doesn't
-      // push the whole header off-screen on small viewports. The
-      // arbitrary `min(...)` keeps narrow widths on phones (60vw) while
-      // capping at ~32rem on desktop; sm:/md: bumps give intermediate
-      // breakpoints a deterministic width too.
+      // 响应式限制标题宽度，使长自动摘要不会在窄视口上将整个头部推出屏幕。
+      // 任意 `min(...)` 使窄宽度手机保持 60vw，桌面端上限约 32rem；
+      // sm:/md: 断点为中间尺寸提供确定性宽度。
       className="group flex min-w-0 max-w-[min(60vw,18rem)] sm:max-w-[24rem] md:max-w-[28rem] lg:max-w-[32rem] items-center gap-1.5 rounded-md px-2 py-1 text-sm text-foreground hover:bg-muted/50"
       title={title || fallback}
     >
@@ -2724,10 +2545,9 @@ function ChatHeaderTitle({ title, fallback, onSave }: ChatHeaderTitleProps) {
   );
 }
 
-/** Renders a group of tool calls as a collapsible summary. When
- *  `nested`, the outer flex/max-width wrappers are dropped so a parent
- *  container (ToolRoundsBundle) can stack rounds without each one
- *  re-imposing its own bubble alignment. */
+/** 将一组工具调用渲染为可折叠摘要。当 `nested` 为 true 时，
+ *  去掉外层 flex/max-width 包装，使父容器（ToolRoundsBundle）
+ *  可以堆叠回合而每个回合不重新施加自己的气泡对齐。 */
 function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, roundIndex, subagentProgress }: { msg: ChatMessage; surfacedSrcs?: ReadonlySet<string>; agentId: string; sessionId: string; nested?: boolean; roundIndex?: number; subagentProgress?: { iteration?: number; max?: number; phase?: "thinking" | "running" | "final-delivery" | "done"; tools?: string[] } | null }) {
   const [groupOpen, setGroupOpen] = useState(false);
   const [expandedTool, setExpandedTool] = useState<Record<string, boolean>>({});
@@ -2736,10 +2556,9 @@ function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, 
   const doneCount = tools.filter((tc) => tc.result != null).length;
   const allDone = doneCount === tools.length;
 
-  // delegate_task is registered serial, so only the FIRST not-yet-
-  // returned delegate_task in this round corresponds to the active
-  // subagentProgress event stream. Older ones already finished;
-  // later ones are queued on the mutex and have no progress yet.
+  // delegate_task 以串行注册，因此此轮中第一个尚未返回的
+  // delegate_task 才对应活跃的 subagentProgress 事件流。
+  // 较早的已完成；较晚的在互斥锁上排队，尚无进度。
   const activeDelegateId = (() => {
     for (const tc of tools) {
       if (tc.name === "delegate_task" && tc.result == null) {
@@ -2754,7 +2573,7 @@ function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, 
 
   const inner = (
     <>
-      {/* Content before tools */}
+      {/* 工具之前的内容 */}
       {msg.content && (
         <div className="bg-muted rounded-2xl rounded-bl-md px-4 py-2.5">
           <div className={CHAT_PROSE_CLASS}>
@@ -2766,7 +2585,7 @@ function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, 
           </div>
         </div>
       )}
-      {/* Collapsed tool group summary */}
+      {/* 折叠的工具组摘要 */}
       <div className="rounded-lg border border-border bg-card/50 overflow-hidden">
           <button
             onClick={() => setGroupOpen(!groupOpen)}
@@ -2775,10 +2594,9 @@ function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, 
             {!allDone ? (
               <div className="h-5 w-5 shrink-0 rounded-full border-2 border-amber-500 border-t-transparent animate-spin" />
             ) : roundIndex !== undefined ? (
-              // When this group is a round inside a bundle, the leading
-              // glyph carries the round number — gives the bundle's
-              // expanded view a built-in step indicator without an
-              // extra "ROUND N" label row above each card.
+// 当此组是打包中的回合时，前导字形携带回合编号——
+                  // 为打包的展开视图提供内置步骤指示器，
+                  // 无需额外的"ROUND N"标签行。
               <span className="h-5 w-5 shrink-0 inline-flex items-center justify-center rounded-full bg-amber-500/10 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
                 {roundIndex}
               </span>
@@ -2827,13 +2645,10 @@ function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, 
                       {(() => {
                         try {
                           const args = JSON.parse(tc.arguments);
-                          // delegate_task's `task` arg always opens with
-                          // the same boilerplate ("You are a B2B lead
-                          // researcher…"); the differentiating part is a
-                          // markdown heading further down ("## Target:
-                          // <industry>"). Surface that line instead of
-                          // the head so a fan-out of N delegates doesn't
-                          // look like N copies of the same call.
+                          // delegate_task 的 `task` 参数总是以相同的样板开头（"You are a B2B lead
+                          // researcher…"）；区分部分是更下方的 markdown 标题
+                          //（"## Target: <industry>"）。显示该行而非开头，
+                          // 使 N 个委托的扇出不会看起来像 N 个相同调用。
                           if (tc.name === "delegate_task" && typeof args.task === "string") {
                             const m = args.task.match(/^#+\s*Target:\s*(.+)$/m) ||
                                       args.task.match(/^#+\s+(.+)$/m);
@@ -2909,15 +2724,12 @@ function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, 
   );
 }
 
-/** ToolRoundsBundle wraps consecutive tool-group rounds (the agent
- *  ran tools, got results, then ran more tools, …) in a single
- *  collapsible header so a long ReAct turn doesn't take over the chat
- *  with seven independent "Executed N tools" boxes. The aggregate
- *  badge shows total rounds + total tools; expanding reveals each
- *  round as a regular ToolCallGroup, which itself stays collapsible
- *  per the existing per-round UX. Single-round bundles aren't built
- *  here — those still render as a flat ToolCallGroup so the extra
- *  layer doesn't show up unless it earns its keep. */
+/** ToolRoundsBundle 将连续的工具组回合（智能体运行工具、获取结果、
+ *  再运行更多工具……）包装在单个可折叠头部中，使长时间 ReAct 轮次
+ *  不会用七个独立的"已执行 N 个工具"框占据整个聊天。聚合徽章显示
+ *  总回合数 + 总工具数；展开显示每个回合为常规 ToolCallGroup，各自
+ *  仍可折叠。单回合不打包——这些仍渲染为扁平 ToolCallGroup，使
+ *  额外层仅在有价值时出现。 */
 function ToolRoundsBundle({
   rounds,
   surfacedSrcs,
@@ -2983,7 +2795,7 @@ function ToolRoundsBundle({
   );
 }
 
-/** File extension → icon + preview kind. */
+/** 文件扩展名 → 图标 + 预览类型。 */
 function fileKind(path: string): { icon: typeof File; preview: "image" | "pdf" | "markdown" | "html" | "text" | "none" } {
   const ext = path.toLowerCase().split(".").pop() || "";
   if (["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico"].includes(ext)) return { icon: ImageIcon, preview: "image" };
@@ -3005,17 +2817,14 @@ function formatBytes(n?: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-// fileUrl / zipUrl deliberately do NOT carry the bearer token in the
-// query string anymore. The web UI runs same-origin and the auth
-// middleware reads the session cookie set at login, so <img src>,
-// <a href>, and direct downloads authenticate via cookie just like
-// every other API call. Pre-fix we appended `?token=<bearer>` so
-// programmatic-bearer-only clients could render images, but that
-// token is a full API credential — putting it in URLs leaked it
-// via Referer (when a workspace HTML file linked to a 3rd-party
-// site), browser history, and reverse-proxy access logs. The
-// server still accepts `?token=` for back-compat with CLI scripts
-// that build their own URLs; the frontend just stops feeding it.
+// fileUrl / zipUrl 不再在查询字符串中携带 bearer token。Web UI 运行
+// 在同源环境，认证中间件读取登录时设置的会话 cookie，因此 <img src>、
+// <a href> 和直接下载均通过 cookie 认证，与所有其他 API 调用相同。
+// 此前我们追加 `?token=<bearer>`，使仅持 bearer 的程序化客户端能渲染
+// 图片，但该 token 是完整的 API 凭证——将其放入 URL 会通过 Referer
+// （当工作区 HTML 文件链接到第三方站点时）、浏览器历史和反向代理访问
+// 日志泄露。服务端仍接受 `?token=` 以向后兼容自建 URL 的 CLI 脚本；
+// 前端仅停止提供它。
 function fileUrl(agentId: string, path: string, download: boolean): string {
   const encoded = path.split("/").map(encodeURIComponent).join("/");
   const params = new URLSearchParams();
@@ -3026,9 +2835,8 @@ function fileUrl(agentId: string, path: string, download: boolean): string {
 
 function zipUrl(agentId: string, sessionId: string, projectId?: string): string {
   const params = new URLSearchParams();
-  // projectId wins when both are present — same precedence as the
-  // backend's fileScopeForRequest, which treats projectId-without-
-  // session as "whole project zip".
+  // projectId 优先于 sessionId——与后端的 fileScopeForRequest 优先级一致，
+  // 后者将 projectId-without-session 视为"整个项目 zip"。
   if (projectId) params.set("projectId", projectId);
   else if (sessionId) params.set("sessionId", sessionId);
   const qs = params.toString();
@@ -3092,18 +2900,14 @@ const FILES_PANEL_MAX = 640;
 const FILES_PANEL_DEFAULT = 280;
 const FILES_PANEL_KEY = "chat:filesPanelWidth";
 
-// WorkspacePanel renders the files in the active scope:
-//   - chat scope (sessionId set): files produced in this conversation.
-//     Project chats also see root-level project files so shared notes
-//     are visible alongside the chat's own outputs.
-//   - project scope (projectId set, no session): every file under the
-//     project — root-level + every chat's subtree. Used on the
-//     /agents/<aid>/project/<pid> landing where no specific chat is
-//     selected, so the user can still see what's accumulated in the
-//     project.
-// The agent's shared files (SKILL.md / main.py / templates) are
-// excluded by the backend's scope filter so they can't leak into
-// either view and confuse "what did this conversation produce".
+// WorkspacePanel 在活跃范围中渲染文件：
+//   - 聊天范围（设置了 sessionId）：此对话中产出的文件。项目聊天也显示根级
+//     项目文件，使共享笔记与聊天自身产出并列可见。
+//   - 项目范围（设置了 projectId，无会话）：项目下所有文件——根级 + 每个聊天的
+//     子树。用于 /agents/<aid>/project/<pid> 落地页，未选特定聊天时用户仍可查看
+//     项目中积累的内容。
+// 智能体的共享文件（SKILL.md / main.py / templates）由后端范围过滤器排除，
+// 不会泄露到任一视图中混淆"此对话产出了什么"。
 function WorkspacePanel({
   agentId,
   sessionId,
@@ -3118,10 +2922,9 @@ function WorkspacePanel({
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [previewing, setPreviewing] = useState<ProducedFile | null>(null);
-  // Self-hosted-only "open in Finder" affordance. We learn the deploy
-  // mode from /api/me on mount; it doesn't change at runtime, so one
-  // fetch per panel instance is enough. Hosted deployments leave this
-  // null and the button never renders.
+  // 自托管专用的"在 Finder 中打开"功能。我们在挂载时从 /api/me 获取
+  // 部署模式；运行时不变，因此每个面板实例一次获取就够了。托管部署
+  // 保持 null，按钮永不渲染。
   const [deployMode, setDeployMode] = useState<"self-hosted" | "hosted" | null>(null);
   const [revealing, setRevealing] = useState(false);
   useEffect(() => {
@@ -3161,7 +2964,7 @@ function WorkspacePanel({
       setResizing(false);
       try {
         window.localStorage.setItem(FILES_PANEL_KEY, String(width));
-      } catch { /* ignore quota errors */ }
+      } catch { /* 忽略配额错误 */ }
     };
     window.addEventListener("mousemove", handleMove);
     window.addEventListener("mouseup", handleUp);
@@ -3181,9 +2984,8 @@ function WorkspacePanel({
     try {
       const res = await revealAgentWorkspace(agentId, sessionId || undefined, projectId);
       if (!res.ok) {
-        // Best-effort UX — surface the error inline rather than a
-        // toast lib we don't have. The message comes from the
-        // backend (e.g. "S3-backed store, no host path").
+// 尽力 UX——行内显示错误而非我们没有的 toast 库。消息来自后端
+      // （例如"S3-backed store, no host path"）。
         // eslint-disable-next-line no-alert
         alert(res.error || "无法打开工作区文件夹");
       }
@@ -3193,15 +2995,13 @@ function WorkspacePanel({
   }, [agentId, sessionId, projectId]);
 
   const refresh = useCallback(async () => {
-    // Project scope (no session) is handled via projectId; chat scope
-    // requires sessionId. With neither, there's nothing to fetch.
+    // 项目范围（无会话）通过 projectId 处理；聊天范围需要 sessionId。
+    // 两者都没有时，无需获取。
     if (!agentId || (!sessionId && !projectId)) return;
     setLoading(true);
     try {
-      // When projectId is set we skip sessionId — backend scope filter
-      // expects exactly one of them to drive the prefix match. Mixing
-      // them would fall into the chat-scope branch and miss other
-      // chats' files.
+      // 设置 projectId 时跳过 sessionId——后端范围过滤器期望恰好一个来驱动
+      // 前缀匹配。混合它们会进入聊天范围分支并遗漏其他聊天的文件。
       const list = projectId
         ? await listAgentFiles(agentId, undefined, projectId)
         : await listAgentFiles(agentId, sessionId);
@@ -3257,11 +3057,9 @@ function WorkspacePanel({
             >
               <Download className="h-4 w-4" />
             </a>
-            {/* Open the workspace folder in the operator's native file
-                browser. Self-hosted only — hosted deployments don't
-                expose a meaningful "local folder" so the button is
-                hidden entirely (we learned the mode from /api/me at
-                mount). */}
+{/* 在操作系统的文件浏览器中打开工作区文件夹。仅限自托管——
+                 托管部署不暴露有意义的"本地文件夹"，因此按钮完全隐藏
+                 （我们在挂载时从 /api/me 获取部署模式）。 */}
             {deployMode === "self-hosted" && (
               <button
                 onClick={handleReveal}
@@ -3370,7 +3168,7 @@ function FilePreview({ agentId, file, onClose }: { agentId: string; file: Produc
   const [htmlView, setHtmlView] = useState<"rendered" | "source">("rendered");
 
   useEffect(() => {
-    // HTML fetches its text lazily only when the user switches to source view.
+    // 仅当用户切换到源码视图时，HTML 懒加载其文本。
     if (preview !== "markdown" && preview !== "text") return;
     let cancelled = false;
     fetch(src)
@@ -3452,9 +3250,8 @@ function FilePreview({ agentId, file, onClose }: { agentId: string; file: Produc
           )}
           {preview === "html" && (
             htmlView === "rendered" ? (
-              // sandbox="allow-scripts" runs the page in a null origin: CSS,
-              // animations, charts work, but scripts can't reach parent
-              // cookies/storage/API — safe for untrusted agent output.
+// sandbox="allow-scripts" 在空源中运行页面：CSS、动画、图表可以工作，
+                    // 但脚本无法访问父级 cookie/storage/API——对不受信任的智能体输出安全。
               <iframe
                 src={src}
                 sandbox="allow-scripts"
@@ -3504,8 +3301,8 @@ function SlashMenu({
           return (
             <button
               key={`${it.kind}-${it.name}`}
-              // onMouseDown fires before the textarea's onBlur so the click
-              // isn't swallowed by the blur-driven menu close.
+              // onMouseDown 在 textarea 的 onBlur 之前触发，因此点击
+                // 不会被 blur 驱动的菜单关闭吞没。
               onMouseDown={(e) => {
                 e.preventDefault();
                 onSelect(it);

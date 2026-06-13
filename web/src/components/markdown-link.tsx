@@ -3,18 +3,17 @@
 import type { AnchorHTMLAttributes } from "react";
 
 /**
- * ExternalAnchor renders <a> for ReactMarkdown chat content with one tweak:
- * links pointing at a different origin open in a new tab. Same-origin / relative
- * / mailto / # links keep default behaviour.
+ * ExternalAnchor 为 ReactMarkdown 聊天内容渲染 <a>，有一个调整：
+ * 指向不同源的链接在新标签页中打开。同源 / 相对 / mailto / # 链接
+ * 保持默认行为。
  *
- * Why: chat replies routinely include outbound URLs (Namecheap, GitHub, docs).
- * Opening those in the current tab navigates away from the chat session and
- * loses the agent's context. Forcing target="_blank" only on cross-origin
- * URLs avoids breaking in-app navigation (we still rely on the Next.js router
- * for /agents/<id>/... links the agent might emit).
+ * 原因：聊天回复中经常包含外站 URL（Namecheap、GitHub、文档）。
+ * 在当前标签页打开这些链接会导航离开聊天会话，丢失智能体上下文。
+ * 仅对跨源 URL 强制 target="_blank" 可避免破坏应用内导航（应用内
+ * /agents/<id>/... 链接仍依赖 Next.js 路由）。
  *
- * Pair with rel="noopener noreferrer" so the popup can't reach back to
- * window.opener — standard hardening for any anchor that opens a new tab.
+ * 搭配 rel="noopener noreferrer" 使用，使弹窗无法访问
+ * window.opener —— 这是对任何在新标签页打开的锚点的标准加固。
  */
 export function ExternalAnchor(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
   const { href, children, ...rest } = props;
@@ -35,12 +34,12 @@ export function ExternalAnchor(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
 
 function isExternalHref(href: string | undefined): boolean {
   if (!href) return false;
-  // Bail on mailto:, tel:, # anchors, and protocol-less / relative paths —
-  // those should keep their default in-place behaviour.
+  // 跳过 mailto:、tel:、# 锚点和无协议 / 相对路径 ——
+  // 它们应保持默认的原地行为。
   if (!/^https?:\/\//i.test(href)) return false;
   if (typeof window === "undefined") {
-    // Server render: assume any absolute http(s) link could be external.
-    // Hydration on the client will re-evaluate against the real origin.
+    // 服务端渲染：假设任何绝对 http(s) 链接都可能是外部的。
+    // 客户端水合时会根据真实源重新评估。
     return true;
   }
   try {

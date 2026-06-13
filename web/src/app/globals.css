@@ -49,7 +49,7 @@
   --font-heading: var(--font-heading);
 }
 
-/* Light theme */
+/* 浅色主题 */
 :root {
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0.008 326);
@@ -85,7 +85,7 @@
   --foreground: oklch(0.145 0.008 326);
 }
 
-/* Dark theme */
+/* 深色主题 */
 .dark {
   --background: oklch(0.145 0.008 326);
   --foreground: oklch(0.985 0 0);
@@ -132,7 +132,7 @@
   }
 }
 
-/* Theme transition */
+/* 主题过渡动画 */
 html.theme-transition,
 html.theme-transition *,
 html.theme-transition *::before,
@@ -140,7 +140,7 @@ html.theme-transition *::after {
   transition: background-color 200ms ease, border-color 200ms ease, color 200ms ease !important;
 }
 
-/* Custom scrollbar */
+/* 自定义滚动条 */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -162,7 +162,7 @@ html.theme-transition *::after {
   background: oklch(0.7 0 0 / 35%);
 }
 
-/* Typing dots animation */
+/* 输入指示点动画 */
 @keyframes typing-dot {
   0%, 100% {
     opacity: 0.3;
@@ -178,7 +178,7 @@ html.theme-transition *::after {
   animation: typing-dot 1.4s ease-in-out infinite;
 }
 
-/* Existing animations */
+/* 已有动画 */
 @keyframes gradient-shift {
   0%, 100% {
     background-position: 0% 50%;

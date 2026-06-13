@@ -1,6 +1,6 @@
-# User Profile
+# 用户档案
 
-This file contains information about the user. Update as you learn more.
+本文件包含关于用户的信息。随着对用户的了解不断更新。
 
-## Preferences
-- (To be filled as the agent learns about the user)
+## 偏好
+- （随着智能体了解用户后逐步填充）

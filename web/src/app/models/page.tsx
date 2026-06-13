@@ -46,13 +46,13 @@ import {
 } from "@/lib/api";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 
-// Keep these maps in sync with onboard's ProviderStep so the two flows
-// look and behave identically — same preset set, same labels, same
-// SelectValue render-children pattern.
-// `models` are common model IDs pre-filled into the form when the
-// preset is selected. The user can keep, edit, or remove them. Empty
-// list means "no sensible default" (custom / openrouter / ollama all
-// vary too much to ship a baked-in suggestion).
+// 保持这些映射与 onboard 的 ProviderStep 同步，确保两个流程
+// 外观和行为一致——相同的预设集、相同标签、相同的
+// SelectValue 渲染子元素模式。
+// `models` 是选中预设时预填到表单中的常见模型 ID。
+// 用户可以保留、编辑或移除它们。空列表表示"无合理默认值"
+//（自定义 / openrouter / ollama 的模型差异太大，不适合
+// 内置建议）。
 const PROVIDER_PRESETS: Record<
   string,
   { apiBase: string; apiType: string; authType: string; models: string[] }
@@ -85,20 +85,18 @@ const AUTH_TYPE_LABELS: Record<string, string> = {
 };
 
 interface ProviderEntry {
-  id: string;          // configs row id — required for PUT/DELETE
+  id: string;          // configs 行 ID——PUT/DELETE 操作必需
   name: string;
   apiBase: string;
-  apiKey: string;      // unmasked draft (only set while editing)
-  maskedKey: string;   // server-returned masked key for display
+  apiKey: string;      // 未遮蔽的草稿值（仅在编辑时设置）
+  maskedKey: string;   // 服务端返回的遮蔽密钥，用于显示
   apiType: string;
   authType: string;
   models: ModelEntry[];
-  // scope tells the row apart from the inherited (system) ones a regular
-  // user is allowed to see but not mutate. "system" and "agent" rows
-  // render with an Inherited badge and disabled edit/delete; "user" rows
-  // are the caller's own and fully editable. "agent" only shows up when
-  // the page is mounted inside an agent context (chatter viewing a
-  // shared agent whose owner enabled shareModelConfig).
+  // scope 用于区分行与普通用户可查看但不可修改的继承（系统）行。
+  // "system" 和 "agent" 行显示继承标记且禁用编辑/删除；"user" 行
+  // 是调用者自己的，完全可编辑。"agent" 仅在页面挂载于智能体上下文时
+  // 出现（对话者查看所有者启用了 shareModelConfig 的共享智能体）。
   scope: "system" | "user" | "agent";
 }
 
@@ -114,22 +112,20 @@ function emptyModel(): ModelEntry {
   };
 }
 
-// presetModelRows produces ready-to-edit ModelEntry rows for the IDs
-// declared on a preset, so the dialog opens with common models already
-// filled in instead of an empty list.
+// presetModelRows 为预设声明的 ID 生成可直接编辑的 ModelEntry 行，
+// 使对话框打开时已填入常见模型而非空列表。
 function presetModelRows(preset: string): ModelEntry[] {
   const ids = PROVIDER_PRESETS[preset]?.models || [];
   return ids.map((id) => ({ ...emptyModel(), id, name: id }));
 }
 
 export default function ModelsPage() {
-  // Agent context is auto-detected from the URL. The standalone /models
-  // page lives outside any /agents/<id>/ path, so the hook returns
-  // "default" and we render the plain user-scope view. When this same
-  // component is mounted inside the agent settings dialog (chatter
-  // viewing a shared agent), the URL is /agents/<id>/... and we pick up
-  // the id here — the inheritance chain then includes the agent-scope
-  // model + providers (when the owner enabled shareModelConfig).
+  // 智能体上下文从 URL 自动检测。独立的 /models 页面不在
+  // 任何 /agents/<id>/ 路径下，因此钩子返回 "default"，我们
+  // 渲染普通用户范围视图。当此组件挂载在智能体设置对话框中
+  // （对话者查看共享智能体）时，URL 为 /agents/<id>/...，我们
+  // 在此获取 id——继承链随后包含智能体范围的模型和服务商
+  // （当所有者启用了 shareModelConfig 时）。
   const urlAgentId = useAgentIdFromURL();
   const inAgentContext = urlAgentId !== "default" && urlAgentId !== "";
   const [agentName, setAgentName] = useState("");
@@ -138,32 +134,31 @@ export default function ModelsPage() {
 
   const [providers, setProviders] = useState<ProviderEntry[]>([]);
   const [model, setModel] = useState("");
-  // System-only resolution from /api/config?meta. For super_admin this
-  // equals `model` always (they ARE system); for regular users it's the
-  // value they'd inherit if their user-scope override were cleared. Used
-  // only for the Inheriting/Override badge + caption.
+  // 仅系统级的解析结果，来自 /api/config?meta。对 super_admin 来说
+  // 始终等于 `model`（他们就是系统）；对普通用户来说，这是清除
+  // 其用户级覆盖后将继承的值。仅用于"继承中/覆盖"标记和说明文字。
   const [systemDefault, setSystemDefault] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  // Caller identity drives which scope this page reads/writes:
-  //   - super_admin → system scope (shared across all users)
-  //   - regular user → user scope (private to themselves)
-  // No UI toggle — admins who want a private provider should configure it
-  // outside the admin role; users can't see system providers from here
-  // because the backend rejects the read for non-admins anyway.
+  // 调用者身份决定此页面读写的范围：
+  //   - super_admin → 系统范围（所有用户共享）
+  //   - 普通用户 → 用户范围（仅自己可见）
+  // 无 UI 切换——需要私有服务商的管理员应在管理角色外配置；
+  // 普通用户无法从此处查看系统服务商，因为后端对非管理员
+  // 直接拒绝读取请求。
   const [me, setMe] = useState<{ id: string; role: string } | null>(null);
   const isSuperAdmin = me?.role === "super_admin";
   const writeScope: "system" | "user" = isSuperAdmin ? "system" : "user";
   const writeScopeId = isSuperAdmin ? "" : (me?.id || "");
 
-  // Dialog state
+  // 对话框状态
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingName, setEditingName] = useState<string | null>(null);
-  // editingId disambiguates rows when admin's "shared" provider and a
-  // user's "private" override happen to share the same name. The find()
-  // helpers always match by id; editingName remains for display only.
+  // editingId 用于在管理员的"共享"服务商与用户的"私有"覆盖恰好
+  // 同名时消除歧义。find() 辅助函数始终按 id 匹配；
+  // editingName 仅用于显示。
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formPreset, setFormPreset] = useState("openrouter");
   const [formName, setFormName] = useState("");
@@ -172,18 +167,16 @@ export default function ModelsPage() {
   const [formApiType, setFormApi] = useState("openai-chat");
   const [formAuthType, setFormAuthType] = useState("api-key");
   const [formModels, setFormModels] = useState<ModelEntry[]>([]);
-  // Per-model test results keyed by model index in formModels. We test
-  // every configured model so the user sees which model IDs the provider
-  // actually exposes — a single "ping the base URL" check would mask
-  // typos in any individual model id.
+  // 按模型索引存储的逐模型测试结果。我们测试每个已配置的模型，
+  // 让用户看到服务商实际公开哪些模型 ID——单独"ping 基础 URL"
+  // 的检查会掩盖单个模型 ID 中的拼写错误。
   type ModelTestResult = { status: "idle" | "testing" | "success" | "error"; error?: string };
   const [modelTests, setModelTests] = useState<Record<number, ModelTestResult>>({});
   const [batchTesting, setBatchTesting] = useState(false);
 
-  // Add/Update is gated on every non-empty model having a green test
-  // result. Empty model rows are ignored (they get filtered out at
-  // save), an explicit "no models configured" provider is allowed
-  // through (rare but legal — e.g. seeding before the catalog is known).
+  // 添加/更新的前提是每个非空模型都有绿色测试结果。空模型行
+  // 会被忽略（保存时过滤掉）；"未配置模型"的服务商也允许通过
+  // （少见但合法——例如在目录已知之前先播种）。
   const cleanModelRows = formModels
     .map((m, idx) => ({ idx, id: m.id.trim() }))
     .filter((t) => t.id);
@@ -191,12 +184,12 @@ export default function ModelsPage() {
     cleanModelRows.length === 0 ||
     cleanModelRows.every((t) => modelTests[t.idx]?.status === "success");
 
-  // Collect all provider/model options for the default-model dropdown.
-  // Dedupe on `provider/modelId` and walk inner→outer scope so the more
-  // specific row wins the label when two rows share a name (e.g. an
-  // agent-scope "openai" override shadowing the system "openai").
-  // providers[] is already pre-sorted agent → user → system by
-  // fetchConfig, so the natural traversal order is correct.
+  // 收集所有服务商/模型选项用于默认模型下拉菜单。
+  // 按 provider/modelId 去重，从内层到外层范围遍历，
+  // 使更具体的行在两个同名行（如智能体范围的 "openai" 覆盖
+  // 覆盖系统范围的 "openai"）中胜出标签。
+  // providers[] 已由 fetchConfig 按 智能体→用户→系统 排序，
+  // 因此自然遍历顺序是正确的。
   const allModelOptions: { value: string; label: string }[] = (() => {
     const seen = new Set<string>();
     const out: { value: string; label: string }[] = [];
@@ -211,25 +204,24 @@ export default function ModelsPage() {
     return out;
   })();
 
-  // Providers are stored in the configs table and only round-trip through
-  // the dedicated /api/providers endpoints — POST /api/config silently
-  // ignores the providers map. agents.defaults.model is read off the
-  // merged /api/config response (so it picks up system+user overlay) but
-  // written back through the same endpoint. Keep the two writes split so
-  // an empty default-model field doesn't blow away provider rows, and a
-  // provider mutation doesn't accidentally clear the default model.
+// 服务商存储在 configs 表中，仅通过专用的 /api/providers 端点
+  // 读写——POST /api/config 会静默忽略 providers 映射。
+  // agents.defaults.model 从合并后的 /api/config 响应中读取
+  // （因此会叠加系统+用户层），但通过同一端点写回。保持两次写入
+  // 分离，以防空的默认模型字段意外清除服务商行，以及服务商变更
+  // 意外清除默认模型。
   const fetchConfig = async (
     asAdmin: boolean,
     userId: string,
   ) => {
     setLoading(true);
     try {
-      // Admin: system is the source of truth.
-      // Regular user: system (inherited) + own user-scope rows.
-      // Agent context (chatter on a shared agent): also pull the agent
-      //   record + agent-scope providers. The latter is gated on
-      //   shareModelConfig=true server-side; a 403 just means sharing is
-      //   off and we render the plain user-scope view.
+      // 管理员：系统范围是权威数据源。
+      // 普通用户：系统（继承）+ 自己的用户范围行。
+      // 智能体上下文（对话者查看共享智能体）：还需要拉取智能体
+      //   记录 + 智能体范围的服务商。后者依赖于服务端的
+      //   shareModelConfig=true 门控；403 仅表示共享已关闭，
+      //   此时渲染普通用户范围视图。
       const [cfg, sysRes, userRes, agentRec, agentRes] = await Promise.all([
         getConfig().catch(() => null),
         listProviders("system", "").catch(() => null),
@@ -257,11 +249,10 @@ export default function ModelsPage() {
         models: r.models || [],
         scope: sc,
       });
-      // Order: agent (most specific) → user → system. Read-only "agent"
-      // rows only appear for non-owners viewing a shared agent (the
-      // owner sees the dedicated AgentModelsPage that owns agent-scope
-      // editing); we still skip them for admins because admin's
-      // standalone /models page is system-scope only.
+      // 顺序：智能体（最具体）→ 用户 → 系统。只读的"智能体"行
+      // 仅出现在非所有者查看共享智能体时（所有者使用专用的
+      // AgentModelsPage 来编辑智能体范围）；管理员跳过它们，
+      // 因为管理员的独立 /models 页面仅针对系统范围。
       const entries: ProviderEntry[] = asAdmin
         ? sysRows.map((r) => toEntry(r, "system"))
         : [
@@ -281,8 +272,8 @@ export default function ModelsPage() {
     }
   };
 
-  // Resolve identity first, then fetch — admin gets system only, regular
-  // user gets the union (system inherited + own user-scope rows).
+  // 先解析身份，再获取配置——管理员获取系统范围数据，
+  // 普通用户获取合并结果（系统继承 + 自己的用户范围行）。
   useEffect(() => {
     getMe().then((m) => {
       if (!m?.user) return;
@@ -316,10 +307,10 @@ export default function ModelsPage() {
     setFormApi(provider.apiType);
     setFormAuthType(provider.authType || "bearer-token");
     setFormApiKey("");
-    // Saved providers may have models persisted before we shipped the
-    // full ModelEntry schema (no cost block, no input array). Layer
-    // emptyModel() defaults under the saved data so the dialog always
-    // has well-formed objects to edit.
+    // 已保存的服务商可能包含在我们交付完整 ModelEntry 结构
+    // 之前持久化的模型（缺少 cost 块、缺少 input 数组）。
+    // 将 emptyModel() 的默认值合并到保存数据之下，确保对话框
+    // 始终有结构完整的对象可编辑。
     setFormModels(
       (provider.models || []).map((m) => {
         const base = emptyModel();
@@ -331,10 +322,9 @@ export default function ModelsPage() {
         };
       }),
     );
-    // Pre-mark every model in an editing session as "success" so the
-    // user isn't forced to re-test every existing model just to change
-    // a display name. Editing the model id, hitting Test, or removing /
-    // re-adding rows will reset their status as expected.
+    // 编辑会话中将每个模型预标记为"成功"，避免用户必须重新测试
+    // 每个现有模型才能修改显示名称。编辑模型 ID、点击测试或
+    // 移除/重新添加行会按预期重置其状态。
     setModelTests(
       provider.models
         ? Object.fromEntries(
@@ -345,14 +335,13 @@ export default function ModelsPage() {
     setDialogOpen(true);
   };
 
-  // Match onboard's handleProviderChange: pre-fill api base + api type from
-  // the preset, keep provider name editable (auto-set to preset key, but
-  // user can rename — e.g. "openai" → "production"), reset test status.
-  // Preset switching is treated as "give me a clean slate for this
-  // provider" — same way it overwrites apiBase/apiType, it also
-  // refreshes the models list with the preset's known model IDs. Edit
-  // mode (openEditDialog) loads stored models directly and never goes
-  // through this path, so user-saved configurations are never clobbered.
+  // 与 onboard 的 handleProviderChange 保持一致：从预设预填
+  // API 地址 + API 类型，保持服务商名称可编辑（自动设为预设键，
+  // 但用户可重命名，如 "openai" → "production"），重置测试状态。
+  // 切换预设被视为"给出该服务商的全新起点"——与覆盖 apiBase/apiType
+  // 一样，它也会用预设的已知模型 ID 刷新模型列表。编辑模式
+  // （openEditDialog）直接加载已保存的模型，不经过此路径，
+  // 因此用户保存的配置不会被覆盖。
   const handlePresetChange = (preset: string) => {
     setFormPreset(preset);
     const cfg = PROVIDER_PRESETS[preset];
@@ -366,16 +355,15 @@ export default function ModelsPage() {
     setModelTests({});
   };
 
-  // Test every configured model in turn. We hit one /chat/completions
-  // (or /v1/messages) per model id so a typo in any single model surfaces
-  // distinctly — a single "ping" with model="" can return 200 and still
-  // leave a broken model id silently undetected.
+  // 逐个测试每个已配置的模型。针对每个模型 ID
+  // 发送一次 /chat/completions（或 /v1/messages）请求，
+  // 使任何单个模型的拼写错误都能独立暴露——单独以 model=""
+  // "ping" 可能返回 200，但仍会让错误的模型 ID 静默漏过。
   //
-  // When editing an existing row, the user typically hasn't re-typed the
-  // API key (the field is empty + masked-only displays), so we route the
-  // test through the saved provider row server-side. If they DID type a
-  // fresh key, we honor it and use the inline-test path so the new key
-  // gets exercised before they save.
+  // 编辑已有行时，用户通常没有重新输入 API 密钥（字段为空 +
+  // 仅显示遮蔽值），因此我们走服务端已保存行进行测试。
+  // 如果他们确实输入了新密钥，我们优先使用它并走内联测试路径，
+  // 以便在保存前验证新密钥。
   const handleTestConnection = async () => {
     const targets = formModels
       .map((m, idx) => ({ idx, id: m.id.trim() }))
@@ -441,9 +429,8 @@ export default function ModelsPage() {
       return updated;
     });
     if (field === "id") {
-      // Editing the model id invalidates the previous test result for
-      // that row — clear the badge so a stale "connected" doesn't
-      // mislead after a typo.
+      // 编辑模型 ID 会使该行之前的测试结果失效——清除标记，
+      // 避免拼写错误后仍显示过期的"已连接"标记产生误导。
       setModelTests((prev) => {
         if (prev[index] === undefined) return prev;
         const { [index]: _drop, ...rest } = prev;
@@ -455,7 +442,7 @@ export default function ModelsPage() {
 
   const handleRemoveModel = (index: number) => {
     setFormModels((prev) => prev.filter((_, i) => i !== index));
-    // Reindex modelTests: rows after the removed index shift down by 1.
+    // 重新索引 modelTests：移除索引之后的行下移 1 位。
     setModelTests((prev) => {
       const next: Record<number, ModelTestResult> = {};
       for (const [k, v] of Object.entries(prev)) {
@@ -485,8 +472,8 @@ export default function ModelsPage() {
       if (editingRow) {
         await updateProvider(editingRow.id, {
           apiBase: formApiBase,
-          // Empty key on edit means "keep existing"; the backend treats
-          // empty/masked-sentinel values as a no-op.
+          // 编辑时空密钥表示"保留现有值"；后端将空值/遮蔽哨兵值
+          // 视为无操作。
           apiKey: formApiKey || undefined,
           apiType: formApiType,
           authType: formAuthType,
@@ -523,10 +510,10 @@ export default function ModelsPage() {
     await fetchConfig(isSuperAdmin, me?.id || "");
   };
 
-  // Save button at the top persists the default-model setting. An empty
-  // value is a legitimate intent ("clear the default") — the backend's
-  // `omitempty` on AgentDefaults.Model drops the key from the saved row
-  // without disturbing sibling fields, so it's safe to send through.
+  // 顶部的保存按钮持久化默认模型设置。空值是合法意图
+  // （"清除默认值"）——后端的 AgentDefaults.Model 上的
+  // `omitempty` 会从保存行中删除该键而不干扰兄弟字段，
+  // 因此发送空值是安全的。
   const handleSaveAll = async () => {
     setSaving(true);
     try {
@@ -545,17 +532,17 @@ export default function ModelsPage() {
     try {
       await updateConfig({ agents: { defaults: { model: value.trim() } } });
       flashSaved();
-      // Refresh so Inheriting/Override badge reflects the new state.
+      // 刷新以使"继承中/覆盖"标记反映新状态。
       await fetchConfig(isSuperAdmin, me?.id || "");
     } finally {
       setSaving(false);
     }
   };
 
-  // Clear the user-scope agents.defaults.model override so the agent
-  // runtime falls back to the system default. Writing an empty string
-  // just stores "" at user scope which still wins the merge — instead
-  // we send a null/undefined which the backend treats as "delete row".
+  // 清除用户范围的 agents.defaults.model 覆盖，使智能体运行时
+  // 回退到系统默认值。写入空字符串只会将 "" 存到用户范围，
+  // 这在合并时仍会优先——因此我们发送 null/undefined，
+  // 后端将其视为"删除行"。
   const handleClearOverride = async () => {
     setSaving(true);
     try {
@@ -619,19 +606,17 @@ export default function ModelsPage() {
         </div>
       </div>
 
-      {/* Default Model — for non-admin we surface inheritance state the
-          same way the agent Models page does, so users can see what
-          they'd get for free vs what they've overridden. Super_admin is
-          the system source of truth, so the badges are noise for them.
-          In agent context the inheritance chain becomes
-          chatter-user → agent-scope → system, so we show the agent's
-          model in the placeholder and caption when sharing is on. */}
+{/* 默认模型——对非管理员我们与智能体模型页面一样展示继承状态，
+            使用户能看到免费继承的值和自己覆盖了什么。对 super_admin
+            来说，他们是系统权威来源，标记只会是噪音。
+            在智能体上下文中，继承链变为 对话者用户→智能体范围→系统，
+            因此共享开启时在占位符和说明文字中显示智能体模型。 */}
       {(() => {
         const inheriting = !isSuperAdmin && !model.trim();
         const overridden = !isSuperAdmin && !inheriting;
-        // What the runtime will actually use when the chatter has no
-        // override. EnsureAgent picks agent-scope first (only when the
-        // owner enabled sharing); otherwise it falls through to system.
+// 对话者没有覆盖时运行时实际使用的模型。EnsureAgent
+          // 优先选择智能体范围（仅当所有者启用了共享时）；
+          // 否则回退到系统默认值。
         const effectiveFallback = inAgentContext && agentShares && agentScopeModel
           ? agentScopeModel
           : systemDefault;
@@ -669,11 +654,10 @@ export default function ModelsPage() {
             <SelectTrigger className="font-mono text-sm max-w-md">
               <SelectValue placeholder={inheriting ? `继承（${effectiveFallback || "无默认值"}）` : "选择模型"} />
             </SelectTrigger>
-            {/* Default `w-(--anchor-width)` locks the popup to the
-                trigger's max-w-md. Long ids like
-                openrouter/xiaomi/mimo-v2-flash get clipped. Let it grow
-                to fit content instead, while still staying at least as
-                wide as the trigger. */}
+{/* 默认 Select 的 `w-(--anchor-width)` 将弹出层锁定为
+                  触发器的 max-w-md。像 openrouter/xiaomi/mimo-v2-flash
+                  这样的长 ID 会被截断。改为允许内容自适应宽度，
+                  同时保持最小宽度等于触发器。 */}
             <SelectContent className="!w-auto !min-w-[var(--anchor-width)] !overflow-x-visible">
               {allModelOptions.map((opt) => (
                 <SelectItem key={opt.value} value={opt.value}>
@@ -724,7 +708,7 @@ export default function ModelsPage() {
         );
       })()}
 
-      {/* Providers Grid */}
+      {/* 服务商网格 */}
       {providers.length === 0 ? (
         <div className="rounded-lg border border-border bg-card">
           <div className="flex flex-col items-center justify-center py-16">
@@ -756,10 +740,10 @@ export default function ModelsPage() {
             </TableHeader>
             <TableBody>
               {providers.map((provider) => {
-                // A row is editable if it's at the caller's own scope.
-                // For super_admin that's "system"; for everyone else
-                // it's "user". "agent" rows surfaced for a chatter on
-                // a shared agent are always read-only (owner owns them).
+                // 行的可编辑性取决于其是否在调用者自己的范围内。
+                // 对 super_admin 来说是 "system"；对其他人是 "user"。
+                // 为共享智能体上的对话者展示的 "agent" 行始终只读
+                // （所有者拥有它们）。
                 const editable = isSuperAdmin
                   ? provider.scope === "system"
                   : provider.scope === "user";
@@ -835,7 +819,7 @@ export default function ModelsPage() {
         </div>
       )}
 
-      {/* Add/Edit Provider Dialog */}
+      {/* 添加/编辑服务商对话框 */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
@@ -847,7 +831,7 @@ export default function ModelsPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            {/* Provider + Provider Name (mirrors onboard's 2-col grid). */}
+            {/* 服务商 + 服务商名称（与 onboard 的两列网格对应）。 */}
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label>服务商</Label>
@@ -882,7 +866,7 @@ export default function ModelsPage() {
               </div>
             </div>
 
-            {/* API Base URL */}
+            {/* API 基础地址 */}
             <div className="space-y-1.5">
               <Label>API 基础地址</Label>
               <Input
@@ -893,11 +877,10 @@ export default function ModelsPage() {
               />
             </div>
 
-            {/* API Key — on edit we never receive the unmasked key from
-                the server, so show the masked key as the placeholder so
-                the operator can see one is configured. Leave the value
-                empty so they can type a replacement; Test connection
-                falls back to the stored key when the field is blank. */}
+            {/* API 密钥——编辑时我们从不接收未遮蔽的密钥，
+                因此显示遮蔽密钥作为占位符，让操作者看到已配置了密钥。
+                留空可让用户输入替换值；字段为空时测试连接
+                会回退到已保存的密钥。 */}
             <div className="space-y-1.5">
               <Label>API 密钥</Label>
               <Input
@@ -921,7 +904,7 @@ export default function ModelsPage() {
               )}
             </div>
 
-            {/* API Type & Auth Type */}
+            {/* API 类型与认证类型 */}
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label>API 类型</Label>
@@ -953,7 +936,7 @@ export default function ModelsPage() {
               </div>
             </div>
 
-            {/* Models Section */}
+            {/* 模型部分 */}
             <div className="space-y-3 pt-2 border-t border-border">
               <div className="flex items-center justify-between">
                 <Label className="text-base">模型</Label>
@@ -1028,10 +1011,10 @@ export default function ModelsPage() {
                 );
               })}
 
-              {/* Test connection runs against every configured model so
-                  a typo in any single model id is surfaced per-row, not
-                  hidden behind a single green pass/fail. Always visible
-                  — Add/Update is gated on every model passing. */}
+              {/* 测试连接会对每个已配置的模型逐一运行，因此任何单个
+                  模型 ID 中的拼写错误会按行暴露，而非隐藏在单一的
+                  绿色通过/失败背后。始终可见——添加/更新的前提是
+                  每个模型都通过测试。 */}
               <div className="flex flex-col gap-2 pt-2">
                 <div className="flex items-center gap-3">
                   <Button

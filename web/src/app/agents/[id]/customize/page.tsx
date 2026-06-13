@@ -20,18 +20,17 @@ const CUSTOMIZE_FILES = [
   { name: "AGENTS.md", label: "智能体" },
 ];
 
-// FileState mirrors the backend's GET response: `content` is what's
-// effectively loaded, `source` says where it came from, and `baseContent`
-// (only set when source==="db" with a different owner row to revert to)
-// is what the user would fall back to on Revert.
+// FileState 镜像后端 GET 响应：`content` 是实际加载的内容，
+// `source` 表示来源，`baseContent`（仅在 source==="db" 且有不同
+// 所有者行可还原时设置）是用户还原时会回退到的内容。
 //
-//   - "db":      the caller's own per-user override row (USER.md /
-//                MEMORY.md only) — distinct from the owner's content.
-//   - "owner":   the agent owner's row, the canonical "shared template"
-//                — what identity files (SOUL/IDENTITY/BOOTSTRAP/...)
-//                always render as, and what per-user files fall back to.
-//   - "fs":      legacy filesystem default. Kept for back-compat.
-//   - "default": neither caller nor owner row exists; tab is empty.
+//   - "db":      调用者自己的每用户覆盖行（仅 USER.md /
+//                MEMORY.md）——与所有者内容不同。
+//   - "owner":   智能体所有者的行，规范的"共享模板"
+//                ——身份文件（SOUL/IDENTITY/BOOTSTRAP/...）
+//                始终以此呈现，每用户文件回退到此。
+//   - "fs":      旧版文件系统默认值。保留用于向后兼容。
+//   - "default": 调用者和所有者行均不存在；标签页为空。
 type FileSource = "db" | "owner" | "fs" | "default";
 type FileState = { content: string; source: FileSource; baseContent?: string };
 
@@ -84,15 +83,15 @@ export default function AgentCustomizePage() {
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-      // Reload so source/baseContent stay accurate after save.
+      // 重新加载以使保存后 source/baseContent 保持准确。
       loadAll();
     } catch {}
     setSaving(false);
   };
 
-  // Revert deletes the DB override so the runtime falls back to the FS base
-  // shipped with the agent definition. Only meaningful when source==="db"
-  // AND a baseContent exists (otherwise the tab just becomes empty).
+  // 还原会删除 DB 覆盖，使运行时回退到智能体定义随附的
+// 文件系统基础版本。仅在 source==="db" 且有 baseContent
+// 时有意义（否则标签页只会变空）。
   const handleRevert = async () => {
     if (!active || active.source !== "db") return;
     if (!confirm(`确定将 ${activeTab} 还原为仓库基础版本吗？当前编辑内容将被丢弃。`)) return;
@@ -174,7 +173,7 @@ export default function AgentCustomizePage() {
         </div>
       </div>
 
-      {/* Tabs */}
+      {/* 标签页 */}
       <div className="flex gap-1 border-b border-border mb-4 overflow-x-auto">
         {CUSTOMIZE_FILES.map((f) => (
           <button
@@ -194,9 +193,9 @@ export default function AgentCustomizePage() {
         ))}
       </div>
 
-      {/* Active-tab status line — only shows when there's something
-          actionable to say (override active / loaded from repo). The
-          "default" case (empty + no repo base) is silent. */}
+      {/* 活动标签页状态行——仅在有可操作信息时显示
+          （覆盖激活 / 来自仓库）。"default" 情况
+          （空 + 无仓库基础）保持静默。 */}
       {(active?.source === "db" || active?.source === "fs") && (
         <div className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
           {sourceBadge(active?.source)}
@@ -209,7 +208,7 @@ export default function AgentCustomizePage() {
         </div>
       )}
 
-      {/* Editor */}
+      {/* 编辑器 */}
       <textarea
         value={active?.content || ""}
         onChange={(e) =>
@@ -220,12 +219,10 @@ export default function AgentCustomizePage() {
         }
         spellCheck={false}
         className="w-full rounded-lg border border-border bg-card px-4 py-3 font-mono text-sm leading-relaxed outline-none focus:ring-1 focus:ring-primary/30 resize-none"
-        // Bounded so the editor stays a reasonable size inside the
-        // Settings dialog (85vh modal) — the previous
-        // `calc(100vh - 240px)` made the textarea swallow nearly the
-        // whole dialog. The clamp keeps the standalone /customize/
-        // page usable too: still grows on tall screens, but stops
-        // short of "fills the viewport".
+        // 限制高度使编辑器在设置对话框（85vh 模态框）内保持合理尺寸——
+        // 之前用的 `calc(100vh - 240px)` 会让文本区域几乎占满整个对话框。
+        // clamp 值也保证独立 /customize/ 页面可用：在高等屏幕上仍会增长，
+        // 但不会"填满整个视口"。
         style={{ height: "min(55vh, 480px)", minHeight: 280 }}
         placeholder={`# ${activeTab}\n\nWrite your content here...`}
       />

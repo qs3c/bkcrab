@@ -4,10 +4,9 @@ export function generateStaticParams() {
   return [{ id: "default" }];
 }
 
-// Server params here resolve at BUILD time (output: 'export' bakes
-// generateStaticParams' "default" into the bundle), so we can't pass
-// the agent id down — the client wrapper reads it from the URL via
-// usePathname() instead.
+// 此处的服务端参数在构建时解析（output: 'export' 会将
+// generateStaticParams 的 "default" 烘焙到产物中），因此无法向下
+// 传递 agent id——客户端包装组件通过 usePathname() 从 URL 中读取。
 export default function AgentLayout({ children }: { children: React.ReactNode }) {
   return <AgentLayoutClient>{children}</AgentLayoutClient>;
 }

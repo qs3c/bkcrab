@@ -14,11 +14,10 @@ import {
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
 
-// Per-agent plugin enable tab. Mirrors the Skills page layout (cards
-// grid with header). Off by default — plugins listed here come from
-// the system install; flipping a toggle attaches the plugin's hooks
-// to THIS agent only. See registerHookPluginsForAgent in
-// internal/gateway/userspace.go for the opt-in semantics.
+// 按智能体的插件启用页面。与技能页面布局一致（卡片网格 + 标题）。
+// 默认关闭——此处列出的插件来自系统安装；拨动开关只会将插件钩子
+// 挂载到此智能体。参见 internal/gateway/userspace.go 中的
+// registerHookPluginsForAgent 了解选择加入语义。
 export default function AgentPluginsPage() {
   const agentId = useAgentIdFromURL();
   const agentName = useAgentName(agentId);
@@ -50,8 +49,8 @@ export default function AgentPluginsPage() {
     fetchAll();
   }, [fetchAll]);
 
-  // Per-plugin toggle. Patch-semantic so flipping one doesn't clobber
-  // overrides for sibling plugins. Optimistic update with rollback.
+  // 按插件切换。采用补丁语义，拨动一个不会覆盖兄弟插件的覆盖设置。
+  // 乐观更新，失败时回滚。
   const handleToggle = async (pluginID: string, next: boolean) => {
     const prev = pluginEnabled[pluginID] === true;
     setPluginEnabled((m) => ({ ...m, [pluginID]: next }));

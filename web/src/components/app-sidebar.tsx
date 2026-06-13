@@ -43,12 +43,12 @@ import {
   type StatusResponse,
 } from "@/lib/api";
 
-// Extract agent ID from pathname like /agents/default/chat/. The second
-// capture is an explicit allow-list of sub-routes so the bare /agents/
-// index keeps the Platform nav instead of flipping to Agent nav.
-// Add new agent-scoped routes here when they ship — `project` was
-// missed when the project chat route was introduced and that left
-// the sidebar showing the platform nav for /agents/<id>/project/...
+// 从类似 /agents/default/chat/ 的路径中提取智能体 ID。第二个
+// 捕获组是子路由的显式白名单，这样裸 /agents/
+// 首页会保持平台导航而不是切换到智能体导航。
+// 新增智能体范围的路由时应在此处添加 — `project` 就曾
+// 在项目聊天路由引入时被遗漏，导致侧边栏在 /agents/<id>/project/...
+// 仍然显示平台导航
 function extractAgentId(pathname: string): string | null {
   const match = pathname.match(
     /^\/agents\/([^/]+)\/(chat|customize|skills|models|sessions|channels|chats|scheduler|project)/,
@@ -56,19 +56,18 @@ function extractAgentId(pathname: string): string | null {
   return match ? match[1] : null;
 }
 
-// Sidebar nav is rendered as a series of labeled sections so users can
-// scan it by domain instead of one flat list:
+// 侧边栏导航渲染为一系列带标签的分组，用户可以按领域浏览，
+// 而不是一个扁平列表：
 //
-//   (no label)  Overview                              — landing dashboard
-//   Agent       Agents · Models · Skills · Tools      — agent-building surfaces
-//   User        Users · Chats · Token Usage · API Keys — admin platform tools
-//   (no label)  Settings                              — opens the user dialog
+//   (无标签)    概览                                   — 登录仪表盘
+//   Agent       智能体 · 模型 · 技能 · 工具              — 智能体构建界面
+//   用户        用户 · 对话 · 令牌用量 · API 密钥         — 管理员工具
+//   (无标签)    设置                                    — 打开用户对话框
 //
-// Skills / Tools and the Users/Chats/Token-Usage admin entries are
-// admin-only. Non-admin sees the Agent group with just Agents + Models,
-// and a slim User group with API Keys. Settings is a click-only item —
-// its onClick is attached at render time so it can call into component
-// state.
+// 技能/工具以及用户/对话/令牌用量等管理入口仅管理员可见。
+// 非管理员只能看到包含"智能体"和"模型"的 Agent 分组，
+// 以及仅含 API 密钥的精简"用户"分组。设置项仅响应点击 —
+// 其 onClick 在渲染时绑定，以便调用组件状态。
 const OVERVIEW_ITEM: NavItem = {
   title: "概览",
   url: "/overview/",
@@ -98,17 +97,17 @@ const ADMIN_USER_GROUP: NavItem[] = [
   { title: "API 密钥", url: "/apikeys/", icon: KeyRoundIcon },
 ];
 
-// "New chat" is active iff we're parked on the bare /chat/ page with
-// no session open. A session can be encoded two ways:
-//   - `?session=<id>` query param on `/chat/`
-//   - path segment: `/chat/<sessionId>/`
-// Either form means a specific session is open, so the New chat entry
-// must NOT light up. We check the exact pathname (rather than
-// startsWith) so the path-segment form falls through.
+// "新建对话"仅在我们停留在 /chat/ 页面且没有打开会话时
+// 处于激活状态。会话可以两种方式编码：
+//   - `/chat/` 上的 `?session=<id>` 查询参数
+//   - 路径段：`/chat/<sessionId>/`
+// 两种形式都表示打开了特定会话，因此"新建对话"条目不
+// 应高亮。我们检查精确路径名（而非 startsWith），
+// 以使路径段形式不会误判。
 //
-// Configuration tabs (Customize / Models / Skills / Channels /
-// Scheduler) live in the footer Settings dialog — for owners only —
-// so the sidebar nav itself just exposes "New chat" regardless of role.
+// 配置标签页（自定义 / 模型 / 技能 / 渠道 /
+// 调度器）位于底部设置对话框中 — 仅限所有者 —
+// 因此侧边栏导航本身只展示"新建对话"，无论角色如何。
 const AGENT_NAV = (
   agentId: string,
   pathname: string,
@@ -135,19 +134,18 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const [status, setStatus] = React.useState<StatusResponse | null>(null);
   const [me, setMe] = React.useState<MeResponse | null>(null);
   const [agents, setAgents] = React.useState<AgentSwitcherItem[]>([]);
-  // role flag per agent the caller can see — owner vs viewer (read-only
-  // shared from another user). Drives whether the AGENT_NAV exposes
-  // configuration tabs.
+  // 每个智能体的角色标志 — 所有者 vs 查看者（只读，
+  // 由其他用户共享）。驱动 AGENT_NAV 是否展示配置标签页。
   const [agentRoles, setAgentRoles] = React.useState<Record<string, "owner" | "viewer">>({});
   const [sessions, setSessions] = React.useState<SessionItem[]>([]);
   const [projects, setProjects] = React.useState<ProjectEntry[]>([]);
-  // Single dialog state covers both entry points: the agent-scoped
-  // footer button (full Agent + User tabs) and the platform-nav
-  // Settings entry (User tabs only). `settingsUserOnly` picks the mode.
+  // 单个对话框状态覆盖两个入口：智能体范围的
+  // 底部按钮（完整 Agent + 用户标签页）和平台导航的
+  // 设置项（仅用户标签页）。settingsUserOnly 切换模式。
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [settingsUserOnly, setSettingsUserOnly] = React.useState(false);
 
-  // Keep status polling so the online dot / admin flag stay fresh.
+  // 保持状态轮询，使在线指示和管理员标志保持最新。
   React.useEffect(() => {
     getStatus().then(setStatus).catch(() => {});
     const iv = setInterval(() => {
@@ -156,12 +154,12 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
     return () => clearInterval(iv);
   }, []);
 
-  // Fetch current user once so the footer can show their name + role.
+  // 获取当前用户一次，以便底部栏显示其名称和角色。
   React.useEffect(() => {
     getMe().then(setMe).catch(() => {});
   }, []);
 
-  // Agent list drives the switcher dropdown at the top of the sidebar.
+  // 智能体列表驱动侧边栏顶部的切换下拉框。
   React.useEffect(() => {
     getAgents()
       .then((list) => {
@@ -175,11 +173,10 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
       .catch(() => {});
   }, []);
 
-  // When the active agent isn't in the caller's owned list — e.g. a
-  // super_admin chatting with another user's agent — fetch its name
-  // separately and splice it in so the switcher header shows the real
-  // name instead of falling back to "BkClaw". The single-agent
-  // endpoint also returns role, so capture it here too.
+  // 当活跃智能体不在调用者的自有列表中时 — 例如
+  // 超级管理员与其他用户的智能体对话 — 单独获取其名称
+  // 并插入，以便切换器标题显示真实名称而非回退到"BkClaw"。
+  // 单智能体端点也返回角色，因此在此一并捕获。
   React.useEffect(() => {
     if (!activeAgentId) return;
     if (agents.some((a) => a.id === activeAgentId)) return;
@@ -202,12 +199,12 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
     };
   }, [activeAgentId, agents]);
 
-  // Sessions + projects only matter while a specific agent is selected.
-  // We re-run both whenever the active agent changes *or* the chat page
-  // broadcasts a `bkclaw:sessions-changed` event (e.g. after rename /
-  // new chat / project create) so the sidebar stays in sync without a
-  // page refresh. Projects are bundled with sessions because creating a
-  // chat in a project also affects which sessions appear under it.
+  // 会话和项目仅在选择特定智能体时才有意义。
+  // 当活跃智能体变更或聊天页面广播
+  // `bkclaw:sessions-changed` 事件时（例如重命名 /
+  // 新建对话 / 创建项目后），我们会重新获取两者，
+  // 以便侧边栏无需刷新页面即可保持同步。项目与
+  // 会话一起获取，因为项目内创建聊天也会影响其下的会话列表。
   React.useEffect(() => {
     if (!activeAgentId) {
       setSessions([]);
@@ -245,10 +242,10 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
     };
   }, [activeAgentId]);
 
-  // broadcastSessionsChanged fires the same custom event NavSessions
-  // listens to, so a project mutation refreshes both the projects list
-  // AND the sessions list (a new chat-in-project shows up under its
-  // project, and the project's session count drives the delete-block).
+  // broadcastSessionsChanged 触发 NavSessions 监听的
+  // 同一自定义事件，因此项目变更会同时刷新项目列表
+  // 和会话列表（项目中的新聊天会出现在其项目下，
+  // 而项目的会话计数驱动删除阻止逻辑）。
   const broadcastSessionsChanged = React.useCallback(() => {
     if (typeof window !== "undefined" && activeAgentId) {
       window.dispatchEvent(
@@ -260,12 +257,11 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   }, [activeAgentId]);
 
   const isAdmin = status?.isAdmin ?? false;
-  // quotaLocked = caller has agent_quota=0 (admin-provisions-only,
-  // typical single-agent customer model). The agent switcher header
-  // is locked (static label, no "Manage agents" dropdown), but the
-  // /agents page itself stays reachable so they can browse what's
-  // been provisioned and jump into chat — it just hides the Create
-  // button. So we keep the Agents nav entry visible.
+  // quotaLocked = 调用者的 agent_quota=0（仅管理员分配，
+  // 典型的单智能体客户模式）。智能体切换器标题被锁定
+  // （静态标签，无"管理智能体"下拉），但 /agents 页面本身
+  // 仍然可达，以便他们浏览已分配的智能体并进入聊天 —
+  // 只是隐藏了创建按钮。因此我们保持"智能体"导航条目可见。
   const quotaLocked = me?.user?.agentQuota === 0;
 
   return (
@@ -299,12 +295,11 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
             />
           </>
         )}
-        {/* Projects are per-(user, agent), so viewers on a shared agent
-            see/create their OWN projects — the owner's projects stay
-            private. The owner-only Settings dialog below is unaffected:
-            project CRUD is read-write for whoever opened the agent, but
-            agent configuration (skills, channels, models) stays the
-            owner's. */}
+        {/* 项目按（用户，智能体）划分，因此共享智能体上的查看者
+            看到/创建的是自己的项目 — 所有者的项目保持
+            私有。下面的仅所有者设置对话框不受影响：
+            项目 CRUD 对打开智能体的人可读写，但
+            智能体配置（技能、渠道、模型）仍归所有者。 */}
         {activeAgentId && (
           <NavProjectsList
             agentId={activeAgentId}
@@ -316,12 +311,11 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
         <NavSessions agentId={activeAgentId} sessions={sessions} />
       </SidebarContent>
       <SidebarFooter>
-        {/* Settings is pinned to the footer regardless of route so the
-            entry point stays in one place. Mode keys off activeAgentId:
-            on an agent route the dialog opens with full agent tabs
-            (Profile / Customize / Models / Skills / Channels / Scheduler)
-            — viewers get a filtered subset; on platform routes it opens
-            in user-only mode (Account / General). */}
+        {/* 设置固定在底部栏，无论当前路由如何，入口位置不变。
+            模式取决于 activeAgentId：在智能体路由上，对话框以
+            完整智能体标签页打开（个人资料 / 自定义 / 模型 / 技能 /
+            渠道 / 调度器）— 查看者看到过滤后的子集；在平台路由上以
+            仅用户模式打开（账户 / 通用）。 */}
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton

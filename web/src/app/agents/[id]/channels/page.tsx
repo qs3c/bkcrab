@@ -50,12 +50,11 @@ import {
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
 
-// Channels page: per-agent IM bot bindings. One card per channel type
-// in the catalog — connected types show bot info + Disconnect, others
-// show a Connect button. The backend supports multiple bots per type;
-// the UI intentionally surfaces only the first binding for now to keep
-// the mental model simple (one bot per channel per agent). When we add
-// multi-bot management later, this card can expand to a list.
+// 渠道页面：按智能体配置 IM 机器人绑定。目录中每种渠道类型对应一张卡片——
+// 已连接的类型显示机器人信息和断开按钮，未连接的显示连接按钮。
+// 后端支持每种类型绑定多个机器人；UI 目前只展示第一个绑定，保持
+// 简单心智模型（每种渠道每个智能体一个机器人）。后续添加
+// 多机器人管理时，卡片可展开为列表。
 
 const CATALOG: { type: string; label: string; description: string; available: boolean }[] = [
   {
@@ -125,9 +124,9 @@ export default function AgentChannelsPage() {
     refresh();
   }, [refresh]);
 
-  // First binding per channel type — the UI is currently single-bot,
-  // even though the backend allows multiple. If multiple exist (legacy
-  // data), the rest are still wired up server-side, just hidden here.
+  // 每种渠道类型的第一个绑定——UI 目前只支持单机器人，
+  // 尽管后端允许绑定多个。如果存在多个（历史数据），
+  // 其余的仍在服务端生效，只是在此处隐藏。
   const byType = useMemo(() => {
     const m: Record<string, AgentChannel> = {};
     for (const ch of channels) {
@@ -316,9 +315,9 @@ function ConnectedCard({
   channel: AgentChannel;
   onDelete: () => void;
 }) {
-  // Telegram is the only provider with a public profile URL pattern
-  // (t.me/<username>); Discord/Slack don't expose one from a bot
-  // username alone, so we render plain text for those.
+  // Telegram 是唯一拥有公开个人主页 URL 模式的提供商
+  // （t.me/<username>）；Discord/Slack 仅凭机器人用户名无法
+  // 拼出公开链接，因此这些平台只显示纯文本。
   const botLink =
     channel.type === "telegram" && channel.botUsername
       ? `https://t.me/${channel.botUsername}`
@@ -376,11 +375,10 @@ function ConnectedCard({
 }
 
 function ChannelIcon({ type }: { type: string }) {
-  // Brand SVG/PNG assets live in /public/channels — copied from the
-  // workany-web icon set. We size them at 16x16 to match the lucide
-  // icons they replace; the asset's intrinsic colors carry the brand
-  // tint so we don't need a `text-*` class. WeChat has no asset yet so
-  // it falls through to the lucide MessageSquare in emerald.
+  // 品牌 SVG/PNG 资源位于 /public/channels——复制自
+  // workany-web 图标集。尺寸设为 16x16 以匹配所替换的
+  // lucide 图标；资源自带品牌色彩，无需 text-* 着色类。
+  // 微信尚无专用资源，因此回退到 lucide 的 MessageSquare（翠绿色）。
   const asset: Record<string, string> = {
     telegram: "/channels/telegram.svg",
     discord: "/channels/discord.svg",
@@ -390,10 +388,9 @@ function ChannelIcon({ type }: { type: string }) {
     wechat: "/channels/wechat.svg",
   };
   if (asset[type]) {
-    // WeChat's artwork is non-square (50×40) — object-contain letterboxes
-    // it inside the 16×16 box, leaving a visible gap on top/bottom. Scale
-    // up just this one so it reads at the same visual weight as the
-    // square brand icons next to it.
+    // 微信图标非正方形（50×40）——object-contain 会在
+    // 16×16 框内留出上下间隙。仅对此图标放大 1.5 倍，
+    // 使其视觉重量与相邻的正方形品牌图标一致。
     const extra = type === "wechat" ? "scale-150" : "";
     return (
       <img
@@ -777,12 +774,11 @@ function ConnectSlackDialog({
   );
 }
 
-// LINE Messaging API connect dialog. Two-step UX matching Feishu:
-//   1. User pastes Channel access token + Channel secret; we hit
-//      /v2/bot/info to validate and capture the bot's userId.
-//   2. On success, surface the public webhook URL — user pastes it
-//      into LINE Developers Console under "Messaging API → Webhook URL"
-//      and toggles "Use webhook" on.
+// LINE Messaging API 连接对话框。两步式 UX，与飞书一致：
+//   1. 用户粘贴渠道访问令牌 + 渠道密钥；调用 /v2/bot/info 验证
+//      并获取机器人的 userId。
+//   2. 成功后展示公开 Webhook URL——用户将其粘贴到 LINE 开发者
+//      控制台的"消息 API → Webhook 地址"下，并开启"使用 Webhook"。
 function ConnectLINEDialog({
   open,
   onOpenChange,
@@ -948,11 +944,11 @@ function ConnectLINEDialog({
   );
 }
 
-// ConnectWeChatDialog drives the QR-scan login: fetch a session token,
-// render its `qrCode` string as a QR image, then poll the server every
-// 3s for state. The polling endpoint does ONE upstream round-trip per
-// call (no long-poll on our side), so the lifecycle is purely client-
-// driven — closing the dialog cleans up via the polling ref.
+// ConnectWeChatDialog 驱动扫码登录流程：获取会话令牌，
+// 将其 qrCode 字符串渲染为二维码，然后每 3 秒轮询服务器状态。
+// 轮询端点每次调用只做一次上游往返（我们不做长轮询），
+// 因此生命周期完全由客户端驱动——关闭对话框时通过轮询
+// 引用清理资源。
 function ConnectWeChatDialog({
   open,
   onOpenChange,
@@ -980,7 +976,7 @@ function ConnectWeChatDialog({
     }
   }, []);
 
-  // Cleanup on unmount and on dialog close.
+  // 组件卸载和对话框关闭时清理轮询。
   useEffect(() => () => stopPolling(), [stopPolling]);
   useEffect(() => {
     if (!open) {
@@ -1014,9 +1010,8 @@ function ConnectWeChatDialog({
     pollRef.current = setInterval(async () => {
       const s = await pollAgentWeChatLoginStatus(agentId, res.sessionId!);
       if (s.error) {
-        // Don't kill the loop on a single transient error — iLink's
-        // status endpoint occasionally hiccups, and the next tick
-        // usually recovers. Surface it as a banner only.
+        // 不要因单次瞬态错误终止轮询——iLink 的状态端点偶有波动，
+        // 下一次轮询通常能恢复。仅以横幅形式展示错误。
         setError(s.error);
         return;
       }
@@ -1033,9 +1028,8 @@ function ConnectWeChatDialog({
     }, 3000);
   }, [agentId, onConnected, stopPolling]);
 
-  // Auto-fetch a QR as soon as the dialog opens (no separate "name"
-  // step — bkclaw doesn't surface per-account names, accountID is
-  // ilink_bot_id).
+  // 对话框打开时自动获取二维码（无需单独的"命名"步骤——
+  // bkclaw 不展示每账户名称，accountId 即 ilink_bot_id）。
   useEffect(() => {
     if (open && !qrPayload && !loading && !error) {
       startLogin();
@@ -1128,13 +1122,12 @@ function ConnectWeChatDialog({
   );
 }
 
-// Feishu / Feishu connect dialog. Two-step UX:
-//   1. User pastes App ID + App Secret + Verification Token, we validate
-//      via /tenant_access_token + /bot/v3/info.
-//   2. On success, we surface the webhook URL — user must paste it
-//      into the Feishu Developer Console under "Event Subscriptions →
-//      Request URL" and re-trigger Feishu's URL verification handshake
-//      from there before the bot starts receiving messages.
+// 飞书连接对话框。两步式 UX：
+//   1. 用户粘贴应用 ID + 应用密钥 + 验证令牌，通过
+//      /tenant_access_token + /bot/v3/info 验证。
+//   2. 成功后展示 Webhook URL——用户需将其粘贴到飞书开发者控制台
+//      的"事件订阅 → 请求地址"下，并在此处触发飞书的 URL 验证
+//      握手，机器人才能开始接收消息。
 function ConnectFeishuDialog({
   open,
   onOpenChange,

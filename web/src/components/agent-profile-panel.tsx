@@ -11,13 +11,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { apiFetch, getAgent, updateAgent, type AgentDetail } from "@/lib/api";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 
-// AgentProfilePanel is the "Profile" tab inside the Settings dialog —
-// the same fields the admin Edit Agent dialog at /agents/page.tsx
-// exposes (avatar, name, description, public toggle), gated to the
-// agent's owner. Viewers (super_admin browsing or public-link users)
-// see read-only fields. The panel reads agentId from the URL via
-// useAgentIdFromURL so the dialog component doesn't have to thread
-// it through.
+// AgentProfilePanel 是设置对话框中的"资料"标签页 —
+// 与管理页 /agents/page.tsx 中的编辑智能体对话框拥有相同字段
+// （头像、名称、描述、公开开关），仅对智能体所有者开放编辑。
+// 访问者（浏览中的 super_admin 或公开链接用户）只能看到只读字段。
+// 面板通过 useAgentIdFromURL 从 URL 读取 agentId，无需对话框组件层层传递。
 
 export default function AgentProfilePanel() {
   const agentId = useAgentIdFromURL();
@@ -27,8 +25,8 @@ export default function AgentProfilePanel() {
   const [saved, setSaved] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  // Form state — independent from `agent` so users can revert with a
-  // refresh and so the Save button can compare-then-write.
+  // 表单状态 — 与 `agent` 独立，以便用户可以通过刷新来撤销修改，
+  // 也让保存按钮可以对比后再写入。
   const [name, setName] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [isPublic, setIsPublic] = React.useState(false);
@@ -60,9 +58,9 @@ export default function AgentProfilePanel() {
     refresh();
   }, [refresh]);
 
-  // Revoke blob URLs we own when the file changes or the panel
-  // unmounts — without this the page leaks one URL per attachment
-  // swap, mostly harmless but eslint flags it on long sessions.
+  // 在文件更换或面板卸载时撤销我们创建的 blob URL —
+  // 否则页面每换一次附件就泄漏一个 URL，虽然大多无害但 eslint
+  // 在长时间会话中会标记。
   React.useEffect(() => {
     return () => {
       if (avatarPreview) URL.revokeObjectURL(avatarPreview);
@@ -113,10 +111,8 @@ export default function AgentProfilePanel() {
         try {
           await uploadAvatar(avatar);
         } catch {
-          // Non-fatal: text fields saved, only the avatar upload
-          // failed. Keep the saved-pulse so the user knows the
-          // primary write went through; the next Save can retry the
-          // image.
+// 非致命：文本字段已保存，仅头像上传失败。保留已保存脉冲，
+           // 让用户知道主要写入已成功；下次保存时可重试图片。
         }
         setAvatar(null);
         if (avatarPreview) URL.revokeObjectURL(avatarPreview);
@@ -149,9 +145,8 @@ export default function AgentProfilePanel() {
     );
   }
 
-  // Avatar src: the editable preview wins, then a fresh URL bust on
-  // upload (so the cached image refreshes), then the canonical avatar
-  // route.
+  // 头像 src：可编辑预览优先，其次是上传后的带版本号 URL
+  // （使缓存图片刷新），最后是规范头像路由。
   const avatarSrc =
     avatarPreview ||
     `/api/agents/${agent.id}/files/avatar.png${avatarBust ? `?v=${avatarBust}` : ""}`;
@@ -192,7 +187,7 @@ export default function AgentProfilePanel() {
       )}
 
       <div className="rounded-lg border border-border bg-card p-5 space-y-5">
-        {/* Avatar + name on the same row, mirrors the admin Edit dialog. */}
+        {/* 头像和名称在同一行，与管理页的编辑对话框一致。 */}
         <div className="flex items-start gap-4">
           <button
             type="button"
@@ -290,7 +285,7 @@ export default function AgentProfilePanel() {
                   setLinkCopied(true);
                   setTimeout(() => setLinkCopied(false), 2000);
                 } catch {
-                  // clipboard blocked — user can still select the input
+                  // 剪贴板被阻止 — 用户仍可手动选中输入框
                 }
               }}
             >
@@ -313,10 +308,10 @@ export default function AgentProfilePanel() {
   );
 }
 
-// AgentAvatarImg renders the avatar with a Bot fallback so an agent
-// without an uploaded avatar.png doesn't show a broken-image icon.
-// Mirrors the team-switcher's AgentAvatar but takes a plain src so we
-// can swap in the local blob URL during edit.
+// AgentAvatarImg 渲染头像并在无图时回退为 Bot 图标，
+// 避免未上传 avatar.png 的智能体显示碎图图标。
+// 与 team-switcher 的 AgentAvatar 镜像，但接受纯 src 以便
+// 编辑时替换为本地 blob URL。
 function AgentAvatarImg({ src }: { src: string }) {
   const [failed, setFailed] = React.useState(false);
   React.useEffect(() => {

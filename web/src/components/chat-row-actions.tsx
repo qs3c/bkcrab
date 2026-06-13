@@ -33,17 +33,15 @@ import { useSidebar } from "@/components/ui/sidebar";
 import { MoreHorizontalIcon, PencilIcon, Trash2Icon } from "lucide-react";
 import { deleteChatSession, renameChatSession } from "@/lib/api";
 
-// ChatRowActions is the shared "..." dropdown attached to every chat
-// row in the sidebar — both the flat "Chats" list and the chats nested
-// under a project. It owns its own Edit / Delete dialog state so the
-// caller only needs to render the trigger and the dialogs unmount the
-// instant they close.
+// ChatRowActions 是附加在侧边栏每个聊天行上的共享"…"下拉菜单
+// — 包括扁平"对话"列表和项目下嵌套的对话。它自行管理编辑/删除
+// 对话框的状态，调用者只需渲染触发器，对话框在关闭时立即卸载。
 //
-// Variant controls absolute positioning + hover gating:
-//   "menu-item"     — paired with SidebarMenuButton (top-1.5 right-1)
-//   "menu-sub-item" — paired with SidebarMenuSubButton (smaller; uses
-//                     the group/menu-sub-item hover scope so the trigger
-//                     only fades in when the sub-row is hovered).
+// variant 控制定位和悬停门控：
+//   "menu-item"     — 配合 SidebarMenuButton（top-1.5 right-1）
+//   "menu-sub-item" — 配合 SidebarMenuSubButton（更小；使用
+//                     group/menu-sub-item 悬停作用域，触发器仅在
+//                     子行被悬停时淡入）。
 
 export interface ChatRowSession {
   id: string;
@@ -71,8 +69,8 @@ export function ChatRowActions({
     try {
       await deleteChatSession(agentId, session.id);
     } finally {
-      // If the deleted session is currently open, bounce back to the
-      // fresh chat URL so the page doesn't hang on a stale id.
+      // 如果删除的会话当前已打开，则跳转回新聊天 URL，
+      // 避免页面停留在过期的 ID 上。
       if (
         typeof window !== "undefined" &&
         window.location.pathname.replace(/\/$/, "").endsWith("/chat/" + session.id)
@@ -83,18 +81,16 @@ export function ChatRowActions({
     }
   };
 
-  // Trigger styling: SidebarMenuAction (used by the flat chats list)
-  // hooks into group-hover/menu-item; project sub-rows use a different
-  // group selector (group/menu-sub-item) and a smaller chip so it fits
-  // the h-7 sub-button. The two trigger flavors live here so callers
-  // don't have to know either layout's details.
+  // 触发器样式：SidebarMenuAction（用于扁平对话列表）接入
+  // group-hover/menu-item；项目子行使用不同的 group 选择器
+  //（group/menu-sub-item）和更小的芯片以适应 h-7 子按钮。
+  // 两种触发器变体在此定义，调用者无需了解两种布局的细节。
   //
-  // The sub-item variant uses right:-20px so the chip pokes out past
-  // the SidebarMenuSub's mx-3.5 (14px margin) PLUS px-2.5 (10px
-  // padding) inset and ends up flush with the parent project row's
-  // `...` action (which sits at right:4px). 14 + 10 - 4 = 20 →
-  // right:-20px. Without this escape the sub chip sits ~20px to the
-  // left of the parent's chip.
+  // 子项变体使用 right:-20px，使芯片从 SidebarMenuSub 的
+  // mx-3.5（14px 边距）加 px-2.5（10px 内边距）中突出，
+  // 最终与父项目行的"…"操作按钮（位于 right:4px）对齐。
+  // 14 + 10 - 4 = 20 → right:-20px。没有此偏移子芯片会比
+  // 父芯片偏左约 20px。
   const triggerClass =
     variant === "menu-sub-item"
       ? "absolute top-1 right-[-20px] flex h-5 w-5 items-center justify-center rounded-md text-sidebar-foreground outline-hidden transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground aria-expanded:opacity-100 md:opacity-0 group-hover/menu-sub-item:opacity-100 group-focus-within/menu-sub-item:opacity-100 [&>svg]:size-4"
@@ -178,8 +174,8 @@ function EditTitleDialog({
   const [draft, setDraft] = React.useState("");
   const [saving, setSaving] = React.useState(false);
 
-  // Re-prime the draft each time the dialog opens. Without this, a
-  // user who edits, cancels, and re-opens would see their stale draft.
+  // 每次对话框打开时重新填充草稿。否则编辑后取消再重新打开
+  // 的用户会看到过期的草稿。
   React.useEffect(() => {
     if (open) setDraft(session.title ?? "");
   }, [open, session.title]);
@@ -214,9 +210,8 @@ function EditTitleDialog({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            // Ignore Enter while a CJK IME composition is active —
-            // otherwise selecting a candidate would submit the dialog
-            // prematurely.
+            // CJK 输入法合成活跃时忽略 Enter 键 ——
+            // 否则选择候选词会过早提交对话框。
             if (e.nativeEvent.isComposing || e.keyCode === 229) return;
             if (e.key === "Enter") {
               e.preventDefault();

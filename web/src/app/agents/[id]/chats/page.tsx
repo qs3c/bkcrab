@@ -87,8 +87,8 @@ export default function AgentChatsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId]);
 
-  // Server returns sessions in some order — sort by updatedAt desc here so
-  // the page is deterministic regardless of backend behavior.
+  // 服务端返回的会话顺序不定——此处按 updatedAt 降序排列，
+  // 确保页面不受后端行为影响且排列确定。
   const sorted = useMemo(
     () =>
       [...sessions].sort(
@@ -98,8 +98,7 @@ export default function AgentChatsPage() {
   );
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
-  // Clamp the page when sessions shrink below the previous count (e.g.
-  // after deleting the last row on the current page).
+  // 会话减少时将页码钳制到有效范围内（例如删除当前页最后一行后）。
   const safePage = Math.min(page, totalPages);
   const pageStart = (safePage - 1) * PAGE_SIZE;
   const pageRows = sorted.slice(pageStart, pageStart + PAGE_SIZE);
@@ -373,8 +372,7 @@ function EditTitleDialog({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            // Skip Enter while a CJK IME composition is active — otherwise
-            // selecting a candidate would submit the dialog prematurely.
+// CJK 输入法组合期间跳过回车键——否则选字时会提前提交对话框。
             if (e.nativeEvent.isComposing || e.keyCode === 229) return;
             if (e.key === "Enter") {
               e.preventDefault();

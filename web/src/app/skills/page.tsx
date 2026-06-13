@@ -41,15 +41,14 @@ export default function SkillsPage() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [installOpen, setInstallOpen] = useState(false);
   const [configureTarget, setConfigureTarget] = useState<SkillInfo | null>(null);
-  // Per-skill saved entries (apiKey/env values come back masked from
-  // GET /api/config — the dialog renders them as placeholders so the
-  // user can tell something is configured, and POST preserves any field
-  // that's still masked on save).
+  // 每个技能的已保存条目（apiKey/env 值从 GET /api/config 返回时是
+  // 脱敏的 — 对话框将它们渲染为占位符，让用户知道已配置了内容，
+  // POST 保存时会保留仍为脱敏值的字段）。
   const [skillEntries, setSkillEntries] = useState<Record<string, SkillEntryView>>({});
-  // Upload-zip state. Backend route is the same as the agent-scoped
-  // upload but without the ?agent= query param — it lands in the global
-  // ~/.bkclaw/skills dir, which the resolveInstallTarget handler
-  // gates behind admin (this page is already admin-only).
+  // 上传 zip 状态。后端路由与带 agent 作用域的上传路由相同，
+  // 但不带 ?agent= 查询参数 — 它会安装到全局 ~/.bkclaw/skills
+  // 目录，resolveInstallTarget 处理程序会要求管理员权限
+  // （此页面已限制仅管理员访问）。
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -113,8 +112,8 @@ export default function SkillsPage() {
     setUploading(true);
     setUploadError(null);
     try {
-      // No agentId here → backend installs to the global skills dir.
-      // The connect handler enforces admin auth for global installs.
+      // 此处无 agentId → 后端安装到全局技能目录。
+      // connect 处理程序对全局安装强制执行管理员认证。
       const resp = await uploadSkill(uploadFile);
       if (!resp.ok) {
         setUploadError(resp.error || "上传失败");
@@ -430,7 +429,7 @@ function InstallSkillDialog({
     };
   }, [query, open]);
 
-  // Show at most 20 results; the API returns up to 100, most are low-signal.
+  // 最多显示 20 条结果；API 最多返回 100 条，但大多数相关性较低。
   const visible = useMemo(() => results.slice(0, 20), [results]);
 
   const handleInstall = async (r: SkillSearchResult) => {

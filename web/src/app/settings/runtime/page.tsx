@@ -35,8 +35,8 @@ export default function RuntimeSettingsPage() {
   const [sandboxBoxliteURL, setSandboxBoxliteURL] = useState("");
 
   useEffect(() => {
-    // Belt-and-suspenders gate: the layout already hides the nav item,
-    // but a direct URL hit needs to bounce too.
+    // 双重保险：布局已隐藏导航项，
+    // 但直接访问 URL 也需要跳转。
     getMe().then((m) => {
       if (m?.user?.role !== "super_admin") {
         router.replace("/settings/general");
@@ -49,10 +49,9 @@ export default function RuntimeSettingsPage() {
           setSandboxEnabled(cfg.sandbox?.enabled || false);
           const backend = cfg.sandbox?.backend || "docker";
           setSandboxBackend(backend);
-          // Each backend has its own persisted field. For configs
-          // predating the split there's only the legacy `image` slot,
-          // so we migrate it into the backend it belonged to (the saved
-          // `backend`) and leave the other two empty.
+          // 每个后端都有各自的持久化字段。对于拆分之前的配置，
+          // 只有旧的 `image` 字段，因此我们将其迁移到它所属的
+          // 后端（即已保存的 `backend`），其他两个留空。
           const savedImage = cfg.sandbox?.image || "";
           setSandboxDockerImage(
             cfg.sandbox?.dockerImage ?? (backend === "docker" ? savedImage : ""),
@@ -74,10 +73,9 @@ export default function RuntimeSettingsPage() {
 
   const handleSave = async () => {
     setSaving(true);
-    // Persist every backend's field so switching the dropdown after a
-    // save still surfaces the value the user typed for that backend.
-    // Also mirror the active backend's value into the legacy `image`
-    // slot so consumers that haven't migrated still resolve correctly.
+    // 持久化每个后端的字段，以便保存后切换下拉框仍能显示
+    // 用户为该后端输入的值。同时将当前激活后端的值映射到
+    // 旧的 `image` 字段，使尚未迁移的消费者仍能正确解析。
     const activeImage =
       sandboxBackend === "e2b"
         ? sandboxE2BTemplate

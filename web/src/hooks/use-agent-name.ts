@@ -3,10 +3,9 @@
 import { useEffect, useState } from "react";
 import { getAgents } from "@/lib/api";
 
-// useAgentName resolves an agent id to its display name. While the agent
-// list is loading, or if the id isn't in the list, it returns the id so
-// page chrome doesn't flicker between empty and resolved states. Pass an
-// empty string to skip the fetch entirely.
+// useAgentName 将智能体 id 解析为显示名称。当智能体列表正在加载
+// 或 id 不在列表中时，返回 id 本身，以避免页面框架在空状态和已解析
+// 状态之间闪烁。传入空字符串可跳过请求。
 export function useAgentName(agentId: string): string {
   const [name, setName] = useState<string>(agentId);
   useEffect(() => {
@@ -23,7 +22,7 @@ export function useAgentName(agentId: string): string {
         if (me?.name) setName(me.name);
       })
       .catch(() => {
-        // leave name as the id fallback
+        // 保留 id 作为回退名称
       });
     return () => {
       aborted = true;

@@ -57,14 +57,13 @@ export default function AgentSkillsPage() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [installOpen, setInstallOpen] = useState(false);
   const [configureTarget, setConfigureTarget] = useState<SkillInfo | null>(null);
-  // Skill env entries are GLOBAL (keyed by skill name), so the same
-  // /api/config blob feeds both the global /skills page and this
-  // agent-scoped one. Lets the user configure FAL_KEY etc. from
-  // whichever entry point they're already on.
+  // 技能环境变量条目是全局的（以技能名作为键），因此同一个
+  // /api/config 数据同时供全局 /skills 页面和此智能体专属页面使用。
+  // 用户可以从任一入口配置 FAL_KEY 等。
   const [skillEntries, setSkillEntries] = useState<Record<string, SkillEntryView>>({});
-  // File input ref + upload state for the local-zip "Upload" button.
-  // The server unzips to <agent>/skills/<name>/ and hot-reloads the
-  // agent so the new skill shows up without a refresh.
+  // 文件输入引用和上传状态，用于本地上传 ZIP 的"上传"按钮。
+  // 服务端解压到 <agent>/skills/<name>/ 并热重载智能体，
+  // 新技能无需刷新即可出现。
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -80,9 +79,9 @@ export default function AgentSkillsPage() {
     ])
       .then(([list, cfg]) => {
         setSkills(list || []);
-        // Per-agent override map first (this page edits there); merge
-        // global defaults underneath so the "configured" badge still
-        // lights up when only the global value is set.
+        // 优先使用智能体级覆盖映射（本页面编辑此处）；将全局默认值
+        // 合并在下层，这样即使只设置了全局值，"已配置"标记也会
+        // 亮起。
         const skillsCfg = cfg?.skills as
           | {
               entries?: Record<string, SkillEntryView>;
@@ -118,13 +117,13 @@ export default function AgentSkillsPage() {
     try {
       const resp = await uploadSkill(uploadFile, agentId);
       if (!resp.ok) {
-        // Backend rejects zips that don't contain SKILL.md at the
-        // skill root — surface the message inside the dialog so the
-        // user can fix the zip and retry without re-opening it.
+        // 后端拒绝技能根目录中不含 SKILL.md 的 ZIP——
+        // 在对话框中展示错误信息，用户可修复 ZIP 后重试，
+        // 无需重新打开对话框。
         setUploadError(resp.error || "上传失败");
         return;
       }
-      // Success — close, reset, refresh the grid.
+      // 成功——关闭、重置、刷新网格。
       setUploadOpen(false);
       setUploadFile(null);
       fetchSkills();
@@ -136,8 +135,8 @@ export default function AgentSkillsPage() {
     }
   };
 
-  // Drop dialog state when the dialog closes (cancel or success), so the
-  // next open is fresh — no stale file or error from a previous attempt.
+  // 对话框关闭时（取消或成功）清除上传状态，确保下次打开
+  // 是全新的——不会残留上次尝试的文件或错误。
   const handleUploadOpenChange = (open: boolean) => {
     setUploadOpen(open);
     if (!open) {
@@ -148,9 +147,9 @@ export default function AgentSkillsPage() {
     }
   };
 
-  // Filter dropped/selected files to a single .zip — the dropzone accepts
-  // multi-drop in the browser, but a skill bundle is one archive so we
-  // take the first .zip and reject the rest with an inline message.
+  // 将拖放/选择的文件过滤为单个 .zip——拖放区允许浏览器多文件
+  // 拖放，但技能包是单个归档文件，因此只取第一个 .zip 并以内联
+  // 消息拒绝其余文件。
   const acceptDroppedFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
     if (files.length > 1) {
@@ -271,9 +270,9 @@ export default function AgentSkillsPage() {
             <DialogTitle>上传技能</DialogTitle>
           </DialogHeader>
 
-          {/* Hidden input — both the drop zone click and the "click to upload"
-              text trigger it. accept= filters the OS picker to .zip; we still
-              re-validate in JS for drops since accept doesn't apply there. */}
+          {/* 隐藏的文件输入——点击拖放区或"点击上传"文本都会触发它。
+              accept= 将操作系统文件选择器过滤为 .zip；拖放时不
+              适用 accept，因此我们在 JS 中再次校验。 */}
           <input
             ref={uploadInputRef}
             type="file"
@@ -282,10 +281,9 @@ export default function AgentSkillsPage() {
             onChange={(e) => acceptDroppedFiles(e.target.files)}
           />
 
-          {/* Drop zone. Keeps a constant footprint (32rem-ish content,
-              ~12rem tall) so the dialog doesn't jump when a file is
-              picked — empty state shows the icon + prompt, populated
-              state shows the chosen filename inline. */}
+          {/* 拖放区。保持恒定尺寸（内容约 32rem，高度约 12rem），
+              避免选中文件时对话框跳动——空状态显示图标 + 提示，
+              已选状态内联显示文件名。 */}
           <button
             type="button"
             onClick={() => uploadInputRef.current?.click()}
@@ -488,7 +486,7 @@ function InstallSkillDialog({
     setInstallError(null);
     setInstallingId(r.id);
     try {
-      // agent: agentId → backend installs into ~/.bkclaw/agents/<id>/skills
+      // agent: agentId → 后端安装到 ~/.bkclaw/agents/<id>/skills
       const resp = await installSkill({
         source: "skillssh",
         name: r.skillId,

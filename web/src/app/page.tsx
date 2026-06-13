@@ -20,9 +20,8 @@ export default function RootPage() {
   useEffect(() => {
     getStatus()
       .then(async (status) => {
-        // Never trust a stale localStorage token when the backend reports
-        // the system is unconfigured — that token belongs to a previous
-        // deployment and would otherwise short-circuit onboarding.
+        // 当后端报告系统未配置时，绝不要信任过期的 localStorage 令牌——
+        // 该令牌属于之前的部署，否则会跳过引导流程。
         if (!status.configured) {
           logout();
           router.replace("/onboard/");

@@ -1,7 +1,7 @@
-// /agents/<aid>/chat — fresh loose chat. The visible UI is rendered by
-// the parent layout's <ChatScreen/>; this page only exists so Next has a
-// route to match. ChatScreen reads `usePathname()` and switches into
-// "fresh chat" mode when no `chat/<sid>` segment is present.
+// /agents/<aid>/chat — 新的临时聊天。可见 UI 由父级布局的
+// <ChatScreen/> 渲染；此页面仅存在以便 Next 有路由可匹配。
+// ChatScreen 读取 `usePathname()`，在没有 `chat/<sid>` 段时
+// 切换到"新聊天"模式。
 export default function ChatPage() {
   return null;
 }

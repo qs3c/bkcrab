@@ -27,8 +27,8 @@ const RANGES: { value: TokenUsageRange; label: string }[] = [
   { value: "30d", label: "最近 30 天" },
 ];
 
-// fmt collapses big counts into 12.3K / 4.5M / 1.2B so the cards stay
-// readable when traffic ramps. Below 1000 we keep the exact count.
+// fmt 将大计数压缩为 12.3K / 4.5M / 1.2B 格式，使卡片在流量
+// 增长时仍保持可读性。低于 1000 时保留精确计数。
 function fmt(n: number): string {
   if (!Number.isFinite(n)) return "—";
   if (Math.abs(n) < 1000) return n.toString();
@@ -46,9 +46,8 @@ export default function AdminUsagePage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // Resolve ID → display name for both axes. Done once on mount; the
-  // ranking lists send back raw IDs so the dashboard wouldn't be
-  // legible without this.
+  // 将 ID 解析为显示名称，两个轴都使用。仅在挂载时执行一次；
+  // 排行榜返回原始 ID，没有此步骤仪表盘将不可读。
   useEffect(() => {
     let aborted = false;
     (async () => {
@@ -66,7 +65,7 @@ export default function AdminUsagePage() {
         setAgentNames(am);
         setUserNames(um);
       } catch {
-        // Non-fatal — rankings still render with raw IDs.
+        /* 非致命错误——排行榜仍使用原始 ID 渲染。 */
       }
     })();
     return () => {

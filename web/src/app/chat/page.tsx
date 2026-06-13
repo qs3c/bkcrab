@@ -27,7 +27,7 @@ function generateSessionId() {
   return `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Convert raw history messages into UI ChatMessages, grouping tool calls with results. */
+/** 将原始历史消息转换为 UI ChatMessages，将工具调用与结果分组。 */
 function buildChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
   const msgs: ChatMessage[] = [];
   let i = 0;
@@ -37,17 +37,17 @@ function buildChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
       msgs.push({ id: `h-${i}`, role: "user", content: h.content || "", timestamp: 0 });
       i++;
     } else if (h.role === "assistant" && h.toolCalls && h.toolCalls.length > 0) {
-      // Group: assistant tool_calls + following tool results + final assistant content
+      // 分组：assistant 的 tool_calls + 后续工具结果 + 最终 assistant 内容
       const calls = h.toolCalls.map((tc) => ({ ...tc, result: undefined as string | undefined }));
       i++;
-      // Collect tool results
+      // 收集工具结果
       while (i < history.length && history[i].role === "tool") {
         const toolMsg = history[i];
         const call = calls.find((c) => c.id === toolMsg.toolCallId);
         if (call) call.result = toolMsg.content;
         i++;
       }
-      // Show as tool-group
+      // 显示为 tool-group
       msgs.push({
         id: `h-tool-${i}`,
         role: "tool-group",
@@ -55,7 +55,7 @@ function buildChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
         timestamp: 0,
         toolCalls: calls,
       });
-      // If next is assistant with content (final answer), add it
+      // 如果下一条是带内容的 assistant（最终回答），则添加
       if (i < history.length && history[i].role === "assistant" && history[i].content) {
         msgs.push({ id: `h-${i}`, role: "agent", content: history[i].content || "", timestamp: 0 });
         i++;
@@ -64,7 +64,7 @@ function buildChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
       msgs.push({ id: `h-${i}`, role: "agent", content: h.content || "", timestamp: 0 });
       i++;
     } else {
-      i++; // skip unexpected
+      i++; // 跳过意外项
     }
   }
   return msgs;
@@ -82,7 +82,7 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Load agents on mount
+  // 挂载时加载智能体
   useEffect(() => {
     getStatus()
       .then((status) => {
@@ -94,7 +94,7 @@ export default function ChatPage() {
       .catch(() => {});
   }, []);
 
-  // Load sessions when agent changes
+  // 智能体切换时加载会话
   const loadSessions = useCallback((agentId: string) => {
     getChatSessions(agentId)
       .then((list) => setSessions(list || []))
@@ -106,7 +106,7 @@ export default function ChatPage() {
     loadSessions(selectedAgent);
   }, [selectedAgent, loadSessions]);
 
-  // Load history when session changes
+  // 会话切换时加载历史记录
   useEffect(() => {
     if (!selectedAgent || !sessionId) return;
     getChatHistory(selectedAgent, sessionId)
@@ -160,10 +160,10 @@ export default function ChatPage() {
       await sendChatStream(selectedAgent, sessionId, text, (evt: ChatStreamEvent) => {
         switch (evt.type) {
           case "content_delta": {
-            // Mirror chat-screen.tsx: accrete deltas into one
-            // in-flight assistant bubble per round. See that file's
-            // comment for the lifecycle (delta → tool_call resets →
-            // content seals).
+            // 与 chat-screen.tsx 一致：将增量累积为每轮一个
+            // 进行中的 assistant 气泡。参见该文件的
+            // 注释了解生命周期（增量 → tool_call 重置 →
+            // 内容定稿）。
             const delta = evt.data?.delta || "";
             if (!delta) break;
             if (curCalls.length > 0 && !streamingMsgId) {
@@ -202,10 +202,10 @@ export default function ChatPage() {
               break;
             }
             if (curCalls.length > 0) {
-              // Content after tool calls = new round. Finalize current group, start fresh.
+              // 工具调用之后的内容 = 新一轮。完成当前分组，开始新的。
               startNewGroup();
             }
-            // Store as thinking content (may become part of next tool-group, or stay as final answer)
+            // 存储为思考内容（可能成为下一个 tool-group 的一部分，或作为最终回答）
             curContent = content;
             setMessages((prev) => [
               ...prev,
@@ -224,7 +224,7 @@ export default function ChatPage() {
             const calls = [...curCalls];
             const content = curContent;
             setMessages((prev) => {
-              // If last message is the thinking content for this round, replace with tool-group
+              // 如果最后一条消息是本轮的思考内容，替换为 tool-group
               const last = prev[prev.length - 1];
               if (content && last?.role === "agent" && last.content === content) {
                 return [
@@ -232,14 +232,14 @@ export default function ChatPage() {
                   { id: groupId, role: "tool-group" as const, content, timestamp: Date.now(), toolCalls: calls },
                 ];
               }
-              // Update existing tool-group for this round
+              // 更新本轮已有的 tool-group
               const idx = prev.findIndex((m) => m.id === groupId);
               if (idx >= 0) {
                 const updated = [...prev];
                 updated[idx] = { ...updated[idx], toolCalls: calls };
                 return updated;
               }
-              // New tool-group
+              // 新建 tool-group
               return [
                 ...prev,
                 { id: groupId, role: "tool-group" as const, content, timestamp: Date.now(), toolCalls: calls },
@@ -316,7 +316,7 @@ export default function ChatPage() {
 
   return (
     <div className="flex h-[calc(100vh-3rem)] md:h-screen">
-      {/* Sidebar: agents + sessions */}
+      {/* 侧边栏：智能体 + 历史会话 */}
       <div className="hidden w-56 flex-col border-r border-border bg-card/30 lg:flex">
         <div className="flex items-center justify-between border-b border-border p-3">
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -343,7 +343,7 @@ export default function ChatPage() {
           ))}
         </div>
 
-        {/* Session list */}
+        {/* 会话列表 */}
         {sessions.length > 0 && (
           <>
             <div className="flex items-center justify-between border-t border-b border-border p-3">
@@ -371,9 +371,9 @@ export default function ChatPage() {
         )}
       </div>
 
-      {/* Chat area */}
+      {/* 聊天区域 */}
       <div className="flex flex-1 flex-col">
-        {/* Chat header */}
+        {/* 聊天头部 */}
         <div className="flex h-12 items-center justify-between border-b border-border px-4 shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10">
@@ -415,7 +415,7 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* Messages */}
+        {/* 消息列表 */}
         <div className="flex-1 overflow-y-auto min-h-0 px-4 py-4">
           <div className="mx-auto max-w-2xl space-y-3">
             {messages.length === 0 && (
@@ -503,7 +503,7 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* Input */}
+        {/* 输入区域 */}
         <div className="shrink-0 px-4 pb-6 pt-2">
           <div className="mx-auto max-w-2xl">
             <div className="flex items-end gap-2 rounded-xl border border-border bg-card px-4 py-3 focus-within:ring-2 focus-within:ring-ring/20 transition-shadow">
@@ -541,7 +541,7 @@ export default function ChatPage() {
   );
 }
 
-/** Renders a group of tool calls as a collapsible summary. */
+/** 将一组工具调用渲染为可折叠摘要。 */
 function ToolCallGroup({ msg }: { msg: ChatMessage }) {
   const [groupOpen, setGroupOpen] = useState(false);
   const [expandedTool, setExpandedTool] = useState<Record<string, boolean>>({});
@@ -556,7 +556,7 @@ function ToolCallGroup({ msg }: { msg: ChatMessage }) {
   return (
     <div className="flex justify-start">
       <div className="max-w-[85%] space-y-2">
-        {/* Content before tools */}
+        {/* 工具之前的内容 */}
         {msg.content && (
           <div className="bg-muted rounded-2xl rounded-bl-md px-4 py-2.5">
             <div className="text-[15px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1">
@@ -566,7 +566,7 @@ function ToolCallGroup({ msg }: { msg: ChatMessage }) {
             </div>
           </div>
         )}
-        {/* Collapsed tool group summary */}
+        {/* 折叠的工具调用组摘要 */}
         <div className="rounded-lg border border-border bg-card/50 overflow-hidden">
           <button
             onClick={() => setGroupOpen(!groupOpen)}

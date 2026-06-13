@@ -72,22 +72,22 @@ export interface AgentDetail {
   id: string;
   name?: string;
   description?: string;
-  avatarUrl?: string;       // /api/agents/{id}/files/avatar.png — may 404
-  userId?: string;          // owner's user id (agents.user_id)
-  // role distinguishes agents the caller owns from agents accessed via
-  // a public link. "viewer" gates UI out of configuration tabs
-  // (Customize / Skills / Channels / Scheduler / Models). Backend
-  // always sends one of these on /api/agents and /api/agents/{id}.
+  avatarUrl?: string;       // /api/agents/{id}/files/avatar.png — 可能返回 404
+  userId?: string;          // 所有者的用户 ID (agents.user_id)
+  // role 区分调用者拥有的 agent 和通过公共链接访问的 agent。
+  // "viewer" 会阻止 UI 进入配置标签页
+  // (自定义 / 技能 / 渠道 / 调度器 / 模型)。后端
+  // 在 /api/agents 和 /api/agents/{id} 上始终发送此字段。
   role?: "owner" | "viewer";
-  // isPublic: when true, anyone with the chat URL can chat with this
-  // agent under their own user_id (sessions/memory partition per
-  // chatter). Owner-editable from the Edit dialog. Default false.
+  // isPublic: 当为 true 时，任何拥有聊天 URL 的人都可以在
+  // 自己的 user_id 下与此 agent 聊天（会话/记忆按聊
+  // 天者分区）。所有者可在编辑对话框中修改。默认 false。
   isPublic?: boolean;
-  // shareModelConfig: when true, chatters using this agent inherit the
-  // owner's user-scope + agent-scope model and provider configuration
-  // (current "fall back to owner's keys" behavior). When false (default),
-  // chatters see only their own user-scope + system — they bring their
-  // own model/providers or the agent doesn't work for them.
+  // shareModelConfig: 当为 true 时，使用此 agent 的聊天者将继承
+  // 所有者的用户级 + agent 级模型和提供者配置
+  //（当前的"回退到所有者密钥"行为）。当为 false（默认值）时，
+  // 聊天者仅能看到自己的用户级 + 系统级配置 — 他们需要自带
+  // 模型/提供者，否则 agent 对他们不可用。
   shareModelConfig?: boolean;
   model: string;
   workspace?: string;
@@ -95,30 +95,28 @@ export interface AgentDetail {
   temperature?: number;
   maxToolIterations?: number;
   thinking?: string;
-  // promptMode is what the backend currently has saved on the
-  // agents.defaults row. Empty / undefined = no override (runtime
-  // falls back to "agent"). See AgentUpdatePayload.promptMode for
-  // the allowed values. The built-in tool set the LLM sees is a
-  // function of this mode — there's no separate allowlist field by
-  // design. Extend tools via Plugin or MCP, not per-agent toggles.
+  // promptMode 是后端当前保存在 agents.defaults 行上的值。
+  // 空 / undefined = 无覆盖（运行时回退到 "agent"）。参见
+  // AgentUpdatePayload.promptMode 了解允许的值。LLM 看到的内置
+  // 工具集由此模式决定 — 设计时没有单独的允许列表字段。
+  // 通过插件或 MCP 扩展工具，而非按 agent 切换。
   promptMode?: string;
-  // splitReplies is the per-agent multi-bubble override. Applies to
-  // every IM channel uniformly — when on, the agent may emit the
-  // SplitMessageMarker between bubbles and the dispatcher honors it.
-  // null / undefined / false-ish = single bubble per reply (default).
+  // splitReplies 是按 agent 的多气泡覆盖。统一应用于
+  // 每个 IM 渠道 — 开启时，agent 可以在气泡之间发出
+  // SplitMessageMarker，调度器会遵循它。
+  // null / undefined / 类 false 值 = 每次回复单个气泡（默认）。
   splitReplies?: boolean | null;
-  // autoPersist is the per-agent "remember the chatter automatically"
-  // toggle. When on, every N turns the runtime fires an LLM-driven
-  // distill pass that appends extracted facts to USER.md (chatter
-  // profile) and MEMORY.md (long-term notes). Mainly needed in chatbot
-  // mode — that mode's curated tool allowlist excludes write_file, so
-  // this is the only path the agent has to remember a chatter across
-  // sessions.
+  // autoPersist 是按 agent 的"自动记住聊天者"切换。
+  // 开启时，每 N 轮运行时会触发一次 LLM 驱动的提炼过程，
+  // 将提取的事实追加到 USER.md（聊天者资料）和
+  // MEMORY.md（长期笔记）中。主要在聊天机器人模式下需要 —
+  // 该模式的精选工具允许列表排除了 write_file，因此
+  // 这是 agent 跨会话记住聊天者的唯一途径。
   autoPersist?: boolean | null;
-  // plugins is the per-agent hook-plugin enable overlay: pluginID →
-  // enabled. Missing keys fall back to the system-wide enable state
-  // (visible via /api/plugins). null/undefined means "no per-agent
-  // override at all".
+  // plugins 是按 agent 的钩子插件启用覆盖：pluginID →
+  // enabled。缺失的键回退到系统范围的启用状态
+  //（可通过 /api/plugins 查看）。null/undefined 表示
+  // "完全没有按 agent 的覆盖"。
   plugins?: Record<string, boolean> | null;
   soul?: string;
   skills?: string[];
@@ -146,10 +144,10 @@ export interface SkillEntryCfg {
   env?: Record<string, string>;
 }
 
-// updateSkillEntries persists skill env / apiKey patches. When agentId
-// is set the patch lands in cfg.Skills.AgentEntries[agentId] (per-agent
-// override), otherwise in cfg.Skills.Entries (global default). The
-// runtime resolves agent-scoped first, falling back to global.
+// updateSkillEntries 持久化技能的 env/apiKey 补丁。当 agentId
+// 有值时，补丁写入 cfg.Skills.AgentEntries[agentId]（按 agent
+// 覆盖），否则写入 cfg.Skills.Entries（全局默认）。运行时
+// 优先解析 agent 级配置，然后回退到全局。
 export async function updateSkillEntries(
   entries: Record<string, SkillEntryCfg>,
   agentId?: string,
@@ -228,9 +226,9 @@ export interface ConfigResponse {
   sandbox?: {
     enabled: boolean;
     backend?: string;
-    // Legacy single-slot image field; read-only fallback. The per-
-    // backend fields below are authoritative when set so switching
-    // backends in the UI preserves each backend's last-entered value.
+    // 遗留的单插槽镜像字段；只读回退。下面的每个后端
+    // 字段在设置时是权威的，因此在 UI 中切换后端会
+    // 保留每个后端上次输入的值。
     image?: string;
     dockerImage?: string;
     e2bTemplate?: string;
@@ -248,23 +246,24 @@ export interface ConfigResponse {
   cronJobs?: Array<Record<string, unknown>>;
   skills?: {
     entries?: Record<string, SkillEntryCfg>;
-    // Per-agent overrides, keyed agentID → skillName → entry. The UI
-    // surfaces these only on the agent-scoped /agents/<id>/skills page;
-    // SkillsLoader.SkillEnvVars resolves agentEntries[<agent>][<skill>]
-    // first, falling back to the global entries map.
+    // 按 agent 的覆盖，键为 agentID → skillName → entry。UI
+    // 仅在 agent 级 /agents/<id>/skills 页面上展示这些；
+    // SkillsLoader.SkillEnvVars 优先解析
+    // agentEntries[<agent>][<skill>]，
+    // 然后回退到全局 entries 映射。
     agentEntries?: Record<string, Record<string, SkillEntryCfg>>;
   };
-  // Presentation hints the dashboard needs to render inheritance state
-  // without re-resolving the scope chain client-side. systemDefaultModel
-  // is the value `agents.defaults.model` would resolve to from system
-  // scope alone — compare against `agents.defaults.model` (the merged
-  // value) to know whether the caller has overridden at user scope.
+// 仪表板渲染继承状态所需的表现提示，
+    // 无需客户端重新解析作用域链。systemDefaultModel
+    // 是 agents.defaults.model 仅从系统作用域解析
+    // 出的值 — 与 agents.defaults.model（合并值）
+    // 比较，即可知道调用者是否在用户作用域上进行了覆盖。
   meta?: {
     systemDefaultModel?: string;
   };
 }
 
-// Auth token for cloud mode. Set via setAuthToken() on login; empty in local mode.
+// 云模式的认证令牌。登录时通过 setAuthToken() 设置；本地模式下为空。
 let authToken = "";
 
 export function setAuthToken(token: string) {
@@ -283,16 +282,16 @@ export function getAuthToken(): string {
   return authToken;
 }
 
-// Wrapper around fetch that injects Authorization header when a token is set
-// and always includes the cookie session for username/password logins. Cookie
-// is the primary credential for the web UI; the bearer is only used by
-// programmatic clients that put the token into localStorage manually.
+// fetch 的封装，在设置了令牌时注入 Authorization 头，
+// 并始终包含用于用户名/密码登录的 cookie 会话。Cookie
+// 是 Web UI 的主要凭证；bearer 令牌仅用于手动将令牌
+// 放入 localStorage 的编程客户端。
 //
-// When the page URL carries `?actAs=<userId>`, the same param is mirrored
-// into every API request so super_admin opening another user's resources
-// (e.g. /agents/<id>/chat/<sid>/?actAs=<uid> reached from the admin Chats
-// page) actually reads/writes against that user's scope. The middleware-
-// level actAs lock makes these requests read-only.
+// 当页面 URL 携带 ?actAs=<userId> 时，该参数会被镜像到
+// 每个 API 请求中，以便 super_admin 打开其他用户的资源
+// （例如从管理聊天页面进入 /agents/<id>/chat/<sid>/?actAs=<uid>）
+// 时实际读写该用户的作用域。中间件级别的 actAs 锁定
+// 使这些请求变为只读。
 export async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
   const token = getAuthToken();
   const headers: Record<string, string> = {
@@ -310,7 +309,7 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
   return fetch(url, { credentials: "same-origin", ...init, headers });
 }
 
-// Login + logout + me
+// 登录 + 登出 + 当前用户
 
 export interface MeResponse {
   ok: boolean;
@@ -322,15 +321,15 @@ export interface MeResponse {
     displayName?: string;
     avatarUrl?: string;
     status: string;
-    // -1 = unlimited, 0 = no self-creation, N>0 = up to N owned agents
+    // -1 = 无限制，0 = 禁止自建，N>0 = 最多拥有 N 个 agent
     agentQuota?: number;
   };
   authMethod?: string;
   actAsUserId?: string;
   readOnly?: boolean;
-  // 'self-hosted' (default) or 'hosted' — driven by BKCLAW_DEPLOY
-  // env var on the daemon. Frontend uses this to gate local-only
-  // conveniences (open-in-Finder, future $EDITOR hooks).
+  // 'self-hosted'（默认）或 'hosted' — 由守护进程上的
+  // BKCLAW_DEPLOY 环境变量决定。前端据此限制仅限本地的
+  // 便利功能（在 Finder 中打开、未来的 $EDITOR 钩子）。
   deployMode?: "self-hosted" | "hosted";
   error?: string;
 }
@@ -373,7 +372,7 @@ export async function changeMyPassword(req: { oldPassword: string; newPassword: 
   return res.json();
 }
 
-// Onboard
+// 引导
 
 export interface OnboardRequest {
   username: string;
@@ -407,10 +406,10 @@ export async function onboard(req: OnboardRequest): Promise<{ ok: boolean; error
   return res.json();
 }
 
-// User management — admin-only at the top level (CRUD), admin-or-self
-// for the nested resources (apikeys/agents under /api/users/{id}/...).
-// The /api/admin/* prefix was removed in favor of flat resource paths;
-// permission is enforced inside each handler.
+// 用户管理 — 顶层为仅管理员操作（CRUD），嵌套资源
+// （apikeys/agents 在 /api/users/{id}/... 下）为管理员或本人。
+// /api/admin/* 前缀已移除，改为扁平资源路径；
+// 权限在每个处理程序内部强制执行。
 
 export async function adminListUsers() {
   const res = await apiFetch("/api/users");
@@ -464,7 +463,7 @@ export async function adminResetPassword(id: string, password: string) {
   return res.json();
 }
 
-// Apikeys (per-user)
+// API 密钥（按用户）
 
 export async function listApikeys() {
   const res = await apiFetch("/api/apikeys");
@@ -501,7 +500,7 @@ export async function setApikeyAgents(id: string, agentIds: string[]) {
   return res.json();
 }
 
-// Scoped providers + channels
+// 作用域化的提供者和渠道
 
 export type ScopeName = "system" | "user" | "agent";
 
@@ -511,7 +510,7 @@ export interface ProviderRow {
   scopeId: string;
   name: string;
   apiBase?: string;
-  apiKey?: string;       // masked on read
+  apiKey?: string;       // 读取时已遮蔽
   apiType?: string;
   authType?: string;
   models?: ModelEntry[];
@@ -524,7 +523,7 @@ export interface ChannelRow {
   scopeId: string;
   type: string;
   enabled: boolean;
-  botToken?: string;     // masked on read
+  botToken?: string;     // 读取时已遮蔽
   appToken?: string;
   credentialKey?: string;
   updatedAt?: string;
@@ -572,15 +571,14 @@ export async function deleteProvider(id: string) {
   return res.json();
 }
 
-// testStoredProvider hits the saved provider row server-side using its
-// own apiKey, so the Edit dialog can verify a model id without forcing
-// the user to re-paste the secret. The backend never returns unmasked
-// keys to the browser, so this is the only way to test from edit mode.
+// testStoredProvider 使用保存的提供者行中的 apiKey 在服务端
+// 测试连接，这样编辑对话框无需用户重新粘贴密钥即可验证模型 ID。
+// 后端不会将未遮蔽的密钥返回给浏览器，因此这是从编辑模式
+// 测试的唯一方式。
 //
-// Non-secret overrides (apiBase / apiType / authType) are passed through
-// when the user has edited them in the form — the saved row's values are
-// only used as fallback. Without this, editing just the URL and clicking
-// Test would silently re-ping the old saved URL and report green.
+// 非密钥覆盖（apiBase / apiType / authType）在用户于表单中
+// 编辑时会透传 — 保存行的值仅用作回退。否则，仅编辑 URL 然后
+// 点击测试会安静地重新 ping 旧的已保存 URL 并报告成功。
 export async function testStoredProvider(
   providerId: string,
   model: string,
@@ -635,13 +633,13 @@ export async function deleteScopedChannel(id: string) {
   return res.json();
 }
 
-// Status
+// 状态
 export async function getStatus(): Promise<StatusResponse> {
   const res = await apiFetch("/api/status");
   return res.json();
 }
 
-// Provider
+// 提供者
 export async function testProvider(config: { apiBase: string; apiKey: string; model: string; apiType?: string; authType?: string }) {
   const res = await apiFetch("/api/test-provider", {
     method: "POST",
@@ -651,7 +649,7 @@ export async function testProvider(config: { apiBase: string; apiKey: string; mo
   return res.json();
 }
 
-// Config — persisted system_settings block (super_admin only).
+// 配置 — 持久化的 system_settings 块（仅 super_admin）。
 export async function saveConfig(config: Record<string, unknown>) {
   const res = await apiFetch("/api/config", {
     method: "POST",
@@ -675,21 +673,20 @@ export async function updateConfig(config: Record<string, unknown>) {
   return res.json();
 }
 
-// Workspace files listing — used to diff a turn's outputs so the chat
-// UI can surface produced files under the final reply.
+// 工作区文件列表 — 用于对比某轮的输出，以便聊天
+// UI 可以在最终回复下方展示生成的文件。
 export interface WorkspaceFile {
   path: string;
   size: number;
   modTime: number;
 }
 
-// revealAgentWorkspace opens the workspace folder for this scope in
-// the operator's native file browser (Finder/Explorer/xdg-open).
-// Self-hosted only — hosted deployments 403; the UI hides the
-// trigger button so callers shouldn't normally hit that path. One
-// of sessionId/projectId scopes the reveal: pass sessionId for a
-// chat, projectId for the project landing page, neither for the
-// agent root (admin browser).
+// revealAgentWorkspace 在操作系统的原生文件浏览器中
+// 打开此作用域的工作区文件夹（Finder/Explorer/xdg-open）。
+// 仅限自托管 — 托管部署返回 403；UI 会隐藏触发按钮，
+// 因此调用者通常不会触发此路径。sessionId 或 projectId
+// 之一用于限定范围：传 sessionId 针对聊天，projectId 针对
+// 项目着陆页，都不传则针对 agent 根目录（管理员浏览器）。
 export async function revealAgentWorkspace(
   agentId: string,
   sessionId?: string,
@@ -715,10 +712,9 @@ export async function listAgentFiles(
   sessionId?: string,
   projectId?: string,
 ): Promise<WorkspaceFile[]> {
-  // sessionId scopes to a single chat; projectId (used on the project
-  // landing page when no chat is selected) scopes to the whole project
-  // tree (every chat under it + root-level shared files). Caller passes
-  // one or the other — both empty means agent-wide (admin browser).
+  // sessionId 限定为单个聊天；projectId（在项目着陆页未选聊天时使用）
+  // 限定为整个项目树（其下所有聊天 + 根级共享文件）。调用者传其一 —
+  // 都为空表示 agent 级范围（管理员浏览器）。
   const params = new URLSearchParams();
   if (sessionId) params.set("sessionId", sessionId);
   if (projectId) params.set("projectId", projectId);
@@ -731,26 +727,24 @@ export async function listAgentFiles(
   return (data.files || []) as WorkspaceFile[];
 }
 
-// Chat
+// 聊天
 export interface ChatHistoryMessage {
   role: "user" | "assistant" | "tool";
   content?: string;
   toolCalls?: { id: string; name: string; arguments: string }[];
   name?: string;
   toolCallId?: string;
-  // For role==="tool" this carries the sandbox flag etc.; for
-  // role==="assistant" it can carry iterationCapReached / iterationCapValue
-  // so the chat UI can badge the bubble on history reload.
+  // 对于 role==="tool"，此字段携带沙箱标志等；对于
+  // role==="assistant"，它可以携带 iterationCapReached / iterationCapValue，
+  // 以便聊天 UI 在历史记录重载时为气泡添加标记。
   metadata?: ToolResultMetadata;
-  // Set on user-role messages whose original turn carried image
-  // attachments. The chat UI renders these as inline thumbnails on
-  // bubbles loaded from history.
+  // 设置在原始回合携带图像附件的 user 角色消息上。
+  // 聊天 UI 将这些渲染为从历史加载的气泡中的内联缩略图。
   imageUrls?: string[];
-  // Populated for user turns that arrived via an IM bridge (Discord,
-  // Telegram, ...). The chat panel renders an avatar + nickname header
-  // on each such bubble so the agent owner can see who they're looking
-  // at. None of these reach the LLM — they live on Message.Metadata
-  // and are stripped from the persisted Content too.
+  // 用于通过 IM 桥接（Discord、Telegram 等）到达的用户轮次。
+  // 聊天面板在每个此类气泡上渲染头像 + 昵称标题，以便 agent
+  // 所有者能看到正在对话的人。这些不会传递给 LLM — 它们
+  // 存储在 Message.Metadata 上，也会从持久化的 Content 中剥离。
   senderName?: string;
   senderAvatarUrl?: string;
   senderId?: string;
@@ -767,10 +761,9 @@ export interface TodoState {
   raw: string;
 }
 
-// getChatTodo fetches the per-session todo.md the agent maintains.
-// Returns {items: [], raw: ""} when no file exists yet (fresh session
-// or a turn that didn't use the todo convention) — caller should hide
-// the panel in that case.
+// getChatTodo 获取 agent 维护的按会话的 todo.md。
+// 当文件尚不存在时（新会话或未使用 todo 约定的回合）
+// 返回 {items: [], raw: ""} — 调用者应在此时隐藏面板。
 export async function getChatTodo(agentId: string, sessionId: string): Promise<TodoState> {
   if (!agentId || !sessionId) return { items: [], raw: "" };
   const res = await apiFetch(
@@ -788,20 +781,19 @@ export async function getChatHistory(agentId: string, sessionId: string): Promis
   const res = await apiFetch(`/api/chat/history?agentId=${encodeURIComponent(agentId)}&sessionId=${encodeURIComponent(sessionId)}`);
   if (!res.ok) return [];
   const data = await res.json();
-  // Backend wraps in { history: [...] }; older shape was a raw array.
+  // 后端包装为 { history: [...] }；旧格式为原始数组。
   if (Array.isArray(data?.history)) return data.history;
   return Array.isArray(data) ? data : [];
 }
 
-// ChatHistoryWithCursor returns the same history list plus the latest
-// chat_events.seq for this session — the resume cursor that the
-// subscribe SSE wants. Use this when mounting the chat panel; the
-// cursor is fed into /api/chat/subscribe?since=N so a freshly reloaded
-// page picks up any in-flight turn that's still streaming on the
-// server.
+// ChatHistoryWithCursor 返回相同的历史列表加上此会话
+// 最新的 chat_events.seq — 订阅 SSE 所需的恢复游标。
+// 在挂载聊天面板时使用；游标被传入
+// /api/chat/subscribe?since=N，以便新刷新的页面能拾取
+// 服务器上仍在流式传输的进行中回合。
 export interface ChatHistoryResult {
   history: ChatHistoryMessage[];
-  latestEventSeq: number; // -1 when there's nothing logged yet
+  latestEventSeq: number; // -1 表示尚未记录任何事件
 }
 
 export async function getChatHistoryWithCursor(agentId: string, sessionId: string): Promise<ChatHistoryResult> {
@@ -818,15 +810,14 @@ export async function getChatHistoryWithCursor(agentId: string, sessionId: strin
 
 export interface ChatSessionEntry {
   id: string;
-  // channel/accountId/chatId let the sidebar render a per-channel icon
-  // and the chats page tell apart "the same agent's wechat thread vs
-  // its web thread". Empty channel means "legacy row that escaped the
-  // backfill" — falls back to web styling on the UI side.
+  // channel/accountId/chatId 让侧栏渲染按渠道的图标，
+  // 让聊天页面区分"同一 agent 的微信线程 vs 网页线程"。
+  // 空渠道表示"漏网回填的遗留行" — 在 UI 侧回退到网页样式。
   channel?: string;
   accountId?: string;
   chatId?: string;
-  // projectId groups this chat under a per-(user, agent) project.
-  // Empty = loose chat (rendered in the flat Chats section).
+  // projectId 将此聊天归入按(用户, agent)的项目下。
+  // 为空 = 散聊（渲染在扁平的聊天区域中）。
   projectId?: string;
   title?: string;
   preview: string;
@@ -883,9 +874,9 @@ export async function updateProject(
   return res.json();
 }
 
-// deleteProject returns a structured shape because the server replies
-// 409 when the project still owns chats — surface sessionCount so the
-// caller can render a useful prompt instead of just "delete failed".
+// deleteProject 返回结构化数据，因为服务器在项目仍
+// 拥有聊天时回复 409 — 提供 sessionCount 以便调用者
+// 可以渲染有用的提示而非仅仅"删除失败"。
 export async function deleteProject(
   agentId: string,
   projectId: string,
@@ -898,10 +889,10 @@ export async function deleteProject(
 }
 
 
-// AdminChatSessionEntry extends ChatSessionEntry with the (user, agent)
-// ownership info needed to render a cross-tenant Chats listing — agent
-// name + owner display fields, joined server-side so the client doesn't
-// fan out per-agent. Backed by GET /api/admin/chats (super_admin only).
+// AdminChatSessionEntry 扩展 ChatSessionEntry，增加了渲染跨租户
+// 聊天列表所需的 (user, agent) 所有权信息 — agent 名称 + 所有者
+// 显示字段，在服务端拼接以便客户端无需逐 agent 请求。
+// 由 GET /api/admin/chats 提供（仅 super_admin）。
 export interface AdminChatSessionEntry extends ChatSessionEntry {
   agentId: string;
   agentName?: string;
@@ -922,8 +913,8 @@ export async function getChatSessions(agentId: string): Promise<ChatSessionEntry
   const res = await apiFetch(`/api/chat/sessions?agentId=${encodeURIComponent(agentId)}`);
   if (!res.ok) return [];
   const data = await res.json();
-  // Backend wraps the list in { sessions: [...] }. Tolerate raw array
-  // shape too in case an older deployment is still around.
+  // 后端将列表包装为 { sessions: [...] }。也兼容原始数组
+  // 格式，以防仍有较旧的部署。
   if (Array.isArray(data?.sessions)) return data.sessions;
   return Array.isArray(data) ? data : [];
 }
@@ -945,11 +936,10 @@ export async function deleteChatSession(agentId: string, sessionId: string) {
   return res.json();
 }
 
-// moveChatSessionToProject reassigns a chat to a project (or detaches
-// it back to the loose-chat list when projectId is ""). Backs the
-// sidebar drag-and-drop affordance. Returns { ok } on success;
-// { error, code? } on failure — code="destination_exists" when the
-// target workspace dir already has files (defensive 409).
+// moveChatSessionToProject 将聊天重新分配到项目（或当 projectId 为 ""
+// 时将其脱离回散聊列表）。支撑侧栏的拖放交互。成功时返回
+// { ok }；失败时返回 { error, code? } — code="destination_exists"
+// 表示目标工作区目录已有文件（防御性 409）。
 export async function moveChatSessionToProject(
   agentId: string,
   sessionId: string,
@@ -975,10 +965,10 @@ export async function sendChat(agentId: string, sessionId: string, message: stri
   return res.json();
 }
 
-// steerChat buffers a message into an in-flight turn for the session.
-// Resolves true when the server folded it into a running turn (200),
-// false when no turn is active (409) — caller should then fall back to
-// a normal sendChatStream. Throws only on unexpected/transport errors.
+// steerChat 将消息缓冲到会话中正在进行的轮次中。
+// 当服务器将其合并到正在运行的轮次时返回 true（200），
+// 当没有活跃轮次时返回 false（409）— 调用者应回退到
+// 正常的 sendChatStream。仅在意外/传输错误时抛出异常。
 export async function steerChat(
   agentId: string,
   sessionId: string,
@@ -1003,15 +993,14 @@ export async function steerChat(
 
 export interface ToolResultMetadata {
   sandbox?: boolean;
-  // Stamped on the forced-final-delivery assistant message that the
-  // backend emits when the per-turn tool-iteration cap was hit. Lets the
-  // UI surface a small badge so the user knows the answer was synthesized
-  // under-budget and may be incomplete.
+  // 标记在按轮工具迭代上限触发时后端发出的强制最终交付助手消息上。
+  // 让 UI 显示一个小标记，以便用户知道答案是在预算限制下生成的，
+  // 可能不完整。
   iterationCapReached?: boolean;
   iterationCapValue?: number;
-  // Stamped on assistant messages produced by plan mode (composer toggle).
-  // The bubble is a plan, not an execution result — UI shows a distinct
-  // badge so the user knows to review it and reply with "go" (or edits).
+  // 标记在由计划模式（编辑器切换）生成的助手消息上。
+  // 该气泡是一个计划，而非执行结果 — UI 显示不同的
+  // 标记，以便用户知道需要审阅并回复"go"（或编辑）。
   planMode?: boolean;
 }
 
@@ -1025,20 +1014,20 @@ export interface ChatStreamEvent {
     | "error"
     | "done"
     | "subagent_progress";
-  // Per-session monotonic sequence assigned by chat_events. Lets the
-  // chat page dedupe events arriving on both the active POST stream
-  // and the parallel /api/chat/subscribe SSE connection. -1 means
-  // "not assigned" (legacy / pre-persist code path).
+  // 由 chat_events 分配的按会话单调序列号。让
+  // 聊天页面去重在活跃 POST 流和并行
+  // /api/chat/subscribe SSE 连接上到达的事件。-1 表示
+  // "未分配"（遗留/预持久化代码路径）。
   //
-  // content_delta is intentionally NOT persisted (would generate 100+
-  // rows per turn for no replay value — the trailing `content` event
-  // carries the full final text). So content_delta always arrives
-  // with seq=-1; the panel must accept it without dedup.
+  // content_delta 故意不持久化（每轮会生成 100+
+  // 行但没有回放价值 — 后面的 content 事件包含
+  // 完整的最终文本）。所以 content_delta 总是以
+  // seq=-1 到达；面板必须不去重直接接受它。
   seq?: number;
   data?: {
     content?: string;
-    // delta is the incremental text appended to the in-flight
-    // assistant bubble for content_delta events.
+    // delta 是 content_delta 事件追加到正在进行的
+    // 助手气泡上的增量文本。
     delta?: string;
     id?: string;
     name?: string;
@@ -1046,7 +1035,7 @@ export interface ChatStreamEvent {
     result?: string;
     message?: string;
     metadata?: ToolResultMetadata;
-    // subagent_progress payload — only populated when type === "subagent_progress".
+    // subagent_progress 载荷 — 仅在 type === "subagent_progress" 时填充。
     iteration?: number;
     max?: number;
     phase?: "thinking" | "running" | "final-delivery" | "done";
@@ -1061,15 +1050,15 @@ export async function sendChatStream(
   onEvent: (evt: ChatStreamEvent) => void,
   signal?: AbortSignal,
   imageUrls?: string[],
-  // projectId, when set, is the "this chat belongs to project X" hint
-  // the URL carries (`?project=<pid>`) before any session row exists.
-  // Server stamps it on the first SaveSession; subsequent turns ignore
-  // it (the row is authoritative).
+  // projectId（设置时）是"此聊天属于项目 X"的提示，
+  // 在任何会话行存在之前通过 URL 传递（?project=<pid>）。
+  // 服务器在首次 SaveSession 时标记它；后续轮次忽略
+  // 它（以行为准）。
   projectId?: string,
-  // params is a free-form blob the backend forwards as
-  // bus.InboundMessage.Params. The agent loop reads recognized keys
-  // (planMode etc.) directly; unrecognized keys land in a "Client
-  // Parameters" system message via renderClientParams.
+  // params 是后端作为 bus.InboundMessage.Params 转发的自由格式
+  // 数据。agent 循环直接读取已识别的键（planMode 等）；
+  // 未识别的键通过 renderClientParams 放入"Client
+  // Parameters"系统消息。
   params?: Record<string, unknown>,
 ): Promise<void> {
   const res = await apiFetch("/api/chat/stream", {
@@ -1090,7 +1079,7 @@ export async function sendChatStream(
     try {
       const data = await res.json();
       if (data?.error) msg = String(data.error);
-    } catch { /* non-JSON body — keep status fallback */ }
+    } catch { /* 非 JSON 请求体 — 保持状态回退 */ }
     throw new Error(msg);
   }
   if (!res.body) throw new Error("stream failed: no body");
@@ -1099,10 +1088,10 @@ export async function sendChatStream(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  // Reader loop exits on either an explicit {type:"done"} event from the
-  // server or a clean stream end (done flag from getReader). We tear down
-  // early on "done" so any trailing bytes that may have been queued behind
-  // the final flush don't get re-parsed and surfaced as spurious errors.
+  // 读取器循环在服务器显式发送的 {type:"done"} 事件或
+  // 干净的流结束（getReader 的 done 标志）时退出。我们
+  // 在 "done" 时提前拆卸，以避免最终刷新之后可能排队的
+  // 任何尾部字节被重新解析并显示为虚假错误。
   let finished = false;
   while (!finished) {
     const { done, value } = await reader.read();
@@ -1120,10 +1109,10 @@ export async function sendChatStream(
         if (evt.type === "done") {
           finished = true;
         }
-      } catch { /* skip malformed frames */ }
+      } catch { /* 跳过格式错误的帧 */ }
     }
   }
-  try { await reader.cancel(); } catch { /* ignore */ }
+  try { await reader.cancel(); } catch { /* 忽略 */ }
 }
 
 export interface UploadedFile {
@@ -1148,25 +1137,25 @@ export async function uploadAgentFiles(
   return (data.files || []) as UploadedFile[];
 }
 
-// Agents
+// Agent 列表
 export async function getAgents(): Promise<AgentDetail[]> {
   const res = await apiFetch("/api/agents");
   if (!res.ok) {
-    // 401 etc. return a JSON error envelope — throw so callers fall back
-    // to [] instead of crashing on .map of a non-array.
+    // 401 等返回 JSON 错误信封 — 抛出以便调用者回退到
+    // [] 而非在非数组上 .map 崩溃。
     throw new Error(`getAgents failed: ${res.status}`);
   }
   const data = await res.json();
-  // Backend returns { agents: [...] }. Tolerate raw array too in case an
-  // older handler is still around.
+  // 后端返回 { agents: [...] }。也兼容原始数组，以防
+  // 仍有较旧的处理程序。
   if (Array.isArray(data?.agents)) return data.agents as AgentDetail[];
   return Array.isArray(data) ? (data as AgentDetail[]) : [];
 }
 
-// Single-agent detail. Falls back through the same permission rules as
-// the rest of /api/agents/{id} — owner or super_admin can fetch. Used
-// by the chat header to resolve a name when the agent isn't in the
-// caller's own list (admin viewing another user's agent).
+// 单个 agent 详情。回退使用与 /api/agents/{id} 其余部分
+// 相同的权限规则 — 所有者或 super_admin 可获取。由
+// 聊天标题使用，当 agent 不在调用者自己的列表中时解析名称
+//（管理员查看其他用户的 agent）。
 export async function getAgent(id: string): Promise<AgentDetail | null> {
   const res = await apiFetch(`/api/agents/${encodeURIComponent(id)}`);
   if (!res.ok) return null;
@@ -1174,10 +1163,10 @@ export async function getAgent(id: string): Promise<AgentDetail | null> {
   return (data?.agent as AgentDetail) || null;
 }
 
-// getAgentStatus surfaces the raw HTTP status alongside the agent so
-// callers can branch on 403 (forbidden — not the owner, not public)
-// vs 404 (no such agent) vs success. The plain getAgent() collapses
-// every failure to null, which the chat page can't tell apart.
+// getAgentStatus 返回原始 HTTP 状态和 agent，以便
+// 调用者区分 403（禁止 — 非所有者，非公共）与 404
+//（无此 agent）与成功。普通的 getAgent() 将所有失败
+// 合并为 null，聊天页面无法区分。
 export async function getAgentStatus(
   id: string,
 ): Promise<{ status: number; agent: AgentDetail | null }> {
@@ -1187,21 +1176,21 @@ export async function getAgentStatus(
   return { status: res.status, agent: (data?.agent as AgentDetail) || null };
 }
 
-// AgentRegisteredTool is what /api/agents/{id}/tools/registered returns
-// per tool: name (the canonical identifier the allowlist uses),
-// description (one-liner for the picker UI), and source (where the tool
-// came from: builtin / mcp / plugin). Stable order is guaranteed by the
-// backend so dashboard renders are deterministic.
+// AgentRegisteredTool 是 /api/agents/{id}/tools/registered 返回的
+// 每个工具的结构：name（白名单使用的规范标识符）、
+// description（选择器 UI 的一句话说明）和 source（工具来源：
+// builtin / mcp / plugin）。后端保证稳定排序，以便仪表板渲染
+// 是确定性的。
 export interface AgentRegisteredTool {
   name: string;
   description: string;
   source: "builtin" | "mcp" | "plugin" | string;
 }
 
-// listAgentRegisteredTools fetches the live tool registry for an agent.
-// Drives the Tools tab's allowlist checkbox picker so operators can
-// click rather than type names from memory. Returns null on auth failure
-// or when the agent isn't loaded (the backend 404s in that case).
+// listAgentRegisteredTools 获取 agent 的实时工具注册表。
+// 驱动工具标签页的白名单复选框选择器，以便操作者点击而
+// 非从记忆中输入名称。认证失败或 agent 未加载时返回 null
+//（后端在该情况下返回 404）。
 export async function listAgentRegisteredTools(
   id: string,
 ): Promise<AgentRegisteredTool[] | null> {
@@ -1227,47 +1216,45 @@ export interface AgentSkillsConfig {
   alwaysLoad?: string[];
 }
 
-// The backend accepts model / soul / skills / providers on update.
-// `AgentDetail.skills` is a flat string[] (legacy), but per-agent skills
-// config is really { disabled, alwaysLoad } — use an explicit payload
-// type so the two shapes don't collide in the type system.
+// 后端接受 model / soul / skills / providers 进行更新。
+// AgentDetail.skills 是扁平 string[]（遗留），但按 agent 技能
+// 配置实际是 { disabled, alwaysLoad } — 使用明确的载荷类型
+// 以避免两种形状在类型系统中冲突。
 export interface AgentUpdatePayload {
   name?: string;
   description?: string;
   model?: string;
   soul?: string;
   skills?: AgentSkillsConfig;
-  // Whole-map replace: omit to leave providers untouched, send {} to
-  // clear them, or send the full desired map to replace.
+  // 整体映射替换：省略以保持 providers 不变，发送 {} 以
+  // 清除，或发送完整的期望映射以替换。
   providers?: Record<string, ProviderData>;
-  // Toggle the "anyone with the link can chat" gate. Omit to leave the
-  // current value alone.
+  // 切换"拥有链接的人都可以聊天"的门槛。省略以保持当前值不变。
   isPublic?: boolean;
-  // Toggle whether chatters using this agent inherit the owner's
-  // model + provider configuration. Omit to leave unchanged.
+  // 切换使用此 agent 的聊天者是否继承所有者的
+  // 模型 + 提供者配置。省略以保持不变。
   shareModelConfig?: boolean;
-  // PromptMode selects how heavily the framework system prompt
-  // participates: "agent" (full, default), "chatbot" (slim — drops
-  // task-delegation / tool-use discipline / workspace-update so
-  // companion / role-play personas stay in character), "customize"
-  // (only the date anchor + bootstrap files — author writes the whole
-  // system prompt themselves via SOUL.md / IDENTITY.md). Pass "" to clear.
+  // PromptMode 选择框架系统提示的参与程度："agent"（完整，默认）、
+  // "chatbot"（精简 — 去掉任务委派/工具使用规范/工作区更新，以
+  // 保持伴侣/角色扮演人设）、"customize"（仅有日期锚点 + 引导
+  // 文件 — 作者通过 SOUL.md / IDENTITY.md 自行编写整个系统提示）。
+  // 传 "" 以清除。
   promptMode?: "" | "agent" | "chatbot" | "customize";
-  // Multi-bubble per-agent override (applies to all IM channels).
-  // Tri-state: omit to leave the saved value alone; pass true/false to
-  // set explicit; pass `splitRepliesReset: true` to delete the override
-  // so default behavior (single bubble) applies.
+  // 按 agent 的多气泡覆盖（应用于所有 IM 渠道）。
+  // 三态：省略以保持已保存的值不变；传 true/false 以
+  // 显式设置；传 splitRepliesReset: true 以删除覆盖，
+  // 从而应用默认行为（单气泡）。
   splitReplies?: boolean;
   splitRepliesReset?: boolean;
-  // Auto-persist per-agent override. Same tri-state semantics as
-  // splitReplies. When true, every N turns the runtime runs a small
-  // LLM call that distills the conversation into USER.md (chatter
-  // profile) and MEMORY.md (long-term facts) — see Agent.autoPersist.
+  // 按agent的自动持久化覆盖。与 splitReplies 相同的三态语义。
+  // 为 true 时，每 N 轮运行时会发起一个小型 LLM 调用，将对话
+  // 提炼到 USER.md（聊天者资料）和 MEMORY.md（长期事实）中 —
+  // 参见 Agent.autoPersist。
   autoPersist?: boolean;
   autoPersistReset?: boolean;
-  // Per-agent plugin enable overrides (patch semantics — keys not in
-  // the map are preserved). Pass pluginsReset:true to clear ALL
-  // per-agent overrides and fall back to system-wide enable state.
+  // 按 agent 的插件启用覆盖（补丁语义 — 未在映射中的键
+  // 保持不变）。传 pluginsReset:true 以清除所有按 agent 的
+  // 覆盖并回退到系统范围的启用状态。
   plugins?: Record<string, boolean>;
   pluginsReset?: boolean;
 }
@@ -1281,9 +1268,9 @@ export async function updateAgent(id: string, agent: AgentUpdatePayload) {
   return res.json();
 }
 
-// HookPlugin is the metadata shape returned by /api/plugins/hook —
-// read-only listing of hook-type plugins available on this install.
-// Operators pick which to enable per-agent on the Context page.
+// HookPlugin 是 /api/plugins/hook 返回的元数据结构 —
+// 此安装上可用的钩子型插件的只读列表。
+// 操作者在上下文页面选择要按 agent 启用的插件。
 export interface HookPlugin {
   id: string;
   name?: string;
@@ -1311,9 +1298,8 @@ export interface AgentFileConfig {
   providers?: Record<string, ProviderData>;
 }
 
-// Fetch the raw agent.json for one agent (per-agent overrides only — not
-// the merged/resolved config). Used by the per-agent Models and Skills
-// admin pages.
+// 获取单个 agent 的原始 agent.json（仅按 agent 覆盖 —
+// 不是合并/解析后的配置）。用于按 agent 的模型和技能管理页面。
 export async function getAgentConfig(id: string): Promise<AgentFileConfig> {
   const res = await apiFetch(`/api/agents/${id}/config`);
   return res.json();
@@ -1326,7 +1312,7 @@ export async function deleteAgent(id: string) {
   return res.json();
 }
 
-// Skills
+// 技能
 export async function getSkills(): Promise<SkillInfo[]> {
   const res = await apiFetch("/api/skills");
   return res.json();
@@ -1339,8 +1325,8 @@ export async function deleteSkill(name: string) {
   return res.json();
 }
 
-// Per-agent skills: list what's installed in an agent's own home/skills dir.
-// Agent-scoped skills shadow global ones with the same name.
+// 按 agent 的技能：列出安装在 agent 自己的 home/skills 目录中的技能。
+// 按 agent 的技能会覆盖同名的全局技能。
 export async function getAgentSkills(agentId: string): Promise<SkillInfo[]> {
   const res = await apiFetch(`/api/agents/${encodeURIComponent(agentId)}/skills`);
   return res.json();
@@ -1354,12 +1340,12 @@ export async function deleteAgentSkill(agentId: string, name: string) {
   return res.json();
 }
 
-// Search results use skills.sh's shape; clawhub has a different shape but the
-// admin UI only wires skills.sh (primary registry). Callers that want clawhub
-// go through installSkill with source="clawhub".
+// 搜索结果使用 skills.sh 的格式；clawhub 有不同的格式，但管理
+// UI 仅连接 skills.sh（主注册表）。需要 clawhub 的调用者通过
+// source="clawhub" 的 installSkill 访问。
 export interface SkillSearchResult {
   id: string;       // "<owner>/<repo>/<skillId>"
-  skillId: string;  // folder name — also the slug passed to installSkill
+  skillId: string;  // 文件夹名称 — 也是传给 installSkill 的 slug
   name: string;
   source: string;   // "<owner>/<repo>"
   installs: number;
@@ -1377,7 +1363,7 @@ export interface InstallSkillRequest {
   name: string;
   source?: "skillssh" | "clawhub" | "github" | "auto";
   repo?: string;
-  agent?: string;  // omit for global install (admin only)
+  agent?: string;  // 省略表示全局安装（仅管理员）
 }
 
 export interface InstallSkillResponse {
@@ -1399,11 +1385,10 @@ export async function installSkill(req: InstallSkillRequest): Promise<InstallSki
   return res.json();
 }
 
-// uploadSkill installs a skill from a user-supplied .zip file. The zip is
-// extracted into <agent>/skills/<name>/ on the backend (or the global
-// skills dir when agentId is empty — admin only). `name` overrides the
-// inferred folder name; leave undefined to let the server pick (common
-// top-level dir → falls back to filename without extension).
+// uploadSkill 从用户提供的 .zip 文件安装技能。zip 会在
+// 后端解压到 <agent>/skills/<name>/ 目录（或当 agentId 为空时
+// 解压到全局技能目录 — 仅管理员）。name 覆盖推断的文件夹名称；
+// 留 undefined 让服务器自行选择（常见顶层目录 → 回退到不含扩展名的文件名）。
 export async function uploadSkill(
   file: File,
   agentId?: string,
@@ -1420,7 +1405,7 @@ export async function uploadSkill(
   return res.json();
 }
 
-// --- Tools (provider-backed capabilities: web_search, image_gen, tts, ...) ---
+// --- 工具（提供者支持的能力：web_search、image_gen、tts 等）---
 
 export interface ToolProviderCatalog {
   name: string;
@@ -1471,7 +1456,7 @@ export async function saveTools(payload: {
   return res.json();
 }
 
-// Plugins
+// 插件
 export async function getPlugins(): Promise<PluginInfo[]> {
   const res = await apiFetch("/api/plugins");
   return res.json();
@@ -1486,13 +1471,13 @@ export async function updatePlugin(id: string, data: Partial<PluginInfo>) {
   return res.json();
 }
 
-// Channels
+// 渠道
 export async function getChannels(): Promise<ChannelInfo[]> {
   const res = await apiFetch("/api/channels");
   return res.json();
 }
 
-// Cron Jobs
+// 定时任务
 export async function getCronJobs(): Promise<CronJobInfo[]> {
   const res = await apiFetch("/api/cron");
   return res.json();
@@ -1523,21 +1508,21 @@ export async function deleteCronJob(id: string) {
   return res.json();
 }
 
-// --- Admin API: API keys ---
+// --- 管理 API：API 密钥 ---
 
-// APIKey is one entry returned by GET /v1/admin/apikeys. The `key` field is
-// masked by the server for everyone except the create/rotate response, which
-// returns the freshly-issued plaintext key under a separate `key` field.
+// APIKey 是 GET /v1/admin/apikeys 返回的条目。key 字段
+// 在服务器端对除创建/轮换响应外的所有人进行了遮蔽，
+// 创建/轮换响应在单独的 key 字段下返回新签发的明文密钥。
 export interface APIKey {
   id: string;
   name: string;
-  key: string; // masked for list responses (e.g. "fc_abcd****wxyz")
+  key: string; // 列表响应中已遮蔽（例如 "fc_abcd****wxyz"）
   createdAt: string;
 }
 
-// Helper: pull a server-supplied {error} message out of a non-OK response so
-// callers can surface the real reason (auth failure, duplicate id, etc.)
-// instead of crashing on `.apikey` being undefined.
+// 辅助函数：从非 OK 响应中提取服务器提供的 {error} 消息，
+// 以便调用者显示真实原因（认证失败、重复 ID 等），
+// 而非在 .apikey 为 undefined 时崩溃。
 async function readError(res: Response, fallback: string): Promise<string> {
   try {
     const body = await res.json();
@@ -1578,9 +1563,9 @@ export async function rotateAPIKey(id: string): Promise<string> {
   return data.key;
 }
 
-// --- Admin API: agent ↔ apikey bindings ---
+// --- 管理 API：agent ↔ apikey 绑定 ---
 
-// Map of agent id → apikey id. Empty value means agent is admin-only.
+// agent ID 到 apikey ID 的映射。空值表示 agent 仅限管理员访问。
 export type AgentBindings = Record<string, string>;
 
 export async function listAgentBindings(): Promise<AgentBindings> {
@@ -1590,7 +1575,7 @@ export async function listAgentBindings(): Promise<AgentBindings> {
   return data.bindings || {};
 }
 
-// Pass apiKeyId="" to unbind (agent returns to admin-only access).
+// 传 apiKeyId="" 以解绑（agent 恢复为仅管理员访问）。
 export async function bindAgent(agentId: string, apiKeyId: string): Promise<{ ok: boolean; error?: string }> {
   const res = await apiFetch(`/api/agents/${agentId}/binding`, {
     method: "POST",
@@ -1600,21 +1585,22 @@ export async function bindAgent(agentId: string, apiKeyId: string): Promise<{ ok
   return res.json();
 }
 
-// --- Per-agent IM channels (Telegram, ...) ---
+// --- 按 agent 的 IM 渠道（Telegram 等）---
 
 export interface AgentChannel {
   type: string;        // "telegram"
-  accountId: string;   // bot username for Telegram
+  accountId: string;   // Telegram 的 bot 用户名
   botUsername?: string;
-  botToken: string;    // server-masked
+  botToken: string;    // 服务器端已遮蔽
   enabled: boolean;
   updatedAt?: string;
 }
 
-// AgentCronJob mirrors store.CronJobRecord. Returned by GET
-// /api/agents/{id}/cron — covers both jobs the agent scheduled itself
-// via create_cron_job AND any seeded by other paths (config, future
-// admin UI). lastRun / nextRun are RFC3339 strings or absent.
+// AgentCronJob 映射 store.CronJobRecord。由 GET
+// /api/agents/{id}/cron 返回 — 涵盖 agent 通过
+// create_cron_job 自行安排的作业以及通过其他路径
+// （配置、未来管理 UI）植入的作业。lastRun / nextRun
+// 是 RFC3339 字符串或不存在。
 export interface AgentCronJob {
   id: string;
   agentId: string;
@@ -1798,7 +1784,7 @@ export async function disconnectAgentChannel(
   return res.json();
 }
 
-// ---------- Admin: token usage ----------
+// ---------- 管理：令牌用量 ----------
 
 export type TokenUsageRange = "24h" | "7d" | "30d";
 
@@ -1839,8 +1825,8 @@ export interface AgentTokenUsage {
   sessions: TokenUsageRank[];
 }
 
-// Per-agent session-level usage, exposed in the agent settings dialog.
-// Owner-gated server-side; chat viewers of a public agent get a 403.
+// 按 agent 的会话级用量，在 agent 设置对话框中展示。
+// 服务端由所有者控制；公共 agent 的聊天查看者会收到 403。
 export async function getAgentTokenUsage(
   agentId: string,
   range: TokenUsageRange = "7d",

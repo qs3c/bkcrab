@@ -19,12 +19,11 @@ interface ScopePickerProps {
   onChange: (scope: ScopeName, scopeId: string) => void;
 }
 
-// ScopePicker is the shared "system / user / agent" selector for the
-// providers and channels admin pages. Available scopes depend on the
-// caller's role:
+// ScopePicker 是供应商和渠道管理页的共享"系统 / 用户 / 智能体"
+// 选择器。可用范围取决于调用者角色：
 //
-//   super_admin: all three (system, every user, every agent)
-//   user:        only their own user-scope and the agents they own
+//   super_admin：全部三个（系统、每个用户、每个智能体）
+//   user：       仅自己的用户范围和自己拥有的智能体
 export function ScopePicker({ scope, scopeId, onChange }: ScopePickerProps) {
   const [role, setRole] = useState<string>("");
   const [meId, setMeId] = useState<string>("");
@@ -39,12 +38,12 @@ export function ScopePicker({ scope, scopeId, onChange }: ScopePickerProps) {
       setRole(me.user.role);
       setMeId(me.user.id);
 
-      // Pull the agent list — every caller can see their own agents.
+      // 拉取智能体列表 —— 每个调用者都能看到自己的智能体。
       const ag = await apiFetch("/api/agents");
       const aj = await ag.json();
       if (!aborted && aj.agents) setAgents(aj.agents);
 
-      // Super_admin can also enumerate users (for picking a user scope).
+      // super_admin 还可以枚举用户（用于选择用户范围）。
       if (me.user.role === "super_admin") {
         const u = await apiFetch("/api/users");
         const uj = await u.json();

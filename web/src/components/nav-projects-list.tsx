@@ -66,15 +66,13 @@ import {
 } from "@/components/nav-projects";
 import { ChatRowActions } from "@/components/chat-row-actions";
 
-// NavProjectsList is the "Projects" section of the agent sidebar. Each
-// project expands inline to show its child chats; clicking "+ New chat"
-// inside a project mints a session pre-bound to that project so the
-// very first turn writes to projects/<pid>/.
+// NavProjectsList 是智能体侧边栏的"项目"部分。每个项目
+// 内联展开显示其子对话；点击项目内的"+ 新建对话"会创建一个
+// 预绑定到该项目的新会话，使第一次对话直接写入 projects/<pid>/。
 //
-// `sessions` is the full per-agent session list — we filter to those
-// whose projectId matches each project. The flat NavSessions component
-// is responsible for filtering OUT project sessions on its side so
-// they don't double-render in the "Chats" section below.
+// `sessions` 是完整的每个智能体会话列表 —— 我们按 projectId 过滤到
+// 每个项目。扁平的 NavSessions 组件负责在己方过滤掉项目会话，
+// 避免它们在下方"对话"部分重复渲染。
 
 export interface ProjectChatItem extends SessionItem {
   projectId?: string;
@@ -89,10 +87,9 @@ export function NavProjectsList({
   agentId: string | null;
   projects: ProjectEntry[];
   sessions: ProjectChatItem[];
-  // Caller refetches projects + sessions when this fires (rename, delete,
-  // create chat). Same pattern as the `bkclaw:sessions-changed` event
-  // NavSessions broadcasts; we keep it as a callback prop because the
-  // Project state lives one level up in AppSidebar.
+  // 调用者在此触发时重新拉取项目和会话（重命名、删除、创建对话）。
+  // 与 NavSessions 广播的 `bkclaw:sessions-changed` 事件模式相同；
+  // 我们保留为回调属性，因为 Project 状态住在上一层 AppSidebar 中。
   onChanged: () => void;
 }) {
   const router = useRouter();
@@ -102,12 +99,12 @@ export function NavProjectsList({
   const [deleteTarget, setDeleteTarget] = React.useState<ProjectEntry | null>(
     null,
   );
-  // Open project IDs: clicking a project toggles its expand state. We
-  // keep this as a Set so multiple projects can be expanded at once.
+  // 已展开的项目 ID 集合：点击项目切换其展开状态。
+  // 使用 Set 以便多个项目可以同时展开。
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
 
-  // useMemo must run before the early-return below or hook order
-  // changes between renders when the active agent comes / goes.
+  // useMemo 必须在下方的 early-return 之前运行，否则活跃智能体
+  // 出现/消失时 hook 顺序会在渲染间变化。
   const sessionsByProject = React.useMemo(() => {
     const m = new Map<string, ProjectChatItem[]>();
     for (const s of sessions) {
@@ -119,26 +116,21 @@ export function NavProjectsList({
     return m;
   }, [sessions]);
 
-  // Two distinct "active project" signals — they look similar but
-  // gate different things and resolving them together hid a subtle
-  // bug where clicking a project from one of its sessions toggled
-  // instead of navigating:
+  // 两个不同的"活跃项目"信号 —— 它们看起来相似但门控不同的事物，
+  // 将它们放在一起解析曾隐藏一个微妙的 bug：从项目的某个会话点击
+  // 项目会变成切换而非导航：
   //
-  //   urlProjectId  — only set when the URL path is *exactly* the
-  //                   project's empty new-chat state
-  //                   `/agents/<aid>/project/<pid>/` (no session).
-  //                   Drives the click-to-toggle branch below: a
-  //                   click is "toggle" only when the user is
-  //                   already sitting on the project's landing URL.
-  //                   Anywhere else (including inside a session that
-  //                   belongs to this project) clicks navigate.
+  //   urlProjectId  —— 仅当 URL 路径恰好是项目的空白新对话状态
+  //                   `/agents/<aid>/project/<pid>/`（无会话）时设置。
+  //                   驱动下方的 点击-切换 分支：只有当用户已坐在
+  //                   项目的着陆 URL 上时，点击才是"切换"。
+  //                   其他任何位置（包括属于此项目的会话中）点击
+  //                   都是导航。
   //
-  //   activeProjectId — broader: also matches when the URL is on a
-  //                     session whose project_id is this project.
-  //                     Used purely for visual / expansion cues —
-  //                     the row gets the `isActive` highlight and
-  //                     auto-expands so the user always sees their
-  //                     project's chats while reading any of them.
+  //   activeProjectId —— 更广泛：也匹配 URL 在某个 project_id
+  //                     为此项目的会话上时。纯用于视觉/展开提示 ——
+  //                     该行获得 `isActive` 高亮并自动展开，使用户
+  //                     在阅读任何项目对话时始终看到其项目的对话。
   const projectPathMatch = pathname.match(/\/agents\/[^/]+\/project\/([^/]+)\/?$/);
   const urlProjectId = projectPathMatch ? projectPathMatch[1] : null;
   const sessionPathMatch = pathname.match(/\/agents\/[^/]+\/chat\/([^/]+)\/?$/);
@@ -152,11 +144,10 @@ export function NavProjectsList({
     return null;
   }, [urlProjectId, urlSessionId, sessions]);
 
-  // Auto-expand the active project so the user always sees their
-  // current project's chats when they land on a project chat URL —
-  // without this, a fresh page load on `?project=<pid>` would show
-  // the project collapsed and require an extra click. Only adds; we
-  // never auto-collapse so a deliberate user collapse persists.
+  // 自动展开活跃项目，使用户着陆到项目对话 URL 时总能看到
+  // 当前项目的对话 —— 没有此项，在 `?project=<pid>` 上全新页面
+  // 加载会显示项目折叠并需要额外一次点击。只添加；我们从不在
+  // 自动模式下收起，因此用户的主动收起会持久保留。
   React.useEffect(() => {
     if (!activeProjectId) return;
     setExpanded((prev) => {
@@ -167,14 +158,11 @@ export function NavProjectsList({
     });
   }, [activeProjectId]);
 
-  // Track the URL we last asked the router to navigate to but haven't
-  // yet observed in `pathname`. Rapid double/triple clicks on the same
-  // project header used to stack one `router.push` per click; under
-  // static-export each push fires its own RSC fetch, and stacking
-  // enough of them drained the browser's 6-conn-per-origin pool so
-  // subsequent clicks (and the in-flight SSE) went `pending` forever.
-  // Hooks must run before the early-return below to keep call order
-  // stable across renders.
+  // 追踪我们上次请求路由器导航到、但尚未在 `pathname` 中观察到的 URL。
+  // 对同一项目标题的快速双击/三击曾导致每次点击堆叠一个 `router.push`；
+  // 在静态导出下每次 push 触发自己的 RSC 请求，堆积足够多会耗尽浏览器
+  // 每源 6 连接池，导致后续点击（和进行中的 SSE）永远处于 `pending` 状态。
+  // hook 必须在下方 early-return 之前运行以保持各次渲染间 hook 调用顺序稳定。
   const inFlightTargetRef = React.useRef<string | null>(null);
   React.useEffect(() => {
     inFlightTargetRef.current = null;
@@ -195,9 +183,9 @@ export function NavProjectsList({
 
   const chatBase = `/agents/${agentId}/chat/`;
   const projectBase = `/agents/${agentId}/project/`;
-  // Path form: /chat/<sid>/. Read it from pathname so the highlight
-  // stays in sync with the URL (the legacy `?session=` code path
-  // depended on a non-reactive `window.location.search` read).
+  // 路径格式：/chat/<sid>/。从 pathname 读取，使高亮与 URL 保持
+  // 同步（旧的 `?session=` 代码路径依赖非响应式的
+  // `window.location.search` 读取）。
   const activeSessionKey = urlSessionId;
 
   const toggleExpand = (id: string) => {
@@ -212,13 +200,11 @@ export function NavProjectsList({
     });
   };
 
-  // onProjectClick: clicking a project header always navigates to
-  // the project's empty new-chat URL (/project/<pid>/) — even from
-  // a session that belongs to the same project, so the click is a
-  // reliable "give me a fresh chat in this project" affordance.
-  // The toggle behavior only kicks in once the user is sitting on
-  // that exact URL, so a second click on the project from its own
-  // landing page collapses / re-opens the row.
+  // onProjectClick：点击项目标题总是导航到项目的空白新对话 URL
+  //（/project/<pid>/）—— 即使从属于同一项目的会话中也如此，
+  // 因此点击是可靠的"在此项目中给我一个新对话"的操作入口。
+  // 切换行为仅在用户坐在该确切 URL 上时生效，因此从项目自身
+  // 着陆页对项目的第二次点击会折叠/重新打开该行。
   const onProjectClick = (projectId: string) => {
     if (urlProjectId === projectId) {
       toggleExpand(projectId);
@@ -228,9 +214,9 @@ export function NavProjectsList({
   };
 
   const startNewChat = (projectId: string) => {
-    // Used by the "..." dropdown's "New chat in project" item — same
-    // navigation as the header click but skips the "currently in
-    // project = toggle" branch so it always opens a fresh chat.
+    // 由"…"下拉菜单的"在项目中新建对话"项使用 —— 与标题点击
+    // 相同的导航，但跳过"当前在项目中 = 切换"分支，因此总是
+    // 打开一个新对话。
     navigateOnce(`${projectBase}${encodeURIComponent(projectId)}/`);
   };
 
@@ -277,9 +263,8 @@ export function NavProjectsList({
                 allSessions={sessions}
                 agentId={agentId}
                 onMoved={() => {
-                  // Auto-expand the destination project after a drop so
-                  // the user immediately sees their chat land in its new home,
-                  // then trigger a refetch.
+                  // 拖放后自动展开目标项目，使用户立即看到对话落入新位置，
+                  // 然后触发重新拉取。
                   setExpanded((prev) => {
                     if (prev.has(p.id)) return prev;
                     const next = new Set(prev);
@@ -334,25 +319,23 @@ function ProjectRow({
 }: {
   project: ProjectEntry;
   open: boolean;
-  // isActive marks the project the user is currently viewing — drives
-  // the visual selection state on the header AND the click semantics
-  // (active = toggle, inactive = navigate).
+  // isActive 标记用户当前正在查看的项目 —— 驱动标题上的
+  // 视觉选中状态和点击语义（活跃 = 切换，非活跃 = 导航）。
   isActive: boolean;
   onClick: () => void;
   onEdit: () => void;
   onDelete: () => void;
-  // onNewChat is wired up only via the "..." dropdown now — the
-  // expanded sub-list no longer carries a "+ New chat" affordance
-  // because clicking the project header itself opens a fresh chat in
-  // the project (the `?project=<pid>` URL = empty new chat state).
+  // onNewChat 现在仅通过"…"下拉菜单连接 —— 展开的子列表不再
+  // 提供"+ 新建对话"入口，因为点击项目标题本身会在项目中打开
+  // 一个新对话（`?project=<pid>` URL = 空白新对话状态）。
   onNewChat: () => void;
   sessions: ProjectChatItem[];
   activeSessionKey: string | null;
   onOpenSession: (sessionId: string) => void;
   isOnChatRoute: boolean;
-  // allSessions is the full per-agent list — needed during a drop to
-  // look up the source chat's current projectId so a self-drop is a
-  // cheap no-op instead of a wasted API roundtrip.
+  // allSessions 是完整的每个智能体列表 —— 在拖放期间需要查找
+  // 源对话的当前 projectId，使自我拖放成为廉价的空操作而非
+  // 浪费一次 API 往返。
   allSessions: ProjectChatItem[];
   agentId: string;
   onMoved: () => void;
@@ -369,9 +352,8 @@ function ProjectRow({
   const onDrop = async (e: React.DragEvent) => {
     if (!hasChatPayload(e)) return;
     e.preventDefault();
-    // Stop the parent "Chats" group from also handling this drop —
-    // without this a drop on a project would also fire the loose-chat
-    // detach handler.
+    // 阻止父级"对话"组也处理此拖放 —— 没有此行则项目上的拖放
+    // 也会触发松散对话的解绑处理器。
     e.stopPropagation();
     setDropActive(false);
     const sid = e.dataTransfer.getData(CHAT_DRAG_MIME);
@@ -399,12 +381,10 @@ function ProjectRow({
         onClick={onClick}
         className="font-medium"
       >
-        {/* Default: just the folder icon. Hover: swap to a chevron
-            so the user can tell the row is collapsible (and the
-            chevron's rotation conveys current open/closed state).
-            Both icons share a slot so the row width doesn't jump
-            when the hover swaps them. group/menu-item is set on
-            SidebarMenuItem in components/ui/sidebar.tsx. */}
+        {/* 默认：文件夹图标。悬停：切换为箭头，让用户知道行可折叠
+            （箭头的旋转传达当前展开/折叠状态）。两个图标共享同一
+            位置，避免悬停切换时行宽跳动。group/menu-item 在
+            components/ui/sidebar.tsx 中设置于 SidebarMenuItem 上。 */}
         <span className="relative size-4 shrink-0">
           <span className="absolute inset-0 flex items-center justify-center transition-opacity group-hover/menu-item:opacity-0">
             {open ? <FolderOpenIcon /> : <FolderIcon />}
@@ -470,9 +450,8 @@ function ProjectRow({
                     e.preventDefault();
                     onOpenSession(s.id);
                   }}
-                  // Reserve room on the right so the title doesn't slip
-                  // under the absolutely-positioned actions chip on
-                  // hover. pr-7 ≈ width of the 5-unit chip + gutter.
+                  // 右侧预留空间，使标题不会在悬停时滑到绝对定位的操作芯片下方。
+                   // pr-7 ≈ 5 单位芯片宽度 + 间距。
                   className="pr-7"
                 >
                   <span className="truncate">{s.title || s.id}</span>
@@ -684,8 +663,8 @@ function DeleteProjectDialog({
     try {
       const res = await deleteProject(agentId, target.id);
       if (res.error) {
-        // Server returned 409 with sessionCount when the project still
-        // owns chats — surface a hint instead of just "delete failed".
+        // 服务器在项目仍拥有对话时返回 409 并带 sessionCount ——
+        // 显示提示而非仅仅"删除失败"。
         if (res.sessionCount && res.sessionCount > 0) {
           setError(
             `This 项目 still has ${res.sessionCount} 对话${res.sessionCount === 1 ? "" : "s"}. 删除 or move them first.`,

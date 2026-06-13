@@ -9,14 +9,13 @@ interface AuthGuardProps {
   children: React.ReactNode;
 }
 
-// Routes that require an admin (super_admin) role. Server APIs enforce this
-// authoritatively; the client gate just stops non-admins from landing on a
-// page that would render an empty / 403'd shell.
-//
-// /settings, /models, and /apikeys are intentionally NOT here —
-// settings hides Runtime; models merges system+user with badges;
-// apikeys lets non-admins issue type=user/agent (only type=admin
-// requires super_admin and that gate lives inside the create handler).
+// 需要 admin（super_admin）角色的路由。服务端 API 做了权威性验证；
+  // 客户端门禁只是阻止非管理员进入会渲染空壳 / 403 页面的页面。
+  //
+  // /settings、/models 和 /apikeys 故意不在此列 ——
+  // settings 隐藏了 Runtime；models 合并系统+用户并显示徽章；
+  // apikeys 允许非管理员签发 type=user/agent（仅 type=admin
+  // 需要 super_admin，该门控在创建处理器内部）。
 const ADMIN_PATH_PREFIXES = [
   "/admin/",
   "/skills",
@@ -43,10 +42,10 @@ export function AuthGuard({ children }: AuthGuardProps) {
   useEffect(() => {
     let aborted = false;
     (async () => {
-      // Decide between three states:
-      //   - users table empty → /onboard
-      //   - users exist, caller has a session → render children
-      //   - users exist, caller has no session → show LoginScreen
+// 在三种状态之间决策：
+        //   - 用户表为空 → /onboard
+        //   - 用户存在，调用者有会话 → 渲染子组件
+        //   - 用户存在，调用者无会话 → 显示 LoginScreen
       let configured = false;
       try {
         const res = await fetch("/api/status", { credentials: "same-origin" });
@@ -55,7 +54,7 @@ export function AuthGuard({ children }: AuthGuardProps) {
           configured = !!status.configured;
         }
       } catch {
-        // server down — fall through to LoginScreen
+        // 服务器不可用 — 落入 LoginScreen
       }
       if (aborted) return;
 
@@ -70,10 +69,9 @@ export function AuthGuard({ children }: AuthGuardProps) {
         return;
       }
 
-      // /signup is a public route when admin opens registration. Let it
-      // render unauthenticated — the page itself re-checks the toggle and
-      // surfaces "registration is closed" if the admin flipped it off
-      // between page load and submit.
+      // /signup 是管理员开放注册时的公开路由。允许其未认证渲染 ——
+      // 页面本身会重新检查开关，如果管理员在页面加载和提交之间
+      // 关闭了注册，会显示"注册已关闭"。
       if (pathname === "/signup" || pathname.startsWith("/signup/")) {
         setAuthed(true);
         setChecked(true);
@@ -90,7 +88,7 @@ export function AuthGuard({ children }: AuthGuardProps) {
           setAuthed(true);
         }
       } catch {
-        // network failure — fall through to LoginScreen
+        // 网络错误 — 落入 LoginScreen
       }
       if (!aborted) setChecked(true);
     })();

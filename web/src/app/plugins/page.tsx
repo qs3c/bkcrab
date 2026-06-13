@@ -62,7 +62,7 @@ export default function PluginsPage() {
       const config = JSON.parse(configJson);
       await updatePlugin(editPlugin.id, { config });
     } catch {
-      // invalid JSON
+      // 无效的 JSON
     }
     setSaving(false);
     setEditPlugin(null);
@@ -189,7 +189,7 @@ export default function PluginsPage() {
         )}
       </div>
 
-      {/* Config Editor Dialog */}
+      {/* 配置编辑器对话框 */}
       <Dialog open={!!editPlugin} onOpenChange={() => setEditPlugin(null)}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>

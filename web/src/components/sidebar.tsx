@@ -8,10 +8,9 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
-// Page-header slot: pages call `usePageHeader(<jsx/>)` to render content
-// to the right of the sidebar-trigger in the global sticky header. When
-// the page unmounts the slot empties. Chat uses this to show an editable
-// session title next to the sidebar toggle.
+// 页面头部插槽：页面调用 `usePageHeader(<jsx/>)` 在全局粘性头部的
+// 侧边栏触发器右侧渲染内容。页面卸载时插槽清空。聊天使用此功能
+// 在侧边栏切换按钮旁显示可编辑的会话标题。
 interface PageHeaderContextValue {
   setNode: (node: React.ReactNode) => void;
 }
@@ -32,10 +31,9 @@ export function usePageHeader(node: React.ReactNode, deps: React.DependencyList 
 export function SidebarLayout({ children }: { children: React.ReactNode }) {
   const [headerNode, setHeaderNode] = React.useState<React.ReactNode>(null);
   const searchParams = useSearchParams();
-  // `?actAs=<uid>` means an admin / agent owner is viewing another
-  // user's chat read-only. The platform sidebar belongs to the viewer's
-  // session, not the impersonated user — hiding it (and its collapse
-  // toggle) keeps the surface focused on the conversation being inspected.
+  // `?actAs=<uid>` 表示管理员 / 智能体所有者正在只读查看另一个
+  // 用户的聊天。平台侧边栏属于查看者的会话而非被模拟用户 —— 隐藏它
+  //（及其折叠切换）保持界面专注于被检查的对话。
   const isActAsView = !!searchParams?.get("actAs");
 
   const headerCtx = React.useMemo<PageHeaderContextValue>(

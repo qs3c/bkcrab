@@ -90,8 +90,7 @@ export default function AdminUsersPage() {
   }, []);
 
   async function toggleRegistration(next: boolean) {
-    // Optimistic flip; revert on error so the UI never lies about the
-    // backend state.
+    // 乐观翻转；失败时回滚，确保 UI 永不谎报后端状态。
     setRegOpen(next);
     try {
       const r = await setRegistration(next);

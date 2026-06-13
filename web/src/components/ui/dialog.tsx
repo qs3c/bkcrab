@@ -28,10 +28,9 @@ function DialogOverlay({
   forceRender = true,
   ...props
 }: DialogPrimitive.Backdrop.Props) {
-  // base-ui suppresses the backdrop on nested dialogs by default (only
-  // the outermost one renders). That leaves a 3rd-level dialog popping
-  // on top of a clear 2nd-level dialog — no visual depth cue. Force the
-  // backdrop on every level so each child dims the parent it sits over.
+  // base-ui 默认情况下会抑制嵌套对话框的遮罩层（只渲染最外层）。
+  // 这会导致第三层对话框弹出到清晰的第二层对话框之上——没有视觉层次感。
+  // 强制每一层都显示遮罩，使每个子对话框都能使其父对话框变暗。
   return (
     <DialogPrimitive.Backdrop
       forceRender={forceRender}

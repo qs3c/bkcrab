@@ -28,7 +28,7 @@ export default function AboutSettingsPage() {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
-      /* clipboard may be unavailable on insecure origins — ignore */
+      /* 剪贴板可能在非安全源上不可用 — 忽略 */
     }
   };
 

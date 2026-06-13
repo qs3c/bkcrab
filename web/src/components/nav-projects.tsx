@@ -14,29 +14,27 @@ import { moveChatSessionToProject } from "@/lib/api";
 import { ChannelIcon, channelLabel } from "@/components/channel-icon";
 import { ChatRowActions } from "@/components/chat-row-actions";
 
-// MIME type carried in dataTransfer for chat-session drags. Custom
-// type so we don't react to unrelated drops (text dragged in from
-// outside the app, files from the desktop, etc.).
+// 聊天会话拖拽时在 dataTransfer 中携带的 MIME 类型。自定义类型，
+// 避免响应无关拖放（从应用外拖入文本、桌面文件等）。
 export const CHAT_DRAG_MIME = "application/x-bkclaw-chat";
 
-// Cap the sidebar list so a chatty agent doesn't push every other nav
-// item off-screen. The full list lives at /agents/<id>/chats with
-// pagination — the trailing "More…" row links there.
+// 限制侧边栏列表长度，避免一个活跃智能体把其他导航项推出屏幕。
+// 完整列表在 /agents/<id>/chats，带分页 —— 末尾的"更多…"行链接过去。
 const MAX_SIDEBAR_SESSIONS = 10;
 
 export interface SessionItem {
   id: string;
   title: string;
-  // Set when the session's first user turn carried an image attachment.
-  // Renders as a small thumbnail before the title so multimodal chats
-  // show "image + text" instead of just the text label.
+  // 会话首条用户消息包含图片附件时设置。
+  // 渲染为标题前的小缩略图，使多模态对话显示"图片 + 文本"
+  // 而不是仅仅文本标签。
   thumbnailUrl?: string;
-  // channel drives the per-channel icon prefix (telegram / wechat /
-  // line / web …). Empty falls back to the web glyph.
+  // channel 驱动各渠道图标前缀（telegram / wechat /
+  // line / web 等）。为空时回退到 web 图标。
   channel?: string;
-  // projectId, when set, marks this chat as belonging to a project —
-  // NavSessions filters these out so they only appear nested under
-  // their project (NavProjectsList renders them).
+  // projectId 设置后标记此对话属于某个项目 —— NavSessions
+  // 过滤掉这些对话，使它们仅嵌套显示在项目下方
+  //（NavProjectsList 渲染它们）。
   projectId?: string;
 }
 
@@ -49,18 +47,16 @@ export function NavSessions({
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  // Drop-zone state for "drag a project chat back out into Chats".
-  // The whole group acts as a target — we only highlight when the
-  // drag carries a CHAT_DRAG_MIME payload AND the source chat is
-  // currently inside a project (dropping a loose chat onto its own
-  // group is a no-op, so suppressing the highlight makes that
-  // self-evident). Hook must run before the early-return below to
-  // keep call order stable across renders.
+  // "将项目对话拖回对话组"的放置区状态。
+  // 整个组作为目标 —— 仅在拖拽数据携带 CHAT_DRAG_MIME 载荷且源对话
+  // 当前位于某个项目内时才高亮（将已松散的对话拖放到其自身组是空操作，
+  // 抑制高亮使这一点自明）。此 hook 必须在下方的 early-return 之前运行，
+  // 以保持各次渲染间 hook 调用顺序稳定。
   const [chatsDropActive, setChatsDropActive] = React.useState(false);
 
-  // Dedupe rapid double-clicks on the same chat row — see the matching
-  // block in nav-projects-list.tsx for the connection-pool starvation
-  // it prevents. Hooks must come before the early-return.
+  // 对同一聊天行去重快速双击 —— 参见 nav-projects-list.tsx 中
+  // 对应的块，了解它防止的连接池饥饿问题。hook 必须在
+  // early-return 之前运行。
   const inFlightTargetRef = React.useRef<string | null>(null);
   React.useEffect(() => {
     inFlightTargetRef.current = null;
@@ -81,8 +77,8 @@ export function NavSessions({
 
   const chatBase = `/agents/${agentId}/chat/`;
 
-  // Any mutation (rename / delete) broadcasts so AppSidebar re-fetches and
-  // the chat page (if open) also re-syncs its local sessions list.
+  // 任何变更（重命名 / 删除）都会广播，以便 AppSidebar 重新拉取，
+  // 同时聊天页面（如果打开）也重新同步其本地会话列表。
   const broadcastChange = () => {
     if (typeof window !== "undefined") {
       window.dispatchEvent(
@@ -107,13 +103,12 @@ export function NavSessions({
     const sid = e.dataTransfer.getData(CHAT_DRAG_MIME);
     if (!sid) return;
     const sess = sessions.find((s) => s.id === sid);
-    // Already loose — nothing to do.
+    // 已经是松散的 —— 无需操作。
     if (!sess || !sess.projectId) return;
     const res = await moveChatSessionToProject(agentId, sid, "");
     if (res?.error) {
-      // Surface the failure inline; no toast infra in the sidebar yet
-      // so a console error + alert keeps the user from silently losing
-      // the action.
+      // 内联显示失败；侧边栏暂无 toast 基础设施，
+      // 因此 console 错误 + 弹窗可防止用户静默丢失操作。
       console.error("move chat to loose failed:", res.error);
       window.alert(`移动会话失败：${res.error}`);
       return;
@@ -137,14 +132,13 @@ export function NavSessions({
               : ""
           }
         >
-          {/* Skip chats that belong to a project — they render nested
-              under their project in NavProjectsList instead, so the flat
-              "Chats" section keeps showing only loose chats. */}
+          {/* 跳过属于项目的对话 —— 它们在 NavProjectsList 中
+              嵌套渲染在其项目下，因此扁平的"对话"部分
+              仅显示非项目对话。 */}
           {sessions.filter((s) => !s.projectId).slice(0, MAX_SIDEBAR_SESSIONS).map((s) => {
             const href = `${chatBase}${encodeURIComponent(s.id)}/`;
-            // Path form: /agents/<aid>/chat/<sid>/. Match exactly so a
-            // sibling chat doesn't light up just because pathname
-            // shares the chat base.
+            // 路径格式：/agents/<aid>/chat/<sid>/。精确匹配，使兄弟对话不会
+            // 仅因路径名共享聊天基础路径而高亮。
             const active = pathname === href || pathname === href.replace(/\/$/, "");
             return (
               <SessionRow
@@ -182,10 +176,9 @@ export function NavSessions({
   );
 }
 
-// hasChatPayload: cheap predicate the drop targets use to gate
-// preventDefault + highlight. dataTransfer.types is available during
-// drag enter/over, so we can avoid lighting up for unrelated drags
-// (text/uri-list, Files, etc.) that happen to cross the sidebar.
+// hasChatPayload：廉价的判断谓词，放置目标用于门控 preventDefault + 高亮。
+// dataTransfer.types 在 drag enter/over 期间可用，因此我们可以避免为
+// 偶然穿越侧边栏的不相关拖放（text/uri-list、Files 等）亮起。
 export function hasChatPayload(e: React.DragEvent): boolean {
   return Array.from(e.dataTransfer.types).includes(CHAT_DRAG_MIME);
 }

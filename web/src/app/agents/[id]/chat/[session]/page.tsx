@@ -1,11 +1,10 @@
-// /agents/<aid>/chat/<session> — open existing chat by id. UI is
-// rendered by the parent layout's <ChatScreen/>; this page only exists
-// so Next has a dynamic route to match. ChatScreen reads the session id
-// from `usePathname()`.
+// /agents/<aid>/chat/<session> — 按 ID 打开已有聊天。UI 由
+// 父级布局的 <ChatScreen/> 渲染；此页面仅存在以便 Next 有
+// 动态路由可匹配。ChatScreen 从 `usePathname()` 读取会话 ID。
 //
-// generateStaticParams: under output:'export' Next emits one .html per
-// param tuple. We ship a single placeholder ("_") and rely on the Go
-// SPA fallback to serve it for any concrete session id at runtime.
+// generateStaticParams：在 output:'export' 下，Next 为每个
+// 参数元组生成一个 .html。我们发布一个占位符（"_"）并依赖
+// Go SPA 回退在运行时将其提供给任何具体的会话 ID。
 export async function generateStaticParams() {
   return [{ session: "_" }];
 }

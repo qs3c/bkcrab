@@ -56,8 +56,8 @@ export default function AccountSettingsPage() {
       setProfileError("头像必须是图片");
       return;
     }
-    // Rough pre-check on raw bytes; the encoded data URL will be ~33%
-    // larger, so reject anything that won't fit comfortably.
+    // 对原始字节的粗略预检；编码后的 data URL 会大约增加 33%，
+    // 因此拒绝任何无法舒适容纳的文件。
     if (file.size > Math.floor(AVATAR_MAX_BYTES * 0.7)) {
       setProfileError("图片过大（编码前最大约 180KB）");
       return;
@@ -72,7 +72,7 @@ export default function AccountSettingsPage() {
       setAvatarUrl(result);
     };
     reader.readAsDataURL(file);
-    // Reset input so re-selecting the same file fires onchange again.
+    // 重置 input，以便再次选择同一文件时仍能触发 onchange。
     e.target.value = "";
   }
 
@@ -108,8 +108,8 @@ export default function AccountSettingsPage() {
       return;
     }
     setPwSaved(true);
-    // Force re-login on the new password — also kicks any stale sessions
-    // off this device. Brief delay so the user sees the success state.
+    // 强制使用新密码重新登录 — 同时清除本设备上的过期会话。
+    // 短暂延迟以便用户看到成功状态。
     setTimeout(() => {
       doLogout();
       window.location.href = "/";
@@ -137,7 +137,7 @@ export default function AccountSettingsPage() {
         </p>
       </div>
 
-      {/* Profile */}
+      {/* 个人资料 */}
       <div className="rounded-lg border border-border bg-card p-5 space-y-4">
         <div className="flex items-center gap-4">
           <div className="relative size-16 group">
@@ -223,7 +223,7 @@ export default function AccountSettingsPage() {
         </div>
       </div>
 
-      {/* Password */}
+      {/* 密码 */}
       <form onSubmit={savePassword} className="rounded-lg border border-border bg-card p-5 space-y-4">
         <div>
           <h4 className="font-medium">修改密码</h4>

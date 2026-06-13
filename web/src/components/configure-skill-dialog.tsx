@@ -19,9 +19,9 @@ import {
 } from "@/lib/api";
 import { useAgentName } from "@/hooks/use-agent-name";
 
-// SkillEntryView is what the masked GET /api/config response carries
-// for a single skill entry. apiKey + env values come back as "***" so
-// the UI shows that something is configured without leaking the secret.
+// SkillEntryView 是掩码后的 GET /api/config 响应中单个技能条目的
+// 结构。apiKey 和 env 值返回为 "***"，以便 UI 显示某项已配置而
+// 不泄露密钥。
 export interface SkillEntryView {
   enabled?: boolean;
   apiKey?: string;
@@ -35,13 +35,13 @@ export function looksLikeSecret(name: string): boolean {
   );
 }
 
-// ConfigureSkillDialog renders one input per declared env var (from the
-// skill's SKILL.md frontmatter envSpec) plus an escape hatch for adding
-// arbitrary vars the skill author didn't declare. Saving POSTs through
-// updateSkillEntries; when `agentId` is supplied the patch lands in the
-// per-agent override map (cfg.Skills.AgentEntries[agentId][skillName]),
-// otherwise in the global map (cfg.Skills.Entries[skillName]). The
-// runtime resolves agent-scoped first and falls back to global.
+// ConfigureSkillDialog 为声明的每个环境变量（来自技能的 SKILL.md
+// frontmatter envSpec）渲染一个输入框，并提供一个后门用于添加技能
+// 作者未声明的任意变量。保存时通过 updateSkillEntries POST；
+// 当提供 `agentId` 时，补丁写入每个智能体的覆盖映射
+//（cfg.Skills.AgentEntries[agentId][skillName]），否则写入全局映射
+//（cfg.Skills.Entries[skillName]）。运行时优先解析智能体范围，然后
+// 回退到全局。
 export function ConfigureSkillDialog({
   skill,
   existing,

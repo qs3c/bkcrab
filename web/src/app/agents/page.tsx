@@ -49,15 +49,15 @@ interface OtherAgent {
   ownerDisplayName?: string;
 }
 
-// AgentAvatar tries to load /api/agents/{id}/files/avatar.png and falls
-// back to the default Bot icon when the agent has no avatar yet (404).
+// AgentAvatar 尝试加载 /api/agents/{id}/files/avatar.png，当智能体
+// 还没有头像时（404）回退到默认的 Bot 图标。
 function AgentAvatar({
   agent,
   bust,
   size = 48,
 }: {
   agent: AgentDetail;
-  bust?: number; // cache-buster ticked after upload
+  bust?: number; // 上传后递增的缓存破坏参数
   size?: number;
 }) {
   const [failed, setFailed] = useState(false);
@@ -90,21 +90,20 @@ export default function AgentsPage() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"own" | "others">("own");
-  // quotaLocked = true when the caller has agent_quota=0 (admin
-  // provisions only). They can still browse /agents to see what's
-  // been provisioned for them and jump into chat — we just hide the
-  // Create button. If nothing has been provisioned yet, the empty
-  // state tells them to contact their admin.
+  // quotaLocked = true 表示调用者的 agent_quota=0（仅管理员
+// 分配）。他们仍可浏览 /agents 查看已分配的智能体并进入
+// 聊天——我们只是隐藏创建按钮。如果尚未分配任何智能体，
+// 空状态会提示联系管理员。
   const [quotaLocked, setQuotaLocked] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<AgentDetail | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // Bumped after avatar upload so <img> re-fetches the new file.
+  // 头像上传后递增，使 <img> 重新获取新文件。
   const [avatarBust, setAvatarBust] = useState<Record<string, number>>({});
 
-  // Create dialog state
+  // 创建对话框状态
   const [newName, setNewName] = useState("");
   const [newDescription, setNewDescription] = useState("");
   const [newAvatar, setNewAvatar] = useState<File | null>(null);
@@ -112,7 +111,7 @@ export default function AgentsPage() {
   const [createError, setCreateError] = useState<string | null>(null);
   const createAvatarInput = useRef<HTMLInputElement>(null);
 
-  // Edit dialog state
+  // 编辑对话框状态
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editIsPublic, setEditIsPublic] = useState(false);
@@ -152,14 +151,13 @@ export default function AgentsPage() {
 
   const fetchAgents = async () => {
     setLoading(true);
-    // /api/agents returns the caller's owned agents only. Public agents
-    // owned by other users surface as separate links — they don't auto-
-    // populate the dashboard list.
+    // /api/agents 仅返回调用者拥有的智能体。其他用户拥有的
+    // 公开智能体以单独链接显示——不会自动填充到仪表板列表。
     const list = await getAgents().catch(() => [] as AgentDetail[]);
     setAgents(list);
-    // Admins also see other users' agents (read-only) below their own.
-    // We resolve isAdmin from /api/status and only call adminListAgents
-    // when entitled — non-admins would 403 and the UI would flash an error.
+    // 管理员还可查看其他用户的智能体（只读），显示在自己智能体下方。
+    // 我们从 /api/status 获取 isAdmin 并仅在有权时调用 adminListAgents——
+    // 非管理员会收到 403 并在界面上闪烁错误。
     const status = await getStatus().catch(() => null);
     const admin = !!status?.isAdmin;
     setIsAdmin(admin);
@@ -180,10 +178,9 @@ export default function AgentsPage() {
     fetchAgents();
   }, []);
 
-  // Resolve quotaLocked from /api/me. agent_quota === 0 means the
-  // caller can't self-create — we hide the Create button but still
-  // render the list so they can see admin-provisioned agents and
-  // jump into chat.
+  // 从 /api/me 获取 quotaLocked。agent_quota === 0 表示
+  // 调用者无法自行创建——隐藏创建按钮但仍渲染列表，
+  // 以便他们能看到管理员分配的智能体并进入聊天。
   useEffect(() => {
     let aborted = false;
     getMe()
@@ -222,7 +219,7 @@ export default function AgentsPage() {
       try {
         await uploadAvatar(newId, newAvatar);
       } catch {
-        // non-fatal — agent is created; avatar can be retried via Edit
+        // 非致命——智能体已创建；头像可通过编辑重试
       }
     }
     setSaving(false);
@@ -249,7 +246,7 @@ export default function AgentsPage() {
       try {
         await uploadAvatar(editTarget.id, editAvatar);
       } catch {
-        // non-fatal — text fields saved; user can retry avatar upload
+        // 非致命——文本字段已保存；用户可重试头像上传
       }
     }
     setSaving(false);
@@ -382,12 +379,11 @@ export default function AgentsPage() {
                   {agent.description}
                 </p>
               )}
-              {/* mt-auto pins the action row to the card bottom so cards
-                  with no description don't shrink — keeps the grid row
-                  aligned regardless of content length. */}
-              {/* quotaLocked users (agent_quota=0) are admin-provisioned —
-                  they can browse and chat but can't mutate the agent
-                  record, so hide Edit/Remove entirely. */}
+{/* mt-auto 将操作行固定在卡片底部，使无描述的卡片
+                   不会缩小——保持网格行无论内容长度都对齐。 */}
+{/* quotaLocked 用户（agent_quota=0）由管理员分配——
+                   他们可以浏览和聊天但不能修改智能体
+                   记录，因此完全隐藏编辑/移除按钮。 */}
               {!quotaLocked && (
                 <div className="flex items-center gap-2 mt-auto pt-3 border-t border-border">
                   <Button
@@ -471,7 +467,7 @@ export default function AgentsPage() {
         </>
       )}
 
-      {/* Create Dialog */}
+      {/* 创建对话框 */}
       <Dialog
         open={createOpen}
         onOpenChange={(v) => {
@@ -554,7 +550,7 @@ export default function AgentsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Edit Dialog */}
+      {/* 编辑对话框 */}
       <Dialog
         open={editTarget !== null}
         onOpenChange={(v) => {
@@ -625,9 +621,9 @@ export default function AgentsPage() {
               />
             </div>
 
-            {/* Public/Private toggle. Off (default) = owner-only.
-                On = anyone with the chat URL can chat under their own
-                account; sessions/memory partition per chatter. */}
+{/* 公开/私有切换。关闭（默认）= 仅所有者可用。
+                 开启 = 任何拥有聊天链接的人可在自己账号下聊天；
+                 会话/记忆按聊天者分区。 */}
             <div className="space-y-3 rounded-lg border border-border p-4">
               <div className="flex items-start justify-between gap-4">
                 <div className="space-y-1">
@@ -672,7 +668,7 @@ export default function AgentsPage() {
                         setEditLinkCopied(true);
                         setTimeout(() => setEditLinkCopied(false), 2000);
                       } catch {
-                        // clipboard blocked — user can still select the input
+                        // 剪贴板被阻止——用户仍可手动选择输入框
                       }
                     }}
                   >
@@ -705,7 +701,7 @@ export default function AgentsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirmation */}
+      {/* 删除确认 */}
       <AlertDialog open={!!deleteId} onOpenChange={() => setDeleteId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>

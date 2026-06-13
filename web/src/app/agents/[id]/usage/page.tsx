@@ -28,8 +28,8 @@ const RANGES: { value: TokenUsageRange; label: string }[] = [
   { value: "30d", label: "30d" },
 ];
 
-// fmt collapses big counts into 12.3K / 4.5M for the table. Below 1000
-// keep the raw count so a quick test session reads "47" not "0.0K".
+// fmt 将大数字折叠为 12.3K / 4.5M 格式用于表格。1000 以下保留
+// 原始数值，这样快速测试会话会显示 "47" 而不是 "0.0K"。
 function fmt(n: number): string {
   if (!Number.isFinite(n)) return "—";
   if (Math.abs(n) < 1000) return n.toString();
@@ -47,11 +47,10 @@ export default function AgentUsagePage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // Pull session metadata once so the table can render titles
-  // instead of opaque session_keys. getChatSessions returns the
-  // owner's view of this agent's chats; rows whose key doesn't
-  // appear there (e.g. cron-fired sessions for a different
-  // chatter on a public agent) fall back to the truncated key.
+  // 一次性拉取会话元数据，以便表格能显示标题而非不透明的
+  // session_key。getChatSessions 返回当前用户视角下该智能体
+  // 的对话列表；密钥未出现在其中的行（例如公开智能体上由
+  // 定时任务为其他用户触发的会话）会回退到截断后的密钥。
   useEffect(() => {
     if (!agentId) return;
     let aborted = false;
@@ -60,7 +59,7 @@ export default function AgentUsagePage() {
         const list = await getChatSessions(agentId);
         if (!aborted) setSessions(list);
       } catch {
-        // Non-fatal — table just shows raw keys.
+        // 非致命错误——表格仅显示原始密钥。
       }
     })();
     return () => {
@@ -99,7 +98,7 @@ export default function AgentUsagePage() {
     if (!key) return "（未跟踪）";
     const t = sessionTitles[key];
     if (t) return t;
-    // Keys are opaque hashes — truncate so the row stays readable.
+    // 密钥是不透明的哈希值——截断以保持行可读。
     return key.length > 14 ? key.slice(0, 14) + "…" : key;
   }
 
@@ -161,12 +160,10 @@ export default function AgentUsagePage() {
               </TableHeader>
               <TableBody>
                 {rows.map((r) => {
-                  // Cache = total - input - output; the API rolls
-                  // cache_read + cache_creation into `tokens` but
-                  // doesn't break them out on the wire (yet). Showing
-                  // a single "Cache" column makes the row math add
-                  // up (input + output + cache = total) without
-                  // pretending prompt-cache hits don't exist.
+                  // 缓存 = 总计 - 输入 - 输出；API 将 cache_read + cache_creation
+                  // 合并到 `tokens` 中，但暂未在传输中分别列出。显示单个
+                  // "缓存"列使行内数字可加（输入 + 输出 + 缓存 = 总计），
+                  // 同时不忽略提示缓存命中的存在。
                   const cache = Math.max(0, r.tokens - r.inputTokens - r.outputTokens);
                   return (
                     <TableRow key={r.key || "untracked"}>

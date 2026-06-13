@@ -5,34 +5,33 @@ import { usePathname } from "next/navigation";
 import { Bot } from "lucide-react";
 import { getAgentStatus } from "@/lib/api";
 
-// Pull the agent id straight from the URL. Under output:'export' the
-// HTML served for /agents/agt_xxx/chat/ is actually the prebuilt
-// /agents/default/chat/index.html (see the server's static fallback);
-// useParams() in that bundle resolves to {id: "default"} during the
-// initial render which would fail the access probe even for the real
-// owner. Reading the pathname is unambiguous on the client.
+// 直接从 URL 中提取智能体 ID。在 output:'export' 模式下，
+// /agents/agt_xxx/chat/ 提供的 HTML 实际上是预构建的
+// /agents/default/chat/index.html（参见服务器的静态回退）；
+// 该打包中的 useParams() 在初始渲染时解析为 {id: "default"}，
+// 即使是真正的所有者也会导致访问探测失败。在客户端读取
+// pathname 是明确无误的。
 function agentIdFromPath(pathname: string | null | undefined): string {
   if (!pathname) return "";
-  // Match /agents/<id>(/...)? — strict on the prefix so we don't
-  // accidentally pull an id off some other route.
+  // 匹配 /agents/<id>(/...)? — 对前缀严格匹配，避免从其他路由
+  // 中误提取 ID。
   const m = pathname.match(/^\/agents\/([^/]+)/);
   return m ? m[1] : "";
 }
 
-// AgentAccessGate probes /api/agents/{id} once on mount and:
-//   - 200: renders children (caller is owner / super_admin / public-link
-//     visitor / apikey ACL grantee)
-//   - 401: redirects to /login (handled at apiFetch level normally)
-//   - 403/404 or any other failure: shows a "no access" screen that
-//     overlays the entire viewport (sidebar included), so a non-owner
-//     can't peek at the agent's name / sessions / admin tabs by typing
-//     the URL.
-//
-// Lives at the [id]/layout level so every nested route (chat, customize,
-// skills, etc.) inherits the same gate. The agent id is read from the
-// URL via useParams() — passing it from the layout's `params` doesn't
-// work under output:'export' because params resolve at build time to
-// whatever generateStaticParams returned ("default"), not the URL.
+// AgentAccessGate 在挂载时探测 /api/agents/{id}，然后：
+  //   - 200：渲染子组件（调用者是所有者 / super_admin / 公开链接
+  //     访客 / apikey ACL 授权者）
+  //   - 401：重定向到 /login（通常在 apiFetch 层处理）
+  //   - 403/404 或其他失败：显示"无权访问"界面，覆盖整个
+  //     视口（包括侧边栏），防止非所有者通过输入 URL 窥探智能体
+  //     的名称 / 会话 / 管理标签页。
+  //
+  // 放在 [id]/layout 层级，使每个嵌套路由（聊天、自定义、
+  // 技能等）都继承同一道门。智能体 ID 从 URL 通过 useParams()
+  // 读取 — 在 output:'export' 下从 layout 的 `params` 传递不生效，
+  // 因为 params 在构建时解析为 generateStaticParams 返回的值
+  // （"default"），而非 URL 中的值。
 export default function AgentAccessGate({
   children,
 }: {
@@ -43,10 +42,9 @@ export default function AgentAccessGate({
   const [state, setState] = useState<"checking" | "ok" | "denied">("checking");
 
   useEffect(() => {
-    // The "default" id is the prebuilt static-export placeholder, not
-    // a real agent — skip the probe and let children render. The real
-    // /agents/default/* route is super_admin's local-mode dashboard
-    // which has its own server-side gating already.
+    // "default" ID 是预构建的静态导出占位符，不是真正的智能体 —
+    // 跳过探测，直接渲染子组件。真正的 /agents/default/* 路由
+    // 是 super_admin 的本地模式仪表板，已有自身的服务端门控。
     if (!agentId || agentId === "default") {
       setState("ok");
       return;
@@ -71,9 +69,8 @@ export default function AgentAccessGate({
   }, [agentId]);
 
   if (state === "checking") {
-    // Full-viewport placeholder while the probe runs — z-50 lifts it
-    // over the AppShell sidebar so non-owners don't briefly see the
-    // chat UI / admin tabs while the 403 is in flight.
+    // 探测期间的整视口占位 — z-50 使其覆盖 AppShell 侧边栏，
+    // 防止非所有者在 403 尚未到达时短暂看到聊天 UI / 管理标签页。
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
         <div className="h-2 w-2 animate-pulse rounded-full bg-muted-foreground/40" />

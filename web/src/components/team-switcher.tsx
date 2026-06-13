@@ -19,10 +19,9 @@ import {
 } from "@/components/ui/sidebar";
 import { Bot, ChevronsUpDownIcon, PlusIcon } from "lucide-react";
 
-// AgentAvatar shows the agent's uploaded /api/agents/{id}/files/avatar.png
-// when available, falls back to the BkClaw logo for the platform header
-// (no agent), and falls back to a Bot icon when an agent has no custom
-// avatar yet (the image 404s).
+// AgentAvatar 在可用时显示智能体上传的 /api/agents/{id}/files/avatar.png，
+// 无智能体时回退为 BkClaw 标志（平台头部），智能体未上传自定义头像时
+//（图片 404）回退为 Bot 图标。
 function AgentAvatar({
   agentId,
   size = 32,
@@ -77,16 +76,15 @@ export interface AgentSwitcherItem {
   model?: string;
 }
 
-// AgentSwitcher renders the sidebar header.
-//
-//   activeAgentId set     → show that agent's display name + id, dropdown
-//                           lists every agent for quick switching
-//   activeAgentId unset   → show "BkClaw" (platform brand). The dropdown
-//                           still lists agents so users can jump in from
-//                           any non-agent page.
-//
-// We never auto-promote the first agent into the header — the header on
-// admin pages (Agents list, API Keys, Settings, …) stays neutral.
+// AgentSwitcher 渲染侧边栏头部。
+  //
+  //   activeAgentId 已设置   → 显示该智能体的显示名称和 ID，下拉列表
+  //                           列出每个智能体供快速切换
+  //   activeAgentId 未设置   → 显示"BkClaw"（平台品牌）。下拉列表
+  //                           仍然列出智能体，以便用户从任何非智能体页面跳入。
+  //
+  // 我们从不会自动将第一个智能体提升到头部 —— 管理页面（智能体列表、
+  // API 密钥、设置……）的头部保持中性。
 export function AgentSwitcher({
   agents,
   activeAgentId,
@@ -96,11 +94,10 @@ export function AgentSwitcher({
   agents: AgentSwitcherItem[];
   activeAgentId?: string | null;
   onSelect?: (id: string) => void;
-  // locked hides the dropdown trigger / agent list / "Manage agents"
-  // entirely — the header becomes a static label + avatar. Used when
-  // the caller isn't the owner of the active agent (public-link
-  // visitor / super_admin viewing someone else's agent), so they
-  // don't see a switcher full of agents that aren't actually theirs.
+  // locked 隐藏下拉触发器 / 智能体列表 / "管理智能体" ——
+  // 头部变成静态标签 + 头像。用于调用者不是活跃智能体所有者的情况
+  //（公开链接访客 / super_admin 查看他人智能体），使其不会看到
+  // 实际上不属于他们的智能体列表。
   locked?: boolean;
 }) {
   const { isMobile } = useSidebar();

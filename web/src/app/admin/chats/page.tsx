@@ -33,11 +33,10 @@ export default function AdminChatsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [page, setPage] = useState(1);
 
-  // load is shared by the initial mount effect and the refresh button.
-  // The mount path passes initial=true so it owns the full-page spinner
-  // (sessions still empty); manual refreshes use the smaller in-button
-  // spinner instead so the existing rows stay visible while the fetch
-  // is in flight.
+  // load 共用于初始挂载效果和刷新按钮。
+  // 挂载路径传入 initial=true，控制全页加载中动画
+  // （此时会话仍为空）；手动刷新使用按钮内较小的旋转图标，
+  // 已有行在请求飞行期间保持可见。
   const load = useCallback(async (initial: boolean) => {
     if (initial) setLoading(true);
     else setRefreshing(true);
@@ -57,8 +56,8 @@ export default function AdminChatsPage() {
     void load(true);
   }, [load]);
 
-  // Newest first — backend doesn't guarantee order across (user, agent)
-  // pairs because it concatenates per-agent lists.
+  // 最新优先——后端不保证跨（用户、智能体）对的顺序，
+  // 因为它是按智能体分别拼接列表的。
   const sorted = useMemo(
     () =>
       [...sessions].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),

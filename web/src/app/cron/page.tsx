@@ -228,7 +228,7 @@ export default function CronPage() {
         )}
       </div>
 
-      {/* Create Dialog */}
+      {/* 创建对话框 */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent>
           <DialogHeader>
@@ -310,7 +310,7 @@ export default function CronPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirmation */}
+      {/* 删除确认 */}
       <AlertDialog open={!!deleteId} onOpenChange={() => setDeleteId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>

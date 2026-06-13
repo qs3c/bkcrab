@@ -7,16 +7,13 @@ interface LoginScreenProps {
   onSuccess: () => void;
 }
 
-// LoginScreen flips between sign-in and sign-up inline rather than
-// navigating to /signup. Two reasons: (a) the agent share URL the user
-// landed on stays in the address bar throughout the flow, so a
-// successful sign-up lands them straight on the page they came for; (b)
-// /signup as a separate route was being rendered inside AppShell's
-// SidebarLayout, leaking authenticated app chrome to a visitor who
-// hasn't even registered yet. Registration on the server sets the
-// session cookie, so a sign-up success is functionally a sign-in
-// success — we route both through `onSuccess` and let AuthGuard render
-// the originally-requested page.
+// LoginScreen 在登录和注册之间内联切换，而非导航到 /signup。
+// 两个原因：(a) 用户着陆的智能体分享 URL 在整个流程中保持不变，
+// 因此注册成功后直接到达他们想要的页面；(b) /signup 作为独立路由
+// 会在 AppShell 的 SidebarLayout 中渲染，向尚未注册的访客泄漏了
+// 已认证的应用框架。服务端注册会设置会话 cookie，因此注册成功
+// 在功能上等同于登录成功 —— 两者都通过 `onSuccess` 路由，由
+// AuthGuard 渲染最初请求的页面。
 export function LoginScreen({ onSuccess }: LoginScreenProps) {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [loginField, setLoginField] = useState("");
@@ -32,7 +29,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
     let aborted = false;
     getStatus()
       .then((s) => { if (!aborted) setRegistrationOpen(!!s.registrationOpen); })
-      .catch(() => { /* leave default false — sign-up link stays hidden */ });
+      .catch(() => { /* 保持默认值 false — 注册链接保持隐藏 */ });
     return () => { aborted = true; };
   }, []);
 
@@ -87,10 +84,9 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
         setLoading(false);
         return;
       }
-      // Register handler set the session cookie on our response, so the
-      // app is effectively already signed in. Reuse the same callback
-      // sign-in uses and AuthGuard will render the originally-requested
-      // route without any redirect.
+      // 注册处理器已在响应上设置了会话 cookie，因此应用实际上
+      // 已经登录。复用与登录相同的回调，AuthGuard 将渲染最初
+      // 请求的路由，无需任何重定向。
       onSuccess();
     } catch {
       setError("无法连接服务器");

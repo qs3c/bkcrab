@@ -47,19 +47,18 @@ import {
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
 
-// Per-agent Models page — same UI/UX as the admin /models page, but
-// scoped to a single agent. Reads/writes agent-scoped provider rows
-// (`scope=agent&scopeId=<agentId>`) and the agent's own model override.
+// 每个智能体的模型页面——与管理员 /models 页面相同的 UI/UX，
+// 但限定到单个智能体。读取/写入智能体范围的 Provider 行
+//（`scope=agent&scopeId=<agentId>`）及智能体自身的模型覆盖。
 //
-// Precedence at runtime (see internal/gateway/userspace.go):
-//   - Agent-scope providers shadow system providers by name.
-//   - Agent-scope `agents.defaults.model` overrides system default.
-// Empty override here => inherit system default.
+// 运行时优先级（参见 internal/gateway/userspace.go）：
+//   - 智能体范围的 Provider 按名称遮蔽系统 Provider。
+//   - 智能体范围的 `agents.defaults.model` 覆盖系统默认值。
+// 此处空覆盖 => 继承系统默认值。
 
-// `models` are common model IDs pre-filled into the form when the
-// preset is selected. The user can keep, edit, or remove them. Empty
-// list means "no sensible default" (custom / openrouter / ollama all
-// vary too much to ship a baked-in suggestion).
+// `models` 是选择预设时预填充到表单中的常见模型 ID。
+// 用户可以保留、编辑或移除它们。空列表表示"无合理默认值"
+//（custom/openrouter/ollama 变化太大，不适合提供内置建议）。
 const PROVIDER_PRESETS: Record<
   string,
   { apiBase: string; apiType: string; authType: string; models: string[] }
@@ -92,19 +91,18 @@ const AUTH_TYPE_LABELS: Record<string, string> = {
 };
 
 interface ProviderEntry {
-  id: string;          // configs row id — required for PUT/DELETE
+  id: string;          // 配置行 ID — PUT/DELETE 必需
   name: string;
   apiBase: string;
-  apiKey: string;      // unmasked draft (only set while editing)
-  maskedKey: string;   // server-returned masked key for display
+  apiKey: string;      // 未遮罩的草稿（仅在编辑时设置）
+  maskedKey: string;   // 服务端返回的遮罩密钥，用于显示
   apiType: string;
   authType: string;
   models: ModelEntry[];
-  // Inheritance source. Only "agent" rows are editable on this page;
-  // "user" and "system" rows are read-only views of the chain that
-  // resolves at runtime. Two same-name rows in different scopes can
-  // coexist (lower scope shadows higher) — looking up by id avoids
-  // the collision the old name-keyed lookups had.
+  // 继承来源。仅 "agent" 行可在此页面编辑；
+  // "user" 和 "system" 行是运行时解析链的只读视图。
+  // 不同作用域可以有两个同名行（低作用域遮蔽高作用域）——
+  // 通过 id 查找避免了旧版按名称查找的冲突问题。
   scope: "agent" | "user" | "system";
 }
 
@@ -120,9 +118,8 @@ function emptyModel(): ModelEntry {
   };
 }
 
-// presetModelRows produces ready-to-edit ModelEntry rows for the IDs
-// declared on a preset, so the dialog opens with common models already
-// filled in instead of an empty list.
+// presetModelRows 为预设声明的 ID 生成可直接编辑的 ModelEntry 行，
+// 使对话框打开时预填充常见模型而非空列表。
 function presetModelRows(preset: string): ModelEntry[] {
   const ids = PROVIDER_PRESETS[preset]?.models || [];
   return ids.map((id) => ({ ...emptyModel(), id, name: id }));
@@ -136,20 +133,20 @@ export default function AgentModelsPage() {
   const [model, setModel] = useState("");
   const [systemDefault, setSystemDefault] = useState("");
   const [systemProviders, setSystemProviders] = useState<string[]>([]);
-  // Default true so the toggle reflects the on-state during the brief
-  // window before fetchAll resolves. Backend treats absent key as on
-  // (agentShareModelConfig in handlers_agents.go) — keep these aligned.
+  // 默认为 true，使开关在 fetchAll 解析前的短暂窗口内反映开启状态。
+  // 后端将缺少的键视为开启（见 agentShareModelConfig in handlers_agents.go）
+  // ——保持这两处对齐。
   const [shareModelConfig, setShareModelConfig] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  // Dialog state — mirrors the admin page exactly.
+  // 对话框状态——与管理员页面完全一致。
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingName, setEditingName] = useState<string | null>(null);
-  // editingId: with the merged view, two rows can share `name` across
-  // scopes (e.g. agent's "openai" override + system's "openai"). Lookups
-  // for edit / test must use id.
+  // editingId：合并视图中，不同作用域的两行可以共享 `name`
+  //（例如智能体的 "openai" 覆盖 + 系统的 "openai"）。
+  // 编辑/测试的查找必须使用 id。
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formPreset, setFormPreset] = useState("openrouter");
   const [formName, setFormName] = useState("");
@@ -169,11 +166,11 @@ export default function AgentModelsPage() {
     cleanModelRows.length === 0 ||
     cleanModelRows.every((t) => modelTests[t.idx]?.status === "success");
 
-  // Dropdown lists models from every scope the agent will resolve at
-  // runtime — agent overrides shadow user, user overrides system. We
-  // dedupe on `provider/modelId` so a same-name override doesn't show
-  // twice; the lower-scope row wins (agent > user > system) because it's
-  // what would actually be chosen.
+  // 下拉列表展示智能体在运行时将解析到的所有作用域中的模型——
+  // 智能体覆盖遮蔽用户，用户覆盖遮蔽系统。我们在
+  // `provider/modelId` 上去重，以免同名覆盖显示两次；
+  // 低作用域行优先（agent > user > system），因为它是
+  // 实际会被选择的。
   const allModelOptions: { value: string; label: string }[] = useMemo(() => {
     const seen = new Set<string>();
     const order: ProviderEntry["scope"][] = ["agent", "user", "system"];
@@ -196,23 +193,21 @@ export default function AgentModelsPage() {
     if (!agentId) return;
     setLoading(true);
     try {
-      // We need the agent's owner to fetch user-scope inherited rows.
-      // Pull agent record + all three provider scopes in parallel. The
-      // user-scope call gets bound to the owner only after agentRec
-      // resolves; doing the user list lazily here keeps things flat
-      // without an awkward two-stage fetch.
+      // 需要智能体的所有者来获取用户作用域的继承行。
+      // 并行拉取智能体记录 + 三种 Provider 作用域。用户作用域
+      // 调用仅在 agentRec 解析后才绑定到所有者；在此惰性获取
+      // 用户列表使结构扁平，避免尴尬的两阶段获取。
       const [agentRec, agentScopeRes, sysScopeRes, cfg] = await Promise.all([
         getAgent(agentId).catch(() => null),
         listProviders("agent", agentId).catch(() => null),
         listProviders("system", "").catch(() => null),
-        // /api/config may 403 for non-admins; if it does, we just lose
-        // the "inheriting system default: X" hint, which is fine.
+        // /api/config 可能对非管理员返回 403；如果如此，我们只是丢失
+        // "继承系统默认值: X" 提示，这没什么影响。
         getConfig().catch(() => null),
       ]);
       const ownerId = agentRec?.userId || "";
-      // user-scope inheritance only applies if we know the owner;
-      // anonymous fall-through means no user layer (rare — agents
-      // without an owner shouldn't exist post-onboarding).
+      // 用户作用域继承仅在知道所有者时适用；匿名穿透意味着
+      // 没有用户层（罕见——引导后不应存在无所有者的智能体）。
       const userScopeRes = ownerId
         ? await listProviders("user", ownerId).catch(() => null)
         : null;
@@ -238,16 +233,13 @@ export default function AgentModelsPage() {
       setProviders(merged);
       setSystemDefault(cfg?.agents?.defaults?.model || "");
       setSystemProviders(toRows(sysScopeRes).map((r) => r.name));
-      // The agent's own model override is already resolved server-side
-      // by handleGetAgent → agentScopeModel (configs row at scope=agent,
-      // name=agents.defaults). Reading from agentRec keeps this page in
-      // sync with the rest of the app — `cfg.agents.list` is a stale TS
-      // type from before per-agent overrides moved out of the merged
-      // config; the Go side never populates it.
+      // 智能体自身的模型覆盖已在服务端由 handleGetAgent → agentScopeModel
+      // 解析（scope=agent, name=agents.defaults 的配置行）。从 agentRec
+      // 读取可保持此页面与应用其余部分同步——`cfg.agents.list` 是每智能体
+      // 覆盖移出合并配置之前的过时 TS 类型；Go 端不会填充它。
       setModel(agentRec?.model || "");
-      // Backend always emits a definitive boolean (see agentShareModelConfig);
-      // the ?? guards against a stale shape if the page is hit before
-      // the binary upgrade lands.
+      // 后端总是发出确定的布尔值（见 agentShareModelConfig）；
+      // ?? 防护页面在二进制升级落地前被访问时的过时结构。
       setShareModelConfig(agentRec?.shareModelConfig ?? true);
     } finally {
       setLoading(false);
@@ -308,11 +300,10 @@ export default function AgentModelsPage() {
     setDialogOpen(true);
   };
 
-  // Preset switching is treated as "give me a clean slate for this
-  // provider" — same way it overwrites apiBase/apiType, it also
-  // refreshes the models list with the preset's known model IDs. Edit
-  // mode (openEditDialog) loads stored models directly and never goes
-  // through this path, so user-saved configurations are never clobbered.
+  // 预设切换被视为"给我该 Provider 的全新起点"——与覆盖
+  // apiBase/apiType 相同，它也会用预设的已知模型 ID 刷新
+  // 模型列表。编辑模式（openEditDialog）直接加载存储的模型
+  // 且不会经过此路径，因此用户保存的配置永远不会被覆盖。
   const handlePresetChange = (preset: string) => {
     setFormPreset(preset);
     const cfg = PROVIDER_PRESETS[preset];
@@ -456,9 +447,8 @@ export default function AgentModelsPage() {
     setSaving(true);
     try {
       await deleteProvider(row.id);
-      // If the active model came from this provider, the override is
-      // now dangling — clear it so the agent falls back through the
-      // chain at runtime.
+      // 如果当前模型来自此 Provider，覆盖现在悬空了——清除它
+      // 以便智能体在运行时通过链回退。
       if (model.startsWith(`${row.name}/`)) {
         await updateAgent(agentId, { model: "" });
       }
@@ -473,7 +463,7 @@ export default function AgentModelsPage() {
     setModel(value);
     setSaving(true);
     try {
-      // Empty string means "clear override → inherit system default".
+      // 空字符串表示"清除覆盖 → 继承系统默认值"。
       await updateAgent(agentId, { model: value });
       flashSaved();
     } finally {
@@ -492,10 +482,10 @@ export default function AgentModelsPage() {
     }
   };
 
-  // Optimistic — flip the UI immediately, then persist. On failure we
-  // revert. invalidateAgent on the server side drops every UserSpace
-  // that lazy-attached this agent so chatters see the new gate on
-  // their next message, no process restart required.
+  // 乐观更新——立即翻转 UI，然后持久化。失败时回滚。
+  // 服务端的 invalidateAgent 会丢弃所有惰性挂载此智能体的
+  // UserSpace，使聊天者在下一条消息时看到新的门控，
+  // 无需进程重启。
   const handleShareToggle = async (next: boolean) => {
     const prev = shareModelConfig;
     setShareModelConfig(next);
@@ -545,7 +535,7 @@ export default function AgentModelsPage() {
         </div>
       </div>
 
-      {/* Share with chatters */}
+      {/* 与聊天者共享模型配置 */}
       <div className="rounded-lg border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-start gap-3 min-w-0">
@@ -575,7 +565,7 @@ export default function AgentModelsPage() {
         </div>
       </div>
 
-      {/* Active Model */}
+      {/* 当前模型 */}
       <div className="rounded-lg border border-border bg-card p-5">
         <div className="flex items-center justify-between gap-2 mb-3">
           <div className="flex items-center gap-2">
@@ -659,7 +649,7 @@ export default function AgentModelsPage() {
         </p>
       </div>
 
-      {/* Providers Table */}
+      {/* 服务商表格 */}
       {providers.length === 0 ? (
         <div className="rounded-lg border border-border bg-card">
           <div className="flex flex-col items-center justify-center py-16">
@@ -769,7 +759,7 @@ export default function AgentModelsPage() {
         </div>
       )}
 
-      {/* Add/Edit Provider Dialog */}
+      {/* 添加/编辑服务商对话框 */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>

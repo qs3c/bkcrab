@@ -61,32 +61,27 @@ const AGENT_TABS: Array<{ id: AgentSettingsTab; label: string; icon: TabIcon }> 
   { id: "usage", label: "令牌用量", icon: CoinsIcon },
 ];
 
-// Runtime intentionally lives only on the standalone /settings/runtime
-// page (super_admin-gated) — it's a deployment-wide knob, not the kind
-// of thing the average chatter wants in their per-agent dialog.
+// Runtime 故意只放在独立的 /settings/runtime 页面（由 super_admin 门控）——
+// 它是部署级别的开关，不是普通聊天者会在每个智能体对话框中需要的东西。
 const USER_TABS: Array<{ id: AgentSettingsTab; label: string; icon: TabIcon }> = [
   { id: "account", label: "账户", icon: UserCog },
   { id: "general", label: "常规", icon: Palette },
-  // About surfaces the gateway version + upgrade hint — only useful
-  // to operators (super_admin), filtered out below for regular users.
+  // About 展示网关版本号和升级提示 — 仅对运维人员（super_admin）有用，
+  // 下面对普通用户过滤掉了。
   { id: "about", label: "关于", icon: InfoIcon },
 ];
 
-// Tabbed configuration panel. Hosts both the per-agent pages
-// (Customize / Models / Skills / Channels / Scheduler) and the
-// per-user pages (Account / General / Runtime[admin-only]) so a
-// click on the sidebar Settings button covers everything the user
-// could want to change. Each tab mounts the existing page component
-// lazily — switching tabs unmounts the previous panel, which is fine
-// because the pages are self-contained and re-fetch on mount.
-//
-// role="viewer" hides the owner-only Agent tabs (Profile, Customize,
-// Skills, Scheduler, Usage) and only exposes Models + Channels under
-// Agent — viewers can pin their own model for the shared agent and
-// bind their own IM accounts, but can't touch the agent's identity /
-// skills / scheduling. The Models tab id is shared with owners; the
-// render branch below picks the agent-scope page for owners and the
-// user-scope page for viewers (same tab slot, different writer).
+// 标签式配置面板。同时承载每个智能体的页面（自定义 / 模型 / 技能 /
+  // 渠道 / 定时任务）和每个用户的页面（账户 / 常规 / Runtime[仅管理员]），
+  // 这样点击侧边栏的设置按钮就能覆盖用户可能想修改的一切。每个标签
+  // 懒加载现有页面组件 — 切换标签会卸载上一个面板，这没问题，因为
+  // 页面都是自含的并在挂载时重新拉取。
+  //
+  // role="viewer" 隐藏仅限所有者的智能体标签（资料、自定义、技能、
+  // 定时任务、用量），仅暴露智能体下的模型 + 渠道 — 访问者可以为自己的
+  // 共享智能体固定模型，绑定自己的 IM 账号，但不能触碰智能体的身份 /
+  // 技能 / 定时任务。模型标签 ID 与所有者共享；下面的渲染分支为所有者
+  // 选择智能体范围页面、为访问者选择用户范围页面（同一标签位，不同写入方）。
 export function AgentSettingsDialog({
   open,
   onOpenChange,
@@ -99,12 +94,11 @@ export function AgentSettingsDialog({
   onOpenChange: (open: boolean) => void;
   defaultTab?: AgentSettingsTab;
   role?: "owner" | "viewer";
-  // userOnly hides the Agent section entirely. Used by the platform
-  // sidebar's Settings button, which has no agent context — it should
-  // only expose Account + General.
+  // userOnly 隐藏整个智能体部分。用于平台侧边栏的设置按钮，
+  // 该按钮没有智能体上下文 — 仅应暴露账户 + 常规。
   userOnly?: boolean;
-  // isAdmin gates super_admin-only tabs (currently just About — the
-  // gateway version + upgrade hint is operator info, not end-user info).
+  // isAdmin 门控 super_admin 专用标签（目前仅 About — 网关版本+
+  // 升级提示属于运维信息，不是终端用户信息）。
   isAdmin?: boolean;
 }) {
   const agentTabs = userOnly
@@ -113,16 +107,15 @@ export function AgentSettingsDialog({
       ? AGENT_TABS.filter((t) => t.id === "models" || t.id === "channels")
       : AGENT_TABS;
   const userTabs = isAdmin ? USER_TABS : USER_TABS.filter((t) => t.id !== "about");
-  // Pick the landing tab: userOnly opens on General (User section);
-  // viewers land on Models (the first Agent tab they have); owners on
-  // Profile.
+  // 选择初始标签：userOnly 打开常规（用户部分）；访问者落在模型
+  // （其拥有的第一个智能体标签）；所有者落在资料。
   const initialTab: AgentSettingsTab =
     defaultTab ??
     (userOnly ? "general" : role === "viewer" ? "models" : "profile");
   const [tab, setTab] = React.useState<AgentSettingsTab>(initialTab);
 
-  // Reset to the requested tab whenever the dialog re-opens, so a fresh
-  // click on the sidebar Settings button always lands on the same place.
+  // 对话框重新打开时重置到请求的标签，确保再次点击侧边栏
+  // 设置按钮时总是落在同一位置。
   React.useEffect(() => {
     if (open) setTab(initialTab);
   }, [open, initialTab]);

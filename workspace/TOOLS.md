@@ -1,20 +1,20 @@
-# Tools Reference
+# 工具参考
 
-## Built-in Tools
+## 内置工具
 
 ### exec
-Execute shell commands with timeout and safety checks.
-- Dangerous commands (rm -rf /, mkfs, etc.) are blocked
-- Default timeout: 30 seconds
+执行 Shell 命令，带超时和安全检查。
+- 危险命令（rm -rf /、mkfs 等）会被阻止
+- 默认超时：30 秒
 
 ### read_file
-Read file contents. Supports absolute paths or paths relative to the workspace.
+读取文件内容。支持绝对路径或相对于工作区的路径。
 
 ### write_file
-Write content to a file. Creates parent directories as needed.
+将内容写入文件。按需创建父目录。
 
 ### list_dir
-List files and directories with size information.
+列出文件和目录，包含大小信息。
 
 ### message
-Send a message to a specific channel and chat ID.
+向指定渠道和聊天 ID 发送消息。
