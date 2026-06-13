@@ -11,24 +11,21 @@ import (
 	"github.com/qs3c/bkclaw/internal/provider"
 )
 
-// subagentDefaultTimeout caps the wall time one subagent can spend on
-// its loop, independent of how long the parent's overall turn has left.
-// Big enough for ~15-20 camoufox-cli-driven iterations including cold-
-// start. Smaller than agentTurnTimeout so a parallel fan-out where one
-// subagent goes slow doesn't take the rest down with it; parent ctx
-// cancel still propagates so a genuinely killed parent kills every
-// subagent.
+// subagentDefaultTimeout 限制单个子代理在循环中可花费的挂钟时间，
+// 与父代理整体轮次的剩余时间无关。足够大以容纳约 15-20 次
+// camoufox-cli 驱动的迭代（含冷启动）。小于 agentTurnTimeout，这样
+// 并行扇出中一个慢子代理不会拖垮其他子代理；父代理 ctx 取消
+// 仍会传播，真正被终止的父代理会终止所有子代理。
 const subagentDefaultTimeout = 15 * time.Minute
 
-// RunSubagent implements tools.SubagentRunner so the delegate_task tool
-// can call back into the Agent without creating an import cycle.
+// RunSubagent 实现 tools.SubagentRunner，使 delegate_task 工具
+// 可以回调到 Agent 而不产生导入循环。
 //
-// Always emits a `subagent_progress` event with phase="done" on exit
-// (success, error, or panic-via-defer) so the frontend's "currently
-// delegating" indicator can clear cleanly between serial sub-agent
-// runs — even when the next sub-agent doesn't start immediately or
-// the parent decides to handle the result before issuing another
-// delegate_task.
+// 退出时始终发送 phase="done" 的 `subagent_progress` 事件（无论
+// 成功、错误还是通过 defer 捕获的 panic），使前端的"正在委托"
+// 指示器可以在串行子代理运行之间干净地清除——即使下一个子代理
+// 不立即启动或父代理决定在发出另一个 delegate_task 之前处理
+// 结果。
 func (a *Agent) RunSubagent(ctx context.Context, task string, maxIterations int) (out string, err error) {
 	defer func() {
 		emitEvent(ctx, ChatEvent{Type: "subagent_progress", Data: map[string]any{
@@ -38,31 +35,30 @@ func (a *Agent) RunSubagent(ctx context.Context, task string, maxIterations int)
 	return a.runSubagentLoop(ctx, task, maxIterations)
 }
 
-// runSubagentLoop is a self-contained ReAct loop used by delegate_task.
+// runSubagentLoop 是 delegate_task 使用的自包含 ReAct 循环。
 //
-// What it shares with HandleMessage:
-//   - the parent's provider, model, tool registry, and SDK engine
-//   - the same loop-detection, all-failed-rounds-disable-tools, and
-//     cap-reached forced-delivery patterns
+// 与 HandleMessage 共享的：
+//   - 父代理的 provider、模型、工具注册表和 SDK 引擎
+//   - 相同的循环检测、全失败轮次禁用工具和达到上限强制交付模式
 //
-// What it deliberately does NOT do (vs HandleMessage):
-//   - no session persistence — the sub-agent's working messages live in
-//     a private slice and never touch session_messages
-//   - no chat-event emission — the parent's chat UI sees the
-//     delegate_task tool call + final tool_result only, not the sub-
-//     agent's intermediate steps
-//   - no hooks, no skill-store refresh, no compaction, no runPostTurn
-//   - no slash-command / plan-mode short-circuit (caller is the parent
-//     model via the delegate_task tool, not a human composer)
+// 与 HandleMessage 故意不做的：
+//   - 无会话持久化——子代理的工作消息存在于私有切片中，
+//     永远不会触及 session_messages
+//   - 无聊天事件发射——父代理的聊天 UI 仅看到
+//     delegate_task 工具调用 + 最终 tool_result，而非子代理的
+//     中间步骤
+//   - 无钩子、无技能存储刷新、无压缩、无 runPostTurn
+//   - 无斜杠命令/计划模式短路（调用者是父代理模型通过
+//     delegate_task 工具，而非人类编写者）
 //
-// delegate_task itself is filtered out of the sub-agent's toolset so
-// sub-agents can't spawn further sub-agents (v1 nesting limit).
+// delegate_task 本身被子代理工具集过滤掉，因此子代理不能
+// 再生成子代理（v1 嵌套限制）。
 //
-// Return contract: the final synthesized text in all "we got something"
-// cases — clean exit, cap-hit forced delivery, or loop-detection abort.
-// A non-nil error is returned only for plumbing failures (no provider,
-// transient API error during a Chat call); callers fold that into the
-// tool_result so the parent agent can react.
+// 返回契约：所有"我们得到了内容"情况下返回合成的最终文本——
+// 干净退出、达到上限强制交付或循环检测中止。
+// 仅对管道故障（无 provider、Chat 调用期间的瞬态 API 错误）
+// 返回非 nil 错误；调用者将其折叠到 tool_result 中，
+// 使父代理可以做出反应。
 func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations int) (string, error) {
 	if a.provider == nil {
 		return "", fmt.Errorf("agent has no provider configured")
@@ -74,9 +70,9 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 		maxIterations = 20
 	}
 
-	// Each subagent gets its own bounded ctx so a slow sibling can't
-	// drain the rest of a parallel fan-out. Parent cancel still wins —
-	// we're wrapping, not detaching.
+	// 每个子代理获得自己的有界 ctx，使慢速兄弟不会
+	// 耗尽并行扇出的其余部分。父代理取消仍然优先——
+	// 我们是包装而非分离。
 	subCtx, cancel := context.WithTimeout(ctx, subagentDefaultTimeout)
 	defer cancel()
 	ctx = subCtx
@@ -87,9 +83,8 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 		{Role: "user", Content: task},
 	}
 
-	// Filter delegate_task out of the sub-agent's toolset — no nesting
-	// in v1. Other tools (web_fetch, exec, file ops, MCP, …) flow
-	// through unchanged.
+	// 从子代理工具集中过滤 delegate_task——v1 不允许嵌套。
+	// 其他工具（web_fetch、exec、文件操作、MCP 等）原样传递。
 	var toolDefs []provider.Tool
 	for _, t := range a.registry.Definitions() {
 		if t.Function.Name == "delegate_task" {
@@ -113,13 +108,12 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 			"iteration", i+1,
 			"max", maxIterations,
 		)
-		// Heartbeat to the parent's chat stream so the UI can show
-		// the user that a sub-agent is making progress and where it
-		// is. Without this the delegate_task tool card looks frozen
-		// for the entire sub-agent run (often 5-15 min). We emit at
-		// the start of every iteration plus right before tool execution
-		// (with the tool name) so the user sees both "thinking" and
-		// "running web_search" phases.
+		// 向父代理的聊天流发送心跳，使 UI 可以向用户显示
+		// 子代理正在取得进展及其位置。没有这个，delegate_task
+		// 工具卡片在整个子代理运行期间（通常 5-15 分钟）
+		// 看起来会卡住。我们在每次迭代开始时和工具执行之前
+		// （带工具名称）发射事件，使用户既能看到"思考中"也能
+		// 看到"正在运行 web_search"阶段。
 		emitEvent(ctx, ChatEvent{Type: "subagent_progress", Data: map[string]any{
 			"iteration": i + 1,
 			"max":       maxIterations,
@@ -143,10 +137,9 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 
 		resp, err := a.provider.Chat(ctx, llmMsgs, callTools, a.model, a.maxTokens, a.temperature)
 		if err != nil {
-			// If the ctx itself expired, the parent caller has more
-			// useful framing than "context deadline exceeded" mid-
-			// stream — surface the timeout explicitly so the parent
-			// agent can decide to retry with a tighter task scope.
+			// 如果 ctx 本身已过期，父调用者有比流中间
+			// "context deadline exceeded" 更有用的框架——显式
+			// 呈现超时信息，使父代理可以决定用更窄的任务范围重试。
 			if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 				return "", fmt.Errorf(
 					"subagent ran out of its %s wall-time budget at iteration %d — task was too large; the parent should retry with a tighter scope or lower max_iterations",
@@ -167,7 +160,7 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 			RawAssistant: resp.RawAssistant,
 		})
 
-		// Loop detection: same shape as HandleMessage but on private state.
+		// 循环检测：与 HandleMessage 相同的形状但在私有状态上。
 		loopDetected := false
 		for _, tc := range resp.ToolCalls {
 			s := sig{name: tc.Function.Name, hash: sha256.Sum256([]byte(tc.Function.Arguments))}
@@ -191,9 +184,9 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 			break
 		}
 
-		// Second heartbeat: tools are about to run. Surface their names
-		// so the UI can show "running web_search" / "running exec
-		// (camoufox-cli open …)" instead of just a spinner.
+		// 第二次心跳：工具即将运行。展示它们的名称，
+		// 使 UI 可以显示"正在运行 web_search"/"正在运行
+		// exec (camoufox-cli open …)"而不仅仅是一个加载指示器。
 		toolNames := make([]string, 0, len(resp.ToolCalls))
 		for _, tc := range resp.ToolCalls {
 			toolNames = append(toolNames, tc.Function.Name)
@@ -227,8 +220,8 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 		}
 	}
 
-	// Cap reached — forced-delivery turn with tools off. Same nudge as
-	// HandleMessage; the system message reads naturally in both contexts.
+	// 达到上限——关闭工具的强制交付轮次。与 HandleMessage
+	// 相同的催促；系统消息在两种上下文中都读起来很自然。
 	slog.Warn("subagent max iterations reached — forcing final delivery",
 		"agent", a.name, "max", maxIterations)
 	emitEvent(ctx, ChatEvent{Type: "subagent_progress", Data: map[string]any{
@@ -247,11 +240,11 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 	return finalResp.Content, nil
 }
 
-// subagentSystemSuffix is appended to the agent's normal system prompt
-// when running under runSubagentLoop. Spells out the contract: the
-// reply is a tool result for the parent, not chat with a human. Without
-// this, sub-agents kept producing chatty "Hi! I'll help you find …"
-// preambles that the parent then had to strip before splicing.
+// subagentSystemSuffix 附加到代理的常规系统提示词后面，
+// 在 runSubagentLoop 下运行时使用。阐明契约：回复是父代理的
+// 工具结果，不是与人类的聊天。没有这个，子代理持续产生
+// 唠叨的"嗨！我来帮你找……"前文，父代理之后不得不在
+// 拼接前剥离它们。
 func subagentSystemSuffix() string {
 	return "\n\n# Subagent mode\n\n" +
 		"You are running as a delegated sub-agent invoked by a parent " +

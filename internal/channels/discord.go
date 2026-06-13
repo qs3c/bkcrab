@@ -18,7 +18,7 @@ var (
 	discordPlainMentionRe = regexp.MustCompile(`@(\w+)`)
 )
 
-// Discord implements the Channel interface for Discord bots.
+// Discord 实现了 Discord bot 的 Channel 接口。
 type Discord struct {
 	session       *discordgo.Session
 	bus           *bus.MessageBus
@@ -28,7 +28,7 @@ type Discord struct {
 	botGlobalName string
 }
 
-// NewDiscord creates a new Discord channel instance.
+// NewDiscord 创建新的 Discord 渠道实例。
 func NewDiscord(botToken string, accountID string, mb *bus.MessageBus) (*Discord, error) {
 	dg, err := discordgo.New("Bot " + botToken)
 	if err != nil {
@@ -61,14 +61,14 @@ func (d *Discord) BotUsername() string {
 	return d.botUsername
 }
 
-// Start connects to Discord gateway and blocks until ctx is cancelled.
+// Start 连接到 Discord 网关并阻塞直到 ctx 被取消。
 func (d *Discord) Start(ctx context.Context) error {
 	if err := d.session.Open(); err != nil {
 		return err
 	}
 	defer d.session.Close()
 
-	// Cache bot user info
+	// 缓存 bot 用户信息
 	d.botUserID = d.session.State.User.ID
 	d.botUsername = d.session.State.User.Username
 	d.botGlobalName = d.session.State.User.GlobalName
@@ -86,19 +86,17 @@ func (d *Discord) Start(ctx context.Context) error {
 	return nil
 }
 
-// registerCommands publishes the bot's slash-command set to Discord so the
-// native `/` autocomplete picker surfaces them (mirrors telegram.go's
-// registerCommands). Without this, users have to type `/new` as plain text
-// — Discord won't suggest it.
+// registerCommands 将 bot 的斜杠命令集发布到 Discord，以便原生
+// `/` 自动补全选择器显示它们（镜像 telegram.go 的 registerCommands）。
+// 没有它，用户必须将 `/new` 作为纯文本输入——Discord 不会建议它。
 //
-// Registered as GLOBAL commands (empty guild ID) so they're available in
-// DMs as well as every guild the bot is in. Global commands can take a
-// few minutes to propagate across Discord's cache on first publish; after
-// that, edits via BulkOverwrite are usually instant.
+// 注册为全局命令（空 guild ID），以便在 DM 和 bot 所在的每个
+// guild 中都可用。全局命令在首次发布时可能需要几分钟才能在
+// Discord 缓存中传播；之后通过 BulkOverwrite 编辑通常立即可见。
 //
-// The interaction handler (onInteractionCreate) synthesizes an
-// InboundMessage with text `/<cmd> <args>` so the existing slash handler
-// in agent/slash.go runs unchanged — no duplicate slash logic on this side.
+// 交互处理程序（onInteractionCreate）合成一个文本为 `/<cmd> <args>`
+// 的 InboundMessage，以便现有的斜杠处理程序在 agent/slash.go 中
+// 不变运行——此侧无重复斜杠逻辑。
 func (d *Discord) registerCommands() {
 	appID := d.session.State.User.ID
 	if appID == "" {
@@ -160,32 +158,28 @@ func (d *Discord) registerCommands() {
 	slog.Info("discord commands registered", "account", d.accountID, "count", len(cmds))
 }
 
-// onInteractionCreate handles native slash-command clicks from Discord's
-// autocomplete picker. Discord delivers these as Interactions, not as
-// MessageCreate events — without this handler, clicking `/new` shows
-// "The application did not respond" in the UI and the slash never reaches
-// the agent's handleSlashCommand.
+// onInteractionCreate 处理来自 Discord 自动补全选择器的原生斜杠命令点击。
+// Discord 将这些作为 Interaction 传递，而非 MessageCreate 事件——没有此
+// 处理程序，点击 `/new` 会在 UI 中显示 "The application did not respond"，
+// 且斜杠永远无法到达 agent 的 handleSlashCommand。
 //
-// Flow: ACK the interaction ephemerally (only the clicker sees it) within
-// the 3-second window, then push a synthetic InboundMessage with text
-// `/<cmd> <args>` so the standard slash path runs and posts the reply as
-// a normal channel message. The ephemeral ACK is brief and self-explains
-// what the bot is doing; the real reply lands in the channel as usual.
+// 流程：在 3 秒窗口内临时确认交互（仅点击者可见），然后推送一个文本为
+// `/<cmd> <args>` 的合成 InboundMessage，使标准斜杠路径运行并将回复作为
+// 正常渠道消息发布。临时确认简短且自我解释 bot 正在做什么；真实回复
+// 照常落在渠道中。
 //
-// For group (guild) interactions we inject the bot's username into
-// Mentions so routing.go's agentByMention resolves THIS bot as the
-// target — clicking the bot's own command is intent-equivalent to
-// @-mentioning it.
+// 对于群组（guild）交互，我们将 bot 的用户名注入 Mentions，以便
+// routing.go 的 agentByMention 将此 bot 解析为目标——点击 bot 自身
+// 的命令在意图上等同于 @提及它。
 func (d *Discord) onInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i.Type != discordgo.InteractionApplicationCommand {
 		return
 	}
 	data := i.ApplicationCommandData()
 
-	// Build the text representation `/<cmd> <arg1> <arg2>` so the slash
-	// handler parses it via the same strings.Fields path as a typed
-	// command. Option order follows the registered schema (single arg per
-	// command today), so this is just space-joining option values.
+	// 构建文本表示 `/<cmd> <arg1> <arg2>`，以便斜杠处理程序通过
+	// 与输入命令相同的 strings.Fields 路径解析。选项顺序遵循
+	// 注册的 schema（目前每个命令单个参数），因此这只是空格连接选项值。
 	var b strings.Builder
 	b.WriteString("/")
 	b.WriteString(data.Name)
@@ -195,8 +189,8 @@ func (d *Discord) onInteractionCreate(s *discordgo.Session, i *discordgo.Interac
 	}
 	text := b.String()
 
-	// Determine peer kind + sender identity. In guilds, the user info is
-	// nested under Member; in DMs, it's at the top level.
+	// 确定 peer 类型 + 发送者身份。在 guild 中，用户信息嵌套在 Member 下；
+	// 在 DM 中，在顶层。
 	peerKind := "dm"
 	if i.GuildID != "" {
 		peerKind = "group"
@@ -216,19 +210,16 @@ func (d *Discord) onInteractionCreate(s *discordgo.Session, i *discordgo.Interac
 		senderName = u.Username
 	}
 
-	// Group routing requires the bot to be in msg.Mentions for
-	// agentByMention to pick THIS bot. Clicking the bot's own slash
-	// command is intent-equivalent — inject the username so the
-	// gateway routes the synthetic message to us instead of dropping
-	// it as an unaddressed group message.
+	// 群组路由要求 bot 在 msg.Mentions 中，以便 agentByMention 选择此 bot。
+	// 点击 bot 自身的斜杠命令在意图上等同——注入用户名，以便网关将合成
+	// 消息路由给我们，而非将其丢弃为未寻址的群组消息。
 	var mentions []string
 	if peerKind == "group" {
 		mentions = []string{d.botUsername}
 	}
 
-	// ACK the interaction ephemerally so Discord clears the
-	// "thinking..." spinner immediately. The real reply lands in the
-	// channel as a normal bot message via the outbound path.
+	// 临时确认交互，使 Discord 立即清除 "正在思考..." 旋转器。
+	// 真实回复通过出站路径作为正常 bot 消息落在渠道中。
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
@@ -247,14 +238,12 @@ func (d *Discord) onInteractionCreate(s *discordgo.Session, i *discordgo.Interac
 		"from", u.Username,
 	)
 
-	// MessageID is intentionally left empty. Slash commands arrive as
-	// Discord *interactions*, not channel messages — i.ID is the
-	// interaction id, which can't be used as a MessageReference target
-	// (Discord 400s with MESSAGE_REFERENCE_UNKNOWN_MESSAGE). The
-	// outbound path keys "send as reply" off ReplyToMsgID != "", so
-	// leaving it blank makes us send a plain channel message instead
-	// of a referenced one. Group dedup uses chatID+userID+text hash,
-	// not MessageID, so omitting it doesn't break anti-replay.
+	// MessageID 故意留空。斜杠命令作为 Discord *交互* 到达，而非渠道
+	// 消息——i.ID 是交互 id，不能用作 MessageReference 目标
+	// （Discord 会以 MESSAGE_REFERENCE_UNKNOWN_MESSAGE 返回 400）。
+	// 出站路径通过 ReplyToMsgID != "" 判断"作为回复发送"，因此将其
+	// 留空使我们发送普通渠道消息而非引用消息。群组去重使用
+	// chatID+userID+text 哈希而非 MessageID，因此省略它不会破坏防重放。
 	d.bus.Inbound <- bus.InboundMessage{
 		Channel:    "discord",
 		AccountID:  d.accountID,
@@ -267,9 +256,9 @@ func (d *Discord) onInteractionCreate(s *discordgo.Session, i *discordgo.Interac
 	}
 }
 
-// Send sends a message to a Discord channel.
+// Send 向 Discord 渠道发送消息。
 func (d *Discord) Send(chatID string, text string) error {
-	// Discord has a 2000 char limit; split if needed
+	// Discord 每条消息有 2000 字符限制；需要时拆分
 	for len(text) > 0 {
 		chunk := text
 		if len(chunk) > 2000 {
@@ -285,32 +274,25 @@ func (d *Discord) Send(chatID string, text string) error {
 	return nil
 }
 
-// SendMessage delivers text + any pre-resolved MediaItems to Discord.
-// Discord renders standard markdown natively (bold/italic/code/lists),
-// so msg.Text goes through unchanged. MediaItems upload as message
-// attachments — Discord auto-renders images inline. Single
-// ChannelMessageSendComplex call carries both, but if there's a long
-// body that needs chunking we send the body chunked first and the
-// files on the last chunk.
+// SendMessage 将文本 + 任何预解析的 MediaItems 投递到 Discord。
+// Discord 原生渲染标准 markdown（粗体/斜体/代码/列表），因此 msg.Text
+// 原样通过。MediaItems 作为消息附件上传——Discord 自动内联渲染图片。
+// 单次 ChannelMessageSendComplex 调用同时承载两者，但如果正文较长
+// 需要分块，我们先发送分块的正文，最后一块附带文件。
 //
-// When msg.ReplyToMsgID is set the first outbound message attaches a
-// MessageReference so Discord renders our reply as a native "Replying
-// to @sender" quote bubble and pings them — without this, multi-user
-// channels turn into a guessing game of which question each bot reply
-// is answering. Subsequent chunks ship without the reference so a
-// chunked answer doesn't produce N quote bubbles + N pings.
-// FailIfNotExists stays at the zero value (false) so a stale / deleted
-// source message degrades to a plain send instead of dropping the
-// reply on the floor.
+// 当 msg.ReplyToMsgID 设置时，第一条出站消息附加 MessageReference，
+// 使 Discord 将我们的回复渲染为原生的 "Replying to @sender" 引用气泡
+// 并通知对方——没有这个，多用户渠道中每个 bot 回复回答哪个问题就成了
+// 猜谜游戏。后续分块不带引用发送，这样分块答案不会产生 N 个引用气泡
+// + N 次通知。FailIfNotExists 保持零值（false），以便过时/已删除的源消息
+// 降级为普通发送而非丢弃回复。
 func (d *Discord) SendMessage(msg bus.OutboundMessage) error {
 	if msg.Text != "" {
-		// Discord 2000-char per-message limit. Send N-1 chunks
-		// without files, then the final chunk with files attached so
-		// the embedded preview lands at the end of the conversation.
-		// Tables get flattened first — Discord renders bold/italic/
-		// code/lists natively but ignores GFM tables (pipes show as
-		// raw text); FlattenMarkdownTables turns each into a plain
-		// "label: value" / middle-dot block that scans cleanly.
+		// Discord 2000 字符每条消息限制。先发送 N-1 个无文件块，
+		// 然后在最后一个块附带文件，使嵌入预览出现在对话末尾。
+		// 首先展平表格——Discord 原生渲染粗体/斜体/代码/列表但忽略
+		// GFM 表格（管道显示为原始文本）；FlattenMarkdownTables 将每行
+		// 转换为清晰的 "label: value" / 中点块。
 		text := FlattenMarkdownTables(msg.Text)
 		chunks := splitDiscordMessage(text)
 		for i, chunk := range chunks {
@@ -327,16 +309,12 @@ func (d *Discord) SendMessage(msg bus.OutboundMessage) error {
 					Content:   chunk,
 					Reference: ref,
 				}); err != nil {
-					// Defense-in-depth: the MessageReference is purely
-					// cosmetic (renders the "Replying to @sender" quote
-					// bubble). If Discord rejects the referenced id —
-					// MESSAGE_REFERENCE_UNKNOWN_MESSAGE on a deleted
-					// source, an interaction id that slipped through,
-					// missing read perms on the channel, … — retry the
-					// same chunk without the reference so the reply
-					// still lands in the channel. Only retries when we
-					// actually attached a ref: errors on a plain send
-					// are real and propagate to the warn log.
+					// 深度防御：MessageReference 只是外观上的（渲染 "Replying to @sender"
+					// 引用气泡）。如果 Discord 拒绝引用的 id——删除消息上的
+					// MESSAGE_REFERENCE_UNKNOWN_MESSAGE、泄漏的交互 id、缺少
+					// 渠道读取权限等——则不带引用重试同一块，使回复仍然落在
+					// 渠道中。仅在确实附加了引用时重试：普通发送上的错误是
+					// 真实的并传播到警告日志。
 					if ref != nil {
 						if _, retryErr := d.session.ChannelMessageSendComplex(msg.ChatID, &discordgo.MessageSend{
 							Content: chunk,
@@ -425,7 +403,7 @@ func splitDiscordMessage(text string) []string {
 			out = append(out, text)
 			break
 		}
-		// Prefer a paragraph break so we don't tear sentences apart.
+		// 优先在段落断开处拆分，避免撕裂句子。
 		cut := strings.LastIndex(text[:2000], "\n\n")
 		if cut < 1000 {
 			cut = strings.LastIndex(text[:2000], "\n")
@@ -439,39 +417,37 @@ func splitDiscordMessage(text string) []string {
 	return out
 }
 
-// SendTyping sends a typing indicator to the Discord channel.
+// SendTyping 向 Discord 渠道发送输入指示器。
 func (d *Discord) SendTyping(chatID string) error {
 	return d.session.ChannelTyping(chatID)
 }
 
 func (d *Discord) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
-	// Ignore own messages
+	// 忽略自身消息
 	if m.Author.ID == d.botUserID {
 		return
 	}
 
-	// Determine peer kind
+	// 确定 peer 类型
 	peerKind := "dm"
 	if m.GuildID != "" {
 		peerKind = "group"
 	}
 
-	// Check if sender is a bot
+	// 检查发送者是否为 bot
 	isBot := m.Author.Bot
 
-	// Clean message text: replace <@ID> mentions with @username
+	// 清理消息文本：将 <@ID> 提及替换为 @username
 	text := m.Content
 	for _, u := range m.Mentions {
 		text = strings.ReplaceAll(text, "<@"+u.ID+">", "@"+u.Username)
 		text = strings.ReplaceAll(text, "<@!"+u.ID+">", "@"+u.Username)
 	}
 
-	// Collect @mentions. Discord only populates m.Mentions for the
-	// formal `<@USER_ID>` markup produced by the autocomplete picker;
-	// users on mobile or who skip the popup just type "@DisplayName"
-	// literally, which lands in m.Content untouched. Telegram/Slack
-	// already do a regex pass over text — match that here so the
-	// downstream gateway sees the bot mention either way.
+	// 收集 @提及。Discord 仅为自动补全选择器生成的正式 `<@USER_ID>` 标记
+	// 填充 m.Mentions；移动端用户或跳过弹窗的用户直接输入 "@DisplayName"，
+	// 原封不动地出现在 m.Content 中。Telegram/Slack 已经对文本做了正则
+	// 扫描——在此匹配以便下游网关无论哪种方式都能看到 bot 提及。
 	var mentions []string
 	seen := make(map[string]struct{})
 	addMention := func(name string) {
@@ -490,20 +466,18 @@ func (d *Discord) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCrea
 	for _, mm := range discordPlainMentionRe.FindAllStringSubmatch(text, -1) {
 		addMention(mm[1])
 	}
-	// If the bot was addressed by display name (GlobalName) rather than
-	// its lowercase Username, also inject the Username so the gateway's
-	// strict-equality match against BotUsername() resolves the bot.
+	// 如果 bot 被以显示名称（GlobalName）而非其小写用户名提及，
+	// 也注入用户名，以便网关对 BotUsername() 的严格相等匹配解析 bot。
 	if d.botGlobalName != "" {
 		if _, hit := seen[d.botGlobalName]; hit {
 			addMention(d.botUsername)
 		}
 	}
 
-	// Prefer the display name (GlobalName) over the unique handle so
-	// the chat panel renders "idoubi" (what Discord shows everywhere)
-	// rather than the post-username-overhaul lowercase handle
-	// "idoubicc". Falls back to Username when GlobalName is unset
-	// (legacy bots, freshly-migrated accounts, etc.).
+	// 优先使用显示名称（GlobalName）而非唯一句柄，以便聊天面板渲染
+	// "idoubi"（Discord 各处显示的内容），而非用户名大修后的
+	// 小写句柄 "idoubicc"。GlobalName 未设置时回退到 Username
+	//（旧版 bot、刚迁移的账号等）。
 	senderName := m.Author.GlobalName
 	if senderName == "" {
 		senderName = m.Author.Username

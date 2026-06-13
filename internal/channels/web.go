@@ -7,41 +7,35 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 )
 
-// WebChannel is the in-process fan-out for web chat clients. It satisfies
-// the Channel interface so channels.Manager can route bus.Outbound
-// messages with Channel="web" through it like any other channel — but
-// instead of pushing to an external service (Telegram / Discord / Slack)
-// it forwards to per-(agentID, sessionID) subscribers held open by SSE
-// handlers.
+// WebChannel 是 Web 聊天客户端的进程内扇出。它满足 Channel 接口，
+// 因此 channels.Manager 可以像任何其他渠道一样通过它路由
+// Channel="web" 的 bus.Outbound 消息——但它不是推送到外部服务
+//（Telegram / Discord / Slack），而是转发到由 SSE 处理程序保持打开的
+// 每 (agentID, sessionID) 订阅者。
 //
-// This is what fixes "WARN unknown outbound channel key=web:" for cron-
-// fired replies: the cron scheduler enqueues an outbound on the bus,
-// the channels manager finds WebChannel registered at "web:", and
-// WebChannel.SendMessage fans out to whichever browser tabs are
-// subscribed for that chat. Tabs that aren't subscribed (user closed
-// the page) silently drop — the message is already persisted on the
-// session row by the agent loop, so they'll see it on next reload.
+// 这修复了 cron 触发回复时出现 "WARN unknown outbound channel key=web:" 的问题：
+// cron 调度器在总线排队一个出站消息，channels 管理器找到注册在 "web:" 的
+// WebChannel，WebChannel.SendMessage 扇出到订阅该聊天的浏览器标签。未订阅
+// 的标签（用户关闭了页面）会静默丢弃——消息已经被 agent 循环保存在会话行中，
+// 下次加载时用户可以看到。
 type WebChannel struct {
 	mu          sync.RWMutex
 	subscribers map[string][]chan bus.OutboundMessage
 }
 
-// NewWebChannel returns a fresh WebChannel with no subscribers.
+// NewWebChannel 返回一个没有订阅者的全新 WebChannel。
 func NewWebChannel() *WebChannel {
 	return &WebChannel{
 		subscribers: make(map[string][]chan bus.OutboundMessage),
 	}
 }
 
-// Subscribe registers a channel to receive every OutboundMessage whose
-// (AgentID, ChatID) matches. Returns the channel and a cleanup func the
-// caller MUST defer to remove its slot — without it the slice grows
-// unbounded across reconnects.
+// Subscribe 注册一个 channel 来接收每条 (AgentID, ChatID) 匹配的
+// OutboundMessage。返回该 channel 和一个清理函数，调用方必须 defer
+// 调用以移除其槽位——没有它，切片会在重新连接时无限增长。
 //
-// Buffer size is intentionally small: cron messages arrive at human
-// pace, not high frequency, and falling behind is preferable to
-// unbounded memory growth on a stuck client. Drops are logged at the
-// send site.
+// 缓冲区大小有意设置得很小：cron 消息以人类速度到达，而非高频，
+// 且落后比卡住客户端的无界内存增长更可取。丢弃在发送处记录。
 func (w *WebChannel) Subscribe(agentID, chatID string) (<-chan bus.OutboundMessage, func()) {
 	key := webKey(agentID, chatID)
 	ch := make(chan bus.OutboundMessage, 8)
@@ -66,27 +60,25 @@ func (w *WebChannel) Subscribe(agentID, chatID string) (<-chan bus.OutboundMessa
 	return ch, cleanup
 }
 
-// Name returns "web".
+// Name 返回 "web"。
 func (w *WebChannel) Name() string { return "web" }
 
-// AccountID returns "" — web is a global channel, not per-bot.
+// AccountID 返回 "" —— web 是全局渠道，不是每 bot 的。
 func (w *WebChannel) AccountID() string { return "" }
 
-// BotUsername returns "" — n/a for the web channel.
+// BotUsername 返回 "" ——对 web 渠道不适用。
 func (w *WebChannel) BotUsername() string { return "" }
 
-// Start blocks until ctx is cancelled. There is no inbound side: web
-// chat requests come in through the dashboard SSE / OpenAI-compat
-// endpoints, not via this channel.
+// Start 阻塞直到 ctx 被取消。没有入站侧：web 聊天请求通过
+// 仪表板 SSE / OpenAI 兼容端点传入，而非通过此渠道。
 func (w *WebChannel) Start(ctx context.Context) error {
 	<-ctx.Done()
 	return nil
 }
 
-// Send is unused for the web channel — outbound deliveries always
-// arrive via SendMessage which carries the full OutboundMessage shape.
-// Implemented to satisfy the Channel interface; a stray caller would
-// have no way to address a specific session.
+// Send 对 web 渠道未使用——出站投递总是通过承载完整 OutboundMessage
+// 形状的 SendMessage 到达。为满足 Channel 接口而实现；混用调用方无法
+// 发现特定会话。
 func (w *WebChannel) Send(chatID, text string) error {
 	return w.SendMessage(bus.OutboundMessage{
 		Channel: "web",
@@ -95,9 +87,9 @@ func (w *WebChannel) Send(chatID, text string) error {
 	})
 }
 
-// SendMessage fans out msg to every subscriber bound to (msg.AgentID,
-// msg.ChatID). Subscribers whose buffer is full are skipped (not
-// blocked) so a single stuck client can't stall the cron scheduler.
+// SendMessage 将 msg 扇出到绑定到 (msg.AgentID, msg.ChatID) 的每个订阅者。
+// 缓冲区已满的订阅者会被跳过（不会阻塞），这样单个卡住的客户端不会
+// 停滞 cron 调度器。
 func (w *WebChannel) SendMessage(msg bus.OutboundMessage) error {
 	key := webKey(msg.AgentID, msg.ChatID)
 	w.mu.RLock()
@@ -107,14 +99,14 @@ func (w *WebChannel) SendMessage(msg bus.OutboundMessage) error {
 		select {
 		case ch <- msg:
 		default:
-			// buffer full — client is stuck; skip rather than block.
+			// 缓冲区已满——客户端卡住；跳过而非阻塞。
 		}
 	}
 	return nil
 }
 
-// SendTyping is a no-op for web — typing indicators are driven by the
-// dashboard's own UI state, not by a server signal.
+// SendTyping 对 web 是空操作——输入指示器由仪表板自身的 UI 状态驱动，
+// 而非服务器信号。
 func (w *WebChannel) SendTyping(chatID string) error { return nil }
 
 func webKey(agentID, chatID string) string {

@@ -1,7 +1,7 @@
 package config
 
-// ResolveToolProviderCfg returns the config for a provider name, falling back
-// to an empty value (not nil) so callers don't need to nil-check.
+// ResolveToolProviderCfg 返回指定名称的提供者配置，回退为空值（非 nil），
+// 以便调用方无需做 nil 检查。
 func (c *Config) ResolveToolProviderCfg(name string) ToolProviderCfg {
 	if c == nil || c.ToolProviders == nil {
 		return ToolProviderCfg{}
@@ -9,8 +9,8 @@ func (c *Config) ResolveToolProviderCfg(name string) ToolProviderCfg {
 	return c.ToolProviders[name]
 }
 
-// ResolveToolCategory returns the category config for categoryName (e.g.
-// "web_search"), falling back to an empty value.
+// ResolveToolCategory 返回 categoryName（例如 "web_search"）的分类配置，
+// 回退为空值。
 func (c *Config) ResolveToolCategory(categoryName string) ToolCategoryCfg {
 	if c == nil || c.Tools == nil {
 		return ToolCategoryCfg{}

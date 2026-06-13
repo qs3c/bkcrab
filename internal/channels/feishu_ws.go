@@ -9,22 +9,18 @@ import (
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 )
 
-// startLongConn runs the Feishu WebSocket client until ctx is done or
-// the SDK returns a fatal error. Subscribes to im.message.receive_v1
-// and reuses the existing dispatchInbound() path by translating the
-// SDK's typed event back into our internal feishuMessageEvent shape —
-// the rest of the pipeline (peer-kind detection, dedup ID, content
-// JSON unwrap) is identical to the webhook path.
+// startLongConn 运行飞书 WebSocket 客户端直到 ctx 完成或 SDK 返回致命错误。
+// 订阅 im.message.receive_v1 并通过将 SDK 的类型化事件转换回我们的内部
+// feishuMessageEvent 形状来重用现有的 dispatchInbound() 路径——管道的其余
+// 部分（对等类型检测、去重 ID、内容 JSON 解包）与 webhook 路径相同。
 //
-// We intentionally do NOT use the SDK's auth/send code; outbound
-// messages still go through Feishu.SendMessage / fetchBotInfo (own
-// tenant_access_token cache). The SDK is here purely as a transport
-// for inbound events because the long-conn protocol is protobuf-
-// framed and not worth hand-rolling (see feishu.go top-of-file note).
+// 我们故意不使用 SDK 的认证/发送代码；出站消息仍然通过
+// Feishu.SendMessage / fetchBotInfo（自己的 tenant_access_token 缓存）。
+// SDK 仅作为入站事件的传输，因为长连接协议是 protobuf 帧格式，
+// 不值得手写（见 feishu.go 文件顶部注释）。
 func (l *Feishu) startLongConn(ctx context.Context) error {
-	// NewEventDispatcher's first two args (verificationToken,
-	// encryptKey) are HTTP-mode concerns — the WS transport carries
-	// no signature/encryption, so empty strings are correct.
+	// NewEventDispatcher 的前两个参数（verificationToken、encryptKey）
+	// 是 HTTP 模式关注点——WS 传输不携带签名/加密，因此空字符串是正确的。
 	d := dispatcher.NewEventDispatcher("", "").
 		OnP2MessageReceiveV1(func(_ context.Context, ev *larkim.P2MessageReceiveV1) error {
 			l.dispatchInbound(sdkEventToInternal(ev))
@@ -36,13 +32,13 @@ func (l *Feishu) startLongConn(ctx context.Context) error {
 		larkws.WithAutoReconnect(true),
 	)
 	slog.Info("feishu long-connection starting", "account", l.accountID)
-	// SDK's Start blocks; it watches ctx and returns on cancel.
+	// SDK 的 Start 阻塞；它监视 ctx 并在取消时返回。
 	return cli.Start(ctx)
 }
 
-// sdkEventToInternal converts a larkim.P2MessageReceiveV1 into the
-// feishuMessageEvent shape dispatchInbound expects. SDK fields are
-// pointer-strings; nil is normalized to "" via deref.
+// sdkEventToInternal 将 larkim.P2MessageReceiveV1 转换为 dispatchInbound
+// 期望的 feishuMessageEvent 形状。SDK 字段是指针字符串；nil 通过解引用
+// 归一化为 ""。
 func sdkEventToInternal(ev *larkim.P2MessageReceiveV1) feishuMessageEvent {
 	var out feishuMessageEvent
 	if ev == nil || ev.Event == nil {

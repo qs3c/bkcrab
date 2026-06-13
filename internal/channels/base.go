@@ -7,48 +7,39 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 )
 
-// SplitMessageMarker is the on-the-wire control token the LLM emits to
-// ask an IM-style adapter (WeChat, …) to split a single outbound text
-// payload into multiple separate chat bubbles. We picked a token that
+// SplitMessageMarker 是 LLM 在线路上发出的控制标记，用于请求 IM 风格
+// 适配器（微信等）将单个出站文本负载拆分为多个独立聊天气泡。我们选择了一个
+// 不会出现在自然散文中的标记，这样 agent 不会在 markdown / 代码 / 引用文本
+// 中意外触发拆分；
 //
-//  1. won't appear in natural prose, so the agent can't trigger a split
-//     by accident in markdown / code / quoted text;
-//  2. survives WeChat's wechatStripMarkdown pass — it's not parsed as
-//     any markdown construct;
-//  3. reads as "control instruction" both to a human inspecting the
-//     transcript and to the LLM emitting it.
+//  1. 它能通过微信的 wechatStripMarkdown 处理——不会被解析为任何 markdown 构造；
+//  2. 对检查记录的人类和发出它的 LLM 来说都读作"控制指令"。
 //
-// The agent-side hint that introduces this token to the model lives in
-// internal/agent/loop.go under the per-turn system-prompt addendum, so
-// the protocol stays advertised in exactly one place.
+// 引入此标记的 agent 侧提示位于 internal/agent/loop.go 的每轮系统提示附录中，
+// 因此协议只在唯一的地点声明。
 const SplitMessageMarker = "<|split|>"
 
-// FlattenMarkdownTables converts every GFM-style table block in `text`
-// into a flat, no-syntax form that IM channels actually render. None of
-// the IM platforms we support (Discord, Telegram, LINE, Slack, Feishu,
-// WeChat) render markdown tables — they ship them as raw `|cell|cell|`
-// rows with a `|---|---|` separator line right in the middle, which
-// looks like a malfunction to the chatter.
+// FlattenMarkdownTables 将 `text` 中的每个 GFM 风格表格块转换为
+// IM 渠道实际渲染的平面无语法形式。我们支持的所有 IM 平台
+//（Discord、Telegram、LINE、Slack、飞书、微信）都不渲染 markdown
+// 表格——它们将表格作为原始 `|cell|cell|` 行加上 `|---|---|` 分隔线
+// 直接显示，这对话者来说看起来像故障。
 //
-// Detection is GFM-strict: a table is two-or-more consecutive lines
-// where the first is a header row, the second is the separator
-// (`|---|...` with optional alignment colons), and everything after is
-// data until we hit a non-table line. Anything that doesn't match
-// passes through byte-for-byte — quoted text containing pipes, code
-// fences, accidental "|" in prose all survive.
+// 检测是 GFM 严格的：表格是两行或更多连续行，其中第一行是标题行，
+// 第二行是分隔行（`|---|...`，可选对齐冒号），之后的所有内容是数据行
+// 直到遇到非表格行。任何不匹配的内容逐字节原样通过——包含管道的
+// 引用文本、代码围栏、散文中偶然出现的 "|" 都能存活。
 //
-// Output shape:
+// 输出形状：
 //
-//	2-column tables  → "header1: header2" line, then one
-//	                   "cell1: cell2" line per row. This is the most
-//	                   common shape LLMs emit (label / value lists)
-//	                   and reads cleanly as plain text.
-//	3+ column tables → cells joined with " · " (middle dot) per row,
-//	                   no separator. Loses alignment but stays on one
-//	                   line per row and scans as tabular at a glance.
+//	2 列表格  → "header1: header2" 行，然后每行一个 "cell1: cell2" 行。
+//	              这是 LLM 发出的最常见形状（标签/值列表），作为纯文本
+//	              可清晰阅读。
+//	3+ 列表格 → 单元格用 " · "（中点）连接，无分隔行。丢弃对齐但每行
+//	              保持一行且一目了然可扫描为表格。
 //
-// Cells are trimmed; the GFM escape `\|` round-trips back to a literal
-// `|` inside a cell. The separator row is dropped in every shape.
+// 单元格被修剪；GFM 转义 `\|` 在单元格内回退为字面 `|`。分隔行
+// 在任何形状下都被丢弃。
 func FlattenMarkdownTables(text string) string {
 	if !strings.Contains(text, "|") {
 		return text
@@ -56,9 +47,8 @@ func FlattenMarkdownTables(text string) string {
 	lines := strings.Split(text, "\n")
 	out := make([]string, 0, len(lines))
 	for i := 0; i < len(lines); {
-		// A table starts when we see a row immediately followed by a
-		// separator row. Anything else — even a stray pipe-bearing
-		// line — passes through.
+		// 当我们看到一行后面紧跟分隔行时，表格开始。其它情况——
+		// 即使是偶然包含管道的行——原样通过。
 		if i+1 < len(lines) && isMarkdownTableRow(lines[i]) && isMarkdownTableSeparator(lines[i+1]) {
 			header := parseMarkdownTableRow(lines[i])
 			i += 2 // consume header + separator
@@ -76,16 +66,15 @@ func FlattenMarkdownTables(text string) string {
 	return strings.Join(out, "\n")
 }
 
-// isMarkdownTableRow returns true when the trimmed line begins AND ends
-// with an unescaped `|` AND contains at least one more `|` between
-// them — the GFM table-row shape. A bare "|" or a single field doesn't
-// count; the false-positive cost on prose lines is otherwise too high.
+// isMarkdownTableRow 在修剪后的行以非转义 `|` 开头和结尾且中间
+// 包含至少一个 `|` 时返回 true——即 GFM 表格行形状。单独的 "|"
+// 或单字段不算；否则散文行上的误报成本太高。
 func isMarkdownTableRow(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	if len(trimmed) < 3 || trimmed[0] != '|' || trimmed[len(trimmed)-1] != '|' {
 		return false
 	}
-	// Need an interior pipe — count unescaped ones inside the bounds.
+	// 需要内部管道——计算边界内的非转义管道。
 	interior := trimmed[1 : len(trimmed)-1]
 	for i := 0; i < len(interior); i++ {
 		if interior[i] == '|' && (i == 0 || interior[i-1] != '\\') {
@@ -95,10 +84,9 @@ func isMarkdownTableRow(line string) bool {
 	return false
 }
 
-// isMarkdownTableSeparator returns true for a GFM table separator line
-// — a row where every cell matches `^\s*:?-+:?\s*$`. Tolerates an empty
-// pipe-only line for the same reason GFM does (some emitters skip the
-// dashes inside an empty column).
+// isMarkdownTableSeparator 对 GFM 表格分隔行返回 true——每行中
+// 每个单元格匹配 `^\s*:?-+:?\s*$` 的行。也容忍空管道行，原因与
+// GFM 相同（某些发送器在空列中跳过短划线）。
 func isMarkdownTableSeparator(line string) bool {
 	if !isMarkdownTableRow(line) {
 		return false
@@ -126,12 +114,11 @@ func isMarkdownTableSeparator(line string) bool {
 	return true
 }
 
-// parseMarkdownTableRow splits one table row into trimmed cells. Honors
-// GFM's `\|` escape so a cell containing a literal pipe round-trips.
+// parseMarkdownTableRow 将一个表格行拆分为修剪后的单元格。遵循
+// GFM 的 `\|` 转义，使包含字面管道的单元格可以往返。
 func parseMarkdownTableRow(line string) []string {
 	trimmed := strings.TrimSpace(line)
-	// Drop the leading/trailing pipes; without that the split produces
-	// a phantom empty cell at each end.
+	// 丢弃前导/尾部管道；否则拆分会在两端产生幽灵空单元格。
 	if strings.HasPrefix(trimmed, "|") {
 		trimmed = trimmed[1:]
 	}
@@ -158,8 +145,8 @@ func parseMarkdownTableRow(line string) []string {
 	return cells
 }
 
-// renderFlatTable formats the parsed rows for plain-text channels.
-// rows[0] is the header. See FlattenMarkdownTables for shape rules.
+// renderFlatTable 将解析后的行格式化为纯文本渠道文本。rows[0] 是标题。
+// 形状规则参见 FlattenMarkdownTables。
 func renderFlatTable(rows [][]string) string {
 	if len(rows) == 0 {
 		return ""
@@ -194,8 +181,7 @@ func renderFlatTable(rows [][]string) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		// Pad short rows to keep column alignment readable; missing
-		// cells appear as empty strings between dots.
+		// 填充短行以保持列对齐可读；缺失单元格在点之间显示为空字符串。
 		padded := r
 		for len(padded) < cols {
 			padded = append(padded, "")
@@ -205,12 +191,10 @@ func renderFlatTable(rows [][]string) string {
 	return b.String()
 }
 
-// SplitOutboundText splits a reply payload on SplitMessageMarker into
-// one chunk per bubble the adapter should send. Trims whitespace on each
-// chunk and drops empties so a trailing marker or accidental double-
-// split doesn't produce a blank message. Returns a single-element slice
-// for the common case where the agent didn't ask to split — adapters
-// can call this unconditionally without a branch.
+// SplitOutboundText 在 SplitMessageMarker 处将回复负载拆分为适配器应
+// 发送的每个气泡一个块。修剪每个块上的空白并丢弃空块，以避免尾部标记
+// 或意外双重拆分产生空白消息。在 agent 未请求拆分的常见情况下返回
+// 单元素切片——适配器可以无条件调用而无需分支。
 func SplitOutboundText(text string) []string {
 	parts := strings.Split(text, SplitMessageMarker)
 	out := make([]string, 0, len(parts))
@@ -224,21 +208,21 @@ func SplitOutboundText(text string) []string {
 	return out
 }
 
-// Channel is the interface that all channel implementations must satisfy.
+// Channel 是所有渠道实现必须满足的接口。
 type Channel interface {
-	// Name returns the channel type identifier (e.g. "telegram").
+	// Name 返回渠道类型标识符（例如 "telegram"）。
 	Name() string
-	// AccountID returns the account identifier within the channel.
+	// AccountID 返回渠道内的账号标识符。
 	AccountID() string
-	// BotUsername returns the bot's username for this channel (e.g. "mike_bkclaw_bot").
-	// Returns empty string if not applicable.
+	// BotUsername 返回此渠道的机器人用户名（例如 "mike_bkclaw_bot"）。
+	// 不适用时返回空字符串。
 	BotUsername() string
-	// Start begins listening for messages. It should block until ctx is cancelled.
+	// Start 开始监听消息。应阻塞直到 ctx 被取消。
 	Start(ctx context.Context) error
-	// Send sends a plain text message to the specified chat.
+	// Send 向指定聊天发送纯文本消息。
 	Send(chatID string, text string) error
-	// SendMessage sends a rich outbound message with formatting, reply-to, buttons, etc.
+	// SendMessage 发送带格式、回复、按钮等功能的富出站消息。
 	SendMessage(msg bus.OutboundMessage) error
-	// SendTyping sends a typing indicator to the specified chat.
+	// SendTyping 向指定聊天发送输入指示器。
 	SendTyping(chatID string) error
 }

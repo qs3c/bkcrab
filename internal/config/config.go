@@ -1,10 +1,9 @@
-// Package config holds runtime configuration types and ctx user-id plumbing.
+// Package config 包含运行时配置类型和 ctx 的 user-id 管道。
 //
-// There is no bkclaw.json. Bootstrap settings (port, bind, storage DSN,
-// sandbox backend) come from BKCLAW_* env vars; user-facing config (providers,
-// channels, agents, etc.) lives in the database. The Config struct here is
-// the in-memory snapshot the gateway assembles at boot from those sources;
-// callers never read it from disk.
+// 没有 bkclaw.json。引导设置（端口、绑定、存储 DSN、沙箱后端）
+// 来自 BKCLAW_* 环境变量；用户可见的配置（提供者、渠道、agent 等）
+// 存储在数据库中。此处的 Config 结构体是网关在启动时从这些来源
+// 组装的内存快照；调用方从不从磁盘读取它。
 package config
 
 import (
@@ -18,19 +17,18 @@ import (
 
 type userIDKey struct{}
 
-// WithUserID stamps a resolved user_id onto ctx. Auth middleware does this
-// after validating a session cookie or apikey; nothing else should.
+// WithUserID 将已解析的 user_id 标记到 ctx 上。认证中间件在验证
+// 会话 cookie 或 apikey 后执行此操作；其他代码不应调用。
 func WithUserID(ctx context.Context, userID string) context.Context {
 	return context.WithValue(ctx, userIDKey{}, userID)
 }
 
-// UserIDFromContext extracts the resolved user_id, or "" if none.
+// UserIDFromContext 提取已解析的 user_id，如果没有则返回 ""。
 //
-// There is no DefaultUserID fallback. Code paths that reach the store
-// without a real user_id are bugs — the auth middleware should have 401'd
-// the request, the cron tick should have read the job's owner from the
-// row, the channel ingress should have resolved the credential. Catch
-// these in development by panicking on store calls with empty user_id.
+// 没有 DefaultUserID 回退。到达存储层而没有真实 user_id 的代码路径
+// 是 bug——认证中间件应该已经 401 了该请求，cron tick 应该已经从行中
+// 读取了作业的所有者，渠道入口应该已经解析了凭据。在开发过程中通过
+// 对空 user_id 的存储调用进行 panic 来捕获这些问题。
 func UserIDFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
@@ -41,9 +39,8 @@ func UserIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-// MustUserIDFromContext returns the resolved user_id or an error. Use this
-// at handler boundaries where missing identity is a 500-level bug rather
-// than a normal flow.
+// MustUserIDFromContext 返回已解析的 user_id 或错误。在缺少身份
+// 是 500 级别 bug 而非正常流程的处理边界使用此方法。
 func MustUserIDFromContext(ctx context.Context) (string, error) {
 	uid := UserIDFromContext(ctx)
 	if uid == "" {
@@ -52,7 +49,7 @@ func MustUserIDFromContext(ctx context.Context) (string, error) {
 	return uid, nil
 }
 
-// MCPServerConfig holds configuration for a single MCP server.
+// MCPServerConfig 保存单个 MCP 服务器的配置。
 type MCPServerConfig struct {
 	Type    string            `json:"type"`
 	URL     string            `json:"url,omitempty"`
@@ -62,7 +59,7 @@ type MCPServerConfig struct {
 	Env     map[string]string `json:"env,omitempty"`
 }
 
-// CronJob defines a scheduled job loaded into the gateway's runtime.
+// CronJob 定义加载到网关运行时的定时作业。
 type CronJob struct {
 	Name        string `json:"name"`
 	Type        string `json:"type"`
@@ -74,20 +71,20 @@ type CronJob struct {
 	Message     string `json:"message"`
 }
 
-// HeartbeatCfg holds heartbeat configuration.
+// HeartbeatCfg 保存心跳配置。
 type HeartbeatCfg struct {
 	IntervalMinutes int `json:"intervalMinutes,omitempty"`
 }
 
-// StorageCfg mirrors the bootstrap storage block so existing code that reads it
-// off Config keeps working without an extra parameter plumbed through.
+// StorageCfg 镜像引导存储块，以便从 Config 读取的现有代码无需
+// 额外传参即可继续工作。
 type StorageCfg struct {
 	Type        string `json:"type,omitempty"`
 	DSN         string `json:"dsn,omitempty"`
 	AutoMigrate bool   `json:"autoMigrate,omitempty"`
 }
 
-// ObjectStoreCfg controls the object-storage backend.
+// ObjectStoreCfg 控制对象存储后端。
 type ObjectStoreCfg struct {
 	Type         string              `json:"type,omitempty"`
 	Local        ObjectStoreLocalCfg `json:"local,omitempty"`
@@ -110,14 +107,14 @@ type ObjectStoreS3Cfg struct {
 	UseSSL    bool   `json:"useSSL"`
 }
 
-// ToolProviderCfg holds credentials/endpoint for one provider (e.g. "exa").
+// ToolProviderCfg 保存单个提供者（例如 "exa"）的凭据/端点。
 type ToolProviderCfg struct {
 	APIKey   string            `json:"apiKey,omitempty"`
 	Endpoint string            `json:"endpoint,omitempty"`
 	Options  map[string]string `json:"options,omitempty"`
 }
 
-// ToolCategoryCfg chooses which provider(s) back a tool category.
+// ToolCategoryCfg 选择哪些提供者支持某个工具类别。
 type ToolCategoryCfg struct {
 	Primary      string   `json:"primary,omitempty"`
 	Fallbacks    []string `json:"fallbacks,omitempty"`
@@ -144,7 +141,7 @@ func (c ToolCategoryCfg) Chain() []string {
 	return out
 }
 
-// HooksCfg configures the webhook ingress server.
+// HooksCfg 配置 webhook 入口服务器。
 type HooksCfg struct {
 	Enabled bool   `json:"enabled,omitempty"`
 	Token   string `json:"token,omitempty"`
@@ -168,16 +165,13 @@ type TaskQueueCfg struct {
 	TaskTimeoutSec int `json:"taskTimeoutSec,omitempty"`
 }
 
-// SandboxCfg holds sandbox configuration for an agent.
+// SandboxCfg 保存 agent 的沙箱配置。
 //
-// Image is the legacy single-slot image/template/snapshot — read-only
-// fallback now. The per-backend fields (DockerImage / E2BTemplate /
-// BoxliteSnapshot) are authoritative when set, so switching Backend in
-// the dashboard preserves each backend's last-entered value instead of
-// overwriting the shared slot. Consumers should prefer the per-backend
-// field for the active Backend and fall through to Image only when the
-// per-backend field is empty (migration path for configs predating the
-// split).
+// Image 是旧版单槽 image/template/snapshot——现在是只读回退。当设置时，
+// 每后端字段（DockerImage / E2BTemplate / BoxliteSnapshot）具有权威性，
+// 因此在仪表板中切换 Backend 会保留每个后端的上次输入值，而不是覆盖
+// 共享槽。消费者应优先使用活动 Backend 的每后端字段，仅在每后端字段
+// 为空时回退到 Image（为早于拆分的配置提供迁移路径）。
 type SandboxCfg struct {
 	Enabled         bool   `json:"enabled"`
 	Image           string `json:"image,omitempty"`
@@ -187,14 +181,13 @@ type SandboxCfg struct {
 	Policy          string `json:"policy,omitempty"`
 	Backend         string `json:"backend,omitempty"`
 	E2BKey          string `json:"e2bKey,omitempty"`
-	// Boxlite (https://github.com/boxlite-ai/boxlite) is a hosted sandbox
-	// service speaking the REST spec at openapi/rest-sandbox-open-api.yaml.
-	// BoxliteURL is the full base URL (default https://api.boxlite.ai/v1);
-	// BoxliteKey is the apikey sent as `Authorization: Bearer <key>`
-	// directly (no OAuth exchange — that path was removed upstream).
-	// ClientID is retained for back-compat with older config rows but
-	// no longer wired to anything. Prefix defaults to "default" when
-	// empty so the minimum config is just (URL, Key).
+	// Boxlite（https://github.com/boxlite-ai/boxlite）是一个托管沙箱服务，
+	// 遵循 openapi/rest-sandbox-open-api.yaml 中的 REST 规范。
+	// BoxliteURL 是完整基础 URL（默认 https://api.boxlite.ai/v1）；
+	// BoxliteKey 是直接作为 `Authorization: Bearer <key>` 发送的 apikey
+	// （无 OAuth 交换——该路径已在上游移除）。
+	// ClientID 为兼容旧配置行而保留，但不再连接到任何功能。Prefix 在
+	// 为空时默认为 "default"，因此最小配置只需 (URL, Key)。
 	BoxliteURL      string `json:"boxliteUrl,omitempty"`
 	BoxliteClientID string `json:"boxliteClientId,omitempty"`
 	BoxliteKey      string `json:"boxliteKey,omitempty"`
@@ -203,10 +196,10 @@ type SandboxCfg struct {
 	IdleTTLSec      int    `json:"idleTTLSec,omitempty"`
 }
 
-// GatewayAuth is now a thin shell — the authoritative auth state lives in
-// the users table (cookie session) and apikeys table (bearer). Token here
-// is unused at runtime; kept on the struct so existing JSON serializations
-// remain compatible while the field is migrated out of callers.
+// GatewayAuth 现在是一个薄壳——权威认证状态存储在 users 表
+// （cookie 会话）和 apikeys 表（bearer）中。此处的 Token 在运行时未使用；
+// 保留在结构体上以使现有 JSON 序列化保持兼容，同时该字段正在从
+// 调用方迁移出去。
 type GatewayAuth struct {
 	Mode  string `json:"mode,omitempty"`
 	Token string `json:"token,omitempty"`
@@ -225,8 +218,8 @@ type GatewayHTTP struct {
 	Endpoints GatewayHTTPEndpoints `json:"endpoints,omitempty"`
 }
 
-// GatewayCfg holds gateway server configuration. The legacy "mode" field
-// is gone — multi-user is unconditional.
+// GatewayCfg 保存网关服务器配置。旧版 "mode" 字段已移除——
+// 多用户是无条件的。
 type GatewayCfg struct {
 	Port      int          `json:"port,omitempty"`
 	Bind      string       `json:"bind,omitempty"`
@@ -269,10 +262,9 @@ type SkillsLearnerCfg struct {
 	Model        string `json:"model,omitempty"`
 }
 
-// Config is the in-memory runtime snapshot. The gateway assembles this at
-// boot by reading BKCLAW_* env vars + database (system_settings, providers,
-// channels, agents). Callers never serialize it back out — DB tables are
-// the persistent source of truth.
+// Config 是内存中的运行时快照。网关在启动时从 BKCLAW_* 环境变量 +
+// 数据库（system_settings、providers、channels、agents）组装此结构；
+// 调用方从不会将其序列化回写——数据库表是持久化的真实来源。
 type Config struct {
 	Providers     map[string]ProviderConfig  `json:"providers"`
 	Agents        AgentsConfig               `json:"agents"`
@@ -297,7 +289,7 @@ type Config struct {
 	SkillsLearner SkillsLearnerCfg           `json:"skillsLearner,omitempty"`
 }
 
-// ModelCost holds pricing info for a model.
+// ModelCost 保存模型的定价信息。
 type ModelCost struct {
 	Input      float64 `json:"input"`
 	Output     float64 `json:"output"`
@@ -315,9 +307,8 @@ type ModelEntry struct {
 	MaxTokens     int       `json:"maxTokens"`
 }
 
-// ProviderConfig holds API credentials for an LLM provider — used both as
-// the JSON shape inside agents.config and as the resolved per-(scope, name)
-// view assembled by the providers resolver.
+// ProviderConfig 保存 LLM 提供者的 API 凭据——既用作 agents.config 内的
+// JSON 结构，也用作由提供者解析器组装的已解析每（范围、名称）视图。
 type ProviderConfig struct {
 	APIKey   string       `json:"apiKey"`
 	APIBase  string       `json:"apiBase"`
@@ -326,7 +317,7 @@ type ProviderConfig struct {
 	Models   []ModelEntry `json:"models,omitempty"`
 }
 
-// UnmarshalJSON handles a long-deprecated `api` alias for `apiType`.
+// UnmarshalJSON 处理已弃用的 `api` 别名到 `apiType` 的转换。
 func (pc *ProviderConfig) UnmarshalJSON(data []byte) error {
 	type Alias ProviderConfig
 	aux := &struct {
@@ -351,49 +342,43 @@ type AgentDefaults struct {
 	MaxTokens         int     `json:"maxTokens,omitempty"`
 	Temperature       float64 `json:"temperature,omitempty"`
 	MaxToolIterations int     `json:"maxToolIterations,omitempty"`
-	// MaxParallelToolCalls caps how many tool calls a single LLM
-	// response is allowed to execute concurrently in one round. The
-	// LLM still decides how many tools to emit; we just refuse to
-	// run more than this many at once. The overflow gets a synthetic
-	// "deferred — re-issue next round" tool_result so the model
-	// naturally serializes. 0 = unlimited (no cap, current behavior).
-	// Useful when downstream APIs (Brave free tier 1RPS, etc.) can't
-	// take a parallel burst.
+	// MaxParallelToolCalls 限制单次 LLM 响应允许并发执行的工具调用数量。
+	// LLM 仍然决定 emit 多少工具；我们只是拒绝同时运行超过此数量的工具。
+	// 溢出部分会收到合成的 "deferred — re-issue next round" tool_result，
+	// 使模型自然串行化。0 = 无限制（无上限，当前行为）。当下游 API
+	// （Brave 免费层 1RPS 等）无法承受并行突发时很有用。
 	MaxParallelToolCalls int    `json:"maxParallelToolCalls,omitempty"`
 	Thinking             string `json:"thinking,omitempty"`
 	PolicyPreset         string `json:"policy,omitempty"`
-	// PromptMode lives here so the agent-scope `agents.defaults`
-	// config row (written by CLI and dashboard) round-trips into
-	// ResolvedAgent at userspace assembly time — see
-	// gateway/userspace.go where agentOverride is applied.
+	// PromptMode 位于此处，以便 agent 范围的 `agents.defaults` 配置行
+	// （由 CLI 和仪表板写入）在 userspace 组装时回写到 ResolvedAgent——
+	// 参见 gateway/userspace.go 中 agentOverride 应用的位置。
 	PromptMode string `json:"promptMode,omitempty"`
-	// SplitReplies — per-agent override of WeChatCfg.SplitReplies.
-	// Nil at this layer means the agent-scope row has no opinion; the
-	// effective value falls back to system-level WeChatCfg.SplitReplies.
+	// SplitReplies — 每 agent 覆盖 WeChatCfg.SplitReplies。
+	// 在此层为 nil 表示 agent 范围行无意见；有效值回退到系统级
+	// WeChatCfg.SplitReplies。
 	SplitReplies *bool `json:"splitReplies,omitempty"`
-	// AutoPersist — per-agent override of MemoryCfg.AutoPersist.Enabled.
-	// Pointer-typed for the same reason as SplitReplies: distinguishing
-	// "operator hasn't touched it" from "explicitly false". When non-nil,
-	// flips ag.memoryCfg.AutoPersist.Enabled at agent build time so the
-	// runPostTurn check at loop.go:2286 either fires the background
-	// distill-into-USER.md/MEMORY.md pass or skips it. Mainly useful in
-	// chatbot mode — that mode's curated tool allowlist has no write_file,
-	// so this is the only way for the agent to remember a chatter across
-	// sessions.
+	// AutoPersist — 每 agent 覆盖 MemoryCfg.AutoPersist.Enabled。
+	// 使用指针类型的原因与 SplitReplies 相同：区分"操作员未触及它"
+	// 和"操作员显式设为 false"。非 nil 时，在 agent 构建时翻转
+	// ag.memoryCfg.AutoPersist.Enabled，使 loop.go:2286 处的
+	// runPostTurn 检查要么触发后台的 distill-into-USER.md/MEMORY.md
+	// 流程，要么跳过它。主要用于聊天机器人模式——该模式策划的工具
+	// 白名单中没有 write_file，所以这是 agent 跨会话记住聊天者的
+	// 唯一方式。
 	AutoPersist *bool `json:"autoPersist,omitempty"`
 }
 
-// AgentEntry is the in-memory shape of one agent row, used during
-// resolution. UserID is the owning account (mirrors agents.user_id).
-// Per-agent model overrides aren't carried here — they live in the
-// configs table at scope=agent and are merged in via scope.SettingInto
-// during userspace load.
+// AgentEntry 是单个 agent 行的内存结构，在解析期间使用。
+// UserID 是拥有账户（镜像 agents.user_id）。每 agent 模型覆盖不在此处
+// 保存——它们存在于 configs 表的 scope=agent 中，在 userspace 加载期间
+// 通过 scope.SettingInto 合并。
 type AgentEntry struct {
 	ID     string `json:"id"`
 	UserID string `json:"userId,omitempty"`
-	// Name mirrors agents.name (the operator-given display name) and is
-	// carried through to ResolvedAgent.DisplayName so the system prompt
-	// can stamp a fallback identity line when IDENTITY.md is empty.
+	// Name 镜像 agents.name（操作员给的显示名称），并传递到
+	// ResolvedAgent.DisplayName，以便在 IDENTITY.md 为空时系统提示
+	// 可以标注回退身份行。
 	Name                 string                     `json:"name,omitempty"`
 	Workspace            string                     `json:"workspace,omitempty"`
 	MaxTokens            int                        `json:"maxTokens,omitempty"`
@@ -406,59 +391,49 @@ type AgentEntry struct {
 	Thinking             string                     `json:"thinking,omitempty"`
 	Sandbox              SandboxCfg                 `json:"sandbox,omitempty"`
 	PolicyPreset         string                     `json:"policy,omitempty"`
-	// PromptMode selects how heavily the framework system prompt
-	// participates AND which built-in tools the LLM sees. Empty =
-	// "agent" (current default) for backward compatibility. See
-	// PromptMode* constants. The built-in tool set per mode is
-	// hardcoded in builtinAllowForMode (internal/agent/loop.go) —
-	// extension via Plugin / MCP, not per-agent allowlists, by design.
+	// PromptMode 选择框架系统提示参与的程度以及 LLM 看到的内置工具集。
+	// 空 = "agent"（当前默认值）以保持向后兼容。参见 PromptMode* 常量。
+	// 每模式的内置工具集硬编码在 builtinAllowForMode（internal/agent/loop.go）
+	// 中——按设计通过 Plugin / MCP 扩展，而非每 agent 白名单。
 	PromptMode string `json:"promptMode,omitempty"`
-	// SplitReplies overrides the system-wide WeChatCfg.SplitReplies
-	// setting for THIS agent. Nil = inherit system default; non-nil =
-	// authoritative for this agent. Pointer (not bool) because we need
-	// to distinguish "operator hasn't touched it" from "operator
-	// explicitly turned it off". The agent uses the effective value to
-	// (1) decide whether to advertise the SplitMessageMarker in the
-	// system-prompt hint, and (2) stamp OutboundMessage.AllowSplit so
-	// the WeChat adapter knows whether to honor the marker.
+	// SplitReplies 覆盖此 agent 的系统级 WeChatCfg.SplitReplies 设置。
+	// nil = 继承系统默认值；非 nil = 对此 agent 具有权威性。使用指针（而非
+	// bool），因为我们需要区分"操作员未触及它"和"操作员显式关闭它"。
+	// agent 使用有效值（覆盖或系统默认值）来决定（1）是否在系统提示中
+	// 广告 SplitMessageMarker，以及（2）在 OutboundMessage.AllowSplit 上
+	// 标记，以便微信适配器知道是否遵循该标记。
 	SplitReplies *bool `json:"splitReplies,omitempty"`
-	// AutoPersist overrides MemoryCfg.AutoPersist.Enabled for this agent.
-	// Same pointer semantics as SplitReplies. When true, the agent's
-	// runPostTurn fires a background LLM call every N turns to distill
-	// recent messages into USER.md (chatter profile) and MEMORY.md
-	// (long-term facts) — the chatbot-mode persistence path since that
-	// mode's curated tool allowlist excludes write_file.
+	// AutoPersist 覆盖此 agent 的 MemoryCfg.AutoPersist.Enabled。
+	// 与 SplitReplies 相同的指针语义。为 true 时，agent 的 runPostTurn
+	// 每隔 N 轮触发一次后台 LLM 调用，将近期消息蒸馏到 USER.md（聊天者
+	// 档案）和 MEMORY.md（长期事实）中——这是聊天机器人模式的持久化路径，
+	// 因为该模式策划的工具白名单不包括 write_file。
 	AutoPersist *bool `json:"autoPersist,omitempty"`
 }
 
-// PromptMode controls which framework sections BuildSystemPromptAs emits.
-// Chatbot-style products (companion, customer support, role-play) cannot
-// inherit the agent-shaped instructions (task delegation, todo tracking,
-// tool-use discipline, sandbox rules) without their character bleeding
-// into a generic AI-assistant tone. PromptMode lets a deployment opt out
-// of those sections per agent.
+// PromptMode 控制 BuildSystemPromptAs 发出哪些框架部分。
+// 聊天机器人风格的产品（伴侣、客服、角色扮演）无法继承 agent 形状的指令
+// （任务委托、todo 跟踪、工具使用纪律、沙箱规则）而不让其角色特征
+// 泛化为通用 AI 助手语调。PromptMode 允许部署在每个 agent 中退出这些部分。
 const (
-	// PromptModeAgent emits the full framework prompt (task delegation,
-	// todo.md, tool-use discipline, sandbox rules, workspace self-update,
-	// scheduling). Default when PromptMode is empty.
+	// PromptModeAgent 发出完整框架提示（任务委托、todo.md、
+	// 工具使用纪律、沙箱规则、工作区自更新、调度）。当 PromptMode 为空时的默认值。
 	PromptModeAgent = "agent"
-	// PromptModeChatbot keeps the minimal identity scaffolding
-	// (file-purpose schema, confidentiality, date) and drops every
-	// agent-loop instruction so chatbot persona files (SOUL.md /
-	// IDENTITY.md / USER.md / MEMORY.md) shape behavior directly.
+	// PromptModeChatbot 保留最小身份脚手架
+	// （文件用途 schema、保密性、日期），并丢弃所有 agent 循环指令，
+	// 使聊天机器人角色文件（SOUL.md / IDENTITY.md / USER.md / MEMORY.md）
+	// 直接塑造行为。
 	PromptModeChatbot = "chatbot"
-	// PromptModeCustomize emits ONLY the bootstrap files (plus a date
-	// anchor). The author is responsible for putting any framework
-	// guidance they need inside SOUL.md / IDENTITY.md themselves —
-	// this mode hands the floor over to the persona files completely.
-	// (Renamed from PromptModeMinimal to make the intent more obvious:
-	// you're CUSTOMIZING the system prompt yourself, not asking bkclaw
-	// for a minimal version of its built-in one.)
+	// PromptModeCustomize 仅发出引导文件（加上日期锚点）。作者负责
+	// 在 SOUL.md / IDENTITY.md 中放入所需的任何框架指导——此模式将
+	// 舞台完全交给角色文件。
+	// （从 PromptModeMinimal 重命名以使意图更明显：您是在自定义系统
+	// 提示，而不是要求 bkclaw 提供其内置提示的最小版本。）
 	PromptModeCustomize = "customize"
 )
 
-// ChannelConfig holds per-channel runtime configuration. Built by the
-// channels scope resolver from system/user/agent rows.
+// ChannelConfig 保存每渠道的运行时配置。由渠道范围解析器从
+// 系统/用户/agent 行构建。
 type ChannelConfig struct {
 	Enabled  bool                     `json:"enabled"`
 	BotToken string                   `json:"botToken,omitempty"`
@@ -468,28 +443,22 @@ type ChannelConfig struct {
 
 type AccountConfig struct {
 	BotToken string `json:"botToken,omitempty"`
-	// BaseURL is the per-account API base used by adapters whose
-	// upstream isn't a fixed hostname (e.g. WeChat iLink hands out a
-	// region-specific baseurl on QR confirmation). Empty for
-	// Telegram/Discord/Slack — they all hit fixed endpoints.
+	// BaseURL 是某些适配器使用的每账号 API 基地址，其上游不是固定主机名
+	// （例如微信 iLink 在 QR 确认时发放区域特定 baseurl）。对于
+	// Telegram/Discord/Slack 为空——它们都访问固定端点。
 	BaseURL string `json:"baseUrl,omitempty"`
-	// UserID is an extra account-scoped identifier some adapters need
-	// alongside BotToken (WeChat iLink's `ilink_user_id`, used as the
-	// X-WECHAT-UIN seed and for typing/getconfig calls). Empty when
-	// not applicable.
+	// UserID 是某些适配器在 BotToken 之外需要的额外账号范围标识符
+	// （微信 iLink 的 `ilink_user_id`，用作 X-WECHAT-UIN 种子以及
+	// typing/getconfig 调用）。不适用时为空。
 	UserID string `json:"userId,omitempty"`
-	// EncryptKey is the symmetric key used by adapters whose upstream
-	// optionally encrypts webhook payloads (Feishu's "加密策略 →
-	// Encrypt Key"). Empty when the user hasn't configured encryption
-	// in the upstream console — adapters then expect plaintext bodies.
+	// EncryptKey 是上游可选加密 webhook 载荷的适配器使用的对称密钥
+	//（飞书的"加密策略 → Encrypt Key"）。当用户未在上游控制台配置加密
+	// 时为空——此时适配器期望明文请求体。
 	EncryptKey string `json:"encryptKey,omitempty"`
-	// UseLongConn switches inbound transport to a long-lived
-	// connection (WebSocket) initiated outbound from bkclaw rather
-	// than the platform POSTing to a public webhook. Currently only
-	// honored by the Feishu adapter; ignored by adapters that don't
-	// offer this mode. When true, verification/encrypt keys are
-	// unused (the WS connection is authenticated by appID/appSecret)
-	// and no public URL needs to be reachable.
+	// UseLongConn 将入站传输切换为从 bkclaw 向外发起的长连接（WebSocket），
+	// 而非平台向公共 webhook POST。目前仅飞书适配器遵守；不提供此模式的
+	// 适配器会忽略它。为 true 时，验证/加密密钥未使用（WS 连接通过
+	// appID/appSecret 认证），且不需要公共可达 URL。
 	UseLongConn bool `json:"useLongConn,omitempty"`
 }
 
@@ -509,8 +478,8 @@ type Peer struct {
 	ID   string `json:"id,omitempty"`
 }
 
-// AgentFileConfigLoader is the indirection point for layer-3 agent config.
-// Gateway boot wires it to read from agents.config rows in the DB.
+// AgentFileConfigLoader 是第 3 层 agent 配置的间接点。
+// 网关引导将其连接为从数据库的 agents.config 行读取。
 var AgentFileConfigLoader func(agentID, home string) (AgentFileConfig, bool) = defaultAgentFileConfigLoader
 
 func defaultAgentFileConfigLoader(_, home string) (AgentFileConfig, bool) {
@@ -528,9 +497,8 @@ func defaultAgentFileConfigLoader(_, home string) (AgentFileConfig, bool) {
 	return cfg, true
 }
 
-// AgentFileConfig is the schema for an agent's per-row override JSON
-// (agents.config column). Per-agent providers/channels live in their own
-// scoped DB tables and are NOT persisted here.
+// AgentFileConfig 是每 agent 行覆盖 JSON（agents.config 列）的 schema。
+// 每 agent 的 providers/channels 存储在各自的范围化 DB 表中，不在此持久化。
 type AgentFileConfig struct {
 	Model                string                     `json:"model,omitempty"`
 	MaxTokens            int                        `json:"maxTokens,omitempty"`
@@ -543,24 +511,22 @@ type AgentFileConfig struct {
 	ToolProviders        map[string]ToolProviderCfg `json:"toolProviders,omitempty"`
 	Tools                map[string]ToolCategoryCfg `json:"tools,omitempty"`
 	Providers            map[string]ProviderConfig  `json:"providers,omitempty"`
-	// PromptMode mirrors AgentEntry.PromptMode at the file-config layer.
-	// Non-empty values override the entry-level setting.
+	// PromptMode 在文件配置层镜像 AgentEntry.PromptMode。
+	// 非空值覆盖条目级设置。
 	PromptMode string `json:"promptMode,omitempty"`
-	// SplitReplies mirrors AgentEntry.SplitReplies. Nil =
-	// inherit; non-nil = authoritative for this agent.
+	// SplitReplies 镜像 AgentEntry.SplitReplies。nil = 继承；
+	// 非 nil = 对此 agent 具有权威性。
 	SplitReplies *bool `json:"splitReplies,omitempty"`
-	// AutoPersist mirrors AgentEntry.AutoPersist. Nil = inherit;
-	// non-nil = authoritative for this agent.
+	// AutoPersist 镜像 AgentEntry.AutoPersist。nil = 继承；
+	// 非 nil = 对此 agent 具有权威性。
 	AutoPersist *bool `json:"autoPersist,omitempty"`
-	// Admins gates write-mode slash commands (/new /reset /undo /retry /compact
-	// /model /personality) in IM channels. Keyed by channel name ("discord",
-	// "telegram", "slack", ...), each value is the platform-side user IDs
-	// allowed to run those commands on that channel. Empty/absent list = no
-	// gate (anyone can run the command — backward-compatible default).
+	// Admins 在 IM 渠道中管控写入模式斜杠命令（/new /reset /undo /retry
+	// /compact /model /personality）。以渠道名称为键（"discord"、"telegram"、
+	// "slack" 等），每个值是允许在该渠道运行这些命令的平台侧用户 ID 列表。
+	// 空/缺失列表 = 无门控（任何人都可以运行命令——向后兼容的默认值）。
 	//
-	// On web/api the gate falls through to msg.UserID == agent owner UUID
-	// regardless of this field, since those channels carry the BkClaw
-	// identity directly and don't need a per-platform allowlist.
+	// 在 web/api 上，门控会穿透到 msg.UserID == agent owner UUID，
+	// 无论此字段如何，因为那些渠道直接携带 BkClaw 身份，不需要每平台白名单。
 	Admins map[string][]string `json:"admins,omitempty"`
 }
 
@@ -591,14 +557,13 @@ type SkillsLoadCfg struct {
 	ExtraDirs []string `json:"extraDirs,omitempty"`
 }
 
-// ResolvedAgent is the fully merged config for a single agent.
+// ResolvedAgent 是单个 agent 的完全合并配置。
 type ResolvedAgent struct {
 	ID     string
 	UserID string
-	// DisplayName mirrors agents.name — the human-readable name the
-	// operator gave the agent ("Bob", "tdj", "Sonny"). Used as a
-	// fallback identity line in the system prompt when IDENTITY.md
-	// is empty so the model doesn't introduce itself as "Claude".
+	// DisplayName 镜像 agents.name——操作员给 agent 的人类可读名称
+	// （"Bob"、"tdj"、"Sonny"）。在 IDENTITY.md 为空时用作系统提示中
+	// 的回退身份行，以避免模型以 "Claude" 自我介绍。
 	DisplayName          string
 	Home                 string
 	Workspace            string
@@ -615,22 +580,20 @@ type ResolvedAgent struct {
 	ToolProviders        map[string]ToolProviderCfg
 	Tools                map[string]ToolCategoryCfg
 	Providers            map[string]ProviderConfig
-	// Admins is the per-channel admin allowlist for write-mode slash
-	// commands. See AgentFileConfig.Admins for semantics + default.
+	// Admins 是每渠道的写入模式斜杠命令管理员白名单。
+	// 参见 AgentFileConfig.Admins 了解语义和默认值。
 	Admins map[string][]string
-	// PromptMode selects the system-prompt assembly profile AND the
-	// built-in tool set the LLM sees. See AgentEntry.PromptMode for
-	// semantics. Empty = PromptModeAgent.
+	// PromptMode 选择系统提示组装配置文件和 LLM 看到的内置工具集。
+	// 参见 AgentEntry.PromptMode 了解语义。空值 = PromptModeAgent。
 	PromptMode string
-	// SplitReplies — nil = inherit system WeChatCfg.SplitReplies,
-	// non-nil = authoritative for this agent. The agent stamps the
-	// EFFECTIVE value (override OR system default) on every
-	// OutboundMessage.AllowSplit at send time.
+	// SplitReplies — nil = 继承系统 WeChatCfg.SplitReplies，
+	// 非 nil = 对此 agent 具有权威性。agent 在发送时将有效值
+	// （覆盖或系统默认）标记到每个 OutboundMessage.AllowSplit。
 	SplitReplies *bool
-	// AutoPersist — nil = inherit system MemoryCfg.AutoPersist.Enabled,
-	// non-nil = authoritative for this agent. Drives whether the
-	// runPostTurn hook fires AutoPersistMemory (the LLM-driven distill-
-	// to-USER.md/MEMORY.md pass) every N turns.
+	// AutoPersist — nil = 继承系统 MemoryCfg.AutoPersist.Enabled，
+	// 非 nil = 对此 agent 具有权威性。驱动 runPostTurn 钩子是否
+	// 每 N 轮触发 AutoPersistMemory（LLM 驱动的蒸馏到
+	// USER.md/MEMORY.md 流程）。
 	AutoPersist *bool
 }
 
@@ -646,8 +609,8 @@ type TeamConfig struct {
 	Routing map[string]string `json:"routing"`
 }
 
-// HomeDir returns the BkClaw root directory (default ~/.bkclaw).
-// Holds sandbox roots, local indexes, and FS-materialized agent caches.
+// HomeDir 返回 BkClaw 根目录（默认 ~/.bkclaw）。
+// 保存沙箱根目录、本地索引和 FS 物化的 agent 缓存。
 func HomeDir() (string, error) {
 	if h := os.Getenv("BKCLAW_HOME"); h != "" {
 		return h, nil
@@ -659,9 +622,8 @@ func HomeDir() (string, error) {
 	return filepath.Join(home, ".bkclaw"), nil
 }
 
-// AgentHomeDir returns ~/.bkclaw/agents/{agentID}/agent — the FS cache
-// directory the runtime materializes agent identity files into. agents.id
-// is globally unique so no user namespace is needed.
+// AgentHomeDir 返回 ~/.bkclaw/agents/{agentID}/agent——运行时物化
+// agent 身份文件的 FS 缓存目录。agents.id 全局唯一，因此不需要用户命名空间。
 func AgentHomeDir(agentID string) (string, error) {
 	if agentID == "" {
 		return "", errors.New("config.AgentHomeDir: agentID is required")
@@ -673,10 +635,10 @@ func AgentHomeDir(agentID string) (string, error) {
 	return filepath.Join(home, "agents", agentID, "agent"), nil
 }
 
-// AgentWorkspaceDir returns the agent's working directory for user-facing
-// artifacts: ~/.bkclaw/workspaces/<agent_id>/. agents.id is globally
-// unique so no user namespace is needed; per-session sub-directories are
-// added by the workspace store at write time (see workspace.LocalFS).
+// AgentWorkspaceDir 返回 agent 的用户可见产物工作目录：
+// ~/.bkclaw/workspaces/<agent_id>/。agents.id 全局唯一，因此不需要
+// 用户命名空间；每会话子目录在写入时由工作区存储添加
+//（参见 workspace.LocalFS）。
 func AgentWorkspaceDir(agentID string) (string, error) {
 	if agentID == "" {
 		return "", errors.New("config.AgentWorkspaceDir: agentID is required")
@@ -699,7 +661,7 @@ func expandPath(path string) string {
 	return path
 }
 
-// ApplyDefaults fills in zero-valued knobs on Agents.Defaults.
+// ApplyDefaults 填充 Agents.Defaults 上为零值的旋钮。
 func ApplyDefaults(cfg *Config) {
 	if cfg.Agents.Defaults.MaxTokens == 0 {
 		cfg.Agents.Defaults.MaxTokens = 8192
@@ -712,8 +674,7 @@ func ApplyDefaults(cfg *Config) {
 	}
 }
 
-// MergedAgentConfig merges defaults with an agent entry to produce a fully
-// resolved agent config.
+// MergedAgentConfig 合并默认值与 agent 条目以生成完全解析的 agent 配置。
 func (cfg *Config) MergedAgentConfig(entry AgentEntry) ResolvedAgent {
 	home, _ := AgentHomeDir(entry.ID)
 	workspace := expandPath(entry.Workspace)
@@ -860,9 +821,8 @@ func (cfg *Config) MergedAgentConfig(entry AgentEntry) ResolvedAgent {
 	return resolved
 }
 
-// ResolveAgents builds resolved agent configs from a list of entries.
-// Source-of-truth lookup happens in the caller (DB ListAgents); this
-// function only does the merge.
+// ResolveAgents 从条目列表构建已解析的 agent 配置。
+// 真实来源查找在调用方（DB ListAgents）中进行；此函数只做合并。
 func ResolveAgents(cfg *Config, entries []AgentEntry) []ResolvedAgent {
 	out := make([]ResolvedAgent, 0, len(entries))
 	for _, e := range entries {
@@ -874,7 +834,7 @@ func ResolveAgents(cfg *Config, entries []AgentEntry) []ResolvedAgent {
 	return out
 }
 
-// LoadTeam reads a team.json file from the FS skills bundle.
+// LoadTeam 从 FS skills bundle 读取 team.json 文件。
 func LoadTeam(path string) (*TeamConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

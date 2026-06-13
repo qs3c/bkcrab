@@ -10,20 +10,20 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 )
 
-// slashResult holds the result of a slash command.
+// slashResult 保存斜杠命令的结果。
 //
-// continuationQueued flags slashes that pushed a follow-up message onto
-// bus.Inbound (currently /goal foo and /goal resume). HandleMessage uses
-// it to emit a `turn_pending` event instead of `done`, which keeps the
-// caller's SSE stream open until the continuation's own `done` arrives —
-// so the typing indicator stays visible during the model-thinking gap.
+// continuationQueued 标记将后续消息推送到 bus.Inbound 的斜杠命令
+// （目前为 /goal foo 和 /goal resume）。HandleMessage 使用它来
+// 发出 `turn_pending` 事件而不是 `done`，使调用者的 SSE 流
+// 保持打开直到继续自己的 `done` 到达——这样在模型思考间隙期间
+// 打字指示器保持可见。
 type slashResult struct {
 	handled            bool
 	reply              string
 	continuationQueued bool
 }
 
-// handleSlashCommand checks if the message is a slash command and handles it.
+// handleSlashCommand 检查消息是否为斜杠命令并处理它。
 func (a *Agent) handleSlashCommand(msg bus.InboundMessage) slashResult {
 	text := strings.TrimSpace(msg.Text)
 	if !strings.HasPrefix(text, "/") {
@@ -32,20 +32,18 @@ func (a *Agent) handleSlashCommand(msg bus.InboundMessage) slashResult {
 
 	parts := strings.Fields(text)
 	cmd := strings.ToLower(parts[0])
-	// Strip @botname suffix: /status@mybot → /status
+	// 剥离 @botname 后缀：/status@mybot → /status
 	if idx := strings.Index(cmd, "@"); idx > 0 {
 		cmd = cmd[:idx]
 	}
 	args := parts[1:]
 
-	// Owner-only gate for write commands. Read-only inspections (/status,
-	// /usage, /insights, /help, /version, /start, /whoami) stay open so
-	// any group member can self-serve info. Mutators that change the
-	// agent's runtime state (model, personality) or the session history
-	// (new/reset/undo/retry/compact) are restricted to the agent owner
-	// + per-channel admin allowlist — without this gate, anyone in a
-	// Discord guild could `/model haiku` and silently downgrade a shared
-	// agent for everyone else.
+	// 仅限拥有者的写命令门控。只读检查（/status、/usage、/insights、
+	// /help、/version、/start、/whoami）保持开放，使任何群组成员都能
+	// 自助获取信息。修改代理运行时状态（model、personality）或会话
+	// 历史（new/reset/undo/retry/compact）的变更操作限制为代理拥有者
+	// + 按频道管理员白名单——没有此门控，Discord 公会中的任何人
+	// 都可以 `/model haiku` 并静默降级所有其他人的共享代理。
 	if writeSlashCommands[cmd] && !a.isAdminChatter(msg) {
 		return slashResult{
 			handled: true,
@@ -61,23 +59,22 @@ func (a *Agent) handleSlashCommand(msg bus.InboundMessage) slashResult {
 		}
 
 	case "/new", "/reset":
-		// Clear any goal attached to the OLD session_key — design
-		// §6 chose "fresh session = clean state" over "goal follows
-		// chat". Runs before the web short-circuit too, so frontend-
-		// driven /new also reaps the goal row.
+		// 清除附加到旧 session_key 的任何目标——设计
+		// §6 选择了"新会话 = 干净状态"而非"目标跟随
+		// 聊天"。在 web 短路之前运行，所以前端驱动的
+		// /new 也会收割目标行。
 		if a.goalStore != nil {
 			oldKey := a.resolveSessionKey(msg)
 			a.clearGoalForSession(oldKey)
 		}
 		if msg.Channel == "web" {
-			// For web channel, don't delete the session file — frontend handles new session creation
+			// 对于 web 渠道，不删除会话文件——前端处理新会话创建
 			return slashResult{handled: true, reply: "__NEW_SESSION__"}
 		}
-		// Mint a fresh session under the same (channel, account, chat)
-		// triple so this conversation thread starts blank but the prior
-		// thread is preserved as history. Subsequent inbound messages
-		// resolve to the new (max updated_at) row via Manager.Get's
-		// active-session lookup.
+		// 在相同的 (channel, account, chat) 三元组下生成新会话，
+		// 使此对话线程从空白开始但保留前一线程为历史。
+		// 后续入站消息通过 Manager.Get 的活跃会话查找
+		// 解析到新的（max updated_at）行。
 		a.sessions.OpenNewSession(msg.Channel, msg.AccountID, msg.ChatID)
 		return slashResult{handled: true, reply: "🔄 New session started. Previous conversation kept as history."}
 
@@ -139,9 +136,9 @@ func (a *Agent) handleSlashCommand(msg bus.InboundMessage) slashResult {
 	}
 }
 
-// writeSlashCommands are the slash commands that mutate the agent's runtime
-// state or session history and therefore need the owner/admin gate. Anything
-// not in this set is treated as read-only and runs unrestricted.
+// writeSlashCommands 是修改代理运行时状态或会话历史
+// 并因此需要拥有者/管理员门控的斜杠命令。不在本集合中的
+// 任何命令被视为只读并无限制运行。
 var writeSlashCommands = map[string]bool{
 	"/new":         true,
 	"/reset":       true,
@@ -152,31 +149,27 @@ var writeSlashCommands = map[string]bool{
 	"/personality": true,
 }
 
-// isAdminChatter decides whether the chatter is allowed to run a write-mode
-// slash command on this channel.
+// isAdminChatter 判断聊天者是否被允许在此频道运行写模式斜杠命令。
 //
-// Web / api: the chatter's UserID is the BkClaw user UUID — owner is
-// identified by direct equality with the agent's ownerUserID. No
-// per-platform allowlist needed.
+// Web / api：聊天者的 UserID 是 BkClaw 用户 UUID——拥有者通过
+// 与代理的 ownerUserID 直接相等来识别。不需要每平台白名单。
 //
-// IM channels (discord, telegram, slack, ...): UserID is the platform's
-// own user ID (Discord snowflake, Telegram numeric ID, ...), which has
-// no inherent link to the agent's BkClaw owner. The owner registers
-// platform IDs in agent.json's `admins[channel]` to grant access — and,
-// to keep single-user dev installs from being locked out of their own
-// agent, an empty/absent allowlist for the channel falls through to
-// "anyone can run it" (the legacy behavior). Operators who care about
-// group-chat protection populate the list to lock it down.
+// IM 渠道（discord、telegram、slack 等）：UserID 是平台自身的
+// 用户 ID（Discord 雪花、Telegram 数字 ID 等），与代理的 BkClaw
+// 拥有者没有固有联系。拥有者在 agent.json 的 `admins[channel]`
+// 中注册平台 ID 以授予访问权限——并且为了防止单用户开发
+// 安装被锁定在自己的代理之外，渠道为空/缺失的白名单会回退到
+// "任何人都可以运行"（旧版行为）。关心群聊保护的运维人员填充
+// 列表以锁定。
 func (a *Agent) isAdminChatter(msg bus.InboundMessage) bool {
-	// Web / api carry BkClaw UUIDs directly; owner check is sufficient.
+	// Web / api 直接携带 BkClaw UUID；拥有者检查即可。
 	if msg.Channel == "web" || msg.Channel == "api" {
 		return msg.UserID != "" && msg.UserID == a.ownerUserID
 	}
 	list, ok := a.admins[msg.Channel]
 	if !ok || len(list) == 0 {
-		// No allowlist configured for this channel → preserve legacy
-		// unrestricted behavior. Operators opt in to group-chat
-		// protection by populating admins[channel].
+		// 此渠道未配置白名单 → 保留旧版不受限行为。
+		// 运维人员通过填充 admins[channel] 选择加入群聊保护。
 		return true
 	}
 	for _, id := range list {
@@ -187,12 +180,12 @@ func (a *Agent) isAdminChatter(msg bus.InboundMessage) bool {
 	return false
 }
 
-// slashRetry re-runs the last user message, discarding the last assistant response.
+// slashRetry 重新运行上一条用户消息，丢弃上一条助手回复。
 func (a *Agent) slashRetry(msg bus.InboundMessage) slashResult {
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
 	msgs := sess.GetMessages()
 
-	// Find the last user message
+	// 查找最后一条用户消息
 	lastUserIdx := -1
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "user" {
@@ -204,36 +197,36 @@ func (a *Agent) slashRetry(msg bus.InboundMessage) slashResult {
 		return slashResult{handled: true, reply: "No previous message to retry."}
 	}
 
-	// Save snapshot for undo
+	// 保存快照以便撤销
 	sess.Snapshot()
 
-	// Trim to just before the last user message
+	// 裁剪到上一条用户消息之前
 	sess.ReplaceMessages(msgs[:lastUserIdx])
 
-	// Re-inject the user message as a new inbound
+	// 将用户消息作为新入站重新注入
 	lastUserText := msgs[lastUserIdx].Content
 	retryMsg := msg
 	retryMsg.Text = lastUserText
 
-	// Signal that we want to re-process this message (return not-handled so gateway retries)
-	// But we return handled here to avoid double-processing — gateway should re-send
+	// 信号表示我们要重新处理此消息（返回 not-handled 让网关重试）
+	// 但我们在这里返回 handled 以避免双重处理——网关应重新发送
 	return slashResult{
 		handled: true,
 		reply:   fmt.Sprintf("🔁 Retrying: *%s*", truncateSlash(lastUserText, 80)),
 	}
 }
 
-// slashUndo reverts the last assistant response.
+// slashUndo 撤销上一条助手回复。
 func (a *Agent) slashUndo(msg bus.InboundMessage) slashResult {
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
 
 	if !sess.HasSnapshot() {
-		// No snapshot — try to remove last user+assistant turn manually
+		// 无快照——尝试手动删除最后的 user+assistant 轮次
 		msgs := sess.GetMessages()
 		if len(msgs) < 2 {
 			return slashResult{handled: true, reply: "Nothing to undo."}
 		}
-		// Trim trailing assistant messages + the user message before them
+		// 裁剪尾部的助手消息及之前的用户消息
 		end := len(msgs)
 		for end > 0 && msgs[end-1].Role == "assistant" {
 			end--
@@ -324,7 +317,7 @@ func (a *Agent) slashUsage(msg bus.InboundMessage) slashResult {
 		userTurns, asstTurns, toolTurns, len(msgs),
 	)
 
-	// Append cost tracking info from SDK engine
+	// 从 SDK 引擎追加成本跟踪信息
 	if a.costTracker != nil {
 		stats := a.costTracker.Stats()
 		reply += fmt.Sprintf("\n─────────────────\n"+
@@ -377,7 +370,7 @@ func (a *Agent) slashInsights(msg bus.InboundMessage, days int) slashResult {
 	return slashResult{handled: true, reply: reply}
 }
 
-// slashPersonalityList lists available SOUL.md presets.
+// slashPersonalityList 列出可用的 SOUL.md 预设。
 func (a *Agent) slashPersonalityList(msg bus.InboundMessage) slashResult {
 	presets := a.listPersonalities()
 	if len(presets) == 0 {
@@ -398,9 +391,9 @@ func (a *Agent) slashPersonalityList(msg bus.InboundMessage) slashResult {
 	return slashResult{handled: true, reply: sb.String()}
 }
 
-// slashPersonalitySet switches the active SOUL.md.
+// slashPersonalitySet 切换活动的 SOUL.md。
 func (a *Agent) slashPersonalitySet(msg bus.InboundMessage, name string) slashResult {
-	// Look for SOUL-<name>.md in workspace
+	// 在工作区中查找 SOUL-<name>.md
 	srcPath := filepath.Join(a.homePath, fmt.Sprintf("SOUL-%s.md", name))
 	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
 		return slashResult{handled: true, reply: fmt.Sprintf("Personality '%s' not found.\nExpected: %s", name, srcPath)}
@@ -419,14 +412,14 @@ func (a *Agent) slashPersonalitySet(msg bus.InboundMessage, name string) slashRe
 	return slashResult{handled: true, reply: fmt.Sprintf("🎭 Personality set to: **%s**\nSOUL.md updated. Takes effect on the next message.", name)}
 }
 
-// slashModel switches the active model for this agent session.
+// slashModel 切换此代理会话的活动模型。
 func (a *Agent) slashModel(msg bus.InboundMessage, model string) slashResult {
 	old := a.model
 	a.model = model
 	return slashResult{handled: true, reply: fmt.Sprintf("🤖 Model switched: `%s` → `%s`", old, model)}
 }
 
-// listPersonalities finds SOUL-<name>.md files in workspace.
+// listPersonalities 在工作区中查找 SOUL-<name>.md 文件。
 func (a *Agent) listPersonalities() []string {
 	pattern := filepath.Join(a.homePath, "SOUL-*.md")
 	files, _ := filepath.Glob(pattern)
@@ -441,9 +434,9 @@ func (a *Agent) listPersonalities() []string {
 	return names
 }
 
-// loadSoulName returns the current personality name (default if standard SOUL.md).
+// loadSoulName 返回当前人格名称（如果标准 SOUL.md 则为 default）。
 func (a *Agent) loadSoulName() string {
-	// Check if current SOUL.md is a known preset
+	// 检查当前 SOUL.md 是否为已知预设
 	for _, p := range a.listPersonalities() {
 		srcPath := filepath.Join(a.homePath, fmt.Sprintf("SOUL-%s.md", p))
 		soulPath := filepath.Join(a.homePath, "SOUL.md")
@@ -495,21 +488,20 @@ Info
    agent.json's "admins" field. Use /whoami to find your ID.`
 }
 
-// slashPlan handles `/plan <task>`: republish the rest of the message
-// onto bus.Inbound with planMode=true so the regular HandleMessage path
-// routes it into handlePlanMode. Manual replacement for the auto-plan
-// heuristic — users opt in explicitly per turn rather than the server
-// guessing from message shape.
+// slashPlan 处理 `/plan <task>`：将消息的剩余部分重新发布到
+// bus.Inbound 并设置 planMode=true，使常规 HandleMessage 路径
+// 将其路由到 handlePlanMode。这是自动计划启发式的手动替代——
+// 用户按轮次显式选择，而非服务器从消息形状猜测。
 func (a *Agent) slashPlan(msg bus.InboundMessage, args []string) slashResult {
 	task := strings.TrimSpace(strings.Join(args, " "))
 	if task == "" {
 		return slashResult{handled: true, reply: "Usage: `/plan <task>`"}
 	}
 
-	// Clone the inbound msg so routing fields (channel, account, chat,
-	// project, user, sender, owner) carry over verbatim. Rewrite only
-	// Text and Params — the plan-mode flag is what handlePlanMode keys
-	// on (see isPlanMode in loop.go).
+	// 克隆入站消息，使路由字段（channel、account、chat、
+	// project、user、sender、owner）原样传递。仅重写
+	// Text 和 Params——plan-mode 标志是 handlePlanMode 的关键
+	// （参见 loop.go 中的 isPlanMode）。
 	out := msg
 	out.Text = task
 	params := map[string]any{}

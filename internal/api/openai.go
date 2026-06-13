@@ -13,71 +13,65 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 )
 
-// chatCompletionRequest mirrors the OpenAI chat completion request.
+// chatCompletionRequest 映射 OpenAI 聊天补全请求。
 //
-// User is OpenAI's standard "end-user identifier" field. When the
-// request authenticates with an api_key, a non-empty value triggers
-// rebinding the request identity to a bkclaw app_user keyed on
-// (apikey_id, user) so sessions and agent_files partition per
-// end-user. Clients that prefer a header-only contract can use
-// X-Bkclaw-End-User instead — both arrive at the same code path.
+// User 是 OpenAI 标准的"终端用户标识符"字段。当请求使用
+// api_key 认证时，非空值会触发将请求身份重新绑定到以
+// (apikey_id, user) 为键的 bkclaw app_user，从而使会话
+// 和 agent_files 按终端用户分区。偏好仅使用 header 的客户端
+// 可以改用 X-Bkclaw-End-User — 两者最终走同一代码路径。
 type chatCompletionRequest struct {
 	Model    string        `json:"model"`
 	Messages []chatMessage `json:"messages"`
 	Stream   *bool         `json:"stream,omitempty"`
 	User     string        `json:"user,omitempty"`
-	// AgentID is a bkclaw extension: lets the caller pick the agent
-	// in the request body instead of (or in addition to) the
-	// `x-bkclaw-agent-id` header. Body wins when both are set —
-	// matches the pattern used for `user`. Optional.
+	// AgentID 是 bkclaw 扩展：允许调用者在请求体中选择 agent，
+	// 而不是（或除了）`x-bkclaw-agent-id` 头。当两者都设置时，
+	// 请求体优先 — 与 `user` 使用的模式一致。可选。
 	AgentID string `json:"agent_id,omitempty"`
-	// Params is a bkclaw extension: a freeform structured-parameter
-	// blob the calling app submits alongside the chat. Rendered into
-	// a per-turn system message so the agent's LLM can honor it when
-	// calling tools (e.g. a third-party app's "model selector" +
-	// "settings" UI translate to {provider, aspect_ratio, n} here,
-	// rather than the user typing those into the prompt). Scope is
-	// per-request — params don't persist across turns. OpenAI clients
-	// that don't know about this field are unaffected (omitempty).
+	// Params 是 bkclaw 扩展：调用应用随聊天提交的自由格式
+	// 结构化参数块。渲染为每轮系统消息，使 agent 的 LLM
+	// 在调用工具时可以遵循（例如，第三方应用的"模型选择器" +
+	// "设置" UI 转换为此处的 {provider, aspect_ratio, n}，
+	// 而非用户在提示中输入这些内容）。范围为每次请求 —
+	// 参数不会跨轮持久化。不了解此字段的 OpenAI 客户端不受影响（omitempty）。
 	Params map[string]any `json:"params,omitempty"`
-	// Images is a bkclaw extension: image attachments for the
-	// current turn. Each entry is one of:
-	//   - HTTPS URL: "https://example.com/photo.jpg" (must be
-	//     reachable from the LLM provider; not validated here)
+	// Images 是 bkclaw 扩展：当前轮次的图片附件。
+	// 每个条目为以下之一：
+	//   - HTTPS URL: "https://example.com/photo.jpg"（必须可从
+	//     LLM provider 访问；此处不做验证）
 	//   - Data URL:  "data:image/png;base64,iVBORw0KGgo..."
 	//
-	// Accepted MIME types depend on the LLM model. Anthropic / OpenAI
-	// vision models all support png, jpeg, webp; gif is hit-or-miss.
-	// Per-image and total-request size limits are also model-side
-	// (Anthropic ~5MB/image, OpenAI ~20MB) — bkclaw does not enforce
-	// its own ceiling, the upstream provider returns the rejection.
+	// 接受的 MIME 类型取决于 LLM 模型。Anthropic / OpenAI
+	// 视觉模型均支持 png、jpeg、webp；gif 则不一定。
+	// 单图和总请求大小限制也取决于模型侧
+	//（Anthropic ~5MB/图，OpenAI ~20MB）— bkclaw 不强制
+	// 自己的上限，由上游 provider 返回拒绝。
 	Images []string `json:"images,omitempty"`
-	// ImageURLs is an accepted alias for Images. The web-facing chat
-	// endpoint historically calls this field `imageUrls`; allowing it
-	// here means a caller writing one client against both endpoints
-	// doesn't get silently dropped attachments when they pick the
-	// wrong name.
+	// ImageURLs 是 Images 的可接受别名。面向 Web 的聊天端点
+	// 历史上称此字段为 `imageUrls`；允许在此处使用意味着
+	// 为两个端点编写一个客户端的调用者在选错名称时
+	// 不会导致附件被静默丢弃。
 	ImageURLs []string `json:"imageUrls,omitempty"`
-	// Attachments is the typed, general-purpose attachment field. Each
-	// entry can carry an optional Name which is sanitized and used as
-	// the on-disk filename so the LLM sees `report.pdf` instead of
-	// `image_3jk7l_0.pdf`. Unlike Images / ImageURLs, entries here are
-	// NOT inlined as vision content parts — they only land in
-	// /workspace and reach the LLM via the `[Attached: /workspace/X]`
-	// breadcrumb. Use Images / ImageURLs (not Attachments) when you
-	// want the bytes shown directly to a vision model.
+	// Attachments 是类型化的通用附件字段。每个条目可以携带
+	// 可选的 Name，经清理后用作磁盘文件名，使 LLM 看到
+	// `report.pdf` 而非 `image_3jk7l_0.pdf`。与 Images / ImageURLs
+	// 不同，此处的条目不会作为视觉内容部分内联 — 它们只存入
+	// /workspace 并通过 `[Attached: /workspace/X]` 面包屑到达
+	// LLM。当希望字节直接显示给视觉模型时，应使用 Images /
+	// ImageURLs（而非 Attachments）。
 	Attachments []attachmentRequest `json:"attachments,omitempty"`
 }
 
-// attachmentRequest is the wire form of a single attachment.
+// attachmentRequest 是单个附件的传输格式。
 type attachmentRequest struct {
 	URL  string `json:"url"`
 	Name string `json:"name,omitempty"`
 }
 
-// allAttachments flattens the three input shapes (Images, ImageURLs,
-// Attachments) into one ordered slice for materialization into
-// /workspace. Clients normally pick one; mixing is allowed.
+// allAttachments 将三种输入形式（Images、ImageURLs、Attachments）
+// 扁平化为一个有序切片，用于物化到 /workspace。客户端通常选择
+// 其中一种；也允许混合使用。
 func (r chatCompletionRequest) allAttachments() []agent.Attachment {
 	n := len(r.Images) + len(r.ImageURLs) + len(r.Attachments)
 	if n == 0 {
@@ -96,13 +90,13 @@ func (r chatCompletionRequest) allAttachments() []agent.Attachment {
 	return out
 }
 
-// inlineImageURLs returns just the URLs eligible for vision inline
-// (PhotoURLs → image_url content blocks). Only Images and ImageURLs
-// qualify — by contract they're caller-asserted images. The general
-// Attachments field is excluded: feeding a PDF / zip URL through the
-// vision channel returns HTTP 400 from upstream providers and sinks
-// the whole turn. Attachments reach the LLM via the
-// `[Attached: /workspace/<file>]` breadcrumb instead.
+// inlineImageURLs 仅返回符合内联视觉条件的 URL
+//（PhotoURLs → image_url 内容块）。仅 Images 和 ImageURLs
+// 符合条件 — 按约定它们是调用者断言为图片的。通用的
+// Attachments 字段被排除：通过视觉通道传入 PDF/zip URL 会
+// 导致上游 provider 返回 HTTP 400 并使整个轮次失败。
+// Attachments 通过 `[Attached: /workspace/<file>]` 面包屑
+// 到达 LLM。
 func (r chatCompletionRequest) inlineImageURLs() []string {
 	if len(r.Images) == 0 && len(r.ImageURLs) == 0 {
 		return nil
@@ -118,7 +112,7 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
-// chatCompletionChunk is a single SSE chunk in streaming mode.
+// chatCompletionChunk 是流式模式下单个 SSE 数据块。
 type chatCompletionChunk struct {
 	ID      string        `json:"id"`
 	Object  string        `json:"object"`
@@ -138,7 +132,7 @@ type chunkDelta struct {
 	Content string `json:"content,omitempty"`
 }
 
-// chatCompletionResponse is the non-streaming response.
+// chatCompletionResponse 是非流式响应。
 type chatCompletionResponse struct {
 	ID      string             `json:"id"`
 	Object  string             `json:"object"`
@@ -160,7 +154,7 @@ type completionUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
-// HandleChatCompletions handles POST /v1/chat/completions.
+// HandleChatCompletions 处理 POST /v1/chat/completions。
 func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var req chatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -177,13 +171,13 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// OpenAI's `user` body field, when present on an api_key call,
-	// rebinds the identity to the corresponding app_user (lazy mint).
-	// Header X-Bkclaw-End-User does the same job pre-handler in the
-	// auth middleware; we run this *after* the middleware so the body
-	// value wins iff both are present (the body field is more
-	// specific to this call than a static header). Errors here are
-	// non-fatal — request continues under the unswitched identity.
+	// OpenAI 的 `user` 请求体字段，在 api_key 调用中出现时，
+	// 会将身份重新绑定到对应的 app_user（懒创建）。
+	// Header X-Bkclaw-End-User 在认证中间件中的预处理阶段完成
+	// 相同的工作；我们在中间件*之后*运行此逻辑，因此当两者
+	// 同时存在时请求体值优先（请求体字段比静态 header 更具体
+	// 地针对本次调用）。此处的错误是非致命的 — 请求在未切换的
+	// 身份下继续进行。
 	if req.User != "" && s.authResolver != nil {
 		if ident, ok := auth.FromContext(r.Context()); ok {
 			if next, swErr := s.authResolver.SwitchToAppUser(r.Context(), ident, req.User); swErr == nil {
@@ -192,8 +186,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Resolve the caller's user space (set by authMiddleware) and pick an
-	// agent out of it.
+	// 解析调用者的用户空间（由 authMiddleware 设置）并从中选取一个 agent。
 	space, err := s.userSpaceFor(r)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{
@@ -202,8 +195,8 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Body field beats header — same precedence as `user`. Lets app
-	// callers send everything in one JSON without juggling headers.
+	// 请求体字段优先于 header — 与 `user` 的优先级一致。
+	// 让应用调用者可以在一个 JSON 中发送所有内容，无需处理 header。
 	agentID := r.Header.Get("x-bkclaw-agent-id")
 	if req.AgentID != "" {
 		agentID = req.AgentID
@@ -215,16 +208,14 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// Apikey ACL gate. UserSpaceFor loads every agent the owner has,
-	// regardless of which subset this particular apikey is scoped to.
-	// Without this check a type=agent apikey scoped to one agent
-	// could pass `x-bkclaw-agent-id: <sibling>` (or omit it and
-	// fall back to default / all[0]) and talk to any of the owner's
-	// agents. The /v1/agents listing already filters by
-	// CanAccessAgent — mirror that here so apikey scope is enforced
-	// uniformly. Use 404 (not 403) so the response is identical to
-	// the genuine "no such agent" case and the ACL doesn't leak the
-	// existence of out-of-scope agents.
+	// Apikey ACL 门控。UserSpaceFor 加载所有者拥有的每个 agent，
+	// 无论此特定 apikey 限定到哪个子集。无此检查时，限定到
+	// 一个 agent 的 type=agent apikey 可以传入
+	// `x-bkclaw-agent-id: <同级>`（或省略并回退到 default / all[0]）
+	// 并与所有者的任何 agent 通信。/v1/agents 列表已经通过
+	// CanAccessAgent 进行过滤 — 在此镜像该逻辑以便统一执行
+	// apikey 范围。使用 404（而非 403），使响应与真正的
+	// "无此 agent" 情况一致，ACL 不会泄露超出范围的 agent 的存在。
 	if ident, ok := auth.FromContext(r.Context()); ok && !ident.CanAccessAgent(ag.Name()) {
 		writeJSON(w, http.StatusNotFound, map[string]any{
 			"error": map[string]string{"message": "agent not found", "type": "not_found_error"},
@@ -232,13 +223,13 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build session key from header
+	// 从 header 构建会话密钥
 	sessionKey := r.Header.Get("x-bkclaw-session-key")
 	if sessionKey == "" {
 		sessionKey = "api-" + fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 
-	// Extract the last user message
+	// 提取最后一条用户消息
 	var userText string
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == "user" {
@@ -253,17 +244,15 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Materialize attached images into the agent's session workspace and
-	// prepend the same `[Attached: /workspace/<file>]` breadcrumb the web
-	// UI uses (web/src/app/agents/[id]/chat/page.tsx:639-645) so the wire
-	// shape is identical across web and API entry points. Verbose "do not
-	// probe" notes here actively backfire — models reflexively run
-	// which/ls/file to "verify" the path when the prompt foregrounds it.
-	// PhotoURLs is preserved so vision LLMs still see the image inline.
-	// API clients can't address a project today — chat completions only
-	// know session_key — so attachments always land in the loose-chat
-	// scope. When/if we expose project addressing here, look up the
-	// session row and pass its project_id instead of "".
+	// 将附件图片物化到 agent 的会话工作区，并在前面添加与 Web UI
+	// 使用的相同的 `[Attached: /workspace/<file>]` 面包屑
+	// (web/src/app/agents/[id]/chat/page.tsx:639-645)，使 Web 和
+	// API 入口的传输格式一致。冗长的"请勿探测"提示反而适得其反 —
+	// 当提示中强调路径时，模型会本能地运行 which/ls/file 来"验证"路径。
+	// PhotoURLs 被保留，以便视觉 LLM 仍能内联看到图片。
+	// API 客户端目前无法寻址项目 — 聊天补全仅知道 session_key —
+	// 因此附件始终落入松散聊天范围。当/如果我们在此暴露项目寻址时，
+	// 查找会话行并传入其 project_id 而非 ""。
 	atts := req.allAttachments()
 	attachmentPaths := ag.WriteSessionAttachments(r.Context(), sessionKey, "", atts)
 	if len(attachmentPaths) > 0 {
@@ -277,10 +266,10 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		userText = b.String()
 	}
 
-	// Build inbound message.
-	// X-Bkclaw-Channel lets callers override the reply channel so
-	// cron jobs created during this turn route through the right
-	// adapter (e.g. "pinclaw" → plugin channel.send → Cloud API).
+	// 构建入站消息。
+	// X-Bkclaw-Channel 允许调用者覆盖回复通道，使此轮创建的
+	// 定时任务通过正确的适配器路由（例如 "pinclaw" → plugin
+	// channel.send → Cloud API）。
 	channel := r.Header.Get("x-bkclaw-channel")
 	if channel == "" {
 		channel = "api"
@@ -312,7 +301,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if isStream {
 		s.streamResponseFromAgent(w, r, ag, msg, chatID, model, now)
 	} else {
-		// Get reply from agent
+		// 从 agent 获取回复
 		reply := ag.HandleMessage(r.Context(), msg)
 		s.fullResponse(w, reply, chatID, model, now)
 	}
@@ -329,13 +318,13 @@ func (s *Server) streamResponseFromAgent(w http.ResponseWriter, r *http.Request,
 
 	sr := ag.HandleMessageStream(r.Context(), msg)
 
-	// Send role chunk
+	// 发送角色数据块
 	s.writeSSEChunk(w, chatID, model, created, "assistant", "", nil)
 	if ok {
 		flusher.Flush()
 	}
 
-	// Forward chunks from StreamReader
+	// 转发 StreamReader 的数据块
 	for {
 		chunk, more := sr.Next()
 		if chunk.Content != "" {
@@ -349,7 +338,7 @@ func (s *Server) streamResponseFromAgent(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	// Send finish chunk
+	// 发送完成数据块
 	done := "stop"
 	s.writeSSEChunk(w, chatID, model, created, "", "", &done)
 	fmt.Fprint(w, "data: [DONE]\n\n")
@@ -401,9 +390,8 @@ func (s *Server) fullResponse(w http.ResponseWriter, reply, chatID, model string
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// resolveAgent picks an agent out of the caller's user space, preferring an
-// explicit agent ID from the x-bkclaw-agent-id header and falling back to
-// the default / first agent.
+// resolveAgent 从调用者的用户空间中选取一个 agent，优先使用
+// x-bkclaw-agent-id 头中的显式 agent ID，回退到默认/第一个 agent。
 func resolveAgent(space *UserSpaceView, agentID string) *agent.Agent {
 	mgr := space.Agents
 	if agentID != "" {

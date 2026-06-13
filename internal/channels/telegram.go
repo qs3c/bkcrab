@@ -18,10 +18,10 @@ import (
 
 var mentionRe = regexp.MustCompile(`@(\w+)`)
 
-// markdownV2Escaper escapes special characters for Telegram MarkdownV2.
+// markdownV2Escaper 为 Telegram MarkdownV2 转义特殊字符。
 var markdownV2SpecialChars = []string{"_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"}
 
-// Telegram implements the Channel interface for Telegram Bot API.
+// Telegram 实现了 Telegram Bot API 的 Channel 接口。
 type Telegram struct {
 	bot         *tgbotapi.BotAPI
 	bus         *bus.MessageBus
@@ -29,7 +29,7 @@ type Telegram struct {
 	botUsername string
 }
 
-// NewTelegram creates a new Telegram channel instance for the given account.
+// NewTelegram 为给定账号创建新的 Telegram 渠道实例。
 func NewTelegram(botToken string, accountID string, mb *bus.MessageBus) (*Telegram, error) {
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
@@ -54,19 +54,19 @@ func (t *Telegram) AccountID() string {
 	return t.accountID
 }
 
-// BotUsername returns the Telegram bot's username (without @).
+// BotUsername 返回 Telegram bot 的用户名（不带 @）。
 func (t *Telegram) BotUsername() string {
 	return t.botUsername
 }
 
-// Start begins long polling for Telegram updates.
+// Start 开始长轮询 Telegram 更新。
 func (t *Telegram) Start(ctx context.Context) error {
-	// Register bot commands so users see them in the / menu
+	// 注册 bot 命令以便用户在 / 菜单中看到它们
 	t.registerCommands()
 
-	// Reclaim the bot before polling so a stray webhook or a previous
-	// holder's in-flight getUpdates doesn't lock us into the 3s retry
-	// spam loop inside tgbotapi.
+	// 在轮询之前回收 bot，以便残留的 webhook 或前一个持有者
+	// 进行中的 getUpdates 不会将我们锁定在 tgbotapi 内部的
+	// 3 秒重试垃圾循环中。
 	t.claimBot()
 
 	u := tgbotapi.NewUpdate(0)
@@ -86,13 +86,13 @@ func (t *Telegram) Start(ctx context.Context) error {
 }
 
 func (t *Telegram) handleUpdate(update tgbotapi.Update) {
-	// Handle callback queries (inline keyboard button presses)
+	// 处理回调查询（内联键盘按钮点击）
 	if update.CallbackQuery != nil {
 		t.handleCallbackQuery(update.CallbackQuery)
 		return
 	}
 
-	// Handle edited messages - treat like new messages
+	// 处理编辑消息 - 视同新消息
 	msg := update.Message
 	if msg == nil {
 		msg = update.EditedMessage
@@ -101,7 +101,7 @@ func (t *Telegram) handleUpdate(update tgbotapi.Update) {
 		return
 	}
 
-	// Build inbound message
+	// 构建入站消息
 	inbound := t.buildInboundMessage(msg)
 	if inbound == nil {
 		return
@@ -111,10 +111,10 @@ func (t *Telegram) handleUpdate(update tgbotapi.Update) {
 }
 
 func (t *Telegram) buildInboundMessage(msg *tgbotapi.Message) *bus.InboundMessage {
-	// Handle photos
+	// 处理照片
 	var photoURL string
 	if msg.Photo != nil && len(msg.Photo) > 0 {
-		// Use the largest photo (last in the array)
+		// 使用最大照片（数组中最后一个）
 		largest := msg.Photo[len(msg.Photo)-1]
 		fileURL, err := t.bot.GetFileDirectURL(largest.FileID)
 		if err != nil {
@@ -124,13 +124,13 @@ func (t *Telegram) buildInboundMessage(msg *tgbotapi.Message) *bus.InboundMessag
 		}
 	}
 
-	// Skip messages with no text and no photo
+	// 跳过没有文本和照片的消息
 	text := msg.Text
 	if msg.Caption != "" {
 		text = msg.Caption
 	}
 	if text == "" && photoURL == "" {
-		// Unsupported message type (sticker, voice, etc.) - skip
+		// 不支持的消息类型（贴纸、语音等）- 跳过
 		slog.Debug("telegram skipping unsupported message type",
 			"chat_id", msg.Chat.ID,
 			"from", msg.From.UserName,
@@ -148,7 +148,7 @@ func (t *Telegram) buildInboundMessage(msg *tgbotapi.Message) *bus.InboundMessag
 		senderName = msg.From.FirstName
 	}
 
-	// Parse @mentions from message text
+	// 从消息文本中解析 @提及
 	var mentions []string
 	matches := mentionRe.FindAllStringSubmatch(text, -1)
 	for _, m := range matches {
@@ -157,7 +157,7 @@ func (t *Telegram) buildInboundMessage(msg *tgbotapi.Message) *bus.InboundMessag
 
 	isBot := msg.From.IsBot
 
-	// Track reply-to
+	// 跟踪回复
 	var replyToMsgID string
 	if msg.ReplyToMessage != nil {
 		replyToMsgID = strconv.Itoa(msg.ReplyToMessage.MessageID)
@@ -190,7 +190,7 @@ func (t *Telegram) buildInboundMessage(msg *tgbotapi.Message) *bus.InboundMessag
 }
 
 func (t *Telegram) handleCallbackQuery(cq *tgbotapi.CallbackQuery) {
-	// Acknowledge the callback
+	// 确认回调
 	callback := tgbotapi.NewCallback(cq.ID, "")
 	if _, err := t.bot.Request(callback); err != nil {
 		slog.Warn("telegram callback ack failed", "error", err)
@@ -223,12 +223,11 @@ func (t *Telegram) handleCallbackQuery(cq *tgbotapi.CallbackQuery) {
 	}
 }
 
-// claimBot clears any leftover webhook and steals the long-poll lock
-// from any previous getUpdates holder, so we enter the polling loop in
-// a clean state. Telegram lets at most one client long-poll a bot at a
-// time — issuing a fresh getUpdates terminates whatever request is
-// in-flight on the other side. We use offset=-1, timeout=0 so this
-// returns immediately and we don't consume real updates.
+// claimBot 清除残留的 webhook 并从任何前一个 getUpdates 持有者
+// 窃取长轮询锁，以便我们以干净状态进入轮询循环。Telegram 最多
+// 允许一个客户端同时长轮询一个 bot——发出新的 getUpdates 会终止
+// 对端进行中的请求。我们使用 offset=-1, timeout=0 使其立即返回，
+// 且不消耗真实更新。
 func (t *Telegram) claimBot() {
 	if _, err := t.bot.Request(tgbotapi.DeleteWebhookConfig{DropPendingUpdates: false}); err != nil {
 		slog.Warn("telegram delete webhook on startup", "account", t.accountID, "error", err)
@@ -238,7 +237,7 @@ func (t *Telegram) claimBot() {
 	}
 }
 
-// registerCommands sets the bot command menu visible to users.
+// registerCommands 设置用户可见的 bot 命令菜单。
 func (t *Telegram) registerCommands() {
 	commands := []tgbotapi.BotCommand{
 		{Command: "start", Description: "Start the bot"},
@@ -263,7 +262,7 @@ func (t *Telegram) registerCommands() {
 	}
 }
 
-// Send sends a plain text message to a Telegram chat.
+// Send 向 Telegram 聊天发送纯文本消息。
 func (t *Telegram) Send(chatID string, text string) error {
 	return t.SendMessage(bus.OutboundMessage{
 		ChatID: chatID,
@@ -271,35 +270,34 @@ func (t *Telegram) Send(chatID string, text string) error {
 	})
 }
 
-// SendMessage sends a rich outbound message with formatting, reply-to, buttons, etc.
+// SendMessage 发送带格式、回复、按钮等功能的富出站消息。
 func (t *Telegram) SendMessage(msg bus.OutboundMessage) error {
 	id, err := strconv.ParseInt(msg.ChatID, 10, 64)
 	if err != nil {
 		return fmt.Errorf("parse chat ID: %w", err)
 	}
 
-	// Edit existing message
+	// 编辑现有消息
 	if msg.EditMsgID != "" {
 		return t.editMessage(id, msg)
 	}
 
-	// Default to legacy Markdown — Telegram's MarkdownV2 is too strict
-	// (every special char needs escaping), and our agents emit standard
-	// GFM. The legacy "Markdown" parse mode renders *bold*, _italic_,
-	// `code`, ```fenced```, and [links](url) without making us escape
-	// every brace/bracket. Headers and tables don't render in either
-	// mode, so we strip ###/## prefixes pre-send. Caller can still
-	// override via msg.ParseMode.
+	// 默认使用旧版 Markdown——Telegram 的 MarkdownV2 过于严格
+	// （每个特殊字符都需要转义），且我们的 agent 输出标准 GFM。
+	// 旧版 "Markdown" 解析模式渲染 *粗体*、_斜体_、`代码`、
+	// ```围栏代码```和[链接](url)，无需我们转义每个大括号/方括号。
+	// 标题和表格在两种模式下都不渲染，因此我们在发送前去除 ###/## 前缀。
+	// 调用方仍可通过 msg.ParseMode 覆盖。
 	if msg.ParseMode == "" {
 		msg.ParseMode = "Markdown"
 	}
-	// Flatten GFM tables first — Telegram (every parse mode) renders
-	// `|cell|cell|` rows as literal text. FlattenMarkdownTables turns
-	// each into "label: value" lines that read like normal prose.
+	// 先展平 GFM 表格——Telegram（任何解析模式）将 `|cell|cell|` 行
+	// 渲染为纯文本。FlattenMarkdownTables 将每行转换为 "label: value" 行，
+	// 读起来像普通散文。
 	text := FlattenMarkdownTables(msg.Text)
 	body := convertMarkdownForTelegram(text, msg.ParseMode)
 
-	// Send the text body first (chunked if long).
+	// 首先发送文本主体（如果较长则分块）。
 	if body != "" {
 		chunks := splitTelegramMessage(body)
 		for i, chunk := range chunks {
@@ -312,12 +310,10 @@ func (t *Telegram) SendMessage(msg bus.OutboundMessage) error {
 		}
 	}
 
-	// Then upload any pre-resolved attachments (image-tool output etc.).
-	// Telegram has four distinct media APIs and the right one is picked
-	// from MediaItem.ContentType (set by the gateway) or the filename
-	// extension. Sending a PDF/MP3/MP4 through NewPhoto — which the old
-	// code did unconditionally — gets rejected with `PHOTO_INVALID_DIMENSIONS`
-	// or similar.
+	// 然后上传任何预解析的附件（图片工具输出等）。
+	// Telegram 有四个不同的媒体 API，正确的那个由 MediaItem.ContentType
+	//（由网关设置）或文件名扩展选择。通过 NewPhoto 发送 PDF/MP3/MP4——
+	// 旧代码无条件这样做——会被拒绝并报 PHOTO_INVALID_DIMENSIONS 或类似错误。
 	for _, item := range msg.MediaItems {
 		fb := tgbotapi.FileBytes{Name: item.Filename, Bytes: item.Bytes}
 		var c tgbotapi.Chattable
@@ -339,12 +335,10 @@ func (t *Telegram) SendMessage(msg bus.OutboundMessage) error {
 	return nil
 }
 
-// telegramMediaKind picks photo / video / audio / document for a
-// MediaItem. Preference: explicit ContentType (set by the gateway from
-// the file's mime/ext) → filename extension lookup → "document" as the
-// safe fallback. Telegram is lax about document uploads (any file
-// works), so anything we can't classify confidently still goes through
-// rather than being dropped.
+// telegramMediaKind 为 MediaItem 选择 photo / video / audio / document。
+// 优先级：显式 ContentType（由网关从文件的 mime/ext 设置）→ 文件名
+// 扩展名查找 → "document" 作为安全回退。Telegram 对文档上传很宽松
+// （任何文件都可以），所以我们无法有把握分类的内容仍然通过而非丢弃。
 func telegramMediaKind(item bus.MediaItem) string {
 	ct := strings.ToLower(item.ContentType)
 	if ct == "" {
@@ -361,21 +355,20 @@ func telegramMediaKind(item bus.MediaItem) string {
 	return "document"
 }
 
-// convertMarkdownForTelegram does a lightweight pass over GFM text so
-// the legacy `Markdown` parse mode at least renders something useful:
-//   - `### header` / `## header` / `# header` → `*header*` (bold)
-//   - `**bold**` → `*bold*` (legacy mode uses single asterisk)
-//   - tables and other GFM-only syntax fall through unchanged (Telegram
-//     just shows them as plain text)
+// convertMarkdownForTelegram 对 GFM 文本做轻量级处理，使旧版
+// `Markdown` 解析模式至少渲染有用的内容：
+//   - `### 标题` / `## 标题` / `# 标题` → `*标题*`（粗体）
+//   - `**粗体**` → `*粗体*`（旧版模式使用单个星号）
+//   - 表格和其他仅 GFM 语法直接不变通过（Telegram 只显示为纯文本）
 //
-// MarkdownV2 callers get the existing escaper applied later.
+// MarkdownV2 调用方稍后会应用现有的转义器。
 func convertMarkdownForTelegram(text, mode string) string {
 	if text == "" {
 		return text
 	}
 	if mode == "MarkdownV2" {
-		// V2 path: caller's existing escaper does the work. Pre-strip
-		// header markers though so they don't end up as literal `\#\#\#`.
+		// V2 路径：调用方现有的转义器完成工作。但先剥离标题标记，
+		// 以免它们变成纯文本 `\#\#\#`。
 		text = stripMarkdownHeaders(text)
 		text = strings.ReplaceAll(text, "**", "*")
 		return text
@@ -384,15 +377,14 @@ func convertMarkdownForTelegram(text, mode string) string {
 		return text
 	}
 	text = stripMarkdownHeaders(text)
-	// Legacy Markdown bold is `*X*`, not `**X**`. Convert paired `**`.
+	// 旧版 Markdown 粗体是 `*X*`，不是 `**X**`。转换成对的 `**`。
 	text = strings.ReplaceAll(text, "**", "*")
 	return text
 }
 
-// stripMarkdownHeaders rewrites lines that start with `### `, `## `, or
-// `# ` (with any leading whitespace) into bold lines. Telegram doesn't
-// have heading support in either parse mode; bolding the line is the
-// closest approximation.
+// stripMarkdownHeaders 将以 `### `、`## ` 或 `# ` 开头（允许前导空白）
+// 的行改写为粗体行。Telegram 在两种解析模式下都不支持标题；将行加粗是
+// 最接近的近似。
 func stripMarkdownHeaders(text string) string {
 	lines := strings.Split(text, "\n")
 	for i, ln := range lines {
@@ -411,7 +403,7 @@ func stripMarkdownHeaders(text string) string {
 func (t *Telegram) sendSingleMessage(chatID int64, text string, msg bus.OutboundMessage, isFirst bool) error {
 	tgMsg := tgbotapi.NewMessage(chatID, text)
 
-	// Set parse mode with fallback
+	// 设置解析模式并带回退
 	if msg.ParseMode != "" {
 		if msg.ParseMode == "MarkdownV2" {
 			tgMsg.Text = escapeMarkdownV2(text)
@@ -419,7 +411,7 @@ func (t *Telegram) sendSingleMessage(chatID int64, text string, msg bus.Outbound
 		tgMsg.ParseMode = msg.ParseMode
 	}
 
-	// Reply-to (only on first chunk)
+	// 仅回复（仅在第一个块上）
 	if isFirst && msg.ReplyToMsgID != "" {
 		replyID, err := strconv.Atoi(msg.ReplyToMsgID)
 		if err == nil {
@@ -427,20 +419,20 @@ func (t *Telegram) sendSingleMessage(chatID int64, text string, msg bus.Outbound
 		}
 	}
 
-	// Inline keyboard (only on last chunk, but we set on first for single messages)
+	// 内联键盘（仅在最后一个块上，但对于单条消息设置在第一个块上）
 	if isFirst && len(msg.Buttons) > 0 {
 		tgMsg.ReplyMarkup = buildInlineKeyboard(msg.Buttons)
 	}
 
 	_, err := t.bot.Send(tgMsg)
 	if err != nil && msg.ParseMode == "MarkdownV2" {
-		// Fallback to HTML
+		// 回退到 HTML
 		slog.Warn("telegram MarkdownV2 failed, trying HTML", "error", err)
 		tgMsg.ParseMode = "HTML"
 		tgMsg.Text = text // use original text for HTML
 		_, err = t.bot.Send(tgMsg)
 		if err != nil {
-			// Fallback to plain text
+			// 回退到纯文本
 			slog.Warn("telegram HTML failed, sending plain", "error", err)
 			tgMsg.ParseMode = ""
 			tgMsg.Text = text
@@ -471,7 +463,7 @@ func (t *Telegram) editMessage(chatID int64, msg bus.OutboundMessage) error {
 
 	_, err = t.bot.Send(edit)
 	if err != nil && msg.ParseMode == "MarkdownV2" {
-		// Fallback to HTML then plain
+		// 然后回退到 HTML 再到纯文本
 		edit.ParseMode = "HTML"
 		edit.Text = msg.Text
 		_, err = t.bot.Send(edit)
@@ -484,7 +476,7 @@ func (t *Telegram) editMessage(chatID int64, msg bus.OutboundMessage) error {
 	return err
 }
 
-// SendTyping sends a typing indicator to the chat.
+// SendTyping 向聊天发送输入指示器。
 func (t *Telegram) SendTyping(chatID string) error {
 	id, err := strconv.ParseInt(chatID, 10, 64)
 	if err != nil {
@@ -495,7 +487,7 @@ func (t *Telegram) SendTyping(chatID string) error {
 	return err
 }
 
-// escapeMarkdownV2 escapes special characters for Telegram MarkdownV2 format.
+// escapeMarkdownV2 为 Telegram MarkdownV2 格式转义特殊字符。
 func escapeMarkdownV2(text string) string {
 	for _, ch := range markdownV2SpecialChars {
 		text = strings.ReplaceAll(text, ch, "\\"+ch)
@@ -503,8 +495,7 @@ func escapeMarkdownV2(text string) string {
 	return text
 }
 
-// splitTelegramMessage splits a message that exceeds Telegram's 4096 char limit
-// at paragraph boundaries.
+// splitTelegramMessage 在超过 Telegram 4096 字符限制时按段落边界拆分消息。
 func splitTelegramMessage(text string) []string {
 	const maxLen = 4096
 
@@ -519,7 +510,7 @@ func splitTelegramMessage(text string) []string {
 			break
 		}
 
-		// Try to split at paragraph boundary
+		// 尝试在段落边界处拆分
 		cutAt := maxLen
 		if idx := strings.LastIndex(text[:maxLen], "\n\n"); idx > 0 {
 			cutAt = idx + 2
@@ -533,7 +524,7 @@ func splitTelegramMessage(text string) []string {
 	return chunks
 }
 
-// buildInlineKeyboard converts OutboundButton rows to a Telegram InlineKeyboardMarkup.
+// buildInlineKeyboard 将 OutboundButton 行转换为 Telegram InlineKeyboardMarkup。
 func buildInlineKeyboard(buttons [][]bus.OutboundButton) tgbotapi.InlineKeyboardMarkup {
 	var rows [][]tgbotapi.InlineKeyboardButton
 	for _, row := range buttons {

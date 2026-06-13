@@ -6,38 +6,33 @@ import (
 	"time"
 )
 
-// Leaser is the cross-process singleton primitive a Manager uses to
-// gate polling / persistent-connection adapters (WeChat, Telegram,
-// Discord, Slack, Feishu long-conn). Without a leaser, two replicas
-// sharing the same bot token would both long-poll the upstream and
-// the user would receive every reply twice.
+// Leaser 是 Manager 用来门控轮询/持久连接适配器（微信、Telegram、
+// Discord、Slack、飞书长连接）的跨进程单例原语。没有 leaser 时，共享
+// 同一 bot token 的两个副本都会对上游进行长轮询，用户会收到双重复回复。
 //
-// Acquire returns true when the caller (identified by holderID) is now
-// the leaseholder for (channel, accountID); false means another live
-// holder owns it. Renew returns false when the lease was lost — the
-// caller MUST stop polling immediately. Release voluntarily drops the
-// row so a peer can take over without waiting for TTL.
+// Acquire 在调用方（由 holderID 标识）成为 (channel, accountID) 的
+// 租约持有者时返回 true；false 表示另一个活跃持有者拥有它。Renew 在
+// 租约丢失时返回 false——调用方必须立即停止轮询。Release 主动释放行，
+// 以便对等方无需等待 TTL 即可接管。
 type Leaser interface {
 	Acquire(ctx context.Context, channel, accountID, holderID string, ttl time.Duration) (bool, error)
 	Renew(ctx context.Context, channel, accountID, holderID string, ttl time.Duration) (bool, error)
 	Release(ctx context.Context, channel, accountID, holderID string) error
 }
 
-// Lease lifecycle constants. The TTL is the freshness window the
-// leaseholder writes into channel_leases.expires_at; renew fires at
-// 1/3 of TTL so two consecutive renewal failures still leave time for
-// the third before the row goes stale. Retry is how often a peer
-// re-tries Acquire while waiting for the active holder to die.
+// 租约生命周期常量。TTL 是租约持有者写入 channel_leases.expires_at 的
+// 新鲜度窗口；续约在 TTL 的 1/3 处触发，以便两次连续续约失败仍有时间
+// 让第三次在行过期之前完成。重试是对等方在等待活跃持有者死亡时重新
+// 尝试 Acquire 的频率。
 const (
 	leaseTTL           = 30 * time.Second
 	leaseRenewInterval = 10 * time.Second
 	leaseRetryInterval = 10 * time.Second
 )
 
-// NopLeaser is the no-singleton implementation: every Acquire wins,
-// Renew always succeeds, Release is a no-op. Used by tests and by
-// installs where no leaser is wired (single-instance fallback). Safe
-// to share — all methods are stateless.
+// NopLeaser 是无单例实现：每次 Acquire 都成功，Renew 总是成功，
+// Release 是空操作。用于测试和未接 leaser 的安装（单实例回退）。
+// 可安全共享——所有方法都是无状态的。
 type NopLeaser struct{}
 
 func (NopLeaser) Acquire(context.Context, string, string, string, time.Duration) (bool, error) {
@@ -48,22 +43,19 @@ func (NopLeaser) Renew(context.Context, string, string, string, time.Duration) (
 }
 func (NopLeaser) Release(context.Context, string, string, string) error { return nil }
 
-// runWithLease wraps a Channel's Start in a cross-instance singleton
-// gate. Lifecycle:
+// runWithLease 将 Channel 的 Start 包装在跨实例单例门控中。生命周期：
 //
-//  1. Try to Acquire the (channel, accountID) lease. If another
-//     instance holds it, sleep and retry until ctx ends or we win.
-//  2. While held, spawn ch.Start(childCtx) and a renewal ticker.
-//     Renewal failure (lease lost or DB error) cancels childCtx —
-//     the Start goroutine exits, we Release locally (best-effort),
-//     and we loop back to step 1.
-//  3. On parent ctx cancellation we cancel the Start goroutine,
-//     wait for it to return, then Release before exiting.
+//  1. 尝试 Acquire (channel, accountID) 租约。如果另一个实例持有它，
+//     则休眠并重试，直到 ctx 结束或我们赢得租约。
+//  2. 持有时，启动 ch.Start(childCtx) 和续约计时器。
+//     续约失败（租约丢失或数据库错误）会取消 childCtx——Start goroutine
+//     退出，我们在本地 Release（尽力），然后回到步骤 1。
+//  3. 父 ctx 取消时，我们取消 Start goroutine，等待它返回，
+//     然后在退出前 Release。
 //
-// `holderID` is the per-process instance identifier — typically a UUID
-// generated once at Manager construction. It MUST be stable across
-// renewals of the same process or RenewChannelLease will return false
-// on every tick.
+// `holderID` 是每进程实例标识符——通常在 Manager 构造时生成的一次 UUID。
+// 它必须在同一进程的续约之间保持稳定，否则 RenewChannelLease 会在每次
+// tick 上返回 false。
 func runWithLease(ctx context.Context, ch Channel, leaser Leaser, holderID string) {
 	chName := ch.Name()
 	accountID := ch.AccountID()
@@ -82,10 +74,9 @@ func runWithLease(ctx context.Context, ch Channel, leaser Leaser, holderID strin
 			continue
 		}
 		if !ok {
-			// Another live instance holds the lease — quiet retry. We
-			// intentionally don't log here per-tick to avoid spamming
-			// the standby replica's logs forever; the holder logs its
-			// own "starting channel" once on acquisition.
+			// 另一个活跃实例持有租约——安静重试。我们故意不在每 tick
+			// 处记录日志，以避免永远刷屏待机副本的日志；持有者在获取时
+			// 记录自己的 "starting channel" 一次。
 			if !sleepOrDone(ctx, leaseRetryInterval) {
 				return
 			}
@@ -103,41 +94,35 @@ func runWithLease(ctx context.Context, ch Channel, leaser Leaser, holderID strin
 		}()
 		renewExit := renewUntilLost(childCtx, leaser, chName, accountID, holderID)
 
-		// Wait for either: parent ctx ends, the adapter exits on its
-		// own (e.g. wechat token-expired), or the renew loop reports
-		// the lease was lost / errored.
+		// 等待以下任一情况：父 ctx 结束、适配器自行退出（例如微信 token 过期），
+		// 或续约循环报告租约丢失/出错。
 		select {
 		case <-ctx.Done():
 			childCancel()
 			<-done
-			// Best-effort release on graceful shutdown so a peer can
-			// take over within seconds instead of waiting for TTL.
+			// 优雅关闭时尽力释放，以便对等方可以在几秒内接管而不必等待 TTL。
 			if err := leaser.Release(context.Background(), chName, accountID, holderID); err != nil {
 				slog.Debug("channel lease release failed on shutdown", append(logCtx, "error", err)...)
 			}
 			return
 		case <-done:
-			// Adapter exited on its own. Drop the lease so a peer can
-			// pick it up (or it'll re-acquire on the next loop iter if
-			// the exit was transient).
+			// 适配器自行退出。释放租约以便对等方可以接管（或者如果退出是暂时性的，
+			// 下一次循环迭代会重新获取）。
 			childCancel()
 			<-renewExit
 			if err := leaser.Release(context.Background(), chName, accountID, holderID); err != nil {
 				slog.Debug("channel lease release failed after adapter exit", append(logCtx, "error", err)...)
 			}
-			// Fall through to the for-loop: next iteration tries to
-			// re-acquire and restart. If the adapter exited because
-			// of a permanent condition (wechat onExpired callback
-			// unregisters the channel from the manager), the manager
-			// will eventually tear down this goroutine via ctx.
+			// 进入 for 循环的下一次迭代：下一次迭代尝试重新获取并重启。
+			// 如果适配器因永久条件退出（wechat onExpired 回调从管理器
+			// 注销渠道），管理器最终会通过 ctx 拆除此 goroutine。
 			if !sleepOrDone(ctx, leaseRetryInterval) {
 				return
 			}
 		case <-renewExit:
-			// Renewal failed: either the DB rejected us (peer stole
-			// the lease — should be impossible under healthy TTLs but
-			// guard anyway) or a transient DB error chewed through
-			// the full TTL. Either way stop the adapter and re-loop.
+			// 续约失败：要么 DB 拒绝了我们（对等方窃取了租约——在健康 TTL 下
+			// 应该不可能，但无论如何都要防护），要么瞬态 DB 错误消耗了
+			// 完整的 TTL。无论哪种情况，停止适配器并重新循环。
 			slog.Warn("channel lease lost, stopping adapter", logCtx...)
 			childCancel()
 			<-done
@@ -148,10 +133,9 @@ func runWithLease(ctx context.Context, ch Channel, leaser Leaser, holderID strin
 	}
 }
 
-// renewUntilLost ticks every leaseRenewInterval until either ctx ends
-// (parent told us to stop) or Renew reports the lease was lost. The
-// returned channel closes when the goroutine exits — callers select
-// on it to learn when to tear down the adapter.
+// renewUntilLost 每 leaseRenewInterval 触发一次，直到 ctx 结束
+// （父进程告诉我们停止）或 Renew 报告租约丢失。返回的 channel 在
+// goroutine 退出时关闭——调用方在其上 select 以了解何时拆下适配器。
 func renewUntilLost(ctx context.Context, leaser Leaser, channel, accountID, holderID string) <-chan struct{} {
 	exit := make(chan struct{})
 	go func() {
@@ -165,11 +149,9 @@ func renewUntilLost(ctx context.Context, leaser Leaser, channel, accountID, hold
 			case <-ticker.C:
 				ok, err := leaser.Renew(ctx, channel, accountID, holderID, leaseTTL)
 				if err != nil {
-					// Transient DB error: log and keep trying. The
-					// lease expires after leaseTTL of no successful
-					// renew — at that point a peer steals and our
-					// next Renew returns ok=false, hitting the exit
-					// branch below.
+					// 瞬态 DB 错误：记录并继续尝试。租约在 leaseTTL 内没有成功续约会过期
+				// ——届时对等方窃取，我们的下一次 Renew 返回 ok=false，进入下面的
+				// 退出分支。
 					slog.Warn("channel lease renew error",
 						"channel", channel, "account", accountID, "error", err)
 					continue
@@ -183,9 +165,8 @@ func renewUntilLost(ctx context.Context, leaser Leaser, channel, accountID, hold
 	return exit
 }
 
-// sleepOrDone returns true after a full sleep, false if ctx ended
-// first. Lets the caller bail out of a retry loop cleanly without
-// reaching for a select boilerplate each time.
+// sleepOrDone 在完整休眠后返回 true，如果 ctx 先结束则返回 false。
+// 让调用方可以干净地退出重试循环，而不必每次都写 select 模板。
 func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	t := time.NewTimer(d)
 	defer t.Stop()

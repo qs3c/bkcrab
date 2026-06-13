@@ -21,22 +21,18 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 )
 
-// Feishu (飞书) bot adapter. Webhook-driven: inbound messages arrive via
-// HTTPS POSTs from Feishu's open platform to the bkclaw webhook route
-// (set up in internal/setup/server.go); outbound replies go through
-// /open-apis/im/v1/messages with a tenant_access_token we mint on
-// demand and cache.
+// Feishu（飞书）bot 适配器。Webhook 驱动：入站消息通过飞书开放平台
+// HTTPS POST 到 bkclaw 的 webhook 路由到达（在 internal/setup/server.go
+// 中设置）；出站回复通过 /open-apis/im/v1/messages 发送，使用我们按需
+// 获取并缓存的 tenant_access_token。
 //
-// Long-connection (WebSocket) is also offered by Feishu but uses
-// Protobuf framing — too much surface area to hand-roll without the
-// official SDK. Webhook is JSON-only and integrates with the existing
-// bkclaw HTTP server. Trade-off: needs a publicly reachable URL.
+// 飞书也提供长连接（WebSocket），但使用 Protobuf 帧格式——没有官方 SDK
+// 手写协议面积太大。Webhook 仅 JSON 且与现有 bkclaw HTTP 服务器集成。
+// 权衡：需要公共可达 URL。
 //
-// AppID is the credential_key + accountID. AppSecret is held in
-// AccountConfig.BotToken (semantic match: "the secret credential the
-// bot uses"). Verification token is held in AccountConfig.UserID
-// (matches the "extra account-scoped identifier" comment on that
-// field).
+// AppID 是 credential_key + accountID。AppSecret 存储在 AccountConfig.BotToken
+// 中（语义匹配："bot 使用的秘密凭据"）。验证令牌存储在
+// AccountConfig.UserID 中（匹配该字段"额外账户范围标识符"的注释）。
 
 const (
 	feishuBaseURL          = "https://open.feishu.cn"
@@ -55,15 +51,13 @@ type Feishu struct {
 	appID             string
 	appSecret         string
 	verificationToken string
-	// encryptKey, when non-empty, signals the Feishu app has "加密策略"
-	// configured. Inbound webhook bodies arrive as {"encrypt": "<b64>"}
-	// and must be AES-256-CBC-decrypted (key = sha256(encryptKey),
-	// IV = first 16 bytes of the ciphertext) before JSON parsing.
+	// encryptKey 非空时表示飞书 app 已配置"加密策略"。
+	// 入站 webhook 请求体以 {"encrypt": "<b64>"} 到达，必须在 JSON 解析前
+	// 用 AES-256-CBC 解密（key = sha256(encryptKey)，IV = 密文前 16 字节）。
 	encryptKey string
-	// useLongConn switches inbound to Feishu's WebSocket/长连接 path
-	// (no public URL required). When true, Start() boots the SDK ws
-	// client + dispatcher in startLongConn(); when false, inbound
-	// arrives via the public HTTP webhook handled in HandleWebhook().
+	// useLongConn 将入站切换到飞书的 WebSocket/长连接路径（无需公共 URL）。
+	// 为 true 时，Start() 启动 SDK ws 客户端 + startLongConn() 中的调度器；
+	// 为 false 时，入站通过公共 HTTP webhook 到达，在 HandleWebhook() 中处理。
 	useLongConn bool
 
 	httpClient *http.Client
@@ -71,14 +65,13 @@ type Feishu struct {
 	mu           sync.Mutex
 	accessTok    string
 	accessTokExp time.Time
-	botName      string // populated on Start via /bot/v3/info; best-effort
+	botName      string // 在 Start 时通过 /bot/v3/info 填充；尽力获取
 	botOpenID    string
 }
 
-// NewFeishu creates a Feishu adapter. verificationToken matches the value
-// configured under "Event Subscriptions → Verification Token" in the
-// Feishu Developer Console; we use it to validate inbound webhook
-// payloads.
+// NewFeishu 创建飞书适配器。verificationToken 与飞书开发者控制台
+// "Event Subscriptions → Verification Token" 中配置的值匹配；
+// 我们用它来验证入站 webhook 载荷。
 func NewFeishu(appID, appSecret, verificationToken, encryptKey string, useLongConn bool, accountID string, mb *bus.MessageBus) (*Feishu, error) {
 	if appID == "" || appSecret == "" {
 		return nil, errors.New("feishu: appID and appSecret required")
@@ -102,12 +95,10 @@ func (l *Feishu) Name() string        { return "feishu" }
 func (l *Feishu) AccountID() string   { return l.accountID }
 func (l *Feishu) BotUsername() string { return l.botName }
 
-// Start is mostly a no-op — Feishu pushes events to the webhook route
-// rather than us polling. We do one /bot/v3/info call up front to
-// surface the bot's display name, then block until ctx is done.
-// Errors fetching bot info don't fail the channel: outbound still
-// works, the username is just empty (which the cron-binding fallback
-// already tolerates).
+// Start 基本不做操作——飞书通过 webhook 路由推送事件而非我们轮询。
+// 我们会先调用一次 /bot/v3/info 获取 bot 的显示名称，然后阻塞直到 ctx 完成。
+// 获取 bot 信息失败不会使渠道失败：出站仍然有效，用户名只是为空
+// （cron 绑定回退已经容许此情况）。
 func (l *Feishu) Start(ctx context.Context) error {
 	if name, openID, err := l.fetchBotInfo(ctx); err != nil {
 		slog.Warn("feishu bot info fetch failed", "account", l.accountID, "error", err)
@@ -119,35 +110,31 @@ func (l *Feishu) Start(ctx context.Context) error {
 		slog.Info("feishu bot connected", "account", l.accountID, "name", name)
 	}
 	if l.useLongConn {
-		// Long-connection mode: outbound WS to Feishu, no public URL
-		// needed. startLongConn() blocks until ctx is done or the SDK
-		// client returns a fatal error. Implementation lives in
-		// feishu_ws.go to keep the SDK import scoped.
+		// 长连接模式：向外建立到飞书的 WS 出站连接，无需公共 URL。
+		// startLongConn() 阻塞直到 ctx 完成或 SDK 客户端返回致命错误。
+		// 实现位于 feishu_ws.go 以保持 SDK 导入范围限定。
 		return l.startLongConn(ctx)
 	}
 	<-ctx.Done()
 	return nil
 }
 
-// Send posts plain text. Used by tools / test paths that don't carry
-// any rich payload.
+// Send 发送纯文本。用于不携带富负载的工具/测试路径。
 func (l *Feishu) Send(chatID, text string) error {
 	return l.SendMessage(bus.OutboundMessage{ChatID: chatID, Text: text})
 }
 
-// SendMessage delivers Text + (optionally) MediaItems. Feishu's text
-// shape is `{"text":"..."}` JSON-stringified inside the `content`
-// field. MediaItems are deferred — sending images requires uploading
-// to Feishu's CDN first via /im/v1/images, which is a separate dance
-// we don't need until users complain.
+// SendMessage 投递 Text +（可选）MediaItems。飞书的文本形状是在
+// `content` 字段内 JSON 字符串化的 `{"text":"..."}`。MediaItems 暂缓——
+// 发送图片需要先通过 /im/v1/images 上传到飞书 CDN，这是一个我们
+// 还不需要的额外步骤，直到用户反馈。
 func (l *Feishu) SendMessage(msg bus.OutboundMessage) error {
 	if msg.Text == "" && len(msg.MediaItems) == 0 {
 		return nil
 	}
 	if msg.Text == "" {
-		// MediaItems-only without an upload path — skip rather than
-		// posting an empty bubble. Logged so it's debuggable if it
-		// ever happens in practice.
+		// 仅有 MediaItems 但无上传路径——跳过而非发送空气泡。
+		// 记录日志以便在实际情况中可以调试。
 		slog.Debug("feishu send: media-only message dropped (image upload not implemented)",
 			"account", l.accountID, "chat", msg.ChatID)
 		return nil
@@ -156,9 +143,8 @@ func (l *Feishu) SendMessage(msg bus.OutboundMessage) error {
 	if err != nil {
 		return fmt.Errorf("feishu token: %w", err)
 	}
-	// Feishu's `msg_type:"text"` path renders no markdown — GFM tables
-	// would arrive as literal `|cell|cell|` rows. Collapse them to
-	// label:value or middle-dot lines first.
+	// 飞书的 `msg_type:"text"` 路径不渲染 markdown——GFM 表格会以
+	// 原始 `|cell|cell|` 行到达。先将它们折叠为 label:value 或中点行。
 	text := FlattenMarkdownTables(msg.Text)
 	contentJSON, err := json.Marshal(map[string]string{"text": text})
 	if err != nil {
@@ -203,25 +189,22 @@ func (l *Feishu) SendMessage(msg bus.OutboundMessage) error {
 	return nil
 }
 
-// SendTyping is a no-op. Feishu's open platform doesn't expose a typing
-// indicator API for custom-app bots — only first-party apps get it.
-// The gateway's typing relay still fires every 5s but degenerates to
-// a cheap no-op call.
+// SendTyping 是空操作。飞书开放平台不暴露自定义 app bot 的输入指示器 API——
+// 只有第一方 app 才有。网关的输入中继仍然每 5 秒触发一次，但退化为廉价的空操作调用。
 func (l *Feishu) SendTyping(_ string) error { return nil }
 
-// --- Inbound (webhook handler entry point) ---
+// --- 入站（webhook 处理入口）---
 
-// FeishuEventEnvelope is the v2 schema Feishu uses for event subscriptions.
-// We match on header.event_type == "im.message.receive_v1".
+// FeishuEventEnvelope 是飞书用于事件订阅的 v2 schema。
+// 我们匹配 header.event_type == "im.message.receive_v1"。
 type FeishuEventEnvelope struct {
 	Schema string            `json:"schema"`
 	Header FeishuEventHeader `json:"header"`
 	Event  json.RawMessage   `json:"event"`
 
-	// v1 url_verification challenge fields (also surfaced here for the
-	// initial subscribe-time handshake; Feishu's v2 events use
-	// header.event_type == "url_verification" too on newer apps but
-	// older flows still send the legacy top-level shape).
+	// v1 url_verification 挑战字段（也在初始订阅时握手的风头上浮出；
+	// 飞书 v2 事件在新 app 上也使用 header.event_type == "url_verification"，
+	// 但旧流程仍发送旧版顶层形状）。
 	Type      string `json:"type,omitempty"`
 	Challenge string `json:"challenge,omitempty"`
 	Token     string `json:"token,omitempty"`
@@ -257,23 +240,18 @@ type feishuMessageEvent struct {
 	} `json:"message"`
 }
 
-// HandleWebhook is invoked by the HTTP route receiving POSTs from
-// Feishu. It validates `header.token` against the configured
-// verification token, handles the one-time URL-verification challenge,
-// and dispatches im.message.receive_v1 events onto the bus.
+// HandleWebhook 由接收飞书 POST 的 HTTP 路由调用。它针对配置的
+// 验证令牌验证 `header.token`，处理一次性 URL 验证挑战，
+// 并将 im.message.receive_v1 事件分派到总线。
 //
-// Returns the JSON body the handler should write back, plus an HTTP
-// status code. The handler is intentionally small/synchronous so a
-// single goroutine drives one webhook through to bus enqueue — Feishu
-// retries on non-200, so we'd rather block briefly than ack early and
-// drop on a panic.
+// 返回处理程序应写回的 JSON 体和 HTTP 状态码。处理程序故意小而同步，
+// 以便单个 goroutine 将一个 webhook 驱动到总线入队完成——飞书在非 200 时
+// 重试，因此我们宁愿短暂阻塞也不愿提前确认然后在 panic 时丢弃。
 func (l *Feishu) HandleWebhook(body []byte) (responseBody []byte, status int, err error) {
-	// If 加密策略 is on, body arrives as {"encrypt": "<b64>"} and must
-	// be decrypted to plaintext JSON before further parsing. Detect the
-	// encrypted shape by peeking — a body with a non-empty "encrypt"
-	// field but no encryptKey configured is a misconfiguration we want
-	// to surface (otherwise feishu just sees opaque "Challenge code 没
-	// 有返回" with no clue why).
+	// 如果加密策略已开启，请求体以 {"encrypt": "<b64>"} 到达，必须在
+	// 进一步解析前解密为明文 JSON。通过窥探检测加密形状——具有非空
+	// "encrypt" 字段但未配置 encryptKey 的请求体是我们想要暴露的配置
+	// 错误（否则飞书只看到不透明的"Challenge code 没有返回"而不知道原因）。
 	var peek struct {
 		Encrypt string `json:"encrypt"`
 	}
@@ -294,23 +272,18 @@ func (l *Feishu) HandleWebhook(body []byte) (responseBody []byte, status int, er
 		return nil, http.StatusBadRequest, fmt.Errorf("parse: %w", err)
 	}
 
-	// URL verification — Feishu sends this once at subscribe-config time.
-	// Echo the challenge back so it considers the URL valid. Two
-	// shapes coexist in the wild: legacy top-level {type, challenge,
-	// token} and v2 {schema, header.event_type=url_verification,
-	// event.{challenge}}. Handle both.
+	// URL 验证——飞书在订阅配置时发送一次。回显挑战值以使其认为 URL 有效。
+	// 两种形状并存：旧版顶层 {type, challenge, token} 和 v2
+	// {schema, header.event_type=url_verification, event.{challenge}}。两者都处理。
 	if env.Type == "url_verification" || env.Header.EventType == "url_verification" {
 		token := env.Token
 		if token == "" {
 			token = env.Header.Token
 		}
-		// Fail closed when no verification token is configured. The
-		// webhook URL is public; without a shared secret to compare
-		// against, anybody who guesses /api/feishu/webhook/<appId>
-		// can drive the bot. Operators must set the verification
-		// token in the Feishu Developer Console *and* paste it into
-		// bkclaw connect dialog. Constant-time compare on the
-		// match to avoid timing leaks on the token.
+		// 未配置验证令牌时安全失败。webhook URL 是公开的；没有共享密钥可以比对，
+		// 知道 /api/feishu/webhook/<appId> 的任何人都可以驱动机器人。操作员必须
+		// 在飞书开发者控制台设置验证令牌*并*将其粘贴到 bkclaw 连接对话框中。
+		// 使用常量时间比较以避免令牌的时序泄漏。
 		if l.verificationToken == "" {
 			return nil, http.StatusUnauthorized,
 				errors.New("feishu webhook rejected: no verification token configured — set it in the Feishu console and bkclaw connect dialog")
@@ -320,7 +293,7 @@ func (l *Feishu) HandleWebhook(body []byte) (responseBody []byte, status int, er
 		}
 		challenge := env.Challenge
 		if challenge == "" {
-			// v2 shape: challenge nests inside event
+			// v2 形状：challenge 嵌套在 event 中
 			var inner struct {
 				Challenge string `json:"challenge"`
 			}
@@ -331,12 +304,10 @@ func (l *Feishu) HandleWebhook(body []byte) (responseBody []byte, status int, er
 		return out, http.StatusOK, nil
 	}
 
-	// Real event. Validate token, then dispatch. Same fail-closed
-	// posture as url_verification above: an unset token used to mean
-	// "skip the check", which made the public webhook URL
-	// indistinguishable from "anybody who knows my app_id can post
-	// fabricated user messages here". Constant-time compare to keep
-	// the token out of timing-attack reach.
+	// 真实事件。验证令牌，然后分派。与上面 url_verification 相同的安全
+	// 关闭姿态：未设置的令牌曾意味着"跳过检查"，使公开的 webhook URL
+	// 与"任何知道我 app_id 的人都可以在此伪造用户消息"无法区分。
+	// 使用常量时间比较以将令牌保持在时序攻击范围之外。
 	if l.verificationToken == "" {
 		return nil, http.StatusUnauthorized,
 			errors.New("feishu webhook rejected: no verification token configured — set it in the Feishu console and bkclaw connect dialog")
@@ -353,25 +324,24 @@ func (l *Feishu) HandleWebhook(body []byte) (responseBody []byte, status int, er
 		}
 		l.dispatchInbound(ev)
 	default:
-		// Unknown event_type — ack with 200 so Feishu doesn't retry, but
-		// log so misconfigured subscriptions are visible.
+		// 未知 event_type——以 200 确认以免飞书重试，但记录日志
+		// 以便错误配置的订阅可见。
 		slog.Debug("feishu unhandled event", "event_type", env.Header.EventType, "event_id", env.Header.EventID)
 	}
 	return []byte(`{"ok":true}`), http.StatusOK, nil
 }
 
-// dispatchInbound translates a Feishu message event into a
-// bus.InboundMessage. Drops self-sent messages (sender_type != "user")
-// and non-text messages. Feishu's `content` is a JSON-encoded string
-// inside the event JSON — `{"text":"hello"}` — which we have to
-// re-decode separately.
+// dispatchInbound 将飞书消息事件转换为 bus.InboundMessage。
+// 丢弃自身发送的消息（sender_type != "user"）和非文本消息。
+// 飞书的 `content` 是事件 JSON 内的 JSON 编码字符串——
+// `{"text":"hello"}`——我们需要单独重新解码。
 func (l *Feishu) dispatchInbound(ev feishuMessageEvent) {
 	if ev.Sender.SenderType != "user" {
 		return
 	}
 	if ev.Message.MessageType != "text" {
-		// We support only text in V1. Feishu's "post" / "image" / "file"
-		// types each have their own content shape; defer until users ask.
+		// V1 仅支持文本。飞书的 "post" / "image" / "file" 类型各有自己的
+		// 内容形状；推迟直到用户有需求。
 		slog.Debug("feishu non-text message skipped",
 			"account", l.accountID, "type", ev.Message.MessageType)
 		return
@@ -392,8 +362,8 @@ func (l *Feishu) dispatchInbound(ev feishuMessageEvent) {
 		peerKind = "group"
 	}
 
-	// Use a stable per-message ID so dedup at the gateway can squash
-	// retries (Feishu resends events on non-2xx replies).
+	// 使用稳定的每消息 ID，以便网关去重可以消除重试
+	//（飞书在非 2xx 回复时重发事件）。
 	msgID := ev.Message.MessageID
 	if msgID == "" {
 		msgID = strconv.FormatInt(time.Now().UnixNano(), 10)
@@ -416,11 +386,11 @@ func (l *Feishu) dispatchInbound(ev feishuMessageEvent) {
 	}
 }
 
-// --- HTTP plumbing ---
+// --- HTTP 管线 ---
 
-// tenantAccessToken returns a cached Feishu tenant token, refreshing
-// when expired (or about to expire — RefreshSkew). One in-flight
-// refresh at a time via the struct mutex; concurrent callers wait.
+// tenantAccessToken 返回缓存的飞书租户令牌，在过期（或即将过期——
+// RefreshSkew）时刷新。通过结构体互斥锁限制一次飞行中的刷新；
+// 并发调用者等待。
 func (l *Feishu) tenantAccessToken(ctx context.Context) (string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -473,13 +443,13 @@ func (l *Feishu) fetchTenantAccessToken(ctx context.Context) (string, int, error
 		return "", 0, errors.New("feishu token: empty tenant_access_token")
 	}
 	if out.Expire == 0 {
-		out.Expire = 7200 // documented default
+		out.Expire = 7200 // 文档默认值
 	}
 	return out.TenantAccessToken, out.Expire, nil
 }
 
-// fetchBotInfo calls /bot/v3/info to get the bot's display name +
-// open_id. Best-effort; failures don't break the channel.
+// fetchBotInfo 调用 /bot/v3/info 获取 bot 的显示名称 + open_id。
+// 尽力获取；失败不会破坏渠道。
 func (l *Feishu) fetchBotInfo(ctx context.Context) (name, openID string, err error) {
 	tok, err := l.tenantAccessToken(ctx)
 	if err != nil {
@@ -519,10 +489,10 @@ func (l *Feishu) fetchBotInfo(ctx context.Context) (name, openID string, err err
 	return out.Bot.AppName, out.Bot.OpenID, nil
 }
 
-// FeishuValidateCredentials is the connect-handler validation step:
-// mints a tenant_access_token to confirm app_id/app_secret are good,
-// then fetches /bot/v3/info to capture the bot's display name. No
-// adapter state created — caller persists and hot-registers.
+// FeishuValidateCredentials 是连接处理程序验证步骤：
+// 获取 tenant_access_token 以确认 app_id/app_secret 可用，
+// 然后获取 /bot/v3/info 以捕获 bot 的显示名称。不创建适配器
+// 状态——调用方持久化并热注册。
 func FeishuValidateCredentials(ctx context.Context, appID, appSecret string) (botName, botOpenID string, err error) {
 	stub := &Feishu{
 		appID:      appID,
@@ -535,15 +505,15 @@ func FeishuValidateCredentials(ctx context.Context, appID, appSecret string) (bo
 	return stub.fetchBotInfo(ctx)
 }
 
-// decryptFeishuPayload decrypts a base64-encoded ciphertext from a
-// Feishu webhook's `encrypt` field. The scheme (per Feishu docs):
-//   - aesKey = sha256(encryptKey)             // 32 bytes → AES-256
+// decryptFeishuPayload 从飞书 webhook 的 `encrypt` 字段解密 base64 编码的
+// 密文。方案（根据飞书文档）：
+//   - aesKey = sha256(encryptKey)             // 32 字节 → AES-256
 //   - raw = base64-decode(b64ciphertext)
 //   - iv = raw[:16], ciphertext = raw[16:]
-//   - plain = AES-256-CBC-decrypt(ciphertext, aesKey, iv), PKCS7-unpadded
+//   - plain = AES-256-CBC-decrypt(ciphertext, aesKey, iv)，PKCS7 去填充
 //
-// Returns the JSON plaintext body the rest of HandleWebhook can
-// unmarshal as a normal FeishuEventEnvelope.
+// 返回 HandleWebhook 其余部分可作为普通 FeishuEventEnvelope 解组的
+// JSON 明文请求体。
 func decryptFeishuPayload(encryptKey, b64ciphertext string) ([]byte, error) {
 	raw, err := base64.StdEncoding.DecodeString(b64ciphertext)
 	if err != nil {
@@ -563,8 +533,8 @@ func decryptFeishuPayload(encryptKey, b64ciphertext string) ([]byte, error) {
 	}
 	plain := make([]byte, len(ct))
 	cipher.NewCBCDecrypter(block, iv).CryptBlocks(plain, ct)
-	// PKCS7 unpad. Final byte = pad length (1..blockSize). Validate
-	// before trimming so a malformed payload doesn't yield garbage.
+	// PKCS7 去填充。最后字节 = 填充长度 (1..blockSize)。在修剪前验证
+	// 以免格式错误的载荷产生垃圾数据。
 	if len(plain) == 0 {
 		return nil, errors.New("empty plaintext")
 	}

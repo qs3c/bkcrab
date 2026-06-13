@@ -14,16 +14,16 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// wsFrame is the envelope for all WebSocket messages.
+// wsFrame 是所有 WebSocket 消息的信封结构。
 type wsFrame struct {
-	Type    string          `json:"type"`              // "req", "res", "event"
-	ID      string          `json:"id,omitempty"`      // request/response correlation
-	Event   string          `json:"event,omitempty"`   // for type=event
-	Method  string          `json:"method,omitempty"`  // for type=req
-	Params  json.RawMessage `json:"params,omitempty"`  // for type=req
-	OK      *bool           `json:"ok,omitempty"`      // for type=res
-	Payload json.RawMessage `json:"payload,omitempty"` // for type=res
-	Error   *wsError        `json:"error,omitempty"`   // for type=res
+	Type    string          `json:"type"`              // "req"、"res"、"event"
+	ID      string          `json:"id,omitempty"`      // 请求/响应关联
+	Event   string          `json:"event,omitempty"`   // 用于 type=event
+	Method  string          `json:"method,omitempty"`  // 用于 type=req
+	Params  json.RawMessage `json:"params,omitempty"`  // 用于 type=req
+	OK      *bool           `json:"ok,omitempty"`      // 用于 type=res
+	Payload json.RawMessage `json:"payload,omitempty"` // 用于 type=res
+	Error   *wsError        `json:"error,omitempty"`   // 用于 type=res
 }
 
 type wsError struct {
@@ -36,7 +36,7 @@ type connectParams struct {
 	} `json:"auth"`
 }
 
-// HandleWebSocket handles WebSocket connections for the OpenClaw protocol.
+// HandleWebSocket 处理 OpenClaw 协议的 WebSocket 连接。
 func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -47,7 +47,7 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("websocket client connected", "remote", r.RemoteAddr)
 
-	// Send connect challenge
+	// 发送连接挑战
 	challenge := wsFrame{
 		Type:  "event",
 		Event: "connect.challenge",
@@ -94,13 +94,11 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				s.wsRespondError(conn, frame.ID, "authentication failed")
 				continue
 			}
-			// Stash the full resolved identity — type + ACL + everything
-			// — so later frames (`agents.list`, future verbs) reuse the
-			// same authorization context the HTTP path uses. The previous
-			// `auth.Identity{UserID, AuthMethod:"apikey"}` rebuild dropped
-			// APIKeyType and APIKeyAgents, so CanAccessAgent's apikey
-			// branch returned false for every agent and the list came
-			// back empty regardless of scope.
+// 保存完整的已解析身份（类型 + ACL + 所有内容），
+		// 以便后续帧（`agents.list`、未来的动词）复用与 HTTP 路径相同的
+		// 授权上下文。之前的 `auth.Identity{UserID, AuthMethod:"apikey"}` 重建
+		// 丢弃了 APIKeyType 和 APIKeyAgents，导致 CanAccessAgent 的 apikey
+		// 分支对每个 agent 都返回 false，无论范围如何列表均为空。
 			wsIdent = ident
 			authenticated = true
 			s.wsRespondOK(conn, frame.ID, json.RawMessage(`{}`))

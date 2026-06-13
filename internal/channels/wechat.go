@@ -30,19 +30,17 @@ import (
 	"github.com/qs3c/bkclaw/internal/config"
 )
 
-// WeChat implements the Channel interface for the iLink (微信) bot
-// platform. Pattern mirrors telegram.go: a single file owning the
-// HTTP client, long-poll loop, and outbound send. We deliberately
-// don't import a higher-level library — keeping the protocol surface
-// in-tree makes it easy to evolve alongside bkclaw's own message
-// types and avoids a Go-module dependency on an out-of-tree project.
+// WeChat 实现了 iLink（微信）bot 平台的 Channel 接口。
+// 模式镜像 telegram.go：单一文件拥有 HTTP 客户端、长轮询循环和出站发送。
+// 我们故意不导入更高级的库——将协议面保持在项目内使其易于与 bkclaw
+// 自身的消息类型一起演进，并避免对树外项目的 Go 模块依赖。
 
-// iLink protocol constants. Matches the upstream WeChat bot API.
+// iLink 协议常量。匹配上游微信 bot API。
 const (
 	wechatDefaultBaseURL    = "https://ilinkai.weixin.qq.com"
 	wechatLongPollTimeout   = 35 * time.Second
 	wechatSendTimeout       = 15 * time.Second
-	wechatErrSessionExpired = -14 // server-side sync token rotated; reset and re-poll
+	wechatErrSessionExpired = -14 // 服务端同步令牌已轮换；重置并重新轮询
 
 	wechatMsgTypeUser = 1
 	wechatMsgTypeBot  = 2
@@ -58,61 +56,55 @@ const (
 	wechatBackoffInitial = 3 * time.Second
 	wechatBackoffMax     = 60 * time.Second
 
-	// /ilink/bot/sendtyping status values.
+	// /ilink/bot/sendtyping 状态值。
 	wechatTypingStatusTyping = 1
 	wechatTypingStatusCancel = 2
 
 	wechatTypingTimeout = 8 * time.Second
 
-	// CDN constants for image/file upload. Mirrors the upstream weclaw
-	// daemon: iLink mints a per-upload URL via /ilink/bot/getuploadurl,
-	// the bot AES-128-ECB-encrypts the bytes, POSTs ciphertext to the
-	// CDN, and gets back an X-Encrypted-Param header that gets fed into
-	// the ImageItem.media.encrypt_query_param.
+	// 图片/文件上传的 CDN 常量。镜像上游 weclaw 守护进程：
+	// iLink 通过 /ilink/bot/getuploadurl 生成一次性上传 URL，
+	// bot 用 AES-128-ECB 加密字节后 POST 密文到 CDN，
+	// 并获取返回的 X-Encrypted-Param 头，该头被输入到
+	// ImageItem.media.encrypt_query_param 中。
 	wechatCDNBaseURL        = "https://novac2c.cdn.weixin.qq.com/c2c"
 	wechatCDNMediaTypeImage = 1
 	wechatCDNMediaTypeVideo = 2
 	wechatCDNMediaTypeFile  = 3
 	wechatCDNEncryptType    = 1 // AES-128-ECB
 
-	// Media-send timeout. Covers the getuploadurl round-trip + CDN POST
-	// + the second sendmessage. Longer than wechatSendTimeout because
-	// the CDN leg can be slow for larger images.
+	// 媒体发送超时。覆盖 getuploadurl 往返 + CDN POST + 第二次 sendmessage。
+	// 比我们 chatSendTimeout 长，因为 CDN 环节对较大图片可能较慢。
 	wechatMediaSendTimeout = 90 * time.Second
 
-	// Threshold of consecutive empty-buf SessionExpired responses before
-	// we declare the bot token dead and fire onExpired. iLink returns
-	// SessionExpired when the supplied get_updates_buf is missing or
-	// stale — including the legitimate "freshly rescanned account that
-	// hasn't received its first message yet" case. Treating the first
-	// occurrence as terminal would purge healthy accounts on every
-	// restart (we used to do this). Combined with calcBackoff capping at
-	// wechatBackoffMax (typically 60s), 20 consecutive failures gives
-	// roughly 15–20 minutes of retries before we give up — long enough
-	// for a freshly-rescanned bot to receive its first message and
-	// graduate to a real buf, short enough that a truly revoked token
-	// doesn't loop forever.
+	// 连续空 buf SessionExpired 响应的阈值，超过后我们声明 bot token 已死
+	// 并触发 onExpired。iLink 在提供的 get_updates_buf 缺失或过期时返回
+	// SessionExpired——包括合法的"刚重新扫描账号尚未收到第一条消息"的情况。
+	// 将第一次出现视为终端会导致每次健康账号重启时被清除（我们以前就是这样做的）。
+	// 结合 calcBackoff 在 wechatBackoffMax（通常 60 秒）处封顶，20 次连续失败
+	// 大约给出 15-20 分钟的重试时间——对于刚重新扫描的 bot 来说足够长以收到
+	// 第一条消息并毕业到真实 buf，对于真正被撤销的 token 来说足够短以不会永远循环。
 	wechatEmptyBufExpiredThreshold = 20
 )
 
-// WeChat is the iLink long-poll adapter for one logged-in WeChat bot.
+// WeChat 是一个已登录微信 bot 的 iLink 长轮询适配器。
 type WeChat struct {
 	bus       *bus.MessageBus
-	accountID string // ilink_bot_id, used by routing to look up the owner
+	accountID string // ilink_bot_id，路由用来查找所有者
 
-	// HTTP credentials (one-time on QR confirm, persisted in configs):
+	// HTTP 凭据（QR 确认时一次性，持久化在 configs 中）：
 	botToken    string
 	baseURL     string
 	ilinkUserID string
 
 	httpClient *http.Client
-	wechatUIN  string // randomized per process; iLink wants a stable-ish header
+	wechatUIN  string // 每进程随机生成；iLink 希望一个稳定的头
 
-	// Long-poll cursor. iLink's `get_updates_buf` advances each turn
-	// and is persisted to disk at `bufPath` so process restarts don't
-	// poll with the empty buf (which iLink answers with SessionExpired,
-	// which the old code misread as "bot token dead" — see
-	// wechatEmptyBufExpiredThreshold for the matching softened heuristic).
+	// 长轮询游标。iLink 的 `get_updates_buf` 每轮递增，持久化到
+	// `bufPath` 路径的磁盘上，以便进程重启不会以空 buf 轮询
+	//（iLink 会用 SessionExpired 回应空 buf，旧代码误认为
+	// "bot token 已死"——参见 wechatEmptyBufExpiredThreshold 的
+	// 对应软启发式处理）。
 	getUpdatesBuf string
 	bufPath       string
 	failures      int

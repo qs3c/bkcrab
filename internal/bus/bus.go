@@ -1,126 +1,110 @@
 package bus
 
-// Source identifies what produced an InboundMessage. The default
-// (empty string) means an end-user typed it through a chat surface
-// (IM, web, OpenAI-compat API, webhook, plugin) — that's the most
-// common case and the existing call sites don't have to be touched.
+// Source 标识 InboundMessage 的来源。默认值（空字符串）表示最终用户
+// 通过聊天界面输入的（IM、Web、OpenAI 兼容 API、webhook、插件）——这是
+// 最常见的情况，现有调用点无需修改。
 //
-// Non-user sources are the cases the agent runtime needs to
-// distinguish: cron self-fires, heartbeat ticks, sub-agent spawns,
-// and runtime-injected goal continuations. The /goal feature in
-// particular uses this to decide whether a turn just finished
-// because of a real user message (and should trigger a continuation
-// probe) or because of one of these synthetic ones (which should not,
-// or we'd loop).
+// 非用户来源是 agent 运行时需要区分的情况：cron 自触发、心跳 ticks、
+// 子 agent 生成以及运行时注入的目标续行。特别是 /goal 功能使用此值
+// 来判断一次轮次是否因真实用户消息而结束（应触发续行探测），还是因
+// 这些合成来源而结束（不应续行，否则会循环）。
 const (
-	SourceUser        = "" // default — keep "" so existing producers stay correct without edits
+	SourceUser        = "" // 默认值——保持 "" 以使现有生产者无需修改即可正常工作
 	SourceCron        = "cron"
 	SourceHeartbeat   = "heartbeat"
 	SourceSubAgent    = "subagent"
 	SourceGoalContext = "goal_context"
 )
 
-// InboundMessage represents a message received from a channel.
+// InboundMessage 表示从渠道接收到的消息。
 type InboundMessage struct {
-	Channel   string // channel type, e.g. "telegram"
-	AccountID string // account within the channel (e.g. which bot)
-	ChatID    string // unique chat identifier within the channel
-	// ProjectID, when set, names the per-(user, agent) project the chat
-	// belongs to. Empty = loose chat (legacy behavior). Stamped on
-	// inbound messages by the chat handlers after they've resolved the
-	// session row, so the agent runtime can route workspace IO to
-	// projects/<id>/ instead of sessions/<chat>/.
+	Channel   string // 渠道类型，例如 "telegram"
+	AccountID string // 渠道内的账号（例如哪个机器人）
+	ChatID    string // 渠道内唯一的聊天标识符
+	// ProjectID 设置后表示该聊天所属的每（用户、agent）项目。空值 = 松散
+	// 聊天（旧行为）。由聊天处理器解析会话行后标记在入站消息上，以便 agent
+	// 运行时将工作区 I/O 路由到 projects/<id>/ 而不是 sessions/<chat>/。
 	ProjectID   string
-	UserID      string // user identifier
-	OwnerUserID string // bkclaw user that owns the agent (for multi-user routing)
-	// AgentID is an *explicit* agent target. Non-empty when the source
-	// of the message already knows which agent should handle it (cron
-	// jobs, web chat, sub-agent spawns) — bypasses binding lookup +
-	// default-agent fallback in routeDM. Empty for IM-channel messages
-	// where the gateway has to figure out the agent from bindings.
+	UserID      string // 用户标识符
+	OwnerUserID string // 拥有该 agent 的 bkclaw 用户（用于多用户路由）
+	// AgentID 是一个*显式*的 agent 目标。当消息来源已知应由哪个 agent 处理时
+	// 非空（cron 任务、Web 聊天、子 agent 生成）——绕过 routeDM 中的绑定查找
+	// + 默认 agent 回退。对于 IM 渠道消息为空，网关必须从绑定中确定 agent。
 	AgentID      string
-	MessageID    string   // unique message identifier within the chat
-	Text         string   // message text
-	PeerKind     string   // "group" or "dm"
-	SenderName   string   // display name of the sender
-	// SenderAvatarURL is the platform-side avatar URL for the message
-	// sender, when the channel can provide one (Discord serves
-	// `cdn.discordapp.com/avatars/<user_id>/<hash>.png`; Telegram/Slack
-	// need a separate API hit so the bridges leave this empty for now).
-	// Stored on the session_message row as UI-only metadata — the LLM
-	// never sees it — so the web chat panel can render an avatar +
-	// nickname header on each IM-routed user bubble.
+	MessageID    string   // 聊天内唯一的消息标识符
+	Text         string   // 消息文本
+	PeerKind     string   // "group" 或 "dm"
+	SenderName   string   // 发送者的显示名称
+	// SenderAvatarURL 是消息发送者在平台侧的头像 URL，当渠道可以提供时
+	// 设值（Discord 提供 cdn.discordapp.com/avatars/<user_id>/<hash>.png；
+	// Telegram/Slack 需要单独的 API 调用，因此桥接器暂时留空）。作为仅 UI
+	// 元数据存储在 session_message 行上——LLM 永远看不到它——以便 Web 聊天
+	// 面板可以在每个 IM 路由的用户气泡上渲染头像和昵称标题。
 	SenderAvatarURL string
-	Mentions     []string // @usernames mentioned in the message
-	IsBotMessage bool     // true if the message was sent by a bot
-	PhotoURL     string   // URL of attached photo (if any) — single-image legacy field
-	PhotoURLs    []string // URLs of attached photos. Independent of PhotoURL so old single-image callers (Telegram bridge etc.) keep working untouched; new web-chat path uses this for multi-image attachments.
-	ReplyToMsgID string   // message ID being replied to
-	// Params is a freeform structured-parameter blob supplied by the
-	// calling client (typically a third-party app via the chat
-	// completions API's `params` field). The agent loop renders it as
-	// a per-turn system message so the LLM can honor it when calling
-	// tools. Scope is per-request — not stored in session history,
-	// next turn ships its own params (or none). nil / empty when the
-	// inbound source doesn't supply params (IM channels, web chat).
+	Mentions     []string // 消息中 @提及的用户名
+	IsBotMessage bool     // 如果消息由机器人发送则为 true
+	PhotoURL     string   // 附加照片的 URL（如有）——单图遗留字段
+	PhotoURLs    []string // 附加照片的 URL 列表。与 PhotoURL 独立，以使旧的
+	// 单图调用方（Telegram 桥接等）无需修改即可继续工作；新的 Web 聊天路径
+	// 使用此字段处理多图附件。
+	ReplyToMsgID string   // 正在回复的消息 ID
+	// Params 是由调用客户端提供的自由格式结构化参数块（通常来自聊天补全
+	// API 的 `params` 字段）。agent 循环将其渲染为每轮系统消息，以便 LLM
+	// 在调用工具时可以遵循它。作用域为每次请求——不存储在会话历史中，
+	// 下一轮携带自己的 params（或不携带）。当入站来源不提供 params
+	// 时（IM 渠道、Web 聊天）为 nil / 空。
 	Params map[string]any
-	// Source distinguishes user-originated messages from runtime-
-	// originated ones (cron, heartbeat, sub-agent, goal continuations).
-	// Empty means "user". See the Source* constants. Read this on the
-	// agent-loop side to decide whether the turn should fire downstream
-	// reactions that are only valid for genuine user input.
+	// Source 区分用户来源的消息与运行时来源的消息（cron、心跳、子 agent、
+	// 目标续行）。空值表示"用户"。参见 Source* 常量。agent 循环端读取此值
+	// 以决定该轮次是否应触发仅对真实用户输入有效的下游反应。
 	Source string
 }
 
-// OutboundButton represents a button in an inline keyboard.
+// OutboundButton 表示内联键盘中的按钮。
 type OutboundButton struct {
 	Text         string
 	CallbackData string
 	URL          string
 }
 
-// MediaItem is an attachment whose bytes are already resolved (read
-// from workspace.Store / sandbox snapshot / wherever) by the time the
-// message lands on the bus. Channels that can't access the host
-// filesystem (e2b path) still need to upload to Telegram/Discord/etc.,
-// so we ship the bytes inline rather than asking each channel adapter
-// to hold a workspace.Store reference.
+// MediaItem 是在消息到达总线时字节已解析完成（从 workspace.Store / 沙箱
+// 快照 / 其他来源读取）的附件。无法访问主机文件系统的渠道（e2b 路径）
+// 仍然需要上传到 Telegram/Discord 等平台，因此我们内联发送字节，而不是
+// 要求每个渠道适配器持有 workspace.Store 引用。
 type MediaItem struct {
-	Filename    string // for content-type sniffing + display in IM
-	ContentType string // optional override; channels can sniff if empty
+	Filename    string // 用于内容类型嗅探和 IM 中显示
+	ContentType string // 可选覆盖；渠道可在为空时自行嗅探
 	Bytes       []byte
 }
 
-// OutboundMessage represents a message to be sent to a channel.
+// OutboundMessage 表示要发送到渠道的消息。
 type OutboundMessage struct {
-	Channel      string             // target channel type
-	AccountID    string             // target account within the channel
-	AgentID      string             // originating agent — used by the WebChannel to route SSE events to the right (agent, session) pair; harmless for IM channels (which key on AccountID).
-	ChatID       string             // target chat identifier
-	Text         string             // message text
-	ReplyToMsgID string             // reply to specific message
-	ParseMode    string             // "MarkdownV2", "HTML", ""
-	Buttons      [][]OutboundButton // inline keyboard rows
-	EditMsgID    string             // edit existing message instead of sending new
-	MediaPaths   []string           // file paths to attach (from MEDIA: protocol; host-mounted backends only)
-	MediaItems   []MediaItem        // pre-resolved attachments — channel uploads bytes directly
-	// AllowSplit, when true on a WeChat-bound message, lets the adapter
-	// honor SplitMessageMarker and emit multiple bubbles. False (default)
-	// collapses the marker to a newline so a stray marker doesn't leak
-	// as literal text. Stamped by the originating Agent based on its
-	// effective splitReplies setting (per-agent override OR system
-	// default) — see internal/agent/loop.go. Harmless on non-WeChat
-	// channels: they ignore the field.
+	Channel      string             // 目标渠道类型
+	AccountID    string             // 渠道内的目标账号
+	AgentID      string             // 来源 agent——WebChannel 使用它将 SSE 事件路由到正确的（agent, session）对；对 IM 渠道无影响（它们以 AccountID 为键）。
+	ChatID       string             // 目标聊天标识符
+	Text         string             // 消息文本
+	ReplyToMsgID string             // 回复指定消息
+	ParseMode    string             // "MarkdownV2"、"HTML" 或 ""
+	Buttons      [][]OutboundButton // 内联键盘行
+	EditMsgID    string             // 编辑现有消息而非发送新消息
+	MediaPaths   []string           // 要附加的文件路径（来自 MEDIA: 协议；仅限主机挂载的后端）
+	MediaItems   []MediaItem        // 预解析附件——渠道直接上传字节
+	// AllowSplit 在绑定微信的消息上为 true 时，允许适配器遵循
+	// SplitMessageMarker 并发出多个气泡。为 false（默认值）时，将标记
+	// 折叠为换行，避免杂散标记作为纯文本泄露。由来源 Agent 根据其
+	// 有效的 splitReplies 设置（每 agent 覆盖或系统默认）标记——参见
+	// internal/agent/loop.go。对非微信渠道无害：它们忽略此字段。
 	AllowSplit bool
 }
 
-// MessageBus is an async message queue backed by Go channels.
+// MessageBus 是一个由 Go channel 支持的异步消息队列。
 type MessageBus struct {
 	Inbound  chan InboundMessage
 	Outbound chan OutboundMessage
 }
 
-// New creates a new MessageBus with buffered channels.
+// New 创建一个带缓冲 channel 的新 MessageBus。
 func New() *MessageBus {
 	return &MessageBus{
 		Inbound:  make(chan InboundMessage, 100),

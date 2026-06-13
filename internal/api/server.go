@@ -11,32 +11,31 @@ import (
 	"github.com/qs3c/bkclaw/internal/config"
 )
 
-// UserResolver looks up a user space by user ID.
+// UserResolver 通过用户 ID 查找用户空间。
 type UserResolver interface {
 	UserSpaceFor(userID string) (*UserSpaceView, error)
 	LocalAgentManager() *agent.Manager
 	IsCloudMode() bool
 }
 
-// AgentInjector is the optional capability for resolvers that can
-// dynamically attach a foreign agent_id into a caller's UserSpace.
-// Used by super_admin chat handlers so the admin operates on the agent
-// (which lives in the owner's account) under the admin's own user_id —
-// sessions, memory, provider scope all stay admin-keyed, while the
-// agent's persistent identity (system prompt, agent-scope config,
-// skills) is reused. Implementations MUST be idempotent.
+// AgentInjector 是解析器的可选能力，可以将外部 agent_id 动态
+// 附加到调用者的 UserSpace 中。由 super_admin 聊天处理器使用，
+// 使管理员在管理员自己的 user_id 下操作 agent（该 agent 位于
+// 所有者的账户中）— 会话、内存、provider 范围都以管理员为键，
+// 而 agent 的持久身份（系统提示、agent 范围配置、技能）被复用。
+// 实现必须是幂等的。
 type AgentInjector interface {
 	EnsureAgent(ctx context.Context, userID, agentID string) error
 }
 
-// UserSpaceView is the subset of gateway.UserSpace that the API layer needs.
+// UserSpaceView 是 API 层所需的 gateway.UserSpace 的子集。
 type UserSpaceView struct {
 	UserID string
 	Agents *agent.Manager
 	Config *config.Config
 }
 
-// Server handles the OpenAI-compatible API and WebSocket gateway.
+// Server 处理兼容 OpenAI 的 API 和 WebSocket 网关。
 type Server struct {
 	resolver     UserResolver
 	authResolver *auth.Resolver
@@ -44,8 +43,7 @@ type Server struct {
 	limiter      *rateLimiter
 }
 
-// NewServer creates a new API server. authResolver is mandatory — there is
-// no fallback "local" auth.
+// NewServer 创建一个新的 API 服务器。authResolver 是必需的 — 没有回退的"本地"认证。
 func NewServer(resolver UserResolver, authResolver *auth.Resolver, gatewayCfg *config.GatewayCfg) *Server {
 	var rpm int
 	if gatewayCfg != nil {
@@ -59,7 +57,7 @@ func NewServer(resolver UserResolver, authResolver *auth.Resolver, gatewayCfg *c
 	}
 }
 
-// RegisterRoutes registers API routes on the given mux.
+// RegisterRoutes 在给定的 mux 上注册 API 路由。
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/ws", s.HandleWebSocket)
 	mux.HandleFunc("OPTIONS /v1/", s.handleCORS)
@@ -74,18 +72,18 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("GET /v1/agents",
 			s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleListAgents)))
 	}
-	// Explicit provisioning of an app_user for a downstream end-user.
-	// Always available — any api_key call can use the same identity-
-	// switch (header or `user` body field) without precreating, this
-	// endpoint just exists for callers that prefer to mint up front and
-	// store the returned bkclaw user_id locally.
+	// 为下游终端用户显式配置 app_user。
+	// 始终可用 — 任何 api_key 调用都可以使用相同的身份切换
+	// （header 或 `user` 请求体字段）而无需预先创建，此端点
+	// 仅为偏好提前创建并本地存储返回的 bkclaw user_id 的
+	// 调用者而存在。
 	mux.HandleFunc("POST /v1/users",
 		s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleProvisionAppUser)))
 }
 
-// RegisterAdminRoutes is kept as a no-op for callers that still call it
-// during gateway boot. Admin user/apikey CRUD now lives under /api/admin
-// in the setup server, which has proper cookie-session auth.
+// RegisterAdminRoutes 保留为空操作，供在网关启动期间仍调用它的
+// 调用者使用。管理员用户/apikey 的增删改查现在位于设置服务器的
+// /api/admin 下，该服务器具有适当的 cookie-session 认证。
 func (s *Server) RegisterAdminRoutes(mux *http.ServeMux) {}
 
 func (s *Server) handleCORS(w http.ResponseWriter, r *http.Request) {
@@ -96,8 +94,7 @@ func (s *Server) handleCORS(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// HandleListAgents handles GET /v1/agents. Returns only the agents this
-// caller is authorized for.
+// HandleListAgents 处理 GET /v1/agents。仅返回此调用者有权限的 agent。
 func (s *Server) HandleListAgents(w http.ResponseWriter, r *http.Request) {
 	space, err := s.userSpaceFor(r)
 	if err != nil {
@@ -136,7 +133,7 @@ func buildAgentList(space *UserSpaceView, ident auth.Identity) []map[string]stri
 	return agents
 }
 
-// userSpaceFor resolves the user space from the request's identity.
+// userSpaceFor 从请求的身份解析用户空间。
 func (s *Server) userSpaceFor(r *http.Request) (*UserSpaceView, error) {
 	uid := config.UserIDFromContext(r.Context())
 	if uid == "" {
@@ -145,9 +142,9 @@ func (s *Server) userSpaceFor(r *http.Request) (*UserSpaceView, error) {
 	return s.resolver.UserSpaceFor(uid)
 }
 
-// authMiddleware validates the apikey/cookie and stamps the resolved
-// identity onto ctx. Apikey-only endpoints can additionally check
-// Identity.CanAccessAgent for the requested agentID.
+// authMiddleware 验证 apikey/cookie 并将解析后的身份
+// 写入 ctx。仅 apikey 的端点还可以额外检查
+// Identity.CanAccessAgent 以验证请求的 agentID。
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")

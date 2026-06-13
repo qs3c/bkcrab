@@ -10,26 +10,23 @@ import (
 	"github.com/qs3c/bkclaw/internal/provider"
 )
 
-// maybeRecoverToolCalls runs recoverToolCallsFromContent on the
-// response when the model returned no native tool_calls but did emit
-// text. On a successful recovery it mutates the response in place:
-// splices the parsed calls into resp.ToolCalls, replaces resp.Content
-// with the residual (any human-readable preamble before the XML), and
-// clears RawAssistant so the next round's history replay rebuilds the
-// assistant message from the now-recovered fields instead of replaying
-// the bad XML payload back into the model's context.
+// maybeRecoverToolCalls 在模型没有返回原生 tool_calls 但输出了文本时，
+// 对响应运行 recoverToolCallsFromContent。成功恢复时会就地修改响应：
+// 将解析出的调用拼接进 resp.ToolCalls，用残余文本（XML 之前的可读
+// 前言）替换 resp.Content，并清空 RawAssistant，使下一轮的历史
+// 重放从已恢复的字段重建助手消息，而不是将错误的 XML 载荷重新
+// 回放到模型的上下文中。
 //
-// Even when no calls are recoverable, if recoverToolCallsFromContent
-// scrubbed leaked special-token noise (DeepSeek/Qwen `<｜…｜>` style
-// delimiters that detokenize as visible `<| … |>` / `< | DSML | … >`
-// garbage), we still replace resp.Content with the scrubbed version so
-// the UI doesn't render the leaked tokens.
+// 即使没有可恢复的调用，如果 recoverToolCallsFromContent 清理了
+// 泄露的特殊 token 噪声（DeepSeek/Qwen 的 `<｜…｜>` 风格分隔符，
+// 会被反 token 化为可见的 `<| … |>` / `< | DSML | … >` 垃圾），
+// 我们仍会用清理后的版本替换 resp.Content，使 UI 不会渲染泄露的
+// token。
 //
-// Logs once at info level with the agent + model + recovered tool names
-// so an operator can see how often the path triggers and for which
-// (model, prompt) combinations — without this signal the recovery
-// silently papers over genuine prompt/tool-definition bugs that should
-// surface.
+// 在 info 级别记录一次日志，包含 agent + 模型 + 恢复的工具名称，
+// 以便运维人员能看到此路径的触发频率以及哪些（模型、提示词）
+// 组合触发了它——没有此信号，恢复机制会静默地掩盖本应暴露的
+// 真实提示词/工具定义缺陷。
 func (a *Agent) maybeRecoverToolCalls(resp *provider.Response) {
 	if resp == nil || resp.HasToolCalls() || resp.Content == "" {
 		return
@@ -56,51 +53,45 @@ func (a *Agent) maybeRecoverToolCalls(resp *provider.Response) {
 	resp.RawAssistant = nil
 }
 
-// recoverToolCallsFromContent parses tool-call attempts that some open-
-// source models (DeepSeek, Qwen variants) emit as XML in the assistant
-// `content` field instead of using the OpenAI Chat Completions
-// `tool_calls` schema. The shape we recognize is the Anthropic
-// function_calls XML many of those models were trained on:
+// recoverToolCallsFromContent 解析某些开源模型（DeepSeek、Qwen 变体）
+// 在助手 `content` 字段中以 XML 形式发出的工具调用尝试，而不是使用
+// OpenAI Chat Completions 的 `tool_calls` 模式。我们识别的格式是
+// 这些模型训练时使用的 Anthropic function_calls XML：
 //
 //	<invoke name="exec">
 //	  <parameter name="command" string="true">echo hi</parameter>
 //	  <parameter name="timeout" string="false">15</parameter>
 //	</invoke>
 //
-// Returned tool calls have synthetic IDs (`recovered_…`) so the
-// downstream tool_result message can be paired with the original
-// assistant message — IDs the model itself proposed would collide with
-// real OpenAI-style IDs from later turns.
+// 返回的工具调用使用合成 ID（`recovered_…`），以便下游的
+// tool_result 消息能与原始助手消息配对——模型自身提出的 ID 会
+// 与后续轮次的真实 OpenAI 风格 ID 冲突。
 //
-// The second return is the original content with every matched invoke
-// (and any optional <tool_calls>/<function_calls>/<DSML> wrapper) block
-// stripped, so the saved assistant message doesn't keep the raw XML
-// alongside the recovered structured calls — that would double-bill the
-// tool call in the chat UI and confuse the next round.
+// 第二个返回值是原始内容去掉所有匹配的 invoke（以及可选的
+// <tool_calls>/<function_calls>/<DSML> 包裹块），这样保存的
+// 助手消息不会在已恢复的结构化调用旁边保留原始 XML——那样会
+// 在聊天 UI 中重复计费工具调用并混淆下一轮。
 //
-// Returns (nil, content) when no invoke blocks match; the caller can
-// then fall through to the normal "model didn't ask for a tool" branch
-// without the recovery path adding any cost.
+// 当没有 invoke 块匹配时返回 (nil, content)；调用者可以直接
+// 跳到正常的"模型未请求工具"分支，恢复路径不会增加任何开销。
 func recoverToolCallsFromContent(content string) ([]provider.ToolCall, string) {
-	// Fast path: skip when there's nothing tool-call-shaped at all.
-	// We trigger on either the normal <invoke marker or the leaked
-	// special-token shape (`<|`, `<｜`, `< | DSML`, etc.) so DeepSeek/
-	// Qwen detokenization garbage gets at least scrubbed even when no
-	// real invoke is present to recover.
+	// 快速路径：当内容中完全没有工具调用形状时跳过。
+	// 我们同时触发普通的 <invoke 标记和泄露的特殊 token 形状
+	// （`<|`、`<｜`、`< | DSML` 等），这样即使没有真实 invoke 可恢复，
+	// DeepSeek/Qwen 的反 token 化垃圾至少也能被清理掉。
 	if !strings.Contains(content, "<invoke") && !tagLeakHintRE.MatchString(content) {
 		return nil, content
 	}
-	// Collapse leaked-token noise (`<｜tool_calls｜>`, `< | | DSML | |
-	// invoke …>`, closing variants) into plain `<tag …>` shapes the
-	// parser already understands. No-op when the content is clean.
+// 将泄露的 token 噪声（`<｜tool_calls｜>`、`< | | DSML | |`
+		// invoke …>`、关闭变体）折叠为解析器已理解的普通 `<tag …>` 形状。
+		// 当内容干净时为空操作。
 	normalized := leakedTagRE.ReplaceAllString(content, `<${1}${2}${3}>`)
 
 	matches := invokeRE.FindAllStringSubmatchIndex(normalized, -1)
 	if len(matches) == 0 {
-		// Nothing recoverable. If normalization changed the content we
-		// still scrub wrapper tags from the residual so the UI doesn't
-		// render the leaked-token garbage — the model "called" something
-		// we couldn't reconstruct, but at least the chat reads clean.
+		// 没有可恢复的内容。如果规范化改变了内容，我们仍然从残余中
+		// 剥离包裹标签，使 UI 不会渲染泄露的 token 垃圾——模型"调用"
+		// 了我们无法重建的东西，但至少聊天内容是干净的。
 		if normalized == content {
 			return nil, content
 		}
@@ -109,16 +100,15 @@ func recoverToolCallsFromContent(content string) ([]provider.ToolCall, string) {
 	}
 	calls := make([]provider.ToolCall, 0, len(matches))
 	for i, m := range matches {
-		// m: [whole-lo, whole-hi, name-lo, name-hi, body-lo, body-hi]
+		// m: [整个匹配的起始位置, 结束位置, 名称起始位置, 名称结束位置, 主体起始位置, 主体结束位置]
 		name := normalized[m[2]:m[3]]
 		body := normalized[m[4]:m[5]]
 		args := parseInvokeParameters(body)
 		argJSON, err := json.Marshal(args)
 		if err != nil {
-			// Marshal of map[string]any can only fail on cycles, which
-			// our scalar map can't produce — but keep the fail-open
-			// behavior anyway: skip this one rather than panicking and
-			// killing the whole turn.
+			// map[string]any 的 JSON 序列化只会在循环时失败——我们的标量
+			// map 不可能产生循环——但保留容错行为：跳过此项而不是
+			// panic 终止整个轮次。
 			continue
 		}
 		calls = append(calls, provider.ToolCall{
@@ -137,52 +127,46 @@ func recoverToolCallsFromContent(content string) ([]provider.ToolCall, string) {
 		scrubbed := strings.TrimSpace(stripRE.ReplaceAllString(normalized, ""))
 		return nil, scrubbed
 	}
-	// Strip the recovered XML out of the content. We pull every
-	// <invoke> block, plus the common outer wrappers (tool_calls,
-	// function_calls, DSML) so the residual text is just the model's
-	// human-readable preamble — if any — without dangling tags.
+	// 将已恢复的 XML 从内容中剥离。我们移除每个 <invoke> 块，
+	// 加上常见的外部包裹（tool_calls、function_calls、DSML），
+	// 使残余文本只是模型的人类可读前言（如果有的话），没有悬空标签。
 	stripped := stripRE.ReplaceAllString(normalized, "")
 	stripped = strings.TrimSpace(stripped)
 	return calls, stripped
 }
 
-// invokeRE pulls one <invoke name="..."> ... </invoke> block at a time.
-//   - non-greedy `(?s).*?` so two adjacent invokes don't merge into one.
-//   - tolerates `<invoke>` with no name attribute by demanding a quote-
-//     delimited name= attribute up front; the parser is recovery-only
-//     and a name-less invoke can't be turned into a tool call anyway.
+// invokeRE 每次提取一个 <invoke name="..."> ... </invoke> 块。
+//   - 非贪婪 `(?s).*?` 使相邻的 invoke 不会合并为一个。
+//   - 容忍没有 name 属性的 `<invoke>`，通过要求引号限定的 name= 属性；
+//     解析器仅用于恢复，而无名 invoke 无论如何无法转为工具调用。
 var invokeRE = regexp.MustCompile(`(?s)<invoke\s+name="([^"]+)"\s*>(.*?)</invoke>`)
 
-// parameterRE matches `<parameter name="key" string="true|false">VALUE</parameter>`.
-// The `string` attribute is the type hint:
-//   - string="true"  → VALUE is the JSON string contents (we re-quote it).
-//   - string="false" → VALUE is raw JSON (number, bool, array, object).
+// parameterRE 匹配 `<parameter name="key" string="true|false">VALUE</parameter>`。
+// `string` 属性是类型提示：
+//   - string="true"  → VALUE 是 JSON 字符串内容（我们重新引用它）。
+//   - string="false" → VALUE 是原始 JSON（数字、布尔、数组、对象）。
 //
-// Absent attribute defaults to treating VALUE as a string — that's the
-// safest interpretation when the model omits the hint, and it's what
-// human-readable XML would imply.
+// 缺少该属性时默认将 VALUE 视为字符串——这是模型省略提示时最安全的
+// 解释，也是人类可读 XML 的自然语义。
 var parameterRE = regexp.MustCompile(`(?s)<parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>(.*?)</parameter>`)
 
-// stripRE finds:
-//   - every invoke block (so we can drop it after a successful parse)
-//   - the optional outer <tool_calls> / <function_calls> / <DSML>
-//     wrappers some models add (open AND close tags), so the residual
-//     content doesn't keep a dangling `</tool_calls>`.
+// stripRE 匹配：
+//   - 每个 invoke 块（成功解析后将其丢弃）
+//   - 可选的外部 <tool_calls> / <function_calls> / <DSML>
+//     包裹（开标签和闭标签），使残余内容不会保留悬空的 `</tool_calls>`。
 var stripRE = regexp.MustCompile(`(?s)<invoke\s+name="[^"]+"\s*>.*?</invoke>|</?(?:tool_calls|function_calls|DSML)\s*/?>`)
 
-// tagLeakHintRE flags content worth running the leaked-token normalizer
-// on. We match either a normal `<invoke` (the original recovery
-// trigger) or the leaked special-token prefix shape (`<|`, `<｜`,
-// `</|`, `< | …`, etc.) so DeepSeek/Qwen detokenization garbage that
-// doesn't contain a recoverable <invoke> still gets scrubbed.
+// tagLeakHintRE 标记值得运行泄露 token 规范化的内容。
+// 我们匹配普通的 `<invoke`（原始恢复触发器）或泄露的特殊 token
+// 前缀形状（`<|`、`<｜`、`</|`、`< | …` 等），使不包含可恢复
+// <invoke> 的 DeepSeek/Qwen 反 token 化垃圾也能被清理。
 var tagLeakHintRE = regexp.MustCompile(`<invoke|<\s*/?\s*[|｜]`)
 
-// leakedTagRE collapses leaked tool-call delimiters back into the plain
-// `<tag …>` / `</tag>` shape the recovery parser understands. Some
-// open-source models (DeepSeek-V3/R1, Qwen variants) use special tokens
-// like `<｜tool_calls｜>` / `<｜DSML｜>` for tool-call framing; when the
-// tokenizer round-trip fails or a downstream layer renders those tokens
-// as text, the user sees shapes like:
+// leakedTagRE 将泄露的工具调用分隔符折叠回恢复解析器能理解的
+// 普通 `<tag …>` / `</tag>` 形状。某些开源模型（DeepSeek-V3/R1、
+// Qwen 变体）使用 `<｜tool_calls｜>` / `<｜DSML｜>` 等特殊 token
+// 用于工具调用框架；当 tokenizer 往返失败或下游层将这些 token
+// 渲染为文本时，用户看到如下形状：
 //
 //	<｜tool_calls｜>
 //	<|tool_calls|>
@@ -190,38 +174,36 @@ var tagLeakHintRE = regexp.MustCompile(`<invoke|<\s*/?\s*[|｜]`)
 //	</ | | DSML | | invoke>
 //	<｜/invoke｜>
 //
-// The `/` for a closing tag may sit either right after `<` or inside
-// the leaked noise (depending on which side of the pipe the model put
-// it), so we let either noise group consume it.
+// 闭标签的 `/` 可能位于 `<` 正后方或泄露噪声内部（取决于模型
+// 将其放在管道的哪一侧），因此我们让任一噪声组消耗它。
 //
-// Captures:
+// 捕获：
 //
-//	$1 = optional `/` for closing tags
-//	$2 = real tag name (invoke / parameter / tool_calls / function_calls / DSML)
-//	$3 = attributes that follow the tag name (e.g. ` name="exec"`)
+//	$1 = 闭标签的可选 `/`
+//	$2 = 真实标签名（invoke / parameter / tool_calls / function_calls / DSML）
+//	$3 = 标签名后的属性（例如 ` name="exec"`）
 //
-// Replacement `<${1}${2}${3}>` reconstructs `<invoke name="exec">` etc.
-// Clean inputs like `<DSML>` / `<invoke name="x">` round-trip unchanged
-// because all the noise groups are zero-width.
+// 替换 `<${1}${2}${3}>` 重构出 `<invoke name="exec">` 等。
+// 干净的输入如 `<DSML>` / `<invoke name="x">` 无变化通过，
+// 因为所有噪声组都是零宽度的。
 var leakedTagRE = regexp.MustCompile(`<(?:[|｜\s]|DSML)*(/?)(?:[|｜\s]|DSML)*(invoke|parameter|tool_calls|function_calls|DSML)([^>]*?)[|｜\s]*>`)
 
-// parseInvokeParameters walks the parameters inside one invoke body and
-// returns the assembled arguments map. Unknown/malformed parameters are
-// silently skipped — we prefer to call the tool with whatever args we
-// could parse rather than reject the recovery wholesale.
+// parseInvokeParameters 遍历一个 invoke 主体内的参数并返回组装的
+// 参数映射。未知/格式错误的参数会被静默跳过——我们倾向于用能解析
+// 到的参数调用工具，而不是完全拒绝恢复。
 func parseInvokeParameters(body string) map[string]any {
 	out := map[string]any{}
 	for _, p := range parameterRE.FindAllStringSubmatch(body, -1) {
-		// p[1]=name, p[2]="true"/"false"/"", p[3]=raw VALUE
+		// p[1]=名称, p[2]="true"/"false"/"", p[3]=原始 VALUE
 		name := p[1]
 		typeHint := p[2]
 		raw := p[3]
 		if typeHint == "false" {
-			// Raw JSON value. If it doesn't parse, fall back to string —
-			// better to ship a wrong-typed arg than drop the parameter
-			// entirely (the tool itself can usually coerce numeric
-			// strings, and the loop's BeforeToolCall hook logs the args
-			// so an operator can see what came through).
+			// 原始 JSON 值。如果解析失败，回退为字符串——
+			// 发送一个类型错误的参数优于完全丢弃该参数
+			// （工具本身通常能强制转换数字字符串，
+			// 循环的 BeforeToolCall 钩子会记录参数，
+			// 运维人员可以看到通过了什么）。
 			var v any
 			if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &v); err == nil {
 				out[name] = v

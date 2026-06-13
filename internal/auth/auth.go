@@ -1,13 +1,9 @@
-// Package auth resolves an HTTP request to a user identity. It supports
-// two credential types:
-//   - cookie session ("bkclaw_session"): set by /api/login, validated
-//     against the web_sessions table; used by the web UI
-//   - Bearer apikey: validated against the apikeys table; used by API
-//     consumers and CLI clients
+// Package auth 将 HTTP 请求解析为用户身份。它支持两种凭证类型：
+//   - cookie 会话 ("bkclaw_session")：由 /api/login 设置，基于 web_sessions 表验证；供 Web UI 使用
+//   - Bearer apikey：基于 apikeys 表验证；供 API 消费者和 CLI 客户端使用
 //
-// Both paths funnel into the same Identity struct stamped onto ctx via
-// config.WithUserID. There is no anonymous "local" fallback — requests
-// without valid credentials get 401.
+// 两条路径最终汇聚为同一个 Identity 结构体，通过 config.WithUserID 印入 ctx。
+// 不存在匿名的"local"回退——没有有效凭证的请求将收到 401。
 package auth
 
 import (
@@ -24,10 +20,10 @@ import (
 	"github.com/qs3c/bkclaw/internal/users"
 )
 
-// SessionCookieName is the cookie that backs the web UI's login state.
+// SessionCookieName 是支撑 Web UI 登录状态的 cookie 名称。
 const SessionCookieName = "bkclaw_session"
 
-// SessionTTL is how long a freshly-issued login cookie is valid.
+// SessionTTL 是新签发的登录 cookie 的有效时长。
 const SessionTTL = 30 * 24 * time.Hour
 
 // Identity is the resolved caller for one request.

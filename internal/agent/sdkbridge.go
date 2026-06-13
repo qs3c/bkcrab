@@ -15,7 +15,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/provider"
 )
 
-// readOnlyTools lists tools that are safe to run concurrently.
+// readOnlyTools 列出可以安全并发执行的工具。
 var readOnlyTools = map[string]bool{
 	"read_file":     true,
 	"list_dir":      true,
@@ -25,7 +25,7 @@ var readOnlyTools = map[string]bool{
 	"load_skill":    true,
 }
 
-// toolAdapter wraps a BkClaw tool as an SDK Tool interface.
+// toolAdapter 将 BkClaw 工具包装为 SDK Tool 接口。
 type toolAdapter struct {
 	name        string
 	description string
@@ -37,7 +37,7 @@ func (t *toolAdapter) Name() string        { return t.name }
 func (t *toolAdapter) Description() string { return t.description }
 
 func (t *toolAdapter) InputSchema() sdktypes.ToolInputSchema {
-	// Convert BkClaw params (interface{}) to SDK ToolInputSchema
+	// 将 BkClaw 参数 (interface{}) 转换为 SDK ToolInputSchema
 	if t.params == nil {
 		return sdktypes.ToolInputSchema{Type: "object"}
 	}
@@ -53,7 +53,7 @@ func (t *toolAdapter) InputSchema() sdktypes.ToolInputSchema {
 }
 
 func (t *toolAdapter) Call(ctx context.Context, input map[string]interface{}, tCtx *sdktypes.ToolUseContext) (*sdktypes.ToolResult, error) {
-	// Convert input map to JSON for BkClaw's ToolFunc
+	// 将输入映射转换为 JSON 供 BkClaw 的 ToolFunc 使用
 	argsJSON, err := json.Marshal(input)
 	if err != nil {
 		return &sdktypes.ToolResult{IsError: true, Error: err.Error()}, nil
@@ -92,19 +92,19 @@ func (t *toolAdapter) IsReadOnly(input map[string]interface{}) bool {
 	return readOnlyTools[t.name]
 }
 
-// sdkEngine wraps SDK components for concurrent tool execution and cost tracking.
+// sdkEngine 包装 SDK 组件以支持并发工具执行和成本追踪。
 type sdkEngine struct {
 	costTracker *costtracker.Tracker
 }
 
-// newSDKEngine creates a new SDK engine with cost tracking.
+// newSDKEngine 创建一个带成本追踪的新 SDK 引擎。
 func newSDKEngine(sessionID string) *sdkEngine {
 	return &sdkEngine{
 		costTracker: costtracker.NewTracker(sessionID),
 	}
 }
 
-// buildSDKRegistry converts BkClaw's tool registry into an SDK registry.
+// buildSDKRegistry 将 BkClaw 的工具注册表转换为 SDK 注册表。
 func buildSDKRegistry(fcRegistry *tools.Registry) *sdktools.Registry {
 	sdkReg := sdktools.NewRegistry()
 	for _, def := range fcRegistry.Definitions() {
@@ -122,7 +122,7 @@ func buildSDKRegistry(fcRegistry *tools.Registry) *sdktools.Registry {
 	return sdkReg
 }
 
-// toolCallResult holds the result of a single tool call with metadata.
+// toolCallResult 保存单个工具调用的结果及元数据。
 type toolCallResult struct {
 	toolCallID string
 	toolName   string
@@ -130,7 +130,7 @@ type toolCallResult struct {
 	err        error
 }
 
-// executeToolsConcurrently runs tool calls using the SDK's concurrent executor.
+// executeToolsConcurrently 使用 SDK 的并发执行器运行工具调用。
 func (e *sdkEngine) executeToolsConcurrently(ctx context.Context, fcRegistry *tools.Registry, toolCalls []provider.ToolCall, workspace string) []toolCallResult {
 	sdkReg := buildSDKRegistry(fcRegistry)
 	executor := sdktools.NewExecutor(sdkReg, nil, &sdktypes.ToolUseContext{
@@ -138,7 +138,7 @@ func (e *sdkEngine) executeToolsConcurrently(ctx context.Context, fcRegistry *to
 		AbortCtx:   ctx,
 	})
 
-	// Convert BkClaw tool calls to SDK format
+	// 将 BkClaw 工具调用转换为 SDK 格式
 	calls := make([]sdktools.ToolCallRequest, len(toolCalls))
 	for i, tc := range toolCalls {
 		var input map[string]interface{}

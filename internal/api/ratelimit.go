@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// rateLimiter is a simple per-user sliding-window rate limiter.
+// rateLimiter 是一个简单的按用户滑动窗口限流器。
 type rateLimiter struct {
 	mu      sync.Mutex
 	windows map[string][]time.Time // userID → request timestamps
@@ -25,7 +25,7 @@ func newRateLimiter(rpm int) *rateLimiter {
 	}
 }
 
-// allow returns true if the request for userID should be permitted.
+// allow 在 userID 的请求应被允许时返回 true。
 func (rl *rateLimiter) allow(userID string) bool {
 	if rl.rpm <= 0 {
 		return true
@@ -36,7 +36,7 @@ func (rl *rateLimiter) allow(userID string) bool {
 	now := time.Now()
 	cutoff := now.Add(-rl.window)
 
-	// Prune expired entries.
+	// 清除过期条目。
 	ts := rl.windows[userID]
 	start := 0
 	for start < len(ts) && ts[start].Before(cutoff) {
@@ -52,7 +52,7 @@ func (rl *rateLimiter) allow(userID string) bool {
 	return true
 }
 
-// cleanup periodically purges stale entries. Call in a goroutine.
+// cleanup 定期清除过期条目。在 goroutine 中调用。
 func (rl *rateLimiter) cleanup(interval time.Duration, done <-chan struct{}) {
 	if rl.rpm <= 0 {
 		return
@@ -82,8 +82,7 @@ func (rl *rateLimiter) cleanup(interval time.Duration, done <-chan struct{}) {
 	}
 }
 
-// rateLimitMiddleware wraps a handler and returns 429 when a user exceeds
-// the configured RPM.
+// rateLimitMiddleware 包装一个处理器，当用户超过配置的 RPM 时返回 429。
 func rateLimitMiddleware(rl *rateLimiter, getUserID func(r *http.Request) string, next http.HandlerFunc) http.HandlerFunc {
 	if rl == nil || rl.rpm <= 0 {
 		return next

@@ -16,7 +16,7 @@ import (
 
 var slackMentionRe = regexp.MustCompile(`<@(\w+)>`)
 
-// Slack implements the Channel interface for Slack bots via Socket Mode.
+// Slack 通过 Socket Mode 实现 Channel 接口。
 type Slack struct {
 	client      *slack.Client
 	socketMode  *socketmode.Client
@@ -26,7 +26,7 @@ type Slack struct {
 	botUsername string
 }
 
-// NewSlack creates a new Slack channel instance using Socket Mode.
+// NewSlack 使用 Socket Mode 创建新的 Slack 渠道实例。
 func NewSlack(botToken, appToken, accountID string, mb *bus.MessageBus) (*Slack, error) {
 	api := slack.New(
 		botToken,
@@ -57,9 +57,9 @@ func (s *Slack) BotUsername() string {
 	return s.botUsername
 }
 
-// Start connects to Slack via Socket Mode and blocks until ctx is cancelled.
+// Start 通过 Socket Mode 连接到 Slack 并阻塞直到 ctx 被取消。
 func (s *Slack) Start(ctx context.Context) error {
-	// Get bot user info
+	// 获取 bot 用户信息
 	authResp, err := s.client.AuthTest()
 	if err != nil {
 		return err
@@ -78,20 +78,20 @@ func (s *Slack) Start(ctx context.Context) error {
 	return s.socketMode.RunContext(ctx)
 }
 
-// Send sends a message to a Slack channel.
+// Send 向 Slack 渠道发送消息。
 func (s *Slack) Send(chatID string, text string) error {
 	_, _, err := s.client.PostMessage(chatID, slack.MsgOptionText(text, false))
 	return err
 }
 
-// SendMessage delivers text + MediaItems to Slack. Text uses Slack's
-// mrkdwn (auto-renders *bold* / _italic_ / `code` / lists). MediaItems
-// upload as files via files.uploadV2 — Slack auto-previews images.
-// Send text first so it appears above the file preview in the channel.
+// SendMessage 将文本 + MediaItems 投递到 Slack。文本使用 Slack 的
+// mrkdwn（自动渲染 *粗体* / _斜体_ / `代码` / 列表）。MediaItems
+// 通过 files.uploadV2 上传为文件——Slack 自动预览图片。先发送文本，
+// 使其出现在渠道中的文件预览上方。
 //
-// Slack's mrkdwn doesn't render GFM tables — `|cell|cell|` ships as
-// raw text. Flatten tables to "label: value" / middle-dot lines first
-// so the chatter sees structured prose instead of pipe soup.
+// Slack 的 mrkdwn 不渲染 GFM 表格——`|cell|cell|` 以纯文本显示。
+// 先将表格展平为 "label: value" / 中点行，以便聊天者看到结构化散文
+// 而非管道杂烩。
 func (s *Slack) SendMessage(msg bus.OutboundMessage) error {
 	if msg.Text != "" {
 		text := FlattenMarkdownTables(msg.Text)
@@ -112,7 +112,7 @@ func (s *Slack) SendMessage(msg bus.OutboundMessage) error {
 	return nil
 }
 
-// SendTyping sends a typing indicator. Slack Socket Mode does not support this directly.
+// SendTyping 发送输入指示器。Slack Socket Mode 不直接支持此功能。
 func (s *Slack) SendTyping(_ string) error {
 	return nil
 }
@@ -148,27 +148,27 @@ func (s *Slack) handleEventsAPI(event slackevents.EventsAPIEvent) {
 }
 
 func (s *Slack) handleMessage(ev *slackevents.MessageEvent) {
-	// Ignore bot's own messages
+	// 忽略 bot 自身的消息
 	if ev.User == s.botUserID {
 		return
 	}
-	// Ignore message subtypes (edits, deletes, etc.) except empty subtype (normal messages)
+	// 忽略消息子类型（编辑、删除等），空子类型除外（正常消息）
 	if ev.SubType != "" {
 		return
 	}
 
-	// Determine peer kind
+	// 确定 peer 类型
 	peerKind := "dm"
 	if ev.ChannelType == "channel" || ev.ChannelType == "group" {
 		peerKind = "group"
 	}
 
-	// Parse @mentions from text
+	// 从文本中解析 @提及
 	var mentions []string
 	matches := slackMentionRe.FindAllStringSubmatch(ev.Text, -1)
 	for _, m := range matches {
 		userID := m[1]
-		// Try to resolve username
+		// 尝试解析用户名
 		info, err := s.client.GetUserInfo(userID)
 		if err == nil {
 			mentions = append(mentions, info.Name)
@@ -177,7 +177,7 @@ func (s *Slack) handleMessage(ev *slackevents.MessageEvent) {
 		}
 	}
 
-	// Clean text: replace <@USERID> with @username
+	// 清理文本：将 <@USERID> 替换为 @username
 	text := ev.Text
 	for _, m := range matches {
 		userID := m[1]

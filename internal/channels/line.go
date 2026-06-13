@@ -18,24 +18,22 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 )
 
-// LINE Messaging API adapter. Webhook-driven inbound + REST outbound,
-// same shape as the Feishu adapter but with two key differences:
+// LINE Messaging API 适配器。Webhook 驱动的入站 + REST 出站，
+// 与飞书适配器形状相同，但有两个关键区别：
 //
-//  1. Inbound auth is HMAC-SHA256(channel_secret, raw_body) compared
-//     against the `x-line-signature` header — stricter than Feishu's
-//     plaintext verification token, so the webhook handler must hand
-//     us the raw body bytes alongside the signature.
-//  2. Outbound has TWO send endpoints — `reply` (uses a per-event
-//     `replyToken`, free, single-use within ~5 minutes of the inbound)
-//     and `push` (no token, consumes the bot's monthly free quota).
-//     We cache the most recent replyToken per chatID so the FIRST
-//     outbound after an inbound goes through reply (free); subsequent
-//     messages or messages after token expiry fall back to push.
+//  1. 入站认证是 HMAC-SHA256(channel_secret, raw_body) 与
+//     `x-line-signature` 头比较——比飞书的明文验证令牌更严格，
+//     因此 webhook 处理程序必须将原始正文字节与签名一起传入。
+//  2. 出站有两个发送端点——`reply`（使用每个事件的 `replyToken`，
+//     免费，在入站后约 5 分钟内单次使用）和 `push`（无令牌，
+//     消耗 bot 的月度免费配额）。我们缓存每个 chatID 最近的
+//     replyToken，以便入站后的第一个出站通过 reply（免费）发送；
+//     后续消息或令牌过期后的消息回退到 push。
 //
-// AccountID is the bot's `userId` (stable per channel, returned by
-// /v2/bot/info). AccountConfig.BotToken stores channel_access_token,
-// AccountConfig.UserID stores channel_secret (matches the field's
-// "extra account-scoped identifier" comment).
+// AccountID 是 bot 的 `userId`（每个渠道稳定，由 /v2/bot/info 返回）。
+// AccountConfig.BotToken 存储 channel_access_token，
+// AccountConfig.UserID 存储 channel_secret（匹配该字段
+// "额外账户范围标识符"的注释）。
 
 const (
 	lineAPIBase       = "https://api.line.me"
@@ -43,10 +41,10 @@ const (
 	linePushURL       = lineAPIBase + "/v2/bot/message/push"
 	lineBotInfoURL    = lineAPIBase + "/v2/bot/info"
 	lineSendTimeout   = 15 * time.Second
-	lineReplyTokenTTL = 4 * time.Minute // server-side limit is ~5min; refresh under to avoid races
+	lineReplyTokenTTL = 4 * time.Minute // 服务端限制约 5 分钟；提前刷新以避免竞态
 )
 
-// LINE implements the Channel interface for a LINE Messaging API bot.
+// LINE 实现 LINE Messaging API bot 的 Channel 接口。
 type LINE struct {
 	bus           *bus.MessageBus
 	accountID     string // == bot userId (Uxxxxxxxxxxxxxxxx)
@@ -57,11 +55,10 @@ type LINE struct {
 
 	mu      sync.Mutex
 	botName string
-	basicID string // "@xxx" handle, surfaced for display
-	// replyTokens caches the most recent inbound replyToken per chat.
-	// Single-use, ~5min TTL. First outbound after an inbound pops the
-	// token; subsequent messages in the same turn use the push API
-	// (which costs the bot's monthly free quota).
+	basicID string // "@xxx" 句柄，用于显示
+	// replyTokens 缓存每个聊天最近的入站 replyToken。单次使用，
+	// 约 5 分钟 TTL。入站后的第一个出站弹出令牌；同一轮次中后续消息
+	// 使用 push API（消耗 bot 的月度免费配额）。
 	replyTokens map[string]lineReplyToken
 }
 
@@ -70,7 +67,7 @@ type lineReplyToken struct {
 	expires time.Time
 }
 
-// NewLINE creates a LINE channel adapter from a stored credential pair.
+// NewLINE 从存储的凭据对创建 LINE 渠道适配器。
 func NewLINE(channelToken, channelSecret, accountID string, mb *bus.MessageBus) (*LINE, error) {
 	if channelToken == "" {
 		return nil, errors.New("line: channelToken required")
@@ -93,10 +90,9 @@ func (l *LINE) BotUsername() string {
 	return l.basicID
 }
 
-// Start fetches /v2/bot/info to surface the bot's display name + basicId,
-// then blocks until ctx is done — events arrive via webhook, not poll.
-// Failure of /v2/bot/info doesn't break the channel: outbound still
-// works, the username is just empty.
+// Start 获取 /v2/bot/info 以展示 bot 的显示名称 + basicId，
+// 然后阻塞直到 ctx 完成——事件通过 webhook 到达，而非轮询。
+// /v2/bot/info 失败不会破坏渠道：出站仍然有效，只是用户名为空。
 func (l *LINE) Start(ctx context.Context) error {
 	if name, basicID, err := l.fetchBotInfo(ctx); err != nil {
 		slog.Warn("line bot info fetch failed", "account", l.accountID, "error", err)
@@ -111,17 +107,15 @@ func (l *LINE) Start(ctx context.Context) error {
 	return nil
 }
 
-// Send is the simple text path used by tools / tests.
+// Send 是工具/测试使用的简单文本路径。
 func (l *LINE) Send(chatID, text string) error {
 	return l.SendMessage(bus.OutboundMessage{ChatID: chatID, Text: text})
 }
 
-// SendMessage delivers Text to a LINE chat. Uses replyToken when one is
-// cached and unexpired (free); otherwise falls back to the push API
-// (consumes the bot's free quota — 200 msgs/month/account at the time
-// of writing). MediaItems are deferred — LINE supports image messages
-// but they require a public CDN URL or upload via /v2/bot/message/...,
-// neither of which we plumb yet.
+// SendMessage 将 Text 投递到 LINE 聊天。有缓存的未过期 replyToken 时
+// 使用 replyToken（免费）；否则回退到 push API（消耗 bot 的月度免费配额——
+// 目前为每月 200 条消息/账号）。MediaItems 暂不支持——LINE 支持图片消息
+// 但需要公共 CDN URL 或通过 /v2/bot/message/... 上传，两者我们都尚未对接。
 func (l *LINE) SendMessage(msg bus.OutboundMessage) error {
 	if msg.Text == "" && len(msg.MediaItems) == 0 {
 		return nil
@@ -132,22 +126,21 @@ func (l *LINE) SendMessage(msg bus.OutboundMessage) error {
 		return nil
 	}
 
-	// LINE renders plain text only — no markdown anywhere. GFM tables
-	// would arrive as raw `|cell|cell|`; FlattenMarkdownTables collapses
-	// them to label:value or middle-dot lines first.
+	// LINE 仅渲染纯文本——无处使用 markdown。GFM 表格会以原始
+	// `|cell|cell|` 到达；FlattenMarkdownTables 先将它们折叠为
+	// label:value 或中点行。
 	text := FlattenMarkdownTables(msg.Text)
 
-	// Pop a cached replyToken if present + unexpired. Single-use, so
-	// this also clears the slot — concurrent sends in the same turn
-	// only get one shot at the free reply path.
+	// 弹出缓存的 replyToken（如果存在且未过期）。单次使用，
+	// 因此这也会清除槽位——同一轮次中的并发发送只有一次
+	// 免费回复路径的机会。
 	if tok := l.popReplyToken(msg.ChatID); tok != "" {
 		if err := l.postReply(tok, text); err == nil {
 			return nil
 		} else {
-			// reply can fail (token already consumed by a parallel
-			// reply, or expired in flight). Fall through to push so
-			// the user still gets the message; log so the cause is
-			// visible if it becomes a pattern.
+			// 回复可能失败（令牌已被并行回复消耗，或在传输中过期）。
+			// 回退到 push，以便用户仍然收到消息；记录日志以便在
+			// 成为模式时可见原因。
 			slog.Debug("line reply failed, falling back to push",
 				"account", l.accountID, "chat", msg.ChatID, "error", err)
 		}
@@ -155,14 +148,13 @@ func (l *LINE) SendMessage(msg bus.OutboundMessage) error {
 	return l.postPush(msg.ChatID, text)
 }
 
-// SendTyping is a no-op. LINE doesn't expose a typing indicator API
-// for bots; the "loading animation" feature is paid + chat-scoped and
-// not worth wiring for a 5s polling loop.
+// SendTyping 是空操作。LINE 不暴露 bot 的输入指示器 API；
+// "加载动画"功能是付费 + 聊天范围的，不值得为 5 秒轮询间隔接入。
 func (l *LINE) SendTyping(_ string) error { return nil }
 
-// --- Inbound webhook ---
+// --- 入站 webhook ---
 
-// LINEEventEnvelope is the webhook body shape.
+// LINEEventEnvelope 是 webhook 请求体结构。
 type LINEEventEnvelope struct {
 	Destination string      `json:"destination"`
 	Events      []LINEEvent `json:"events"`
@@ -179,7 +171,7 @@ type LINEEvent struct {
 }
 
 type LINESource struct {
-	Type    string `json:"type"` // "user" | "group" | "room"
+	Type    string `json:"type"`    // "user" | "group" | "room"
 	UserID  string `json:"userId,omitempty"`
 	GroupID string `json:"groupId,omitempty"`
 	RoomID  string `json:"roomId,omitempty"`
@@ -191,11 +183,10 @@ type LINEMessage struct {
 	Text string `json:"text,omitempty"`
 }
 
-// HandleWebhook validates the HMAC signature against `body` (raw bytes
-// — Go's json.Decode would re-encode and break the comparison) and
-// dispatches each event. Returns response body + HTTP status for the
-// caller to write back. LINE expects 200 with any body to ack;
-// non-2xx triggers up to ~5 retries.
+// HandleWebhook 对照 `body`（原始字节——Go 的 json.Decode 会重新编码
+// 并破坏比较）验证 HMAC 签名，并分派每个事件。返回响应体 + HTTP 状态码
+// 供调用方写回。LINE 期望 200 状态和任意响应体来确认接收；
+// 非 2xx 会触发约 5 次重试。
 func (l *LINE) HandleWebhook(body []byte, signature string) (responseBody []byte, status int, err error) {
 	if l.channelSecret != "" {
 		mac := hmac.New(sha256.New, []byte(l.channelSecret))
@@ -215,14 +206,13 @@ func (l *LINE) HandleWebhook(body []byte, signature string) (responseBody []byte
 	return []byte(`{"ok":true}`), http.StatusOK, nil
 }
 
-// dispatchEvent translates a LINE event into a bus.InboundMessage.
-// Drops non-text events (sticker/image/file/follow/etc.) until we
-// support them. ChatID resolution prefers the most-specific identifier
-// (groupId / roomId / userId) so DMs and groups end up in distinct
-// session keys.
+// dispatchEvent 将 LINE 事件转换为 bus.InboundMessage。
+// 丢弃非文本事件（贴纸/图片/文件/关注/等）直到我们支持它们。
+// ChatID 解析优先选择最具体的标识符（groupId / roomId / userId），
+// 以便 DM 和群组最终作为不同的会话键。
 func (l *LINE) dispatchEvent(ev LINEEvent) {
 	if ev.Type != "message" || ev.Message == nil {
-		// Non-message events (follow, unfollow, postback, …) — skip.
+		// 非消息事件（关注、取关、回发等）——跳过。
 		return
 	}
 	if ev.Message.Type != "text" || ev.Message.Text == "" {
@@ -237,9 +227,9 @@ func (l *LINE) dispatchEvent(ev LINEEvent) {
 		return
 	}
 
-	// Stash the replyToken so the FIRST outbound for this chat in the
-	// next ~5min uses the free reply path. Per-chat slot — multi-turn
-	// conversations naturally roll the slot forward each inbound.
+	// 缓存 replyToken，以便此聊天在接下来约 5 分钟内的第一个出站
+	// 使用免费回复路径。每个聊天一个槽位——多轮对话自然在每次
+	// 入站时向前滚动槽位。
 	if ev.ReplyToken != "" {
 		l.mu.Lock()
 		l.replyTokens[chatID] = lineReplyToken{
@@ -266,11 +256,10 @@ func (l *LINE) dispatchEvent(ev LINEEvent) {
 	}
 }
 
-// lineChatKey picks the most-specific chat identifier from a source
-// block and returns it alongside bkclaw's peerKind tag. LINE has
-// three chat scopes: 1:1 with a user, multi-person room, and group.
-// We collapse room/group → "group" since bkclaw doesn't distinguish
-// the two further down the pipeline.
+// lineChatKey 从源块中选择最具体的聊天标识符，并与 bkclaw 的
+// peerKind 标签一起返回。LINE 有三种聊天范围：用户 1:1、多人房间、
+// 群组。我们将 room/group 折叠为 "group"，因为 bkclaw 不会在
+// 下游进一步区分两者。
 func lineChatKey(s LINESource) (chatID, peerKind string) {
 	switch s.Type {
 	case "group":
@@ -297,7 +286,7 @@ func (l *LINE) popReplyToken(chatID string) string {
 	return t.token
 }
 
-// --- HTTP plumbing ---
+// --- HTTP 管线 ---
 
 func (l *LINE) postReply(replyToken, text string) error {
 	body, _ := json.Marshal(map[string]any{
@@ -336,8 +325,8 @@ func (l *LINE) postJSON(url string, body []byte) error {
 	return nil
 }
 
-// fetchBotInfo calls /v2/bot/info to capture the bot's display name +
-// basicId. Best-effort.
+// fetchBotInfo 调用 /v2/bot/info 获取 bot 的显示名称 + basicId。
+// 尽力获取；失败不会破坏渠道。
 func (l *LINE) fetchBotInfo(ctx context.Context) (name, basicID string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, lineSendTimeout)
 	defer cancel()
@@ -366,10 +355,10 @@ func (l *LINE) fetchBotInfo(ctx context.Context) (name, basicID string, err erro
 	return out.DisplayName, out.BasicID, nil
 }
 
-// LINEValidateCredentials is the connect-handler validation step:
-// hits /v2/bot/info to confirm the channel access token is good and
-// captures the bot's userId + display name. Returns (userId,
-// displayName, basicId, error).
+// LINEValidateCredentials 是连接处理程序验证步骤：
+// 获取 tenant_access_token 以确认 channel_access_token/app_secret 可用，
+// 然后获取 /bot/v3/info 以捕获 bot 的显示名称。不创建适配器状态——
+// 调用方持久化并热注册。
 func LINEValidateCredentials(ctx context.Context, channelToken string) (userID, displayName, basicID string, err error) {
 	stub := &LINE{
 		channelToken: channelToken,

@@ -1,8 +1,7 @@
-// Package agentcli provides the data-layer operations that bkclaw's
-// `agents …` CLI subcommands run against the operator's own BkClaw
-// store. The CLI is a thin convenience wrapper over the same store the
-// gateway and dashboard use — agents created here are indistinguishable
-// from agents created via the web UI.
+﻿// Package agentcli 提供了 bkclaw 的 `agents …` CLI 子命令在操作员自身
+// BkClaw 存储上执行的数据层操作。CLI 是对网关和仪表盘所使用的同一
+// 存储的轻量便捷封装——通过此方式创建的代理与通过 Web 界面创建的
+// 代理完全一致。
 package agentcli
 
 import (
@@ -22,9 +21,9 @@ import (
 	"github.com/qs3c/bkclaw/internal/users"
 )
 
-// validateName mirrors the dashboard's only check: non-empty after trim.
-// Anything stricter would reject agent names the web UI accepts and break
-// the "CLI ≡ dashboard" contract.
+// validateName 与仪表盘的唯一校验保持一致：去除空格后不为空。
+// 更严格的校验会拒绝 Web 界面接受的代理名称，从而破坏
+// "CLI ≡ 仪表盘"的一致性契约。
 func validateName(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("agent name is required")
@@ -32,11 +31,10 @@ func validateName(name string) error {
 	return nil
 }
 
-// InitOptions controls Init behavior.
+// InitOptions 控制 Init 的行为。
 type InitOptions struct {
 	Description string
-	// AgentID overrides the auto-derived id. Set this to update an agent
-	// originally created via the dashboard.
+	// AgentID 覆盖自动生成的 id。设置此项可更新原本通过仪表盘创建的代理。
 	AgentID string
 
 	Provider  string
@@ -46,16 +44,15 @@ type InitOptions struct {
 	APIType   string
 	AuthType  string
 
-	// Username pins the agent to a specific account. When omitted, Init
-	// uses the existing agent's owner, or the first super_admin, or
-	// creates an admin if the DB is empty.
+	// Username 将代理绑定到指定账户。未设置时，Init 使用现有代理的
+	// 所有者，或第一个 super_admin，或在数据库为空时创建管理员。
 	Username    string
 	Email       string
 	Password    string
 	DisplayName string
 }
 
-// InitResult describes what Init created or updated.
+// InitResult 描述 Init 创建或更新的内容。
 type InitResult struct {
 	Agent             store.AgentRecord
 	OwnerUsername     string
@@ -66,9 +63,8 @@ type InitResult struct {
 	ModelSaved        bool
 }
 
-// Init creates a new agent or updates an existing one in the operator's
-// store. It writes the same tables the dashboard does — the agent is a
-// peer of dashboard-created agents.
+// Init 在操作员的存储中创建新代理或更新现有代理。它写入与仪表盘相同的
+// 表——由此创建的代理与仪表盘创建的代理地位相同。
 func Init(ctx context.Context, st store.Store, name string, opts InitOptions) (*InitResult, error) {
 	if err := validateName(name); err != nil {
 		return nil, err
@@ -99,16 +95,15 @@ func Init(ctx context.Context, st store.Store, name string, opts InitOptions) (*
 	if err != nil {
 		return nil, err
 	}
-	// Without --id we treat init as create-only: a name collision is a
-	// mistake (likely a forgotten --id), not an implicit update. --id
-	// remains the documented update path for dashboard-created agents.
+	// 未指定 --id 时，init 视为仅创建模式：名称冲突即为错误
+	//（可能是忘记了 --id），而非隐式更新。--id 仍是更新仪表盘创建
+	// 代理的文档化途径。
 	if existing != nil && opts.AgentID == "" {
 		return nil, fmt.Errorf("agent %q already exists (id %s); use a different name, or pass --id %s to update it", displayName, existing.ID, existing.ID)
 	}
 
-	// Updating an existing agent (--id) without --username preserves the
-	// current owner instead of looking up the default admin (which may
-	// not be the agent's owner).
+	// 更新现有代理（--id）时若未指定 --username，保留当前所有者
+	// 而非查找默认管理员（该管理员可能并非代理的所有者）。
 	var owner *users.Account
 	var ownerCreated bool
 	var generatedPassword string
@@ -159,13 +154,11 @@ func Init(ctx context.Context, st store.Store, name string, opts InitOptions) (*
 	return res, nil
 }
 
-// ensureOwner picks (or creates) the user account the agent belongs to.
-// Rules: --username pins the lookup. Without it we prefer "admin", then
-// fall back to the oldest active super_admin so deployments that
-// provisioned a differently-named admin via the dashboard still work.
-// If the named user doesn't exist we create them when the DB is empty
-// (and surface the generated password for first-run UX), or fail loudly
-// when other users already exist.
+// ensureOwner 选择（或创建）代理所属的用户账户。
+// 规则：--username 指定查找目标。未指定时优先使用 "admin"，
+// 其次回退到最旧的活跃 super_admin，以兼容通过仪表盘配置了
+// 不同名称管理员的环境。若指定用户不存在，当数据库为空时
+// 创建该用户（并返回生成的密码供首次使用），否则报错。
 func ensureOwner(ctx context.Context, st store.Store, opts InitOptions) (*users.Account, bool, string, error) {
 	accts, err := users.NewAccounts(st)
 	if err != nil {
@@ -226,8 +219,8 @@ func ensureOwner(ctx context.Context, st store.Store, opts InitOptions) (*users.
 	return acct, err == nil, generated, err
 }
 
-// lookupAgent finds an existing agent record by --id or by display name.
-// Returns (nil, nil) when no match exists.
+// lookupAgent 通过 --id 或显示名称查找现有代理记录。
+// 无匹配时返回 (nil, nil)。
 func lookupAgent(ctx context.Context, st store.Store, displayName string, opts InitOptions) (*store.AgentRecord, error) {
 	if opts.AgentID != "" {
 		rec, err := st.GetAgent(ctx, opts.AgentID)
@@ -242,9 +235,8 @@ func lookupAgent(ctx context.Context, st store.Store, displayName string, opts I
 	return findAgentByName(ctx, st, displayName)
 }
 
-// writeAgent updates the existing agent or creates a new one with a
-// random id. Re-init refuses a silent owner switch when --username
-// points at a different account.
+// writeAgent 更新现有代理或创建具有随机 id 的新代理。
+// 重新初始化时，若 --username 指向不同账户，则拒绝静默切换所有者。
 func writeAgent(ctx context.Context, st store.Store, existing *store.AgentRecord, displayName string, owner *users.Account, opts InitOptions) (*store.AgentRecord, bool, error) {
 	if existing != nil {
 		if existing.UserID != "" && existing.UserID != owner.ID && opts.Username != "" {
@@ -284,8 +276,8 @@ func writeAgent(ctx context.Context, st store.Store, existing *store.AgentRecord
 	return rec, true, nil
 }
 
-// loadAccount reads the user account for an existing agent. Used on
-// re-init so we can preserve the owner without going through ensureOwner.
+// loadAccount 读取现有代理的用户账户。用于重新初始化时
+// 在不经过 ensureOwner 的情况下保留所有者。
 func loadAccount(ctx context.Context, st store.Store, userID string) (*users.Account, error) {
 	accts, err := users.NewAccounts(st)
 	if err != nil {
@@ -294,9 +286,8 @@ func loadAccount(ctx context.Context, st store.Store, userID string) (*users.Acc
 	return accts.Get(ctx, userID)
 }
 
-// Resolve looks an agent up by exact id and by display name. Agent names
-// can legitimately start with "agt_", so the prefix alone is not enough
-// to classify a user-supplied reference.
+// Resolve 通过精确 id 和显示名称查找代理。代理名称可以合法地
+// 以 "agt_" 开头，因此仅凭前缀不足以判断用户提供的引用类型。
 func Resolve(ctx context.Context, st store.Store, ref string) (*store.AgentRecord, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -329,8 +320,8 @@ func Resolve(ctx context.Context, st store.Store, ref string) (*store.AgentRecor
 	return nil, fmt.Errorf("agent %q not found", ref)
 }
 
-// ErrAmbiguousName signals that a display name resolved to more than
-// one agent; callers should ask the user for the agt_ id.
+// ErrAmbiguousName 表示一个显示名称匹配到多个代理；
+// 调用方应要求用户提供 agt_ id。
 var ErrAmbiguousName = errors.New("multiple agents share that name; use the agt_ id instead")
 
 func findAgentByName(ctx context.Context, st store.Store, name string) (*store.AgentRecord, error) {
@@ -355,7 +346,7 @@ func findAgentByName(ctx context.Context, st store.Store, name string) (*store.A
 	}
 }
 
-// List returns all agents in the operator's store, sorted by display name.
+// List 返回操作员存储中的所有代理，按显示名称排序。
 func List(ctx context.Context, st store.Store) ([]store.AgentRecord, error) {
 	all, err := st.ListAllAgents(ctx)
 	if err != nil {
@@ -370,9 +361,8 @@ func List(ctx context.Context, st store.Store) ([]store.AgentRecord, error) {
 	return all, nil
 }
 
-// Remove deletes an agent record together with any system files it owns.
-// Provider configs in the system scope are left intact; they are shared
-// between agents and the dashboard.
+// Remove 删除代理记录及其拥有的所有系统文件。
+// 系统范围内的 Provider 配置保持不变；它们在代理与仪表盘之间共享。
 func Remove(ctx context.Context, st store.Store, name string) (*store.AgentRecord, error) {
 	rec, err := Resolve(ctx, st, name)
 	if err != nil {
@@ -390,8 +380,8 @@ func Remove(ctx context.Context, st store.Store, name string) (*store.AgentRecor
 	return rec, nil
 }
 
-// SetConfig writes a provider field, an agent-scope setting (model,
-// temperature, …), or a system-scope namespace blob.
+// SetConfig 写入 provider 字段、代理范围设置（model、temperature 等）
+// 或系统范围的命名空间配置。
 func SetConfig(ctx context.Context, st store.Store, agentID, key, rawValue string) error {
 	if strings.HasPrefix(key, "provider.") {
 		return setProviderField(ctx, st, key, rawValue)
@@ -428,8 +418,8 @@ func SetConfig(ctx context.Context, st store.Store, agentID, key, rawValue strin
 	return scope.SaveSetting(ctx, st, uid, aid, namespace, data)
 }
 
-// GetConfig returns a single config value or, when key is empty, the
-// agent-scope + system-scope view of everything saved.
+// GetConfig 返回单个配置值，或在 key 为空时返回代理范围与
+// 系统范围的全部已保存配置视图。
 func GetConfig(ctx context.Context, st store.Store, agentID, key string) (interface{}, error) {
 	if key == "" {
 		return configDump(ctx, st, agentID)
@@ -458,7 +448,7 @@ func GetConfig(ctx context.Context, st store.Store, agentID, key string) (interf
 	return getNested(rec.Data, path), nil
 }
 
-// PutFile writes a system file to the agent's row in the agent_files table.
+// PutFile 将系统文件写入 agent_files 表中该代理的行。
 func PutFile(ctx context.Context, st store.Store, agentID, userID, filename string, data []byte) error {
 	if err := validateSystemFilename(filename); err != nil {
 		return err
@@ -466,7 +456,7 @@ func PutFile(ctx context.Context, st store.Store, agentID, userID, filename stri
 	return st.SaveAgentFile(ctx, agentID, userID, filename, data)
 }
 
-// GetFile reads a system file.
+// GetFile 读取一个系统文件。
 func GetFile(ctx context.Context, st store.Store, agentID, userID, filename string) ([]byte, error) {
 	if err := validateSystemFilename(filename); err != nil {
 		return nil, err
@@ -474,7 +464,7 @@ func GetFile(ctx context.Context, st store.Store, agentID, userID, filename stri
 	return st.GetAgentFile(ctx, agentID, userID, filename)
 }
 
-// ListFiles lists the agent's system files (allowlist-filtered).
+// ListFiles 列出代理的系统文件（经过允许列表过滤）。
 func ListFiles(ctx context.Context, st store.Store, agentID, userID string) ([]string, error) {
 	files, err := st.ListAgentFiles(ctx, agentID, userID)
 	if err != nil {
@@ -662,9 +652,8 @@ func appendModel(models []config.ModelEntry, id string) []config.ModelEntry {
 	return append(models, config.ModelEntry{ID: id, Name: id})
 }
 
-// agentScopeKeys maps top-level CLI keys onto the namespace+path they
-// live in under the agent's row. These are the same keys the dashboard
-// exposes per-agent.
+// agentScopeKeys 将顶层 CLI 键映射到它们在代理行中存储的
+// 命名空间+路径。这些键与仪表盘为每个代理暴露的键相同。
 var agentScopeKeys = map[string]string{
 	"model":                "agents.defaults",
 	"maxTokens":            "agents.defaults",
@@ -673,18 +662,17 @@ var agentScopeKeys = map[string]string{
 	"maxParallelToolCalls": "agents.defaults",
 	"thinking":             "agents.defaults",
 	"policy":               "agents.defaults",
-	// promptMode selects which framework sections BuildSystemPromptAs
-	// emits AND which built-in tools the LLM sees. One of "agent",
-	// "chatbot", "customize". Stored as a plain string under
-	// agents.defaults.promptMode. The built-in tool set per mode is
-	// hardcoded in builtinAllowForMode (internal/agent/loop.go) —
-	// custom tools come from Plugin / MCP, not a per-agent allowlist.
+	// promptMode 选择 BuildSystemPromptAs 生成的框架部分以及 LLM
+	// 可见的内置工具。取值为 "agent"、"chatbot" 或 "customize"。
+	// 以纯字符串形式存储于 agents.defaults.promptMode 下。
+	// 每种模式对应的内置工具集硬编码在 builtinAllowForMode
+	// （internal/agent/loop.go）中——自定义工具来自 Plugin / MCP，
+	// 而非每个代理的允许列表。
 	"promptMode": "agents.defaults",
-	// splitReplies — per-agent multi-bubble toggle. When true, the
-	// dispatcher splits the reply at SplitMessageMarker before sending
-	// to any IM channel (WeChat / Telegram / Discord / Slack / LINE /
-	// Feishu). System-level fallback is gone — false is the default
-	// when the key is absent.
+	// splitReplies —— 每个代理的多气泡切换。为 true 时，调度器
+	// 在发送到任何 IM 通道（微信 / Telegram / Discord / Slack / LINE /
+	// 飞书）之前，在 SplitMessageMarker 处拆分回复。
+	// 系统级回退已移除——当该键不存在时默认为 false。
 	"splitReplies": "agents.defaults",
 	"sandbox":      "sandbox",
 }
@@ -705,15 +693,14 @@ var systemSettingNamespaces = []string{
 	"teams",
 }
 
-// settingKey resolves a CLI key to (namespace, path-into-data, scope).
-// Agent-scope keys cover model/temperature/sandbox; everything else is
-// a system-wide namespace. The bool return is "isAgentScope" — true
-// means the row's agent_id should be set to the active agentID; false
-// means a system row (user_id=”, agent_id=”).
+// settingKey 将 CLI 键解析为 (命名空间, 数据内路径, 作用域)。
+// 代理范围的键涵盖 model/temperature/sandbox；其余为系统级命名空间。
+// 布尔返回值表示 "isAgentScope"——true 表示行的 agent_id 应设为
+// 当前 agentID；false 表示系统行（user_id="", agent_id=""）。
 func settingKey(key string) (string, []string, bool, error) {
 	if ns, ok := agentScopeKeys[key]; ok {
 		path := []string{key}
-		if key == ns { // sandbox -> sandbox: whole namespace, no inner path
+		if key == ns { // sandbox -> sandbox：整个命名空间，无内部路径
 			path = nil
 		}
 		return ns, path, true, nil
@@ -832,9 +819,8 @@ func getNested(data map[string]interface{}, path []string) interface{} {
 	return cur
 }
 
-// parseValue turns a raw CLI string into a typed JSON value where
-// possible. JSON handles bools/numbers/objects; unquoted strings
-// fall through as the raw string.
+// parseValue 将原始 CLI 字符串尽可能转换为有类型的 JSON 值。
+// JSON 处理布尔值/数字/对象；未加引号的字符串直接作为原始字符串保留。
 func parseValue(raw string) interface{} {
 	var v interface{}
 	if err := json.Unmarshal([]byte(raw), &v); err == nil {

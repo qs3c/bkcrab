@@ -8,22 +8,20 @@ import (
 	"github.com/qs3c/bkclaw/internal/auth"
 )
 
-// HandleProvisionAppUser handles POST /v1/users.
+// HandleProvisionAppUser 处理 POST /v1/users。
 //
-// Authenticated by api_key only. Mints (or returns) the bkclaw user
-// representing the calling app's end-user identified by external_id.
-// Idempotent: repeated calls with the same external_id return the same
-// bkclaw user_id, regardless of whether the row already existed.
+// 仅通过 api_key 认证。创建（或返回）代表调用应用的终端用户（由 external_id 标识）
+// 的 bkclaw 用户。幂等：使用相同 external_id 重复调用返回相同的
+// bkclaw user_id，无论该行是否已存在。
 //
-// Request body: { "external_id": "...", "display_name": "..." (optional) }
-// Response:     { "user_id": "u_…", "external_id": "...", "created": bool }
+// 请求体：{ "external_id": "...", "display_name": "..."（可选） }
+// 响应：  { "user_id": "u_…", "external_id": "...", "created": bool }
 //
-// Sessions, agent_files, and scope=user configs all key off the returned
-// user_id, so once the calling app has it, every downstream interaction
-// for that end-user partitions cleanly. Apps that prefer not to
-// pre-provision can skip this endpoint entirely and pass `user` in the
-// /v1/chat/completions body (or the X-Bkclaw-End-User header) on
-// every call — the auth layer lazy-mints on first sight either way.
+// 会话、agent_files 和 scope=user 的配置都以返回的 user_id 为键，
+// 因此一旦调用应用获得该 user_id，该终端用户的每个下游交互
+// 都能干净地分区。不想预创建的应用可以完全跳过此端点，
+// 在每次调用时通过 /v1/chat/completions 请求体中的 `user` 字段
+// （或 X-Bkclaw-End-User 头）传递 — 无论哪种方式，认证层都会在首次见到时懒创建。
 func (s *Server) HandleProvisionAppUser(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok || ident.AuthMethod != "apikey" || ident.APIKeyID == "" {
@@ -51,11 +49,10 @@ func (s *Server) HandleProvisionAppUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Going through SwitchToAppUser keeps the mint logic in one place
-	// — the same code path the request-time switch uses. The returned
-	// identity carries the resolved app_user user_id; we don't write it
-	// back onto the request context here because this endpoint is a
-	// pure provisioning call, not a passthrough.
+	// 通过 SwitchToAppUser 保持创建逻辑在一处
+	// — 与请求时切换使用的是同一代码路径。返回的身份
+	// 包含已解析的 app_user user_id；我们不会将其写回
+	// 请求上下文，因为此端点是纯粹的配置调用，而非透传。
 	switched, err := s.authResolver.SwitchToAppUser(r.Context(), ident, req.ExternalID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{

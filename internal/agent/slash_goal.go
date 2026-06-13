@@ -10,16 +10,15 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 )
 
-// slashGoal dispatches `/goal …` to one of the sub-handlers. The
-// argument grammar mirrors the design doc § 6:
+// slashGoal 将 `/goal …` 分派到子处理器。参数语法遵循设计文档 § 6：
 //
-//	/goal <objective>          → create
-//	/goal                      → show current
+//	/goal <objective>          → 创建
+//	/goal                      → 显示当前目标
 //	/goal pause | resume | clear
 //
-// `/goal budget <N>` is deliberately absent — Codex doesn't ship it
-// and mid-flight budget changes have ambiguous semantics (do tokens
-// already spent count?). Set the budget at create time instead.
+// `/goal budget <N>` 被故意省略——Codex 没有附带它，
+// 且飞行中的预算修改语义模糊（已花费的 token 是否计入？）。
+// 改为在创建时设置预算。
 func (a *Agent) slashGoal(msg bus.InboundMessage, args []string) slashResult {
 	if a.goalStore == nil {
 		return slashResult{
@@ -28,10 +27,9 @@ func (a *Agent) slashGoal(msg bus.InboundMessage, args []string) slashResult {
 		}
 	}
 
-	// First arg may be a sub-command. Anything else is treated as
-	// objective text for the create path. `/goal pause objective`
-	// would otherwise be ambiguous, but pause/resume/clear are short
-	// keywords nobody would use as an objective opener.
+	// 第一个参数可能是子命令。其他任何内容被视为创建路径的目标文本。
+	// 否则 `/goal pause objective` 会有歧义，但 pause/resume/clear 是
+	// 没有人会用作目标开头的短关键字。
 	sub := ""
 	if len(args) > 0 {
 		sub = strings.ToLower(args[0])
@@ -46,15 +44,14 @@ func (a *Agent) slashGoal(msg bus.InboundMessage, args []string) slashResult {
 	case "clear":
 		return a.slashGoalClear(msg)
 	}
-	// Default: treat the entire remainder as objective text.
+	// 默认：将整个剩余部分视为目标文本。
 	objective := strings.Join(args, " ")
 	return a.slashGoalCreate(msg, objective)
 }
 
-// resolveSessionKey returns the persistent session_key for the
-// in-flight turn, or "" if no session matches the inbound's
-// (channel, account, chat, project) tuple. Slash handlers downgrade
-// to a clean error message on "".
+// resolveSessionKey 返回进行中轮次的持久 session_key，
+// 如果没有会话匹配入站消息的 (channel, account, chat, project) 元组
+// 则返回 ""。斜杠处理器在 "" 时降级为清晰的错误消息。
 func (a *Agent) resolveSessionKey(msg bus.InboundMessage) string {
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
 	if sess == nil {
@@ -72,9 +69,8 @@ func (a *Agent) slashGoalShow(msg bus.InboundMessage) slashResult {
 	if err != nil {
 		return slashResult{handled: true, reply: fmt.Sprintf("Error reading goal: %v", err)}
 	}
-	// Plain-text status — no emoji prefix or scaffolding. /goal is
-	// the only command that returns visible text on success; pause /
-	// resume / clear / create all stay silent.
+	// 纯文本状态——无 emoji 前缀或支架。/goal 是唯一成功时返回
+	// 可见文本的命令；pause / resume / clear / create 都保持静默。
 	return slashResult{handled: true, reply: fmt.Sprintf("%s: %s", g.Status, g.Objective)}
 }
 
@@ -108,24 +104,22 @@ func (a *Agent) slashGoalCreate(msg bus.InboundMessage, objective string) slashR
 		return slashResult{handled: true, reply: fmt.Sprintf("Error creating goal: %v", err)}
 	}
 
-	// Fire the first continuation immediately off the user's own /goal
-	// turn. Silent success — the continuation streaming back IS the
-	// conversational reply, same as if the user had typed the
-	// objective directly. Goal is transparent at the chat surface; no
-	// scaffolding text.
+	// 立即从用户自己的 /goal 轮次触发第一次继续。静默成功——
+	// 继续流回本身就是对话回复，与用户直接输入目标相同。
+	// Goal 在聊天界面上是透明的；没有支架文本。
 	goal.TryFireContinuation(context.Background(), a.goalStore, a.messageBus, a.name, key)
 	return slashResult{handled: true, reply: "", continuationQueued: true}
 }
 
 func (a *Agent) slashGoalPause(msg bus.InboundMessage) slashResult {
-	// Silent transition. Wrong-state / no-goal cases still surface.
+	// 静默转换。错误状态/无目标情况仍然会暴露。
 	return a.transitionGoal(msg, goal.StatusActive, goal.StatusPaused, "Not active.")
 }
 
 func (a *Agent) slashGoalResume(msg bus.InboundMessage) slashResult {
 	res := a.transitionGoal(msg, goal.StatusPaused, goal.StatusActive, "Not paused.")
-	// Empty reply == success path; non-empty == wrongStateMsg or
-	// error. Fire the next continuation only on success.
+	// 空回复 == 成功路径；非空 == wrongStateMsg 或
+	// 错误。仅在成功时触发下一次继续。
 	if res.handled && res.reply == "" {
 		key := a.resolveSessionKey(msg)
 		goal.TryFireContinuation(context.Background(), a.goalStore, a.messageBus, a.name, key)
@@ -134,10 +128,9 @@ func (a *Agent) slashGoalResume(msg bus.InboundMessage) slashResult {
 	return res
 }
 
-// transitionGoal centralizes the "load goal → check it's in the
-// expected source state → flip → persist" pattern for pause/resume.
-// On success the reply is silent (""); on wrong state, returns
-// wrongStateMsg; on store errors, returns a formatted error.
+// transitionGoal 集中处理"加载目标 → 检查处于预期源状态 →
+// 翻转 → 持久化"的暂停/恢复模式。成功时回复为静默（""）；
+// 错误状态时返回 wrongStateMsg；存储错误时返回格式化错误。
 func (a *Agent) transitionGoal(msg bus.InboundMessage, from, to goal.Status, wrongStateMsg string) slashResult {
 	key := a.resolveSessionKey(msg)
 	g, err := a.goalStore.GetGoalBySession(context.Background(), a.name, key)
@@ -172,11 +165,10 @@ func (a *Agent) slashGoalClear(msg bus.InboundMessage) slashResult {
 	return slashResult{handled: true, reply: ""}
 }
 
-// clearGoalForSession removes any goal attached to the named
-// session_key. Called by /new and /reset so an old session's goal
-// doesn't leak into a brand-new conversation thread on the same
-// chat. Best-effort: store errors are not surfaced — /new shouldn't
-// fail because of a stray goal row.
+// clearGoalForSession 移除附加在指定 session_key 上的目标。
+// 由 /new 和 /reset 调用，使旧会话的目标不会泄漏到同一聊天上的
+// 全新对话线程。尽力而为：存储错误不会暴露——/new 不应该因为
+// 一个残留的目标行而失败。
 func (a *Agent) clearGoalForSession(sessionKey string) {
 	if a.goalStore == nil || sessionKey == "" {
 		return

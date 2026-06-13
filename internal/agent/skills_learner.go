@@ -12,16 +12,16 @@ import (
 	"github.com/qs3c/bkclaw/internal/provider"
 )
 
-// SkillsLearner observes complex tasks and extracts reusable skill patterns.
+// SkillsLearner 观察复杂任务并提取可复用的技能模式。
 type SkillsLearner struct {
 	workspace    string
 	provider     provider.Provider
 	model        string
-	minToolCalls int      // minimum tool calls to consider extracting (default: 3)
-	skillDirs    []string // directories to search for the skill-learner skill
+	minToolCalls int      // 考虑提取的最少工具调用次数（默认：3）
+	skillDirs    []string // 搜索技能学习器技能的目录
 }
 
-// NewSkillsLearner creates a new SkillsLearner.
+// NewSkillsLearner 创建一个新的 SkillsLearner。
 func NewSkillsLearner(workspace string, p provider.Provider, model string, skillDirs ...string) *SkillsLearner {
 	return &SkillsLearner{
 		workspace:    workspace,
@@ -44,8 +44,8 @@ type extractionResponse struct {
 	Skill   extractedSkill `json:"skill"`
 }
 
-// MaybeExtract checks if the conversation warrants skill extraction.
-// Called after agent turns complete. Extracts and saves to workspace/skills/<name>/SKILL.md.
+// MaybeExtract 检查对话是否值得技能提取。
+// 在代理轮次完成后调用。提取并保存到 workspace/skills/<name>/SKILL.md。
 func (sl *SkillsLearner) MaybeExtract(ctx context.Context, messages []provider.Message, toolCallCount int) error {
 	if toolCallCount < sl.minToolCalls {
 		return nil
@@ -59,14 +59,14 @@ func (sl *SkillsLearner) MaybeExtract(ctx context.Context, messages []provider.M
 		return nil
 	}
 
-	// Check if similar skill already exists
+	// 检查是否已存在类似技能
 	skillDir := filepath.Join(sl.workspace, "skills", skill.Slug)
 	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err == nil {
 		slog.Debug("skill already exists, skipping", "slug", skill.Slug)
 		return nil
 	}
 
-	// Save the extracted skill
+	// 保存提取的技能
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		return fmt.Errorf("create skill dir: %w", err)
 	}
@@ -79,10 +79,10 @@ func (sl *SkillsLearner) MaybeExtract(ctx context.Context, messages []provider.M
 	return nil
 }
 
-// loadSkillLearnerPrompt loads the skill-learner SKILL.md from disk.
-// Falls back to a minimal built-in prompt if not found.
+// loadSkillLearnerPrompt 从磁盘加载技能学习器的 SKILL.md。
+// 如果未找到则回退到最小化的内置提示词。
 func (sl *SkillsLearner) loadSkillLearnerPrompt() string {
-	// Search skill directories for skill-learner SKILL.md
+	// 在技能目录中搜索 skill-learner SKILL.md
 	for _, dir := range sl.skillDirs {
 		path := filepath.Join(dir, "bkclaw-skill-learner", "SKILL.md")
 		if data, err := os.ReadFile(path); err == nil {
@@ -91,7 +91,7 @@ func (sl *SkillsLearner) loadSkillLearnerPrompt() string {
 		}
 	}
 
-	// Fallback: minimal built-in prompt
+	// 回退：最小化的内置提示词
 	return fallbackExtractionPrompt
 }
 
@@ -116,9 +116,9 @@ Step-by-step instructions in markdown...
 
 Output ONLY the JSON, no markdown fences.`
 
-// extractSkill uses LLM to generate a SKILL.md from the conversation.
+// extractSkill 使用 LLM 从对话生成 SKILL.md。
 func (sl *SkillsLearner) extractSkill(ctx context.Context, messages []provider.Message) (*extractedSkill, error) {
-	// Build a summary of the conversation for the extraction prompt
+	// 为提取提示词构建对话摘要
 	var sb strings.Builder
 	for _, m := range messages {
 		if m.Role == "system" {
@@ -147,7 +147,7 @@ func (sl *SkillsLearner) extractSkill(ctx context.Context, messages []provider.M
 	}
 
 	var result extractionResponse
-	// Try to parse response as JSON
+	// 尝试将响应解析为 JSON
 	content := strings.TrimSpace(resp.Content)
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
 		slog.Debug("skill extraction: LLM response not valid JSON", "error", err)
