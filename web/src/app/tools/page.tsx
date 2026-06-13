@@ -34,8 +34,8 @@ import {
 } from "@/lib/api";
 import RuntimeSettingsPage from "@/app/settings/runtime/page";
 
-// Sentinel value used as the active rail entry when Runtime is selected.
-// Real tool categories never start with "__" so this can never collide.
+// 在选中 Runtime 时用作侧栏活动项的哨兵值。
+// 真正的工具分类不会以 "__" 开头，因此不会产生冲突。
 const RUNTIME_ACTIVE = "__runtime__";
 
 export default function ToolsPage() {
@@ -45,7 +45,7 @@ export default function ToolsPage() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Mutable copies of the two config maps. The catalog itself is immutable.
+  // 两个配置映射的可变副本。目录本身不可变。
   const [providers, setProviders] = useState<Record<string, ToolProviderSettings>>({});
   const [tools, setTools] = useState<Record<string, ToolCategorySettings>>({});
   const [active, setActive] = useState<string>("");
@@ -74,7 +74,7 @@ export default function ToolsPage() {
     setSaving(true);
     setError(null);
     try {
-      // Drop empty provider entries so the config stays tidy.
+      // 移除空白的服务商条目，保持配置整洁。
       const cleaned: Record<string, ToolProviderSettings> = {};
       for (const [name, p] of Object.entries(providers)) {
         const hasKey = p.apiKey && p.apiKey.trim();
@@ -131,10 +131,9 @@ export default function ToolsPage() {
         )}
 
         {active === RUNTIME_ACTIVE ? (
-          // Runtime is a deployment-wide knob (sandbox backend, etc.), not
-          // a per-category provider; it lives in the same rail as the tool
-          // categories purely as a convenient admin entry point. The
-          // component manages its own save / loading state.
+          // Runtime 是全局部署级别的开关（沙箱后端等），而非按分类的服务商；
+          // 它与工具分类放在同一侧栏，仅作为方便的管理入口。
+          // 该组件管理自己的保存/加载状态。
           <RuntimeSettingsPage />
         ) : !cfg || cfg.categories.length === 0 ? (
           <div className="rounded-lg border border-border bg-card p-8 text-center">
@@ -196,10 +195,9 @@ function CategoryRail({
           {c.label}
         </button>
       ))}
-      {/* Runtime sits at the bottom of the rail (or rightmost on mobile);
-          super_admin-only — the underlying RuntimeSettingsPage redirects
-          anyone else away. The hairline divider visually separates it
-          from the per-category tool entries. */}
+      {/* Runtime 位于侧栏底部（移动端为最右侧）；
+          仅 super_admin 可见——底层 RuntimeSettingsPage 会重定向其他用户。
+          细线分隔符将其与按分类的工具条目在视觉上隔开。 */}
       <div className="hidden md:block my-1 border-t border-border/60" />
       <button
         type="button"
@@ -227,11 +225,10 @@ function CategoryPanel({
   setTools: (patch: Partial<ToolCategorySettings>) => void;
   saveButton?: React.ReactNode;
 }) {
-  // Which provider's config to render. Default: the first one that
-  // already has a value, else the first provider in the catalog. The
-  // selector only swaps the visible config — every provider's state
-  // is still held in the parent `providers` map so a single Save
-  // persists every key the user has touched.
+  // 要渲染哪个服务商的配置。默认值：已填写值的首个服务商，否则取目录中
+  // 的首个服务商。选择器只切换可见配置——每个服务商的状态仍保存在
+  // 父级 `providers` 映射中，因此单次保存即可持久化用户修改过的
+  // 所有密钥。
   const firstConfigured = catalog.providers.find((p) => {
     const s = providers[p.name];
     return (s?.apiKey && s.apiKey.trim()) || (s?.endpoint && s.endpoint.trim());
@@ -297,7 +294,7 @@ function CategoryPanel({
         </div>
       )}
 
-      {/* Fallback chain editor */}
+      {/* 回退链编辑器 */}
       <ChainEditor catalog={catalog} providers={providers} tools={tools} setTools={setTools} />
     </div>
   );
@@ -477,14 +474,11 @@ function ChainEditor({
   tools: ToolCategorySettings;
   setTools: (patch: Partial<ToolCategorySettings>) => void;
 }) {
-  // Each provider contributes at most one chain option, using whichever
-  // model the admin actually configured in the Default model input.
-  // Providers with a single catalog model (e.g. the None sentinel, or
-  // built-ins that don't expose a model knob) are auto-configured with
-  // that one option so they remain pickable without the admin having
-  // to type anything. Providers with multiple models and no typed
-  // default are skipped — keeping the dropdown short and avoiding chain
-  // entries that reference models the admin hasn't actively chosen.
+  // 每个服务商最多贡献一个链选项，使用管理员在"默认模型"输入框中
+  // 实际配置的模型。只有一个目录模型的服务商（例如 None 哨兵或
+  // 不暴露模型选项的内置服务商）会自动配置该选项，无需管理员
+  // 手动输入即可选择。有多个模型但未填写默认值的服务商会被跳过——
+  // 保持下拉菜单简短，避免出现管理员未主动选择模型的链条目。
   const refOptions = useMemo(() => {
     const opts: { value: string; label: string }[] = [];
     for (const p of catalog.providers) {

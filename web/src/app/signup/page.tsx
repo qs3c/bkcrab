@@ -13,7 +13,7 @@ export default function SignupPage() {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  // null = still loading the toggle, true/false = resolved
+  // null = 仍在加载开关状态，true/false = 已确定
   const [open, setOpen] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -47,7 +47,7 @@ export default function SignupPage() {
         setLoading(false);
         return;
       }
-      // Server set the session cookie on us; head to the app.
+      // 服务器已为我们设置了会话 cookie；跳转到应用。
       router.replace("/overview/");
     } catch {
       setError("无法连接服务器");

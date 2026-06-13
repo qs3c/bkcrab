@@ -129,7 +129,7 @@ export default function ChannelsPage() {
         </div>
       )}
 
-      {/* Channel Config Dialog */}
+      {/* 渠道配置对话框 */}
       <Dialog open={!!editChannel} onOpenChange={() => setEditChannel(null)}>
         <DialogContent>
           <DialogHeader>
