@@ -14,7 +14,7 @@ import (
 )
 
 // loadAgentFileConfig 从 agents.config 列返回 agent 的每行覆盖配置 JSON。
-func (s *Server) loadAgentFileConfig(r *http.Request, agentID string) (*config.AgentFileConfig, error) {
+func (s *workspaceRepo) loadAgentFileConfig(r *http.Request, agentID string) (*config.AgentFileConfig, error) {
 	rec, err := s.dataStore.GetAgent(r.Context(), agentID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -31,11 +31,11 @@ func (s *Server) loadAgentFileConfig(r *http.Request, agentID string) (*config.A
 }
 
 // saveAgentFileConfig 将每个 agent 的覆盖配置持久化到 agents.config 中。
-func (s *Server) saveAgentFileConfig(r *http.Request, agentID string, cfg *config.AgentFileConfig) error {
+func (s *workspaceRepo) saveAgentFileConfig(r *http.Request, agentID string, cfg *config.AgentFileConfig) error {
 	rec, err := s.dataStore.GetAgent(r.Context(), agentID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			rec = &store.AgentRecord{ID: agentID, UserID: s.effectiveUserID(r), Name: agentID}
+			rec = &store.AgentRecord{ID: agentID, UserID: effectiveUserID(r), Name: agentID}
 		} else {
 			return err
 		}

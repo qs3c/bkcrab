@@ -11,14 +11,14 @@ import (
 
 // --- 插件 ---
 
-func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
+func (s *PluginsHandler) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 	homeDir, err := config.HomeDir()
 	if err != nil {
 		jsonResponse(w, http.StatusOK, []any{})
 		return
 	}
 
-	cfg, _ := s.loadUserConfig(r)
+	cfg, _ := s.cfg.loadUserConfig(r)
 	pluginsDir := filepath.Join(homeDir, "plugins")
 	entries, err := os.ReadDir(pluginsDir)
 	if err != nil {
@@ -79,7 +79,7 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 // handleListHookPlugins 返回可发现的 hook 类型插件，用于 Context 页面上的每个 agent 插件开关。
 // 只读，不对管理员门控（agent 拥有者需要查看可用插件来选择在其 agent 上启用哪些）—
 // 它故意省略了管理 /api/plugins 端点暴露的每个插件的运行时状态（running/stopped）。
-func (s *Server) handleListHookPlugins(w http.ResponseWriter, r *http.Request) {
+func (s *PluginsHandler) handleListHookPlugins(w http.ResponseWriter, r *http.Request) {
 	homeDir, err := config.HomeDir()
 	if err != nil {
 		jsonResponse(w, http.StatusOK, []any{})
@@ -138,7 +138,7 @@ func (s *Server) handleListHookPlugins(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, out)
 }
 
-func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
+func (s *PluginsHandler) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
 		Enabled *bool                  `json:"enabled,omitempty"`
@@ -149,7 +149,7 @@ func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg, err := s.loadUserConfig(r)
+	cfg, err := s.cfg.loadUserConfig(r)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -167,7 +167,7 @@ func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.Plugins.Entries[id] = entry
 
-	if err := s.saveUserConfig(r, cfg); err != nil {
+	if err := s.cfg.saveUserConfig(r, cfg); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}

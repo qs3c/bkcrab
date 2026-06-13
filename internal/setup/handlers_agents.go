@@ -43,7 +43,7 @@ func agentShareModelConfig(rec *store.AgentRecord) bool {
 
 // agentScopeModel 从 configs 表读取 per-agent 模型覆盖 —
 // kind=setting, scope=agent 行，设置后取代系统/用户默认值。
-func (s *Server) agentScopeModel(r *http.Request, agentID string) string {
+func (s *configRepo) agentScopeModel(r *http.Request, agentID string) string {
 	rec, err := s.dataStore.GetConfigByName(r.Context(), store.KindSetting, "", agentID, "agents.defaults")
 	if err != nil || rec == nil {
 		return ""
@@ -55,7 +55,7 @@ func (s *Server) agentScopeModel(r *http.Request, agentID string) string {
 }
 
 // saveAgentScopeModel 当 model!="" 时写入（upsert），当 model=="" 时删除 agent 作用域的 agents.defaults 行。
-func (s *Server) saveAgentScopeModel(r *http.Request, agentID, model string) error {
+func (s *configRepo) saveAgentScopeModel(r *http.Request, agentID, model string) error {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return scope.SaveSettingByScope(r.Context(), s.dataStore, scope.Agent, agentID, "agents.defaults", nil)
@@ -65,7 +65,7 @@ func (s *Server) saveAgentScopeModel(r *http.Request, agentID, model string) err
 
 // agentScopeDefaultsRead 返回当前 agent 作用域的 agents.defaults 行数据，如果行不存在则返回空 map。
 // 调用者将其作为合并感知补丁的基础（读-改-写），以便一个只接触一个字段的 PATCH 不会破坏其余部分。
-func (s *Server) agentScopeDefaultsRead(r *http.Request, agentID string) map[string]interface{} {
+func (s *configRepo) agentScopeDefaultsRead(r *http.Request, agentID string) map[string]interface{} {
 	rec, err := s.dataStore.GetConfigByName(r.Context(), store.KindSetting, "", agentID, "agents.defaults")
 	if err != nil || rec == nil || rec.Data == nil {
 		return map[string]interface{}{}
@@ -81,7 +81,7 @@ func (s *Server) agentScopeDefaultsRead(r *http.Request, agentID string) map[str
 // applyAgentScopeDefaultsPatch 将 patch 合并到当前的 agents.defaults 行中并写入结果。
 // 值为 nil 的键将从行中删除（调用者的信号"清除此覆盖"）。
 // 结果为空的整行被完全移除，以便 MergedAgentConfig 完全回退到系统/用户默认值。
-func (s *Server) applyAgentScopeDefaultsPatch(r *http.Request, agentID string, patch map[string]interface{}) error {
+func (s *configRepo) applyAgentScopeDefaultsPatch(r *http.Request, agentID string, patch map[string]interface{}) error {
 	if len(patch) == 0 {
 		return nil
 	}
@@ -104,7 +104,7 @@ func (s *Server) applyAgentScopeDefaultsPatch(r *http.Request, agentID string, p
 // 值为 true/false 的补丁键被写入；行的其余部分被保留
 //（这样对一个插件的 UI 切换不会破坏兄弟插件的覆盖）。
 // 当 reset 为 true 时，整行被删除 — agent 回退到系统范围的插件启用状态。
-func (s *Server) applyAgentScopePluginsPatch(r *http.Request, agentID string, patch map[string]bool, reset bool) error {
+func (s *configRepo) applyAgentScopePluginsPatch(r *http.Request, agentID string, patch map[string]bool, reset bool) error {
 	if reset {
 		return scope.SaveSettingByScope(r.Context(), s.dataStore, scope.Agent, agentID, "plugins.enabled", nil)
 	}
@@ -127,7 +127,7 @@ func (s *Server) applyAgentScopePluginsPatch(r *http.Request, agentID string, pa
 // 当不存在时返回 nil — nil 被每个运行时消费者视为 false，
 // 因此区别仅在于 GET 响应（仪表板可以选择将"未设置"与"关闭"渲染不同，
 // 但目前 Switch 将两者都渲染为关闭，这没问题）。
-func (s *Server) agentScopeSplitReplies(r *http.Request, agentID string) *bool {
+func (s *configRepo) agentScopeSplitReplies(r *http.Request, agentID string) *bool {
 	rec, err := s.dataStore.GetConfigByName(r.Context(), store.KindSetting, "", agentID, "agents.defaults")
 	if err != nil || rec == nil {
 		return nil
@@ -140,7 +140,7 @@ func (s *Server) agentScopeSplitReplies(r *http.Request, agentID string) *bool {
 }
 
 // agentScopePromptMode reads the per-agent promptMode override.
-func (s *Server) agentScopePromptMode(r *http.Request, agentID string) string {
+func (s *configRepo) agentScopePromptMode(r *http.Request, agentID string) string {
 	rec, err := s.dataStore.GetConfigByName(r.Context(), store.KindSetting, "", agentID, "agents.defaults")
 	if err != nil || rec == nil {
 		return ""
@@ -153,7 +153,7 @@ func (s *Server) agentScopePromptMode(r *http.Request, agentID string) string {
 
 // agentScopePlugins 读取 per-agent 插件启用覆盖层。当没有行存在时返回 nil。
 // 键为 pluginID → bool；缺失的键回退到系统范围插件条目的启用状态。
-func (s *Server) agentScopePlugins(r *http.Request, agentID string) map[string]bool {
+func (s *configRepo) agentScopePlugins(r *http.Request, agentID string) map[string]bool {
 	rec, err := s.dataStore.GetConfigByName(r.Context(), store.KindSetting, "", agentID, "plugins.enabled")
 	if err != nil || rec == nil {
 		return nil
@@ -174,7 +174,7 @@ func (s *Server) agentScopePlugins(r *http.Request, agentID string) map[string]b
 // 不存在时返回 nil — 与 agentScopeSplitReplies 相同的约定。
 // 驱动 runPostTurn AutoPersistMemory 过程（LLM 提炼写入 USER.md / MEMORY.md），
 // 这是聊天机器人模式下唯一的聊天者记忆持久化路径。
-func (s *Server) agentScopeAutoPersist(r *http.Request, agentID string) *bool {
+func (s *configRepo) agentScopeAutoPersist(r *http.Request, agentID string) *bool {
 	rec, err := s.dataStore.GetConfigByName(r.Context(), store.KindSetting, "", agentID, "agents.defaults")
 	if err != nil || rec == nil {
 		return nil
@@ -187,7 +187,7 @@ func (s *Server) agentScopeAutoPersist(r *http.Request, agentID string) *bool {
 }
 
 // effectiveUserID 返回请求的已解析 user_id：调用者自己的 id，或者 — 对于处于 actAs 模式的 super_admin — 被模拟用户的 id。
-func (s *Server) effectiveUserID(r *http.Request) string {
+func effectiveUserID(r *http.Request) string {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
 		return ""
@@ -196,7 +196,7 @@ func (s *Server) effectiveUserID(r *http.Request) string {
 }
 
 // requireWritable 如果调用者可以变更则返回 true，否则写入 4xx 响应并返回 false。
-func (s *Server) requireWritable(w http.ResponseWriter, r *http.Request) bool {
+func requireWritable(w http.ResponseWriter, r *http.Request) bool {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "unauthorized"})
@@ -209,8 +209,8 @@ func (s *Server) requireWritable(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
-	uid := s.effectiveUserID(r)
+func (s *AgentsHandler) handleListAgents(w http.ResponseWriter, r *http.Request) {
+	uid := effectiveUserID(r)
 	if uid == "" {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
@@ -238,7 +238,7 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 			"id":          ar.ID,
 			"name":        ar.Name,
 			"description": desc,
-			"model":       s.agentScopeModel(r, ar.ID),
+			"model":       s.cfg.agentScopeModel(r, ar.ID),
 			"avatarUrl":   "/api/agents/" + ar.ID + "/files/avatar.png",
 			"createdAt":   ar.CreatedAt,
 			"userId":      ar.UserID,
@@ -255,8 +255,8 @@ type createAgentRequest struct {
 	Model       string `json:"model,omitempty"`
 }
 
-func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *AgentsHandler) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	ident, _ := auth.FromContext(r.Context())
@@ -264,7 +264,7 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"error": "type=agent api keys cannot create agents"})
 		return
 	}
-	uid := s.effectiveUserID(r)
+	uid := effectiveUserID(r)
 	var req createAgentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -310,12 +310,12 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Model != "" {
-		if err := s.saveAgentScopeModel(r, id, req.Model); err != nil {
+		if err := s.cfg.saveAgentScopeModel(r, id, req.Model); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
 	}
-	s.invalidateUser(uid)
+	s.guard.invalidateUser(uid)
 	jsonResponse(w, http.StatusCreated, map[string]any{
 		"agent": map[string]any{
 			"id":     rec.ID,
@@ -333,7 +333,7 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 //
 // 成功时返回 true；失败时写入 401/403 并返回 false。
 // 当操作依赖于路径用户时，调用者仍应验证该用户实际存在。
-func (s *Server) requireUserOrAdmin(w http.ResponseWriter, r *http.Request, pathUserID string) bool {
+func requireUserOrAdmin(w http.ResponseWriter, r *http.Request, pathUserID string) bool {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
@@ -355,8 +355,8 @@ func (s *Server) requireUserOrAdmin(w http.ResponseWriter, r *http.Request, path
 
 // requireAgentOwner 如果调用者拥有该 agent（或是 super_admin）则返回 agent 记录，
 // 否则写入 403/404 并返回 nil。
-func (s *Server) requireAgentOwner(w http.ResponseWriter, r *http.Request, agentID string) *store.AgentRecord {
-	uid := s.effectiveUserID(r)
+func (s *agentGuard) requireAgentOwner(w http.ResponseWriter, r *http.Request, agentID string) *store.AgentRecord {
+	uid := effectiveUserID(r)
 	rec, err := s.dataStore.GetAgent(r.Context(), agentID)
 	if err != nil || rec == nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "not found"})
@@ -380,12 +380,12 @@ func (s *Server) requireAgentOwner(w http.ResponseWriter, r *http.Request, agent
 // 与 requireAgentReadable 不同，它不授予公开 agent 的读取者权限 — 由需要区分"浏览所有内容"
 //（拥有者）和"限定到自己的会话"（公开 agent 上的外部调用者）的文件作用域代码使用。
 // 失败时静默：由调用者决定如何响应。
-func (s *Server) callerOwnsAgent(r *http.Request, agentID string) bool {
+func (s *agentGuard) callerOwnsAgent(r *http.Request, agentID string) bool {
 	rec, err := s.dataStore.GetAgent(r.Context(), agentID)
 	if err != nil || rec == nil {
 		return false
 	}
-	uid := s.effectiveUserID(r)
+	uid := effectiveUserID(r)
 	ident, _ := auth.FromContext(r.Context())
 	if rec.UserID == uid || ident.Role == users.RoleSuperAdmin {
 		return true
@@ -396,13 +396,13 @@ func (s *Server) callerOwnsAgent(r *http.Request, agentID string) bool {
 	return false
 }
 
-func (s *Server) requireAgentReadable(w http.ResponseWriter, r *http.Request, agentID string) bool {
+func (s *agentGuard) requireAgentReadable(w http.ResponseWriter, r *http.Request, agentID string) bool {
 	rec, err := s.dataStore.GetAgent(r.Context(), agentID)
 	if err != nil || rec == nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return false
 	}
-	uid := s.effectiveUserID(r)
+	uid := effectiveUserID(r)
 	ident, _ := auth.FromContext(r.Context())
 	if rec.UserID == uid || ident.Role == users.RoleSuperAdmin {
 		return true
@@ -421,12 +421,12 @@ func (s *Server) requireAgentReadable(w http.ResponseWriter, r *http.Request, ag
 	return false
 }
 
-func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *AgentsHandler) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
-	rec := s.requireAgentOwner(w, r, id)
+	rec := s.guard.requireAgentOwner(w, r, id)
 	if rec == nil {
 		return
 	}
@@ -533,14 +533,14 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	} else if req.AutoPersist != nil {
 		defaultsPatch["autoPersist"] = *req.AutoPersist
 	}
-	if err := s.applyAgentScopeDefaultsPatch(r, rec.ID, defaultsPatch); err != nil {
+	if err := s.cfg.applyAgentScopeDefaultsPatch(r, rec.ID, defaultsPatch); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	// 插件启用覆盖层：单独的配置行（scope=agent, name=plugins.enabled），因此不经过 agents.defaults
 	// 补丁路径。Reset 完全清除该行；否则我们将传入的 map 键合并到现有数据中。
 	if req.PluginsReset || req.Plugins != nil {
-		if err := s.applyAgentScopePluginsPatch(r, rec.ID, req.Plugins, req.PluginsReset); err != nil {
+		if err := s.cfg.applyAgentScopePluginsPatch(r, rec.ID, req.Plugins, req.PluginsReset); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -548,18 +548,18 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	// 使用 invalidateAgent（而不是 invalidateUser），这样 super_admin / 公开链接查看者 / apikey 调用者
 	// 通过延迟附加将此 agent 加载到自己的 UserSpace 中时，也会丢弃其过时的 rc.Model —
 	// 没有这个，他们会继续使用以前的模型，直到 30 分钟的空闲驱逐。
-	s.invalidateAgent(rec.ID)
+	s.guard.invalidateAgent(rec.ID)
 	share := agentShareModelConfig(rec)
 	jsonResponse(w, http.StatusOK, map[string]any{
 		"agent": map[string]any{
 			"id":               rec.ID,
 			"userId":           rec.UserID,
 			"name":             rec.Name,
-			"model":            s.agentScopeModel(r, rec.ID),
-			"promptMode":       s.agentScopePromptMode(r, rec.ID),
-			"splitReplies":     s.agentScopeSplitReplies(r, rec.ID),
-			"autoPersist":      s.agentScopeAutoPersist(r, rec.ID),
-			"plugins":          s.agentScopePlugins(r, rec.ID),
+			"model":            s.cfg.agentScopeModel(r, rec.ID),
+			"promptMode":       s.cfg.agentScopePromptMode(r, rec.ID),
+			"splitReplies":     s.cfg.agentScopeSplitReplies(r, rec.ID),
+			"autoPersist":      s.cfg.agentScopeAutoPersist(r, rec.ID),
+			"plugins":          s.cfg.agentScopePlugins(r, rec.ID),
 			"config":           rec.Config,
 			"isPublic":         rec.IsPublic,
 			"shareModelConfig": share,
@@ -570,9 +570,9 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 // handleGetAgent 返回单个 agent 的基本 AgentRecord（id, name, description, userId）。
 // 由聊天头部/侧边栏切换器用于解析显示名称。权限为读取级别 — 拥有者、super_admin
 // 或共享记录的任何受让人。
-func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
+func (s *AgentsHandler) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !s.requireAgentReadable(w, r, id) {
+	if !s.guard.requireAgentReadable(w, r, id) {
 		return
 	}
 	rec, err := s.dataStore.GetAgent(r.Context(), id)
@@ -582,7 +582,7 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	desc, _ := rec.Config["description"].(string)
 	share := agentShareModelConfig(rec)
-	uid := s.effectiveUserID(r)
+	uid := effectiveUserID(r)
 	role := "owner"
 	if rec.UserID != uid {
 		role = "viewer"
@@ -594,11 +594,11 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 			"description":      desc,
 			"userId":           rec.UserID,
 			"role":             role,
-			"model":            s.agentScopeModel(r, rec.ID),
-			"promptMode":       s.agentScopePromptMode(r, rec.ID),
-			"splitReplies":     s.agentScopeSplitReplies(r, rec.ID),
-			"autoPersist":      s.agentScopeAutoPersist(r, rec.ID),
-			"plugins":          s.agentScopePlugins(r, rec.ID),
+			"model":            s.cfg.agentScopeModel(r, rec.ID),
+			"promptMode":       s.cfg.agentScopePromptMode(r, rec.ID),
+			"splitReplies":     s.cfg.agentScopeSplitReplies(r, rec.ID),
+			"autoPersist":      s.cfg.agentScopeAutoPersist(r, rec.ID),
+			"plugins":          s.cfg.agentScopePlugins(r, rec.ID),
 			"avatarUrl":        "/api/agents/" + rec.ID + "/files/avatar.png",
 			"createdAt":        rec.CreatedAt,
 			"isPublic":         rec.IsPublic,
@@ -607,9 +607,9 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleGetAgentConfig(w http.ResponseWriter, r *http.Request) {
+func (s *AgentsHandler) handleGetAgentConfig(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	rec := s.requireAgentOwner(w, r, id)
+	rec := s.guard.requireAgentOwner(w, r, id)
 	if rec == nil {
 		return
 	}
@@ -621,12 +621,12 @@ func (s *Server) handleGetAgentConfig(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, cfg)
 }
 
-func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *AgentsHandler) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
-	rec := s.requireAgentOwner(w, r, id)
+	rec := s.guard.requireAgentOwner(w, r, id)
 	if rec == nil {
 		return
 	}
@@ -636,7 +636,7 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	// 从每个缓存的 UserSpace 中删除 agent，而不仅仅是拥有者的，
 	// 这样外部调用者停止通过 EnsureAgent 的延迟附加路径解析已删除的 agent。
-	s.invalidateAgent(rec.ID)
+	s.guard.invalidateAgent(rec.ID)
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -666,14 +666,14 @@ var agentIdentityFiles = map[string]bool{
 	"agent.json": true,
 }
 
-func (s *Server) handleGetAgentSystemFile(w http.ResponseWriter, r *http.Request) {
+func (s *AgentFilesHandler) handleGetAgentSystemFile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	name := r.PathValue("name")
 	if !agentSystemFileAllowlist[name] {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "filename not allowed"})
 		return
 	}
-	if !s.requireAgentReadable(w, r, id) {
+	if !s.guard.requireAgentReadable(w, r, id) {
 		return
 	}
 	rec, err := s.dataStore.GetAgent(r.Context(), id)
@@ -681,7 +681,7 @@ func (s *Server) handleGetAgentSystemFile(w http.ResponseWriter, r *http.Request
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
-	caller := s.effectiveUserID(r)
+	caller := effectiveUserID(r)
 
 	// Identity 文件：直接读取拥有者的行 — 这是唯一的事实来源，无论谁在询问。
 	if agentIdentityFiles[name] {
@@ -730,8 +730,8 @@ func (s *Server) handleGetAgentSystemFile(w http.ResponseWriter, r *http.Request
 	jsonResponse(w, http.StatusOK, map[string]any{"content": "", "source": "default"})
 }
 
-func (s *Server) handlePutAgentSystemFile(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *AgentFilesHandler) handlePutAgentSystemFile(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
@@ -747,7 +747,7 @@ func (s *Server) handlePutAgentSystemFile(w http.ResponseWriter, r *http.Request
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	target, ok := s.resolveSystemFileTarget(w, r, id, name)
+	target, ok := s.ws.resolveSystemFileTarget(w, r, id, name)
 	if !ok {
 		return
 	}
@@ -755,12 +755,12 @@ func (s *Server) handlePutAgentSystemFile(w http.ResponseWriter, r *http.Request
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.invalidateUser(target)
+	s.guard.invalidateUser(target)
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleDeleteAgentSystemFile(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *AgentFilesHandler) handleDeleteAgentSystemFile(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
@@ -769,7 +769,7 @@ func (s *Server) handleDeleteAgentSystemFile(w http.ResponseWriter, r *http.Requ
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "filename not allowed"})
 		return
 	}
-	target, ok := s.resolveSystemFileTarget(w, r, id, name)
+	target, ok := s.ws.resolveSystemFileTarget(w, r, id, name)
 	if !ok {
 		return
 	}
@@ -777,7 +777,7 @@ func (s *Server) handleDeleteAgentSystemFile(w http.ResponseWriter, r *http.Requ
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.invalidateUser(target)
+	s.guard.invalidateUser(target)
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -790,13 +790,13 @@ func (s *Server) handleDeleteAgentSystemFile(w http.ResponseWriter, r *http.Requ
 //     因此每个聊天者都有独立的覆盖。调用者只需要对 agent 的读取权限。
 //
 // 写入 4xx 并在权限/查找失败时返回 ok=false。
-func (s *Server) resolveSystemFileTarget(w http.ResponseWriter, r *http.Request, agentID, name string) (string, bool) {
+func (s *workspaceRepo) resolveSystemFileTarget(w http.ResponseWriter, r *http.Request, agentID, name string) (string, bool) {
 	rec, err := s.dataStore.GetAgent(r.Context(), agentID)
 	if err != nil || rec == nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return "", false
 	}
-	caller := s.effectiveUserID(r)
+	caller := effectiveUserID(r)
 	ident, _ := auth.FromContext(r.Context())
 	if agentIdentityFiles[name] {
 		if rec.UserID != caller && !ident.CanAdminPlatform() {
@@ -805,7 +805,7 @@ func (s *Server) resolveSystemFileTarget(w http.ResponseWriter, r *http.Request,
 		}
 		return rec.UserID, true
 	}
-	if !s.requireAgentReadable(w, r, agentID) {
+	if !s.guard.requireAgentReadable(w, r, agentID) {
 		return "", false
 	}
 	return caller, true
@@ -830,7 +830,7 @@ func (s *Server) resolveSystemFileTarget(w http.ResponseWriter, r *http.Request,
 // 因此调用者不会意外地扩大范围进入另一个用户的文件。
 // 修复前的行为是回退到原始 URL token；在公开 agent 上，这允许非拥有者调用者
 // 传递已知的拥有者 chat_id 并读取其文件，因为结果范围是 sessions/<他们的 chat>/。
-func (s *Server) workspaceSessionScope(ctx context.Context, agentID, urlToken string) string {
+func (s *workspaceRepo) workspaceSessionScope(ctx context.Context, agentID, urlToken string) string {
 	tok := strings.TrimSpace(urlToken)
 	if tok == "" || s.dataStore == nil {
 		return ""
@@ -846,13 +846,13 @@ func (s *Server) workspaceSessionScope(ctx context.Context, agentID, urlToken st
 	return chatID
 }
 
-func (s *Server) handleAgentFileList(w http.ResponseWriter, r *http.Request) {
+func (s *AgentFilesHandler) handleAgentFileList(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if s.workspaceStore == nil {
 		jsonResponse(w, http.StatusOK, map[string]any{"files": []any{}})
 		return
 	}
-	if !s.requireAgentReadable(w, r, id) {
+	if !s.guard.requireAgentReadable(w, r, id) {
 		return
 	}
 	// 始终以 project 和 session 都为空的方式 List，以便返回的路径保持 agent 相对
@@ -863,7 +863,7 @@ func (s *Server) handleAgentFileList(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	scope := s.fileScopeForRequest(r, id)
+	scope := s.ws.fileScopeForRequest(r, id)
 	files := make([]map[string]any, 0, len(objects))
 	for _, o := range objects {
 		if !scope.acceptPath(o.Path) {
@@ -934,7 +934,7 @@ func rejectAllScope() fileScope {
 	return fileScope{acceptPath: func(string) bool { return false }}
 }
 
-func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope {
+func (s *workspaceRepo) fileScopeForRequest(r *http.Request, agentID string) fileScope {
 	rawSession := r.URL.Query().Get("sessionId")
 	rawProject := r.URL.Query().Get("projectId")
 	// 项目登录页面：没有打开特定的聊天，因此面板显示 projects/<pid>/ 下的所有内容 —
@@ -951,7 +951,7 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 		// Agent 范围视图（完全没有范围参数）。拥有者 / super_admin
 		// 可以合法地浏览每个文件；非拥有者（公开 agent 查看者、外部 apikey 调用者）
 		// 必须指定一个他们拥有的会话，否则我们会给他们其他用户的文件。
-		if s.callerOwnsAgent(r, agentID) {
+		if s.guard.callerOwnsAgent(r, agentID) {
 			return fileScope{acceptPath: func(string) bool { return true }}
 		}
 		return rejectAllScope()
@@ -990,13 +990,13 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 
 // handleAgentFilesZip 流式传输 agent 所有工作区文件的 zip（或仅当设置了 ?sessionId= 时的一个会话）。
 // 文件以其会话相对路径添加，以便存档布局与用户在聊天面板中看到的匹配 — 没有外层包装目录。
-func (s *Server) handleAgentFilesZip(w http.ResponseWriter, r *http.Request) {
+func (s *AgentFilesHandler) handleAgentFilesZip(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if s.workspaceStore == nil {
 		http.Error(w, "no workspace store", http.StatusServiceUnavailable)
 		return
 	}
-	if !s.requireAgentReadable(w, r, id) {
+	if !s.guard.requireAgentReadable(w, r, id) {
 		return
 	}
 	objects, err := s.workspaceStore.List(r.Context(), id, "", "")
@@ -1004,7 +1004,7 @@ func (s *Server) handleAgentFilesZip(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	scope := s.fileScopeForRequest(r, id)
+	scope := s.ws.fileScopeForRequest(r, id)
 	archiveName := fmt.Sprintf("%s.zip", id)
 	if scope.archiveSuffix != "" {
 		archiveName = fmt.Sprintf("%s-%s.zip", id, scope.archiveSuffix)
@@ -1076,7 +1076,7 @@ func (s *Server) handleAgentFilesZip(w http.ResponseWriter, r *http.Request) {
 // 尽力而为：成功时返回 200 及解析的路径，作用域错误时返回 4xx，
 // 配置的工作区存储不暴露主机路径时返回 503（S3 / R2 部署），
 // OS 打开命令失败时返回 500。非阻塞 — 我们不等待 Finder 实际显示窗口。
-func (s *Server) handleAgentWorkspaceReveal(w http.ResponseWriter, r *http.Request) {
+func (s *AgentFilesHandler) handleAgentWorkspaceReveal(w http.ResponseWriter, r *http.Request) {
 	if buildinfo.IsHostedDeploy() {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"error": "workspace reveal is disabled on hosted deployments"})
 		return
@@ -1086,7 +1086,7 @@ func (s *Server) handleAgentWorkspaceReveal(w http.ResponseWriter, r *http.Reque
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "no workspace store configured"})
 		return
 	}
-	if !s.requireAgentReadable(w, r, id) {
+	if !s.guard.requireAgentReadable(w, r, id) {
 		return
 	}
 
@@ -1105,8 +1105,8 @@ func (s *Server) handleAgentWorkspaceReveal(w http.ResponseWriter, r *http.Reque
 	chatID := ""
 	projectID := rawProject
 	if rawSession != "" {
-		chatID = s.workspaceSessionScope(r.Context(), id, rawSession)
-		if pid := s.resolveSessionProject(r.Context(), r, id, rawSession); pid != "" {
+		chatID = s.ws.workspaceSessionScope(r.Context(), id, rawSession)
+		if pid := s.ws.resolveSessionProject(r.Context(), r, id, rawSession); pid != "" {
 			projectID = pid
 		}
 	}
@@ -1156,18 +1156,18 @@ func openInFileBrowser(path string) error {
 	return nil
 }
 
-func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
+func (s *AgentFilesHandler) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	rel := r.PathValue("path")
 	if rel == "" {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "path required"})
 		return
 	}
-	if !s.requireAgentReadable(w, r, id) {
+	if !s.guard.requireAgentReadable(w, r, id) {
 		return
 	}
 	if s.workspaceStore != nil {
-		s.serveFileFromWorkspaceStore(w, r, id, rel)
+		s.ws.serveFileFromWorkspaceStore(w, r, id, rel)
 		return
 	}
 	// Workspace store 未配置 — 回退到直接 FS 读取。
@@ -1193,7 +1193,7 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, abs)
 }
 
-func (s *Server) serveFileFromWorkspaceStore(w http.ResponseWriter, r *http.Request, agentID, path string) {
+func (s *workspaceRepo) serveFileFromWorkspaceStore(w http.ResponseWriter, r *http.Request, agentID, path string) {
 	rc, err := s.workspaceStore.Get(r.Context(), agentID, "", "", path)
 	if err != nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": err.Error()})
@@ -1223,8 +1223,8 @@ func setFileResponseHeaders(w http.ResponseWriter, path string) {
 	}
 }
 
-func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *AgentFilesHandler) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
@@ -1232,7 +1232,7 @@ func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "no workspace store"})
 		return
 	}
-	if rec := s.requireAgentOwner(w, r, id); rec == nil {
+	if rec := s.guard.requireAgentOwner(w, r, id); rec == nil {
 		return
 	}
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
@@ -1250,8 +1250,8 @@ func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
 	// 我们解析会话以找到其 project_id，以便在项目聊天中的上传落在 projects/<pid>/ 旁边
 	// 与 agent 自己的写入一起；普通聊天保留旧的 sessions/<chat>/ 子目录。
 	sessionKey := r.URL.Query().Get("sessionId")
-	sessionID := s.workspaceSessionScope(r.Context(), id, sessionKey)
-	projectID := s.resolveSessionProject(r.Context(), r, id, sessionKey)
+	sessionID := s.ws.workspaceSessionScope(r.Context(), id, sessionKey)
+	projectID := s.ws.resolveSessionProject(r.Context(), r, id, sessionKey)
 	if projectID != "" {
 		// 项目会话不使用每个聊天的子目录 — 清除它，以便 workspace store 路由到 projects/<pid>/。
 		sessionID = ""
@@ -1287,7 +1287,7 @@ func defaultIfEmpty(v, fallback string) string {
 
 // invalidateUser 丢弃用户延迟加载的 UserSpace，以便下次访问时从数据库重新加载。
 // gateway 在 api.UserResolver 接口后面实现 InvalidateUser。
-func (s *Server) invalidateUser(userID string) {
+func (s *agentGuard) invalidateUser(userID string) {
 	if userID == "" || s.userResolver == nil {
 		return
 	}
@@ -1301,7 +1301,7 @@ func (s *Server) invalidateUser(userID string) {
 // 拥有者以及通过 EnsureAgent 延迟附加的任何外部调用者（super_admin 聊天、公开链接查看者、apikey 用户）。
 // 在改变 agent 解析的运行时（agents.defaults、agent-scope providers）的写入后使用；
 // 纯用户作用域的写入可以继续使用 invalidateUser。
-func (s *Server) invalidateAgent(agentID string) {
+func (s *agentGuard) invalidateAgent(agentID string) {
 	if agentID == "" || s.userResolver == nil {
 		return
 	}
@@ -1312,7 +1312,7 @@ func (s *Server) invalidateAgent(agentID string) {
 }
 
 // requireOwnerOrSuperAdmin 门控变更另一个用户资源的端点。
-func (s *Server) requireOwnerOrSuperAdmin(w http.ResponseWriter, r *http.Request, ownerID string) bool {
+func requireOwnerOrSuperAdmin(w http.ResponseWriter, r *http.Request, ownerID string) bool {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
@@ -1332,12 +1332,12 @@ var _ workspace.Store = (workspace.Store)(nil)
 //
 // 权限为读取级别（拥有者 / super_admin / 共享链接查看者）而不是仅限拥有者，
 // 因为查看者可能想看看他们可以访问什么，即使他们不能更改允许列表。PUT 路径保持拥有者门控。
-func (s *Server) handleListAgentRegisteredTools(w http.ResponseWriter, r *http.Request) {
+func (s *AgentsHandler) handleListAgentRegisteredTools(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !s.requireAgentReadable(w, r, id) {
+	if !s.guard.requireAgentReadable(w, r, id) {
 		return
 	}
-	ag := s.resolveAgent(r, id)
+	ag := s.guard.resolveAgent(r, id)
 	if ag == nil {
 		// Agent 未在调用者的 UserSpace 中加载，延迟附加也失败了。
 		// 我们可以回退到 DB 记录，但此端点的全部意义在于实时注册表

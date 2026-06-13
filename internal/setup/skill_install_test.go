@@ -66,7 +66,7 @@ func TestAuthorizeSkillInstallTargetRequiresAdminForGlobalInstalls(t *testing.T)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rr := httptest.NewRecorder()
-			ok := s.authorizeSkillInstallTarget(rr, skillInstallRequest(tt.ident), "")
+			ok := (&SkillsHandler{guard: &agentGuard{dataStore: s.dataStore, userResolver: s.userResolver}}).authorizeSkillInstallTarget(rr, skillInstallRequest(tt.ident), "")
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
 			}
@@ -131,7 +131,7 @@ func TestAuthorizeSkillInstallTargetKeepsAgentInstallsOwnerScoped(t *testing.T) 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rr := httptest.NewRecorder()
-			ok := s.authorizeSkillInstallTarget(rr, skillInstallRequest(tt.ident), "agt_owner")
+			ok := (&SkillsHandler{guard: &agentGuard{dataStore: s.dataStore, userResolver: s.userResolver}}).authorizeSkillInstallTarget(rr, skillInstallRequest(tt.ident), "agt_owner")
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
 			}

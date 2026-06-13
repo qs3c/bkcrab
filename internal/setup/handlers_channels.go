@@ -6,8 +6,8 @@ import (
 
 // --- 频道 ---
 
-func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
-	cfg, err := s.loadUserConfig(r)
+func (s *ScopedHandler) handleListChannels(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.cfg.loadUserConfig(r)
 	if err != nil {
 		jsonResponse(w, http.StatusOK, []any{})
 		return

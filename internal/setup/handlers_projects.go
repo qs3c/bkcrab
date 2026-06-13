@@ -66,12 +66,12 @@ func projectToJSON(p *store.ProjectRecord) map[string]any {
 	}
 }
 
-func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
+func (s *ProjectsHandler) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !s.requireAgentReadable(w, r, id) {
+	if !s.guard.requireAgentReadable(w, r, id) {
 		return
 	}
-	uid := s.effectiveUserID(r)
+	uid := effectiveUserID(r)
 	if uid == "" {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
@@ -88,18 +88,18 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"projects": out})
 }
 
-func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *ProjectsHandler) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
 	// 可读即可（不必是拥有者）：项目以 (user_id, agent_id, project_id) 为键，
 	// 因此在共享 agent 上创建项目的查看者只会添加到自己 user_id 下的行，永远不会影响拥有者的项目列表。
 	// 下面的更新/删除同理。
-	if !s.requireAgentReadable(w, r, id) {
+	if !s.guard.requireAgentReadable(w, r, id) {
 		return
 	}
-	uid := s.effectiveUserID(r)
+	uid := effectiveUserID(r)
 	var req struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
@@ -135,16 +135,16 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, projectToJSON(saved))
 }
 
-func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *ProjectsHandler) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
 	pid := r.PathValue("pid")
-	if !s.requireAgentReadable(w, r, id) {
+	if !s.guard.requireAgentReadable(w, r, id) {
 		return
 	}
-	uid := s.effectiveUserID(r)
+	uid := effectiveUserID(r)
 	existing, err := s.dataStore.GetProject(r.Context(), uid, id, pid)
 	if err != nil || existing == nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "project not found"})
@@ -182,16 +182,16 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, projectToJSON(saved))
 }
 
-func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *ProjectsHandler) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
 	pid := r.PathValue("pid")
-	if !s.requireAgentReadable(w, r, id) {
+	if !s.guard.requireAgentReadable(w, r, id) {
 		return
 	}
-	uid := s.effectiveUserID(r)
+	uid := effectiveUserID(r)
 	// 拒绝删除仍拥有聊天的项目。级联/软分离被故意不暴露 —
 	// v1 将破坏性操作放在显式的"先删除聊天"步骤之后，
 	// 这样在垃圾桶图标上的一次误操作不会清除相当于一份调查报告的笔记。

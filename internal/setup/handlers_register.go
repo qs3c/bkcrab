@@ -15,7 +15,7 @@ import (
 const registrationSettingNamespace = "registration"
 
 // registrationOpen 读取系统级开关。错误被视为"关闭" — 故障安全为"禁止注册"。
-func (s *Server) registrationOpen(r *http.Request) bool {
+func (s *configRepo) registrationOpen(r *http.Request) bool {
 	if s.dataStore == nil {
 		return false
 	}
@@ -36,12 +36,12 @@ type registerRequest struct {
 
 // handleRegister 是公开注册端点。由管理员控制的 registration_open 设置门控；
 // 在任何读取错误时回退为关闭，以便瞬时的存储故障不会意外打开大门。
-func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+func (s *SessionHandler) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if s.accounts == nil || s.authResolver == nil {
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "auth not configured"})
 		return
 	}
-	if !s.registrationOpen(r) {
+	if !s.cfg.registrationOpen(r) {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "registration is closed"})
 		return
 	}
@@ -92,11 +92,11 @@ type registrationConfig struct {
 	Open bool `json:"open"`
 }
 
-func (s *Server) handleGetRegistration(w http.ResponseWriter, r *http.Request) {
-	jsonResponse(w, http.StatusOK, registrationConfig{Open: s.registrationOpen(r)})
+func (s *SessionHandler) handleGetRegistration(w http.ResponseWriter, r *http.Request) {
+	jsonResponse(w, http.StatusOK, registrationConfig{Open: s.cfg.registrationOpen(r)})
 }
 
-func (s *Server) handleSetRegistration(w http.ResponseWriter, r *http.Request) {
+func (s *SessionHandler) handleSetRegistration(w http.ResponseWriter, r *http.Request) {
 	if s.dataStore == nil {
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store not ready"})
 		return

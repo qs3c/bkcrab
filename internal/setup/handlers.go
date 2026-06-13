@@ -36,7 +36,7 @@ type agentChatEvent = agent.ChatEvent
 // loadUserConfig 读取请求用户的合并 Config 视图。
 // 遍历 system → user 设置命名空间 + 作用域感知的 provider/channel 行。
 // 结果与 gateway.assembleConfig 生成的形状相同 — Storage/Gateway 等仅 UI 字段由环境覆盖填充，不由数据库填充。
-func (s *Server) loadUserConfig(r *http.Request) (*config.Config, error) {
+func (s *configRepo) loadUserConfig(r *http.Request) (*config.Config, error) {
 	if s.dataStore == nil {
 		return &config.Config{}, nil
 	}
@@ -108,7 +108,7 @@ func saveAgentSkillEntries(ctx context.Context, st store.Store, agentID string, 
 
 // saveUserConfig 持久化调用用户作用域的命名空间设置行。
 // Providers/Channels 位于它们自己的 configs 行中，此处不涉及 — 专用的 /api/providers 和 /api/channels 端点（以及 onboard handler）写入它们。
-func (s *Server) saveUserConfig(r *http.Request, cfg *config.Config) error {
+func (s *configRepo) saveUserConfig(r *http.Request, cfg *config.Config) error {
 	if s.dataStore == nil {
 		return errors.New("store not configured")
 	}
@@ -242,7 +242,7 @@ func authIdentity(r *http.Request) (auth.Identity, bool) {
 // 以便当聊天属于某个 project 时，附件和其他 workspace IO 可以路由到 projects/<pid>/。
 // 返回 ""（调用者将其视为松散聊天）— 不存在的 session、无 auth context 和 "no datastore"
 // 都归结为相同结果，我们不想让路径查找破坏聊天的热路径。
-func (s *Server) resolveSessionProject(ctx context.Context, r *http.Request, agentID, sessionKey string) string {
+func (s *workspaceRepo) resolveSessionProject(ctx context.Context, r *http.Request, agentID, sessionKey string) string {
 	if sessionKey == "" || s.dataStore == nil {
 		return ""
 	}
@@ -262,7 +262,7 @@ func (s *Server) resolveSessionProject(ctx context.Context, r *http.Request, age
 }
 
 // 身份（system prompt、agent 作用域配置、skills、files — 全部按 agent_id 键控）被重用。
-func (s *Server) resolveAgent(r *http.Request, agentID string) AgentHandle {
+func (s *agentGuard) resolveAgent(r *http.Request, agentID string) AgentHandle {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
 		return nil
@@ -320,7 +320,7 @@ func (s *Server) resolveAgent(r *http.Request, agentID string) AgentHandle {
 	return ag
 }
 
-func (s *Server) resolveAllAgents(r *http.Request) []AgentHandle {
+func (s *agentGuard) resolveAllAgents(r *http.Request) []AgentHandle {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok || s.userResolver == nil {
 		return nil
@@ -342,7 +342,7 @@ func (s *Server) resolveAllAgents(r *http.Request) []AgentHandle {
 
 // --- /api/status ---
 
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+func (s *SessionHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
 	configured := false
 	if s.accounts != nil {
 		if n, err := s.accounts.Count(r.Context()); err == nil && n > 0 {
@@ -351,7 +351,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := map[string]any{
 		"configured":       configured,
-		"registrationOpen": s.registrationOpen(r),
+		"registrationOpen": s.cfg.registrationOpen(r),
 		"running":          s.userResolver != nil,
 		"port":             s.port,
 		"version":          buildinfo.Version,
@@ -378,7 +378,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusOK, resp)
 		return
 	}
-	cfg, err := s.loadUserConfig(r)
+	cfg, err := s.cfg.loadUserConfig(r)
 	if err == nil {
 		// 选择实际支持默认模型的 provider。模型 ID 是 "<providerName>/<modelID>"
 		//（在第一个斜杠处分割 — modelID 本身可以包含斜杠，例如 "openrouter/xiaomi/mimo-v2-flash"）。
@@ -418,7 +418,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			resp["channels"] = chs
 		}
 	}
-	allAgents := s.resolveAllAgents(r)
+	allAgents := s.guard.resolveAllAgents(r)
 	if len(allAgents) > 0 {
 		var agentList []map[string]string
 		for _, ag := range allAgents {
@@ -441,8 +441,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // --- /api/config (GET / POST) ---
 
-func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	cfg, err := s.loadUserConfig(r)
+func (s *SessionHandler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.cfg.loadUserConfig(r)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -489,7 +489,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, out)
 }
 
-func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+func (s *SessionHandler) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok || ident.ReadOnly() {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})
@@ -503,7 +503,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	merged, err := s.loadUserConfig(r)
+	merged, err := s.cfg.loadUserConfig(r)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -516,7 +516,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	if err := s.saveUserConfig(r, merged); err != nil {
+	if err := s.cfg.saveUserConfig(r, merged); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
@@ -536,7 +536,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 				jsonResponse(w, http.StatusNotFound, map[string]any{"ok": false, "error": "agent not found: " + agentID})
 				return
 			}
-			if !s.authorizeScope(w, r, scope.Agent, agentID, scopeWrite) {
+			if !s.cfg.authorizeScope(w, r, scope.Agent, agentID, scopeWrite) {
 				return
 			}
 			if err := saveAgentSkillEntries(r.Context(), s.dataStore, agentID, entries); err != nil {
@@ -547,14 +547,14 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	// 缓存的 UserSpaces 保存了合并配置的快照（包括 agents.defaults.model 和 provider 链）。
 	// 没有这步操作，在变更前加载的 agent 会一直看到过时的模型并在聊天中显示"no usable LLM provider"。
-	sc, scopeID := s.scopeForSave(r)
-	s.invalidateScope(sc, scopeID)
+	sc, scopeID := s.cfg.scopeForSave(r)
+	s.guard.invalidateScope(sc, scopeID)
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // scopeForSave 镜像 saveUserConfig 中的作用域解析逻辑，以便
 // 调用者可以精确地使刚被触及的 UserSpaces 失效。
-func (s *Server) scopeForSave(r *http.Request) (string, string) {
+func (s *configRepo) scopeForSave(r *http.Request) (string, string) {
 	ident, ok := authIdentity(r)
 	if ok && ident.Role == "super_admin" {
 		if !ident.IsActingAs() {
@@ -578,7 +578,7 @@ type testProviderRequest struct {
 	AuthType string `json:"authType"`
 }
 
-func (s *Server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
+func (s *SessionHandler) handleTestProvider(w http.ResponseWriter, r *http.Request) {
 	var req testProviderRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request"})
@@ -590,7 +590,7 @@ func (s *Server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
 // handleTestStoredProvider 运行相同的连接检查，但从已保存的 provider 行中读取
 // apiKey + apiBase + apiType + authType，而不是从请求体中获取。
 // 让编辑对话框针对存储的密钥进行测试，这样用户不必在每次编辑时重新粘贴密钥。
-func (s *Server) handleTestStoredProvider(w http.ResponseWriter, r *http.Request) {
+func (s *SessionHandler) handleTestStoredProvider(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	rec, err := s.dataStore.GetConfig(r.Context(), id)
 	if err != nil || rec == nil || rec.Kind != store.KindProvider {
@@ -599,7 +599,7 @@ func (s *Server) handleTestStoredProvider(w http.ResponseWriter, r *http.Request
 	}
 	// 测试 = 读取等效：任何可以读取该行的用户都可以验证它是否有效。
 	// 他们无论如何都会通过其 agent 运行时使用它，因此仪表板端的试运行不应更严格。
-	if !s.authorizeScope(w, r, rec.LegacyScope(), rec.LegacyScopeID(), scopeRead) {
+	if !s.cfg.authorizeScope(w, r, rec.LegacyScope(), rec.LegacyScopeID(), scopeRead) {
 		return
 	}
 	// 浏览器永远不会收到未掩码的 API 密钥，因此它通过存储的行保留在服务器端。
@@ -738,7 +738,7 @@ func truncate(s string, n int) string {
 
 // --- /api/tasks ---
 
-func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
+func (s *TasksHandler) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	if s.taskQueue == nil {
 		jsonResponse(w, http.StatusOK, []any{})
 		return
@@ -871,13 +871,13 @@ func annotateMessageWithAttachments(message string, paths []string) string {
 	return b.String()
 }
 
-func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+func (s *ChatHandler) handleChat(w http.ResponseWriter, r *http.Request) {
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	ag := s.resolveAgent(r, req.AgentID)
+	ag := s.guard.resolveAgent(r, req.AgentID)
 	if ag == nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return
@@ -889,11 +889,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// projects/<pid>/ when the session belongs to one. Best-effort:
 		// failure → empty pid → loose-chat scope (the historical
 		// behavior).
-		projectID := s.resolveSessionProject(r.Context(), r, ag.Name(), req.SessionID)
+		projectID := s.ws.resolveSessionProject(r.Context(), r, ag.Name(), req.SessionID)
 		paths := ag.WriteSessionAttachments(r.Context(), req.SessionID, projectID, atts)
 		msgText = annotateMessageWithAttachments(req.Message, paths)
 	}
-	reply := ag.HandleWebChat(r.Context(), req.SessionID, req.ProjectID, s.effectiveUserID(r), msgText, req.inlineImageURLs(), req.Params)
+	reply := ag.HandleWebChat(r.Context(), req.SessionID, req.ProjectID, effectiveUserID(r), msgText, req.inlineImageURLs(), req.Params)
 	jsonResponse(w, http.StatusOK, map[string]any{"reply": reply})
 }
 
@@ -902,18 +902,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 // 在工具轮次之间折叠该消息并在其现有的 SSE 上发出 "steer" 事件。
 // 当有活跃轮次时返回 200 {"buffered":true}；没有运行时返回 409 {"buffered":false}，
 // 以便客户端回退到普通的 /api/chat/stream 发送。
-func (s *Server) handleChatSteer(w http.ResponseWriter, r *http.Request) {
+func (s *ChatHandler) handleChatSteer(w http.ResponseWriter, r *http.Request) {
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	ag := s.resolveAgent(r, req.AgentID)
+	ag := s.guard.resolveAgent(r, req.AgentID)
 	if ag == nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return
 	}
-	if s.effectiveUserID(r) == "" {
+	if effectiveUserID(r) == "" {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
@@ -936,13 +936,13 @@ func (s *Server) handleChatSteer(w http.ResponseWriter, r *http.Request) {
 // 仍然有边界，因此真正的失控循环不会永久占用 goroutine。
 const agentTurnTimeout = 45 * time.Minute
 
-func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
+func (s *ChatHandler) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	ag := s.resolveAgent(r, req.AgentID)
+	ag := s.guard.resolveAgent(r, req.AgentID)
 	if ag == nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return
@@ -952,7 +952,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": "streaming unsupported"})
 		return
 	}
-	uid := s.effectiveUserID(r)
+	uid := effectiveUserID(r)
 	if uid == "" {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
@@ -969,14 +969,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	imageURLs := req.inlineImageURLs()
 	msgText := req.Message
 	if !req.preMaterialized() {
-		projectID := s.resolveSessionProject(r.Context(), r, ag.Name(), req.SessionID)
+		projectID := s.ws.resolveSessionProject(r.Context(), r, ag.Name(), req.SessionID)
 		paths := ag.WriteSessionAttachments(r.Context(), req.SessionID, projectID, atts)
 		msgText = annotateMessageWithAttachments(req.Message, paths)
 	}
 
 	// 在启动 agent 之前订阅 hub，这样我们就不会与第一个发出的事件竞争。
 	// hub 缓冲进行中的事件，因此 emitEvent 的分发即使我们消耗缓慢也永远不会阻塞。
-	hub := s.chatEventHub()
+	hub := s.chatEvents
 	agentID := ag.Name()
 	sub, unsubscribe := hub.Subscribe(uid, agentID, req.SessionID)
 	defer unsubscribe()
@@ -1113,18 +1113,18 @@ func forwardEvent(w http.ResponseWriter, flusher http.Flusher, env agent.EventEn
 //
 // Auth 门控重用 resolveAgent，因此调用者必须已经有权限与此 agent 聊天。
 // 订阅本身不会产生任何流量 — 关闭是静默的（客户端离开）。
-func (s *Server) handleChatSubscribe(w http.ResponseWriter, r *http.Request) {
+func (s *ChatHandler) handleChatSubscribe(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agentId")
 	sessionID := r.URL.Query().Get("sessionId")
 	if agentID == "" || sessionID == "" {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "agentId and sessionId required"})
 		return
 	}
-	if ag := s.resolveAgent(r, agentID); ag == nil {
+	if ag := s.guard.resolveAgent(r, agentID); ag == nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return
 	}
-	uid := s.effectiveUserID(r)
+	uid := effectiveUserID(r)
 	if uid == "" {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
@@ -1156,7 +1156,7 @@ func (s *Server) handleChatSubscribe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	hub := s.chatEventHub()
+	hub := s.chatEvents
 	// 在回放之前订阅，这样在我们扫描数据库时到达的任何事件
 	// 最终要么在回放范围内，要么在实时通道中 — 永远不会两者都，永远不会丢失。
 	live, unsubscribeLive := hub.Subscribe(uid, agentID, sessionID)
@@ -1266,10 +1266,10 @@ func (s *Server) handleChatSubscribe(w http.ResponseWriter, r *http.Request) {
 //
 // 缺少的文件不是错误 — 不使用 todo 约定的新会话或运行返回 {items: [], raw: ""}。
 // 当 items 为空时前端隐藏面板。
-func (s *Server) handleChatTodo(w http.ResponseWriter, r *http.Request) {
+func (s *ChatHandler) handleChatTodo(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agentId")
 	sessionID := r.URL.Query().Get("sessionId")
-	ag := s.resolveAgent(r, agentID)
+	ag := s.guard.resolveAgent(r, agentID)
 	if ag == nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return
@@ -1285,8 +1285,8 @@ func (s *Server) handleChatTodo(w http.ResponseWriter, r *http.Request) {
 	// a `write_file("todo.md", ...)` from the agent lands at one of
 	// these two paths — same shape that handleAgentFileList already
 	// surfaces.
-	chatID := s.workspaceSessionScope(r.Context(), ag.Name(), sessionID)
-	projectID := s.resolveSessionProject(r.Context(), r, ag.Name(), sessionID)
+	chatID := s.ws.workspaceSessionScope(r.Context(), ag.Name(), sessionID)
+	projectID := s.ws.resolveSessionProject(r.Context(), r, ag.Name(), sessionID)
 	var relPath string
 	switch {
 	case projectID != "" && chatID != "":
@@ -1298,7 +1298,7 @@ func (s *Server) handleChatTodo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw, err := s.readWorkspaceFileBytes(r.Context(), ag.Name(), relPath)
+	raw, err := s.ws.readWorkspaceFileBytes(r.Context(), ag.Name(), relPath)
 	if err != nil {
 		// 404 / 未写入 / FS 未命中 — 返回空而不是显示错误；
 		// 面板保持隐藏，直到 agent 写入一个。
@@ -1315,7 +1315,7 @@ func (s *Server) handleChatTodo(w http.ResponseWriter, r *http.Request) {
 // readWorkspaceFileBytes 通过 workspace store 读取单个 agent 相对路径的文件，
 // 当没有配置 store 时回退到本地 FS 布局。裸路径字符串接口仅由 todo 端点使用
 // — workspaceStore.Get 期望 (projectID, chatID)，但这里我们已经将它们烘焙到路径中，因此传递空字符串。
-func (s *Server) readWorkspaceFileBytes(ctx context.Context, agentID, relPath string) ([]byte, error) {
+func (s *workspaceRepo) readWorkspaceFileBytes(ctx context.Context, agentID, relPath string) ([]byte, error) {
 	if s.workspaceStore != nil {
 		rc, err := s.workspaceStore.Get(ctx, agentID, "", "", relPath)
 		if err != nil {
@@ -1383,10 +1383,10 @@ func parseTodoMarkdown(s string) []map[string]any {
 	return out
 }
 
-func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
+func (s *ChatHandler) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agentId")
 	sessionID := r.URL.Query().Get("sessionId")
-	ag := s.resolveAgent(r, agentID)
+	ag := s.guard.resolveAgent(r, agentID)
 	if ag == nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return
@@ -1398,7 +1398,7 @@ func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 	// 尽力而为：丢失/零值仅表示"仅实时流，无回放"，
 	// 当会话没有进行中的轮次或 session_events 未被回填时，这是正确的回退。
 	if s.dataStore != nil {
-		uid := s.effectiveUserID(r)
+		uid := effectiveUserID(r)
 		if uid != "" {
 			if seq, err := s.dataStore.LatestSessionEventSeq(r.Context(), uid, ag.Name(), sessionID); err == nil {
 				resp["latestEventSeq"] = seq
@@ -1408,9 +1408,9 @@ func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, resp)
 }
 
-func (s *Server) handleChatSessions(w http.ResponseWriter, r *http.Request) {
+func (s *ChatHandler) handleChatSessions(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agentId")
-	ag := s.resolveAgent(r, agentID)
+	ag := s.guard.resolveAgent(r, agentID)
 	if ag == nil {
 		jsonResponse(w, http.StatusOK, map[string]any{"sessions": []session.WebSession{}})
 		return
@@ -1418,7 +1418,7 @@ func (s *Server) handleChatSessions(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"sessions": ag.WebChatSessions()})
 }
 
-func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
+func (s *ChatHandler) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 	// agentId 来自 body 或 query — 前端在 JSON body 中发送它
 	//（参见 web/src/lib/api.ts 中的 renameChatSession），与 handleMoveSessionProject 约定一致。
 	// 以前的仅 query 路径总是看到 "" 并在 resolveAgent 处以静默 404 退出，
@@ -1435,7 +1435,7 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 	if agentID == "" {
 		agentID = req.AgentID
 	}
-	ag := s.resolveAgent(r, agentID)
+	ag := s.guard.resolveAgent(r, agentID)
 	if ag == nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return
@@ -1447,9 +1447,9 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+func (s *ChatHandler) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agentId")
-	ag := s.resolveAgent(r, agentID)
+	ag := s.guard.resolveAgent(r, agentID)
 	if ag == nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return
@@ -1474,7 +1474,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 //
 // 当目标目录已有文件时返回 409，code="destination_exists"
 //（防御性 — session_keys 是唯一的，因此这不应自然发生，但比静默合并好）。
-func (s *Server) handleMoveSessionProject(w http.ResponseWriter, r *http.Request) {
+func (s *ChatHandler) handleMoveSessionProject(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agentId")
 	var req struct {
 		AgentID   string `json:"agentId"`
@@ -1492,13 +1492,13 @@ func (s *Server) handleMoveSessionProject(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// 仅拥有者 — 移动聊天会更改其 workspace 路径，只读查看器绝不应触发。
-	if rec := s.requireAgentOwner(w, r, agentID); rec == nil {
+	if rec := s.guard.requireAgentOwner(w, r, agentID); rec == nil {
 		return
 	}
-	if !s.requireWritable(w, r) {
+	if !requireWritable(w, r) {
 		return
 	}
-	uid := s.effectiveUserID(r)
+	uid := effectiveUserID(r)
 	// 验证目标项目存在且属于此调用者。
 	// 空的 projectId 是"分离"情况 — 始终允许。
 	if req.ProjectID != "" && s.dataStore != nil {
@@ -1512,7 +1512,7 @@ func (s *Server) handleMoveSessionProject(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	ag := s.resolveAgent(r, agentID)
+	ag := s.guard.resolveAgent(r, agentID)
 	if ag == nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return
@@ -1539,7 +1539,7 @@ func (s *Server) handleMoveSessionProject(w http.ResponseWriter, r *http.Request
 // 后者通过 accountID 找到正确的适配器。适配器返回 HTTP body + status —
 // handler 仅中继它。URL 验证挑战和真实事件都通过此相同路径；
 // 适配器内部进行区分。
-func (s *Server) handleFeishuWebhook(w http.ResponseWriter, r *http.Request) {
+func (s *AgentChannelsHandler) handleFeishuWebhook(w http.ResponseWriter, r *http.Request) {
 	appID := r.PathValue("appId")
 	if appID == "" {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "appId required"})
@@ -1577,7 +1577,7 @@ func (s *Server) handleFeishuWebhook(w http.ResponseWriter, r *http.Request) {
 //
 // 读取 body 一次，将原始字节 + 签名交给网关 dispatcher
 //（重新编码 JSON 会改变计算 HMAC 所用的字节并破坏验证）。
-func (s *Server) handleLINEWebhook(w http.ResponseWriter, r *http.Request) {
+func (s *AgentChannelsHandler) handleLINEWebhook(w http.ResponseWriter, r *http.Request) {
 	accountID := r.PathValue("accountId")
 	if accountID == "" {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "accountId required"})

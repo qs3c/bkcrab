@@ -57,8 +57,11 @@ type AgentProvider interface {
 	ReloadAgents() error
 }
 
-// Server 托管 Web UI + 管理 API。多用户是强制的 —
-// 每个请求必须通过 auth.Resolver 解析为真实的 users.id。
+// Server is the composition root for the web UI + admin API. It holds
+// every shared instance gathered from the setters and, in engine(),
+// distributes each one to the per-domain handler that actually needs it
+// (plus the small shared services). Nothing outside this file embeds
+// Server — handlers receive only their own concrete dependencies.
 type Server struct {
 	port           int
 	bind           string
@@ -184,187 +187,7 @@ func (s *Server) requireSuperAdmin(next http.HandlerFunc) http.HandlerFunc {
 
 // Run 启动 HTTP 服务器并阻塞，直到上下文被取消。
 func (s *Server) Run(ctx context.Context) error {
-	mux := http.NewServeMux()
-
-	// 健康检查探测（无需认证）。
-	healthz := func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	}
-	mux.HandleFunc("GET /healthz", healthz)
-	mux.HandleFunc("GET /livez", healthz)
-	mux.HandleFunc("GET /readyz", healthz)
-
-	auth := s.authMiddleware
-	opt := s.optionalAuth
-	admin := s.requireSuperAdmin
-
-	// 引导 / 登录。
-	mux.HandleFunc("GET /api/status", opt(s.handleStatus))
-	mux.HandleFunc("POST /api/login", s.handleLogin)
-	mux.HandleFunc("POST /api/logout", auth(s.handleLogout))
-	mux.HandleFunc("GET /api/me", auth(s.handleMe))
-	mux.HandleFunc("PUT /api/me", auth(s.handleUpdateMe))
-	mux.HandleFunc("POST /api/me/password", auth(s.handleChangeMyPassword))
-	mux.HandleFunc("POST /api/test-provider", opt(s.handleTestProvider))
-	mux.HandleFunc("POST /api/onboard", s.handleOnboard)
-	mux.HandleFunc("POST /api/register", s.handleRegister)
-	mux.HandleFunc("GET /api/admin/registration", admin(s.handleGetRegistration))
-	mux.HandleFunc("PUT /api/admin/registration", admin(s.handleSetRegistration))
-	mux.HandleFunc("GET /api/admin/chats", admin(s.handleAdminChats))
-
-	// 按用户配置（system_settings + 作用域内的 providers/channels）。
-	mux.HandleFunc("GET /api/config", auth(s.handleGetConfig))
-	mux.HandleFunc("POST /api/config", auth(s.handleUpdateConfig))
-
-	// 聊天
-	mux.HandleFunc("POST /api/chat", auth(s.handleChat))
-	mux.HandleFunc("POST /api/chat/stream", auth(s.handleChatStream))
-	mux.HandleFunc("POST /api/chat/steer", auth(s.handleChatSteer))
-	mux.HandleFunc("GET /api/chat/history", auth(s.handleChatHistory))
-	mux.HandleFunc("GET /api/chat/todo", auth(s.handleChatTodo))
-	mux.HandleFunc("GET /api/chat/sessions", auth(s.handleChatSessions))
-	mux.HandleFunc("PUT /api/chat/sessions/{key}", auth(s.handleRenameSession))
-	mux.HandleFunc("DELETE /api/chat/sessions/{key}", auth(s.handleDeleteSession))
-	mux.HandleFunc("PATCH /api/chat/sessions/{key}/project", auth(s.handleMoveSessionProject))
-	// 长生命周期的 SSE 订阅，使得 cron 触发（及其他异步）消息无需手动刷新即可到达打开的聊天面板。
-	mux.HandleFunc("GET /api/chat/subscribe", auth(s.handleChatSubscribe))
-
-	// Agent 管理
-	mux.HandleFunc("GET /api/agents", auth(s.handleListAgents))
-	mux.HandleFunc("POST /api/agents", auth(s.handleCreateAgent))
-	mux.HandleFunc("GET /api/agents/{id}", auth(s.handleGetAgent))
-	mux.HandleFunc("PUT /api/agents/{id}", auth(s.handleUpdateAgent))
-	mux.HandleFunc("GET /api/agents/{id}/config", auth(s.handleGetAgentConfig))
-	mux.HandleFunc("GET /api/agents/{id}/tools/registered", auth(s.handleListAgentRegisteredTools))
-	mux.HandleFunc("DELETE /api/agents/{id}", auth(s.handleDeleteAgent))
-
-	mux.HandleFunc("GET /api/agents/{id}/files", auth(s.handleAgentFileList))
-	mux.HandleFunc("GET /api/agents/{id}/files.zip", auth(s.handleAgentFilesZip))
-	mux.HandleFunc("GET /api/agents/{id}/files/{path...}", auth(s.handleAgentFile))
-	mux.HandleFunc("POST /api/agents/{id}/files", auth(s.handleAgentFileUpload))
-	// 仅限自托管：在操作系统的原生文件浏览器（Finder/Explorer/xdg-open）中打开工作区目录。
-	// 托管部署在处理程序内部返回 403 — 那里的聊天者不拥有守护进程的文件系统。
-	mux.HandleFunc("POST /api/agents/{id}/workspace/reveal", auth(s.handleAgentWorkspaceReveal))
-
-	mux.HandleFunc("GET /api/agents/{id}/system-files/{name}", auth(s.handleGetAgentSystemFile))
-	mux.HandleFunc("PUT /api/agents/{id}/system-files/{name}", auth(s.handlePutAgentSystemFile))
-	mux.HandleFunc("DELETE /api/agents/{id}/system-files/{name}", auth(s.handleDeleteAgentSystemFile))
-
-	// 按 agent 的项目：命名的工作区文件夹，用于组织聊天并在其所有会话中共享文件。
-	// POST .../sessions 是"在项目中新建聊天"的路径 — 预先创建带有 project_id 标记的会话行，
-	// 这样第一次轮次就已经将工作区 IO 路由到 projects/<pid>/。
-	mux.HandleFunc("GET /api/agents/{id}/projects", auth(s.handleListProjects))
-	mux.HandleFunc("POST /api/agents/{id}/projects", auth(s.handleCreateProject))
-	mux.HandleFunc("PATCH /api/agents/{id}/projects/{pid}", auth(s.handleUpdateProject))
-	mux.HandleFunc("DELETE /api/agents/{id}/projects/{pid}", auth(s.handleDeleteProject))
-
-	// 按 agent 的频道（IM 机器人绑定）
-	mux.HandleFunc("GET /api/agents/{id}/channels", auth(s.handleListAgentChannels))
-	mux.HandleFunc("POST /api/agents/{id}/channels/telegram", auth(s.handleConnectAgentTelegram))
-	mux.HandleFunc("POST /api/agents/{id}/channels/discord", auth(s.handleConnectAgentDiscord))
-	mux.HandleFunc("POST /api/agents/{id}/channels/slack", auth(s.handleConnectAgentSlack))
-	mux.HandleFunc("POST /api/agents/{id}/channels/wechat/login", auth(s.handleStartAgentWeChatLogin))
-	mux.HandleFunc("GET /api/agents/{id}/channels/wechat/login/status", auth(s.handleAgentWeChatLoginStatus))
-	mux.HandleFunc("POST /api/agents/{id}/channels/line", auth(s.handleConnectAgentLINE))
-	mux.HandleFunc("POST /api/agents/{id}/channels/feishu", auth(s.handleConnectAgentFeishu))
-	mux.HandleFunc("DELETE /api/agents/{id}/channels/{type}/{accountId}", auth(s.handleDisconnectAgentChannel))
-
-	// 飞书事件 webhook。无需认证 — 飞书不带 bkclaw bearer token 直接发送到此端点。
-	// 每个事件的安全性来自 verification_token，在适配器内部针对 payload 的 header.token 进行验证。
-	// {appId} 路径段将接收范围限定到一个已注册的频道。
-	mux.HandleFunc("POST /api/feishu/webhook/{appId}", s.handleFeishuWebhook)
-
-	// LINE Messaging API 事件 webhook。在 bkclaw 层无需认证 —
-	// 每个事件的安全性通过 HMAC-SHA256(channel_secret, body) 实现，
-	// 由适配器根据 `x-line-signature` 头部验证。{accountId} 路径段是机器人的 userId，
-	// 将接收范围限定到一个已注册的频道。
-	mux.HandleFunc("POST /api/line/webhook/{accountId}", s.handleLINEWebhook)
-
-	// 技能
-	mux.HandleFunc("GET /api/skills", auth(s.handleListSkills))
-	mux.HandleFunc("GET /api/skills/search", auth(s.handleSearchSkills))
-	mux.HandleFunc("POST /api/skills/install", auth(s.handleInstallSkill))
-	mux.HandleFunc("POST /api/skills/upload", auth(s.handleUploadSkill))
-	mux.HandleFunc("DELETE /api/skills/{name}", admin(s.handleDeleteSkill))
-	mux.HandleFunc("GET /api/agents/{id}/skills", auth(s.handleListAgentSkills))
-	mux.HandleFunc("DELETE /api/agents/{id}/skills/{name}", auth(s.handleDeleteAgentSkill))
-
-	// 插件（仅限 super_admin）。
-	mux.HandleFunc("GET /api/plugins", admin(s.handleListPlugins))
-	mux.HandleFunc("PUT /api/plugins/{id}", admin(s.handleUpdatePlugin))
-	// Hook 插件发现 — Context 页面上每个 agent 的 Plugins 开关的只读元数据。
-	// Agent 拥有者（不仅仅是管理员）需要此信息来了解他们可以启用哪些插件。
-	mux.HandleFunc("GET /api/plugins/hook", auth(s.handleListHookPlugins))
-
-	// 工具（仅限 super_admin）。
-	mux.HandleFunc("GET /api/tools", admin(s.handleGetTools))
-	mux.HandleFunc("PUT /api/tools", admin(s.handleSaveTools))
-
-	// 频道（运行时可用的已注册频道适配器的只读列表）
-	mux.HandleFunc("GET /api/channels", auth(s.handleListChannels))
-
-	// 作用域 CRUD：系统 / 用户 / agent 范围内的 providers + channels。
-	mux.HandleFunc("GET /api/providers", auth(s.handleListProviders))
-	mux.HandleFunc("POST /api/providers", auth(s.handleCreateProvider))
-	mux.HandleFunc("PUT /api/providers/{id}", auth(s.handleUpdateProvider))
-	mux.HandleFunc("DELETE /api/providers/{id}", auth(s.handleDeleteProvider))
-	mux.HandleFunc("POST /api/providers/{id}/test", auth(s.handleTestStoredProvider))
-	mux.HandleFunc("GET /api/scoped-channels", auth(s.handleListScopedChannels))
-	mux.HandleFunc("POST /api/scoped-channels", auth(s.handleCreateScopedChannel))
-	mux.HandleFunc("PUT /api/scoped-channels/{id}", auth(s.handleUpdateScopedChannel))
-	mux.HandleFunc("DELETE /api/scoped-channels/{id}", auth(s.handleDeleteScopedChannel))
-
-	// Cron 任务（按用户，配置定义的目录）
-	mux.HandleFunc("GET /api/cron", auth(s.handleListCronJobs))
-	mux.HandleFunc("POST /api/cron", auth(s.handleCreateCronJob))
-	mux.HandleFunc("PUT /api/cron/{id}", auth(s.handleUpdateCronJob))
-	mux.HandleFunc("DELETE /api/cron/{id}", auth(s.handleDeleteCronJob))
-
-	// 按 agent 的 cron 任务（数据库支持，包括 agent 在运行时通过 create_cron_job 自行调度的任何任务）。
-	mux.HandleFunc("GET /api/agents/{id}/cron", auth(s.handleListAgentCronJobs))
-	mux.HandleFunc("DELETE /api/agents/{id}/cron/{jobId}", auth(s.handleDeleteAgentCronJob))
-	mux.HandleFunc("PUT /api/agents/{id}/cron/{jobId}", auth(s.handleToggleAgentCronJob))
-
-	// 任务
-	mux.HandleFunc("GET /api/tasks", admin(s.handleListTasks))
-
-	// API 密钥（按用户，支持 agent 多选）。
-	mux.HandleFunc("GET /api/apikeys", auth(s.handleListAPIKeys))
-	mux.HandleFunc("POST /api/apikeys", auth(s.handleCreateAPIKey))
-	mux.HandleFunc("DELETE /api/apikeys/{id}", auth(s.handleDeleteAPIKey))
-	mux.HandleFunc("POST /api/apikeys/{id}/rotate", auth(s.handleRotateAPIKey))
-	mux.HandleFunc("PUT /api/apikeys/{id}/agents", auth(s.handleSetAPIKeyAgents))
-
-	// 用户 — 扁平资源路径。顶层 CRUD 仅限管理员；
-	// 嵌套的 {id}/apikeys + {id}/agents 接受管理员或自己
-	//（在处理程序内部通过 requireUserOrAdmin 进行门控）。
-	mux.HandleFunc("GET /api/users", admin(s.handleListUsers))
-	mux.HandleFunc("POST /api/users", admin(s.handleCreateUser))
-	mux.HandleFunc("PUT /api/users/{id}", admin(s.handleUpdateUser))
-	mux.HandleFunc("DELETE /api/users/{id}", admin(s.handleDeleteUser))
-	mux.HandleFunc("POST /api/users/{id}/password", admin(s.handleResetUserPassword))
-	mux.HandleFunc("POST /api/users/{id}/apikeys", auth(s.handleCreateUserAPIKey))
-	mux.HandleFunc("GET /api/users/{id}/agents", auth(s.handleListUserAgents))
-	mux.HandleFunc("POST /api/users/{id}/agents", auth(s.handleCreateUserAgent))
-	// 跨租户 agent 列表移至 /api/agents?all=true（设置该参数时仅限管理员）。
-	// /api/usage 取代了 /api/admin/usage。
-	mux.HandleFunc("GET /api/usage", admin(s.handleGetUsage))
-	// 按 agent 的使用量：在处理程序内部通过 requireAgentOwner 进行拥有者门控（或 super_admin），
-	// 因此这里使用普通的 auth 包装器。
-	mux.HandleFunc("GET /api/agents/{id}/usage", auth(s.handleGetAgentUsage))
-
-	// OpenAI 兼容的 API 和 WebSocket 网关。
-	if s.apiServer != nil {
-		s.apiServer.RegisterRoutes(mux)
-	}
-
-	// 静态 UI 文件。
-	webRoot, err := fs.Sub(webFS, "web")
-	if err != nil {
-		return fmt.Errorf("setup: embed sub: %w", err)
-	}
-	mux.Handle("/", spaHandler{fs: webRoot})
+	handler := s.engine()
 
 	var addr string
 	if s.bind == "all" {
@@ -372,7 +195,7 @@ func (s *Server) Run(ctx context.Context) error {
 	} else {
 		addr = fmt.Sprintf("127.0.0.1:%d", s.port)
 	}
-	srv := &http.Server{Addr: addr, Handler: mux}
+	srv := &http.Server{Addr: addr, Handler: handler}
 
 	go func() {
 		<-ctx.Done()
@@ -390,6 +213,22 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// spaHandlerFunc 返回嵌入式 UI 的回退处理器（http.HandlerFunc），
+// 作为 gin 的 NoRoute 处理器：任何未命中 API 路由的路径都返回
+// Next.js SPA。嵌入子 FS 实际上不会失败（已编译进二进制）；万一失败
+// 则返回 500 而非在启动时 panic。
+func (s *Server) spaHandlerFunc() http.HandlerFunc {
+	webRoot, err := fs.Sub(webFS, "web")
+	if err != nil {
+		slog.Error("setup: embed sub failed", "error", err)
+		return func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "ui unavailable", http.StatusInternalServerError)
+		}
+	}
+	h := spaHandler{fs: webRoot}
+	return h.ServeHTTP
 }
 
 // spaHandler 使用 SPA 风格的回退机制提供嵌入式 Next.js UI 服务。

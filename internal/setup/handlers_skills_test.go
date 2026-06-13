@@ -18,7 +18,11 @@ func TestListSkillsRequiresAuth(t *testing.T) {
 	s, resolver, adminUser, regularUser := newAuthTestServer(t, ctx)
 	t.Setenv("BKCLAW_HOME", t.TempDir())
 
-	handler := s.authMiddleware(s.handleListSkills)
+	skills := &SkillsHandler{
+		workspaceStore: s.workspaceStore,
+		guard:          &agentGuard{dataStore: s.dataStore, userResolver: s.userResolver},
+	}
+	handler := s.authMiddleware(skills.handleListSkills)
 
 	t.Run("unauthenticated request is rejected", func(t *testing.T) {
 		rr := httptest.NewRecorder()

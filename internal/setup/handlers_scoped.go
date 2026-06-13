@@ -33,7 +33,7 @@ const (
 
 // authorizeScope 对于给定操作，如果请求在 (scope, scopeID) 处被允许则返回 true。
 // 变更调用者应额外通过 `requireWritable`（它会拒绝 super_admin actAs 模式）。
-func (s *Server) authorizeScope(w http.ResponseWriter, r *http.Request, sc, scopeID string, op scopeOp) bool {
+func (s *configRepo) authorizeScope(w http.ResponseWriter, r *http.Request, sc, scopeID string, op scopeOp) bool {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "unauthorized"})
@@ -84,7 +84,7 @@ func (s *Server) authorizeScope(w http.ResponseWriter, r *http.Request, sc, scop
 		// 以便聊天者知道 agent 正在使用哪些凭证以及哪些模型可用。写入仍仅限拥有者。
 		if op == scopeRead {
 			if agentShareModelConfig(rec) {
-				if rec.IsPublic || s.callerOwnsAgent(r, scopeID) {
+				if rec.IsPublic || s.guard.callerOwnsAgent(r, scopeID) {
 					return true
 				}
 				// 镜像 requireAgentReadable 的 apikey-ACL 门控，以便作用域为此 agent 的 apikey 也可以读取。
@@ -108,13 +108,13 @@ func (s *Server) authorizeScope(w http.ResponseWriter, r *http.Request, sc, scop
 // 将 (scope, scopeID) URL 惯用法转换为 (userID, agentID)。
 // 新代码应直接调用 store.ListConfigs 并显式指定拥有者；此辅助函数的存在是为了使仪表板的
 // 作用域键控路由不必在每个调用点内联转换。
-func (s *Server) listConfigsByScope(ctx context.Context, kind, sc, scopeID string) ([]store.ConfigRecord, error) {
+func (s *configRepo) listConfigsByScope(ctx context.Context, kind, sc, scopeID string) ([]store.ConfigRecord, error) {
 	uid, aid := scope.OwnershipFromScope(sc, scopeID)
 	return s.dataStore.ListConfigs(ctx, kind, uid, aid)
 }
 
 // getConfigByNameScope 是同一桥接函数的 GetConfigByName 变体。
-func (s *Server) getConfigByNameScope(ctx context.Context, kind, sc, scopeID, name string) (*store.ConfigRecord, error) {
+func (s *configRepo) getConfigByNameScope(ctx context.Context, kind, sc, scopeID, name string) (*store.ConfigRecord, error) {
 	uid, aid := scope.OwnershipFromScope(sc, scopeID)
 	return s.dataStore.GetConfigByName(ctx, kind, uid, aid, name)
 }
@@ -138,12 +138,12 @@ func scopeFromQuery(r *http.Request) (string, string) {
 
 // --- 提供者 ---
 
-func (s *Server) handleListProviders(w http.ResponseWriter, r *http.Request) {
+func (s *ScopedHandler) handleListProviders(w http.ResponseWriter, r *http.Request) {
 	sc, scopeID := scopeFromQuery(r)
-	if !s.authorizeScope(w, r, sc, scopeID, scopeRead) {
+	if !s.cfg.authorizeScope(w, r, sc, scopeID, scopeRead) {
 		return
 	}
-	rows, err := s.listConfigsByScope(r.Context(), store.KindProvider, sc, scopeID)
+	rows, err := s.cfg.listConfigsByScope(r.Context(), store.KindProvider, sc, scopeID)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -181,8 +181,8 @@ type writeProviderRequest struct {
 	Models   []config.ModelEntry `json:"models,omitempty"`
 }
 
-func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *ScopedHandler) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	var req writeProviderRequest
@@ -198,7 +198,7 @@ func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 	if sc == "" {
 		sc, scopeID = scopeFromQuery(r)
 	}
-	if !s.authorizeScope(w, r, sc, scopeID, scopeWrite) {
+	if !s.cfg.authorizeScope(w, r, sc, scopeID, scopeWrite) {
 		return
 	}
 	pcfg := config.ProviderConfig{
@@ -212,12 +212,12 @@ func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.invalidateScope(sc, scopeID)
+	s.guard.invalidateScope(sc, scopeID)
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *ScopedHandler) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
@@ -226,7 +226,7 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
-	if !s.authorizeScope(w, r, rec.LegacyScope(), rec.LegacyScopeID(), scopeWrite) {
+	if !s.cfg.authorizeScope(w, r, rec.LegacyScope(), rec.LegacyScopeID(), scopeWrite) {
 		return
 	}
 	var req writeProviderRequest
@@ -260,12 +260,12 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.invalidateScope(rec.LegacyScope(), rec.LegacyScopeID())
+	s.guard.invalidateScope(rec.LegacyScope(), rec.LegacyScopeID())
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *ScopedHandler) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
@@ -274,25 +274,25 @@ func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
-	if !s.authorizeScope(w, r, rec.LegacyScope(), rec.LegacyScopeID(), scopeWrite) {
+	if !s.cfg.authorizeScope(w, r, rec.LegacyScope(), rec.LegacyScopeID(), scopeWrite) {
 		return
 	}
 	if err := s.dataStore.DeleteConfig(r.Context(), id); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.invalidateScope(rec.LegacyScope(), rec.LegacyScopeID())
+	s.guard.invalidateScope(rec.LegacyScope(), rec.LegacyScopeID())
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // --- 频道 ---
 
-func (s *Server) handleListScopedChannels(w http.ResponseWriter, r *http.Request) {
+func (s *ScopedHandler) handleListScopedChannels(w http.ResponseWriter, r *http.Request) {
 	sc, scopeID := scopeFromQuery(r)
-	if !s.authorizeScope(w, r, sc, scopeID, scopeRead) {
+	if !s.cfg.authorizeScope(w, r, sc, scopeID, scopeRead) {
 		return
 	}
-	rows, err := s.listConfigsByScope(r.Context(), store.KindChannel, sc, scopeID)
+	rows, err := s.cfg.listConfigsByScope(r.Context(), store.KindChannel, sc, scopeID)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -344,8 +344,8 @@ func credentialKeyFor(channelType, botToken, callerKey string) string {
 	return botToken[len(botToken)-12:]
 }
 
-func (s *Server) handleCreateScopedChannel(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *ScopedHandler) handleCreateScopedChannel(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	var req writeChannelRequest
@@ -361,12 +361,12 @@ func (s *Server) handleCreateScopedChannel(w http.ResponseWriter, r *http.Reques
 	if sc == "" {
 		sc, scopeID = scopeFromQuery(r)
 	}
-	if !s.authorizeScope(w, r, sc, scopeID, scopeWrite) {
+	if !s.cfg.authorizeScope(w, r, sc, scopeID, scopeWrite) {
 		return
 	}
 	credKey := credentialKeyFor(req.Type, req.BotToken, req.CredentialKey)
 	uid, aid := scope.OwnershipFromScope(sc, scopeID)
-	if err := s.assertChannelCredentialUnique(r, req.Type, credKey, "", uid, aid); err != nil {
+	if err := s.chans.assertChannelCredentialUnique(r, req.Type, credKey, "", uid, aid); err != nil {
 		jsonResponse(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
@@ -379,17 +379,17 @@ func (s *Server) handleCreateScopedChannel(w http.ResponseWriter, r *http.Reques
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.invalidateScope(sc, scopeID)
+	s.guard.invalidateScope(sc, scopeID)
 	if req.Enabled {
 		if rec, _ := s.dataStore.LookupChannelByCredential(r.Context(), req.Type, credKey); rec != nil {
-			s.hotRegisterChannel(*rec)
+			s.chans.hotRegisterChannel(*rec)
 		}
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleUpdateScopedChannel(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *ScopedHandler) handleUpdateScopedChannel(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
@@ -398,7 +398,7 @@ func (s *Server) handleUpdateScopedChannel(w http.ResponseWriter, r *http.Reques
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
-	if !s.authorizeScope(w, r, rec.LegacyScope(), rec.LegacyScopeID(), scopeWrite) {
+	if !s.cfg.authorizeScope(w, r, rec.LegacyScope(), rec.LegacyScopeID(), scopeWrite) {
 		return
 	}
 	var req writeChannelRequest
@@ -419,7 +419,7 @@ func (s *Server) handleUpdateScopedChannel(w http.ResponseWriter, r *http.Reques
 	enabled := req.Enabled
 	credKey := credentialKeyFor(rec.Name, cc.BotToken, req.CredentialKey)
 	if credKey != rec.CredentialKey {
-		if err := s.assertChannelCredentialUnique(r, rec.Name, credKey, rec.ID, rec.UserID, rec.AgentID); err != nil {
+		if err := s.chans.assertChannelCredentialUnique(r, rec.Name, credKey, rec.ID, rec.UserID, rec.AgentID); err != nil {
 			jsonResponse(w, http.StatusConflict, map[string]any{"error": err.Error()})
 			return
 		}
@@ -428,17 +428,17 @@ func (s *Server) handleUpdateScopedChannel(w http.ResponseWriter, r *http.Reques
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.invalidateScope(rec.LegacyScope(), rec.LegacyScopeID())
+	s.guard.invalidateScope(rec.LegacyScope(), rec.LegacyScopeID())
 	if enabled {
 		if updated, _ := s.dataStore.LookupChannelByCredential(r.Context(), rec.Name, credKey); updated != nil {
-			s.hotRegisterChannel(*updated)
+			s.chans.hotRegisterChannel(*updated)
 		}
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleDeleteScopedChannel(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *ScopedHandler) handleDeleteScopedChannel(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
@@ -447,22 +447,22 @@ func (s *Server) handleDeleteScopedChannel(w http.ResponseWriter, r *http.Reques
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
-	if !s.authorizeScope(w, r, rec.LegacyScope(), rec.LegacyScopeID(), scopeWrite) {
+	if !s.cfg.authorizeScope(w, r, rec.LegacyScope(), rec.LegacyScopeID(), scopeWrite) {
 		return
 	}
 	if err := s.dataStore.DeleteConfig(r.Context(), id); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.invalidateScope(rec.LegacyScope(), rec.LegacyScopeID())
+	s.guard.invalidateScope(rec.LegacyScope(), rec.LegacyScopeID())
 	// 尽力而为：停止 bot 适配器接收出站路由。
 	// 不解码 rec 我们不知道它的 accountID，所以从刚刚查找的行中派生（rec 在此处仍然有效）。
 	cc := decodeChannelConfigFromRecord(rec)
 	for accountID := range cc.Accounts {
-		s.hotUnregisterChannel(rec.Name, accountID)
+		s.chans.hotUnregisterChannel(rec.Name, accountID)
 	}
 	if len(cc.Accounts) == 0 {
-		s.hotUnregisterChannel(rec.Name, "")
+		s.chans.hotUnregisterChannel(rec.Name, "")
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -490,7 +490,7 @@ func decodeChannelConfigFromRecord(rec *store.ConfigRecord) config.ChannelConfig
 //
 // callerUserID / callerAgentID 是调用者即将写入的行的 (user_id, agent_id) —
 // 传递空字符串为没有该上下文信息的调用者保留更严格的"全局唯一性"语义。
-func (s *Server) assertChannelCredentialUnique(r *http.Request, channelType, credKey, excludeID string, callerUserID, callerAgentID string) error {
+func (s *channelRepo) assertChannelCredentialUnique(r *http.Request, channelType, credKey, excludeID string, callerUserID, callerAgentID string) error {
 	if credKey == "" {
 		return nil
 	}
@@ -520,7 +520,7 @@ func (s *Server) assertChannelCredentialUnique(r *http.Request, channelType, cre
 // invalidateOwner 是 invalidateScope 的 (userID, agentID) 形式 —
 // 对于已经使用新拥有者惯用法的代码更推荐。回退到 invalidateScope，
 // 以便无论调用者使用哪个入口点，缓存拓扑都保持一致。
-func (s *Server) invalidateOwner(userID, agentID string) {
+func (s *agentGuard) invalidateOwner(userID, agentID string) {
 	sc, scopeID := scope.ScopeFromOwnership(userID, agentID)
 	// "user-agent" 在 invalidateScope 的 switch 中不存在 — 对于每个 (user, agent) 的写入，
 	// 丢弃用户缓存的 UserSpace 是正确的行为，因此将其映射到 scope=user。
@@ -532,7 +532,7 @@ func (s *Server) invalidateOwner(userID, agentID string) {
 
 // invalidateScope 丢弃受作用域级别写入影响的缓存 UserSpaces。
 // 系统更改影响每个已加载的空间；用户更改影响一个。
-func (s *Server) invalidateScope(sc, scopeID string) {
+func (s *agentGuard) invalidateScope(sc, scopeID string) {
 	if s.userResolver == nil {
 		return
 	}
@@ -572,7 +572,7 @@ func (s *Server) invalidateScope(sc, scopeID string) {
 
 // hotRegisterChannel 请求网关立即为 `rec` 启动频道适配器。
 // 尽力而为 — 当解析器未实现该钩子时（例如在带有存根解析器的测试中），不执行任何操作。
-func (s *Server) hotRegisterChannel(rec store.ConfigRecord) {
+func (s *channelRepo) hotRegisterChannel(rec store.ConfigRecord) {
 	if s.userResolver == nil {
 		return
 	}
@@ -589,7 +589,7 @@ func (s *Server) hotRegisterChannel(rec store.ConfigRecord) {
 }
 
 // hotUnregisterChannel — 与 hotRegisterChannel 配对，用于删除路径。
-func (s *Server) hotUnregisterChannel(channelType, accountID string) {
+func (s *channelRepo) hotUnregisterChannel(channelType, accountID string) {
 	if s.userResolver == nil {
 		return
 	}

@@ -14,7 +14,7 @@ import (
 
 // --- 技能 ---
 
-func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
+func (s *SkillsHandler) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	homeDir, err := config.HomeDir()
 	if err != nil {
 		jsonResponse(w, http.StatusOK, []any{})
@@ -41,7 +41,7 @@ func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, out)
 }
 
-func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
+func (s *SkillsHandler) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	homeDir, err := config.HomeDir()
 	if err != nil {
@@ -65,12 +65,12 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 
 // handleListAgentSkills 列出安装到 agent 自身主目录（~/.bkclaw/agents/<id>/skills/）中的技能。
 // 加载器"Layer 1"以最高优先级获取这些技能 — 它们专属于该 agent。
-func (s *Server) handleListAgentSkills(w http.ResponseWriter, r *http.Request) {
+func (s *SkillsHandler) handleListAgentSkills(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	// 技能列表会暴露每个技能的 env spec（拥有者设置了哪些环境变量键）。
 	// 仅限拥有者 — Identity.CanAccessAgent 对会话调用者延迟返回 true，
 	// 会让任何已登录用户枚举任何 agent 的技能。
-	if s.requireAgentOwner(w, r, id) == nil {
+	if s.guard.requireAgentOwner(w, r, id) == nil {
 		return
 	}
 	homePath, err := config.AgentHomeDir(id)
@@ -151,15 +151,15 @@ func scanSkillsDir(dir string) []map[string]any {
 }
 
 // handleDeleteAgentSkill 仅从 agent 自身的主目录中删除技能。全局/共享技能不受影响。
-func (s *Server) handleDeleteAgentSkill(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *SkillsHandler) handleDeleteAgentSkill(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
 	name := r.PathValue("name")
 	// 变更操作 — 仅限拥有者。Identity.CanAccessAgent 对会话调用者延迟返回 true，
 	// 会让任何人删除任何 agent 的技能。
-	if s.requireAgentOwner(w, r, id) == nil {
+	if s.guard.requireAgentOwner(w, r, id) == nil {
 		return
 	}
 	homePath, err := config.AgentHomeDir(id)
@@ -180,7 +180,7 @@ func (s *Server) handleDeleteAgentSkill(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	// 热重载 agent，使已删除的技能从其上下文中移除。
-	if ag := s.resolveAgent(r, id); ag != nil {
+	if ag := s.guard.resolveAgent(r, id); ag != nil {
 		ag.ReloadWorkspaceFiles()
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})

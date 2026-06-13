@@ -78,8 +78,8 @@ var builtinCatalog = []categoryCatalog{
 }
 
 // handleGetTools 返回类别 + 提供者目录以及用户当前的 toolProviders/tools 设置。UI 据此渲染表单。
-func (s *Server) handleGetTools(w http.ResponseWriter, r *http.Request) {
-	cfg, err := s.loadUserConfig(r)
+func (s *ToolsHandler) handleGetTools(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.cfg.loadUserConfig(r)
 	if err != nil {
 		cfg = &config.Config{}
 	}
@@ -135,7 +135,7 @@ func (s *Server) handleGetTools(w http.ResponseWriter, r *http.Request) {
 // handleSaveTools 原子地更新 bkclaw.json 的 toolProviders 和 tools 部分。
 // 仅允许管理员/本地用户 — 云端租户通过单独的路径获取自己的设置（尚未接入）。
 // 保存后，运行中的 agent 会被热重载，以便链立即获取新密钥。
-func (s *Server) handleSaveTools(w http.ResponseWriter, r *http.Request) {
+func (s *ToolsHandler) handleSaveTools(w http.ResponseWriter, r *http.Request) {
 	// requireSuperAdmin 中间件已对此路由进行门控；无需进一步检查。
 	var req struct {
 		ToolProviders map[string]config.ToolProviderCfg `json:"toolProviders"`
@@ -150,19 +150,19 @@ func (s *Server) handleSaveTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg, err := s.loadUserConfig(r)
+	cfg, err := s.cfg.loadUserConfig(r)
 	if err != nil {
 		cfg = &config.Config{}
 	}
 	cfg.ToolProviders = req.ToolProviders
 	cfg.Tools = req.Tools
-	if err := s.saveUserConfig(r, cfg); err != nil {
+	if err := s.cfg.saveUserConfig(r, cfg); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
 
 	// 提示解析器丢弃调用者缓存的用户空间；下次访问时从数据库重新加载新的工具/提供者配置。
-	s.invalidateUser(s.effectiveUserID(r))
+	s.guard.invalidateUser(effectiveUserID(r))
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 

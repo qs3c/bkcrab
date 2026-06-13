@@ -17,9 +17,9 @@ import (
 // 只监听数据库。因此那些 agent 编写的任务对仪表板不可见。
 // handleListAgentCronJobs 在 /api/agents/{id}/cron 上显示它们。
 
-func (s *Server) handleListAgentCronJobs(w http.ResponseWriter, r *http.Request) {
+func (s *CronHandler) handleListAgentCronJobs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if s.requireAgentOwner(w, r, id) == nil {
+	if s.guard.requireAgentOwner(w, r, id) == nil {
 		return
 	}
 	jobs, err := s.dataStore.ListCronJobsByAgent(r.Context(), id)
@@ -33,10 +33,10 @@ func (s *Server) handleListAgentCronJobs(w http.ResponseWriter, r *http.Request)
 	jsonResponse(w, http.StatusOK, map[string]any{"jobs": jobs})
 }
 
-func (s *Server) handleDeleteAgentCronJob(w http.ResponseWriter, r *http.Request) {
+func (s *CronHandler) handleDeleteAgentCronJob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	jobID := r.PathValue("jobId")
-	if s.requireAgentOwner(w, r, id) == nil {
+	if s.guard.requireAgentOwner(w, r, id) == nil {
 		return
 	}
 	// 在删除前验证任务属于此 agent — 否则路径参数可能被用来删除调用者不拥有的任务
@@ -53,10 +53,10 @@ func (s *Server) handleDeleteAgentCronJob(w http.ResponseWriter, r *http.Request
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleToggleAgentCronJob(w http.ResponseWriter, r *http.Request) {
+func (s *CronHandler) handleToggleAgentCronJob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	jobID := r.PathValue("jobId")
-	if s.requireAgentOwner(w, r, id) == nil {
+	if s.guard.requireAgentOwner(w, r, id) == nil {
 		return
 	}
 	var req struct {
@@ -81,8 +81,8 @@ func (s *Server) handleToggleAgentCronJob(w http.ResponseWriter, r *http.Request
 
 // --- Cron 任务 ---
 
-func (s *Server) handleListCronJobs(w http.ResponseWriter, r *http.Request) {
-	cfg, err := s.loadUserConfig(r)
+func (s *CronHandler) handleListCronJobs(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.cfg.loadUserConfig(r)
 	if err != nil {
 		jsonResponse(w, http.StatusOK, []any{})
 		return
@@ -109,7 +109,7 @@ func (s *Server) handleListCronJobs(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, jobs)
 }
 
-func (s *Server) handleCreateCronJob(w http.ResponseWriter, r *http.Request) {
+func (s *CronHandler) handleCreateCronJob(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name     string `json:"name"`
 		Type     string `json:"type"`
@@ -124,7 +124,7 @@ func (s *Server) handleCreateCronJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg, err := s.loadUserConfig(r)
+	cfg, err := s.cfg.loadUserConfig(r)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -140,7 +140,7 @@ func (s *Server) handleCreateCronJob(w http.ResponseWriter, r *http.Request) {
 		Message:  req.Message,
 	})
 
-	if err := s.saveUserConfig(r, cfg); err != nil {
+	if err := s.cfg.saveUserConfig(r, cfg); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
@@ -148,7 +148,7 @@ func (s *Server) handleCreateCronJob(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleUpdateCronJob(w http.ResponseWriter, r *http.Request) {
+func (s *CronHandler) handleUpdateCronJob(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	var idx int
 	if _, err := fmt.Sscanf(idStr, "%d", &idx); err != nil {
@@ -168,7 +168,7 @@ func (s *Server) handleUpdateCronJob(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleDeleteCronJob(w http.ResponseWriter, r *http.Request) {
+func (s *CronHandler) handleDeleteCronJob(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	var idx int
 	if _, err := fmt.Sscanf(idStr, "%d", &idx); err != nil {
@@ -176,7 +176,7 @@ func (s *Server) handleDeleteCronJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg, err := s.loadUserConfig(r)
+	cfg, err := s.cfg.loadUserConfig(r)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -189,7 +189,7 @@ func (s *Server) handleDeleteCronJob(w http.ResponseWriter, r *http.Request) {
 
 	cfg.CronJobs = append(cfg.CronJobs[:idx], cfg.CronJobs[idx+1:]...)
 
-	if err := s.saveUserConfig(r, cfg); err != nil {
+	if err := s.cfg.saveUserConfig(r, cfg); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}

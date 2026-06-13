@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
 	"github.com/qs3c/bkclaw/internal/agent"
 	"github.com/qs3c/bkclaw/internal/auth"
 	"github.com/qs3c/bkclaw/internal/config"
@@ -58,33 +59,39 @@ func NewServer(resolver UserResolver, authResolver *auth.Resolver, gatewayCfg *c
 }
 
 // RegisterRoutes 在给定的 mux 上注册 API 路由。
-func (s *Server) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/ws", s.HandleWebSocket)
-	mux.HandleFunc("OPTIONS /v1/", s.handleCORS)
+func (s *Server) RegisterRoutes(r gin.IRouter) {
+	r.GET("/ws", wrapHTTP(s.HandleWebSocket))
+	r.OPTIONS("/v1/*any", wrapHTTP(s.handleCORS))
 
 	getUserID := func(r *http.Request) string { return config.UserIDFromContext(r.Context()) }
 
 	if s.gatewayCfg == nil || s.gatewayCfg.HTTP.Endpoints.ChatCompletions.Enabled {
-		mux.HandleFunc("POST /v1/chat/completions",
-			s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleChatCompletions)))
+		r.POST("/v1/chat/completions",
+			wrapHTTP(s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleChatCompletions))))
 	}
 	if s.gatewayCfg == nil || s.gatewayCfg.HTTP.Endpoints.Agents.Enabled {
-		mux.HandleFunc("GET /v1/agents",
-			s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleListAgents)))
+		r.GET("/v1/agents",
+			wrapHTTP(s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleListAgents))))
 	}
 	// 为下游终端用户显式配置 app_user。
 	// 始终可用 — 任何 api_key 调用都可以使用相同的身份切换
-	// （header 或 `user` 请求体字段）而无需预先创建，此端点
-	// 仅为偏好提前创建并本地存储返回的 bkclaw user_id 的
-	// 调用者而存在。
-	mux.HandleFunc("POST /v1/users",
-		s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleProvisionAppUser)))
+	//（header 或 `user` 请求体字段）而无需预先创建，此端点
+	// 仅为偏好提前创建并本地存储返回的 bkclaw user_id 的调用者而存在。
+	r.POST("/v1/users",
+		wrapHTTP(s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleProvisionAppUser))))
 }
 
-// RegisterAdminRoutes 保留为空操作，供在网关启动期间仍调用它的
-// 调用者使用。管理员用户/apikey 的增删改查现在位于设置服务器的
-// /api/admin 下，该服务器具有适当的 cookie-session 认证。
-func (s *Server) RegisterAdminRoutes(mux *http.ServeMux) {}
+// wrapHTTP 将 net/http handler 适配为 gin handler，把 gin 的路径参数
+// 回写到请求上，使 handler 继续使用 r.PathValue(...)。这里不读取
+// catch-all 参数值，因此无需处理前导斜杠。
+func wrapHTTP(h http.HandlerFunc) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		for _, p := range c.Params {
+			c.Request.SetPathValue(p.Key, p.Value)
+		}
+		h(c.Writer, c.Request)
+	}
+}
 
 func (s *Server) handleCORS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")

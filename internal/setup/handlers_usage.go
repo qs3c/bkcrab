@@ -34,7 +34,7 @@ func limitFromQuery(r *http.Request) int {
 
 // handleGetUsage 返回管理仪表板的关键数据：
 // 总 token 数，以及指定时间窗口内的 top agent 和 top 用户。在 server.go 中由 requireSuperAdmin 包裹。
-func (s *Server) handleGetUsage(w http.ResponseWriter, r *http.Request) {
+func (s *UsageHandler) handleGetUsage(w http.ResponseWriter, r *http.Request) {
 	if s.usage == nil {
 		jsonResponse(w, http.StatusOK, map[string]any{
 			"totals":    usage.Totals{},
@@ -72,9 +72,9 @@ func (s *Server) handleGetUsage(w http.ResponseWriter, r *http.Request) {
 // — agent 设置对话框中"Token Usage"标签页背后的数据。
 // 通过 requireAgentOwner 进行拥有者门控，因此公开 agent 的聊天查看者看不到拥有者的其他会话。
 // `sessions` 列表是以 session_key 为键的 Rank[]（在名称查找后，客户端使用会话标题渲染）。
-func (s *Server) handleGetAgentUsage(w http.ResponseWriter, r *http.Request) {
+func (s *UsageHandler) handleGetAgentUsage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	rec := s.requireAgentOwner(w, r, id)
+	rec := s.guard.requireAgentOwner(w, r, id)
 	if rec == nil {
 		return
 	}

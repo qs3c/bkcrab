@@ -51,7 +51,7 @@ type channelOut struct {
 //
 // 旧的返回形状是 (scope, scopeID, ok)。新形状是 (userID, agentID, ok)。
 // 旧调用者将 (sc, scopeID) 传入 invalidateScope；此文件底部的迁移适配器保持其正常工作。
-func (s *Server) resolveChannelBindingScope(w http.ResponseWriter, r *http.Request, agentID string) (userID, aid string, ok bool) {
+func (s *channelRepo) resolveChannelBindingScope(w http.ResponseWriter, r *http.Request, agentID string) (userID, aid string, ok bool) {
 	if agentID == "" {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "agent id required"})
 		return "", "", false
@@ -61,7 +61,7 @@ func (s *Server) resolveChannelBindingScope(w http.ResponseWriter, r *http.Reque
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return "", "", false
 	}
-	uid := s.effectiveUserID(r)
+	uid := effectiveUserID(r)
 	if uid == "" {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return "", "", false
@@ -81,11 +81,11 @@ func (s *Server) resolveChannelBindingScope(w http.ResponseWriter, r *http.Reque
 // ownsAgent 门控频道管理调用。当调用者是 agent 拥有者或平台管理员（super_admin 会话、type=admin apikey）
 // 时返回 (callerUID, true)。绑定/频道行以 agent 为键，因此返回的 uid 是调用者的，而不是拥有者的 —
 // 这对每个调用者的流程（如 WeChat QR 会话，其轮询端的相等性检查需要与存储它的起始端匹配）很重要。
-func (s *Server) ownsAgent(r *http.Request, agentID string) (string, bool) {
+func (s *agentGuard) ownsAgent(r *http.Request, agentID string) (string, bool) {
 	if agentID == "" {
 		return "", false
 	}
-	uid := s.effectiveUserID(r)
+	uid := effectiveUserID(r)
 	if uid == "" {
 		return "", false
 	}
@@ -102,9 +102,9 @@ func (s *Server) ownsAgent(r *http.Request, agentID string) (string, bool) {
 	return "", false
 }
 
-func (s *Server) handleListAgentChannels(w http.ResponseWriter, r *http.Request) {
+func (s *AgentChannelsHandler) handleListAgentChannels(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !s.requireAgentReadable(w, r, id) {
+	if !s.guard.requireAgentReadable(w, r, id) {
 		return
 	}
 	rec, err := s.dataStore.GetAgent(r.Context(), id)
@@ -112,7 +112,7 @@ func (s *Server) handleListAgentChannels(w http.ResponseWriter, r *http.Request)
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
-	caller := s.effectiveUserID(r)
+	caller := effectiveUserID(r)
 	_ = rec // kept around in case future logic gates on agent ownership again
 
 	// 频道行始终携带绑定者的 user_id + 目标 agent_id，因此调用者的视角是"我绑定到此 agent 的内容"—
@@ -189,12 +189,12 @@ type connectTelegramRequest struct {
 
 // handleConnectAgentTelegram 通过调用 Telegram 的 getMe 验证 bot token，
 // 然后持久化一个作用域到此 agent 的 kind=channel + binding 对，并热启动适配器使 bot 立即开始轮询。
-func (s *Server) handleConnectAgentTelegram(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *AgentChannelsHandler) handleConnectAgentTelegram(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
-	uid, aid, ok := s.resolveChannelBindingScope(w, r, id)
+	uid, aid, ok := s.chans.resolveChannelBindingScope(w, r, id)
 	if !ok {
 		return
 	}
@@ -228,7 +228,7 @@ func (s *Server) handleConnectAgentTelegram(w http.ResponseWriter, r *http.Reque
 	// accountID = Accounts 映射键创建，即 bot 的 @username，因此我们在此镜像它。
 	// 使用 token-tail 回退（credentialKeyFor）会静默丢弃所有入站消息，因为没有匹配的行。
 	credKey := username
-	if err := s.assertChannelCredentialUnique(r, "telegram", credKey, "", uid, aid); err != nil {
+	if err := s.chans.assertChannelCredentialUnique(r, "telegram", credKey, "", uid, aid); err != nil {
 		jsonResponse(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
@@ -239,7 +239,7 @@ func (s *Server) handleConnectAgentTelegram(w http.ResponseWriter, r *http.Reque
 
 	// 追加一个绑定，以便入站消息路由到此 agent。现有绑定（例如之前的 Discord bot）被保留。
 	// 条目内的 AgentID 始终是路径解析的 agent（= sc=Agent 时的 scopeID；sc=User 时调用者要绑定的外部 agent）。
-	if err := s.appendBinding(r, "", "", config.Binding{
+	if err := s.chans.appendBinding(r, "", "", config.Binding{
 		AgentID: id,
 		Match:   config.Match{Channel: "telegram", AccountID: username},
 	}); err != nil {
@@ -247,9 +247,9 @@ func (s *Server) handleConnectAgentTelegram(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	s.invalidateOwner(uid, aid)
+	s.guard.invalidateOwner(uid, aid)
 	if rec, _ := s.dataStore.LookupChannelByCredential(r.Context(), "telegram", credKey); rec != nil {
-		s.hotRegisterChannel(*rec)
+		s.chans.hotRegisterChannel(*rec)
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{
 		"ok":          true,
@@ -257,14 +257,14 @@ func (s *Server) handleConnectAgentTelegram(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-func (s *Server) handleDisconnectAgentChannel(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *AgentChannelsHandler) handleDisconnectAgentChannel(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
 	channelType := r.PathValue("type")
 	accountID := r.PathValue("accountId")
-	uid, aid, ok := s.resolveChannelBindingScope(w, r, id)
+	uid, aid, ok := s.chans.resolveChannelBindingScope(w, r, id)
 	if !ok {
 		return
 	}
@@ -302,12 +302,12 @@ func (s *Server) handleDisconnectAgentChannel(w http.ResponseWriter, r *http.Req
 			}
 		}
 		// 也删除匹配的绑定。
-		if err := s.removeBinding(r, "", "", id, channelType, accountID); err != nil {
+		if err := s.chans.removeBinding(r, "", "", id, channelType, accountID); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		s.invalidateOwner(uid, aid)
-		s.hotUnregisterChannel(channelType, accountID)
+		s.guard.invalidateOwner(uid, aid)
+		s.chans.hotUnregisterChannel(channelType, accountID)
 		jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
@@ -320,7 +320,7 @@ func (s *Server) handleDisconnectAgentChannel(w http.ResponseWriter, r *http.Req
 //
 // 迁移删除所有现有的 kind=setting/name=bindings 行，
 // 运行时端（gateway/userspace.go::bindingsFromChannelRows）通过直接遍历频道行重建路由表。
-func (s *Server) appendBinding(r *http.Request, sc, scopeID string, b config.Binding) error {
+func (s *channelRepo) appendBinding(r *http.Request, sc, scopeID string, b config.Binding) error {
 	_ = r
 	_ = sc
 	_ = scopeID
@@ -328,7 +328,7 @@ func (s *Server) appendBinding(r *http.Request, sc, scopeID string, b config.Bin
 	return nil
 }
 
-func (s *Server) removeBinding(r *http.Request, sc, scopeID, agentID, channelType, accountID string) error {
+func (s *channelRepo) removeBinding(r *http.Request, sc, scopeID, agentID, channelType, accountID string) error {
 	_ = r
 	_ = sc
 	_ = scopeID
@@ -381,12 +381,12 @@ type connectDiscordRequest struct {
 // handleConnectAgentDiscord 通过调用 Discord REST API 的 /users/@me 验证 Discord bot token，
 // 然后持久化 kind=channel + binding 行，就像 Telegram 流程一样。accountID = bot 用户 ID
 //（Discord 的稳定标识符，与可以更改的用户名不同）。
-func (s *Server) handleConnectAgentDiscord(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *AgentChannelsHandler) handleConnectAgentDiscord(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
-	uid, aid, ok := s.resolveChannelBindingScope(w, r, id)
+	uid, aid, ok := s.chans.resolveChannelBindingScope(w, r, id)
 	if !ok {
 		return
 	}
@@ -415,7 +415,7 @@ func (s *Server) handleConnectAgentDiscord(w http.ResponseWriter, r *http.Reques
 		Accounts: map[string]config.AccountConfig{userID: {BotToken: token}},
 	}
 	credKey := userID
-	if err := s.assertChannelCredentialUnique(r, "discord", credKey, "", uid, aid); err != nil {
+	if err := s.chans.assertChannelCredentialUnique(r, "discord", credKey, "", uid, aid); err != nil {
 		jsonResponse(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
@@ -423,16 +423,16 @@ func (s *Server) handleConnectAgentDiscord(w http.ResponseWriter, r *http.Reques
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if err := s.appendBinding(r, "", "", config.Binding{
+	if err := s.chans.appendBinding(r, "", "", config.Binding{
 		AgentID: id,
 		Match:   config.Match{Channel: "discord", AccountID: userID},
 	}); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.invalidateOwner(uid, aid)
+	s.guard.invalidateOwner(uid, aid)
 	if rec, _ := s.dataStore.LookupChannelByCredential(r.Context(), "discord", credKey); rec != nil {
-		s.hotRegisterChannel(*rec)
+		s.chans.hotRegisterChannel(*rec)
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{
 		"ok":          true,
@@ -500,12 +500,12 @@ type connectSlackRequest struct {
 // handleConnectAgentSlack 在通过 auth.test 验证后持久化 Slack bot+app token 对。
 // Slack 需要两者：bot token (xoxb-...) 用于发布/读取，app token (xapp-...) 用于 Socket Mode WS。
 // accountID = team_id，因此一个工作区的事件都路由到同一 agent（按工作区的 Slack 应用是常见形式）。
-func (s *Server) handleConnectAgentSlack(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *AgentChannelsHandler) handleConnectAgentSlack(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
-	uid, aid, ok := s.resolveChannelBindingScope(w, r, id)
+	uid, aid, ok := s.chans.resolveChannelBindingScope(w, r, id)
 	if !ok {
 		return
 	}
@@ -545,7 +545,7 @@ func (s *Server) handleConnectAgentSlack(w http.ResponseWriter, r *http.Request)
 		Accounts: map[string]config.AccountConfig{teamID: {BotToken: botToken}},
 	}
 	credKey := teamID
-	if err := s.assertChannelCredentialUnique(r, "slack", credKey, "", uid, aid); err != nil {
+	if err := s.chans.assertChannelCredentialUnique(r, "slack", credKey, "", uid, aid); err != nil {
 		jsonResponse(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
@@ -553,16 +553,16 @@ func (s *Server) handleConnectAgentSlack(w http.ResponseWriter, r *http.Request)
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if err := s.appendBinding(r, "", "", config.Binding{
+	if err := s.chans.appendBinding(r, "", "", config.Binding{
 		AgentID: id,
 		Match:   config.Match{Channel: "slack", AccountID: teamID},
 	}); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.invalidateOwner(uid, aid)
+	s.guard.invalidateOwner(uid, aid)
 	if rec, _ := s.dataStore.LookupChannelByCredential(r.Context(), "slack", credKey); rec != nil {
-		s.hotRegisterChannel(*rec)
+		s.chans.hotRegisterChannel(*rec)
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{
 		"ok":        true,
@@ -686,12 +686,12 @@ func (r *wechatLoginRegistry) delete(id string) {
 // handleStartAgentWeChatLogin 向 iLink 请求新的 QR 码，注册一个以返回的 qrCode token 为键的服务器端会话，
 // 并将客户端渲染 QR 图像所需的内容返回。实际扫描在用户的微信手机应用中带外进行；
 // 然后客户端轮询 handleAgentWeChatLoginStatus 来驱动状态机。
-func (s *Server) handleStartAgentWeChatLogin(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *AgentChannelsHandler) handleStartAgentWeChatLogin(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
-	uid, aid, ok := s.resolveChannelBindingScope(w, r, id)
+	uid, aid, ok := s.chans.resolveChannelBindingScope(w, r, id)
 	if !ok {
 		return
 	}
@@ -723,12 +723,12 @@ func (s *Server) handleStartAgentWeChatLogin(w http.ResponseWriter, r *http.Requ
 // handleAgentWeChatLoginStatus 轮询 iLink 获取此会话 QR 码的当前扫描状态。
 // 在 `confirmed` 时，持久化频道行 + 绑定 + 热注册适配器 — 与 Telegram / Discord / Slack
 // 连接处理程序相同的形状，但由 QR 状态机驱动，而不是立即验证 token。
-func (s *Server) handleAgentWeChatLoginStatus(w http.ResponseWriter, r *http.Request) {
+func (s *AgentChannelsHandler) handleAgentWeChatLoginStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, _, ok := s.resolveChannelBindingScope(w, r, id); !ok {
+	if _, _, ok := s.chans.resolveChannelBindingScope(w, r, id); !ok {
 		return
 	}
-	uid := s.effectiveUserID(r)
+	uid := effectiveUserID(r)
 	sessionID := r.URL.Query().Get("session")
 	if sessionID == "" {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "session required"})
@@ -764,7 +764,7 @@ func (s *Server) handleAgentWeChatLoginStatus(w http.ResponseWriter, r *http.Req
 			jsonResponse(w, http.StatusBadGateway, map[string]any{"error": "ilink confirmed without credentials"})
 			return
 		}
-		if err := s.persistWeChatAccount(r, sess.scope, sess.scopeID, id, creds); err != nil {
+		if err := s.chans.persistWeChatAccount(r, sess.scope, sess.scopeID, id, creds); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -796,7 +796,7 @@ func (s *Server) handleAgentWeChatLoginStatus(w http.ResponseWriter, r *http.Req
 // persistWeChatAccount 为新确认的 iLink 账户写入 kind=channel 行 + 绑定。
 // 旧的第三/四个参数 (sc, scopeID) 现在被重用为携带 (userID, agentID) —
 // 微信 QR 流程在开始时将它们存储在 wechatLoginSession 上，以便持久化时使用相同的拥有者。
-func (s *Server) persistWeChatAccount(r *http.Request, userID, agentIDArg, agentID string, creds wechatCredentials) error {
+func (s *channelRepo) persistWeChatAccount(r *http.Request, userID, agentIDArg, agentID string, creds wechatCredentials) error {
 	cc := config.ChannelConfig{
 		Enabled: true,
 		Accounts: map[string]config.AccountConfig{
@@ -820,7 +820,7 @@ func (s *Server) persistWeChatAccount(r *http.Request, userID, agentIDArg, agent
 	}); err != nil {
 		return err
 	}
-	s.invalidateOwner(userID, agentIDArg)
+	s.guard.invalidateOwner(userID, agentIDArg)
 	if rec, _ := s.dataStore.LookupChannelByCredential(r.Context(), "wechat", credKey); rec != nil {
 		s.hotRegisterChannel(*rec)
 	}
@@ -919,12 +919,12 @@ type connectFeishuRequest struct {
 // 存储布局镜像 slack/wechat：credKey = app_id（同时也是 accountID），
 // AccountConfig.BotToken = app_secret，AccountConfig.UserID = verification_token
 //（与字段的"额外账户作用域标识符"注释匹配）。
-func (s *Server) handleConnectAgentFeishu(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *AgentChannelsHandler) handleConnectAgentFeishu(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
-	uid, aid, ok := s.resolveChannelBindingScope(w, r, id)
+	uid, aid, ok := s.chans.resolveChannelBindingScope(w, r, id)
 	if !ok {
 		return
 	}
@@ -966,7 +966,7 @@ func (s *Server) handleConnectAgentFeishu(w http.ResponseWriter, r *http.Request
 		},
 	}
 	credKey := appID
-	if err := s.assertChannelCredentialUnique(r, "feishu", credKey, "", uid, aid); err != nil {
+	if err := s.chans.assertChannelCredentialUnique(r, "feishu", credKey, "", uid, aid); err != nil {
 		jsonResponse(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
@@ -974,16 +974,16 @@ func (s *Server) handleConnectAgentFeishu(w http.ResponseWriter, r *http.Request
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if err := s.appendBinding(r, "", "", config.Binding{
+	if err := s.chans.appendBinding(r, "", "", config.Binding{
 		AgentID: id,
 		Match:   config.Match{Channel: "feishu", AccountID: appID},
 	}); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.invalidateOwner(uid, aid)
+	s.guard.invalidateOwner(uid, aid)
 	if rec, _ := s.dataStore.LookupChannelByCredential(r.Context(), "feishu", credKey); rec != nil {
-		s.hotRegisterChannel(*rec)
+		s.chans.hotRegisterChannel(*rec)
 	}
 	resp := map[string]any{
 		"ok":          true,
@@ -1032,12 +1032,12 @@ type connectLINERequest struct {
 // channel_secret 在技术上是可选的 — 适配器可以在没有签名验证的情况下运行 —
 // 但 webhook 流量经过开放互联网，因此我们强烈建议设置它。
 // 连接处理程序接受空字符串，仅在 secret 缺失时在验证时发出警告。
-func (s *Server) handleConnectAgentLINE(w http.ResponseWriter, r *http.Request) {
-	if !s.requireWritable(w, r) {
+func (s *AgentChannelsHandler) handleConnectAgentLINE(w http.ResponseWriter, r *http.Request) {
+	if !requireWritable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
-	uid, aid, ok := s.resolveChannelBindingScope(w, r, id)
+	uid, aid, ok := s.chans.resolveChannelBindingScope(w, r, id)
 	if !ok {
 		return
 	}
@@ -1070,7 +1070,7 @@ func (s *Server) handleConnectAgentLINE(w http.ResponseWriter, r *http.Request) 
 		},
 	}
 	credKey := userID
-	if err := s.assertChannelCredentialUnique(r, "line", credKey, "", uid, aid); err != nil {
+	if err := s.chans.assertChannelCredentialUnique(r, "line", credKey, "", uid, aid); err != nil {
 		jsonResponse(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
@@ -1078,16 +1078,16 @@ func (s *Server) handleConnectAgentLINE(w http.ResponseWriter, r *http.Request) 
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if err := s.appendBinding(r, "", "", config.Binding{
+	if err := s.chans.appendBinding(r, "", "", config.Binding{
 		AgentID: id,
 		Match:   config.Match{Channel: "line", AccountID: userID},
 	}); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.invalidateOwner(uid, aid)
+	s.guard.invalidateOwner(uid, aid)
 	if rec, _ := s.dataStore.LookupChannelByCredential(r.Context(), "line", credKey); rec != nil {
-		s.hotRegisterChannel(*rec)
+		s.chans.hotRegisterChannel(*rec)
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{
 		"ok":         true,

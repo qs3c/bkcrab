@@ -23,7 +23,7 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+func (s *SessionHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if s.accounts == nil || s.authResolver == nil {
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "auth not configured"})
 		return
@@ -47,7 +47,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "user": acct})
 }
 
-func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+func (s *SessionHandler) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if s.authResolver != nil {
 		if c, err := r.Cookie(auth.SessionCookieName); err == nil {
 			_ = s.authResolver.RevokeSession(r.Context(), c.Value)
@@ -62,7 +62,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+func (s *SessionHandler) handleMe(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"ok": false})
@@ -106,7 +106,7 @@ type updateMeReq struct {
 // handleUpdateMe 允许已登录用户编辑自己的显示名称和头像。
 // 头像必须为空（清除）或 data: URL — 完整的 HTTP URL
 // 会在渲染时通过 referer 泄露用户数据，因此我们限制为仅内联图像。
-func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
+func (s *SessionHandler) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok || ident.ReadOnly() {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})
@@ -143,7 +143,7 @@ type changePasswordReq struct {
 // handleChangeMyPassword 是管理员密码重置的自助服务变体 —
 // 在接受新密码之前需要当前密码。最小长度匹配其他地方的隐式默认值；
 // 我们不强制执行强规则，因为安装是单租户的，而且我们不想成为用正则表达式拒绝"correcthorse"的地方。
-func (s *Server) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) {
+func (s *SessionHandler) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok || ident.ReadOnly() {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})
@@ -202,7 +202,7 @@ type onboardRequest struct {
 
 // handleOnboard 在单个逻辑操作中创建第一个 super_admin + 第一个系统提供者 + 第一个 agent。
 // 仅在用户表为空时可调用；后续调用返回 409。
-func (s *Server) handleOnboard(w http.ResponseWriter, r *http.Request) {
+func (s *SessionHandler) handleOnboard(w http.ResponseWriter, r *http.Request) {
 	if s.dataStore == nil || s.accounts == nil {
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store not ready"})
 		return
@@ -319,7 +319,7 @@ func (s *Server) handleOnboard(w http.ResponseWriter, r *http.Request) {
 
 // --- 管理员：用户管理 ---
 
-func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+func (s *UsersHandler) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	list, err := s.accounts.List(r.Context())
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
@@ -358,7 +358,7 @@ type createUserReq struct {
 	ExternalID string `json:"externalId,omitempty"`
 }
 
-func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+func (s *UsersHandler) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	var req createUserReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request"})
@@ -409,7 +409,7 @@ type updateUserReq struct {
 	AgentQuota  *int64 `json:"agentQuota,omitempty"`
 }
 
-func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+func (s *UsersHandler) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req updateUserReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -424,7 +424,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"user": acct})
 }
 
-func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+func (s *UsersHandler) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.accounts.Delete(r.Context(), id); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
@@ -437,7 +437,7 @@ type resetPasswordReq struct {
 	Password string `json:"password"`
 }
 
-func (s *Server) handleResetUserPassword(w http.ResponseWriter, r *http.Request) {
+func (s *UsersHandler) handleResetUserPassword(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req resetPasswordReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -454,7 +454,7 @@ func (s *Server) handleResetUserPassword(w http.ResponseWriter, r *http.Request)
 // respondAllAgents 返回每个用户的所有 agent，附带拥有者的用户名/电子邮件。
 // 为平台范围的管理视图支持 GET /api/agents?all=true；认证门控在 handleListAgents 中
 //（仅在 CanAdminPlatform 通过后调用此函数）。
-func (s *Server) respondAllAgents(w http.ResponseWriter, r *http.Request) {
+func (s *AgentsHandler) respondAllAgents(w http.ResponseWriter, r *http.Request) {
 	if s.dataStore == nil {
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "no data store"})
 		return
@@ -509,7 +509,7 @@ func (s *Server) respondAllAgents(w http.ResponseWriter, r *http.Request) {
 // 写入会话行 — 按 agent.owner 迭代会完全错过这些会话。成对展开捕获每个聊天者，
 // 无论他们是否拥有该 agent。"拥有者"列然后反映聊天的实际用户，因此仪表板中的 actAs 链接
 // 可以模拟真正的会话拥有者，而不是 agent 拥有者（后者可能没有对会话的读取权限）。
-func (s *Server) handleAdminChats(w http.ResponseWriter, r *http.Request) {
+func (s *UsersHandler) handleAdminChats(w http.ResponseWriter, r *http.Request) {
 	if s.dataStore == nil {
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "no data store"})
 		return
@@ -594,9 +594,9 @@ func (s *Server) handleAdminChats(w http.ResponseWriter, r *http.Request) {
 // handleListUserAgents 返回路径解析的用户拥有的 agent。
 // 通过 requireUserOrAdmin 实现管理员或自己（管理员可以列出任何用户的；非管理员只能列出自己的）。
 // 与常规 agent 列表相同的响应形状，以便管理工具可以复用渲染。
-func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
+func (s *UsersHandler) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("id")
-	if !s.requireUserOrAdmin(w, r, uid) {
+	if !requireUserOrAdmin(w, r, uid) {
 		return
 	}
 	if _, err := s.dataStore.GetUser(r.Context(), uid); err != nil {
@@ -641,12 +641,12 @@ type adminCreateUserAgentReq struct {
 //     以避免让用户通过此路径将其他人的私有 agent 克隆到自己的命名空间中。
 //
 // 创建的 agent 始终是私有的；通过常规的 PUT /api/agents/{id} 流程切换为公开。
-func (s *Server) handleCreateUserAgent(w http.ResponseWriter, r *http.Request) {
+func (s *UsersHandler) handleCreateUserAgent(w http.ResponseWriter, r *http.Request) {
 	targetUserID := r.PathValue("id")
-	if !s.requireUserOrAdmin(w, r, targetUserID) {
+	if !requireUserOrAdmin(w, r, targetUserID) {
 		return
 	}
-	if !s.requireWritable(w, r) {
+	if !requireWritable(w, r) {
 		return
 	}
 	target, err := s.dataStore.GetUser(r.Context(), targetUserID)
@@ -722,10 +722,10 @@ func (s *Server) handleCreateUserAgent(w http.ResponseWriter, r *http.Request) {
 
 	model := req.Model
 	if model == "" && source != nil {
-		model = s.agentScopeModel(r, source.ID)
+		model = s.cfg.agentScopeModel(r, source.ID)
 	}
 	if model != "" {
-		if err := s.saveAgentScopeModel(r, id, model); err != nil {
+		if err := s.cfg.saveAgentScopeModel(r, id, model); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": "save model: " + err.Error()})
 			return
 		}
@@ -739,7 +739,7 @@ func (s *Server) handleCreateUserAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.invalidateUser(targetUserID)
+	s.guard.invalidateUser(targetUserID)
 	jsonResponse(w, http.StatusCreated, map[string]any{
 		"agent": map[string]any{
 			"id":          rec.ID,
@@ -769,7 +769,7 @@ var forkAgentScopeConfigs = map[string]bool{
 
 // forkAgentContent 将源 agent 的拥有者行身份文件和 agent 作用域配置复制到目标 agent。
 // 每个文件尽力而为：缺失的源文件被静默跳过（目标只是没有它的覆盖，运行时通过通常的回退路径处理）。
-func (s *Server) forkAgentContent(r *http.Request, src, dst *store.AgentRecord) error {
+func (s *UsersHandler) forkAgentContent(r *http.Request, src, dst *store.AgentRecord) error {
 	for _, name := range forkAgentFiles {
 		data, err := s.dataStore.GetAgentFileExact(r.Context(), src.ID, src.UserID, name)
 		if err != nil {
@@ -808,12 +808,12 @@ func (s *Server) forkAgentContent(r *http.Request, src, dst *store.AgentRecord) 
 // type=admin 始终通过此路径被拒绝 — 管理密钥授予平台范围的权利，
 // 不应为目标用户自动配置；需要管理密钥的管理员通过
 // POST /api/users/{self}/apikeys 为自己发出一个（这成为自助创建，但路由仍然需要管理员调用者）。
-func (s *Server) handleCreateUserAPIKey(w http.ResponseWriter, r *http.Request) {
+func (s *UsersHandler) handleCreateUserAPIKey(w http.ResponseWriter, r *http.Request) {
 	targetUserID := r.PathValue("id")
-	if !s.requireUserOrAdmin(w, r, targetUserID) {
+	if !requireUserOrAdmin(w, r, targetUserID) {
 		return
 	}
-	if !s.requireWritable(w, r) {
+	if !requireWritable(w, r) {
 		return
 	}
 	target, err := s.dataStore.GetUser(r.Context(), targetUserID)
@@ -885,7 +885,7 @@ type createAPIKeyReq struct {
 	AgentIDs []string `json:"agentIds,omitempty"`
 }
 
-func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
+func (s *APIKeysHandler) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"ok": false})
@@ -925,7 +925,7 @@ func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 // type=agent 额外要求每个 agentId 解析为一个调用者被允许绑定的 agent —
 // 拥有者可以绑定自己的，super_admin 可以绑定任何人的。这是权威门控；
 // users 包只验证形状，不验证策略。
-func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
+func (s *APIKeysHandler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok || ident.ReadOnly() {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})
@@ -976,7 +976,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusCreated, map[string]any{"apikey": ak, "token": token})
 }
 
-func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
+func (s *APIKeysHandler) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok || ident.ReadOnly() {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})
@@ -999,7 +999,7 @@ func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleRotateAPIKey(w http.ResponseWriter, r *http.Request) {
+func (s *APIKeysHandler) handleRotateAPIKey(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok || ident.ReadOnly() {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})
@@ -1027,7 +1027,7 @@ type setAPIKeyAgentsReq struct {
 	AgentIDs []string `json:"agentIds"`
 }
 
-func (s *Server) handleSetAPIKeyAgents(w http.ResponseWriter, r *http.Request) {
+func (s *APIKeysHandler) handleSetAPIKeyAgents(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok || ident.ReadOnly() {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})

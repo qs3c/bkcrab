@@ -31,7 +31,7 @@ import (
 // 当 source 为空时的优先级：skills.sh → clawhub。
 // 全局安装（无 `agent` 参数）需要本地/管理员用户 — 云端用户
 // 不能通过此端点修改共享技能。
-func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
+func (s *SkillsHandler) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Source string `json:"source"`
 		Name   string `json:"name"`
@@ -80,7 +80,7 @@ func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Agent != "" {
-		if ag := s.resolveAgent(r, req.Agent); ag != nil {
+		if ag := s.guard.resolveAgent(r, req.Agent); ag != nil {
 			ag.ReloadWorkspaceFiles()
 		}
 	}
@@ -99,14 +99,14 @@ func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 }
 
 // authorizeSkillInstallTarget 强制执行注册表安装和 zip 上传共用的变更及目标范围规则。
-func (s *Server) authorizeSkillInstallTarget(w http.ResponseWriter, r *http.Request, agentID string) bool {
-	if !s.requireWritable(w, r) {
+func (s *SkillsHandler) authorizeSkillInstallTarget(w http.ResponseWriter, r *http.Request, agentID string) bool {
+	if !requireWritable(w, r) {
 		return false
 	}
 	if agentID != "" {
 		// 仅限拥有者 — Identity.CanAccessAgent 对会话调用者延迟返回 true，
 		// 因此如果没有显式的拥有者检查，任何人都可以将技能推送到其他人的 agent 主目录中。
-		return s.requireAgentOwner(w, r, agentID) != nil
+		return s.guard.requireAgentOwner(w, r, agentID) != nil
 	}
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
@@ -192,7 +192,7 @@ func runInstall(source, name, repo, targetDir string) (*skills.Result, error) {
 // Zip-slip 保护：每个解压的文件路径都经过验证，确保其保持在
 // 所选技能目录下。符号链接被跳过 — Go 的 archive/zip
 // 不会自动跟随它们，我们也拒绝在磁盘上重新创建它们。
-func (s *Server) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
+func (s *SkillsHandler) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 	const maxUploadSize = 64 << 20 // 64 MiB
 	agentID := r.URL.Query().Get("agent")
 	if !s.authorizeSkillInstallTarget(w, r, agentID) {
@@ -373,7 +373,7 @@ func (s *Server) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if agentID != "" {
-		if ag := s.resolveAgent(r, agentID); ag != nil {
+		if ag := s.guard.resolveAgent(r, agentID); ag != nil {
 			ag.ReloadWorkspaceFiles()
 		}
 	}
@@ -445,7 +445,7 @@ func sanitizeSkillName(name string) string {
 // handleSearchSkills 返回搜索结果。source=skillssh（默认）访问
 // https://skills.sh；source=clawhub 代理 clawhub.ai 的搜索端点。
 // GET /api/skills/search?q=xxx&source=skillssh|clawhub
-func (s *Server) handleSearchSkills(w http.ResponseWriter, r *http.Request) {
+func (s *SkillsHandler) handleSearchSkills(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
 	source := r.URL.Query().Get("source")
 	if source == "" {
