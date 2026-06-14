@@ -14,13 +14,13 @@ import (
 
 // ProjectsHandler 负责 per-agent 项目（命名工作区文件夹）。
 type ProjectsHandler struct {
-	dataStore store.Store
+	dataStore store.ProjectStore
 	guard     *agentGuard
 	mw        *Middleware
 }
 
 // NewProjectsHandler 构造 ProjectsHandler。
-func NewProjectsHandler(dataStore store.Store, guard *agentGuard, mw *Middleware) *ProjectsHandler {
+func NewProjectsHandler(dataStore store.ProjectStore, guard *agentGuard, mw *Middleware) *ProjectsHandler {
 	return &ProjectsHandler{dataStore: dataStore, guard: guard, mw: mw}
 }
 

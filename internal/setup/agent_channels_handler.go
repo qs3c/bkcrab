@@ -25,7 +25,7 @@ import (
 
 // AgentChannelsHandler 负责 per-agent 的 IM bot 绑定与入站 webhook。
 type AgentChannelsHandler struct {
-	dataStore    store.Store
+	dataStore    agentConfigStore
 	userResolver api.UserResolver
 	guard        *agentGuard
 	chans        *channelRepo
@@ -33,7 +33,7 @@ type AgentChannelsHandler struct {
 }
 
 // NewAgentChannelsHandler 构造 AgentChannelsHandler。
-func NewAgentChannelsHandler(dataStore store.Store, userResolver api.UserResolver, guard *agentGuard, chans *channelRepo, mw *Middleware) *AgentChannelsHandler {
+func NewAgentChannelsHandler(dataStore agentConfigStore, userResolver api.UserResolver, guard *agentGuard, chans *channelRepo, mw *Middleware) *AgentChannelsHandler {
 	return &AgentChannelsHandler{dataStore: dataStore, userResolver: userResolver, guard: guard, chans: chans, mw: mw}
 }
 

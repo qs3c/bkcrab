@@ -25,7 +25,7 @@ import (
 type SessionHandler struct {
 	accounts     *users.Accounts
 	authResolver *auth.Resolver
-	dataStore    store.Store
+	dataStore    agentConfigStore
 	userResolver api.UserResolver
 	port         int
 	startedAt    time.Time
@@ -35,7 +35,7 @@ type SessionHandler struct {
 }
 
 // NewSessionHandler 构造 SessionHandler。
-func NewSessionHandler(accounts *users.Accounts, authResolver *auth.Resolver, dataStore store.Store, userResolver api.UserResolver, port int, startedAt time.Time, guard *agentGuard, cfg *configRepo, mw *Middleware) *SessionHandler {
+func NewSessionHandler(accounts *users.Accounts, authResolver *auth.Resolver, dataStore agentConfigStore, userResolver api.UserResolver, port int, startedAt time.Time, guard *agentGuard, cfg *configRepo, mw *Middleware) *SessionHandler {
 	return &SessionHandler{accounts: accounts, authResolver: authResolver, dataStore: dataStore, userResolver: userResolver, port: port, startedAt: startedAt, guard: guard, cfg: cfg, mw: mw}
 }
 

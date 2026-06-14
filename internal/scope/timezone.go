@@ -24,7 +24,7 @@ const prefsTimezoneKey = "timezone"
 //
 // 即优先使用 (对话者, 智能体) 级覆盖，然后是对话者的个人设置（跟随其跨智能体），
 // 然后是智能体默认值，最后是系统默认值。未设置时返回 "" —— 调用方回退到服务器本地时间。
-func Timezone(ctx context.Context, st store.Store, chatterUID, agentID string) string {
+func Timezone(ctx context.Context, st store.ConfigStore, chatterUID, agentID string) string {
 	if st == nil {
 		return ""
 	}
@@ -68,7 +68,7 @@ func LoadLocationOrLocal(name string) *time.Location {
 // SaveUserTimezone 将 tz 记录为 userID 在用户作用域（agent_id=""）下的个人时区，
 // 使其跟随对话者跨所有智能体。用户 prefs 行中已有的其他键将被保留。
 // tz 必须是有效的 IANA 名称 —— 调用前请使用 time.LoadLocation 验证。
-func SaveUserTimezone(ctx context.Context, st store.Store, userID, tz string) error {
+func SaveUserTimezone(ctx context.Context, st store.ConfigStore, userID, tz string) error {
 	if st == nil {
 		return errors.New("scope.SaveUserTimezone: store is required")
 	}

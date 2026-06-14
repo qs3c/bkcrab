@@ -66,7 +66,7 @@ func (s *configRepo) loadUserConfig(r *http.Request) (*config.Config, error) {
 // loadAgentSkillEntriesForUser 收集此用户拥有的所有 agent 作用域 skills.entries 行。
 // 替换了旧的单行按 agent 键控的 blob — 每个 agent 现在持久化自己的行，
 // 因此我们返回的 JSON 通过列出用户的 agent 并拉取每个 agent 的行来重建。
-func loadAgentSkillEntriesForUser(ctx context.Context, st store.Store, userID string) (map[string]map[string]config.SkillEntryCfg, error) {
+func loadAgentSkillEntriesForUser(ctx context.Context, st agentConfigStore, userID string) (map[string]map[string]config.SkillEntryCfg, error) {
 	if st == nil || userID == "" {
 		return nil, nil
 	}
@@ -91,7 +91,7 @@ func loadAgentSkillEntriesForUser(ctx context.Context, st store.Store, userID st
 
 // saveAgentSkillEntries 更新或插入 agent 作用域的 skills.entries 行。
 // 空的内部映射删除该行（无覆盖 → 无行，保持 configs 表紧凑）。授权是调用者的责任；我们只持久化请求的内容。
-func saveAgentSkillEntries(ctx context.Context, st store.Store, agentID string, entries map[string]config.SkillEntryCfg) error {
+func saveAgentSkillEntries(ctx context.Context, st store.ConfigStore, agentID string, entries map[string]config.SkillEntryCfg) error {
 	if len(entries) == 0 {
 		return scope.SaveSetting(ctx, st, "", agentID, "skills.entries", nil)
 	}

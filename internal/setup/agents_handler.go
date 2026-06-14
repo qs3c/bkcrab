@@ -20,7 +20,7 @@ import (
 
 // AgentsHandler 负责 agent CRUD、per-agent 配置、已注册工具列表。
 type AgentsHandler struct {
-	dataStore store.Store
+	dataStore agentsStore
 	accounts  *users.Accounts
 	guard     *agentGuard
 	cfg       *configRepo
@@ -28,7 +28,7 @@ type AgentsHandler struct {
 }
 
 // NewAgentsHandler 构造 AgentsHandler。
-func NewAgentsHandler(dataStore store.Store, accounts *users.Accounts, guard *agentGuard, cfg *configRepo, mw *Middleware) *AgentsHandler {
+func NewAgentsHandler(dataStore agentsStore, accounts *users.Accounts, guard *agentGuard, cfg *configRepo, mw *Middleware) *AgentsHandler {
 	return &AgentsHandler{dataStore: dataStore, accounts: accounts, guard: guard, cfg: cfg, mw: mw}
 }
 

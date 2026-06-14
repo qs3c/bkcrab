@@ -20,14 +20,14 @@ import (
 type UsersHandler struct {
 	accounts  *users.Accounts
 	apikeys   *users.APIKeys
-	dataStore store.Store
+	dataStore usersStore
 	guard     *agentGuard
 	cfg       *configRepo
 	mw        *Middleware
 }
 
 // NewUsersHandler 构造 UsersHandler。
-func NewUsersHandler(accounts *users.Accounts, apikeys *users.APIKeys, dataStore store.Store, guard *agentGuard, cfg *configRepo, mw *Middleware) *UsersHandler {
+func NewUsersHandler(accounts *users.Accounts, apikeys *users.APIKeys, dataStore usersStore, guard *agentGuard, cfg *configRepo, mw *Middleware) *UsersHandler {
 	return &UsersHandler{accounts: accounts, apikeys: apikeys, dataStore: dataStore, guard: guard, cfg: cfg, mw: mw}
 }
 

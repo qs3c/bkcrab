@@ -17,13 +17,12 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 	"github.com/qs3c/bkclaw/internal/channels"
 	"github.com/qs3c/bkclaw/internal/session"
-	"github.com/qs3c/bkclaw/internal/store"
 	"github.com/qs3c/bkclaw/internal/workspace"
 )
 
 // ChatHandler 负责 web 聊天界面 — 轮次、引导(steer)、流式、SSE 订阅、历史与会话管理。
 type ChatHandler struct {
-	dataStore  store.Store
+	dataStore  chatStore
 	webChan    *channels.WebChannel
 	chatEvents *agent.EventHub
 	guard      *agentGuard
@@ -32,7 +31,7 @@ type ChatHandler struct {
 }
 
 // NewChatHandler 构造 ChatHandler。
-func NewChatHandler(dataStore store.Store, webChan *channels.WebChannel, chatEvents *agent.EventHub, guard *agentGuard, ws *workspaceRepo, mw *Middleware) *ChatHandler {
+func NewChatHandler(dataStore chatStore, webChan *channels.WebChannel, chatEvents *agent.EventHub, guard *agentGuard, ws *workspaceRepo, mw *Middleware) *ChatHandler {
 	return &ChatHandler{dataStore: dataStore, webChan: webChan, chatEvents: chatEvents, guard: guard, ws: ws, mw: mw}
 }
 

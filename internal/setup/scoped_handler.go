@@ -19,7 +19,7 @@ import (
 // ScopedHandler 负责 system/user/agent 作用域的提供者与频道 CRUD，
 // 以及运行时已注册频道适配器的只读列表。
 type ScopedHandler struct {
-	dataStore store.Store
+	dataStore agentConfigStore
 	guard     *agentGuard
 	cfg       *configRepo
 	chans     *channelRepo
@@ -27,7 +27,7 @@ type ScopedHandler struct {
 }
 
 // NewScopedHandler 构造 ScopedHandler。
-func NewScopedHandler(dataStore store.Store, guard *agentGuard, cfg *configRepo, chans *channelRepo, mw *Middleware) *ScopedHandler {
+func NewScopedHandler(dataStore agentConfigStore, guard *agentGuard, cfg *configRepo, chans *channelRepo, mw *Middleware) *ScopedHandler {
 	return &ScopedHandler{dataStore: dataStore, guard: guard, cfg: cfg, chans: chans, mw: mw}
 }
 

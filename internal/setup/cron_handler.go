@@ -14,14 +14,14 @@ import (
 // CronHandler 负责 cron 任务：用户配置中的 cron 目录（config 表）
 // 以及 per-agent 的 DB cron 任务（含 agent 运行时自调度的任务）。
 type CronHandler struct {
-	dataStore store.Store
+	dataStore store.CronStore
 	guard     *agentGuard
 	cfg       *configRepo
 	mw        *Middleware
 }
 
 // NewCronHandler 构造 CronHandler。
-func NewCronHandler(dataStore store.Store, guard *agentGuard, cfg *configRepo, mw *Middleware) *CronHandler {
+func NewCronHandler(dataStore store.CronStore, guard *agentGuard, cfg *configRepo, mw *Middleware) *CronHandler {
 	return &CronHandler{dataStore: dataStore, guard: guard, cfg: cfg, mw: mw}
 }
 

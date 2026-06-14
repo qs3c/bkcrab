@@ -14,12 +14,12 @@ import (
 // APIKeysHandler 负责当前调用者自己的 API key（含 agent 多选授权）。
 type APIKeysHandler struct {
 	apikeys   *users.APIKeys
-	dataStore store.Store
+	dataStore store.AgentStore
 	mw        *Middleware
 }
 
 // NewAPIKeysHandler 构造 APIKeysHandler。
-func NewAPIKeysHandler(apikeys *users.APIKeys, dataStore store.Store, mw *Middleware) *APIKeysHandler {
+func NewAPIKeysHandler(apikeys *users.APIKeys, dataStore store.AgentStore, mw *Middleware) *APIKeysHandler {
 	return &APIKeysHandler{apikeys: apikeys, dataStore: dataStore, mw: mw}
 }
 

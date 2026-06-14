@@ -20,7 +20,7 @@ import (
 // the store (ownership rows) and the user resolver (live agent routing +
 // cache busting).
 type agentGuard struct {
-	dataStore    store.Store
+	dataStore    store.AgentStore
 	userResolver api.UserResolver
 }
 
@@ -28,7 +28,7 @@ type agentGuard struct {
 // settings, scoped providers/channels, agent-scope defaults). The scope
 // authorization path checks agent ownership, so it borrows agentGuard.
 type configRepo struct {
-	dataStore store.Store
+	dataStore agentConfigStore
 	guard     *agentGuard
 }
 
@@ -36,7 +36,7 @@ type configRepo struct {
 // workspace + system files. It checks ownership via agentGuard and reads
 // blobs from the workspace store.
 type workspaceRepo struct {
-	dataStore      store.Store
+	dataStore      workspaceRepoStore
 	workspaceStore workspace.Store
 	guard          *agentGuard
 }
@@ -44,7 +44,7 @@ type workspaceRepo struct {
 // channelRepo manages IM channel bindings: credential uniqueness, the
 // per-binding rows, and hot (un)registration against the live runtime.
 type channelRepo struct {
-	dataStore    store.Store
+	dataStore    agentConfigStore
 	userResolver api.UserResolver
 	guard        *agentGuard
 }

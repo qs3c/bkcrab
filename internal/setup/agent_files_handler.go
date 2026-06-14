@@ -27,7 +27,7 @@ import (
 
 // AgentFilesHandler 负责 per-agent 的工作区文件与系统文件（SOUL/IDENTITY/MEMORY 等）。
 type AgentFilesHandler struct {
-	dataStore      store.Store
+	dataStore      agentFilesStore
 	workspaceStore workspace.Store
 	guard          *agentGuard
 	ws             *workspaceRepo
@@ -35,7 +35,7 @@ type AgentFilesHandler struct {
 }
 
 // NewAgentFilesHandler 构造 AgentFilesHandler。
-func NewAgentFilesHandler(dataStore store.Store, workspaceStore workspace.Store, guard *agentGuard, ws *workspaceRepo, mw *Middleware) *AgentFilesHandler {
+func NewAgentFilesHandler(dataStore agentFilesStore, workspaceStore workspace.Store, guard *agentGuard, ws *workspaceRepo, mw *Middleware) *AgentFilesHandler {
 	return &AgentFilesHandler{dataStore: dataStore, workspaceStore: workspaceStore, guard: guard, ws: ws, mw: mw}
 }
 
