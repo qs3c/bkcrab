@@ -11,15 +11,22 @@ import (
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
-// StoreAdapter 将 store.Store 适配为 SessionStore 接口，专用于一个
+// sessionDataStore 是 StoreAdapter 实际需要的存储能力：会话行 + 会话消息存档。
+// 单实现 *store.DBStore 满足它；调用方可传入完整 store.Store。
+type sessionDataStore interface {
+	store.SessionStore
+	store.SessionMessageStore
+}
+
+// StoreAdapter 将存储适配为 SessionStore 接口，专用于一个
 // 拥有者用户。每个 UserSpace 创建自己的适配器，使得 user_id 作用域
 // 在调用点隐式传递，而无需通过每次智能体循环调用进行传递。
 type StoreAdapter struct {
-	st     store.Store
+	st     sessionDataStore
 	userID string
 }
 
-func NewStoreAdapter(st store.Store, userID string) *StoreAdapter {
+func NewStoreAdapter(st sessionDataStore, userID string) *StoreAdapter {
 	return &StoreAdapter{st: st, userID: userID}
 }
 

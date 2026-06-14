@@ -155,7 +155,7 @@ func (s *Server) chatEventHub() *agent.EventHub {
 }
 
 // ChatEventHub 暴露 hub，以便网关可以将流管道附加到总线触发的 web 轮次
-//（cron / 目标延续 / 心跳 / 子 agent），赋予它们与用户键入轮次相同的 SSE 流式体验。
+// （cron / 目标延续 / 心跳 / 子 agent），赋予它们与用户键入轮次相同的 SSE 流式体验。
 // 包裹了 chatEventHub 的延迟初始化。
 func (s *Server) ChatEventHub() *agent.EventHub { return s.chatEventHub() }
 
@@ -282,16 +282,16 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.ServeFileFS(w, r, h.fs, dirFallback)
 				return
 			}
-		// 嵌套动态段回退：像 agents/[id]/chat/[session] 和 agents/[id]/project/[pid] 这样的路由
-		// 在构建时发出单个占位符 ("_")。将任何紧跟在已知动态父级 (chat, project) 下的段替换为 "_"，
-		// 无论后面是什么。这涵盖了页面 HTML 和 Next 16 在客户端导航期间获取的每个路由的 RSC 负载：
-		//   /chat/<sid>/                            → /chat/_/index.html
-		//   /chat/<sid>/index.txt                   → /chat/_/index.txt
-		//   /chat/<sid>/__next.agents.$d$id.chat.$d$session.__PAGE__.txt
-		//   …
-		// 没有这个，App Router 在侧边栏点击时的 RSC 获取会得到 404（或根 index.html），
-		// 放弃软导航，回退到 window.location — 这会导致页面闪烁并中断正在进行的流。
-		// 随着新动态路由的引入，将它们添加到下面的 dynamicParents 中。
+			// 嵌套动态段回退：像 agents/[id]/chat/[session] 和 agents/[id]/project/[pid] 这样的路由
+			// 在构建时发出单个占位符 ("_")。将任何紧跟在已知动态父级 (chat, project) 下的段替换为 "_"，
+			// 无论后面是什么。这涵盖了页面 HTML 和 Next 16 在客户端导航期间获取的每个路由的 RSC 负载：
+			//   /chat/<sid>/                            → /chat/_/index.html
+			//   /chat/<sid>/index.txt                   → /chat/_/index.txt
+			//   /chat/<sid>/__next.agents.$d$id.chat.$d$session.__PAGE__.txt
+			//   …
+			// 没有这个，App Router 在侧边栏点击时的 RSC 获取会得到 404（或根 index.html），
+			// 放弃软导航，回退到 window.location — 这会导致页面闪烁并中断正在进行的流。
+			// 随着新动态路由的引入，将它们添加到下面的 dynamicParents 中。
 			dynamicParents := map[string]bool{"chat": true, "project": true}
 			sub := strings.Split(parts[2], "/")
 			substituted := false

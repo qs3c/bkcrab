@@ -73,7 +73,7 @@ func ScopeFromOwnership(userID, agentID string) (scope, scopeID string) {
 
 // Providers 返回给定 (user, agent) 的合并后的 LLM 提供者配置映射。
 // 传入 agentID="" 仅获取用户级视图。两者都为空则仅获取系统级。
-func Providers(ctx context.Context, st store.Store, userID, agentID string) (map[string]config.ProviderConfig, error) {
+func Providers(ctx context.Context, st store.ConfigStore, userID, agentID string) (map[string]config.ProviderConfig, error) {
 	if st == nil {
 		return nil, errors.New("scope.Providers: store is required")
 	}
@@ -120,7 +120,7 @@ func Providers(ctx context.Context, st store.Store, userID, agentID string) (map
 // 智能体的"官方"行，不包含系统层或用户层的合并。
 // 用于在已合并系统+用户的视图之上叠加智能体自身的行：
 // 重新运行完整的 Providers 遍历会重新应用外层，并静默覆盖调用方已合并的任何用户作用域覆盖。
-func AgentScopeProviders(ctx context.Context, st store.Store, agentID string) (map[string]config.ProviderConfig, error) {
+func AgentScopeProviders(ctx context.Context, st store.ConfigStore, agentID string) (map[string]config.ProviderConfig, error) {
 	if st == nil {
 		return nil, errors.New("scope.AgentScopeProviders: store is required")
 	}
@@ -142,7 +142,7 @@ func AgentScopeProviders(ctx context.Context, st store.Store, agentID string) (m
 // 用户的个人行，不包含系统层。由外部智能体路径使用，以便查看者可以
 // 回退到所有者的提供者凭据，而无需拖入所有者的完整合并视图
 // （后者会在查看者已合并的集合之上重新应用系统行）。
-func UserScopeProviders(ctx context.Context, st store.Store, userID string) (map[string]config.ProviderConfig, error) {
+func UserScopeProviders(ctx context.Context, st store.ConfigStore, userID string) (map[string]config.ProviderConfig, error) {
 	if st == nil {
 		return nil, errors.New("scope.UserScopeProviders: store is required")
 	}
@@ -161,7 +161,7 @@ func UserScopeProviders(ctx context.Context, st store.Store, userID string) (map
 }
 
 // Channels 返回合并后的通道映射。内层作用域中被禁用的行会擦除外层条目。
-func Channels(ctx context.Context, st store.Store, userID, agentID string) (map[string]config.ChannelConfig, error) {
+func Channels(ctx context.Context, st store.ConfigStore, userID, agentID string) (map[string]config.ChannelConfig, error) {
 	if st == nil {
 		return nil, errors.New("scope.Channels: store is required")
 	}
@@ -208,7 +208,7 @@ func Channels(ctx context.Context, st store.Store, userID, agentID string) (map[
 // 单个命名空间的合并 JSON。在顶层映射上进行字段级合并；
 // 内层所有权的字段覆盖外层。未设置的命名空间返回空映射且不报错 ——
 // 调用方将其 Unmarshal 到类型化结构体中，依赖零值字段。
-func Setting(ctx context.Context, st store.Store, namespace, userID, agentID string) (map[string]interface{}, error) {
+func Setting(ctx context.Context, st store.ConfigStore, namespace, userID, agentID string) (map[string]interface{}, error) {
 	if st == nil {
 		return nil, errors.New("scope.Setting: store is required")
 	}
@@ -254,7 +254,7 @@ func Setting(ctx context.Context, st store.Store, namespace, userID, agentID str
 
 // SettingInto 解析 Setting 并将合并后的 JSON 反序列化到 dst 中。
 // 为需要类型化配置块的调用方提供的便利方法。
-func SettingInto(ctx context.Context, st store.Store, namespace, userID, agentID string, dst interface{}) error {
+func SettingInto(ctx context.Context, st store.ConfigStore, namespace, userID, agentID string, dst interface{}) error {
 	merged, err := Setting(ctx, st, namespace, userID, agentID)
 	if err != nil {
 		return err
@@ -272,25 +272,25 @@ func SettingInto(ctx context.Context, st store.Store, namespace, userID, agentID
 // SaveSettingByScope 是为 HTTP 层保留的旧版 (scope, scopeID) 形式，
 // HTTP 层仍在 URL 参数和 JSON 中输出作用域字符串。
 // 新调用方应使用带显式 (userID, agentID) 的 SaveSetting。
-func SaveSettingByScope(ctx context.Context, st store.Store, sc, scopeID, namespace string, data map[string]interface{}) error {
+func SaveSettingByScope(ctx context.Context, st store.ConfigStore, sc, scopeID, namespace string, data map[string]interface{}) error {
 	uid, aid := OwnershipFromScope(sc, scopeID)
 	return SaveSetting(ctx, st, uid, aid, namespace, data)
 }
 
 // SaveProviderByScope / SaveChannelByScope 镜像相同的旧版桥接。
-func SaveProviderByScope(ctx context.Context, st store.Store, sc, scopeID, name string, p config.ProviderConfig) error {
+func SaveProviderByScope(ctx context.Context, st store.ConfigStore, sc, scopeID, name string, p config.ProviderConfig) error {
 	uid, aid := OwnershipFromScope(sc, scopeID)
 	return SaveProvider(ctx, st, uid, aid, name, p)
 }
 
-func SaveChannelByScope(ctx context.Context, st store.Store, sc, scopeID, channelType, credentialKey string, enabled bool, c config.ChannelConfig) error {
+func SaveChannelByScope(ctx context.Context, st store.ConfigStore, sc, scopeID, channelType, credentialKey string, enabled bool, c config.ChannelConfig) error {
 	uid, aid := OwnershipFromScope(sc, scopeID)
 	return SaveChannel(ctx, st, uid, aid, channelType, credentialKey, enabled, c)
 }
 
 // SaveSetting 在给定的 (user, agent) 所有权下插入或更新单个命名空间。
 // 传入 nil/空数据将删除该行（而非写入 {}）。传入空 userID/agentID 表示系统级。
-func SaveSetting(ctx context.Context, st store.Store, userID, agentID, namespace string, data map[string]interface{}) error {
+func SaveSetting(ctx context.Context, st store.ConfigStore, userID, agentID, namespace string, data map[string]interface{}) error {
 	if st == nil {
 		return errors.New("scope.SaveSetting: store is required")
 	}
@@ -313,7 +313,7 @@ func SaveSetting(ctx context.Context, st store.Store, userID, agentID, namespace
 }
 
 // SaveProvider 在给定的 (user, agent) 所有权下插入或更新 kind="provider" 行。
-func SaveProvider(ctx context.Context, st store.Store, userID, agentID, name string, p config.ProviderConfig) error {
+func SaveProvider(ctx context.Context, st store.ConfigStore, userID, agentID, name string, p config.ProviderConfig) error {
 	rec := &store.ConfigRecord{
 		Kind:    store.KindProvider,
 		UserID:  userID,
@@ -327,7 +327,7 @@ func SaveProvider(ctx context.Context, st store.Store, userID, agentID, name str
 
 // SaveChannel 在给定的 (user, agent) 所有权下插入或更新 kind="channel" 行。
 // credentialKey 是用于入站调度的稳定查找句柄（机器人令牌尾部、应用 ID）。
-func SaveChannel(ctx context.Context, st store.Store, userID, agentID, channelType, credentialKey string, enabled bool, c config.ChannelConfig) error {
+func SaveChannel(ctx context.Context, st store.ConfigStore, userID, agentID, channelType, credentialKey string, enabled bool, c config.ChannelConfig) error {
 	rec := &store.ConfigRecord{
 		Kind:          store.KindChannel,
 		UserID:        userID,
