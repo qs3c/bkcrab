@@ -5,27 +5,25 @@ import (
 	"strings"
 )
 
-// NormalizeAPIBase folds the user-typed apiBase into the canonical form
-// that downstream code expects to concatenate path segments onto.
+// NormalizeAPIBase 将用户输入的 apiBase 转换为下游代码期望的标准形式，
+// 以便在其上拼接路径段。
 //
-// Different API types disagree on whether `/v1` is part of the base or
-// part of the path:
+// 不同的 API 类型对 `/v1` 是属于基础 URL 还是路径的一部分有不同看法：
 //
-//   - OpenAI Chat Completions: runtime appends "/chat/completions",
-//     assuming /v1 is already in the base. A bare host hits 404.
-//   - Anthropic Messages: runtime appends "/v1/messages", assuming /v1
-//     is NOT in the base. A trailing /v1 produces /v1/v1/messages.
+//   - OpenAI Chat Completions: 运行时追加 "/chat/completions"，
+//     假设 /v1 已在基础 URL 中。裸主机返回 404。
+//   - Anthropic Messages: 运行时追加 "/v1/messages"，假设 /v1
+//     不在基础 URL 中。尾部有 /v1 会产生 /v1/v1/messages。
 //
-// Both forms are common typos (people copy "https://api.openai.com" off
-// a doc page, or paste "https://api.anthropic.com/v1" by analogy with
-// OpenAI). We fold them into the canonical shape here so the connection
-// test, the runtime, and any other consumer all hit the same URL.
+// 两种形式都是常见的拼写错误（人们从文档页面复制 "https://api.openai.com"，
+// 或者类比 OpenAI 粘贴 "https://api.anthropic.com/v1"）。
+// 我们在这里将它们统一为标准形式，以便连接测试、运行时和任何其他消费者
+// 都访问相同的 URL。
 //
-// The rules are intentionally conservative — we only touch the trailing
-// /v1 segment, and only when the user gave us a bare host (no custom
-// path). Third-party gateways with their own routing convention
-// (e.g. "https://my-gateway.com/openai") are left alone, because we
-// can't safely guess where /v1 belongs in their path.
+// 规则有意保持保守——我们只处理尾部的 /v1 段，且仅在用户提供裸主机
+//（无自定义路径）时进行。第三方网关有自己的路由约定
+//（例如 "https://my-gateway.com/openai"）保持不变，因为我们
+// 无法安全地猜测 /v1 在其路径中的位置。
 func NormalizeAPIBase(apiBase, apiType string) string {
 	base := strings.TrimRight(strings.TrimSpace(apiBase), "/")
 	if base == "" {

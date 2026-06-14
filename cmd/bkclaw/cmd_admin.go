@@ -11,9 +11,8 @@ import (
 	"github.com/qs3c/bkclaw/internal/users"
 )
 
-// adminCmd groups the admin-only CLI operations: create users, reset
-// passwords, grant roles. These bypass the HTTP API and write to the DB
-// directly so an operator who's lost super_admin access can recover.
+// adminCmd 组合了仅管理员的 CLI 操作：创建用户、重置密码、授予角色。
+// 这些操作绕过 HTTP API，直接写入数据库，以便失去 super_admin 访问权限的操作者可以恢复。
 func adminCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "admin",

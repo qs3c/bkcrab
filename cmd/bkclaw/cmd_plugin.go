@@ -16,7 +16,7 @@ import (
 
 const hubRepo = "qs3c/bkclaw"
 
-// pluginCmd handles plugin management subcommands.
+// pluginCmd 处理插件管理子命令。
 func pluginCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "plugins",
@@ -113,7 +113,7 @@ func isGitHubRef(s string) bool {
 }
 
 func isNpmPackage(s string) bool {
-	// @scope/package is always npm.
+	// @scope/package 始终是 npm 包。
 	return strings.HasPrefix(s, "@")
 }
 
@@ -150,13 +150,13 @@ func installFromLocal(srcDir, pluginsDir string) error {
 }
 
 func installFromGitHub(source, pluginsDir string) error {
-	// Normalize URL
+	// 规范化 URL
 	repo := strings.TrimPrefix(source, "https://")
 	repo = strings.TrimPrefix(repo, "github.com/")
 	repo = strings.TrimSuffix(repo, ".git")
 	repoURL := "https://github.com/" + repo
 
-	// Clone to temp dir
+	// 克隆到临时目录
 	tmpDir, err := os.MkdirTemp("", "bkclaw-plugin-*")
 	if err != nil {
 		return err
@@ -183,14 +183,14 @@ func installFromHub(name, pluginsDir string) error {
 
 	tarballURL := fmt.Sprintf("https://github.com/%s/archive/refs/heads/main.tar.gz", hubRepo)
 
-	// Download tarball
+	// 下载 tarball
 	tarball := filepath.Join(tmpDir, "repo.tar.gz")
 	dlCmd := exec.Command("curl", "-fsSL", "-o", tarball, tarballURL)
 	if out, err := dlCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("download failed: %s: %w", string(out), err)
 	}
 
-	// Extract full tarball
+	// 解压完整的 tarball
 	extractDir := filepath.Join(tmpDir, "extract")
 	if err := os.MkdirAll(extractDir, 0o755); err != nil {
 		return err
@@ -200,7 +200,7 @@ func installFromHub(name, pluginsDir string) error {
 		return fmt.Errorf("extract failed: %s: %w", string(out), err)
 	}
 
-	// Find top-level dir (name varies: bkclaw-main, bkclaw-v0.16.0, etc.)
+	// 查找顶级目录（名称可能为 bkclaw-main、bkclaw-v0.16.0 等）
 	entries, _ := os.ReadDir(extractDir)
 	if len(entries) == 0 {
 		return fmt.Errorf("extract failed: empty archive")
@@ -210,12 +210,12 @@ func installFromHub(name, pluginsDir string) error {
 		return fmt.Errorf("plugin %q not found in BkClaw Hub", name)
 	}
 
-	// Check if it has plugin.json (standard plugin) or is a utility
+	// 检查是否包含 plugin.json（标准插件）或是工具程序
 	if _, err := os.Stat(filepath.Join(pluginDir, "plugin.json")); err == nil {
 		return installFromLocal(pluginDir, pluginsDir)
 	}
 
-	// No plugin.json — copy as utility (e.g. plugin-bridge)
+	// 没有 plugin.json — 作为工具程序复制（例如 plugin-bridge）
 	toolsDir := filepath.Join(filepath.Dir(pluginsDir), "tools")
 	os.MkdirAll(toolsDir, 0o755)
 	destDir := filepath.Join(toolsDir, name)
@@ -231,14 +231,14 @@ func installFromHub(name, pluginsDir string) error {
 func installFromNpm(pkg, pluginsDir string) error {
 	homeDir := filepath.Dir(pluginsDir)
 
-	// Derive plugin ID from package name
+	// 从包名推导出插件 ID
 	pluginID := pkg
 	if i := strings.LastIndex(pluginID, "/"); i >= 0 {
 		pluginID = pluginID[i+1:]
 	}
 	pluginID = strings.TrimPrefix(pluginID, "bkclaw-")
 
-	// 1. npm install to temp dir to inspect the package
+	// 1. 在临时目录中执行 npm install 以检查包
 	tmpDir, err := os.MkdirTemp("", "bkclaw-npm-*")
 	if err != nil {
 		return err
@@ -252,7 +252,7 @@ func installFromNpm(pkg, pluginsDir string) error {
 		return fmt.Errorf("npm install failed: %s: %w", string(out), err)
 	}
 
-	// 2. Check if it's a compatible plugin (supports bkclaw or openclaw plugin format)
+	// 2. 检查是否为兼容插件（支持 bkclaw 或 openclaw 插件格式）
 	pkgDir := filepath.Join(tmpDir, "node_modules", pkg)
 	isPlugin := false
 	for _, marker := range []string{"bkclaw.plugin.json", "openclaw.plugin.json"} {
@@ -261,7 +261,7 @@ func installFromNpm(pkg, pluginsDir string) error {
 			break
 		}
 	}
-	// Also check package.json for bkclaw/openclaw field
+	// 同时检查 package.json 中是否包含 bkclaw/openclaw 字段
 	if !isPlugin {
 		if data, err := os.ReadFile(filepath.Join(pkgDir, "package.json")); err == nil {
 			var pj map[string]json.RawMessage
@@ -279,7 +279,7 @@ func installFromNpm(pkg, pluginsDir string) error {
 		return fmt.Errorf("%s is not a compatible plugin", pkg)
 	}
 
-	// 3. Find entry file
+	// 3. 查找入口文件
 	entryFile := ""
 	for _, name := range []string{"index.ts", "index.js"} {
 		if _, err := os.Stat(filepath.Join(pkgDir, name)); err == nil {
@@ -291,7 +291,7 @@ func installFromNpm(pkg, pluginsDir string) error {
 		return fmt.Errorf("cannot find entry file for %s", pkg)
 	}
 
-	// 4. Test bridgeability — run proxy and check if tools are registered
+	// 4. 测试桥接能力 — 运行代理并检查是否注册了工具
 	proxyDir := filepath.Join(homeDir, "tools", "plugin-bridge")
 	proxyJS := filepath.Join(proxyDir, "proxy.js")
 	if _, err := os.Stat(proxyJS); os.IsNotExist(err) {
@@ -321,7 +321,7 @@ func installFromNpm(pkg, pluginsDir string) error {
 	hasChannel := false
 	for _, line := range strings.Split(string(testOut), "\n") {
 		if !strings.HasPrefix(line, "{") {
-			// Check stderr for channel registration
+			// 检查 stderr 中是否有频道注册信息
 			if strings.Contains(line, "registered channel") {
 				hasChannel = true
 			}
@@ -351,14 +351,14 @@ func installFromNpm(pkg, pluginsDir string) error {
 		return fmt.Errorf("cannot install %s: no tools detected. Only plugins that register tools can be bridged", pkg)
 	}
 
-	// 5. Compatible! Move to plugins dir
+	// 5. 兼容！移动到插件目录
 	destDir := filepath.Join(pluginsDir, pluginID)
 	os.RemoveAll(destDir)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return err
 	}
 
-	// npm install in final location
+	// 在最终位置执行 npm install
 	npmCmd2 := exec.Command("npm", "install", "--production", pkg)
 	npmCmd2.Dir = destDir
 	if out, err := npmCmd2.CombinedOutput(); err != nil {
@@ -366,7 +366,7 @@ func installFromNpm(pkg, pluginsDir string) error {
 		return fmt.Errorf("npm install failed: %s: %w", string(out), err)
 	}
 
-	// Generate plugin.json
+	// 生成 plugin.json
 	manifest := map[string]any{
 		"id":           pluginID,
 		"name":         fmt.Sprintf("Bridged: %s", pkg),

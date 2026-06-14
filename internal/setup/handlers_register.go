@@ -9,14 +9,12 @@ import (
 	"github.com/qs3c/bkclaw/internal/users"
 )
 
-// registrationSettingNamespace is the configs-table key for the public
-// signup toggle. Stored as kind=setting, name=registration, data={"open": bool}.
-// Defaults to closed: a fresh instance shouldn't accept anonymous signups
-// until the operator explicitly opens the door.
+// registrationSettingNamespace 是公开注册开关的 configs 表键。
+// 存储为 kind=setting, name=registration, data={"open": bool}。
+// 默认为关闭：新实例不应接受匿名注册，直到操作员明确打开。
 const registrationSettingNamespace = "registration"
 
-// registrationOpen reads the system-level toggle. Errors are treated as
-// "closed" — fail safe is "no signup".
+// registrationOpen 读取系统级开关。错误被视为"关闭" — 故障安全为"禁止注册"。
 func (s *Server) registrationOpen(r *http.Request) bool {
 	if s.dataStore == nil {
 		return false
@@ -36,9 +34,8 @@ type registerRequest struct {
 	DisplayName string `json:"displayName,omitempty"`
 }
 
-// handleRegister is the public signup endpoint. Gated by the admin-controlled
-// registration_open setting; falls back to closed on any read error so a
-// momentary store hiccup can't accidentally fling the door open.
+// handleRegister 是公开注册端点。由管理员控制的 registration_open 设置门控；
+// 在任何读取错误时回退为关闭，以便瞬时的存储故障不会意外打开大门。
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if s.accounts == nil || s.authResolver == nil {
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "auth not configured"})
@@ -59,8 +56,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "username, email, password required"})
 		return
 	}
-	// Light email shape check — the users.Account store also validates;
-	// this layer just catches the obvious "no @" before we hit the DB.
+	// 轻量级电子邮件格式检查 — users.Account 存储也会验证；
+	// 这一层只是在到达数据库之前捕获明显的"缺少 @"。
 	if !strings.Contains(req.Email, "@") || strings.Contains(req.Email, " ") {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid email"})
 		return
@@ -77,8 +74,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Role:        users.RoleUser,
 	})
 	if err != nil {
-		// users.Create surfaces "username taken" / "email taken" as plain
-		// errors; passing them through gives the form a usable message.
+		// users.Create 将"用户名已存在"/"电子邮件已存在"作为普通错误返回；
+		// 传递它们给表单提供可用的消息。
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
@@ -89,7 +86,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "user": acct})
 }
 
-// --- Admin: read + write the toggle ---
+// --- 管理员：读取和写入开关 ---
 
 type registrationConfig struct {
 	Open bool `json:"open"`

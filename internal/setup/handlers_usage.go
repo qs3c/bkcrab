@@ -7,9 +7,8 @@ import (
 	"github.com/qs3c/bkclaw/internal/usage"
 )
 
-// rangeFromQuery parses ?range=24h|7d|30d (default 7d) into a usage.Range
-// of last-N days. We don't expose precise hour windows on the admin
-// dashboard — daily buckets is good enough for "who burned what".
+// rangeFromQuery 将 ?range=24h|7d|30d（默认 7d）解析为最近 N 天的 usage.Range。
+// 管理仪表板不暴露精确的小时窗口 — 按天统计已足够回答"谁消耗了什么"。
 func rangeFromQuery(r *http.Request) usage.Range {
 	switch r.URL.Query().Get("range") {
 	case "24h":
@@ -21,7 +20,7 @@ func rangeFromQuery(r *http.Request) usage.Range {
 	}
 }
 
-// limitFromQuery clamps ?limit= to [1, 100], defaulting to 10.
+// limitFromQuery 将 ?limit= 限制在 [1, 100] 之间，默认为 10。
 func limitFromQuery(r *http.Request) int {
 	v, err := strconv.Atoi(r.URL.Query().Get("limit"))
 	if err != nil || v <= 0 {
@@ -33,9 +32,8 @@ func limitFromQuery(r *http.Request) int {
 	return v
 }
 
-// handleGetUsage returns the headline numbers for the admin dashboard:
-// total tokens, plus top agents and top users for the requested time
-// window. Wrapped by requireSuperAdmin in server.go.
+// handleGetUsage 返回管理仪表板的关键数据：
+// 总 token 数，以及指定时间窗口内的 top agent 和 top 用户。在 server.go 中由 requireSuperAdmin 包裹。
 func (s *Server) handleGetUsage(w http.ResponseWriter, r *http.Request) {
 	if s.usage == nil {
 		jsonResponse(w, http.StatusOK, map[string]any{
@@ -70,12 +68,10 @@ func (s *Server) handleGetUsage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleGetAgentUsage returns per-session token rollups for one agent
-// — the data behind the "Token Usage" tab in the agent settings
-// dialog. Owner-gated via requireAgentOwner, so chat viewers of a
-// public agent don't get to see the owner's other sessions. The
-// `sessions` list is a Rank[] keyed by session_key (rendered with
-// session title client-side after a name lookup).
+// handleGetAgentUsage 返回单个 agent 的每个会话 token 汇总
+// — agent 设置对话框中"Token Usage"标签页背后的数据。
+// 通过 requireAgentOwner 进行拥有者门控，因此公开 agent 的聊天查看者看不到拥有者的其他会话。
+// `sessions` 列表是以 session_key 为键的 Rank[]（在名称查找后，客户端使用会话标题渲染）。
 func (s *Server) handleGetAgentUsage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	rec := s.requireAgentOwner(w, r, id)
@@ -93,9 +89,8 @@ func (s *Server) handleGetAgentUsage(w http.ResponseWriter, r *http.Request) {
 	rng := rangeFromQuery(r)
 	limit := limitFromQuery(r)
 	if limit < 50 {
-		// Sessions list is the headline view on this tab; default
-		// limit (10 from limitFromQuery) is too short. Cap at 50
-		// rows unless the caller explicitly asked for fewer.
+		// 会话列表是该标签页的主要视图；默认限制（limitFromQuery 的 10）太短。
+		// 除非调用者明确要求更少，否则上限为 50 行。
 		limit = 50
 	}
 	sessions, err := s.usage.SessionsForAgent(r.Context(), id, "", rng, limit)

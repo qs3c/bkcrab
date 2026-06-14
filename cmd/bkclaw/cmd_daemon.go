@@ -11,7 +11,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/daemon"
 )
 
-// daemonCmd handles daemon/service management subcommands.
+// daemonCmd 处理守护进程/服务管理子命令。
 func daemonCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "daemon",
@@ -24,7 +24,7 @@ func daemonCmd() *cobra.Command {
 	cmd.AddCommand(daemonLogsCmd())
 	cmd.AddCommand(daemonInstallCmd())
 	cmd.AddCommand(daemonUninstallCmd())
-	cmd.AddCommand(daemonRunCmd()) // internal, hidden
+	cmd.AddCommand(daemonRunCmd()) // 内部命令，隐藏
 	return cmd
 }
 
@@ -57,7 +57,7 @@ func daemonRestartCmd() *cobra.Command {
 		Use:   "restart",
 		Short: "Restart the daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Stop (ignore error if not running)
+			// 停止（如果未运行则忽略错误）
 			_ = daemon.Stop()
 			time.Sleep(500 * time.Millisecond)
 			return daemon.Start(port)
@@ -146,7 +146,7 @@ func daemonUninstallCmd() *cobra.Command {
 	}
 }
 
-// daemonRunCmd is the internal command used by 'daemon start' to run the auto-restart loop.
+// daemonRunCmd 是 'daemon start' 用于运行自动重启循环的内部命令。
 func daemonRunCmd() *cobra.Command {
 	var port int
 	cmd := &cobra.Command{

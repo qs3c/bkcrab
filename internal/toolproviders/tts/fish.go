@@ -12,11 +12,10 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// Fish posts to https://api.fish.audio/v1/tts (a.k.a. fish.studio). Auth is
-// `Authorization: Bearer <token>`. Voice (the LLM-provided `voice` arg) maps
-// to the `reference_id` field — Fish exposes voices as cloned-voice IDs the
-// admin/user picks from their dashboard. When omitted, the request omits the
-// field too and Fish picks a built-in voice.
+// Fish 向 https://api.fish.audio/v1/tts（即 fish.studio）发送请求。
+// 认证方式为 `Authorization: Bearer <token>`。Voice（LLM 提供的 `voice` 参数）
+// 映射到 `reference_id` 字段——Fish 将语音公开为克隆语音 ID，由管理员/用户从仪表盘中选择。
+// 省略时，请求也省略该字段，Fish 使用内置语音。
 type Fish struct{}
 
 func (Fish) Category() string { return Category }
@@ -41,9 +40,9 @@ func (f *Fish) Execute(ctx context.Context, req toolproviders.Request) (toolprov
 	if a.Voice != "" {
 		body["reference_id"] = a.Voice
 	}
-	// Model (suffix in "fish/<model>") selects the synthesis backend (s1 /
-	// speech-1.5 / etc.). When set, pass it through as `backend`; default
-	// is "s1" — left unset so Fish picks its own current default.
+	// Model（"fish/<model>" 中的后缀）选择合成后端（s1 / speech-1.5 等）。
+	// 设置时，将其作为 `backend` 传递；默认为 "s1"——保持未设置状态，
+	// 以便 Fish 选择自己的当前默认值。
 	if req.Config.Model != "" {
 		body["backend"] = req.Config.Model
 	}

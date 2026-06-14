@@ -1,0 +1,1799 @@
+Found 23 files
+
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\embed.go ===
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers.go ===
+  L36: loadUserConfig reads the merged Config view for the request's user.
+  L37: Walks system → user setting namespaces + the scope-aware provider /
+  L38: channel rows. The result is the same shape gateway.assembleConfig
+  L39: produces — UI-only fields like Storage/Gateway are filled by env
+  L40: overlay, not by the DB.
+  L73: loadAgentSkillEntriesForUser collects every agent-scope skills.entries
+  L74: row owned by this user. Replaces the legacy single-row keyed-by-agent
+  L75: blob — each agent now persists its own row, so the JSON we hand back
+  L76: is rebuilt by listing the user's agents and pulling each one's row.
+  L100: saveAgentSkillEntries upserts the agent-scope skills.entries row.
+  L101: Empty inner map deletes the row (no overrides → no row, keeps the
+  L102: configs table tight). Authorization is the caller's responsibility;
+  L103: we just persist what was requested.
+  L114: saveUserConfig persists the namespaced setting rows for the calling
+  L115: user's scope. Providers/Channels live in their own configs rows
+  L116: and are NOT touched here — the dedicated /api/providers and /api/channels
+  L117: endpoints (and the onboard handler) write those.
+  L123: Decide who owns the rows we're about to save:
+  L124: - super_admin without ?actAs=  → system rows (user_id='')
+  L125: - super_admin with ?actAs=X    → write into user X's scope
+  L126: - regular user                 → write into their own scope
+  L144: settingNamespaces is the table that drives loadUserConfig /
+  L145: saveUserConfig. Adding a new sub-block of Config to the round-trip is
+  L146: a single append here.
+  L178: Per-agent skill env/key overrides have been split off this table
+  L179: into one row per agent at scope=agent, name=skills.entries — see
+  L180: loadAgentSkillEntriesForUser / saveAgentSkillEntries below. Lumping
+  L181: every agent's overrides into a single user/system-scope row let
+  L182: the JSON blob grow with every agent × skill, and forced a full
+  L183: rewrite on every patch.
+  L228: wrapKeyed marshals a map[string]X into map[string]interface{} so it
+  L229: fits the configs.data column. Empty maps return nil so
+  L230: SaveSetting deletes the row instead of writing {}.
+  L248: resolveAgent returns the AgentHandle for the given agent within the
+  L249: caller's user space. Apikey callers are additionally checked against
+  L250: their access list before the handle is returned. super_admin without
+  L251: an actAs override gets the foreign agent injected into their OWN
+  L252: UserSpace — sessions, memory, and provider scope stay caller-keyed
+  L253: (admin doesn't see the owner's chats), while the agent's persistent
+  L254: resolveSessionProject reads sessions.project_id for the chat
+  L255: the request is targeting so attachments and other workspace IO can
+  L256: route to projects/<pid>/ when the chat belongs to a project. Returns
+  L257: "" on any failure (caller treats as loose chat) — non-existent
+  L258: session, no auth context, and "no datastore" all collapse to the
+  L259: same outcome and we don't want a path lookup to break the chat
+  L260: hot-path.
+  L280: identity (system prompt, agent-scope config, skills, files — all
+  L281: keyed by agent_id) is reused.
+  L299: Lazy-attach when the agent isn't in the caller's UserSpace but
+  L300: the caller is otherwise authorized to use it. Concrete scenarios:
+  L302: 1. super_admin browsing another user's agent.
+  L303: 2. api_key whose ACL grants this agent — typically the key
+  L304: owner == agent owner, but this path also handles the
+  L305: app_user case where SwitchToAppUser flipped the identity
+  L306: to a fresh app_user whose UserSpace has no agents at all.
+  L307: Sessions/files written under that UserSpace then partition
+  L308: per end-user, which is the desired isolation.
+  L309: 3. session user accessing a public agent owned by someone else
+  L310: (link-based sharing — gated on agents.is_public).
+  L312: For the public-agent path we DO need a DB hit to confirm
+  L313: is_public; everything else (super_admin, apikey ACL) is already
+  L314: answered by Identity. EnsureAgent is idempotent so the lookup
+  L315: only fires before the agent lands in the user's Manager — once
+  L316: attached, AgentByID succeeds on subsequent requests.
+  L319: super_admin can lazy-attach foreign agents regardless of actAs
+  L320: mode. In actAs mode, EffectiveUserID() is the impersonated user
+  L321: — attaching the agent to THAT user's UserSpace is exactly what
+  L322: the admin Chats "Open" flow needs to read sessions written
+  L323: under user_id=impersonated. The previous `!ident.IsActingAs()`
+  L324: gate blocked this case and the chat panel rendered empty even
+  L325: though the session_messages rows existed in the DB.
+  L365: --- /api/status ---
+  L405: Pick the provider that actually backs the default model. The
+  L406: model id is "<providerName>/<modelID>" (split on first slash —
+  L407: modelIDs themselves can contain slashes, e.g.
+  L408: "openrouter/xiaomi/mimo-v2-flash"). Falling back to "first
+  L409: provider in the map" produced a mismatched panel where the
+  L410: header said one provider but the default model belonged to
+  L411: another.
+  L452: Surface the human-friendly name from the agents row so the
+  L453: dashboard list reads "default" / "ImgAny" instead of
+  L454: "agt_…". Look-up failures fall back to id-only so a
+  L455: transient store error doesn't black out the panel.
+  L468: --- /api/config (GET / POST) ---
+  L500: Compute the system-only resolution of agents.defaults so the
+  L501: dashboard can tell apart "inheriting from system" vs "overriding
+  L502: at my user scope" — `cfg` already merges user over system, so
+  L503: without this hint the UI sees the same value either way and
+  L504: can't render an Inheriting/Override badge.
+  L509: Marshal-then-extend keeps the response shape compatible (existing
+  L510: callers ignore the extra `meta` key) without forcing a refactor of
+  L511: config.Config to carry presentation metadata.
+  L527: PATCH semantics: load existing cfg, then decode the request into
+  L528: it. Go's json.Unmarshal leaves struct fields and map entries that
+  L529: aren't present in the JSON untouched, so /settings POSTing just
+  L530: `{"sandbox":{...}}` no longer wipes agents.defaults / skills.* /
+  L531: every other namespace via saveUserConfig's namespace sweep.
+  L542: Avoid merging stale per-agent skill entries back into the saved
+  L543: state — those are persisted via the per-agent loop below, not
+  L544: through the namespace sweep, and re-writing them here would
+  L545: re-build the legacy shape we just split apart.
+  L555: Per-agent skill env overrides (one row per agent at scope=agent,
+  L556: name=skills.entries). Pull from the raw body — not from the
+  L557: merged Config — so we only touch agents the caller actually
+  L558: patched, and don't echo every existing override back as a write.
+  L581: Cached UserSpaces hold a snapshot of the merged config (including
+  L582: agents.defaults.model and the provider chain). Without this, an
+  L583: agent loaded before the change keeps seeing the stale model and
+  L584: surfaces "no usable LLM provider" in chat.
+  L590: scopeForSave mirrors the scope-resolution logic in saveUserConfig so
+  L591: callers can invalidate exactly the UserSpaces that were just touched.
+  L606: --- /api/test-provider ---
+  L625: handleTestStoredProvider runs the same connection check, but reads the
+  L626: apiKey + apiBase + apiType + authType from a saved provider row instead
+  L627: of taking them from the request body. Lets the Edit dialog test against
+  L628: the stored secret so users don't have to re-paste the key on every edit.
+  L636: Test = read-equivalent: any user that can read the row can verify
+  L637: it works. They'll be using it via their agent runtime anyway, so a
+  L638: dashboard-side dry run shouldn't be more restrictive.
+  L642: The browser never receives the unmasked API key, so it stays
+  L643: server-side via the stored row. But everything else (apiBase,
+  L644: apiType, authType) is freely editable in the form and the user
+  L645: expects Test to exercise *what they typed*, not the saved row —
+  L646: otherwise tweaking the URL and clicking Test silently re-pings
+  L647: the old URL and reports green. Honor any overrides the client
+  L648: sends; fall back to the stored values when a field is omitted.
+  L681: runProviderTest issues a lightweight chat completion against the
+  L682: upstream provider. Shared between the inline test (key supplied in
+  L683: the request body, used during create / re-key) and the stored test
+  L684: (key looked up server-side, used during edit).
+  L686: We're deliberately stricter than "HTTP 2xx = ok" because some
+  L687: upstreams (one-api / new-api gateways, generic reverse proxies, even
+  L688: a misconfigured nginx) happily return 200 with HTML on a wrong path.
+  L689: A bare 2xx check there reports green for a URL that the runtime will
+  L690: later 404 on. So after the request we also require the response to
+  L691: look like a real Messages / ChatCompletion object.
+  L745: validateProviderTestBody confirms the 2xx body is a real Messages /
+  L746: ChatCompletion object rather than an HTML splash page or a generic
+  L747: gateway "ok" payload. Returns nil if the shape matches.
+  L782: --- /api/tasks ---
+  L810: --- chat handlers (delegate to per-user agent) ---
+  L815: ProjectID, when non-empty AND the session row doesn't yet exist,
+  L816: is the "this chat belongs to project X" hint the URL carries
+  L817: (`?project=<pid>`) before the first message. Once the row exists
+  L818: it's authoritative — the server reads project_id from the row
+  L819: and ignores any later hint.
+  L822: Images carries data URLs / HTTPS URLs for image attachments. The
+  L823: web client historically sends them under `imageUrls` (camelCase)
+  L824: while the API path uses `images`; we accept both and merge below
+  L825: so server-side plumbing has one canonical slice. Without this the
+  L826: web's image_url content parts never reach the agent (empty slice
+  L827: → no ContentParts persisted → history reload shows no image, and
+  L828: vision LLMs see only the text breadcrumb).
+  L831: Attachments is the typed, general-purpose attachment field. Each
+  L832: entry can carry an optional Name which is sanitized and used as
+  L833: the on-disk filename so the LLM sees `report.pdf` instead of
+  L834: `image_3jk7l_0.pdf`. Unlike Images / ImageURLs, entries here are
+  L835: NOT inlined as vision content parts — they only land in
+  L836: /workspace and reach the LLM via the `[Attached: /workspace/X]`
+  L837: breadcrumb. Use Images / ImageURLs (not Attachments) when you
+  L838: want the bytes shown directly to a vision model.
+  L843: attachmentRequest is the wire form of a single attachment. URL is the
+  L844: data: or http(s) URL; Name is the optional caller-supplied filename.
+  L850: allAttachments flattens the three input shapes (Images, ImageURLs,
+  L851: Attachments) into one ordered slice for materialization into
+  L852: /workspace. Order: Images → ImageURLs → Attachments. Clients
+  L853: normally pick one; mixing is allowed and not de-dup'd.
+  L872: inlineImageURLs returns just the URLs that should be inlined as
+  L873: vision content parts (PhotoURLs → image_url content blocks). Only
+  L874: the legacy image-only fields qualify: Images and ImageURLs are by
+  L875: contract caller-asserted images, so wrapping them as image_url is
+  L876: safe. The newer Attachments field is general-purpose (pdf / zip /
+  L877: txt are all legal), and feeding a non-image URL to provider vision
+  L878: channels fails the whole turn upstream (Anthropic returns 400 for
+  L879: `{type:image, source:{type:url, url:<pdf>}}`). Attachments reach
+  L880: the LLM via the `[Attached: /workspace/<file>]` breadcrumb instead.
+  L891: preMaterialized reports whether the caller already uploaded the
+  L892: attachments + prefixed `[Attached: /workspace/...]` breadcrumb into
+  L893: the message. The web client does this end-to-end (uploadAgentFiles +
+  L894: inline breadcrumb in chat/page.tsx); doing it again server-side
+  L895: double-writes the file under a generated name and emits a second
+  L896: breadcrumb, which the LLM reads as two distinct images and tries to
+  L897: edit each separately. API callers that just send raw images via the
+  L898: chat-completions extension have no breadcrumb, so the server has to
+  L899: materialize on their behalf.
+  L904: annotateMessageWithAttachments prepends one `[Attached: /workspace/<file>]`
+  L905: line per attachment to the user message — same breadcrumb format the web
+  L906: UI uses (see web/src/app/agents/[id]/chat/page.tsx:639-645), so the wire
+  L907: shape the LLM sees is identical regardless of whether the turn arrived
+  L908: via the web chat or the chat API. provider.StripAttachedPrefix scrubs
+  L909: these tags from stored history before they hit UI bubbles / page titles.
+  L911: We deliberately do NOT add a trailing "do not probe" block. An earlier
+  L912: pass tried that — but the explicit negative directive triggered the
+  L913: opposite of its intent (models reflexively `which`/`ls`/`file`'d the
+  L914: path "to confirm" before using it). The web path proves a single bare
+  L915: breadcrumb is enough; mirror that exactly.
+  L946: Resolve the chat's project so attachments land in
+  L947: projects/<pid>/ when the session belongs to one. Best-effort:
+  L948: failure → empty pid → loose-chat scope (the historical
+  L949: behavior).
+  L958: handleChatSteer buffers a message into an in-flight turn for the
+  L959: session. It does NOT open a stream or emit an event — the running
+  L960: turn (started by the earlier /api/chat/stream POST) folds the message
+  L961: in between tool rounds and emits the "steer" event on its existing
+  L962: SSE. 200 {"buffered":true} when a turn was active; 409
+  L963: {"buffered":false} when none is running, so the client falls back to
+  L964: a normal /api/chat/stream send.
+  L991: agentTurnTimeout is the upper bound on how long an agent goroutine
+  L992: is allowed to run after the client connection drops. Bumped to 45m
+  L993: after fan-out delegate_task work (6 parallel subagents × ~10m each
+  L994: driving camoufox-cli) routinely blew through the prior 15m budget
+  L995: in the middle of a Chat call, surfacing as "context deadline
+  L996: exceeded" to every sibling at once. 45m is comfortably above a
+  L997: realistic max-parallel fan-out with browser automation; still
+  L998: bounded so a genuine runaway loop doesn't pin a goroutine forever.
+  L1025: Defeat nginx / Cloudflare buffering of long-lived responses; the
+  L1026: agent loop emits chunks at human-typing pace and we want them on
+  L1027: the wire immediately, not held until the response closes.
+  L1039: Subscribe to the hub BEFORE starting the agent so we don't race
+  L1040: the first emitted event. The hub buffers in-flight events so
+  L1041: dispatch from emitEvent never blocks even if we're slow to drain.
+  L1047: Detach the agent's ctx from the request: when the browser tab
+  L1048: disconnects (refresh, close, network blip) we want the agent to
+  L1049: keep running so its already-paid-for LLM call finishes and the
+  L1050: reply lands in session_events. The 15-minute cap is the only thing
+  L1051: that can kill it.
+  L1053: cancel lives on the handler, not the agent goroutine: when a slash
+  L1054: queues a continuation we keep the SSE open past HandleMessage's
+  L1055: return, and inner-scope cancel would tear down agentCtx before the
+  L1056: continuation's events can reach this handler's safety-net check.
+  L1063: events param stays nil — emitEvent now fans out via the
+  L1064: streamCtx attached above (persist + hub). The legacy channel
+  L1065: path is no longer needed for this handler.
+  L1069: Heartbeat keeps proxies (nginx 60s default, Cloudflare 100s, ELB
+  L1070: 60s) from killing an idle SSE connection while the agent is
+  L1071: thinking but not yet emitting content.
+  L1076: turnPending flips on when the slash handler reports it queued a
+  L1077: continuation via bus.Inbound (`turn_pending` event). The POST
+  L1078: goroutine's HandleMessage has already returned, but the real
+  L1079: reply is still 10–15s away on a different goroutine — we keep
+  L1080: the SSE open so the browser's typing indicator stays visible
+  L1081: and the continuation's content_delta/content events stream into
+  L1082: the same connection. Cleared when the continuation's own `done`
+  L1083: arrives, at which point the loop returns normally.
+  L1088: Client dropped; the agent goroutine keeps running on
+  L1089: its detached ctx and persists every event it emits.
+  L1090: User reloading the chat page will pick up the rest via
+  L1091: /api/chat/subscribe?since=N.
+  L1094: Race: HandleMessage publishes `turn_pending` to the hub
+  L1095: AND `defer close(agentDone)` fires from the same goroutine.
+  L1096: Go's select picks at random when both are ready, so
+  L1097: agentDone can win even when a turn_pending event is
+  L1098: sitting in the sub buffer. Drain pending events first to
+  L1099: make the decision deterministic.
+  L1120: HandleMessage returned silent after queueing a
+  L1121: continuation. Don't close; wait for the continuation's
+  L1122: `done` event over the hub instead. agentCtx.Done()
+  L1123: (15-min timeout) is the upper bound if it never lands.
+  L1129: Safety net for the turnPending path above: bail out at
+  L1130: the agent context's hard timeout even if no `done` event
+  L1131: ever arrives.
+  L1152: forwardEvent writes one EventEnvelope to the SSE response. Includes
+  L1153: seq inline in the JSON payload (in addition to the SSE `id:` line)
+  L1154: so the fetch-based parser used by the frontend's POST sendChatStream
+  L1155: can dedup against the parallel /api/chat/subscribe SSE connection.
+  L1156: Without this dedup, every chunk renders twice during an active turn.
+  L1173: handleChatSubscribe holds an SSE connection open for one (agent,
+  L1174: session) pair and forwards three kinds of traffic:
+  L1176: 1. Replay: session_events rows with seq > since (or > Last-Event-ID)
+  L1177: that the client missed before connecting. Lets a freshly
+  L1178: reloaded page pick up an in-flight turn without the rest of the
+  L1179: reply disappearing.
+  L1181: 2. Live agent chat events from the hub — every emitEvent call from
+  L1182: the agent loop fans through here. This covers both the
+  L1183: synchronous POST /api/chat/stream path AND turns started by
+  L1184: other tabs / cron firings, so any open chat panel sees them
+  L1185: regardless of who triggered the work.
+  L1187: 3. Legacy WebChannel bus messages — cron-fired final replies that
+  L1188: route through bus.Outbound rather than the chat-event path.
+  L1189: Kept so we don't lose pre-existing functionality during the
+  L1190: transition.
+  L1192: Auth gating reuses resolveAgent, so the caller must already have
+  L1193: permission to chat with this agent. The subscription doesn't
+  L1194: generate any traffic on its own — closes are silent (client gone).
+  L1220: Initial flush so the client EventSource fires `open` immediately.
+  L1224: Resume point: prefer Last-Event-ID (browser-managed reconnect),
+  L1225: fall back to ?since=N for callers that pass it explicitly. -1
+  L1226: means "stream live only, no replay".
+  L1240: Subscribe BEFORE replay so any event that lands while we're
+  L1241: scanning the DB ends up either in the replayed range OR in the
+  L1242: live channel — never both, never lost.
+  L1246: Replay missed events from the persistent log.
+  L1266: Legacy webChan path: cron-fired bus.Outbound messages. Kept until
+  L1267: the cron path is refactored to emit through the chat-event hub
+  L1268: (then this can go away).
+  L1291: content_delta is the high-volume token-by-token stream
+  L1292: that drives the active turn's bubble. It is intentionally
+  L1293: NOT persisted (see emitEvent), arrives with seq=-1, and is
+  L1294: already delivered to the initiating tab via the POST
+  L1295: /api/chat/stream subscription on the same hub. Forwarding
+  L1296: it here would double-render on the active tab; reloaders
+  L1297: who join mid-turn miss the partial reveal but still get
+  L1298: the trailing `content` event with the full text.
+  L1302: Drop replay-overlap events: any event with seq <= the
+  L1303: highest seq we already streamed during replay. Without
+  L1304: this, a browser that reconnects at exactly the wrong
+  L1305: moment would render the same content chunk twice.
+  L1349: handleChatTodo reads the per-session todo.md the agent maintains and
+  L1350: returns it as both raw markdown and a parsed checklist. We resolve
+  L1351: the session key → (chatID, projectID) here so the frontend doesn't
+  L1352: need to know the on-disk path layout (`sessions/<chat>/todo.md` vs
+  L1353: `projects/<pid>/<chat>/todo.md`).
+  L1355: A missing file is not an error — fresh sessions or runs that don't
+  L1356: use the todo convention return {items: [], raw: ""}. Frontend hides
+  L1357: the panel when items is empty.
+  L1371: Build the agent-relative path. Project chats live under
+  L1372: projects/<pid>/<chat>/, plain chats under sessions/<chat>/. The
+  L1373: agent's workdir resolves bare filenames to its session subdir, so
+  L1374: a `write_file("todo.md", ...)` from the agent lands at one of
+  L1375: these two paths — same shape that handleAgentFileList already
+  L1376: surfaces.
+  L1392: 404 / not-yet-written / FS miss — return empty rather than
+  L1393: surfacing the error; the panel just stays hidden until the
+  L1394: agent writes one.
+  L1405: readWorkspaceFileBytes reads a single agent-relative file via the
+  L1406: workspace store, falling back to the local FS layout when no store
+  L1407: is wired. Bare path-string interface used only by the todo endpoint
+  L1408: — workspaceStore.Get expects (projectID, chatID) but here we already
+  L1409: baked them into the path, so pass empties.
+  L1431: parseTodoMarkdown extracts checkbox lines from a todo.md body and
+  L1432: returns them as structured items. Conventions:
+  L1434: - [ ] text   → pending
+  L1435: - [x] text   → completed
+  L1436: - [X] text   → completed (case-insensitive)
+  L1438: Anything else (heading lines, blank lines, non-checkbox bullets) is
+  L1439: ignored — todo.md doubles as a human-readable plan document, so we
+  L1440: don't force a rigid schema. Indented checkboxes are NOT supported
+  L1441: in v1 (no sub-tasks); flatten them in the model's nudge if needed.
+  L1443: Duplicate-text entries get merged: first occurrence wins the slot,
+  L1444: `done` is OR'd across all occurrences. This is defensive — the
+  L1445: convention says use edit_file to flip a single item, but if the
+  L1446: model accidentally re-runs write_file and stacks old + new lists,
+  L1447: we'd otherwise show the same step twice. Progress (done=true) is
+  L1448: sticky on merge so a later pending duplicate can't regress an
+  L1449: already-checked item.
+  L1491: latestEventSeq is the resume cursor for /api/chat/subscribe — the
+  L1492: client opens that endpoint with `since=<latestEventSeq>` so a
+  L1493: fresh page load picks up only deltas it hasn't already rendered.
+  L1494: Best-effort: a missing/zero value just means "stream live only,
+  L1495: no replay", which is the right fallback when the session has no
+  L1496: in-flight turn or when session_events isn't backfilled.
+  L1519: Body-or-query for agentId — the frontend sends it in the JSON body
+  L1520: (see renameChatSession in web/src/lib/api.ts), matching the
+  L1521: handleMoveSessionProject convention. The earlier query-only path
+  L1522: always saw "" and bailed at resolveAgent with a silent 404, so
+  L1523: "Edit chat title" looked like a no-op even though the dialog
+  L1524: submitted cleanly.
+  L1563: handleMoveSessionProject reassigns one chat to a different project
+  L1564: (or detaches it back to the loose-chat list when projectId is "").
+  L1565: Backs the sidebar drag-and-drop affordance: dragging a chat row
+  L1566: onto a project header / out of one fires this endpoint.
+  L1568: Request body: { "agentId": "...", "projectId": "<pid>" | "" }
+  L1570: Side effects beyond the sessions.project_id flip:
+  L1571: - Workspace files are moved between sessions/<sid>/ and
+  L1572: projects/<pid>/<sid>/ so the next turn sees its own artifacts
+  L1573: under the new scope. Empty source dir = no-op.
+  L1574: - Any active sandbox bound to this chat is released so the
+  L1575: replacement container starts with the new bind-mount path.
+  L1577: Returns 409 with code="destination_exists" when the target dir
+  L1578: already has files (defensive — session_keys are unique so this
+  L1579: shouldn't happen organically, but better than silent merge).
+  L1597: Owner-only — moving a chat changes its workspace path, which a
+  L1598: read-only viewer should never trigger.
+  L1606: Validate the target project exists and belongs to this caller.
+  L1607: Empty projectId is the "detach" case — always allowed.
+  L1638: handleFeishuWebhook receives Feishu / Feishu event POSTs. The route is
+  L1639: public (Feishu doesn't auth via bkclaw bearer); per-event security
+  L1640: is enforced inside the Feishu adapter by validating the payload's
+  L1641: header.token against the verification token stored at connect time.
+  L1643: Hands the raw body to the gateway (via type-asserted dispatcher
+  L1644: hook) which finds the right adapter by accountID. The adapter
+  L1645: returns an HTTP body + status — handler just relays it. URL
+  L1646: verification challenges and real events both go through this same
+  L1647: path; the adapter discriminates internally.
+  L1679: handleLINEWebhook receives LINE Messaging API event POSTs. The route
+  L1680: is public (LINE doesn't auth via bkclaw bearer); per-event security
+  L1681: comes from the HMAC-SHA256 signature in `x-line-signature` which the
+  L1682: adapter validates against channel_secret + the raw body.
+  L1684: Reads the body once, hands the raw bytes + signature to the gateway
+  L1685: dispatcher (re-encoding the JSON would change the bytes the HMAC was
+  L1686: computed over and break verification).
+  L1719: --- Helpers ---
+  L1814: debugLog is used from various handlers for diagnostic events; kept as a
+  L1815: thin wrapper so handler files don't import slog directly.
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_admin.go ===
+  L19: --- Login / logout / me ---
+  L76: deployMode lets the frontend show or hide local-only conveniences
+  L77: (open-in-Finder for the workspace folder, future "edit SOUL.md in
+  L78: $EDITOR" hooks, etc). One source of truth here so we don't read
+  L79: the env var in 5 different handlers; the frontend can cache it
+  L80: alongside the user profile since it doesn't change at runtime.
+  L95: --- Self-service profile ---
+  L97: maxAvatarBytes caps the size of a base64-encoded avatar payload. ~256KB
+  L98: is enough for a reasonable square (e.g. 256×256 PNG); anything larger
+  L99: pushes the users row into TOAST territory on Postgres and slows /api/me.
+  L100: Frontend should resize/compress before upload — this is just the wall.
+  L108: handleUpdateMe lets the logged-in user edit their own display name and
+  L109: avatar. Avatar must be empty (clears) or a data: URL — full-blown HTTP
+  L110: URLs would let a malicious paste exfiltrate user data via referer when
+  L111: rendered, so we constrain to inline images only.
+  L146: handleChangeMyPassword is the self-service variant of admin's password
+  L147: reset — requires the current password before accepting a new one. Min
+  L148: length matches the implicit default elsewhere; we don't enforce strong
+  L149: rules because the install is single-tenant and we don't want to be
+  L150: the place that rejects "correcthorse" with a regex.
+  L181: --- Onboard ---
+  L208: handleOnboard creates the first super_admin + first system provider +
+  L209: first agent, all in a single logical operation. Only callable when the
+  L210: users table is empty; subsequent calls 409.
+  L252: Seed the chosen model into Provider.Models so the Models /
+  L253: Providers admin pages show it right away — without this, users
+  L254: land on an "Edit Provider" dialog with an empty Models list
+  L255: and an inactive Test connection button, even though
+  L256: agents.defaults already names this model.
+  L327: --- Admin: user management ---
+  L335: app_user accounts are programmatically provisioned by api_keys on
+  L336: behalf of downstream end-users — they're not humans the admin
+  L337: manages, and their volume can be very large. Hide them by default;
+  L338: admins that need to audit them can pass ?includeAppUsers=1.
+  L358: AgentQuota is a pointer so the admin can distinguish "unset →
+  L359: use the default unlimited" from "explicitly 0 → no self-creation".
+  L361: AvatarURL is an optional inline data:image/* URL (≤256KB). Same
+  L362: shape and cap as the self-service /api/me endpoint.
+  L364: ExternalID is the calling app's own user identifier. Combined
+  L365: with the auth-derived apikey_id (NOT taken from the body) it
+  L366: makes provisioning idempotent: the same upstream user always
+  L367: resolves to the same bkclaw user_id. Optional for session
+  L368: callers (web admin clicks); typical for upstream apikey
+  L369: provisioning where the caller wants a stable mapping back to
+  L370: their own user table.
+  L390: apikey_id is auth-derived, never trusted from the body — that
+  L391: row is what audits a provisioned user back to the key that
+  L392: minted them. Empty for session callers (web admin), populated
+  L393: when an admin apikey hits this endpoint.
+  L469: respondAllAgents returns every agent across every user, with the
+  L470: owner's username/email joined in. Backs GET /api/agents?all=true for
+  L471: the platform-wide admin view; the auth gate lives in handleListAgents
+  L472: (which calls this only after CanAdminPlatform passes).
+  L483: Resolve owner usernames once per unique userID — N agents could
+  L484: belong to a handful of users, so a per-row lookup would re-hit the
+  L485: store for the same id repeatedly.
+  L520: handleAdminChats returns every chat session across every (user, agent)
+  L521: pair, enriched with the owning user's username and the agent's name so
+  L522: the platform-wide admin Chats page can render one flat table without
+  L523: fanning out per-agent on the client. Super_admin only — registered on
+  L524: /api/admin/chats and gated by the admin middleware.
+  L526: Implementation note: we fan out per (chatter user_id, agent_id) pair
+  L527: from the sessions table, NOT per agent. A non-owner who binds their
+  L528: own bot to a public agent (or chats with a public agent on the web)
+  L529: writes session rows under their own user_id — an iteration keyed by
+  L530: agent.owner would miss those sessions entirely. The pair fan-out
+  L531: captures every chatter regardless of whether they own the agent. The
+  L532: "Owner" column then reflects the chat's actual user, so the actAs
+  L533: link in the dashboard can impersonate the real session owner instead
+  L534: of the agent owner (who may have no read access to the session).
+  L573: Orphan session row whose agent has been deleted — skip
+  L574: rather than surfacing a row with a blank Agent column.
+  L612: --- Admin provisioning (per-user) ---
+  L614: The handlers below all live under /api/users/{id}/* — admin-or-self
+  L615: per requireUserOrAdmin. The admin path bypasses the target user's
+  L616: agent_quota (call initiated by the platform); the self path enforces
+  L617: it. Quota / fork semantics live inside the relevant handler.
+  L619: handleListUserAgents returns the agents owned by the path-resolved
+  L620: user. Admin-or-self via requireUserOrAdmin (admin can list any
+  L621: user's; non-admin can only list their own). Same response shape as
+  L622: the regular agents list so admin tools can reuse rendering.
+  L656: ForkFrom is an optional source agent id. When set, the new agent
+  L657: inherits SOUL.md / IDENTITY.md / AGENTS.md / BOOTSTRAP.md /
+  L658: TOOLS.md / HEARTBEAT.md / agent.json from the source's owner-row,
+  L659: plus the source's agent-scope `agents.defaults` and
+  L660: `skills.entries` config rows. Per-user state (MEMORY.md, USER.md,
+  L661: sessions, cron_jobs) and per-owner routing (channel bindings)
+  L662: are deliberately NOT copied. Fork sources can be any agent the
+  L663: caller (super_admin) can read.
+  L667: handleCreateUserAgent creates an agent owned by the path-resolved
+  L668: user. Behavior depends on caller:
+  L669: - admin (super_admin / type=admin apikey) → bypass the target's
+  L670: agent_quota; forkFrom is honored (clones an existing agent's
+  L671: identity into the new one).
+  L672: - self (target user calling for themselves) → enforce their own
+  L673: agent_quota; forkFrom is ignored to avoid letting users clone
+  L674: other people's private agents into their namespace through this
+  L675: path.
+  L677: The created agent is always private; flip via the regular
+  L678: PUT /api/agents/{id} flow.
+  L701: Quota only applies on the self path. Admin provisioning is
+  L702: initiated by the platform and intentionally bypasses it.
+  L770: Fork content: identity files + agent-scope configs.
+  L791: forkAgentFiles is the allowlist of files copied during fork. These
+  L792: are the agent's identity (what it IS / does); per-user state
+  L793: (MEMORY.md, USER.md) is intentionally omitted so each chatter starts
+  L794: fresh on the new agent.
+  L800: forkAgentScopeConfigs is the allowlist of agent-scope config rows
+  L801: copied during fork. Bindings are deliberately excluded — they encode
+  L802: the source owner's IM routing (bot tokens, chat ids) and would be
+  L803: nonsensical on the new agent under a different owner.
+  L809: forkAgentContent copies the source agent's owner-row identity files
+  L810: and agent-scope configs into the destination agent. Best-effort per
+  L811: file: a missing source file is skipped silently (the destination
+  L812: just has no override for it, which the runtime handles via the
+  L813: usual fallback paths).
+  L845: handleCreateUserAPIKey issues an apikey owned by the path-resolved
+  L846: user. Admin-or-self via requireUserOrAdmin:
+  L847: - admin caller may issue user/agent keys for any user
+  L848: - non-admin caller may issue keys only for themselves (id == self)
+  L850: type=admin is always rejected through this path — admin keys grant
+  L851: platform-wide rights and shouldn't be auto-provisioned for a target
+  L852: user; admin who needs an admin key issues one for themselves via
+  L853: POST /api/users/{self}/apikeys (which becomes self-create and the
+  L854: route still requires admin caller anyway).
+  L888: Admin keys are never minted via this path — they could only
+  L889: originate via super_admin doing POST /api/users/{self}/apikeys
+  L890: for themselves, which would still bypass intent ("here's a
+  L891: platform key for that other user"). If a super_admin needs a
+  L892: fresh admin key for themselves, they self-issue from the
+  L893: settings UI; we don't expose a programmatic admin-key mint.
+  L908: Self caller: must own each agent.
+  L909: Admin caller: target must own each agent (admin can't
+  L910: bind random user A's agent into user B's apikey).
+  L927: --- Apikey CRUD (per-user) ---
+  L948: Only type=agent keys carry an explicit agent list; user/admin
+  L949: derive scope from ownership at auth time, so an empty array
+  L950: here means "the tier defines the scope, not the row."
+  L968: handleCreateAPIKey enforces the role × type policy:
+  L969: - super_admin may issue admin / user / agent keys
+  L970: - regular user may issue user / agent keys (only for their own agents)
+  L971: - app_user (provisioned via apikey) may not issue keys at all
+  L973: type=agent additionally requires that every agentId resolves to an
+  L974: agent the caller is allowed to bind — owners can bind their own,
+  L975: super_admins can bind anyone's. This is the authoritative gate; the
+  L976: users package only validates shape, not policy.
+  L1008: Bind only agents the caller controls. Super_admin can bind
+  L1009: anyone's; everyone else must own each one.
+  L1117: generateID returns a random hex id with the given prefix.
+  L1126: newRandID is implemented in handlers.go to share with other generators.
+  L1128: Force a compile reference so unused import warnings stay loud
+  L1129: when refactoring; otherwise no-op.
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_agents.go ===
+  L29: agentShareModelConfig reports whether the agent's owner has opted to
+  L30: share their model + provider configuration with chatters. Default
+  L31: true: when the key is absent from rec.Config, sharing is on. Owners
+  L32: explicitly opt OUT by writing `false`. Centralised here so the API
+  L33: layer, the runtime overlay gate (EnsureAgent), and the listProviders
+  L34: auth relaxation read the flag with one consistent default.
+  L46: agentScopeModel reads the per-agent model override from the configs
+  L47: table — the kind=setting, scope=agent row that supersedes the
+  L48: system/user defaults when set.
+  L60: saveAgentScopeModel upserts (model="") or deletes (model=="") the
+  L61: agent-scope agents.defaults row.
+  L70: agentScopeDefaultsRead returns the current agent-scope agents.defaults
+  L71: row data, or an empty map if the row doesn't exist yet. Callers use
+  L72: this as the base for merge-aware patches (read-modify-write) so a
+  L73: single PATCH that touches one field doesn't clobber the rest.
+  L79: Copy so callers mutating the result don't accidentally write
+  L80: back through the cached store object.
+  L88: applyAgentScopeDefaultsPatch merges patch into the current
+  L89: agents.defaults row and writes the result. Keys whose value is nil are
+  L90: DELETED from the row (the caller's signal for "clear this override").
+  L91: A row that ends up empty is removed entirely so MergedAgentConfig
+  L92: falls all the way back to system/user defaults.
+  L111: applyAgentScopePluginsPatch merges per-agent plugin enable
+  L112: overrides into the (scope=agent, name=plugins.enabled) row.
+  L114: patch keys whose value is true/false are written; the rest of the
+  L115: row is preserved (so a UI toggle for one plugin doesn't clobber
+  L116: overrides for sibling plugins). When reset is true, the entire row
+  L117: is dropped — agent falls back to system-wide plugin enable state.
+  L137: agentScopeSplitReplies reads the per-agent multi-bubble override.
+  L138: Returns nil when absent — nil is treated as false by every runtime
+  L139: consumer, so the distinction only matters for the GET response (the
+  L140: dashboard could choose to render "unset" differently from "off", but
+  L141: today the Switch renders both as off and that's fine).
+  L154: agentScopePromptMode reads the per-agent promptMode override.
+  L166: agentScopePlugins reads the per-agent plugin enable overlay. Returns
+  L167: nil when no row exists. Keyed pluginID → bool; missing keys fall
+  L168: through to the system-wide plugin entry's enabled state.
+  L186: agentScopeAutoPersist reads the per-agent autoPersist override.
+  L187: Returns nil when absent — same convention as agentScopeSplitReplies.
+  L188: Drives the runPostTurn AutoPersistMemory pass (LLM-distilled writes to
+  L189: USER.md / MEMORY.md) which is the only chatter-memory persistence
+  L190: path in chatbot mode.
+  L203: effectiveUserID returns the resolved user_id for the request: the
+  L204: caller's own id, or — for super_admin in actAs mode — the impersonated
+  L205: user's id.
+  L214: requireWritable returns true if the caller may mutate, writing a 4xx
+  L215: response and false otherwise.
+  L235: ?all=true is the cross-tenant view (replaces /api/admin/agents).
+  L236: Admin-only — for the platform-wide "Agents" admin page that
+  L237: joins owner usernames in.
+  L295: Enforce per-user agent quota. -1 = unlimited (default), 0 = no
+  L296: self-creation (single-tenant customers — admin provisions for
+  L297: them via POST /api/users/{id}/agents under admin caller),
+  L298: N>0 = max N owned at once. Admin path bypasses this check.
+  L323: Description lives in the agents.config JSON blob — keeps the
+  L324: schema stable while still surfacing through GetAgentConfig and
+  L325: the agents.config namespace settings overlay.
+  L350: requireUserOrAdmin gates the /api/users/{id}/* nested routes:
+  L351: - any caller may operate on themselves (pathUserID == ident.UserID)
+  L352: - super_admin / type=admin apikey may operate on any user
+  L354: Returns true on success; on failure writes a 401/403 and returns false.
+  L355: Callers should still validate that the path user actually exists when
+  L356: the operation depends on it.
+  L377: requireAgentOwner returns the agent record if the caller owns it (or is
+  L378: super_admin), otherwise writes a 403/404 and returns nil.
+  L394: requireAgentReadable allows access when the caller is the owner, a
+  L395: super_admin, holds an apikey-ACL grant (CanAccessAgent), OR the
+  L396: agent is marked public and the caller is at least an authenticated
+  L397: session. Public agents are link-shared: any signed-in user who hits
+  L398: the URL can chat under their own user_id namespace, while the
+  L399: agent's identity (SOUL/IDENTITY/skills) is reused from the owner's
+  L400: row. This is the same gate /api/chat/history uses, so app_user
+  L401: requests proxied through an integration with X-Bkclaw-End-User
+  L402: can read artifacts for sessions they own without 403'ing on the
+  L403: strict ownership check.
+  L404: callerOwnsAgent returns true when the caller is the agent's owner, a
+  L405: super_admin, or an apikey explicitly scoped to the agent. Unlike
+  L406: requireAgentReadable this does NOT grant public-agent readers — used
+  L407: by file-scope code that needs to distinguish "browse everything"
+  L408: (owner) from "scope to your own session" (foreign caller on a public
+  L409: agent). Failures are silent: caller decides how to respond.
+  L437: CanAccessAgent is a hard check for apikeys (ACL) but a deferred
+  L438: "true" for session callers — the comment on Identity.CanAccessAgent
+  L439: spells this out. Only honor it for the apikey path; for session
+  L440: users we must do the explicit owner / public check ourselves,
+  L441: otherwise any signed-in user could GET another user's private
+  L442: agent via /api/agents/{id} and friends.
+  L468: PromptMode is a ptr so the caller can distinguish "leave
+  L469: unchanged" (omitted / null) from "clear override" (empty
+  L470: string). Allowed string values: "agent" | "chatbot" |
+  L471: "customize" — empty falls back to system default ("agent").
+  L472: PromptMode also drives the built-in tool surface; there is
+  L473: no separate allowlist field by design (extend via plugins).
+  L475: SplitReplies per-agent override: nil = leave unchanged,
+  L476: non-nil pointer-to-bool = set explicit value (true/false).
+  L477: Distinct from "clear" which is a separate signal — the
+  L478: dashboard sends `splitRepliesReset: true` to delete
+  L479: the override and fall back to system default.
+  L482: AutoPersist per-agent override — same semantics as SplitReplies.
+  L483: `autoPersistReset:true` clears the override and falls back to
+  L484: system default (currently effectively disabled).
+  L487: Plugins per-agent enable overlay. Keys are plugin IDs, values
+  L488: are bool. Patch semantics: only the keys present in this map
+  L489: get written; other keys in the existing row are preserved.
+  L490: To clear all overrides for this agent, send pluginsReset:true.
+  L514: shareModelConfig controls whether a chatter using this agent
+  L515: inherits the owner's model + provider configuration. Default
+  L516: true: sharing is on unless the owner explicitly opts out.
+  L517: Encoding: absent key = on (the new-agent default), explicit
+  L518: `false` = opt-out. We never store `true` — storing absence for
+  L519: the default keeps existing rows minimal and means a future
+  L520: default flip needs only one place to change (agentShareModelConfig
+  L521: above). Stored in the agent's config blob so we don't need a
+  L522: schema migration; runtime reads it back in EnsureAgent to gate
+  L523: the owner-fallback + agent-scope overlays.
+  L538: Per-agent defaults live in one configs row (kind=setting, scope=agent,
+  L539: namespace=agents.defaults). Collect every field the caller touched
+  L540: into a single merge-aware patch so e.g. updating promptMode doesn't
+  L541: clobber an existing model override and vice versa. nil pointer =
+  L542: caller didn't touch the field; ptr-to-empty = "clear this override".
+  L554: Allow only the documented values plus empty (= clear).
+  L555: Anything else is a 400 — silently coercing to "agent" would
+  L556: mask typos from the dashboard or CLI.
+  L568: Reset wins over set in the same request — the dashboard's
+  L569: "Inherit" pill writes this flag.
+  L583: Plugins-enabled overlay: separate config row (scope=agent,
+  L584: name=plugins.enabled), so doesn't go through the agents.defaults
+  L585: patch path. Reset clears the row entirely; otherwise we merge
+  L586: the incoming map keys into the existing data.
+  L593: invalidateAgent (not invalidateUser) so super_admin / public-link
+  L594: viewers / apikey callers that lazy-attached this agent into their
+  L595: own UserSpace also drop their stale rc.Model — without this they
+  L596: keep firing the previous model until the 30-min idle eviction.
+  L616: handleGetAgent returns the basic AgentRecord (id, name, description,
+  L617: userId) for one agent. Used by the chat header / sidebar switcher to
+  L618: resolve a display name. Permission is read-level — owner, super_admin,
+  L619: or any grantee of a sharing record.
+  L684: Drop the agent from every cached UserSpace, not just the owner's,
+  L685: so foreign callers stop resolving the now-deleted agent through
+  L686: EnsureAgent's lazy-attach path.
+  L691: Agent identity / memory files — all live in agent_files, agent-scoped.
+  L692: Two classes:
+  L694: - identity files (agentIdentityFiles below) are the canonical "shared
+  L695: template" for the agent. They live under a single row keyed by the
+  L696: agent owner's user_id — so admin provisioning, the owner's edits,
+  L697: and the agent's own BOOTSTRAP-flow write_file calls all converge on
+  L698: the same row. Mirrors handlers_admin.forkAgentFiles and
+  L699: internal/agent/tools.identityFiles; keep these three lists in sync.
+  L701: - per-user files (USER.md, MEMORY.md) are state that genuinely
+  L702: differs per chatter. They're keyed by the caller's effective
+  L703: user_id; a non-owner caller can author their own override and the
+  L704: read path falls back to the owner's row when none exists.
+  L706: Filename allowlist gates which files this endpoint can touch at all;
+  L707: agent-runtime tool calls go through the workspace store instead.
+  L737: Identity files: read the owner's row directly — that's the single
+  L738: source of truth, regardless of who's asking.
+  L753: Per-user files: prefer caller's own row, fall back to the owner's.
+  L754: `source: "db"` means the caller has authored an override; "owner"
+  L755: means we're showing the agent owner's row by fallback. The
+  L756: frontend uses this to decide whether to show the "Edited" badge
+  L757: and enable the Revert action.
+  L838: resolveSystemFileTarget figures out which user_id row a write/delete
+  L839: on (agentID, filename) should hit, and gates access:
+  L841: - Identity files (SOUL/IDENTITY/AGENTS/BOOTSTRAP/TOOLS/HEARTBEAT/
+  L842: agent.json) always target the agent owner's row — this is the
+  L843: canonical "shared template". Caller must be the owner or hold
+  L844: platform admin (super_admin session, or type=admin apikey).
+  L845: - Per-user files (USER.md, MEMORY.md) target the caller's own row
+  L846: so each chatter has an independent override. Caller just needs
+  L847: read access to the agent.
+  L849: Writes 4xx and returns ok=false on permission/lookup failures.
+  L871: Workspace files — list / get / upload of agent-produced artifacts.
+  L872: Backed by the workspace.Store blob backend, whose layout is
+  L874: workspaces/<agent_id>/<session_id>/<path>
+  L876: The HTTP file endpoints below operate at the agent-root level
+  L877: (sessionID="") — that's where uploads land and where ListByAgent
+  L878: returns objects across every session of that agent. The agent runtime
+  L879: passes its own sessionID for in-chat tool calls; those land under the
+  L880: session sub-prefix automatically.
+  L882: workspaceSessionScope translates the URL `?sessionId=` token into
+  L883: the directory name used under workspaces/<agent>/sessions/. The URL
+  L884: token is the session_key (so the dashboard can address any session
+  L885: uniformly), but workspace artifacts are namespaced by chat_id
+  L886: instead — that's what the agent runtime passed at write time.
+  L888: Returns the chat_id when the session_key resolves under the caller's
+  L889: (user_id, agent_id). Returns "" when the lookup fails — including
+  L890: the case where the session belongs to a DIFFERENT user — so callers
+  L891: don't accidentally widen scope into another user's files. Pre-fix
+  L892: behavior was to fall back to the raw URL token; on a public agent
+  L893: that let a non-owner caller pass a known chat_id of the owner and
+  L894: read its files because the resulting scope was sessions/<their chat>/.
+  L920: Always List with project + session both empty so returned paths
+  L921: stay agent-relative (e.g. "sessions/<sid>/foo.png" or
+  L922: "projects/<pid>/notes.md") — the download endpoint expects that
+  L923: shape, and filtering here is cheaper than two divergent code paths.
+  L944: fileScope describes which agent-relative paths to surface for the
+  L945: file browser / zip filter. acceptPath returns true for paths the
+  L946: scope considers in-bounds:
+  L948: loose chat:  paths under sessions/<chat_id>/
+  L949: project chat: paths under projects/<pid>/<chat_id>/ (the chat's
+  L950: own files), PLUS files directly at projects/<pid>/
+  L951: (project-root "shared/legacy" files — pre-subdir
+  L952: layout still lives there, and operators may
+  L953: deliberately drop shared files at the root). Other
+  L954: chats' subdirs (projects/<pid>/<other-sid>/...)
+  L955: are excluded — those belong to that chat's panel.
+  L956: no session:  everything (admin browser).
+  L958: archiveSuffix returns the human-readable scope id used in the zip
+  L959: filename — chat_id for loose chats, "<pid>-<chat_id>" for project
+  L960: chats so a download names "agent-pid-sid.zip" instead of
+  L961: disambiguating by chat_id alone.
+  L967: stripScopePrefix removes the deepest known scope prefix from an
+  L968: agent-relative path so zip entries read as plain filenames. Order
+  L969: matters: project chats are tried before session chats so a
+  L970: `projects/<pid>/<sid>/foo.md` collapses to `foo.md` rather than
+  L971: `<pid>/<sid>/foo.md`. Top-level project files keep the leading
+  L972: `projects/<pid>/` strip so they read as bare filenames too.
+  L979: Cut after the scope id (one path segment).
+  L982: Project paths can have a second id segment for the
+  L983: per-chat subdir; collapse that too when present.
+  L986: Only treat the first segment as a chat id when it
+  L987: looks like one (s-... prefix). Otherwise keep
+  L988: rest as-is so legacy "subdir/file.md" structures
+  L989: don't get over-stripped.
+  L1002: rejectAllScope returns a fileScope that lets nothing through. Used
+  L1003: when the caller asked for a sessionId we can't resolve for them, so
+  L1004: a non-owner can't widen into another user's files on a public agent
+  L1005: just by guessing/leaking a chat_id.
+  L1013: Project landing page: no specific chat is open, so the panel
+  L1014: shows everything under projects/<pid>/ — every chat's subtree
+  L1015: plus root-level shared files. The sessionId branch below is
+  L1016: the per-chat view; use this branch when the URL is
+  L1017: /agents/<aid>/project/<pid> with no chat selected.
+  L1026: Agent-wide view (no scope params at all). Owner / super_admin
+  L1027: can legitimately browse every file; non-owners (public-agent
+  L1028: viewers, foreign apikey callers) must specify a session they
+  L1029: own, otherwise we'd hand them other users' files.
+  L1037: sessionId didn't resolve to a chat THIS caller owns — either
+  L1038: it doesn't exist or it belongs to another user. Either way,
+  L1039: surface nothing. Pre-fix behavior was to widen back to
+  L1040: "accept all", which on a public agent meant non-owners could
+  L1041: list every chat's files by passing a junk sessionId.
+  L1052: Top-level file at projects/<pid>/<file> (no further
+  L1053: "/" — i.e. not in any sid subdir).
+  L1070: handleAgentFilesZip streams a zip of every workspace file for the agent
+  L1071: (or just one session when ?sessionId= is set). Files are added with
+  L1072: their session-relative path so the archive layout matches what the user
+  L1073: sees in the chat panel — no enclosing wrapper directory.
+  L1093: Wrap entries in a folder named after the archive so extractors
+  L1094: (macOS Archive Utility, Windows Explorer, 7zip…) place every
+  L1095: file inside one directory instead of dumping them loose next
+  L1096: to the zip. Without this, "5 files extracted" looks like
+  L1097: "files went missing" because they fan out into Downloads/.
+  L1110: Strip the deepest scope prefix from the archive entry name
+  L1111: so the user sees clean filenames in the zip rather than
+  L1112: nested `projects/<pid>/<sid>/foo.md` paths.
+  L1125: Continue, not return — finalizing the archive with the
+  L1126: rest of the entries is more useful than bailing out and
+  L1127: leaving the user with a single file. Pre-fix behavior:
+  L1128: any transient hiccup partway through truncated the zip
+  L1129: to whatever was already written, surfacing in prod as
+  L1130: "only one image came out".
+  L1157: handleAgentWorkspaceReveal opens the chatter's workspace folder in
+  L1158: the operator's native file browser (Finder/Explorer/xdg-open).
+  L1159: Self-hosted only — hosted deployments don't have a meaningful
+  L1160: concept of "the operator's local filesystem" and the chatter
+  L1161: doesn't own the daemon, so exposing this would be a privilege
+  L1162: leak. Reads sessionId / projectId from the query string, mirrors
+  L1163: fileScopeForRequest's resolution (session_key → chat_id, project
+  L1164: lookup) so the revealed dir matches what the chat-side Workspace
+  L1165: panel is showing.
+  L1167: Best-effort: returns 200 with the resolved path on success, 4xx
+  L1168: on bad scope, 503 when the configured workspace store doesn't
+  L1169: expose a host path (S3 / R2 deploys), 500 if the OS open command
+  L1170: fails. Non-blocking — we don't wait for Finder to actually
+  L1171: surface the window.
+  L1195: Resolve to the same (project, chatID) the chat-side panel is
+  L1196: scoped to. Empty rawSession + non-empty projectId means project
+  L1197: landing — reveal the project root. Empty both means agent root
+  L1198: (admin browser); we still allow it because requireAgentReadable
+  L1199: has already gated access.
+  L1215: Pre-create the dir so `open <missing-path>` doesn't error out
+  L1216: on a brand-new chat that hasn't written any files yet — empty
+  L1217: folder still feels like progress to the user.
+  L1230: openInFileBrowser shells out to the platform-appropriate "open"
+  L1231: command. macOS and Linux behave consistently (open the directory
+  L1232: in the default file manager); Windows uses explorer.exe. We
+  L1233: deliberately don't wait on the child — Finder in particular
+  L1234: returns immediately, and there's no useful exit code to surface
+  L1235: either way.
+  L1242: `explorer` returns exit code 1 even on success, so we
+  L1243: don't check err. The only real failure mode is "binary
+  L1244: not on PATH", which Start() reports.
+  L1248: Linux / *BSD — xdg-open is the freedesktop standard.
+  L1254: Detach: we don't care about the file manager's lifetime.
+  L1273: Workspace store not configured — fall back to direct FS read.
+  L1274: The local FS layout mirrors the workspace store's:
+  L1275: ~/.bkclaw/workspaces/<agent_id>/<path>.
+  L1287: ServeFile sets Content-Type from the mime database itself; we just
+  L1288: add the CSP sandbox for HTML on top — same rationale as in
+  L1289: setFileResponseHeaders above.
+  L1308: setFileResponseHeaders picks the right Content-Type for a user-produced
+  L1309: workspace file and locks down agent-generated HTML so it can't reach the
+  L1310: app's cookies/storage even if the user opens the URL in a bare tab. The
+  L1311: Content-Type derived from the extension is what lets iframes render the
+  L1312: file (octet-stream → about:blank, since iframes don't sniff). The CSP
+  L1313: `sandbox` header is the same protection the chat preview gets via the
+  L1314: iframe `sandbox` attribute, but applied at the HTTP layer so it kicks in
+  L1315: no matter how the file is loaded.
+  L1345: The chat client sends one form field "file" per attachment, so the
+  L1346: multipart payload often carries several entries under the same key.
+  L1347: r.FormFile only returns the first — iterate over MultipartForm.File
+  L1348: so multi-attach uploads land all of their files, not just one.
+  L1354: sessionId scopes the upload to the sandbox mount the agent actually
+  L1355: sees. We resolve the session to find its project_id so uploads in
+  L1356: a project chat land in projects/<pid>/ alongside the agent's own
+  L1357: writes; loose chats keep the legacy sessions/<chat>/ subdir.
+  L1362: Project sessions don't use the per-chat subdir — clear it so
+  L1363: the workspace store routes to projects/<pid>/.
+  L1395: invalidateUser drops the user's lazy-loaded UserSpace so the next
+  L1396: access reloads it from the DB. The gateway implements InvalidateUser
+  L1397: behind the api.UserResolver interface.
+  L1408: invalidateAgent drops every cached UserSpace that holds this agent —
+  L1409: owner plus any foreign caller that lazy-attached via EnsureAgent
+  L1410: (super_admin chat, public-link viewer, apikey user). Use this after
+  L1411: writes that mutate the agent's resolved runtime (agents.defaults,
+  L1412: agent-scope providers); plain user-scope writes can stick with
+  L1413: invalidateUser.
+  L1424: requireOwnerOrSuperAdmin guards endpoints that mutate another user's
+  L1425: resources.
+  L1441: handleListAgentRegisteredTools returns the live tool registry for the
+  L1442: specified agent. Drives the Tools tab's allowlist checkbox picker —
+  L1443: the operator clicks rather than typing tool names from memory.
+  L1445: Permission is read-level (owner / super_admin / shared-link viewer)
+  L1446: rather than owner-only because viewers might want to see what they
+  L1447: have access to, even if they can't change the allowlist. The PUT
+  L1448: path stays owner-gated.
+  L1456: Agent isn't loaded in the caller's UserSpace and lazy-attach
+  L1457: also failed. We could fall back to the DB record, but the
+  L1458: whole point of this endpoint is the LIVE registry (MCP tools
+  L1459: only exist once the agent is attached), so a 404 here is
+  L1460: honest rather than misleadingly returning just the builtins.
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_agent_channels.go ===
+  L21: Per-agent IM channel CRUD. Wraps the existing scope.SaveChannel +
+  L22: bindings setting so the dashboard can present "connect Telegram" as
+  L23: one click instead of asking users to wire two separate config rows
+  L24: by hand.
+  L26: channelOut is the wire shape returned by GET /api/agents/<id>/channels.
+  L27: One row per (channelType, accountID); botToken is masked.
+  L29: Source distinguishes where this binding lives:
+  L30: - "agent" — the agent's "official" channel (visible to every user
+  L31: with read access; only the agent owner / admin can mutate)
+  L32: - "user"  — the caller's own per-user overlay on this agent
+  L33: (only the caller sees + can mutate it)
+  L44: resolveChannelBindingScope authorizes a connect/disconnect call and
+  L45: returns the (userID, agentID) tuple the channel row should be written
+  L46: under. Every channel row now carries the binder's user_id directly —
+  L47: there's no "agent-official" overload anymore, because two users
+  L48: sharing a public agent can't share one bot anyway (inbound messages
+  L49: would route to the wrong space).
+  L51: - Owner of the agent (or platform admin): (callerUID, agentID).
+  L52: The owner's bindings are just their personal bindings on their
+  L53: own agent.
+  L54: - Non-owner with read access (public agent or apikey ACL grant):
+  L55: (callerUID, agentID). Each user can bind their own bot to the
+  L56: same public agent without colliding with anyone else's row, and
+  L57: inbound messages route to the binder's UserSpace.
+  L59: Writes 4xx and returns ok=false on permission/lookup failures.
+  L61: The legacy return shape was (scope, scopeID, ok). The new shape is
+  L62: (userID, agentID, ok). Old callers passed (sc, scopeID) into
+  L63: invalidateScope; the migration adapter at the bottom of this file
+  L64: keeps that working.
+  L84: Non-owner: must be able to at least read the agent.
+  L92: ownsAgent gates channel-management calls. Returns (callerUID, true)
+  L93: when the caller is the agent owner OR a platform admin (super_admin
+  L94: session, type=admin apikey). Bindings/channel rows are agent-keyed so
+  L95: the returned uid is the caller's, not the owner's — that matters for
+  L96: per-caller flows like the WeChat QR session whose poll-side equality
+  L97: check needs to match the start-side that stored it.
+  L132: Channel rows always carry the binder's user_id + the target
+  L133: agent_id, so the caller's view is "what I bound to this agent" —
+  L134: (user_id=caller, agent_id=id). The first ListConfigs covers the
+  L135: owner's own bindings on their agent and a non-owner's per-(user,
+  L136: agent) overlay alike.
+  L138: We additionally pull (user_id='', agent_id=id) for legacy
+  L139: installs whose pre-refactor "scope=agent" rows escaped the
+  L140: migration backfill (e.g. an agent without a user_id at the
+  L141: time). New rows are never written there.
+  L154: flattenChannelRows expands one config row per row into one channelOut
+  L155: per (channelType, accountID). source stamps where the row came from
+  L156: for the UI to render the badge. The (botToken, _, _) trio is unused
+  L157: at present — kept variadic-style so a future caller can pre-mask
+  L158: without an extra arg.
+  L211: handleConnectAgentTelegram validates the bot token by hitting
+  L212: Telegram's getMe, then persists a kind=channel + binding pair scoped
+  L213: to this agent and hot-starts the adapter so the bot starts polling
+  L214: immediately.
+  L236: Validate via Telegram getMe; this also gives us the bot username
+  L237: which we use as the binding accountID.
+  L244: Build channel config: one Account keyed by bot username so multi-
+  L245: bot setups are supported on the same agent if a user adds another
+  L246: bot later. Per-account BotToken so each can have its own.
+  L251: credential_key MUST equal the value the Telegram adapter ships as
+  L252: InboundMessage.AccountID — that's the column processInbound uses
+  L253: to find the owning user (LookupChannelByCredential). The adapter
+  L254: is created with accountID = the Accounts-map key, which is the
+  L255: bot's @username, so we mirror that here. Using the token-tail
+  L256: fallback (credentialKeyFor) silently dropped every inbound
+  L257: message because no row matched.
+  L268: Append a binding so inbound messages route to this agent. Existing
+  L269: bindings (e.g. an earlier Discord bot) are preserved. AgentID
+  L270: inside the entry is always the path-resolved agent (= scopeID
+  L271: when sc=Agent; the foreign agent the caller is binding to when
+  L272: sc=User).
+  L303: Locate the channel row at the resolved scope (agent for owner /
+  L304: admin, user for non-owner overlay). Match by accountID inside the
+  L305: row's Accounts map.
+  L317: When the row has no Accounts map, treat it as the legacy
+  L318: single-bot shape; accountID must be empty to match.
+  L325: If nothing left, drop the row; otherwise rewrite it.
+  L337: Drop the matching binding too.
+  L350: appendBinding / removeBinding used to maintain a kind=setting,
+  L351: name=bindings row that carried (channel, accountID → agentID)
+  L352: mappings. Channel rows now carry agent_id directly, so the
+  L353: indirection is gone — these stubs are kept so the many connect/
+  L354: disconnect handlers don't all have to change shape at once.
+  L356: The migration drops every existing kind=setting/name=bindings row,
+  L357: and the runtime side (gateway/userspace.go::bindingsFromChannelRows)
+  L358: rebuilds the routing table by walking channel rows directly.
+  L377: telegramGetMe validates the bot token by hitting the Bot API. Returns
+  L378: the bot's username on success. We avoid pulling tgbotapi here so this
+  L379: handler doesn't drag in the full long-poll bot machinery for what's
+  L380: just a HEAD-style validation.
+  L390: Telegram returns {"ok":false,"description":"..."} on bad tokens.
+  L413: --- Discord ---
+  L419: handleConnectAgentDiscord validates a Discord bot token by calling
+  L420: /users/@me on the Discord REST API, then persists kind=channel +
+  L421: binding rows just like the Telegram flow. accountID = bot user ID
+  L422: (Discord's stable identifier, unlike username which can be changed).
+  L450: accountID = Discord user ID. Stable across username changes
+  L451: and matches what the Discord adapter ships in
+  L452: InboundMessage.AccountID (it's set from the same value).
+  L484: discordGetMe validates the bot token via the Discord REST API.
+  L485: Endpoint docs: GET /users/@me with `Authorization: Bot <token>`
+  L486: returns the bot user object (id, username, discriminator). We avoid
+  L487: pulling discordgo here so this handler doesn't open a gateway
+  L488: connection just to check a token.
+  L502: Discord returns {"message": "...", "code": ...} on auth errors.
+  L528: Legacy Discord usernames are user#1234. Modern (post-2023)
+  L529: accounts have discriminator "0" — display just the handle.
+  L535: --- Slack ---
+  L542: handleConnectAgentSlack persists the Slack bot+app token pair after
+  L543: validating via auth.test. Slack needs both: bot token (xoxb-...)
+  L544: for posting/reading, app token (xapp-...) for Socket Mode WS.
+  L545: accountID = team_id so a workspace's events all route to the same
+  L546: agent (per-workspace Slack apps are the common shape).
+  L583: Slack channel rows put both tokens in top-level BotToken/AppToken
+  L584: (the Slack adapter constructor reads them as a pair). Accounts
+  L585: map keyed by team_id so the inbound side resolves owner via
+  L586: LookupChannelByCredential(channel="slack", credKey=teamID).
+  L621: slackAuthTest hits Slack's auth.test endpoint with the bot token to
+  L622: validate it AND capture team_id/team_name/bot_user_id in one call.
+  L623: Doc: https://api.slack.com/methods/auth.test
+  L636: Slack always returns 200 + a JSON body; the `ok` field carries
+  L637: the actual result.
+  L662: --- WeChat (iLink) ---
+  L664: Unlike Telegram/Discord/Slack, WeChat doesn't take a paste-it-in
+  L665: token. The user scans a QR code with the WeChat phone app; on
+  L666: confirmation iLink hands back a (bot_token, ilink_bot_id,
+  L667: ilink_user_id, baseurl) tuple. Two-step flow:
+  L669: POST /api/agents/{id}/channels/wechat/login
+  L670: → fetch a QR token from iLink, render as image on the client.
+  L671: Returns {sessionID, qrCode, qrCodeImg}.
+  L673: GET  /api/agents/{id}/channels/wechat/login/status?session=<id>
+  L674: → poll iLink's get_qrcode_status one round-trip.
+  L675: Returns {status: wait|scaned|confirmed|expired, connected,
+  L676: accountId?}. On `confirmed`, persists the channel row +
+  L677: binding and hot-registers the adapter, so the next poll the
+  L678: client makes for sandbox/agent state shows the bot live.
+  L690: wechatLoginSession tracks an in-flight QR scan. Lives in memory only
+  L691: — abandoned sessions get GC'd via the TTL sweep on the registry.
+  L692: Saving to the store would let polls survive process restart but the
+  L693: QR token itself expires in iLink server-side after a couple of
+  L694: minutes anyway, so cross-restart resumption isn't worth the
+  L695: complexity.
+  L702: "user" for non-owner overlay) — captured at start so persist on
+  L703: confirm uses the same scope the caller initially saw.
+  L719: Opportunistic GC: drop sessions older than 5 minutes (QR codes
+  L720: expire well before this server-side; anything older is dead).
+  L741: handleStartAgentWeChatLogin asks iLink for a fresh QR code, registers
+  L742: a server-side session keyed by the returned qrCode token, and hands
+  L743: the client back what it needs to render the QR image. The actual
+  L744: scan happens out-of-band in the user's WeChat phone app; the client
+  L745: then polls handleAgentWeChatLoginStatus to drive the state machine.
+  L767: `scope`/`scopeID` are kept on the struct for backwards compat
+  L768: with the polling handler — repurposed as (userID, agentID) so
+  L769: persist time uses the same ownership the caller saw at start.
+  L781: handleAgentWeChatLoginStatus polls iLink for the current scan state
+  L782: of this session's QR code. On `confirmed`, persists the channel row
+  L783: + binding + hot-registers the adapter — same shape as the Telegram /
+  L784: Discord / Slack connect handlers, but driven by the QR status
+  L785: machine instead of an immediate token validation.
+  L802: Cross-tenant guard: don't let one user's poll observe another
+  L803: user's QR session even with a guessed sessionID.
+  L817: User confirmed on phone. iLink returned credentials; persist
+  L818: + bind + hot-register, then drop the in-flight session.
+  L848: wait / scaned / unknown — keep polling. We surface "scaned"
+  L849: distinctly because the UI flips to "扫描完成,请确认" when the
+  L850: user has tapped the QR but not yet pressed confirm on phone.
+  L859: persistWeChatAccount writes a kind=channel row + binding for a
+  L860: freshly-confirmed iLink account. The legacy 3rd/4th args (sc,
+  L861: scopeID) are now reused to carry (userID, agentID) — the wechat QR
+  L862: flow stashes them on wechatLoginSession at start so persist time
+  L863: uses the same ownership.
+  L895: --- iLink HTTP helpers (validation-only; running adapter has its own
+  L896: client in internal/channels/wechat.go) ---
+  L944: wechatPollQRStatus does ONE round-trip — returns whatever the server
+  L945: says right now. We don't long-poll on the server side because the
+  L946: upstream endpoint already does (~40s); doing it on every status
+  L947: request would mean a tab refresh stalls 40s. The client polls every
+  L948: 3s instead, mirroring the workany-web shape.
+  L972: --- Feishu / Feishu ---
+  L982: handleConnectAgentFeishu validates a Feishu custom-app credential triple
+  L983: by minting a tenant_access_token (proves app_id+app_secret are
+  L984: valid) and fetching /bot/v3/info (captures the bot's display name).
+  L985: Stores the triple as kind=channel + binding rows + hot-registers
+  L986: the adapter.
+  L988: Storage layout mirrors slack/wechat: credKey = app_id (also the
+  L989: accountID), AccountConfig.BotToken = app_secret, AccountConfig.UserID
+  L990: = verification_token (matches the field's "extra account-scoped
+  L991: identifier" comment).
+  L1065: Webhook URL is only meaningful when the user picked the
+  L1066: public-URL transport. Long-connection accounts don't need it
+  L1067: (no public ingress required) — omit so the UI doesn't show a
+  L1068: step the user can't / shouldn't do.
+  L1075: feishuWebhookPathFor builds the URL the user should paste into the
+  L1076: Feishu Developer Console's "Event Subscriptions → Request URL" field.
+  L1077: Best-effort — uses the request's Host so reverse-proxied deployments
+  L1078: surface the user-facing hostname rather than the bind address.
+  L1094: --- LINE ---
+  L1101: handleConnectAgentLINE validates a LINE Messaging API channel by
+  L1102: hitting /v2/bot/info with the channel access token. Captures the
+  L1103: bot's userId (used as accountID) + display name + basicId. Stores
+  L1104: channel_access_token in AccountConfig.BotToken, channel_secret in
+  L1105: AccountConfig.UserID (matching the field-mapping convention used by
+  L1106: the WeChat / Feishu adapters).
+  L1108: channel_secret is technically optional — the adapter can run without
+  L1109: signature validation — but webhook traffic flows over the open
+  L1110: internet so we strongly recommend setting it. The connect handler
+  L1111: accepts an empty string and warns at validation time only if the
+  L1112: secret is missing.
+  L1179: lineWebhookPathFor returns the URL the user pastes into LINE
+  L1180: Developers Console under "Messaging API → Webhook URL". Same shape
+  L1181: as feishuWebhookPathFor — surfaces the public-facing host via the
+  L1182: usual reverse-proxy headers.
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_channels.go ===
+  L7: --- Channels ---
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_cron.go ===
+  L12: --- Per-agent cron jobs (DB-backed) ---
+  L14: The legacy /api/cron set below reads jobs out of the user's flat
+  L15: bkclaw.json (cfg.CronJobs) — that's the install-time, statically-
+  L16: configured catalog. Agents that schedule work at runtime via the
+  L17: create_cron_job tool persist into the cron_jobs DB table instead, and
+  L18: the cron.Scheduler (which actually fires them) only watches the DB.
+  L19: So those agent-authored jobs were invisible to the dashboard.
+  L20: handleListAgentCronJobs surfaces them at /api/agents/{id}/cron.
+  L44: Verify the job belongs to this agent before deleting — otherwise
+  L45: the path param could be used to delete jobs the caller doesn't
+  L46: own (the cron table has no user_id; we gate via agent ownership).
+  L85: --- Cron Jobs ---
+  L170: For now, just acknowledge — cron enable/disable would need scheduler integration
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_plugins.go ===
+  L12: --- Plugins ---
+  L36: Read plugin.json for metadata
+  L79: handleListHookPlugins returns the discoverable hook-type plugins
+  L80: for use in per-agent plugin toggles on the Context page. Read-only,
+  L81: not admin-gated (agent owners need to see the available plugins to
+  L82: pick which to enable on their agents) — it deliberately leaves out
+  L83: the per-plugin runtime state (running/stopped) the admin /api/plugins
+  L84: endpoint exposes.
+  L112: Filter on either Type=="hook" OR capabilities containing "hook".
+  L113: Older plugins use Type alone; newer ones may declare multiple
+  L114: capabilities (e.g. a plugin that's both a tool AND a hook).
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_projects.go ===
+  L13: Projects are per-(user, agent) named workspace folders that group
+  L14: chat sessions. Every chat in the same project shares one
+  L15: workspace dir at workspaces/<agent>/projects/<pid>/, so notes /
+  L16: generated files persist across the project's chats — that's the
+  L17: whole point of the feature.
+  L19: Endpoints exposed below:
+  L21: GET    /api/agents/{id}/projects                   — list (caller's own)
+  L22: POST   /api/agents/{id}/projects                   — create
+  L23: PATCH  /api/agents/{id}/projects/{pid}             — rename / re-describe
+  L24: DELETE /api/agents/{id}/projects/{pid}             — delete (blocked when chats remain)
+  L26: Project chats are minted lazily: clicking "New chat in project" in
+  L27: the sidebar just navigates to `/agents/<id>/chat/?project=<pid>`,
+  L28: and the very first user message carries `projectId` in the chat
+  L29: request body. The first SaveSession that fires from there stamps
+  L30: the new sessions row with project_id; subsequent saves leave it
+  L31: untouched (ON CONFLICT in the SQL upsert preserves it). No
+  L32: pre-create endpoint — keeps "user opened New chat and walked
+  L33: away" from littering the sidebar with empty rows.
+  L35: generateProjectID mints an opaque project_id matching the
+  L36: `<prefix>_<hex20>` shape that users (u_) and agents (agt_) use, so
+  L37: IDs are visually consistent across the platform. ~80 bits of entropy
+  L38: — collision-resistant at platform scale; we don't probe the store
+  L39: for uniqueness because the caller already passed requireAgentOwner.
+  L43: crypto/rand should never fail on supported platforms; if it
+  L44: does, surface a recognizable sentinel rather than silently
+  L45: minting "proj_" (which would collide with itself across
+  L46: concurrent calls).
+  L52: trimProjectName strips wrapping whitespace and caps the length so a
+  L53: rogue 64KB body doesn't end up in the sidebar.
+  L107: Readable-not-owner is enough: projects are keyed on (user_id,
+  L108: agent_id, project_id), so a viewer creating a project on a shared
+  L109: agent only adds rows under THEIR user_id and can never touch the
+  L110: owner's project list. Same reasoning for update / delete below.
+  L139: Re-read to get authoritative created_at / updated_at the DB
+  L140: stamped on the row, instead of returning zero times.
+  L143: Fall back to the in-memory copy — IDs and name are correct,
+  L144: just timestamps are zero. Still better than 500'ing the
+  L145: caller after a successful insert.
+  L167: PATCH semantics: only the fields the caller sent get updated.
+  L168: Use pointers so we can distinguish "not sent" from "sent empty
+  L169: string" — the latter is a legitimate clear of the description.
+  L210: Refuse to delete a project that still owns chats. Cascade /
+  L211: soft-detach are deliberately not exposed — v1 keeps the
+  L212: destructive action behind an explicit "delete chats first" step
+  L213: so a slip on the trash icon can't nuke a survey's worth of
+  L214: notes.
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_register.go ===
+  L12: registrationSettingNamespace is the configs-table key for the public
+  L13: signup toggle. Stored as kind=setting, name=registration, data={"open": bool}.
+  L14: Defaults to closed: a fresh instance shouldn't accept anonymous signups
+  L15: until the operator explicitly opens the door.
+  L18: registrationOpen reads the system-level toggle. Errors are treated as
+  L19: "closed" — fail safe is "no signup".
+  L39: handleRegister is the public signup endpoint. Gated by the admin-controlled
+  L40: registration_open setting; falls back to closed on any read error so a
+  L41: momentary store hiccup can't accidentally fling the door open.
+  L62: Light email shape check — the users.Account store also validates;
+  L63: this layer just catches the obvious "no @" before we hit the DB.
+  L80: users.Create surfaces "username taken" / "email taken" as plain
+  L81: errors; passing them through gives the form a usable message.
+  L92: --- Admin: read + write the toggle ---
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_scoped.go ===
+  L17: Scope-aware CRUD for providers + channels (and a generic settings
+  L18: endpoint). Authorization:
+  L20: scope=system → READ: any authenticated user (system providers are
+  L21: designed to be inheritable; api keys are masked on
+  L22: the way out). WRITE: super_admin only.
+  L23: scope=user   → super_admin OR scopeId == caller's user_id
+  L24: scope=agent  → super_admin OR caller owns the agent
+  L26: All four routes share the same gating helper so the rules stay aligned.
+  L28: scopeOp distinguishes read vs mutating access for authorizeScope. The
+  L29: only place this matters today is system scope: regular users may list
+  L30: inherited system providers but never edit them.
+  L38: authorizeScope returns true if the request is allowed at (scope, scopeID)
+  L39: for the given op. Mutating callers should additionally pass through
+  L40: `requireWritable` (which rejects super_admin actAs mode).
+  L52: System scope is broadcast: every agent inherits from it. Reads
+  L53: are open so the dashboard can show a non-admin which providers
+  L54: they're inheriting and the runtime can resolve them. Writes
+  L55: stay locked to super_admin (the upstream business reason for
+  L56: the gate hasn't changed).
+  L67: app_user accounts are end-users provisioned by a downstream
+  L68: app — they shouldn't be able to redirect their LLM provider
+  L69: or fork channel bindings out from under the calling app.
+  L70: Reads are still allowed (so the agent runtime can see what
+  L71: the upstream stack configured for them); only mutating
+  L72: callers reach this path via requireWritable, but we hard-
+  L73: reject up front to be unambiguous.
+  L80: Must own the agent. We do an inexpensive store lookup to verify.
+  L93: Non-owner read access on a shared agent: when the owner has
+  L94: shareModelConfig on (default), the agent's runtime resolution
+  L95: already includes its agent-scope providers for chatters
+  L96: (EnsureAgent overlays them in). The Models tab in the chatter's
+  L97: agent-settings dialog needs to surface those same rows — with
+  L98: masked keys — so the chatter knows which credentials the agent
+  L99: is using and which models are available. Writes stay owner-only.
+  L105: Mirror requireAgentReadable's apikey-ACL gate so an
+  L106: apikey scoped to this agent can also read.
+  L110: Signed-in user on a non-public shared agent: we don't
+  L111: have a separate "this user has been granted access"
+  L112: table beyond IsPublic / apikey ACL, so fall through
+  L113: to the standard 403 below. (If you build sharing
+  L114: invites later, gate them here.)
+  L125: listConfigsByScope is the HTTP-side bridge to store.ListConfigs:
+  L126: translates the (scope, scopeID) URL idiom into (userID, agentID).
+  L127: New code should call store.ListConfigs directly with explicit
+  L128: ownership; this helper exists so the dashboard's scope-keyed routes
+  L129: don't have to inline the conversion at every call site.
+  L135: getConfigByNameScope is the GetConfigByName variant of the same bridge.
+  L141: scopeFromQuery reads the scope/scopeId query parameters with sensible
+  L142: defaults: missing scope falls through to the caller's user scope so a
+  L143: regular user's `GET /api/providers` returns "their" providers.
+  L159: --- Providers ---
+  L261: Patch — preserve apiKey when caller sent the masked sentinel.
+  L274: `models` is sent as the full desired set on every PUT (the dialog
+  L275: is the source of truth) — overwrite even when the array is empty so
+  L276: "remove last model" actually persists.
+  L309: --- Channels ---
+  L352: credentialKeyFor derives a stable lookup handle from the channel's
+  L353: credentials. For bot-token channels we use the last 12 chars (matches
+  L354: how Telegram / Discord bot tokens are recognizable); falls back to the
+  L355: caller-supplied key when it's already populated.
+  L480: Best-effort: stop the bot adapter from receiving outbound routes.
+  L481: We don't know its accountID without decoding rec, so derive from
+  L482: the row we just looked up (rec is still valid here).
+  L493: decodeChannelConfigFromRecord — local mirror of gateway.decodeChannelConfig
+  L494: so this package doesn't need to import gateway.
+  L504: assertChannelCredentialUnique enforces the soft uniqueness invariant the
+  L505: schema doesn't have a DB constraint for: two rows with the same
+  L506: (kind="channel", credential_key) would race in the inbound dispatcher
+  L507: — only one row is returned and which one is undefined.
+  L509: "Same logical row" exemptions:
+  L510: - excludeID matches: the update path; we're rewriting the row in place
+  L511: - same (kind, user_id, agent_id, name): the upsert path; the
+  L512: connect handler is reconnecting the SAME bot to the SAME (user,
+  L513: agent) it was bound to before. SaveChannel's ON CONFLICT will
+  L514: just refresh the row, no race.
+  L516: callerUserID / callerAgentID are the (user_id, agent_id) of the row
+  L517: the caller is about to write — passing empty strings preserves the
+  L518: stricter "global uniqueness" semantics for callers that don't have
+  L519: that context handy.
+  L531: Same caller reconnecting the same bot to the same agent — the
+  L532: upsert path will refresh the existing row, not create a new one.
+  L538: Surface where the conflict actually lives so the operator knows
+  L539: where to disconnect first instead of staring at a generic message.
+  L549: invalidateOwner is the (userID, agentID) form of invalidateScope —
+  L550: preferred for code that's already speaking the new ownership idiom.
+  L551: Falls through to invalidateScope so the cache topology stays
+  L552: consistent regardless of which entry point the caller used.
+  L555: "user-agent" doesn't exist in invalidateScope's switch — for
+  L556: per-(user, agent) writes, dropping the user's cached UserSpace
+  L557: is the right behavior, so map it to scope=user.
+  L564: invalidateScope drops cached UserSpaces affected by a scope-level
+  L565: write. System changes touch every loaded space; user changes touch one.
+  L583: Agent-scoped writes (provider, channel, setting) affect every
+  L584: cached UserSpace that holds the agent — owner plus any foreign
+  L585: caller that lazy-attached it via EnsureAgent. InvalidateAgent
+  L586: walks the registry and drops them all; falling back to the
+  L587: owner-only invalidate keeps behavior consistent for resolvers
+  L588: that don't implement the newer hook.
+  L607: hotRegisterChannel asks the gateway to start the channel adapter for
+  L608: `rec` immediately. Best-effort — no-op when the resolver doesn't
+  L609: implement the hook (e.g. in tests with a stub resolver).
+  L619: Don't fail the request — the row is saved, the next
+  L620: process restart will pick it up. But surface the error
+  L621: in logs so an obviously-broken bot token is debuggable.
+  L627: hotUnregisterChannel — paired with hotRegisterChannel for delete paths.
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_skills.go ===
+  L15: --- Skills ---
+  L25: Hydrate from object store first so pods that didn't handle the
+  L26: original install still see the skill bundle. Pass the bundled skill
+  L27: names as the keep-local list so an empty OSS response never causes
+  L28: us to prune builtin skills. No-op when no object store is configured
+  L29: (local mode) or nothing is mirrored yet.
+  L58: Also remove from the object store so other pods drop it on their
+  L59: next hydrate. Failure here shouldn't fail the delete — the local
+  L60: copy is gone already and a stale remote copy will just re-appear
+  L61: next reload (annoying but not dangerous).
+  L70: handleListAgentSkills lists skills installed into an agent's own home
+  L71: directory (~/.bkclaw/agents/<id>/skills/). Loader "Layer 1" picks
+  L72: these up at the highest precedence — they're exclusive to the agent.
+  L75: Skill listing exposes per-skill env spec (which env keys the
+  L76: owner has set). Owner-only — Identity.CanAccessAgent is a
+  L77: deferred-true for session callers and would let any signed-in
+  L78: user enumerate any agent's skills.
+  L88: Hydrate this agent's skills from object store on demand so replica
+  L89: pods that haven't yet cached the bundle still list it in the UI.
+  L104: scanSkillsDir reads every SKILL.md under dir and returns the list of
+  L105: {name, description, location, type, envSpec?} entries the admin UI
+  L106: renders. Shared between the global /api/skills and the per-agent
+  L107: /api/agents/{id}/skills paths so frontmatter parsing (description,
+  L108: envSpec) stays consistent — earlier the two handlers drifted, with
+  L109: the agent-scoped one falling back to "first non-# line" which then
+  L110: surfaced the literal `---` frontmatter delimiter as the description.
+  L131: Top-level `env:` shortcut wins; fall back to the
+  L132: namespaced metadata.bkclaw|openclaw.env form.
+  L163: handleDeleteAgentSkill removes a skill from an agent's own home dir
+  L164: only. Global/shared skills are untouched.
+  L171: Mutation — owner-only. Identity.CanAccessAgent is a
+  L172: deferred-true for session callers and would let anyone delete
+  L173: skills off any agent.
+  L187: Delete from object store so other pods drop it on their next hydrate.
+  L194: Hot-reload the agent so the removed skill drops out of its context.
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_tools.go ===
+  L13: categoryCatalog is the admin UI's source of truth for which tool
+  L14: categories exist and which providers can back them. Extending this list
+  L15: (once the new providers exist in the toolproviders package) makes them
+  L16: appear in the UI automatically.
+  L31: builtinCatalog lists every tool category + provider pair that the binary
+  L32: knows how to run. Providers not present in the runtime Registry are
+  L33: filtered out at response time, so this is safe to list optimistically.
+  L42: "none" is a sentinel: when picked, web_search is not exposed
+  L43: to the model at all. There's no external backend — the model
+  L44: uses its own native search if it has one.
+  L52: Direct uses Go's net/http directly — no key required.
+  L53: Jina's free tier works without a key (rate limited);
+  L54: the key field is shown so admins can paste one to raise
+  L55: quota, but the chain runtime treats blank as valid because
+  L56: the provider implements CredentialFree.
+  L69: "none" is a sentinel: when picked, image_gen is not exposed
+  L70: to the model at all. The model falls back to its own native
+  L71: image-generation capability if it has one.
+  L83: "none" is a sentinel: when picked, tts is not exposed to the
+  L84: model at all. The model falls back to its own native audio
+  L85: capability if it has one.
+  L91: handleGetTools returns the categories + provider catalog and the user's
+  L92: current toolProviders/tools settings. The UI renders a form from this.
+  L111: Append plugin-registered providers that aren't in the static
+  L112: builtin catalog. We can't know whether they want a key or a URL
+  L113: (plugin doesn't declare that yet), so we offer both fields — the
+  L114: admin fills whichever the plugin needs.
+  L132: Return providers as a keyed object (easier for the UI to merge-edit).
+  L133: apiKey is returned in full to the admin — the UI decides whether to
+  L134: mask it — but cloud callers see 403 below, so this is local-only.
+  L150: handleSaveTools atomically updates the toolProviders and tools sections of
+  L151: bkclaw.json. Only the admin/local user is allowed here — cloud tenants
+  L152: get their own settings via a separate path (not wired yet). After save,
+  L153: running agents are hot-reloaded so chains pick up new keys immediately.
+  L155: requireSuperAdmin middleware already gates this route; no further check needed.
+  L180: Nudge the resolver to drop the caller's cached user space; next
+  L181: access reloads it from the DB with the new tool/provider config.
+  L186: validateToolChains sanity-checks that every "<provider>/<model>" reference
+  L187: names a provider actually registered in the runtime catalog. Catching
+  L188: typos here avoids a silent "no providers available" when the agent starts.
+  L189: The runtime registry is the single source of truth, so plugin-provided
+  L190: providers validate the same as built-ins.
+  L213: Silence unused-import warnings when the package grows.
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_usage.go ===
+  L10: rangeFromQuery parses ?range=24h|7d|30d (default 7d) into a usage.Range
+  L11: of last-N days. We don't expose precise hour windows on the admin
+  L12: dashboard — daily buckets is good enough for "who burned what".
+  L24: limitFromQuery clamps ?limit= to [1, 100], defaulting to 10.
+  L36: handleGetUsage returns the headline numbers for the admin dashboard:
+  L37: total tokens, plus top agents and top users for the requested time
+  L38: window. Wrapped by requireSuperAdmin in server.go.
+  L73: handleGetAgentUsage returns per-session token rollups for one agent
+  L74: — the data behind the "Token Usage" tab in the agent settings
+  L75: dialog. Owner-gated via requireAgentOwner, so chat viewers of a
+  L76: public agent don't get to see the owner's other sessions. The
+  L77: `sessions` list is a Rank[] keyed by session_key (rendered with
+  L78: session title client-side after a name lookup).
+  L96: Sessions list is the headline view on this tab; default
+  L97: limit (10 from limitFromQuery) is too short. Cap at 50
+  L98: rows unless the caller explicitly asked for fewer.
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\identity_store.go ===
+  L16: loadAgentFileConfig returns an agent's per-row override JSON from the
+  L17: agents.config column.
+  L34: saveAgentFileConfig persists per-agent overrides into agents.config.
+  L57: isStoreNotFound recognises the "not found" signal across backends.
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\server.go ===
+  L27: AgentHandle is the surface the web UI uses to talk to a running agent.
+  L32: SteerWeb buffers a message into an in-flight turn for the session;
+  L33: returns false when no turn is running (caller falls back to a
+  L34: normal send).
+  L40: MoveWebChatSession reassigns the chat to a different project (or
+  L41: detaches when projectID==""). Migrates workspace files between
+  L42: the old and new scope dirs and releases any active sandbox so
+  L43: the next turn cold-starts at the new bind-mount path.
+  L46: WriteSessionAttachments materializes user-uploaded bytes (data
+  L47: URLs / HTTPS URLs) into the agent's session workspace so skills can
+  L48: read them via /workspace/<filename>. Returns the relative filenames
+  L49: in input order; per-item errors are skipped.
+  L51: RegisteredTools returns the live tool registry projection — what
+  L52: this agent currently has loaded (built-ins + MCP + plugin tools).
+  L53: Used by the Tools tab to render the allowlist checkbox picker.
+  L57: AgentProvider is implemented by gateway.UserSpace's agent manager — used
+  L58: by handlers that legitimately need to enumerate the *current caller's*
+  L59: agents (resolved through the user resolver, not from a global pool).
+  L66: Server hosts the web UI + admin API. Multi-user is unconditional —
+  L67: every request must resolve to a real users.id via the auth.Resolver.
+  L81: chatEvents fans live agent chat events out to subscribed SSE
+  L82: clients across browser tabs. Lazy-init on first use so older
+  L83: callers that didn't wire it explicitly still work.
+  L89: NewServer creates a setup wizard server on the given port.
+  L94: SetGatewayConfig sets the gateway configuration for bind address and HTTP endpoints.
+  L105: SetTaskQueue sets the task queue for the tasks API endpoint.
+  L110: SetAPIServer sets the OpenAI-compatible API server for /v1/* and /ws routes.
+  L115: SetUserResolver sets the per-user agent routing resolver.
+  L120: SetStore sets the storage backend.
+  L129: SetWorkspaceStore installs the blob store used for agent-generated artifacts.
+  L134: SetUsageMeter installs the per-tenant resource counter.
+  L139: SetAuth installs the auth resolver. Required.
+  L144: SetWebChannel installs the in-process fan-out used by the SSE
+  L145: subscription endpoint. When set, /api/chat/subscribe holds an SSE
+  L146: stream open per (agent, session) pair and forwards every outbound
+  L147: message routed to channel="web" — this is what surfaces cron-fired
+  L148: agent replies live in the dashboard chat panel.
+  L153: chatEventHub returns the lazy-initialized hub. Centralized so every
+  L154: chat handler reaches the same instance — without this, the streaming
+  L155: handler's hub publish would never reach the subscribe handler.
+  L163: ChatEventHub exposes the hub so the gateway can attach a stream
+  L164: pipeline onto bus-fired web turns (cron / goal continuation /
+  L165: heartbeat / sub-agent), giving them the same SSE streaming a
+  L166: user-typed turn gets. Wraps chatEventHub's lazy-init.
+  L169: authMiddleware wraps the auth.Resolver's Middleware. Required for every
+  L170: authenticated route.
+  L180: optionalAuth is the bootstrap-friendly variant for endpoints reachable
+  L181: before login (status, login, onboard).
+  L189: requireSuperAdmin gates handlers behind platform-admin authority:
+  L190: either a super_admin session or a type=admin apikey. Despite the name,
+  L191: this accepts both — the apikey path is the only way a programmatic
+  L192: admin client can hit /api/admin/* without a browser cookie. Use
+  L193: auth.RequireSuperAdmin directly for the rare cases that need the
+  L194: session-only flavor.
+  L199: Run starts the HTTP server and blocks until the context is canceled.
+  L203: Health probes (unauthenticated).
+  L216: Bootstrap / login.
+  L230: Per-user config (system_settings + scoped providers/channels).
+  L234: Chat
+  L244: Long-lived SSE subscription so cron-fired (and other async)
+  L245: messages reach the open chat panel without a manual refresh.
+  L248: Agents
+  L261: Self-hosted-only: opens the workspace dir in the operator's
+  L262: native file browser (Finder/Explorer/xdg-open). Hosted
+  L263: deployments 403 inside the handler — chatters there don't
+  L264: own the daemon's filesystem.
+  L271: Per-agent projects: named workspace folders that group chats and
+  L272: share files across all sessions inside them. POST .../sessions
+  L273: is the "New chat in project" path — pre-creates the session row
+  L274: stamped with project_id so the very first turn already routes
+  L275: workspace IO to projects/<pid>/.
+  L281: Per-agent channels (IM bot bindings)
+  L292: Feishu (飞书) event webhook. UNAUTHENTICATED — Feishu posts here
+  L293: without a bkclaw bearer token. Per-event security comes from
+  L294: the verification_token validated inside the adapter against the
+  L295: payload's header.token. The {appId} path segment scopes the
+  L296: receive to one registered channel.
+  L299: LINE Messaging API event webhook. UNAUTHENTICATED at the bkclaw
+  L300: layer — per-event security is HMAC-SHA256(channel_secret, body)
+  L301: validated by the adapter against the `x-line-signature` header.
+  L302: The {accountId} path segment is the bot's userId, scoping the
+  L303: receive to one registered channel.
+  L306: Skills
+  L315: Plugins (super_admin only).
+  L318: Hook plugin discovery — read-only metadata for the per-agent
+  L319: Plugins toggle on the Context page. Agent owners (not just
+  L320: admins) need this to know what plugins they can enable.
+  L323: Tools (super_admin only).
+  L327: Channels (read-only list of registered channel adapters at runtime)
+  L330: Scoped CRUD: providers + channels at system / user / agent scope.
+  L341: Cron jobs (per-user, config-defined catalog)
+  L347: Per-agent cron jobs (DB-backed, includes anything the agent
+  L348: scheduled itself via create_cron_job at runtime).
+  L353: Tasks
+  L356: Apikeys (per-user, with agent multi-select).
+  L363: Users — flat resource paths. Top-level CRUD is admin-only;
+  L364: nested {id}/apikeys + {id}/agents accept admin-or-self
+  L365: (gated in-handler via requireUserOrAdmin).
+  L374: Cross-tenant agent list moved into /api/agents?all=true (admin-only
+  L375: when the param is set). /api/usage replaces /api/admin/usage.
+  L377: Per-agent usage: owner-gated (or super_admin) inside the handler
+  L378: itself via requireAgentOwner, so we use the plain auth wrapper here.
+  L381: OpenAI-compatible API and WebSocket gateway.
+  L386: Static UI files.
+  L419: spaHandler serves the embedded Next.js UI with SPA-style fallback.
+  L470: Nested dynamic segment fallback: routes like
+  L471: agents/[id]/chat/[session] and agents/[id]/project/[pid]
+  L472: emit a single placeholder ("_") at build time. Substitute
+  L473: "_" for any segment that sits immediately under a known
+  L474: dynamic-parent (chat, project), regardless of what
+  L475: follows. This covers BOTH the page HTML
+  L476: /chat/<sid>/                            → /chat/_/index.html
+  L477: AND the per-route RSC payloads Next 16 fetches during
+  L478: client-side navigation:
+  L479: /chat/<sid>/index.txt                   → /chat/_/index.txt
+  L480: /chat/<sid>/__next.agents.$d$id.chat.$d$session.__PAGE__.txt
+  L482: Without this, App Router's RSC fetch on a sidebar click
+  L483: gets a 404 (or the root index.html), gives up on soft
+  L484: navigation, and falls back to window.location — which
+  L485: flickers the page and tears down any in-flight stream.
+  L486: Add new dynamic routes to dynamicParents below as they
+  L487: get introduced.
+
+=== E:\\fromGithub\\bkclaw\\internal\\setup\skill_install.go ===
+  L21: handleInstallSkill installs a skill from skills.sh, clawhub.ai, or a
+  L22: specific GitHub repo. Body:
+  L25: "source": "skillssh" | "clawhub" | "github" | "" (auto),
+  L26: "name":   "<skill slug / folder name>",
+  L27: "repo":   "owner/repo"  (github only),
+  L28: "agent":  "<agent-id>"  (optional; if set, install into the agent's own
+  L29: skills dir and hot-reload it; otherwise install
+  L30: globally — admin only)
+  L33: Source precedence when source is empty: skills.sh → clawhub.
+  L34: Global installs (no `agent`) require the local/admin user — cloud users
+  L35: cannot modify shared skills through this endpoint.
+  L71: Mirror the installed skill bundle to the shared object store so
+  L72: other pods can hydrate it on their next reload. Without this step
+  L73: the skill only exists on this pod's emptyDir, and a chat request
+  L74: balanced to another pod wouldn't see it.
+  L105: authorizeSkillInstallTarget enforces the mutation and target-scope rules
+  L106: shared by registry installs and zip uploads.
+  L112: Owner-only — Identity.CanAccessAgent is a deferred-true for
+  L113: session callers, so without an explicit owner check anyone
+  L114: could push a skill into anyone else's agent home dir.
+  L129: resolveInstallTarget picks the target directory for an install. Authorization
+  L130: happens before this helper is called: agent installs are owner-only; global
+  L131: installs are platform-admin-only.
+  L134: agents.id is globally unique, so the home dir doesn't need a
+  L135: user namespace — owner check happens upstream of this call.
+  L157: runInstall dispatches to the right skills backend. When source is empty it
+  L158: tries skills.sh then clawhub (skill-creator is a chat-level fallback, not a
+  L159: registry — the agent tool offers it when both sources miss).
+  L189: handleUploadSkill installs a skill from a user-supplied .zip file.
+  L190: Multipart POST: field `file` is the zip; optional `name` form field
+  L191: overrides the inferred skill folder name. Optional `?agent=<id>` query
+  L192: param scopes the install to one agent's home (same auth + target rules
+  L193: as handleInstallSkill).
+  L195: Layout assumptions:
+  L196: - Zip with a single common top-level directory (e.g. `my-skill/...`):
+  L197: that dir becomes the skill folder name and its contents land
+  L198: directly inside <target>/my-skill/.
+  L199: - Zip without a common top-level (files at root): we wrap them in a
+  L200: <target>/<name>/ folder, where <name> defaults to the upload's
+  L201: filename minus extension and can be overridden by the `name` form
+  L202: field.
+  L204: Zip-slip protection: every extracted file path is validated to stay
+  L205: under the chosen skill dir. Symlinks are skipped — Go's archive/zip
+  L206: doesn't auto-follow them but we also refuse to recreate them on disk.
+  L269: Zip already has a wrapping dir — strip it on extraction so
+  L270: we don't end up with skill/skill/SKILL.md (works whether the
+  L271: wrapper matches skillName or the user renamed via form field).
+  L275: Validation: a valid skill MUST have a SKILL.md at its root. We
+  L276: check this BEFORE creating any directories so a bad upload (e.g.
+  L277: a zip of a session log, a random folder) doesn't pollute the
+  L278: agent's skills dir. Match SKILL.md exactly (case-sensitive — the
+  L279: runtime in agent/skills.go reads "SKILL.md").
+  L329: Reject any entry whose cleaned name escapes the skill dir.
+  L341: Reject symlinks — Go's archive/zip exposes them via mode bits.
+  L368: Cap per-file copy too — defense in depth against zip bombs
+  L369: after the outer 64MiB cap.
+  L408: detectCommonTopDir returns the shared first-path-segment across every
+  L409: zip entry, or "" if entries diverge or any entry sits at the zip root.
+  L410: Used to decide whether the user's upload already wraps its skill in a
+  L411: folder we should peel off (and reuse as the skill name).
+  L419: macOS Finder zips include `__MACOSX/` metadata — ignore it
+  L420: so its presence doesn't break common-top detection.
+  L426: file lives at zip root → there's no common top dir
+  L439: sanitizeSkillName strips path separators and other surprises from a
+  L440: user-supplied skill name, leaving a single safe directory component.
+  L445: Take the last path segment in case the user typed a path.
+  L450: Filter unsafe characters.
+  L463: handleSearchSkills returns search results. source=skillssh (default) hits
+  L464: https://skills.sh; source=clawhub proxies clawhub.ai's search endpoint.
+  L465: GET /api/skills/search?q=xxx&source=skillssh|clawhub
+
+=== E:\\fromGithub\\bkclaw\\internal\\skills\clawhub.go ===
+  L17: SkillInfo holds metadata about a skill from the ClawHub registry.
+  L27: ClawHubClient communicates with the ClawHub skill registry.
+  L33: NewClawHubClient creates a client with defaults.
+  L45: Search queries the ClawHub registry for skills matching the query.
+  L65: Info fetches details about a specific skill.
+  L88: Install downloads and extracts a skill to targetDir/slug/.
+  L89: If the API returns a tarball URL, downloads and extracts it.
+  L90: Falls back to npx clawhub if available.
+  L92: Try API-based install first
+  L98: Fallback: use npx clawhub CLI if available
+  L116: Update checks for a newer version and installs it.
+  L174: Strip the first path component (tarball root)
+  L184: Prevent path traversal
+  L213: ListInstalled scans a directory for installed skills (dirs containing SKILL.md).
+  L240: InstalledSkill represents a locally installed skill.
+
+=== E:\\fromGithub\\bkclaw\\internal\\skills\github.go ===
+  L8: InstallFromGitHubRepo installs a skill folder from a public GitHub repo
+  L9: identified by "owner/repo". If skillName is empty, the repo itself is
+  L10: assumed to be the skill (tarball root is extracted into
+  L11: targetDir/<repo>/). Otherwise it looks up the skill folder (at any depth)
+  L12: inside the repo and extracts it to targetDir/<skillName>/.
+  L31: Whole-repo skill: extract the tarball top into targetDir/<name>.
+  L71: normalizeGitHubRepo strips common wrapper prefixes/suffixes so callers can
+  L72: pass things like "https://github.com/owner/repo.git" directly.
+
+=== E:\\fromGithub\\bkclaw\\internal\\skills\install.go ===
+  L15: Result describes a successful install so callers can show the user what
+  L16: happened and, if they care, where to find the files.
+  L27: InstallFromClawHub downloads the latest version of `slug` from clawhub.ai
+  L28: and extracts its ZIP into targetDir/<slug>/. Returns a Result on success.
+  L35: Fetch metadata to discover the latest version.
+  L91: extractZipToDir unpacks a zip archive into destDir, skipping entries with
+  L92: path-traversal components. Returns number of files written.
+  L146: InstallAuto tries skills.sh first and falls back to clawhub. Returns the
+  L147: Result of the first successful install, or a combined error describing
+  L148: both misses. `name` is the skill slug/id the user asked for.
+  L150: This is the default path for agent-initiated installs: if nothing matches
+  L151: after both sources, the caller is expected to offer skill-creator as a
+  L152: third option.
+  L165: ClawHub fallback.
+
+=== E:\\fromGithub\\bkclaw\\internal\\skills\objectstore.go ===
+  L16: Skill bundles are static file trees that need to live on the local disk
+  L17: for SkillsLoader to discover them, but in multi-pod deployments the
+  L18: disk is pod-local. To make installs consistent across replicas we mirror
+  L19: every installed skill into the shared object store and hydrate it back
+  L20: onto each pod's disk on startup / reload.
+  L22: Key layout under the workspace bucket:
+  L24: <owner>/skills/<skillName>/<relFile>
+  L26: Owner is the agent ID for per-agent skills, or GlobalSkillOwner for the
+  L27: platform-wide directory (`~/.bkclaw/skills/`).
+  L29: GlobalSkillOwner is the synthetic "agent ID" used as the prefix for
+  L30: globally-installed skills in the object store. A real agent can
+  L31: never collide with it because agent names are validated to be lower
+  L32: alphanumeric + hyphens (see setup/handlers_agents.go:agentNameRE),
+  L33: so the leading underscore keeps this namespace separate.
+  L36: skillsKeyPrefix scopes every skill object under the owner. Every
+  L37: caller must go through buildKey so this stays consistent.
+  L40: userSkillOwnerPrefix is the leading marker for per-user pseudo
+  L41: owner keys (`_user_<uid>`). Same leading-underscore convention as
+  L42: GlobalSkillOwner so it can never collide with a real agent ID.
+  L46: UserSkillOwner returns the workspace.Store pseudo-owner key for a
+  L47: chatter's per-user skills. Empty userID returns "" so callers can
+  L48: short-circuit on legacy / single-user installs.
+  L57: relPath is already normalised (filepath.Walk yields forward-slash-
+  L58: equivalents via filepath.ToSlash when we pass through this helper).
+  L63: SyncSkillUp uploads every file under <rootDir>/<skillName>/ to the
+  L64: object store under <owner>/skills/<skillName>/. Symlinks are followed
+  L65: (os.Lstat filter excludes them to avoid duplicating targets). Safe to
+  L66: call after each install; existing keys are overwritten.
+  L102: Skills live in the agent-shared scope (project + session both
+  L103: empty) so every chat of an agent sees the same set; per-scope
+  L104: subtrees are reserved for chat artifacts.
+  L119: MirrorSkillsUp uploads any local skill subdir under rootDir whose name
+  L120: is absent from the object store under owner. Pairs with
+  L121: HydrateSkillsDown: hydrate-down brings remote→local at LoadSkills
+  L122: entry, mirror-up catches anything the agent just wrote locally
+  L123: (typically `npx skills add -g -y` into the per-user bind-mount) and
+  L124: pushes it so sibling pods see it on their next hydrate cycle.
+  L126: Skip-criterion is "skill name absent from remote", not per-file diff,
+  L127: so a skill that already exists on remote is treated as authoritative-
+  L128: remote (no re-upload, no overwrite). Half-installed dirs without
+  L129: SKILL.md are skipped to avoid uploading partial state mid-install.
+  L151: Missing local dir == nothing to mirror; not an error.
+  L159: Only upload dirs that look fully installed. Without this guard
+  L160: a concurrent npx install could push a half-written tree.
+  L176: DeleteSkillUp removes every object under <owner>/skills/<skillName>/.
+  L177: Missing keys are tolerated.
+  L205: HydrateSkillsDown mirrors every skill object under <owner>/skills/
+  L206: into <rootDir>/ so SkillsLoader (filesystem scanner) sees the same set
+  L207: of skills the object store has.
+  L209: Two-way reconciliation:
+  L210: 1. For every remote key, create/overwrite the local file (skipped when
+  L211: size matches — cheap re-entry guard).
+  L212: 2. For every local top-level skill directory that has no remote keys,
+  L213: remove it. This is what propagates a delete from pod A to pod B.
+  L215: `keepLocal` is an allow-list of skill folder names that must never be
+  L216: pruned regardless of the remote state. The global-skills dir uses this
+  L217: to protect bundled skills (installed from the embedded FS at startup,
+  L218: never uploaded to the object store). Pass nil for per-agent dirs.
+  L220: File-level divergence inside a surviving skill (remote dropped one file
+  L221: from the bundle) is not reconciled; skills are replaced wholesale at
+  L222: install time, so per-file drift shouldn't happen in practice.
+  L233: Remote view: which skill-name directories exist in the store.
+  L248: Same size → already hydrated. We overwrite remote keys on
+  L249: every install so size changes when content does; true
+  L250: checksum match would need an extra HEAD/ETag and is rarely
+  L251: worth it for static skill bundles.
+  L281: Reconcile deletions: any top-level skill dir present locally but not
+  L282: in the remote listing was deleted on another pod — drop it so this
+  L283: pod's SkillsLoader stops returning a stale entry. `keepLocal` shields
+  L284: bundled skills (embedded in the binary, never mirrored to OSS) from
+  L285: getting nuked the first time an empty OSS listing comes back.
+  L287: SAFETY: when the remote has zero skill objects, the listing is
+  L288: indistinguishable from "OSS misconfigured" or "fresh install with
+  L289: only filesystem-installed skills". Pruning in that case is
+  L290: destructive — it deletes every local skill the operator dropped
+  L291: into BKCLAW_HOME/skills/ for product agents that don't use OSS
+  L292: at all. Skip pruning entirely unless the remote authoritatively
+  L293: has at least one skill, which is the only state where "missing
+  L294: from remote" carries meaning.
+  L324: ListRemoteSkillNames returns the unique skill folder names present in
+  L325: the object store under <owner>/skills/. Used so the admin UI can show
+  L326: all skills the agent owns even if this pod hasn't hydrated them yet.
+
+=== E:\\fromGithub\\bkclaw\\internal\\skills\skillssh.go ===
+  L11: skillsShBaseURL is the hostname for https://skills.sh. It returns a public
+  L12: JSON search endpoint but does not expose per-skill metadata — tarball
+  L13: downloads go directly to codeload.github.com using the source repo listed
+  L14: in each search result.
+  L17: SkillsShResult is one entry returned by the skills.sh search API.
+  L26: SearchSkillsSh queries https://skills.sh/api/search?q=... and returns the
+  L27: raw results. An empty slice means no matches.
+  L47: PickSkillsShExact returns the result that best matches name: exact skillId
+  L48: match wins; otherwise falls back to the most-installed entry. Returns nil
+  L49: when results is empty.
+  L67: InstallFromSkillsSh installs skills.sh result r into targetDir/<r.SkillID>/.
+  L68: It fetches the source repo's tarball (trying main then master), finds the
+  L69: in-tarball path of the skill folder (skills may live at arbitrary depth in
+  L70: the repo), and extracts that folder.
+  L80: The "source" field sometimes contains a repo-internal subpath appended
+  L81: to owner/repo (e.g. "claude-office-skills/skills"). GitHub repos only
+  L82: have two-segment slugs, so split again and treat the rest as a prefix
+  L83: hint we can use to disambiguate tarball probing.
+  L92: Try the repo's actual default branch first, then the common
+  L93: conventions as fallback. Many skills.sh entries point at repos with
+  L94: non-standard branches (e.g. `trunk`, `develop`, `dev`) — without the
+  L95: API probe we'd 404 even though the repo exists and contains the
+  L96: skill. Dedup so we don't hit the same ref twice when default is
+  L97: already `main`/`master`.
+  L103: Move matching ref to front to short-circuit the happy path.
+  L110: Probe once to discover the real in-tarball subpath of the skill
+  L111: folder. This is cheap for small repos and avoids double-downloads
+  L112: because the streaming tar reader bails out on the first match.
+  L119: Fall back to prefix hint when the probe finds nothing but
+  L120: skills.sh's "source" hinted at a subpath.
+  L153: githubDefaultBranch asks the GitHub API for the repo's default branch.
+  L154: Returns "" on any error (API rate limit, private repo, etc.) — callers
+  L155: fall back to the well-known conventions. Best-effort only; we never
+  L156: block the install path on this call.
+  L163: Explicit Accept keeps the v3 JSON format stable. No auth header —
+  L164: unauthenticated requests have a low rate limit (60/h per IP) but
+  L165: that's enough for interactive installs and we don't want to require
+  L166: configuring a token just for default-branch lookup.
+
+=== E:\\fromGithub\\bkclaw\\internal\\skills\tarball.go ===
+  L15: extractSubpath downloads a gzipped tar from url and writes files whose
+  L16: in-tarball path matches <topLevel>/<subpath>/<rest> into destDir/<rest>.
+  L17: If subpath is empty, everything under the top-level directory is extracted.
+  L18: It tolerates tarballs produced by codeload.github.com (each file is prefixed
+  L19: with a repo-sha directory) and stops path-traversal via ".." components.
+  L21: Returns the number of files written.
+  L58: Strip the archive's top-level directory (codeload wraps everything
+  L59: in "<repo>-<sha>/"), which we don't care about.
+  L116: findSkillDirInTarball fetches the tarball once and returns the in-tarball
+  L117: subpath (relative to the top-level dir) whose basename is skillID and which
+  L118: contains a SKILL.md, or "" if no such folder exists.
+  L120: Needed for skills.sh entries where the skill lives at an arbitrary depth in
+  L121: the source repo (e.g. pdf-viewer/skills/view-pdf/).
+  L158: defaultHTTPClient is the shared timeout-bounded client for registry calls.

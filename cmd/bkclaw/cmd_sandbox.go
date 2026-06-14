@@ -10,7 +10,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/sandbox"
 )
 
-// sandboxCmd handles sandbox management subcommands.
+// sandboxCmd 处理沙箱管理子命令。
 func sandboxCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sandbox",

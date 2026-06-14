@@ -9,12 +9,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Engine evaluates policy rules.
+// Engine 评估策略规则。
 type Engine struct {
 	policy *Policy
 }
 
-// NewEngine creates an engine with the given policy.
+// NewEngine 使用给定的策略创建一个引擎。
 func NewEngine(p *Policy) *Engine {
 	if p == nil {
 		p = DefaultPolicy()
@@ -22,12 +22,12 @@ func NewEngine(p *Policy) *Engine {
 	return &Engine{policy: p}
 }
 
-// Policy returns the current policy.
+// Policy 返回当前策略。
 func (e *Engine) Policy() *Policy {
 	return e.policy
 }
 
-// LoadFromFile parses a YAML policy file.
+// LoadFromFile 解析 YAML 策略文件。
 func LoadFromFile(path string) (*Policy, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -40,7 +40,7 @@ func LoadFromFile(path string) (*Policy, error) {
 	return &p, nil
 }
 
-// LoadPreset returns a named preset policy.
+// LoadPreset 返回指定名称的预设策略。
 func LoadPreset(name string) *Policy {
 	switch strings.ToLower(name) {
 	case "restricted":
@@ -52,25 +52,25 @@ func LoadPreset(name string) *Policy {
 	}
 }
 
-// CheckFilesystem checks whether a file path is allowed for read or write.
+// CheckFilesystem 检查文件路径是否允许读取或写入。
 func (e *Engine) CheckFilesystem(path string, write bool) error {
 	fs := e.policy.Filesystem
 
 	if write {
-		// Check deny first (deny wins)
+		// 先检查拒绝规则（拒绝优先）
 		for _, pattern := range fs.DenyWrite {
 			if matchGlob(pattern, path) {
 				return fmt.Errorf("policy: write denied for %s (matches %s)", path, pattern)
 			}
 		}
-		// If allow list is specified, path must match
+		// 如果指定了允许列表，路径必须匹配
 		if len(fs.AllowWrite) > 0 {
 			if !matchAny(fs.AllowWrite, path) {
 				return fmt.Errorf("policy: write not allowed for %s", path)
 			}
 		}
 	} else {
-		// Check deny first
+		// 先检查拒绝规则
 		for _, pattern := range fs.DenyRead {
 			if matchGlob(pattern, path) {
 				return fmt.Errorf("policy: read denied for %s (matches %s)", path, pattern)
@@ -85,7 +85,7 @@ func (e *Engine) CheckFilesystem(path string, write bool) error {
 	return nil
 }
 
-// CheckNetwork checks whether a network request is allowed.
+// CheckNetwork 检查网络请求是否允许。
 func (e *Engine) CheckNetwork(host string, port int, method string, path string) error {
 	net := e.policy.Network
 
@@ -95,7 +95,7 @@ func (e *Engine) CheckNetwork(host string, port int, method string, path string)
 	case "permissive", "":
 		return nil
 	case "allowlist":
-		// Must match at least one outbound rule
+		// 必须匹配至少一条出站规则
 		for _, rule := range net.Outbound {
 			if !matchHost(rule.Host, host) {
 				continue
@@ -116,18 +116,18 @@ func (e *Engine) CheckNetwork(host string, port int, method string, path string)
 	return nil
 }
 
-// CheckTool checks whether a tool is allowed to be used.
+// CheckTool 检查工具是否允许使用。
 func (e *Engine) CheckTool(toolName string) error {
 	tools := e.policy.Tools
 
-	// Deny always wins
+	// 拒绝规则始终优先
 	for _, d := range tools.Deny {
 		if d == toolName || d == "*" {
 			return fmt.Errorf("policy: tool %q denied", toolName)
 		}
 	}
 
-	// If allow list is specified, must be in it
+	// 如果指定了允许列表，必须在列表中
 	if len(tools.Allow) > 0 {
 		for _, a := range tools.Allow {
 			if a == toolName || a == "*" {
@@ -145,7 +145,7 @@ func matchGlob(pattern, path string) bool {
 	if matched {
 		return true
 	}
-	// Also try matching against the base name
+	// 也尝试匹配基本名称
 	matched, _ = filepath.Match(pattern, filepath.Base(path))
 	return matched
 }
@@ -155,11 +155,11 @@ func matchAny(patterns []string, path string) bool {
 		if matchGlob(p, path) {
 			return true
 		}
-		// Support prefix matching with trailing *
+		// 支持带尾随 * 的前缀匹配
 		if strings.HasSuffix(p, "*") && strings.HasPrefix(path, strings.TrimSuffix(p, "*")) {
 			return true
 		}
-		// Support directory prefix (e.g. "/workspace" allows "/workspace/foo")
+		// 支持目录前缀（例如 "/workspace" 允许 "/workspace/foo"）
 		if strings.HasPrefix(path, p) {
 			return true
 		}
@@ -172,8 +172,8 @@ func matchHost(pattern, host string) bool {
 		return true
 	}
 	if strings.HasPrefix(pattern, "*.") {
-		// Wildcard subdomain match
-		suffix := pattern[1:] // ".example.com"
+		// 通配符子域名匹配
+		suffix := pattern[1:] // 如 ".example.com"
 		return strings.HasSuffix(host, suffix) || host == pattern[2:]
 	}
 	return pattern == host

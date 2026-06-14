@@ -14,17 +14,17 @@ type setTimezoneArgs struct {
 	Timezone string `json:"timezone"`
 }
 
-// RegisterTimezoneTool registers set_timezone — the structured
-// counterpart to "write the chatter's timezone into USER.md". USER.md
-// is free text the model may or may not act on; this tool persists the
-// timezone where the RUNTIME reads it (scope prefs), so the system
-// prompt's date line and cron scheduling switch to the chatter's local
-// time deterministically instead of relying on the model doing offset
-// arithmetic.
+// RegisterTimezoneTool 注册 set_timezone — 结构化
+// 对应于“将聊天者的时区写入 USER.md”。用户名.md
+// 是模型可能会或可能不会采取行动的自由文本；这个工具坚持
+// RUNTIME 读取它的时区（范围首选项），因此系统
+// 提示符的日期行和 cron 调度切换到聊天者的本地
+// 时间确定性而不是依赖于模型进行偏移
+// 算术。
 //
-// The chatter is resolved at execute time via r.ChatterUserID() —
-// bindSession stamps it per-turn — so one registration serves every
-// sender the agent talks to.
+// 聊天在执行时通过 r.ChatterUserID() 解决 -
+// BindSession 每回合都会对其进行标记 — 因此一次注册即可服务于每个回合
+// 与代理交谈的发件人。
 func RegisterTimezoneTool(r *Registry, st store.Store) {
 	r.Register("set_timezone",
 		"Record the current chatter's timezone. Call this whenever the chatter tells you their timezone, city, or country (e.g. \"我在北京\" → Asia/Shanghai), or when their messages imply one. The runtime uses it to show you their local time and to fire their scheduled tasks at the right local hour — do NOT just note the timezone in USER.md, that does not affect scheduling.",
@@ -51,9 +51,9 @@ func makeSetTimezone(st store.Store, r *Registry) ToolFunc {
 		if args.Timezone == "" {
 			return "", fmt.Errorf("timezone is required")
 		}
-		// "Local" is technically loadable but meaningless to persist —
-		// it would pin the chatter to whatever the server's TZ happens
-		// to be at read time.
+		// “本地”在技术上是可加载的，但持久化是没有意义的——
+		// 无论服务器的 TZ 发生什么，它都会将喋喋不休的信息固定下来
+		// 处于读取时间。
 		if args.Timezone == "Local" {
 			return "", fmt.Errorf("timezone must be a concrete IANA name like 'Asia/Shanghai', not 'Local'")
 		}

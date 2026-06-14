@@ -22,7 +22,7 @@ postgres
 {{- end -}}
 {{- end -}}
 
-{{- /* DSN: prefer externalDSN, else use the selected bundled database. */ -}}
+{{- /* DSN：优先使用 externalDSN，否则使用选定的捆绑数据库。 */ -}}
 {{- define "bkclaw.dsn" -}}
 {{- if .Values.externalDSN -}}
 {{ .Values.externalDSN }}

@@ -63,9 +63,8 @@ spec:
           mountPath: /data/.bkclaw
         resources:
           {{- toYaml .Values.gateway.resources | nindent 10 }}
-        # /readyz and /livez bypass auth — they probe reliably both before
-        # and after onboard. Don't switch to /api/status: that path 401s
-        # once onboard is complete.
+        # /readyz 和 /livez 绕过认证 — 它们在引导前后都能可靠探测。
+        # 不要改用 /api/status：引导完成后该路径会返回 401。
         readinessProbe:
           httpGet:
             path: /readyz
@@ -84,8 +83,7 @@ spec:
               command: ["sh", "-c", "sleep {{ .Values.gateway.preStopSleepSeconds }}"]
       terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
       volumes:
-      # /data/.bkclaw only holds pod-local ephemeral state; workspace
-      # artifacts go to the object store.
+      # /data/.bkclaw 仅保存 Pod 本地临时状态；工作区工件进入对象存储。
       - name: data
         emptyDir: {}
 ---
@@ -99,9 +97,9 @@ spec:
   type: ClusterIP
   selector:
     app: {{ include "bkclaw.fullname" . }}-gateway
-  # SSE/WS connections must stick to the same pod under multi-replica.
-  # The Ingress already does cookie affinity; ClientIP here is a fallback
-  # for load balancers that hit the Service directly.
+  # 多副本下 SSE/WS 连接必须保持在同一 Pod 上。
+  # Ingress 已处理 cookie 亲和性；这里的 ClientIP 是
+  # 针对直接访问 Service 的负载均衡器的回退。
   sessionAffinity: ClientIP
   sessionAffinityConfig:
     clientIP:

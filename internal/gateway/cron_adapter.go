@@ -8,9 +8,8 @@ import (
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
-// cronStoreAdapter bridges store.Store to cron.StoreInterface. The cron
-// package keeps its own StoreJob type to avoid an import cycle; we project
-// CronJobRecord rows down to that type here.
+// cronStoreAdapter 桥接 store.Store 到 cron.StoreInterface。cron
+// 包维护自己的 StoreJob 类型以避免导入循环；我们在此将 CronJobRecord 行投影到该类型。
 type cronStoreAdapter struct {
 	st store.Store
 }
@@ -21,8 +20,7 @@ func (a *cronStoreAdapter) GetDueCronJobs(ctx context.Context, now time.Time) ([
 		return nil, err
 	}
 	out := make([]cron.StoreJob, 0, len(rows))
-	// Resolve agent → owner once per (de-duplicated) agent so a tick
-	// firing dozens of jobs against the same agent doesn't re-query.
+	// 每个（去重后的）代理解析一次 agent → owner，这样同一个代理触发数十个任务时不会重复查询。
 	ownerByAgent := map[string]string{}
 	for _, r := range rows {
 		owner, ok := ownerByAgent[r.AgentID]

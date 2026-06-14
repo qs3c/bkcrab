@@ -9,7 +9,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/config"
 )
 
-// --- Plugins ---
+// --- 插件 ---
 
 func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 	homeDir, err := config.HomeDir()
@@ -33,7 +33,7 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 		}
 		id := entry.Name()
 
-		// Read plugin.json for metadata
+		// 读取 plugin.json 获取元数据
 		pluginType := "unknown"
 		version := ""
 		manifestPath := filepath.Join(pluginsDir, id, "plugin.json")
@@ -76,12 +76,9 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, plugins)
 }
 
-// handleListHookPlugins returns the discoverable hook-type plugins
-// for use in per-agent plugin toggles on the Context page. Read-only,
-// not admin-gated (agent owners need to see the available plugins to
-// pick which to enable on their agents) — it deliberately leaves out
-// the per-plugin runtime state (running/stopped) the admin /api/plugins
-// endpoint exposes.
+// handleListHookPlugins 返回可发现的 hook 类型插件，用于 Context 页面上的每个 agent 插件开关。
+// 只读，不对管理员门控（agent 拥有者需要查看可用插件来选择在其 agent 上启用哪些）—
+// 它故意省略了管理 /api/plugins 端点暴露的每个插件的运行时状态（running/stopped）。
 func (s *Server) handleListHookPlugins(w http.ResponseWriter, r *http.Request) {
 	homeDir, err := config.HomeDir()
 	if err != nil {
@@ -109,9 +106,9 @@ func (s *Server) handleListHookPlugins(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(data, &manifest); err != nil {
 			continue
 		}
-		// Filter on either Type=="hook" OR capabilities containing "hook".
-		// Older plugins use Type alone; newer ones may declare multiple
-		// capabilities (e.g. a plugin that's both a tool AND a hook).
+		// 过滤条件为 Type=="hook" 或 capabilities 包含 "hook"。
+		// 旧插件仅使用 Type；新插件可能声明多个 capabilities
+		//（例如既是工具又是 hook 的插件）。
 		isHook := false
 		if t, ok := manifest["type"].(string); ok && t == "hook" {
 			isHook = true

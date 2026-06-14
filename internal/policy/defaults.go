@@ -1,6 +1,6 @@
 package policy
 
-// DefaultPolicy returns a permissive policy that allows everything.
+// DefaultPolicy 返回允许所有操作的宽松策略。
 func DefaultPolicy() *Policy {
 	return &Policy{
 		Name:        "permissive",
@@ -14,7 +14,7 @@ func DefaultPolicy() *Policy {
 	}
 }
 
-// RestrictedPolicy returns a locked-down policy that denies everything by default.
+// RestrictedPolicy 返回默认拒绝所有操作的严格限制策略。
 func RestrictedPolicy() *Policy {
 	return &Policy{
 		Name:        "restricted",
@@ -37,7 +37,7 @@ func RestrictedPolicy() *Policy {
 	}
 }
 
-// StandardPolicy returns sensible defaults.
+// StandardPolicy 返回合理的默认策略。
 func StandardPolicy() *Policy {
 	return &Policy{
 		Name:        "standard",

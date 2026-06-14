@@ -12,13 +12,13 @@ import (
 	"time"
 )
 
-// extractSubpath downloads a gzipped tar from url and writes files whose
-// in-tarball path matches <topLevel>/<subpath>/<rest> into destDir/<rest>.
-// If subpath is empty, everything under the top-level directory is extracted.
-// It tolerates tarballs produced by codeload.github.com (each file is prefixed
-// with a repo-sha directory) and stops path-traversal via ".." components.
+// extractSubpath 从 url 下载 gzip 压缩的 tar 包，并将 tar 包内路径匹配
+// <topLevel>/<subpath>/<rest> 的文件写入 destDir/<rest>。
+// 如果 subpath 为空，则提取顶级目录下的所有内容。
+// 兼容 codeload.github.com 生成的 tar 包（每个文件以 repo-sha 目录为前缀），
+// 并通过 ".." 组件阻止路径遍历。
 //
-// Returns the number of files written.
+// 返回写入的文件数量。
 func extractSubpath(client *http.Client, url, subpath, destDir string) (int, error) {
 	resp, err := client.Get(url)
 	if err != nil {
@@ -55,8 +55,8 @@ func extractSubpath(client *http.Client, url, subpath, destDir string) (int, err
 			return written, fmt.Errorf("read tar: %w", err)
 		}
 		name := hdr.Name
-		// Strip the archive's top-level directory (codeload wraps everything
-		// in "<repo>-<sha>/"), which we don't care about.
+		// 去除归档文件的顶级目录（codeload 将所有文件包裹在
+		// "<repo>-<sha>/" 中），我们对此不关心。
 		slash := strings.IndexByte(name, '/')
 		if slash < 0 {
 			continue
@@ -113,12 +113,10 @@ func extractSubpath(client *http.Client, url, subpath, destDir string) (int, err
 	return written, nil
 }
 
-// findSkillDirInTarball fetches the tarball once and returns the in-tarball
-// subpath (relative to the top-level dir) whose basename is skillID and which
-// contains a SKILL.md, or "" if no such folder exists.
+// findSkillDirInTarball 获取一次 tar 包，并返回 tar 包内 basename 为 skillID
+// 且包含 SKILL.md 的子路径（相对于顶级目录），如果不存在则返回 ""。
 //
-// Needed for skills.sh entries where the skill lives at an arbitrary depth in
-// the source repo (e.g. pdf-viewer/skills/view-pdf/).
+// 用于 skills.sh 条目中技能位于源仓库任意深度的情况（例如 pdf-viewer/skills/view-pdf/）。
 func findSkillDirInTarball(client *http.Client, url, skillID string) (string, error) {
 	resp, err := client.Get(url)
 	if err != nil {
@@ -155,7 +153,7 @@ func findSkillDirInTarball(client *http.Client, url, skillID string) (string, er
 	return "", nil
 }
 
-// defaultHTTPClient is the shared timeout-bounded client for registry calls.
+// defaultHTTPClient 是用于注册表调用的共享超时限制客户端。
 func defaultHTTPClient() *http.Client {
 	return &http.Client{Timeout: 60 * time.Second}
 }

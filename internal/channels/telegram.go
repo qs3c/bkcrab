@@ -429,7 +429,7 @@ func (t *Telegram) sendSingleMessage(chatID int64, text string, msg bus.Outbound
 		// 回退到 HTML
 		slog.Warn("telegram MarkdownV2 failed, trying HTML", "error", err)
 		tgMsg.ParseMode = "HTML"
-		tgMsg.Text = text // use original text for HTML
+		tgMsg.Text = text // 使用原始文本进行 HTML
 		_, err = t.bot.Send(tgMsg)
 		if err != nil {
 			// 回退到纯文本

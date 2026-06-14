@@ -8,9 +8,9 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 )
 
-// SubAgentSpawner is the interface for spawning sub-agents.
+// SubAgentSpawner 是生成子代理的接口。
 type SubAgentSpawner interface {
-	// SpawnSubAgent sends a task to another agent and returns its response.
+	// SpawnSubAgent 将任务发送到另一个代理并返回其响应。
 	SpawnSubAgent(ctx context.Context, agentID string, msg bus.InboundMessage) string
 }
 
@@ -19,7 +19,7 @@ type spawnSubagentArgs struct {
 	Task    string `json:"task"`
 }
 
-// RegisterSubAgent registers the spawn_subagent tool.
+// RegisterSubAgent 注册spawn_subagent 工具。
 func RegisterSubAgent(r *Registry, spawner SubAgentSpawner, callerAgentID string) {
 	r.Register("spawn_subagent", "Spawn another agent as a sub-task and return its response. Use this to delegate work to specialized agents.", map[string]interface{}{
 		"type": "object",

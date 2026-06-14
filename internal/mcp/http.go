@@ -11,7 +11,7 @@ import (
 	"sync"
 )
 
-// HTTPClient implements the MCP client for HTTP (Streamable HTTP) servers.
+// HTTPClient 实现了基于 HTTP（Streamable HTTP）的 MCP 客户端。
 type HTTPClient struct {
 	url     string
 	headers map[string]string
@@ -20,7 +20,7 @@ type HTTPClient struct {
 	nextID  int
 }
 
-// NewHTTPClient creates a new HTTP MCP client.
+// NewHTTPClient 创建一个新的 HTTP MCP 客户端。
 func NewHTTPClient(url string, headers map[string]string) *HTTPClient {
 	return &HTTPClient{
 		url:     url,
@@ -97,7 +97,7 @@ func (c *HTTPClient) sendRequest(method string, params interface{}) (*jsonRPCRes
 	return &rpcResp, nil
 }
 
-// Connect initializes the connection with the MCP server.
+// Connect 初始化与 MCP 服务器的连接。
 func (c *HTTPClient) Connect() error {
 	_, err := c.sendRequest("initialize", initializeParams{
 		ProtocolVersion: "2024-11-05",
@@ -106,7 +106,7 @@ func (c *HTTPClient) Connect() error {
 	return err
 }
 
-// ListTools returns the list of tools available on the MCP server.
+// ListTools 返回 MCP 服务器上可用的工具列表。
 func (c *HTTPClient) ListTools() ([]ToolDef, error) {
 	resp, err := c.sendRequest("tools/list", struct{}{})
 	if err != nil {
@@ -121,7 +121,7 @@ func (c *HTTPClient) ListTools() ([]ToolDef, error) {
 	return result.Tools, nil
 }
 
-// CallTool calls a tool on the MCP server.
+// CallTool 调用 MCP 服务器上的某个工具。
 func (c *HTTPClient) CallTool(name string, args json.RawMessage) (string, error) {
 	resp, err := c.sendRequest("tools/call", toolCallParams{
 		Name:      name,
@@ -145,7 +145,7 @@ func (c *HTTPClient) CallTool(name string, args json.RawMessage) (string, error)
 	return strings.Join(texts, "\n"), nil
 }
 
-// Close is a no-op for HTTP clients.
+// Close 对 HTTP 客户端无操作。
 func (c *HTTPClient) Close() error {
 	return nil
 }

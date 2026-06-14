@@ -9,17 +9,17 @@ import (
 	"github.com/qs3c/bkclaw/internal/agent/goal"
 )
 
-// RegisterGoalTools wires the single model-callable goal tool onto r.
+// RegisterGoalTools 将单个模型可调用目标工具连接到 r 上。
 //
-// Only `update_goal(status="complete")` is exposed to the model: the
-// continuation prompt already feeds the model the current objective +
-// budget every turn, so there's nothing for `get_goal` to add. We
-// deliberately don't let the model start its own goals (`create_goal`)
-// either — goals are user-initiated, via the /goal slash.
+// 只有 `update_goal(status="complete")` 暴露给模型：
+// 继续提示已经为模型提供了当前目标 +
+// 每回合都会进行预算，因此“get_goal”无需添加任何内容。我们
+// 故意不让模型启动自己的目标（`create_goal`）
+// 要么 - 目标是用户通过 /goal 斜线发起的。
 //
-// status is restricted to the literal "complete" at the schema layer.
-// Pause / resume / budget_limited are user- or runtime-controlled, not
-// model-controlled. Mirrors codex-rs/core/src/tools/handlers/goal_spec.rs.
+// 状态仅限于模式层的“完整”字面意思。
+// 暂停/恢复/预算限制是用户或运行时控制的，而不是
+// 模型控制。镜像 codex-rs/core/src/tools/handlers/goal_spec.rs。
 func RegisterGoalTools(r *Registry, st goal.Store, agentID string) {
 	r.Register("update_goal",
 		"Mark the active goal complete. Status is restricted to \"complete\"; "+
@@ -44,10 +44,10 @@ func RegisterGoalTools(r *Registry, st goal.Store, agentID string) {
 	)
 }
 
-// makeUpdateGoal returns a ToolFunc that flips the active goal to
-// Complete. Schema restricts status to "complete"; we re-validate
-// here defensively in case a non-OpenAI provider ships through a
-// non-conforming model response.
+// makeUpdateGoal 返回一个 ToolFunc，将活动目标翻转为
+// 完全的。架构将状态限制为“完成”；我们重新验证
+// 这里是防御性的，以防非 OpenAI 提供商通过
+// 不合格模型响应。
 func makeUpdateGoal(st goal.Store, r *Registry, agentID string) ToolFunc {
 	return func(ctx context.Context, args json.RawMessage) (string, error) {
 		var a struct {

@@ -16,7 +16,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/users"
 )
 
-// --- Login / logout / me ---
+// --- 登录/登出/我的信息 ---
 
 type loginRequest struct {
 	Login    string `json:"login"`
@@ -73,11 +73,10 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	// deployMode lets the frontend show or hide local-only conveniences
-	// (open-in-Finder for the workspace folder, future "edit SOUL.md in
-	// $EDITOR" hooks, etc). One source of truth here so we don't read
-	// the env var in 5 different handlers; the frontend can cache it
-	// alongside the user profile since it doesn't change at runtime.
+	// deployMode 让前端显示或隐藏仅限本地的便利功能
+	//（在工作区文件夹中打开 Finder、未来的"在 $EDITOR 中编辑 SOUL.md"钩子等）。
+	// 此处作为唯一事实来源，这样我们不必在 5 个不同的处理程序中读取环境变量；
+	// 前端可以将其与用户资料一起缓存，因为它在运行时不会改变。
 	deployMode := "self-hosted"
 	if buildinfo.IsHostedDeploy() {
 		deployMode = "hosted"
@@ -92,12 +91,11 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// --- Self-service profile ---
+// --- 自助服务资料 ---
 
-// maxAvatarBytes caps the size of a base64-encoded avatar payload. ~256KB
-// is enough for a reasonable square (e.g. 256×256 PNG); anything larger
-// pushes the users row into TOAST territory on Postgres and slows /api/me.
-// Frontend should resize/compress before upload — this is just the wall.
+// maxAvatarBytes 限制 base64 编码的头像负载大小。约 256KB
+// 对于一个合理的正方形（例如 256×256 PNG）足够了；更大的会将用户行推入 Postgres 的 TOAST 区域并减慢 /api/me。
+// 前端应在上传前调整大小/压缩 — 这只是一个限制墙。
 const maxAvatarBytes = 256 * 1024
 
 type updateMeReq struct {
@@ -105,10 +103,9 @@ type updateMeReq struct {
 	AvatarURL   string `json:"avatarUrl"`
 }
 
-// handleUpdateMe lets the logged-in user edit their own display name and
-// avatar. Avatar must be empty (clears) or a data: URL — full-blown HTTP
-// URLs would let a malicious paste exfiltrate user data via referer when
-// rendered, so we constrain to inline images only.
+// handleUpdateMe 允许已登录用户编辑自己的显示名称和头像。
+// 头像必须为空（清除）或 data: URL — 完整的 HTTP URL
+// 会在渲染时通过 referer 泄露用户数据，因此我们限制为仅内联图像。
 func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok || ident.ReadOnly() {
@@ -143,11 +140,9 @@ type changePasswordReq struct {
 	NewPassword string `json:"newPassword"`
 }
 
-// handleChangeMyPassword is the self-service variant of admin's password
-// reset — requires the current password before accepting a new one. Min
-// length matches the implicit default elsewhere; we don't enforce strong
-// rules because the install is single-tenant and we don't want to be
-// the place that rejects "correcthorse" with a regex.
+// handleChangeMyPassword 是管理员密码重置的自助服务变体 —
+// 在接受新密码之前需要当前密码。最小长度匹配其他地方的隐式默认值；
+// 我们不强制执行强规则，因为安装是单租户的，而且我们不想成为用正则表达式拒绝"correcthorse"的地方。
 func (s *Server) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok || ident.ReadOnly() {
@@ -178,7 +173,7 @@ func (s *Server) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) 
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// --- Onboard ---
+// --- 引导 ---
 
 type onboardRequest struct {
 	Username    string `json:"username"`
@@ -205,9 +200,8 @@ type onboardRequest struct {
 	SandboxBoxlitePrefix   string `json:"sandboxBoxlitePrefix,omitempty"`
 }
 
-// handleOnboard creates the first super_admin + first system provider +
-// first agent, all in a single logical operation. Only callable when the
-// users table is empty; subsequent calls 409.
+// handleOnboard 在单个逻辑操作中创建第一个 super_admin + 第一个系统提供者 + 第一个 agent。
+// 仅在用户表为空时可调用；后续调用返回 409。
 func (s *Server) handleOnboard(w http.ResponseWriter, r *http.Request) {
 	if s.dataStore == nil || s.accounts == nil {
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store not ready"})
@@ -249,11 +243,10 @@ func (s *Server) handleOnboard(w http.ResponseWriter, r *http.Request) {
 			APIType:  req.APIType,
 			AuthType: req.AuthType,
 		}
-		// Seed the chosen model into Provider.Models so the Models /
-		// Providers admin pages show it right away — without this, users
-		// land on an "Edit Provider" dialog with an empty Models list
-		// and an inactive Test connection button, even though
-		// agents.defaults already names this model.
+		// 将选择的模型种子写入 Provider.Models，以便 Models/Providers
+		// 管理员页面立即显示它 — 没有这个，用户进入"编辑 Provider"对话框时，
+		// 即使 agents.defaults 已经命名了该模型，Models 列表也是空的，
+		// 测试连接按钮也是非活动的。
 		if req.Model != "" {
 			pcfg.Models = []config.ModelEntry{{ID: req.Model, Name: req.Model}}
 		}
@@ -324,7 +317,7 @@ func (s *Server) handleOnboard(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "user": acct, "agentId": agentID})
 }
 
-// --- Admin: user management ---
+// --- 管理员：用户管理 ---
 
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	list, err := s.accounts.List(r.Context())
@@ -332,10 +325,9 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	// app_user accounts are programmatically provisioned by api_keys on
-	// behalf of downstream end-users — they're not humans the admin
-	// manages, and their volume can be very large. Hide them by default;
-	// admins that need to audit them can pass ?includeAppUsers=1.
+	// app_user 账户是由 apikeys 代为下游最终用户以编程方式创建的 —
+	// 它们不是管理员管理的人类用户，其数量可能非常大。默认隐藏它们；
+	// 需要审计它们的管理员可以传递 ?includeAppUsers=1。
 	if r.URL.Query().Get("includeAppUsers") != "1" {
 		filtered := make([]*users.Account, 0, len(list))
 		for _, u := range list {
@@ -355,19 +347,14 @@ type createUserReq struct {
 	Password    string `json:"password"`
 	DisplayName string `json:"displayName,omitempty"`
 	Role        string `json:"role,omitempty"`
-	// AgentQuota is a pointer so the admin can distinguish "unset →
-	// use the default unlimited" from "explicitly 0 → no self-creation".
+	// AgentQuota 使用指针，以便管理员可以区分"未设置 → 使用默认无限制"和"显式 0 → 禁止自助创建"。
 	AgentQuota *int64 `json:"agentQuota,omitempty"`
-	// AvatarURL is an optional inline data:image/* URL (≤256KB). Same
-	// shape and cap as the self-service /api/me endpoint.
+	// AvatarURL 是一个可选的内联 data:image/* URL（≤256KB）。与自助服务 /api/me 端点相同的形状和上限。
 	AvatarURL string `json:"avatarUrl,omitempty"`
-	// ExternalID is the calling app's own user identifier. Combined
-	// with the auth-derived apikey_id (NOT taken from the body) it
-	// makes provisioning idempotent: the same upstream user always
-	// resolves to the same bkclaw user_id. Optional for session
-	// callers (web admin clicks); typical for upstream apikey
-	// provisioning where the caller wants a stable mapping back to
-	// their own user table.
+	// ExternalID 是调用应用自己的用户标识符。与认证派生的 apikey_id（不从请求体获取）结合，
+	// 使配置幂等：相同的上游用户始终解析为相同的 bkclaw user_id。
+	// 对于会话调用者（Web 管理员点击）是可选的；对于上游 apikey 配置是典型的，
+	// 其中调用者希望稳定映射回自己的用户表。
 	ExternalID string `json:"externalId,omitempty"`
 }
 
@@ -387,10 +374,8 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// apikey_id is auth-derived, never trusted from the body — that
-	// row is what audits a provisioned user back to the key that
-	// minted them. Empty for session callers (web admin), populated
-	// when an admin apikey hits this endpoint.
+	// apikey_id 由认证派生，绝不应从请求体信任 — 该行将配置的用户审计回创建他们的密钥。
+	// 对于会话调用者（Web 管理员）为空，当管理 apikey 访问此端点时填充。
 	apikeyID := ""
 	if ident, ok := auth.FromContext(r.Context()); ok {
 		apikeyID = ident.APIKeyID
@@ -466,10 +451,9 @@ func (s *Server) handleResetUserPassword(w http.ResponseWriter, r *http.Request)
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// respondAllAgents returns every agent across every user, with the
-// owner's username/email joined in. Backs GET /api/agents?all=true for
-// the platform-wide admin view; the auth gate lives in handleListAgents
-// (which calls this only after CanAdminPlatform passes).
+// respondAllAgents 返回每个用户的所有 agent，附带拥有者的用户名/电子邮件。
+// 为平台范围的管理视图支持 GET /api/agents?all=true；认证门控在 handleListAgents 中
+//（仅在 CanAdminPlatform 通过后调用此函数）。
 func (s *Server) respondAllAgents(w http.ResponseWriter, r *http.Request) {
 	if s.dataStore == nil {
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "no data store"})
@@ -480,9 +464,8 @@ func (s *Server) respondAllAgents(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	// Resolve owner usernames once per unique userID — N agents could
-	// belong to a handful of users, so a per-row lookup would re-hit the
-	// store for the same id repeatedly.
+	// 为每个唯一 userID 解析拥有者用户名一次 — N 个 agent 可能属于少数几个用户，
+	// 因此逐行查找会反复命中同一 id 的存储。
 	ownerCache := map[string]*users.Account{}
 	resolveOwner := func(uid string) *users.Account {
 		if uid == "" {
@@ -517,21 +500,15 @@ func (s *Server) respondAllAgents(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"agents": out})
 }
 
-// handleAdminChats returns every chat session across every (user, agent)
-// pair, enriched with the owning user's username and the agent's name so
-// the platform-wide admin Chats page can render one flat table without
-// fanning out per-agent on the client. Super_admin only — registered on
-// /api/admin/chats and gated by the admin middleware.
+// handleAdminChats 返回跨所有 (user, agent) 对的每个聊天会话，附带上拥有用户的用户名和 agent 名称，
+// 以便平台范围的管理员 Chats 页面可以渲染一个扁平表，而无需在客户端为每个 agent 展开。
+// 仅限 super_admin — 注册在 /api/admin/chats 上，由管理中间件门控。
 //
-// Implementation note: we fan out per (chatter user_id, agent_id) pair
-// from the sessions table, NOT per agent. A non-owner who binds their
-// own bot to a public agent (or chats with a public agent on the web)
-// writes session rows under their own user_id — an iteration keyed by
-// agent.owner would miss those sessions entirely. The pair fan-out
-// captures every chatter regardless of whether they own the agent. The
-// "Owner" column then reflects the chat's actual user, so the actAs
-// link in the dashboard can impersonate the real session owner instead
-// of the agent owner (who may have no read access to the session).
+// 实现说明：我们按每个（聊天者 user_id, agent_id）对从 sessions 表展开，而不是每个 agent。
+// 将自己的 bot 绑定到公开 agent（或在 Web 上与公开 agent 聊天）的非拥有者会在自己的 user_id 下
+// 写入会话行 — 按 agent.owner 迭代会完全错过这些会话。成对展开捕获每个聊天者，
+// 无论他们是否拥有该 agent。"拥有者"列然后反映聊天的实际用户，因此仪表板中的 actAs 链接
+// 可以模拟真正的会话拥有者，而不是 agent 拥有者（后者可能没有对会话的读取权限）。
 func (s *Server) handleAdminChats(w http.ResponseWriter, r *http.Request) {
 	if s.dataStore == nil {
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "no data store"})
@@ -570,8 +547,7 @@ func (s *Server) handleAdminChats(w http.ResponseWriter, r *http.Request) {
 	for _, p := range pairs {
 		ag := resolveAgent(p.AgentID)
 		if ag == nil {
-			// Orphan session row whose agent has been deleted — skip
-			// rather than surfacing a row with a blank Agent column.
+			// 孤立会话行，其 agent 已被删除 — 跳过而不是显示一行 Agent 列为空的行。
 			continue
 		}
 		adapter := session.NewStoreAdapter(s.dataStore, p.UserID)
@@ -609,17 +585,15 @@ func (s *Server) handleAdminChats(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"sessions": out})
 }
 
-// --- Admin provisioning (per-user) ---
+// --- 管理员配置（按用户） ---
 //
-// The handlers below all live under /api/users/{id}/* — admin-or-self
-// per requireUserOrAdmin. The admin path bypasses the target user's
-// agent_quota (call initiated by the platform); the self path enforces
-// it. Quota / fork semantics live inside the relevant handler.
+// 下面的处理程序都位于 /api/users/{id}/* 下 — 根据 requireUserOrAdmin 的要求，管理员或自己。
+// 管理员路径绕过目标用户的 agent_quota（由平台发起的调用）；自助路径强制执行它。
+// 配额/分叉语义位于相应的处理程序内部。
 
-// handleListUserAgents returns the agents owned by the path-resolved
-// user. Admin-or-self via requireUserOrAdmin (admin can list any
-// user's; non-admin can only list their own). Same response shape as
-// the regular agents list so admin tools can reuse rendering.
+// handleListUserAgents 返回路径解析的用户拥有的 agent。
+// 通过 requireUserOrAdmin 实现管理员或自己（管理员可以列出任何用户的；非管理员只能列出自己的）。
+// 与常规 agent 列表相同的响应形状，以便管理工具可以复用渲染。
 func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("id")
 	if !s.requireUserOrAdmin(w, r, uid) {
@@ -653,29 +627,20 @@ type adminCreateUserAgentReq struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Model       string `json:"model,omitempty"`
-	// ForkFrom is an optional source agent id. When set, the new agent
-	// inherits SOUL.md / IDENTITY.md / AGENTS.md / BOOTSTRAP.md /
-	// TOOLS.md / HEARTBEAT.md / agent.json from the source's owner-row,
-	// plus the source's agent-scope `agents.defaults` and
-	// `skills.entries` config rows. Per-user state (MEMORY.md, USER.md,
-	// sessions, cron_jobs) and per-owner routing (channel bindings)
-	// are deliberately NOT copied. Fork sources can be any agent the
-	// caller (super_admin) can read.
+	// ForkFrom 是可选的源 agent id。设置后，新 agent 从源的拥有者行继承
+	// SOUL.md / IDENTITY.md / AGENTS.md / BOOTSTRAP.md / TOOLS.md / HEARTBEAT.md / agent.json，
+	// 以及源的 agent 作用域 `agents.defaults` 和 `skills.entries` 配置行。
+	// 每个用户的状态（MEMORY.md, USER.md, sessions, cron_jobs）和每个拥有者的路由（频道绑定）
+	// 明确不复制。分叉源可以是调用者（super_admin）可以读取的任何 agent。
 	ForkFrom string `json:"forkFrom,omitempty"`
 }
 
-// handleCreateUserAgent creates an agent owned by the path-resolved
-// user. Behavior depends on caller:
-//   - admin (super_admin / type=admin apikey) → bypass the target's
-//     agent_quota; forkFrom is honored (clones an existing agent's
-//     identity into the new one).
-//   - self (target user calling for themselves) → enforce their own
-//     agent_quota; forkFrom is ignored to avoid letting users clone
-//     other people's private agents into their namespace through this
-//     path.
+// handleCreateUserAgent 创建由路径解析的用户拥有 agent。行为取决于调用者：
+//   - 管理员（super_admin / type=admin apikey）→ 绕过目标的 agent_quota；forkFrom 被启用（将现有 agent 的身份克隆到新 agent 中）。
+//   - 自己（目标用户为自己调用）→ 强制执行自己的 agent_quota；forkFrom 被忽略，
+//     以避免让用户通过此路径将其他人的私有 agent 克隆到自己的命名空间中。
 //
-// The created agent is always private; flip via the regular
-// PUT /api/agents/{id} flow.
+// 创建的 agent 始终是私有的；通过常规的 PUT /api/agents/{id} 流程切换为公开。
 func (s *Server) handleCreateUserAgent(w http.ResponseWriter, r *http.Request) {
 	targetUserID := r.PathValue("id")
 	if !s.requireUserOrAdmin(w, r, targetUserID) {
@@ -698,8 +663,7 @@ func (s *Server) handleCreateUserAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Quota only applies on the self path. Admin provisioning is
-	// initiated by the platform and intentionally bypasses it.
+	// 配额仅适用于自助路径。管理员配置由平台发起，有意绕过它。
 	if !isAdmin && target.AgentQuota >= 0 {
 		owned, err := s.dataStore.ListAgents(r.Context(), targetUserID)
 		if err != nil {
@@ -767,7 +731,7 @@ func (s *Server) handleCreateUserAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fork content: identity files + agent-scope configs.
+	// Fork 内容：身份文件 + agent 作用域配置。
 	if source != nil {
 		if err := s.forkAgentContent(r, source, rec); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": "fork content: " + err.Error()})
@@ -788,29 +752,23 @@ func (s *Server) handleCreateUserAgent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// forkAgentFiles is the allowlist of files copied during fork. These
-// are the agent's identity (what it IS / does); per-user state
-// (MEMORY.md, USER.md) is intentionally omitted so each chatter starts
-// fresh on the new agent.
+// forkAgentFiles 是在分叉期间复制的文件允许列表。这些是 agent 的身份（它是什么/做什么）；
+// 每个用户的状态（MEMORY.md, USER.md）被有意省略，以便每个聊天者在新 agent 上从空白开始。
 var forkAgentFiles = []string{
 	"SOUL.md", "IDENTITY.md", "AGENTS.md",
 	"BOOTSTRAP.md", "TOOLS.md", "HEARTBEAT.md", "agent.json",
 }
 
-// forkAgentScopeConfigs is the allowlist of agent-scope config rows
-// copied during fork. Bindings are deliberately excluded — they encode
-// the source owner's IM routing (bot tokens, chat ids) and would be
-// nonsensical on the new agent under a different owner.
+// forkAgentScopeConfigs 是在分叉期间复制的 agent 作用域配置行允许列表。
+// 绑定被有意排除 — 它们编码了源拥有者的 IM 路由（bot token、chat id），
+// 在不同的拥有者下的新 agent 上它们是没有意义的。
 var forkAgentScopeConfigs = map[string]bool{
 	"agents.defaults": true,
 	"skills.entries":  true,
 }
 
-// forkAgentContent copies the source agent's owner-row identity files
-// and agent-scope configs into the destination agent. Best-effort per
-// file: a missing source file is skipped silently (the destination
-// just has no override for it, which the runtime handles via the
-// usual fallback paths).
+// forkAgentContent 将源 agent 的拥有者行身份文件和 agent 作用域配置复制到目标 agent。
+// 每个文件尽力而为：缺失的源文件被静默跳过（目标只是没有它的覆盖，运行时通过通常的回退路径处理）。
 func (s *Server) forkAgentContent(r *http.Request, src, dst *store.AgentRecord) error {
 	for _, name := range forkAgentFiles {
 		data, err := s.dataStore.GetAgentFileExact(r.Context(), src.ID, src.UserID, name)
@@ -842,16 +800,14 @@ func (s *Server) forkAgentContent(r *http.Request, src, dst *store.AgentRecord) 
 	return nil
 }
 
-// handleCreateUserAPIKey issues an apikey owned by the path-resolved
-// user. Admin-or-self via requireUserOrAdmin:
-//   - admin caller may issue user/agent keys for any user
-//   - non-admin caller may issue keys only for themselves (id == self)
+// handleCreateUserAPIKey 为路径解析的用户发出 apikey。
+// 通过 requireUserOrAdmin 实现管理员或自己：
+//   - 管理员调用者可以为任何用户发出 user/agent 密钥
+//   - 非管理员调用者只能为自己发出密钥（id == self）
 //
-// type=admin is always rejected through this path — admin keys grant
-// platform-wide rights and shouldn't be auto-provisioned for a target
-// user; admin who needs an admin key issues one for themselves via
-// POST /api/users/{self}/apikeys (which becomes self-create and the
-// route still requires admin caller anyway).
+// type=admin 始终通过此路径被拒绝 — 管理密钥授予平台范围的权利，
+// 不应为目标用户自动配置；需要管理密钥的管理员通过
+// POST /api/users/{self}/apikeys 为自己发出一个（这成为自助创建，但路由仍然需要管理员调用者）。
 func (s *Server) handleCreateUserAPIKey(w http.ResponseWriter, r *http.Request) {
 	targetUserID := r.PathValue("id")
 	if !s.requireUserOrAdmin(w, r, targetUserID) {
@@ -885,12 +841,10 @@ func (s *Server) handleCreateUserAPIKey(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if req.Type == users.APIKeyTypeAdmin {
-		// Admin keys are never minted via this path — they could only
-		// originate via super_admin doing POST /api/users/{self}/apikeys
-		// for themselves, which would still bypass intent ("here's a
-		// platform key for that other user"). If a super_admin needs a
-		// fresh admin key for themselves, they self-issue from the
-		// settings UI; we don't expose a programmatic admin-key mint.
+		// 管理密钥从不通过此路径生成 — 它们只能通过 super_admin 为自身
+		// 执行 POST /api/users/{self}/apikeys 产生，这仍然会绕过意图
+		//（"这是给那个其他用户的平台密钥"）。如果 super_admin 需要为自己获取新的管理密钥，
+		// 他们从设置 UI 自助发出；我们不暴露编程式的管理密钥生成。
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "admin keys cannot be issued through this path"})
 		return
 	}
@@ -905,16 +859,15 @@ func (s *Server) handleCreateUserAPIKey(w http.ResponseWriter, r *http.Request) 
 				jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "agent not found: " + aid})
 				return
 			}
-			// Self caller: must own each agent.
-			// Admin caller: target must own each agent (admin can't
-			// bind random user A's agent into user B's apikey).
+			// 自助调用者：必须拥有每个 agent。
+			// 管理员调用者：目标必须拥有每个 agent（管理员不能将随机用户 A 的 agent 绑定到用户 B 的 apikey）。
 			if rec.UserID != targetUserID {
 				jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "cannot bind agent " + aid + " — not owned by target user"})
 				return
 			}
 		}
 	}
-	_ = isAdmin // currently no admin-only branches inside; kept for future toggles
+	_ = isAdmin // 当前内部没有仅管理员的路径；保留以供将来开关使用
 	ak, token, err := s.apikeys.Create(r.Context(), targetUserID, req.Name, req.Type, req.AgentIDs)
 	if err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -924,7 +877,7 @@ func (s *Server) handleCreateUserAPIKey(w http.ResponseWriter, r *http.Request) 
 	jsonResponse(w, http.StatusCreated, map[string]any{"apikey": ak, "token": token})
 }
 
-// --- Apikey CRUD (per-user) ---
+// --- Apikey CRUD（按用户） ---
 
 type createAPIKeyReq struct {
 	Name     string   `json:"name"`
@@ -945,9 +898,8 @@ func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	enriched := make([]map[string]any, 0, len(list))
 	for _, ak := range list {
-		// Only type=agent keys carry an explicit agent list; user/admin
-		// derive scope from ownership at auth time, so an empty array
-		// here means "the tier defines the scope, not the row."
+		// 只有 type=agent 密钥携带显式的 agent 列表；user/admin 在认证时从拥有者派生作用域，
+		// 因此此处的空数组意味着"层级定义作用域，而不是行。"
 		var agents []string
 		if ak.Type == users.APIKeyTypeAgent {
 			agents, _ = s.apikeys.Agents(r.Context(), ak.ID)
@@ -965,15 +917,14 @@ func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"apikeys": enriched})
 }
 
-// handleCreateAPIKey enforces the role × type policy:
-//   - super_admin may issue admin / user / agent keys
-//   - regular user may issue user / agent keys (only for their own agents)
-//   - app_user (provisioned via apikey) may not issue keys at all
+// handleCreateAPIKey 强制执行角色 × 类型策略：
+//   - super_admin 可以发出 admin / user / agent 密钥
+//   - 普通用户可以发出 user / agent 密钥（仅限他们自己的 agent）
+//   - app_user（通过 apikey 配置）根本不能发出密钥
 //
-// type=agent additionally requires that every agentId resolves to an
-// agent the caller is allowed to bind — owners can bind their own,
-// super_admins can bind anyone's. This is the authoritative gate; the
-// users package only validates shape, not policy.
+// type=agent 额外要求每个 agentId 解析为一个调用者被允许绑定的 agent —
+// 拥有者可以绑定自己的，super_admin 可以绑定任何人的。这是权威门控；
+// users 包只验证形状，不验证策略。
 func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok || ident.ReadOnly() {
@@ -1005,8 +956,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "type=agent requires at least one agentId"})
 			return
 		}
-		// Bind only agents the caller controls. Super_admin can bind
-		// anyone's; everyone else must own each one.
+		// 只绑定调用者控制的 agent。Super_admin 可以绑定任何人的；其他所有人都必须拥有每个 agent。
 		if ident.Role != users.RoleSuperAdmin {
 			for _, aid := range req.AgentIDs {
 				rec, err := s.dataStore.GetAgent(r.Context(), aid)
@@ -1114,7 +1064,7 @@ func (s *Server) handleSetAPIKeyAgents(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// generateID returns a random hex id with the given prefix.
+// generateID 返回带有给定前缀的随机十六进制 ID。
 func generateID(prefix string) (string, error) {
 	id, err := newRandID()
 	if err != nil {
@@ -1123,9 +1073,8 @@ func generateID(prefix string) (string, error) {
 	return prefix + id, nil
 }
 
-// newRandID is implemented in handlers.go to share with other generators.
+// newRandID 在 handlers.go 中实现，以与其他生成器共享。
 func init() {
-	// Force a compile reference so unused import warnings stay loud
-	// when refactoring; otherwise no-op.
+	// 强制编译引用，以便重构时未使用的导入警告保持响亮；否则无操作。
 	_ = errors.New
 }

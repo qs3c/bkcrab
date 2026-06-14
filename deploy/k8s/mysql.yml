@@ -1,9 +1,9 @@
-# Optional in-cluster MySQL, suitable for development and single-node trials.
-# For production, prefer a managed MySQL 8.0+ service.
+# 可选的集群内 MySQL，适用于开发和单节点试验。
+# 生产环境建议使用托管的 MySQL 8.0+ 服务。
 #
-# To use alongside fastclaw.yaml:
+# 与 fastclaw.yaml 一起使用：
 #   1. kubectl apply -f mysql.yml
-#   2. Set bkclaw-secrets.STORAGE_DSN to:
+#   2. 设置 bkclaw-secrets.STORAGE_DSN 为：
 #        bkclaw:<MYSQL_PASSWORD>@tcp(bkclaw-db:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4
 #   3. kubectl apply -f fastclaw.yaml
 apiVersion: v1

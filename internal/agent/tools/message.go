@@ -14,12 +14,12 @@ type messageArgs struct {
 	Text    string `json:"text"`
 }
 
-// RegisterMessage registers the message tool with the given message bus.
-// allowSplitFn (optional) is consulted on every send to stamp
-// OutboundMessage.AllowSplit — controls whether the WeChat adapter will
-// honor SplitMessageMarker for multi-bubble output. Pass nil if the
-// caller doesn't care (e.g. tests, non-WeChat-bound deployments) —
-// AllowSplit defaults to false in that case.
+// RegisterMessage 将消息工具注册到给定的消息总线。
+// 每次发送到邮票时都会咨询allowSplitFn（可选）
+// OutboundMessage.AllowSplit — 控制微信适配器是否会
+// 尊重 SplitMessageMarker 的多气泡输出。如果满足则传递 nil
+// 调用者不在乎（例如测试、非微信绑定部署）-
+// 在这种情况下，AllowSplit 默认为 false。
 func RegisterMessage(r *Registry, mb *bus.MessageBus, allowSplitFn func() bool) {
 	r.tools["message"] = registeredTool{
 		def: r.tools["message"].def,
@@ -28,7 +28,7 @@ func RegisterMessage(r *Registry, mb *bus.MessageBus, allowSplitFn func() bool) 
 }
 
 func registerMessage(r *Registry) {
-	// Register with a placeholder; will be re-registered with actual bus later.
+	// 使用占位符注册；稍后将在实际总线上重新注册。
 	r.Register("message", "Send a message to a channel", map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{

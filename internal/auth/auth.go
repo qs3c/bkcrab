@@ -26,33 +26,31 @@ const SessionCookieName = "bkclaw_session"
 // SessionTTL 是新签发的登录 cookie 的有效时长。
 const SessionTTL = 30 * 24 * time.Hour
 
-// Identity is the resolved caller for one request.
+// Identity 是针对单个请求解析后的调用方身份。
 type Identity struct {
 	UserID string
 	Role   string
 
-	// AuthMethod is "session" or "apikey".
+	// AuthMethod 取值为 "session" 或 "apikey"。
 	AuthMethod string
 
-	// APIKeyID is set when AuthMethod=="apikey". APIKeyType is one of
-	// users.APIKeyType{Admin,User,Agent}. APIKeyAgents is the agent
-	// scope resolved at auth time:
-	//   - type=admin: empty (the agent gate short-circuits on type)
-	//   - type=user:  every agent owned by the apikey owner at the
-	//     moment of the request (resolved fresh per request)
-	//   - type=agent: the explicit ACL from apikey_agents
+	// APIKeyID 在 AuthMethod=="apikey" 时设置。APIKeyType 是
+	// users.APIKeyType{Admin,User,Agent} 中的一种。APIKeyAgents 是在
+	// 认证时解析的 agent 范围：
+	//   - type=admin：空（agent 门控按类型短路）
+	//   - type=user：请求时刻 apikey 拥有者拥有的所有 agent（每次请求重新解析）
+	//   - type=agent：来自 apikey_agents 的显式 ACL
 	APIKeyID     string
 	APIKeyType   string
 	APIKeyAgents []string
 
-	// ActAsUserID is non-empty when a super_admin is browsing another
-	// user's resources read-only via ?actAs=. Mutating handlers MUST
-	// 403 when this is set.
+	// ActAsUserID 在 super_admin 通过 ?actAs= 以只读方式浏览其他
+	// 用户资源时非空。设置此字段时，变更加载器必须返回 403。
 	ActAsUserID string
 }
 
-// EffectiveUserID is who we read data for. For super_admin in actAs mode
-// it's the impersonated user; otherwise it's the caller themselves.
+// EffectiveUserID 返回我们为其读取数据的用户。对于 actAs 模式下的 super_admin，
+// 返回被模拟的用户；否则返回调用方自身。
 func (i Identity) EffectiveUserID() string {
 	if i.ActAsUserID != "" {
 		return i.ActAsUserID
@@ -60,25 +58,24 @@ func (i Identity) EffectiveUserID() string {
 	return i.UserID
 }
 
-// IsActingAs reports whether super_admin is impersonating another user.
+// IsActingAs 报告 super_admin 是否正在模拟另一个用户。
 func (i Identity) IsActingAs() bool {
 	return i.ActAsUserID != "" && i.ActAsUserID != i.UserID
 }
 
-// ReadOnly reports whether mutating endpoints must reject this request.
-// Active actAs mode is the only read-only condition we enforce here.
+// ReadOnly 报告变更加载点是否必须拒绝此请求。
+// 处于 actAs 模式是此处强制执行的唯一只读条件。
 func (i Identity) ReadOnly() bool {
 	return i.IsActingAs()
 }
 
-// CanAccessAgent answers "is this caller authorized for agentID?"
-//   - super_admin (session): yes, on any agent (read-only when actAs)
-//   - apikey type=admin: yes, on any agent
-//   - apikey type=user/agent: only if agentID ∈ APIKeyAgents (the list
-//     is pre-resolved at auth time per type — see Resolved.Agents)
-//   - session user (non-admin): agent must belong to UserID (verified by
-//     the caller querying agents table; we don't carry that list on
-//     Identity)
+// CanAccessAgent 回答"此调用方是否有权访问 agentID？"
+//   - super_admin（session）：是，可访问任何 agent（actAs 时只读）
+//   - apikey type=admin：是，可访问任何 agent
+//   - apikey type=user/agent：仅当 agentID ∈ APIKeyAgents（该列表
+//     在认证时按类型预解析——参见 Resolved.Agents）
+//   - session 用户（非 admin）：agent 必须属于 UserID（由调用方
+//     查询 agents 表验证；Identity 上不携带该列表）
 func (i Identity) CanAccessAgent(agentID string) bool {
 	if i.AuthMethod == "apikey" {
 		if i.APIKeyType == users.APIKeyTypeAdmin {
@@ -94,16 +91,15 @@ func (i Identity) CanAccessAgent(agentID string) bool {
 	if i.Role == users.RoleSuperAdmin {
 		return true
 	}
-	// session caller: agent ownership check happens in the handler
-	// after reading the agent row (cheap M:1 lookup, no list scan).
+	// session 调用方：agent 归属检查在处理程序中读取 agent 行后进行
+	//（轻量 M:1 查找，无需扫描列表）。
 	return true
 }
 
-// CanAdminPlatform answers "may this caller hit /api/admin/* and other
-// platform-wide mutating endpoints?" Only super_admin sessions and
-// type=admin apikeys qualify. Distinct from CanAccessAgent because a
-// super_admin's type=user/agent apikey deliberately downgrades them to
-// the narrower scope they signed it for.
+// CanAdminPlatform 回答"此调用方是否可以访问 /api/admin/* 及其他
+// 平台级变更加载点？"仅 super_admin session 和 type=admin apikey
+// 符合条件。与 CanAccessAgent 不同，因为 super_admin 的 type=user/agent
+// apikey 会故意将其降级到签发时指定的较窄范围。
 func (i Identity) CanAdminPlatform() bool {
 	if i.AuthMethod == "apikey" {
 		return i.APIKeyType == users.APIKeyTypeAdmin
@@ -111,9 +107,9 @@ func (i Identity) CanAdminPlatform() bool {
 	return i.Role == users.RoleSuperAdmin
 }
 
-// CanCreateAgent answers "may this caller create new agents?"
-// type=agent keys explicitly cannot — they're sandboxed to a fixed list.
-// Everyone else (sessions and admin/user keys) can.
+// CanCreateAgent 回答"此调用方是否可以创建新 agent？"
+// type=agent 密钥明确不能——它们被沙箱限制在固定列表中。
+// 其他所有调用方（session 以及 admin/user 密钥）都可以。
 func (i Identity) CanCreateAgent() bool {
 	if i.AuthMethod == "apikey" && i.APIKeyType == users.APIKeyTypeAgent {
 		return false
@@ -123,8 +119,7 @@ func (i Identity) CanCreateAgent() bool {
 
 type identityKey struct{}
 
-// WithIdentity stamps the resolved identity onto ctx so handlers can read
-// it without re-validating credentials.
+// WithIdentity 将解析后的身份印入 ctx，以便处理程序无需重新验证凭证即可读取。
 func WithIdentity(ctx context.Context, id Identity) context.Context {
 	ctx = context.WithValue(ctx, identityKey{}, id)
 	if uid := id.EffectiveUserID(); uid != "" {
@@ -133,9 +128,8 @@ func WithIdentity(ctx context.Context, id Identity) context.Context {
 	return ctx
 }
 
-// FromContext returns the resolved identity stamped by Middleware. The
-// bool is false if no auth has run, which means a route is misconfigured
-// (every API route must go through Middleware first).
+// FromContext 返回 Middleware 印入的解析后身份。如果未执行认证，
+// bool 值为 false，这意味着路由配置错误（每个 API 路由都必须先经过 Middleware）。
 func FromContext(ctx context.Context) (Identity, bool) {
 	if ctx == nil {
 		return Identity{}, false
@@ -144,14 +138,14 @@ func FromContext(ctx context.Context) (Identity, bool) {
 	return v, ok
 }
 
-// Resolver loads accounts, apikeys, and web sessions from the store.
+// Resolver 从存储中加载账户、apikey 和 web session。
 type Resolver struct {
 	store    store.Store
 	apikeys  *users.APIKeys
 	accounts *users.Accounts
 }
 
-// NewResolver returns a resolver bound to the platform store.
+// NewResolver 返回一个绑定到平台存储的解析器。
 func NewResolver(st store.Store) (*Resolver, error) {
 	if st == nil {
 		return nil, errors.New("auth.NewResolver: store is required")
@@ -167,8 +161,8 @@ func NewResolver(st store.Store) (*Resolver, error) {
 	return &Resolver{store: st, apikeys: ak, accounts: ac}, nil
 }
 
-// IssueSession creates a web session for userID and returns the cookie.
-// Caller writes the cookie to the response.
+// IssueSession 为 userID 创建 web session 并返回 cookie。
+// 调用方将 cookie 写入响应。
 func (r *Resolver) IssueSession(ctx context.Context, userID string) (*http.Cookie, error) {
 	sid, err := newSID()
 	if err != nil {
@@ -194,12 +188,12 @@ func (r *Resolver) IssueSession(ctx context.Context, userID string) (*http.Cooki
 	}, nil
 }
 
-// RevokeSession drops a session from the store.
+// RevokeSession 从存储中删除一个 session。
 func (r *Resolver) RevokeSession(ctx context.Context, sid string) error {
 	return r.store.DeleteWebSession(ctx, sid)
 }
 
-// ResolveSession turns a cookie SID into an Identity.
+// ResolveSession 将 cookie SID 转换为 Identity。
 func (r *Resolver) ResolveSession(ctx context.Context, sid string) (Identity, error) {
 	if sid == "" {
 		return Identity{}, ErrUnauthorized
@@ -229,7 +223,7 @@ func (r *Resolver) ResolveSession(ctx context.Context, sid string) (Identity, er
 	}, nil
 }
 
-// ResolveBearer turns a Bearer token into an Identity.
+// ResolveBearer 将 Bearer token 转换为 Identity。
 func (r *Resolver) ResolveBearer(ctx context.Context, token string) (Identity, error) {
 	res, err := r.apikeys.LookupByToken(ctx, token)
 	if err != nil {
@@ -248,12 +242,11 @@ func (r *Resolver) ResolveBearer(ctx context.Context, token string) (Identity, e
 	}, nil
 }
 
-// SwitchToAppUser rebinds ident to the app_user associated with
-// (ident.APIKeyID, externalID), minting that row the first time it's
-// seen. APIKeyID + APIKeyAgents are preserved — only UserID and Role
-// flip — so the apikey's agent ACL still gates access. Pass through
-// empty externalID untouched. Only valid for AuthMethod=="apikey";
-// session callers stay as-is.
+// SwitchToAppUser 将 ident 重新绑定到与 (ident.APIKeyID, externalID)
+// 关联的 app_user，首次遇到时创建该行。保留 APIKeyID + APIKeyAgents——
+// 仅 UserID 和 Role 切换——因此 apikey 的 agent ACL 仍然控制访问。
+// 空的 externalID 原样传递。仅对 AuthMethod=="apikey" 有效；
+// session 调用方保持不变。
 func (r *Resolver) SwitchToAppUser(ctx context.Context, ident Identity, externalID string) (Identity, error) {
 	if externalID == "" {
 		return ident, nil
@@ -270,29 +263,24 @@ func (r *Resolver) SwitchToAppUser(ctx context.Context, ident Identity, external
 	return ident, nil
 }
 
-// EndUserHeader is the per-request header that names the calling app's
-// end-user. When set on an api_key authenticated request, the auth
-// middleware will lazily mint (or look up) a bkclaw user for
-// (apikey, header) and switch the request identity to it. Sessions and
-// agent_files written under that identity then partition cleanly per
-// end-user instead of piling up under the api_key owner.
+// EndUserHeader 是每个请求的头部，指明调用应用的终端用户。
+// 当在 api_key 认证的请求上设置此头部时，auth 中间件会延迟创建（或查找）
+// 一个 (apikey, header) 对应的 bkclaw 用户，并将请求身份切换为该用户。
+// 在该身份下写入的 Session 和 agent_files 将按终端用户清晰隔离，
+// 而不是堆积在 api_key 拥有者名下。
 const EndUserHeader = "X-Bkclaw-End-User"
 
-// ErrUnauthorized is returned when no valid credential is present.
+// ErrUnauthorized 在没有有效凭证时返回。
 var ErrUnauthorized = errors.New("unauthorized")
 
-// extract returns the bearer token (if any) and session cookie SID (if
-// any) from a request. A `?token=` query param is also accepted, but
-// ONLY on the narrow set of paths that legitimately need it — file
-// downloads (which the browser can't add an Authorization header to
-// when rendered via <img> / <a download>) and the chat SSE
-// subscription (EventSource has no header API). Everywhere else the
-// query-param fallback is denied: tokens in URLs leak via Referer,
-// browser history, reverse-proxy access logs, and observability
-// pipelines. Header-only enforcement on /v1/* and the rest of /api/*
-// closes that leak surface; CLI scripts that previously built
-// `?token=` URLs for those endpoints must switch to
-// `Authorization: Bearer <token>` (every HTTP client supports it).
+// extract 从请求中返回 bearer token（如果有）和 session cookie SID（如果有）。
+// 也接受 `?token=` 查询参数，但仅限确实需要它的狭窄路径集合——文件下载
+//（浏览器在通过 <img> / <a download> 渲染时无法添加 Authorization 头部）
+// 和聊天 SSE 订阅（EventSource 没有头部 API）。其他所有地方都拒绝查询参数
+// 回退：URL 中的 token 会通过 Referer、浏览器历史、反向代理访问日志和可观测
+// 性管道泄漏。在 /v1/* 和 /api/* 其余路径上仅强制使用头部，堵住了泄漏面；
+// 之前为这些端点构建 `?token=` URL 的 CLI 脚本必须切换到
+// `Authorization: Bearer <token>`（每个 HTTP 客户端都支持）。
 func extract(r *http.Request) (bearer, sid string) {
 	if c, err := r.Cookie(SessionCookieName); err == nil {
 		sid = c.Value
@@ -307,21 +295,19 @@ func extract(r *http.Request) (bearer, sid string) {
 	return bearer, sid
 }
 
-// queryTokenAllowed gates the `?token=` bearer fallback to a
-// narrow allowlist of paths whose clients have no other way to
-// attach an Authorization header.
+// queryTokenAllowed 将 `?token=` bearer 回退限制到一个狭窄的路径
+// 白名单，这些路径的客户端没有其他方式附加 Authorization 头部。
 //
-// Allowed:
-//   - GET /api/agents/<id>/files/...        — workspace file download
-//   - GET /api/agents/<id>/files.zip        — workspace archive
-//   - GET /api/agents/<id>/system-files/<n> — identity-file fetch (rare)
-//   - GET /api/chat/subscribe               — EventSource SSE stream
+// 允许的路径：
+//   - GET /api/agents/<id>/files/...        — workspace 文件下载
+//   - GET /api/agents/<id>/files.zip        — workspace 归档
+//   - GET /api/agents/<id>/system-files/<n> — 身份文件获取（少见）
+//   - GET /api/chat/subscribe               — EventSource SSE 流
 //
-// Everything else (/v1/*, /api/chat, /api/agents/<id> JSON, …) must
-// use the Authorization header. Deliberately *not* a prefix match
-// on /api/agents/<id>/files since some workspace endpoints under
-// that prefix accept POST/PUT bodies — limit to GET so a write
-// path can never authenticate via a logged URL.
+// 其他所有路径（/v1/*、/api/chat、/api/agents/<id> JSON 等）必须
+// 使用 Authorization 头部。有意不进行 /api/agents/<id>/files 的前缀
+// 匹配，因为该前缀下某些 workspace 端点接受 POST/PUT 请求体——限制为
+// GET 以确保写入路径永远无法通过被记录的 URL 进行认证。
 func queryTokenAllowed(r *http.Request) bool {
 	if r.Method != http.MethodGet {
 		return false
@@ -338,8 +324,8 @@ func queryTokenAllowed(r *http.Request) bool {
 	return false
 }
 
-// Middleware enforces auth on every wrapped route. 401 on no/invalid
-// credentials. Resolves ?actAs= for super_admins.
+// Middleware 在每个包装的路由上强制执行认证。无凭证或凭证无效时返回 401。
+// 为 super_admin 解析 ?actAs=。
 func (r *Resolver) Middleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		ident, err := r.resolve(req)
@@ -352,9 +338,8 @@ func (r *Resolver) Middleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// Optional resolves credentials when present but lets unauthenticated
-// requests through. Used for /api/status during onboarding so the
-// onboarding UI can probe the install before any user exists.
+// Optional 在凭证存在时进行解析，但允许未经认证的请求通过。
+// 用于引导期间的 /api/status，以便引导 UI 在任何用户存在之前探测安装状态。
 func (r *Resolver) Optional(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		ident, err := r.resolve(req)
@@ -385,20 +370,18 @@ func (r *Resolver) resolve(req *http.Request) (Identity, error) {
 	return Identity{}, ErrUnauthorized
 
 done:
-	// actAs is reserved for super_admin and only applies to session
-	// callers (apikey impersonation would defeat the apikey ACL).
+	// actAs 保留给 super_admin，仅适用于 session 调用方
+	//（apikey 模拟会破坏 apikey ACL）。
 	if act := req.URL.Query().Get("actAs"); act != "" {
 		if ident.AuthMethod == "session" && ident.Role == users.RoleSuperAdmin {
 			ident.ActAsUserID = act
 		}
 	}
-	// If the calling app named an end-user via X-Bkclaw-End-User on an
-	// api_key request, rebind to the corresponding app_user (lazy mint).
-	// We swallow errors here so a malformed header can't 401 a request —
-	// the request just stays under the api_key owner. The OpenAI
-	// /v1/chat/completions handler also honors `user` in the request
-	// body for clients that prefer the OpenAI shape; that path calls
-	// SwitchToAppUser explicitly after parsing the body.
+	// 如果调用应用在 api_key 请求上通过 X-Bkclaw-End-User 指定了终端用户，
+	// 则重新绑定到对应的 app_user（延迟创建）。这里我们吞掉错误，以使格式错误的
+	// 头部不会导致请求返回 401——请求仍保持在 api_key 拥有者名下。OpenAI
+	// /v1/chat/completions 处理程序也会为偏好 OpenAI 格式的客户端处理请求体中的
+	// `user` 字段；该路径在解析请求体后显式调用 SwitchToAppUser。
 	if eu := strings.TrimSpace(req.Header.Get(EndUserHeader)); eu != "" {
 		if next, swErr := r.SwitchToAppUser(req.Context(), ident, eu); swErr == nil {
 			ident = next
@@ -407,15 +390,13 @@ done:
 	return ident, nil
 }
 
-// RequireSuperAdmin returns a middleware that 403s any non-super-admin
-// caller. Wraps another middleware (typically the auth Middleware).
+// RequireSuperAdmin 返回一个中间件，对任何非 super_admin 的调用方返回 403。
+// 包装另一个中间件（通常是 auth Middleware）。
 //
-// This is the strictest gate: it requires the live caller's identity to
-// be super_admin regardless of how they authenticated. A super_admin
-// using a type=user apikey is rejected — that's the deliberate downgrade
-// the user signed up for when they issued the narrower key. For routes
-// that should accept either path (admin session OR type=admin apikey),
-// use RequirePlatformAdmin instead.
+// 这是最严格的网关：要求实时调用方的身份为 super_admin，无论他们如何认证。
+// 使用 type=user apikey 的 super_admin 会被拒绝——这是用户签发较窄密钥时
+// 故意接受的降级。对于应接受任一途径（admin session 或 type=admin apikey）
+// 的路由，请使用 RequirePlatformAdmin。
 func RequireSuperAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		ident, ok := FromContext(req.Context())
@@ -423,8 +404,8 @@ func RequireSuperAdmin(next http.HandlerFunc) http.HandlerFunc {
 			writeForbidden(w, "super_admin required")
 			return
 		}
-		// Apikey callers must additionally hold a type=admin key — a
-		// super_admin's type=user key is intentionally narrower.
+		// Apikey 调用方还必须持有 type=admin 密钥——super_admin
+		// 的 type=user 密钥是有意缩窄的。
 		if ident.AuthMethod == "apikey" && ident.APIKeyType != users.APIKeyTypeAdmin {
 			writeForbidden(w, "admin apikey required")
 			return
@@ -433,10 +414,9 @@ func RequireSuperAdmin(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// RequirePlatformAdmin gates handlers that should accept any platform
-// admin — session super_admin OR type=admin apikey. Same authority as
-// RequireSuperAdmin in terms of what's allowed; just doesn't require the
-// session path.
+// RequirePlatformAdmin 用于门控应接受任何平台管理员（session super_admin
+// 或 type=admin apikey）的处理程序。在允许的权限方面与 RequireSuperAdmin
+// 相同；只是不要求 session 路径。
 func RequirePlatformAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		ident, ok := FromContext(req.Context())
@@ -448,8 +428,8 @@ func RequirePlatformAdmin(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// RequireWritable rejects requests where Identity.ReadOnly() (i.e. the
-// caller is acting as another user). Wrap mutating handlers.
+// RequireWritable 拒绝 Identity.ReadOnly() 为 true（即调用方正在模拟
+// 另一个用户）的请求。包装变更加载处理程序。
 func RequireWritable(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		ident, ok := FromContext(req.Context())

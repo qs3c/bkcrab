@@ -9,10 +9,9 @@ import (
 	"github.com/qs3c/bkclaw/internal/agent/tools"
 )
 
-// RegisterPluginTools queries a tool plugin for its tools and registers them
-// in the given tool registry. If a plugin tool has the same name as a built-in
-// tool, the plugin version overrides the built-in. Otherwise, the tool is
-// registered with a qualified name (e.g. "echo.echo_tool").
+// RegisterPluginTools 查询工具插件获取其工具列表，并在给定的工具注册表中
+// 注册它们。如果插件工具与内置工具同名，则插件版本会覆盖内置工具。
+// 否则，工具会以限定名称注册（例如 "echo.echo_tool"）。
 func RegisterPluginTools(ctx context.Context, mgr *Manager, pluginID string, registry *tools.Registry) error {
 	toolDefs, err := mgr.ListTools(ctx, pluginID)
 	if err != nil {
@@ -37,8 +36,8 @@ func RegisterPluginTools(ctx context.Context, mgr *Manager, pluginID string, reg
 			return mgr.ExecuteTool(ctx, pluginID, toolName, argsMap)
 		}
 
-		// If the plugin provides a tool with the same name as a built-in,
-		// override the built-in with the plugin version.
+		// 如果插件提供了与内置工具同名的工具，
+		// 则用插件版本覆盖内置工具。
 		if registry.HasBuiltin(toolName) {
 			registry.RegisterFrom(toolName, desc, params, fn, tools.SourcePlugin)
 			slog.Info("plugin: overriding built-in tool", "plugin", pluginID, "tool", toolName)

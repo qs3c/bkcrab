@@ -10,10 +10,8 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// categoryCatalog is the admin UI's source of truth for which tool
-// categories exist and which providers can back them. Extending this list
-// (once the new providers exist in the toolproviders package) makes them
-// appear in the UI automatically.
+// categoryCatalog 是管理 UI 的权威来源，用于定义哪些工具类别存在以及哪些提供者可以支持它们。
+// 扩展此列表（一旦新提供者在 toolproviders 包中存在）即可使它们自动出现在 UI 中。
 type categoryCatalog struct {
 	Name      string            `json:"name"`  // e.g. "web_search"
 	Label     string            `json:"label"` // human-friendly name
@@ -28,9 +26,8 @@ type providerCatalog struct {
 	Models   []string `json:"models"`   // suggested "<provider>/<model>" suffixes
 }
 
-// builtinCatalog lists every tool category + provider pair that the binary
-// knows how to run. Providers not present in the runtime Registry are
-// filtered out at response time, so this is safe to list optimistically.
+// builtinCatalog 列出了二进制文件知道如何运行的每个工具类别 + 提供者对。
+// 运行时 Registry 中不存在的提供者会在响应时被过滤掉，因此乐观地列出它们是安全的。
 var builtinCatalog = []categoryCatalog{
 	{
 		Name:  "web_search",
@@ -39,9 +36,7 @@ var builtinCatalog = []categoryCatalog{
 			{Name: "exa", Label: "Exa", NeedsKey: true, Models: []string{"auto", "neural", "keyword"}},
 			{Name: "brave", Label: "Brave Search", NeedsKey: true, Models: []string{"web"}},
 			{Name: "searxng", Label: "SearxNG (self-hosted)", NeedsURL: true, Models: []string{"default"}},
-			// "none" is a sentinel: when picked, web_search is not exposed
-			// to the model at all. There's no external backend — the model
-			// uses its own native search if it has one.
+			// "none" 是哨兵值：选中时，web_search 完全不暴露给模型。没有外部后端 — 模型使用自身的原生搜索（如果有）。
 			{Name: "none", Label: "None (rely on model's native search)", Models: []string{"default"}},
 		},
 	},
@@ -49,11 +44,9 @@ var builtinCatalog = []categoryCatalog{
 		Name:  "web_fetch",
 		Label: "Web Fetch",
 		Providers: []providerCatalog{
-			// Direct uses Go's net/http directly — no key required.
-			// Jina's free tier works without a key (rate limited);
-			// the key field is shown so admins can paste one to raise
-			// quota, but the chain runtime treats blank as valid because
-			// the provider implements CredentialFree.
+			// Direct 直接使用 Go 的 net/http — 无需密钥。
+			// Jina 的免费层无需密钥即可使用（有限速）；密钥字段会显示出来，以便管理员粘贴密钥以提高配额，
+			// 但链运行时将空白视为有效，因为该提供者实现了 CredentialFree。
 			{Name: "direct", Label: "Direct (built-in)", Models: []string{"default"}},
 			{Name: "jina", Label: "Jina Reader", NeedsKey: true, Models: []string{"default"}},
 			{Name: "firecrawl", Label: "Firecrawl", NeedsKey: true, Models: []string{"default"}},
@@ -66,9 +59,7 @@ var builtinCatalog = []categoryCatalog{
 			{Name: "openai", Label: "OpenAI", NeedsKey: true, Models: []string{"gpt-image-1", "dall-e-3"}},
 			{Name: "replicate", Label: "Replicate", NeedsKey: true, Models: []string{"flux-schnell", "flux-dev", "flux-pro", "sdxl", "ideogram"}},
 			{Name: "fal", Label: "Fal", NeedsKey: true, Models: []string{"flux-dev", "flux-schnell", "flux-pro"}},
-			// "none" is a sentinel: when picked, image_gen is not exposed
-			// to the model at all. The model falls back to its own native
-			// image-generation capability if it has one.
+			// "none" 是哨兵值：选中时，image_gen 完全不暴露给模型。模型回退到自身的原生图像生成能力（如果有）。
 			{Name: "none", Label: "None (rely on model's native image gen)", Models: []string{"default"}},
 		},
 	},
@@ -80,16 +71,13 @@ var builtinCatalog = []categoryCatalog{
 			{Name: "elevenlabs", Label: "ElevenLabs", NeedsKey: true, Models: []string{"eleven_multilingual_v2", "eleven_turbo_v2_5", "eleven_flash_v2_5"}},
 			{Name: "fish", Label: "Fish Audio", NeedsKey: true, Models: []string{"s1", "speech-1.5", "speech-1.6"}},
 			{Name: "minimax", Label: "MiniMax", NeedsKey: true, Models: []string{"speech-02-hd", "speech-02-turbo"}},
-			// "none" is a sentinel: when picked, tts is not exposed to the
-			// model at all. The model falls back to its own native audio
-			// capability if it has one.
+			// "none" 是哨兵值：选中时，tts 完全不暴露给模型。模型回退到自身的原生音频能力（如果有）。
 			{Name: "none", Label: "None (rely on model's native audio)", Models: []string{"default"}},
 		},
 	},
 }
 
-// handleGetTools returns the categories + provider catalog and the user's
-// current toolProviders/tools settings. The UI renders a form from this.
+// handleGetTools 返回类别 + 提供者目录以及用户当前的 toolProviders/tools 设置。UI 据此渲染表单。
 func (s *Server) handleGetTools(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.loadUserConfig(r)
 	if err != nil {
@@ -108,10 +96,8 @@ func (s *Server) handleGetTools(w http.ResponseWriter, r *http.Request) {
 			filtered = append(filtered, p)
 			known[p.Name] = true
 		}
-		// Append plugin-registered providers that aren't in the static
-		// builtin catalog. We can't know whether they want a key or a URL
-		// (plugin doesn't declare that yet), so we offer both fields — the
-		// admin fills whichever the plugin needs.
+		// 追加不在静态内置目录中的插件注册的提供者。我们无法知道它们是需要密钥还是 URL
+		//（插件尚未声明这一点），因此我们同时提供两个字段 — 管理员填写插件所需的任意一个。
 		for _, extra := range reg.Names(c.Name) {
 			if known[extra] {
 				continue
@@ -129,9 +115,8 @@ func (s *Server) handleGetTools(w http.ResponseWriter, r *http.Request) {
 		cats = append(cats, cc)
 	}
 
-	// Return providers as a keyed object (easier for the UI to merge-edit).
-	// apiKey is returned in full to the admin — the UI decides whether to
-	// mask it — but cloud callers see 403 below, so this is local-only.
+	// 将提供者作为带键的对象返回（便于 UI 进行合并编辑）。
+	// apiKey 完整返回给管理员 — UI 决定是否屏蔽它 — 但云端调用者会在下面看到 403，因此这仅限本地。
 	providers := map[string]config.ToolProviderCfg{}
 	for name, pc := range cfg.ToolProviders {
 		providers[name] = pc
@@ -147,12 +132,11 @@ func (s *Server) handleGetTools(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleSaveTools atomically updates the toolProviders and tools sections of
-// bkclaw.json. Only the admin/local user is allowed here — cloud tenants
-// get their own settings via a separate path (not wired yet). After save,
-// running agents are hot-reloaded so chains pick up new keys immediately.
+// handleSaveTools 原子地更新 bkclaw.json 的 toolProviders 和 tools 部分。
+// 仅允许管理员/本地用户 — 云端租户通过单独的路径获取自己的设置（尚未接入）。
+// 保存后，运行中的 agent 会被热重载，以便链立即获取新密钥。
 func (s *Server) handleSaveTools(w http.ResponseWriter, r *http.Request) {
-	// requireSuperAdmin middleware already gates this route; no further check needed.
+	// requireSuperAdmin 中间件已对此路由进行门控；无需进一步检查。
 	var req struct {
 		ToolProviders map[string]config.ToolProviderCfg `json:"toolProviders"`
 		Tools         map[string]config.ToolCategoryCfg `json:"tools"`
@@ -177,17 +161,14 @@ func (s *Server) handleSaveTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Nudge the resolver to drop the caller's cached user space; next
-	// access reloads it from the DB with the new tool/provider config.
+	// 提示解析器丢弃调用者缓存的用户空间；下次访问时从数据库重新加载新的工具/提供者配置。
 	s.invalidateUser(s.effectiveUserID(r))
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// validateToolChains sanity-checks that every "<provider>/<model>" reference
-// names a provider actually registered in the runtime catalog. Catching
-// typos here avoids a silent "no providers available" when the agent starts.
-// The runtime registry is the single source of truth, so plugin-provided
-// providers validate the same as built-ins.
+// validateToolChains 检查每个 "<provider>/<model>" 引用是否指定了运行时目录中实际注册的提供者。
+// 在此处捕获拼写错误可避免 agent 启动时静默地出现"没有可用提供者"。
+// 运行时注册表是唯一的事实来源，因此插件提供的提供者与内置提供者以相同方式验证。
 func validateToolChains(tools map[string]config.ToolCategoryCfg) error {
 	reg := gateway.ToolProviderRegistry()
 	for cat, cfg := range tools {
@@ -210,5 +191,5 @@ func splitRef(ref string) (string, string) {
 	return ref, ""
 }
 
-// Silence unused-import warnings when the package grows.
+// 当包增长时抑制未使用导入的警告。
 var _ = toolproviders.ErrNoResults

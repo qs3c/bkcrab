@@ -11,30 +11,28 @@ import (
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
-// APIKey type tiers. Set on the apikey at create time; immutable.
+// APIKey 类型层级。在创建时设置在 apikey 上；不可变。
 //
-//   - APIKeyTypeAdmin: platform-wide authority — only super_admin owners
-//     may issue this. Bypasses agent ACLs and unlocks /api/admin/* routes.
-//   - APIKeyTypeUser:  scoped to the owning user's resources. Can create
-//     agents (which then belong to the owner) and access any agent the
-//     owner already owns. Apikey_agents is ignored for this tier.
-//   - APIKeyTypeAgent: locked to an explicit list of agents (apikey_agents).
-//     Cannot create agents. Use this for "give a downstream app keys to N
-//     specific agents" scenarios.
+//   - APIKeyTypeAdmin：平台级权限——只有 super_admin 所有者才能签发此类型。
+//     绕过代理 ACL 并解锁 /api/admin/* 路由。
+//   - APIKeyTypeUser：限定到拥有用户的资源。可以创建代理（代理随后属于所有者）
+//     并访问所有者已拥有的任何代理。此层级忽略 apikey_agents。
+//   - APIKeyTypeAgent：锁定到显式的代理列表（apikey_agents）。
+//     不能创建代理。用于"给下游应用授予 N 个特定代理的密钥"的场景。
 const (
 	APIKeyTypeAdmin = "admin"
 	APIKeyTypeUser  = "user"
 	APIKeyTypeAgent = "agent"
 )
 
-// IsAPIKeyType reports whether s is one of the canonical tier strings.
+// IsAPIKeyType 报告 s 是否为规范的层级字符串之一。
 func IsAPIKeyType(s string) bool {
 	return s == APIKeyTypeAdmin || s == APIKeyTypeUser || s == APIKeyTypeAgent
 }
 
-// APIKey is the public representation of an apikey row. Key holds the
-// masked display string ("fc_xxxx****") on list responses, and the freshly
-// issued plaintext token on create/rotate. The hash is never returned.
+// APIKey 是 apikey 行的公开表示。Key 在列表响应中保存
+// 掩码显示字符串（"fc_xxxx****"），在创建/轮换时保存
+// 新签发的明文 token。哈希值从不返回。
 type APIKey struct {
 	ID        string    `json:"id"`
 	UserID    string    `json:"userId"`
@@ -44,26 +42,25 @@ type APIKey struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// Resolved is what the auth middleware needs to authorize a request: the
-// apikey, its owning user, and the agents this key may operate on. Fetched
-// in one shot from LookupByToken so the hot path stays a single round-trip.
+// Resolved 是 auth 中间件授权请求所需的内容：apikey、
+// 其拥有者用户以及此密钥可操作的代理。通过 LookupByToken
+// 一次性获取，使热路径保持单次往返。
 //
-// For type=user keys, Agents is populated with every agent owned by the
-// apikey owner at resolve time (a fresh agent created mid-request won't
-// appear until the next request). For type=agent it's the explicit ACL
-// list. For type=admin it's empty — the auth gate short-circuits on type.
+// 对于 type=user 的密钥，Agents 在解析时填充 apikey 所有者拥有的
+// 所有代理（请求中途创建的新代理直到下次请求才会出现）。
+// 对于 type=agent，它是显式的 ACL 列表。对于 type=admin，它为空——认证门基于类型短路。
 type Resolved struct {
 	APIKey  APIKey
 	Account Account
 	Agents  []string
 }
 
-// APIKeys is the registry for programmatic credentials.
+// APIKeys 是编程凭证的注册表。
 type APIKeys struct {
 	store store.Store
 }
 
-// NewAPIKeys returns an apikey registry backed by st.
+// NewAPIKeys 返回由 st 支持的 apikey 注册表。
 func NewAPIKeys(st store.Store) (*APIKeys, error) {
 	if st == nil {
 		return nil, errors.New("users.NewAPIKeys: store is required")
@@ -71,16 +68,14 @@ func NewAPIKeys(st store.Store) (*APIKeys, error) {
 	return &APIKeys{store: st}, nil
 }
 
-// Create issues a new apikey for userID. The plaintext token is returned
-// once and never recoverable.
+// Create 为 userID 签发一个新的 apikey。明文 token 返回一次且不可恢复。
 //
-// keyType must be one of APIKeyTypeAdmin/User/Agent. agentIDs is honored
-// only for type=agent (ignored otherwise — the user/admin tiers derive
-// their scope from the owner's ownership rather than an explicit list).
-// For type=agent the list must be non-empty; an agent-tier key with no
-// reachable agents would be unusable. Caller is responsible for the
-// role-vs-type policy check (handlers_admin.go enforces "only super_admin
-// may issue type=admin", etc.).
+// keyType 必须是 APIKeyTypeAdmin/User/Agent 之一。agentIDs 仅对
+// type=agent 生效（否则忽略——user/admin 层级从所有者的所有权派生其范围，
+// 而不是从显式列表）。对于 type=agent，列表必须非空；
+// 一个无法访问任何代理的 agent 层级密钥将无法使用。
+// 调用者负责角色与类型的策略检查（handlers_admin.go 强制执行
+// "只有 super_admin 才能签发 type=admin"等）。
 func (k *APIKeys) Create(ctx context.Context, userID, name, keyType string, agentIDs []string) (*APIKey, string, error) {
 	if userID == "" {
 		return nil, "", errors.New("users.APIKeys.Create: userID is required")
@@ -124,7 +119,7 @@ func (k *APIKeys) Create(ctx context.Context, userID, name, keyType string, agen
 	return out, token, nil
 }
 
-// Rotate replaces the apikey's token. Old token stops working immediately.
+// Rotate 替换 apikey 的 token。旧 token 立即失效。
 func (k *APIKeys) Rotate(ctx context.Context, id string) (string, error) {
 	token, err := newToken()
 	if err != nil {
@@ -148,7 +143,7 @@ func (k *APIKeys) Get(ctx context.Context, id string) (*APIKey, error) {
 	return toAPIKey(rec), nil
 }
 
-// List returns every apikey owned by userID, with masked Key fields.
+// List 返回 userID 拥有的每个 apikey，Key 字段已掩码。
 func (k *APIKeys) List(ctx context.Context, userID string) ([]*APIKey, error) {
 	recs, err := k.store.ListAPIKeys(ctx, userID)
 	if err != nil {
@@ -161,16 +156,15 @@ func (k *APIKeys) List(ctx context.Context, userID string) ([]*APIKey, error) {
 	return out, nil
 }
 
-// Agents returns the apikey's agent access list.
+// Agents 返回 apikey 的代理访问列表。
 func (k *APIKeys) Agents(ctx context.Context, apikeyID string) ([]string, error) {
 	return k.store.ListAPIKeyAgents(ctx, apikeyID)
 }
 
-// SetAgents replaces the apikey's agent access list. Only meaningful for
-// type=agent — the admin/user tiers derive scope from the owner, not from
-// apikey_agents, so editing the list there would silently no-op at auth
-// time. Reject those calls so callers don't mistake "set succeeded" for
-// "scope changed".
+// SetAgents 替换 apikey 的代理访问列表。仅对 type=agent 有意义——
+// admin/user 层级从所有者（而非 apikey_agents）派生范围，
+// 因此编辑那里的列表在认证时会静默无操作。拒绝这些调用，
+// 以免调用者将"设置成功"误认为"范围已更改"。
 func (k *APIKeys) SetAgents(ctx context.Context, apikeyID string, agentIDs []string) error {
 	rec, err := k.store.GetAPIKey(ctx, apikeyID)
 	if err != nil {
@@ -185,15 +179,14 @@ func (k *APIKeys) SetAgents(ctx context.Context, apikeyID string, agentIDs []str
 	return k.store.SetAPIKeyAgents(ctx, apikeyID, agentIDs)
 }
 
-// LookupByToken is the auth hot path. SHA256(token) → (apikey, account,
-// access list). Returns ErrInvalidCredentials for any failure mode so the
-// middleware can't distinguish "unknown" from "disabled".
+// LookupByToken 是认证热路径。SHA256(token) → (apikey, account,
+// access list)。任何失败模式都返回 ErrInvalidCredentials，
+// 使中间件无法区分"未知"和"已禁用"。
 //
-// For type=agent we read the explicit apikey_agents ACL. For type=user
-// we substitute the owner's full agent list — newly created agents are
-// auto-included on the next request without any ACL maintenance. For
-// type=admin we skip the list entirely; the agent gate short-circuits on
-// type before consulting it.
+// 对于 type=agent，我们读取显式的 apikey_agents ACL。对于 type=user，
+// 我们替换为所有者的完整代理列表——新创建的代理在下次请求时自动包含，
+// 无需任何 ACL 维护。对于 type=admin，我们完全跳过列表；
+// 代理门在查阅它之前基于类型短路。
 func (k *APIKeys) LookupByToken(ctx context.Context, token string) (*Resolved, error) {
 	if token == "" {
 		return nil, ErrInvalidCredentials
@@ -207,8 +200,8 @@ func (k *APIKeys) LookupByToken(ctx context.Context, token string) (*Resolved, e
 	}
 	user, err := k.store.GetUser(ctx, rec.UserID)
 	if err != nil {
-		// Orphaned apikey (user deleted but apikey lingered). Treat as
-		// invalid — the cascade should have caught this.
+		// 孤儿 apikey（用户已删除但 apikey 残留）。视为无效——
+		// 级联本应捕获这种情况。
 		return nil, ErrInvalidCredentials
 	}
 	if user.Status != StatusActive {
@@ -217,10 +210,10 @@ func (k *APIKeys) LookupByToken(ctx context.Context, token string) (*Resolved, e
 	var agents []string
 	switch rec.Type {
 	case APIKeyTypeAdmin:
-		// Admin keys bypass the per-agent gate entirely; leave empty.
+		// Admin 密钥完全绕过按代理的门控；留空。
 	case APIKeyTypeUser:
-		// All agents owned by the apikey owner. A second list per
-		// request is the price of "no ACL maintenance for new agents".
+		// apikey 所有者拥有的所有代理。每次请求第二个列表是
+		// "新代理无需 ACL 维护"的代价。
 		ags, err := k.store.ListAgents(ctx, rec.UserID)
 		if err != nil {
 			return nil, err
@@ -230,7 +223,7 @@ func (k *APIKeys) LookupByToken(ctx context.Context, token string) (*Resolved, e
 			agents = append(agents, a.ID)
 		}
 	default:
-		// type=agent (and any legacy/unknown value) → explicit ACL.
+		// type=agent（以及任何遗留/未知值）→ 显式 ACL。
 		agents, err = k.store.ListAPIKeyAgents(ctx, rec.ID)
 		if err != nil {
 			return nil, err
@@ -243,7 +236,7 @@ func (k *APIKeys) LookupByToken(ctx context.Context, token string) (*Resolved, e
 	}, nil
 }
 
-// CanAccessAgent answers "may this apikey operate on agentID?"
+// CanAccessAgent 回答"此 apikey 是否可以操作 agentID？"
 func (k *APIKeys) CanAccessAgent(ctx context.Context, apikeyID, agentID string) (bool, error) {
 	return k.store.APIKeyCanAccessAgent(ctx, apikeyID, agentID)
 }
@@ -273,9 +266,8 @@ func hashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// keyPrefix keeps a recognizable slice of the plaintext for UI display.
-// 10 chars is enough to spot "your" key in a list while staying far below
-// brute-force feasibility.
+// keyPrefix 保留明文的一段可识别切片用于 UI 显示。
+// 10 个字符足以在列表中识别出"你的"密钥，同时远低于暴力破解的可行性。
 func keyPrefix(token string) string {
 	if len(token) <= 10 {
 		return token

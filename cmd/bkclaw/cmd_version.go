@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// versionCmd prints the current version info.
+// versionCmd 打印当前版本信息。
 func versionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
@@ -29,7 +29,7 @@ func versionCmd() *cobra.Command {
 	}
 }
 
-// upgradeCmd downloads and installs the latest release.
+// upgradeCmd 下载并安装最新版本。
 func upgradeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "upgrade",
@@ -47,7 +47,7 @@ func doUpgrade() error {
 
 	fmt.Println("⚡ Checking for updates...")
 
-	// 1. Fetch latest release info
+	// 1. 获取最新版本信息
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(apiURL)
 	if err != nil {
@@ -70,14 +70,14 @@ func doUpgrade() error {
 		return fmt.Errorf("failed to parse release info: %w", err)
 	}
 
-	// 2. Check if already up to date
+	// 2. 检查是否已是最新
 	if release.TagName == version {
 		fmt.Printf("✅ Already up to date (%s)\n", version)
 		return nil
 	}
 	fmt.Printf("📦 New version available: %s → %s\n", version, release.TagName)
 
-	// 3. Find the right asset for this platform
+	// 3. 查找适合当前平台的资源文件
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
 	var suffix string
@@ -100,7 +100,7 @@ func doUpgrade() error {
 
 	fmt.Printf("⬇️  Downloading %s...\n", suffix)
 
-	// 4. Download to temp file
+	// 4. 下载到临时文件
 	dlResp, err := client.Get(downloadURL)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
@@ -120,7 +120,7 @@ func doUpgrade() error {
 	}
 	tmpFile.Close()
 
-	// 5. Extract binary
+	// 5. 解压二进制文件
 	tmpDir, err := os.MkdirTemp("", "bkclaw-extract-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -128,21 +128,21 @@ func doUpgrade() error {
 	defer os.RemoveAll(tmpDir)
 
 	if goos == "windows" {
-		// Unzip
+		// 解压 ZIP
 		unzip := exec.Command("powershell", "-Command",
 			fmt.Sprintf("Expand-Archive -Path '%s' -DestinationPath '%s' -Force", tmpPath, tmpDir))
 		if out, err := unzip.CombinedOutput(); err != nil {
 			return fmt.Errorf("unzip failed: %s: %w", string(out), err)
 		}
 	} else {
-		// Untar
+		// 解压 tar.gz
 		tar := exec.Command("tar", "-xzf", tmpPath, "-C", tmpDir)
 		if out, err := tar.CombinedOutput(); err != nil {
 			return fmt.Errorf("untar failed: %s: %w", string(out), err)
 		}
 	}
 
-	// 6. Find current binary path and replace
+	// 6. 查找当前二进制文件路径并替换
 	currentBin, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("cannot find current binary: %w", err)
@@ -159,10 +159,10 @@ func doUpgrade() error {
 		return fmt.Errorf("extracted binary not found at %s", newBin)
 	}
 
-	// 7. Replace current binary
+	// 7. 替换当前二进制文件
 	fmt.Printf("📝 Installing to %s...\n", currentBin)
 
-	// Try direct overwrite first; if permission denied, use sudo on Unix
+	// 先尝试直接覆盖；如果权限不足，在 Unix 上使用 sudo
 	if err := replaceBinary(currentBin, newBin); err != nil {
 		if goos != "windows" {
 			fmt.Println("🔐 Need elevated permissions, trying sudo...")

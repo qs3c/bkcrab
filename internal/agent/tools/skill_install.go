@@ -9,17 +9,17 @@ import (
 	"github.com/qs3c/bkclaw/internal/skills"
 )
 
-// RegisterSkillInstall wires the per-agent skill search and install tools
-// into registry r.
+// RegisterSkillInstall 连接每个代理的技能搜索和安装工具
+// 进入雷吉斯特河
 //
-// agentSkillsDir is the per-agent skills directory (conventionally
-// <agentHome>/skills). Agent-initiated installs always land under that path —
-// never in the global ~/.bkclaw/skills/ — so one agent can't alter another
-// agent's capabilities just by chatting.
+// agentSkillsDir 是每个代理的技能目录（通常
+// <agentHome>/技能）。代理启动的安装始终落在该路径下 -
+// 永远不会在全局 ~/.bkclaw/skills/ — 所以一个特工无法改变另一个特工
+// 只需通过聊天即可了解代理的能力。
 //
-// onReload is called after a successful install so the owning agent can
-// re-scan its skills dir and expose the new skill on the next turn without
-// a restart. Pass nil to disable hot reload.
+// onReload 在成功安装后调用，以便拥有代理可以
+// 重新扫描其技能目录并在下一回合暴露新技能而无需
+// 重新启动。传递 nil 来禁用热重载。
 func RegisterSkillInstall(r *Registry, agentSkillsDir string, onReload func()) {
 	r.Register(
 		"search_skills",

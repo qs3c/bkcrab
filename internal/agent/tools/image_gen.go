@@ -9,18 +9,18 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// RegisterImageGenChain registers the image_gen tool against a provider
-// chain. Only registered when at least one provider in the chain has
-// credentials configured — so an agent without image-gen keys doesn't see
-// a tool it can't use.
+// RegisterImageGenChain 针对提供者注册 image_gen 工具
+// 链。仅当链中至少有一个提供商已注册时才注册
+// 配置了凭据 - 因此没有 image-gen 密钥的代理看不到
+// 它无法使用的工具。
 func RegisterImageGenChain(r *Registry, chain *toolproviders.Chain) {
 	if chain == nil {
 		return
 	}
-	// "none" is a sentinel meaning the admin explicitly opted out of
-	// bkclaw's image_gen. Detected anywhere in the chain → don't
-	// register the tool at all so the model falls back to its own
-	// native image-generation capability (or does without).
+	// “none”是一个哨兵，意味着管理员明确选择退出
+	// bkclaw 的 image_gen。在链条中的任何位置检测到 → 不检测
+	// 完全注册该工具，以便模型恢复到它自己的状态
+	// 本机图像生成功能（或没有）。
 	for _, ref := range chain.Order {
 		name := ref
 		if i := strings.IndexByte(ref, '/'); i >= 0 {

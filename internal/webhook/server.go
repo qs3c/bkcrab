@@ -11,17 +11,17 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 )
 
-// AgentHandler processes messages and returns responses.
+// AgentHandler 处理消息并返回响应。
 type AgentHandler interface {
 	HandleMessage(ctx context.Context, agentID string, msg bus.InboundMessage) (string, error)
 }
 
-// UserLookup resolves a bearer token to a user ID (cloud mode).
+// UserLookup 将 bearer token 解析为用户 ID（云模式）。
 type UserLookup interface {
 	LookupByToken(token string) (string, bool)
 }
 
-// WebhookRequest is the body of a webhook POST request.
+// WebhookRequest 是 webhook POST 请求的请求体。
 type WebhookRequest struct {
 	AgentID string `json:"agentId"`
 	UserID  string `json:"userId,omitempty"` // bkclaw user to route to (cloud mode)
@@ -30,14 +30,14 @@ type WebhookRequest struct {
 	ChatID  string `json:"chatId"`
 }
 
-// WebhookResponse is the JSON response returned to webhook callers.
+// WebhookResponse 是返回给 webhook 调用者的 JSON 响应。
 type WebhookResponse struct {
 	OK      bool   `json:"ok"`
 	Reply   string `json:"reply,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 
-// Server is the webhook HTTP server.
+// Server 是 webhook HTTP 服务器。
 type Server struct {
 	token      string
 	path       string
@@ -45,7 +45,7 @@ type Server struct {
 	userLookup UserLookup // optional (nil in local mode)
 }
 
-// NewServer creates a new webhook server. userLookup may be nil in local mode.
+// NewServer 创建一个新的 webhook 服务器。在本地模式下 userLookup 可为 nil。
 func NewServer(token, path string, handler AgentHandler, userLookup UserLookup) *Server {
 	if path == "" {
 		path = "/hooks"
@@ -58,14 +58,13 @@ func NewServer(token, path string, handler AgentHandler, userLookup UserLookup) 
 	}
 }
 
-// SetHandler replaces the agent handler. Used by gateway.New so the
-// handler can hold a reference to the Gateway being constructed without a
-// chicken-and-egg problem.
+// SetHandler 替换代理处理程序。被 gateway.New 使用，以便处理程序
+// 可以持有正在构建的 Gateway 的引用，而无需解决先有鸡还是先有蛋的问题。
 func (s *Server) SetHandler(h AgentHandler) {
 	s.handler = h
 }
 
-// Handler returns an http.Handler for the webhook endpoint.
+// Handler 返回 webhook 端点的 http.Handler。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.path, s.handleWebhook)
@@ -78,13 +77,13 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate bearer token and optionally resolve to a user ID.
+	// 验证 bearer token 并可选择解析为用户 ID。
 	var ownerUserID string
 	auth := r.Header.Get("Authorization")
 	token := strings.TrimPrefix(auth, "Bearer ")
 	if s.token != "" {
 		if token == s.token {
-			// Admin / local-mode token matches.
+			// 管理员/本地模式 token 匹配。
 		} else if s.userLookup != nil {
 			if uid, ok := s.userLookup.LookupByToken(token); ok {
 				ownerUserID = uid
@@ -122,7 +121,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		chatID = "webhook-default"
 	}
 
-	// Prefer explicit userId in request body, then token-derived.
+	// 优先使用请求体中显式的 userId，然后是 token 派生的。
 	if req.UserID != "" {
 		ownerUserID = req.UserID
 	}
@@ -158,7 +157,7 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// ListenAndServe starts the webhook server on the given address.
+// ListenAndServe 在给定地址上启动 webhook 服务器。
 func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 	srv := &http.Server{
 		Addr:    addr,

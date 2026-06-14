@@ -426,7 +426,7 @@ func (a *Agent) listPersonalities() []string {
 	var names []string
 	for _, f := range files {
 		base := filepath.Base(f)
-		// SOUL-<name>.md → <name>
+		// SOUL-<名称>.md → <名称>
 		name := strings.TrimPrefix(base, "SOUL-")
 		name = strings.TrimSuffix(name, ".md")
 		names = append(names, name)

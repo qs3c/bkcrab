@@ -11,7 +11,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// Brave calls api.search.brave.com. Requires an X-Subscription-Token API key.
+// Brave 调用 api.search.brave.com。需要 X-Subscription-Token API 密钥。
 type Brave struct{}
 
 func (Brave) Category() string { return Category }
@@ -69,9 +69,8 @@ func (b *Brave) Execute(ctx context.Context, req toolproviders.Request) (toolpro
 	return toolproviders.Response{Text: render(a.Query, items)}, nil
 }
 
-// retriableHTTP inspects the response status and either returns nil (200),
-// a retriable error (network-y codes that deserve a fallback) or a fatal
-// error (4xx that signals config problems).
+// retriableHTTP 检查响应状态，返回 nil（200）、可重试错误（应回退的网络类状态码）
+// 或致命错误（表明配置问题的 4xx）。
 func retriableHTTP(name string, resp *http.Response) error {
 	if resp.StatusCode == http.StatusOK {
 		return nil

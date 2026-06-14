@@ -18,25 +18,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Skill represents a discovered skill.
+// Skill 表示一个已发现的技能。
 type Skill struct {
-	Name        string         // directory name
+	Name        string         // 目录名称
 	Layer       string         // "agent", "user", "managed", "bundled", "extra"
-	Content     string         // optional inline SKILL.md content for always-loaded skills
-	BaseDir     string         // absolute path to the skill directory
-	Description string         // from frontmatter
-	Metadata    *SkillMetadata // parsed OpenClaw metadata
-	Gated       bool           // true if gating requirements not met
-	GateReason  string         // reason gating failed
+	Content     string         // 可选的内联 SKILL.md 内容，用于始终加载的技能
+	BaseDir     string         // 技能目录的绝对路径
+	Description string         // 来自 frontmatter
+	Metadata    *SkillMetadata // 解析后的 OpenClaw 元数据
+	Gated       bool           // 如果门控要求未满足则为 true
+	GateReason  string         // 门控失败的原因
 }
 
-// SkillFrontmatter represents the YAML frontmatter of a SKILL.md file.
+// SkillFrontmatter 表示 SKILL.md 文件的 YAML frontmatter。
 //
-// Env is the ergonomic shortcut for declaring configurable environment
-// variables — equivalent to writing them under metadata.bkclaw.env
-// but spares skill authors the namespace nesting when they don't need
-// to publish their skill to a non-bkclaw runtime. The HTTP layer
-// merges both sources, top-level Env wins on conflict.
+// Env 是声明可配置环境变量的便捷快捷方式——等同于将它们写在
+// metadata.bkclaw.env 下，但免去了技能作者在不需要将技能发布到
+// 非 bkclaw 运行时时的命名空间嵌套。HTTP 层合并两个来源，
+// 冲突时顶级 Env 优先。
 type SkillFrontmatter struct {
 	Name        string         `yaml:"name"`
 	Description string         `yaml:"description"`
@@ -45,14 +44,14 @@ type SkillFrontmatter struct {
 	Metadata    yaml.Node      `yaml:"metadata"`
 }
 
-// SkillMetadata represents the skill metadata block.
-// Supports both "bkclaw" and "openclaw" keys for backward compatibility.
+// SkillMetadata 表示技能元数据块。
+// 支持 "bkclaw" 和 "openclaw" 两种键以实现向后兼容。
 type SkillMetadata struct {
 	BkClaw   *OpenClawMeta `json:"bkclaw"`
 	OpenClaw *OpenClawMeta `json:"openclaw"`
 }
 
-// Meta returns the effective metadata, preferring bkclaw over openclaw.
+// Meta 返回有效的元数据，bkclaw 优先于 openclaw。
 func (m *SkillMetadata) Meta() *OpenClawMeta {
 	if m.BkClaw != nil {
 		return m.BkClaw
@@ -60,7 +59,7 @@ func (m *SkillMetadata) Meta() *OpenClawMeta {
 	return m.OpenClaw
 }
 
-// OpenClawMeta holds OpenClaw-specific metadata.
+// OpenClawMeta 持有 OpenClaw 特定的元数据。
 type OpenClawMeta struct {
 	Emoji      string         `json:"emoji"`
 	Homepage   string         `json:"homepage"`
@@ -68,25 +67,22 @@ type OpenClawMeta struct {
 	OS         []string       `json:"os"`
 	Requires   *SkillRequires `json:"requires"`
 	PrimaryEnv string         `json:"primaryEnv"`
-	// Env declares configurable environment variables this skill reads.
-	// Surfaced to the admin UI so operators get labeled inputs (with
-	// help text + secret masking) instead of having to grep main.py for
-	// os.environ.get() calls. PrimaryEnv stays around for the legacy
-	// "single API key" convenience path; multi-provider skills like
-	// image-tool list everything here.
+	// Env 声明此技能读取的可配置环境变量。
+	// 暴露给管理 UI，使运维人员获得带标签的输入（带有帮助文本和密钥掩码），
+	// 而不必 grep main.py 中的 os.environ.get() 调用。PrimaryEnv 保留
+	// 作为旧版"单个 API 密钥"便捷路径；像 image-tool 这样的多提供商技能
+	// 在此列出所有内容。
 	Env     []SkillEnvSpec  `json:"env,omitempty"`
 	Install json.RawMessage `json:"install"`
 }
 
-// SkillEnvSpec describes one configurable env var. All fields except
-// Name are optional. Secret defaults to true at the UI layer when the
-// name matches /KEY|TOKEN|SECRET|PASSWORD/i so authors usually don't
-// have to set it.
+// SkillEnvSpec 描述一个可配置的环境变量。除 Name 外的所有字段都是
+// 可选的。当名称匹配 /KEY|TOKEN|SECRET|PASSWORD/i 时，Secret 在 UI
+// 层默认为 true，因此作者通常不必设置它。
 //
-// Carries both json and yaml tags so it round-trips via the
-// metadata.bkclaw.env path (yaml→generic→json→struct, json tags) AND
-// via the new top-level frontmatter.Env shortcut (yaml→struct directly,
-// yaml tags).
+// 同时携带 json 和 yaml 标签，使其可以通过 metadata.bkclaw.env 路径
+// （yaml→generic→json→struct，json 标签）以及通过新的顶级
+// frontmatter.Env 快捷方式（yaml→struct 直接，yaml 标签）往返。
 type SkillEnvSpec struct {
 	Name        string `json:"name" yaml:"name"`
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
@@ -94,7 +90,7 @@ type SkillEnvSpec struct {
 	Secret      bool   `json:"secret,omitempty" yaml:"secret,omitempty"`
 }
 
-// SkillRequires holds gating requirements.
+// SkillRequires 持有门控要求。
 type SkillRequires struct {
 	Bins    []string `json:"bins"`
 	AnyBins []string `json:"anyBins"`
@@ -102,29 +98,27 @@ type SkillRequires struct {
 	Config  []string `json:"config"`
 }
 
-// SkillsLoader discovers and merges skills from multiple layers with OpenClaw compatibility.
+// SkillsLoader 从多层发现并合并技能，具有 OpenClaw 兼容性。
 type SkillsLoader struct {
 	homeDir   string
 	agentDir  string
 	teamDir   string
 	skillsCfg config.SkillsConfig
 	globalCfg config.SkillsCfg
-	// workspaceStore is optional: when set, LoadSkills hydrates the global
-	// and agent skill directories from the object store before scanning the
-	// filesystem. Without this, a skill uploaded to the store after a pod's
-	// UserSpace was cached is invisible to that pod until restart — and
-	// completely invisible on replicas that didn't handle the upload.
+	// workspaceStore 是可选的：设置后，LoadSkills 在扫描文件系统之前
+	// 会从对象存储中水合全局和代理技能目录。没有这个，一个技能在 Pod 的
+	// UserSpace 被缓存后上传到存储中，对该 Pod 是不可见的，直到重启
+	// ——并且对未处理上传的副本完全不可见。
 	workspaceStore workspace.Store
 	agentID        string
-	// userID is the chatter. When set, LoadSkills also scans the
-	// per-user skills dir (~/.bkclaw/users/<uid>/skills/) so skills
-	// the user creates while chatting any agent are reusable on every
-	// other agent they chat with. Empty disables this layer (legacy /
-	// single-user installs that pre-date per-user skills).
+	// userID 是聊天者。设置后，LoadSkills 还会扫描每个用户的技能目录
+	// （~/.bkclaw/users/<uid>/skills/），使用户在与任何代理聊天时创建的
+	// 技能可以在他们与之聊天的每个其他代理上重复使用。空值禁用此层
+	// （早于每个用户技能的旧版/单用户安装）。
 	userID string
 }
 
-// NewSkillsLoader creates a new skills loader.
+// NewSkillsLoader 创建一个新的技能加载器。
 func NewSkillsLoader(homeDir, agentDir, teamDir string, skillsCfg config.SkillsConfig) *SkillsLoader {
 	return &SkillsLoader{
 		homeDir:   homeDir,
@@ -134,38 +128,35 @@ func NewSkillsLoader(homeDir, agentDir, teamDir string, skillsCfg config.SkillsC
 	}
 }
 
-// NewSkillsLoaderWithGlobal creates a skills loader with global SkillsCfg for env injection and entries.
+// NewSkillsLoaderWithGlobal 创建一个带有全局 SkillsCfg 的技能加载器，用于环境变量注入和条目。
 func NewSkillsLoaderWithGlobal(homeDir, agentDir, teamDir string, skillsCfg config.SkillsConfig, globalCfg config.SkillsCfg) *SkillsLoader {
 	sl := NewSkillsLoader(homeDir, agentDir, teamDir, skillsCfg)
 	sl.globalCfg = globalCfg
 	return sl
 }
 
-// WithObjectStore wires a workspace.Store + agentID so LoadSkills hydrates
-// skills from the object store before scanning the filesystem. Returns the
-// loader for chaining.
+// WithObjectStore 连接 workspace.Store + agentID，使 LoadSkills 在扫描
+// 文件系统之前从对象存储中水合技能。返回加载器以支持链式调用。
 func (sl *SkillsLoader) WithObjectStore(ws workspace.Store, agentID string) *SkillsLoader {
 	sl.workspaceStore = ws
 	sl.agentID = agentID
 	return sl
 }
 
-// WithUserID enables the per-user skill layer (~/.bkclaw/users/<uid>/skills).
-// When set together with WithObjectStore, hydrate also pulls the user's
-// pseudo-owner namespace so skills created on another pod are mirrored to
-// this pod's disk. Empty userID disables the layer.
+// WithUserID 启用每个用户的技能层（~/.bkclaw/users/<uid>/skills）。
+// 与 WithObjectStore 一起设置时，水合还会拉取用户的伪所有者命名空间，
+// 使在另一个 Pod 上创建的技能镜像到此 Pod 的磁盘。空 userID 禁用此层。
 func (sl *SkillsLoader) WithUserID(userID string) *SkillsLoader {
 	sl.userID = userID
 	return sl
 }
 
-// LoadSkills discovers skills from all layers and returns them merged.
-// Precedence: agent workspace > user installed > managed > extra dirs.
+// LoadSkills 从所有层发现技能并返回合并后的结果。
+// 优先级：代理工作空间 > 用户安装 > 托管 > 额外目录。
 func (sl *SkillsLoader) LoadSkills() []Skill {
-	// Mirror object-store skills to the local filesystem so a skill
-	// uploaded to OSS (or installed on another replica) is visible here
-	// this turn — not on next pod restart. Cheap idempotent hydrate; the
-	// store does "skip if size matches" per object.
+	// 将对象存储中的技能镜像到本地文件系统，使上传到 OSS（或在另一个
+	// 副本上安装）的技能在此轮次可见——而不是在下次 Pod 重启后。廉价的
+	// 幂等水合；存储按对象执行"大小匹配则跳过"。
 	if sl.workspaceStore != nil {
 		ctx := context.Background()
 		managedDir := bkclawManagedDir()
@@ -181,19 +172,17 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 				slog.Warn("agent skill hydrate failed", "error", err)
 			}
 		}
-		// Per-user skill bucket: shared across every agent the chatter
-		// uses, isolated from other chatters. Lets utility skills the
-		// user sinks on agent A be available on agent B without
-		// polluting the agent owner's official skill set.
+		// 每个用户的技能桶：在聊天者使用的每个代理之间共享，与其他聊天者隔离。
+		// 使用户在代理 A 上沉淀的实用技能可在代理 B 上使用，而不会污染代理
+		// 所有者的官方技能集。
 		if userDir := sl.userSkillsDir(); userDir != "" {
 			owner := skills.UserSkillOwner(sl.userID)
 			if err := skills.HydrateSkillsDown(ctx, sl.workspaceStore, owner, userDir); err != nil {
 				slog.Warn("user skill hydrate failed", "user", sl.userID, "error", err)
 			}
-			// Anything the agent installed mid-chat into the bind-mounted
-			// per-user dir (e.g. via `npx skills add -g -y`) is local-only
-			// at this point. Push it up so sibling pods pick it up on their
-			// next hydrate cycle. Cheap when nothing's new.
+		// 代理在聊天过程中安装到绑定挂载的每个用户目录中的任何内容
+		// （例如通过 `npx skills add -g -y`）此时仅为本地。将其推送到上层，
+		// 使兄弟 Pod 在下一个水合周期中获取它。没有新内容时成本很低。
 			if err := skills.MirrorSkillsUp(ctx, sl.workspaceStore, owner, userDir); err != nil {
 				slog.Warn("user skill mirror-up failed", "user", sl.userID, "error", err)
 			}
@@ -206,14 +195,14 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 	for _, name := range sl.skillsCfg.Disabled {
 		disabled[name] = true
 	}
-	// Also check global entries for enabled: false
+	// 也检查全局条目中 enabled: false 的项
 	for name, entry := range sl.globalCfg.Entries {
 		if !entry.Enabled {
 			disabled[name] = true
 		}
 	}
 
-	// Layer 4 (lowest): extra dirs from config
+	// 第 4 层（最低）：来自配置的额外目录
 	for _, dir := range sl.globalCfg.Load.ExtraDirs {
 		dir = expandPath(dir)
 		for name, skill := range discoverSkillsEnhanced(dir, "extra") {
@@ -223,7 +212,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 		}
 	}
 
-	// Layer 3: managed skills (~/.bkclaw/skills/)
+	// 第 3 层：托管技能（~/.bkclaw/skills/）
 	managedDir := bkclawManagedDir()
 	for name, skill := range discoverSkillsEnhanced(managedDir, "managed") {
 		if !disabled[name] {
@@ -231,7 +220,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 		}
 	}
 
-	// Layer 2: user installed (~/.bkclaw/skills/)
+	// 第 2 层：用户安装（~/.bkclaw/skills/）
 	userDir := filepath.Join(sl.homeDir, "skills")
 	for name, skill := range discoverSkillsEnhanced(userDir, "user") {
 		if !disabled[name] {
@@ -239,7 +228,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 		}
 	}
 
-	// Layer 1.5: team skills
+	// 第 1.5 层：团队技能
 	if sl.teamDir != "" {
 		teamSkillsDir := filepath.Join(sl.teamDir, "skills")
 		for name, skill := range discoverSkillsEnhanced(teamSkillsDir, "team") {
@@ -249,10 +238,9 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 		}
 	}
 
-	// Layer 1.3: per-user skills (this chatter's personal bucket).
-	// Sits below agent (owner-curated) so an agent's official skill
-	// can override a user's same-named utility, but above team / host
-	// so the user's own skills always trump generic installs.
+	// 第 1.3 层：每个用户的技能（此聊天者的个人桶）。
+	// 位于代理（所有者策划的）之下，使代理的官方技能可以覆盖用户的
+	// 同名工具，但位于团队/主机之上，使用户自己的技能始终优先于通用安装。
 	if userDir := sl.userSkillsDir(); userDir != "" {
 		for name, skill := range discoverSkillsEnhanced(userDir, "personal") {
 			if !disabled[name] {
@@ -261,7 +249,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 		}
 	}
 
-	// Layer 1 (highest): agent workspace skills
+	// 第 1 层（最高）：代理工作空间技能
 	agentSkillsDir := filepath.Join(sl.agentDir, "skills")
 	for name, skill := range discoverSkillsEnhanced(agentSkillsDir, "agent") {
 		if !disabled[name] {
@@ -269,7 +257,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 		}
 	}
 
-	// Apply gating and env injection
+	// 应用门控和环境变量注入
 	result := make([]Skill, 0, len(skillsMap))
 	for _, s := range skillsMap {
 		if s.Gated {
@@ -278,26 +266,21 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 		}
 		result = append(result, s)
 	}
-	// Sort by name so the system prompt's skill ordering is stable
-	// across turns. Go map iteration is randomized, so without this a
-	// 122KB summary ends up with skills in a different position on
-	// every refresh — the model is sensitive to where a block sits
-	// (later blocks compete with more preceding context for
-	// attention), which produced an intermittent "model doesn't see
-	// skill X" symptom in long-tail group chats. Alphabetic is the
-	// cheapest stable order and also makes log diff'ing trivial.
+	// 按名称排序，使系统提示中的技能顺序在轮次之间保持稳定。
+	// Go map 迭代是随机的，所以没有这个，一个 122KB 的摘要会在每次刷新时
+	// 以不同的位置排列技能——模型对块的位置很敏感（后面的块与更多前面的
+	// 上下文竞争注意力），这在长尾群聊中产生了间歇性的"模型看不到技能 X"
+	// 症状。字母顺序是最便宜的稳定顺序，也使日志差异比较变得简单。
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Name < result[j].Name
 	})
 	return result
 }
 
-// BuildSkillsSummary returns the skill section of the system prompt.
-// Skills use progressive disclosure by default: keep the prompt's always-on
-// context to the small name + description catalog, and let the model call
-// load_skill when it needs the full SKILL.md instructions. Explicit
-// always-load skills remain inline for compatibility with skills that must be
-// present before the first tool call.
+// BuildSkillsSummary 返回系统提示中的技能部分。
+// 技能默认使用渐进式披露：将提示的常开上下文保持在较小的名称+描述目录，
+// 让模型在需要完整 SKILL.md 指令时调用 load_skill。显式的始终加载技能
+// 保持内联，以便与必须在第一次工具调用之前存在的技能兼容。
 func (sl *SkillsLoader) BuildSkillsSummary(skills []Skill) string {
 	if len(skills) == 0 {
 		return ""
@@ -353,11 +336,10 @@ func skillAlwaysLoads(skill Skill) bool {
 	return skill.Metadata != nil && skill.Metadata.Meta() != nil && skill.Metadata.Meta().Always
 }
 
-// firstSentence returns the first sentence-ish chunk of s — used for
-// the skill-catalog one-liner. We bound the output to keep the catalog
-// scannable even when a skill's Description is a paragraph: cut at the
-// first ". " / "。" / newline, then hard-cap at 140 runes so a single
-// run-on sentence can't drown the index. Trimmed whitespace.
+// firstSentence 返回 s 的第一个句子片段——用于技能目录的一行摘要。
+// 我们对输出进行限制以保持目录的可扫描性，即使技能的 Description 是一个
+// 段落：在第一个 ". " / "。" / 换行处截断，然后硬限制在 140 个字符，
+// 使单个长句不会淹没索引。修剪空白。
 func firstSentence(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -376,13 +358,11 @@ func firstSentence(s string) string {
 	return s
 }
 
-// skillsDirective tells the LLM how to invoke pre-installed skills AND
-// what to try before falling back to ad-hoc code when the inline set
-// doesn't cover the request. The trigger condition is concrete — "before
-// any package install via exec" — rather than abstract ("when no skill
-// covers it"), because the abstract framing left the model an easy
-// rationalization ("this is one-shot, skip the ladder") that produced
-// reflexive `pip install` calls for tasks a published skill would handle.
+// skillsDirective 告诉 LLM 如何调用预安装的技能，以及在内联集合不覆盖
+// 请求时在回退到临时代码之前尝试什么。触发条件是具体的——"在通过 exec
+// 安装任何包之前"——而不是抽象的（"当没有技能覆盖它时"），因为抽象的
+// 框架给了模型一个简单的合理化解释（"这是一次性的，跳过梯子"），导致
+// 对已发布技能能处理的任务产生反射性的 `pip install` 调用。
 const skillsDirective = `<skill_usage_rules>
 The skills listed below are pre-installed for this agent. Only the catalog is always in context. Before using a skill, call the "load_skill" tool with its name to load the full SKILL.md instructions, then follow those instructions exactly. If an always-loaded skill is included inline below, you may use those inline instructions directly.
 
@@ -399,12 +379,11 @@ When the listed skills don't cover what the user asked for, follow this order BE
 Skipping step 1 to "save time" is not allowed — it costs one tool call and prevents reinventing wheels the community has already published.
 </skill_usage_rules>`
 
-// SkillEnvVars returns environment variables for a specific skill from global config.
+// SkillEnvVars 从全局配置返回特定技能的环境变量。
 func (sl *SkillsLoader) SkillEnvVars(skillName string) map[string]string {
-	// Per-agent override wins. Fall back to the global entry only when
-	// the agent doesn't have its own row OR has it but it's empty (so
-	// the operator doesn't have to copy the global config to every
-	// agent just to keep the same defaults).
+	// 每个代理的覆盖优先。仅当代理没有自己的条目或有条目但为空时
+	// 才回退到全局条目（这样运维人员不必为了保持相同的默认值而将
+	// 全局配置复制到每个代理）。
 	var entry config.SkillEntryCfg
 	var found bool
 	if sl.agentID != "" {
@@ -432,10 +411,10 @@ func (sl *SkillsLoader) SkillEnvVars(skillName string) map[string]string {
 	for k, v := range entry.Env {
 		env[k] = v
 	}
-	// If apiKey is set and the skill has a primaryEnv, inject it
+	// 如果设置了 apiKey 且技能有 primaryEnv，则注入它
 	if entry.APIKey != "" {
-		// Find the skill to get primaryEnv
-		// This is a convenience — the skill's primaryEnv tells us which env var the apiKey maps to
+		// 找到技能以获取 primaryEnv
+		// 这是一个便利功能——技能的 primaryEnv 告诉我们 apiKey 映射到哪个环境变量
 		for _, dir := range sl.allSkillDirs() {
 			skillDir := filepath.Join(dir, skillName)
 			fm := parseFrontmatter(filepath.Join(skillDir, "SKILL.md"))
@@ -451,7 +430,7 @@ func (sl *SkillsLoader) SkillEnvVars(skillName string) map[string]string {
 	return env
 }
 
-// AllSkillDirs returns all skill directories in precedence order.
+// AllSkillDirs 按优先级顺序返回所有技能目录。
 func (sl *SkillsLoader) AllSkillDirs() []string {
 	return sl.allSkillDirs()
 }
@@ -471,9 +450,8 @@ func (sl *SkillsLoader) allSkillDirs() []string {
 	return dirs
 }
 
-// userSkillsDir returns ~/.bkclaw/users/<uid>/skills (BKCLAW_HOME-aware).
-// Empty when no userID is set so the loader skips the layer entirely on
-// single-user installs / legacy paths.
+// userSkillsDir 返回 ~/.bkclaw/users/<uid>/skills（支持 BKCLAW_HOME）。
+// 未设置 userID 时返回空，使加载器在单用户安装/旧版路径上完全跳过此层。
 func (sl *SkillsLoader) userSkillsDir() string {
 	if sl.userID == "" {
 		return ""
@@ -485,12 +463,10 @@ func (sl *SkillsLoader) userSkillsDir() string {
 	return filepath.Join(base, "users", sl.userID, "skills")
 }
 
-// userSkillsRootDir is the host parent dir of the per-user skills/
-// subtree (~/.bkclaw/users/<uid>/). Returned form leaves "skills/"
-// off the end so file.go's path resolver can join a relative
-// "skills/foo/SKILL.md" against it the same way it handles agent
-// home; the SkillsLoader layer reaches the actual subdir via
-// userSkillsDir (which appends "skills/").
+// userSkillsRootDir 是每个用户技能子树的主机父目录（~/.bkclaw/users/<uid>/）。
+// 返回的形式末尾不带 "skills/"，以便 file.go 的路径解析器可以像处理代理
+// 主目录一样将相对的 "skills/foo/SKILL.md" 与其拼接；SkillsLoader 层通过
+// userSkillsDir（附加了 "skills/"）到达实际的子目录。
 func userSkillsRootDir(userID string) string {
 	if userID == "" {
 		return ""
@@ -502,10 +478,9 @@ func userSkillsRootDir(userID string) string {
 	return filepath.Join(base, "users", userID)
 }
 
-// discoverSkillsEnhanced scans a directory for skill subdirectories with SKILL.md,
-// parses frontmatter, and applies gating. It deliberately does not keep the
-// full SKILL.md body in memory for default skills; the model loads that body
-// on demand through load_skill.
+// discoverSkillsEnhanced 扫描目录中带有 SKILL.md 的技能子目录，
+// 解析 frontmatter 并应用门控。它故意不为默认技能在内存中保留完整的
+// SKILL.md 内容；模型通过 load_skill 按需加载该内容。
 func discoverSkillsEnhanced(dir string, layer string) map[string]Skill {
 	result := make(map[string]Skill)
 
@@ -527,7 +502,7 @@ func discoverSkillsEnhanced(dir string, layer string) map[string]Skill {
 
 		absDir, _ := filepath.Abs(skillDir)
 
-		// Parse frontmatter
+		// 解析 frontmatter
 		fm := parseFrontmatterFromBytes(data)
 		var meta *SkillMetadata
 		var desc string
@@ -538,12 +513,12 @@ func discoverSkillsEnhanced(dir string, layer string) map[string]Skill {
 			}
 		}
 
-		// Apply gating
+		// 应用门控
 		gated, gateReason := checkGating(meta)
 
 		name := entry.Name()
 		if fm != nil && fm.Name != "" {
-			// Use directory name as the key, but store the frontmatter name
+			// 使用目录名称作为键，但存储 frontmatter 名称
 			_ = fm.Name
 		}
 
@@ -586,19 +561,19 @@ func entryKeys(m map[string]config.SkillEntryCfg) []string {
 	return out
 }
 
-// SplitSkillFrontmatter is the exported entrypoint used by the HTTP
-// layer when it needs both the parsed frontmatter and the raw body
-// (e.g. to fall back to the first body line for the description on
-// frontmatter-less skills). Returns nil + raw input when there is no
-// `---` frontmatter to parse.
+// SplitSkillFrontmatter 是 HTTP 使用的导出入口点
+// 当需要解析的 frontmatter 和原始正文时
+// （例如，退回到第一条正文线以进行描述
+// 无前置问题的技能）。当没有时返回 nil + 原始输入
+// `---` 需要解析的 frontmatter。
 func SplitSkillFrontmatter(data []byte) (*SkillFrontmatter, string) {
 	fm := parseFrontmatterFromBytes(data)
 	body := string(data)
 	if fm == nil {
 		return nil, body
 	}
-	// Strip the frontmatter block from the body so callers don't see the
-	// YAML lines when scanning for the first prose line.
+	// 从正文中剥离 frontmatter 块，以便调用者看不到
+	// 扫描第一个散文行时的 YAML 行。
 	trimmed := strings.TrimSpace(body)
 	if strings.HasPrefix(trimmed, "---") {
 		rest := trimmed[3:]
@@ -610,14 +585,14 @@ func SplitSkillFrontmatter(data []byte) (*SkillFrontmatter, string) {
 	return fm, body
 }
 
-// ParseSkillMetadata is the exported wrapper around the (yaml.Node →
-// SkillMetadata) decode path. The HTTP skill list handler uses it to
-// surface envSpec to the admin UI.
+// ParseSkillMetadata 是 (yaml.Node →
+// SkillMetadata）解码路径。 HTTP 技能列表处理程序使用它来
+// 将 envSpec 表面到管理 UI。
 func ParseSkillMetadata(node *yaml.Node) *SkillMetadata {
 	return parseMetadata(node)
 }
 
-// parseFrontmatter reads and parses YAML frontmatter from a SKILL.md file path.
+// parseFrontmatter 从 SKILL.md 文件路径读取并解析 YAML frontmatter。
 func parseFrontmatter(path string) *SkillFrontmatter {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -626,7 +601,7 @@ func parseFrontmatter(path string) *SkillFrontmatter {
 	return parseFrontmatterFromBytes(data)
 }
 
-// parseFrontmatterFromBytes parses YAML frontmatter from raw bytes.
+// parseFrontmatterFromBytes 从原始字节解析 YAML frontmatter。
 func parseFrontmatterFromBytes(data []byte) *SkillFrontmatter {
 	content := string(data)
 
@@ -634,7 +609,7 @@ func parseFrontmatterFromBytes(data []byte) *SkillFrontmatter {
 		return nil
 	}
 
-	// Find opening and closing ---
+	// 寻找开局和闭局---
 	trimmed := strings.TrimSpace(content)
 	rest := trimmed[3:] // skip first ---
 	endIdx := strings.Index(rest, "\n---")
@@ -651,18 +626,18 @@ func parseFrontmatterFromBytes(data []byte) *SkillFrontmatter {
 	return &fm
 }
 
-// parseMetadata converts the yaml.Node metadata into our SkillMetadata struct.
+// parseMetadata 将 yaml.Node 元数据转换为我们的 SkillMetadata 结构。
 func parseMetadata(node *yaml.Node) *SkillMetadata {
 	if node == nil || node.Kind == 0 {
 		return nil
 	}
-	// Marshal back to YAML then decode as JSON-like structure
+	// 编组回 YAML，然后解码为类似 JSON 的结构
 	yamlBytes, err := yaml.Marshal(node)
 	if err != nil {
 		return nil
 	}
 
-	// Unmarshal YAML into a generic map, then marshal to JSON, then unmarshal to struct
+	// 将 YAML 解组为通用映射，然后编组为 JSON，然后解组为结构
 	var raw interface{}
 	if err := yaml.Unmarshal(yamlBytes, &raw); err != nil {
 		return nil
@@ -680,8 +655,8 @@ func parseMetadata(node *yaml.Node) *SkillMetadata {
 	return &meta
 }
 
-// convertYAMLToJSON converts YAML map[string]interface{} (which uses map[interface{}]interface{})
-// to JSON-compatible map[string]interface{}.
+// ConvertYAMLToJSON 转换 YAML map[string]interface{}（使用 map[interface{}]interface{}）
+// 到兼容 JSON 的映射[字符串]接口{}。
 func convertYAMLToJSON(v interface{}) interface{} {
 	switch val := v.(type) {
 	case map[string]interface{}:
@@ -707,8 +682,8 @@ func convertYAMLToJSON(v interface{}) interface{} {
 	}
 }
 
-// checkGating validates whether a skill's requirements are met.
-// Returns (gated, reason). gated=true means the skill should be skipped.
+// checkGating 验证是否满足技能要求。
+// 返回（门控，原因）。 ated=true 表示应该跳过该技能。
 func checkGating(meta *SkillMetadata) (bool, string) {
 	if meta == nil || meta.Meta() == nil {
 		return false, ""
@@ -719,7 +694,7 @@ func checkGating(meta *SkillMetadata) (bool, string) {
 		return false, ""
 	}
 
-	// Check OS requirement
+	// 检查操作系统要求
 	if len(oc.OS) > 0 {
 		currentOS := runtime.GOOS
 		found := false
@@ -738,14 +713,14 @@ func checkGating(meta *SkillMetadata) (bool, string) {
 		return false, ""
 	}
 
-	// Check required binaries
+	// 检查所需的二进制文件
 	for _, bin := range oc.Requires.Bins {
 		if _, err := exec.LookPath(bin); err != nil {
 			return true, fmt.Sprintf("required binary %q not found on PATH", bin)
 		}
 	}
 
-	// Check anyBins (at least one must exist)
+	// 检查anyBins（至少一个必须存在）
 	if len(oc.Requires.AnyBins) > 0 {
 		found := false
 		for _, bin := range oc.Requires.AnyBins {
@@ -759,7 +734,7 @@ func checkGating(meta *SkillMetadata) (bool, string) {
 		}
 	}
 
-	// Check required env vars
+	// 检查所需的环境变量
 	for _, envVar := range oc.Requires.Env {
 		if os.Getenv(envVar) == "" {
 			return true, fmt.Sprintf("required env var %q not set", envVar)
@@ -769,9 +744,9 @@ func checkGating(meta *SkillMetadata) (bool, string) {
 	return false, ""
 }
 
-// bkclawBaseDir returns $BKCLAW_HOME or $HOME/.bkclaw. Used as
-// the parent for skills/, users/<uid>/skills/, etc. Honors BKCLAW_HOME
-// so multi-instance dev (one stack per product) stays isolated.
+// bkclawBaseDir 返回 $BKCLAW_HOME 或 $HOME/.bkclaw。用作
+// Skills/、users/<uid>/skills/ 等的父级。 荣誉 BKCLAW_HOME
+// 因此多实例开发（每个产品一个堆栈）保持隔离。
 func bkclawBaseDir() string {
 	if h := os.Getenv("BKCLAW_HOME"); h != "" {
 		return h
@@ -783,8 +758,8 @@ func bkclawBaseDir() string {
 	return filepath.Join(home, ".bkclaw")
 }
 
-// bkclawManagedDir returns the BkClaw managed skills directory
-// (~/.bkclaw/skills/, host-shared).
+// bkclawManagedDir 返回 BkClaw 托管技能目录
+// （~/.bkclaw/skills/，主机共享）。
 func bkclawManagedDir() string {
 	base := bkclawBaseDir()
 	if base == "" {
@@ -814,7 +789,7 @@ func firstLine(s string) string {
 	return s
 }
 
-// FindSkillForPath returns the skill name if the given path is within a skill directory.
+// 如果给定路径位于技能目录内，FindSkillForPath 将返回技能名称。
 func FindSkillForPath(path string, skillDirs []string) string {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -826,7 +801,7 @@ func FindSkillForPath(path string, skillDirs []string) string {
 			continue
 		}
 		if strings.HasPrefix(absPath, absDir+string(filepath.Separator)) {
-			// Extract skill name (first component after the skills dir)
+			// 提取技能名称（技能目录后的第一个组成部分）
 			rel, err := filepath.Rel(absDir, absPath)
 			if err != nil {
 				continue

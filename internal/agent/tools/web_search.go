@@ -9,18 +9,18 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// RegisterWebSearchChain exposes the web_search tool backed by a
-// toolproviders.Chain. When the chain has no configured provider, nothing is
-// registered at all — the LLM doesn't see a tool it can't use. One tool, many
-// providers, fallback chosen at runtime.
+// RegisterWebSearchChain 公开了由 a 支持的 web_search 工具
+// 工具提供商.链。当链没有配置的提供者时，什么也没有
+// 根本没有注册——法学硕士没有看到它不能使用的工具。一种工具，多种
+// 提供者，在运行时选择的后备。
 func RegisterWebSearchChain(r *Registry, chain *toolproviders.Chain) {
 	if chain == nil {
 		return
 	}
-	// "none" is a sentinel meaning the admin explicitly opted out of
-	// bkclaw's web_search. Detected anywhere in the chain → don't
-	// register the tool at all so the model falls back to its own
-	// native search (or simply has no search).
+	// “none”是一个哨兵，意味着管理员明确选择退出
+	// bkclaw 的 web_search。在链条中的任何位置检测到 → 不检测
+	// 完全注册该工具，以便模型恢复到它自己的状态
+	// 本机搜索（或根本没有搜索）。
 	for _, ref := range chain.Order {
 		name := ref
 		if i := strings.IndexByte(ref, '/'); i >= 0 {

@@ -1,29 +1,28 @@
-# BkClaw — single-file K8s deployment.
+# BkClaw — 单文件 K8s 部署。
 #
-# ┌─ ONE-SHOT DEPLOY ──────────────────────────────────────────────────────┐
-# │  1. Edit the 3 (or 4) values in `bkclaw-secrets`                     │
-# │     (DSN + object-store AK/SK, optionally E2B key).                    │
-# │  2. In `bkclaw-config`, pick ONE object-store provider block;        │
-# │     leave the rest commented out.                                      │
-# │  3. Edit the Ingress host (or delete the whole Ingress section if      │
-# │     you don't need public access).                                     │
+# ┌─ 一次性部署 ──────────────────────────────────────────────────────────┐
+# │  1. 编辑 `bkclaw-secrets` 中的 3（或 4）个值                          │
+# │     （DSN + 对象存储 AK/SK，可选 E2B 密钥）。                           │
+# │  2. 在 `bkclaw-config` 中，选择一个对象存储提供者块；                   │
+# │     将其余的注释掉。                                                   │
+# │  3. 编辑 Ingress 主机名（如果不需要公共访问，则删除整个 Ingress 部分）。│
 # │  4. kubectl apply -f bkclaw.yaml                                     │
-# │  5. Create a super-admin:                                              │
+# │  5. 创建超级管理员：                                                   │
 # │     kubectl -n bkclaw exec deploy/bkclaw -- \                      │
 # │       bkclaw admin create-user --username alice \                    │
 # │         --email alice@example.com --password 'hunter2' \               │
 # │         --role super_admin                                             │
-# │     Then sign in at /login — no admin token needed.                    │
+# │     然后在 /login 登录 — 无需管理员令牌。                              │
 # └────────────────────────────────────────────────────────────────────────┘
 #
-# Prerequisites:
-#   - Managed MySQL 8.0+ (Aliyun RDS / AWS RDS / etc.)
-#   - One object-store bucket (AWS S3 / R2 / B2 / OSS / MinIO — your pick)
-#   - Image: ghcr.io/qs3c/bkclaw:dev (auto-pushed by GitHub Actions, public)
-#   - Optional: cert-manager + ClusterIssuer (if you want HTTPS)
+# 先决条件：
+#   - 托管的 MySQL 8.0+（阿里云 RDS / AWS RDS 等）
+#   - 一个对象存储桶（AWS S3 / R2 / B2 / OSS / MinIO — 任选其一）
+#   - 镜像：ghcr.io/qs3c/bkclaw:dev（由 GitHub Actions 自动推送，公开）
+#   - 可选：cert-manager + ClusterIssuer（如果需要 HTTPS）
 #
-# Configuration is fully driven by BKCLAW_* env vars — there is no
-# config file. Users / agents / providers / channels all live in MySQL.
+# 配置完全由 BKCLAW_* 环境变量驱动 — 没有配置文件。
+# 用户/agent/提供者/渠道都存储在 MySQL 中。
 
 ---
 apiVersion: v1
@@ -31,7 +30,7 @@ kind: Namespace
 metadata: { name: bkclaw }
 
 ---
-# ========================= EDIT HERE (secrets) =========================
+# ========================= 在此编辑（密钥）=============================
 apiVersion: v1
 kind: Secret
 metadata:
@@ -39,34 +38,33 @@ metadata:
   namespace: bkclaw
 type: Opaque
 stringData:
-  # MySQL DSN. Add tls=true or a registered TLS profile for managed services.
+  # MySQL DSN。为托管服务添加 tls=true 或注册的 TLS 配置文件。
   STORAGE_DSN: "bkclaw:PASS@tcp(rm-xxxxx.mysql.rds.aliyuncs.com:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4"
 
-  # Object-store credentials. Same two fields for every provider:
-  #   AWS S3:       Access Key ID / Secret Access Key
-  #   R2:           API Token (Access Key ID / Secret Access Key)
-  #   Backblaze B2: Key ID / Application Key
-  #   Aliyun OSS:   AccessKey / AccessSecret (use a RAM sub-account scoped to one bucket)
-  #   MinIO:        root user / root password
+  # 对象存储凭证。每个提供者使用相同的两个字段：
+  #   AWS S3：       Access Key ID / Secret Access Key
+  #   R2：           API Token（Access Key ID / Secret Access Key）
+  #   Backblaze B2： Key ID / Application Key
+  #   Aliyun OSS：   AccessKey / AccessSecret（使用限定到单个存储桶的 RAM 子账户）
+  #   MinIO：        root user / root password
   OBJECT_STORE_ACCESSKEY: "REPLACE_WITH_ACCESS_KEY"
   OBJECT_STORE_SECRETKEY: "REPLACE_WITH_SECRET_KEY"
 
-  # Set when sandbox is enabled, then uncomment the matching env entry
-  # in the Deployment below.
+  # 启用沙箱时设置，然后在下方 Deployment 中取消对应环境变量条目的注释。
   # E2B_API_KEY: "REPLACE_WITH_E2B_KEY"
 
 ---
-# =================== EDIT HERE (object store provider) ==================
-# Pick ONE provider — uncomment its block and leave the others commented.
+# =================== 在此编辑（对象存储提供者）==========================
+# 选择一个提供者 — 取消对应块的注释，其他保持注释状态。
 #
-# BKCLAW_OBJECT_STORE_TYPE accepts:
-#   local          pod-local disk (single node / dev only)
+# BKCLAW_OBJECT_STORE_TYPE 接受以下值：
+#   local          Pod 本地磁盘（单节点/仅开发）
 #   aws-s3         AWS S3
-#   cloudflare-r2  Cloudflare R2 (requires ACCOUNTID)
-#   backblaze-b2   Backblaze B2 (S3-compatible)
-#   aliyun-oss     Aliyun OSS
-#   minio          self-hosted MinIO (requires ENDPOINT)
-#   s3             generic S3-compatible (requires ENDPOINT — e.g. DO Spaces / Wasabi)
+#   cloudflare-r2  Cloudflare R2（需要 ACCOUNTID）
+#   backblaze-b2   Backblaze B2（兼容 S3）
+#   aliyun-oss     阿里云 OSS
+#   minio          自托管 MinIO（需要 ENDPOINT）
+#   s3             通用 S3 兼容（需要 ENDPOINT — 例如 DO Spaces / Wasabi）
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -78,57 +76,57 @@ data:
   BKCLAW_STORAGE_TYPE: "mysql"
   BKCLAW_STORAGE_AUTO_MIGRATE: "true"
 
-  # Server default timezone (IANA name) — the LAST fallback in the chain
-  # chatter pref → agent default → system default → TZ. Without it pods
-  # run UTC, so agents whose chatters never set a timezone see UTC wall
-  # clocks and get UTC-fired schedules.
+  # 服务器默认时区（IANA 名称）— 链中最后的回退
+  # 聊天偏好 → agent 默认 → 系统默认 → TZ。没有它，Pod 将
+  # 运行 UTC，因此其聊天者从未设置时区的 agent 会看到 UTC
+  # 时钟并接收 UTC 触发的计划任务。
   TZ: "Asia/Shanghai"
 
-  # ─── Provider 1: Aliyun OSS (default example) ───
+  # ─── 提供者 1：阿里云 OSS（默认示例）───
   BKCLAW_OBJECT_STORE_TYPE: "aliyun-oss"
   BKCLAW_OBJECT_STORE_REGION: "cn-hangzhou"
   BKCLAW_OBJECT_STORE_BUCKET: "your-bkclaw-bucket"
-  BKCLAW_OBJECT_STORE_ALIYUN_INTERNAL: "true"    # same-region ACK uses the internal endpoint, saves egress
+  BKCLAW_OBJECT_STORE_ALIYUN_INTERNAL: "true"    # 同区域 ACK 使用内部端点，节省出站流量
 
-  # ─── Provider 2: AWS S3 ───
+  # ─── 提供者 2：AWS S3 ───
   # BKCLAW_OBJECT_STORE_TYPE: "aws-s3"
   # BKCLAW_OBJECT_STORE_REGION: "us-east-1"
   # BKCLAW_OBJECT_STORE_BUCKET: "your-bkclaw-bucket"
 
-  # ─── Provider 3: Cloudflare R2 ───
+  # ─── 提供者 3：Cloudflare R2 ───
   # BKCLAW_OBJECT_STORE_TYPE: "cloudflare-r2"
   # BKCLAW_OBJECT_STORE_ACCOUNTID: "<cloudflare-account-id>"
   # BKCLAW_OBJECT_STORE_BUCKET: "your-bkclaw-bucket"
 
-  # ─── Provider 4: Backblaze B2 ───
+  # ─── 提供者 4：Backblaze B2 ───
   # BKCLAW_OBJECT_STORE_TYPE: "backblaze-b2"
   # BKCLAW_OBJECT_STORE_REGION: "us-west-004"
   # BKCLAW_OBJECT_STORE_BUCKET: "your-bkclaw-bucket"
 
-  # ─── Provider 5: self-hosted MinIO (in-cluster) ───
+  # ─── 提供者 5：自托管 MinIO（集群内）───
   # BKCLAW_OBJECT_STORE_TYPE: "minio"
   # BKCLAW_OBJECT_STORE_ENDPOINT: "minio.default.svc.cluster.local:9000"
   # BKCLAW_OBJECT_STORE_BUCKET: "bkclaw"
   # BKCLAW_OBJECT_STORE_USESSL: "false"
 
-  # ─── Provider 6: generic S3-compatible (DigitalOcean Spaces / Wasabi / …) ───
+  # ─── 提供者 6：通用 S3 兼容（DigitalOcean Spaces / Wasabi / …）───
   # BKCLAW_OBJECT_STORE_TYPE: "s3"
   # BKCLAW_OBJECT_STORE_ENDPOINT: "nyc3.digitaloceanspaces.com"
   # BKCLAW_OBJECT_STORE_REGION: "nyc3"
   # BKCLAW_OBJECT_STORE_BUCKET: "your-bkclaw-bucket"
 
-  # Optional: prefix to share one bucket across multiple environments.
+  # 可选：前缀，用于在多个环境间共享一个存储桶。
   # BKCLAW_OBJECT_STORE_PREFIX: "prod"
 
-  # ─── Sandbox (optional) ───
-  # k8s pods don't have a docker daemon, so the only sandbox backend
-  # is E2B (remote) — or leave it disabled. To enable: set the
-  # E2B_API_KEY in bkclaw-secrets above and uncomment the lines below.
+  # ─── 沙箱（可选）───
+  # k8s Pod 没有 Docker 守护进程，因此唯一的沙箱后端
+  # 是 E2B（远程）— 或者禁用它。要启用：在上面
+  # bkclaw-secrets 中设置 E2B_API_KEY 并取消下方行的注释。
   # BKCLAW_SANDBOX_BACKEND: "e2b"
-  # BKCLAW_SANDBOX_IMAGE: "thinkany/bkclaw-sandbox:latest"   # used when running an E2B custom template
+  # BKCLAW_SANDBOX_IMAGE: "thinkany/bkclaw-sandbox:latest"   # 使用 E2B 自定义模板时使用
 
 ---
-# =================== Application (usually no edits) =====================
+# =================== 应用程序（通常无需编辑）============================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -146,7 +144,7 @@ spec:
     spec:
       containers:
         - name: bkclaw
-          image: ghcr.io/qs3c/bkclaw:dev    # production: pin to :<sha7> or :vX.Y.Z
+          image: ghcr.io/qs3c/bkclaw:dev    # 生产环境：固定到 :<sha7> 或 :vX.Y.Z
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 18953 }
@@ -160,9 +158,8 @@ spec:
             # - { name: E2B_API_KEY, valueFrom: { secretKeyRef: { name: bkclaw-secrets, key: E2B_API_KEY } } }
           volumeMounts:
             - { name: data, mountPath: /data/.bkclaw }
-          # /healthz and /readyz skip the auth middleware so kubelet can probe
-          # them directly. Don't use /api/status — it sits behind userAuth and
-          # 401s every anonymous request.
+          # /healthz 和 /readyz 跳过认证中间件，因此 kubelet 可以直接探测。
+          # 不要使用 /api/status — 它在 userAuth 后面，每次匿名请求都返回 401。
           readinessProbe:
             httpGet: { path: /readyz, port: http }
             periodSeconds: 5
@@ -175,16 +172,15 @@ spec:
             requests: { cpu: "100m", memory: "128Mi" }
             limits:   { cpu: "1",    memory: "512Mi" }
           lifecycle:
-            # Give SSE / WebSocket connections time to drain.
-            # terminationGracePeriod=30s; preStop sleeps 15s, leaving the
-            # remainder for Go's graceful shutdown.
+            # 给 SSE / WebSocket 连接时间排空。
+            # terminationGracePeriod=30s；preStop 休眠 15s，剩余时间留给 Go 的优雅关闭。
             preStop:
               exec: { command: ["sh", "-c", "sleep 15"] }
       terminationGracePeriodSeconds: 30
       volumes:
-        # /data/.bkclaw only holds pod-local ephemeral state (sandbox cache,
-        # etc.). Workspace artifacts go to the object store (BKCLAW_OBJECT_STORE_*)
-        # so they're shared across pods and survive horizontal scaling.
+        # /data/.bkclaw 仅保存 Pod 本地临时状态（沙箱缓存等）。
+        # 工作区工件进入对象存储（BKCLAW_OBJECT_STORE_*），
+        # 因此它们在 Pod 之间共享并能承受水平扩展。
         - { name: data, emptyDir: {} }
 
 ---
@@ -196,10 +192,9 @@ metadata:
 spec:
   type: ClusterIP
   selector: { app: bkclaw }
-  # SSE / WebSocket connections must stick to the same pod until they close.
-  # The Ingress already does cookie affinity; this is a ClientIP fallback for
-  # load balancers that bypass the Ingress and hit the Service directly,
-  # otherwise /api/chat/subscribe reconnects in a loop.
+  # SSE / WebSocket 连接必须保持在同一 Pod 上直到关闭。
+  # Ingress 已处理 cookie 亲和性；这里是绕过 Ingress 直接访问 Service 的
+  # 负载均衡器的 ClientIP 回退，否则 /api/chat/subscribe 会循环重连。
   sessionAffinity: ClientIP
   sessionAffinityConfig:
     clientIP:
@@ -234,8 +229,8 @@ spec:
   selector: { matchLabels: { app: bkclaw } }
 
 ---
-# ========================= EDIT HERE (host) ============================
-# Delete this entire block if you don't need public access.
+# ========================= 在此编辑（主机名）============================
+# 如果不需要公共访问，请删除整个块。
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -244,20 +239,19 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
     nginx.ingress.kubernetes.io/proxy-body-size: "32m"
-    # SSE (/api/chat/subscribe) and WebSocket (/ws) are long-lived — the
-    # default 60s timeout disconnects clients constantly. Lift read/write
-    # to 1h and disable buffering so tokens are flushed in real time.
+    # SSE (/api/chat/subscribe) 和 WebSocket (/ws) 是长连接 — 默认
+    # 60s 超时会不断断开客户端。将读/写超时提高到 1h 并禁用缓冲，
+    # 以便令牌实时刷新。
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    # Pin clients to the same pod under multi-replica — SSE/WS can't
-    # resume across pods.
+    # 在多副本下将客户端固定到同一 Pod — SSE/WS 无法跨 Pod 恢复。
     nginx.ingress.kubernetes.io/affinity: "cookie"
     nginx.ingress.kubernetes.io/session-cookie-name: "bkclaw-affinity"
     nginx.ingress.kubernetes.io/session-cookie-max-age: "86400"
-    # Aliyun ACK ships nginx-ingress by default; if you use ALB Ingress
-    # instead, swap the annotations above for their alb.ingress.kubernetes.io/*
-    # equivalents (same semantics).
+    # 阿里云 ACK 默认提供 nginx-ingress；如果你改用 ALB Ingress，
+    # 将上述注释替换为对应的 alb.ingress.kubernetes.io/* 等价项
+    #（语义相同）。
 spec:
   ingressClassName: nginx
   tls:

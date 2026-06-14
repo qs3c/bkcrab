@@ -29,7 +29,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/workspace"
 )
 
-// Agent is the ReAct agent loop.
+// Agent 是 ReAct 代理循环。
 type Agent struct {
 	name                 string
 	provider             provider.Provider
@@ -45,21 +45,21 @@ type Agent struct {
 	maxToolIterations    int
 	maxParallelToolCalls int // 0 = unlimited
 	thinking             string
-	// promptMode is kept on Agent so ReloadWorkspaceFiles can re-apply it
-	// when it rebuilds ctxBuilder — without this, every skill install /
-	// dashboard reload silently drops the agent back to agent-mode prompt
-	// even after the operator explicitly chose chatbot/customize.
-	// PromptMode also drives the per-turn tool filter via
-	// builtinAllowForMode below.
+	// PromptMode 保留在 Agent 上，以便 ReloadWorkspaceFiles 可以重新应用它
+	// 当它重建 ctxBuilder 时 - 没有这个，每个技能都会安装/
+	// 仪表板重新加载会静默地将代理返回到代理模式提示符
+	// 即使操作员明确选择了聊天机器人/自定义。
+	// PromptMode 还通过以下方式驱动每转刀具过滤器
+	// 下面内置AllowForMode。
 	promptMode    string
 	homePath      string // agent's home: SOUL.md, sessions, memory, skills
 	workspacePath string // working dir where agent creates user files
 	homeDir       string // BkClaw root, ~/.bkclaw
 	ownerUserID   string // the user that owns this agent (for hook namespacing)
-	// admins is the per-channel allowlist of chatters who can run write-
-	// mode slash commands (/new /undo /retry /compact /model /personality).
-	// Keyed by channel name (e.g. "discord" → ["123...", "456..."]). Empty
-	// or absent → no gate, anyone can run the command (legacy default).
+	// admins 是可以运行 write- 的聊天者的每个频道白名单
+	// 模式斜线命令（/new /undo /retry /compact /model /personality）。
+	// 按频道名称键入（例如“discord”→ [“123...”，“456...”]）。空的
+	// 或缺席→没有门，任何人都可以运行该命令（传统默认值）。
 	admins          map[string][]string
 	skillsCfg       config.SkillsConfig
 	globalSkillsCfg config.SkillsCfg
@@ -68,98 +68,98 @@ type Agent struct {
 	ftsStore        *store.FTSStore
 	piiScrubEnabled bool
 	memoryCfg       config.MemoryCfg
-	// splitReplies is the per-agent multi-bubble toggle. Gates the
-	// per-turn system-prompt hint that advertises SplitMessageMarker
-	// to the LLM (see renderChannelHints) AND stamps
-	// OutboundMessage.AllowSplit so the dispatcher splits the reply at
-	// the marker before handing each chunk to the channel adapter.
-	// Per-agent only — there's no system-level fallback.
+	// splitReplies 是每个代理的多气泡切换。盖茨
+	// 通告 SplitMessageMarker 的每轮系统提示提示
+	// 到 LLM（参见 renderChannelHints）并盖章
+	// OutboundMessage.AllowSplit 因此调度程序将回复拆分为
+	// 将每个块交给通道适配器之前的标记。
+	// 仅限每个代理 - 没有系统级回退。
 	splitReplies bool
-	// memoryStore is the optional Store-backed source of identity files
-	// (SOUL.md, IDENTITY.md, ...). Kept on the Agent so ReloadWorkspaceFiles
-	// can rewire a fresh ContextBuilder to keep reading from the Store
-	// instead of silently falling back to pod-local filesystem.
+	// memoryStore 是可选的存储支持的身份文件源
+	// （灵魂.md，身份.md，...）。保留在代理上，以便 ReloadWorkspaceFiles
+	// 可以重新连接一个新的 ContextBuilder 以继续从 Store 中读取
+	// 而不是默默地退回到 pod 本地文件系统。
 	memoryStore MemoryStore
-	// displayName mirrors agents.name (the operator-given name). Stamped
-	// on the ContextBuilder for the IDENTITY.md fallback line — kept on
-	// Agent too so ReloadWorkspaceFiles can re-apply after rebuilding
-	// the ContextBuilder from scratch.
+	// displayName 镜像agents.name（操作员指定的名称）。盖章
+	// 在 IDENTITY.md 后备行的 ContextBuilder 上 — 继续
+	// 代理也是如此，因此 ReloadWorkspaceFiles 可以在重建后重新应用
+	// 从头开始创建 ContextBuilder。
 	displayName string
-	// dataStore is the full relational Store (when wired by the
-	// manager). Used for per-turn durable lookups that can't go through
-	// the narrower MemoryStore — currently just the autoPersist gate
-	// counting (chatter, agent) user-message rows so the cadence
-	// survives daemon restarts / UserSpace invalidations / idle
-	// evictions that all reset the in-memory turnCount.
+	// dataStore 是完整的关系存储（当通过
+	// 经理）。用于无法通过的每回合持久查找
+	// 较窄的 MemoryStore — 目前只有 autoPersist 门
+	// 计算（聊天、代理）用户消息行，以便节奏
+	// 守护进程重新启动/用户空间失效/空闲后仍然存在
+	// 所有驱逐都会重置内存中的turnCount。
 	dataStore store.Store
-	// workspaceStore is optional; when set, SkillsLoader hydrates per-agent
-	// and global skill dirs from the object store on every turn so skills
-	// uploaded post-boot or on a sibling replica become visible here.
+	// 工作区存储是可选的；设置后，SkillsLoader 会为每个代理提供水合
+	// 每回合都从对象存储中获取全局技能目录，因此技能
+	// 启动后或同级副本上上传的内容在此处可见。
 	workspaceStore workspace.Store
 	skillsLearner  *SkillsLearner
 	turnCount      int
 	engine         *sdkEngine
 	costTracker    *costtracker.Tracker
 	agentID        string
-	// meter is the admin-level token meter. Non-nil only when the
-	// gateway wires it in via SetMeter at boot — local-only dev runs
-	// leave it nil and metering becomes a no-op via meterTokens().
+	// Meter 是管理员级别的令牌 Meter。仅当
+	// 网关在启动时通过 SetMeter 将其连接起来 — 仅本地开发运行
+	// 将其保留为 nil，计量将通过meterTokens() 变为无操作。
 	meter usage.Meter
-	// sandboxPool is the per-user (agent + session) sandbox pool. Set
-	// once at boot/hot-reload by attachSandboxToAgents; bindSession
-	// pulls a session-scoped executor from it at the top of every turn
-	// so concurrent sessions of the same agent get isolated containers
-	// + isolated /workspace mounts.
+	// sandboxPool 是每用户（代理 + 会话）沙箱池。放
+	// 通过 AttachSandboxToAgents 在启动/热重载时一次；绑定会话
+	// 在每个回合的顶部从其中拉出一个会话范围的执行器
+	// 因此同一代理的并发会话会获得隔离的容器
+	// + 隔离/工作空间安装座。
 	sandboxPool sandbox.ExecutorPool
 
-	// goalStore is the /goal feature's per-Agent state. Wired by
-	// WireGoals; nil on agents whose Manager didn't provide a data
-	// store (legacy single-user installs). When nil, the goal tools
-	// and hook are simply not registered, so a missing store silently
-	// degrades to "feature off" rather than crashing.
+	// goalStore 是 /goal 功能的每个代理状态。有线方式
+	// 电线目标；经理未提供数据的代理为零
+	// 商店（旧版单用户安装）。当 nil 时，目标工具
+	// 和hook根本就没有注册，所以默默的失踪了一个store
+	// 降级为“功能关闭”而不是崩溃。
 	goalStore goal.Store
 }
 
-// SetSandboxPool wires the per-(agent,session) executor pool. Called by
-// attachSandboxToAgents on boot and by hot-reload's reloadSandbox after
-// onboarding flips sandbox on. The pool is consulted by bindSession at
-// the start of every chat turn — there's no eager Get at boot anymore
-// because session IDs only exist once a chat starts.
+// SetSandboxPool 连接每个（代理、会话）执行器池。呼叫者
+// 启动时 AttachSandboxToAgents 以及之后通过热重载的 reloadSandbox
+// 入职会打开沙箱。该池由bindSession 查询
+// 每个聊天回合的开始——不再需要急切地启动
+// 因为会话 ID 仅在聊天开始后才存在。
 //
-// Also flips the context builder's sandbox flag so the system prompt's
-// "Working Directory" / filesystem-layout description matches reality.
-// Without this, an agent whose rc.Sandbox.Enabled=false but who got a
-// pool reference (attachSandboxToAgents wires the pool to ALL agents
-// once any one of them wants sandbox) ends up with exec routed through
-// the container while the prompt still advertises host paths — model
-// dutifully writes `/Users/.../workspaces/<id>/foo` which 404s inside
-// the container. The two states must agree.
+// 还翻转上下文构建器的沙箱标志，以便系统提示符
+// “工作目录”/文件系统布局描述与实际相符。
+// 如果没有这个，一个 rc.Sandbox.Enabled=false 但获得了
+// 池引用（attachSandboxToAgents 将池连接到所有代理
+// 一旦他们中的任何一个想要沙箱）最终都会通过 exec 路由
+// 容器，而提示仍然通告主机路径 - 模型
+// 尽职尽责地写入 `/Users/.../workspaces/<id>/foo` 其中 404
+// 容器。两国必须同意。
 func (a *Agent) SetSandboxPool(p sandbox.ExecutorPool) {
 	a.sandboxPool = p
 	if a.ctxBuilder != nil {
 		a.ctxBuilder.sandboxEnabled = p != nil
 	}
-	// Tell the tool registry sandbox is required so its host-shell exec
-	// fallback refuses to run when bindSession can't bind an executor.
-	// The two states (system prompt advertising /workspace + /skills,
-	// exec actually using sandbox) must agree — without this, a Docker
-	// daemon hiccup turns into "sh: python: command not found" on the
-	// host instead of a clear "sandbox required but unavailable" error.
+	// 告诉工具注册表沙箱是必需的，因此它的主机外壳执行
+	// 当bindSession无法绑定执行器时，后备拒绝运行。
+	// 两种状态（系统提示广告/workspace + /skills，
+	// exec 实际上使用沙箱）必须同意 - 没有这个，Docker
+	// 守护进程 hiccup 变成“sh：python：命令未找到”
+	// 主机而不是明显的“需要沙箱但不可用”错误。
 	if a.registry != nil {
 		a.registry.SetSandboxRequired(p != nil)
 	}
 }
 
-// bindSession wires per-turn session state into the tool registry: the
-// session-scoped sandbox executor (when a pool is configured), the
-// sessionID workspace.Store calls use to namespace artifacts, and the
-// (channel, chatID) bus address so deferred-work tools (create_cron_job)
-// can stamp it onto persisted rows for later replay. Called at the top
-// of HandleMessage / HandleMessageStream before any tool runs.
+// bindSession 将每轮会话状态连接到工具注册表中：
+// 会话范围的沙箱执行器（配置池时），
+// sessionID Workspace.Store 调用用于命名空间工件，并且
+// (channel, chatID) 总线地址所以延迟工作工具 (create_cron_job)
+// 可以将其标记到持久的行上以供以后重播。在顶部调用
+// 在任何工具运行之前的 HandleMessage / HandleMessageStream。
 //
-// Mutating the shared registry across concurrent chats would race, but
-// the current invariant is one chat-in-flight per agent — the gateway
-// serializes per-agent turns. Documenting it here in case that changes.
+// 在并发聊天中改变共享注册表会产生竞争，但是
+// 当前的不变量是每个代理一次聊天 - 网关
+// 序列化每个代理的回合。在这里记录下来以防发生变化。
 func (a *Agent) bindSession(ctx context.Context, channel, sessionID, projectID string) {
 	a.registry.SetSessionID(sessionID)
 	a.registry.SetProjectID(projectID)
@@ -169,11 +169,11 @@ func (a *Agent) bindSession(ctx context.Context, channel, sessionID, projectID s
 	}
 	ex, err := a.sandboxPool.Get(ctx, a.name, projectID, sessionID)
 	if err != nil {
-		// Error level (not warn) — when sandbox is required and we
-		// can't bind, the next exec call will refuse with the
-		// "sandboxRequired but no executor" message; log here so the
-		// upstream cause (docker daemon down, image pull failed, …) is
-		// captured next to the user-facing error.
+		// 错误级别（不是警告）——当需要沙箱并且我们
+		// 无法绑定，下一个 exec 调用将拒绝
+		// “sandboxRequired 但没有执行器”消息；在这里登录，以便
+		// 上游原因（docker 守护进程关闭、镜像拉取失败……）是
+		// 在用户面临的错误旁边捕获。
 		slog.Error("sandbox executor unavailable; exec will refuse host fallback",
 			"agent", a.name, "session", sessionID, "error", err)
 		return
@@ -181,20 +181,20 @@ func (a *Agent) bindSession(ctx context.Context, channel, sessionID, projectID s
 	a.registry.SetExecutor(ex)
 }
 
-// NewAgent creates a new Agent from a resolved config.
+// NewAgent 从已解析的配置创建一个新代理。
 func NewAgent(rc config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBus, homeDir string) *Agent {
 	return NewAgentWithSkillsCfg(rc, prov, mb, homeDir, config.SkillsCfg{})
 }
 
-// NewAgentWithFullCfg creates a new Agent with full config support (memory, privacy, skills learner).
+// NewAgentWithFullCfg 创建一个具有完整配置支持（内存、隐私、技能学习者）的新代理。
 func NewAgentWithFullCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBus, homeDir string, fullCfg *config.Config) *Agent {
 	ag := NewAgentWithSkillsCfg(rc, prov, mb, homeDir, fullCfg.Skills)
 	ag.memoryCfg = fullCfg.Memory
 	ag.piiScrubEnabled = fullCfg.Privacy.PIIScrubbing.Enabled
-	// splitReplies is plumbed inside NewAgentWithSkillsCfg so foreign-
-	// attached agents also pick up the toggle; don't re-stamp here.
+	// splitReplies 是在 NewAgentWithSkillsCfg 内部进行检测的，所以很陌生-
+	// 附属特工也拿起开关；不要在这里重新盖章。
 
-	// Set up FTS store if configured
+	// 设置 FTS 存储（如果已配置）
 	if fullCfg.Memory.FTS.Enabled {
 		dbPath := fullCfg.Memory.FTS.DBPath
 		if dbPath == "" {
@@ -212,7 +212,7 @@ func NewAgentWithFullCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bu
 		}
 	}
 
-	// Set up skills learner if configured
+	// 设置技能学习者（如果已配置）
 	if fullCfg.SkillsLearner.Enabled {
 		model := fullCfg.SkillsLearner.Model
 		if model == "" {
@@ -226,7 +226,7 @@ func NewAgentWithFullCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bu
 		}
 	}
 
-	// Set memory auto-persist defaults
+	// 设置内存自动保留默认值
 	if ag.memoryCfg.AutoPersist.EveryNTurns == 0 {
 		ag.memoryCfg.AutoPersist.EveryNTurns = 5
 	}
@@ -234,44 +234,44 @@ func NewAgentWithFullCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bu
 	return ag
 }
 
-// NewAgentWithSkillsCfg creates a new Agent with global skills config for env injection.
+// NewAgentWithSkillsCfg 创建一个具有全局技能配置的新代理，用于环境注入。
 func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBus, homeDir string, globalSkillsCfg config.SkillsCfg) *Agent {
 	workspace := rc.Workspace
 	if workspace == "" {
-		// Fallback for callers (tests, legacy configs) that don't populate
-		// Workspace — use the agent's home as a single-dir fallback.
+		// 未填充的调用者（测试、遗留配置）的后备
+		// 工作区 — 使用代理的家作为单目录后备。
 		workspace = rc.Home
 	}
-	// Ensure the workspace dir exists so the first write_file doesn't fail.
+	// 确保工作区目录存在，以便第一个 write_file 不会失败。
 	if workspace != "" {
 		_ = os.MkdirAll(workspace, 0o755)
 	}
 
 	memory := NewMemory(rc.Home)
 	registry := tools.NewRegistry(rc.Home, workspace)
-	// message tool is re-registered AFTER the Agent struct is built (see
-	// below) so its outbound-side closure can read agent.splitReplies
-	// at send time. The registerBuiltins pass inside NewRegistry already
-	// stamped a placeholder; tools.RegisterMessage replaces it.
+	// 消息工具在代理结构构建后重新注册（请参阅
+	// 如下），因此其出站端闭包可以读取 agent.splitReplies
+	// 在发送时。 registerBuiltins 已在 NewRegistry 中传递
+	// 标记占位符； tools.RegisterMessage 取代了它。
 	tools.RegisterMemorySearch(registry, rc.Home)
 	tools.RegisterWebFetch(registry)
 
-	// Load skills with OpenClaw compatibility. We can't hydrate from OSS
-	// here — the Agent isn't constructed yet and the manager hasn't wired
-	// workspaceStore. The manager will call ReloadWorkspaceFiles after
-	// wiring to refresh the summary with OSS-hosted skills, and runOnce
-	// re-hydrates on every turn to pick up later uploads.
+	// 加载具有 OpenClaw 兼容性的技能。我们无法从 OSS 中获取水分
+	// 这里 - 代理尚未构建，管理器尚未连接
+	// 工作区存储。管理器将在之后调用 ReloadWorkspaceFiles
+	// 使用OSS托管的技能连线刷新摘要，并运行一次
+	// 每回合都会重新补充水分以接收以后的上传。
 	loader := NewSkillsLoaderWithGlobal(homeDir, rc.Home, "", rc.Skills, globalSkillsCfg)
 	loader.agentID = rc.ID
 	skills := loader.LoadSkills()
 	skillsSummary := loader.BuildSkillsSummary(skills)
 
-	// Set up skill env injection for exec tool. Pass an sbCfg carrying
-	// just the Enabled flag so the host-mode closure (used until
-	// bindSession swaps in a sandboxed executor on session start) knows
-	// sandbox was REQUIRED for this agent — without that signal an
-	// executor-pool failure would silently fall through to /bin/sh on the
-	// host, defeating the security boundary the user asked for.
+	// 为 exec 工具设置技能环境注入。传递一个 sbCfg 携带
+	// 只是启用标志，所以主机模式关闭（使用直到
+	// bindSession 在会话启动时在沙盒执行器中交换）知道
+	// 该代理需要沙箱 - 如果没有该信号
+	// 执行程序池故障将默默地落在 /bin/sh 上
+	// 主机，打破了用户要求的安全边界。
 	skillDirs := loader.AllSkillDirs()
 	tools.RegisterLoadSkill(registry, skillDirs)
 	var sbCfg *tools.SandboxConfig
@@ -284,7 +284,7 @@ func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *
 		slog.Info("loaded skills", "agent", rc.ID, "count", len(skills))
 	}
 
-	// Set up hooks with logging
+	// 设置带有日志记录的钩子
 	hooks := NewHookRegistry()
 	hooks.Register(BeforeModelCall, LoggingHook())
 	hooks.Register(AfterModelCall, LoggingHook())
@@ -319,35 +319,35 @@ func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *
 		costTracker:          eng.costTracker,
 	}
 
-	// Multi-bubble split-replies: per-agent only — system-level toggle
-	// was removed since "every agent splits the same way" is rarely
-	// what an operator wants for a deployment running multiple personas.
-	// nil override = off (default); non-nil = explicit value. Plumbed at
-	// this layer (not just NewAgentWithFullCfg) so foreign-attached
-	// agents — chatters reaching an agent they don't own via a channel
-	// binding — also pick up the toggle. Without this the wechat
-	// dispatcher hint never reaches the LLM for non-owner chatters and
-	// the model falls back to markdown `---` separators that render as
-	// one bubble.
+	// 多气泡分割回复：仅限每个代理 - 系统级切换
+	// 被删除，因为“每个特工都以相同的方式分裂”很少见
+	// 操作员对于运行多个角色的部署的需求。
+	// nil override = 关闭（默认）；非零=显式值。检测于
+	// 这一层（不仅仅是NewAgentWithFullCfg）如此外挂
+	// 代理 — 聊天者通过渠道联系不属于他们的代理
+	// 绑定 - 也拿起切换开关。没有这个微信
+	// 对于非所有者聊天，调度员提示永远不会到达法学硕士，并且
+	// 模型回退到 markdown `---` 分隔符，呈现为
+	// 一个泡沫。
 	if rc.SplitReplies != nil {
 		ag.splitReplies = *rc.SplitReplies
 	}
-	// Stamp the operator-given display name onto the context builder
-	// so an empty IDENTITY.md doesn't leak the base-model identity
-	// ("I am Claude") through to chatters — the system prompt's
-	// identity-fallback line uses this. Also keep on the Agent so
-	// ReloadWorkspaceFiles (which rebuilds the ContextBuilder from
-	// scratch) can re-apply it instead of losing the value.
+	// 将操作员给定的显示名称标记到上下文构建器上
+	// 所以空的 IDENTITY.md 不会泄漏基本模型身份
+	// （“我是克劳德”）到喋喋不休——系统提示的
+	// 身份后备线使用这个。还要继续代理所以
+	// ReloadWorkspaceFiles（从重建 ContextBuilder
+	// 刮擦）可以重新应用它而不是丢失该值。
 	ag.displayName = rc.DisplayName
 	ag.ctxBuilder.SetDisplayName(rc.DisplayName)
-	// Auto-persist memory toggle — per-agent override. The manager
-	// today only ever calls NewAgentWithSkillsCfg (not the unused
-	// NewAgentWithFullCfg), which means the system/user `memory`
-	// configs row is effectively dead in production — per-agent
-	// agents.defaults.autoPersist is the only working path. Set
-	// EveryNTurns default here too so the modulo check at the
-	// runPostTurn site doesn't panic when an operator enables
-	// AutoPersist without specifying a cadence.
+	// 自动持久内存切换 - 每个代理覆盖。经理
+	// 今天只调用 NewAgentWithSkillsCfg （不是未使用的
+	// NewAgentWithFullCfg)，表示系统/用户“内存”
+	// 配置行实际上在生产中已死亡 - 每个代理
+	// Agents.defaults.autoPersist 是唯一的工作路径。放
+	// EveryNTurns 在这里也是默认的，因此模数检查
+	// 当操作员启用时，runPostTurn 站点不会出现恐慌
+	// 自动保留而不指定节奏。
 	if rc.AutoPersist != nil {
 		ag.memoryCfg.AutoPersist.Enabled = *rc.AutoPersist
 	}
@@ -355,20 +355,20 @@ func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *
 		ag.memoryCfg.AutoPersist.EveryNTurns = 5
 	}
 
-	// message tool — registered HERE (post-Agent) so the closure can read
-	// ag.splitReplies at every send. Per-agent setting can flip at
-	// runtime (UpdateConfig); the getter pulls the current value each
-	// time rather than capturing a stale snapshot.
+	// 消息工具 — 在此处注册（代理后），以便闭包可以读取
+	// ag.split在每次发送时回复。每个代理设置可以翻转
+	// 运行时（更新配置）； getter 分别提取当前值
+	// 时间而不是捕捉陈旧的快照。
 	tools.RegisterMessage(registry, mb, func() bool { return ag.splitReplies })
 
-	// delegate_task lets the parent agent fan a bounded subtask out to a
-	// fresh sub-agent context (own iteration budget, isolated messages).
-	// Registered after ag is built because the tool callback closes over
-	// ag.RunSubagent — couldn't wire it inside RegisterExecWithSkillEnv's
-	// pre-Agent block. Self-disables when runner is nil.
+	// delegate_task 让父代理将有界子任务扇出到
+	// 新的子代理上下文（自己的迭代预算，隔离的消息）。
+	// 在ag构建后注册，因为工具回调关闭
+	// ag.RunSubagent — 无法将其连接到 RegisterExecWithSkillEnv 内部
+	// 预代理块。当 runner 为零时自行禁用。
 	tools.RegisterDelegateTask(registry, ag)
 
-	// Connect MCP servers and register their tools
+	// 连接 MCP 服务器并注册其工具
 	if len(rc.MCPServers) > 0 {
 		mcpMgr := mcp.NewManager(rc.MCPServers)
 		ag.mcpMgr = mcpMgr
@@ -407,29 +407,29 @@ func newContextBuilderWithSandbox(home, workspace string, memory *Memory, skills
 	return cb
 }
 
-// Name returns the agent's name.
+// 名称返回代理的姓名。
 func (a *Agent) Name() string {
 	return a.name
 }
 
-// HandleWebChat handles a chat message from the web UI with a session ID.
-// imageURLs and params mirror the streaming variant so non-streaming
-// callers (third-party apps hitting POST /api/chat) get the same
-// vision + per-turn-params support as the SSE path.
+// HandleWebChat 使用会话 ID 处理来自 Web UI 的聊天消息。
+// imageURLs 和 params 镜像流变体，因此非流式
+// 调用者（点击 POST /api/chat 的第三方应用程序）得到相同的结果
+// Vision + per-turn-params 支持作为 SSE 路径。
 //
-// projectIDHint is the chat's "owning project" as carried in the URL
-// (`?project=<pid>`) or chat request body. It only matters on the very
-// first turn of a brand-new session: once the row exists, project_id
-// stamped on it is authoritative and the hint is ignored.
+// projectIDHint 是 URL 中携带的聊天的“所属项目”
+// (`?project=<pid>`) 或聊天请求正文。这只对非常重要
+// 全新会话的第一轮：一旦该行存在，project_id
+// 上面印的就是权威的，提示被忽略。
 func (a *Agent) HandleWebChat(ctx context.Context, sessionId, projectIDHint, userID, text string, imageURLs []string, params map[string]any) string {
 	if sessionId == "" {
 		sessionId = "web-ui"
 	}
 	if userID == "" {
-		// Backward compat for unauth'd / legacy callers: keep the
-		// sentinel so the per-user skills mount lands at a stable shared
-		// dir instead of trying to mkdir <base>/users//skills/ (which
-		// docker would happily mount over the user's whole home dir).
+		// 向后兼容未经身份验证/遗留调用者：保留
+		// 哨兵，使每个用户的技能能够稳定地共享
+		// dir 而不是尝试 mkdir <base>/users//skills/ （其中
+		// docker 会很乐意安装在用户的整个主目录上）。
 		userID = "web-user"
 	}
 	channel, accountID, chatID, projectID := a.recoverWebTriple(sessionId)
@@ -450,11 +450,11 @@ func (a *Agent) HandleWebChat(ctx context.Context, sessionId, projectIDHint, use
 	return a.HandleMessage(ctx, msg)
 }
 
-// HandleWebChatStream handles a web chat message with real-time event streaming.
-// imageURLs carries any user-attached images (data URLs or fetchable HTTPS
-// links) so vision-capable models receive them as image_url content parts on
-// the user message. projectIDHint mirrors HandleWebChat's parameter — see
-// that doc.
+// HandleWebChatStream 通过实时事件流处理网络聊天消息。
+// imageURLs 携带任何用户附加的图像（数据 URL 或可获取的 HTTPS
+// 链接），因此具有视觉能力的模型将它们作为 image_url 内容部分接收
+// 用户消息。 projectIDHint 镜像 HandleWebChat 的参数 — 请参阅
+// 那个医生。
 func (a *Agent) HandleWebChatStream(ctx context.Context, sessionId, projectIDHint, userID, text string, imageURLs []string, params map[string]any, events chan<- ChatEvent) string {
 	if sessionId == "" {
 		sessionId = "web-ui"
@@ -481,13 +481,13 @@ func (a *Agent) HandleWebChatStream(ctx context.Context, sessionId, projectIDHin
 	return a.HandleMessage(ctx, msg)
 }
 
-// SteerWeb buffers a steering message for an in-flight web turn on the
-// given session. Returns true if a turn was active and the message was
-// buffered (the running loop will fold it in between tool rounds and
-// emit a "steer" event on the existing SSE), false if no turn is
-// running — in which case the caller should fall back to a normal send.
-// Session resolution mirrors HandleWebChatStream exactly so we land on
-// the same *session.Session pointer the running turn holds.
+// SteerWeb 缓冲飞行中网络转向的转向消息
+// 给定的会话。如果回合处于活动状态且消息已发送，则返回 true
+// 缓冲（运行循环会将其折叠在工具轮之间并且
+// 在现有 SSE 上发出“转向”事件），如果没有转弯则为 false
+// running — 在这种情况下，调用者应该返回到正常发送。
+// 会话解析完全镜像 HandleWebChatStream，因此我们可以登陆
+// 运行回合所持有的相同 *session.Session 指针。
 func (a *Agent) SteerWeb(sessionId, projectIDHint, text string) bool {
 	if sessionId == "" {
 		sessionId = "web-ui"
@@ -504,13 +504,13 @@ func (a *Agent) SteerWeb(sessionId, projectIDHint, text string) bool {
 	})
 }
 
-// SteerInbound buffers a steering message for an in-flight turn keyed by
-// the inbound message's (channel, accountID, chatID, projectID) — the
-// SAME fields HandleMessage resolves the session with (NOT the
-// taskqueue's per-agent accountID), so the pointer matches the running
-// turn. `text` is the already-formatted body the Submit path would have
-// delivered (e.g. the group `\[name\]:` prefix). Returns false when no
-// turn is active so the caller falls back to taskQueue.Submit.
+// SteerInbound 缓冲由以下命令控制的飞行中转向消息
+// 入站消息的（频道、帐户 ID、聊天 ID、项目 ID）—
+// 相同的字段 HandleMessage 解析会话（不是
+// 任务队列的每个代理帐户ID），因此指针与正在运行的
+// 转动。 `text` 是提交路径将具有的已格式化正文
+// 已交付（例如组“\[name\]:”前缀）。没有时返回 false
+// turn 处于活动状态，因此调用者会退回到 taskQueue.Submit。
 func (a *Agent) SteerInbound(msg bus.InboundMessage, text string) bool {
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
 	return sess.PushSteerIfActive(provider.Message{
@@ -521,27 +521,27 @@ func (a *Agent) SteerInbound(msg bus.InboundMessage, text string) bool {
 	})
 }
 
-// recoverWebTriple maps a URL `?session=` token (which can be a
-// session_key for any channel, OR a legacy web chat_id) to the full
-// (channel, accountID, chatID, projectID) tuple downstream callers
-// need.
+// recoveryWebTriple 映射一个 URL `?session=` 标记（可以是
+// 任何频道的 session_key，或旧版网络 chat_id）完整
+// (channel, accountID, chatID, projectID) 元组下游调用者
+// 需要。
 //
-// Without recovering accountID too, an inbound web write to a
-// telegram/wechat session would query Manager.Get(channel, "", chatID),
-// miss the existing row (which has account_id=<bot_id>), and mint a
-// brand-new session under the wrong triple — the user sees the reply
-// briefly, but a refresh loads the original session's history and the
-// just-written exchange vanishes.
+// 在不恢复 accountID 的情况下，入站 Web 会写入
+// telegram/wechat 会话会查询 Manager.Get(channel, "", chatID),
+// 错过现有行（其中 account_id=<bot_id>），并创建一个
+// 错误三元组下的全新会话 — 用户看到回复
+// 简短地说，但是刷新会加载原始会话的历史记录和
+// 刚刚写的交换消失了。
 //
-// projectID is "" for loose chats and forwarded onto the inbound
-// message so bindSession routes the sandbox + workspace.Store to the
-// project folder.
+// 对于松散的聊天，projectID 为“”并转发到入站
+// 消息，因此bindSession将沙箱+workspace.Store路由到
+// 项目文件夹。
 //
-// Two-step recovery:
-//  1. If the token matches a session_key → look up the full triple +
-//     project.
-//  2. Otherwise treat it as a web chat_id (preserves the brand-new
-//     "+New chat" path where the row doesn't exist yet).
+// 两步恢复：
+// 1. 如果 token 与 session_key 匹配 → 查找完整的三元组 +
+// 项目。
+// 2. 否则将其视为网络chat_id（保留全新的
+// 该行尚不存在的“+新聊天”路径）。
 func (a *Agent) recoverWebTriple(sessionId string) (channel, accountID, chatID, projectID string) {
 	channel, accountID, chatID = "web", "", sessionId
 	if !a.sessions.SessionExists(sessionId) {
@@ -561,25 +561,25 @@ func (a *Agent) recoverWebTriple(sessionId string) (channel, accountID, chatID, 
 	return
 }
 
-// home returns the agent's home (metadata) directory path.
+// home 返回代理的主（元数据）目录路径。
 func (a *Agent) home() string {
 	return a.homePath
 }
 
-// SetGroupContext configures group chat awareness for this agent's system prompt.
+// SetGroupContext 为此座席的系统提示配置群聊感知。
 func (a *Agent) SetGroupContext(gc *GroupContext) {
 	a.ctxBuilder.SetGroupContext(gc)
 }
 
-// InjectGroupMessage appends a message from another bot into the session history
-// without triggering an LLM call. This gives the agent awareness of what other
-// bots said in the group chat.
+// InjectGroupMessage 将来自另一个机器人的消息附加到会话历史记录中
+// 而不触发LLM呼叫。这让代理意识到还有什么
+// 机器人在群聊中说道。
 //
-// The `\[name\]:` prefix escapes the brackets so the web UI's CommonMark
-// renderer doesn't read short single-token messages (e.g. `[idoubi]: hello`)
-// as a link reference definition and silently swallow them. The LLM still
-// reads it as a bracketed sender label — the backslash escapes are well-
-// understood markdown source.
+// `\[name\]:` 前缀转义括号，因此 Web UI 的 CommonMark
+// 渲染器不读取短的单令牌消息（例如“[idoubi]：hello”）
+// 作为链接引用定义并默默地吞下它们。 LLM仍然
+// 将其读取为括号内的发件人标签 - 反斜杠转义很好 -
+// 了解降价源。
 func (a *Agent) InjectGroupMessage(ctx context.Context, msg bus.InboundMessage) {
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
 	label := msg.SenderName
@@ -594,41 +594,41 @@ func (a *Agent) InjectGroupMessage(ctx context.Context, msg bus.InboundMessage) 
 	})
 }
 
-// SetSubAgentSpawner sets the sub-agent spawner for the spawn_subagent tool.
+// SetSubAgentSpawner 为spawn_subagent 工具设置子代理生成器。
 func (a *Agent) SetSubAgentSpawner(spawner tools.SubAgentSpawner) {
 	a.subAgentSpawner = spawner
 	tools.RegisterSubAgent(a.registry, spawner, a.name)
 }
 
-// ToolRegistry returns the agent's tool registry for external registration.
+// ToolRegistry 返回代理的工具注册表以供外部注册。
 func (a *Agent) ToolRegistry() *tools.Registry {
 	return a.registry
 }
 
-// SetOwnerUserID tags this agent with the owning user ID. The value is
-// propagated into every HookContext so plugins like mem0 can namespace
-// data per user.
+// SetOwnerUserID 使用拥有的用户 ID 标记此代理。其值为
+// 传播到每个 HookContext 中，因此像 mem0 这样的插件可以命名空间
+// 每个用户的数据。
 func (a *Agent) SetOwnerUserID(uid string) {
 	a.ownerUserID = uid
 }
 
-// OwnerUserID returns the agent's owning user ID — the user that
-// created / owns this agent. Exposed so callers that mint records
-// on the user's behalf (e.g. /goal slash) can stamp ownership
-// without reaching into agent internals.
+// OwnerUserID 返回代理的拥有用户 ID — 代理的用户
+// 创建/拥有该代理。暴露制造记录的调用者
+// 代表用户（例如/目标斜线）可以标记所有权
+// 无需深入代理内部。
 func (a *Agent) OwnerUserID() string { return a.ownerUserID }
 
-// SetMeter wires the admin token meter onto this agent. Called by the
-// gateway at boot / hot-reload so every Chat call lands a RecordTokens
-// invocation. Nil is fine — meterTokens() is a no-op when unset.
+// SetMeter 将管理令牌计量器连接到该代理上。被称为
+// 启动/热重载时的网关，因此每个聊天调用都会获得一个记录令牌
+// 调用。 Nil 没问题——未设置时，meterTokens() 是无操作的。
 func (a *Agent) SetMeter(m usage.Meter) { a.meter = m }
 
-// meterTokens records one Chat call's token counts. Safe to call with
-// zero usage (still bumps request_count). Errors are logged but never
-// propagated — metering must not break the chat path. The agent's
-// configured model string carries the provider prefix when a per-agent
-// override is set; we split it so the meter stores provider and model
-// in their own columns rather than mashing them together.
+// meterTokens 记录一次聊天调用的令牌计数。安全通话
+// 零使用（仍然会增加 request_count）。错误被记录但从未记录
+// 传播——计量不得破坏聊天路径。代理的
+// 当每个代理配置时，配置的模型字符串带有提供者前缀
+// 覆盖已设置；我们将其拆分，以便计量商店提供商和模型
+// 放在自己的列中，而不是将它们混在一起。
 func (a *Agent) meterTokens(ctx context.Context, sessionKey string, u provider.Usage) {
 	if a.meter == nil {
 		return
@@ -646,22 +646,22 @@ func (a *Agent) meterTokens(ctx context.Context, sessionKey string, u provider.U
 	}
 }
 
-// streamChatToResponse is a drop-in replacement for provider.Chat that
-// pipes text chunks to the chat-event channel in real time via
-// content_delta events. The web UI subscriber appends each delta to
-// the in-flight assistant bubble so users see the answer materialize
-// token-by-token instead of waiting for the whole ReAct loop to
-// finish.
+// StreamChatToResponse 是provider.Chat 的直接替代品
+// 通过管道将文本块实时传输到聊天事件通道
+// content_delta 事件。 Web UI 订阅者将每个增量附加到
+// 飞行中的助手气泡让用户看到答案的实现
+// 逐个令牌，而不是等待整个 ReAct 循环
+// 结束。
 //
-// Tool-calls / thinking / RawAssistant / Usage are extracted from the
-// final (Done=true) chunk so the returned *provider.Response matches
-// what provider.Chat would have produced — the caller's downstream
-// logic (HasToolCalls check, session.Append with thinking, meterTokens)
-// doesn't have to change.
+// 工具调用/思考/RawAssistant/用法均提取自
+// 最终 (Done=true) 块，因此返回的 *provider.Response 匹配
+// provider.Chat 会产生什么——调用者的下游
+// 逻辑（HasToolCalls 检查、session.Append 与思考、meterTokens）
+// 不必改变。
 //
-// Use this at every site that previously called provider.Chat in the
-// HandleMessage path. Providers that don't actually stream still work
-// — they just deliver one big chunk on Done.
+// 在以前称为provider.Chat的每个站点上使用它
+// 句柄消息路径。实际上不进行流式传输的提供商仍然可以工作
+// ——他们只是在完成时交付了一大块。
 func (a *Agent) streamChatToResponse(ctx context.Context, messages []provider.Message, tools []provider.Tool) (*provider.Response, error) {
 	sr, err := a.provider.ChatStream(ctx, messages, tools, a.model, a.maxTokens, a.temperature)
 	if err != nil {
@@ -682,11 +682,11 @@ func (a *Agent) streamChatToResponse(ctx context.Context, messages []provider.Me
 		}
 		if chunk.Content != "" {
 			contentBuilder.WriteString(chunk.Content)
-			// Push the incremental delta. The web chat panel
-			// appends it to the bubble in progress; consumers
-			// that only know about the legacy `content` event
-			// ignore unknown types and rely on the final
-			// emit (caller's responsibility) instead.
+			// 推动增量增量。网络聊天面板
+			// 将其附加到正在进行的气泡中；消费者
+			// 只知道遗留的“内容”事件
+			// 忽略未知类型并依赖最终的
+			// 改为发出（调用者的责任）。
 			emitEvent(ctx, ChatEvent{
 				Type: "content_delta",
 				Data: map[string]any{"delta": chunk.Content},
@@ -712,10 +712,10 @@ func (a *Agent) streamChatToResponse(ctx context.Context, messages []provider.Me
 	if err := sr.Err(); err != nil {
 		return nil, err
 	}
-	// Mirror what AnthropicProvider.parseSSE does when no
-	// RawAssistant was emitted but we still captured thinking text:
-	// pack {thinking, signature} as a thinking content-block so the
-	// next turn replays it correctly to extended-thinking models.
+	// 镜像 AnthropicProvider.parseSSE 在 no 时执行的操作
+	// RawAssistant 已发出，但我们仍然捕获了思考文本：
+	// 将 {thinking,signature} 打包为思考内容块，以便
+	// 下一回合将其正确地重播到扩展思维模型。
 	if len(rawAssistant) == 0 && thinking != "" {
 		if raw, err := json.Marshal(map[string]string{
 			"type":      "thinking",
@@ -734,24 +734,24 @@ func (a *Agent) streamChatToResponse(ctx context.Context, messages []provider.Me
 	}, nil
 }
 
-// HookRegistry returns the agent's hook registry for external hook registration.
+// HookRegistry 返回代理的钩子注册表以进行外部钩子注册。
 func (a *Agent) HookRegistry() *HookRegistry {
 	return a.hooks
 }
 
-// WireGoals turns the /goal feature on for this Agent. Side effects:
+// WireGoals 为此代理打开 /goal 功能。副作用：
 //
-//   - Stash the store on the agent.
-//   - Register the AfterModelCall token-accounting hook (folds
-//     Response.Usage into the active goal, flips budget_limited on
-//     exhaust).
-//   - Register the model-callable update_goal tool.
-//   - Register a PostTurn hook that, when allowed, fires the next
-//     continuation synchronously.
+// - 将商店隐藏在代理上。
+// - 注册 AfterModelCall 令牌记账钩子（折叠
+// Response.Usage 进入活动目标，打开预算限制
+// 排气）。
+// - 注册模型可调用的 update_goal 工具。
+// - 注册一个 PostTurn 钩子，当允许时，触发下一个钩子
+// 同步继续。
 //
-// Must be called after SetOwnerUserID so the registered tool and
-// hook carry the right owner. Called by manager.buildAgent when a
-// data store is available; nil store turns the feature off cleanly.
+// 必须在 SetOwnerUserID 之后调用，因此注册的工具和
+// 钩扛右主。当 a 时由 manager.buildAgent 调用
+// 数据存储可用； nil store 彻底关闭该功能。
 func (a *Agent) WireGoals(st goal.Store) {
 	if st == nil {
 		return
@@ -763,31 +763,31 @@ func (a *Agent) WireGoals(st goal.Store) {
 	}
 	tools.RegisterGoalTools(a.registry, st, a.name)
 
-	// Trigger continuation only at turn boundaries (PostTurn), not
-	// mid-turn from AfterToolCall. AfterToolCall publishing
-	// optimistically while a turn is still running opens a window
-	// where the next continuation lands in bus.Inbound before a
-	// concurrent /goal pause can; PostTurn closes that window.
+	// 仅在转弯边界（PostTurn）触发延续，而不是
+	// AfterToolCall 的中途。 AfterToolCall 发布
+	// 乐观地在转弯仍在运行时打开一个窗口
+	// 下一个延续在总线上着陆的地方。入站之前
+	// 并发/目标暂停可以； PostTurn 关闭该窗口。
 	//
-	// PostTurn fires for every source — we accept user (a real reply
-	// or a /goal resume) and goal_context (chain the loop). Other
-	// sources (cron, heartbeat, sub-agent) must NOT auto-continue or
-	// we'd loop. The budget_limit wrap-up arrives as goal_context too,
-	// but TryFireContinuation re-reads the goal status and bails on
-	// non-Active goals, so a wrap-up turn doesn't cause a chain.
+	// PostTurn 对每个来源都会触发 — 我们接受用户（真实的回复
+	// 或 /goal 简历）和 goal_context （链接循环）。其他
+	// 源（cron、心跳、子代理）不得自动继续或
+	// 我们会循环。 Budget_limit 总结也作为 goal_context 到达，
+	// 但 TryFireContinuation 会重新读取目标状态并继续执行
+	// 非主动目标，因此总结回合不会导致连锁。
 	a.hooks.Register(PostTurn, a.goalTriggerHook(allowedContinuationSources))
 }
 
-// allowedContinuationSources is the whitelist of bus sources that
-// may auto-fire the next continuation from a PostTurn hook. User
-// turns start / resume the loop; goal_context turns chain it.
+// allowedContinuationSources 是总线源的白名单
+// 可以从 PostTurn 钩子自动触发下一个延续。用户
+// 轮流开始/恢复循环； goal_context 将其链接起来。
 var allowedContinuationSources = map[string]bool{
 	bus.SourceUser:        true,
 	bus.SourceGoalContext: true,
 }
 
-// goalTriggerHook builds a HookFunc that fires the next continuation
-// for the in-flight session, when all gates pass.
+// goalTriggerHook 构建一个触发下一个延续的 HookFunc
+// 对于飞行中的会议，当所有登机口都通过时。
 func (a *Agent) goalTriggerHook(allowed map[string]bool) HookFunc {
 	return func(ctx context.Context, hc *HookContext) {
 		if !allowed[hc.Source] {
@@ -806,14 +806,14 @@ func (a *Agent) goalTriggerHook(allowed map[string]bool) HookFunc {
 	}
 }
 
-// sessionHasActiveGoal reports whether the session this inbound is
-// for has a goal in Active state. Used as a hard precedence rule
-// over auto-plan-mode: an active goal is an autonomous loop; plan-mode
-// is a "wait for human approval" gate. The two cannot coexist on the
-// same turn without breaking the goal's autonomy guarantee.
+// sessionHasActiveGoal 报告此入站会话是否是
+// for 有一个处于活动状态的目标。用作硬优先规则
+// over auto-plan-mode：主动目标是一个自治循环；计划模式
+// 是一个“等待人类批准”的门。两者不能共存
+// 在不破坏目标自主保证的情况下进行同样的回合。
 //
-// Best-effort: a store error or missing session returns false. One
-// indexed read per inbound turn — cheap enough to skip caching.
+// 尽力而为：存储错误或丢失会话返回 false。一
+// 每个入站轮次的索引读取 — 便宜到足以跳过缓存。
 func (a *Agent) sessionHasActiveGoal(ctx context.Context, msg bus.InboundMessage) bool {
 	if a.goalStore == nil || a.sessions == nil {
 		return false
@@ -829,29 +829,29 @@ func (a *Agent) sessionHasActiveGoal(ctx context.Context, msg bus.InboundMessage
 	return g.Status == goal.StatusActive
 }
 
-// buildUserMessage flattens an inbound message into the user-role
-// provider.Message that lands in session history. Tags Origin so
-// goal-context continuations get recognized by the compaction /
-// WebChatHistory / FTS filters (which check Origin != OriginUser),
-// and merges PhotoURL (legacy IM single) + PhotoURLs (web multi)
-// into one ContentParts slice. Image-only sends skip a leading
-// empty text part — some upstreams reject content-less wire messages.
+// buildUserMessage 将入站消息扁平化为用户角色
+// 登陆会话历史记录中的provider.Message。标签 起源 所以
+// 目标上下文延续通过压缩得到识别 /
+// WebChatHistory / FTS 过滤器（检查 Origin != OriginUser），
+// 并合并 PhotoURL（传统 IM 单）+ PhotoURL（网络多）
+// 到一个 ContentParts 切片中。仅图像发送跳过前导
+// 空文本部分——一些上游拒绝无内容的有线消息。
 func buildUserMessage(msg bus.InboundMessage) provider.Message {
 	origin := provider.OriginUser
 	if msg.Source == bus.SourceGoalContext {
 		origin = provider.OriginGoalContext
 	}
-	// IM DMs are not prefixed with `[SenderName]:` — there's only one
-	// chatter per DM, the sender is already surfaced as a per-turn
-	// system block when needed (see renderSender for the group case),
-	// and putting an English-name bracket in front of every line biases
-	// the model away from the language preferences set in SOUL.md
+	// IM DM 没有前缀“[SenderName]:” — 只有一个
+	// 每个 DM 的聊天，发送者已经作为每轮出现
+	// 需要时系统块（请参阅 renderSender 了解组情况），
+	// 并在每行前面加上英文名括号
+	// 模型远离 SOUL.md 中设置的语言偏好
 	// ("默认中文" loses to N copies of "[idoubicc]:" surrounding it).
-	// Web has always been bare; this brings IM DMs in line.
-	// Group fan-out still needs in-content tags so the model can tell
-	// speakers apart across turns — routing.go pre-prefixes group
-	// messages before queueing, so msg.Text already carries `[A]: …`
-	// when PeerKind=="group". We pass it through unchanged.
+	// 网络一直都是裸露的；这使得 IM DM 变得一致。
+	// 组扇出仍然需要内容标签，以便模型可以判断
+	// 扬声器在转弯处分开 —routing.go 前缀组
+	// 消息在排队之前，所以 msg.Text 已经携带了 `[A]: …`
+	// 当 PeerKind==“组”时。我们不变地通过它。
 	userText := msg.Text
 	userMsg := provider.Message{
 		Role:     "user",
@@ -867,9 +867,9 @@ func buildUserMessage(msg bus.InboundMessage) provider.Message {
 		return userMsg
 	}
 	userMsg.Content = ""
-	// Skip an empty leading text part — image-only sends used to produce
-	// `[{text: ""}, {image_url}, …]` which some upstreams reject as a
-	// content-less wire message.
+	// 跳过空的前导文本部分 - 仅发送图像用于生成
+	// `[{text: ""}, {image_url}, …]` 一些上游拒绝作为
+	// 无内容的有线消息。
 	var parts []provider.ContentPart
 	if userText != "" {
 		parts = append(parts, provider.ContentPart{Type: "text", Text: userText})
@@ -883,48 +883,48 @@ func buildUserMessage(msg bus.InboundMessage) provider.Message {
 	return userMsg
 }
 
-// RegisterWebSearchChain exposes the web_search tool to this agent using a
-// provider chain (primary + fallbacks). Pass nil to skip — the tool won't
-// appear in the agent's tool list, so the model can't try to call it.
+// RegisterWebSearchChain 使用以下方法向该代理公开 web_search 工具：
+// 提供商链（主要+后备）。传递 nil 来跳过 — 该工具不会
+// 出现在代理的工具列表中，因此模型无法尝试调用它。
 func (a *Agent) RegisterWebSearchChain(chain *toolproviders.Chain) {
 	tools.RegisterWebSearchChain(a.registry, chain)
 }
 
-// RegisterImageGenChain exposes the image_gen tool to this agent.
+// RegisterImageGenChain 向该代理公开 image_gen 工具。
 func (a *Agent) RegisterImageGenChain(chain *toolproviders.Chain) {
 	tools.RegisterImageGenChain(a.registry, chain)
 }
 
-// RegisterWebFetchChain swaps the agent's web_fetch backend for a
-// provider chain (e.g. direct → jina → firecrawl). Pass nil to keep the
-// legacy direct-only fetcher already wired during agent construction.
+// RegisterWebFetchChain 将代理的 web_fetch 后端替换为
+// 供应商链（例如直接 → jina → firecrawl）。传递 nil 来保留
+// 遗留的仅直接获取器已经在代理构建期间连接。
 func (a *Agent) RegisterWebFetchChain(chain *toolproviders.Chain) {
 	tools.RegisterWebFetchChain(a.registry, chain)
 }
 
-// RegisterTTSChain exposes the tts tool to this agent.
+// RegisterTTSChain 向该代理公开 tts 工具。
 func (a *Agent) RegisterTTSChain(chain *toolproviders.Chain) {
 	tools.RegisterTTSChain(a.registry, chain)
 }
 
-// Sessions returns the session manager for this agent.
+// Sessions 返回该代理的会话管理器。
 func (a *Agent) Sessions() *session.Manager {
 	return a.sessions
 }
 
-// WebChatHistory returns chat history for a specific session — the
-// name is historical; it now serves any channel because the dashboard
-// surfaces all-channel chats in the sidebar.
+// WebChatHistory 返回特定会话的聊天历史记录 -
+// 名称具有历史意义；它现在服务于任何频道，因为仪表板
+// 在侧边栏中显示全频道聊天。
 //
-// Reads from the append-only session_messages archive (via
-// Session.ArchivedMessages) instead of the in-memory working set, so
-// post-compaction sessions show the original conversation rather than a
-// summary + last 20 turns. Falls back to the working set when no
-// archive is available (file-backed mode or pre-archive sessions).
+// 从仅附加的 session_messages 存档中读取（通过
+// Session.ArchivedMessages）而不是内存中的工作集，所以
+// 压缩后会话显示原始对话而不是
+// 总结+最后20回合。当没有时返回到工作集
+// 存档可用（文件支持模式或预存档会话）。
 //
-// sessionId may be either a canonical session_key (what
-// ListWebSessions returns) or a legacy web chat_id from older URLs;
-// ResolveSessionKey untangles them.
+// sessionId 可以是规范的 session_key （什么
+// ListWebSessions 返回）或来自旧 URL 的旧版网络 chat_id；
+// ResolveSessionKey 可以解开它们。
 func (a *Agent) WebChatHistory(sessionId string) []map[string]any {
 	if sessionId == "" {
 		sessionId = "web-ui"
@@ -934,23 +934,23 @@ func (a *Agent) WebChatHistory(sessionId string) []map[string]any {
 	msgs := sess.ArchivedMessages()
 	var history []map[string]any
 	for _, m := range msgs {
-		// Hide runtime-injected messages (currently only goal_context
-		// continuations). They live in the session for the LLM's
-		// benefit; surfacing them to the user would expose audit
-		// scaffolding the user never typed. Matches Codex's slash-only
-		// /goal UX — the audit prompt is internal-only.
+		// 隐藏运行时注入的消息（当前仅 goal_context
+		// 继续）。他们住在法学硕士课程中
+		// 益处;将它们呈现给用户会暴露审计
+		// 用户从未输入过的脚手架。匹配 Codex 的仅斜杠
+		// /goal UX — 审核提示仅供内部使用。
 		if m.Origin != provider.OriginUser {
 			continue
 		}
 		switch m.Role {
 		case "user":
-			// Multimodal user turns store text inside ContentParts and
-			// leave Content empty (see HandleMessageStream's image
-			// attachment path). Surface both shapes here:
-			//   - text (Content fallback to joined text parts)
-			//   - imageUrls (image_url parts) so the chat UI can render
-			//     image thumbnails on bubbles loaded from history, not
-			//     just on the live in-flight bubble.
+			// 多模式用户将文本存储在 ContentParts 中，并且
+			// 将内容留空（参见 HandleMessageStream 的图像
+			// 附件路径）。在这里对两种形状进行表面处理：
+			// - 文本（内容回退到连接的文本部分）
+			// - imageUrls（image_url 部分），以便聊天 UI 可以呈现
+			// 从历史加载的气泡上的图像缩略图，而不是
+			// 就在飞行中的实时气泡中。
 			text := m.TextContent()
 			var imageURLs []string
 			for _, p := range m.ContentParts {
@@ -958,13 +958,13 @@ func (a *Agent) WebChatHistory(sessionId string) []map[string]any {
 					imageURLs = append(imageURLs, p.ImageURL.URL)
 				}
 			}
-			// IM-routed turns store an "\[idoubi\]: hello" prefix on
-			// Content so the LLM can attribute the line in group chats
-			// when the system prompt rolls off. The web panel renders
-			// the nickname separately from `senderName` metadata, so
-			// strip the prefix from `text` here to keep the bubble body
-			// clean. Cover both the escaped (post-fix) and unescaped
-			// (legacy session rows) shapes.
+			// IM 路由轮流存储“\[idoubi\]: hello”前缀
+			// 内容，以便法学硕士可以在群聊中归属该线路
+			// 当系统提示音消失时。 Web 面板呈现
+			// 昵称与“senderName”元数据分开，所以
+			// 在这里去掉“text”的前缀以保留气泡体
+			// 干净的。覆盖转义（后修复）和未转义
+			// （旧会话行）形状。
 			senderName, _ := m.Metadata["senderName"].(string)
 			if senderName != "" {
 				text = stripSenderPrefix(text, senderName)
@@ -1005,13 +1005,13 @@ func (a *Agent) WebChatHistory(sessionId string) []map[string]any {
 				}
 				entry["toolCalls"] = calls
 			}
-			// Surface persisted assistant-side metadata so the UI can
-			// re-render iteration-cap badges, etc. on history reload —
-			// without this, the badge only ever showed on the live turn.
+			// Surface 保留助手端元数据，以便 UI 可以
+			// 在历史记录重新加载时重新渲染迭代上限徽章等 —
+			// 如果没有这个，徽章只会在实时回合中显示。
 			if len(m.Metadata) > 0 {
 				entry["metadata"] = m.Metadata
 			}
-			// Skip empty assistant messages (no content, no tool calls)
+			// 跳过空的助手消息（没有内容，没有工具调用）
 			if m.Content == "" && len(m.ToolCalls) == 0 {
 				continue
 			}
@@ -1032,45 +1032,45 @@ func (a *Agent) WebChatHistory(sessionId string) []map[string]any {
 	return history
 }
 
-// WebChatSessions returns a list of web chat sessions with metadata.
+// WebChatSessions 返回带有元数据的网络聊天会话列表。
 func (a *Agent) WebChatSessions() []session.WebSession {
 	return a.sessions.ListWebSessions()
 }
 
-// DeleteWebChatSession removes a chat session (any channel) by the URL
-// token — accepts either session_key or legacy web chat_id.
+// DeleteWebChatSession 通过 URL 删除聊天会话（任何频道）
+// token — 接受 session_key 或旧版网络 chat_id。
 func (a *Agent) DeleteWebChatSession(sessionId string) error {
 	return a.sessions.DeleteSessionByID(sessionId)
 }
 
-// RenameWebChatSession sets a custom title for a chat session (any
-// channel) by the URL token.
+// RenameWebChatSession 为聊天会话设置自定义标题（任何
+// 频道）通过 URL 令牌。
 func (a *Agent) RenameWebChatSession(sessionId, title string) error {
 	return a.sessions.RenameSessionByID(sessionId, title)
 }
 
-// MoveWebChatSession reassigns a chat to a different project (or
-// detaches it when projectID is "") and migrates its workspace files
-// from the old scope to the new one. Drives the sidebar drag-and-drop
-// affordance.
+// MoveWebChatSession 将聊天重新分配给不同的项目（或
+// 当projectID为“”时将其分离）并迁移其工作区文件
+// 从旧范围到新范围。驱动侧边栏拖放
+// 可供性。
 //
-// Order matters:
-//  1. Resolve the URL token to the canonical session_key.
-//  2. Read the current project_id so we know the source workspace
-//     scope (loose chat = sessions/<sid>/, project chat =
-//     projects/<oldPid>/<sid>/).
-//  3. Release any live sandbox bound to this chat — leaving it up
-//     would keep the old bind-mount referenced and the new mount
-//     wouldn't take effect until eviction. Released proactively so
-//     the next turn cold-starts at the new path.
-//  4. Move workspace files (no-op when the source dir is empty).
-//  5. Flip sessions.project_id in the store and drop the in-memory
-//     Session cache so the next Get re-reads the row.
+// 订单事宜：
+// 1. 将 URL 令牌解析为规范的 session_key。
+// 2. 读取当前的project_id，以便我们知道源工作空间
+// 范围（松散聊天 = 会话/<sid>/，项目聊天 =
+// 项目/<oldPid>/<sid>/)。
+// 3. 释放与此聊天绑定的任何实时沙箱 - 保留它
+// 将保留引用的旧绑定安装和新安装
+// 直到被驱逐后才生效。主动发布所以
+// 下一回合在新路径上冷启动。
+// 4. 移动工作区文件（当源目录为空时无操作）。
+// 5.翻转store中的sessions.project_id并删除内存中
+// 会话缓存，以便下一个 Get 重新读取该行。
 //
-// Steps 4 and 5 are not atomic: a crash between them leaves the row
-// pointing at the new project but files at the old path (or vice
-// versa). The pending follow-up move is idempotent — re-running this
-// method finishes the migration cleanly.
+// 步骤 4 和 5 不是原子的：它们之间的崩溃会留下该行
+// 指向新项目，但文件位于旧路径（或副路径）
+// 反之亦然）。待处理的后续操作是幂等的 - 重新运行此操作
+// 方法干净地完成迁移。
 func (a *Agent) MoveWebChatSession(ctx context.Context, sessionId, projectID string) error {
 	key := a.sessions.ResolveSessionKey(sessionId)
 	if key == "" {
@@ -1094,25 +1094,25 @@ func (a *Agent) MoveWebChatSession(ctx context.Context, sessionId, projectID str
 	return a.sessions.MoveSessionByID(sessionId, projectID)
 }
 
-// Model returns the agent's model name.
+// Model 返回代理的型号名称。
 func (a *Agent) Model() string {
 	return a.model
 }
 
-// CostTracker returns the agent's cost tracker for usage/billing queries.
+// CostTracker 返回代理的成本跟踪器以进行使用/计费查询。
 func (a *Agent) CostTracker() *costtracker.Tracker {
 	return a.costTracker
 }
 
-// dumpLLMRequest appends the full LLM-bound payload to a dedicated file
-// when BKCLAW_DUMP_LLM is set. Default path is ~/.bkclaw/logs/llm-dump.log
-// (overridable via BKCLAW_DUMP_LLM_FILE) — separate from gateway.log so
-// the multi-thousand-line system prompt doesn't drown structured slog
-// entries, and tail-able regardless of whether the gateway runs under air,
-// daemon, or as a foreground process.
+// dumpLLMRequest 将完整的 LLM 绑定负载附加到专用文件
+// 当设置 BKCLAW_DUMP_LLM 时。默认路径是~/.bkclaw/logs/llm-dump.log
+// (可通过 BKCLAW_DUMP_LLM_FILE 覆盖) — 与 gateway.log 分开，因此
+// 数千行的系统提示并没有淹没结构化的日志
+// 条目，并且无论网关是否在空中运行，都可尾部，
+// 守护进程，或作为前台进程。
 //
-// Multi-line content is written as one block per turn (not per-line slog
-// calls) so timestamps don't shred the system prompt.
+// 多行内容被写入为每回合一个块（而不是每行slog
+// 调用），因此时间戳不会破坏系统提示。
 func dumpLLMRequest(agentName, model string, messages []provider.Message, tools []provider.Tool) {
 	if os.Getenv("BKCLAW_DUMP_LLM") == "" {
 		return
@@ -1137,8 +1137,8 @@ func dumpLLMRequest(agentName, model string, messages []provider.Message, tools 
 		time.Now().Format(time.RFC3339Nano), agentName, model, len(messages), len(tools))
 	for i, m := range messages {
 		fmt.Fprintf(&b, "--- msg[%d] role=%s ---\n", i, m.Role)
-		// Prefer Content; fall back to ContentParts for multimodal turns
-		// (image_url stubs keep logs readable instead of dumping data URLs).
+		// 偏好内容；回退到 ContentParts 进行多模式转向
+		// （image_url 存根保持日志可读，而不是转储数据 URL）。
 		content := m.Content
 		if content == "" && len(m.ContentParts) > 0 {
 			var pb strings.Builder
@@ -1176,7 +1176,7 @@ func dumpLLMRequest(agentName, model string, messages []provider.Message, tools 
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		// Fall back to stderr so the dump isn't silently lost.
+		// 回退到 stderr，这样转储就不会默默丢失。
 		fmt.Fprint(os.Stderr, b.String())
 		return
 	}
@@ -1184,8 +1184,8 @@ func dumpLLMRequest(agentName, model string, messages []provider.Message, tools 
 	_, _ = f.WriteString(b.String())
 }
 
-// filepathDir is a tiny inline helper to dodge importing path/filepath
-// just for one Dir() call in this single function.
+// filepathDir 是一个微小的内联帮助器，用于避免导入路径/文件路径
+// 仅针对此单个函数中的一次 Dir() 调用。
 func filepathDir(p string) string {
 	for i := len(p) - 1; i >= 0; i-- {
 		if p[i] == '/' {
@@ -1195,25 +1195,25 @@ func filepathDir(p string) string {
 	return "."
 }
 
-// renderClientParams turns the per-request `params` blob the API
-// caller submitted into a system message that nudges the LLM to
-// honor those values when calling tools. Returns "" when params is
-// empty so we don't add a noise message every turn.
+// renderClientParams 将每个请求的“params” blob 转换为 API
+// 呼叫者提交了一条系统消息，推动法学硕士
+// 调用工具时尊重这些值。当参数为时返回“”
+// 空，这样我们就不会每次都添加噪音消息。
 //
-// Why a system message and not a binding into tool args:
+// 为什么是系统消息而不是绑定到工具参数：
 //
-//	v1 trades determinism for simplicity. Apps don't know which
-//	tools the agent has — they just send a flat key/value blob, and
-//	the agent owner's system prompt tells the LLM what to do with
-//	each known key. LLMs are reliable at copying JSON-shaped values
-//	verbatim into tool calls (the failure mode is "ignored", not
-//	"corrupted"); a stronger forcing layer is a v2 problem.
+// v1 牺牲了确定性以换取简单性。应用程序不知道是哪个
+// 代理拥有的工具 - 他们只发送一个平面键/值 blob，并且
+// 代理所有者的系统提示告诉法学硕士该怎么做
+// 每个已知的密钥。 LLM 在复制 JSON 形状的值方面是可靠的
+// 逐字进入工具调用（故障模式是“忽略”，而不是
+// “损坏”）；更强的强迫层是 v2 问题。
 //
-// Output shape: a `## Client Parameters` section with the JSON
-// pretty-printed in a fenced block, plus a one-liner reminding the
-// model these are constraints. The header + fence are deliberate —
-// LLMs honor structured params framed as a separate document
-// section much more reliably than as inline prose.
+// 输出形状：带有 JSON 的“## ClientParameters”部分
+// 漂亮的印刷在一个围栏块上，加上一行提醒
+// 模型这些都是约束。标头+栅栏是故意的——
+// 法学硕士尊重作为单独文档构建的结构化参数
+// 部分比行内散文更可靠。
 func renderClientParams(params map[string]any) string {
 	if len(params) == 0 {
 		return ""
@@ -1222,28 +1222,28 @@ func renderClientParams(params map[string]any) string {
 	if err != nil {
 		return ""
 	}
-	// Minimal by design — one fact, no behavioural prose. Earlier
-	// versions tried to nudge the model with "treat as constraints" /
-	// "don't shell out" / "look at the skills section" and each one
-	// opened a new literal-misread surface (the model treated `model`
-	// as a directive to call that API, refused outright "no skill
-	// matches", or did `ls Skills/` looking for a directory). How to
-	// pick a tool / skill is the agent's regular job, fully covered
-	// by the system prompt's skills section and any per-agent SOUL.md.
-	// The only thing the system has to say here is "here is the data
-	// the client sent" — anything more is noise.
+	// 设计极简——事实是，没有行为散文。早些时候
+	// 版本试图通过“视为约束”来推动模型/
+	// “不要掏钱”/“查看技能部分”以及每一项
+	// 打开了一个新的字面误读表面（模型处理了“model”
+	// 作为调用该 API 的指令，完全拒绝“没有技能”
+	// 匹配”，或者执行 `ls Skills/` 查找目录）。如何
+	// 选择工具/技能是代理的常规工作，全面覆盖
+	// 通过系统提示的技能部分和任何每个代理 SOUL.md。
+	// 系统在这里唯一要说的是“这是数据
+	// 客户发送的”——更多的都是噪音。
 	return "## Client Parameters\n\n" +
 		"The user's client app submitted these parameters alongside " +
 		"the message. Forward them to whichever tool / skill you call.\n\n" +
 		"```json\n" + string(blob) + "\n```"
 }
 
-// stripSenderPrefix removes the leading "\[name\]: " (or unescaped
-// "[name]: ") attribution wrapper that the agent loop injects on
-// IM-routed user turns. Used by the web history rendering so the
-// nickname can be surfaced via dedicated metadata and the bubble body
-// no longer double-shows "[idoubi]: hello" alongside an avatar header.
-// Returns the original string when no prefix matches.
+// stripSenderPrefix 删除前导“\[name\]:”（或未转义的
+// "[name]: ") 代理循环注入的归因包装器
+// IM 路由的用户轮流。由网络历史渲染使用，因此
+// 昵称可以通过专用元数据和气泡体显示
+// 不再在头像标题旁边双重显示“[idoubi]：你好”。
+// 当没有前缀匹配时返回原始字符串。
 func stripSenderPrefix(text, senderName string) string {
 	if senderName == "" {
 		return text
@@ -1259,18 +1259,18 @@ func stripSenderPrefix(text, senderName string) string {
 	return text
 }
 
-// senderMetadata extracts UI-only sender identity off an inbound IM
-// message (Discord/Telegram/Slack/...) and returns a metadata map ready
-// to attach to the persisted user-role Message. The web chat panel
-// reads these fields back via WebChatHistory to render an avatar +
-// nickname header on each bubble. Returns nil for web chats and any
-// other caller that doesn't populate SenderName so we don't bloat
-// session_messages rows with empty maps.
+// senderMetadata 从入站 IM 中提取仅限 UI 的发件人身份
+// 消息（Discord/Telegram/Slack/...）并返回准备好的元数据映射
+// 附加到持久的用户角色消息。网络聊天面板
+// 通过 WebChatHistory 读回这些字段以渲染头像 +
+// 每个气泡上的昵称标题。对于网络聊天和任何其他内容返回 nil
+// 其他调用者不会填充 SenderName，这样我们就不会膨胀
+// 具有空映射的 session_messages 行。
 //
-// The map is deliberately not Marshal()-strict — provider serializers
-// ignore Message.Metadata, so anything we put here stays out of the
-// LLM payload. The nickname is still funneled to the LLM via the
-// `\[nickname\]: ` prefix on Message.Content (set by callers).
+// 该映射故意不严格 Marshal() — 提供者序列化器
+// 忽略 Message.Metadata，因此我们放在这里的任何内容都不在
+// LLM 有效负载。该昵称仍然通过以下方式传递给法学硕士：
+// `\[nickname\]: ` Message.Content 上的前缀（由调用者设置）。
 func senderMetadata(msg bus.InboundMessage) map[string]any {
 	if msg.SenderName == "" {
 		return nil
@@ -1288,32 +1288,32 @@ func senderMetadata(msg bus.InboundMessage) map[string]any {
 	return md
 }
 
-// logSystemPromptFingerprint emits one structured line per turn that
-// proves what the LLM was *actually* told about skills. The refresh
-// log up the call stack only proves the loader produced N skills; this
-// confirms they survived the BuildSystemPromptAs assembly into the
-// system message we're about to ship. Used to chase the "group chat
-// doesn't see skills" report — diff this line between a DM turn and a
-// group turn for the same agent and the divergence point becomes
-// obvious.
+// logSystemPromptFingerprint 每回合发出一条结构化行，
+// 证明了法学硕士“实际上”被告知的有关技能的内容。刷新
+// 记录调用栈只能证明loader产生了N个技能；这
+// 确认它们在 BuildSystemPromptAs 程序集中幸存下来
+// 我们即将发货的系统消息。用来追“群聊”
+// 没有看到技能”报告 — 区分 DM 回合和 A 回合之间的这条线
+// 同一智能体的群体轮流，分歧点变为
+// 明显的。
 func (a *Agent) logSystemPromptFingerprint(channel, chatID, userID, prompt string) {
 	skillCount := strings.Count(prompt, "<skill name=")
 	hasFeishu := strings.Contains(prompt, "feedback-to-feishu")
-	// Per-chatter file presence — sized so we can tell at a glance
-	// whether the chatter's USER.md / MEMORY.md actually reached the
-	// model this turn. Zero on either means the section was omitted
-	// (no row, empty content, or chatterUID didn't resolve). Match
-	// against the canonical section header text used in context.go;
-	// keep this in sync with that file or the diagnostic goes dark.
+	// 每个聊天文件的存在 - 大小使我们一眼就能看出
+	// 聊天者的 USER.md / MEMORY.md 是否实际到达
+	// 本轮建模。任一为零都表示该部分被省略
+	// （没有行、空内容或chatterUID 未解析）。匹配
+	// 与 context.go 中使用的规范部分标题文本相对应；
+	// 使其与该文件保持同步，否则诊断将消失。
 	hasUserMD := strings.Contains(prompt, "<current_chatter_profile")
 	hasMemorySection := strings.Contains(prompt, "<chatter_long_term_memory")
 	hasSoul := strings.Contains(prompt, "# SOUL.md")
 	hasIdentity := strings.Contains(prompt, "# IDENTITY.md")
-	// "Remembering things across conversations" is the chatbot-mode
-	// instruction block telling the LLM it CAN persist via write_file.
-	// If chatbot mode is misconfigured / not applied, this string
-	// won't be in the prompt and the model defaults to "I have no
-	// memory" reflexive replies.
+	// “通过对话记住事情”是聊天机器人模式
+	// 指令块告诉 LLM 它可以通过 write_file 保留。
+	// 如果聊天机器人模式配置错误/未应用，此字符串
+	// 不会出现在提示中，并且模型默认为“我没有
+	// 记忆”反射性的回答。
 	hasPersistenceInstr := strings.Contains(prompt, "Remembering things across conversations")
 	mode := a.promptMode
 	if mode == "" {
@@ -1332,43 +1332,43 @@ func (a *Agent) logSystemPromptFingerprint(channel, chatID, userID, prompt strin
 		"has_feedback_to_feishu", hasFeishu)
 }
 
-// renderChatbotPersistenceReminder returns a terse imperative system
-// message reminding the LLM that in chatbot mode it has write_file /
-// edit_file available and MUST use them to persist chatter info.
+// renderChatbotPersistenceReminder 返回一个简洁的命令式系统
+// 消息提醒法学硕士在聊天机器人模式下它有 write_file /
+// edit_file 可用，并且必须使用它们来保存聊天信息。
 //
-// Why a per-turn reminder rather than relying on the big "Remembering
-// things across conversations" block in the chatbotInfo prompt:
-// Sonnet 4.x in chatbot mode (no other tools, simple persona) reverts
-// to a strong training prior of "I am an AI without persistent
-// memory" — observed lying to chatters with phrasings like
+// 为什么要进行每回合提醒而不是依靠“记住”
+// chatbotInfo 提示中的“跨对话的事物”块：
+// 聊天机器人模式下的 Sonnet 4.x（没有其他工具，简单的角色）恢复
+// 在“我是一个没有持久力的人工智能”之前接受过严格的训练
+// 记忆”——观察到用诸如此类的措辞对聊天者撒谎
 // "跨对话我没有记忆" even when the system prompt explicitly grants
-// the capability. Putting a short, imperative reminder right before
-// the user turn buys recency weight that outranks the training
-// prior in practice.
+// 的能力。在之前放置一个简短的、必要的提醒
+// 用户轮流购买比训练排名更高的新近度权重
+// 实践中先行。
 //
-// userMD / memoryMD are the CURRENT contents of those files (the same
-// data that's already in the system prompt under <current_chatter_profile>
-// / <chatter_long_term_memory>). We inline them again here for two
-// reasons: 1) recency weight — they're now the very last system message
-// before the user turn, so the model can't miss them; 2) Sonnet was
-// observed reading the earlier system-prompt copies as schema docs
-// rather than chatter facts and denying knowledge in fresh sessions
+// userMD / memoryMD 是这些文件的当前内容（相同
+// <current_chatter_profile> 下系统提示中已有的数据
+// / <chatter_long_term_memory>）。我们在这里再次将它们内联为两个
+// 原因：1）新近权重——它们现在是最后一条系统消息
+// 在用户转身之前，模型不会错过他们； 2）十四行诗是
+// 观察到将早期的系统提示副本作为模式文档读取
+// 而不是在新的会议中喋喋不休地谈论事实并否认知识
 // even with "Name: 狗子" present. Double-rendering is wasted tokens
-// but observably wins.
+// 但明显获胜。
 //
-// Empty for non-chatbot modes (no tool surface mismatch there).
+// 对于非聊天机器人模式为空（没有工具表面不匹配）。
 func renderChatbotPersistenceReminder(mode, displayName, userMD, memoryMD string) string {
 	if mode != config.PromptModeChatbot {
 		return ""
 	}
 	var sb strings.Builder
 
-	// Identity reinforcement. Sonnet 4.x ignores "Your name is X" lines
-	// in the middle of the system prompt and reverts to "I am Claude"
+	// 身份强化。 Sonnet 4.x 忽略“你的名字是 X”行
+	// 在系统提示中间并恢复为“我是克劳德”
 	// for "你是谁" / "who are you" questions. Putting the identity in
-	// the per-turn reminder (last system message before the user turn)
-	// + framing it as a violation-warning seems to be what's required
-	// to override the training prior in practice.
+	// 每次转弯提醒（用户转弯前的最后一条系统消息）
+	// + 将其框架为违规警告似乎是所需要的
+	// 在实践中推翻之前的培训。
 	if displayName != "" {
 		sb.WriteString("## Your identity (per-turn anchor)\n\n")
 		sb.WriteString(fmt.Sprintf("In this runtime you ARE **%s**. When a chatter asks \"你是谁\" / \"who are you\", introduce yourself as **%s** — never \"Claude\" or \"AI 助手\" / \"AI assistant\". Saying \"我是 Claude\" / \"I am Claude\" is a role violation; do not do it. IDENTITY.md / SOUL.md below may add personality / role detail on top of this name, but the name itself is %s.\n\n", displayName, displayName, displayName))
@@ -1404,29 +1404,29 @@ func renderChatbotPersistenceReminder(mode, displayName, userMD, memoryMD string
 	return sb.String()
 }
 
-// renderChannelHints emits per-turn protocol notes that the LLM can
-// only honor if it knows about them. Today there's exactly one: IM
-// channels with a single-message-per-bubble UI accept the
-// channels.SplitMessageMarker token as "split this reply into multiple
-// bubbles." The marker constant is colocated with the splitter in
-// internal/channels/base.go so changing the wire token only touches
-// one place; the actual split happens in the channels manager's
-// dispatcher, uniformly across all IM adapters.
+// renderChannelHints 发出每回合协议注释，LLM 可以
+// 只有了解它们才感到荣幸。今天只有一个：IM
+// 具有每个气泡一条消息的 UI 的通道接受
+// Channels.SplitMessageMarker 标记为“将此回复拆分为多个
+// 气泡。”标记常数与分离器位于同一位置
+// Internal/channels/base.go 因此更改有线令牌只会触及
+// 一处；实际的分割发生在渠道经理的手中
+// 调度程序，跨所有 IM 适配器统一。
 //
-// `splitEnabled` is the per-agent toggle. When false (the default) we
-// skip the hint so the LLM never learns the marker — and the dispatcher
-// collapses any stray marker back to a newline. The two branches must
-// stay in lockstep.
+// `splitEnabled` 是每个代理的切换。当 false （默认）时，我们
+// 跳过提示，这样 LLM 就永远不会学习标记和调度员
+// 将任何杂散标记折叠回换行符。两个分支必须
+// 保持步调一致。
 //
-// Returns "" for non-IM channels (web, api) so they don't waste tokens
-// on a hint the chatter wouldn't perceive — web renders one bubble per
-// chat-message anyway.
+// 对于非 IM 渠道（Web、API）返回“”，这样它们就不会浪费令牌
+// 聊天者无法察觉的暗示——网络每渲染一个气泡
+// 无论如何，聊天消息。
 func renderChannelHints(msg bus.InboundMessage, splitEnabled bool) string {
 	if !splitEnabled || !isIMChannel(msg.Channel) {
 		return ""
 	}
-	// Sample alone is enough — the LLM picks up the protocol from one
-	// well-formed example without us listing every rule.
+	// 仅样本就足够了——法学硕士从一个样本中获取协议
+	// 格式良好的示例，无需我们列出每条规则。
 	return "## Reply Format\n\n" +
 		"This channel renders one chat bubble per message. To split your " +
 		"reply into separate bubbles, write `" + channels.SplitMessageMarker +
@@ -1438,10 +1438,10 @@ func renderChannelHints(msg bus.InboundMessage, splitEnabled bool) string {
 		"For a single coherent answer, just reply normally — no marker needed."
 }
 
-// isIMChannel returns true for channels with single-message-per-bubble
-// UX where splitting one logical reply into multiple sequential
-// messages reads naturally. Web/API channels render long replies in
-// place — splitting there adds nothing.
+// isIMChannel 对于每个气泡只有一条消息的通道返回 true
+// UX 将一个逻辑回复拆分为多个顺序回复
+// 消息自然读取。 Web/API 通道呈现长回复
+// 地方——在那里分裂不会增加任何东西。
 func isIMChannel(channel string) bool {
 	switch channel {
 	case "wechat", "telegram", "discord", "slack", "line", "feishu":
@@ -1450,20 +1450,20 @@ func isIMChannel(channel string) bool {
 	return false
 }
 
-// renderSender emits a per-turn system block naming who the message
-// came from on the originating IM channel. Used for GROUP messages so
-// the LLM can attribute each turn to the right speaker.
+// renderSender 每回合发出一个系统块，命名消息的发送者
+// 来自原始 IM 频道。用于 GROUP 消息，因此
+// 法学硕士可以将每个回合归因于正确的发言者。
 //
-// Skipped for DMs: there's only one chatter per DM, their identity is
-// stable across the session and already captured in USER.md /
-// per-chatter MEMORY. Repeating it as a per-turn English system block
+// 跳过 DM：每个 DM 仅有一次聊天，他们的身份是
+// 在整个会话中稳定并已在 USER.md / 中捕获
+// 每个聊天的记忆。将其作为每回合英语系统块重复
 // just adds language bias (SOUL.md's "默认中文" loses to N copies of
-// "The latest user turn was sent by:…" surrounding it) without telling
-// the LLM anything new. Web chats also don't get this block, so DM
-// behavior now matches web.
+// “最新的用户回合是由……”发送的）而不告诉
+// 法学硕士有什么新的东西。网络聊天也不会受到此限制，因此 DM
+// 行为现在与网络匹配。
 //
-// Returns "" for web chats and any other caller that doesn't populate
-// SenderName, so we don't waste tokens.
+// 对于网络聊天和任何其他未填充的呼叫者返回“”
+// SenderName，这样我们就不会浪费令牌。
 func renderSender(msg bus.InboundMessage) string {
 	if msg.SenderName == "" {
 		return ""
@@ -1484,10 +1484,10 @@ func renderSender(msg bus.InboundMessage) string {
 	return b.String()
 }
 
-// isPlanMode reports whether the inbound message asked for plan-only
-// output (no tool calls, just a numbered plan the user reviews before
-// authorizing real work). Truthy values: bool true, string "true"/"1",
-// any non-zero number. The frontend posts `params: {planMode: true}`.
+// isPlanMode 报告入站消息是否要求仅计划
+// 输出（没有工具调用，只是用户之前查看的编号计划
+// 授权实际工作）。真值：bool true，字符串“true”/“1”，
+// 任何非零数字。前端发布 `params: {planMode: true}`。
 func isPlanMode(params map[string]any) bool {
 	v, ok := params["planMode"]
 	if !ok {
@@ -1506,17 +1506,17 @@ func isPlanMode(params map[string]any) bool {
 	return false
 }
 
-// planModeNudge is the system message we prepend on plan-mode turns.
-// Spells out the contract: tools are server-side disabled THIS turn so
-// don't attempt them; they WILL be available on the next turn when the
-// user says "go" — so reference tool names by name in the plan when a
-// step needs one. Earlier drafts only said "tools are disabled" without
-// the "but they exist for execution" half, and the model dutifully
-// wrote plans that didn't reference any tools (including delegate_task,
-// which is exactly the tool we wrote to make these plans work). The
-// model also gets a tool catalog injected as a separate system message
-// so it has the full surface to reference, not just whatever it
-// remembers from the global system prompt.
+// planModeNudge 是我们在计划模式轮流之前添加的系统消息。
+// 阐明合同：工具在服务器端被禁用，这就是这样
+// 不要尝试它们；他们将在下一个回合可用
+// 用户说“开始”——因此，当
+// 步骤需要一个。早期的草案只说“工具被禁用”，而没有
+// “但它们存在是为了执行”一半，模型尽职尽责
+// 编写没有引用任何工具的计划（包括 delegate_task，
+// 这正是我们为使这些计划发挥作用而编写的工具）。这
+// 模型还获得一个作为单独的系统消息注入的工具目录
+// 所以它有完整的表面可供参考，而不仅仅是它的任何东西
+// 从全局系统提示中记住。
 func planModeNudge() string {
 	return "# PLAN MODE — output a plan only\n\n" +
 		"The user has switched on plan mode for this message. They want " +
@@ -1551,18 +1551,18 @@ func planModeNudge() string {
 		"Just the plan."
 }
 
-// buildToolCatalogForPlan builds a compact "what tools are available
-// for the execution turn" reference, injected as its own system message
-// during plan mode. We pass tools=nil to the LLM in plan mode so the
-// model can't accidentally call any — but that also means the model
-// can't *see* the tool registry at all, which empirically caused it to
-// write plans that omitted delegate_task entirely (it didn't know the
-// tool existed). The catalog brings that knowledge back as plain text
-// without surfacing a callable schema.
+// buildToolCatalogForPlan 构建了一个紧凑的“有哪些工具可用
+// 对于执行回合”参考，作为其自己的系统消息注入
+// 在计划模式下。我们在计划模式下将 tools=nil 传递给 LLM，因此
+// 模型不能意外调用任何 - 但这也意味着模型
+// 根本无法*查看*工具注册表，这根据经验导致它
+// 编写完全省略 delegate_task 的计划（它不知道
+// 工具已存在）。该目录将这些知识以纯文本形式带回来
+// 无需呈现可调用模式。
 //
-// Format: name + first-sentence summary, one per line. Truncate long
-// descriptions hard — the model only needs enough to decide whether
-// the tool fits a plan step, not enough to construct the call.
+// 格式：姓名+第一句摘要，每行一个。截长
+// 描述困难——模型只需要足够的信息来决定是否
+// 该工具适合计划步骤，不足以构建调用。
 func buildToolCatalogForPlan(toolDefs []provider.Tool) string {
 	if len(toolDefs) == 0 {
 		return ""
@@ -1573,9 +1573,9 @@ func buildToolCatalogForPlan(toolDefs []provider.Tool) string {
 	for _, t := range toolDefs {
 		name := t.Function.Name
 		desc := strings.TrimSpace(t.Function.Description)
-		// First sentence only — keep the catalog scannable. Fall back to
-		// the first 160 chars if no period is found (some tool descs are
-		// run-on paragraphs).
+		// 仅第一句话——保持目录可扫描。回落至
+		// 如果未找到句点，则前 160 个字符（某些工具说明是
+		// 连续段落）。
 		if idx := strings.IndexAny(desc, ".\n"); idx > 0 && idx < 200 {
 			desc = strings.TrimSpace(desc[:idx])
 		} else if len(desc) > 200 {
@@ -1586,34 +1586,34 @@ func buildToolCatalogForPlan(toolDefs []provider.Tool) string {
 	return b.String()
 }
 
-// handlePlanMode is the single-shot plan-only path: store the user
-// message, ask the model for a plan with tools disabled, persist + emit
-// the response with planMode metadata so the UI can badge the bubble.
-// No iteration loop, no cap, no tool execution. On the next turn (sent
-// without the planMode flag) the regular HandleMessage path executes
-// against the full session including this plan.
+// handlePlanMode 是单次计划路径：存储用户
+// 消息，向模型询问禁用工具的计划，坚持+发出
+// 带有 planMode 元数据的响应，以便 UI 可以标记气泡。
+// 无迭代循环、无上限、无工具执行。在下一个回合（发送
+// 没有 planMode 标志）常规 HandleMessage 路径执行
+// 反对包括该计划在内的全体会议。
 func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) string {
 	chatterUID := a.chatterUserID(msg)
 	ctx = sandbox.WithUserID(ctx, chatterUID)
 	ctx = store.WithChatterUserID(ctx, chatterUID)
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
-	// Session.ctx() builds its OWN context from session-held fields
-	// rather than inheriting the caller's ctx — without binding the
-	// chatter onto sess itself, the WithChatterUserID we just stamped
-	// above never reaches AppendSessionMessage / SaveSession and the
-	// chatter_user_id column stays empty.
+	// Session.ctx() 从会话持有的字段构建自己的上下文
+	// 而不是继承调用者的 ctx — 而不绑定
+	// chatter 到 sess 本身，即我们刚刚标记的 WithChatterUserID
+	// 上面永远不会到达 AppendSessionMessage / SaveSession 和
+	// chatter_user_id 列保持为空。
 	sess.SetChatter(chatterUID)
-	// Steering during plan drafting: plan mode has no ReAct loop to drain
-	// into, so a mid-draft steer is parked in history and answered on
-	// the user's next turn — which matches the plan-mode contract
-	// (review the plan, then reply to execute).
+	// 计划起草期间的指导：计划模式没有需要消耗的 ReAct 循环
+	// 进入，所以中间吃水的转向停在历史中并回答
+	// 用户的下一个回合——与计划模式合同相匹配
+	// （审查计划，然后回复执行）。
 	sess.BeginTurn()
 	defer a.flushLeftoverSteer(sess)
 	defer padOrphanToolResults(sess)
 
-	// Mirror the regular path's user-message construction so multimodal
-	// + IM-bridge payloads (PhotoURL / PhotoURLs) land in session
-	// history the same way they would on a non-plan turn.
+	// 镜像常规路径的用户消息构造，实现多模式
+	// + IM-bridge 有效负载 (PhotoURL / PhotoURLs) 登陆会话
+	// 历史就像他们在非计划转弯时一样。
 	userMsg := buildUserMessage(msg)
 	sess.Append(userMsg)
 
@@ -1626,12 +1626,12 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 
 	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, a.memory.WithUserID(chatterUID))
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
-	// Tool catalog injection: plan mode passes tools=nil to the LLM so
-	// it can't accidentally call anything, but that also hides the
-	// registry from the planning model. Without this, plans were written
-	// as if delegate_task / web_search / camoufox-cli didn't exist —
-	// which defeated the whole point of having Plan mode set up fan-out
-	// work for the execution turn.
+	// 工具目录注入：计划模式将tools=nil传递给LLM，因此
+	// 它不会意外地调用任何东西，但这也隐藏了
+	// 规划模型中的注册表。没有这个，计划就写好了
+	// 就好像 delegate_task / web_search / camoufox-cli 不存在一样 —
+	// 这击败了计划模式设置扇出的全部意义
+	// 为执行轮而努力。
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	catalog := buildToolCatalogForPlan(toolDefs)
 	messages := []provider.Message{
@@ -1672,10 +1672,10 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 	return resp.Content
 }
 
-// appendSteer folds drained steer messages into the running turn: each
-// is persisted to the session, added to the live LLM message slice, and
-// echoed as a "steer" event so the web UI renders it as a user bubble
-// (persisted → late-join backfill + seq-dedup work for free).
+// appendSteer 将耗尽的转向消息折叠到正在运行的转弯中：每个
+// 保存到会话中，添加到实时 LLM 消息片中，并且
+// 作为“转向”事件回显，因此 Web UI 将其呈现为用户气泡
+// （坚持 → 后期加入回填 + seq-dedup 免费工作）。
 func (a *Agent) appendSteer(ctx context.Context, sess *session.Session, messages []provider.Message, steer []provider.Message) []provider.Message {
 	for _, sm := range steer {
 		sess.Append(sm)
@@ -1686,14 +1686,14 @@ func (a *Agent) appendSteer(ctx context.Context, sess *session.Session, messages
 	return messages
 }
 
-// flushLeftoverSteer handles the end-of-turn race: a steer accepted by
-// PushSteerIfActive after the loop's last drain but before the turn was
-// declared done (realistically only the max-iteration synthesis call,
-// an errored turn, or a sub-millisecond window — the between-rounds and
-// pre-done drains cover every normal path). It's persisted to history
-// so it isn't lost and rides the next turn's context; we deliberately
-// do NOT re-run a hidden turn for it (kept simple + avoids the
-// IM-has-no-reply asymmetry of a recursive redispatch).
+// lushLeftoverSteer 处理回合结束比赛：接受的转向
+// PushSteerIfActive 在循环最后一次排水之后但在转弯之前
+// 声明完成（实际上只有最大迭代综合调用，
+// 一个错误的转弯，或者一个亚毫秒的窗口——回合之间和
+// 预制排水沟覆盖每条正常路径）。它一直被历史所铭记
+// 这样它就不会丢失并适应下一回合的上下文；我们故意
+// 不要为其重新运行隐藏回合（保持简单+避免
+// 递归重新调度的 IM 无回复不对称性）。
 func (a *Agent) flushLeftoverSteer(sess *session.Session) {
 	leftover := sess.EndTurn()
 	for _, m := range leftover {
@@ -1705,19 +1705,19 @@ func (a *Agent) flushLeftoverSteer(sess *session.Session) {
 	}
 }
 
-// HandleMessage processes an inbound message through the ReAct loop.
+// HandleMessage 通过 ReAct 循环处理入站消息。
 func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) string {
-	// Check for slash commands first. Empty reply means "handled but
-	// intentionally silent" — /goal foo and /goal resume both fall
-	// through to a streaming continuation that IS the response, so
-	// emitting a separate content event would just clutter the chat
-	// with a redundant confirmation bubble.
+	// 首先检查斜杠命令。空回复意味着“已处理但是
+	// 故意保持沉默” - /goal foo 和 /goalresume 都失败了
+	// 到作为响应的流延续，所以
+	// 发出单独的内容事件只会使聊天变得混乱
+	// 带有多余的确认气泡。
 	//
-	// Slashes that queued a continuation emit `turn_pending` instead
-	// of `done`; the POST SSE handler treats that as "stay open, the
-	// real reply is coming on the next bus-fired turn." Without it,
-	// the stream closes immediately and the typing indicator vanishes
-	// while the model is still warming up.
+	// 将延续排队的斜线会发出“turn_pending”
+	// “完成”； POST SSE 处理程序将其视为“保持打开状态，
+	// 真正的答复将在下一个巴士发射的转弯处到来。”没有它，
+	// 流立即关闭并且打字指示器消失
+	// 当模型仍在预热时。
 	if result := a.handleSlashCommand(msg); result.handled {
 		if result.reply != "" {
 			emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{"content": result.reply}})
@@ -1730,20 +1730,20 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		return result.reply
 	}
 
-	// Plan mode short-circuits the ReAct loop: tools off, the model
-	// emits a numbered plan, the user reviews it and replies normally
-	// (no planMode flag) on the next turn to execute. Lets users catch
-	// the agent before it burns the iteration budget exploring the
-	// wrong direction — the failure mode we saw on long research
-	// prompts where deepseek-flash spent 95 messages exploring and
-	// never produced a deliverable.
-	// Plan-mode is silently dropped when this session has an active
-	// goal. Goal is supposed to be autonomous — pausing for human
-	// approval mid-loop contradicts the contract. Strip the flag so
-	// downstream hooks see this turn as a normal one (IsPlanMode=false
-	// → goalTriggerHook re-fires PostTurn → continuation chain stays
-	// alive instead of waiting on the 30 s probe). To regain plan-mode
-	// behaviour during goal-driven work, /goal pause first.
+	// 计划模式使 ReAct 循环短路：工具关闭，模型
+	// 发出编号计划，用户查看并正常回复
+	// （无 planMode 标志）在下一轮执行。让用户捕捉
+	// 代理在消耗迭代预算之前探索
+	// 错误的方向——我们在长期研究中看到的失败模式
+	// 提示 deepseek-flash 花费了 95 条消息探索和
+	// 从未产生过可交付成果。
+	// 当此会话具有活动状态时，计划模式将被静默删除
+	// 目标。目标应该是自主的——为人类而暂停
+	// 中环审批与合同相矛盾。剥掉旗帜所以
+	// 下游钩子将此回合视为正常回合（IsPlanMode=false
+	// → goalTriggerHook 重新触发 PostTurn → 延续链条停留
+	// 活着而不是等待 30 秒的探测）。恢复计划模式
+	// 目标驱动工作期间的行为，/目标首先暂停。
 	if isPlanMode(msg.Params) {
 		if a.sessionHasActiveGoal(ctx, msg) {
 			slog.Info("ignoring plan-mode flag — session has an active goal",
@@ -1755,105 +1755,105 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	}
 
 	chatterUID := a.chatterUserID(msg)
-	// Tag ctx so the sandbox layer can bind-mount this chatter's
-	// per-user skills dir into the container at /root/.agents/skills
-	// (where `npx skills add -g -y` writes). Tagging happens before
-	// any sandbox.Get call below so attachments + exec inherit it.
+	// 标记 ctx，以便沙箱层可以绑定挂载此聊天的
+	// 将每用户技能目录放入容器中的 /root/.agents/skills
+	// （其中“npx Skills add -g -y”写道）。标记发生在之前
+	// 下面的任何 sandbox.Get 调用，以便附件 + exec 继承它。
 	ctx = sandbox.WithUserID(ctx, chatterUID)
-	// Tag ctx with the chatter so DBStore session writes stamp the
-	// chatter_user_id column (sessions / session_messages /
-	// session_events). user_id stays = UserSpace owner so admin views
-	// continue to list "all sessions on my bots"; chatter_user_id
-	// records the actual participant for per-chatter queries.
+	// 使用chatter标记ctx，以便DBStore会话写入标记
+	// chatter_user_id 列（sessions/session_messages/
+	// 会话事件）。 user_id 保持 = UserSpace 所有者，以便管理员查看
+	// 继续列出“我的机器人上的所有会话”；聊天用户 ID
+	// 记录每个聊天查询的实际参与者。
 	ctx = store.WithChatterUserID(ctx, chatterUID)
-	// Per-turn channel context for the skill-refresh diagnostic. Lets
-	// us correlate the "skills summary refreshed" log emitted inside
-	// refreshSkillsFromStore with the channel the request arrived on,
-	// to chase the "IM doesn't see agent skills" report.
+	// 用于技能刷新诊断的每回合通道上下文。让我们
+	// 我们将内部发出的“技能摘要刷新”日志关联起来
+	// 使用请求到达的通道来刷新SkillsFromStore，
+	// 追查“IM 看不到代理技能”的报告。
 	slog.Info("turn: refreshing skills",
 		"agent", a.name, "channel", msg.Channel, "chat_id", msg.ChatID, "user", chatterUID)
 	a.refreshSkillsFromStore(chatterUID)
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
-	// Bind chatter onto sess. Session.ctx() builds its own
-	// context.Background-rooted ctx for store calls, so the
-	// WithChatterUserID we stamped onto the caller ctx above does NOT
-	// reach AppendSessionMessage / SaveSession on its own — sess has to
-	// carry the chatter itself.
+	// 将chatter 绑定到sess 上。 Session.ctx() 构建自己的
+	// context.Background-rooted ctx 用于存储调用，因此
+	// WithChatterUserID，我们在上面标记的调用者 ctx 上不会
+	// 自行到达 AppendSessionMessage / SaveSession — sess 必须
+	// 携带喋喋不休的内容。
 	sess.SetChatter(chatterUID)
-	// Bind the registry to this chat's session so workspace.Store reads
-	// + writes get session-scoped paths and (when a sandbox pool is
-	// wired) the executor used by exec/read_file/list_dir is tied to a
-	// session-private container.
+	// 将注册表绑定到此聊天会话，以便工作区.Store 读取
+	// + 写入获取会话范围的路径并且（当沙箱池处于
+	// 有线） exec/read_file/list_dir 使用的执行器绑定到
+	// 会话私有容器。
 	a.bindSession(ctx, msg.Channel, msg.ChatID, msg.ProjectID)
-	// Flag whether this turn's chatter is the agent owner / channel
-	// admin. File tools use this to refuse identity-file reads from
-	// regular chatters (SOUL/IDENTITY/BOOTSTRAP/... leak as verbatim
-	// chat replies otherwise).
+	// 标记本回合的聊天是否是代理所有者/频道
+	// 行政。文件工具使用它来拒绝身份文件读取
+	// 常规聊天内容（灵魂/身份/BOOTSTRAP/...逐字泄漏
+	// 否则聊天回复）。
 	a.registry.SetCallerIsAdmin(a.isAdminChatter(msg))
-	// Plumb the persistent session_key for goal-scoped tools.
-	// SetSessionID above uses msg.ChatID (the channel-level chat
-	// identifier); goal tools need the durable session.Session.SessionKey
-	// to address rows in agent_goals.
+	// 探索目标范围工具的持久 session_key。
+	// 上面的 SetSessionID 使用 msg.ChatID （频道级聊天
+	// 标识符）；目标工具需要持久的 session.Session.SessionKey
+	// 寻址 agent_goals 中的行。
 	a.registry.SetGoalSessionKey(sess.SessionKey())
-	// Per-user file writes (USER.md / MEMORY.md) need to land in the
-	// per-turn chatter's row, not the UserSpace owner — see
-	// Registry.systemFileUserID for the routing rule.
+	// 每用户文件写入（USER.md / MEMORY.md）需要登陆
+	// 每回合喋喋不休的行，而不是 UserSpace 所有者 — 请参阅
+	// 路由规则的Registry.systemFileUserID。
 	a.registry.SetChatterUserID(chatterUID)
 
-	// Steering: mark a turn in-flight so messages arriving mid-run are
-	// buffered onto the session (drained between tool iterations below)
-	// instead of starting a separate turn. flushLeftoverSteer parks any
-	// steer that lost the end-of-turn race into history. Registered
-	// before padOrphanToolResults so it runs LAST (defers are LIFO) —
-	// orphan padding settles history first.
+	// 转向：标记飞行中的转弯，以便在运行中到达的消息
+	// 缓冲到会话中（在下面的工具迭代之间耗尽）
+	// 而不是开始单独的回合。冲洗剩余转向停泊任何
+	// 在回合结束比赛中失利的转向成为历史。挂号的
+	// 在 padOrphanToolResults 之前，因此它最后运行（延迟是后进先出） -
+	// 孤儿填充首先解决了历史问题。
 	sess.BeginTurn()
 	defer a.flushLeftoverSteer(sess)
 
-	// Safety net for client-aborted turns: if the loop exits with a
-	// tool_use that never got its matching tool_result appended (the
-	// user clicked Stop while a long-running exec was in flight, the
-	// SDK returned no response for it, etc.), pad the orphan so the
-	// session history stays well-formed. Without this, the tool keeps
-	// rendering as a forever-spinning "running" entry on history
-	// rebuild and the next turn's API call gets a 400 from Anthropic
-	// for orphaned tool_use ids.
+	// 客户端中止转弯的安全网：如果循环退出时带有
+	// tool_use 从未附加其匹配的 tool_result （
+	// 当一个长时间运行的执行程序正在运行时，用户单击了“停止”，
+	// SDK没有返回任何响应等），填充孤儿，这样
+	// 会话历史记录保持格式良好。如果没有这个，该工具将保持
+	// 呈现为历史上永远旋转的“奔跑”条目
+	// 重建并且下一回合的 API 调用从 Anthropic 获得 400
+	// 对于孤立的 tool_use id。
 	defer padOrphanToolResults(sess)
 
-	// Reset per-turn tool failure tracking. The web_fetch (and any
-	// future tool that opts in) consults the registry's
-	// PriorFailure to refuse a guaranteed-fail retry within the
-	// same turn — without StartTurn here, failures from a previous
-	// turn would poison legit retries the user explicitly asked for.
+	// 重置每转刀具故障跟踪。 web_fetch（以及任何
+	// 选择加入的未来工具）咨询注册表
+	// PriorFailure 拒绝保证失败重试
+	// 相同的回合 - 此处没有 StartTurn，之前的失败
+	// 转会毒害用户明确要求的合法重试。
 	a.registry.StartTurn()
 
-	// Hook: BeforeSystemPrompt
+	// 挂钩：BeforeSystemPrompt
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeSystemPrompt, UserID: a.ownerUserID})
 
 	chatterMem := a.memory.WithUserID(chatterUID)
 	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem)
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 
-	// Hook: AfterSystemPrompt
+	// 挂钩：AfterSystemPrompt
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterSystemPrompt, UserID: a.ownerUserID})
 
-	// Store the raw user message. Images may arrive via the legacy
-	// PhotoURL (single, used by IM bridges) or PhotoURLs (multi, used by
-	// the web chat upload path); flatten both into one content-parts
-	// slice so the provider sees `[text, image, image, …]`.
-	// buildUserMessage handles multi-image flatten + senderMetadata.
-	// `[SenderName]:` content-prefix policy lives there (group-only;
-	// DMs stay bare to avoid SOUL.md language-bias regressions).
+	// 存储原始用户消息。图像可能通过遗产到达
+	// PhotoURL（单个，由 IM 桥使用）或 PhotoURL（多个，由 IM 桥使用）
+	// 网络聊天上传路径）；将两者扁平化为一个内容部分
+	// 切片，以便提供者看到“[文本，图像，图像，...]”。
+	// buildUserMessage 处理多图像拼合 + senderMetadata。
+	// `[SenderName]:` 内容前缀策略存在于此（仅限组；
+	// DM 保持裸露以避免 SOUL.md 语言偏差回归）。
 	userMsg := buildUserMessage(msg)
 	sess.Append(userMsg)
 
-	// Context compaction: check if session messages are too large
+	// 上下文压缩：检查会话消息是否太大
 	sessionMsgs := sess.GetMessages()
 	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model)
 	if err != nil {
 		slog.Warn("compaction error", "agent", a.name, "error", err)
 	}
 	if compactResult != nil && compactResult.Pruned {
-		// Replace session messages with compacted version
+		// 用压缩版本替换会话消息
 		sess.ReplaceMessages(compactResult.Messages)
 		sessionMsgs = compactResult.Messages
 		slog.Info("context compacted", "agent", a.name, "log_file", compactResult.LogFile)
@@ -1870,11 +1870,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	if paramsMsg := renderClientParams(msg.Params); paramsMsg != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: paramsMsg})
 	}
-	// Persistence reminder — chatbot-only, positioned just before the
-	// session history so recency weight outranks the model's training
-	// prior of "I have no cross-session memory". See
-	// renderChatbotPersistenceReminder for why this isn't enough to put
-	// in the main system prompt alone.
+	// 持久性提醒——仅限聊天机器人，位于
+	// 会话历史记录，因此近期权重超过模型的训练
+	// “我没有跨会话内存”之前。看
+	// renderChatbotPersistenceReminder 为什么这还不够
+	// 仅在主系统提示符中。
 	if reminder := renderChatbotPersistenceReminder(a.promptMode, a.displayName, chatterMem.LoadUserFile(), chatterMem.LoadMemory()); reminder != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: reminder})
 	}
@@ -1882,7 +1882,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 
-	// Loop detection: track consecutive identical tool calls
+	// 循环检测：跟踪连续的相同工具调用
 	type toolCallSig struct {
 		name string
 		hash [32]byte
@@ -1890,26 +1890,26 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	var lastSig toolCallSig
 	consecutiveCount := 0
 	totalToolCalls := 0
-	// allFailedRounds is the count of CONSECUTIVE rounds where every
-	// tool result came back as a 4xx/5xx HTTP error or an executor
-	// error. This catches the "model rotates through five guessed
-	// URLs that all 404" pattern that loop detection (which keys on
-	// identical args) misses. After three such rounds we drop tools
-	// from the next LLM call so the model is forced to produce text
-	// directly instead of burning more rounds chasing dead URLs.
+	// allFailedRounds 是连续回合的计数，其中每个
+	// 工具结果作为 4xx/5xx HTTP 错误或执行程序返回
+	// 错误。这抓住了“模型旋转了五个猜测
+	// 所有 404" 模式的 URL 都会进行循环检测（关键是
+	// 相同的参数）未命中。经过三轮这样的回合后，我们会丢弃工具
+	// 从下一个 LLM 调用开始，模型被迫生成文本
+	// 直接进行，而不是花费更多的时间去追逐无效的 URL。
 	allFailedRounds := 0
 	const failedRoundsLimit = 3
 
-	// replyParts accumulates every non-empty assistant text segment
-	// emitted across iterations (preamble lines before tool calls + the
-	// final answer). IM channels deliver a single OutboundMessage per
-	// turn, so without accumulation only the last segment reaches WeChat
-	// while the chat panel shows all of them. Joined with
-	// channels.SplitMessageMarker at return time; manager.dispatchOutbound
-	// splits on it (AllowSplit=true) or collapses to newlines otherwise.
+	// replyParts 累积每个非空助理文本段
+	// 跨迭代发出（工具调用之前的前导行+
+	// 最终答案）。 IM 通道为每个通道传送一条 OutboundMessage
+	// 转，所以没有积累，只有最后一段到达微信
+	// 而聊天面板显示了所有这些。加入了
+	// 返回时的channels.SplitMessageMarker； manager.dispatchOutb​​ound
+	// 对其进行拆分 (AllowSplit=true) 或折叠为换行符。
 	var replyParts []string
 
-	// ReAct loop
+	// 反应循环
 	for i := 0; i < a.maxToolIterations; i++ {
 		slog.Info("agent loop iteration",
 			"agent", a.name,
@@ -1918,11 +1918,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			"chat_id", msg.ChatID,
 		)
 
-		// Hook: BeforeModelCall
+		// 挂钩：BeforeModelCall
 		hcBefore := &HookContext{AgentName: a.name, Point: BeforeModelCall, Messages: messages, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID}
 		a.hooks.Run(ctx, hcBefore)
 
-		// PII scrubbing: redact sensitive data before sending to LLM
+		// PII 清理：在发送给 LLM 之前编辑敏感数据
 		llmMessages := messages
 		if a.piiScrubEnabled {
 			llmMessages = privacy.ScrubMessages(messages)
@@ -1935,11 +1935,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			emitEvent(ctx, ChatEvent{Type: "done"})
 			return noProviderMsg
 		}
-		// After enough consecutive rounds where every tool came back
-		// as 4xx/5xx, drop tools from the next call so the model is
-		// forced to produce a text answer with what it has. The
-		// system message above the request makes the constraint
-		// explicit so the model doesn't apologetically dangle.
+		// 经过足够多的连续回合后，所有工具都回来了
+		// 作为 4xx/5xx，从下一次调用中删除工具，以便模型为
+		// 被迫用它所拥有的内容产生一个文本答案。这
+		// 请求之上的系统消息做出约束
+		// 明确，因此模型不会抱歉地悬而未决。
 		callTools := toolDefs
 		if allFailedRounds >= failedRoundsLimit {
 			slog.Warn("disabling tools after consecutive failed rounds",
@@ -1956,7 +1956,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		dumpLLMRequest(a.name, a.model, llmMessages, callTools)
 		resp, err := a.streamChatToResponse(ctx, llmMessages, callTools)
 
-		// Hook: AfterModelCall
+		// 挂钩：AfterModelCall
 		hcAfter := &HookContext{AgentName: a.name, Point: AfterModelCall, Messages: messages, Response: resp, Error: err, StartTime: hcBefore.StartTime, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID, GoalSessionKey: a.registry.GoalSessionKey()}
 		a.hooks.Run(ctx, hcAfter)
 
@@ -1976,16 +1976,16 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			if resp.Content != "" {
 				replyParts = append(replyParts, resp.Content)
 			}
-			// End-of-turn steer race: a message buffered after the last
-			// between-rounds drain but before we declare the turn done.
-			// Fold it in and keep going instead of returning, so the
-			// user's mid-flight instruction isn't deferred to a new turn.
+			// 回合结束转向比赛：最后一个之后缓冲的消息
+			// 在我们宣布回合结束之前，回合之间的资金会耗尽。
+			// 将其折叠起来并继续前进而不是返回，所以
+			// 用户的飞行中指令不会推迟到新的回合。
 			if steer := sess.DrainSteer(); len(steer) > 0 {
-				// Carry the just-produced answer into the next LLM call
-				// only when it has text. A no-text, no-tool-call
-				// assistant message is an invalid turn for Anthropic
-				// (an assistant turn needs a non-empty content block),
-				// and this is the only path that would re-send one.
+				// 将刚刚生成的答案带入下一次 LLM 通话
+				// 仅当它有文本时。无文本、无工具调用
+				// 助理消息对 Anthropic 来说无效
+				// （助理回合需要非空内容块），
+				// 这是重新发送的唯一路径。
 				if resp.Content != "" {
 					messages = append(messages, asst)
 				}
@@ -1997,13 +1997,13 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			return joinReplyParts(replyParts)
 		}
 
-		// Emit assistant content before tool calls if present
+		// 在工具调用之前发出助手内容（如果存在）
 		if resp.Content != "" {
 			emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{"content": resp.Content}})
 			replyParts = append(replyParts, resp.Content)
 		}
 
-		// Emit tool_call events
+		// 发出 tool_call 事件
 		for _, tc := range resp.ToolCalls {
 			emitEvent(ctx, ChatEvent{Type: "tool_call", Data: map[string]any{
 				"id":        tc.ID,
@@ -2023,7 +2023,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		sess.Append(assistantMsg)
 		messages = append(messages, assistantMsg)
 
-		// Loop detection: check before executing
+		// 循环检测：执行前检查
 		loopDetected := false
 		for _, tc := range resp.ToolCalls {
 			sig := toolCallSig{
@@ -2052,7 +2052,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			break
 		}
 
-		// Fire BeforeToolCall hooks
+		// 触发 BeforeToolCall 挂钩
 		for _, tc := range resp.ToolCalls {
 			a.hooks.Run(ctx, &HookContext{
 				AgentName: a.name,
@@ -2066,16 +2066,16 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			})
 		}
 
-		// Apply per-round parallel cap. The LLM decides how many
-		// tool calls to emit; we cap how many run concurrently this
-		// round. Overflow gets a synthetic "deferred" tool_result so
-		// the model sees them as resolved (no orphan tool_use ids
-		// that would poison the next API request) but without
-		// content — naturally re-issuing them next round when it can
-		// react to the executed batch's results. Effective default
-		// is 0 = unlimited; users hit specific rate-limited APIs
-		// (Brave free tier 1RPS, etc.) set it to 1 / 2 to force
-		// strict serial / lightly-parallel execution.
+		// 应用每轮平行盖。 LLM 决定多少名
+		// 工具调用来发出；我们限制同时运行的数量
+		// 圆形的。溢出得到一个合成的“延迟”tool_result 所以
+		// 模型将它们视为已解决（没有孤立的 tool_use id
+		// 这会毒害下一个 API 请求）但没有
+		// 内容——下一轮自然会在可能的情况下重新发布它们
+		// 对执行批次的结果做出反应。有效违约
+		// 0 = 无限制；用户点击了特定速率限制的 API
+		// （勇敢自由层1RPS等）设置为1 / 2强制
+		// 严格串行/轻度并行执行。
 		executeCalls := resp.ToolCalls
 		var deferredCalls []provider.ToolCall
 		if a.maxParallelToolCalls > 0 && len(resp.ToolCalls) > a.maxParallelToolCalls {
@@ -2088,16 +2088,16 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			)
 		}
 
-		// Execute tools concurrently via SDK engine
+		// 通过SDK引擎同时执行工具
 		slog.Info("executing tools concurrently",
 			"agent", a.name,
 			"count", len(executeCalls),
 		)
 		results := a.engine.executeToolsConcurrently(ctx, a.registry, executeCalls, a.workspacePath)
-		// Append synthetic deferred results so every original tool_use
-		// id has a paired tool_result. The deferred message tells the
-		// model exactly why it didn't run — it can re-issue next
-		// round once it has the executed batch's results.
+		// 附加合成延迟结果，以便每个原始 tool_use
+		// id 有一个配对的 tool_result。延迟消息告诉
+		// 准确地模拟它没有运行的原因 - 接下来可以重新发出
+		// 一旦获得执行批次的结果，就进行一轮。
 		for _, tc := range deferredCalls {
 			results = append(results, toolCallResult{
 				toolCallID: tc.ID,
@@ -2109,11 +2109,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			})
 		}
 
-		// Defensive backstop: if the SDK returned fewer results than tool
-		// calls (and the bridge somehow didn't already pad — belt and
-		// suspenders since orphan tool_use ids poison the next API request
-		// with HTTP 400), synthesize a failure result so every tool_use
-		// gets a paired tool_result in the conversation history.
+		// 防御性后盾：如果 SDK 返回的结果少于工具
+		// 呼叫（桥不知何故还没有垫上——皮带和
+		// 由于孤儿 tool_use id 毒害了下一个 API 请求，吊带器
+		// 使用 HTTP 400），综合失败结果，以便每个 tool_use
+		// 在对话历史记录中获取配对的 tool_result。
 		if len(results) < len(resp.ToolCalls) {
 			padded := make([]toolCallResult, len(resp.ToolCalls))
 			gotByID := make(map[string]toolCallResult, len(results))
@@ -2135,17 +2135,17 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			results = padded
 		}
 
-		// Round-level failure detection: did EVERY result come back
-		// as a 4xx/5xx HTTP error or executor error? Tracked here so
-		// the next iteration can decide whether to drop tools.
+		// 回合级故障检测：是否每个结果都返回
+		// 作为 4xx/5xx HTTP 错误或执行程序错误？跟踪到这里所以
+		// 下一次迭代可以决定是否丢弃工具。
 		roundAllFailed := len(results) > 0
-		// Process results
+		// 处理结果
 		for idx, r := range results {
 			totalToolCalls++
 			tc := resp.ToolCalls[idx]
 			resultContent, meta := extractToolMeta(r.result)
 
-			// Hook: AfterToolCall
+			// 挂钩：AfterToolCall
 			a.hooks.Run(ctx, &HookContext{
 				AgentName:      a.name,
 				Point:          AfterToolCall,
@@ -2169,10 +2169,10 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				)
 			}
 
-			// Classify the result: did this single call fail? Records
-			// it in the registry's per-turn failure map so a later
-			// retry of the same args can be short-circuited (see
-			// Registry.PriorFailure / web_fetch).
+			// 对结果进行分类：这一次调用失败了吗？记录
+			// 它在注册表的每回合故障图中，所以稍后
+			// 重试相同的参数可以被短路（参见
+			// 注册表.PriorFailure / web_fetch）。
 			thisFailed := isFailedToolResult(r.err, resultContent)
 			if thisFailed {
 				summary := r.err.Error()
@@ -2181,17 +2181,17 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				}
 				a.registry.RecordToolFailure(r.toolName, tc.Function.Arguments, summary)
 			} else {
-				// One call in this round produced a real result —
-				// the round as a whole isn't "all failed".
+				// 这一轮的一次通话产生了一个真实的结果——
+				// 整个回合并不是“全部失败”。
 				roundAllFailed = false
 			}
 
-			// Index in FTS if available
+			// FTS 中的索引（如果可用）
 			if a.ftsStore != nil {
 				_ = a.ftsStore.Index(a.name, msg.ChatID, "tool:"+r.toolName, resultContent, time.Now())
 			}
 
-			// Check for MEDIA: protocol in tool output
+			// 检查工具输出中的媒体：协议
 			if mediaPaths := extractMediaPaths(resultContent); len(mediaPaths) > 0 {
 				a.sendMediaFiles(msg, mediaPaths)
 			}
@@ -2216,29 +2216,29 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			}
 			emitEvent(ctx, ChatEvent{Type: "tool_result", Data: evt})
 		}
-		// Update consecutive-failed-rounds tally now that the whole
-		// round's results have been processed. A single non-failure
-		// resets it — the model just got useful info, give it room
-		// to use it.
+		// 现在更新连续失败回合计数
+		// 本轮结果已处理。单次无故障
+		// 重置它 - 模型刚刚获得有用的信息，给它空间
+		// 使用它。
 		if roundAllFailed {
 			allFailedRounds++
 		} else {
 			allFailedRounds = 0
 		}
 
-		// Steering: messages that arrived while this tool round ran are
-		// folded in here, between rounds, so the next LLM call sees them
-		// and can change course.
+		// 转向：此工具运行时到达的消息是
+		// 折叠在这里，在轮次之间，所以下一个法学硕士电话可以看到他们
+		// 并且可以改变路线。
 		if steer := sess.DrainSteer(); len(steer) > 0 {
 			messages = a.appendSteer(ctx, sess, messages, steer)
 		}
 	}
 
 	slog.Warn("max tool iterations reached — forcing final delivery", "agent", a.name, "max", a.maxToolIterations)
-	// Forced final delivery: one more LLM call with tools disabled and a
-	// nudge that tells the model to synthesize what it has. Replaces the
-	// old behavior of just returning a canned warning, which left users
-	// with zero deliverable after a full iteration budget got burned.
+	// 强制最终交付：又一个法学硕士通话，工具被禁用，并且
+	// 微移告诉模型合成它所拥有的内容。取代了
+	// 只返回预设警告的旧行为，这让用户
+	// 在整个迭代预算被烧毁后，可交付成果为零。
 	finalMessages := append(messages, capReachedNudge(a.maxToolIterations))
 	if a.piiScrubEnabled {
 		finalMessages = privacy.ScrubMessages(finalMessages)
@@ -2250,9 +2250,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		a.meterTokens(ctx, sess.Key(), finalResp.Usage)
 	}
 	if finalContent == "" {
-		// Synthesis call itself failed or returned empty — fall back to
-		// the canned line so the user still gets *something* with the
-		// badge attached.
+		// 综合调用本身失败或返回空 - 回退到
+		// 固定线路，因此用户仍然可以通过
+		// 附有徽章。
 		finalContent = fmt.Sprintf("I've reached the maximum number of tool iterations (%d) and couldn't synthesize a final response. The work above represents what I gathered before hitting the limit.", a.maxToolIterations)
 	}
 	capMeta := iterationCapMetadata(a.maxToolIterations)
@@ -2274,12 +2274,12 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	return joinReplyParts(replyParts)
 }
 
-// joinReplyParts joins accumulated assistant text segments with
-// channels.SplitMessageMarker so manager.dispatchOutbound can deliver
-// them as separate IM bubbles when AllowSplit is true. Channels
-// without AllowSplit collapse the marker to a newline at dispatch
-// time, so users still see every segment in one message instead of
-// dropping all but the last.
+// joinReplyParts 将累积的辅助文本片段与
+// channels.SplitMessageMarker 以便 manager.dispatchOutb​​ound 可以传递
+// 当AllowSplit 为true 时，它​​们作为单独的IM 气泡。渠道
+// 如果没有AllowSplit，则在调度时将标记折叠为换行符
+// 时间，因此用户仍然可以看到一条消息中的每个片段，而不是
+// 放弃除最后一个以外的所有内容。
 func joinReplyParts(parts []string) string {
 	out := parts[:0:0]
 	for _, p := range parts {
@@ -2296,14 +2296,14 @@ func joinReplyParts(parts []string) string {
 	return strings.Join(out, channels.SplitMessageMarker)
 }
 
-// isFailedToolResult is the agent loop's heuristic for "this tool
-// returned nothing useful". Used both to populate the per-turn failure
-// map (so a later identical call can be refused up front) and to drive
-// the consecutive-failed-rounds short-circuit. We deliberately stay
-// conservative — empty exec output is legit for many shell commands —
-// and only flag the high-signal patterns: tool error, HTTP 4xx/5xx,
-// or the `[Analyze the error above…]` envelope our wrapper appends to
-// upstream failures.
+// isFailedToolResult 是代理循环对于“此工具
+// 返回没有任何有用的信息”。使用两者来填充每回合失败
+// 地图（以便可以预先拒绝稍后的相同呼叫）并开车
+// 连续失败的回合短路。我们刻意留下来
+// 保守 — 对于许多 shell 命令来说，空的 exec 输出是合法的 —
+// 并且仅标记高信号模式：工具错误、HTTP 4xx/5xx、
+// 或者我们的包装器附加到的“[分析上面的错误...]”信封
+// 上游故障。
 func isFailedToolResult(err error, content string) bool {
 	if err != nil {
 		return true
@@ -2318,10 +2318,10 @@ func isFailedToolResult(err error, content string) bool {
 	return false
 }
 
-// firstNonEmptyLine returns the first non-empty line of s, trimmed
-// and capped at 120 chars. Used to make a stash-friendly summary of a
-// tool result when err.Error() is empty. (Named distinctly from
-// skills.firstLine to avoid the duplicate declaration.)
+// firstNonEmptyLine 返回 s 的第一个非空行，已修剪
+// 且上限为 120 个字符。用于对某个内容进行存储友好的摘要
+// err.Error() 为空时的工具结果。 （命名明显来自
+// Skills.firstLine 以避免重复声明。）
 func firstNonEmptyLine(s string) string {
 	for _, line := range strings.Split(s, "\n") {
 		line = strings.TrimSpace(line)
@@ -2336,20 +2336,20 @@ func firstNonEmptyLine(s string) string {
 	return ""
 }
 
-// padOrphanToolResults walks the session and appends a synthetic
-// tool_result for any tool_use id from the latest assistant message that
-// doesn't already have a matching tool_result. Earlier rounds aren't
-// scanned — once the loop has moved past them they're already
-// well-formed, otherwise the previous turn's API call would have failed.
+// padOrphanToolResults 遍历会话并附加合成
+// tool_result 为来自最新助手消息的任何 tool_use id
+// 还没有匹配的 tool_result。前几轮不是
+// 扫描 - 一旦循环移过它们，它们就已经是
+// 格式良好，否则前一轮的 API 调用将会失败。
 //
-// Triggered by HandleMessage's defer so a client-side Stop (or any other
-// premature exit) can't leave the conversation in a state where the next
-// turn's API call gets a 400 for orphan tool_use ids and the UI keeps
-// spinning a "Running tools" indicator that will never resolve.
+// 由 HandleMessage 的延迟触发，因此客户端停止（或任何其他
+// 过早退出）不能让对话处于下一个对话的状态
+// Turn 的 API 调用获取孤立 tool_use id 的 400，并且 UI 保持不变
+// 旋转一个永远无法解决的“运行工具”指标。
 func padOrphanToolResults(sess *session.Session) {
 	msgs := sess.GetMessages()
-	// Walk back to the latest assistant message; if it has no tool_calls
-	// or all tool_calls already have results after it, nothing to do.
+	// 返回最新的助手消息；如果它没有 tool_calls
+	// 或者所有 tool_calls 之后都已经有结果，无需执行任何操作。
 	lastAssistantIdx := -1
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "assistant" && len(msgs[i].ToolCalls) > 0 {
@@ -2381,31 +2381,31 @@ func padOrphanToolResults(sess *session.Session) {
 	}
 }
 
-// msg is the InboundMessage that drove this turn — its (channel, account,
-// chat, project) plus Source ride along on the HookContext so PostTurn
-// hooks can route to session-scoped state and tell user-driven turns
-// apart from runtime-originated ones (cron, heartbeat, sub-agent, goal
-// continuation).
+// msg 是驱动本轮的 InboundMessage — 它的（频道、帐户、
+// 聊天、项目）加上 Source 在 HookContext 上运行，所以 PostTurn
+// 钩子可以路由到会话范围的状态并告诉用户驱动的转向
+// 除了运行时产生的（cron、heartbeat、sub-agent、goal
+// 继续）。
 //
-// chatterMem is the chatter-scoped Memory built at the top of the turn —
-// auto-persist writes the extracted facts back through it so a visitor
-// on a public agent accrues their *own* MEMORY.md / USER.md, not the
-// owner's. nil falls back to the agent-scoped Memory (legacy behavior).
+// chatterMem 是在回合顶部构建的chatter-scoped Memory —
+// 自动持久通过它写回提取的事实，以便访问者
+// 公共代理会累积他们的*自己的* MEMORY.md / USER.md，而不是
+// 业主的。 nil 回退到代理范围的内存（遗留行为）。
 //
-// Streaming (HandleMessageStream) and non-streaming (HandleMessage) both
-// fire this. The streaming path calls it from inside the background
-// goroutine that drains the SSE stream, after the final assistant
-// message has been appended to the session — i.e. after the user's
-// reply is fully on-record.
+// 流式（HandleMessageStream）和非流式（HandleMessage）两者
+// 开火这个。流路径从后台内部调用它
+// 在最后一个助手之后，耗尽 SSE 流的 goroutine
+// 消息已被附加到会话中——即在用户的
+// 答复已完全记录在案。
 func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, messages []provider.Message, toolCallCount int, chatterMem *Memory) {
 	if chatterMem == nil {
 		chatterMem = a.memory
 	}
 	a.turnCount++
 
-	// Index user/assistant messages in FTS. Skip runtime-injected
-	// messages (e.g. goal_context continuations) — they're synthetic
-	// audit prompts, not searchable conversation content.
+	// 在 FTS 中索引用户/助理消息。跳过运行时注入
+	// 消息（例如 goal_context 延续）——它们是合成的
+	// 审核提示，不可搜索的对话内容。
 	if a.ftsStore != nil {
 		for _, m := range messages {
 			if m.Origin != provider.OriginUser {
@@ -2417,7 +2417,7 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 		}
 	}
 
-	// Fire PostTurn hooks
+	// 火柱转钩
 	a.hooks.Run(ctx, &HookContext{
 		AgentName:      a.name,
 		Point:          PostTurn,
@@ -2434,22 +2434,22 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 		IsPlanMode:     isPlanMode(msg.Params),
 	})
 
-	// Auto-persist memory every N user turns.
+	// 每 N 个用户轮流自动保留内存。
 	//
-	// Cadence is keyed on a DURABLE counter — `session_messages.role='user'`
-	// rows for this (agent, chatter). Originally this was `a.turnCount`,
-	// an int field on Agent that resets to 0 on daemon restart,
-	// UserSpace invalidation (any agent-scope dashboard save fires
-	// InvalidateAgent), and 30-minute idle eviction. That made it
-	// practically untestable — flipping the dashboard toggle to
-	// observe the next fire reset the counter to 0 every time. Reading
-	// from the DB removes the reset entirely and also gives a natural
-	// per-chatter cadence (the in-memory counter was shared across
-	// all chatters of the same agent).
+	// 节奏取决于持久计数器 — `session_messages.role='user'`
+	// 行（代理、聊天）。最初这是`a.turnCount`，
+	// Agent 上的 int 字段在守护进程重新启动时重置为 0，
+	// 用户空间失效（任何代理范围的仪表板都可以保存火灾）
+	// InvalidateAgent），以及 30 分钟空闲驱逐。这样就成功了
+	// 几乎无法测试——将仪表板切换至
+	// 观察下一次火灾，每次将计数器重置为 0。阅读
+	// 从数据库中完全删除了重置，并且还提供了自然的
+	// 每个聊天的节奏（内存中的计数器被共享
+	// 同一代理人的所有闲聊）。
 	//
-	// Falls back to skipping fire when dataStore isn't wired
-	// (single-user local mode without persistence) — autoPersist
-	// without persistence is meaningless anyway.
+	// 当数据存储未连接时返回跳过火灾
+	// （单用户本地模式，无持久化）——autoPersist
+	// 没有坚持无论如何都是没有意义的。
 	var chatterUID string
 	if chatterMem != nil {
 		chatterUID = chatterMem.UserID()
@@ -2481,7 +2481,7 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 		go AutoPersistMemory(ctx, chatterMem, a.provider, model, messages)
 	}
 
-	// Skills learner
+	// 技能学习者
 	if a.skillsLearner != nil {
 		go func() {
 			if err := a.skillsLearner.MaybeExtract(ctx, messages, toolCallCount); err != nil {
@@ -2491,13 +2491,13 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 	}
 }
 
-// HandleMessageStream processes a message through the ReAct loop and returns
-// a StreamReader for the final response. Tool call iterations use non-streaming Chat;
-// the final text response uses ChatStream for true SSE streaming.
+// HandleMessageStream通过ReAct循环处理消息并返回
+// 用于最终响应的 StreamReader。工具调用迭代使用非流式聊天；
+// 最终文本响应使用 ChatStream 进行真正的 SSE 流式传输。
 func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage) *provider.StreamReader {
-	// Reuse setup logic from HandleMessage. Empty reply is "handled
-	// but silent" — see the HandleMessage twin. Still emit a Done
-	// chunk so callers waiting on the stream don't hang.
+	// 重用 HandleMessage 中的设置逻辑。空回复是“已处理
+	// 但沉默”——参见 HandleMessage 双胞胎。仍然发出 Done
+	// 块，以便等待流的调用者不会挂起。
 	if result := a.handleSlashCommand(msg); result.handled {
 		ch := make(chan provider.StreamChunk, 2)
 		go func() {
@@ -2509,33 +2509,33 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 	chatterUID := a.chatterUserID(msg)
 	ctx = sandbox.WithUserID(ctx, chatterUID)
-	// Tag ctx so DBStore session writes stamp chatter_user_id — see
-	// the HandleMessage path for the rationale.
+	// 标记 ctx，以便 DBStore 会话写入时间戳 chatter_user_id — 请参阅
+	// HandleMessage 路径的基本原理。
 	ctx = store.WithChatterUserID(ctx, chatterUID)
 	slog.Info("turn: refreshing skills",
 		"agent", a.name, "channel", msg.Channel, "chat_id", msg.ChatID, "user", chatterUID)
 	a.refreshSkillsFromStore(chatterUID)
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
-	// Bind chatter onto sess so its ctx() embeds WithChatterUserID
-	// for DBStore session writes — Session.ctx() rebuilds ctx from its
-	// own fields, so the chatter has to live on sess itself.
+	// 将chatter绑定到sess上，使其ctx()嵌入WithChatterUserID
+	// 对于 DBStore 会话写入 — Session.ctx() 从其重建 ctx
+	// 自己的领域，所以喋喋不休必须生活在 ses 本身。
 	sess.SetChatter(chatterUID)
 	a.bindSession(ctx, msg.Channel, msg.ChatID, msg.ProjectID)
 	a.registry.SetCallerIsAdmin(a.isAdminChatter(msg))
 	a.registry.SetGoalSessionKey(sess.SessionKey())
-	// Per-user file writes (USER.md / MEMORY.md) need to land in the
-	// per-turn chatter's row, not the UserSpace owner — see
-	// Registry.systemFileUserID for the routing rule.
+	// 每用户文件写入（USER.md / MEMORY.md）需要登陆
+	// 每回合喋喋不休的行，而不是 UserSpace 所有者 — 请参阅
+	// 路由规则的Registry.systemFileUserID。
 	a.registry.SetChatterUserID(chatterUID)
 
-	// Same orphan-tool_use safety net as HandleMessage. The streaming path
-	// previously lacked this, so loop detection (which appends an assistant
-	// tool_use + a system warn and breaks without ever running tools) and
-	// any other premature exit between sess.Append(assistantMsg) and tool
-	// result append left orphaned tool_use ids in the session. The next
-	// turn's API request — especially against Anthropic-compat endpoints
-	// like DeepSeek's /anthropic — then 400s with "tool_use ids were found
-	// without tool_result blocks immediately after".
+	// 与 HandleMessage 相同的 orphan-tool_use 安全网。流媒体路径
+	// 以前缺少这个，所以循环检测（它附加了一个助手
+	// tool_use + 系统警告并在不运行工具的情况下中断）和
+	// sess.Append(assistantMsg) 和工具之间的任何其他过早退出
+	// 结果在会话中追加左侧孤立的 tool_use id。下一个
+	// Turn 的 API 请求——尤其是针​​对 Anthropic-compat 端点
+	// 就像 DeepSeek 的 /anthropic — 然后找到了 400 个带有“tool_use id”的
+	// 紧接着“之后没有 tool_result 块”。
 	defer padOrphanToolResults(sess)
 
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeSystemPrompt, UserID: a.ownerUserID})
@@ -2544,9 +2544,9 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterSystemPrompt, UserID: a.ownerUserID})
 
-	// Store raw user message — buildUserMessage handles multi-image
-	// flatten + senderMetadata. Group msgs keep their `[SenderName]:`
-	// prefix (applied in buildUserMessage); DMs stay bare.
+	// 存储原始用户消息 - buildUserMessage 处理多图像
+	// 展平 + 发送者元数据。群组消息保留其“[SenderName]：”
+	// 前缀（在 buildUserMessage 中应用）； DM 保持裸露状态。
 	userMsg := buildUserMessage(msg)
 	sess.Append(userMsg)
 
@@ -2586,7 +2586,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	consecutiveCount := 0
 	totalToolCalls := 0
 
-	// ReAct loop - use Chat for tool iterations
+	// ReAct 循环 - 使用 Chat 进行工具迭代
 	for i := 0; i < a.maxToolIterations; i++ {
 		hcBefore := &HookContext{AgentName: a.name, Point: BeforeModelCall, Messages: messages, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID}
 		a.hooks.Run(ctx, hcBefore)
@@ -2605,7 +2605,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		a.maybeRecoverToolCalls(resp)
 
 		if !resp.HasToolCalls() {
-			// Final response - use streaming
+			// 最终响应 - 使用流媒体
 			sr, err := a.provider.ChatStream(ctx, messages, toolDefs, a.model, a.maxTokens, a.temperature)
 			if err != nil {
 				slog.Error("LLM stream failed, falling back", "agent", a.name, "error", err)
@@ -2614,10 +2614,10 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 				return a.stringStream(resp.Content)
 			}
 
-			// Collect content in background for session storage.
-			// Capture inbound msg + per-turn state out here — the goroutine
-			// below shadows `msg` with the local assistant Message, and
-			// runPostTurn needs the inbound (channel / chat_id / source).
+			// 在后台收集内容以进行会话存储。
+			// 捕获入站消息 + 每回合状态 - goroutine
+			// 在带有本地助手消息的阴影“msg”下方，以及
+			// runPostTurn 需要入站（channel / chat_id / source）。
 			inboundMsg := msg
 			messagesAtTurnStart := messages
 			capturedToolCalls := totalToolCalls
@@ -2661,15 +2661,15 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 				msg := provider.Message{Role: "assistant", Content: full.String(), Thinking: thinking}
 				switch {
 				case len(rawAssistant) > 0:
-					// Provider already serialized the assistant message
-					// in its wire format (e.g. OpenAI/DeepSeek with
-					// reasoning_content). Persist verbatim so the next
-					// turn replays it byte-identically — required for
-					// DeepSeek thinking mode.
+					// 提供者已经序列化了助手消息
+					// 以其有线格式（例如 OpenAI/DeepSeek 与
+					// 推理内容）。坚持逐字逐句，以便下一步
+					// 转以相同的字节方式重放它 - 需要
+					// DeepSeek思维模式。
 					msg.RawAssistant = rawAssistant
 				case thinking != "":
-					// Anthropic extended thinking: pack {thinking, signature}
-					// as a content-block so the next turn can echo it back.
+					// 人择扩展思维：pack {思维，签名}
+					// 作为内容块，以便下一轮可以回显它。
 					if raw, err := json.Marshal(map[string]string{
 						"type":      "thinking",
 						"thinking":  thinking,
@@ -2679,16 +2679,16 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 					}
 				}
 				sess.Append(msg)
-				// Fire PostTurn now that the assistant message is
-				// persisted. Auto-persist (memory.go) lives behind
-				// runPostTurn; without this call the streaming path
-				// silently skipped it — see the FIXME at runPostTurn.
+				// 现在助理消息是 Fire PostTurn
+				// 坚持下来了。自动持久 (memory.go) 落后
+				// 转弯后运行；没有这个调用流路径
+				// 默默地跳过它 - 请参阅 runPostTurn 中的 FIXME。
 				a.runPostTurn(ctx, inboundMsg, append(messagesAtTurnStart, msg), capturedToolCalls, capturedChatterMem)
 			}()
 			return outReader
 		}
 
-		// Tool calls - process concurrently via SDK engine
+		// 工具调用 - 通过 SDK 引擎并发处理
 		assistantMsg := provider.Message{
 			Role:         "assistant",
 			Content:      resp.Content,
@@ -2700,7 +2700,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		sess.Append(assistantMsg)
 		messages = append(messages, assistantMsg)
 
-		// Loop detection
+		// 环路检测
 		loopDetected := false
 		for _, tc := range resp.ToolCalls {
 			sig := toolCallSig{
@@ -2729,12 +2729,12 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			break
 		}
 
-		// Fire BeforeToolCall hooks
+		// 触发 BeforeToolCall 挂钩
 		for _, tc := range resp.ToolCalls {
 			a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeToolCall, ToolName: tc.Function.Name, ToolArgs: tc.Function.Arguments, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID})
 		}
 
-		// Execute tools concurrently via SDK engine
+		// 通过SDK引擎同时执行工具
 		results := a.engine.executeToolsConcurrently(ctx, a.registry, resp.ToolCalls, a.workspacePath)
 		totalToolCalls += len(results)
 
@@ -2761,18 +2761,18 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	return a.streamFinalDeliveryAfterCap(ctx, msg, messages, sess, totalToolCalls, chatterMem)
 }
 
-// streamFinalDeliveryAfterCap runs one extra ChatStream with tools
-// disabled and a synthesis nudge, then persists the assistant message
-// with iteration-cap metadata so the chat UI can badge the bubble.
-// Returned StreamReader matches the contract of the normal "final
-// response" branch above so callers don't need a special case.
+// StreamFinalDeliveryAfterCap 使用工具运行一个额外的 ChatStream
+// 禁用并合成轻推，然后保留助理消息
+// 使用迭代上限元数据，以便聊天 UI 可以标记气泡。
+// 返回的 StreamReader 与正常的“最终
+// 上面的响应”分支，因此调用者不需要特殊情况。
 func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.InboundMessage, messages []provider.Message, sess *session.Session, toolCallCount int, chatterMem *Memory) *provider.StreamReader {
 	capMeta := iterationCapMetadata(a.maxToolIterations)
 	finalMessages := append(messages, capReachedNudge(a.maxToolIterations))
 	sr, err := a.provider.ChatStream(ctx, finalMessages, nil, a.model, a.maxTokens, a.temperature)
 	if err != nil {
-		// Streaming endpoint failed — persist+emit a fallback line
-		// with the badge so the user still gets the signal.
+		// 流端点失败 - 持久+发出后备线
+		// 带有徽章，以便用户仍然收到信号。
 		fallback := fmt.Sprintf("I've reached the maximum number of tool iterations (%d) and couldn't synthesize a final response. The work above represents what I gathered before hitting the limit.", a.maxToolIterations)
 		fallbackMsg := provider.Message{Role: "assistant", Content: fallback, Metadata: capMeta, Timestamp: time.Now().UnixMilli()}
 		sess.Append(fallbackMsg)
@@ -2841,25 +2841,25 @@ func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.
 			}
 		}
 		sess.Append(finalMsg)
-		// Out-of-band content event so SSE subscribers + chat_events
-		// archive carry the cap-reached flag — chunks themselves don't
-		// have a metadata field, so we publish it once here.
+		// 带外内容事件，因此 SSE 订阅者 + chat_events
+		// 存档带有已达到上限的标志 - 块本身没有
+		// 有一个元数据字段，所以我们在这里发布一次。
 		emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{
 			"content":  "",
 			"metadata": capMeta,
 		}})
-		// Fire PostTurn so AutoPersist (and any future PostTurn hook)
-		// runs on the streaming path too — see the no-tool-calls
-		// branch in HandleMessageStream for the rationale.
+		// Fire PostTurn so AutoPersist（以及任何未来的 PostTurn 挂钩）
+		// 也在流路径上运行 - 请参阅 no-tool-calls
+		// HandleMessageStream 中的分支以了解其基本原理。
 		a.runPostTurn(ctx, inboundMsg, append(messages, finalMsg), toolCallCount, chatterMem)
 	}()
 	return outReader
 }
 
-// extractToolMeta strips a FC_META prefix (if present) from a tool result and
-// returns the remaining content plus the parsed metadata. Today the only
-// signal is whether exec ran in a sandbox. Keeping the helper shared so all
-// tool-result handoff paths emit the same shape to the frontend.
+// extractToolMeta 从工具结果中去除 FC_META 前缀（如果存在），并
+// 返回剩余内容加上解析的元数据。今天唯一
+// signal 是 exec 是否在沙箱中运行。让助手保持共享
+// 工具-结果切换路径向前端发出相同的形状。
 func extractToolMeta(result string) (string, map[string]any) {
 	if strings.HasPrefix(result, tools.MetaSandboxPrefix) {
 		return strings.TrimPrefix(result, tools.MetaSandboxPrefix), map[string]any{"sandbox": true}
@@ -2867,14 +2867,14 @@ func extractToolMeta(result string) (string, map[string]any) {
 	return result, nil
 }
 
-// capReachedNudge is the system message we append before the forced
-// final delivery turn. Spells out two things: (a) tools are disabled
-// for this call so don't try, (b) deliver the structured output the
-// user asked for from whatever was already gathered, marking gaps
-// explicitly rather than skipping fields. The model was generally
-// burning the entire budget on exploration without ever circling back
-// to synthesis — surfacing the constraint explicitly is the cheapest
-// nudge that produces a usable artifact.
+// capReachedNudge 是我们在强制之前附加的系统消息
+// 最后交付回合。阐明两件事：(a) 工具被禁用
+// 对于这个调用，所以不要尝试，(b) 提供结构化输出
+// 用户从已经收集到的内容中提出要求，标记空白
+// 明确地而不是跳过字段。模型一般是
+// 把全部预算都花在勘探上，再也没有回头
+// 到综合——明确地暴露约束是最便宜的
+// 产生可用工件的推动。
 func capReachedNudge(maxIterations int) provider.Message {
 	return provider.Message{
 		Role: "system",
@@ -2885,10 +2885,10 @@ func capReachedNudge(maxIterations int) provider.Message {
 	}
 }
 
-// iterationCapMetadata is the assistant-side metadata stamped on the
-// forced final-delivery message so the UI can badge the bubble. Kept
-// as a constructor so the key name stays canonical across the streaming
-// and non-streaming paths.
+// iterationCapMetadata是标记在迭代器上的助手端元数据
+// 强制最终传递消息，以便 UI 可以标记气泡。保留
+// 作为构造函数，因此键名称在流中保持规范
+// 和非流路径。
 func iterationCapMetadata(maxIterations int) map[string]any {
 	return map[string]any{
 		"iterationCapReached": true,
@@ -2896,7 +2896,7 @@ func iterationCapMetadata(maxIterations int) map[string]any {
 	}
 }
 
-// stringStream creates a StreamReader that yields a single string.
+// stringStream 创建一个产生单个字符串的 StreamReader。
 func (a *Agent) stringStream(text string) *provider.StreamReader {
 	ch := make(chan provider.StreamChunk, 2)
 	go func() {
@@ -2906,29 +2906,29 @@ func (a *Agent) stringStream(text string) *provider.StreamReader {
 	return provider.NewStreamReader(ch)
 }
 
-// HomePath returns the agent's home directory (identity/metadata).
+// HomePath 返回代理的主目录（身份/元数据）。
 func (a *Agent) HomePath() string {
 	return a.homePath
 }
 
-// SplitReplies returns the effective per-agent split-reply setting
-// — used by the gateway when constructing OutboundMessage so the WeChat
-// adapter knows whether to honor SplitMessageMarker. Populated at
-// agent boot from the merged config (per-agent override else system
-// WeChatCfg.SplitReplies); refreshed on UpdateConfig.
+// SplitReplies 返回有效的每个代理分割回复设置
+// — 构造 OutboundMessage 时由网关使用，因此微信
+// 适配器知道是否遵守 SplitMessageMarker。人口居住于
+// 代理从合并的配置启动（每个代理覆盖其他系统
+// WeChatCfg.SplitReplies);在 UpdateConfig 上刷新。
 func (a *Agent) SplitReplies() bool {
 	return a.splitReplies
 }
 
-// RegisteredTools returns the live tool registry projection — name +
-// description + source — for the dashboard's Tools tab. Reflects what
-// THIS agent currently has loaded: built-ins always, plus any MCP or
-// plugin tools attached at boot / hot-reload. Order is stable (builtins
-// first, then MCP, then plugin, sorted by name within each group).
+// RegisteredTools 返回实时工具注册表投影 — 名称 +
+// 描述 + 来源 — 用于仪表板的“工具”选项卡。反映了什么
+// 该代理当前已加载：始终内置，以及任何 MCP 或
+// 启动/热重载时附加的插件工具。订单稳定（内置
+// 首先，然后是 MCP，然后是插件，按每个组中的名称排序）。
 //
-// Returns the FULL registry. Mode-based filtering happens client-side
-// in the dashboard so the operator can see "what would be active in
-// chatbot mode" without committing.
+// 返回完整的注册表。基于模式的过滤发生在客户端
+// 在仪表板中，以便操作员可以看到“什么是活动的
+// 聊天机器人模式”而无需提交。
 func (a *Agent) RegisteredTools() []tools.ToolInfo {
 	if a.registry == nil {
 		return nil
@@ -2936,69 +2936,69 @@ func (a *Agent) RegisteredTools() []tools.ToolInfo {
 	return a.registry.RegisteredTools()
 }
 
-// chatbotBuiltinAllowlist is the curated set of built-in tools exposed
-// to the LLM in chatbot mode. Picked for IM-native companion / customer-
-// support / role-play products:
+// chatbotBuiltinAllowlist 是一组公开的精选内置工具
+// 以聊天机器人模式进入法学硕士。被选为 IM 原生伴侣/客户 -
+// 支持/角色扮演产品：
 //
-//   - image_gen     : self-generated images (registered only if a
-//     provider is configured; absence is fine)
-//   - tts           : voice messages (same conditional registration)
-//   - write_file    : persist USER.md / MEMORY.md when the LLM learns
-//     something worth keeping. Routing in
-//     systemFileUserID sends USER.md/MEMORY.md to the
-//     per-chatter row, so each chatter accrues their
-//     own profile / memory. Path resolution rejects
-//     arbitrary paths via identityFileBlocked +
-//     workspace scoping, so this isn't a general
-//     "let the chatbot write anywhere" hole — just
-//     the canonical per-chatter notes.
-//   - edit_file     : same rationale; preferred over write_file when
-//     surgically updating MEMORY.md so the model
-//     doesn't accidentally clobber prior entries.
+// - image_gen ：自行生成的图像（仅当
+// 提供者已配置；缺席也没关系）
+// - tts：语音消息（相同条件注册）
+// - write_file ：LLM学习时保留USER.md / MEMORY.md
+// 值得保留的东西。路由输入
+// systemFileUserID 将 USER.md/MEMORY.md 发送到
+// 每个聊天者行，因此每个聊天者都会积累他们的
+// 自己的个人资料/记忆。路径解析拒绝
+// 通过 IdentityFileBlocked + 任意路径
+// 工作空间范围，所以这不是一般情况
+// “让聊天机器人在任何地方写”漏洞——只是
+// 规范的每条聊天记录。
+// - edit_file ：相同的原理；优先于 write_file 时
+// 通过外科手术更新 MEMORY.md 模型
+// 不会意外破坏之前的条目。
 //
-// Notably absent: `read_file` / `list_dir` — chatbot mode shouldn't
-// browse the filesystem; USER.md / MEMORY.md content is already loaded
-// into the system prompt by the bootstrap pass, so read tools would
-// only enable poking at things the chatter shouldn't see. apply_patch
-// is also out (multi-file batch is agent-mode territory).
+// 值得注意的是：“read_file”/“list_dir”不存在——聊天机器人模式不应该
+// 浏览文件系统； USER.md / MEMORY.md 内容已加载
+// 通过引导程序进入系统提示符，因此读取工具将
+// 只允许刺探聊天者不应该看到的东西。应用补丁
+// 也已经过时了（多文件批处理是代理模式的领域）。
 //
-// Also notably absent: `memory_search`. It scans
-// <workspace>/memory/logs/*.jsonl, which chatbot mode never writes —
-// so the tool ALWAYS returns "No matching entries found" and the
-// model reads that as "I have no memory of you", overriding the
-// in-prompt MEMORY.md section it should have trusted. Removing it
-// forces the model to rely on the USER.md / MEMORY.md sections
-// rendered into the system prompt, which is the only persistence
-// path chatbot mode actually exposes.
+// 同样值得注意的是：“memory_search”。它扫描
+// <workspace>/memory/logs/*.jsonl，聊天机器人模式从不写入 —
+// 因此该工具总是返回“未找到匹配的条目”并且
+// 模型将其解读为“我对你没有记忆”，从而覆盖了
+// 它应该信任的提示 MEMORY.md 部分。删除它
+// 强制模型依赖 USER.md / MEMORY.md 部分
+// 渲染成系统提示符，这是唯一的持久化
+// 聊天机器人模式实际上暴露了路径。
 //
-// Notably absent — the `message` tool. The main reply is emitted via
-// the LLM's normal `content` channel (the gateway's task callback turns
-// that into an OutboundMessage automatically) and multi-bubble output
-// uses SplitMessageMarker inline, not tool calls. Letting `message`
-// into chatbot mode tempts the LLM into agent-style "I'll send a
-// 'thinking...' message first, then my real reply" patterns that look
-// jarring in a companion product. Operators who need OOB messaging
-// (cron-triggered greetings, multi-recipient broadcasts) should fall
-// back to `agent` mode or write a plugin.
+// 值得注意的是“消息”工具的缺失。主要回复通过以下方式发出
+// LLM 的正常“内容”通道（网关的任务回调变成
+// 自动进入 OutboundMessage）和多气泡输出
+// 使用 SplitMessageMarker 内联，而不是工具调用。发布“消息”
+// 进入聊天机器人模式会诱使法学硕士进入代理风格“我会发送一个
+// 首先是“思考...”消息，然后是我真正的回复”的模式
+// 与配套产品不和谐。需要 OOB 消息传递的操作员
+// （cron 触发的问候语、多接收者广播）应该下降
+// 返回“代理”模式或编写插件。
 //
-// Also absent: exec, web_fetch / web_search, scheduling, delegation
-// — all agent-loop machinery that doesn't belong in a chat persona's
-// voice. Add new built-ins here only when they're universally useful
-// for chatbot products; everything else belongs in a plugin.
+// 还缺席：exec、web_fetch / web_search、调度、委托
+// — 不属于聊天角色的所有代理循环机制
+// 嗓音。仅当新的内置函数普遍有用时才在此处添加它们
+// 对于聊天机器人产品；其他一切都属于插件。
 var chatbotBuiltinAllowlist = []string{
 	"image_gen",
 	"tts",
 	"write_file",
 	"edit_file",
-	// set_timezone keeps "their local time" right for chat (greetings,
+	// set_timezone 保持“他们的当地时间”适合聊天（问候语，
 	// "晚安" timing) — chatbots need it as much as full agents do.
 	"set_timezone",
 }
 
-// builtinAllowForMode returns the built-in tool name allowlist for the
-// given prompt mode. Plugin / MCP tools are always included regardless
-// — see Registry.DefinitionsForMode. nil means "all built-ins";
-// []string{} means "no built-ins"; a non-empty slice means "only these".
+// builtinAllowForMode 返回内置工具名称白名单
+// 给定提示模式。无论如何，插件/MCP 工具始终包含在内
+// — 请参阅Registry.DefinitionsForMode。 nil 表示“所有内置函数”；
+// []string{} 表示“无内置函数”；非空切片意味着“只有这些”。
 func builtinAllowForMode(mode string) []string {
 	switch mode {
 	case config.PromptModeChatbot:
@@ -3010,18 +3010,18 @@ func builtinAllowForMode(mode string) []string {
 	}
 }
 
-// WorkspacePath returns the agent's working directory for user-facing files.
+// WorkspacePath 返回面向用户的文件的代理工作目录。
 func (a *Agent) WorkspacePath() string {
 	return a.workspacePath
 }
 
-// chatterLocation resolves the effective timezone for a chatter via
-// scope prefs (chatter pref → agent default → system default). Server-
-// local when no relational store is wired or nothing is configured —
-// the legacy single-tenant behavior. Passed to the ContextBuilder as
-// the tzResolver so the system prompt's date line renders in the
-// chatter's wall clock; the cron tool runs the same resolution at
-// job-creation time.
+// chatterLocation 通过以下方式解析聊天的有效时区
+// 范围首选项（chatter 首选项→代理默认→系统默认）。服务器-
+// 当没有连接关系存储或未配置任何内容时为本地 -
+// 遗留的单租户行为。传递给 ContextBuilder 作为
+// tzResolver 以便系统提示符的日期行呈现在
+// 喋喋不休的挂钟； cron 工具运行相同的分辨率
+// 创造就业机会的时间。
 func (a *Agent) chatterLocation(chatterUID string) *time.Location {
 	if a.dataStore == nil {
 		return time.Local
@@ -3030,44 +3030,44 @@ func (a *Agent) chatterLocation(chatterUID string) *time.Location {
 	return scope.LoadLocationOrLocal(tz)
 }
 
-// UpdateConfig updates the agent's runtime config (model, temperature, etc.)
+// UpdateConfig 更新代理的运行时配置（型号、温度等）
 func (a *Agent) UpdateConfig(rc config.ResolvedAgent) {
 	a.model = rc.Model
 	a.maxTokens = rc.MaxTokens
 	a.temperature = rc.Temperature
 	a.maxToolIterations = rc.MaxToolIterations
 	a.maxParallelToolCalls = rc.MaxParallelToolCalls
-	// Sandbox flags drive the system prompt's "Working Directory" / "home
-	// dir" description and the sandbox-capabilities block. Without this
-	// propagation an agent that existed before sandbox was enabled keeps
-	// telling the LLM its home is the host absolute path, even after the
-	// executor itself has been swapped to Docker — model dutifully calls
-	// list_dir /Users/idoubi/.bkclaw/agents/<id>/agent and 404s in the
-	// container.
+	// 沙箱标志驱动系统提示符的“工作目录”/“主目录”
+	// dir”描述和沙箱功能块。没有这个
+	// 启用沙箱之前存在的传播代理将保留
+	// 告诉LLM它的家是主机绝对路径，即使在
+	// 执行器本身已更换为 Docker — 模型尽职尽责地调用
+	// list_dir /Users/idoubi/.bkclaw/agents/<id>/agent 和 404s
+	// 容器。
 	a.ctxBuilder.sandboxEnabled = rc.Sandbox.Enabled
 	a.ctxBuilder.sandboxBackend = rc.Sandbox.Backend
-	// Propagate per-agent prompt mode updates from dashboard saves.
-	// Without this, an operator switching an agent to chatbot mode in
-	// the UI would have to restart the binary for the change to take
-	// effect. The tool filter follows promptMode automatically via
-	// builtinAllowForMode at request time, so no separate hot-reload
-	// hook is needed for the tool surface.
+	// 从仪表板保存传播每个代理提示模式更新。
+	// 如果没有这个，操作员将代理切换到聊天机器人模式
+	// UI 必须重新启动二进制文件才能使更改生效
+	// 影响。工具过滤器自动遵循提示模式
+	// 在请求时内置AllowForMode，因此不需要单独的热重载
+	// 工具表面需要钩子。
 	a.promptMode = rc.PromptMode
 	a.ctxBuilder.SetPromptMode(rc.PromptMode)
-	// Per-agent WeChat split-replies. Nil override = keep whatever the
-	// system layer initialized at boot (don't reset to false). Non-nil
-	// = authoritative for this agent.
+	// 每个客服微信分批回复。无覆盖 = 保留任何内容
+	// 系统层在启动时初始化（不要重置为 false）。非零
+	// = 该代理的权威。
 	if rc.SplitReplies != nil {
 		a.splitReplies = *rc.SplitReplies
 	}
 }
 
-// chatterUserID picks the per-message chatter identity, falling back
-// to the agent owner when the inbound message doesn't carry one
-// (legacy channels, system-injected events, …). This is what we use
-// as the per-user skills bucket key and the sandbox bind-mount target,
-// so two different chatters of the same agent each see their own
-// personal skill set and write installs into their own host dir.
+// chatterUserID 选择每条消息的聊天身份，回退
+// 当入站消息不携带代理所有者时
+// （遗留通道、系统注入事件……）。这就是我们使用的
+// 作为每用户技能存储桶密钥和沙箱绑定安装目标，
+// 所以同一个代理的两个不同的聊天者各自看到自己的
+// 个人技能设置并将安装写入自己的主机目录中。
 func (a *Agent) chatterUserID(msg bus.InboundMessage) string {
 	if msg.UserID != "" {
 		return msg.UserID
@@ -3075,24 +3075,24 @@ func (a *Agent) chatterUserID(msg bus.InboundMessage) string {
 	return a.ownerUserID
 }
 
-// refreshSkillsFromStore mirrors OSS-hosted skills (global, per-agent,
-// and per-user) to the local filesystem and rebuilds the skills summary
-// baked into the system prompt. No-op when no workspace store is
-// configured. Called at the top of every turn so a skill uploaded
-// after pod start — or on a sibling replica — becomes visible here on
-// the next message instead of requiring a pod restart.
+// freshSkillsFromStore 镜像 OSS 托管的技能（全局、每个代理、
+// 和每个用户）到本地文件系统并重建技能摘要
+// 烘焙到系统提示符中。当没有工作区存储时，无操作
+// 配置。在每个回合的顶部调用，以便上传技能
+// Pod 启动后（或在同级副本上）在此处可见
+// 下一条消息，而不需要重新启动 Pod。
 //
-// userID identifies whose per-user skill bucket to merge into the set;
-// pass the chatter (not the agent owner) so a skill chatter A installs
-// is visible only to chatter A even when both chat the same agent. Empty
-// disables the per-user layer.
+// userID 标识要合并到集合中的每个用户技能桶；
+// 传递聊天者（而不是代理所有者），以便安装技能聊天者 A
+// 即使聊天者 A 与同一个客服人员聊天，该信息也仅对聊天者 A 可见。空的
+// 禁用每用户层。
 func (a *Agent) refreshSkillsFromStore(userID string) {
 	if a.workspaceStore == nil {
-		// IM-vs-web "missing agent skills" diagnostic: when this fires
-		// on an IM turn but not the matching web turn for the same
-		// agent, the chatter's UserSpace was built without a workspace
-		// store, so agent-scope OSS skills never hydrate. Warn (not
-		// debug) so it surfaces in default-level prod logs.
+		// IM-vs-web“缺少代理技能”诊断：何时触发
+		// 在 IM 轮次上，但不在相同的匹配网络轮次上
+		// 代理，聊天者的用户空间是在没有工作空间的情况下构建的
+		// 存储，因此代理范围的 OSS 技能永远不会水合。警告（不
+		// debug），因此它会出现在默认级别的生产日志中。
 		slog.Warn("refresh skills skipped: no workspace store",
 			"agent", a.name, "agentID", a.agentID, "user", userID)
 		return
@@ -3104,11 +3104,11 @@ func (a *Agent) refreshSkillsFromStore(userID string) {
 	summary := loader.BuildSkillsSummary(skills)
 	a.ctxBuilder.SetSkillsSummary(summary)
 	tools.RegisterLoadSkill(a.registry, loader.AllSkillDirs())
-	// Per-turn fingerprint of the skill set the system prompt will
-	// ship. Lets us diff IM vs web for the same (agent, chatter) and
-	// confirm — or rule out — that agent-scope skills are reaching
-	// every channel. count==bundled-only is the "missing agent skills"
-	// signature.
+	// 系统提示会显示技能组的每回合指纹
+	// 船。让我们比较 IM 与 Web 的相同点（座席、聊天）和
+	// 确认——或排除——座席范围的技能正在达到
+	// 每个频道。 count==bundled-only 是“缺少代理技能”
+	// 签名。
 	names := make([]string, 0, len(skills))
 	for _, s := range skills {
 		names = append(names, s.Name)
@@ -3118,18 +3118,18 @@ func (a *Agent) refreshSkillsFromStore(userID string) {
 		"count", len(skills), "summary_bytes", len(summary), "names", names)
 }
 
-// ReloadWorkspaceFiles re-reads workspace .md files (SOUL.md, AGENTS.md, etc.)
-// and rebuilds the context builder.
+// ReloadWorkspaceFiles 重新读取工作区 .md 文件（SOUL.md、AGENTS.md 等）
+// 并重建上下文构建器。
 func (a *Agent) ReloadWorkspaceFiles() {
 	if a.memoryStore != nil {
 		a.memory = NewMemoryWithStoreForUser(a.homePath, a.memoryStore, a.ownerUserID, a.name)
 	} else {
 		a.memory = NewMemory(a.homePath)
 	}
-	// Rebuild skills summary. When a workspace store is configured,
-	// LoadSkills first hydrates global + per-agent + per-user skill dirs
-	// from object storage so skills uploaded on another replica (or
-	// post-boot on this one) become visible.
+	// 重建技能总结。配置工作区存储后，
+	// LoadSkills 首先水合全局+每个代理+每个用户技能目录
+	// 来自对象存储，因此技能上传到另一个副本（或
+	// 启动后）变得可见。
 	loader := NewSkillsLoaderWithGlobal(a.homeDir, a.homePath, "", a.skillsCfg, a.globalSkillsCfg).
 		WithUserID(a.ownerUserID)
 	if a.workspaceStore != nil {
@@ -3142,28 +3142,28 @@ func (a *Agent) ReloadWorkspaceFiles() {
 	a.ctxBuilder.SetWorkspace(a.workspacePath)
 	a.ctxBuilder.SetPromptMode(a.promptMode)
 	a.ctxBuilder.SetDisplayName(a.displayName)
-	// Preserve Store-backed identity reads across reload; without this,
-	// Postgres-mode pods silently fall back to pod-local filesystem.
-	// userID must also be re-pinned — the DB store requires a non-empty
-	// user_id to scope the SOL/IDENTITY/AGENTS reads, and without it
-	// the ContextBuilder's loadFile pass would fail on every shared
-	// identity file after a reload (manifest as an "agent without a
-	// name/soul" greeting).
+	// 在重新加载时保留存储支持的身份读取；没有这个，
+	// Postgres 模式 pod 会默默地回退到 pod 本地文件系统。
+	// 用户ID也必须重新固定——数据库存储需要一个非空的
+	// user_id 来限制 SOL/IDENTITY/AGENTS 读取的范围，并且没有它
+	// ContextBuilder 的 loadFile 传递在每个共享上都会失败
+	// 重新加载后的身份文件（表现为“没有代理”
+	// 名字/灵魂”问候语）。
 	if a.memoryStore != nil {
 		a.ctxBuilder.store = a.memoryStore
 		a.ctxBuilder.agentID = a.name
 		a.ctxBuilder.userID = a.ownerUserID
 	}
-	// Chatter-timezone date line — same re-apply rule as the Store
-	// wiring above: the rebuilt ContextBuilder starts with a nil
-	// resolver and would silently fall back to server-local time.
+	// Chatter-时区日期线 — 与商店相同的重新应用规则
+	// 上面的接线：重建的 ContextBuilder 以 nil 开头
+	// 解析器并会默默地回退到服务器本地时间。
 	if a.dataStore != nil {
 		a.ctxBuilder.SetTimezoneResolver(a.chatterLocation)
 	}
 }
 
-// extractMediaPaths scans tool output for MEDIA: lines and returns file paths.
-// The MEDIA: protocol is used by OpenClaw skills to attach files to chat messages.
+// extractMediaPaths 扫描工具输出中的 MEDIA: 行并返回文件路径。
+// MEDIA：OpenClaw 技能使用协议将文件附加到聊天消息。
 func extractMediaPaths(output string) []string {
 	var paths []string
 	for _, line := range strings.Split(output, "\n") {
@@ -3180,7 +3180,7 @@ func extractMediaPaths(output string) []string {
 	return paths
 }
 
-// sendMediaFiles sends extracted MEDIA: files to the outbound bus.
+// sendMediaFiles 将提取的 MEDIA: 文件发送到出站总线。
 func (a *Agent) sendMediaFiles(msg bus.InboundMessage, mediaPaths []string) {
 	if len(mediaPaths) == 0 || a.messageBus == nil {
 		return

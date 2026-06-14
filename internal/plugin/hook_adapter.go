@@ -11,7 +11,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/provider"
 )
 
-// hookPointName maps HookPoint constants to snake_case protocol names.
+// hookPointName 将 HookPoint 常量映射为蛇形命名法的协议名称。
 var hookPointName = map[agent.HookPoint]string{
 	agent.BeforeModelCall: "before_model_call",
 	agent.AfterModelCall:  "after_model_call",
@@ -20,7 +20,7 @@ var hookPointName = map[agent.HookPoint]string{
 	agent.PostTurn:        "post_turn",
 }
 
-// hookPointFromName maps protocol snake_case names to HookPoint constants.
+// hookPointFromName 将协议蛇形命名法名称映射为 HookPoint 常量。
 var hookPointFromName = map[string]agent.HookPoint{
 	"before_model_call": agent.BeforeModelCall,
 	"after_model_call":  agent.AfterModelCall,
@@ -29,7 +29,7 @@ var hookPointFromName = map[string]agent.HookPoint{
 	"post_turn":         agent.PostTurn,
 }
 
-// syncHookPoints are hook points where we wait for the plugin response.
+// syncHookPoints 是需要等待插件响应的同步钩子点。
 var syncHookPoints = map[agent.HookPoint]bool{
 	agent.BeforeModelCall: true,
 	agent.BeforeToolCall:  true,
@@ -37,15 +37,15 @@ var syncHookPoints = map[agent.HookPoint]bool{
 
 const hookCallTimeout = 10 * time.Second
 
-// RegisterPluginHooks queries a hook plugin for its desired hook points and
-// registers HookFuncs in the agent's hook registry that forward events to the plugin.
+// RegisterPluginHooks 查询钩子插件所需的钩子点，并在代理的钩子注册表中
+// 注册将事件转发给插件的 HookFunc。
 func RegisterPluginHooks(ctx context.Context, mgr *Manager, pluginID string, registry *agent.HookRegistry, agentName string) error {
 	inst := mgr.Plugin(pluginID)
 	if inst == nil || inst.Process == nil || !inst.Process.IsRunning() {
 		return fmt.Errorf("plugin %s not running", pluginID)
 	}
 
-	// Ask the plugin which hook points it wants
+	// 询问插件它需要哪些钩子点
 	result, err := inst.Process.Call(ctx, MethodHookRegister, nil)
 	if err != nil {
 		return fmt.Errorf("hook.register call to %s: %w", pluginID, err)
@@ -63,7 +63,7 @@ func RegisterPluginHooks(ctx context.Context, mgr *Manager, pluginID string, reg
 			continue
 		}
 
-		// Capture loop variables
+		// 捕获循环变量
 		capturedHP := hp
 		capturedPointName := pointName
 		proc := inst.Process
@@ -72,7 +72,7 @@ func RegisterPluginHooks(ctx context.Context, mgr *Manager, pluginID string, reg
 			params := buildHookFireParams(capturedPointName, hc)
 
 			if syncHookPoints[capturedHP] {
-				// Synchronous: call and wait for modified messages
+				// 同步：调用并等待修改后的消息
 				callCtx, cancel := context.WithTimeout(ctx, hookCallTimeout)
 				defer cancel()
 
@@ -90,12 +90,12 @@ func RegisterPluginHooks(ctx context.Context, mgr *Manager, pluginID string, reg
 					return
 				}
 
-				// If the plugin returned modified messages, apply them
+				// 如果插件返回了修改后的消息，则应用它们
 				if len(fireResult.Messages) > 0 {
 					hc.Messages = hookMessagesToProvider(fireResult.Messages)
 				}
 			} else {
-				// Asynchronous: fire and forget
+				// 异步：发送后即忘记
 				if err := proc.Notify(MethodHookFire, params); err != nil {
 					slog.Warn("plugin: hook.fire notify failed",
 						"plugin", pluginID, "point", capturedPointName, "error", err)
@@ -110,7 +110,7 @@ func RegisterPluginHooks(ctx context.Context, mgr *Manager, pluginID string, reg
 	return nil
 }
 
-// buildHookFireParams constructs HookFireParams from a HookContext.
+// buildHookFireParams 从 HookContext 构建 HookFireParams。
 func buildHookFireParams(pointName string, hc *agent.HookContext) HookFireParams {
 	params := HookFireParams{
 		Point:      pointName,
@@ -124,7 +124,7 @@ func buildHookFireParams(pointName string, hc *agent.HookContext) HookFireParams
 		ToolResult: hc.ToolResult,
 	}
 
-	// Serialize messages
+	// 序列化消息
 	if len(hc.Messages) > 0 {
 		msgs := make([]HookMessage, 0, len(hc.Messages))
 		for _, m := range hc.Messages {
@@ -144,7 +144,7 @@ func buildHookFireParams(pointName string, hc *agent.HookContext) HookFireParams
 		params.Messages = msgs
 	}
 
-	// Serialize response
+	// 序列化响应
 	if hc.Response != nil {
 		params.Response = &HookResponseData{
 			Content:  hc.Response.Content,
@@ -155,7 +155,7 @@ func buildHookFireParams(pointName string, hc *agent.HookContext) HookFireParams
 	return params
 }
 
-// hookMessagesToProvider converts HookMessages back to provider.Messages.
+// hookMessagesToProvider 将 HookMessage 转换回 provider.Message。
 func hookMessagesToProvider(msgs []HookMessage) []provider.Message {
 	result := make([]provider.Message, 0, len(msgs))
 	for _, hm := range msgs {

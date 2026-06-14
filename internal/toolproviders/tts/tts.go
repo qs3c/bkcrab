@@ -1,6 +1,5 @@
-// Package tts bundles text-to-speech providers. The category returns the
-// generated audio as a MEDIA: line per tmp file, so the chat pipeline
-// auto-attaches the clip to the assistant's outgoing message.
+// Package tts 包含文本转语音提供商。该类别将生成的音频作为每临时文件的 MEDIA: 行返回，
+// 以便聊天管道自动将音频片段附加到助手的出站消息中。
 package tts
 
 import (
@@ -12,10 +11,10 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// Category is the tool category these providers plug into.
+// Category 是这些提供商插入的工具类别。
 const Category = "tts"
 
-// RegisterAll installs built-in TTS providers in r.
+// RegisterAll 在 r 中注册内置的 TTS 提供商。
 func RegisterAll(r *toolproviders.Registry) {
 	r.Register(&OpenAI{})
 	r.Register(&MiniMax{})
@@ -43,9 +42,8 @@ func parseArgs(raw map[string]any) (args, error) {
 	return a, nil
 }
 
-// writeAudio dumps audio bytes to a tmp file and returns an LLM-visible
-// response. The MEDIA: marker is how loop.go's extractMediaPaths picks files
-// up and attaches them to the outbound chat message.
+// writeAudio 将音频字节写入临时文件并返回 LLM 可见的响应。
+// MEDIA: 标记就是 loop.go 中 extractMediaPaths 拾取文件并附加到出站聊天消息的方式。
 func writeAudio(data []byte, ext string) (toolproviders.Response, error) {
 	if len(data) == 0 {
 		return toolproviders.Response{}, toolproviders.ErrNoResults
@@ -64,8 +62,7 @@ func writeAudio(data []byte, ext string) (toolproviders.Response, error) {
 	}
 	f.Close()
 	path, _ := filepath.Abs(f.Name())
-	// First line is an LLM-visible status; the MEDIA: line is consumed by
-	// the loop before the text reaches the model on the next turn.
+	// 第一行是 LLM 可见的状态；MEDIA: 行在文本到达模型之前被循环消费。
 	text := fmt.Sprintf("Generated audio: %s\nMEDIA:%s", filepath.Base(path), path)
 	return toolproviders.Response{Text: text}, nil
 }

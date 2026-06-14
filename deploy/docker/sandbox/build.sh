@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# Build the bkclaw-sandbox runtime image used by the agent's exec
-# sandbox. Bundles Python + Node + Camoufox (anti-detect Firefox) so
-# the camoufox-cli skill works on the first turn without any pip/npm
-# round-trips.
+# 构建 agent 执行沙箱使用的 bkclaw-sandbox 运行时镜像。
+# 捆绑 Python + Node + Camoufox（反检测 Firefox），
+# 使 camoufox-cli 技能在第一回合无需任何 pip/npm 往返即可工作。
 #
-# Usage:
-#   deploy/docker/sandbox/build.sh                      # local build, tag latest
-#   deploy/docker/sandbox/build.sh -t v1                # custom tag
-#   deploy/docker/sandbox/build.sh --push               # build + push
+# 用法：
+#   deploy/docker/sandbox/build.sh                      # 本地构建，标记 latest
+#   deploy/docker/sandbox/build.sh -t v1                # 自定义标签
+#   deploy/docker/sandbox/build.sh --push               # 构建 + 推送
 #   deploy/docker/sandbox/build.sh --platform linux/amd64,linux/arm64 --push
-#                                                       # multi-arch buildx
+#                                                       # 多架构 buildx
 #
-# After building, point the gateway at it via Settings → Sandbox →
-# Image, or during onboard. Default: thinkany/bkclaw-sandbox:latest.
+# 构建后，通过设置 → 沙箱 → 镜像或在引导期间将网关指向它。
+# 默认：thinkany/bkclaw-sandbox:latest。
 
 set -euo pipefail
 
@@ -47,8 +46,7 @@ echo "==> building ${REF}"
 echo "    context: ${SCRIPT_DIR}"
 
 if [[ -n "$PLATFORM" ]]; then
-  # buildx path — required for multi-arch and for --push to work
-  # against a registry without first loading into the local daemon.
+  # buildx 路径 — 多架构和 --push 推送到注册表时需要，无需先加载到本地守护进程。
   docker buildx build \
     --platform "$PLATFORM" \
     $([[ $PUSH -eq 1 ]] && echo --push || echo --load) \

@@ -16,27 +16,27 @@ import (
 	"github.com/qs3c/bkclaw/internal/config"
 )
 
-// CredentialEntry represents a stored credential.
+// CredentialEntry 表示一个存储的凭据。
 type CredentialEntry struct {
 	Name   string            `json:"name"`
-	Type   string            `json:"type"`   // "api_key", "oauth", "token"
-	Source string            `json:"source"` // "config", "env", "store"
+	Type   string            `json:"type"`   // "api_key"、"oauth"、"token"
+	Source string            `json:"source"` // "config"、"env"、"store"
 	Keys   map[string]string `json:"keys"`
 }
 
-// CredentialManager handles secure credential storage and retrieval.
+// CredentialManager 处理安全的凭据存储和检索。
 type CredentialManager struct {
 	masterKey      []byte
 	entries        map[string]*CredentialEntry
 	storePath      string
-	needsReencrypt bool // true after legacy-key fallback decrypt
+	needsReencrypt bool // 在旧密钥回退解密后为 true
 	mu             sync.RWMutex
 }
 
-// NewCredentialManagerForUser creates a credential manager scoped to a specific
-// user. Credentials live at ~/.bkclaw/users/{userID}/credentials.json and
-// are encrypted with a key derived from the user ID, so one user's file
-// cannot be decrypted with another user's key even if moved on disk.
+// NewCredentialManagerForUser 创建一个限定于特定用户的凭据管理器。
+// 凭据存储在 ~/.bkclaw/users/{userID}/credentials.json 中，
+// 并使用从用户 ID 派生的密钥加密，因此即使一个用户的文件
+// 被移动到磁盘上其他位置，也无法用另一个用户的密钥解密。
 func NewCredentialManagerForUser(userID, passphrase string) (*CredentialManager, error) {
 	if userID == "" {
 		return nil, fmt.Errorf("provider: NewCredentialManagerForUser requires userID")
@@ -58,14 +58,14 @@ func NewCredentialManagerForUser(userID, passphrase string) (*CredentialManager,
 		storePath: filepath.Join(storeDir, "credentials.json"),
 	}
 
-	// Load existing credentials
+	// 加载现有凭据
 	if err := cm.load(); err != nil && !os.IsNotExist(err) {
-		// If decryption fails, start fresh
+		// 如果解密失败，重新开始
 		cm.entries = make(map[string]*CredentialEntry)
 	}
 
-	// If we decrypted with the legacy key, immediately re-save with the
-	// new per-user key so the file is migrated on disk.
+	// 如果我们使用旧密钥解密，立即使用新的按用户密钥重新保存，
+	// 以便文件在磁盘上被迁移。
 	if cm.needsReencrypt {
 		if err := cm.save(); err == nil {
 			cm.needsReencrypt = false
@@ -75,7 +75,7 @@ func NewCredentialManagerForUser(userID, passphrase string) (*CredentialManager,
 	return cm, nil
 }
 
-// Set stores a credential key-value pair.
+// Set 存储一个凭据键值对。
 func (cm *CredentialManager) Set(name, key, value string) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -95,7 +95,7 @@ func (cm *CredentialManager) Set(name, key, value string) error {
 	return cm.save()
 }
 
-// Get retrieves a credential value.
+// Get 检索一个凭据值。
 func (cm *CredentialManager) Get(name, key string) (string, error) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
@@ -113,14 +113,14 @@ func (cm *CredentialManager) Get(name, key string) (string, error) {
 	return val, nil
 }
 
-// List returns all credential entries.
+// List 返回所有凭据条目。
 func (cm *CredentialManager) List() []CredentialEntry {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
 	result := make([]CredentialEntry, 0, len(cm.entries))
 	for _, e := range cm.entries {
-		// Copy without exposing key values
+		// 复制但不暴露密钥值
 		masked := CredentialEntry{
 			Name:   e.Name,
 			Type:   e.Type,
@@ -139,7 +139,7 @@ func (cm *CredentialManager) List() []CredentialEntry {
 	return result
 }
 
-// Delete removes a credential entry.
+// Delete 移除一个凭据条目。
 func (cm *CredentialManager) Delete(name string) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -152,7 +152,7 @@ func (cm *CredentialManager) Delete(name string) error {
 	return cm.save()
 }
 
-// knownEnvVars maps provider names to their environment variable patterns.
+// knownEnvVars 将提供者名称映射到其环境变量模式。
 var knownEnvVars = map[string][]string{
 	"openai":     {"OPENAI_API_KEY"},
 	"anthropic":  {"ANTHROPIC_API_KEY"},
@@ -165,7 +165,7 @@ var knownEnvVars = map[string][]string{
 	"deepseek":   {"DEEPSEEK_API_KEY"},
 }
 
-// Discover scans environment variables for known API key patterns.
+// Discover 扫描环境变量以查找已知的 API 密钥模式。
 func (cm *CredentialManager) Discover() []CredentialEntry {
 	var discovered []CredentialEntry
 
@@ -188,7 +188,7 @@ func (cm *CredentialManager) Discover() []CredentialEntry {
 	return discovered
 }
 
-// InjectEnv returns environment variables suitable for injecting into a sandbox.
+// InjectEnv 返回适合注入到沙箱中的环境变量。
 func (cm *CredentialManager) InjectEnv() map[string]string {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
@@ -197,7 +197,7 @@ func (cm *CredentialManager) InjectEnv() map[string]string {
 
 	for name, entry := range cm.entries {
 		if apiKey, ok := entry.Keys["apiKey"]; ok {
-			// Map back to env var name
+			// 映射回环境变量名
 			envVars, known := knownEnvVars[name]
 			if known && len(envVars) > 0 {
 				env[envVars[0]] = apiKey
@@ -207,7 +207,7 @@ func (cm *CredentialManager) InjectEnv() map[string]string {
 		}
 	}
 
-	// Also include any env-discovered credentials
+	// 同时包含任何从环境变量发现的凭据
 	for _, envVars := range knownEnvVars {
 		for _, envVar := range envVars {
 			if val := os.Getenv(envVar); val != "" {
@@ -245,8 +245,8 @@ func (cm *CredentialManager) load() error {
 
 	decrypted, err := decrypt(data, cm.masterKey)
 	if err != nil {
-		// Fallback: try legacy key format (pre-multiuser) so existing
-		// installs don't lose their stored credentials after upgrading.
+		// 回退：尝试旧密钥格式（多用户之前），
+		// 以便现有安装升级后不会丢失其存储的凭据。
 		legacyKey := legacyDeriveKey()
 		decrypted, err = decrypt(data, legacyKey)
 		if err != nil {
@@ -258,8 +258,8 @@ func (cm *CredentialManager) load() error {
 	return json.Unmarshal(decrypted, &cm.entries)
 }
 
-// legacyDeriveKey returns the old (pre-multiuser) machine-derived key so
-// we can decrypt credentials files created before per-user KEK was added.
+// legacyDeriveKey 返回旧的（多用户之前）机器派生密钥，
+// 以便我们可以解密在添加按用户 KEK 之前创建的凭据文件。
 func legacyDeriveKey() []byte {
 	hostname, _ := os.Hostname()
 	home, _ := os.UserHomeDir()
@@ -267,12 +267,11 @@ func legacyDeriveKey() []byte {
 	return hash[:]
 }
 
-// deriveKeyForUser mixes the user ID into the encryption key so that each
-// user's credentials file is encrypted with a distinct KEK. In the absence
-// of an explicit passphrase, a machine-derived seed (hostname + home) is
-// still included so the same user ID yields different keys on different
-// hosts — preventing wholesale copy of the credentials file across hosts
-// from decrypting.
+// deriveKeyForUser 将用户 ID 混入加密密钥中，以便每个用户的凭据文件
+// 使用不同的 KEK 加密。在没有明确密码短语的情况下，
+// 仍然包含机器派生的种子（主机名 + 家目录），
+// 以便相同的用户 ID 在不同主机上产生不同的密钥——
+// 防止凭据文件跨主机批量复制后被解密。
 func deriveKeyForUser(userID, passphrase string) []byte {
 	if userID == "" {
 		userID = "_anonymous"

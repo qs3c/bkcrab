@@ -21,7 +21,7 @@ import (
 // 泄露的特殊 token 噪声（DeepSeek/Qwen 的 `<｜…｜>` 风格分隔符，
 // 会被反 token 化为可见的 `<| … |>` / `< | DSML | … >` 垃圾），
 // 我们仍会用清理后的版本替换 resp.Content，使 UI 不会渲染泄露的
-// token。
+// 代币。
 //
 // 在 info 级别记录一次日志，包含 agent + 模型 + 恢复的工具名称，
 // 以便运维人员能看到此路径的触发频率以及哪些（模型、提示词）
@@ -58,10 +58,10 @@ func (a *Agent) maybeRecoverToolCalls(resp *provider.Response) {
 // OpenAI Chat Completions 的 `tool_calls` 模式。我们识别的格式是
 // 这些模型训练时使用的 Anthropic function_calls XML：
 //
-//	<invoke name="exec">
+// <调用名称=“执行”>
 //	  <parameter name="command" string="true">echo hi</parameter>
 //	  <parameter name="timeout" string="false">15</parameter>
-//	</invoke>
+// </调用>
 //
 // 返回的工具调用使用合成 ID（`recovered_…`），以便下游的
 // tool_result 消息能与原始助手消息配对——模型自身提出的 ID 会
@@ -168,11 +168,11 @@ var tagLeakHintRE = regexp.MustCompile(`<invoke|<\s*/?\s*[|｜]`)
 // 用于工具调用框架；当 tokenizer 往返失败或下游层将这些 token
 // 渲染为文本时，用户看到如下形状：
 //
-//	<｜tool_calls｜>
-//	<|tool_calls|>
-//	< | | DSML | | invoke name="exec">
-//	</ | | DSML | | invoke>
-//	<｜/invoke｜>
+// <｜工具调用｜>
+// <|工具调用|>
+// < | | DSML | |调用名称=“执行”>
+// </ | | DSML | |调用>
+// <｜/调用｜>
 //
 // 闭标签的 `/` 可能位于 `<` 正后方或泄露噪声内部（取决于模型
 // 将其放在管道的哪一侧），因此我们让任一噪声组消耗它。

@@ -8,7 +8,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/provider"
 )
 
-// HookPoint identifies where in the agent loop a hook fires.
+// HookPoint 标识代理循环中钩子触发的位置。
 type HookPoint int
 
 const (
@@ -21,7 +21,7 @@ const (
 	PostTurn // fires after a complete agent turn (response + all tool calls)
 )
 
-// HookContext carries data available to hooks at each hook point.
+// HookContext 携带每个钩子点处的钩子可用的数据。
 type HookContext struct {
 	AgentName     string
 	Point         HookPoint
@@ -37,62 +37,62 @@ type HookContext struct {
 	Workspace     string    // agent workspace path (for PostTurn)
 	UserID        string    // owning user ID for multi-user namespace isolation
 	ChatID        string    // used by the plugin hook adapter
-	// Channel + AccountID complete the bus routing triple. Plugins
-	// reading these in a hook.fire payload can echo them back to
-	// chat.send so a follow-up message reaches the same chat that
-	// just got the agent's reply.
+	// Channel + AccountID 完成总线路由三元组。插件
+	// 在 hook.fire 有效负载中读取这些内容可以将它们回显
+	// chat.send 以便后续消息到达相同的聊天
+	// 刚刚收到agent的回复。
 	Channel   string
 	AccountID string
-	// Source mirrors bus.InboundMessage.Source so PostTurn hooks can
-	// distinguish a real user turn from a cron / heartbeat / sub-agent
-	// / goal-context turn. Empty means user. Hooks that should only
-	// fire on user-originated turns (notably the goal trigger) gate
-	// on this.
+	// 源镜像bus.InboundMessage.Source，因此PostTurn钩子可以
+	// 区分真实用户轮次和 cron/心跳/子代理
+	// / 目标上下文转向。空表示用户。钩子应该只
+	// 在用户发起的回合（特别是目标触发器）门上触发
+	// 关于这一点。
 	Source string
 
-	// GoalSessionKey is the persistent session_key for the in-flight
-	// turn. The goal-accounting hook reads it to look up the active
-	// goal (if any) for this session. Empty when the turn happened
-	// outside a chat context.
+	// GoalSessionKey 是飞行中的持久 session_key
+	// 转动。目标会计钩子读取它以查找活动的
+	// 本次会议的目标（如果有）。转弯时为空
+	// 在聊天上下文之外。
 	GoalSessionKey string
 
-	// IsPlanMode reports whether this turn ran in plan-mode (model
-	// emits a plan, doesn't act). Goal trigger hooks gate on this so
-	// a plan-only turn doesn't auto-fire a continuation behind the
-	// user's back — plan mode exists precisely to let the user review
-	// before more work happens.
+	// IsPlanMode 报告此回合是否在计划模式下运行（模型
+	// 制定计划，但不采取行动）。目标触发钩子门在此所以
+	// 仅计划转弯不会自动触发后面的延续
+	// 用户的背影——计划模式正是为了让用户回顾而存在的
+	// 在进行更多工作之前。
 	IsPlanMode bool
 }
 
-// HookFunc is a function that runs at a hook point.
-// It can inspect and modify the HookContext.
+// HookFunc 是一个在钩子点运行的函数。
+// 它可以检查和修改 HookContext。
 type HookFunc func(ctx context.Context, hc *HookContext)
 
-// HookRegistry stores registered hooks per hook point.
+// HookRegistry 存储每个钩子点已注册的钩子。
 type HookRegistry struct {
 	hooks map[HookPoint][]HookFunc
 }
 
-// NewHookRegistry creates a new hook registry.
+// NewHookRegistry 创建一个新的钩子注册表。
 func NewHookRegistry() *HookRegistry {
 	return &HookRegistry{
 		hooks: make(map[HookPoint][]HookFunc),
 	}
 }
 
-// Register adds a hook function for the given hook point.
+// Register为给定的钩子点添加一个钩子函数。
 func (hr *HookRegistry) Register(point HookPoint, fn HookFunc) {
 	hr.hooks[point] = append(hr.hooks[point], fn)
 }
 
-// Run executes all hooks registered at the given point.
+// Run 执行在给定点注册的所有钩子。
 func (hr *HookRegistry) Run(ctx context.Context, hc *HookContext) {
 	for _, fn := range hr.hooks[hc.Point] {
 		fn(ctx, hc)
 	}
 }
 
-// LoggingHook returns a hook function that logs timing information.
+// LoggingHook 返回一个记录计时信息的钩子函数。
 func LoggingHook() HookFunc {
 	return func(ctx context.Context, hc *HookContext) {
 		switch hc.Point {

@@ -11,9 +11,8 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// Exa calls api.exa.ai. The x-api-key header authenticates; the request body
-// controls result count and search mode. Model (from "exa/<mode>") is either
-// empty, "auto", "keyword" or "neural".
+// Exa 调用 api.exa.ai。使用 x-api-key 头进行认证；请求体控制结果数量和搜索模式。
+// Model（来自 "exa/<mode>"）可以是空、"auto"、"keyword" 或 "neural"。
 type Exa struct{}
 
 func (Exa) Category() string { return Category }

@@ -10,47 +10,36 @@ import (
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
-// Projects are per-(user, agent) named workspace folders that group
-// chat sessions. Every chat in the same project shares one
-// workspace dir at workspaces/<agent>/projects/<pid>/, so notes /
-// generated files persist across the project's chats — that's the
-// whole point of the feature.
+// 项目是按 (user, agent) 命名的工作区文件夹，用于组织聊天会话。
+// 同一项目中的每个聊天共享一个工作区目录 workspaces/<agent>/projects/<pid>/，
+// 因此笔记/生成的文件在项目的聊天之间持久存在 — 这就是此功能的核心目的。
 //
-// Endpoints exposed below:
+// 下面暴露的端点：
 //
-//	GET    /api/agents/{id}/projects                   — list (caller's own)
-//	POST   /api/agents/{id}/projects                   — create
-//	PATCH  /api/agents/{id}/projects/{pid}             — rename / re-describe
-//	DELETE /api/agents/{id}/projects/{pid}             — delete (blocked when chats remain)
+//	GET    /api/agents/{id}/projects                   — 列出（调用者自己的）
+//	POST   /api/agents/{id}/projects                   — 创建
+//	PATCH  /api/agents/{id}/projects/{pid}             — 重命名 / 重新描述
+//	DELETE /api/agents/{id}/projects/{pid}             — 删除（当还有聊天时阻止）
 //
-// Project chats are minted lazily: clicking "New chat in project" in
-// the sidebar just navigates to `/agents/<id>/chat/?project=<pid>`,
-// and the very first user message carries `projectId` in the chat
-// request body. The first SaveSession that fires from there stamps
-// the new sessions row with project_id; subsequent saves leave it
-// untouched (ON CONFLICT in the SQL upsert preserves it). No
-// pre-create endpoint — keeps "user opened New chat and walked
-// away" from littering the sidebar with empty rows.
+// 项目聊天是延迟创建的：在侧边栏中点击"在项目中新建聊天"只是导航到 `/agents/<id>/chat/?project=<pid>`，
+// 第一个用户消息在聊天请求体中携带 `projectId`。从那里触发的第一个 SaveSession
+// 用 project_id 标记新会话行；后续保存不触碰它（SQL upsert 中的 ON CONFLICT 保持它）。
+// 没有预创建端点 — 防止"用户打开了新建聊天然后离开"导致侧边栏充满空行。
 
-// generateProjectID mints an opaque project_id matching the
-// `<prefix>_<hex20>` shape that users (u_) and agents (agt_) use, so
-// IDs are visually consistent across the platform. ~80 bits of entropy
-// — collision-resistant at platform scale; we don't probe the store
-// for uniqueness because the caller already passed requireAgentOwner.
+// generateProjectID 生成一个不透明的 project_id，匹配 users (u_) 和 agents (agt_)
+// 使用的 `<prefix>_<hex20>` 格式，使 ID 在整个平台上视觉一致。约 80 位熵 —
+// 在平台规模上抗碰撞；我们不会探测存储的唯一性，因为调用者已经通过了 requireAgentOwner。
 func generateProjectID() string {
 	var buf [10]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		// crypto/rand should never fail on supported platforms; if it
-		// does, surface a recognizable sentinel rather than silently
-		// minting "proj_" (which would collide with itself across
-		// concurrent calls).
+		// crypto/rand 在支持的平台上不应失败；如果失败，则返回一个可识别的哨兵值，
+		// 而不是静默生成 "proj_"（它会在并发调用中与自身冲突）。
 		return "proj_rngerror"
 	}
 	return "proj_" + hex.EncodeToString(buf[:])
 }
 
-// trimProjectName strips wrapping whitespace and caps the length so a
-// rogue 64KB body doesn't end up in the sidebar.
+// trimProjectName 去除首尾空白并限制长度，以免恶意的 64KB 内容出现在侧边栏中。
 func trimProjectName(s string) string {
 	s = strings.TrimSpace(s)
 	if len(s) > 200 {
@@ -104,10 +93,9 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	// Readable-not-owner is enough: projects are keyed on (user_id,
-	// agent_id, project_id), so a viewer creating a project on a shared
-	// agent only adds rows under THEIR user_id and can never touch the
-	// owner's project list. Same reasoning for update / delete below.
+	// 可读即可（不必是拥有者）：项目以 (user_id, agent_id, project_id) 为键，
+	// 因此在共享 agent 上创建项目的查看者只会添加到自己 user_id 下的行，永远不会影响拥有者的项目列表。
+	// 下面的更新/删除同理。
 	if !s.requireAgentReadable(w, r, id) {
 		return
 	}
@@ -136,13 +124,11 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	// Re-read to get authoritative created_at / updated_at the DB
-	// stamped on the row, instead of returning zero times.
+	// 重新读取以获取数据库在行上标记的权威 created_at / updated_at，而不是返回零值时间。
 	saved, err := s.dataStore.GetProject(r.Context(), uid, id, rec.ID)
 	if err != nil || saved == nil {
-		// Fall back to the in-memory copy — IDs and name are correct,
-		// just timestamps are zero. Still better than 500'ing the
-		// caller after a successful insert.
+		// 回退到内存中的副本 — ID 和名称是正确的，只是时间戳为零。
+		// 仍然比成功插入后给调用者返回 500 好。
 		jsonResponse(w, http.StatusOK, projectToJSON(rec))
 		return
 	}
@@ -164,9 +150,8 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "project not found"})
 		return
 	}
-	// PATCH semantics: only the fields the caller sent get updated.
-	// Use pointers so we can distinguish "not sent" from "sent empty
-	// string" — the latter is a legitimate clear of the description.
+	// PATCH 语义：仅更新调用者发送的字段。
+	// 使用指针以便区分"未发送"和"发送了空字符串" — 后者是合法的清空描述操作。
 	var req struct {
 		Name        *string `json:"name"`
 		Description *string `json:"description"`
@@ -207,11 +192,9 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := s.effectiveUserID(r)
-	// Refuse to delete a project that still owns chats. Cascade /
-	// soft-detach are deliberately not exposed — v1 keeps the
-	// destructive action behind an explicit "delete chats first" step
-	// so a slip on the trash icon can't nuke a survey's worth of
-	// notes.
+	// 拒绝删除仍拥有聊天的项目。级联/软分离被故意不暴露 —
+	// v1 将破坏性操作放在显式的"先删除聊天"步骤之后，
+	// 这样在垃圾桶图标上的一次误操作不会清除相当于一份调查报告的笔记。
 	n, err := s.dataStore.CountProjectSessions(r.Context(), uid, id, pid)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})

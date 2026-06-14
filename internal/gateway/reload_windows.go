@@ -4,6 +4,6 @@ package gateway
 
 import "os"
 
-// notifyReloadSignal is a no-op on Windows: SIGHUP is not delivered. The
-// CLI falls back to printing a "restart the gateway" hint after a write.
+// notifyReloadSignal 在 Windows 上是空操作：SIGHUP 不会被传递。
+// CLI 回退到在写入后打印"重新启动网关"的提示。
 func notifyReloadSignal(_ chan os.Signal) {}

@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// SkillInfo holds metadata about a skill from the ClawHub registry.
+// SkillInfo 保存来自 ClawHub 注册表的技能元数据。
 type SkillInfo struct {
 	Slug        string `json:"slug"`
 	Name        string `json:"name"`
@@ -24,13 +24,13 @@ type SkillInfo struct {
 	TarballURL  string `json:"tarballUrl,omitempty"`
 }
 
-// ClawHubClient communicates with the ClawHub skill registry.
+// ClawHubClient 与 ClawHub 技能注册表通信。
 type ClawHubClient struct {
 	Registry   string
 	HTTPClient *http.Client
 }
 
-// NewClawHubClient creates a client with defaults.
+// NewClawHubClient 创建一个使用默认值的客户端。
 func NewClawHubClient() *ClawHubClient {
 	registry := os.Getenv("CLAWHUB_REGISTRY")
 	if registry == "" {
@@ -42,7 +42,7 @@ func NewClawHubClient() *ClawHubClient {
 	}
 }
 
-// Search queries the ClawHub registry for skills matching the query.
+// Search 查询 ClawHub 注册表中与查询匹配的技能。
 func (c *ClawHubClient) Search(query string) ([]SkillInfo, error) {
 	url := fmt.Sprintf("%s/api/skills/search?q=%s", c.Registry, query)
 	resp, err := c.HTTPClient.Get(url)
@@ -62,7 +62,7 @@ func (c *ClawHubClient) Search(query string) ([]SkillInfo, error) {
 	return results, nil
 }
 
-// Info fetches details about a specific skill.
+// Info 获取有关特定技能的详细信息。
 func (c *ClawHubClient) Info(slug string) (*SkillInfo, error) {
 	url := fmt.Sprintf("%s/api/skills/%s", c.Registry, slug)
 	resp, err := c.HTTPClient.Get(url)
@@ -85,17 +85,17 @@ func (c *ClawHubClient) Info(slug string) (*SkillInfo, error) {
 	return &info, nil
 }
 
-// Install downloads and extracts a skill to targetDir/slug/.
-// If the API returns a tarball URL, downloads and extracts it.
-// Falls back to npx clawhub if available.
+// Install 下载并提取技能到 targetDir/slug/。
+// 如果 API 返回 tar 包 URL，则下载并提取它。
+// 如果可用，回退到 npx clawhub。
 func (c *ClawHubClient) Install(slug string, version string, targetDir string) error {
-	// Try API-based install first
+	// 首先尝试基于 API 的安装
 	info, err := c.fetchVersion(slug, version)
 	if err == nil && info.TarballURL != "" {
 		return c.downloadAndExtract(info.TarballURL, filepath.Join(targetDir, slug))
 	}
 
-	// Fallback: use npx clawhub CLI if available
+	// 回退：如果可用则使用 npx clawhub CLI
 	if npxPath, lookErr := exec.LookPath("npx"); lookErr == nil {
 		args := []string{npxPath, "clawhub@latest", "install", slug, "--dir", targetDir}
 		if version != "" {
@@ -113,7 +113,7 @@ func (c *ClawHubClient) Install(slug string, version string, targetDir string) e
 	return fmt.Errorf("install %s: no tarball URL and npx not available", slug)
 }
 
-// Update checks for a newer version and installs it.
+// Update 检查较新版本并安装它。
 func (c *ClawHubClient) Update(slug string, targetDir string) error {
 	return c.Install(slug, "", targetDir)
 }
@@ -171,7 +171,7 @@ func (c *ClawHubClient) downloadAndExtract(tarballURL string, destDir string) er
 			return fmt.Errorf("read tar: %w", err)
 		}
 
-		// Strip the first path component (tarball root)
+		// 去除第一个路径组件（tar 包根目录）
 		name := header.Name
 		if idx := strings.IndexByte(name, '/'); idx >= 0 {
 			name = name[idx+1:]
@@ -181,7 +181,7 @@ func (c *ClawHubClient) downloadAndExtract(tarballURL string, destDir string) er
 		}
 
 		target := filepath.Join(destDir, name)
-		// Prevent path traversal
+		// 防止路径遍历
 		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(destDir)) {
 			continue
 		}
@@ -210,7 +210,7 @@ func (c *ClawHubClient) downloadAndExtract(tarballURL string, destDir string) er
 	return nil
 }
 
-// ListInstalled scans a directory for installed skills (dirs containing SKILL.md).
+// ListInstalled 扫描目录以查找已安装的技能（包含 SKILL.md 的目录）。
 func ListInstalled(dir string) ([]InstalledSkill, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -237,7 +237,7 @@ func ListInstalled(dir string) ([]InstalledSkill, error) {
 	return skills, nil
 }
 
-// InstalledSkill represents a locally installed skill.
+// InstalledSkill 表示本地安装的技能。
 type InstalledSkill struct {
 	Name string
 	Dir  string

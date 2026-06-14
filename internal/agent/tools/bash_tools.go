@@ -1,9 +1,9 @@
 package tools
 
-// bash_output and kill_shell — companion tools to exec(run_in_background).
+// bash_output 和kill_shell — exec(run_in_background) 的配套工具。
 //
-// Tool surface mirrors Claude Code's `BashOutput` / `KillShell` so prompts
-// and skills written for that runtime port over without translation.
+// 工具表面镜像 Claude Code 的 `BashOutput` / `KillShell` 所以提示
+// 以及为该运行时移植编写的技能，无需翻译。
 
 import (
 	"context"
@@ -77,12 +77,12 @@ func registerBashOutput(r *Registry) {
 
 		raw2, dropped := s.readNew()
 		status, code, exitErr := s.snapshot()
-		// Race fix: bytes can land in the buffer AFTER our readNew but
-		// BEFORE the reaper flips done=true. Without this drain, an
-		// "exited" report would silently miss the last few bytes (often
-		// the most useful ones — the error message or summary line).
-		// Drain only when exited; running shells can poll again later
-		// for new output.
+		// 竞争修复：字节可以在 readNew 之后进入缓冲区，但是
+		// 在收割者翻转之前，done=true。如果没有这个排水管，
+		// “退出”报告会默默地错过最后几个字节（通常
+		// 最有用的——错误消息或摘要行）。
+		// 仅在退出时排水；正在运行的 shell 可以稍后再次轮询
+		// 以获得新的输出。
 		if status == statusExited {
 			more, dropped2 := s.readNew()
 			if len(more) > 0 {
@@ -111,7 +111,7 @@ func registerBashOutput(r *Registry) {
 		case statusExited:
 			fmt.Fprintf(&sb, "[status] exited (code=%d)", code)
 			if exitErr != nil && code == -1 {
-				// abnormal: killed, IO error, etc.
+				// 异常：killed、IO错误等。
 				fmt.Fprintf(&sb, " — %s", exitErr.Error())
 			}
 		}
@@ -153,9 +153,9 @@ func registerKillShell(r *Registry) {
 	})
 }
 
-// filterLines retains only lines matching re. Trailing newline policy
-// follows the input: a body with a trailing newline keeps it, one
-// without doesn't. Lines that don't match are dropped silently.
+// filterLines 仅保留与 re 匹配的行。尾随换行策略
+// 跟随输入：带有尾随换行符的正文保留它，一个
+// 没有则不然。不匹配的行将被默默删除。
 func filterLines(body string, re *regexp.Regexp) string {
 	hadTrailingNL := strings.HasSuffix(body, "\n")
 	lines := strings.Split(strings.TrimSuffix(body, "\n"), "\n")

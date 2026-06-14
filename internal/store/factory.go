@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 )
 
-// New creates a Store. MySQL is the runtime default and requires an explicit
-// DSN. PostgreSQL and SQLite remain available only when explicitly selected;
-// there is no automatic fallback to SQLite.
+// New 创建一个Store实例。MySQL是运行时默认选项，需要显式提供
+// DSN。PostgreSQL和SQLite仅在明确选择时可用；
+// 不会自动回退到SQLite。
 func New(cfg *StorageConfig, homeDir string) (Store, error) {
 	if cfg == nil || cfg.Type == "" {
 		cfg = &StorageConfig{Type: StorageMySQL, AutoMigrate: true}
@@ -26,14 +26,13 @@ func New(cfg *StorageConfig, homeDir string) (Store, error) {
 			if err := os.MkdirAll(homeDir, 0o755); err != nil {
 				return nil, fmt.Errorf("create %s: %w", homeDir, err)
 			}
-			// modernc.org/sqlite reads PRAGMA settings from `_pragma=`
-			// query params; the legacy `_journal=WAL` form was silently
-			// ignored, so the file was running in default rollback-journal
-			// mode where any writer blocks every other connection. Under
-			// load (cron scheduler firing while web traffic comes in) we
-			// saw "database is locked (SQLITE_BUSY)" — fixed by enabling
-			// WAL (concurrent reads + one writer) and a 5s busy_timeout
-			// so contended writers wait instead of erroring out.
+			// modernc.org/sqlite 从 `_pragma=` 查询参数读取 PRAGMA 设置；
+			// 旧的 `_journal=WAL` 形式被静默忽略，因此文件运行在默认的回滚日志
+			// 模式下，任何写入者都会阻塞所有其他连接。在高负载下
+			//（cron 调度器触发的同时有 web 流量进入），我们看到了
+			// "database is locked (SQLITE_BUSY)"——通过启用 WAL
+			//（并发读取 + 一个写入者）和 5 秒 busy_timeout 修复了这个问题，
+			// 这样竞争的写入者会等待而不是直接报错。
 			dsn = "file:" + filepath.Join(homeDir, "bkclaw.db") +
 				"?_pragma=journal_mode(WAL)" +
 				"&_pragma=busy_timeout(5000)" +
@@ -58,7 +57,7 @@ func New(cfg *StorageConfig, homeDir string) (Store, error) {
 	}
 }
 
-// maskDSN masks passwords in DSN strings for logging.
+// maskDSN 遮蔽 DSN 字符串中的密码，用于日志记录。
 func maskDSN(dsn string) string {
 	if len(dsn) > 20 {
 		return dsn[:10] + "***" + dsn[len(dsn)-5:]

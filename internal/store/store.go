@@ -1,7 +1,7 @@
-// Package store is the single persistence layer for BkClaw. The database
-// is mandatory (MySQL by default); there is no
-// file-only fallback. Every per-user table requires a real users.id row;
-// callers that haven't resolved a user must 401, not invent a placeholder.
+// Package store 是 BkClaw 的单一持久化层。数据库
+// 是必需的（默认为 MySQL）；没有
+// 仅文件的回退方案。每个按用户划分的表都需要一个真实的 users.id 行；
+// 尚未解析用户的调用方必须返回 401，而不是发明一个占位符。
 package store
 
 import (
@@ -11,20 +11,20 @@ import (
 	"time"
 )
 
-// ErrNotFound is returned by Get* methods when the row does not exist. Use
-// errors.Is(err, store.ErrNotFound) at call sites.
+// ErrNotFound 在行不存在时由 Get* 方法返回。在调用处使用
+// errors.Is(err, store.ErrNotFound) 进行检查。
 var ErrNotFound = errors.New("store: not found")
 
-// Store is the unified interface for all persistent data.
+// Store 是所有持久化数据的统一接口。
 //
-// Tables fall into three buckets:
-//   - account-scoped (users, web_sessions, apikeys): keyed by users.id
-//   - agent-scoped (agents, agent_files, cron_jobs): keyed by agents.id;
-//     ownership is on agents.user_id
-//   - per-(user, agent) (sessions): chat history is private to one user
-//   - scope-tagged (configs): rows carry (scope, scope_id, kind, name)
+// 表分为三类：
+//   - 账户范围（users, web_sessions, apikeys）：以 users.id 为键
+//   - agent 范围（agents, agent_files, cron_jobs）：以 agents.id 为键；
+//     所有权在 agents.user_id 上
+//   - 每个（用户, agent）（sessions）：聊天历史对单个用户是私有的
+//   - 范围标记（configs）：行携带（scope, scope_id, kind, name）
 type Store interface {
-	// --- Users ---
+	// --- 用户 ---
 	CreateUser(ctx context.Context, u *UserRecord) error
 	GetUser(ctx context.Context, id string) (*UserRecord, error)
 	GetUserByLogin(ctx context.Context, usernameOrEmail string) (*UserRecord, error)
@@ -34,13 +34,13 @@ type Store interface {
 	DeleteUser(ctx context.Context, id string) error
 	CountUsers(ctx context.Context) (int, error)
 
-	// --- Web sessions (login cookies) ---
+	// --- Web 会话（登录 cookie）---
 	CreateWebSession(ctx context.Context, sess *WebSessionRecord) error
 	GetWebSession(ctx context.Context, sid string) (*WebSessionRecord, error)
 	DeleteWebSession(ctx context.Context, sid string) error
 	DeleteExpiredWebSessions(ctx context.Context, before time.Time) error
 
-	// --- API keys (per user) ---
+	// --- API 密钥（每个用户）---
 	ListAPIKeys(ctx context.Context, userID string) ([]APIKeyRecord, error)
 	GetAPIKey(ctx context.Context, id string) (*APIKeyRecord, error)
 	CreateAPIKey(ctx context.Context, ak *APIKeyRecord) error
@@ -48,150 +48,132 @@ type Store interface {
 	RotateAPIKey(ctx context.Context, id, keyHash, keyPrefix string) error
 	LookupAPIKeyByHash(ctx context.Context, keyHash string) (*APIKeyRecord, error)
 
-	// --- API key ↔ agent permissions (M:N) ---
+	// --- API 密钥 ↔ agent 权限（多对多）---
 	SetAPIKeyAgents(ctx context.Context, apikeyID string, agentIDs []string) error
 	ListAPIKeyAgents(ctx context.Context, apikeyID string) ([]string, error)
 	APIKeyCanAccessAgent(ctx context.Context, apikeyID, agentID string) (bool, error)
 
-	// --- Agents (atomic; agents.id is globally unique) ---
+	// --- Agents（原子性；agents.id 全局唯一）---
 	ListAgents(ctx context.Context, ownerUserID string) ([]AgentRecord, error)
 	GetAgent(ctx context.Context, agentID string) (*AgentRecord, error)
 	SaveAgent(ctx context.Context, agent *AgentRecord) error
 	DeleteAgent(ctx context.Context, agentID string) error
 	ListAllAgents(ctx context.Context) ([]AgentRecord, error)
 
-	// --- Sessions (per user, per agent — chat history is private) ---
+	// --- 会话（每个用户、每个 agent — 聊天历史是私有的）---
 	GetSession(ctx context.Context, userID, agentID, sessionKey string) (*SessionRecord, error)
 	SaveSession(ctx context.Context, userID, agentID, sessionKey string, session *SessionRecord) error
 	ListSessions(ctx context.Context, userID, agentID string) ([]SessionMeta, error)
-	// ListSessionOwnerPairs returns every distinct (user_id, agent_id)
-	// pair present in the sessions table. Used by the admin Chats page
-	// to discover non-owner sessions: when a chatter binds their own bot
-	// to a public agent (or messages a public agent on the web), the
-	// session row is saved under that chatter's user_id, not the agent
-	// owner's — so an owner-keyed ListSessions misses them. Iterating
-	// pairs lets the admin view enumerate every (chatter, agent) tuple
-	// that has chat history, regardless of who owns the agent.
+	// ListSessionOwnerPairs 返回 sessions 表中每个不同的 (user_id, agent_id)
+	// 对。被管理员聊天页面用来发现非拥有者的会话：当聊天者将自己的 bot
+	// 绑定到一个公共 agent（或在 web 上给公共 agent 发消息）时，
+	// 会话行保存在该聊天者的 user_id 下，而不是 agent
+	// 所有者的 user_id 下 —— 因此以拥有者键控的 ListSessions 会遗漏它们。迭代
+	// 这些对让管理员视图能够枚举所有拥有聊天历史的 (聊天者, agent) 元组，
+	// 无论谁拥有该 agent。
 	ListSessionOwnerPairs(ctx context.Context) ([]SessionOwnerPair, error)
 	DeleteSession(ctx context.Context, userID, agentID, sessionKey string) error
 	RenameSession(ctx context.Context, userID, agentID, sessionKey, title string) error
-	// MoveSession reassigns a session to a different project (or
-	// detaches it when projectID is ""). Used by the sidebar
-	// drag-and-drop affordance. Workspace file migration is the
-	// caller's responsibility — this only flips sessions.project_id.
+	// MoveSession 将会话重新分配给不同的项目（当 projectID 为 "" 时
+	// 解除关联）。被侧边栏拖放功能使用。工作区文件迁移是
+	// 调用方的责任 —— 这只会翻转 sessions.project_id。
 	MoveSession(ctx context.Context, userID, agentID, sessionKey, projectID string) error
-	// ResolveActiveSessionKey returns the most recently updated session_key
-	// for the (channel, accountID, chatID) triple, or ErrNotFound. Used by
-	// IM routing to pick the conversation thread an inbound message
-	// belongs to without forcing the channel adapter to track session IDs.
+	// ResolveActiveSessionKey 返回 (channel, accountID, chatID) 三元组
+	// 最近更新的 session_key，或 ErrNotFound。被 IM 路由用来选择入站消息
+	// 所属的对话线程，而无需强制频道适配器跟踪会话 ID。
 	ResolveActiveSessionKey(ctx context.Context, userID, agentID, channel, accountID, chatID string) (string, error)
-	// LookupSessionTriple returns the (channel, accountID, chatID) for a
-	// known session_key — the inverse of ResolveActiveSessionKey. Web
-	// chat handlers use it to recover the chat_id when the URL only
-	// carries the session_key, so workspace artifacts stay namespaced
-	// under the original conversation rather than re-keyed by session.
+	// LookupSessionTriple 返回已知 session_key 的 (channel, accountID, chatID)
+	// —— 是 ResolveActiveSessionKey 的逆操作。Web 聊天处理器用它来在 URL
+	// 只携带 session_key 时恢复 chat_id，以便工作区产物保持在原始对话的
+	// 命名空间下，而不是按会话重新键控。
 	LookupSessionTriple(ctx context.Context, userID, agentID, sessionKey string) (channel, accountID, chatID string, err error)
-	// LookupSessionProject returns the project_id of a session_key, or
-	// "" if the session is loose (no project). Used by the workspace
-	// path resolver to pick projects/<id>/ over sessions/<chat>/ when
-	// mounting the sandbox.
+	// LookupSessionProject 返回 session_key 的 project_id，如果会话是松散的（无项目）
+	// 则返回 ""。被工作区路径解析器用来在挂载沙箱时选择 projects/<id>/
+	// 而不是 sessions/<chat>/。
 	LookupSessionProject(ctx context.Context, userID, agentID, sessionKey string) (string, error)
 
-	// --- Projects (per user, per agent — workspace folder grouping) ---
+	// --- 项目（每个用户、每个 agent — 工作区文件夹分组）---
 	//
-	// A project is just (name, description) plus a stable id; the
-	// workspace dir is derived from id. Sessions opt in by setting
-	// project_id at create time; existing rows can be moved later by
-	// updating sessions.project_id (file migration is the caller's
-	// problem). DeleteProject blocks when any session still references
-	// the row — callers either delete the chats first or use a soft
-	// detach (clearing project_id back to '').
+	// 项目只是 (name, description) 加一个稳定 ID；工作区目录由 ID 派生。
+	// 会话通过在创建时设置 project_id 来加入；现有行稍后可以通过更新
+	// sessions.project_id 来移动（文件迁移是调用方的问题）。
+	// 当任何会话仍然引用该行时，DeleteProject 会阻塞——调用方要么先删除聊天，
+	// 要么使用软解除关联（将 project_id 清回 ''）。
 	ListProjects(ctx context.Context, userID, agentID string) ([]ProjectRecord, error)
 	GetProject(ctx context.Context, userID, agentID, projectID string) (*ProjectRecord, error)
 	SaveProject(ctx context.Context, p *ProjectRecord) error
 	DeleteProject(ctx context.Context, userID, agentID, projectID string) error
 	CountProjectSessions(ctx context.Context, userID, agentID, projectID string) (int, error)
 
-	// --- Session messages (append-only per-turn archive) ---
+	// --- 会话消息（仅追加的每轮存档）---
 	//
-	// Mirrors every Append into session_messages, separate from the
-	// sessions.messages JSONB working set. AppendSessionMessage assigns
-	// the next seq atomically inside one INSERT (COALESCE(MAX(seq),-1)+1)
-	// so callers don't pass a seq. ListSessionMessages returns all rows
-	// for one session in ascending seq order — that's the full history,
-	// untouched by compaction. DeleteSession cascades to clean these up.
+	// 将每个 Append 镜像到 session_messages，与 sessions.messages JSONB
+	// 工作集分开。AppendSessionMessage 在一个 INSERT 中原子性地分配下一个 seq
+	// （COALESCE(MAX(seq),-1)+1），因此调用方不传递 seq。ListSessionMessages
+	// 按 seq 升序返回一个会话的所有行——这是完整的历史记录，
+	// 不受压缩影响。DeleteSession 级联清理这些记录。
 	AppendSessionMessage(ctx context.Context, userID, agentID, sessionKey string, msg SessionMessage) error
 	ListSessionMessages(ctx context.Context, userID, agentID, sessionKey string) ([]SessionMessage, error)
-	// CountChatterUserMessages returns how many role='user' rows this
-	// chatter has accumulated under the agent — across all sessions,
-	// all channels. Used by the autoPersist gate as a *durable* "every
-	// N user turns" counter that survives daemon restart and UserSpace
-	// invalidation (the previous in-memory `turnCount` reset on both).
-	// Counts only rows where chatter_user_id matches; legacy rows where
-	// the column is empty are skipped — those predate per-chatter
-	// resolution and conflating them with the new chatter would
-	// over-count.
+	// CountChatterUserMessages 返回该聊天者在 agent 下累计的
+	// role='user' 行数——跨越所有会话、所有频道。被 autoPersist 门控用作
+	// 一个*持久化*的"每 N 用户轮次"计数器，在守护进程重启和 UserSpace
+	// 失效后仍然存在（之前在内存中的 `turnCount` 在两者上都会重置）。
+	// 只统计 chatter_user_id 匹配的行；列值为空的旧行被跳过——
+	// 那些行早于按聊天者解析的功能，将它们与新聊天者混在一起会过度计数。
 	CountChatterUserMessages(ctx context.Context, agentID, chatterUserID string) (int, error)
 
-	// --- Chat events (in-flight streaming deltas, persisted for resume) ---
+	// --- 聊天事件（进行中的流式增量，持久化用于恢复）---
 	//
-	// Every event the agent emits during a turn (content chunk,
-	// tool_call, error, done) lands here with a per-session
-	// auto-incremented seq. Clients that disconnect mid-turn (refresh,
-	// network blip, mobile app backgrounded) reconnect with their
-	// last-seen seq and receive the missed delta — without this the
-	// agent's reply becomes invisible until the parent session row is
-	// next loaded. Cleared by DeleteSession alongside session_messages.
+	// agent 在一轮中发出的每个事件（内容块、tool_call、error、done）
+	// 都带有一个按会话自增的 seq 存储在这里。在轮次中断开连接的客户端
+	// （刷新、网络闪断、移动应用后台化）使用它们最后看到的 seq 重新连接
+	// 并接收错过的增量——没有这个，agent 的回复将不可见，
+	// 直到父会话行下次被加载。由 DeleteSession 与 session_messages 一起清除。
 	AppendSessionEvent(ctx context.Context, userID, agentID, sessionKey, eventType string, data []byte) (int64, error)
 	ListSessionEventsSince(ctx context.Context, userID, agentID, sessionKey string, sinceSeq int64) ([]SessionEventRecord, error)
 	LatestSessionEventSeq(ctx context.Context, userID, agentID, sessionKey string) (int64, error)
 
-	// --- Agent files ---
+	// --- Agent 文件 ---
 	//
-	// SOUL.md, IDENTITY.md, MEMORY.md, AGENTS.md, BOOTSTRAP.md, etc.
-	// Layered: user_id="" is the shared template (edited via the admin
-	// Customize page), user_id=u_xxx is that user's personal override.
-	// Read picks user-specific over template via fallback; write hits
-	// the (agentID, userID, filename) row exactly.
-	// GetAgentFile prefers the caller's own row, falling back to the
-	// agent owner's row. Use GetAgentFileExact for a strict (agent,
-	// user, filename) lookup that bypasses the overlay.
+	// SOUL.md、IDENTITY.md、MEMORY.md、AGENTS.md、BOOTSTRAP.md 等。
+	// 分层：user_id="" 是共享模板（通过管理员自定义页面编辑），
+	// user_id=u_xxx 是该用户的个人覆盖。
+	// 读取操作通过回退机制优先选择用户特定的覆盖而非模板；写入操作
+	// 精确命中 (agentID, userID, filename) 行。
+	// GetAgentFile 优先使用调用方自己的行，回退到 agent
+	// 拥有者的行。使用 GetAgentFileExact 进行严格的 (agent, user, filename)
+	// 查找，绕过覆盖层。
 	GetAgentFile(ctx context.Context, agentID, userID, filename string) ([]byte, error)
 	GetAgentFileExact(ctx context.Context, agentID, userID, filename string) ([]byte, error)
 	SaveAgentFile(ctx context.Context, agentID, userID, filename string, data []byte) error
 	DeleteAgentFile(ctx context.Context, agentID, userID, filename string) error
 	ListAgentFiles(ctx context.Context, agentID, userID string) ([]string, error)
 
-	// --- Configs (providers / channels / settings live here) ---
+	// --- 配置（providers / channels / settings 都在这里）---
 	//
-	// One table backs all three concept families. Each row is keyed by
-	// (kind, user_id, agent_id, name) and carries a JSON `data` payload.
+	// 一个表支持所有三个概念家族。每行以 (kind, user_id, agent_id, name) 为键，
+	// 并携带一个 JSON `data` 负载。
 	//
-	//   kind="provider": LLM provider (name = provider key, e.g. "openai")
-	//   kind="channel":  channel adapter (name = channel type, e.g. "telegram")
-	//   kind="setting":  config namespace (name = "agents.defaults", "sandbox", …)
+	//   kind="provider"：LLM 提供商（name = 提供商密钥，例如 "openai"）
+	//   kind="channel"：频道适配器（name = 频道类型，例如 "telegram"）
+	//   kind="setting"：配置命名空间（name = "agents.defaults", "sandbox", …）
 	//
-	// `credential_key` is only populated for kind="channel" — it's the
-	// stable lookup key the inbound dispatcher uses to find the row when a
-	// message arrives. `enabled` lets a row hide an outer-scope row in the
-	// merge (used by channels: an inner-scope disabled row erases the
-	// outer entry).
+	// `credential_key` 仅为 kind="channel" 填充——它是入站调度器在消息到达时
+	// 用来查找行的稳定查找键。`enabled` 让一行可以在合并中隐藏外部范围的行
+	// （被频道使用：内部范围禁用的行会擦除外部的条目）。
 	//
-	// ListConfigs(kind, userID, agentID) returns rows that match BOTH ids
-	// exactly. Pass empty for either to filter the corresponding ownership
-	// dimension. Pass both empty to get only system/global rows.
+	// ListConfigs(kind, userID, agentID) 返回精确匹配 BOTH ID 的行。
+	// 将任一 ID 留空以过滤对应的所有权维度。两者都留空只获取系统/全局行。
 	ListConfigs(ctx context.Context, kind, userID, agentID string) ([]ConfigRecord, error)
-	// ListConfigsByUser returns every row of a given kind owned by userID
-	// regardless of agent_id. The UserSpace assembly uses this to surface
-	// channel rows where the caller is the binder on a foreign agent —
-	// rows that ListConfigs(kind, userID, ownedAgentID) misses because
-	// the loop only visits agents the user owns. Pass userID="" to get
-	// system-scope rows (equivalent to ListConfigs(kind, "", "")).
+	// ListConfigsByUser 返回由 userID 拥有的给定 kind 的每一行，
+	// 无论 agent_id 如何。UserSpace 组装使用这个来展示调用方是
+	// 外部 agent 上的绑定者的频道行——ListConfigs(kind, userID, ownedAgentID)
+	// 遗漏的行，因为循环只访问用户拥有的 agent。传递 userID="" 以获取
+	// 系统范围的行（等同于 ListConfigs(kind, "", "")）。
 	ListConfigsByUser(ctx context.Context, kind, userID string) ([]ConfigRecord, error)
-	// QueryAllConfigs returns every row of a given kind regardless of
-	// ownership. Used by the gateway boot path to register every
-	// channel adapter on disk and by admin tooling that lists all
-	// rows of a kind across users/agents.
+	// QueryAllConfigs 返回给定 kind 的每一行，无论所有权如何。
+	// 被网关启动路径用来注册磁盘上的每个频道适配器，也被管理员工具
+	// 用来列出跨用户/agent 的某个 kind 的所有行。
 	QueryAllConfigs(ctx context.Context, kind string) ([]ConfigRecord, error)
 	GetConfig(ctx context.Context, id string) (*ConfigRecord, error)
 	GetConfigByName(ctx context.Context, kind, userID, agentID, name string) (*ConfigRecord, error)
@@ -199,10 +181,10 @@ type Store interface {
 	DeleteConfig(ctx context.Context, id string) error
 	LookupChannelByCredential(ctx context.Context, channelType, credKey string) (*ConfigRecord, error)
 
-	// --- Cron jobs (per agent) ---
+	// --- Cron 任务（每个 agent）---
 	//
-	// Cron rows are owned by an agent; the executing identity is the
-	// agent's user_id. List by ownerUserID joins against agents.
+	// Cron 行由 agent 拥有；执行身份是 agent 的 user_id。
+	// 按 ownerUserID 列出时与 agents 表进行连接。
 	ListCronJobsByOwner(ctx context.Context, ownerUserID string) ([]CronJobRecord, error)
 	ListCronJobsByAgent(ctx context.Context, agentID string) ([]CronJobRecord, error)
 	GetCronJob(ctx context.Context, jobID string) (*CronJobRecord, error)
@@ -211,58 +193,51 @@ type Store interface {
 	GetDueCronJobs(ctx context.Context, now time.Time) ([]CronJobRecord, error)
 	LockCronJob(ctx context.Context, jobID, instanceID string) (bool, error)
 	UpdateCronJobRun(ctx context.Context, jobID string, lastRun, nextRun time.Time) error
-	// IncrementCronJobFailure atomically bumps failure_count and returns
-	// the new count. Used by the scheduler when a tick can't deliver to
-	// the configured channel; the caller decides whether to delete the
-	// row at threshold.
+	// IncrementCronJobFailure 原子性地增加 failure_count 并返回新计数。
+	// 被调度器在某个 tick 无法投递到配置的频道时使用；调用方决定是否
+	// 在达到阈值时删除该行。
 	IncrementCronJobFailure(ctx context.Context, jobID string) (int, error)
-	// GetNextDueTime returns the earliest next_run across all enabled
-	// cron jobs. Used by the scheduler to sleep precisely until the
-	// next job is due instead of polling.
+	// GetNextDueTime 返回所有启用的 cron 任务中最早的 next_run。
+	// 被调度器用来精确休眠直到下一个任务到期，而不是轮询。
 	GetNextDueTime(ctx context.Context) (time.Time, error)
 
-	// --- Channel leases (singleton gate for polling channels) ---
+	// --- 频道租约（轮询频道的单例门控）---
 	//
-	// Cross-process leader election for one (channel, account_id) pair.
-	// AcquireChannelLease returns true on either fresh acquisition,
-	// renewal-via-acquire, or steal-after-expiry. RenewChannelLease
-	// returns false (NOT an error) when the lease was lost — callers
-	// must stop the underlying poller immediately to avoid duplicate
-	// inbound delivery. ReleaseChannelLease deletes the row so a peer
-	// can take over without waiting for TTL.
+	// 跨进程领导者选举，针对一个 (channel, account_id) 对。
+	// AcquireChannelLease 在以下情况返回 true：新获取、通过获取续约、
+	// 或在到期后抢占。RenewChannelLease 在租约丢失时返回 false
+	// （不是错误）——调用方必须立即停止底层轮询器以避免重复的入站投递。
+	// ReleaseChannelLease 删除该行，以便对等方可以在不等待 TTL 的情况下接管。
 	AcquireChannelLease(ctx context.Context, channel, accountID, holderID string, ttl time.Duration) (bool, error)
 	RenewChannelLease(ctx context.Context, channel, accountID, holderID string, ttl time.Duration) (bool, error)
 	ReleaseChannelLease(ctx context.Context, channel, accountID, holderID string) error
 
-	// --- Goals (per agent × session) ---
+	// --- 目标（每个 agent × 会话）---
 	//
-	// At most one row per (agent_id, session_key); enforced by a
-	// UNIQUE index. CreateGoal returns ErrGoalAlreadyExists when the
-	// pair is taken; callers must DeleteGoal first to start a new one.
+	// 每个 (agent_id, session_key) 最多一行；由 UNIQUE 索引强制执行。
+	// 当该对已被占用时，CreateGoal 返回 ErrGoalAlreadyExists；
+	// 调用方必须先 DeleteGoal 才能开始新的目标。
 	CreateGoal(ctx context.Context, g *GoalRecord) error
 	GetGoalBySession(ctx context.Context, agentID, sessionKey string) (*GoalRecord, error)
-	// UpdateGoal writes mutable fields back. Caller-immutable fields
-	// (ID, AgentID, SessionKey, OwnerUserID, Objective, CreatedAt) are
-	// ignored.
+	// UpdateGoal 写回可变字段。调用方不可变字段
+	//（ID、AgentID、SessionKey、OwnerUserID、Objective、CreatedAt）被忽略。
 	UpdateGoal(ctx context.Context, g *GoalRecord) error
 	DeleteGoal(ctx context.Context, goalID string) error
 
 	Close() error
 }
 
-// ErrGoalAlreadyExists is returned by CreateGoal when the
-// (agent_id, session_key) UNIQUE constraint trips. Callers translate
-// this to a user-visible "clear the existing goal first" error.
+// ErrGoalAlreadyExists 在 (agent_id, session_key) UNIQUE 约束触发时由
+// CreateGoal 返回。调用方将其转换为用户可见的"请先清除现有目标"错误。
 var ErrGoalAlreadyExists = errors.New("goal already exists for this session")
 
-// UserRecord is one row of the users table.
+// UserRecord 是 users 表中的一行。
 //
-// Roles: "super_admin" | "user" are first-party humans who log in via
-// password / token. "app_user" is provisioned by an api_key on behalf of
-// a downstream application; for these rows APIKeyID identifies the key
-// that minted them and ExternalID is the calling app's own user
-// identifier (free-form). Together they give each external end-user a
-// stable bkclaw user_id without anyone logging in.
+// 角色："super_admin" | "user" 是通过密码/令牌登录的第一方人类。
+// "app_user" 由 api_key 代表下游应用进行配置；对于这些行，
+// APIKeyID 标识了创建它们的密钥，ExternalID 是调用应用自己的用户
+// 标识符（自由格式）。它们共同为每个外部最终用户提供了一个稳定的
+// bkclaw user_id，无需任何人登录。
 type UserRecord struct {
 	ID           string `json:"id"`
 	Username     string `json:"username"`
@@ -273,25 +248,23 @@ type UserRecord struct {
 	Status       string `json:"status"` // "active" | "disabled"
 	APIKeyID     string `json:"apikeyId,omitempty"`
 	ExternalID   string `json:"externalId,omitempty"`
-	// AvatarURL is a self-contained data: URL ("data:image/png;base64,...")
-	// stored inline to avoid a separate blob path. Cap is enforced by the
-	// handler at write time (256KB by default). Empty means "no avatar"
-	// — UI falls back to initials.
+	// AvatarURL 是一个自包含的 data: URL（"data:image/png;base64,..."）
+	// 内联存储以避免单独的 blob 路径。大小限制由处理程序在写入时强制执行
+	// （默认为 256KB）。空值表示"无头像"——UI 回退到首字母。
 	AvatarURL string `json:"avatarUrl,omitempty"`
-	// AgentQuota caps how many agents this user may self-create via
-	// POST /api/agents. Semantics:
-	//   -1 (default) — unlimited
-	//    0          — self-creation forbidden (e.g. single-tenant
-	//                 customers whose agent is provisioned by admin)
-	//    N > 0      — at most N owned agents at once
-	// Admin provisioning paths (POST /api/admin/users/{id}/agents)
-	// bypass this — quota only governs caller-initiated creation.
+	// AgentQuota 限制此用户可以通过 POST /api/agents 自行创建的 agent 数量。
+	// 语义：
+	//   -1（默认）— 无限制
+	//    0        — 禁止自行创建（例如由管理员配置 agent 的单租户客户）
+	//    N > 0    — 同时最多拥有 N 个 agent
+	// 管理员配置路径（POST /api/admin/users/{id}/agents）绕过此限制——
+	// 配额仅控制由调用方发起的创建。
 	AgentQuota int64     `json:"agentQuota"`
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
-// WebSessionRecord backs cookie-based login state.
+// WebSessionRecord 支持基于 cookie 的登录状态。
 type WebSessionRecord struct {
 	SID       string    `json:"sid"`
 	UserID    string    `json:"userId"`
@@ -299,15 +272,14 @@ type WebSessionRecord struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-// APIKeyRecord is one row of the apikeys table. KeyHash is SHA256(token);
-// the plaintext is shown to the caller exactly once at create/rotate.
+// APIKeyRecord 是 apikeys 表中的一行。KeyHash 是 SHA256(token)；
+// 明文在创建/轮换时仅向调用方显示一次。
 //
-// Type is the key's authority tier:
-//   - "admin": full platform — issues users, manages providers/models/skills
-//   - "user":  the apikey owner's own resources — can create agents,
-//     access every agent owned by the apikey owner (resolved at auth time)
-//   - "agent": locked to the explicit list in apikey_agents — cannot
-//     create agents
+// Type 是密钥的权限层级：
+//   - "admin"：完整平台——颁发用户，管理提供商/模型/技能
+//   - "user"：apikey 拥有者自己的资源——可以创建 agent，
+//     访问 apikey 拥有者拥有的每个 agent（在认证时解析）
+//   - "agent"：锁定到 apikey_agents 中的显式列表——不能创建 agent
 type APIKeyRecord struct {
 	ID        string    `json:"id"`
 	UserID    string    `json:"userId"`
@@ -318,19 +290,18 @@ type APIKeyRecord struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// AgentRecord is the persisted state for one agent. agents.id is globally
-// unique; UserID is who owns the agent. The agent itself is the atomic
-// unit — sessions, cron jobs, and apikey ACLs all reference agents.id
-// directly, never (user_id, agent_id).
-// Per-agent model overrides used to live in agents.model; they now live
-// in configs as kind=setting, scope=agent, scope_id=<aid>, name=
-// "agents.defaults", which is the same path system + user defaults take.
-// Resolution happens in loadUserSpace via scope.SettingInto.
-// IsPublic flips the "anyone with the link can chat" gate. Default
-// false (private — owner-only). When true, requireAgentReadable +
-// resolveAgent let any authenticated session lazy-attach the agent
-// into their own UserSpace; sessions/memory/agent_files still
-// partition per chatter, so only the agent identity is shared.
+// AgentRecord 是单个 agent 的持久化状态。agents.id 全局唯一；
+// UserID 是拥有该 agent 的用户。agent 本身是原子单元——
+// 会话、cron 任务和 apikey ACL 都直接引用 agents.id，
+// 从不引用 (user_id, agent_id)。
+// 每个 agent 的模型覆盖曾经存在于 agents.model；现在它们存在于 configs 中，
+// 作为 kind=setting, scope=agent, scope_id=<aid>, name="agents.defaults"，
+// 这与系统 + 用户默认值采用的路径相同。解析在 loadUserSpace 中通过 scope.SettingInto 完成。
+// IsPublic 翻转"任何拥有链接的人都可以聊天"的门控。默认 false
+// （私有——仅拥有者）。当为 true 时，requireAgentReadable +
+// resolveAgent 让任何经过身份验证的会话将 agent 懒加载到它们自己的
+// UserSpace 中；会话/记忆/agent 文件仍然按聊天者分区，
+// 因此只有 agent 身份是共享的。
 type AgentRecord struct {
 	ID        string                 `json:"id"`
 	UserID    string                 `json:"userId"`
@@ -341,28 +312,26 @@ type AgentRecord struct {
 	UpdatedAt time.Time              `json:"updatedAt"`
 }
 
-// SessionRecord holds a conversation session.
+// SessionRecord 持有一个对话会话。
 //
-// Channel / AccountID / ChatID identify the upstream conversation this
-// session belongs to (e.g. ("wechat", "<bot account id>", "<openid>") or
-// ("web", "", "<frontend session id>")). These are persisted once on
-// INSERT and never overwritten by an UPDATE — a session's home doesn't
-// move once it's created. Multiple session rows can share the same
-// triple; the active one for IM routing is resolved by max(updated_at).
+// Channel / AccountID / ChatID 标识此会话所属的上游对话
+//（例如 ("wechat", "<bot account id>", "<openid>") 或
+// ("web", "", "<frontend session id>")）。这些在 INSERT 时持久化一次，
+// 永远不会被 UPDATE 覆盖——会话的归属地在创建后不会移动。
+// 多个会话行可以共享相同的三元组；IM 路由的活动会话通过 max(updated_at) 解析。
 type SessionRecord struct {
 	Channel   string `json:"channel,omitempty"`
 	AccountID string `json:"accountId,omitempty"`
 	ChatID    string `json:"chatId,omitempty"`
-	// ProjectID groups sessions sharing a workspace folder; empty =
-	// loose chat (each session gets its own per-chat sandbox dir).
-	// Like the channel triple it's persisted on INSERT only and
-	// preserved on UPDATE.
+	// ProjectID 对共享工作区文件夹的会话进行分组；空值 =
+	// 松散聊天（每个会话有自己的每个聊天的沙箱目录）。
+	// 与频道三元组一样，它仅在 INSERT 时持久化并在 UPDATE 时保留。
 	ProjectID string           `json:"projectId,omitempty"`
 	Messages  []SessionMessage `json:"messages"`
 	UpdatedAt time.Time        `json:"updatedAt"`
 }
 
-// SessionMessage is a single message in a session.
+// SessionMessage 是会话中的单条消息。
 type SessionMessage struct {
 	Role         string                 `json:"role"`
 	Content      string                 `json:"content"`
@@ -374,16 +343,15 @@ type SessionMessage struct {
 	Timestamp    time.Time              `json:"timestamp"`
 	Thinking     string                 `json:"thinking,omitempty"`
 	RawAssistant json.RawMessage        `json:"rawAssistant,omitempty"`
-	// Origin mirrors provider.Message.Origin — empty for genuine user
-	// / assistant messages, non-empty for runtime-injected ones
-	// (currently only "goal_context"). Stored as a column on
-	// session_messages (see migrateSessionMessagesAddOrigin).
+	// Origin 镜像 provider.Message.Origin — 对真实的用户/助手消息为空，
+	// 对运行时注入的消息非空（目前仅有 "goal_context"）。
+	// 作为 session_messages 上的列存储（参见 migrateSessionMessagesAddOrigin）。
 	Origin string `json:"origin,omitempty"`
 }
 
-// SessionEventRecord is one row of session_events — a single delta the
-// agent emitted during a turn. Data is opaque JSON whose shape depends
-// on Type ("content", "tool_call", "error", "done", ...).
+// SessionEventRecord 是 session_events 表中的一行——agent 在一轮中发出的
+// 单个增量。Data 是不透明的 JSON，其形状取决于 Type
+//（"content", "tool_call", "error", "done", ...）。
 type SessionEventRecord struct {
 	UserID     string    `json:"userId,omitempty"`
 	AgentID    string    `json:"agentId,omitempty"`
@@ -394,17 +362,16 @@ type SessionEventRecord struct {
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
-// SessionOwnerPair is one (user_id, agent_id) tuple returned by
-// ListSessionOwnerPairs — represents "this user has at least one
-// session with this agent." The admin Chats view fans out per pair to
-// pull each chatter's session list, so non-owner conversations on
-// public agents (where session.user_id ≠ agent.user_id) get surfaced.
+// SessionOwnerPair 是由 ListSessionOwnerPairs 返回的一个 (user_id, agent_id)
+// 元组——表示"该用户与此 agent 至少有一个会话。"管理员聊天视图按对展开，
+// 拉取每个聊天者的会话列表，以便公共 agent 上的非拥有者对话
+//（其中 session.user_id ≠ agent.user_id）被展示出来。
 type SessionOwnerPair struct {
 	UserID  string `json:"userId"`
 	AgentID string `json:"agentId"`
 }
 
-// SessionMeta is summary info for a session (for listing).
+// SessionMeta 是会话的摘要信息（用于列表展示）。
 type SessionMeta struct {
 	Key          string    `json:"key"`
 	Channel      string    `json:"channel,omitempty"`
@@ -416,15 +383,14 @@ type SessionMeta struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
-// ProjectRecord is a per-(user, agent) named workspace folder. Sessions
-// reference a project via sessions.project_id; every session in the
-// same project mounts workspaces/<agent>/projects/<id>/ as its sandbox
-// /workspace, so files are shared across the project's chats.
+// ProjectRecord 是一个按 (user, agent) 划分的命名工作区文件夹。会话通过
+// sessions.project_id 引用项目；同一项目中的每个会话都将
+// workspaces/<agent>/projects/<id>/ 挂载为它的沙箱 /workspace，
+// 因此文件在项目的聊天之间共享。
 //
-// A project is private to its creator (the user_id, agent_id pair),
-// matching SessionRecord's ownership model — different users sharing
-// the same agent each have their own projects, never seeing each
-// other's.
+// 项目对其创建者（user_id, agent_id 对）是私有的，
+// 与 SessionRecord 的所有权模型匹配——共享同一 agent 的不同用户
+// 各有自己的项目，永远不会看到彼此的项目。
 type ProjectRecord struct {
 	UserID      string    `json:"-"`
 	AgentID     string    `json:"-"`
@@ -435,39 +401,36 @@ type ProjectRecord struct {
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
-// Kinds for ConfigRecord.
+// ConfigRecord 的 kind 常量。
 const (
 	KindProvider = "provider"
 	KindChannel  = "channel"
 	KindSetting  = "setting"
 )
 
-// ConfigRecord is one row of the configs table — the unified
-// home for providers, channels, and namespaced settings.
+// ConfigRecord 是 configs 表中的一行——providers、channels 和命名空间设置
+// 的统一存放处。
 //
-//   - kind says which family this row belongs to
-//   - (user_id, agent_id) says who owns it; the empty-string defaults
-//     give us four natural ownership levels:
-//     (”, ”)   = system / global
-//     (X, ”)    = user X's private config
-//     (”, Y)    = agent Y's "official" config (anyone using Y inherits)
-//     (X, Y)     = user X's per-agent override on agent Y (multi-tenant)
-//   - name is the lookup handle inside that family (provider key,
-//     channel type, or setting namespace)
-//   - data is the family-specific JSON payload
+//   - kind 表示此行属于哪个家族
+//   - (user_id, agent_id) 表示谁拥有它；空字符串默认值
+//     给我们四个自然的所有权级别：
+//     (”, ”)   = 系统/全局
+//     (X, ”)    = 用户 X 的私有配置
+//     (”, Y)    = agent Y 的"官方"配置（任何使用 Y 的人都继承）
+//     (X, Y)     = 用户 X 在 agent Y 上的每个 agent 覆盖（多租户）
+//   - name 是该家族内的查找句柄（provider 密钥、频道类型或设置命名空间）
+//   - data 是家族特定的 JSON 负载
 //
-// CredentialKey is only meaningful for kind="channel" — see
-// LookupChannelByCredential.
+// CredentialKey 仅对 kind="channel" 有意义——参见 LookupChannelByCredential。
 type ConfigRecord struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
-	// Scope is a denormalized label derived from (UserID, AgentID).
-	// "system" / "user" / "agent" / "user-agent". The storage layer is
-	// the single writer — SaveConfig always recomputes and overwrites
-	// whatever the caller passed, so the column can't drift out of
-	// sync with the (user_id, agent_id) source of truth. Kept so DB
-	// dumps and ad-hoc queries (`WHERE scope='system'`) stay readable
-	// without parsing the empty/non-empty pattern of the id columns.
+	// Scope 是从 (UserID, AgentID) 派生的反规范化标签。
+	// "system" / "user" / "agent" / "user-agent"。存储层是
+	// 唯一的写入者——SaveConfig 总是重新计算并覆盖调用方传递的任何值，
+	// 因此该列不会与 (user_id, agent_id) 的真相来源不同步。
+	// 保留此列以便数据库转储和临时查询（`WHERE scope='system'`）保持可读，
+	// 而无需解析 ID 列的空/非空模式。
 	Scope         string                 `json:"scope,omitempty"`
 	UserID        string                 `json:"userId,omitempty"`
 	AgentID       string                 `json:"agentId,omitempty"`
@@ -479,11 +442,10 @@ type ConfigRecord struct {
 	UpdatedAt     time.Time              `json:"updatedAt"`
 }
 
-// computeConfigScope derives the scope label from the (userID, agentID)
-// ownership pair. Single source of truth for the Scope column —
-// SaveConfig calls this before every write, so any divergence between
-// the columns and the label means a code path that bypassed SaveConfig
-// (which shouldn't exist outside of test-only ad-hoc INSERTs).
+// computeConfigScope 从 (userID, agentID) 所有权对派生范围标签。
+// Scope 列的单一真相来源——SaveConfig 在每次写入前调用它，
+// 因此列与标签之间的任何差异都意味着绕过了 SaveConfig 的代码路径
+//（除了测试专用的临时 INSERT 外不应存在）。
 func computeConfigScope(userID, agentID string) string {
 	switch {
 	case userID != "" && agentID != "":
@@ -497,10 +459,9 @@ func computeConfigScope(userID, agentID string) string {
 	}
 }
 
-// LegacyScope returns the scope label suitable for the HTTP-layer
-// (scope, scopeId) JSON shape. Reads the persisted column when set;
-// falls back to recomputing for rows that pre-date the column-add
-// migration / are constructed in tests via raw INSERT.
+// LegacyScope 返回适用于 HTTP 层 (scope, scopeId) JSON 形状的范围标签。
+// 当已设置时读取持久化的列；对于在列添加迁移之前存在或通过原始 INSERT
+// 在测试中构造的行，回退到重新计算。
 func (r ConfigRecord) LegacyScope() string {
 	if r.Scope != "" {
 		return r.Scope
@@ -508,9 +469,8 @@ func (r ConfigRecord) LegacyScope() string {
 	return computeConfigScope(r.UserID, r.AgentID)
 }
 
-// LegacyScopeID is the scopeID half of LegacyScope. For per-(user,
-// agent) rows it returns "user_id/agent_id" so the JSON consumer has
-// enough to round-trip.
+// LegacyScopeID 是 LegacyScope 的 scopeID 部分。对于每个 (user, agent)
+// 的行，它返回 "user_id/agent_id"，以便 JSON 消费者有足够的信息进行往返。
 func (r ConfigRecord) LegacyScopeID() string {
 	switch {
 	case r.UserID != "" && r.AgentID != "":
@@ -524,17 +484,16 @@ func (r ConfigRecord) LegacyScopeID() string {
 	}
 }
 
-// GoalRecord is the persisted shape of a /goal target. One per
-// (agent, session) — UNIQUE index enforces it. See
-// internal/agent/goal for the domain type and rationale.
+// GoalRecord 是 /goal 目标的持久化形状。每个 (agent, session) 一个——
+// UNIQUE 索引强制执行。参见 internal/agent/goal 了解领域类型和原理。
 type GoalRecord struct {
 	ID          string `json:"id"`
 	AgentID     string `json:"agentId"`
 	SessionKey  string `json:"sessionKey"`
 	OwnerUserID string `json:"ownerUserId"`
 
-	// Routing tuple — see goal.Goal for the rationale. Continuations
-	// publish onto this address so the prompt lands in the right chat.
+	// 路由元组——参见 goal.Goal 了解原理。延续发布到此地址，
+	// 以便提示落地到正确的聊天中。
 	Channel   string `json:"channel,omitempty"`
 	AccountID string `json:"accountId,omitempty"`
 	ChatID    string `json:"chatId,omitempty"`
@@ -543,8 +502,7 @@ type GoalRecord struct {
 	Objective string `json:"objective"`
 	Status    string `json:"status"` // active | paused | budget_limited | complete
 
-	// TokenBudget is nil for unbounded goals. Stored as a nullable
-	// BIGINT column.
+	// TokenBudget 对于无限目标是 nil。存储为可空的 BIGINT 列。
 	TokenBudget *int64 `json:"tokenBudget,omitempty"`
 	TokensUsed  int64  `json:"tokensUsed"`
 
@@ -552,9 +510,9 @@ type GoalRecord struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// CronJobRecord holds a scheduled job. agent_id is mandatory; user_id is
-// also stored so "list a user's crons" doesn't need a join against
-// agents and ownership checks can short-circuit.
+// CronJobRecord 持有一个计划任务。agent_id 是必需的；user_id 也被存储，
+// 这样"列出用户的 cron 任务"就不需要与 agents 表连接，
+// 所有权检查也可以短路。
 type CronJobRecord struct {
 	ID        string     `json:"id"`
 	UserID    string     `json:"userId,omitempty"`
@@ -570,15 +528,14 @@ type CronJobRecord struct {
 	Enabled   bool       `json:"enabled"`
 	LastRun   *time.Time `json:"lastRun,omitempty"`
 	NextRun   *time.Time `json:"nextRun,omitempty"`
-	// FailureCount is the number of consecutive fire-attempts whose
-	// destination channel was missing/unreachable. UpdateCronJobRun
-	// resets it to 0; IncrementCronJobFailure bumps it. The scheduler
-	// deletes the row once it crosses an internal threshold.
+	// FailureCount 是目标频道缺失/不可达的连续触发尝试次数。
+	// UpdateCronJobRun 将其重置为 0；IncrementCronJobFailure 增加它。
+	// 调度器一旦超过内部阈值就删除该行。
 	FailureCount int       `json:"failureCount,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
-// StorageType identifies the storage backend.
+// StorageType 标识存储后端。
 type StorageType string
 
 const (
@@ -587,7 +544,7 @@ const (
 	StorageSQLite   StorageType = "sqlite"
 )
 
-// StorageConfig holds DB credentials. Populated from BKCLAW_STORAGE_* env vars at boot.
+// StorageConfig 持有数据库凭据。在启动时从 BKCLAW_STORAGE_* 环境变量填充。
 type StorageConfig struct {
 	Type        StorageType `json:"type"`
 	DSN         string      `json:"dsn,omitempty"`

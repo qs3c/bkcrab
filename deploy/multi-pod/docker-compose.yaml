@@ -1,25 +1,24 @@
-# Two-pod shared-MySQL + MinIO smoke test for the stateless-gateway
-# architecture. This is the reference environment for verifying that
-# sessions/memory/identity/workspace are truly shared across pods and
-# survive pod restart.
+# 双 Pod 共享 MySQL + MinIO 冒烟测试，用于无状态网关架构。
+# 这是验证会话/记忆/身份/工作区确实在 Pod 之间共享
+# 并能承受 Pod 重启的参考环境。
 #
-# Run:
+# 运行：
 #   docker compose -f deploy/multi-pod/docker-compose.yaml up --build
 #
-# After ~10s:
-#   pod A           http://localhost:18953  (admin token: dev-admin-token)
-#   pod B           http://localhost:18954  (same state, different pod)
-#   MinIO console   http://localhost:9001   (user: minioadmin / pass: minioadmin)
+# 约 10 秒后：
+#   Pod A           http://localhost:18953  （管理员令牌：dev-admin-token）
+#   Pod B           http://localhost:18954  （相同状态，不同 Pod）
+#   MinIO 控制台    http://localhost:9001   （用户：minioadmin / 密码：minioadmin）
 #   MySQL           bkclaw:bkclaw@tcp(localhost:3306)/bkclaw
 #
-# Smoke test checklist (curl examples use pod A, then read from pod B):
-#   1. curl POST /api/agents via A          — creates agent in shared DB
-#   2. curl GET /api/agents via B           — B sees it without restart
-#   3. write SOUL.md via A, read via B      — identity file crosses pod
-#   4. chat an agent via A (no exec)        — sandbox not created
-#   5. chat with exec via A                 — sandbox created lazily
-#   6. wait 10+ min or edit IdleTTLSec      — sandbox evicted, DB intact
-#   7. kill pod A                           — B keeps serving all state
+# 冒烟测试清单（curl 示例使用 Pod A，然后从 Pod B 读取）：
+#   1. 通过 A 执行 curl POST /api/agents          — 在共享数据库中创建 agent
+#   2. 通过 B 执行 curl GET /api/agents           — B 无需重启即可看到
+#   3. 通过 A 写入 SOUL.md，通过 B 读取            — 身份文件跨 Pod 访问
+#   4. 通过 A 与 agent 聊天（无执行）               — 不创建沙箱
+#   5. 通过 A 带执行聊天                           — 沙箱延迟创建
+#   6. 等待 10+ 分钟或编辑 IdleTTLSec             — 沙箱被驱逐，数据库完好
+#   7. 杀死 Pod A                                — B 继续服务所有状态
 
 version: "3.8"
 
@@ -58,9 +57,9 @@ services:
       timeout: 2s
       retries: 10
 
-  # Bootstraps a bucket inside MinIO so the gateway doesn't crash on first
-  # use. Runs once, exits — compose waits for "healthy" not "exited", so
-  # both gateway pods start after this is done via depends_on.
+  # 在 MinIO 中初始化存储桶，以便网关在首次使用时不会崩溃。
+  # 运行一次后退出 — compose 等待的是 "healthy" 而非 "exited"，
+  # 因此两个网关 Pod 在此完成后通过 depends_on 启动。
   minio-bootstrap:
     image: minio/mc:latest
     depends_on:
@@ -79,15 +78,15 @@ services:
       context: ../..
       dockerfile: Dockerfile
     environment:
-      # Same config on both pods — that's the whole point of "stateless".
-      # TZ included so cross-pod runs exercise the server-default
-      # timezone fallback the same way single-pod deploys do.
+      # 两个 Pod 使用相同配置 — 这就是"无状态"的全部意义。
+      # 包含 TZ 以便跨 Pod 运行以与单 Pod 部署相同的方式
+      # 测试服务器默认时区回退。
       TZ: Asia/Shanghai
       BKCLAW_STORAGE_TYPE: mysql
       BKCLAW_STORAGE_DSN: "bkclaw:bkclaw@tcp(db:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4"
       BKCLAW_MODE: cloud
       BKCLAW_AUTH_TOKEN: dev-admin-token
-      # Object store → MinIO. The keys mirror config.ObjectStoreCfg.
+      # 对象存储 → MinIO。这些键镜像了 config.ObjectStoreCfg。
       BKCLAW_OBJECT_STORE_TYPE: minio
       BKCLAW_OBJECT_STORE_ENDPOINT: minio:9000
       BKCLAW_OBJECT_STORE_BUCKET: bkclaw

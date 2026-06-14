@@ -20,7 +20,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
-// apiResolver adapts *gateway.Gateway to api.UserResolver.
+// apiResolver 适配器，将 *gateway.Gateway 转换为 api.UserResolver。
 type apiResolver struct {
 	gw *gateway.Gateway
 }
@@ -41,30 +41,26 @@ func (a *apiResolver) LocalAgentManager() *agent.Manager { return a.gw.LocalAgen
 func (a *apiResolver) IsCloudMode() bool                 { return a.gw.IsCloudMode() }
 func (a *apiResolver) InvalidateUser(userID string)      { a.gw.InvalidateUser(userID) }
 
-// InvalidateAgent forwards to the gateway so agent-scope mutations
-// (PUT /api/agents/{id} model change, agent-scope provider/setting
-// writes) actually drop the cached UserSpace. Without this method on
-// the resolver, setup.invalidateAgent's type assertion silently fails
-// and chat keeps firing the pre-change model until the 30-min idle
-// eviction kicks in.
+// InvalidateAgent 转发到网关，使得代理作用域的变更
+//（PUT /api/agents/{id} 模型更改、代理作用域的提供者/设置写入）
+// 实际丢弃缓存的 UserSpace。如果没有此方法，
+// 则 setup.invalidateAgent 的类型断言会静默失败，
+// 聊天将一直使用更改前的模型，直到 30 分钟空闲驱逐触发。
 func (a *apiResolver) InvalidateAgent(agentID string) { a.gw.InvalidateAgent(agentID) }
 
 func (a *apiResolver) EnsureAgent(ctx context.Context, userID, agentID string) error {
 	return a.gw.EnsureAgent(ctx, userID, agentID)
 }
 
-// ReloadAgents drops every cached UserSpace so each one reloads on the
-// next request. setup.invalidateScope's system-scope branch type-
-// asserts the resolver to this interface — without the method the
-// assertion silently fails and a system-scope settings save (sandbox,
-// agents.defaults, …) leaves the running gateway pinned to its pre-
-// save snapshot, surfacing as "model is empty" mysteries on the next
-// chat turn.
+// ReloadAgents 丢弃所有缓存的 UserSpace，以便每个缓存在下一次请求时重新加载。
+// setup.invalidateScope 的系统作用域分支对解析器进行类型断言为此接口——没有此方法时，
+// 断言会静默失败，系统作用域设置保存（sandbox、agents.defaults 等）
+// 会使运行中的网关保持其保存前的快照，在下一次聊天轮次中表现为 "model is empty" 的谜团。
 func (a *apiResolver) ReloadAgents() error { return a.gw.ReloadAgents() }
 
-// RegisterChannelFromConfig hot-starts a freshly-saved channel row.
-// Called by setup handlers after they persist a new bot config so the
-// adapter starts polling without a process restart.
+// RegisterChannelFromConfig 热启动新保存的频道记录。
+// 由设置处理程序在持久化新的 bot 配置后调用，
+// 以便适配器无需重启进程即可开始轮询。
 func (a *apiResolver) RegisterChannelFromConfig(rec store.ConfigRecord) error {
 	return a.gw.RegisterChannelFromConfig(rec)
 }
@@ -144,11 +140,10 @@ func runGateway(port int) error {
 		return fmt.Errorf("create gateway: %w", err)
 	}
 
-	// Remove credential-bearing env vars from the process environment
-	// now that boot config has been read. Closes the /proc/<pid>/environ
-	// path that a shell-having LLM could otherwise use to recover the
-	// daemon's storage DSN and object-store keys. See
-	// config.ScrubBootSecrets for the trade-off note.
+	// 从进程环境中移除包含凭据的环境变量，因为启动配置已读取完毕。
+	// 关闭 /proc/<pid>/environ 路径，否则拥有 shell 的 LLM 可能利用该路径
+	// 恢复守护进程的存储 DSN 和对象存储密钥。有关权衡说明，
+	// 请参见 config.ScrubBootSecrets。
 	config.ScrubBootSecrets()
 
 	authResolver, err := auth.NewResolver(gw.Store())
@@ -176,10 +171,9 @@ func runGateway(port int) error {
 	webSrv.SetUsageMeter(gw.Usage())
 	webSrv.SetAuth(authResolver)
 	webSrv.SetWebChannel(gw.WebChannel())
-	// Share the chat-event hub so bus-fired web turns (cron / goal
-	// continuation / heartbeat / sub-agent) stream through the same
-	// SSE pipeline a user-typed turn uses. Must be wired before
-	// gw.Run() starts the bus consumer.
+	// 共享聊天事件集线器，使得总线触发的 web 轮次（cron / 目标
+	// 延续 / 心跳 / 子代理）通过与用户输入轮次相同的 SSE 管道传输。
+	// 必须在 gw.Run() 启动总线消费者之前连接。
 	gw.SetChatEvents(webSrv.ChatEventHub())
 
 	apiSrv := api.NewServer(&apiResolver{gw: gw}, authResolver, gwCfg)
@@ -201,7 +195,7 @@ func runGateway(port int) error {
 
 	url := fmt.Sprintf("http://localhost:%d", port)
 	slog.Info("web UI available", "url", url)
-	// Auto-open the browser when this looks like a fresh install.
+	// 在看起来是全新安装时自动打开浏览器。
 	if n, _ := countUsersSafe(gw); n == 0 {
 		go openBrowser(url)
 	}

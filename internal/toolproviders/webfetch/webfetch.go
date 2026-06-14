@@ -1,7 +1,6 @@
-// Package webfetch bundles built-in web_fetch providers. Every provider takes
-// the same {url, max_length} arg shape and returns plain text the LLM can
-// read directly. Per-call credentials/endpoint come from the
-// toolproviders.Request.Config so providers stay stateless.
+// Package webfetch 包含内置的 web_fetch 提供商。每个提供商接受相同的
+// {url, max_length} 参数格式，并返回 LLM 可以直接阅读的纯文本。
+// 每次调用的凭据/端点来自 toolproviders.Request.Config，因此提供商保持无状态。
 package webfetch
 
 import (
@@ -12,15 +11,14 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// Category is the tool category these providers plug into.
+// Category 是这些提供商插入的工具类别。
 const Category = "web_fetch"
 
-// DefaultMaxLen is the cap when the caller doesn't pass max_length. Mirrors
-// the value that the legacy direct-only web_fetch tool used so swapping in
-// a chain doesn't change reply truncation behaviour.
+// DefaultMaxLen 是调用方未传递 max_length 时的上限。
+// 与旧版纯 direct web_fetch 工具使用的值相同，以便切换到链时不会改变回复截断行为。
 const DefaultMaxLen = 10000
 
-// RegisterAll installs every built-in web_fetch provider in r.
+// RegisterAll 在 r 中注册所有内置的 web_fetch 提供商。
 func RegisterAll(r *toolproviders.Registry) {
 	r.Register(&Direct{})
 	r.Register(&Jina{})
@@ -52,9 +50,8 @@ func parseArgs(raw map[string]any) (args, error) {
 	return a, nil
 }
 
-// truncate caps text at maxLen with a visible marker so the LLM knows the
-// page was longer than what it received and can ask for a higher cap (or
-// pick a more specific URL) instead of treating the cut as authoritative.
+// truncate 在 maxLen 处截断文本并添加可见标记，以便 LLM 知道页面比收到的内容更长，
+// 可以请求更高的上限（或选择更具体的 URL），而不是将截断视为完整内容。
 func truncate(text string, maxLen int) string {
 	if maxLen <= 0 || len(text) <= maxLen {
 		return text
@@ -64,9 +61,9 @@ func truncate(text string, maxLen int) string {
 
 var htmlTagRe = regexp.MustCompile(`<[^>]*>`)
 
-// stripHTML removes script/style blocks, drops remaining HTML tags, and
-// collapses whitespace. Mirrors the helper that lived in the agent's
-// web_fetch tool so the Direct provider produces identical output.
+// stripHTML 移除 script/style 块、删除剩余的 HTML 标签并折叠空白。
+// 与原来在代理的 web_fetch 工具中的辅助函数相同，
+// 以便 Direct 提供商产生相同的输出。
 func stripHTML(html string) string {
 	scriptRe := regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
 	html = scriptRe.ReplaceAllString(html, "")

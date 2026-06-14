@@ -4,7 +4,7 @@ import (
 	"net/http"
 )
 
-// --- Channels ---
+// --- 频道 ---
 
 func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.loadUserConfig(r)

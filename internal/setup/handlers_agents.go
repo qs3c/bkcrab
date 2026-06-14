@@ -26,12 +26,10 @@ import (
 	"github.com/qs3c/bkclaw/internal/workspace"
 )
 
-// agentShareModelConfig reports whether the agent's owner has opted to
-// share their model + provider configuration with chatters. Default
-// true: when the key is absent from rec.Config, sharing is on. Owners
-// explicitly opt OUT by writing `false`. Centralised here so the API
-// layer, the runtime overlay gate (EnsureAgent), and the listProviders
-// auth relaxation read the flag with one consistent default.
+// agentShareModelConfig 报告 agent 拥有者是否选择与聊天者共享其模型+提供者配置。
+// 默认为 true：当 rec.Config 中缺少该键时，共享开启。拥有者通过写入 `false` 显式退出。
+// 集中在此处，以便 API 层、运行时覆盖门控（EnsureAgent）和 listProviders 认证放宽
+// 使用一致的默认值读取该标志。
 func agentShareModelConfig(rec *store.AgentRecord) bool {
 	if rec == nil {
 		return true
@@ -43,9 +41,8 @@ func agentShareModelConfig(rec *store.AgentRecord) bool {
 	return v
 }
 
-// agentScopeModel reads the per-agent model override from the configs
-// table — the kind=setting, scope=agent row that supersedes the
-// system/user defaults when set.
+// agentScopeModel 从 configs 表读取 per-agent 模型覆盖 —
+// kind=setting, scope=agent 行，设置后取代系统/用户默认值。
 func (s *Server) agentScopeModel(r *http.Request, agentID string) string {
 	rec, err := s.dataStore.GetConfigByName(r.Context(), store.KindSetting, "", agentID, "agents.defaults")
 	if err != nil || rec == nil {
@@ -57,8 +54,7 @@ func (s *Server) agentScopeModel(r *http.Request, agentID string) string {
 	return ""
 }
 
-// saveAgentScopeModel upserts (model="") or deletes (model=="") the
-// agent-scope agents.defaults row.
+// saveAgentScopeModel 当 model!="" 时写入（upsert），当 model=="" 时删除 agent 作用域的 agents.defaults 行。
 func (s *Server) saveAgentScopeModel(r *http.Request, agentID, model string) error {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -67,17 +63,14 @@ func (s *Server) saveAgentScopeModel(r *http.Request, agentID, model string) err
 	return scope.SaveSettingByScope(r.Context(), s.dataStore, scope.Agent, agentID, "agents.defaults", map[string]interface{}{"model": model})
 }
 
-// agentScopeDefaultsRead returns the current agent-scope agents.defaults
-// row data, or an empty map if the row doesn't exist yet. Callers use
-// this as the base for merge-aware patches (read-modify-write) so a
-// single PATCH that touches one field doesn't clobber the rest.
+// agentScopeDefaultsRead 返回当前 agent 作用域的 agents.defaults 行数据，如果行不存在则返回空 map。
+// 调用者将其作为合并感知补丁的基础（读-改-写），以便一个只接触一个字段的 PATCH 不会破坏其余部分。
 func (s *Server) agentScopeDefaultsRead(r *http.Request, agentID string) map[string]interface{} {
 	rec, err := s.dataStore.GetConfigByName(r.Context(), store.KindSetting, "", agentID, "agents.defaults")
 	if err != nil || rec == nil || rec.Data == nil {
 		return map[string]interface{}{}
 	}
-	// Copy so callers mutating the result don't accidentally write
-	// back through the cached store object.
+	// 复制一份，以便调用者修改结果时不会意外通过缓存存储对象写回。
 	out := make(map[string]interface{}, len(rec.Data))
 	for k, v := range rec.Data {
 		out[k] = v
@@ -85,11 +78,9 @@ func (s *Server) agentScopeDefaultsRead(r *http.Request, agentID string) map[str
 	return out
 }
 
-// applyAgentScopeDefaultsPatch merges patch into the current
-// agents.defaults row and writes the result. Keys whose value is nil are
-// DELETED from the row (the caller's signal for "clear this override").
-// A row that ends up empty is removed entirely so MergedAgentConfig
-// falls all the way back to system/user defaults.
+// applyAgentScopeDefaultsPatch 将 patch 合并到当前的 agents.defaults 行中并写入结果。
+// 值为 nil 的键将从行中删除（调用者的信号"清除此覆盖"）。
+// 结果为空的整行被完全移除，以便 MergedAgentConfig 完全回退到系统/用户默认值。
 func (s *Server) applyAgentScopeDefaultsPatch(r *http.Request, agentID string, patch map[string]interface{}) error {
 	if len(patch) == 0 {
 		return nil
@@ -108,13 +99,11 @@ func (s *Server) applyAgentScopeDefaultsPatch(r *http.Request, agentID string, p
 	return scope.SaveSettingByScope(r.Context(), s.dataStore, scope.Agent, agentID, "agents.defaults", data)
 }
 
-// applyAgentScopePluginsPatch merges per-agent plugin enable
-// overrides into the (scope=agent, name=plugins.enabled) row.
+// applyAgentScopePluginsPatch 将 per-agent 插件启用覆盖合并到 (scope=agent, name=plugins.enabled) 行中。
 //
-// patch keys whose value is true/false are written; the rest of the
-// row is preserved (so a UI toggle for one plugin doesn't clobber
-// overrides for sibling plugins). When reset is true, the entire row
-// is dropped — agent falls back to system-wide plugin enable state.
+// 值为 true/false 的补丁键被写入；行的其余部分被保留
+//（这样对一个插件的 UI 切换不会破坏兄弟插件的覆盖）。
+// 当 reset 为 true 时，整行被删除 — agent 回退到系统范围的插件启用状态。
 func (s *Server) applyAgentScopePluginsPatch(r *http.Request, agentID string, patch map[string]bool, reset bool) error {
 	if reset {
 		return scope.SaveSettingByScope(r.Context(), s.dataStore, scope.Agent, agentID, "plugins.enabled", nil)
@@ -134,11 +123,10 @@ func (s *Server) applyAgentScopePluginsPatch(r *http.Request, agentID string, pa
 	return scope.SaveSettingByScope(r.Context(), s.dataStore, scope.Agent, agentID, "plugins.enabled", data)
 }
 
-// agentScopeSplitReplies reads the per-agent multi-bubble override.
-// Returns nil when absent — nil is treated as false by every runtime
-// consumer, so the distinction only matters for the GET response (the
-// dashboard could choose to render "unset" differently from "off", but
-// today the Switch renders both as off and that's fine).
+// agentScopeSplitReplies 读取 per-agent 多气泡覆盖。
+// 当不存在时返回 nil — nil 被每个运行时消费者视为 false，
+// 因此区别仅在于 GET 响应（仪表板可以选择将"未设置"与"关闭"渲染不同，
+// 但目前 Switch 将两者都渲染为关闭，这没问题）。
 func (s *Server) agentScopeSplitReplies(r *http.Request, agentID string) *bool {
 	rec, err := s.dataStore.GetConfigByName(r.Context(), store.KindSetting, "", agentID, "agents.defaults")
 	if err != nil || rec == nil {
@@ -163,9 +151,8 @@ func (s *Server) agentScopePromptMode(r *http.Request, agentID string) string {
 	return ""
 }
 
-// agentScopePlugins reads the per-agent plugin enable overlay. Returns
-// nil when no row exists. Keyed pluginID → bool; missing keys fall
-// through to the system-wide plugin entry's enabled state.
+// agentScopePlugins 读取 per-agent 插件启用覆盖层。当没有行存在时返回 nil。
+// 键为 pluginID → bool；缺失的键回退到系统范围插件条目的启用状态。
 func (s *Server) agentScopePlugins(r *http.Request, agentID string) map[string]bool {
 	rec, err := s.dataStore.GetConfigByName(r.Context(), store.KindSetting, "", agentID, "plugins.enabled")
 	if err != nil || rec == nil {
@@ -183,11 +170,10 @@ func (s *Server) agentScopePlugins(r *http.Request, agentID string) map[string]b
 	return out
 }
 
-// agentScopeAutoPersist reads the per-agent autoPersist override.
-// Returns nil when absent — same convention as agentScopeSplitReplies.
-// Drives the runPostTurn AutoPersistMemory pass (LLM-distilled writes to
-// USER.md / MEMORY.md) which is the only chatter-memory persistence
-// path in chatbot mode.
+// agentScopeAutoPersist 读取 per-agent autoPersist 覆盖。
+// 不存在时返回 nil — 与 agentScopeSplitReplies 相同的约定。
+// 驱动 runPostTurn AutoPersistMemory 过程（LLM 提炼写入 USER.md / MEMORY.md），
+// 这是聊天机器人模式下唯一的聊天者记忆持久化路径。
 func (s *Server) agentScopeAutoPersist(r *http.Request, agentID string) *bool {
 	rec, err := s.dataStore.GetConfigByName(r.Context(), store.KindSetting, "", agentID, "agents.defaults")
 	if err != nil || rec == nil {
@@ -200,9 +186,7 @@ func (s *Server) agentScopeAutoPersist(r *http.Request, agentID string) *bool {
 	return &v
 }
 
-// effectiveUserID returns the resolved user_id for the request: the
-// caller's own id, or — for super_admin in actAs mode — the impersonated
-// user's id.
+// effectiveUserID 返回请求的已解析 user_id：调用者自己的 id，或者 — 对于处于 actAs 模式的 super_admin — 被模拟用户的 id。
 func (s *Server) effectiveUserID(r *http.Request) string {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
@@ -211,8 +195,7 @@ func (s *Server) effectiveUserID(r *http.Request) string {
 	return ident.EffectiveUserID()
 }
 
-// requireWritable returns true if the caller may mutate, writing a 4xx
-// response and false otherwise.
+// requireWritable 如果调用者可以变更则返回 true，否则写入 4xx 响应并返回 false。
 func (s *Server) requireWritable(w http.ResponseWriter, r *http.Request) bool {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
@@ -232,9 +215,8 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
-	// ?all=true is the cross-tenant view (replaces /api/admin/agents).
-	// Admin-only — for the platform-wide "Agents" admin page that
-	// joins owner usernames in.
+	// ?all=true 是跨租户视图（取代 /api/admin/agents）。仅限管理员 —
+	// 用于平台范围的"Agents"管理员页面，该页面拼接了拥有者的用户名。
 	if r.URL.Query().Get("all") == "true" {
 		ident, _ := auth.FromContext(r.Context())
 		if !ident.CanAdminPlatform() {
@@ -292,10 +274,9 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "name required"})
 		return
 	}
-	// Enforce per-user agent quota. -1 = unlimited (default), 0 = no
-	// self-creation (single-tenant customers — admin provisions for
-	// them via POST /api/users/{id}/agents under admin caller),
-	// N>0 = max N owned at once. Admin path bypasses this check.
+	// 强制每用户 agent 配额。 -1 = 无限制（默认），0 = 禁止自助创建
+	//（单租户客户 — 管理员通过 POST /api/users/{id}/agents 为他们配置），
+	// N>0 = 最多同时拥有 N 个。管理员路径绕过此检查。
 	if u, err := s.dataStore.GetUser(r.Context(), uid); err == nil && u != nil && u.AgentQuota >= 0 {
 		owned, err := s.dataStore.ListAgents(r.Context(), uid)
 		if err != nil {
@@ -320,9 +301,8 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		Name:   req.Name,
 	}
 	if req.Description != "" {
-		// Description lives in the agents.config JSON blob — keeps the
-		// schema stable while still surfacing through GetAgentConfig and
-		// the agents.config namespace settings overlay.
+		// Description 存在于 agents.config JSON blob 中 — 保持模式稳定，
+		// 同时仍然通过 GetAgentConfig 和 agents.config 命名空间设置覆盖层暴露。
 		rec.Config = map[string]interface{}{"description": req.Description}
 	}
 	if err := s.dataStore.SaveAgent(r.Context(), rec); err != nil {
@@ -347,13 +327,12 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// requireUserOrAdmin gates the /api/users/{id}/* nested routes:
-//   - any caller may operate on themselves (pathUserID == ident.UserID)
-//   - super_admin / type=admin apikey may operate on any user
+// requireUserOrAdmin 门控 /api/users/{id}/* 嵌套路由：
+//   - 任何调用者可以操作自己（pathUserID == ident.UserID）
+//   - super_admin / type=admin apikey 可以操作任何用户
 //
-// Returns true on success; on failure writes a 401/403 and returns false.
-// Callers should still validate that the path user actually exists when
-// the operation depends on it.
+// 成功时返回 true；失败时写入 401/403 并返回 false。
+// 当操作依赖于路径用户时，调用者仍应验证该用户实际存在。
 func (s *Server) requireUserOrAdmin(w http.ResponseWriter, r *http.Request, pathUserID string) bool {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
@@ -374,8 +353,8 @@ func (s *Server) requireUserOrAdmin(w http.ResponseWriter, r *http.Request, path
 	return false
 }
 
-// requireAgentOwner returns the agent record if the caller owns it (or is
-// super_admin), otherwise writes a 403/404 and returns nil.
+// requireAgentOwner 如果调用者拥有该 agent（或是 super_admin）则返回 agent 记录，
+// 否则写入 403/404 并返回 nil。
 func (s *Server) requireAgentOwner(w http.ResponseWriter, r *http.Request, agentID string) *store.AgentRecord {
 	uid := s.effectiveUserID(r)
 	rec, err := s.dataStore.GetAgent(r.Context(), agentID)
@@ -391,22 +370,16 @@ func (s *Server) requireAgentOwner(w http.ResponseWriter, r *http.Request, agent
 	return rec
 }
 
-// requireAgentReadable allows access when the caller is the owner, a
-// super_admin, holds an apikey-ACL grant (CanAccessAgent), OR the
-// agent is marked public and the caller is at least an authenticated
-// session. Public agents are link-shared: any signed-in user who hits
-// the URL can chat under their own user_id namespace, while the
-// agent's identity (SOUL/IDENTITY/skills) is reused from the owner's
-// row. This is the same gate /api/chat/history uses, so app_user
-// requests proxied through an integration with X-Bkclaw-End-User
-// can read artifacts for sessions they own without 403'ing on the
-// strict ownership check.
-// callerOwnsAgent returns true when the caller is the agent's owner, a
-// super_admin, or an apikey explicitly scoped to the agent. Unlike
-// requireAgentReadable this does NOT grant public-agent readers — used
-// by file-scope code that needs to distinguish "browse everything"
-// (owner) from "scope to your own session" (foreign caller on a public
-// agent). Failures are silent: caller decides how to respond.
+// requireAgentReadable 在调用者是拥有者、super_admin、持有 apikey-ACL 授权（CanAccessAgent）、
+// 或者 agent 标记为公开且调用者至少是经过认证的会话时允许访问。
+// 公开 agent 通过链接共享：任何访问 URL 的已登录用户可以在自己的 user_id 命名空间下聊天，
+// 而 agent 的身份（SOUL/IDENTITY/skills）从拥有者的行重用。
+// 这是 /api/chat/history 使用的相同门控，因此通过 X-Bkclaw-End-User 集成代理的 app_user
+// 请求可以读取他们拥有的会话的工件，而不会在严格的拥有者检查上返回 403。
+// callerOwnsAgent 在调用者是 agent 的拥有者、super_admin 或明确作用域到该 agent 的 apikey 时返回 true。
+// 与 requireAgentReadable 不同，它不授予公开 agent 的读取者权限 — 由需要区分"浏览所有内容"
+//（拥有者）和"限定到自己的会话"（公开 agent 上的外部调用者）的文件作用域代码使用。
+// 失败时静默：由调用者决定如何响应。
 func (s *Server) callerOwnsAgent(r *http.Request, agentID string) bool {
 	rec, err := s.dataStore.GetAgent(r.Context(), agentID)
 	if err != nil || rec == nil {
@@ -434,12 +407,10 @@ func (s *Server) requireAgentReadable(w http.ResponseWriter, r *http.Request, ag
 	if rec.UserID == uid || ident.Role == users.RoleSuperAdmin {
 		return true
 	}
-	// CanAccessAgent is a hard check for apikeys (ACL) but a deferred
-	// "true" for session callers — the comment on Identity.CanAccessAgent
-	// spells this out. Only honor it for the apikey path; for session
-	// users we must do the explicit owner / public check ourselves,
-	// otherwise any signed-in user could GET another user's private
-	// agent via /api/agents/{id} and friends.
+	// CanAccessAgent 对 apikey 是硬检查（ACL），但对会话调用者是延迟的"true" —
+	// Identity.CanAccessAgent 的注释说明了这一点。仅为 apikey 路径使用它；
+	// 对于会话用户，我们必须自己做显式的拥有者/公开检查，否则任何已登录用户
+	// 都可以通过 /api/agents/{id} 及其相关端点 GET 另一个用户的私有 agent。
 	if ident.AuthMethod == "apikey" && ident.CanAccessAgent(agentID) {
 		return true
 	}
@@ -465,29 +436,22 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		Model            *string `json:"model,omitempty"`       // ptr so empty-string clears the agent-scope override
 		IsPublic         *bool   `json:"isPublic,omitempty"`    // ptr so caller can leave it unchanged
 		ShareModelConfig *bool   `json:"shareModelConfig,omitempty"`
-		// PromptMode is a ptr so the caller can distinguish "leave
-		// unchanged" (omitted / null) from "clear override" (empty
-		// string). Allowed string values: "agent" | "chatbot" |
-		// "customize" — empty falls back to system default ("agent").
-		// PromptMode also drives the built-in tool surface; there is
-		// no separate allowlist field by design (extend via plugins).
+		// PromptMode 使用指针，以便调用者可以区分"保持不变"（省略/null）和"清除覆盖"（空字符串）。
+		// 允许的字符串值："agent" | "chatbot" | "customize" — 空字符串回退到系统默认值（"agent"）。
+		// PromptMode 也驱动内置工具表面；设计上没有单独的 allowlist 字段（通过插件扩展）。
 		PromptMode *string `json:"promptMode,omitempty"`
-		// SplitReplies per-agent override: nil = leave unchanged,
-		// non-nil pointer-to-bool = set explicit value (true/false).
-		// Distinct from "clear" which is a separate signal — the
-		// dashboard sends `splitRepliesReset: true` to delete
-		// the override and fall back to system default.
+		// SplitReplies per-agent 覆盖：nil = 不变，
+		// 非 nil 的 bool 指针 = 设置显式值（true/false）。
+		// 与"清除"不同，后者是一个单独的信号 — 仪表板发送 `splitRepliesReset: true` 来删除覆盖并回退到系统默认值。
 		SplitReplies      *bool `json:"splitReplies,omitempty"`
 		SplitRepliesReset bool  `json:"splitRepliesReset,omitempty"`
-		// AutoPersist per-agent override — same semantics as SplitReplies.
-		// `autoPersistReset:true` clears the override and falls back to
-		// system default (currently effectively disabled).
+		// AutoPersist per-agent 覆盖 — 与 SplitReplies 相同的语义。
+		// `autoPersistReset:true` 清除覆盖并回退到系统默认值（目前为禁用）。
 		AutoPersist      *bool `json:"autoPersist,omitempty"`
 		AutoPersistReset bool  `json:"autoPersistReset,omitempty"`
-		// Plugins per-agent enable overlay. Keys are plugin IDs, values
-		// are bool. Patch semantics: only the keys present in this map
-		// get written; other keys in the existing row are preserved.
-		// To clear all overrides for this agent, send pluginsReset:true.
+		// 每个 agent 的插件启用覆盖层。键是插件 ID，值为 bool。
+		// 补丁语义：只写入此 map 中存在的键；现有行中的其他键被保留。
+		// 要清除此 agent 的所有覆盖，发送 pluginsReset:true。
 		Plugins      map[string]bool `json:"plugins,omitempty"`
 		PluginsReset bool            `json:"pluginsReset,omitempty"`
 	}
@@ -511,16 +475,12 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if req.IsPublic != nil {
 		rec.IsPublic = *req.IsPublic
 	}
-	// shareModelConfig controls whether a chatter using this agent
-	// inherits the owner's model + provider configuration. Default
-	// true: sharing is on unless the owner explicitly opts out.
-	// Encoding: absent key = on (the new-agent default), explicit
-	// `false` = opt-out. We never store `true` — storing absence for
-	// the default keeps existing rows minimal and means a future
-	// default flip needs only one place to change (agentShareModelConfig
-	// above). Stored in the agent's config blob so we don't need a
-	// schema migration; runtime reads it back in EnsureAgent to gate
-	// the owner-fallback + agent-scope overlays.
+	// shareModelConfig 控制使用此 agent 的聊天者是否继承拥有者的模型+提供者配置。
+	// 默认为 true：除非拥有者显式退出，否则共享开启。
+	// 编码：缺少键 = 开启（新 agent 的默认值），显式 `false` = 退出。
+	// 我们从不为 true 存储值 — 存储键的缺失可使现有行保持最小，并意味着未来的默认值翻转
+	// 只需在一个地方更改（上面的 agentShareModelConfig）。存储在 agent 的 config blob 中，
+	// 这样不需要模式迁移；运行时的 EnsureAgent 读取它以门控拥有者回退和 agent 作用域覆盖层。
 	if req.ShareModelConfig != nil {
 		if rec.Config == nil {
 			rec.Config = map[string]interface{}{}
@@ -535,11 +495,9 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	// Per-agent defaults live in one configs row (kind=setting, scope=agent,
-	// namespace=agents.defaults). Collect every field the caller touched
-	// into a single merge-aware patch so e.g. updating promptMode doesn't
-	// clobber an existing model override and vice versa. nil pointer =
-	// caller didn't touch the field; ptr-to-empty = "clear this override".
+	// Per-agent 默认值存储在一个 configs 行中（kind=setting, scope=agent, namespace=agents.defaults）。
+	// 将调用者触及的每个字段收集到一个合并感知的补丁中，这样例如更新 promptMode 不会破坏
+	// 现有的 model 覆盖，反之亦然。nil 指针 = 调用者未触及该字段；指向空值的指针 = "清除此覆盖"。
 	defaultsPatch := map[string]interface{}{}
 	if req.Model != nil {
 		m := strings.TrimSpace(*req.Model)
@@ -565,8 +523,7 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.SplitRepliesReset {
-		// Reset wins over set in the same request — the dashboard's
-		// "Inherit" pill writes this flag.
+		// 重置在同一次请求中优先于设置 — 仪表板的"Inherit"选项写入此标志。
 		defaultsPatch["splitReplies"] = nil
 	} else if req.SplitReplies != nil {
 		defaultsPatch["splitReplies"] = *req.SplitReplies
@@ -580,20 +537,17 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	// Plugins-enabled overlay: separate config row (scope=agent,
-	// name=plugins.enabled), so doesn't go through the agents.defaults
-	// patch path. Reset clears the row entirely; otherwise we merge
-	// the incoming map keys into the existing data.
+	// 插件启用覆盖层：单独的配置行（scope=agent, name=plugins.enabled），因此不经过 agents.defaults
+	// 补丁路径。Reset 完全清除该行；否则我们将传入的 map 键合并到现有数据中。
 	if req.PluginsReset || req.Plugins != nil {
 		if err := s.applyAgentScopePluginsPatch(r, rec.ID, req.Plugins, req.PluginsReset); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
 	}
-	// invalidateAgent (not invalidateUser) so super_admin / public-link
-	// viewers / apikey callers that lazy-attached this agent into their
-	// own UserSpace also drop their stale rc.Model — without this they
-	// keep firing the previous model until the 30-min idle eviction.
+	// 使用 invalidateAgent（而不是 invalidateUser），这样 super_admin / 公开链接查看者 / apikey 调用者
+	// 通过延迟附加将此 agent 加载到自己的 UserSpace 中时，也会丢弃其过时的 rc.Model —
+	// 没有这个，他们会继续使用以前的模型，直到 30 分钟的空闲驱逐。
 	s.invalidateAgent(rec.ID)
 	share := agentShareModelConfig(rec)
 	jsonResponse(w, http.StatusOK, map[string]any{
@@ -613,10 +567,9 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleGetAgent returns the basic AgentRecord (id, name, description,
-// userId) for one agent. Used by the chat header / sidebar switcher to
-// resolve a display name. Permission is read-level — owner, super_admin,
-// or any grantee of a sharing record.
+// handleGetAgent 返回单个 agent 的基本 AgentRecord（id, name, description, userId）。
+// 由聊天头部/侧边栏切换器用于解析显示名称。权限为读取级别 — 拥有者、super_admin
+// 或共享记录的任何受让人。
 func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.requireAgentReadable(w, r, id) {
@@ -681,30 +634,26 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	// Drop the agent from every cached UserSpace, not just the owner's,
-	// so foreign callers stop resolving the now-deleted agent through
-	// EnsureAgent's lazy-attach path.
+	// 从每个缓存的 UserSpace 中删除 agent，而不仅仅是拥有者的，
+	// 这样外部调用者停止通过 EnsureAgent 的延迟附加路径解析已删除的 agent。
 	s.invalidateAgent(rec.ID)
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// Agent identity / memory files — all live in agent_files, agent-scoped.
-// Two classes:
+// Agent identity / memory files 文件 — 都存在于 agent_files 中，按 agent 作用域划分。
+// 两个类别：
 //
-//   - identity files (agentIdentityFiles below) are the canonical "shared
-//     template" for the agent. They live under a single row keyed by the
-//     agent owner's user_id — so admin provisioning, the owner's edits,
-//     and the agent's own BOOTSTRAP-flow write_file calls all converge on
-//     the same row. Mirrors handlers_admin.forkAgentFiles and
-//     internal/agent/tools.identityFiles; keep these three lists in sync.
+//   - identity 文件（下面的 agentIdentityFiles）是 agent 的规范"共享模板"。
+//     它们存在于由 agent 拥有者的 user_id 键控的单行中 — 因此管理员配置、拥有者的编辑、
+//     以及 agent 自己的 BOOTSTRAP 流程中的 write_file 调用都汇聚到同一行。
+//     镜像 handlers_admin.forkAgentFiles 和 internal/agent/tools.identityFiles；
+//     保持这三个列表同步。
 //
-//   - per-user files (USER.md, MEMORY.md) are state that genuinely
-//     differs per chatter. They're keyed by the caller's effective
-//     user_id; a non-owner caller can author their own override and the
-//     read path falls back to the owner's row when none exists.
+//   - per-user 文件（USER.md, MEMORY.md）是真正因每个聊天者而不同的状态。
+//     它们由调用者的有效 user_id 键控；非拥有者调用者可以编写自己的覆盖，
+//     读取路径在不存在时回退到拥有者的行。
 //
-// Filename allowlist gates which files this endpoint can touch at all;
-// agent-runtime tool calls go through the workspace store instead.
+// 文件名允许列表门控此端点可以触及的文件；agent 运行时工具调用通过 workspace store 进行。
 var agentSystemFileAllowlist = map[string]bool{
 	"SOUL.md": true, "IDENTITY.md": true, "AGENTS.md": true,
 	"BOOTSTRAP.md": true, "TOOLS.md": true, "MEMORY.md": true,
@@ -734,8 +683,7 @@ func (s *Server) handleGetAgentSystemFile(w http.ResponseWriter, r *http.Request
 	}
 	caller := s.effectiveUserID(r)
 
-	// Identity files: read the owner's row directly — that's the single
-	// source of truth, regardless of who's asking.
+	// Identity 文件：直接读取拥有者的行 — 这是唯一的事实来源，无论谁在询问。
 	if agentIdentityFiles[name] {
 		data, err := s.dataStore.GetAgentFileExact(r.Context(), id, rec.UserID, name)
 		if err != nil {
@@ -750,11 +698,9 @@ func (s *Server) handleGetAgentSystemFile(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Per-user files: prefer caller's own row, fall back to the owner's.
-	// `source: "db"` means the caller has authored an override; "owner"
-	// means we're showing the agent owner's row by fallback. The
-	// frontend uses this to decide whether to show the "Edited" badge
-	// and enable the Revert action.
+	// Per-user 文件：优先使用调用者自己的行，回退到拥有者的行。
+	// `source: "db"` 表示调用者已编写了覆盖；"owner" 表示我们通过回退显示
+	// agent 拥有者的行。前端用此决定是否显示"已编辑"徽章并启用还原操作。
 	if data, err := s.dataStore.GetAgentFileExact(r.Context(), id, caller, name); err == nil {
 		baseContent := ""
 		if rec.UserID != caller {
@@ -835,18 +781,15 @@ func (s *Server) handleDeleteAgentSystemFile(w http.ResponseWriter, r *http.Requ
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// resolveSystemFileTarget figures out which user_id row a write/delete
-// on (agentID, filename) should hit, and gates access:
+// resolveSystemFileTarget 确定对 (agentID, filename) 的写入/删除应影响哪个 user_id 行，并门控访问：
 //
-//   - Identity files (SOUL/IDENTITY/AGENTS/BOOTSTRAP/TOOLS/HEARTBEAT/
-//     agent.json) always target the agent owner's row — this is the
-//     canonical "shared template". Caller must be the owner or hold
-//     platform admin (super_admin session, or type=admin apikey).
-//   - Per-user files (USER.md, MEMORY.md) target the caller's own row
-//     so each chatter has an independent override. Caller just needs
-//     read access to the agent.
+//   - Identity 文件（SOUL/IDENTITY/AGENTS/BOOTSTRAP/TOOLS/HEARTBEAT/agent.json）
+//     始终以 agent 拥有者的行为目标 — 这是规范的"共享模板"。调用者必须是拥有者
+//     或持有平台管理员权限（super_admin 会话或 type=admin apikey）。
+//   - Per-user 文件（USER.md, MEMORY.md）以调用者自己的行为目标，
+//     因此每个聊天者都有独立的覆盖。调用者只需要对 agent 的读取权限。
 //
-// Writes 4xx and returns ok=false on permission/lookup failures.
+// 写入 4xx 并在权限/查找失败时返回 ok=false。
 func (s *Server) resolveSystemFileTarget(w http.ResponseWriter, r *http.Request, agentID, name string) (string, bool) {
 	rec, err := s.dataStore.GetAgent(r.Context(), agentID)
 	if err != nil || rec == nil {
@@ -868,30 +811,25 @@ func (s *Server) resolveSystemFileTarget(w http.ResponseWriter, r *http.Request,
 	return caller, true
 }
 
-// Workspace files — list / get / upload of agent-produced artifacts.
-// Backed by the workspace.Store blob backend, whose layout is
+// Workspace 文件 — 列出/获取/上传 agent 产生的工件。
+// 由 workspace.Store blob 后端支持，其布局为
 //
 //   workspaces/<agent_id>/<session_id>/<path>
 //
-// The HTTP file endpoints below operate at the agent-root level
-// (sessionID="") — that's where uploads land and where ListByAgent
-// returns objects across every session of that agent. The agent runtime
-// passes its own sessionID for in-chat tool calls; those land under the
-// session sub-prefix automatically.
+// 下面的 HTTP 文件端点操作在 agent 根级别（sessionID=""）—
+// 那就是上传的目标位置，ListByAgent 返回该 agent 每个会话的对象。
+// agent 运行时对于聊天中的工具调用传递自己的 sessionID；它们自动落在会话子前缀下。
 
-// workspaceSessionScope translates the URL `?sessionId=` token into
-// the directory name used under workspaces/<agent>/sessions/. The URL
-// token is the session_key (so the dashboard can address any session
-// uniformly), but workspace artifacts are namespaced by chat_id
-// instead — that's what the agent runtime passed at write time.
+// workspaceSessionScope 将 URL 中的 `?sessionId=` token 转换为
+// workspaces/<agent>/sessions/ 下使用的目录名。URL token 是 session_key
+//（因此仪表板可以统一地寻址任何会话），但工作区工件按 chat_id 命名空间 —
+// 那是 agent 运行时在写入时传递的。
 //
-// Returns the chat_id when the session_key resolves under the caller's
-// (user_id, agent_id). Returns "" when the lookup fails — including
-// the case where the session belongs to a DIFFERENT user — so callers
-// don't accidentally widen scope into another user's files. Pre-fix
-// behavior was to fall back to the raw URL token; on a public agent
-// that let a non-owner caller pass a known chat_id of the owner and
-// read its files because the resulting scope was sessions/<their chat>/.
+// 当 session_key 在调用者的 (user_id, agent_id) 下解析时返回 chat_id。
+// 当查找失败时返回 "" — 包括会话属于不同用户的情况 —
+// 因此调用者不会意外地扩大范围进入另一个用户的文件。
+// 修复前的行为是回退到原始 URL token；在公开 agent 上，这允许非拥有者调用者
+// 传递已知的拥有者 chat_id 并读取其文件，因为结果范围是 sessions/<他们的 chat>/。
 func (s *Server) workspaceSessionScope(ctx context.Context, agentID, urlToken string) string {
 	tok := strings.TrimSpace(urlToken)
 	if tok == "" || s.dataStore == nil {
@@ -917,10 +855,9 @@ func (s *Server) handleAgentFileList(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAgentReadable(w, r, id) {
 		return
 	}
-	// Always List with project + session both empty so returned paths
-	// stay agent-relative (e.g. "sessions/<sid>/foo.png" or
-	// "projects/<pid>/notes.md") — the download endpoint expects that
-	// shape, and filtering here is cheaper than two divergent code paths.
+	// 始终以 project 和 session 都为空的方式 List，以便返回的路径保持 agent 相对
+	//（例如 "sessions/<sid>/foo.png" 或 "projects/<pid>/notes.md"）—
+	// 下载端点期望该形状，在此处过滤比两个发散的代码路径更便宜。
 	objects, err := s.workspaceStore.List(r.Context(), id, "", "")
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -941,52 +878,43 @@ func (s *Server) handleAgentFileList(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"files": files})
 }
 
-// fileScope describes which agent-relative paths to surface for the
-// file browser / zip filter. acceptPath returns true for paths the
-// scope considers in-bounds:
+// fileScope 描述哪些 agent 相对路径对文件浏览器/zip 过滤器可见。
+// acceptPath 对作用域认为范围内的路径返回 true：
 //
-//	loose chat:  paths under sessions/<chat_id>/
-//	project chat: paths under projects/<pid>/<chat_id>/ (the chat's
-//	              own files), PLUS files directly at projects/<pid>/
-//	              (project-root "shared/legacy" files — pre-subdir
-//	              layout still lives there, and operators may
-//	              deliberately drop shared files at the root). Other
-//	              chats' subdirs (projects/<pid>/<other-sid>/...)
-//	              are excluded — those belong to that chat's panel.
-//	no session:  everything (admin browser).
+//	普通聊天：sessions/<chat_id>/ 下的路径
+//	项目聊天：projects/<pid>/<chat_id>/ 下的路径（聊天自己的文件），
+//	          加上直接位于 projects/<pid>/ 的文件（项目根目录的"共享/遗留"文件 —
+//	          预子目录布局仍在那里，操作员可能有意将共享文件放在根目录）。
+//	          其他聊天的子目录（projects/<pid>/<other-sid>/...）被排除 —
+//	          它们属于那个聊天的面板。
+//	无会话：所有内容（管理员浏览器）。
 //
-// archiveSuffix returns the human-readable scope id used in the zip
-// filename — chat_id for loose chats, "<pid>-<chat_id>" for project
-// chats so a download names "agent-pid-sid.zip" instead of
-// disambiguating by chat_id alone.
+// archiveSuffix 返回 zip 文件名中使用的人类可读的作用域 id —
+// 普通聊天为 chat_id，项目聊天为 "<pid>-<chat_id>"，
+// 以便下载名称为 "agent-pid-sid.zip" 而不是仅靠 chat_id 消除歧义。
 type fileScope struct {
 	acceptPath    func(string) bool
 	archiveSuffix string
 }
 
-// stripScopePrefix removes the deepest known scope prefix from an
-// agent-relative path so zip entries read as plain filenames. Order
-// matters: project chats are tried before session chats so a
-// `projects/<pid>/<sid>/foo.md` collapses to `foo.md` rather than
-// `<pid>/<sid>/foo.md`. Top-level project files keep the leading
-// `projects/<pid>/` strip so they read as bare filenames too.
+// stripScopePrefix 从 agent 相对路径中删除最深的已知作用域前缀，
+// 以便 zip 条目读作纯文件名。顺序很重要：项目聊天在会话聊天之前尝试，
+// 这样 `projects/<pid>/<sid>/foo.md` 折叠为 `foo.md` 而不是 `<pid>/<sid>/foo.md`。
+// 顶级项目文件也保留前导 `projects/<pid>/` 的剥离，以便它们也读作裸文件名。
 func stripScopePrefix(p string) string {
 	for _, top := range []string{"projects/", "sessions/"} {
 		if !strings.HasPrefix(p, top) {
 			continue
 		}
 		rest := p[len(top):]
-		// Cut after the scope id (one path segment).
+		// 在作用域 id 后切割（一个路径段）。
 		if i := strings.IndexByte(rest, '/'); i >= 0 {
 			rest = rest[i+1:]
-			// Project paths can have a second id segment for the
-			// per-chat subdir; collapse that too when present.
+			// 项目路径可以有第二个 id 段用于每个聊天的子目录；存在时也折叠它。
 			if top == "projects/" {
 				if j := strings.IndexByte(rest, '/'); j >= 0 {
-					// Only treat the first segment as a chat id when it
-					// looks like one (s-... prefix). Otherwise keep
-					// rest as-is so legacy "subdir/file.md" structures
-					// don't get over-stripped.
+				// 仅当第一个段看起来像聊天 id（s-... 前缀）时才将其视为聊天 id。
+				// 否则保持 rest 不变，以便遗留的"子目录/file.md"结构不会被过度剥离。
 					if first := rest[:j]; strings.HasPrefix(first, "s-") {
 						rest = rest[j+1:]
 					}
@@ -999,10 +927,9 @@ func stripScopePrefix(p string) string {
 	return p
 }
 
-// rejectAllScope returns a fileScope that lets nothing through. Used
-// when the caller asked for a sessionId we can't resolve for them, so
-// a non-owner can't widen into another user's files on a public agent
-// just by guessing/leaking a chat_id.
+// rejectAllScope 返回一个不让任何内容通过的 fileScope。当调用者请求了 sessionId
+// 但我们无法为他们解析时使用，这样非拥有者无法仅通过猜测/泄露 chat_id
+// 在公开 agent 上扩大进入另一个用户的文件。
 func rejectAllScope() fileScope {
 	return fileScope{acceptPath: func(string) bool { return false }}
 }
@@ -1010,11 +937,9 @@ func rejectAllScope() fileScope {
 func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope {
 	rawSession := r.URL.Query().Get("sessionId")
 	rawProject := r.URL.Query().Get("projectId")
-	// Project landing page: no specific chat is open, so the panel
-	// shows everything under projects/<pid>/ — every chat's subtree
-	// plus root-level shared files. The sessionId branch below is
-	// the per-chat view; use this branch when the URL is
-	// /agents/<aid>/project/<pid> with no chat selected.
+	// 项目登录页面：没有打开特定的聊天，因此面板显示 projects/<pid>/ 下的所有内容 —
+	// 每个聊天的子树加上根级别的共享文件。下面的 sessionId 分支是按聊天的视图；
+	// 当 URL 是 /agents/<aid>/project/<pid> 且未选择聊天时使用此分支。
 	if rawSession == "" && rawProject != "" {
 		prefix := "projects/" + rawProject + "/"
 		return fileScope{
@@ -1023,10 +948,9 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 		}
 	}
 	if rawSession == "" {
-		// Agent-wide view (no scope params at all). Owner / super_admin
-		// can legitimately browse every file; non-owners (public-agent
-		// viewers, foreign apikey callers) must specify a session they
-		// own, otherwise we'd hand them other users' files.
+		// Agent 范围视图（完全没有范围参数）。拥有者 / super_admin
+		// 可以合法地浏览每个文件；非拥有者（公开 agent 查看者、外部 apikey 调用者）
+		// 必须指定一个他们拥有的会话，否则我们会给他们其他用户的文件。
 		if s.callerOwnsAgent(r, agentID) {
 			return fileScope{acceptPath: func(string) bool { return true }}
 		}
@@ -1034,11 +958,9 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 	}
 	chatID := s.workspaceSessionScope(r.Context(), agentID, rawSession)
 	if chatID == "" {
-		// sessionId didn't resolve to a chat THIS caller owns — either
-		// it doesn't exist or it belongs to another user. Either way,
-		// surface nothing. Pre-fix behavior was to widen back to
-		// "accept all", which on a public agent meant non-owners could
-		// list every chat's files by passing a junk sessionId.
+		// sessionId 未解析到此调用者拥有的聊天 — 要么不存在，要么属于另一个用户。
+		// 无论哪种方式，都不返回任何内容。修复前的行为是回退到"接受所有"，
+		// 这在公开 agent 上意味着非拥有者可以通过传递垃圾 sessionId 列出每个聊天的文件。
 		return rejectAllScope()
 	}
 	if pid := s.resolveSessionProject(r.Context(), r, agentID, rawSession); pid != "" {
@@ -1049,8 +971,7 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 				if strings.HasPrefix(p, ownPrefix) {
 					return true
 				}
-				// Top-level file at projects/<pid>/<file> (no further
-				// "/" — i.e. not in any sid subdir).
+			// 位于 projects/<pid>/<file> 的顶级文件（没有进一步的 "/" — 即不在任何 sid 子目录中）。
 				if strings.HasPrefix(p, rootPrefix) {
 					rest := p[len(rootPrefix):]
 					return rest != "" && !strings.Contains(rest, "/")
@@ -1067,10 +988,8 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 	}
 }
 
-// handleAgentFilesZip streams a zip of every workspace file for the agent
-// (or just one session when ?sessionId= is set). Files are added with
-// their session-relative path so the archive layout matches what the user
-// sees in the chat panel — no enclosing wrapper directory.
+// handleAgentFilesZip 流式传输 agent 所有工作区文件的 zip（或仅当设置了 ?sessionId= 时的一个会话）。
+// 文件以其会话相对路径添加，以便存档布局与用户在聊天面板中看到的匹配 — 没有外层包装目录。
 func (s *Server) handleAgentFilesZip(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if s.workspaceStore == nil {
@@ -1090,11 +1009,9 @@ func (s *Server) handleAgentFilesZip(w http.ResponseWriter, r *http.Request) {
 	if scope.archiveSuffix != "" {
 		archiveName = fmt.Sprintf("%s-%s.zip", id, scope.archiveSuffix)
 	}
-	// Wrap entries in a folder named after the archive so extractors
-	// (macOS Archive Utility, Windows Explorer, 7zip…) place every
-	// file inside one directory instead of dumping them loose next
-	// to the zip. Without this, "5 files extracted" looks like
-	// "files went missing" because they fan out into Downloads/.
+	// 将条目包装在以存档命名的文件夹中，以便解压器（macOS Archive Utility、Windows Explorer、7zip…）
+	// 将所有文件放在一个目录内，而不是松散地解压到 zip 旁边。
+	// 没有这个，"解压了 5 个文件"看起来像"文件丢失了"，因为它们散布到 Downloads/ 中。
 	wrapper := strings.TrimSuffix(archiveName, ".zip") + "/"
 
 	w.Header().Set("Content-Type", "application/zip")
@@ -1107,9 +1024,8 @@ func (s *Server) handleAgentFilesZip(w http.ResponseWriter, r *http.Request) {
 			skipped++
 			continue
 		}
-		// Strip the deepest scope prefix from the archive entry name
-		// so the user sees clean filenames in the zip rather than
-		// nested `projects/<pid>/<sid>/foo.md` paths.
+		// 从存档条目名称中剥离最深的作用域前缀，这样用户在 zip 中看到干净的
+		// 文件名，而不是嵌套的 `projects/<pid>/<sid>/foo.md` 路径。
 		entryName := stripScopePrefix(o.Path)
 		if entryName == "" {
 			skipped++
@@ -1122,12 +1038,9 @@ func (s *Server) handleAgentFilesZip(w http.ResponseWriter, r *http.Request) {
 		}
 		entry, err := zw.CreateHeader(hdr)
 		if err != nil {
-			// Continue, not return — finalizing the archive with the
-			// rest of the entries is more useful than bailing out and
-			// leaving the user with a single file. Pre-fix behavior:
-			// any transient hiccup partway through truncated the zip
-			// to whatever was already written, surfacing in prod as
-			// "only one image came out".
+			// 继续而非返回 — 用其余条目完成存档比中途退出给用户留下单个文件更有用。
+			// 修复前的行为：途中任何瞬时故障都会截断 zip 为已写入的内容，
+			// 在生产中表现为"只有一张图片出来了"。
 			slog.Warn("zip: create entry failed", "agent", id, "path", o.Path, "err", err)
 			failed++
 			continue
@@ -1154,21 +1067,15 @@ func (s *Server) handleAgentFilesZip(w http.ResponseWriter, r *http.Request) {
 		"objects", len(objects), "written", written, "skipped", skipped, "failed", failed)
 }
 
-// handleAgentWorkspaceReveal opens the chatter's workspace folder in
-// the operator's native file browser (Finder/Explorer/xdg-open).
-// Self-hosted only — hosted deployments don't have a meaningful
-// concept of "the operator's local filesystem" and the chatter
-// doesn't own the daemon, so exposing this would be a privilege
-// leak. Reads sessionId / projectId from the query string, mirrors
-// fileScopeForRequest's resolution (session_key → chat_id, project
-// lookup) so the revealed dir matches what the chat-side Workspace
-// panel is showing.
+// handleAgentWorkspaceReveal 在操作系统的原生文件浏览器（Finder/Explorer/xdg-open）中打开聊天者的工作区文件夹。
+// 仅限自托管 — 托管部署没有"操作员的本地文件系统"的有意义概念，聊天者也不拥有守护进程，
+// 因此暴露此功能将是权限泄露。从查询字符串读取 sessionId / projectId，
+// 镜像 fileScopeForRequest 的解析（session_key → chat_id, project 查找），
+// 以便打开的目录匹配聊天侧 Workspace 面板显示的内容。
 //
-// Best-effort: returns 200 with the resolved path on success, 4xx
-// on bad scope, 503 when the configured workspace store doesn't
-// expose a host path (S3 / R2 deploys), 500 if the OS open command
-// fails. Non-blocking — we don't wait for Finder to actually
-// surface the window.
+// 尽力而为：成功时返回 200 及解析的路径，作用域错误时返回 4xx，
+// 配置的工作区存储不暴露主机路径时返回 503（S3 / R2 部署），
+// OS 打开命令失败时返回 500。非阻塞 — 我们不等待 Finder 实际显示窗口。
 func (s *Server) handleAgentWorkspaceReveal(w http.ResponseWriter, r *http.Request) {
 	if buildinfo.IsHostedDeploy() {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"error": "workspace reveal is disabled on hosted deployments"})
@@ -1192,11 +1099,9 @@ func (s *Server) handleAgentWorkspaceReveal(w http.ResponseWriter, r *http.Reque
 	rawSession := r.URL.Query().Get("sessionId")
 	rawProject := r.URL.Query().Get("projectId")
 
-	// Resolve to the same (project, chatID) the chat-side panel is
-	// scoped to. Empty rawSession + non-empty projectId means project
-	// landing — reveal the project root. Empty both means agent root
-	// (admin browser); we still allow it because requireAgentReadable
-	// has already gated access.
+	// 解析到聊天侧面板作用域的相同 (project, chatID)。
+	// 空的 rawSession + 非空 projectId 表示项目登录页面 — 打开项目根目录。
+	// 两者都空表示 agent 根目录（管理员浏览器）；我们仍然允许，因为 requireAgentReadable 已经门控了访问。
 	chatID := ""
 	projectID := rawProject
 	if rawSession != "" {
@@ -1212,9 +1117,8 @@ func (s *Server) handleAgentWorkspaceReveal(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Pre-create the dir so `open <missing-path>` doesn't error out
-	// on a brand-new chat that hasn't written any files yet — empty
-	// folder still feels like progress to the user.
+	// 预创建目录，这样 `open <不存在的路径>` 在一个尚未写入任何文件的全新聊天上不会出错 —
+	// 空的文件夹仍然给用户一种进展的感觉。
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -1227,31 +1131,27 @@ func (s *Server) handleAgentWorkspaceReveal(w http.ResponseWriter, r *http.Reque
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "path": dir})
 }
 
-// openInFileBrowser shells out to the platform-appropriate "open"
-// command. macOS and Linux behave consistently (open the directory
-// in the default file manager); Windows uses explorer.exe. We
-// deliberately don't wait on the child — Finder in particular
-// returns immediately, and there's no useful exit code to surface
-// either way.
+// openInFileBrowser 调用平台适当的"打开"命令。macOS 和 Linux 行为一致（在默认文件管理器中打开目录）；
+// Windows 使用 explorer.exe。我们故意不等待子进程 — Finder 特别是立即返回，
+// 而且无论哪种方式都没有有用的退出代码可显示。
 func openInFileBrowser(path string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
 		cmd = exec.Command("open", path)
 	case "windows":
-		// `explorer` returns exit code 1 even on success, so we
-		// don't check err. The only real failure mode is "binary
-		// not on PATH", which Start() reports.
+		// `explorer` 即使成功也返回退出码 1，因此我们不检查 err。
+		// 唯一的真正失败模式是"二进制不在 PATH 上"，Start() 会报告。
 		cmd = exec.Command("explorer", path)
 		return cmd.Start()
 	default:
-		// Linux / *BSD — xdg-open is the freedesktop standard.
+		// Linux / *BSD — xdg-open 是 freedesktop 标准。
 		cmd = exec.Command("xdg-open", path)
 	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
-	// Detach: we don't care about the file manager's lifetime.
+	// 分离：我们不关心文件管理器的生命周期。
 	go func() { _ = cmd.Wait() }()
 	return nil
 }
@@ -1270,9 +1170,9 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 		s.serveFileFromWorkspaceStore(w, r, id, rel)
 		return
 	}
-	// Workspace store not configured — fall back to direct FS read.
-	// The local FS layout mirrors the workspace store's:
-	// ~/.bkclaw/workspaces/<agent_id>/<path>.
+	// Workspace store 未配置 — 回退到直接 FS 读取。
+	// 本地 FS 布局镜像 workspace store：
+	// ~/.bkclaw/workspaces/<agent_id>/<path>。
 	home, err := config.HomeDir()
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -1284,9 +1184,8 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"error": "path escape"})
 		return
 	}
-	// ServeFile sets Content-Type from the mime database itself; we just
-	// add the CSP sandbox for HTML on top — same rationale as in
-	// setFileResponseHeaders above.
+	// ServeFile 从 mime 数据库自身设置 Content-Type；我们只是在此基础上为 HTML 添加 CSP sandbox —
+	// 与上面 setFileResponseHeaders 中相同的理由。
 	if ext := strings.ToLower(filepath.Ext(rel)); ext == ".html" || ext == ".htm" {
 		w.Header().Set("Content-Security-Policy", "sandbox allow-scripts")
 	}
@@ -1305,14 +1204,12 @@ func (s *Server) serveFileFromWorkspaceStore(w http.ResponseWriter, r *http.Requ
 	io.Copy(w, rc)
 }
 
-// setFileResponseHeaders picks the right Content-Type for a user-produced
-// workspace file and locks down agent-generated HTML so it can't reach the
-// app's cookies/storage even if the user opens the URL in a bare tab. The
-// Content-Type derived from the extension is what lets iframes render the
-// file (octet-stream → about:blank, since iframes don't sniff). The CSP
-// `sandbox` header is the same protection the chat preview gets via the
-// iframe `sandbox` attribute, but applied at the HTTP layer so it kicks in
-// no matter how the file is loaded.
+// setFileResponseHeaders 为用户产生的工作区文件选择正确的 Content-Type，
+// 并锁定 agent 生成的 HTML，使其即使在用户直接在标签页中打开 URL 时也无法访问
+// 应用的 cookie/存储。从扩展名派生的 Content-Type 允许 iframe 渲染文件
+//（octet-stream → about:blank，因为 iframe 不嗅探）。CSP `sandbox` 头部
+// 与聊天预览通过 iframe `sandbox` 属性获得的保护相同，但在 HTTP 层应用，
+// 因此无论文件如何加载都能生效。
 func setFileResponseHeaders(w http.ResponseWriter, path string) {
 	ext := strings.ToLower(filepath.Ext(path))
 	ctype := mime.TypeByExtension(ext)
@@ -1342,25 +1239,21 @@ func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	// The chat client sends one form field "file" per attachment, so the
-	// multipart payload often carries several entries under the same key.
-	// r.FormFile only returns the first — iterate over MultipartForm.File
-	// so multi-attach uploads land all of their files, not just one.
+	// 聊天客户端对每个附件发送一个表单字段 "file"，因此 multipart 负载通常在同一个键下携带多个条目。
+	// r.FormFile 只返回第一个 — 遍历 MultipartForm.File 以便多附件上传提交所有文件，而不仅仅是一个。
 	headers := r.MultipartForm.File["file"]
 	if len(headers) == 0 {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "no file"})
 		return
 	}
-	// sessionId scopes the upload to the sandbox mount the agent actually
-	// sees. We resolve the session to find its project_id so uploads in
-	// a project chat land in projects/<pid>/ alongside the agent's own
-	// writes; loose chats keep the legacy sessions/<chat>/ subdir.
+	// sessionId 将上传限定到 agent 实际看到的沙箱挂载点。
+	// 我们解析会话以找到其 project_id，以便在项目聊天中的上传落在 projects/<pid>/ 旁边
+	// 与 agent 自己的写入一起；普通聊天保留旧的 sessions/<chat>/ 子目录。
 	sessionKey := r.URL.Query().Get("sessionId")
 	sessionID := s.workspaceSessionScope(r.Context(), id, sessionKey)
 	projectID := s.resolveSessionProject(r.Context(), r, id, sessionKey)
 	if projectID != "" {
-		// Project sessions don't use the per-chat subdir — clear it so
-		// the workspace store routes to projects/<pid>/.
+		// 项目会话不使用每个聊天的子目录 — 清除它，以便 workspace store 路由到 projects/<pid>/。
 		sessionID = ""
 	}
 	saved := make([]map[string]any, 0, len(headers))
@@ -1392,9 +1285,8 @@ func defaultIfEmpty(v, fallback string) string {
 	return v
 }
 
-// invalidateUser drops the user's lazy-loaded UserSpace so the next
-// access reloads it from the DB. The gateway implements InvalidateUser
-// behind the api.UserResolver interface.
+// invalidateUser 丢弃用户延迟加载的 UserSpace，以便下次访问时从数据库重新加载。
+// gateway 在 api.UserResolver 接口后面实现 InvalidateUser。
 func (s *Server) invalidateUser(userID string) {
 	if userID == "" || s.userResolver == nil {
 		return
@@ -1405,12 +1297,10 @@ func (s *Server) invalidateUser(userID string) {
 	slog.Debug("invalidated user space", "user", userID)
 }
 
-// invalidateAgent drops every cached UserSpace that holds this agent —
-// owner plus any foreign caller that lazy-attached via EnsureAgent
-// (super_admin chat, public-link viewer, apikey user). Use this after
-// writes that mutate the agent's resolved runtime (agents.defaults,
-// agent-scope providers); plain user-scope writes can stick with
-// invalidateUser.
+// invalidateAgent 丢弃每个持有此 agent 的缓存 UserSpace —
+// 拥有者以及通过 EnsureAgent 延迟附加的任何外部调用者（super_admin 聊天、公开链接查看者、apikey 用户）。
+// 在改变 agent 解析的运行时（agents.defaults、agent-scope providers）的写入后使用；
+// 纯用户作用域的写入可以继续使用 invalidateUser。
 func (s *Server) invalidateAgent(agentID string) {
 	if agentID == "" || s.userResolver == nil {
 		return
@@ -1421,8 +1311,7 @@ func (s *Server) invalidateAgent(agentID string) {
 	slog.Debug("invalidated user spaces holding agent", "agent", agentID)
 }
 
-// requireOwnerOrSuperAdmin guards endpoints that mutate another user's
-// resources.
+// requireOwnerOrSuperAdmin 门控变更另一个用户资源的端点。
 func (s *Server) requireOwnerOrSuperAdmin(w http.ResponseWriter, r *http.Request, ownerID string) bool {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
@@ -1438,14 +1327,11 @@ func (s *Server) requireOwnerOrSuperAdmin(w http.ResponseWriter, r *http.Request
 
 var _ workspace.Store = (workspace.Store)(nil)
 
-// handleListAgentRegisteredTools returns the live tool registry for the
-// specified agent. Drives the Tools tab's allowlist checkbox picker —
-// the operator clicks rather than typing tool names from memory.
+// handleListAgentRegisteredTools 返回指定 agent 的实时工具注册表。
+// 驱动 Tools 标签页的允许列表复选框选择器 — 操作员点击而不是从记忆中键入工具名称。
 //
-// Permission is read-level (owner / super_admin / shared-link viewer)
-// rather than owner-only because viewers might want to see what they
-// have access to, even if they can't change the allowlist. The PUT
-// path stays owner-gated.
+// 权限为读取级别（拥有者 / super_admin / 共享链接查看者）而不是仅限拥有者，
+// 因为查看者可能想看看他们可以访问什么，即使他们不能更改允许列表。PUT 路径保持拥有者门控。
 func (s *Server) handleListAgentRegisteredTools(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !s.requireAgentReadable(w, r, id) {
@@ -1453,11 +1339,10 @@ func (s *Server) handleListAgentRegisteredTools(w http.ResponseWriter, r *http.R
 	}
 	ag := s.resolveAgent(r, id)
 	if ag == nil {
-		// Agent isn't loaded in the caller's UserSpace and lazy-attach
-		// also failed. We could fall back to the DB record, but the
-		// whole point of this endpoint is the LIVE registry (MCP tools
-		// only exist once the agent is attached), so a 404 here is
-		// honest rather than misleadingly returning just the builtins.
+		// Agent 未在调用者的 UserSpace 中加载，延迟附加也失败了。
+		// 我们可以回退到 DB 记录，但此端点的全部意义在于实时注册表
+		//（MCP 工具只有在 agent 附加后才存在），因此返回 404 是诚实的，
+		// 而不是误导性地仅返回内置工具。
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not loaded"})
 		return
 	}

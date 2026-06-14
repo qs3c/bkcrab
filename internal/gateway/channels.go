@@ -13,11 +13,10 @@ import (
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
-// storeLeaser adapts store.Store to channels.Leaser. The method names
-// differ (Acquire/Renew/Release on the channels side, ...ChannelLease
-// on the store side) so the store can grow other lease kinds without
-// renaming. Lives here rather than in the store package to keep the
-// store interface IM-agnostic.
+// storeLeaser 适配 store.Store 到 channels.Leaser。方法名称不同
+//（channels 侧是 Acquire/Renew/Release，store 侧是 ...ChannelLease）
+// 以便 store 可以扩展其他租约类型而无需重命名。放在这里而不是 store 包中，
+// 以保持 store 接口与 IM 无关。
 type storeLeaser struct{ st store.Store }
 
 func (s storeLeaser) Acquire(ctx context.Context, channel, accountID, holderID string, ttl time.Duration) (bool, error) {
@@ -30,16 +29,13 @@ func (s storeLeaser) Release(ctx context.Context, channel, accountID, holderID s
 	return s.st.ReleaseChannelLease(ctx, channel, accountID, holderID)
 }
 
-// registerChannelInstance starts a channel adapter for one kind="channel"
-// row in configs. The row's credential_key is what processInbound
-// reverse-looks up via Store.LookupChannelByCredential to find the owner —
-// keep it stable (e.g. tail of bot token, app id).
+// registerChannelInstance 为 configs 中一个 kind="channel" 的行启动通道适配器。
+// 行的 credential_key 是 processInbound 通过 Store.LookupChannelByCredential
+// 反向查找以找到所有者的方式 — 保持其稳定（例如 bot token 的尾部、app id）。
 //
-// `hot` controls whether the bot adapter's polling goroutine is launched
-// immediately. Boot-time registration uses Register (Manager.Start
-// fans out everything in one go); dashboard mutations use
-// RegisterAndStart so a freshly-saved bot starts receiving updates
-// without restarting the process.
+// `hot` 控制 bot 适配器的轮询 goroutine 是否立即启动。启动时注册使用 Register
+//（Manager.Start 一次性扇出所有内容）；仪表盘变更使用 RegisterAndStart，
+// 以便新保存的 bot 无需重启进程即可开始接收更新。
 func registerChannelInstance(rec store.ConfigRecord, mb *bus.MessageBus, chanMgr *channels.Manager, st store.Store, hot bool) error {
 	cc := decodeChannelConfig(rec)
 	switch rec.Name {
@@ -59,9 +55,8 @@ func registerChannelInstance(rec store.ConfigRecord, mb *bus.MessageBus, chanMgr
 	return nil
 }
 
-// register adds an adapter to the manager via the appropriate path
-// (boot-time Register vs hot RegisterAndStart). Keeps the per-channel
-// case branches tidy.
+// register 通过适当的路径（启动时 Register vs 热注册 RegisterAndStart）将适配器添加到管理器。
+// 保持每个通道的分支整洁。
 func register(chanMgr *channels.Manager, ch channels.Channel, hot bool) {
 	if hot {
 		chanMgr.RegisterAndStart(ch)
@@ -70,13 +65,10 @@ func register(chanMgr *channels.Manager, ch channels.Channel, hot bool) {
 	chanMgr.Register(ch)
 }
 
-// registerSingleton is the polling-channel variant: every replica
-// running this binary will share the (channel, accountID) lease and
-// only the leaseholder's Start runs. Use for Telegram long-poll,
-// WeChat iLink long-poll, Discord/Slack WS, and Feishu long-conn —
-// anything where a second concurrent client would deliver duplicate
-// inbound. Webhook-only adapters (LINE, Feishu webhook mode) and
-// in-process fanout (Web) stay on plain register.
+// registerSingleton 是轮询通道变体：运行此二进制文件的每个副本将共享 (channel, accountID) 租约，
+// 只有租约持有者的 Start 运行。用于 Telegram 长轮询、微信 iLink 长轮询、
+// Discord/Slack WS 和飞书长连接 — 任何第二个并发客户端会传递重复入站消息的情况。
+// 仅 webhook 适配器（LINE、飞书 webhook 模式）和进程内扇出（Web）使用普通的 register。
 func registerSingleton(chanMgr *channels.Manager, ch channels.Channel, hot bool) {
 	if hot {
 		chanMgr.RegisterSingletonAndStart(ch)
@@ -172,11 +164,8 @@ func registerSlackChannels(chCfg config.ChannelConfig, mb *bus.MessageBus, chanM
 }
 
 func registerLINEChannels(chCfg config.ChannelConfig, mb *bus.MessageBus, chanMgr *channels.Manager, hot bool) error {
-	// LINE row carries one or more (channel_access_token, channel_secret)
-	// pairs keyed by bot userId. AccountConfig.BotToken is the channel
-	// access token; AccountConfig.UserID is the channel secret (used
-	// for inbound HMAC verification — see channels/line.go field-mapping
-	// note).
+	// LINE 行携带一个或多个以 bot userId 为键的 (channel_access_token, channel_secret) 对。
+	// AccountConfig.BotToken 是通道访问令牌；AccountConfig.UserID 是通道密钥（用于入站 HMAC 验证 — 见 channels/line.go 字段映射注释）。
 	for accountID, acct := range chCfg.Accounts {
 		token := acct.BotToken
 		if token == "" {
@@ -192,32 +181,25 @@ func registerLINEChannels(chCfg config.ChannelConfig, mb *bus.MessageBus, chanMg
 }
 
 func registerFeishuChannels(chCfg config.ChannelConfig, mb *bus.MessageBus, chanMgr *channels.Manager, hot bool) error {
-	// Feishu is multi-account: one row carries one or more (app_id,
-	// app_secret, verification_token) triples keyed by app_id. No
-	// legacy single-bot fallback — the per-account map is the only
-	// shape produced by the connect handler.
+	// 飞书是多账号的：一行携带一个或多个以 app_id 为键的 (app_id, app_secret, verification_token) 三元组。
+	// 没有传统的单 bot 回退 — 每个账号的映射是连接处理程序生成的唯一形状。
 	for accountID, acct := range chCfg.Accounts {
 		secret := acct.BotToken
 		if secret == "" {
 			secret = chCfg.BotToken
 		}
-		// AccountConfig.UserID carries the verification token (see
-		// channels/feishu.go for the field-mapping rationale).
-		// AccountConfig.EncryptKey is set when the user enabled 加密
-		// 策略 in the Feishu console; empty = plaintext webhook bodies.
-		// AccountConfig.UseLongConn switches the adapter to outbound
-		// WebSocket mode (no public URL needed); when true the
-		// verificationToken/encryptKey fields are unused.
+		// AccountConfig.UserID 携带验证令牌（见 channels/feishu.go 的字段映射说明）。
+		// AccountConfig.EncryptKey 在用户在飞书控制台启用加密策略时设置；空值表示明文 webhook 体。
+		// AccountConfig.UseLongConn 将适配器切换到出站 WebSocket 模式（无需公网 URL）；
+		// 当为 true 时 verificationToken/encryptKey 字段未使用。
 		lk, err := channels.NewFeishu(accountID, secret, acct.UserID, acct.EncryptKey, acct.UseLongConn, accountID, mb)
 		if err != nil {
 			return err
 		}
-		// Long-conn opens a Feishu WebSocket — two replicas would
-		// both subscribe to im.message.receive_v1 and the bot owner
-		// would see every reply twice. Webhook mode receives via an
-		// HTTP route and is already idempotent at the gateway entry
-		// (HandleWebhook is called once per HTTP POST), so it skips
-		// the lease.
+		// 长连接打开飞书 WebSocket — 两个副本都会订阅 im.message.receive_v1，
+		// bot 所有者会看到每条回复两次。Webhook 模式通过 HTTP 路由接收，
+		// 在网关入口已经是幂等的（每个 HTTP POST 调用一次 HandleWebhook），
+		// 因此跳过租约。
 		if acct.UseLongConn {
 			registerSingleton(chanMgr, lk, hot)
 		} else {
@@ -228,12 +210,9 @@ func registerFeishuChannels(chCfg config.ChannelConfig, mb *bus.MessageBus, chan
 }
 
 func registerWeChatChannels(rec store.ConfigRecord, chCfg config.ChannelConfig, mb *bus.MessageBus, chanMgr *channels.Manager, st store.Store, hot bool) error {
-	// WeChat is multi-account by design — every QR scan mints a new
-	// (botToken, ilink_user_id, baseURL) triple keyed under a fresh
-	// accountID. The legacy "no Accounts map → single bot from
-	// top-level BotToken" shape doesn't apply (we never have a
-	// usable top-level config; the per-account fields BaseURL +
-	// UserID are required). So skip the empty-Accounts fallback.
+	// 微信在设计上是多账号的 — 每次二维码扫描都会生成一个新的 (botToken, ilink_user_id, baseURL) 三元组，
+	// 以新的 accountID 为键。传统的"无 Accounts 映射 → 从顶层 BotToken 的单个 bot"形状不适用
+	//（我们从来没有可用的顶层配置；每个账号的字段 BaseURL + UserID 是必需的）。因此跳过空 Accounts 回退。
 	for accountID, acct := range chCfg.Accounts {
 		token := acct.BotToken
 		if token == "" {
@@ -243,11 +222,9 @@ func registerWeChatChannels(rec store.ConfigRecord, chCfg config.ChannelConfig, 
 		if err != nil {
 			return err
 		}
-		// On confirmed token-expiry the adapter exits; clean up the
-		// configs row so the next process restart doesn't re-register
-		// a known-dead bot (which would log the same warning again on
-		// boot). The user has to rescan the QR through the dashboard
-		// — that flow re-creates the Accounts entry from scratch.
+		// 在确认令牌过期时适配器退出；清理配置行，以便下次进程重启不会重新注册已知失效的 bot
+		//（这会在启动时再次记录相同的警告）。用户必须通过仪表盘重新扫描二维码 —
+		// 该流程从头重新创建 Accounts 条目。
 		if st != nil {
 			rowID := rec.ID
 			wc.SetOnExpired(func(deadAccount string) {
@@ -263,14 +240,12 @@ func registerWeChatChannels(rec store.ConfigRecord, chCfg config.ChannelConfig, 
 	return nil
 }
 
-// purgeWeChatAccount removes one account from the configs row's
-// Accounts map. If the row is left empty after the removal the whole
-// row gets deleted. Runs in the adapter's polling goroutine so the
-// HTTP request ctx isn't available — use a fresh background ctx.
+// purgeWeChatAccount 从配置行的 Accounts 映射中移除一个账号。
+// 如果移除后行被留空，则整个行被删除。在适配器的轮询 goroutine 中运行，
+// 因此 HTTP 请求 ctx 不可用 — 使用新的后台 ctx。
 //
-// Idempotent: ErrNotFound on the GetConfig lookup means the row is
-// already gone (dashboard-side disconnect, or a sibling account's
-// purge that emptied the row first) — that's success, not an error.
+// 幂等的：GetConfig 查找返回 ErrNotFound 意味着行已经不存在
+//（仪表盘断开连接，或兄弟账号的清理先清空了该行）— 那是成功，不是错误。
 func purgeWeChatAccount(st store.Store, rowID, deadAccount string) error {
 	ctx := context.Background()
 	rec, err := st.GetConfig(ctx, rowID)

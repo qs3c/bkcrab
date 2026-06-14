@@ -13,11 +13,10 @@ import (
 	"github.com/qs3c/bkclaw/internal/daemon"
 )
 
-// agentsCmd is a thin CLI front-end for the same agent CRUD the
-// dashboard performs over HTTP. Every subcommand opens the operator's
-// own store via openStoreFromEnv (defined in cmd_admin.go) and writes
-// into the same tables the gateway reads. There is no separate
-// "instance" concept — agents created here show up in the dashboard.
+// agentsCmd 是与仪表盘通过 HTTP 执行的相同代理 CRUD 的轻量 CLI 前端。
+// 每个子命令通过 openStoreFromEnv（在 cmd_admin.go 中定义）打开操作者自己的存储，
+// 并写入网关读取的相同表。没有独立的"实例"概念——
+// 在此创建的代理会出现在仪表盘中。
 func agentsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agents",
@@ -31,8 +30,7 @@ func agentsCmd() *cobra.Command {
 	return cmd
 }
 
-// addAgentsSubcommand wires a child command and silences cobra's usage
-// dump on every error throughout the agents tree.
+// addAgentsSubcommand 连接子命令并在整个 agents 命令树中静默 cobra 的每次错误使用信息。
 func addAgentsSubcommand(parent, child *cobra.Command) {
 	silenceTree(child)
 	parent.AddCommand(child)
@@ -45,11 +43,9 @@ func silenceTree(cmd *cobra.Command) {
 	}
 }
 
-// notifyGatewayReload signals the running gateway (if any) so it picks
-// up store mutations the CLI just made. On Unix it sends SIGHUP to the
-// daemon PID; the gateway's reload handler invalidates every cached
-// UserSpace. On Windows it falls back to a hint, since SIGHUP isn't
-// delivered there.
+// notifyGatewayReload 向运行中的网关（如果有）发送信号，使其获取 CLI 刚刚所做的存储变更。
+// 在 Unix 上向守护进程 PID 发送 SIGHUP；网关的重载处理程序会使所有缓存的 UserSpace 失效。
+// 在 Windows 上则退化为提示信息，因为 SIGHUP 在那里不可用。
 func notifyGatewayReload() {
 	st, err := daemon.GetStatus()
 	if err != nil || st == nil || !st.Running {
@@ -62,11 +58,9 @@ func notifyGatewayReload() {
 	fmt.Fprintf(os.Stderr, "Reloaded gateway (PID %d).\n", st.PID)
 }
 
-// ensureGatewayRunning is the post-`agents init` hook that turns a fresh
-// agent record into something the user can immediately chat with. If the
-// gateway is already up, we send SIGHUP so it picks up the new agent.
-// Otherwise we launch it in the background (same path as
-// `bkclaw daemon start`) and print the URL.
+// ensureGatewayRunning 是 `agents init` 之后的钩子，将新创建的代理记录
+// 转换为用户可以立即聊天的内容。如果网关已在运行，我们发送 SIGHUP 使其获取新代理。
+// 否则在后台启动它（与 `bkclaw daemon start` 相同的方式）并打印 URL。
 func ensureGatewayRunning() {
 	st, _ := daemon.GetStatus()
 	if st != nil && st.Running {

@@ -9,16 +9,16 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// RegisterTTSChain registers the tts tool against a provider chain. Absent
-// credentials ⇒ the tool isn't visible to the agent at all.
+// RegisterTTSChain 针对提供商链注册 tts 工具。缺席的
+// 凭据 ⇒ 该工具对代理根本不可见。
 func RegisterTTSChain(r *Registry, chain *toolproviders.Chain) {
 	if chain == nil {
 		return
 	}
-	// "none" is a sentinel meaning the admin explicitly opted out of
-	// bkclaw's tts. Detected anywhere in the chain → don't register
-	// the tool at all so the model falls back to its own native audio
-	// capability (or does without).
+	// “none”是一个哨兵，意味着管理员明确选择退出
+	// bkclaw 的 tts。在链中的任何位置检测到 → 不注册
+	// 完全使用该工具，以便模型回退到其自己的本机音频
+	// 能力（或没有）。
 	for _, ref := range chain.Order {
 		name := ref
 		if i := strings.IndexByte(ref, '/'); i >= 0 {

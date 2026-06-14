@@ -14,64 +14,59 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 )
 
-// JobType defines the type of cron schedule.
+// JobType 定义 cron 调度的类型。
 type JobType string
 
 const (
-	JobTypeExact    JobType = "exact"    // specific time: "14:30"
-	JobTypeInterval JobType = "interval" // duration: "5m", "1h"
-	JobTypeCron     JobType = "cron"     // cron expression: "*/5 * * * *"
+	JobTypeExact    JobType = "exact"    // 具体时间："14:30"
+	JobTypeInterval JobType = "interval" // 持续时间："5m"、"1h"
+	JobTypeCron     JobType = "cron"     // cron 表达式："*/5 * * * *"
 )
 
-// Job defines a scheduled job.
+// Job 定义一个定时作业。
 type Job struct {
 	Name        string  `json:"name"`
 	Type        JobType `json:"type"`
-	Schedule    string  `json:"schedule"` // depends on type
+	Schedule    string  `json:"schedule"` // 取决于类型
 	AgentID     string  `json:"agentId"`
-	Channel     string  `json:"channel"`               // channel to send results back through
-	ChatID      string  `json:"chatId"`                // chat to send results to
-	Message     string  `json:"message"`               // message to send to the agent
-	OwnerUserID string  `json:"ownerUserId,omitempty"` // bkclaw user that owns this job
+	Channel     string  `json:"channel"`               // 将结果发送回的渠道
+	ChatID      string  `json:"chatId"`                // 要发送结果的聊天
+	Message     string  `json:"message"`               // 发送给 agent 的消息
+	OwnerUserID string  `json:"ownerUserId,omitempty"` // 拥有此作业的 bkclaw 用户
 }
 
-// CronConfig holds cron job configuration.
+// CronConfig 保存 cron 作业配置。
 type CronConfig struct {
 	Jobs []Job `json:"jobs"`
 }
 
-// StoreInterface is the subset of store.Store needed by the scheduler.
+// StoreInterface 是调度器所需的 store.Store 的子集。
 type StoreInterface interface {
 	GetDueCronJobs(ctx context.Context, now time.Time) ([]StoreJob, error)
 	LockCronJob(ctx context.Context, jobID, instanceID string) (bool, error)
 	UpdateCronJobRun(ctx context.Context, jobID string, lastRun, nextRun time.Time) error
-	// IncrementCronJobFailure bumps the row's consecutive-failure
-	// counter and returns the new total. The scheduler self-deletes
-	// the row once the counter crosses cronMaxConsecutiveFailures.
+	// IncrementCronJobFailure 增加行的连续失败计数器并返回新总数。
+	// 一旦计数器超过 cronMaxConsecutiveFailures，调度器将自动删除该行。
 	IncrementCronJobFailure(ctx context.Context, jobID string) (int, error)
 	DeleteCronJob(ctx context.Context, jobID string) error
 	GetNextDueTime(ctx context.Context) (time.Time, error)
 }
 
-// ChannelChecker is the bit of channels.Manager the scheduler needs to
-// pre-flight a tick: "is the bot adapter for (channel, accountID)
-// actually registered right now?". Optional — without it the scheduler
-// fires every due job blindly (legacy behaviour).
+// ChannelChecker 是调度器在触发 tick 前预检所需的 channels.Manager 的一部分：
+// "(channel, accountID) 的 bot 适配器当前是否实际已注册？" 可选的——
+// 没有它时调度器会盲目触发所有到期的作业（旧版行为）。
 type ChannelChecker interface {
 	Has(channel, accountID string) bool
 }
 
-// cronMaxConsecutiveFailures is the threshold at which a cron row gets
-// auto-deleted because its destination channel has been missing for
-// too many consecutive ticks. Tuned for the IM-bot use case: ~3
-// minutes of dead destination is enough signal to give up (the bot
-// adapter is gone, the user has to reschedule anyway).
+// cronMaxConsecutiveFailures 是 cron 行因目标渠道在连续多次 tick
+// 中缺失而被自动删除的阈值。针对 IM-bot 用例调优：大约 3 分钟的目标
+// 不可用就足以放弃（bot 适配器已消失，用户无论如何都需要重新调度）。
 const cronMaxConsecutiveFailures = 3
 
-// StoreJob mirrors store.CronJobRecord to avoid import cycle. The fired
-// job carries OwnerUserID resolved by the adapter (= agents.owner_user_id
-// for the row's agent_id) so processInbound can route into the right
-// user space.
+// StoreJob 镜像 store.CronJobRecord 以避免导入循环。触发的作业携带
+// 由适配器解析的 OwnerUserID（即该行 agent_id 对应的 agents.owner_user_id），
+// 以便 processInbound 可以路由到正确的用户空间。
 type StoreJob struct {
 	ID          string
 	AgentID     string
@@ -83,18 +78,16 @@ type StoreJob struct {
 	Channel     string
 	ChatID      string
 	AccountID   string
-	// Timezone is the IANA zone the schedule is interpreted in —
-	// captured from the chatter at creation time. Legacy rows carry
-	// "UTC" (the old hardcoded value); empty means server-local.
+	// Timezone 是调度所依据的 IANA 时区——在创建时从对话者处捕获。
+	// 旧版行携带 "UTC"（旧的硬编码值）；空表示服务器本地时间。
 	Timezone string
 }
 
-// globalNotify wakes the DB-mode scheduler when a cron tool creates or
-// deletes a job, so it can recalculate its next sleep target immediately.
+// globalNotify 在 cron 工具创建或删除作业时唤醒 DB 模式调度器，
+// 以便它能立即重新计算下一个休眠目标。
 var globalNotify = make(chan struct{}, 1)
 
-// NotifyJobCreated wakes the DB-mode scheduler. Non-blocking, safe from
-// any goroutine.
+// NotifyJobCreated 唤醒 DB 模式调度器。非阻塞，可从任何 goroutine 安全调用。
 func NotifyJobCreated() {
 	select {
 	case globalNotify <- struct{}{}:
@@ -102,7 +95,7 @@ func NotifyJobCreated() {
 	}
 }
 
-// Scheduler manages cron job execution.
+// Scheduler 管理 cron 作业的执行。
 type Scheduler struct {
 	mu         sync.Mutex
 	jobs       []Job
@@ -110,20 +103,19 @@ type Scheduler struct {
 	store      StoreInterface
 	channels   ChannelChecker
 	instanceID string
-	// hot-reload support
+	// 热重载支持
 	parentCtx context.Context
 	jobCancel context.CancelFunc
 }
 
-// SetChannelChecker enables pre-flight delivery checks. When set, jobs
-// whose destination channel adapter is missing get their failure_count
-// bumped instead of firing into the void; rows that hit
-// cronMaxConsecutiveFailures consecutive misses are deleted.
+// SetChannelChecker 启用预投递检查。设置后，目标渠道适配器缺失的作业
+// 会递增 failure_count 而非空转；连续缺失达到 cronMaxConsecutiveFailures
+// 次的行会被删除。
 func (s *Scheduler) SetChannelChecker(c ChannelChecker) {
 	s.channels = c
 }
 
-// NewScheduler creates a scheduler from config.
+// NewScheduler 从配置创建调度器。
 func NewScheduler(jobs []Job, mb *bus.MessageBus) *Scheduler {
 	return &Scheduler{
 		jobs:       jobs,
@@ -132,10 +124,9 @@ func NewScheduler(jobs []Job, mb *bus.MessageBus) *Scheduler {
 	}
 }
 
-// NewSchedulerFromStore returns a scheduler that polls the DB for due
-// jobs on every tick — no in-memory job list. Each fired job carries its
-// owning user_id (StoreJob.UserID) so processInbound can route into the
-// right user space.
+// NewSchedulerFromStore 返回一个调度器，在每个 tick 轮询数据库获取到期
+// 作业——无需内存中的作业列表。每个触发的作业携带其所属用户的 user_id
+// （StoreJob.UserID），以便 processInbound 能路由到正确的用户空间。
 func NewSchedulerFromStore(st StoreInterface, mb *bus.MessageBus) *Scheduler {
 	return &Scheduler{
 		jobs:       nil,
@@ -145,12 +136,12 @@ func NewSchedulerFromStore(st StoreInterface, mb *bus.MessageBus) *Scheduler {
 	}
 }
 
-// SetStore enables DB-backed cron job polling.
+// SetStore 启用基于数据库的 cron 作业轮询。
 func (s *Scheduler) SetStore(st StoreInterface) {
 	s.store = st
 }
 
-// LoadJobs reads cron jobs from a JSON file.
+// LoadJobs 从 JSON 文件读取 cron 作业。
 func LoadJobs(path string) ([]Job, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -168,17 +159,17 @@ func LoadJobs(path string) ([]Job, error) {
 	return cfg.Jobs, nil
 }
 
-// Start begins the scheduler. It blocks until ctx is cancelled.
+// Start 启动调度器。它会阻塞直到 ctx 被取消。
 func (s *Scheduler) Start(ctx context.Context) {
 	s.mu.Lock()
 	s.parentCtx = ctx
 	slog.Info("cron scheduler started", "jobs", len(s.jobs), "store_backed", s.store != nil)
 
-	// Start goroutines for initial in-memory jobs
+	// 为初始的内存中作业启动 goroutine
 	s.startJobGoroutines()
 	s.mu.Unlock()
 
-	// If store is set, poll for DB-backed jobs
+	// 如果设置了 store，轮询基于数据库的作业
 	if s.store != nil {
 		go s.pollStore(ctx)
 	}
@@ -191,11 +182,11 @@ func (s *Scheduler) pollStore(ctx context.Context) {
 	for {
 		s.processDueJobs(ctx)
 
-		// Sleep precisely until the next job is due
+		// 精确休眠直到下一个作业到期
 		nextDue, err := s.store.GetNextDueTime(ctx)
 		var sleepDur time.Duration
 		if err != nil || nextDue.IsZero() {
-			sleepDur = 5 * time.Minute // idle — no pending jobs
+			sleepDur = 5 * time.Minute // 空闲——无待处理的作业
 		} else {
 			sleepDur = time.Until(nextDue)
 			if sleepDur <= 0 {
@@ -209,7 +200,7 @@ func (s *Scheduler) pollStore(ctx context.Context) {
 			timer.Stop()
 			return
 		case <-globalNotify:
-			timer.Stop() // new job created — recalculate
+			timer.Stop() // 新作业已创建——重新计算
 		case <-timer.C:
 		}
 	}
@@ -233,17 +224,14 @@ func (s *Scheduler) processDueJobs(ctx context.Context) {
 			continue
 		}
 
-		// Pre-flight: if the destination IM channel adapter isn't
-		// registered (e.g. the bot token died and the gateway tore
-		// it down), there's no point queuing the inbound — the
-		// agent's reply would just hit "unknown outbound channel"
-		// and be dropped. Instead, bump the failure counter; after
-		// cronMaxConsecutiveFailures consecutive misses, delete
-		// the row so the scheduler stops re-trying forever.
-		// "web" is the dashboard SSE, "api" is the HTTP completions
-		// endpoint — both are always reachable (replies go through
-		// the plugin's channel.send, not an IM adapter). Empty
-		// channel is a legacy row that doesn't route through any bot.
+		// 预检：如果目标 IM 渠道适配器未注册（例如 bot token 已失效且网关
+		// 已拆除它），排队入站消息没有意义——agent 的回复只会遇到
+		// "unknown outbound channel" 并被丢弃。相反，递增失败计数器；
+		// 连续缺失 cronMaxConsecutiveFailures 次后，删除该行，让调度器
+		// 停止无限重试。
+		// "web" 是仪表板 SSE，"api" 是 HTTP completions 端点——
+		// 两者始终可达（回复通过插件的 channel.send 而非 IM 适配器）。
+		// 空渠道是不通过任何 bot 路由的旧版行。
 		if s.channels != nil && j.Channel != "" && j.Channel != "web" && j.Channel != "api" {
 			if !s.channels.Has(j.Channel, j.AccountID) {
 				count, ferr := s.store.IncrementCronJobFailure(ctx, j.ID)
@@ -287,9 +275,9 @@ func (s *Scheduler) processDueJobs(ctx context.Context) {
 			Source:      bus.SourceCron,
 		}
 
-		// Calculate next run based on job type.
-		// UpdateCronJobRun also resets failure_count to 0 — a single
-		// successful fire clears prior misses.
+		// 根据作业类型计算下一次运行时间。
+		// UpdateCronJobRun 还会将 failure_count 重置为 0 ——
+		// 一次成功触发即清除先前的缺失记录。
 		switch j.Type {
 		case "once":
 			if err := s.store.DeleteCronJob(ctx, j.ID); err != nil {
@@ -353,7 +341,7 @@ func (s *Scheduler) runInterval(ctx context.Context, job Job) {
 }
 
 func (s *Scheduler) runExact(ctx context.Context, job Job) {
-	// Parse time in HH:MM format
+	// 解析 HH:MM 格式的时间
 	parts := strings.Split(job.Schedule, ":")
 	if len(parts) != 2 {
 		slog.Error("invalid exact time format (expected HH:MM)", "name", job.Name, "schedule", job.Schedule)
@@ -387,15 +375,15 @@ func (s *Scheduler) runExact(ctx context.Context, job Job) {
 }
 
 func (s *Scheduler) runCronExpr(ctx context.Context, job Job) {
-	// Simple cron expression parser: "minute hour day month weekday"
-	// Supports * and */N for each field
+	// 简单 cron 表达式解析器："minute hour day month weekday"
+	// 支持每个字段的 * 和 */N
 	fields := strings.Fields(job.Schedule)
 	if len(fields) != 5 {
 		slog.Error("invalid cron expression (expected 5 fields)", "name", job.Name, "schedule", job.Schedule)
 		return
 	}
 
-	// Check every minute
+	// 每分钟检查一次
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
@@ -411,7 +399,7 @@ func (s *Scheduler) runCronExpr(ctx context.Context, job Job) {
 	}
 }
 
-// cronMatch checks if the current time matches a 5-field cron expression.
+// cronMatch 检查当前时间是否匹配 5 字段 cron 表达式。
 func cronMatch(fields []string, t time.Time) bool {
 	values := []int{t.Minute(), t.Hour(), t.Day(), int(t.Month()), int(t.Weekday())}
 	for i, field := range fields {
@@ -422,7 +410,7 @@ func cronMatch(fields []string, t time.Time) bool {
 	return true
 }
 
-// fieldMatch checks if a value matches a cron field (* or */N or exact number).
+// fieldMatch 检查值是否匹配 cron 字段（* 或 */N 或精确数字）。
 func fieldMatch(field string, value int) bool {
 	if field == "*" {
 		return true
@@ -461,15 +449,15 @@ func (s *Scheduler) fireJob(job Job) {
 	}
 }
 
-// UpdateJobs replaces the scheduler's job list (hot-reload).
-// It cancels goroutines for old jobs and starts new ones.
+// UpdateJobs 替换调度器的作业列表（热重载）。
+// 它会取消旧作业的 goroutine 并启动新的。
 func (s *Scheduler) UpdateJobs(jobs []Job) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.jobs = jobs
 
-	// If the scheduler is running, restart job goroutines
+	// 如果调度器正在运行，重启作业 goroutine
 	if s.parentCtx != nil {
 		s.startJobGoroutines()
 	}
@@ -477,15 +465,15 @@ func (s *Scheduler) UpdateJobs(jobs []Job) {
 	slog.Info("cron jobs updated (hot-reload)", "jobs", len(jobs))
 }
 
-// startJobGoroutines cancels any existing job goroutines and starts new ones.
-// Must be called with s.mu held.
+// startJobGoroutines 取消所有现有作业 goroutine 并启动新的。
+// 必须在持有 s.mu 时调用。
 func (s *Scheduler) startJobGoroutines() {
-	// Cancel previous batch of job goroutines
+	// 取消前一批作业 goroutine
 	if s.jobCancel != nil {
 		s.jobCancel()
 	}
 
-	// Create a new child context for this batch
+	// 为这一批创建新的子 context
 	jobCtx, cancel := context.WithCancel(s.parentCtx)
 	s.jobCancel = cancel
 
@@ -494,17 +482,16 @@ func (s *Scheduler) startJobGoroutines() {
 	}
 }
 
-// nextCronOccurrence finds the next time matching a 5-field cron
-// expression after the given time, evaluated in server-local time.
-// Kept for callers/tests that predate per-job timezones.
+// nextCronOccurrence 查找在给定时间之后匹配 5 字段 cron 表达式的
+// 下一个时间点，在服务器本地时间中计算。
+// 保留给早于每作业时区的调用方/测试使用。
 func nextCronOccurrence(schedule string, after time.Time) time.Time {
 	return NextOccurrenceIn(schedule, after, time.Local)
 }
 
-// LocationOf resolves a job's stored timezone name to a *time.Location.
-// Empty (pre-timezone rows / no chatter preference) and unknown names
-// fall back to server-local — for legacy "UTC" rows that loads UTC,
-// matching the behavior they were created under. Never returns nil.
+// LocationOf 将作业存储的时区名称解析为 *time.Location。
+// 空（无时区的旧版行/无对话者偏好）和未知名称回退到服务器本地时间——
+// 对于旧版 "UTC" 行则加载 UTC，匹配它们被创建时的行为。永不返回 nil。
 func LocationOf(name string) *time.Location {
 	if name == "" {
 		return time.Local
@@ -517,11 +504,10 @@ func LocationOf(name string) *time.Location {
 	return loc
 }
 
-// NextOccurrenceIn finds the next instant matching a 5-field cron
-// expression after the given time, with the expression's wall-clock
-// fields (minute/hour/day/month/weekday) read in loc — "0 9 * * *"
-// stored with Asia/Shanghai fires at 09:00 Beijing time regardless of
-// the server's TZ. Scans up to 48 hours ahead.
+// NextOccurrenceIn 查找在给定时间之后匹配 5 字段 cron 表达式的下一个时刻，
+// 表达式的挂钟字段（分/时/日/月/周几）在 loc 中读取——存储为
+// Asia/Shanghai 的 "0 9 * * *" 无论服务器时区如何都在北京时间 09:00 触发。
+// 最多扫描 48 小时。
 func NextOccurrenceIn(schedule string, after time.Time, loc *time.Location) time.Time {
 	fields := strings.Fields(schedule)
 	if len(fields) != 5 {

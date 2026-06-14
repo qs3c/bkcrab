@@ -12,9 +12,9 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// OpenAI generates via POST /v1/images/generations. Model (the suffix in
-// "openai/<model>") defaults to "gpt-image-1" which returns base64; older
-// dall-e-3 returns a URL. Both paths are handled transparently.
+// OpenAI 通过 POST /v1/images/generations 生成图像。
+// Model（"openai/<model>" 中的后缀）默认为 "gpt-image-1"，返回 base64；
+// 较旧的 dall-e-3 返回 URL。两种路径都被透明处理。
 type OpenAI struct{}
 
 func (OpenAI) Category() string { return Category }
@@ -78,7 +78,7 @@ func (o *OpenAI) Execute(ctx context.Context, req toolproviders.Request) (toolpr
 	if len(out.Data) == 0 {
 		return toolproviders.Response{}, toolproviders.ErrNoResults
 	}
-	// Prefer URL if present; otherwise embed b64 inline.
+	// 优先使用 URL（如果存在）；否则内联嵌入 b64。
 	urls := make([]string, 0, len(out.Data))
 	b64s := make([]string, 0, len(out.Data))
 	for _, d := range out.Data {

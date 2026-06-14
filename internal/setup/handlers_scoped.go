@@ -14,20 +14,16 @@ import (
 	"github.com/qs3c/bkclaw/internal/users"
 )
 
-// Scope-aware CRUD for providers + channels (and a generic settings
-// endpoint). Authorization:
+// 作用域感知的 providers + channels CRUD（以及一个通用设置端点）。授权规则：
 //
-//   scope=system → READ: any authenticated user (system providers are
-//                  designed to be inheritable; api keys are masked on
-//                  the way out). WRITE: super_admin only.
-//   scope=user   → super_admin OR scopeId == caller's user_id
-//   scope=agent  → super_admin OR caller owns the agent
+//   scope=system → 读取：任何已认证用户（系统提供者设计为可继承；api 密钥在输出时被屏蔽）。写入：仅限 super_admin。
+//   scope=user   → super_admin 或 scopeId == 调用者的 user_id
+//   scope=agent  → super_admin 或调用者拥有该 agent
 //
-// All four routes share the same gating helper so the rules stay aligned.
+// 所有四个路由共享同一个门控辅助函数，以确保规则保持一致。
 
-// scopeOp distinguishes read vs mutating access for authorizeScope. The
-// only place this matters today is system scope: regular users may list
-// inherited system providers but never edit them.
+// scopeOp 区分 authorizeScope 的读取和变更操作。目前唯一重要的地方是系统作用域：
+// 普通用户可以列出继承的系统提供者，但永远不能编辑它们。
 type scopeOp int
 
 const (
@@ -35,9 +31,8 @@ const (
 	scopeWrite
 )
 
-// authorizeScope returns true if the request is allowed at (scope, scopeID)
-// for the given op. Mutating callers should additionally pass through
-// `requireWritable` (which rejects super_admin actAs mode).
+// authorizeScope 对于给定操作，如果请求在 (scope, scopeID) 处被允许则返回 true。
+// 变更调用者应额外通过 `requireWritable`（它会拒绝 super_admin actAs 模式）。
 func (s *Server) authorizeScope(w http.ResponseWriter, r *http.Request, sc, scopeID string, op scopeOp) bool {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
@@ -49,11 +44,8 @@ func (s *Server) authorizeScope(w http.ResponseWriter, r *http.Request, sc, scop
 	}
 	switch sc {
 	case scope.System:
-		// System scope is broadcast: every agent inherits from it. Reads
-		// are open so the dashboard can show a non-admin which providers
-		// they're inheriting and the runtime can resolve them. Writes
-		// stay locked to super_admin (the upstream business reason for
-		// the gate hasn't changed).
+		// 系统作用域是广播的：每个 agent 都继承自它。读取是开放的，以便仪表板可以向非管理员显示他们正在继承哪些提供者，
+		// 运行时也可以解析它们。写入仍锁定为 super_admin（门控的业务原因未改变）。
 		if op == scopeRead {
 			return true
 		}
@@ -64,20 +56,16 @@ func (s *Server) authorizeScope(w http.ResponseWriter, r *http.Request, sc, scop
 			jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "cannot manage other users' configs"})
 			return false
 		}
-		// app_user accounts are end-users provisioned by a downstream
-		// app — they shouldn't be able to redirect their LLM provider
-		// or fork channel bindings out from under the calling app.
-		// Reads are still allowed (so the agent runtime can see what
-		// the upstream stack configured for them); only mutating
-		// callers reach this path via requireWritable, but we hard-
-		// reject up front to be unambiguous.
+		// app_user 账户是由下游应用提供的最终用户 — 他们不应该能够重定向其 LLM 提供者
+		// 或从调用应用下分出频道绑定。读取仍然允许（以便 agent 运行时可以看到上游栈为它们配置了什么）；
+		// 只有变更调用者通过 requireWritable 到达此路径，但我们提前硬拒绝以消除歧义。
 		if ident.Role == users.RoleAppUser {
 			jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "app_user cannot manage user-scope configs"})
 			return false
 		}
 		return true
 	case scope.Agent:
-		// Must own the agent. We do an inexpensive store lookup to verify.
+		// 必须拥有该 agent。我们通过一次廉价的存储查询来验证。
 		if s.dataStore == nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "store not configured"})
 			return false
@@ -90,28 +78,22 @@ func (s *Server) authorizeScope(w http.ResponseWriter, r *http.Request, sc, scop
 		if rec.UserID == ident.UserID {
 			return true
 		}
-		// Non-owner read access on a shared agent: when the owner has
-		// shareModelConfig on (default), the agent's runtime resolution
-		// already includes its agent-scope providers for chatters
-		// (EnsureAgent overlays them in). The Models tab in the chatter's
-		// agent-settings dialog needs to surface those same rows — with
-		// masked keys — so the chatter knows which credentials the agent
-		// is using and which models are available. Writes stay owner-only.
+		// 共享 agent 上的非拥有者读取访问：当拥有者启用了 shareModelConfig（默认）时，
+		// agent 的运行时解析已经包含其 agent 作用域的提供者供聊天者使用（EnsureAgent 会叠加它们）。
+		// 聊天者的 agent 设置对话框中的 Models 标签页需要显示相同的行 — 带屏蔽密钥 —
+		// 以便聊天者知道 agent 正在使用哪些凭证以及哪些模型可用。写入仍仅限拥有者。
 		if op == scopeRead {
 			if agentShareModelConfig(rec) {
 				if rec.IsPublic || s.callerOwnsAgent(r, scopeID) {
 					return true
 				}
-				// Mirror requireAgentReadable's apikey-ACL gate so an
-				// apikey scoped to this agent can also read.
+				// 镜像 requireAgentReadable 的 apikey-ACL 门控，以便作用域为此 agent 的 apikey 也可以读取。
 				if ident.AuthMethod == "apikey" && ident.CanAccessAgent(scopeID) {
 					return true
 				}
-				// Signed-in user on a non-public shared agent: we don't
-				// have a separate "this user has been granted access"
-				// table beyond IsPublic / apikey ACL, so fall through
-				// to the standard 403 below. (If you build sharing
-				// invites later, gate them here.)
+				// 非公开共享 agent 上的已登录用户：除了 IsPublic / apikey ACL 之外，
+				// 我们没有单独的"此用户已被授予访问权限"表，因此落入下面的标准 403。
+				//（如果以后构建共享邀请，请在此处进行门控。）
 			}
 		}
 		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "agent not yours"})
@@ -122,25 +104,23 @@ func (s *Server) authorizeScope(w http.ResponseWriter, r *http.Request, sc, scop
 	}
 }
 
-// listConfigsByScope is the HTTP-side bridge to store.ListConfigs:
-// translates the (scope, scopeID) URL idiom into (userID, agentID).
-// New code should call store.ListConfigs directly with explicit
-// ownership; this helper exists so the dashboard's scope-keyed routes
-// don't have to inline the conversion at every call site.
+// listConfigsByScope 是 store.ListConfigs 的 HTTP 端桥接：
+// 将 (scope, scopeID) URL 惯用法转换为 (userID, agentID)。
+// 新代码应直接调用 store.ListConfigs 并显式指定拥有者；此辅助函数的存在是为了使仪表板的
+// 作用域键控路由不必在每个调用点内联转换。
 func (s *Server) listConfigsByScope(ctx context.Context, kind, sc, scopeID string) ([]store.ConfigRecord, error) {
 	uid, aid := scope.OwnershipFromScope(sc, scopeID)
 	return s.dataStore.ListConfigs(ctx, kind, uid, aid)
 }
 
-// getConfigByNameScope is the GetConfigByName variant of the same bridge.
+// getConfigByNameScope 是同一桥接函数的 GetConfigByName 变体。
 func (s *Server) getConfigByNameScope(ctx context.Context, kind, sc, scopeID, name string) (*store.ConfigRecord, error) {
 	uid, aid := scope.OwnershipFromScope(sc, scopeID)
 	return s.dataStore.GetConfigByName(ctx, kind, uid, aid, name)
 }
 
-// scopeFromQuery reads the scope/scopeId query parameters with sensible
-// defaults: missing scope falls through to the caller's user scope so a
-// regular user's `GET /api/providers` returns "their" providers.
+// scopeFromQuery 读取 scope/scopeId 查询参数，带有合理的默认值：
+// 缺少 scope 时回退到调用者的用户作用域，这样普通用户的 `GET /api/providers` 返回"他们的"提供者。
 func scopeFromQuery(r *http.Request) (string, string) {
 	sc := r.URL.Query().Get("scope")
 	scopeID := r.URL.Query().Get("scopeId")
@@ -156,7 +136,7 @@ func scopeFromQuery(r *http.Request) (string, string) {
 	return sc, scopeID
 }
 
-// --- Providers ---
+// --- 提供者 ---
 
 func (s *Server) handleListProviders(w http.ResponseWriter, r *http.Request) {
 	sc, scopeID := scopeFromQuery(r)
@@ -258,7 +238,7 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	if blob, err := json.Marshal(rec.Data); err == nil {
 		_ = json.Unmarshal(blob, &pc)
 	}
-	// Patch — preserve apiKey when caller sent the masked sentinel.
+	// 补丁 — 当调用者发送了屏蔽的哨兵值时，保留 apiKey。
 	if req.APIBase != "" {
 		pc.APIBase = req.APIBase
 	}
@@ -271,9 +251,8 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	if req.AuthType != "" {
 		pc.AuthType = req.AuthType
 	}
-	// `models` is sent as the full desired set on every PUT (the dialog
-	// is the source of truth) — overwrite even when the array is empty so
-	// "remove last model" actually persists.
+	// `models` 在每次 PUT 中作为完整的期望集合发送（对话框是事实来源）—
+	// 即使数组为空也要覆盖，以便"移除最后一个模型"实际生效。
 	if req.Models != nil {
 		pc.Models = req.Models
 	}
@@ -306,7 +285,7 @@ func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// --- Channels ---
+// --- 频道 ---
 
 func (s *Server) handleListScopedChannels(w http.ResponseWriter, r *http.Request) {
 	sc, scopeID := scopeFromQuery(r)
@@ -349,10 +328,9 @@ type writeChannelRequest struct {
 	CredentialKey string `json:"credentialKey,omitempty"`
 }
 
-// credentialKeyFor derives a stable lookup handle from the channel's
-// credentials. For bot-token channels we use the last 12 chars (matches
-// how Telegram / Discord bot tokens are recognizable); falls back to the
-// caller-supplied key when it's already populated.
+// credentialKeyFor 从频道的凭证派生一个稳定的查找句柄。
+// 对于 bot-token 频道，我们使用最后 12 个字符（与 Telegram / Discord bot token 的可识别方式匹配）；
+// 当调用者已提供密钥时，回退到调用者提供的密钥。
 func credentialKeyFor(channelType, botToken, callerKey string) string {
 	if callerKey != "" {
 		return callerKey
@@ -477,9 +455,8 @@ func (s *Server) handleDeleteScopedChannel(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.invalidateScope(rec.LegacyScope(), rec.LegacyScopeID())
-	// Best-effort: stop the bot adapter from receiving outbound routes.
-	// We don't know its accountID without decoding rec, so derive from
-	// the row we just looked up (rec is still valid here).
+	// 尽力而为：停止 bot 适配器接收出站路由。
+	// 不解码 rec 我们不知道它的 accountID，所以从刚刚查找的行中派生（rec 在此处仍然有效）。
 	cc := decodeChannelConfigFromRecord(rec)
 	for accountID := range cc.Accounts {
 		s.hotUnregisterChannel(rec.Name, accountID)
@@ -490,8 +467,8 @@ func (s *Server) handleDeleteScopedChannel(w http.ResponseWriter, r *http.Reques
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// decodeChannelConfigFromRecord — local mirror of gateway.decodeChannelConfig
-// so this package doesn't need to import gateway.
+// decodeChannelConfigFromRecord — gateway.decodeChannelConfig 的本地镜像，
+// 这样此包不需要导入 gateway。
 func decodeChannelConfigFromRecord(rec *store.ConfigRecord) config.ChannelConfig {
 	cc := config.ChannelConfig{Enabled: rec.Enabled}
 	if blob, err := json.Marshal(rec.Data); err == nil && len(blob) > 0 {
@@ -501,22 +478,18 @@ func decodeChannelConfigFromRecord(rec *store.ConfigRecord) config.ChannelConfig
 	return cc
 }
 
-// assertChannelCredentialUnique enforces the soft uniqueness invariant the
-// schema doesn't have a DB constraint for: two rows with the same
-// (kind="channel", credential_key) would race in the inbound dispatcher
-// — only one row is returned and which one is undefined.
+// assertChannelCredentialUnique 强制实现模式没有数据库约束的软唯一性不变性：
+// 两行具有相同的 (kind="channel", credential_key) 会在入站分发器中产生竞争
+// — 只返回一行，返回哪一行是未定义的。
 //
-// "Same logical row" exemptions:
-//   - excludeID matches: the update path; we're rewriting the row in place
-//   - same (kind, user_id, agent_id, name): the upsert path; the
-//     connect handler is reconnecting the SAME bot to the SAME (user,
-//     agent) it was bound to before. SaveChannel's ON CONFLICT will
-//     just refresh the row, no race.
+// "相同逻辑行"豁免：
+//   - excludeID 匹配：更新路径；我们在原地重写该行
+//   - 相同 (kind, user_id, agent_id, name)：upsert 路径；
+//     连接处理程序正在将同一个 bot 重新连接到之前绑定的同一个 (user, agent)。
+//     SaveChannel 的 ON CONFLICT 将刷新该行，不会产生竞争。
 //
-// callerUserID / callerAgentID are the (user_id, agent_id) of the row
-// the caller is about to write — passing empty strings preserves the
-// stricter "global uniqueness" semantics for callers that don't have
-// that context handy.
+// callerUserID / callerAgentID 是调用者即将写入的行的 (user_id, agent_id) —
+// 传递空字符串为没有该上下文信息的调用者保留更严格的"全局唯一性"语义。
 func (s *Server) assertChannelCredentialUnique(r *http.Request, channelType, credKey, excludeID string, callerUserID, callerAgentID string) error {
 	if credKey == "" {
 		return nil
@@ -528,15 +501,13 @@ func (s *Server) assertChannelCredentialUnique(r *http.Request, channelType, cre
 	if existing == nil || existing.ID == excludeID {
 		return nil
 	}
-	// Same caller reconnecting the same bot to the same agent — the
-	// upsert path will refresh the existing row, not create a new one.
+	// 同一调用者将同一 bot 重新连接到同一 agent — upsert 路径将刷新现有行，而不是创建新行。
 	if existing.UserID == callerUserID &&
 		existing.AgentID == callerAgentID &&
 		existing.Name == channelType {
 		return nil
 	}
-	// Surface where the conflict actually lives so the operator knows
-	// where to disconnect first instead of staring at a generic message.
+	// 显示冲突实际存在的位置，以便操作员知道先在哪里断开连接，而不是看着一条通用消息。
 	scopeHint := existing.LegacyScope()
 	if existing.AgentID != "" {
 		scopeHint = "agent " + existing.AgentID
@@ -546,23 +517,21 @@ func (s *Server) assertChannelCredentialUnique(r *http.Request, channelType, cre
 	return fmt.Errorf("this bot is already connected at %s — disconnect it there first", scopeHint)
 }
 
-// invalidateOwner is the (userID, agentID) form of invalidateScope —
-// preferred for code that's already speaking the new ownership idiom.
-// Falls through to invalidateScope so the cache topology stays
-// consistent regardless of which entry point the caller used.
+// invalidateOwner 是 invalidateScope 的 (userID, agentID) 形式 —
+// 对于已经使用新拥有者惯用法的代码更推荐。回退到 invalidateScope，
+// 以便无论调用者使用哪个入口点，缓存拓扑都保持一致。
 func (s *Server) invalidateOwner(userID, agentID string) {
 	sc, scopeID := scope.ScopeFromOwnership(userID, agentID)
-	// "user-agent" doesn't exist in invalidateScope's switch — for
-	// per-(user, agent) writes, dropping the user's cached UserSpace
-	// is the right behavior, so map it to scope=user.
+	// "user-agent" 在 invalidateScope 的 switch 中不存在 — 对于每个 (user, agent) 的写入，
+	// 丢弃用户缓存的 UserSpace 是正确的行为，因此将其映射到 scope=user。
 	if sc == "user-agent" {
 		sc, scopeID = scope.User, userID
 	}
 	s.invalidateScope(sc, scopeID)
 }
 
-// invalidateScope drops cached UserSpaces affected by a scope-level
-// write. System changes touch every loaded space; user changes touch one.
+// invalidateScope 丢弃受作用域级别写入影响的缓存 UserSpaces。
+// 系统更改影响每个已加载的空间；用户更改影响一个。
 func (s *Server) invalidateScope(sc, scopeID string) {
 	if s.userResolver == nil {
 		return
@@ -580,12 +549,9 @@ func (s *Server) invalidateScope(sc, scopeID string) {
 			r.InvalidateUser(scopeID)
 		}
 	case scope.Agent:
-		// Agent-scoped writes (provider, channel, setting) affect every
-		// cached UserSpace that holds the agent — owner plus any foreign
-		// caller that lazy-attached it via EnsureAgent. InvalidateAgent
-		// walks the registry and drops them all; falling back to the
-		// owner-only invalidate keeps behavior consistent for resolvers
-		// that don't implement the newer hook.
+		// Agent 作用域的写入（provider, channel, setting）影响每个缓存了该 agent 的 UserSpace —
+		// 拥有者以及通过 EnsureAgent 延迟附加的任何外部调用者。InvalidateAgent 遍历注册表并全部丢弃；
+		// 回退到仅拥有者失效，为未实现较新钩子的解析器保持行为一致。
 		if r, ok := s.userResolver.(agentInvalidator); ok {
 			r.InvalidateAgent(scopeID)
 			return
@@ -604,9 +570,8 @@ func (s *Server) invalidateScope(sc, scopeID string) {
 	}
 }
 
-// hotRegisterChannel asks the gateway to start the channel adapter for
-// `rec` immediately. Best-effort — no-op when the resolver doesn't
-// implement the hook (e.g. in tests with a stub resolver).
+// hotRegisterChannel 请求网关立即为 `rec` 启动频道适配器。
+// 尽力而为 — 当解析器未实现该钩子时（例如在带有存根解析器的测试中），不执行任何操作。
 func (s *Server) hotRegisterChannel(rec store.ConfigRecord) {
 	if s.userResolver == nil {
 		return
@@ -616,15 +581,14 @@ func (s *Server) hotRegisterChannel(rec store.ConfigRecord) {
 	}
 	if r, ok := s.userResolver.(chanRegistrar); ok {
 		if err := r.RegisterChannelFromConfig(rec); err != nil {
-			// Don't fail the request — the row is saved, the next
-			// process restart will pick it up. But surface the error
-			// in logs so an obviously-broken bot token is debuggable.
+			// 不要让请求失败 — 行已保存，下次进程重启时会拾取它。
+			// 但在日志中显示错误，以便明显损坏的 bot token 可被调试。
 			slog.Warn("hot-register channel failed", "type", rec.Name, "error", err)
 		}
 	}
 }
 
-// hotUnregisterChannel — paired with hotRegisterChannel for delete paths.
+// hotUnregisterChannel — 与 hotRegisterChannel 配对，用于删除路径。
 func (s *Server) hotUnregisterChannel(channelType, accountID string) {
 	if s.userResolver == nil {
 		return

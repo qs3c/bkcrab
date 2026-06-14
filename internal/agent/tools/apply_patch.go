@@ -1,12 +1,12 @@
 package tools
 
-// apply_patch — multi-file patch tool aligned with OpenAI Codex's DSL.
+// apply_patch — 与 OpenAI Codex 的 DSL 一致的多文件补丁工具。
 //
-// One tool call adds, updates, deletes, or renames any number of files.
-// Two-phase execution: parse the envelope and compute every file's new
-// content in memory first; only when every hunk anchors successfully do
-// we flush writes/deletes. If any hunk fails, no file on disk changes —
-// the agent gets a clear error and can re-emit the patch.
+// 一次工具调用即可添加、更新、删除或重命名任意数量的文件。
+// 两阶段执行：解析信封并计算每个文件的新值
+// 首先内存中的内容；只有当每个帅哥主播都成功的时候
+// 我们刷新写入/删除。如果任何块失败，磁盘上的文件不会发生变化 -
+// 代理收到明显错误并可以重新发出补丁。
 
 import (
 	"context"
@@ -23,7 +23,7 @@ import (
 )
 
 // -----------------------------------------------------------------------------
-// AST
+// 抽象语法树（AST）
 // -----------------------------------------------------------------------------
 
 type patchOpType int
@@ -76,11 +76,11 @@ const (
 )
 
 // -----------------------------------------------------------------------------
-// Parser
+// 解析器
 // -----------------------------------------------------------------------------
 
-// parsePatch turns a patch envelope into a structured AST. Errors include
-// the offending line so the model can self-correct.
+// parsePatch 将补丁包络转换为结构化 AST。错误包括
+// 有问题的线，以便模型可以自我纠正。
 func parsePatch(input string) (*patch, error) {
 	trimmed := strings.TrimSpace(input)
 	if !strings.HasPrefix(trimmed, beginPatch) {
@@ -175,9 +175,9 @@ loop:
 				if !strings.HasPrefix(line, "+") {
 					return nil, fmt.Errorf("apply_patch: Add File body line must start with %q (got %q)", "+", line)
 				}
-				// Each + line contributes one line of file content. Append a
-				// trailing newline so the file ends in \n (POSIX convention,
-				// matches what most tools emit).
+				// 每 + 行贡献一行文件内容。附加一个
+				// 尾随换行符，因此文件以 \n 结尾（POSIX 约定，
+				// 与大多数工具发出的内容相匹配）。
 				currentOp.AddBody += line[1:] + "\n"
 			case opDelete:
 				if strings.TrimSpace(line) != "" {
@@ -188,9 +188,9 @@ loop:
 					currentHunk = &hunk{}
 				}
 				if line == "" {
-					// A bare blank line inside a hunk is treated as a blank
-					// context line. Strict Codex requires " " (space) but
-					// LLMs often drop the prefix; tolerating is harmless.
+					// 块内的空白行被视为空白
+					// 上下文线。严格的法典需要“”（空格），但是
+					// LLM 经常会删除前缀；容忍是无害的。
 					currentHunk.Lines = append(currentHunk.Lines, hunkLine{Kind: lineContext, Text: ""})
 					continue
 				}
@@ -218,12 +218,12 @@ loop:
 }
 
 // -----------------------------------------------------------------------------
-// Applier (pure functions)
+// 应用程序（纯函数）
 // -----------------------------------------------------------------------------
 
-// applyHunks applies all hunks of an Update to oldContent and returns the
-// new content. Trailing-newline state is preserved. The first hunk that
-// fails to anchor produces an error mentioning its expected lines.
+// applyHunks 将 Update 的所有块应用到 oldContent 并返回
+// 新内容。保留尾随换行状态。第一个大块头那个
+// 无法锚定会产生提及其预期行的错误。
 func applyHunks(path, oldContent string, hunks []hunk) (string, error) {
 	hadTrailingNL := strings.HasSuffix(oldContent, "\n")
 	var lines []string
@@ -231,16 +231,16 @@ func applyHunks(path, oldContent string, hunks []hunk) (string, error) {
 		lines = strings.Split(strings.TrimSuffix(oldContent, "\n"), "\n")
 	}
 
-	// searchFrom advances past each applied hunk so successive hunks can't
-	// re-match into already-rewritten regions.
+	// searchFrom 前进超过每个应用的大块，因此连续的大块不能
+	// 重新匹配到已经重写的区域。
 	searchFrom := 0
 	for hi, h := range hunks {
 		pattern := patternLines(h)
-		// A pure-add hunk (only '+' lines, no context, no remove) has an
-		// empty pattern. Per the Codex spec these are anchored to the end
-		// of the current file — and crucially, they do NOT advance the
-		// search cursor, so a later anchored hunk can still match earlier
-		// in the file.
+		// 纯添加块（只有“+”行，没有上下文，没有删除）有一个
+		// 空图案。根据 Codex 规范，这些都固定在末尾
+		// 当前文件的 - 最重要的是，它们不会推进
+		// 搜索光标，因此稍后锚定的块仍然可以匹配较早的
+		// 在文件中。
 		anchorEOF := h.IsEOF || len(pattern) == 0
 
 		idx := findHunkAnchor(lines, pattern, anchorEOF, searchFrom)
@@ -250,11 +250,11 @@ func applyHunks(path, oldContent string, hunks []hunk) (string, error) {
 				hi+1, path, strings.Join(pattern, "\n"))
 		}
 
-		// Build the replacement using the file's *actual* text for context
-		// lines (so a successful fuzzy / Unicode-normalised match
-		// preserves the file's whitespace and original glyphs instead of
-		// overwriting with the patch's ASCII version). Equivalent to
-		// replacementLines(h) when the match was exact.
+		// 使用文件的*实际*文本作为上下文构建替换
+		// 行（因此成功的模糊/Unicode 规范化匹配
+		// 保留文件的空白和原始字形而不是
+		// 用补丁的 ASCII 版本覆盖）。相当于
+		// 当匹配完全时，replacementLines(h)。
 		replacement := buildReplacement(h, lines, idx)
 
 		next := make([]string, 0, len(lines)-len(pattern)+len(replacement))
@@ -262,9 +262,9 @@ func applyHunks(path, oldContent string, hunks []hunk) (string, error) {
 		next = append(next, replacement...)
 		next = append(next, lines[idx+len(pattern):]...)
 		lines = next
-		// Only advance the cursor for anchored hunks. EOF-anchored and
-		// pure-add hunks tack onto the end of the file and must not
-		// constrain where subsequent anchored hunks search from.
+		// 仅将光标移动到锚定的帅哥。 EOF 锚定和
+		// 纯添加块附加到文件末尾，并且不能
+		// 限制后续锚定帅哥的搜索位置。
 		if !anchorEOF {
 			searchFrom = idx + len(replacement)
 		}
@@ -277,8 +277,8 @@ func applyHunks(path, oldContent string, hunks []hunk) (string, error) {
 	return out, nil
 }
 
-// patternLines extracts the pattern that must be matched in the file:
-// context + remove lines, in order.
+// patternLines 提取文件中必须匹配的模式：
+// 上下文+按顺序删除行。
 func patternLines(h hunk) []string {
 	out := make([]string, 0, len(h.Lines))
 	for _, l := range h.Lines {
@@ -289,11 +289,11 @@ func patternLines(h hunk) []string {
 	return out
 }
 
-// buildReplacement assembles the lines that should replace the matched
-// region. Context lines are sourced from the file (preserves the file's
-// own whitespace when fuzzy matching squashed differences); add lines come
-// from the hunk; remove lines are dropped. fileLines[startIdx:] must
-// already align with the hunk's pattern.
+// buildReplacement 组装应替换匹配的行
+// 地区。上下文行源自文件（保留文件的
+// 当模糊匹配压缩差异时有自己的空白）；添加行来
+// 来自猛男；删除线被丢弃。 fileLines[startIdx:] 必须
+// 已经符合帅哥的模式了。
 func buildReplacement(h hunk, fileLines []string, startIdx int) []string {
 	out := make([]string, 0, len(h.Lines))
 	off := 0 // cursor into the matched region in fileLines
@@ -311,9 +311,9 @@ func buildReplacement(h hunk, fileLines []string, startIdx int) []string {
 	return out
 }
 
-// seekSequence returns the smallest index ≥ start where pattern aligns
-// with haystack, or -1. An empty pattern is allowed and anchors at start
-// (used by pure-add hunks at the top of a file or with EOF anchor).
+// searchSequence 返回模式对齐处的最小索引 ≥ start
+// 与干草堆，或-1。允许使用空模式并在开始处锚定
+// （由文件顶部的纯添加块使用或与 EOF 锚一起使用）。
 func seekSequence(haystack, pattern []string, start int) int {
 	if len(pattern) == 0 {
 		if start <= len(haystack) {
@@ -341,17 +341,17 @@ func linesEqual(haystack []string, start int, pattern []string) bool {
 	return true
 }
 
-// findHunkAnchor locates a hunk's pattern in `lines`, trying progressively
-// more lenient transforms: identity → rstrip → full trim → Unicode
-// normalisation. EOF-anchored hunks prefer end-of-file alignment but fall
-// back to a forward scan from searchFrom (matches Codex's seek_sequence).
-// Returns -1 when no transform finds a match.
+// findHunkAnchor 在“lines”中定位一个帅哥的模式，逐步尝试
+// 更宽松的转换：identity→rstrip→fulltrim→Unicode
+// 正常化。 EOF 锚定的帅哥更喜欢文件尾对齐，但会失败
+// 返回到从 searchFrom 开始的正向扫描（与 Codex 的eek_sequence 匹配）。
+// 当没有转换找到匹配项时返回 -1。
 //
-// Transforms are line-by-line and don't change the line count, so the
-// returned index is valid against the original `lines` array. Callers
-// pass that index to buildReplacement so context lines are sourced from
-// the file's actual (un-normalised) text — fuzzy matching tolerates
-// glyph differences without rewriting them.
+// 转换是逐行进行的，不会改变行数，因此
+// 返回的索引对于原始“lines”数组有效。来电者
+// 将该索引传递给 buildReplacement，以便上下文行源自
+// 文件的实际（非标准化）文本 - 允许模糊匹配
+// 字形差异而无需重写它们。
 func findHunkAnchor(lines, pattern []string, anchorEOF bool, searchFrom int) int {
 	transforms := []func(string) string{
 		nil,               // identity
@@ -372,7 +372,7 @@ func findHunkAnchor(lines, pattern []string, anchorEOF bool, searchFrom int) int
 			if start >= 0 && linesEqual(tl, start, tp) {
 				return start
 			}
-			// EOF position miss → forward scan, matching Codex behavior.
+			// EOF 位置缺失→向前扫描，匹配 Codex 行为。
 		}
 		if idx := seekSequence(tl, tp, searchFrom); idx >= 0 {
 			return idx
@@ -393,11 +393,11 @@ func rstripWS(s string) string {
 	return strings.TrimRightFunc(s, unicode.IsSpace)
 }
 
-// normalizeForFuzzy maps typographic glyphs that LLMs (or auto-correct
-// editors) frequently substitute for their ASCII counterparts. After
-// mapping, the line is also fully trimmed so this level subsumes the
-// trim level when the difference happens to be both whitespace and
-// glyphs. Mirrors the Unicode mapping in Codex's seek_sequence.
+// NormalizeForFuzzy 映射 LLM（或自动更正）的印刷字形
+// 编辑器）经常替换其 ASCII 对应项。后
+// 映射时，该线也被完全修剪，因此该级别包含
+// 当差异恰好是空白和
+// 字形。镜像 Codex 的eek_sequence 中的 Unicode 映射。
 func normalizeForFuzzy(s string) string {
 	if isASCII(s) {
 		return strings.TrimSpace(s)
@@ -406,18 +406,18 @@ func normalizeForFuzzy(s string) string {
 	sb.Grow(len(s))
 	for _, r := range s {
 		switch r {
-		// Dashes & hyphens (en/em/figure/non-breaking/minus/small/fullwidth).
+		// 破折号和连字符（en/em/figure/non-break/minus/small/fullwidth）。
 		case '‐', '‑', '‒', '–', '—', '―',
 			'−', '﹘', '﹣', '－':
 			sb.WriteByte('-')
-		// Single quotes / apostrophes (left, right, low, high-reversed).
+		// 单引号/撇号（左、右、低位、高位反转）。
 		case '‘', '’', '‚', '‛':
 			sb.WriteByte('\'')
-		// Double quotes (left, right, low, high-reversed).
+		// 双引号（左、右、低位、高位反转）。
 		case '“', '”', '„', '‟':
 			sb.WriteByte('"')
-		// Various spaces (NBSP, figure, punctuation, thin, hair, narrow
-		// no-break, medium math, ideographic).
+		// 各种空格（NBSP、图形、标点符号、细、头发、窄
+		// 不间断、中等数学、表意文字）。
 		case ' ', ' ', ' ', ' ', ' ',
 			' ', ' ', '　':
 			sb.WriteByte(' ')
@@ -438,7 +438,7 @@ func isASCII(s string) bool {
 }
 
 // -----------------------------------------------------------------------------
-// Tool description / schema
+// 工具描述/架构
 // -----------------------------------------------------------------------------
 
 const applyPatchDescription = `Apply a multi-file patch in OpenAI Codex DSL format. Use this instead of chained edit_file/write_file calls when a change touches ≥2 files or ≥2 hunks — one tool call performs every edit atomically (parse + hunk matching happens for every file before any write; if any hunk fails to anchor, NO file is modified).
@@ -486,7 +486,7 @@ type applyPatchArgs struct {
 }
 
 // -----------------------------------------------------------------------------
-// Backend helpers — host filesystem mode (mirrors registerFile's routing)
+// 后端助手 — 主机文件系统模式（镜像 registerFile 的路由）
 // -----------------------------------------------------------------------------
 
 func (r *Registry) readForPatch(ctx context.Context, path string) (string, error) {
@@ -539,9 +539,9 @@ func (r *Registry) writeForPatch(ctx context.Context, path, content string) erro
 		if err := r.systemFileStore.SaveWorkspaceFile(ctx, r.agentID, r.systemFileUserID(name), name, []byte(content)); err != nil {
 			return err
 		}
-		// Mirror to disk so this pod's in-process readers (context builder,
-		// skills loader) see the new content immediately. Same invariant as
-		// makeWriteFile.
+		// 镜像到磁盘，以便该 Pod 的进程内读取器（上下文生成器、
+		// 技能加载器）立即看到新内容。与以下相同的不变量
+		// makeWriteFile。
 		if r.systemRoot != "" {
 			disk := filepath.Join(r.systemRoot, name)
 			_ = os.MkdirAll(filepath.Dir(disk), 0o755)
@@ -564,10 +564,10 @@ func (r *Registry) writeForPatch(ctx context.Context, path, content string) erro
 }
 
 func (r *Registry) deleteForPatch(ctx context.Context, path string) error {
-	// Identity files refuse Delete: systemFileStore has no Delete API and
-	// these files have a fixed slot — clearing them via Delete would
-	// corrupt the agent. Use Update File with empty target content
-	// instead.
+	// 身份文件拒绝删除：systemFileStore没有删除API并且
+	// 这些文件有一个固定的槽 - 通过删除清除它们
+	// 腐败代理人。使用目标内容为空的更新文件
+	// 反而。
 	if isSingleSegmentSystemFile(path) {
 		return fmt.Errorf("apply_patch: refusing to delete identity file %q (use Update File with empty content instead)", path)
 	}
@@ -586,7 +586,7 @@ func (r *Registry) deleteForPatch(ctx context.Context, path string) error {
 }
 
 // -----------------------------------------------------------------------------
-// Backend helpers — sandbox mode (mirrors registerSandboxedFile's routing)
+// 后端助手——沙箱模式（镜像registerSandboxedFile的路由）
 // -----------------------------------------------------------------------------
 
 func (r *Registry) readForPatchSandbox(ctx context.Context, ex sandbox.Executor, path string) (string, error) {
@@ -606,7 +606,7 @@ func (r *Registry) readForPatchSandbox(ctx context.Context, ex sandbox.Executor,
 				return string(data), nil
 			}
 		}
-		// Fall through to executor on store miss / read error.
+		// 发生存储丢失/读取错误时，会落入执行程序。
 	}
 	return ex.ReadFile(ctx, path)
 }
@@ -631,16 +631,16 @@ func (r *Registry) deleteForPatchSandbox(ctx context.Context, ex sandbox.Executo
 	if r.workspaceStore != nil && r.agentID != "" && r.isWorkspacePath(path) {
 		return r.workspaceStore.Delete(ctx, r.agentID, r.projectID, r.sessionID, path)
 	}
-	// Sandbox executor exposes no Delete API; fall back to `rm`. Single-quote
-	// the path and escape embedded single quotes so a pathological filename
-	// can't inject shell.
+	// 沙盒执行器不公开删除 API；回到“rm”。单引号
+	// 路径和转义嵌入单引号，因此是病态的文件名
+	// 无法注入shell。
 	q := "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
 	_, err := ex.Exec(ctx, "rm -f -- "+q, 0)
 	return err
 }
 
 // -----------------------------------------------------------------------------
-// Tool registration
+// 工具注册
 // -----------------------------------------------------------------------------
 
 func registerApplyPatch(r *Registry) {
@@ -675,15 +675,15 @@ func registerSandboxedApplyPatch(r *Registry, ex sandbox.Executor) {
 	})
 }
 
-// runApplyPatch is the storage-agnostic engine. Phase 1: parse and compute
-// every file's new content / planned deletes in memory. Phase 2: only after
-// all hunks anchor successfully, flush writes (then deletes — Move source
-// goes last so the destination is in place before its old slot is freed).
+// runApplyPatch 是与存储无关的引擎。第一阶段：解析和计算
+// 每个文件的新内容/计划在内存中删除。第 2 阶段：仅在之后
+// 所有帅哥锚定成功，刷新写入（然后删除 - 移动源
+// 最后走，以便在释放旧插槽之前目的地已就位）。
 //
-// Phase-2 errors leak partial state (one file written, the next failed);
-// the agent can re-emit the patch after fixing the underlying cause
-// (permissions, disk full, ...). Cross-backend transactional rollback is
-// not attempted — it would require snapshotting every touched store.
+// 第 2 阶段错误泄漏部分状态（一个文件写入，下一个文件失败）；
+// 修复根本原因后，代理可以重新发出补丁
+// （权限、磁盘已满，...）。跨后端事务回滚是
+// 没有尝试过——这需要对每个受影响的商店进行快照。
 func runApplyPatch(
 	ctx context.Context,
 	input string,
@@ -714,11 +714,11 @@ func runApplyPatch(
 			if op.Path == "" {
 				return "", errors.New("apply_patch: Delete File requires a non-empty path")
 			}
-			// Identity files have a fixed slot in the systemFileStore and
-			// no Delete API; allowing Delete here would corrupt the agent.
-			// Refuse at the engine level so backend del() doesn't have to
-			// repeat the rule (defense-in-depth still does in
-			// deleteForPatch / deleteForPatchSandbox).
+			// 身份文件在 systemFileStore 中有一个固定的槽，并且
+			// 无删除API；允许在此处删除会损坏代理。
+			// 在引擎级别拒绝，因此后端 del() 不必
+			// 重复规则（纵深防御仍然适用）
+			// 删除ForPatch /删除ForPatchSandbox）。
 			if isSingleSegmentSystemFile(op.Path) {
 				return "", fmt.Errorf("apply_patch: refusing to delete identity file %q (use Update File with empty content instead)", op.Path)
 			}

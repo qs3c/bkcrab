@@ -10,12 +10,11 @@ data:
   BKCLAW_STORAGE_TYPE: {{ include "bkclaw.storageType" . | quote }}
   BKCLAW_STORAGE_AUTO_MIGRATE: "true"
   {{- with .Values.timezone }}
-  ## Server default timezone — last fallback after chatter / agent /
-  ## system prefs.
+  ## 服务器默认时区 — 聊天/agent/系统偏好之后的最后回退。
   TZ: {{ . | quote }}
   {{- end }}
 
-  ## Object store
+  ## 对象存储
   BKCLAW_OBJECT_STORE_TYPE: {{ .Values.objectStore.type | quote }}
   {{- with .Values.objectStore.bucket }}
   BKCLAW_OBJECT_STORE_BUCKET: {{ . | quote }}
@@ -37,7 +36,7 @@ data:
   BKCLAW_OBJECT_STORE_ALIYUN_INTERNAL: "true"
   {{- end }}
 
-  ## Sandbox
+  ## 沙箱
   {{- if .Values.sandbox.enabled }}
   BKCLAW_SANDBOX_BACKEND: {{ .Values.sandbox.backend | quote }}
   {{- with .Values.sandbox.image }}

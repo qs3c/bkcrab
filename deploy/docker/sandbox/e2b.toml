@@ -1,10 +1,10 @@
-# This is a config for E2B sandbox template.
-# You can use template ID (95m23hiiqsx9u65ayuvo) or template name (bkclaw-sandbox) to create a sandbox:
+# 这是 E2B 沙箱模板的配置。
+# 你可以使用模板 ID (95m23hiiqsx9u65ayuvo) 或模板名称 (bkclaw-sandbox) 来创建沙箱：
 
 # Python SDK
 # from e2b import Sandbox, AsyncSandbox
-# sandbox = Sandbox.create("bkclaw-sandbox") # Sync sandbox
-# sandbox = await AsyncSandbox.create("bkclaw-sandbox") # Async sandbox
+# sandbox = Sandbox.create("bkclaw-sandbox") # 同步沙箱
+# sandbox = await AsyncSandbox.create("bkclaw-sandbox") # 异步沙箱
 
 # JS SDK
 # import { Sandbox } from 'e2b'

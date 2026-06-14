@@ -9,7 +9,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/policy"
 )
 
-// policyCmd handles policy management subcommands.
+// policyCmd 处理策略管理子命令。
 func policyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "policy",

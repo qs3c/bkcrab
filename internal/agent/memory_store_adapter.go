@@ -6,11 +6,10 @@ import (
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
-// MemoryStoreAdapter exposes the agent's identity + memory files via the
-// underlying store. Reads pass userID through so the per-user override
-// row wins when present (USER.md / MEMORY.md the agent autopersisted
-// for that chatter); writes also carry userID so chat-time updates land
-// in the chatter's row, never the shared template.
+// MemoryStoreAdapter 通过底层存储暴露代理的身份和内存文件。
+// 读取传递 userID，使每个用户的覆盖行在存在时获胜（代理为该聊天者
+// 自动持久化的 USER.md / MEMORY.md）；写入也携带 userID，使聊天时的
+// 更新落在聊天者的行中，绝不会落入共享模板。
 type MemoryStoreAdapter struct {
 	st store.Store
 }
@@ -21,9 +20,9 @@ func NewMemoryStoreAdapter(st store.Store) *MemoryStoreAdapter {
 
 const memoryFilename = "MEMORY.md"
 
-// GetMemory uses the *Exact* (no owner-fallback) variant deliberately.
-// MEMORY.md is per-chatter — a public-link visitor must not inherit the
-// agent owner's accumulated memories of past conversations.
+// GetMemory 故意使用 *Exact*（无所有者回退）变体。
+// MEMORY.md 是每个聊天者的——公共链接访问者不得继承代理所有者积攒的
+// 过去对话记忆。
 func (a *MemoryStoreAdapter) GetMemory(ctx context.Context, agentID, userID string) (string, error) {
 	data, err := a.st.GetAgentFileExact(ctx, agentID, userID, memoryFilename)
 	if err != nil {
@@ -36,17 +35,15 @@ func (a *MemoryStoreAdapter) SaveMemory(ctx context.Context, agentID, userID, co
 	return a.st.SaveAgentFile(ctx, agentID, userID, memoryFilename, []byte(content))
 }
 
-// GetWorkspaceFile keeps the owner-fallback overlay because the
-// ContextBuilder uses this method for shared identity files
-// (SOUL/IDENTITY/AGENTS/BOOTSTRAP/HEARTBEAT/TOOLS). Chatters inheriting
-// the owner's identity is the desired behavior there.
+// GetWorkspaceFile 保留所有者回退覆盖层，因为 ContextBuilder 对共享
+// 身份文件（SOUL/IDENTITY/AGENTS/BOOTSTRAP/HEARTBEAT/TOOLS）使用此方法。
+// 聊天者继承所有者的身份在那里是期望的行为。
 func (a *MemoryStoreAdapter) GetWorkspaceFile(ctx context.Context, agentID, userID, filename string) ([]byte, error) {
 	return a.st.GetAgentFile(ctx, agentID, userID, filename)
 }
 
-// GetWorkspaceFileExact bypasses the owner-fallback overlay. Used for
-// per-chatter files (USER.md) so a fresh visitor sees an empty profile
-// instead of the owner's.
+// GetWorkspaceFileExact 绕过所有者回退覆盖层。用于每个聊天者的文件
+// （USER.md），使新访客看到空白的个人资料而不是所有者的。
 func (a *MemoryStoreAdapter) GetWorkspaceFileExact(ctx context.Context, agentID, userID, filename string) ([]byte, error) {
 	return a.st.GetAgentFileExact(ctx, agentID, userID, filename)
 }

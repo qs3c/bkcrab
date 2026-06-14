@@ -12,8 +12,8 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// OpenAI posts to /v1/audio/speech. Model (e.g. "openai/tts-1") defaults to
-// "tts-1". Voice defaults to "alloy".
+// OpenAI 向 /v1/audio/speech 发送请求。模型（如 "openai/tts-1"）默认为 "tts-1"。
+// 语音默认为 "alloy"。
 type OpenAI struct{}
 
 func (OpenAI) Category() string { return Category }

@@ -10,7 +10,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 )
 
-// TaskStatus represents the current state of a task.
+// TaskStatus 表示任务的当前状态。
 type TaskStatus string
 
 const (
@@ -20,12 +20,12 @@ const (
 	TaskFailed  TaskStatus = "failed"
 )
 
-// Task represents a unit of work to be processed.
+// Task 表示一个待处理的工作单元。
 type Task struct {
 	ID          string
 	AgentID     string
-	OwnerUserID string // owner of the agent (for user-space lookup)
-	ChatKey     string // channel:chatID — serialization key
+	OwnerUserID string // 代理的所有者（用于用户空间查找）
+	ChatKey     string // channel:chatID — 序列化键
 	Message     bus.InboundMessage
 	AccountID   string
 	Status      TaskStatus
@@ -36,32 +36,32 @@ type Task struct {
 	Error       error
 }
 
-// TaskHandler processes a task and returns a result or error.
+// TaskHandler 处理任务并返回结果或错误。
 type TaskHandler func(ctx context.Context, task *Task) (string, error)
 
-// chatQueue is a per-chat FIFO queue with its own processing goroutine.
+// chatQueue 是每个聊天独立的 FIFO 队列，拥有自己的处理 goroutine。
 type chatQueue struct {
 	ch       chan *Task
 	lastUsed time.Time
 }
 
-// Queue manages task submission, per-chat serialization, and global concurrency.
+// Queue 管理任务提交、聊天级别串行化和全局并发控制。
 type Queue struct {
 	maxConcurrent int
 	taskTimeout   time.Duration
 	idleTimeout   time.Duration
 
 	mu         sync.Mutex
-	tasks      map[string]*Task      // taskID -> Task
-	chatQueues map[string]*chatQueue // chatKey -> chatQueue
-	sem        chan struct{}         // counting semaphore for global concurrency
+	tasks      map[string]*Task      // taskID -> 任务
+	chatQueues map[string]*chatQueue // chatKey -> 聊天队列
+	sem        chan struct{}         // 全局并发的计数信号量
 	handler    TaskHandler
-	seq        uint64 // task ID sequence
+	seq        uint64 // 任务 ID 序列号
 	ctx        context.Context
 	cancel     context.CancelFunc
 }
 
-// NewQueue creates a new task queue.
+// NewQueue 创建一个新的任务队列。
 func NewQueue(maxConcurrent int, taskTimeout time.Duration, handler TaskHandler) *Queue {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 10
@@ -84,13 +84,13 @@ func NewQueue(maxConcurrent int, taskTimeout time.Duration, handler TaskHandler)
 		cancel:        cancel,
 	}
 
-	// Start idle cleanup goroutine
+	// 启动空闲清理 goroutine
 	go q.cleanupIdleQueues()
 
 	return q
 }
 
-// Submit adds a task to the queue for processing.
+// Submit 将任务添加到队列中等待处理。
 func (q *Queue) Submit(agentID, chatKey string, msg bus.InboundMessage, accountID string) string {
 	q.mu.Lock()
 
@@ -116,7 +116,7 @@ func (q *Queue) Submit(agentID, chatKey string, msg bus.InboundMessage, accountI
 			lastUsed: time.Now(),
 		}
 		q.chatQueues[chatKey] = cq
-		// Start a processing goroutine for this chat
+		// 为该聊天启动处理 goroutine
 		go q.processChatQueue(chatKey, cq)
 	}
 	cq.lastUsed = time.Now()
@@ -139,7 +139,7 @@ func (q *Queue) Submit(agentID, chatKey string, msg bus.InboundMessage, accountI
 	return taskID
 }
 
-// processChatQueue drains tasks for a single chat, running them serially.
+// processChatQueue 从单个聊天的队列中取出任务，串行执行。
 func (q *Queue) processChatQueue(chatKey string, cq *chatQueue) {
 	for {
 		select {
@@ -158,9 +158,9 @@ func (q *Queue) processChatQueue(chatKey string, cq *chatQueue) {
 	}
 }
 
-// executeTask runs a single task with concurrency control and timeout.
+// executeTask 运行单个任务，带并发控制和超时。
 func (q *Queue) executeTask(task *Task) {
-	// Acquire global semaphore
+	// 获取全局信号量
 	select {
 	case q.sem <- struct{}{}:
 	case <-q.ctx.Done():
@@ -168,7 +168,7 @@ func (q *Queue) executeTask(task *Task) {
 	}
 	defer func() { <-q.sem }()
 
-	// Mark running
+	// 标记为运行中
 	now := time.Now()
 	q.mu.Lock()
 	task.Status = TaskRunning
@@ -183,7 +183,7 @@ func (q *Queue) executeTask(task *Task) {
 		"concurrent_count", concurrent,
 	)
 
-	// Create timeout context
+	// 创建超时上下文
 	ctx, cancel := context.WithTimeout(q.ctx, q.taskTimeout)
 	defer cancel()
 
@@ -221,7 +221,7 @@ func (q *Queue) executeTask(task *Task) {
 	}
 }
 
-// cleanupIdleQueues removes chat queues that have been idle too long.
+// cleanupIdleQueues 移除空闲时间过长的聊天队列。
 func (q *Queue) cleanupIdleQueues() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
@@ -245,7 +245,7 @@ func (q *Queue) cleanupIdleQueues() {
 	}
 }
 
-// RecentTasks returns recent tasks for observability, newest first.
+// RecentTasks 返回最近的任务以供可观测性查看，最新的在前。
 func (q *Queue) RecentTasks(limit int) []*Task {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -255,7 +255,7 @@ func (q *Queue) RecentTasks(limit int) []*Task {
 		all = append(all, t)
 	}
 
-	// Sort newest first
+	// 按最新时间排序
 	for i := 0; i < len(all); i++ {
 		for j := i + 1; j < len(all); j++ {
 			if all[j].CreatedAt.After(all[i].CreatedAt) {
@@ -268,7 +268,7 @@ func (q *Queue) RecentTasks(limit int) []*Task {
 		all = all[:limit]
 	}
 
-	// Prune old completed tasks (keep last 200)
+	// 清理旧的已完成任务（保留最近 200 个）
 	if len(q.tasks) > 200 {
 		go q.pruneOldTasks()
 	}
@@ -276,7 +276,7 @@ func (q *Queue) RecentTasks(limit int) []*Task {
 	return all
 }
 
-// pruneOldTasks removes completed tasks beyond the retention limit.
+// pruneOldTasks 移除超出保留限制的已完成任务。
 func (q *Queue) pruneOldTasks() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -285,7 +285,7 @@ func (q *Queue) pruneOldTasks() {
 		return
 	}
 
-	// Collect completed tasks sorted by creation time
+	// 收集已完成任务并按创建时间排序
 	type entry struct {
 		id        string
 		createdAt time.Time
@@ -297,7 +297,7 @@ func (q *Queue) pruneOldTasks() {
 		}
 	}
 
-	// Sort oldest first
+	// 按最早时间排序
 	for i := 0; i < len(completed); i++ {
 		for j := i + 1; j < len(completed); j++ {
 			if completed[j].createdAt.Before(completed[i].createdAt) {
@@ -306,14 +306,14 @@ func (q *Queue) pruneOldTasks() {
 		}
 	}
 
-	// Remove oldest completed tasks to get below 200
+	// 移除最早的已完成任务，使总数低于 200
 	toRemove := len(q.tasks) - 200
 	for i := 0; i < toRemove && i < len(completed); i++ {
 		delete(q.tasks, completed[i].id)
 	}
 }
 
-// Stop shuts down the queue.
+// Stop 关闭队列。
 func (q *Queue) Stop() {
 	q.cancel()
 }

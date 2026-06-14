@@ -11,11 +11,10 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// Jina calls r.jina.ai, which proxies an arbitrary URL and returns
-// LLM-friendly markdown. The free tier works without a key but is rate
-// limited; an API key (Bearer) raises the quota. We mark this provider as
-// CredentialFree so admins can use it key-less from the dashboard, and
-// pass the key through as a Bearer token when one is configured.
+// Jina 调用 r.jina.ai，它代理任意 URL 并返回对 LLM 友好的 markdown。
+// 免费层级无需密钥即可使用但有速率限制；API 密钥（Bearer）可提高配额。
+// 我们将此提供商标记为 CredentialFree，以便管理员可以从仪表盘无密钥使用，
+// 并在配置了密钥时将其作为 Bearer 令牌传递。
 type Jina struct{}
 
 func (Jina) Category() string     { return Category }
@@ -35,8 +34,8 @@ func (j *Jina) Execute(ctx context.Context, req toolproviders.Request) (toolprov
 	ctx, cancel := context.WithTimeout(ctx, jinaTimeout)
 	defer cancel()
 
-	// r.jina.ai expects the target URL appended verbatim (not query-
-	// escaped) — query-escaping breaks their router and yields 4xx.
+	// r.jina.ai 期望目标 URL 原样追加（不进行查询转义）——
+	// 查询转义会破坏其路由器并导致 4xx 错误。
 	target := jinaBase + strings.TrimSpace(a.URL)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
@@ -65,7 +64,6 @@ func (j *Jina) Execute(ctx context.Context, req toolproviders.Request) (toolprov
 	if err != nil {
 		return toolproviders.Response{}, toolproviders.Retry(fmt.Errorf("jina read: %w", err))
 	}
-	// Jina already returns clean markdown — no HTML stripping needed,
-	// just truncate to the caller's cap.
+	// Jina 已返回干净的 markdown——无需剥离 HTML，只需截断到调用方的上限。
 	return toolproviders.Response{Text: truncate(strings.TrimSpace(string(body)), a.MaxLen)}, nil
 }

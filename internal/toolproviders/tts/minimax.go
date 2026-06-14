@@ -12,9 +12,9 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// MiniMax posts to /v1/t2a_v2. Model defaults to "speech-02-hd". Voice is
-// the "voice_id" MiniMax expects (e.g. "male-qn-qingse"). The API returns
-// hex-encoded audio bytes in data.audio.
+// MiniMax 向 /v1/t2a_v2 发送请求。模型默认为 "speech-02-hd"。
+// Voice 是 MiniMax 期望的 "voice_id"（例如 "male-qn-qingse"）。
+// API 在 data.audio 中返回十六进制编码的音频字节。
 type MiniMax struct{}
 
 func (MiniMax) Category() string { return Category }
@@ -81,7 +81,7 @@ func (m *MiniMax) Execute(ctx context.Context, req toolproviders.Request) (toolp
 	}
 	var out struct {
 		Data struct {
-			Audio string `json:"audio"` // hex-encoded
+			Audio string `json:"audio"` // 十六进制编码
 		} `json:"data"`
 		BaseResp struct {
 			StatusCode int    `json:"status_code"`

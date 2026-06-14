@@ -9,11 +9,10 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// pluginProvider wraps a {plugin, category, name} triple as a
-// toolproviders.Provider. Each call round-trips a JSON-RPC message to the
-// plugin subprocess, so Execute is slower than an in-process provider —
-// fine for occasional/custom providers, intentionally not used for
-// high-volume defaults.
+// pluginProvider 将 {plugin, category, name} 三元组包装为
+// toolproviders.Provider。每次调用都会通过 JSON-RPC 消息往返到
+// 插件子进程，因此 Execute 比进程内提供者慢——
+// 适用于偶尔/自定义的提供者，有意不用于高频率的默认场景。
 type pluginProvider struct {
 	mgr      *Manager
 	pluginID string
@@ -38,8 +37,8 @@ func (p *pluginProvider) Execute(ctx context.Context, req toolproviders.Request)
 	}
 	res, err := p.mgr.ExecuteProvider(ctx, p.pluginID, params)
 	if err != nil {
-		// Network / plugin-level errors are always retriable — another
-		// provider in the chain may still succeed.
+		// 网络/插件级别的错误始终可重试——链中的另一个
+		// 提供者仍可能成功。
 		return toolproviders.Response{}, toolproviders.Retry(fmt.Errorf("plugin %s: %w", p.pluginID, err))
 	}
 	if res.Error != "" {
@@ -55,13 +54,12 @@ func (p *pluginProvider) Execute(ctx context.Context, req toolproviders.Request)
 	return toolproviders.Response{Text: res.Text}, nil
 }
 
-// RegisterPluginProviders asks every running tool plugin which provider
-// slots it fills and registers each one in reg. Conflicts (same
-// category/name already registered) replace the earlier entry, so plugins
-// can intentionally override built-ins.
+// RegisterPluginProviders 询问每个正在运行的工具插件它填充了哪些提供者
+// 槽位，并在 reg 中注册每个槽位。冲突（相同 category/name 已注册）
+// 会替换较早的条目，因此插件可以有意图地覆盖内置提供者。
 //
-// Plugins that don't implement provider.list are harmless no-ops: the
-// ListProviders helper swallows the "unknown method" error.
+// 未实现 provider.list 的插件是无害的空操作：
+// ListProviders 辅助函数会吞掉"未知方法"错误。
 func RegisterPluginProviders(ctx context.Context, mgr *Manager, reg *toolproviders.Registry) {
 	if mgr == nil || reg == nil {
 		return

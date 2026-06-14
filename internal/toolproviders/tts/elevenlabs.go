@@ -12,18 +12,17 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// ElevenLabs posts to /v1/text-to-speech/{voice_id} with the API key in the
-// non-standard `xi-api-key` header. Model (the suffix in
-// "elevenlabs/<model>") defaults to "eleven_multilingual_v2"; Voice defaults
-// to the long-standing built-in "Rachel" voice. Response is raw audio/mpeg.
+// ElevenLabs 向 /v1/text-to-speech/{voice_id} 发送请求，
+// API 密钥放在非标准的 `xi-api-key` 头中。
+// Model（"elevenlabs/<model>" 中的后缀）默认为 "eleven_multilingual_v2"；
+// Voice 默认为长期内置的 "Rachel" 语音。响应为原始 audio/mpeg。
 type ElevenLabs struct{}
 
 func (ElevenLabs) Category() string { return Category }
 func (ElevenLabs) Name() string     { return "elevenlabs" }
 
-// elevenLabsDefaultVoice is the voice_id used when the caller doesn't pass
-// one. "Rachel" is the canonical ElevenLabs sample voice and is available on
-// every account tier.
+// elevenLabsDefaultVoice 是调用方未传递 voice_id 时使用的默认值。
+// "Rachel" 是 ElevenLabs 的标准示例语音，在所有账户层级上均可用。
 const elevenLabsDefaultVoice = "21m00Tcm4TlvDq8ikWAM"
 
 func (e *ElevenLabs) Execute(ctx context.Context, req toolproviders.Request) (toolproviders.Response, error) {
@@ -57,7 +56,7 @@ func (e *ElevenLabs) Execute(ctx context.Context, req toolproviders.Request) (to
 		return toolproviders.Response{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	// ElevenLabs uses a custom auth header, not Bearer.
+	// ElevenLabs 使用自定义的认证头，而非 Bearer。
 	httpReq.Header.Set("xi-api-key", req.Config.APIKey)
 	httpReq.Header.Set("Accept", "audio/mpeg")
 

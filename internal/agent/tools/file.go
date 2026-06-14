@@ -34,9 +34,9 @@ type editFileArgs struct {
 	ReplaceAll bool   `json:"replace_all,omitempty"`
 }
 
-// editSchema is the JSON schema advertised for edit_file. Defined once and
-// reused by registerFile / registerSandboxedFile so the two registration
-// paths can't drift on parameter shape.
+// editSchema 是为 edit_file 公布的 JSON 模式。定义一次并且
+// 由 registerFile / registerSandboxedFile 重用，因此两个注册
+// 路径不能随参数形状而漂移。
 var editSchema = map[string]interface{}{
 	"type": "object",
 	"properties": map[string]interface{}{
@@ -62,14 +62,14 @@ var editSchema = map[string]interface{}{
 
 const editDescription = "Edit a file by replacing an exact substring. Prefer this over write_file when changing only part of a file (especially identity files like SOUL.md / MEMORY.md): it's cheaper, can't drop unrelated content, and validates the replacement was applied. old_string must match a unique substring unless replace_all is true; new_string must differ from old_string. Read the file first if you're unsure of the exact text."
 
-// validateFileTargetPath rejects path arguments to write-like ops that
-// can't refer to a single file. Empty strings, directory-suffix paths
-// ("foo/"), and the special directory aliases (".", "..", "/") all slip
-// through the downstream routing (isWorkspacePath treats "" as workspace-
-// scoped because filepath.Clean("") == ".") and end up at os.OpenFile on
-// the session directory, surfacing a cryptic "is a directory" error.
-// Refusing early gives the model an actionable, tool-shaped message
-// instead.
+// validateFileTargetPath 拒绝类似写入操作的路径参数
+// 无法引用单个文件。空字符串、目录后缀路径
+// （“foo/”）和特殊目录别名（“.”、“..”、“/”）全部消失
+// 通过下游路由（isWorkspacePath 将“”视为工作空间-
+// 范围是因为 filepath.Clean("") == ".") 并最终在 os.OpenFile 上
+// 会话目录，出现一个神秘的“是一个目录”错误。
+// 尽早拒绝为模型提供了可操作的工具形信息
+// 反而。
 func validateFileTargetPath(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("path is required and must include a filename")
@@ -84,10 +84,10 @@ func validateFileTargetPath(path string) error {
 	return nil
 }
 
-// asIsDirToolError detects the "is a directory" failure mode (raised when
-// a write/edit resolves to an existing directory rather than a file) and
-// promotes it to a tool-level message the model can recover from. Falls
-// back to the caller's wrapped error otherwise.
+// asIsDirToolError 检测到“是目录”故障模式（在以下情况下引发）
+// 写入/编辑解析为现有目录而不是文件）和
+// 将其提升为模型可以从中恢复的工具级消息。瀑布
+// 否则返回调用者的包装错误。
 func asIsDirToolError(opName, path string, err error) error {
 	if err != nil && strings.Contains(err.Error(), "is a directory") {
 		return fmt.Errorf("%s: %q resolves to a directory; include a filename in the path", opName, path)
@@ -95,11 +95,11 @@ func asIsDirToolError(opName, path string, err error) error {
 	return nil
 }
 
-// applyEdit performs the in-memory string replacement that backs edit_file.
-// Centralised so every backend (filesystem, workspaceStore, systemFileStore,
-// sandbox executor) shares the same uniqueness / not-found / no-op rules.
-// Returns the new content and a count of replacements; an error if the edit
-// can't be applied as requested.
+// applyEdit 执行支持 edit_file 的内存中字符串替换。
+// 集中化，因此每个后端（文件系统、workspaceStore、systemFileStore、
+// 沙箱执行器）具有相同的唯一性/未找到/无操作规则。
+// 返回新内容和替换内容的计数；如果编辑则出错
+// 无法按要求申请。
 func applyEdit(path, content, oldStr, newStr string, replaceAll bool) (string, int, error) {
 	if oldStr == "" {
 		return "", 0, fmt.Errorf("edit_file: old_string is empty (use write_file to create a file)")
@@ -122,21 +122,21 @@ func applyEdit(path, content, oldStr, newStr string, replaceAll bool) (string, i
 
 var errOutsideSandbox = fmt.Errorf("access denied: path is outside the allowed sandbox directory")
 
-// globalSkillsDirSuffix is used to detect attempts to write into the
-// admin-managed global skills directory (~/.bkclaw/skills/). Reads are
-// fine — the skills layer already exposes this content — but writes from
-// chat would let agents silently install/overwrite skills for every other
-// agent on the host.
+// globalSkillsDirSuffix 用于检测写入的尝试
+// 管理员管理的全局技能目录（~/.bkclaw/skills/）。读取的内容是
+// 很好——技能层已经暴露了这个内容——但是从
+// 聊天可以让特工默默地安装/覆盖其他人的技能
+// 主机上的代理。
 const globalSkillsDirSuffix = "/.bkclaw/skills"
 
-// errGlobalSkillsDirWrite is returned when write_file targets
-// ~/.bkclaw/skills/ from inside an agent chat. The message tells the model
-// exactly how to recover.
+// 当 write_file 目标时返回 errGlobalSkillsDirWrite
+// ~/.bkclaw/skills/ 来自代理聊天。该消息告诉模型
+// 具体如何恢复。
 var errGlobalSkillsDirWrite = fmt.Errorf("access denied: ~/.bkclaw/skills/ is the admin-managed global skills directory. To create a new skill, load the \"skill-creator\" skill and follow its workflow (it scaffolds into this agent's private skills dir). To install an existing one, use the install_skill tool")
 
-// systemFiles are the agent metadata/identity files. When a relative path
-// references one of these by basename, file tools resolve it against the
-// system root rather than the user root.
+// systemFiles 是代理元数据/身份文件。当相对路径
+// 通过基本名称引用其中之一，文件工具根据
+// 系统 root 而不是用户 root。
 var systemFiles = map[string]bool{
 	"SOUL.md":      true,
 	"IDENTITY.md":  true,
@@ -149,10 +149,10 @@ var systemFiles = map[string]bool{
 	"agent.json":   true,
 }
 
-// isWorkspacePath decides whether a write/read/list_dir path belongs in the
-// workspace store (vs. the agent's home / systemRoot on disk). Uses the same
-// rules as rootForPath: identity filenames, the `skills/` subtree, and
-// absolute paths stay on disk; everything else is workspace-scoped.
+// isWorkspacePath 决定 write/read/list_dir 路径是否属于
+// 工作区存储（相对于磁盘上代理的 home / systemRoot）。用途相同
+// 规则为 rootForPath：身份文件名、`skills/` 子树，以及
+// 绝对路径保留在磁盘上；其他一切都在工作空间范围内。
 func (r *Registry) isWorkspacePath(path string) bool {
 	if filepath.IsAbs(path) {
 		return false
@@ -167,42 +167,42 @@ func (r *Registry) isWorkspacePath(path string) bool {
 	return true
 }
 
-// hostHomePath returns the resolved absolute filesystem path when the
-// arg looks like an operator-host path the chatter wants to read/write,
-// and false otherwise. Three forms are recognised:
+// hostHomePath 返回已解析的绝对文件系统路径
+// arg 看起来像chatter想要读/写的操作员主机路径，
+// 否则为假。认可三种形式：
 //
-//	~                 → the operator's home dir
-//	~/<rel>           → joined under the operator's home dir
-//	/Users/<u>/...    → macOS-style absolute home roots
-//	/home/<u>/...     → Linux-style absolute home roots
+// ~ → 操作者的主目录
+// ~/<rel> → 加入到操作者的主目录下
+// /Users/<u>/... → macOS 风格的绝对根目录
+// /home/<u>/... → Linux 风格的绝对主根
 //
-// Used by the sandboxed file tools on SELF-HOSTED installs to route
-// requests like "read ~/Downloads/foo.csv" to actual host disk
-// instead of 404'ing inside the sandbox FS. Hosted (multi-tenant)
-// deployments deliberately don't call this — the chatter doesn't own
-// the daemon's filesystem so exposing it would be a privilege leak.
+// 由自托管安装上的沙盒文件工具用来路由
+// 诸如“read ~/Downloads/foo.csv”之类的请求到实际主机磁盘
+// 而不是沙盒 FS 内的 404'ing。托管（多租户）
+// 部署故意不这么称呼——聊天不拥有
+// 守护进程的文件系统，因此暴露它会导致权限泄漏。
 //
-// Returns ("", false) when the path is not a host-home reference, OR
-// when it falls under one of the BkClaw-managed roots
-// (~/.bkclaw/...) — those are runtime internals and should keep
-// flowing through their existing routing (workspaceStore, identity
-// store, etc.) so chat writes can't, say, smash the agents' DB file.
+// 当路径不是主机主目录引用时返回 ("", false)，或者
+// 当它落入 BkClaw 管理的根源之一时
+// (~/.bkclaw/...) — 这些是运行时内部结构，应该保留
+// 流经他们现有的路由（workspaceStore、身份
+// 存储等），因此聊天写入不能破坏代理的数据库文件。
 func hostHomePath(path string) (string, bool) {
 	if path == "" {
 		return "", false
 	}
 	if path == "~" || strings.HasPrefix(path, "~/") {
-		// Sandbox-only / BkClaw-internal subtrees: skip host expansion
-		// so the read/write falls through to the sandbox executor instead
-		// of trying (and failing) on host disk where the path doesn't
-		// exist. Symmetric to the absolute-path guard below.
-		//   ~/.bkclaw/... — runtime internals (db, workspaces, …)
-		//   ~/.agents/...   — sandbox bind-mount target for npx skills.
-		//                     Host has these at <BKCLAW_HOME>/users/<uid>/skills/,
-		//                     not under ~. After `ls ~/.agents/skills/<x>/` runs
-		//                     in-sandbox the model naturally calls
-		//                     read_file with the same path; that path only
-		//                     resolves inside the container.
+		// 仅沙箱/BkClaw 内部子树：跳过主机扩展
+		// 因此读/写会落入沙箱执行器
+		// 在路径不存在的主机磁盘上尝试（并失败）
+		// 存在。与下面的绝对路径防护对称。
+		// ~/.bkclaw/... — 运行时内部（数据库，工作区，...）
+		// ~/.agents/... — npx 技能的沙箱绑定挂载目标。
+		// 主机在 <BKCLAW_HOME>/users/<uid>/skills/ 中有这些，
+		// 不下～。 `ls ~/.agents/skills/<x>/` 运行后
+		// 在沙箱中模型自然调用
+		// read_file 具有相同的路径；仅那条路
+		// 在容器内解析。
 		if strings.HasPrefix(path, "~/.bkclaw") || strings.HasPrefix(path, "~/.agents") {
 			return "", false
 		}
@@ -219,9 +219,9 @@ func hostHomePath(path string) (string, bool) {
 		return "", false
 	}
 	if strings.HasPrefix(path, "/Users/") || strings.HasPrefix(path, "/home/") {
-		// Refuse BkClaw-internal subpaths even when the chatter
-		// reaches them via the host-home channel. Same guard as
-		// errGlobalSkillsDirWrite, broader scope.
+		// 即使在喋喋不休时也拒绝 BkClaw-内部子路径
+		// 通过主机家庭频道联系他们。与同一个后卫
+		// errGlobalSkillsDirWrite，范围更广。
 		if home, err := os.UserHomeDir(); err == nil {
 			bkclawDir := filepath.Join(home, ".bkclaw")
 			if path == bkclawDir || strings.HasPrefix(path, bkclawDir+string(filepath.Separator)) {
@@ -233,10 +233,10 @@ func hostHomePath(path string) (string, bool) {
 	return "", false
 }
 
-// isSkillPath reports whether path is a chat-time `skills/<name>/...`
-// write — the skill-creator convention. Absolute paths and the bare
-// `skills` segment don't qualify (the latter is a directory, not a
-// file write). Cleans the path so `skills/./foo/SKILL.md` matches.
+// isSkillPath 报告路径是否是聊天时 `skills/<name>/...`
+// write——技能创造者公约。绝对路径和裸路径
+// `skills` 段不符合条件（后者是一个目录，而不是一个
+// 文件写入）。清理路径，以便 `skills/./foo/SKILL.md` 匹配。
 func (r *Registry) isSkillPath(path string) bool {
 	if filepath.IsAbs(path) {
 		return false
@@ -245,9 +245,9 @@ func (r *Registry) isSkillPath(path string) bool {
 	return clean != "skills" && strings.HasPrefix(clean, "skills"+string(filepath.Separator))
 }
 
-// skillRoot returns the host parent of the `skills/` subdir that
-// chat-time skill writes should land in. Per-user when configured
-// (the chatter's personal bucket), agent home otherwise.
+// SkillRoot 返回“skills/”子目录的主机父目录
+// 聊天时技能写入应该落地。配置后按用户
+// （喋喋不休的个人桶），否则代理回家。
 func (r *Registry) skillRoot() string {
 	if r.userSkillsRoot != "" {
 		return r.userSkillsRoot
@@ -255,10 +255,10 @@ func (r *Registry) skillRoot() string {
 	return r.systemRoot
 }
 
-// skillStoreOwner returns the workspace.Store pseudo-owner key the
-// chat-created skill should mirror to. Per-user when userSkillsRoot
-// is set (so the skill follows the chatter across agents); agent ID
-// otherwise (legacy / single-user mode).
+// SkillStoreOwner 返回workspace.Store 伪所有者密钥
+// 聊天创建的技能应该镜像到。 userSkillsRoot 时按用户
+// 已设置（因此技能遵循代理之间的聊天）；代理 ID
+// 否则（传统/单用户模式）。
 func (r *Registry) skillStoreOwner() string {
 	if r.userSkillsRoot != "" && r.userID != "" {
 		return skills.UserSkillOwner(r.userID)
@@ -266,15 +266,15 @@ func (r *Registry) skillStoreOwner() string {
 	return r.agentID
 }
 
-// writeSkillToHost lands a chat-created `skills/<name>/<rel>` file on
-// host disk and mirrors it to the workspace store so SkillsLoader's
-// local scan and any sibling pod's hydrate both see it. Used by the
-// sandbox-mode write_file path (which would otherwise trap the file
-// inside the ephemeral sandbox FS) and by host-mode write_file as a
-// post-write store-sync hook.
+// writeSkillToHost 将聊天创建的 `skills/<name>/<rel>` 文件放置在
+// 主机磁盘并将其镜像到工作区存储，以便 SkillsLoader 的
+// 本地扫描和任何同级 pod 的水合物都可以看到它。使用者
+// 沙箱模式 write_file 路径（否则会捕获文件
+// 在临时沙箱 FS 内）并通过主机模式 write_file 作为
+// 写入后存储同步挂钩。
 //
-// The path arg must already pass isSkillPath. Returns the absolute
-// host path written so the caller can echo it back to the model.
+// 路径 arg 必须已通过 isSkillPath。返回绝对值
+// 写入主机路径，以便调用者可以将其回显给模型。
 func (r *Registry) writeSkillToHost(ctx context.Context, path, content string) (string, error) {
 	root := r.skillRoot()
 	if root == "" {
@@ -290,9 +290,9 @@ func (r *Registry) writeSkillToHost(ctx context.Context, path, content string) (
 	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		return "", fmt.Errorf("write file: %w", err)
 	}
-	// Mirror to the workspace store so a sibling pod (cloud deploy)
-	// hydrates the new skill on its next turn instead of waiting for
-	// pod restart. Best-effort; failures here don't unwrite the file.
+	// 镜像到工作区存储，以便成为同级 Pod（云部署）
+	// 在下一回合中吸收新技能，而不是等待
+	// 吊舱重新启动。尽力而为；这里的失败不会取消文件的写入。
 	if r.workspaceStore != nil {
 		if owner := r.skillStoreOwner(); owner != "" {
 			rel := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(path)), "skills/")
@@ -310,35 +310,35 @@ func (r *Registry) writeSkillToHost(ctx context.Context, path, content string) (
 	return full, nil
 }
 
-// rootForPath returns the root a relative path should resolve against:
-//   - systemRoot (agent home) for identity files (SOUL.md, IDENTITY.md, …);
-//   - userSkillsRoot (~/.bkclaw/users/<uid>/skills/) for `skills/...`
-//     writes when the chatter's user-skills dir is wired (default in
-//     multi-user installs). Routes here so chat-created skills accumulate
-//     in the chatter's personal bucket — shared across every agent they
-//     chat with, isolated from the agent owner's official skills and from
-//     other users on the same shared agent. Falls back to systemRoot when
-//     userSkillsRoot is empty (legacy / single-user installs);
-//   - userRoot (agent workspace) for everything else, which is user-facing
-//     artifact territory.
+// rootForPath 返回相对路径应解析的根：
+// - 身份文件的 systemRoot（代理主目录）（SOUL.md、IDENTITY.md，...）；
+// - userSkillsRoot (~/.bkclaw/users/<uid>/skills/) 用于“技能/...”
+// 当聊天者的用户技能目录连接时写入（默认为
+// 多用户安装）。在这里进行路由，以便积累聊天创建的技能
+// 在聊天者的个人存储桶中 - 与他们的每个代理共享
+// 聊天，与代理所有者的官方技能和隔离
+// 同一共享代理上的其他用户。回退到 systemRoot 时
+// userSkillsRoot 为空（旧版/单用户安装）；
+// - userRoot（代理工作区）用于其他所有内容，面向用户
+// 神器领地。
 //
-// Absolute paths are returned as-is.
+// 绝对路径按原样返回。
 func (r *Registry) rootForPath(path string) string {
 	if filepath.IsAbs(path) {
 		return ""
 	}
 	clean := filepath.Clean(path)
 	if clean == "skills" || strings.HasPrefix(clean, "skills"+string(filepath.Separator)) {
-		// Per-user bucket when configured, otherwise the agent home
-		// (legacy behavior). The leading `skills/` prefix is preserved
-		// in either case so SkillsLoader's scan picks it up.
+		// 配置时为每用户存储桶，否则为代理主页
+		// （遗留行为）。保留前导的“skills/”前缀
+		// 无论哪种情况，SkillsLoader 的扫描都会拾取它。
 		if r.userSkillsRoot != "" {
 			return r.userSkillsRoot
 		}
 		return r.systemRoot
 	}
-	// Single-segment system files (SOUL.md, IDENTITY.md, ...) also route
-	// home; nested paths like "notes/SOUL.md" stay in user content.
+	// 单段系统文件（SOUL.md，IDENTITY.md，...）也路由
+	// 家;像“notes/SOUL.md”这样的嵌套路径保留在用户内容中。
 	if !strings.ContainsRune(clean, filepath.Separator) && systemFiles[clean] {
 		return r.systemRoot
 	}
@@ -393,16 +393,16 @@ func resolvePath(root, path string) string {
 	return filepath.Clean(filepath.Join(root, path))
 }
 
-// isGlobalSkillsPath reports whether absPath points at or under the
-// admin-managed ~/.bkclaw/skills/ directory. Works across user home
-// locations by matching the stable suffix.
+// isGlobalSkillsPath 报告absPath 是否指向或低于
+// 管理员管理的 ~/.bkclaw/skills/ 目录。跨用户主页工作
+// 通过匹配 stable 后缀来定位位置。
 func isGlobalSkillsPath(absPath string) bool {
 	clean := filepath.Clean(absPath)
 	return strings.HasSuffix(clean, globalSkillsDirSuffix) || strings.Contains(clean, globalSkillsDirSuffix+string(filepath.Separator))
 }
 
-// resolvePathSandboxed resolves a path and validates that it stays within
-// sandboxRoot. Returns an error when the resolved path escapes.
+// resolvePathSandboxed 解析路径并验证它是否位于其中
+// 沙箱根。当解析的路径转义时返回错误。
 func resolvePathSandboxed(root, sandboxRoot, path string) (string, error) {
 	full := resolvePath(root, path)
 	if sandboxRoot == "" {
@@ -422,15 +422,15 @@ func resolvePathSandboxed(root, sandboxRoot, path string) (string, error) {
 	return absFull, nil
 }
 
-// effectiveSandboxRoot picks the bound that file ops should enforce for a
-// path resolving against `root`. Identity files (SOUL.md / IDENTITY.md /
-// …) live in r.systemRoot — agent home, OUTSIDE the workspace sandbox
-// mount — so the workspace sandbox bound would always reject them.
-// Confine system-file operations to systemRoot itself instead, which
-// keeps zip-slip-style escapes blocked without breaking the legitimate
-// "agent reads its own IDENTITY.md" flow when the systemFileStore lookup
-// misses (fresh agent, store not yet hydrated, no store configured at
-// all).
+// effectiveSandboxRoot 选择文件操作应强制执行的界限
+// 针对“root”解析的路径。身份文件（SOUL.md / IDENTITY.md /
+// ...) 住在 r.systemRoot — 代理主页，工作区沙箱之外
+// mount - 因此工作区沙箱绑定总是会拒绝它们。
+// 将系统文件操作限制在 systemRoot 本身，这
+// 在不破坏合法性的情况下保持拉链式逃逸被阻止
+// systemFileStore 查找时的“代理读取自己的 IDENTITY.md”流程
+// 未命中（新鲜试剂、尚未水化的存储、未配置存储
+// 全部）。
 func (r *Registry) effectiveSandboxRoot(root string) string {
 	if root == r.systemRoot && r.systemRoot != "" {
 		return r.systemRoot
@@ -438,15 +438,15 @@ func (r *Registry) effectiveSandboxRoot(root string) string {
 	return r.sandboxRoot
 }
 
-// looksBinary returns true when the payload contains a NUL byte in the
-// first 8KB — a near-perfect signal for JPEG/PNG/PDF/zip/wasm/etc. We
-// refuse to read binary files via read_file because the bytes get coerced
-// into a Go string, then sent to the LLM as tool_result text: a 5MB JPG
-// becomes ~1.5M garbled UTF-8 tokens, blowing past every model's context
-// limit and turning the next inference into a multi-minute "thinking..."
-// stall (or an outright API error). The right path for binary files is
-// to feed the path directly to whatever skill handles that format
-// (image-tool's `input`, etc.) — never inline the bytes.
+// 当有效负载中包含 NUL 字节时，looksBinary 返回 true
+// 第一个 8KB — JPEG/PNG/PDF/zip/wasm/等的近乎完美信号。我们
+// 拒绝通过 read_file 读取二进制文件，因为字节被强制
+// 转换为 Go 字符串，然后作为 tool_result 文本发送到 LLM：5MB JPG
+// 变成约 150 万个乱码 UTF-8 标记，超出了每个模型的上下文
+// 限制并将下一个推论变成一个多分钟的“思考......”
+// 停顿（或彻底的 API 错误）。二进制文件的正确路径是
+// 将路径直接提供给处理该格式的任何技能
+// （图像工具的“输入”等）——永远不要内联字节。
 func looksBinary(data []byte) bool {
 	head := data
 	if len(head) > 8192 {
@@ -461,18 +461,18 @@ func looksBinary(data []byte) bool {
 }
 
 func binaryRefusal(path string, size int) string {
-	// Skill-agnostic by design: read_file is a system tool, but which
-	// skill is the right consumer for a binary path depends on what
-	// the host agent actually has installed (image editing, OCR,
-	// archive extract, …). Naming a specific skill here would mislead
-	// agents that don't have it. Per-skill guidance belongs in that
-	// skill's SKILL.md / the agent's SOUL.md, not in a system tool's
-	// error path.
+	// 设计上与技能无关：read_file 是一个系统工具，但它
+	// 技能是二进制路径的正确消费者取决于什么
+	// Host Agent 实际上已安装（图像编辑、OCR、
+	// 存档摘录，...）。在这里命名特定技能会产生误导
+	// 没有它的代理商。按技能指导属于
+	// 技能的 SKILL.md / 代理的 SOUL.md，不在系统工具中
+	// 错误路径。
 	//
-	// What this message MUST do: stop the model's "let me probe the
-	// file first" reflex (file / identify / inline python on a 5MB
-	// JPEG burns turns and never produces a useful result). The
-	// "Don't probe" line is the load-bearing part.
+	// 该消息必须执行的操作：停止模型的“让我探测
+	// 文件优先”反射（在 5MB 上文件/识别/内联 python
+	// JPEG 会反复刻录并且永远不会产生有用的结果）。这
+	// “勿探”线是承重部分。
 	return fmt.Sprintf("[read_file refused: %q is a binary file (%d bytes). Binary bytes don't decode as text — loading them would blow past the context window. Don't probe with `file`, `identify`, `ls`, `python`, or any inline script — pass the path directly to whichever skill in your toolset handles this format (e.g. an image-editing skill for images). If your toolset doesn't have a skill for this format, tell the user instead of trying to inline-process the bytes.]", path, size)
 }
 
@@ -483,14 +483,14 @@ func makeReadFile(r *Registry) ToolFunc {
 			return "", fmt.Errorf("parse args: %w", err)
 		}
 
-		// Identity-file confidentiality gate. A chatter who asks "show me
-		// your SOUL.md" must not get the verbatim persona spec back.
+		// 身份文件保密门。一个喋喋不休的人问“给我看看
+		// 你的 SOUL.md" 一定不能得到逐字的角色规范。
 		if r.identityFileBlocked(args.Path) {
 			return IdentityFileRefusal, nil
 		}
 
-		// Mirror makeWriteFile's routing: userRoot-destined paths go to the
-		// workspace store when one is configured.
+		// 镜像 makeWriteFile 的路由：userRoot 指定的路径转到
+		// 配置工作区存储时。
 		if r.workspaceStore != nil && r.agentID != "" && r.isWorkspacePath(args.Path) {
 			rc, err := r.workspaceStore.Get(ctx, r.agentID, r.projectID, r.sessionID, args.Path)
 			if err != nil {
@@ -507,29 +507,29 @@ func makeReadFile(r *Registry) ToolFunc {
 			return string(data), nil
 		}
 
-		// Identity file reads always go through the durable store first
-		// (db is source of truth; on-disk is fallback). Use the lenient
-		// basename match so an LLM that expands "IDENTITY.md" into the
-		// full host path it saw in the prompt's "Working Directory"
-		// line still hits the store — earlier we required a bare
-		// filename and absolute paths bypassed the store entirely,
-		// reading from a workspace dir where identity files don't live.
+		// 身份文件读取始终首先通过持久存储
+		// （db 是事实来源；磁盘上是后备）。使用宽容
+		// 基本名称匹配，因此 LLM 将“IDENTITY.md”扩展为
+		// 它在提示的“工作目录”中看到的完整主机路径
+		// 商店里仍然排队——早些时候我们需要一个裸露的
+		// 文件名和绝对路径完全绕过存储，
+		// 从身份文件不存在的工作空间目录中读取。
 		if r.systemFileStore != nil && r.agentID != "" && basenameIsSystemFile(args.Path) {
 			name := filepath.Base(filepath.Clean(args.Path))
 			if data, err := r.readSystemFileForUser(ctx, r.systemFileUserID(name), name); err == nil {
 				return string(data), nil
 			}
-			// Store miss: try the agent's systemRoot on disk directly,
-			// bypassing resolvePathSandboxed. systemRoot is the agent
-			// metadata dir (e.g. ~/.bkclaw/agents/<id>/agent) which
-			// in K8s deployments lives OUTSIDE sandboxRoot, so the
-			// sandbox bound would always reject identity files even
-			// though the filename is a fixed whitelist with no escape
-			// surface. "Not found" is legitimate (a fresh agent may
-			// have no IDENTITY.md row yet) — return empty so the agent
-			// treats the field as unset, matching how
-			// ContextBuilder.loadFile loads identity files for the
-			// system prompt.
+			// Store miss：直接尝试磁盘上代理的systemRoot，
+			// 绕过resolvePathSandboxed。 systemRoot是代理
+			// 元数据目录（例如 ~/.bkclaw/agents/<id>/agent）
+			// 在 K8s 部署中，位于 sandboxRoot 之外，因此
+			// 沙箱绑定总是会拒绝身份文件，即使
+			// 尽管文件名是固定的白名单，无法转义
+			// 表面。 “未找到”是合法的（新代理可能
+			// 还没有 IDENTITY.md 行） — 返回空，因此代理
+			// 将字段视为未设置，匹配方式
+			// ContextBuilder.loadFile 加载身份文件
+			// 系统提示。
 			if r.systemRoot != "" {
 				if data, err := os.ReadFile(filepath.Join(r.systemRoot, name)); err == nil {
 					return string(data), nil
@@ -545,12 +545,12 @@ func makeReadFile(r *Registry) ToolFunc {
 		}
 		data, err := os.ReadFile(fullPath)
 		if err != nil {
-			// Identity files (SOUL/IDENTITY/BOOTSTRAP/...) are routinely unset
-			// on a fresh sqlite install — the store has only what the wizard
-			// wrote (typically just SOUL.md) and the agent's host home dir
-			// isn't even created. Surface "" instead of a not-found error so
-			// the agent treats the file as blank and continues, matching how
-			// ContextBuilder.loadFile loads them for the system prompt.
+			// 身份文件（SOUL/IDENTITY/BOOTSTRAP/...）通常会被取消设置
+			// 在新安装的 sqlite 上 - 商店只有向导的内容
+			// 写入（通常只是 SOUL.md）和代理的主机主目录
+			// 甚至没有被创建。表面“”而不是未找到的错误，所以
+			// 代理将文件视为空白并继续，匹配方式
+			// ContextBuilder.loadFile 为系统提示符加载它们。
 			if os.IsNotExist(err) && isSingleSegmentSystemFile(args.Path) {
 				return "", nil
 			}
@@ -574,16 +574,16 @@ func makeWriteFile(r *Registry) ToolFunc {
 			return "", fmt.Errorf("write_file: %w", err)
 		}
 
-		// Identity-file confidentiality gate — also blocks a chatter
-		// from REWRITING the agent's persona via prompt injection.
+		// 身份文件保密门——也可以阻止闲聊
+		// 通过即时注入重写代理的角色。
 		if r.identityFileBlocked(args.Path) {
 			return IdentityFileRefusal, nil
 		}
 
-		// When a workspace store is configured, route userRoot-destined
-		// writes through it. Identity files (systemRoot) still hit the
-		// filesystem because the memory store already covers their
-		// durability via a separate path.
+		// 配置工作区存储后，路由 userRoot-destined
+		// 通过它来写。身份文件（systemRoot）仍然命中
+		// 文件系统，因为内存存储已经覆盖了它们
+		// 通过单独的路径实现持久性。
 		if r.workspaceStore != nil && r.agentID != "" && r.isWorkspacePath(args.Path) {
 			if err := r.workspaceStore.Put(ctx, r.agentID, r.projectID, r.sessionID, args.Path,
 				strings.NewReader(args.Content), int64(len(args.Content)), ""); err != nil {
@@ -595,20 +595,20 @@ func makeWriteFile(r *Registry) ToolFunc {
 			return fmt.Sprintf("Written %d bytes to %s", len(args.Content), args.Path), nil
 		}
 
-		// Identity files (SOUL.md / IDENTITY.md / ...) need to land in the
-		// same durable store the admin UI reads from — otherwise the
-		// agent's BOOTSTRAP flow would write to pod-local disk and the
-		// Customize page would show blanks. Route through the
-		// systemFileStore when available.
+		// 身份文件（SOUL.md / IDENTITY.md / ...）需要登陆
+		// 管理 UI 从中读取的同一个持久存储 — 否则
+		// 代理的 BOOTSTRAP 流将写入 pod 本地磁盘，并且
+		// 自定义页面将显示空白。路线经过
+		// systemFileStore（如果可用）。
 		if r.systemFileStore != nil && r.agentID != "" && isSingleSegmentSystemFile(args.Path) {
 			name := filepath.Clean(args.Path)
 			if err := r.systemFileStore.SaveWorkspaceFile(ctx, r.agentID, r.systemFileUserID(name), name, []byte(args.Content)); err != nil {
 				return "", fmt.Errorf("system file save: %w", err)
 			}
-			// Keep a filesystem mirror so the agent runtime (context
-			// builder, skills loader, etc.) which still reads from disk
-			// sees the same content on this pod. Other pods will pick
-			// up the next call via their own store reads.
+			// 保留文件系统镜像，以便代理运行时（上下文
+			// 构建器、技能加载器等）仍然从磁盘读取
+			// 在此 Pod 上看到相同的内容。其他 pod 会选择
+			// 通过他们自己的存储读取来进行下一个调用。
 			if r.systemRoot != "" {
 				disk := filepath.Join(r.systemRoot, name)
 				_ = os.MkdirAll(filepath.Dir(disk), 0o755)
@@ -617,10 +617,10 @@ func makeWriteFile(r *Registry) ToolFunc {
 			return fmt.Sprintf("Written %d bytes to %s", len(args.Content), name), nil
 		}
 
-		// Skill scaffolding takes a dedicated path so the same writeSkillToHost
-		// helper that handles sandbox-mode also lands the file + mirrors to
-		// the workspace store here, instead of duplicating the SyncSkillUp
-		// hook in two places.
+		// 技能脚手架采用专用路径，因此相同的 writeSkillToHost
+		// 处理沙盒模式的助手也会将文件+镜像着陆到
+		// 工作区存储在这里，而不是复制 SyncSkillUp
+		// 钩在两个地方。
 		if r.isSkillPath(args.Path) && r.skillRoot() != "" {
 			full, err := r.writeSkillToHost(ctx, args.Path, args.Content)
 			if err != nil {
@@ -663,16 +663,16 @@ func makeEditFile(r *Registry) ToolFunc {
 			return "", fmt.Errorf("edit_file: %w", err)
 		}
 
-		// Identity-file confidentiality gate.
+		// 身份文件保密门。
 		if r.identityFileBlocked(args.Path) {
 			return IdentityFileRefusal, nil
 		}
 
-		// Mirror makeWriteFile's routing precedence: workspace store first
-		// (user artifacts), then identity-file store (SOUL.md / IDENTITY.md /
-		// MEMORY.md …), then filesystem. The read and the write must hit
-		// the same backend or an edit could silently land in a different
-		// store than the one the agent later reads from.
+		// 镜像 makeWriteFile 的路由优先级：工作区存储优先
+		// （用户工件），然后身份文件存储（SOUL.md / IDENTITY.md /
+		// MEMORY.md ...），然后是文件系统。读和写必须命中
+		// 相同的后端或编辑可能会悄悄地落在不同的后端
+		// 存储比代理稍后读取的存储。
 		if r.workspaceStore != nil && r.agentID != "" && r.isWorkspacePath(args.Path) {
 			rc, err := r.workspaceStore.Get(ctx, r.agentID, r.projectID, r.sessionID, args.Path)
 			if err != nil {
@@ -714,9 +714,9 @@ func makeEditFile(r *Registry) ToolFunc {
 			if err := r.systemFileStore.SaveWorkspaceFile(ctx, r.agentID, uid, name, []byte(updated)); err != nil {
 				return "", fmt.Errorf("system file save: %w", err)
 			}
-			// Same disk-mirror invariant as makeWriteFile so this pod's
-			// in-process readers (context builder, skills loader) see the
-			// new content immediately.
+			// 与 makeWriteFile 相同的磁盘镜像不变式，所以这个 pod 的
+			// 进程中的读者（上下文构建器、技能加载器）会看到
+			// 立即有新内容。
 			if r.systemRoot != "" {
 				disk := filepath.Join(r.systemRoot, name)
 				_ = os.MkdirAll(filepath.Dir(disk), 0o755)
@@ -751,12 +751,12 @@ func makeEditFile(r *Registry) ToolFunc {
 	}
 }
 
-// isSingleSegmentSystemFile matches "SOUL.md", "IDENTITY.md", etc. —
-// the allow-listed identity file names, and only when the write targets
-// the top-level directory (no slashes). Nested paths like
-// "notes/SOUL.md" deliberately don't qualify. Used by the WRITE path
-// where over-broad matching would let users hijack identity rows by
-// putting an arbitrary file at /any/path/IDENTITY.md.
+// isSingleSegmentSystemFile 匹配“SOUL.md”、“IDENTITY.md”等 —
+// 允许列出的身份文件名，并且仅当写入目标时
+// 顶级目录（无斜杠）。嵌套路径如
+// “notes/SOUL.md”故意不符合条件。由 WRITE 路径使用
+// 过度广泛的匹配会让用户劫持身份行
+// 将任意文件放在 /any/path/IDENTITY.md 中。
 func isSingleSegmentSystemFile(path string) bool {
 	if filepath.IsAbs(path) {
 		return false
@@ -768,15 +768,15 @@ func isSingleSegmentSystemFile(path string) bool {
 	return systemFiles[clean]
 }
 
-// basenameIsSystemFile is the lenient READ-side variant: it accepts
-// absolute paths and nested paths as long as the *basename* is one of
-// the identity filenames. Identity files are the source of truth in
-// systemFileStore (db); the on-disk view is only a fallback. The LLM
-// frequently expands a bare "IDENTITY.md" into the full host path it
-// saw in the system prompt's "Working Directory" line — without this
-// lenient match, those reads bypass the store entirely and miss the
-// real content. Read-only, so the write-path attack surface above
-// stays unchanged.
+// basenameIsSystemFile 是宽松的 READ 端变体：它接受
+// 绝对路径和嵌套路径，只要 *basename* 是其中之一
+// 身份文件名。身份文件是事实的来源
+// 系统文件存储（db）；磁盘视图只是一个后备方案。法学硕士
+// 经常将裸露的“IDENTITY.md”扩展为完整的主机路径
+// 在系统提示符的“工作目录”行中看到 - 没有这个
+// 宽松的匹配，这些读取完全绕过存储并错过
+// 真实的内容。只读，因此上面的写路径攻击面
+// 保持不变。
 func basenameIsSystemFile(path string) bool {
 	return systemFiles[filepath.Base(filepath.Clean(path))]
 }
@@ -788,9 +788,9 @@ func makeListDir(r *Registry) ToolFunc {
 			return "", fmt.Errorf("parse args: %w", err)
 		}
 
-		// Workspace store has a flat key namespace; we synthesise a "dir
-		// listing" by filtering List output to entries whose agent-relative
-		// path sits under args.Path's prefix.
+		// 工作区存储有一个平键命名空间；我们合成一个“dir
+		// 列表”通过过滤列表输出到其代理相关的条目
+		// path 位于 args.Path 的前缀下。
 		if r.workspaceStore != nil && r.agentID != "" && r.isWorkspacePath(args.Path) {
 			objs, err := r.workspaceStore.List(ctx, r.agentID, r.projectID, r.sessionID)
 			if err != nil {
@@ -851,18 +851,18 @@ func makeListDir(r *Registry) ToolFunc {
 	}
 }
 
-// registerSandboxedFile re-registers file tools so they delegate to a
-// sandbox.Executor for paths that don't belong to a store.
+// registerSandboxedFile 重新注册文件工具，以便它们委托给
+// sandbox.Executor 用于不属于商店的路径。
 //
-// IMPORTANT: identity files (SOUL.md, USER.md, MEMORY.md, …) live in
-// `systemFileStore` (Postgres in cloud mode) and workspace artifacts live
-// in `workspaceStore`. If we routed every path straight to the sandbox
-// executor, the agent would 404 on its own identity files — they simply
-// don't exist in the sandbox fs. Mirror the store-routing from the
-// non-sandboxed path; only hit the sandbox executor when no store handles
-// the path (absolute paths, `skills/...`, ad-hoc scripts, etc.). The
-// sandbox badge is emitted only for the executor-fallback path — store
-// hits intentionally don't badge, since they didn't run in the sandbox.
+// 重要提示：身份文件（SOUL.md、USER.md、MEMORY.md...）位于
+// “systemFileStore”（云模式下的 Postgres）和工作区工件已上线
+// 在“workspaceStore”中。如果我们将每条路径都直接路由到沙箱
+// 执行者，代理会对其自己的身份文件执行 404 — 他们只是
+// 沙箱 fs 中不存在。镜像商店路由
+// 非沙盒路径；仅当没有存储句柄时才调用沙箱执行器
+// 路径（绝对路径、“技能/...”、临时脚本等）。这
+// 沙箱徽章仅针对执行程序回退路径发出 - store
+// 点击故意不标记，因为它们没有在沙箱中运行。
 func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 	r.Register("read_file", "Read the contents of a file", map[string]interface{}{
 		"type": "object",
@@ -878,17 +878,17 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		if err := json.Unmarshal(rawArgs, &args); err != nil {
 			return "", fmt.Errorf("parse args: %w", err)
 		}
-		// Identity-file confidentiality gate — same as the host path.
-		// Runs BEFORE the systemFileStore lookup so a chatter never
-		// reaches the DB row at all.
+		// 身份文件机密性门 - 与主机路径相同。
+		// 在系统文件存储查找之前运行，因此永远不会出现喋喋不休的情况
+		// 完全到达数据库行。
 		if r.identityFileBlocked(args.Path) {
 			return IdentityFileRefusal, nil
 		}
-		// Identity files (SOUL.md, IDENTITY.md, …) are routed by basename
-		// (lenient) instead of the strict isSingleSegmentSystemFile that
-		// routeFor uses. Need to be checked separately for reads so an
-		// LLM-emitted absolute path like
-		// /data/.bkclaw/workspaces/<id>/IDENTITY.md still hits the DB.
+		// 身份文件（SOUL.md，IDENTITY.md，...）按基本名称路由
+		// （宽松）而不是严格的 isSingleSegmentSystemFile
+		// 路线供使用。需要单独检查读取情况，以便
+		// LLM 发出的绝对路径，如
+		// /data/.bkclaw/workspaces/<id>/IDENTITY.md 仍然会访问数据库。
 		if r.systemFileStore != nil && r.agentID != "" && basenameIsSystemFile(args.Path) {
 			name := filepath.Base(filepath.Clean(args.Path))
 			if data, err := r.readSystemFileForUser(ctx, r.systemFileUserID(name), name); err == nil {
@@ -909,9 +909,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 					return string(data), nil
 				}
 			}
-			// Fall through to sandbox on store miss so a freshly-written
-			// file the agent put inside the sandbox (mid-turn, not yet
-			// mirrored to store) is still readable.
+			// 掉进商店里的沙箱错过了所以一个新写的
+			// 将代理放入沙箱中归档（中途，尚未
+			// 镜像存储）仍然可读。
 			out, err := ex.ReadFile(ctx, args.Path)
 			if err == nil && looksBinary([]byte(out)) {
 				return binaryRefusal(args.Path, len(out)), nil
@@ -925,8 +925,8 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 				}
 				return string(data), nil
 			}
-			// Fall through to sandbox so pre-mounted skills under
-			// /skills/<name>/ inside the container are still reachable.
+			// 掉入沙箱所以预先安装了技能
+			// 容器内的 /skills/<name>/ 仍然可以访问。
 			out, err := ex.ReadFile(ctx, args.Path)
 			if err == nil && looksBinary([]byte(out)) {
 				return binaryRefusal(args.Path, len(out)), nil
@@ -997,9 +997,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 			}
 			return fmt.Sprintf("Written %d bytes to %s", len(args.Content), args.Path), nil
 		case RouteSkillStore:
-			// Skill scaffolding (skill-creator's `skills/<name>/...`) lands
-			// on host disk where SkillsLoader scans + mirrors to OSS, NOT
-			// in the ephemeral sandbox FS. writeSkillToHost handles both.
+			// 技能脚手架（技能创建者的`skills/<name>/...`）落地
+			// 在 SkillsLoader 扫描 + 镜像到 OSS 的主机磁盘上，而不是
+			// 在短暂的沙箱 FS 中。 writeSkillToHost 处理两者。
 			full, err := r.writeSkillToHost(ctx, args.Path, args.Content)
 			if err != nil {
 				return "", err
@@ -1071,8 +1071,8 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 				}
 				return sb.String(), nil
 			}
-			// Store error → fall through to sandbox so a freshly-written
-			// sandbox-only dir is still listable.
+			// 存储错误 → 落入沙箱，因此新编写的
+			// 仅沙箱目录仍然可列出。
 			out, err := ex.ListDir(ctx, args.Path)
 			return MetaSandboxPrefix + out, err
 		case RouteHostFS:
@@ -1118,9 +1118,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 			return IdentityFileRefusal, nil
 		}
 
-		// editSandboxRMW is the read-modify-write fallback through the
-		// sandbox executor. Used when the store route misses or for any
-		// path routeFor sends to the sandbox.
+		// editSandboxRMW 是通过以下方式进行的读取-修改-写入回退
+		// 沙箱执行器。当商店路线丢失或任何其他情况时使用
+		// 发送到沙箱的路径routeFor。
 		editSandboxRMW := func() (string, error) {
 			content, err := ex.ReadFile(ctx, args.Path)
 			if err != nil {
@@ -1178,15 +1178,15 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 					return fmt.Sprintf("Edited %s (%d replacement(s))", args.Path, count), nil
 				}
 			}
-			// Store miss → sandbox RMW so a freshly-created file (not yet
-			// mirrored) is still editable.
+			// 存储未命中 → 沙箱 RMW，因此是一个新创建的文件（尚未
+			// 镜像）仍然是可编辑的。
 			return editSandboxRMW()
 		case RouteSkillStore:
-			// Skill files have no in-place edit semantics here today; fall
-			// through to the sandbox RMW which can read /skills/<name>/...
-			// from the read-only mount and write through (write will fail
-			// at the FS layer if the mount is RO; that's the right error
-			// to surface to the model).
+			// 今天，技能文件没有就地编辑语义；落下
+			// 到沙箱 RMW，它可以读取 /skills/<name>/...
+			// 从只读挂载并写入（写入将失败
+			// 如果挂载是 RO，则在 FS 层；这是正确的错误
+			// 到模型表面）。
 			return editSandboxRMW()
 		case RouteHostFS:
 			full, ok := hostHomePath(args.Path)

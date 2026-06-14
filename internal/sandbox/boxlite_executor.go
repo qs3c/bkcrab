@@ -20,49 +20,47 @@ import (
 	"github.com/qs3c/bkclaw/internal/workspace"
 )
 
-// Boxlite REST sandbox provider — talks the OpenAPI spec at
+// Boxlite REST 沙箱提供者——遵循 OpenAPI 规范
 // https://github.com/boxlite-ai/boxlite/blob/main/openapi/rest-sandbox-open-api.yaml
 //
-// Auth is a static API key sent as `Authorization: Bearer <apikey>`.
-// Earlier revisions did an OAuth2 client_credentials exchange against
-// /oauth/tokens — that endpoint was removed upstream; the key the
-// operator pastes is now the bearer token directly. BoxliteClientID is
-// retained on the config struct for back-compat (existing admin rows
-// keep working) but it isn't sent anywhere anymore.
+// 认证是作为 `Authorization: Bearer <apikey>` 发送的静态 API 密钥。
+// 早期版本对 /oauth/tokens 进行了 OAuth2 client_credentials 交换——
+// 该端点已被上游移除；操作员粘贴的密钥现在直接是 bearer 令牌。
+// BoxliteClientID 保留在配置结构上以实现向后兼容（现有管理行继续工作），
+// 但它不再发送到任何地方。
 //
-// Lifecycle:
-//   POST   /{prefix}/boxes          create box (configured)
-//   POST   /{prefix}/boxes/{id}/start  start VM (we do this eagerly so
-//                                      Hydrate has a running target)
-//   PUT    /{prefix}/boxes/{id}/files?path=/  application/x-tar bulk upload
-//   POST   /{prefix}/boxes/{id}/exec  → returns {execution_id}
+// 生命周期：
+//   POST   /{prefix}/boxes          创建 box（已配置）
+//   POST   /{prefix}/boxes/{id}/start  启动 VM（我们急切地执行此操作，
+//                                       以便 Hydrate 有运行目标）
+//   PUT    /{prefix}/boxes/{id}/files?path=/  application/x-tar 批量上传
+//   POST   /{prefix}/boxes/{id}/exec  → 返回 {execution_id}
 //   GET    /{prefix}/boxes/{id}/executions/{exec_id}/attach
-//          → WebSocket bidirectional, binary frames are [channel:u8][bytes]
-//            (0x01 stdout, 0x02 stderr), text frame {"type":"exit","exit_code":N}
-//            on completion followed by a normal close.
+//          → WebSocket 双向，二进制帧为 [channel:u8][bytes]
+//            (0x01 stdout, 0x02 stderr)，文本帧 {"type":"exit","exit_code":N}
+//            完成后跟随正常关闭。
 //   DELETE /{prefix}/boxes/{id}?force=true
 
 const (
-	// BoxLite Cloud dev environment — the only public endpoint verified
-	// end-to-end (OAuth + createBox + attach). The OpenAPI servers
-	// stanza advertises `https://api.boxlite.ai/v1`, but that host sits
-	// behind Cloudflare Access and rejects ordinary client_credentials
-	// with a 403 HTML wall. When BoxLite ships a publicly reachable
-	// prod endpoint, update this default — until then, operators on
-	// prod tenants must explicitly set their URL in the admin UI.
+	// BoxLite Cloud 开发环境——唯一经过端到端验证的公共端点
+	//（OAuth + createBox + attach）。OpenAPI servers 节点声明
+	// `https://api.boxlite.ai/v1`，但该主机位于 Cloudflare Access 后面，
+	// 并以 403 HTML 墙拒绝普通的 client_credentials。
+	// 当 BoxLite 发布可公开访问的生产端点时，更新此默认值——
+	// 在此之前，生产租户的操作员必须在管理 UI 中显式设置其 URL。
 	defaultBoxliteURL      = "https://api.dev.boxlite.ai/api/v1"
 	defaultBoxliteClientID = "default"
 	defaultBoxlitePrefix   = "default"
 	defaultBoxliteImage    = "thinkany/bkclaw-sandbox:latest"
 )
 
-// BoxliteExecutor implements Executor against a remote Boxlite REST API.
+// BoxliteExecutor 针对远程 Boxlite REST API 实现 Executor。
 type BoxliteExecutor struct {
-	baseURL string // already trimmed of trailing slash
+	baseURL string // 已去除尾部斜杠
 	prefix  string
-	// clientID is the legacy OAuth2 client_id, retained on the struct so
-	// older config rows that set it don't break the constructor. Unused
-	// after the apikey-as-bearer switch.
+	// clientID 是旧的 OAuth2 client_id，保留在结构体上，
+	// 以便设置它的旧配置行不会破坏构造函数。
+	// 在 apikey-as-bearer 切换后未使用。
 	clientID string
 	apiKey   string
 	image    string
@@ -73,8 +71,8 @@ type BoxliteExecutor struct {
 	mu    sync.Mutex
 	boxID string
 
-	// hydration sources — same shape as E2BExecutor uses, so recreate()
-	// can rebuild /skills + /workspace from scratch when the box is gone.
+	// 填充源——与 E2BExecutor 使用的形状相同，以便 recreate()
+	// 可以在 box 消失时从头重建 /skills + /workspace。
 	skillDirs []string
 	workspace workspace.Store
 	agentID   string
@@ -102,10 +100,9 @@ func newBoxliteExecutor(ctx context.Context, baseURL, prefix, clientID, apiKey, 
 		timeout = 30 * time.Minute
 	}
 
-	// No global http.Client.Timeout: exec round-trips can run for
-	// minutes (long-running builds, image gen, etc.). We bound at the
-	// request level via context.WithTimeout — same pattern E2BExecutor
-	// settled on after the 60s-streaming-cut bug.
+	// 没有全局 http.Client.Timeout：exec 往返可能需要数分钟
+	//（长时间运行的构建、图像生成等）。我们通过 context.WithTimeout
+	// 在请求级别绑定——与 E2BExecutor 在 60 秒流截断错误后采用的模式相同。
 	e := &BoxliteExecutor{
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		prefix:   prefix,
@@ -120,19 +117,17 @@ func newBoxliteExecutor(ctx context.Context, baseURL, prefix, clientID, apiKey, 
 		return nil, fmt.Errorf("boxlite create box: %w", err)
 	}
 	if err := e.startBox(ctx); err != nil {
-		// Best-effort cleanup if start fails so we don't leak a stuck
-		// configured-but-never-started box on the server.
+		// 如果启动失败，尽力清理，以免在服务器上泄漏已配置但从未启动的 box。
 		_ = e.Close()
 		return nil, fmt.Errorf("boxlite start box: %w", err)
 	}
 	return e, nil
 }
 
-// authHeader returns "Bearer <apikey>". The apikey IS the bearer token
-// in the new auth scheme — no exchange, no cache, no expiry handling.
-// Returns a (string, error) shape so callers (which previously needed
-// to handle token-refresh failures) don't have to be rewritten; the
-// error result is always nil today.
+// authHeader 返回 "Bearer <apikey>"。在新认证方案中，apikey 就是 bearer 令牌——
+// 无需交换、无需缓存、无需过期处理。
+// 返回 (string, error) 形状，以便调用者（以前需要处理令牌刷新失败）
+// 无需重写；错误结果今天始终为 nil。
 func (e *BoxliteExecutor) authHeader(_ context.Context) (string, error) {
 	return "Bearer " + e.apiKey, nil
 }
@@ -144,9 +139,9 @@ func (e *BoxliteExecutor) prefixPath(suffix string) string {
 func (e *BoxliteExecutor) createBox(ctx context.Context) error {
 	body, _ := json.Marshal(map[string]interface{}{
 		"image": e.image,
-		// auto_remove keeps the server from accumulating stopped
-		// boxes when our Close() racing the network drops the
-		// explicit DELETE — they self-collect when stopped.
+		// auto_remove 防止服务器累积已停止的 box，
+		// 当我们的 Close() 因网络争用而丢弃显式 DELETE 时——
+		// 它们在停止时会自动收集。
 		"auto_remove": true,
 	})
 	createCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -210,8 +205,8 @@ func (e *BoxliteExecutor) startBox(ctx context.Context) error {
 	return nil
 }
 
-// SetHydrationSources records the inputs Hydrate() should pull from. Same
-// shape as E2BExecutor — set after construction so recreate() can replay.
+// SetHydrationSources 记录 Hydrate() 应从中拉取的输入。
+// 与 E2BExecutor 形状相同——在构造后设置，以便 recreate() 可以重放。
 func (e *BoxliteExecutor) SetHydrationSources(skillDirs []string, ws workspace.Store, agentID, projectID, sessionID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -222,10 +217,10 @@ func (e *BoxliteExecutor) SetHydrationSources(skillDirs []string, ws workspace.S
 	e.sessionID = sessionID
 }
 
-// Hydrate packs /skills and /workspace into a single tar and pushes it via
-// `PUT /files?path=/`. Unlike the E2B path we don't need base64 + exec
-// shenanigans — Boxlite's Files API takes raw tar bytes and extracts them
-// at the destination directly.
+// Hydrate 将 /skills 和 /workspace 打包成一个 tar 并通过
+// `PUT /files?path=/` 推送。与 E2B 路径不同，
+// 我们不需要 base64 + exec 的把戏——Boxlite 的 Files API
+// 接受原始 tar 字节并直接在目标位置解压。
 func (e *BoxliteExecutor) Hydrate(ctx context.Context) error {
 	bundle := newPlainTarBundle()
 
@@ -289,9 +284,8 @@ func (e *BoxliteExecutor) Hydrate(ctx context.Context) error {
 		}
 	}
 
-	// Always ensure the parent dirs exist on the remote side, even when
-	// the tar would be empty — the agent's first write_file would
-	// otherwise fail with ENOENT.
+	// 始终确保远程端存在父目录，即使 tar 是空的——
+	// 否则代理的第一次 write_file 会因 ENOENT 失败。
 	if err := bundle.ensureDir("skills/"); err != nil {
 		return fmt.Errorf("tar skills dir: %w", err)
 	}
@@ -302,20 +296,19 @@ func (e *BoxliteExecutor) Hydrate(ctx context.Context) error {
 		return fmt.Errorf("close tar: %w", err)
 	}
 
-	// BoxLite Files API note: despite the OpenAPI spec advertising
-	// "Uploads a tar archive and extracts it at the specified path",
-	// the dev cloud's PUT /files does NOT extract. Empirically:
-	//   - path = a file path → writes the request body verbatim to
-	//     that file (parents are created automatically). 204.
-	//   - path = an existing directory + Content-Type x-tar →
-	//     stores the raw tar as `boxlite-upload-<rand>.tar` inside it.
-	//     Still 204 — silently wrong for our hydrate purposes.
-	// We work around by:
-	//   1. PUT the tar to a deterministic file path `/tmp/hydrate.tar`
-	//   2. exec `tar -xf /tmp/hydrate.tar -C /` to actually unpack
-	//   3. remove the staging file so /tmp stays clean
-	// One upload + one exec is still cheaper than per-file PUTs when
-	// a skill bundle has dozens of files each.
+	// BoxLite Files API 说明：尽管 OpenAPI 规范声称
+	// "Uploads a tar archive and extracts it at the specified path"，
+	// 但开发云的 PUT /files 并不解压。经验结果：
+	//   - path = 文件路径 → 将请求正文原样写入该文件（父目录自动创建）。204。
+	//   - path = 现有目录 + Content-Type x-tar →
+	//     将原始 tar 存储为 `boxlite-upload-<rand>.tar` 在其中。
+	//     仍然是 204——对我们的填充目的来说静默错误。
+	// 我们通过以下方式解决：
+	//   1. 将 tar PUT 到确定性文件路径 `/tmp/hydrate.tar`
+	//   2. exec `tar -xf /tmp/hydrate.tar -C /` 实际解压
+	//   3. 删除临时文件以保持 /tmp 干净
+	// 当一个技能包有数十个文件时，一次上传 + 一次 exec
+	// 仍然比逐个文件的 PUT 更便宜。
 	const stagingPath = "/tmp/fc-hydrate.tar"
 	uploadCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -341,11 +334,10 @@ func (e *BoxliteExecutor) Hydrate(ctx context.Context) error {
 		return fmt.Errorf("upload tar HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Unpack via exec. tar -C / + bundle paths like "skills/..." land
-	// content at /skills/... — matches what the agent's tools expect
-	// (python /skills/<name>/main.py) and what the Docker backend
-	// gives via bind mount. rm afterwards keeps /tmp tidy across
-	// recreate() cycles.
+	// 通过 exec 解压。tar -C / + 包路径如 "skills/..." 将内容
+	// 放置到 /skills/...——匹配代理工具期望的内容
+	//（python /skills/<name>/main.py）以及 Docker 后端通过绑定挂载
+	// 提供的内容。之后 rm 保持 /tmp 在 recreate() 周期中整洁。
 	extractCmd := fmt.Sprintf("tar -xf %s -C / && rm -f %s", stagingPath, stagingPath)
 	if _, err := e.execOnce(ctx, extractCmd, 60*time.Second); err != nil {
 		return fmt.Errorf("extract hydrate tar: %w", err)
@@ -360,9 +352,9 @@ func (e *BoxliteExecutor) Hydrate(ctx context.Context) error {
 	return nil
 }
 
-// plainTarBundle is the boxlite variant of e2b's tarBundle: no gzip
-// because the Files API expects application/x-tar. addLocalDir /
-// addBytes / ensureDir mirror the e2b helper.
+// plainTarBundle 是 e2b 的 tarBundle 的 boxlite 变体：无 gzip，
+// 因为 Files API 期望 application/x-tar。addLocalDir/addBytes/ensureDir
+// 镜像 e2b 辅助函数。
 type plainTarBundle struct {
 	buf       bytes.Buffer
 	tw        *tar.Writer
@@ -436,9 +428,9 @@ func (b *plainTarBundle) addLocalDir(localRoot, prefix string) (int, error) {
 
 func (b *plainTarBundle) close() error { return b.tw.Close() }
 
-// Exec runs a shell command via the async exec + WebSocket attach pair.
-// On 404 (box gone) we recreate and retry once — matches the E2B
-// recreate-on-stale pattern.
+// Exec 通过异步 exec + WebSocket attach 对运行 shell 命令。
+// 在 404（box 消失）时，我们重新创建并重试一次——匹配 E2B 的
+// 过期重新创建模式。
 func (e *BoxliteExecutor) Exec(ctx context.Context, command string, timeout time.Duration) (string, error) {
 	wrapped := "cd /workspace && " + command
 	out, err := e.execOnce(ctx, wrapped, timeout)
@@ -461,7 +453,7 @@ func isBoxliteGone(err error) bool {
 
 func (e *BoxliteExecutor) recreate(ctx context.Context) error {
 	slog.Info("boxlite box gone, recreating", "oldBoxID", e.boxID)
-	// Static apikey — no token refresh; just rebuild the box state.
+	// 静态 apikey——无需令牌刷新；只需重建 box 状态。
 	if err := e.createBox(ctx); err != nil {
 		return fmt.Errorf("create: %w", err)
 	}
@@ -474,8 +466,8 @@ func (e *BoxliteExecutor) recreate(ctx context.Context) error {
 	return nil
 }
 
-// execOnce starts an execution and streams its output over the attach
-// WebSocket until the server emits {"type":"exit",...} and closes.
+// execOnce 启动一个执行并通过附加的 WebSocket 流式传输其输出，
+// 直到服务器发出 {"type":"exit",...} 并关闭。
 func (e *BoxliteExecutor) execOnce(ctx context.Context, command string, timeout time.Duration) (string, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -520,9 +512,9 @@ func (e *BoxliteExecutor) execOnce(ctx context.Context, command string, timeout 
 	return e.attachAndDrain(ctx, ex.ExecutionID, timeout)
 }
 
-// attachAndDrain opens the attach WebSocket and reads frames until an
-// exit message or the parent context's deadline. Binary frames are the
-// channel-tagged stdout/stderr payloads; text frames are control JSON.
+// attachAndDrain 打开附加的 WebSocket 并读取帧，直到退出消息或
+// 父上下文截止时间。二进制帧是带有通道标记的 stdout/stderr 有效负载；
+// 文本帧是控制 JSON。
 func (e *BoxliteExecutor) attachAndDrain(ctx context.Context, execID string, timeout time.Duration) (string, error) {
 	wsURL, err := e.attachWebsocketURL(execID)
 	if err != nil {
@@ -535,8 +527,8 @@ func (e *BoxliteExecutor) attachAndDrain(ctx context.Context, execID string, tim
 	hdr := http.Header{}
 	hdr.Set("Authorization", auth)
 
-	// Give the WS dial a short bound — if the upgrade is going to fail
-	// (bad token, wrong exec_id, box not running) it'll fail fast.
+	// 给 WS 拨号一个短限制——如果升级将失败（令牌错误、exec_id 错误、
+	// box 未运行），它将快速失败。
 	dialCtx, cancelDial := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelDial()
 	dialer := websocket.DefaultDialer
@@ -554,22 +546,21 @@ func (e *BoxliteExecutor) attachAndDrain(ctx context.Context, execID string, tim
 	}
 	defer conn.Close()
 
-	// Stream deadline: user-supplied tool timeout + 30s slack so the
-	// server has room to flush trailing frames before our side gives up.
+	// 流截止时间：用户提供的工具超时 + 30 秒余量，
+	// 以便服务器在我们放弃之前有时间刷新尾部帧。
 	streamCtx, cancelStream := context.WithTimeout(ctx, timeout+30*time.Second)
 	defer cancelStream()
 	conn.SetReadDeadline(time.Now().Add(timeout + 30*time.Second))
 
-	// Reset the read deadline on every Pong so the keepalive (server
-	// pings every 15s per the spec) keeps the connection alive across
-	// long-running execs.
+	// 在每个 Pong 上重置读取截止时间，以便 keepalive（服务器根据规范每 15 秒 ping）
+	// 在长时间运行的 exec 中保持连接活跃。
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(timeout + 30*time.Second))
 		return nil
 	})
 
-	// Async-cancel: if streamCtx times out or parent ctx is canceled,
-	// nudge the connection closed so the blocking ReadMessage returns.
+	// 异步取消：如果 streamCtx 超时或父 ctx 被取消，
+	// 推动连接关闭，以便阻塞的 ReadMessage 返回。
 	doneReading := make(chan struct{})
 	go func() {
 		select {
@@ -590,9 +581,9 @@ func (e *BoxliteExecutor) attachAndDrain(ctx context.Context, execID string, tim
 			if exited {
 				break
 			}
-			// Normal close from the server after the exit text frame
-			// arrives as a websocket.CloseError(1000). Treat as success
-			// if we already saw the exit frame above; otherwise surface.
+			// 服务器在退出文本帧之后发送的正常关闭
+			// 作为 websocket.CloseError(1000) 到达。
+			// 如果我们已经看到上面的退出帧，则视为成功；否则显示错误。
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
 				break
 			}
@@ -611,9 +602,9 @@ func (e *BoxliteExecutor) attachAndDrain(ctx context.Context, execID string, tim
 			case 0x02:
 				stderr.Write(payload)
 			default:
-				// Unknown channel; the spec only defines 1 and 2 today,
-				// but a future server might add more. Drop silently
-				// rather than corrupt the merged output.
+				// 未知通道；规范目前只定义了 1 和 2，
+				// 但未来的服务器可能会添加更多。静默丢弃，
+				// 而不是破坏合并后的输出。
 			}
 		case websocket.TextMessage:
 			var ctrl struct {
@@ -628,18 +619,17 @@ func (e *BoxliteExecutor) attachAndDrain(ctx context.Context, execID string, tim
 			case "exit":
 				exitCode = ctrl.ExitCode
 				exited = true
-				// Server is about to close. Stop reading; the next
-				// ReadMessage will see the close frame.
+				// 服务器即将关闭。停止读取；下一个 ReadMessage 将看到关闭帧。
 			case "error":
-				// Non-fatal per the spec — connection stays open. Log
-				// and keep reading so we still capture the exit frame.
+				// 根据规范非致命——连接保持打开。记录日志并继续读取，
+				// 以便我们仍然捕获退出帧。
 				slog.Warn("boxlite attach error frame", "boxID", e.boxID, "exec", execID, "message", ctrl.Message)
 			}
 		}
 		if exited {
-			// Drain a single more frame attempt for the close to come
-			// through, then exit on read err above. ReadMessage with a
-			// short deadline keeps this loop bounded.
+			// 再尝试读取一帧以等待关闭到来，
+			// 然后在上面的读取错误时退出。带有短截止时间的 ReadMessage
+			// 保持此循环有界。
 			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		}
 	}
@@ -669,8 +659,8 @@ func combineOutput(stdout, stderr *bytes.Buffer) string {
 	return strings.TrimSpace(out)
 }
 
-// attachWebsocketURL builds the wss:// URL for the attach endpoint by
-// mirroring the http(s) base URL onto the ws(s) scheme.
+// attachWebsocketURL 通过将 http(s) 基础 URL 镜像到 ws(s) 方案上，
+// 构建附加端点的 wss:// URL。
 func (e *BoxliteExecutor) attachWebsocketURL(execID string) (string, error) {
 	u, err := url.Parse(e.baseURL)
 	if err != nil {
@@ -693,12 +683,10 @@ func (e *BoxliteExecutor) ReadFile(ctx context.Context, path string) (string, er
 }
 
 func (e *BoxliteExecutor) WriteFile(ctx context.Context, filePath, content string) (string, error) {
-	// BoxLite Files API quirk: when path points at a concrete file
-	// path the request body is written verbatim and parent dirs are
-	// auto-created (verified empirically — see Hydrate's note). We
-	// used to do a heredoc-over-exec dance, which broke on content
-	// containing the random marker and on binary content; PUT is
-	// binary-safe and skips the shell entirely.
+	// BoxLite Files API 特性：当路径指向具体文件路径时，
+	// 请求正文按原样写入，父目录自动创建（经验验证——参见 Hydrate 的说明）。
+	// 我们以前使用 heredoc-over-exec 的方式，在内容包含随机标记
+	// 和二进制内容时会失败；PUT 是二进制安全的，完全跳过 shell。
 	uploadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	uploadURL := e.prefixPath("/boxes/"+e.boxID+"/files") +
@@ -729,22 +717,22 @@ func (e *BoxliteExecutor) ListDir(ctx context.Context, path string) (string, err
 	return e.Exec(ctx, fmt.Sprintf("ls -la %s", shellQuote(path)), 10*time.Second)
 }
 
-// shellQuote single-quotes a path for safe inclusion in a shell command.
-// shellQuote is declared in docker_executor.go and shared package-wide;
-// boxlite re-used the same helper rather than redeclaring it.
+// shellQuote 用单引号引用路径，以便安全地包含在 shell 命令中。
+// shellQuote 在 docker_executor.go 中声明并在包范围内共享；
+// boxlite 重用相同的辅助函数而不是重新声明。
 
-// Backend returns "boxlite" — used by the per-exec log line so operators
-// can confirm at a glance which provider handled a given tool call.
+// Backend 返回 "boxlite"——用于每执行日志行，以便操作员可以
+// 一目了然地确认哪个提供者处理了给定的工具调用。
 func (e *BoxliteExecutor) Backend() string { return "boxlite" }
 
-// IsRemoteWorkspace marks this executor as cloud-hosted so the
-// LifecyclePool runs SnapshotWorkspace after every exec. Same contract
-// E2BExecutor honors.
+// IsRemoteWorkspace 将此执行器标记为云托管，
+// 以便 LifecyclePool 在每次 exec 后运行 SnapshotWorkspace。
+// 与 E2BExecutor 遵循的相同契约。
 func (e *BoxliteExecutor) IsRemoteWorkspace() {}
 
-// SnapshotWorkspace downloads /workspace as a tar via the Files API and
-// returns the (path → bytes) map the LifecyclePool needs to mirror
-// sandbox-side writes back to the durable workspace.Store.
+// SnapshotWorkspace 通过 Files API 将 /workspace 作为 tar 下载，
+// 并返回 LifecyclePool 需要将沙箱端写入镜像回持久化 workspace.Store 的
+//（路径 → 字节）映射。
 func (e *BoxliteExecutor) SnapshotWorkspace(ctx context.Context) (map[string][]byte, error) {
 	dlCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -783,9 +771,8 @@ func (e *BoxliteExecutor) SnapshotWorkspace(ctx context.Context) (map[string][]b
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
-		// Server tars the requested directory's contents; the entry
-		// names are relative to /workspace already in well-behaved
-		// implementations, but be defensive and strip both forms.
+		// 服务器将请求的目录内容打包成 tar；在表现良好的实现中，
+		// 条目名称已经是相对于 /workspace 的，但要防御性地剥离两种形式。
 		name := strings.TrimPrefix(hdr.Name, "./")
 		name = strings.TrimPrefix(name, "/")
 		name = strings.TrimPrefix(name, "workspace/")
@@ -829,7 +816,7 @@ func (e *BoxliteExecutor) Close() error {
 	return nil
 }
 
-// BoxliteExecutorPool manages per-(agent, project, session) Boxlite boxes.
+// BoxliteExecutorPool 管理每个（代理、项目、会话）的 Boxlite box。
 type BoxliteExecutorPool struct {
 	mu        sync.Mutex
 	executors map[string]*BoxliteExecutor
@@ -843,13 +830,13 @@ type BoxliteExecutorPool struct {
 	workspace workspace.Store
 }
 
-// Backend on the pool mirrors BoxliteExecutor.Backend so the LifecyclePool
-// can surface the provider identity without resolving a lazy executor.
+// 池上的 Backend 镜像 BoxliteExecutor.Backend，以便 LifecyclePool
+// 无需解析延迟执行器即可显示提供者身份。
 func (p *BoxliteExecutorPool) Backend() string { return "boxlite" }
 
-// NewBoxliteExecutorPool constructs a Boxlite-backed pool. Defaults match
-// the public Boxlite Cloud — operators can override URL/prefix/clientID
-// for self-hosted runners or staging environments.
+// NewBoxliteExecutorPool 构造一个 Boxlite 后端池。
+// 默认值与公共 Boxlite Cloud 匹配——操作员可以为自行托管的运行器
+// 或暂存环境覆盖 URL/prefix/clientID。
 func NewBoxliteExecutorPool(baseURL, prefix, clientID, apiKey, image, home string, timeout time.Duration) *BoxliteExecutorPool {
 	if baseURL == "" {
 		baseURL = defaultBoxliteURL
@@ -875,8 +862,8 @@ func NewBoxliteExecutorPool(baseURL, prefix, clientID, apiKey, image, home strin
 	}
 }
 
-// SetWorkspace plugs in the workspace.Store whose contents should be
-// mirrored to /workspace on every fresh box. Mirrors E2BExecutorPool.
+// SetWorkspace 插入 workspace.Store，其内容应镜像到每个新 box 上的
+// /workspace。镜像 E2BExecutorPool。
 func (p *BoxliteExecutorPool) SetWorkspace(ws workspace.Store) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

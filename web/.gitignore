@@ -1,6 +1,6 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# 参见 https://help.github.com/articles/ignoring-files/ 了解更多关于忽略文件的信息。
 
-# dependencies
+# 依赖
 /node_modules
 /.pnp
 .pnp.*
@@ -10,35 +10,35 @@
 !.yarn/releases
 !.yarn/versions
 
-# testing
+# 测试
 /coverage
 
 # next.js
 /.next/
 /out/
 
-# production
+# 生产
 /build
 
-# misc
+# 杂项
 .DS_Store
 *.pem
 
-# debug
+# 调试
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# 环境变量文件（如需提交可选）
 .env*
 
 # vercel
 .vercel
 
-# typescript
+# TypeScript
 *.tsbuildinfo
 next-env.d.ts
 
-# drizzle-kit studio scratch config (auto-generated)
+# drizzle-kit studio 脚手架配置（自动生成）
 drizzle.config.ts

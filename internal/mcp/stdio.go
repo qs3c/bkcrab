@@ -11,7 +11,7 @@ import (
 	"sync"
 )
 
-// StdioClient implements the MCP client for stdio-based servers.
+// StdioClient 实现了基于 stdio 的 MCP 客户端。
 type StdioClient struct {
 	command string
 	args    []string
@@ -23,7 +23,7 @@ type StdioClient struct {
 	nextID  int
 }
 
-// NewStdioClient creates a new stdio MCP client.
+// NewStdioClient 创建一个新的 stdio MCP 客户端。
 func NewStdioClient(command string, args []string, env map[string]string) *StdioClient {
 	return &StdioClient{
 		command: command,
@@ -33,11 +33,11 @@ func NewStdioClient(command string, args []string, env map[string]string) *Stdio
 	}
 }
 
-// Connect starts the subprocess and initializes the MCP session.
+// Connect 启动子进程并初始化 MCP 会话。
 func (c *StdioClient) Connect() error {
 	c.cmd = exec.Command(c.command, c.args...)
 
-	// Set environment variables
+	// 设置环境变量
 	c.cmd.Env = os.Environ()
 	for k, v := range c.env {
 		if strings.HasPrefix(v, "$") {
@@ -59,13 +59,13 @@ func (c *StdioClient) Connect() error {
 
 	c.cmd.Stderr = os.Stderr
 	c.scanner = bufio.NewScanner(stdout)
-	c.scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024) // 1MB buffer
+	c.scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024) // 1MB 缓冲区
 
 	if err := c.cmd.Start(); err != nil {
 		return fmt.Errorf("start process: %w", err)
 	}
 
-	// Send initialize
+	// 发送初始化请求
 	_, err = c.sendRequest("initialize", initializeParams{
 		ProtocolVersion: "2024-11-05",
 		ClientInfo:      clientInfo{Name: "bkclaw", Version: "0.1.0"},
@@ -97,7 +97,7 @@ func (c *StdioClient) sendRequest(method string, params interface{}) (*jsonRPCRe
 		return nil, fmt.Errorf("write to stdin: %w", err)
 	}
 
-	// Read response lines until we get a JSON-RPC response with matching ID
+	// 持续读取响应行，直到收到匹配 ID 的 JSON-RPC 响应
 	for c.scanner.Scan() {
 		line := c.scanner.Bytes()
 		if len(line) == 0 {
@@ -106,7 +106,7 @@ func (c *StdioClient) sendRequest(method string, params interface{}) (*jsonRPCRe
 
 		var resp jsonRPCResponse
 		if err := json.Unmarshal(line, &resp); err != nil {
-			continue // skip non-JSON lines (e.g. stderr leaking)
+			continue // 跳过非 JSON 行（例如 stderr 泄漏）
 		}
 
 		if resp.ID == id {
@@ -123,7 +123,7 @@ func (c *StdioClient) sendRequest(method string, params interface{}) (*jsonRPCRe
 	return nil, fmt.Errorf("process exited without response")
 }
 
-// ListTools returns the list of tools available on the MCP server.
+// ListTools 返回 MCP 服务器上可用的工具列表。
 func (c *StdioClient) ListTools() ([]ToolDef, error) {
 	resp, err := c.sendRequest("tools/list", struct{}{})
 	if err != nil {
@@ -138,7 +138,7 @@ func (c *StdioClient) ListTools() ([]ToolDef, error) {
 	return result.Tools, nil
 }
 
-// CallTool calls a tool on the MCP server.
+// CallTool 调用 MCP 服务器上的某个工具。
 func (c *StdioClient) CallTool(name string, args json.RawMessage) (string, error) {
 	resp, err := c.sendRequest("tools/call", toolCallParams{
 		Name:      name,
@@ -162,7 +162,7 @@ func (c *StdioClient) CallTool(name string, args json.RawMessage) (string, error
 	return strings.Join(texts, "\n"), nil
 }
 
-// Close stops the subprocess.
+// Close 停止子进程。
 func (c *StdioClient) Close() error {
 	if c.stdin != nil {
 		c.stdin.Close()

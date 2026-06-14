@@ -11,8 +11,8 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// SearxNG is the odd one out: no API key, just an endpoint URL of a
-// self-hosted SearxNG instance. Config.Endpoint is required.
+// SearxNG 是特例：不需要 API 密钥，只需要自托管 SearxNG 实例的端点 URL。
+// Config.Endpoint 是必需的。
 type SearxNG struct{}
 
 func (SearxNG) Category() string { return Category }
@@ -38,7 +38,7 @@ func (s *SearxNG) Execute(ctx context.Context, req toolproviders.Request) (toolp
 	q.Set("q", a.Query)
 	q.Set("format", "json")
 	httpReq.URL.RawQuery = q.Encode()
-	// Most SearxNG deployments want a browser-like UA; an empty UA gets 403.
+	// 大多数 SearxNG 部署需要类似浏览器的 UA；空的 UA 会返回 403。
 	httpReq.Header.Set("User-Agent", "bkclaw/1.0")
 
 	resp, err := http.DefaultClient.Do(httpReq)

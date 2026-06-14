@@ -6,28 +6,28 @@ import (
 	"time"
 )
 
-// FTSStore manages a SQLite FTS5 index for conversation history.
+// FTSStore 管理用于会话历史记录的SQLite FTS5索引。
 type FTSStore struct {
 	db *sql.DB
 }
 
-// FTSResult is a single full-text search hit.
+// FTSResult 是单个全文搜索命中结果。
 type FTSResult struct {
 	Content   string
 	Timestamp time.Time
 	AgentID   string
 	ChatID    string
-	Snippet   string  // FTS5 snippet() function output
+	Snippet   string  // FTS5 snippet() 函数输出
 	Rank      float64
 }
 
-// NewFTSStore opens (or creates) a SQLite database at dbPath and returns an FTSStore.
+// NewFTSStore 打开（或创建）位于dbPath的SQLite数据库并返回一个FTSStore实例。
 func NewFTSStore(dbPath string) (*FTSStore, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open fts db: %w", err)
 	}
-	db.SetMaxOpenConns(1) // SQLite single-writer
+	db.SetMaxOpenConns(1) // SQLite 单写入者
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping fts db: %w", err)
@@ -35,7 +35,7 @@ func NewFTSStore(dbPath string) (*FTSStore, error) {
 	return &FTSStore{db: db}, nil
 }
 
-// Init creates the FTS5 virtual table and the shadow content table if they don't exist.
+// Init 创建FTS5虚拟表和影子内容表（如果它们尚不存在）。
 func (f *FTSStore) Init() error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS messages_content (
@@ -54,7 +54,7 @@ func (f *FTSStore) Init() error {
 			content_rowid='id',
 			tokenize='porter unicode61'
 		)`,
-		// Triggers to keep FTS in sync with content table
+		// 触发器用于保持FTS与内容表同步
 		`CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages_content BEGIN
 			INSERT INTO messages_fts(rowid, content, timestamp, agent_id, chat_id)
 			VALUES (new.id, new.content, new.timestamp, new.agent_id, new.chat_id);
@@ -72,7 +72,7 @@ func (f *FTSStore) Init() error {
 	return nil
 }
 
-// Index adds a message to the FTS index.
+// Index 将一条消息添加到FTS索引中。
 func (f *FTSStore) Index(agentID, chatID, role, content string, ts time.Time) error {
 	_, err := f.db.Exec(
 		`INSERT INTO messages_content (content, timestamp, agent_id, chat_id) VALUES (?, ?, ?, ?)`,
@@ -81,7 +81,7 @@ func (f *FTSStore) Index(agentID, chatID, role, content string, ts time.Time) er
 	return err
 }
 
-// Search performs a full-text search and returns ranked results.
+// Search 执行全文搜索并返回排序后的结果。
 func (f *FTSStore) Search(query string, limit int) ([]FTSResult, error) {
 	if limit <= 0 {
 		limit = 10
@@ -119,7 +119,7 @@ func (f *FTSStore) Search(query string, limit int) ([]FTSResult, error) {
 	return results, nil
 }
 
-// Close closes the underlying database.
+// Close 关闭底层数据库。
 func (f *FTSStore) Close() error {
 	return f.db.Close()
 }

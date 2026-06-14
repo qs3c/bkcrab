@@ -109,38 +109,31 @@ type WeChat struct {
 	bufPath       string
 	failures      int
 
-	// emptyBufExpiredCount counts consecutive SessionExpired responses
-	// where the supplied get_updates_buf was already empty. We don't
-	// declare the bot token dead until this hits
-	// wechatEmptyBufExpiredThreshold so a legitimate "fresh process /
-	// dropped buf file" first call isn't misread as a permanent expiry.
-	// Reset to 0 on any successful response.
+	// emptyBufExpiredCount 统计连续返回 SessionExpired 且 get_updates_buf 已为空的响应次数。
+	// 在达到 wechatEmptyBufExpiredThreshold 之前不宣布 bot token 死亡，
+	// 这样合法的"新进程 / buf 文件丢失"的首次调用不会被误判为永久过期。
+	// 任何成功响应时重置为 0。
 	emptyBufExpiredCount int
 
-	// Per-chat ContextToken cache. The /ilink/bot/getconfig call that
-	// mints typing_ticket wants the latest context_token from the user's
-	// inbound message; we don't get one in SendTyping(chatID) so we
-	// remember the most recent token off each inbound and use it on the
-	// way back. Empty string is allowed (getconfig has it as optional)
-	// — the cache is best-effort, not a hard prerequisite.
+	// 每聊天 ContextToken 缓存。生成 typing_ticket 的 /ilink/bot/getconfig 调用
+	// 需要用户入站消息中最新的 context_token；SendTyping(chatID) 不会提供，
+	// 因此我们记住每个入站中最新的 token，并在返回时使用。
+	// 允许空字符串（getconfig 将其视为可选）——缓存是尽力而为，非硬性前提。
 	ctxTokensMu sync.Mutex
 	ctxTokens   map[string]string
 
-	// onExpired fires once when the iLink server has confirmed the bot
-	// token is dead (operator must rescan). Set by the gateway so it
-	// can disable the configs row + unregister the adapter; without it
-	// the loop would log the same warning every 5s forever.
+	// onExpired 在 iLink 服务端确认 bot token 已死亡时触发一次（操作员必须重新扫码）。
+	// 由网关设置，以便可以禁用配置行并注销适配器；否则循环会永远每隔 5 秒记录一次相同警告。
 	onExpired func(accountID string)
 }
 
-// SetOnExpired registers a callback that fires when the bot token is
-// confirmed dead. The callback runs once; Start exits afterwards.
+// SetOnExpired 注册一个回调，在 bot token 被确认死亡时触发。
+// 回调运行一次；之后 Start 退出。
 func (w *WeChat) SetOnExpired(fn func(accountID string)) {
 	w.onExpired = fn
 }
 
-// NewWeChat creates a new WeChat channel adapter from a connected
-// account's stored credentials.
+// NewWeChat 从已连接账号的存储凭据创建新的微信渠道适配器。
 func NewWeChat(botToken, baseURL, ilinkUserID, accountID string, mb *bus.MessageBus) (*WeChat, error) {
 	if botToken == "" || accountID == "" {
 		return nil, fmt.Errorf("wechat: botToken and accountID required")
@@ -162,12 +155,10 @@ func NewWeChat(botToken, baseURL, ilinkUserID, accountID string, mb *bus.Message
 	}, nil
 }
 
-// wechatBufPath returns the on-disk location for this account's
-// persisted get_updates_buf. AccountIDs contain `@` (e.g.
-// `4090de018d12@im.bot`) which is filesystem-safe on every OS we ship
-// to, but we replace path separators defensively in case iLink ever
-// hands one back. Returns "" when HomeDir() fails — caller treats that
-// as "persistence disabled, fall back to in-process state."
+// wechatBufPath 返回此账号持久化 get_updates_buf 在磁盘上的位置。
+// AccountID 包含 `@`（例如 `4090de018d12@im.bot`），在我们所支持的每个
+// 操作系统上都是文件系统安全的，但以防 iLink 传回路径分隔符，我们防御性地
+// 替换它们。HomeDir() 失败时返回 ""——调用方将其视为"持久化已禁用，回退到进程内状态"。
 func wechatBufPath(accountID string) string {
 	home, err := config.HomeDir()
 	if err != nil || home == "" {
@@ -178,11 +169,9 @@ func wechatBufPath(accountID string) string {
 	return filepath.Join(home, "state", "wechat", safe+".json")
 }
 
-// loadBuf populates getUpdatesBuf from disk. Missing file → no-op
-// (first run for this account, or state dir was wiped). Corrupt file
-// → log + ignore (we'll just sync from "" once, which is fine — the
-// softened expiry threshold prevents a single empty-buf reply from
-// purging the account).
+// loadBuf 从磁盘加载 getUpdatesBuf。文件不存在→空操作
+//（此账号首次运行，或状态目录被清空）。文件损坏→记录日志并忽略
+//（我们只会从 "" 同步一次，这没问题——宽松的过期阈值防止单次空 buf 回复清除账号）。
 func (w *WeChat) loadBuf() {
 	if w.bufPath == "" {
 		return
@@ -210,10 +199,8 @@ func (w *WeChat) loadBuf() {
 	}
 }
 
-// saveBuf writes the current getUpdatesBuf to disk. Best-effort: errors
-// are logged but don't abort the poll loop — losing the buf only costs
-// us one fresh-sync round next start, and the softened expiry threshold
-// keeps that from triggering a purge.
+// saveBuf 将当前的 getUpdatesBuf 写入磁盘。尽力而为：错误会被记录但不会中止轮询循环——
+// 丢失 buf 只会在下次启动时多一次全新同步，宽松的过期阈值防止其触发清除。
 func (w *WeChat) saveBuf() {
 	if w.bufPath == "" {
 		return
@@ -232,9 +219,8 @@ func (w *WeChat) saveBuf() {
 	}
 }
 
-// clearBuf removes the on-disk buf file. Called after we declare the
-// token dead so a manually-rescanned-and-relabeled account doesn't
-// inherit the dead session's stale cursor on the next process start.
+// clearBuf 移除磁盘上的 buf 文件。在宣布 token 死亡后调用，
+// 以便手动重新扫码并重新标记的账号不会在下次进程启动时继承已死会话的过期游标。
 func (w *WeChat) clearBuf() {
 	if w.bufPath == "" {
 		return
@@ -249,12 +235,10 @@ func (w *WeChat) Name() string        { return "wechat" }
 func (w *WeChat) AccountID() string   { return w.accountID }
 func (w *WeChat) BotUsername() string { return w.accountID }
 
-// Start runs the long-poll loop until ctx is cancelled. Mirrors the
-// retry / session-recovery semantics of the upstream weclaw monitor:
-//   - any GetUpdates error → exponential backoff up to 60s
-//   - errcode -14 (session expired) → reset sync buf and retry; if
-//     the sync buf was already empty the bot token itself is dead
-//     (operator needs to re-scan).
+// Start 运行长轮询循环直到 ctx 被取消。镜像上游 weclaw monitor 的重试/会话恢复语义：
+//   - 任何 GetUpdates 错误 → 指数退避最长 60 秒
+//   - errcode -14（会话过期）→ 重置同步 buf 并重试；如果同步 buf 已为空，则 bot token 本身已死亡
+//     （操作员需要重新扫码）。
 func (w *WeChat) Start(ctx context.Context) error {
 	w.loadBuf()
 	slog.Info("wechat long-poll loop starting",
@@ -364,17 +348,13 @@ func (w *WeChat) Start(ctx context.Context) error {
 	}
 }
 
-// dispatchInbound flattens a iLink message into a bus.InboundMessage.
-// Filter rules:
-//   - drop messages from the bot itself (MessageType=2). They're echoes
-//     of our own sends.
-//   - drop in-progress streaming messages (MessageState != finish);
-//     iLink sends partial deltas during voice transcription, we only
-//     want the final.
-//   - text + image are surfaced; voice is surfaced as the
-//     speech-to-text transcription iLink already provides; video / file
-//     are dropped (we don't have download/decrypt support yet — adding
-//     it requires AES-128-ECB CDN handling, deferred).
+// dispatchInbound 将 iLink 消息展平为 bus.InboundMessage。
+// 过滤规则：
+//   - 丢弃来自 bot 自身的消息（MessageType=2）。它们是我们自己发送的回声。
+//   - 丢弃正在进行的流式消息（MessageState != finish）；
+//     iLink 在语音转录期间发送部分增量，我们只想要最终结果。
+//   - 文本 + 图片被展示；语音以 iLink 已提供的语音转文字转录展示；
+//     视频/文件被丢弃（我们尚未支持下载/解密——添加需要 AES-128-ECB CDN 处理，已推迟）。
 func (w *WeChat) dispatchInbound(m wechatMessage) {
 	if m.MessageType != wechatMsgTypeUser {
 		return
@@ -438,52 +418,36 @@ func (w *WeChat) dispatchInbound(m wechatMessage) {
 	}
 }
 
-// Send sends a plain text message — the simple form. Used by tools
-// that don't need rich formatting.
+// Send 发送纯文本消息——简单形式。由不需要富格式的工具使用。
 func (w *WeChat) Send(chatID, text string) error {
 	return w.SendMessage(bus.OutboundMessage{ChatID: chatID, Text: text})
 }
 
-// SendMessage posts a reply to a iLink user. iLink doesn't have native
-// markdown, inline keyboards, or message edits, so most of the
-// OutboundMessage fields are intentionally ignored — we honor Text,
-// ChatID, MediaItems, and the per-chat ContextToken cached from the
-// last inbound (used both by SendTyping and by the image-send path).
+// SendMessage 向 iLink 用户发送回复。iLink 没有原生的 markdown、内联键盘或消息编辑，
+// 因此大部分 OutboundMessage 字段被有意忽略——我们只认 Text、ChatID、MediaItems 以及
+// 从上一次入站缓存的每聊天 ContextToken（SendTyping 和图片发送路径都使用）。
 //
-// Text and images are sent as separate iLink messages: a text-only
-// sendmessage first (if there's text), then one sendmessage per image
-// after each has been uploaded to the iLink CDN. Failures on individual
-// images are logged but don't abort the rest of the reply — partial
-// delivery is better than dropping the whole turn for one bad upload.
+// 文本和图片作为独立的 iLink 消息发送：先发送纯文本 sendmessage（如果有文本），
+// 然后每个图片上传到 iLink CDN 后各发送一条 sendmessage。单个图片的失败会被记录
+// 但不会中止其余回复——部分投递优于因一次上传失败而丢弃整个轮次。
 //
-// Multi-bubble replies: when the agent emits SplitMessageMarker, the
-// text is split into N bubbles, each sent as its own sendmessage.
-// Failure on one chunk stops the chain — partial delivery is preferable
-// to silently dropping later bubbles, but if iLink itself errored we
-// don't want to keep hammering the API.
+// 多气泡回复：当 agent 发出 SplitMessageMarker 时，文本被拆分为 N 个气泡，
+// 每个作为独立的 sendmessage 发送。一个块失败会停止链式发送——部分投递优于
+// 静默丢弃后续气泡，但如果 iLink 本身出错，我们不会继续猛打 API。
 func (w *WeChat) SendMessage(msg bus.OutboundMessage) error {
 	if msg.Text == "" && len(msg.MediaItems) == 0 {
 		return nil
 	}
-	// iLink wants markdown stripped — clients render plain text and
-	// will literally show *bold* / [link](url) syntax. Strip it
-	// best-effort, same way weclaw's MarkdownToPlainText helper does.
-	// FlattenMarkdownTables runs FIRST so GFM tables collapse to
-	// "label: value" / middle-dot lines BEFORE wechatStripMarkdown
-	// throws away the rest of the markdown — running it after would
-	// leave a bare `|cell|cell|` blob that's strictly worse.
-	// Splitting on SplitMessageMarker happens at the dispatcher layer
-	// (internal/channels/manager.go: routeOutbound) so all IM adapters
-	// honor it uniformly — by the time SendMessage gets called here,
-	// msg.Text is a single bubble's worth of content. The dispatcher
-	// also collapses stray markers to newlines when AllowSplit is off,
-	// so we never see them here.
+	// iLink 需要去除 markdown——客户端渲染纯文本，会直接显示 *bold* / [link](url) 语法。
+	// 尽力去除，方式与 weclaw 的 MarkdownToPlainText 辅助函数相同。
+	// FlattenMarkdownTables 先运行，使 GFM 表格在 wechatStripMarkdown 丢弃其余 markdown
+	// 之前折叠为 "label: value" / 中点行——在之后运行会留下更糟糕的裸 `|cell|cell|` 块。
+	// 在 SplitMessageMarker 处拆分发生在调度器层（internal/channels/manager.go: routeOutbound），
+	// 因此所有 IM 适配器统一处理——到 SendMessage 被调用时，msg.Text 已经是一个气泡的内容。
+	// 当 AllowSplit 关闭时，调度器还将杂散标记折叠为换行，因此我们在这里永远不会看到它们。
 	plain := wechatStripMarkdown(FlattenMarkdownTables(msg.Text))
-	// Skip the text leg when the body has nothing visible left after
-	// markdown strip — caught the case where a multi-bubble split
-	// produced a chunk whose only content was whitespace or markdown
-	// punctuation, which `sendTextOnly` would otherwise post as a
-	// blank bubble alongside any attached media.
+	// 当正文在 markdown 去除后没有可见内容时跳过文本发送——捕获了多气泡拆分产生的块
+	// 仅包含空白或 markdown 标点的情况，否则 `sendTextOnly` 会将其作为空白气泡随附件一起发送。
 	if strings.TrimSpace(plain) != "" {
 		if err := w.sendTextOnly(msg.ChatID, plain); err != nil {
 			return err
@@ -502,9 +466,8 @@ func (w *WeChat) SendMessage(msg bus.OutboundMessage) error {
 	return nil
 }
 
-// sendTextOnly is the simple text-message path used by SendMessage when
-// there is any plain text to send. Kept distinct from sendImage so each
-// path can carry its own timeout + payload shape.
+// sendTextOnly 是 SendMessage 在有纯文本发送时使用的简单文本消息路径。
+// 与 sendImage 保持独立，以便每条路径可以有各自的超时 + 载荷结构。
 func (w *WeChat) sendTextOnly(chatID, plain string) error {
 	w.ctxTokensMu.Lock()
 	contextToken := w.ctxTokens[chatID]
@@ -539,17 +502,14 @@ func (w *WeChat) sendTextOnly(chatID, plain string) error {
 	return nil
 }
 
-// SendTyping shows a "对方正在输入..." indicator on the user's WeChat
-// while the agent is processing the turn. iLink wants two calls:
+// SendTyping 在 agent 处理轮次时向用户的微信显示"对方正在输入..."指示器。
+// iLink 需要两次调用：
 //
-//  1. /ilink/bot/getconfig with the recipient's ilink_user_id (and
-//     optionally their last context_token) to mint a typing_ticket;
-//  2. /ilink/bot/sendtyping with that ticket and status=1.
+//  1. /ilink/bot/getconfig，使用接收者的 ilink_user_id（可选地加上他们最近的 context_token）来生成 typing_ticket；
+//  2. /ilink/bot/sendtyping，使用该 ticket 和 status=1。
 //
-// The gateway pings this every 5s for the duration of a turn — same
-// cadence as Telegram's sendChatAction. Errors are logged at Debug and
-// returned, but the gateway treats them as best-effort, so a hiccup
-// doesn't fail the user-visible reply.
+// 网关在轮次持续期间每 5 秒 ping 一次此函数——与 Telegram 的 sendChatAction 相同节奏。
+// 错误以 Debug 级别记录并返回，但网关将其视为尽力而为，因此小故障不会导致用户可见的回复失败。
 func (w *WeChat) SendTyping(chatID string) error {
 	if chatID == "" {
 		return nil
@@ -600,13 +560,11 @@ func (w *WeChat) SendTyping(chatID string) error {
 	return nil
 }
 
-// --- HTTP plumbing ---
+// --- HTTP 管线 ---
 
-// getUpdates is the long-poll. Server holds the request open up to
-// `longpolling_timeout_ms` (typically 30s) and returns either pending
-// messages or an empty Msgs slice. We give the request 5s of slack
-// over the server-side timeout so client-side cancellation is
-// distinguishable from server-side empty-batch.
+// getUpdates 是长轮询。服务端保持请求打开最长 `longpolling_timeout_ms`（通常 30 秒），
+// 返回待处理消息或空的 Msgs 切片。我们给请求在服务端超时基础上增加 5 秒的松弛时间，
+// 以便客户端取消能够与服务端空批次区分开。
 func (w *WeChat) getUpdates(ctx context.Context, buf string) (*wechatGetUpdatesResponse, error) {
 	body := wechatGetUpdatesRequest{
 		GetUpdatesBuf: buf,
@@ -661,32 +619,30 @@ func (w *WeChat) calcBackoff() time.Duration {
 	return d
 }
 
-// wechatGenerateUIN produces the randomized base64 string iLink wants
-// in the X-WECHAT-UIN header. The upstream protocol documents it as
-// "anything stable-ish per process"; we generate once at adapter
-// construction.
+// wechatGenerateUIN 生成 iLink 在 X-WECHAT-UIN 头部中需要的随机化 base64 字符串。
+// 上游协议将其记录为"每进程大致稳定即可"；我们在适配器构造时生成一次。
 func wechatGenerateUIN() string {
 	var n uint32
 	_ = binary.Read(rand.Reader, binary.LittleEndian, &n)
 	return base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d", n)))
 }
 
-// wechatStripMarkdown is a small best-effort plain-text converter so
-// LLM-emitted markdown doesn't show up as raw `*foo*` / `### bar` in
-// WeChat. Not a full parser — we only handle the common offenders.
+// wechatStripMarkdown 是一个小型尽力而为的纯文本转换器，
+// 使 LLM 发出的 markdown 不会在微信中显示为原始的 `*foo*` / `### bar`。
+// 非完整解析器——我们只处理常见的违规项。
 func wechatStripMarkdown(text string) string {
 	if text == "" {
 		return ""
 	}
 	out := text
-	// Strip ATX headers at line starts
+	// 去除行首的 ATX 标题
 	for _, prefix := range []string{"### ", "## ", "# "} {
 		out = bytesReplaceAtLineStart(out, prefix, "")
 	}
-	// Bold/italic markers — drop the markers themselves
+	// 粗体/斜体标记——删除标记本身
 	out = bytesReplaceAll(out, "**", "")
 	out = bytesReplaceAll(out, "__", "")
-	// Inline code backticks — drop
+	// 内联代码反引号——去除
 	out = bytesReplaceAll(out, "```", "")
 	out = bytesReplaceAll(out, "`", "")
 	return out
@@ -737,7 +693,7 @@ func indexOf(s, sub string) int {
 	return -1
 }
 
-// --- Wire types (iLink protocol shape, kept private to this package) ---
+// --- 线路类型（iLink 协议结构，对此包保持私有） ---
 
 type wechatBaseInfo struct {
 	ChannelVersion string `json:"channel_version,omitempty"`
@@ -840,20 +796,17 @@ type wechatSendTypingResponse struct {
 	ErrMsg string `json:"errmsg,omitempty"`
 }
 
-// --- CDN image upload + send (mirrors weclaw/messaging/cdn.go + media.go) ---
+// --- CDN 图片上传 + 发送（镜像 weclaw/messaging/cdn.go + media.go） ---
 //
-// iLink's image flow is two-leg:
-//   1. POST /ilink/bot/getuploadurl to mint a one-shot CDN upload URL
-//      (the bot supplies a random filekey + AES-128 key + plaintext
-//      md5; server returns either a full URL or just a query param to
-//      tack onto the well-known CDN endpoint).
-//   2. POST the AES-128-ECB-encrypted bytes to that URL; server replies
-//      with an X-Encrypted-Param header that becomes the
-//      ImageItem.media.encrypt_query_param for the eventual sendmessage.
+// iLink 的图片流程分为两步：
+//   1. POST /ilink/bot/getuploadurl 生成一次性 CDN 上传 URL
+//      （bot 提供随机的 filekey + AES-128 密钥 + 明文 md5；服务端返回完整 URL
+//      或仅返回查询参数以附加到已知的 CDN 端点）。
+//   2. 将 AES-128-ECB 加密的字节 POST 到该 URL；服务端回复 X-Encrypted-Param 头部，
+//      该头部成为最终 sendmessage 的 ImageItem.media.encrypt_query_param。
 //
-// AES key wire format is a base64-encoded *hex string* (not the raw
-// 16 bytes) — quirk of the iLink protocol, preserved here for
-// compatibility with the upstream daemon.
+// AES 密钥线路格式是 base64 编码的 *十六进制字符串*（不是原始的 16 字节）——
+// iLink 协议的特性，此处保留以与上游守护进程兼容。
 
 type wechatImageItem struct {
 	URL     string           `json:"url,omitempty"`
@@ -886,22 +839,20 @@ type wechatGetUploadURLResponse struct {
 	UploadFullURL string `json:"upload_full_url,omitempty"`
 }
 
-// wechatUploadedFile is the post-upload handle: enough to mint a
-// MediaInfo reference (image/video/file) for the follow-up sendmessage.
+// wechatUploadedFile 是上传后的句柄：足够为后续 sendmessage 创建
+// MediaInfo 引用（图片/视频/文件）。
 type wechatUploadedFile struct {
 	DownloadParam string
 	AESKeyHex     string
-	FileSize      int // plaintext size — needed by FileItem.Len
+	FileSize      int // 明文大小——FileItem.Len 需要
 	CipherSize    int
 }
 
-// sendMedia uploads one MediaItem's bytes to the iLink CDN and posts a
-// sendmessage referencing the result. The MediaItem's ContentType /
-// Filename pick the wire shape: image (type=2), video (type=5), or file
-// (type=4) for everything else (including audio — outbound voice items
-// need codec/sample-rate metadata we don't reliably have, and sending
-// audio as a file still plays back inline in WeChat). Mirrors the
-// dispatcher in upstream weclaw/messaging/media.go.
+// sendMedia 将 MediaItem 的字节上传到 iLink CDN 并发布引用结果的 sendmessage。
+// MediaItem 的 ContentType / Filename 选择线路形状：图片（type=2）、视频（type=5）
+// 或其他所有类型为文件（type=4）（包括音频——出站语音项需要我们没有可靠获得的
+// 编解码器/采样率元数据，将音频作为文件发送仍然可以在微信中内联播放）。
+// 镜像上游 weclaw/messaging/media.go 中的调度器。
 func (w *WeChat) sendMedia(chatID string, item bus.MediaItem) error {
 	cdnMediaType, itemType := classifyWeChatMedia(item)
 
@@ -981,10 +932,9 @@ func (w *WeChat) sendMedia(chatID string, item bus.MediaItem) error {
 	return nil
 }
 
-// classifyWeChatMedia decides how to send a MediaItem on iLink: image,
-// video, or file (default). Prefers MediaItem.ContentType when set;
-// otherwise infers from the filename extension. Audio falls through to
-// file — matches upstream weclaw's classifyMedia behavior.
+// classifyWeChatMedia 决定如何在 iLink 上发送 MediaItem：图片、视频或文件（默认）。
+// 优先使用 MediaItem.ContentType（已设置时）；否则从文件扩展名推断。
+// 音频归入文件——匹配上游 weclaw 的 classifyMedia 行为。
 func classifyWeChatMedia(item bus.MediaItem) (cdnMediaType int, itemType int) {
 	ct := strings.ToLower(item.ContentType)
 	if ct == "" {
@@ -1015,9 +965,9 @@ func isWeChatVideoExt(name string) bool {
 	return false
 }
 
-// uploadToCDN handles the AES-encrypted CDN upload leg for any media
-// type. `mediaType` is one of wechatCDNMediaType{Image,Video,File} and
-// determines how iLink's CDN classifies + serves the bytes later.
+// uploadToCDN 处理任何媒体类型的 AES 加密 CDN 上传环节。
+// `mediaType` 是 wechatCDNMediaType{Image,Video,File} 之一，
+// 决定 iLink 的 CDN 随后如何分类和提供这些字节。
 func (w *WeChat) uploadToCDN(ctx context.Context, toUserID string, data []byte, mediaType int) (*wechatUploadedFile, error) {
 	filekey := make([]byte, 16)
 	aeskey := make([]byte, 16)
@@ -1058,8 +1008,8 @@ func (w *WeChat) uploadToCDN(ctx context.Context, toUserID string, data []byte, 
 		return nil, fmt.Errorf("encrypt: %w", err)
 	}
 
-	// Server may hand back a full upload URL or just a query param;
-	// in the latter case construct against the well-known CDN host.
+	// 服务端可能返回完整上传 URL 或仅返回查询参数；
+	// 后者情况下根据已知的 CDN 主机构造 URL。
 	cdnURL := strings.TrimSpace(upResp.UploadFullURL)
 	if cdnURL == "" {
 		if upResp.UploadParam == "" {
@@ -1081,10 +1031,9 @@ func (w *WeChat) uploadToCDN(ctx context.Context, toUserID string, data []byte, 
 	}, nil
 }
 
-// wechatUploadCDNBytes POSTs the AES-encrypted payload to the CDN and
-// returns the X-Encrypted-Param header from the response — the opaque
-// token the bot later embeds as encrypt_query_param so the recipient's
-// WeChat client can fetch + decrypt.
+// wechatUploadCDNBytes 将 AES 加密的载荷 POST 到 CDN，
+// 并从响应中返回 X-Encrypted-Param 头部——bot 稍后嵌入为 encrypt_query_param 的不透明令牌，
+// 以便接收者的微信客户端可以获取并解密。
 func wechatUploadCDNBytes(ctx context.Context, encrypted []byte, cdnURL string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cdnURL, bytes.NewReader(encrypted))
 	if err != nil {

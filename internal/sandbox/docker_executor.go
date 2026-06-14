@@ -14,16 +14,15 @@ import (
 	"time"
 )
 
-// DockerExecutor wraps DockerSandbox to implement Executor. The container
-// has the user's workspace mounted at /workspace and all tool calls are
-// forwarded as docker exec commands.
+// DockerExecutor 包装 DockerSandbox 以实现 Executor。
+// 容器将用户的工作区挂载到 /workspace，所有工具调用作为 docker exec 命令转发。
 type DockerExecutor struct {
 	sb *DockerSandbox
 }
 
-// NewDockerExecutor creates a sandbox Executor backed by a Docker container.
-// workspace is the host-side directory to mount (e.g. the user's workspace
-// synced from S3, or a tmpdir for ephemeral use).
+// NewDockerExecutor 创建一个由 Docker 容器支持的沙箱 Executor。
+// workspace 是要挂载的主机端目录（例如从 S3 同步的用户工作区，
+// 或用于临时使用的 tmpdir）。
 func NewDockerExecutor(image, workspace string, policy *Policy) (*DockerExecutor, error) {
 	sb := NewDockerSandbox(image, workspace, policy)
 	if err := sb.Create(); err != nil {
@@ -40,26 +39,25 @@ func (d *DockerExecutor) Exec(ctx context.Context, command string, timeout time.
 		defer cancel()
 	}
 
-	// docker is client/daemon — exec.CommandContext only SIGKILLs the
-	// local `docker exec` CLI, which just detaches the attached client;
-	// the inner process inside the container keeps running until natural
-	// completion. To make timeouts actually take effect *inside* the
-	// container, we wrap the user command in `setsid` so it becomes a
-	// new session leader, stash its pid (== its pgid) in a marker file,
-	// and on cancel run a *separate* `docker exec` that signals the
-	// entire process group via `kill -KILL -$pgid`.
+	// docker 是客户端/守护进程模式——exec.CommandContext 只 SIGKILL
+	// 本地的 `docker exec` CLI，这只会分离附加的客户端；
+	// 容器内的内部进程继续运行直到自然完成。
+	// 为了使超时在容器*内部*实际生效，我们将用户命令包装在 `setsid` 中，
+	// 使其成为新的会话领导者，将其 pid（== 其 pgid）存储在标记文件中，
+	// 并在取消时运行一个*单独的* `docker exec`，
+	// 通过 `kill -KILL -$pgid` 信号整个进程组。
 	//
-	// This replaces the old behavior of force-removing the whole
-	// container on cancel, which preserved the workspace bind-mount but
-	// nuked any sibling daemons — most painfully camoufox-cli's headless
-	// Firefox, which takes ~3 minutes to cold-start through a proxy on
-	// the next call. Pgrp-scoped kill leaves the container — and the
-	// camoufox daemon, which Python spawned with start_new_session=True
-	// so it lives in its own session — alive.
+	// 这取代了取消时强制移除整个容器的旧行为，
+	// 旧行为保留了工作区绑定挂载但杀死了所有兄弟守护进程——
+	// 最痛苦的是 camoufox-cli 的无头 Firefox，在下次调用时
+	// 通过代理冷启动大约需要 3 分钟。
+	// 进程组范围的 kill 保留容器——以及 camoufox 守护进程
+	//（Python 使用 start_new_session=True 生成它，
+	// 因此它存在于自己的会话中）——保持活动。
 	//
-	// Command is passed via env to avoid quoting fights with the inner
-	// `sh -c`; eval re-parses it so pipes/redirects/expansions behave
-	// the same as if the caller had run `sh -c "$command"` directly.
+	// 命令通过环境变量传递，以避免与内部 `sh -c` 的引号冲突；
+	// eval 重新解析它，使得管道/重定向/展开的行为与调用者直接运行
+	// `sh -c "$command"` 相同。
 	marker := randomExecMarker()
 	pgidFile := "/tmp/fc-pgid-" + marker
 	wrapped := fmt.Sprintf(
@@ -71,9 +69,9 @@ func (d *DockerExecutor) Exec(ctx context.Context, command string, timeout time.
 	go func() {
 		select {
 		case <-execCtx.Done():
-			// Best-effort: fire a separate docker exec to kill the pgrp.
-			// 5s budget so a stuck `docker exec` here doesn't wedge the
-			// caller — if it can't reach the daemon we already lost.
+			// 尽力而为：启动一个单独的 docker exec 来杀死进程组。
+			// 5 秒预算，以便卡住的 `docker exec` 不会阻塞调用者——
+			// 如果无法到达守护进程，我们早就失败了。
 			killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer killCancel()
 			_, _ = d.sb.Exec(killCtx, fmt.Sprintf(
@@ -86,8 +84,8 @@ func (d *DockerExecutor) Exec(ctx context.Context, command string, timeout time.
 	defer close(done)
 
 	out, err := d.sb.Exec(execCtx, wrapped, "/workspace")
-	// On normal exit, the goroutine never fires — clean the marker
-	// ourselves. On timeout, the goroutine already rm'd it.
+	// 正常退出时，goroutine 从未触发——我们自己清理标记文件。
+	// 超时情况下，goroutine 已经删除了它。
 	if execCtx.Err() == nil {
 		_, _ = d.sb.Exec(context.Background(),
 			fmt.Sprintf("rm -f %s", shellQuote(pgidFile)), "")
@@ -95,8 +93,8 @@ func (d *DockerExecutor) Exec(ctx context.Context, command string, timeout time.
 	return out, err
 }
 
-// randomExecMarker returns 16 hex chars — sufficient to keep parallel
-// execs from clobbering each other's pgid files in /tmp.
+// randomExecMarker 返回 16 个十六进制字符——足以防止并行 exec
+// 相互覆盖 /tmp 中的 pgid 文件。
 func randomExecMarker() string {
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
@@ -110,12 +108,11 @@ func (d *DockerExecutor) ReadFile(ctx context.Context, path string) (string, err
 }
 
 func (d *DockerExecutor) WriteFile(ctx context.Context, path, content string) (string, error) {
-	// Pipe content via stdin instead of argv. Heredoc-in-argv (the previous
-	// implementation) sliced bytes into the docker-exec command line, which
-	// fails with "fork/exec: invalid argument" the moment content contains
-	// a NULL byte — every PNG, audio file, or other binary blob hits this
-	// because execve rejects NULs inside argv elements. stdin sidesteps the
-	// argv limit entirely.
+	// 通过 stdin 而不是 argv 传输内容。Heredoc-in-argv（先前的实现）
+	// 将字节切片到 docker-exec 命令行中，当内容包含 NULL 字节时，
+	// 立即失败并报错 "fork/exec: invalid argument"——
+	// 每个 PNG、音频文件或其他二进制 blob 都会触发此问题，
+	// 因为 execve 拒绝 argv 元素中的 NUL。stdin 完全绕过了 argv 的限制。
 	cmd := fmt.Sprintf("mkdir -p \"$(dirname %s)\" && cat > %s",
 		shellQuote(path), shellQuote(path))
 	out, err := d.sb.ExecWithStdin(ctx, cmd, "/workspace", strings.NewReader(content))
@@ -133,15 +130,13 @@ func (d *DockerExecutor) Close() error {
 	return d.sb.Close()
 }
 
-// SnapshotWorkspace walks the host-side mounted workspace dir (which is
-// bind-mounted into the container at /workspace) and returns every
-// regular file's bytes keyed by its container-relative path. Used by
-// LifecyclePool for flush-on-evict so files the agent created via
-// `exec` (not via write_file) still make it to the durable store.
+// SnapshotWorkspace 遍历主机端挂载的工作区目录（以绑定方式挂载到容器中的
+// /workspace），并返回每个常规文件的字节，以其容器相对路径为键。
+// 由 LifecyclePool 用于驱逐时刷新，以便代理通过 `exec`（而不是 write_file）
+// 创建的文件仍然进入持久化存储。
 //
-// Walking the host dir directly is faster and more reliable than doing
-// tar-over-exec: the mount already gives us a POSIX view of the same
-// bytes the sandbox sees.
+// 直接遍历主机目录比通过 exec 执行 tar 更快更可靠：
+// 挂载已经为我们提供了沙箱看到的相同字节的 POSIX 视图。
 func (d *DockerExecutor) SnapshotWorkspace(ctx context.Context) (map[string][]byte, error) {
 	root := d.sb.workspace
 	if root == "" {
@@ -175,38 +170,35 @@ func (d *DockerExecutor) SnapshotWorkspace(ctx context.Context) (map[string][]by
 	return out, nil
 }
 
-// Backend returns "docker" — used by the per-exec log line so operators
-// can confirm which provider handled a given tool call.
+// Backend 返回 "docker"——用于每执行日志行，以便操作员可以确认
+// 哪个提供者处理了给定的工具调用。
 func (d *DockerExecutor) Backend() string { return "docker" }
 
-// Ensure DockerExecutor satisfies the optional snapshot contract. A compile
-// error here would flag any accidental interface drift.
+// 确保 DockerExecutor 满足可选的快照契约。此处的编译错误将标记任何意外的接口漂移。
 var _ WorkspaceSnapshotter = (*DockerExecutor)(nil)
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-// DockerExecutorPool manages per-(agent,session) DockerExecutor instances.
+// DockerExecutorPool 管理每个（代理、会话）的 DockerExecutor 实例。
 type DockerExecutorPool struct {
 	mu        sync.Mutex
 	executors map[string]*DockerExecutor // key = poolKey(agentID, sessionID)
 	image     string
 	policy    *Policy
-	// workspaceRoot is BKCLAW_HOME — each session gets a private mount
-	// rooted at workspaceRoot/workspaces/<agentID>/sessions/<sessionID>/.
+	// workspaceRoot 是 BKCLAW_HOME——每个会话获得一个私有挂载，
+	// 根目录为 workspaceRoot/workspaces/<agentID>/sessions/<sessionID>/。
 	workspaceRoot string
 }
 
-// poolKey is the composite map key used by the executor pools. Every
-// (project, session) pair gets its own slot — including chats that
-// belong to the same project — because two project chats running in
-// parallel would otherwise share a Python kernel / shell state and
-// step on each other. The project mount itself is shared at the FS
-// level so siblings stay visible (see pool.Get for the mount logic).
+// poolKey 是执行器池使用的复合映射键。每个（项目，会话）对
+// 都有自己的槽位——包括属于同一项目的聊天——因为并行运行的两个项目聊天
+// 会共享 Python 内核/shell 状态并相互干扰。
+// 项目挂载本身在文件系统级别共享，因此兄弟会话保持可见
+//（参见 pool.Get 了解挂载逻辑）。
 //
-// Both empty falls back to the agent-shared sandbox slot for legacy
-// callers (admin shell, fixtures).
+// 两者都为空时回退到代理共享的沙箱槽位，用于旧调用者（管理员 shell、fixtures）。
 func poolKey(agentID, projectID, sessionID string) string {
 	switch {
 	case projectID != "" && sessionID != "":
@@ -220,11 +212,11 @@ func poolKey(agentID, projectID, sessionID string) string {
 	}
 }
 
-// Backend on the pool mirrors DockerExecutor.Backend so the LifecyclePool
-// can surface the provider identity without resolving a lazy executor.
+// 池上的 Backend 镜像 DockerExecutor.Backend，以便 LifecyclePool
+// 无需解析延迟执行器即可显示提供者身份。
 func (p *DockerExecutorPool) Backend() string { return "docker" }
 
-// NewDockerExecutorPool creates a pool of Docker-backed executors.
+// NewDockerExecutorPool 创建一个 Docker 后端执行器池。
 func NewDockerExecutorPool(image, workspaceRoot string, policy *Policy) *DockerExecutorPool {
 	if image == "" {
 		image = "thinkany/bkclaw-sandbox:latest"
@@ -246,28 +238,26 @@ func (p *DockerExecutorPool) Get(ctx context.Context, agentID, projectID, sessio
 		return ex, nil
 	}
 
-	// Bind-mount layout. Project chats mount the project ROOT (so
-	// siblings show up under /workspace) and cwd into their own
-	// subdir, so relative writes default to the chat's files but
-	// reads/walks see the whole project. Mirrors workspace.LocalFS:
+	// 绑定挂载布局。项目聊天挂载项目根目录（因此兄弟会话显示在 /workspace 下）
+	// 并将 cwd 设置到自己的子目录中，因此相对写入默认为聊天的文件，
+	// 但读取/遍历看到整个项目。镜像 workspace.LocalFS：
 	//
-	//   pid="p", sid="s" → mount projects/p/, workdir /workspace/s/
-	//   pid="",  sid="s" → mount sessions/s/,  workdir /workspace
-	//   pid="p", sid=""  → mount projects/p/,  workdir /workspace
-	//   both empty       → mount agent root,   workdir /workspace
+	//   pid="p", sid="s" → 挂载 projects/p/，工作目录 /workspace/s/
+	//   pid=""，  sid="s" → 挂载 sessions/s/，工作目录 /workspace
+	//   pid="p", sid=""  → 挂载 projects/p/，工作目录 /workspace
+	//   都为空       → 挂载代理根目录，工作目录 /workspace
 	//
-	// Per-chat per-container — even within the same project — so
-	// concurrent chats don't share shell state. The shared part is the
-	// FS mount, not the container.
+	// 每个聊天每个容器——即使在同一个项目中——以便并发聊天不共享 shell 状态。
+	// 共享的部分是文件系统挂载，而不是容器。
 	workspace := filepath.Join(p.workspaceRoot, "workspaces", agentID)
 	var workdir string
 	switch {
 	case projectID != "" && sessionID != "":
 		workspace = filepath.Join(workspace, "projects", projectID)
 		workdir = "/workspace/" + sessionID
-		// Pre-create the per-chat subdir on disk so docker's `-w` lands
-		// in an existing path; Docker creates missing workdirs but
-		// only as root, leaving the agent unable to write later.
+		// 在磁盘上预先创建每个聊天的子目录，以便 docker 的 `-w` 落在
+		// 现有路径上；Docker 会创建缺失的工作目录，但只能以 root 身份创建，
+		// 导致代理以后无法写入。
 		if err := os.MkdirAll(filepath.Join(workspace, sessionID), 0o755); err != nil {
 			return nil, fmt.Errorf("create chat workspace subdir: %w", err)
 		}
@@ -280,21 +270,19 @@ func (p *DockerExecutorPool) Get(ctx context.Context, agentID, projectID, sessio
 		return nil, fmt.Errorf("create workspace dir %s: %w", workspace, err)
 	}
 
-	// Build the sandbox by hand so we can wire skill mounts BEFORE
-	// Create() bakes the docker run args. Constructing through
-	// NewDockerExecutor would call Create immediately on a sandbox
-	// that hasn't been told about skill dirs.
+	// 手动构建沙箱，以便我们可以在 Create() 烘焙 docker run 参数之前
+	// 连接技能挂载。通过 NewDockerExecutor 构建会在尚未告知技能目录的
+	// 沙箱上立即调用 Create。
 	sb := NewDockerSandbox(p.image, workspace, p.policy)
 	if workdir != "" {
 		sb.SetWorkdir(workdir)
 	}
 	sb.SetSkillDirs(skillDirsForAgent(p.workspaceRoot, agentID))
-	// Bind-mount the chatter's per-user skills host dir into the
-	// sandbox at the path `npx skills add -g -y` writes to, so any
-	// skill the agent installs mid-chat lands on host disk and is
-	// visible to the next LoadSkills scan. UserID flows in via ctx
-	// (set by HandleMessage / HandleMessageStream); empty just skips
-	// the mount, which is the right fallback for non-chat callers.
+	// 将聊天者的按用户技能主机目录绑定挂载到沙箱中 `npx skills add -g -y`
+	// 写入的路径，因此代理在聊天中安装的任何技能都会落到主机磁盘上，
+	// 并对下一次 LoadSkills 扫描可见。UserID 通过 ctx 流入
+	//（由 HandleMessage/HandleMessageStream 设置）；空值跳过挂载，
+	// 这对于非聊天调用者是正确的回退。
 	if uid := UserIDFromContext(ctx); uid != "" {
 		base := os.Getenv("BKCLAW_HOME")
 		if base == "" {
@@ -334,7 +322,7 @@ func (p *DockerExecutorPool) CloseAll() {
 	}
 }
 
-// Ensure interfaces are satisfied.
+// 确保接口被满足。
 var (
 	_ Executor     = (*DockerExecutor)(nil)
 	_ ExecutorPool = (*DockerExecutorPool)(nil)

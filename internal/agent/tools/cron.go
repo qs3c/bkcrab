@@ -24,13 +24,13 @@ type deleteCronJobArgs struct {
 	ID string `json:"id"`
 }
 
-// RegisterCronTools registers cron job management tools.
+// RegisterCronTools 注册 cron 作业管理工具。
 //
-// Channel + chatID for the originating turn are read from the registry
-// at execute time via r.MessageChannel() / r.MessageChatID() so a single
-// registration at agent construction handles every chat context the
-// agent runs in. The agent loop's bindSession stamps the per-turn
-// values onto the registry before any tool fires.
+// 从注册表中读取原始回合的频道 + chatID
+// 在执行时通过 r.MessageChannel() / r.MessageChatID() 所以一个
+// 代理构建中的注册处理每个聊天上下文
+// 代理运行。代理循环的bindSession 标记每轮
+// 在任何工具触发之前将值写入注册表。
 func RegisterCronTools(r *Registry, st store.Store, userID, agentID string) {
 	r.Register("create_cron_job",
 		"Create a scheduled task. Use this for any user request that names a specific time, an interval, or a recurring schedule (e.g. \"5 分钟后提醒\", \"every Monday 9am\", \"each day at 8\"). When the schedule fires, the agent receives `message` as a fresh inbound prompt on the same channel the request originated from. Do NOT write timed reminders into HEARTBEAT.md — that file is only for conditional self-checks reviewed at every heartbeat tick.",
@@ -99,31 +99,31 @@ func makeCreateCronJob(st store.Store, r *Registry, userID, agentID string) Tool
 			jobType = "cron"
 		}
 
-		// Read the originating bus address at execute time — bindSession
-		// stamps it on every turn, so this captures the channel/chatID
-		// the user was on when they asked for the reminder.
+		// 在执行时读取原始总线地址——bindSession
+		// 每回合都会标记它，因此这会捕获频道/聊天ID
+		// 用户请求提醒时处于开机状态。
 		channel := r.MessageChannel()
 		chatID := r.MessageChatID()
 
-		// The chatter's effective timezone governs how the schedule is
-		// read: zone-less 'once' datetimes and cron wall-clock fields
-		// both mean "their local time" (the same zone the system
-		// prompt's date line is rendered in), not the server's. The
-		// resolved name is frozen onto the row so the scheduler keeps
-		// evaluating recurrences in it even if the chatter later moves.
+		// 聊天者的有效时区决定了日程安排的方式
+		// 阅读：无区域“一次”日期时间和 cron 挂钟字段
+		// 两者都表示“他们的当地时间”（与系统相同的区域）
+		// 提示的日期行呈现在）中，而不是服务器的日期行。这
+		// 解析的名称被冻结到行上，以便调度程序保留
+		// 即使喋喋不休后来发生变化，也要评估其中的重复情况。
 		tzName := scope.Timezone(ctx, st, r.ChatterUserID(), agentID)
 		loc := scope.LoadLocationOrLocal(tzName)
 
 		id := generateUUID()
 		now := time.Now()
 
-		// Calculate NextRun based on type
+		// 根据类型计算NextRun
 		var nextRun time.Time
 		switch jobType {
 		case "once":
 			t, err := time.Parse(time.RFC3339, args.Schedule)
 			if err != nil {
-				// No explicit offset — interpret in the chatter's zone.
+				// 没有明确的偏移——在喋喋不休的区域进行解释。
 				t, err = time.ParseInLocation("2006-01-02T15:04:05", args.Schedule, loc)
 				if err != nil {
 					return "", fmt.Errorf("once schedule must be ISO datetime (e.g. 2026-05-06T15:30:00), got: %q", args.Schedule)
@@ -141,9 +141,9 @@ func makeCreateCronJob(st store.Store, r *Registry, userID, agentID string) Tool
 			}
 			nextRun = now.Add(dur)
 		default:
-			// cron expression — first occurrence in the chatter's zone.
-			// (Previously nextRun=now, which fired the job once
-			// immediately on creation — a spurious reminder.)
+			// cron 表达式 — 在聊天区域中第一次出现。
+			// （以前的 nextRun=now，它触发了一次作业
+			// 创建后立即 - 一个虚假的提醒。）
 			nextRun = cron.NextOccurrenceIn(args.Schedule, now, loc)
 		}
 
@@ -156,9 +156,9 @@ func makeCreateCronJob(st store.Store, r *Registry, userID, agentID string) Tool
 			Message:  args.Message,
 			Channel:  channel,
 			ChatID:   chatID,
-			// "" = server-local; the scheduler's LocationOf maps it
-			// the same way LoadLocationOrLocal did above, so creation
-			// and recurrence agree.
+			// "" = 服务器本地；调度程序的 LocationOf 映射它
+			// 与上面 LoadLocationOrLocal 的操作方式相同，因此创建
+			// 和复发一致。
 			Timezone:  tzName,
 			Enabled:   true,
 			NextRun:   &nextRun,
@@ -169,10 +169,10 @@ func makeCreateCronJob(st store.Store, r *Registry, userID, agentID string) Tool
 			return "", fmt.Errorf("save cron job: %w", err)
 		}
 
-		// Wake the scheduler to pick up this new job
+		// 唤醒调度程序以接受这项新工作
 		cron.NotifyJobCreated()
 
-		// Echo the effective timezone + first fire so the model can
+		// 回显有效时区+第一次触发，以便模型可以
 		// confirm the local-time interpretation to the user ("好的，
 		// 北京时间每天 9 点") instead of guessing.
 		tzShown := tzName

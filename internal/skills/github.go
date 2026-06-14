@@ -5,11 +5,10 @@ import (
 	"strings"
 )
 
-// InstallFromGitHubRepo installs a skill folder from a public GitHub repo
-// identified by "owner/repo". If skillName is empty, the repo itself is
-// assumed to be the skill (tarball root is extracted into
-// targetDir/<repo>/). Otherwise it looks up the skill folder (at any depth)
-// inside the repo and extracts it to targetDir/<skillName>/.
+// InstallFromGitHubRepo 从由 "owner/repo" 标识的公共 GitHub 仓库安装技能文件夹。
+// 如果 skillName 为空，则仓库本身被视为技能（tar 包根目录提取到
+// targetDir/<repo>/）。否则在仓库内查找技能文件夹（任意深度）并将其提取到
+// targetDir/<skillName>/。
 func InstallFromGitHubRepo(repo, skillName, targetDir string) (*Result, error) {
 	repo = normalizeGitHubRepo(repo)
 	parts := strings.SplitN(repo, "/", 2)
@@ -28,7 +27,7 @@ func InstallFromGitHubRepo(repo, skillName, targetDir string) (*Result, error) {
 		installedName := skillName
 
 		if skillName == "" {
-			// Whole-repo skill: extract the tarball top into targetDir/<name>.
+			// 整个仓库作为技能：将 tar 包顶级目录提取到 targetDir/<name>。
 			installedName = name
 			dest = fmt.Sprintf("%s/%s", strings.TrimRight(targetDir, "/"), installedName)
 		} else {
@@ -68,8 +67,8 @@ func InstallFromGitHubRepo(repo, skillName, targetDir string) (*Result, error) {
 	return nil, lastErr
 }
 
-// normalizeGitHubRepo strips common wrapper prefixes/suffixes so callers can
-// pass things like "https://github.com/owner/repo.git" directly.
+// normalizeGitHubRepo 去除常见的包装前缀/后缀，以便调用者可以
+// 直接传递类似 "https://github.com/owner/repo.git" 的内容。
 func normalizeGitHubRepo(repo string) string {
 	repo = strings.TrimPrefix(repo, "https://github.com/")
 	repo = strings.TrimPrefix(repo, "http://github.com/")

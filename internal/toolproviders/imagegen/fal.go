@@ -11,9 +11,9 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// Fal posts to https://fal.run/<model-path>. The "<model>" part of the
-// reference becomes the tail of the URL (e.g. "fal/flux-dev" →
-// https://fal.run/fal-ai/flux/dev). Auth is "Key <token>".
+// Fal 向 https://fal.run/<model-path> 发送请求。
+// 引用中的 "<model>" 部分成为 URL 的尾部（例如 "fal/flux-dev" →
+// https://fal.run/fal-ai/flux/dev）。认证方式为 "Key <token>"。
 type Fal struct{}
 
 func (Fal) Category() string { return Category }
@@ -39,7 +39,7 @@ func (f *Fal) Execute(ctx context.Context, req toolproviders.Request) (toolprovi
 	}
 	path, ok := falModelRoutes[modelKey]
 	if !ok {
-		// Let callers pass a raw model path too (e.g. "fal/fal-ai/flux/dev").
+		// 允许调用方也传递原始模型路径（例如 "fal/fal-ai/flux/dev"）。
 		path = modelKey
 	}
 

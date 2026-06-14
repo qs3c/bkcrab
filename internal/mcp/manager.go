@@ -10,10 +10,10 @@ import (
 	"github.com/qs3c/bkclaw/internal/config"
 )
 
-// Manager manages connections to multiple MCP servers.
+// Manager 管理与多个 MCP 服务器的连接。
 type Manager struct {
 	servers map[string]Client // serverName -> client
-	// toolMap maps prefixed tool name -> (serverName, originalToolName)
+	// toolMap 映射带前缀的工具名称 -> (serverName, originalToolName)
 	toolMap map[string]toolRoute
 }
 
@@ -22,8 +22,8 @@ type toolRoute struct {
 	originalName string
 }
 
-// NewManager creates an MCP manager and connects to all configured servers.
-// Servers that fail to connect are logged as warnings but don't block startup.
+// NewManager 创建一个 MCP 管理器并连接到所有配置的服务器。
+// 连接失败的服务器会记录为警告，但不会阻止启动。
 func NewManager(servers map[string]config.MCPServerConfig) *Manager {
 	m := &Manager{
 		servers: make(map[string]Client),
@@ -70,7 +70,7 @@ func NewManager(servers map[string]config.MCPServerConfig) *Manager {
 	return m
 }
 
-// ToolDefs returns tool definitions for all MCP tools, with prefixed names.
+// ToolDefs 返回所有 MCP 工具的定义，名称带前缀。
 func (m *Manager) ToolDefs() []ToolDef {
 	var defs []ToolDef
 	for name, cfg := range m.servers {
@@ -90,7 +90,7 @@ func (m *Manager) ToolDefs() []ToolDef {
 	return defs
 }
 
-// CallTool routes a prefixed tool call to the correct MCP server.
+// CallTool 将带前缀的工具调用路由到正确的 MCP 服务器。
 func (m *Manager) CallTool(_ context.Context, prefixedName string, args json.RawMessage) (string, error) {
 	route, ok := m.toolMap[prefixedName]
 	if !ok {
@@ -105,12 +105,12 @@ func (m *Manager) CallTool(_ context.Context, prefixedName string, args json.Raw
 	return client.CallTool(route.originalName, args)
 }
 
-// HasTools returns true if any MCP tools are available.
+// HasTools 如果有任何可用的 MCP 工具则返回 true。
 func (m *Manager) HasTools() bool {
 	return len(m.toolMap) > 0
 }
 
-// Close shuts down all MCP server connections.
+// Close 关闭所有 MCP 服务器连接。
 func (m *Manager) Close() {
 	for name, client := range m.servers {
 		if err := client.Close(); err != nil {
@@ -120,7 +120,7 @@ func (m *Manager) Close() {
 }
 
 func prefixToolName(serverName, toolName string) string {
-	// Sanitize server name: replace non-alphanumeric with _
+	// 清理服务器名称：将非字母数字字符替换为 _
 	safe := strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
 			return r

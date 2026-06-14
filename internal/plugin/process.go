@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// Process manages a plugin subprocess and its JSON-RPC communication.
+// Process 管理插件子进程及其 JSON-RPC 通信。
 type Process struct {
 	manifest *Manifest
 	cmd      *exec.Cmd
@@ -30,7 +30,7 @@ type Process struct {
 	cancelFn  context.CancelFunc
 }
 
-// NewProcess creates a new plugin process from a manifest.
+// NewProcess 根据清单创建一个新的插件进程。
 func NewProcess(m *Manifest) *Process {
 	p := &Process{
 		manifest: m,
@@ -40,14 +40,14 @@ func NewProcess(m *Manifest) *Process {
 	return p
 }
 
-// SetNotifyHandler sets the handler for notifications from the plugin.
+// SetNotifyHandler 设置来自插件的通知处理函数。
 func (p *Process) SetNotifyHandler(fn func(Notification)) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.onNotify = fn
 }
 
-// Start launches the plugin subprocess.
+// Start 启动插件子进程。
 func (p *Process) Start(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -98,15 +98,15 @@ func (p *Process) Start(ctx context.Context) error {
 	p.stderr = stderrPipe
 	p.running = true
 
-	// Read stdout for JSON-RPC messages
+	// 读取 stdout 的 JSON-RPC 消息
 	go p.readLoop()
-	// Log stderr
+	// 记录 stderr 日志
 	go p.logStderr()
 
 	return nil
 }
 
-// Call sends a JSON-RPC request and waits for the response.
+// Call 发送 JSON-RPC 请求并等待响应。
 func (p *Process) Call(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
 	id := int(p.nextID.Add(1))
 
@@ -154,13 +154,13 @@ func (p *Process) Call(ctx context.Context, method string, params interface{}) (
 	}
 }
 
-// Notify sends a JSON-RPC notification (no response expected) to the plugin.
+// Notify 向插件发送 JSON-RPC 通知（无需等待响应）。
 func (p *Process) Notify(method string, params interface{}) error {
 	req, err := newRequest(method, params, 0)
 	if err != nil {
 		return fmt.Errorf("marshal notification: %w", err)
 	}
-	// Notifications have no ID in JSON-RPC 2.0; we use a minimal struct.
+	// JSON-RPC 2.0 的通知没有 ID；我们使用最小化的结构体。
 	notif := struct {
 		JSONRPC string          `json:"jsonrpc"`
 		Method  string          `json:"method"`
@@ -186,7 +186,7 @@ func (p *Process) Notify(method string, params interface{}) error {
 	return err
 }
 
-// Stop gracefully shuts down the plugin process.
+// Stop 优雅地关闭插件进程。
 func (p *Process) Stop(timeout time.Duration) {
 	p.mu.Lock()
 	if !p.running {
@@ -195,7 +195,7 @@ func (p *Process) Stop(timeout time.Duration) {
 	}
 	p.mu.Unlock()
 
-	// Try graceful shutdown
+	// 尝试优雅关闭
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -206,13 +206,13 @@ func (p *Process) Stop(timeout time.Duration) {
 	if p.cancelFn != nil {
 		p.cancelFn()
 	}
-	// Close stdin to signal EOF to the child
+	// 关闭 stdin 向子进程发送 EOF 信号
 	if p.stdin != nil {
 		p.stdin.Close()
 	}
 	p.mu.Unlock()
 
-	// Wait for process exit with timeout
+	// 等待进程退出，带超时
 	done := make(chan struct{})
 	go func() {
 		if p.cmd != nil && p.cmd.Process != nil {
@@ -229,7 +229,7 @@ func (p *Process) Stop(timeout time.Duration) {
 		}
 	}
 
-	// Cancel any pending calls
+	// 取消所有挂起的调用
 	p.mu.Lock()
 	for id, ch := range p.pending {
 		ch <- &Response{Error: &RPCError{Code: -1, Message: "plugin stopped"}}
@@ -238,7 +238,7 @@ func (p *Process) Stop(timeout time.Duration) {
 	p.mu.Unlock()
 }
 
-// IsRunning returns whether the process is alive.
+// IsRunning 返回进程是否存活。
 func (p *Process) IsRunning() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -258,7 +258,7 @@ func (p *Process) readLoop() {
 			continue
 		}
 
-		// Try to parse as response (has "id" field)
+		// 尝试解析为响应（包含 "id" 字段）
 		var msg struct {
 			ID     *int            `json:"id"`
 			Method string          `json:"method"`
@@ -272,7 +272,7 @@ func (p *Process) readLoop() {
 		}
 
 		if msg.ID != nil {
-			// It's a response
+			// 这是一个响应
 			p.mu.Lock()
 			ch, ok := p.pending[*msg.ID]
 			p.mu.Unlock()
@@ -285,7 +285,7 @@ func (p *Process) readLoop() {
 				}
 			}
 		} else if msg.Method != "" {
-			// It's a notification
+			// 这是一个通知
 			p.mu.Lock()
 			fn := p.onNotify
 			p.mu.Unlock()

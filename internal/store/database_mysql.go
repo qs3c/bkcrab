@@ -12,8 +12,8 @@ import (
 
 const mysqlDialect = "mysql"
 
-// normalizeMySQLDSN makes the driver's time handling match the rest of the
-// store. Callers may still supply TLS, timeouts, and other driver parameters.
+// normalizeMySQLDSN 使驱动程序的时间处理与 store 的其余部分一致。
+// 调用方仍可以提供 TLS、超时和其他驱动程序参数。
 func normalizeMySQLDSN(dsn string) (string, error) {
 	cfg, err := mysqlDriver.ParseDSN(dsn)
 	if err != nil {
@@ -40,8 +40,8 @@ func isMySQLDuplicateKey(err error) bool {
 	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
 }
 
-// execDDL handles MySQL's lack of CREATE INDEX IF NOT EXISTS. All other
-// statements pass through unchanged.
+// execDDL 处理 MySQL 缺少 CREATE INDEX IF NOT EXISTS 的情况。
+// 所有其他语句保持不变地传递。
 func (d *DBStore) execDDL(ctx context.Context, stmt string) error {
 	if d.dialect != mysqlDialect {
 		_, err := d.db.ExecContext(ctx, stmt)
@@ -73,9 +73,9 @@ func mysqlTokenUsageTableSQL() string {
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
 }
 
-// mysqlMigrationSQL is intentionally explicit. PostgreSQL and SQLite allow
-// TEXT columns in keys; InnoDB requires bounded key columns and has a 3072-byte
-// composite-key limit under utf8mb4.
+// mysqlMigrationSQL 是有意明确写出的。PostgreSQL 和 SQLite 允许在键中使用
+// TEXT 列；InnoDB 要求键列有长度限制，并且在 utf8mb4 下有 3072 字节的
+// 复合键限制。
 func mysqlMigrationSQL() []string {
 	return []string{
 		`CREATE TABLE IF NOT EXISTS users (

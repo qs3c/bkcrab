@@ -7,28 +7,27 @@ import (
 	"sync"
 )
 
-// SandboxPool manages sandbox containers per agent, reusing them across exec calls.
+// SandboxPool 按代理管理沙箱容器，跨 exec 调用重用它们。
 type SandboxPool struct {
-	sandboxes map[string]*DockerSandbox // agentID -> sandbox
+	sandboxes map[string]*DockerSandbox // agentID -> 沙箱
 	mu        sync.Mutex
 }
 
-// NewPool creates a new sandbox pool.
+// NewPool 创建一个新的沙箱池。
 func NewPool() *SandboxPool {
 	return &SandboxPool{
 		sandboxes: make(map[string]*DockerSandbox),
 	}
 }
 
-// Get returns (or lazily creates) a sandbox for the given agent.
+// Get 返回（或延迟创建）给定代理的沙箱。
 //
-// On creation we wire BOTH skill dirs into the sandbox so the LLM's
-// `python /skills/<name>/main.py` resolves whether the skill lives in
-// the global $BKCLAW_HOME/skills/ tree or this agent's private
-// $BKCLAW_HOME/agents/<agentID>/agent/skills/. Without the per-agent
-// mount, skills the operator dropped into agents/<id>/agent/skills/
-// (e.g. via SkillsLoader's per-agent layer) silently fail to load
-// inside the container.
+// 创建时，我们将两个技能目录都连接到沙箱中，
+// 以便 LLM 的 `python /skills/<name>/main.py` 可以解析技能是位于
+// 全局 $BKCLAW_HOME/skills/ 树中还是此代理的私有
+// $BKCLAW_HOME/agents/<agentID>/agent/skills/ 中。
+// 没有按代理挂载，操作员放入 agents/<id>/agent/skills/ 的技能
+//（例如通过 SkillsLoader 的按代理层）会在容器内静默地加载失败。
 func (p *SandboxPool) Get(agentID, image, workspace string, policy *Policy) *DockerSandbox {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -38,9 +37,8 @@ func (p *SandboxPool) Get(agentID, image, workspace string, policy *Policy) *Doc
 	}
 
 	sb := NewDockerSandbox(image, workspace, policy)
-	// Best-effort skill mount when the workspace path follows the
-	// standard layout (<home>/workspaces/<agentID>); falls through
-	// silently if the caller used a custom workspace path.
+	// 当工作区路径遵循标准布局（<home>/workspaces/<agentID>）时
+	// 尽力尝试技能挂载；如果调用者使用了自定义工作区路径则静默跳过。
 	if home := homeFromWorkspace(workspace, agentID); home != "" {
 		if dirs := skillDirsForAgent(home, agentID); len(dirs) > 0 {
 			sb.SetSkillDirs(dirs)
@@ -50,8 +48,8 @@ func (p *SandboxPool) Get(agentID, image, workspace string, policy *Policy) *Doc
 	return sb
 }
 
-// homeFromWorkspace inverts <home>/workspaces/<agentID> → <home>.
-// Returns "" if workspace doesn't follow that convention.
+// homeFromWorkspace 将 <home>/workspaces/<agentID> 反解为 <home>。
+// 如果工作区不遵循该约定则返回 ""。
 func homeFromWorkspace(workspace, agentID string) string {
 	suffix := filepath.Join("workspaces", agentID)
 	if strings.HasSuffix(workspace, string(os.PathSeparator)+suffix) {
@@ -60,13 +58,12 @@ func homeFromWorkspace(workspace, agentID string) string {
 	return ""
 }
 
-// skillDirsForAgent returns the host paths whose `<dir>/<skill-name>/`
-// children should be mounted at /skills/<skill-name>/ inside the
-// sandbox. Per-agent dir comes first so its skills override
-// same-named global ones, matching SkillsLoader precedence.
+// skillDirsForAgent 返回主机路径，其 `<dir>/<skill-name>/` 子目录
+// 应挂载到沙箱内的 /skills/<skill-name>/ 下。
+// 按代理目录优先，以便其技能覆盖同名的全局技能，匹配 SkillsLoader 优先级。
 //
-// home is the resolved BKCLAW_HOME (the pool's workspaceRoot), not
-// the process env — keeps tests / multi-instance debug honest.
+// home 是解析后的 BKCLAW_HOME（池的 workspaceRoot），
+// 而不是进程环境——保持测试/多实例调试的真实性。
 func skillDirsForAgent(home, agentID string) []string {
 	if home == "" {
 		return nil
@@ -77,7 +74,7 @@ func skillDirsForAgent(home, agentID string) []string {
 	}
 }
 
-// Close shuts down and removes all sandbox containers.
+// Close 关闭并移除所有沙箱容器。
 func (p *SandboxPool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -88,7 +85,7 @@ func (p *SandboxPool) Close() {
 	}
 }
 
-// List returns info about all active sandboxes.
+// List 返回所有活动沙箱的信息。
 func (p *SandboxPool) List() []SandboxInfo {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -105,7 +102,7 @@ func (p *SandboxPool) List() []SandboxInfo {
 	return infos
 }
 
-// Remove destroys a specific sandbox by agent ID.
+// Remove 按代理 ID 销毁特定的沙箱。
 func (p *SandboxPool) Remove(agentID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -119,7 +116,7 @@ func (p *SandboxPool) Remove(agentID string) error {
 	return err
 }
 
-// SandboxInfo holds display info for a sandbox.
+// SandboxInfo 保存沙箱的显示信息。
 type SandboxInfo struct {
 	AgentID     string
 	ContainerID string

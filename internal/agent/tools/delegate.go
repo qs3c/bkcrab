@@ -6,9 +6,9 @@ import (
 	"fmt"
 )
 
-// SubagentRunner is what the delegate_task tool calls to spawn a
-// sub-agent. The agent package implements this on Agent so we avoid
-// pulling agent into tools (would form an import cycle).
+// SubagentRunner 是 delegate_task 工具调用来生成
+// 子代理。代理包在代理上实现了这一点，因此我们避免了
+// 将代理拉入工具（将形成导入循环）。
 type SubagentRunner interface {
 	RunSubagent(ctx context.Context, task string, maxIterations int) (string, error)
 }
@@ -19,25 +19,25 @@ type delegateTaskArgs struct {
 	MaxIterations  int    `json:"max_iterations,omitempty"`
 }
 
-// RegisterDelegateTask wires the delegate_task tool. No-op when runner
-// is nil so callers can opt out by simply not constructing one (e.g.
-// in tests or for agent flavors where sub-agent fan-out doesn't make
-// sense).
+// RegisterDelegateTask 连接 delegate_task 工具。跑步时无操作
+// 为零，因此调用者可以通过简单地不构建一个来选择退出（例如
+// 在测试或代理风格中，子代理扇出不会产生
+// 感觉）。
 //
-// Registered as SERIAL: two delegate_task calls cannot run
-// concurrently within one agent. Sub-agents share the parent's single
-// sandbox + single camoufox-cli daemon — running 5 in parallel meant
-// they trampled each other's browser navigation state, got back
-// snapshots of pages other siblings just navigated to, and produced
-// garbage. Serialization trades fan-out wall time (5 × N min instead
-// of N min) for actually-correct results.
+// 注册为 SERIAL：两个 delegate_task 调用无法运行
+// 在一名代理人内同时进行。子代理人共享母公司的单身
+// 沙箱 + 单个 camoufox-cli 守护进程 — 并行运行 5 个进程
+// 他们践踏了彼此的浏览器导航状态，又回来了
+// 其他兄弟姐妹刚刚导航到并生成的页面快照
+// 垃圾。序列化以扇出墙时间为代价（5 × N 分钟
+// N 分钟）以获得实际正确的结果。
 //
-// The tool description explains both the WHY of delegation (parent's
-// context stays clean, sub-agent gets a fresh iteration budget) and
-// the serial-execution contract so the model doesn't expect parallel
-// throughput from fan-out. The "no nesting" line is critical — without
-// it flash-tier models try to recursively delegate and burn through
-// budgets exponentially.
+// 该工具说明解释了委托的原因（父母的
+// 上下文保持干净，子代理获得新的迭代预算）并且
+// 串行执行合约，因此模型不期望并行
+// 扇出的吞吐量。 “禁止嵌套”这一行至关重要——没有
+// 它的闪存层模型尝试递归地委托和烧穿
+// 预算呈指数级增长。
 func RegisterDelegateTask(r *Registry, runner SubagentRunner) {
 	if runner == nil {
 		return
@@ -90,10 +90,10 @@ func RegisterDelegateTask(r *Registry, runner SubagentRunner) {
 			}
 			out, err := runner.RunSubagent(ctx, taskPrompt, args.MaxIterations)
 			if err != nil {
-				// Surface the error inside the tool_result so the parent
-				// sees it as a normal tool failure (gets the "analyze
-				// the error and try a different approach" envelope from
-				// the registry) rather than a hard tool-execution error.
+				// 在 tool_result 中显示错误，以便父级
+				// 将其视为正常的工具故障（获取“分析
+				// 错误并尝试不同的方法”信封来自
+				// 注册表）而不是硬工具执行错误。
 				return fmt.Sprintf("[subagent failed: %s]", err.Error()), err
 			}
 			return out, nil

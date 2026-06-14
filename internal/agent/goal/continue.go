@@ -8,20 +8,20 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 )
 
-// TryFireContinuation runs the gate cascade for one (agent, session)
-// and, on success, publishes a continuation prompt back onto the bus.
-// Safe to call synchronously from PostTurn / slash handlers — gates
-// are cheap (one indexed read) and any failure is a silent no-op.
+// TryFireContinuation 为一个（代理、会话）运行门级联
+// 如果成功，则将继续提示发布回总线上。
+// 可以安全地从 PostTurn/slash 处理程序同步调用 — 门
+// 成本低廉（一次索引读取），任何失败都是静默无操作。
 //
-// Gates (in order):
-//   - goal exists for this (agent, session)
-//   - goal status is Active (Paused / BudgetLimited / Complete no-op)
-//   - goal carries routing info (legacy rows missing routing fields
-//     can't be auto-continued; the publish would emit an unroutable
-//     inbound)
+// 大门（按顺序）：
+// - 存在此目标（代理、会话）
+// - 目标状态为活动（已暂停/预算有限/完全无操作）
+// - 目标携带路由信息（遗留行缺少路由字段
+// 不能自动继续；发布将发出不可路由的
+// 入境）
 //
-// Errors land at warn level rather than blocking the caller —
-// continuation is best-effort, and the next PostTurn will retry.
+// 错误落在警告级别而不是阻止调用者 -
+// 继续是尽力而为，下一个 PostTurn 将重试。
 func TryFireContinuation(ctx context.Context, st Store, mb *bus.MessageBus, agentID, sessionKey string) {
 	g, err := st.GetGoalBySession(ctx, agentID, sessionKey)
 	if errors.Is(err, ErrNotFound) {
@@ -46,11 +46,11 @@ func TryFireContinuation(ctx context.Context, st Store, mb *bus.MessageBus, agen
 	}
 }
 
-// Publish pushes a goal-context prompt (continuation or budget-limit
-// wrap-up) onto the bus. Tagged with bus.SourceGoalContext so the
-// agent loop can distinguish runtime-injected goal prompts from real
-// user input and tag the resulting message with OriginGoalContext.
-// Returns true when queued, false when the bus is full.
+// 发布推送目标上下文提示（继续或预算限制
+// 总结）到公共汽车上。标记为bus.SourceGoalContext所以
+// 代理循环可以区分运行时注入的目标提示和真实的目标提示
+// 用户输入并使用 OriginGoalContext 标记结果消息。
+// 排队时返回 true，总线已满时返回 false。
 func Publish(mb *bus.MessageBus, g *Goal, prompt string) bool {
 	if mb == nil || g == nil {
 		return false

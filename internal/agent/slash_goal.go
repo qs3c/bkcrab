@@ -14,7 +14,7 @@ import (
 //
 //	/goal <objective>          → 创建
 //	/goal                      → 显示当前目标
-//	/goal pause | resume | clear
+// /目标暂停|简历 |清除
 //
 // `/goal budget <N>` 被故意省略——Codex 没有附带它，
 // 且飞行中的预算修改语义模糊（已花费的 token 是否计入？）。

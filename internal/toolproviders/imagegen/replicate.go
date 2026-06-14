@@ -11,20 +11,19 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// Replicate posts to https://api.replicate.com/v1/models/<owner>/<name>/predictions
-// with `Prefer: wait` so we get a synchronous response (up to 60s) instead of
-// having to poll the prediction URL. Auth is `Authorization: Bearer <token>`
-// (Replicate also accepts the legacy `Token <token>` form; we use Bearer to
-// match the rest of the catalog).
+// Replicate 向 https://api.replicate.com/v1/models/<owner>/<name>/predictions
+// 发送请求，使用 `Prefer: wait` 获取同步响应（最长 60 秒），而不是轮询预测 URL。
+// 认证方式为 `Authorization: Bearer <token>`
+//（Replicate 也接受旧的 `Token <token>` 格式；我们使用 Bearer 以与目录其余部分保持一致）。
 type Replicate struct{}
 
 func (Replicate) Category() string { return Category }
 func (Replicate) Name() string     { return "replicate" }
 
-// replicateModelRoutes maps the short model key (everything after "replicate/")
-// to a "<owner>/<name>" path on Replicate. Callers can also pass a raw
-// owner/name pair (e.g. "replicate/black-forest-labs/flux-schnell") and we'll
-// route through unchanged.
+// replicateModelRoutes 将短模型键（"replicate/" 后的所有内容）
+// 映射到 Replicate 上的 "<owner>/<name>" 路径。调用方也可以传递原始的
+// owner/name 对（例如 "replicate/black-forest-labs/flux-schnell"），
+// 我们会原样路由。
 var replicateModelRoutes = map[string]string{
 	"flux-schnell": "black-forest-labs/flux-schnell",
 	"flux-dev":     "black-forest-labs/flux-dev",
@@ -58,9 +57,8 @@ func (r *Replicate) Execute(ctx context.Context, req toolproviders.Request) (too
 		"num_outputs": a.N,
 	}
 	if a.Size != "" {
-		// Replicate flux models use aspect_ratio (e.g. "1:1"); width/height
-		// were removed from the schema. Accept either and pass through —
-		// the caller's tool description tells the LLM what to send.
+		// Replicate flux 模型使用 aspect_ratio（如 "1:1"）；width/height
+		// 已从架构中移除。接受两者并透传——调用方的工具描述会告诉 LLM 发送什么。
 		input["aspect_ratio"] = a.Size
 	}
 	buf, _ := json.Marshal(map[string]any{"input": input})
@@ -72,10 +70,9 @@ func (r *Replicate) Execute(ctx context.Context, req toolproviders.Request) (too
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+req.Config.APIKey)
-	// Prefer: wait makes Replicate hold the connection open until the
-	// prediction finishes (or 60s elapses), so we don't have to implement
-	// a polling loop here. Beyond 60s the response returns status="processing"
-	// and we surface that as ErrNoResults so the chain can fall back.
+	// Prefer: wait 使 Replicate 保持连接打开，直到预测完成（或 60 秒超时），
+	// 因此我们不需要在此实现轮询循环。超过 60 秒后，响应返回 status="processing"，
+	// 我们将其作为 ErrNoResults 暴露，以便链可以回退。
 	httpReq.Header.Set("Prefer", "wait")
 
 	resp, err := http.DefaultClient.Do(httpReq)
@@ -83,8 +80,8 @@ func (r *Replicate) Execute(ctx context.Context, req toolproviders.Request) (too
 		return toolproviders.Response{}, toolproviders.Retry(fmt.Errorf("replicate request: %w", err))
 	}
 	defer resp.Body.Close()
-	// Replicate returns 201 Created on accepted predictions even when
-	// Prefer:wait waited for completion, so treat both 200 and 201 as OK.
+	// 即使 Prefer:wait 等待完成，Replicate 对已接受的预测仍返回 201 Created，
+	// 因此将 200 和 201 都视为成功。
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return toolproviders.Response{}, retriableHTTP("replicate", resp)
 	}
@@ -100,8 +97,7 @@ func (r *Replicate) Execute(ctx context.Context, req toolproviders.Request) (too
 		return toolproviders.Response{}, fmt.Errorf("replicate failed: %s", out.Error)
 	}
 	if out.Status != "succeeded" {
-		// "starting" / "processing" / "canceled" — treat as retriable so the
-		// next provider in the chain gets a shot.
+		// "starting" / "processing" / "canceled" —— 视为可重试，以便链中的下一个提供商有机会。
 		return toolproviders.Response{}, toolproviders.Retry(fmt.Errorf("replicate status %q", out.Status))
 	}
 	urls := decodeReplicateOutput(out.Output)
@@ -111,9 +107,8 @@ func (r *Replicate) Execute(ctx context.Context, req toolproviders.Request) (too
 	return toolproviders.Response{Text: renderURLs(a.Prompt, urls)}, nil
 }
 
-// decodeReplicateOutput accepts both the array shape (flux: ["url1", "url2"])
-// and the single-string shape (some older models return one URL) and returns
-// a flat slice.
+// decodeReplicateOutput 接受数组形式（flux: ["url1", "url2"]）
+// 和单字符串形式（一些较旧的模型返回一个 URL），并返回扁平切片。
 func decodeReplicateOutput(raw json.RawMessage) []string {
 	if len(raw) == 0 {
 		return nil

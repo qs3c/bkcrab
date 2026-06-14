@@ -156,14 +156,14 @@ func (e *sdkEngine) executeToolsConcurrently(ctx context.Context, fcRegistry *to
 	responses := executor.RunTools(ctx, calls)
 	e.costTracker.AddToolDuration(time.Since(start))
 
-	// Anthropic (and OpenAI) require a tool_result for every tool_use the
-	// model just emitted — orphaned tool_use IDs make the next API call
-	// return 400 invalid_request_error. The SDK can short-circuit and
-	// return fewer responses than requested (context cancel, executor
-	// poisoned by a sandbox-creation failure, etc.), so build the result
-	// slice keyed on toolCalls and look up by ToolUseID instead of zipping
-	// position-by-position. Missing entries become explicit failure
-	// tool_results so the conversation history stays well-formed.
+	// Anthropic（和 OpenAI）需要每个工具都有一个工具结果_使用
+	// 刚刚发出的模型 — 孤立的 tool_use ID 进行下一个 API 调用
+	// 返回 400 invalid_request_error。 SDK可以短路和
+	// 返回的响应少于请求的响应（上下文取消、执行器
+	// 因沙箱创建失败等而中毒），因此构建结果
+	// 在 toolCalls 上键入切片并通过 ToolUseID 查找而不是压缩
+	// 逐个位置。缺失条目成为明显的失败
+	// tool_results 以便对话历史记录保持格式良好。
 	byID := make(map[string]sdktools.ToolCallResponse, len(responses))
 	for _, resp := range responses {
 		byID[resp.ToolUseID] = resp
@@ -195,7 +195,7 @@ func (e *sdkEngine) executeToolsConcurrently(ctx context.Context, fcRegistry *to
 				}
 				continue
 			}
-			// Extract text from content blocks
+			// 从内容块中提取文本
 			var parts []string
 			for _, cb := range resp.Result.Content {
 				if cb.Text != "" {

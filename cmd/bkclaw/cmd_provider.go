@@ -8,7 +8,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/provider"
 )
 
-// providerCmd handles provider/credential management subcommands.
+// providerCmd 处理提供者/凭证管理子命令。
 func providerCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "provider",
@@ -30,7 +30,7 @@ func providerListCmd() *cobra.Command {
 				return err
 			}
 
-			// Show stored credentials
+			// 显示已存储的凭证
 			stored := cm.List()
 			if len(stored) > 0 {
 				fmt.Println("Stored credentials:")
@@ -41,7 +41,7 @@ func providerListCmd() *cobra.Command {
 				}
 			}
 
-			// Show discovered from env
+			// 显示从环境变量发现的凭证
 			discovered := cm.Discover()
 			if len(discovered) > 0 {
 				fmt.Println("\nDiscovered from environment:")

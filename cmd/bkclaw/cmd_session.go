@@ -16,11 +16,9 @@ import (
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
-// sessionPathPattern pulls the agent id and session key out of a chat
-// URL of the shape http(s)://host[:port]/agents/<agentId>/chat/<sessionKey>[/].
-// We anchor at the literal "/agents/" segment so the host is whatever
-// (localhost dev, cloud prod) and so a stray trailing slash / query
-// string doesn't trip the matcher.
+// sessionPathPattern 从形如 http(s)://host[:port]/agents/<agentId>/chat/<sessionKey>[/] 的聊天 URL 中提取代理 ID 和会话密钥。
+// 我们锚定在字面的 "/agents/" 段上，因此主机可以是任意值
+//（本地开发 localhost、云端 prod），并且多余的尾部斜杠 / 查询字符串不会导致匹配失败。
 var sessionPathPattern = regexp.MustCompile(`/agents/([^/]+)/chat/([^/?#]+)`)
 
 func sessionCmd() *cobra.Command {
@@ -65,11 +63,11 @@ Examples:
 
 			ctx := context.Background()
 
-			// sessions are PK'd by (user_id, agent_id, session_key) so
-			// the URL alone doesn't identify a unique row — but in
-			// practice (agent_id, session_key) is unique because keys
-			// are timestamp-randomized. Look up the owner via a thin
-			// SQL query against the DBStore's underlying connection.
+	// 会话以 (user_id, agent_id, session_key) 为主键，因此
+	// 仅凭 URL 无法唯一标识一行——但在实践中
+	// (agent_id, session_key) 是唯一的，因为密钥是
+	// 基于时间戳随机生成的。通过对 DBStore 底层连接的
+	// 轻量 SQL 查询查找所有者。
 			userID, err := lookupSessionUser(ctx, st, agentID, sessionKey)
 			if err != nil {
 				return err
@@ -109,16 +107,15 @@ Examples:
 	return cmd
 }
 
-// parseChatURL accepts either a full URL or a bare path and returns
-// (agentID, sessionKey). Errors include the input so the user sees
-// exactly what was rejected.
+// parseChatURL 接受完整 URL 或裸路径，并返回
+// (agentID, sessionKey)。错误信息包含输入内容，以便用户
+// 确切看到被拒绝的内容。
 func parseChatURL(raw string) (string, string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", "", fmt.Errorf("chat URL is empty")
 	}
-	// url.Parse tolerates a bare path; we extract the path segment
-	// either way and run the regex on it.
+	// url.Parse 接受裸路径；我们无论如何都提取路径段并在其上运行正则表达式。
 	path := raw
 	if u, err := url.Parse(raw); err == nil && u.Path != "" {
 		path = u.Path
@@ -130,8 +127,7 @@ func parseChatURL(raw string) (string, string, error) {
 	return m[1], m[2], nil
 }
 
-// openStoreAt uses the configured runtime database by default. An explicit
-// path is retained only for exporting data from a legacy SQLite database.
+// openStoreAt 默认使用已配置的运行时数据库。显式路径仅用于从旧版 SQLite 数据库导出数据。
 func openStoreAt(dbPath string) (*store.DBStore, func(), error) {
 	if dbPath == "" {
 		st, err := openStoreFromEnv()
@@ -158,11 +154,10 @@ func openStoreAt(dbPath string) (*store.DBStore, func(), error) {
 	return db, func() { _ = db.Close() }, nil
 }
 
-// lookupSessionUser finds the owning user_id for a session by
-// (agent_id, session_key). Errors when zero rows match (typo in URL,
-// session deleted) or when multiple users happen to share the pair
-// (extremely unlikely — session_key is timestamp-randomized — but
-// would lead to a silent wrong-user export, so flag it).
+// lookupSessionUser 通过 (agent_id, session_key) 查找会话的拥有者 user_id。
+// 当零行匹配（URL 拼写错误、会话已删除）或多个用户恰好共享该组合时返回错误
+//（极不可能——session_key 是基于时间戳随机生成的——但
+// 会导致静默地导出错误用户，因此标记出来）。
 func lookupSessionUser(ctx context.Context, st *store.DBStore, agentID, sessionKey string) (string, error) {
 	query := `SELECT user_id FROM sessions WHERE agent_id = ? AND session_key = ?`
 	if st.Dialect() == "postgres" {
@@ -193,10 +188,10 @@ func lookupSessionUser(ctx context.Context, st *store.DBStore, agentID, sessionK
 	}
 }
 
-// resolveOutputPath returns the user's -o value if set, else
-// ~/.bkclaw/logs/<sessionKey>.json. Per-session filename so a
-// batch of exports doesn't overwrite each other; same parent dir as
-// the daemon's own logs so the analyzer can sweep one place.
+// resolveOutputPath 如果设置了 -o 则返回用户指定的值，否则返回
+// ~/.bkclaw/logs/<sessionKey>.json。每个会话使用独立文件名，
+// 使得批量导出不会相互覆盖；父目录与守护进程自身日志相同，
+// 便于分析器在同一个位置扫描。
 func resolveOutputPath(explicit, sessionKey string) (string, error) {
 	if explicit != "" {
 		return explicit, nil

@@ -4,15 +4,15 @@ package tools
 
 import "os/exec"
 
-// Windows has no Setpgid analogue exposed via syscall.SysProcAttr — job
-// objects exist but require non-trivial wiring. BkClaw's exec path is
-// already Unix-only in practice (uses `sh -c`), so a no-op here keeps
-// cross-compilation green without pretending to support Windows.
+// Windows 没有通过 syscall.SysProcAttr 公开的 Setpgid 类似物 — 作业
+// 对象存在但需要不平凡的接线。 BkClaw的执行路径是
+// 实际上已经仅限于 Unix（使用 `sh -c`），因此这里的无操作保留
+// 绿色交叉编译，无需假装支持Windows。
 //
-// Practical consequence: on Windows the default cmd.Cancel (Kill on the
-// direct child only) applies, and grandchildren can survive a
-// kill_shell. Acceptable for v1 — the same gap exists in the
-// synchronous exec path.
+// 实际结果：在 Windows 上，默认 cmd.Cancel（在
+// 仅直系子女）适用，并且孙辈可以存活
+// 杀壳。 v1 可以接受——同样的差距存在于
+// 同步执行路径。
 func setProcessGroup(cmd *exec.Cmd) {}
 
 func killProcessGroup(groupLeaderPid int) error { return nil }

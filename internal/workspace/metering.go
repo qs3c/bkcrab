@@ -6,30 +6,27 @@ import (
 	"time"
 )
 
-// MeterFunc is called for every successful Put with the number of bytes
-// written. Kept as a plain function value (not an interface) so the
-// workspace package stays free of a dep on internal/usage — the gateway
-// wires the two together at startup.
+// MeterFunc 在每次成功的 Put 时被调用，传入写入的字节数。
+// 保持为普通函数值（而非接口），以便 workspace 包保持不依赖
+// internal/usage——网关在启动时将两者连接在一起。
 type MeterFunc func(ctx context.Context, agentID string, bytes int64)
 
-// Metered wraps an existing Store to count bytes flowing through Put.
-// Get / Stat / List / Delete / SignedURL pass through untouched.
+// Metered 包装现有的 Store 以统计通过 Put 的字节数。
+// Get / Stat / List / Delete / SignedURL 直接透传，不做处理。
 type Metered struct {
 	inner Store
 	meter MeterFunc
 }
 
-// NewMetered returns a Store that tallies write volume per agent. meter
-// must be non-nil; use the underlying Store directly if you don't want
-// metering.
+// NewMetered 返回一个按代理统计写入量的 Store。meter 必须非 nil；
+// 如果你不需要计量，请直接使用底层 Store。
 func NewMetered(inner Store, meter MeterFunc) *Metered {
 	return &Metered{inner: inner, meter: meter}
 }
 
-// countingReader forwards bytes through and tallies them. Needed because
-// Put accepts an io.Reader (not a []byte) — we can't know the payload
-// size without either trusting the caller's `size` hint or counting as we
-// read.
+// countingReader 转发字节并通过时进行计数。之所以需要是因为
+// Put 接受 io.Reader（而非 []byte）——如果不信任调用者的 `size` 提示
+// 或在读取时计数，我们无法知道负载大小。
 type countingReader struct {
 	r       io.Reader
 	n       int64
@@ -50,9 +47,8 @@ func (m *Metered) Put(ctx context.Context, agentID, projectID, sessionID, path s
 	if err := m.inner.Put(ctx, agentID, projectID, sessionID, path, cr, size, contentType); err != nil {
 		return err
 	}
-	// Prefer the caller's size when it's reliable; otherwise fall back
-	// to the byte count we observed. Size=-1 means "don't know", which
-	// is when the counting fallback matters most.
+	// 当调用者提供的 size 可靠时优先使用；否则回退到我们观察到的
+	// 字节计数。Size=-1 表示"未知"，这正是计数回退最关键的时候。
 	n := size
 	if n < 0 {
 		n = cr.n
@@ -85,10 +81,9 @@ func (m *Metered) SignedURL(ctx context.Context, agentID, projectID, sessionID, 
 	return m.inner.SignedURL(ctx, agentID, projectID, sessionID, path, ttl)
 }
 
-// LocalScopeDir forwards to the inner store when it implements
-// LocalScoper (LocalFS does, S3 doesn't). Lets the workspace-reveal
-// handler ask the public Store interface for an on-disk path
-// without unwrapping Metered manually.
+// LocalScopeDir 当内部 store 实现了 LocalScoper 时转发给它
+//（LocalFS 实现了，S3 没有）。允许工作区展示处理程序通过公开的
+// Store 接口请求磁盘路径，而无需手动解包 Metered。
 func (m *Metered) LocalScopeDir(agentID, projectID, sessionID string) (string, bool) {
 	if ls, ok := m.inner.(LocalScoper); ok {
 		return ls.LocalScopeDir(agentID, projectID, sessionID)
@@ -96,16 +91,15 @@ func (m *Metered) LocalScopeDir(agentID, projectID, sessionID string) (string, b
 	return "", false
 }
 
-// LocalScoper is implemented by stores whose objects live on the
-// local filesystem (LocalFS today). A store that returns ok=true
-// commits to: "this path is on the same disk as the daemon and
-// safe to hand to `open`/`xdg-open`/`explorer`". Cloud stores
-// (S3, R2) return ok=false — there's no host-side path to reveal.
+// LocalScoper 由对象位于本地文件系统上的 store 实现（目前是 LocalFS）。
+// 返回 ok=true 的 store 承诺："此路径与守护进程在同一磁盘上，
+// 可安全传递给 `open`/`xdg-open`/`explorer`"。云存储（S3, R2）
+// 返回 ok=false——没有主机端路径可以揭示。
 type LocalScoper interface {
 	LocalScopeDir(agentID, projectID, sessionID string) (string, bool)
 }
 
-// Compile-time check.
+// 编译时检查。
 var (
 	_ Store       = (*Metered)(nil)
 	_ LocalScoper = (*Metered)(nil)

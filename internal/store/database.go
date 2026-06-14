@@ -12,17 +12,17 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/lib/pq"  // PostgreSQL driver
-	_ "modernc.org/sqlite" // SQLite driver (pure Go)
+	_ "github.com/lib/pq"  // PostgreSQL 驱动程序
+	_ "modernc.org/sqlite" // SQLite 驱动程序（纯 Go）
 )
 
-// DBStore implements Store using a SQL database.
+// DBStore 使用 SQL 数据库实现 Store。
 type DBStore struct {
 	db      *sql.DB
-	dialect string // "mysql", "postgres", or "sqlite"
+	dialect string // "mysql"、"postgres" 或 "sqlite"
 }
 
-// NewDBStore creates a database-backed store.
+// NewDBStore 创建一个数据库支持的 store。
 func NewDBStore(dialect, dsn string) (*DBStore, error) {
 	switch dialect {
 	case mysqlDialect:
@@ -39,11 +39,10 @@ func NewDBStore(dialect, dsn string) (*DBStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", dialect, err)
 	}
-	// SQLite serializes all writes through a single global lock; granting
-	// 25 parallel connections makes the userland queue *deeper* without
-	// adding throughput, and on a busy install (cron scheduler + web
-	// traffic) it quickly stacks up SQLITE_BUSY past the busy_timeout.
-	// Postgres handles real concurrency, so we keep the wider pool there.
+	// SQLite 通过单个全局锁序列化所有写入；允许 25 个并行连接只会让用户态
+	// 队列*更深*而不会增加吞吐量，在繁忙的安装（cron 调度器 + web 流量）
+	// 中会迅速堆积超过 busy_timeout 的 SQLITE_BUSY 错误。
+	// Postgres 处理真正的并发，因此我们为它保留更宽的连接池。
 	if dialect == "sqlite" {
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
@@ -59,13 +58,12 @@ func NewDBStore(dialect, dsn string) (*DBStore, error) {
 	return &DBStore{db: db, dialect: dialect}, nil
 }
 
-// DB returns the underlying *sql.DB so satellite packages (e.g.
-// internal/usage) can run their own queries against the same
-// connection pool without re-opening the DSN.
+// DB 返回底层的 *sql.DB，以便卫星包（例如 internal/usage）可以针对相同
+// 的连接池运行自己的查询，而无需重新打开 DSN。
 func (d *DBStore) DB() *sql.DB { return d.db }
 
-// Dialect returns the SQL dialect so satellite packages can pick the right
-// placeholder syntax and upsert form for their queries.
+// Dialect 返回 SQL 方言，以便卫星包可以为它们的查询选择正确的
+// 占位符语法和 upsert 形式。
 func (d *DBStore) Dialect() string { return d.dialect }
 
 func driverName(dialect string) string {
@@ -81,14 +79,12 @@ func driverName(dialect string) string {
 	}
 }
 
-// Migrate creates tables if they don't exist. The schema is the canonical
-// shape — there are no in-place ALTERs because there is no installed base
-// from before this rewrite.
+// Migrate 在表不存在时创建它们。该模式是规范形状——没有就地 ALTER 操作，
+// 因为在此重写之前没有已安装的基础。
 func (d *DBStore) Migrate(ctx context.Context) error {
-	// Pre-DDL renames have to run before migrationSQL — otherwise the
-	// `CREATE TABLE IF NOT EXISTS <new_name>` lines below would create
-	// an empty target ahead of the rename and trip the "both tables
-	// exist" branch.
+	// DDL 之前的重命名必须在 migrationSQL 之前运行——否则下面的
+	// `CREATE TABLE IF NOT EXISTS <new_name>` 行会在重命名之前创建一个空目标，
+	// 并触发"两个表都存在"的分支。
 	if err := d.migrateRenameChatEventsToSessionEvents(ctx); err != nil {
 		return fmt.Errorf("migrate chat_events → session_events: %w", err)
 	}
@@ -167,20 +163,17 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 	return nil
 }
 
-// migrateSessionsAddChatterUserID retrofits a chatter_user_id column
-// onto sessions / session_messages / session_events. user_id continues
-// to mean "UserSpace owner" (channel owner) so admin views that list
-// "all sessions on my bots" keep working unchanged; chatter_user_id
-// holds the actual conversation participant, which differs from
-// user_id whenever an IM channel routes per-sender app_users into a
-// single channel-owner UserSpace.
+// migrateSessionsAddChatterUserID 将 chatter_user_id 列改装到
+// sessions / session_messages / session_events 表上。user_id 继续
+// 表示"UserSpace 拥有者"（频道拥有者），因此列出"我的 bot 上所有会话"
+// 的管理员视图保持不变；chatter_user_id 保存实际的对话参与者，
+// 当 IM 频道将按发送者的 app_users 路由到单个频道拥有者 UserSpace 时，
+// 它与会话的 user_id 不同。
 //
-// Empty default + partial indexes preserve existing query plans for
-// rows written before this column existed. Readers that want the
-// chatter should COALESCE(NULLIF(chatter_user_id,''), user_id) — the
-// fallback is exactly right for the web channel (user_id was already
-// the chatter there) and matches the pre-fix behavior on IM (where
-// every chatter was mis-attributed to the channel owner anyway).
+// 空默认值 + 部分索引保留了在此列存在之前写入的行的现有查询计划。
+// 想要获取聊天者的读取者应使用 COALESCE(NULLIF(chatter_user_id,''), user_id)
+// ——回退值对于 web 频道完全正确（user_id 在那里已经是聊天者），
+// 并且匹配修复前在 IM 上的行为（无论如何每个聊天者都被错误地归属于频道拥有者）。
 func (d *DBStore) migrateSessionsAddChatterUserID(ctx context.Context) error {
 	for _, t := range []string{"sessions", "session_messages", "session_events"} {
 		exists, err := d.tableExists(ctx, t)
@@ -205,8 +198,7 @@ func (d *DBStore) migrateSessionsAddChatterUserID(ctx context.Context) error {
 			}
 		}
 	}
-	// Partial indexes — only rows with a non-empty chatter populate the
-	// index, so legacy rows don't bloat it.
+	// 部分索引——只有具有非空聊天者的行才会填充索引，因此旧行不会使其膨胀。
 	indexSQL := []string{
 		`CREATE INDEX IF NOT EXISTS idx_sessions_by_chatter ON sessions (chatter_user_id, agent_id, updated_at DESC) WHERE chatter_user_id <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_session_messages_by_chatter ON session_messages (chatter_user_id, agent_id, session_key, seq) WHERE chatter_user_id <> ''`,
@@ -227,12 +219,10 @@ func (d *DBStore) migrateSessionsAddChatterUserID(ctx context.Context) error {
 	return nil
 }
 
-// migrateAgentGoalsAddRouting retrofits channel/account_id/chat_id/
-// project_id onto legacy agent_goals tables. All four default to ''
-// — pre-existing rows had no continuation infrastructure attached
-// anyway, so the empty value just means "no routing recorded; can't
-// auto-continue this goal" and TryFireContinuation bails safely.
-// Idempotent.
+// migrateAgentGoalsAddRouting 将 channel/account_id/chat_id/project_id
+// 改装到旧的 agent_goals 表上。所有四个列默认值为 ''——预先存在的行
+// 无论如何都没有附加延续基础设施，因此空值仅表示"未记录路由；无法自动
+// 继续此目标"，TryFireContinuation 安全退出。幂等。
 func (d *DBStore) migrateAgentGoalsAddRouting(ctx context.Context) error {
 	for _, col := range []string{"channel", "account_id", "chat_id", "project_id"} {
 		has, err := d.tableHasColumn(ctx, "agent_goals", col)
@@ -259,11 +249,10 @@ func (d *DBStore) migrateAgentGoalsAddRouting(ctx context.Context) error {
 	return nil
 }
 
-// migrateSessionMessagesAddOrigin retrofits the origin column onto
-// legacy session_messages tables. Empty default = pre-existing user /
-// assistant messages keep working unchanged. Non-empty marks runtime-
-// injected rows (currently only "goal_context") so the WebChatHistory
-// reader can skip them. Idempotent.
+// migrateSessionMessagesAddOrigin 将 origin 列改装到旧的 session_messages
+// 表上。空默认值 = 预先存在的用户/助手消息保持不变。非空值标记运行时注入
+// 的行（目前仅有 "goal_context"），以便 WebChatHistory 读取器可以跳过它们。
+// 幂等。
 func (d *DBStore) migrateSessionMessagesAddOrigin(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "session_messages", "origin")
 	if err != nil {
@@ -283,17 +272,13 @@ func (d *DBStore) migrateSessionMessagesAddOrigin(ctx context.Context) error {
 	return nil
 }
 
-// migrateTokenUsageAddProvider retrofits a `provider` column onto an
-// older token_usage_daily that was created before per-provider
-// breakdown shipped. Pre-release schemas only had (day, user, agent,
-// session, model) in the PK, which made GROUP BY provider impossible
-// (and let same-name models from different providers collide). Since
-// the table only holds accrued counters that the dashboard re-reads
-// every refresh, dropping it on the rare upgrade path is cheaper than
-// rebuilding the PK with a SQLite "create new + copy + swap" dance.
-// Idempotent: returns early if the column already exists, no-op if
-// the table itself doesn't exist yet (fresh installs run the new
-// CREATE TABLE in migrationSQL).
+// migrateTokenUsageAddProvider 将 `provider` 列改装到旧的 token_usage_daily
+// 表上，该表在按提供商细分功能发布之前创建。预发布模式在主键中只有
+// (day, user, agent, session, model)，这使得按 provider 进行 GROUP BY 不可行
+//（并允许不同提供商的同名模型冲突）。由于该表只保存仪表板每次刷新时重新读取的
+// 累计计数器，在罕见的升级路径上删除它比使用 SQLite 的"创建新表+复制+交换"
+// 方式重建主键更便宜。幂等：如果列已存在则提前返回，如果表本身尚不存在
+// 则无操作（新安装运行 migrationSQL 中的新 CREATE TABLE）。
 func (d *DBStore) migrateTokenUsageAddProvider(ctx context.Context) error {
 	exists, err := d.tableExists(ctx, "token_usage_daily")
 	if err != nil {
@@ -312,11 +297,10 @@ func (d *DBStore) migrateTokenUsageAddProvider(ctx context.Context) error {
 	if _, err := d.db.ExecContext(ctx, `DROP TABLE token_usage_daily`); err != nil {
 		return fmt.Errorf("drop old token_usage_daily: %w", err)
 	}
-	// migrationSQL's CREATE TABLE IF NOT EXISTS will recreate it with
-	// the new schema on the next pass. We rely on the fact that this
-	// migration step runs AFTER migrationSQL in the same Migrate()
-	// call ordering — so the table comes back with the right shape
-	// before any agent traffic hits it.
+	// migrationSQL 的 CREATE TABLE IF NOT EXISTS 将在下一次传递中用新模式
+	// 重新创建它。我们依赖这样的事实：此迁移步骤在同一个 Migrate() 调用顺序中
+	// 在 migrationSQL 之后运行——因此在任何 agent 流量到达之前，
+	// 该表将以正确的形状重新创建。
 	createSQL := `CREATE TABLE token_usage_daily (
 		day DATE NOT NULL,
 		user_id TEXT NOT NULL DEFAULT '',
@@ -348,10 +332,9 @@ func (d *DBStore) migrateTokenUsageAddProvider(ctx context.Context) error {
 	return nil
 }
 
-// migrateSessionsAddProjectID adds the project_id column to legacy
-// sessions tables. Empty default = "loose chat" (the existing behavior),
-// non-empty = belongs to that project. Idempotent: returns early if
-// the column already exists.
+// migrateSessionsAddProjectID 将 project_id 列添加到旧的 sessions 表。
+// 空默认值 = "松散聊天"（现有行为），非空值 = 属于该项目。
+// 幂等：如果列已存在则提前返回。
 func (d *DBStore) migrateSessionsAddProjectID(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "sessions", "project_id")
 	if err != nil {
@@ -371,13 +354,11 @@ func (d *DBStore) migrateSessionsAddProjectID(ctx context.Context) error {
 	return nil
 }
 
-// migrateConfigsAddScopeColumn retrofits the denormalized scope label
-// column. Pre-feature configs rows have the (user_id, agent_id) pair
-// but no scope hint — this adds the column and backfills it once. New
-// rows are written by SaveConfig, which is the only place that can
-// emit a scope value.
+// migrateConfigsAddScopeColumn 将反规范化的 scope 标签列改装到旧的 configs 行上。
+// 功能之前的 configs 行有 (user_id, agent_id) 对但没有 scope 提示——此函数添加该列
+// 并一次性回填。新行由 SaveConfig 写入，它是唯一可以发出 scope 值的地方。
 //
-// Idempotent: returns early if the column already exists.
+// 幂等：如果列已存在则提前返回。
 func (d *DBStore) migrateConfigsAddScopeColumn(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "configs", "scope")
 	if err != nil {
@@ -394,9 +375,8 @@ func (d *DBStore) migrateConfigsAddScopeColumn(ctx context.Context) error {
 		fmt.Sprintf(`ALTER TABLE configs ADD COLUMN scope %s NOT NULL DEFAULT ''`, columnType)); err != nil {
 		return fmt.Errorf("add column: %w", err)
 	}
-	// Backfill in one UPDATE — same CASE expression that
-	// computeConfigScope encodes in Go. Both dialects support the
-	// CASE WHEN form unchanged.
+	// 在一个 UPDATE 中回填——与 computeConfigScope 在 Go 中编码的相同 CASE 表达式。
+	// 两种方言都支持 CASE WHEN 形式不变。
 	if _, err := d.db.ExecContext(ctx, `UPDATE configs SET scope = CASE
 		WHEN user_id != '' AND agent_id != '' THEN 'user-agent'
 		WHEN user_id != ''                     THEN 'user'
@@ -408,14 +388,13 @@ func (d *DBStore) migrateConfigsAddScopeColumn(ctx context.Context) error {
 	return nil
 }
 
-// migrateRenameChatEventsToSessionEvents renames the streaming-event
-// deltas table from `chat_events` to `session_events` so it shares the
-// session_* prefix with `sessions` / `session_messages`. The "chat"
-// label was misleading — the table also stores events for wechat /
-// telegram / line / web sessions, not just web "chats".
+// migrateRenameChatEventsToSessionEvents 将流式事件增量表从 `chat_events`
+// 重命名为 `session_events`，使其与 `sessions` / `session_messages` 共享
+// session_* 前缀。"chat" 标签具有误导性——该表也存储 wechat / telegram / line
+// / web 会话的事件，而不仅仅是 web "聊天"。
 //
-// Idempotent: if the new name already exists OR the old name doesn't,
-// the function is a no-op. On rename, the lookup index moves too.
+// 幂等：如果新名称已存在或者旧名称不存在，则该函数无操作。在重命名时，
+// 查找索引也会移动。
 func (d *DBStore) migrateRenameChatEventsToSessionEvents(ctx context.Context) error {
 	hasNew, err := d.tableExists(ctx, "session_events")
 	if err != nil {
@@ -429,9 +408,8 @@ func (d *DBStore) migrateRenameChatEventsToSessionEvents(ctx context.Context) er
 		return err
 	}
 	if !hasOld {
-		// Defensive — fresh installs never have chat_events because
-		// migrationSQL writes session_events directly. Older installs
-		// that already ran this migration land on hasNew=true above.
+		// 防御性——新安装从未有 chat_events，因为 migrationSQL 直接写入
+		// session_events。已经运行过此迁移的旧安装会在上面的 hasNew=true 处命中。
 		return nil
 	}
 	if _, err := d.db.ExecContext(ctx, `ALTER TABLE chat_events RENAME TO session_events`); err != nil {
@@ -444,9 +422,8 @@ func (d *DBStore) migrateRenameChatEventsToSessionEvents(ctx context.Context) er
 		_, _ = d.db.ExecContext(ctx,
 			`ALTER TABLE session_events RENAME INDEX idx_chat_events_lookup TO idx_session_events_lookup`)
 	} else {
-		// SQLite has no ALTER INDEX RENAME on older versions; drop
-		// and recreate with the new name. The DROP is best-effort —
-		// it may already have been gone.
+		// SQLite 在较旧版本上没有 ALTER INDEX RENAME；删除并用新名称重新创建。
+		// DROP 是尽力而为的——它可能已经不存在了。
 		_, _ = d.db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_chat_events_lookup`)
 	}
 	if err := d.execDDL(ctx,
@@ -456,8 +433,8 @@ func (d *DBStore) migrateRenameChatEventsToSessionEvents(ctx context.Context) er
 	return nil
 }
 
-// tableExists is a small helper used by table-rename migrations.
-// SQLite reads sqlite_master; Postgres uses to_regclass.
+// tableExists 是一个由表重命名迁移使用的小型辅助函数。
+// SQLite 读取 sqlite_master；Postgres 使用 to_regclass。
 func (d *DBStore) tableExists(ctx context.Context, table string) (bool, error) {
 	if d.dialect == "postgres" {
 		var name *string
@@ -486,34 +463,30 @@ func (d *DBStore) tableExists(ctx context.Context, table string) (bool, error) {
 	return name != "", nil
 }
 
-// migrateConfigsScopeToUserAgent rewrites the configs table from the
-// historical (scope, scope_id) polymorphic pair into explicit
-// (user_id, agent_id) columns.
+// migrateConfigsScopeToUserAgent 将 configs 表从历史 (scope, scope_id)
+// 多态对重写为显式的 (user_id, agent_id) 列。
 //
-// Backfill rules:
+// 回填规则：
 //
 //	scope='system'           → user_id='',           agent_id=''
 //	scope='user',  scope_id=X→ user_id=X,            agent_id=''
 //	scope='agent', scope_id=Y→
-//	  - kind='channel' or 'setting'/name='bindings':
-//	      user_id = agents.user_id (the owner; channel routes to them
-//	                anyway), agent_id = Y. This finally records WHO
-//	                bound the channel inside the row itself.
-//	  - other kinds (provider / setting):
+//	  - kind='channel' 或 'setting'/name='bindings'：
+//	      user_id = agents.user_id（拥有者；频道路由到他们），
+//	      agent_id = Y。这最终在行本身内记录了是谁绑定了频道。
+//	  - 其他 kind（provider / setting）：
 //	      user_id = '',          agent_id = Y
 //
-// The kind='setting'/name='bindings' rows are migration-deleted at the
-// end — channel rows now carry their agent_id directly, so the
-// indirection layer is gone.
+// kind='setting'/name='bindings' 的行在最后被迁移删除——频道行现在直接携带
+// 它们的 agent_id，因此间接层已消失。
 func (d *DBStore) migrateConfigsScopeToUserAgent(ctx context.Context) error {
 	hasUserID, err := d.tableHasColumn(ctx, "configs", "user_id")
 	if err != nil {
 		return err
 	}
 	if !hasUserID {
-		// Probe `scope_id` rather than `scope`: the post-refactor
-		// schema reintroduces `scope` as a denormalized label, so its
-		// presence no longer means "this is the legacy shape".
+		// 探测 `scope_id` 而不是 `scope`：重构后的模式将 `scope` 重新引入为
+		// 反规范化标签，因此它的存在不再意味着"这是旧形状"。
 		hasScopeID, err := d.tableHasColumn(ctx, "configs", "scope_id")
 		if err != nil {
 			return err
@@ -534,8 +507,8 @@ func (d *DBStore) migrateConfigsScopeToUserAgent(ctx context.Context) error {
 			}
 		}
 	}
-	// Always assert the lookup index — both upgrade and fresh-install
-	// paths flow through here. CREATE INDEX IF NOT EXISTS is idempotent.
+	// 总是确保查找索引——升级和新安装路径都流经这里。
+	// CREATE INDEX IF NOT EXISTS 是幂等的。
 	if err := d.execDDL(ctx,
 		`CREATE INDEX IF NOT EXISTS idx_configs_lookup ON configs (kind, user_id, agent_id)`); err != nil {
 		return fmt.Errorf("create configs index: %w", err)
@@ -544,24 +517,23 @@ func (d *DBStore) migrateConfigsScopeToUserAgent(ctx context.Context) error {
 }
 
 func (d *DBStore) migrateConfigsScopeToUserAgentPostgres(ctx context.Context) error {
-	// Postgres can ALTER directly: add columns, backfill, drop index +
-	// unique, drop scope columns, recreate index + unique.
+	// Postgres 可以直接 ALTER：添加列、回填、删除索引 + 唯一约束、
+	// 删除 scope 列、重新创建索引 + 唯一约束。
 	stmts := []string{
 		`ALTER TABLE configs ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE configs ADD COLUMN IF NOT EXISTS agent_id TEXT NOT NULL DEFAULT ''`,
-		// scope=user: user_id = scope_id
+		// scope=user：user_id = scope_id
 		`UPDATE configs SET user_id = scope_id WHERE scope = 'user' AND user_id = ''`,
-		// scope=agent + (channel or bindings): user_id = agents.user_id, agent_id = scope_id
+		// scope=agent +（channel 或 bindings）：user_id = agents.user_id，agent_id = scope_id
 		`UPDATE configs c SET user_id = a.user_id, agent_id = c.scope_id
 		   FROM agents a
 		   WHERE c.scope = 'agent' AND c.user_id = '' AND c.agent_id = ''
 		     AND a.id = c.scope_id
 		     AND (c.kind = 'channel' OR (c.kind = 'setting' AND c.name = 'bindings'))`,
-		// scope=agent + other kinds: only set agent_id
+		// scope=agent + 其他 kind：仅设置 agent_id
 		`UPDATE configs SET agent_id = scope_id
 		   WHERE scope = 'agent' AND agent_id = ''`,
-		// Drop kind=setting/name=bindings rows — bindings are now
-		// implicit in channel rows' agent_id.
+		// 删除 kind=setting/name=bindings 的行——绑定现在隐含在频道行的 agent_id 中。
 		`DELETE FROM configs WHERE kind = 'setting' AND name = 'bindings'`,
 		`DROP INDEX IF EXISTS idx_configs_lookup`,
 		`ALTER TABLE configs DROP CONSTRAINT IF EXISTS configs_kind_scope_scope_id_name_key`,
@@ -579,8 +551,8 @@ func (d *DBStore) migrateConfigsScopeToUserAgentPostgres(ctx context.Context) er
 }
 
 func (d *DBStore) migrateConfigsScopeToUserAgentSQLite(ctx context.Context) error {
-	// SQLite can't drop / change columns in place reliably across all
-	// versions in our supported range, so we copy-rename the table.
+	// SQLite 不能在我们支持的范围内跨所有版本可靠地就地删除/更改列，
+	// 因此我们使用复制-重命名表的方式。
 	stmts := []string{
 		`CREATE TABLE configs_new (
 			id TEXT PRIMARY KEY,
@@ -595,15 +567,14 @@ func (d *DBStore) migrateConfigsScopeToUserAgentSQLite(ctx context.Context) erro
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE (kind, user_id, agent_id, name)
 		)`,
-		// scope=system: both ids empty
-		// scope=user:   user_id = scope_id, agent_id = ''
-		// scope=agent + (channel | setting/name=bindings):
-		//               user_id = agents.user_id, agent_id = scope_id
-		// scope=agent + other:
-		//               user_id = '', agent_id = scope_id
-		// Skip kind='setting' AND name='bindings' rows — channel rows
-		// now carry agent_id directly so this indirection table is
-		// redundant.
+		// scope=system：两个 ID 都为空
+		// scope=user：user_id = scope_id，agent_id = ''
+		// scope=agent +（channel | setting/name=bindings）：
+		//               user_id = agents.user_id，agent_id = scope_id
+		// scope=agent + 其他：
+		//               user_id = ''，agent_id = scope_id
+		// 跳过 kind='setting' AND name='bindings' 的行——频道行现在直接携带
+		// agent_id，因此这个间接表是多余的。
 		`INSERT INTO configs_new (id, kind, user_id, agent_id, name, enabled, credential_key, data, created_at, updated_at)
 		   SELECT
 		     c.id,
@@ -635,10 +606,9 @@ func (d *DBStore) migrateConfigsScopeToUserAgentSQLite(ctx context.Context) erro
 	return nil
 }
 
-// migrateCronJobsAddUserID retrofits user_id onto cron_jobs so the
-// (user_id, agent_id) keying matches the rest of the codebase. Backfill
-// joins agents to recover the owning user. New rows must populate
-// user_id explicitly (SaveCronJob enforces).
+// migrateCronJobsAddUserID 将 user_id 改装到 cron_jobs 表上，使
+// (user_id, agent_id) 键控与代码库的其余部分匹配。回填连接 agents 表
+// 以恢复拥有用户。新行必须显式填充 user_id（SaveCronJob 强制执行）。
 func (d *DBStore) migrateCronJobsAddUserID(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "cron_jobs", "user_id")
 	if err != nil {
@@ -659,7 +629,7 @@ func (d *DBStore) migrateCronJobsAddUserID(ctx context.Context) error {
 			return fmt.Errorf("backfill cron_jobs.user_id: %w", err)
 		}
 	}
-	// Always assert the lookup index — fresh installs flow through here too.
+	// 总是确保查找索引——新安装也流经这里。
 	if err := d.execDDL(ctx,
 		`CREATE INDEX IF NOT EXISTS idx_cron_jobs_user ON cron_jobs (user_id, agent_id)`); err != nil {
 		return fmt.Errorf("index cron_jobs.user_id: %w", err)
@@ -667,13 +637,12 @@ func (d *DBStore) migrateCronJobsAddUserID(ctx context.Context) error {
 	return nil
 }
 
-// migrateSessionsAddChannelTriple retrofits channel / account_id / chat_id
-// onto pre-feature sessions rows. Existing session_keys followed the
-// `<channel>_<chatID>` convention (web_<sid>, wechat_<openid>, …), so the
-// backfill splits on the first underscore. account_id has no historical
-// source — pre-feature installs only ran one bot per channel anyway, so
-// leaving it '' is correct for those rows. New sessions written after
-// this migration always populate the full triple explicitly.
+// migrateSessionsAddChannelTriple 将 channel / account_id / chat_id
+// 改装到功能之前的 sessions 行上。现有的 session_keys 遵循
+// `<channel>_<chatID>` 约定（web_<sid>、wechat_<openid>、…），
+// 因此回填在第一个下划线处分割。account_id 没有历史来源——功能之前的安装
+// 每个频道只运行一个 bot，因此为这些行保留 '' 是正确的。
+// 此迁移之后写入的新会话始终显式填充完整的三元组。
 func (d *DBStore) migrateSessionsAddChannelTriple(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "sessions", "channel")
 	if err != nil {
@@ -695,11 +664,10 @@ func (d *DBStore) migrateSessionsAddChannelTriple(ctx context.Context) error {
 				return fmt.Errorf("add column: %w (sql: %s)", err, stmt)
 			}
 		}
-		// Backfill from the legacy `<channel>_<chatID>` session_key shape.
-		// SQLite and Postgres both expose substr / instr-style functions;
-		// we pick the dialect-appropriate one. Rows with no underscore
-		// (shouldn't happen in practice but defensive) get channel='' and
-		// chat_id=key.
+		// 从旧的 `<channel>_<chatID>` session_key 形状回填。
+		// SQLite 和 Postgres 都提供 substr / instr 风格的函数；
+		// 我们选择适合方言的那个。没有下划线的行
+		//（在实践中不应该发生，但防御性）得到 channel='' 和 chat_id=key。
 		var backfill string
 		if d.dialect == "postgres" {
 			backfill = `UPDATE sessions
@@ -720,9 +688,8 @@ func (d *DBStore) migrateSessionsAddChannelTriple(ctx context.Context) error {
 			return fmt.Errorf("backfill: %w", err)
 		}
 	}
-	// Always (re)assert the index — the CREATE INDEX in migrationSQL was
-	// removed because it would fire before the columns existed on legacy
-	// databases. IF NOT EXISTS makes it idempotent for fresh installs.
+	// 总是（重新）确保索引——migrationSQL 中的 CREATE INDEX 已被移除，
+	// 因为它在旧数据库上会在列存在之前触发。IF NOT EXISTS 使其对新安装幂等。
 	if err := d.execDDL(ctx,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_chat_active ON sessions (user_id, agent_id, channel, account_id, chat_id, updated_at DESC)`); err != nil {
 		return fmt.Errorf("create index: %w", err)
@@ -730,10 +697,9 @@ func (d *DBStore) migrateSessionsAddChannelTriple(ctx context.Context) error {
 	return nil
 }
 
-// migrateUsersAddAgentQuota retrofits the agent_quota column onto
-// pre-feature installs. Default -1 = unlimited, which preserves the
-// existing "anyone can create as many agents as they want" behavior
-// for users that existed before the quota was introduced.
+// migrateUsersAddAgentQuota 将 agent_quota 列改装到功能之前的安装上。
+// 默认 -1 = 无限制，这为配额引入之前已存在的用户保留了
+// "任何人都可以创建任意数量的 agent"的现有行为。
 func (d *DBStore) migrateUsersAddAgentQuota(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "users", "agent_quota")
 	if err != nil {
@@ -749,9 +715,8 @@ func (d *DBStore) migrateUsersAddAgentQuota(ctx context.Context) error {
 	return nil
 }
 
-// migrateAgentsAddIsPublic retrofits the is_public column onto
-// pre-feature installs. Default FALSE keeps every existing agent
-// owner-only after the upgrade — opt-in via the Edit dialog.
+// migrateAgentsAddIsPublic 将 is_public 列改装到功能之前的安装上。
+// 默认 FALSE 使每个现有的 agent 在升级后仍然仅限拥有者——通过编辑对话框选择启用。
 func (d *DBStore) migrateAgentsAddIsPublic(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "agents", "is_public")
 	if err != nil {
@@ -767,11 +732,10 @@ func (d *DBStore) migrateAgentsAddIsPublic(ctx context.Context) error {
 	return nil
 }
 
-// migrateDropAgentGrants removes the legacy per-user share table.
-// Sharing now lives on agents.is_public; existing per-user grants are
-// not migrated forward (the prior model wasn't shipped to general
-// users). DROP TABLE IF EXISTS is idempotent and a no-op on fresh
-// installs that never created the table.
+// migrateDropAgentGrants 删除旧的按用户共享表。
+// 共享现在位于 agents.is_public 上；现有的按用户授权不会向前迁移
+//（先前的模型没有发布给普通用户）。DROP TABLE IF EXISTS 是幂等的，
+// 在从未创建该表的新安装上是无操作。
 func (d *DBStore) migrateDropAgentGrants(ctx context.Context) error {
 	if _, err := d.db.ExecContext(ctx, `DROP TABLE IF EXISTS agent_grants`); err != nil {
 		return fmt.Errorf("drop agent_grants: %w", err)
@@ -779,10 +743,9 @@ func (d *DBStore) migrateDropAgentGrants(ctx context.Context) error {
 	return nil
 }
 
-// migrateCronJobsFailureCount retrofits the failure_count column onto
-// pre-feature installs. Default 0 backfills existing rows as "healthy"
-// so the auto-delete threshold doesn't fire on first tick after the
-// upgrade.
+// migrateCronJobsFailureCount 将 failure_count 列改装到功能之前的安装上。
+// 默认 0 将现有行回填为"健康"状态，这样自动删除阈值不会在升级后的
+// 第一次触发时生效。
 func (d *DBStore) migrateCronJobsFailureCount(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "cron_jobs", "failure_count")
 	if err != nil {
@@ -798,10 +761,9 @@ func (d *DBStore) migrateCronJobsFailureCount(ctx context.Context) error {
 	return nil
 }
 
-// migrateUsersAvatarURL retrofits the avatar_url column onto pre-feature
-// installs. Stored as a data: URL so the file lives inline with the row
-// — no separate blob store path or cleanup. Empty string means "no
-// avatar"; the UI falls back to initials.
+// migrateUsersAvatarURL 将 avatar_url 列改装到功能之前的安装上。
+// 存储为 data: URL，因此文件与行内联存在——没有单独的 blob 存储路径或清理。
+// 空字符串表示"无头像"；UI 回退到首字母。
 func (d *DBStore) migrateUsersAvatarURL(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "users", "avatar_url")
 	if err != nil {
@@ -821,10 +783,9 @@ func (d *DBStore) migrateUsersAvatarURL(ctx context.Context) error {
 	return nil
 }
 
-// migrateAPIKeysAddType retrofits the `type` column onto apikeys for
-// pre-tier installs. Every legacy row was an explicit-agent-list key, so
-// backfilling DEFAULT 'agent' preserves behavior — admin/user tiers can
-// only be created from this point forward.
+// migrateAPIKeysAddType 将 `type` 列改装到层级之前的 apikeys 安装上。
+// 每个旧行都是显式-agent-列表密钥，因此回填 DEFAULT 'agent' 保留了行为
+// ——admin/user 层级只能从此时开始创建。
 func (d *DBStore) migrateAPIKeysAddType(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "apikeys", "type")
 	if err != nil {
@@ -844,12 +805,10 @@ func (d *DBStore) migrateAPIKeysAddType(ctx context.Context) error {
 	return nil
 }
 
-// migrateUsersAppUserCols retrofits the apikey_id + external_id columns
-// onto the users table for existing installs, and creates the partial
-// unique index used for idempotent provisioning. CREATE TABLE only fires
-// on a fresh DB; older databases reach this with the legacy 7-column
-// users table and exit it with the new 9-column shape. Idempotent: each
-// step probes for existing state before mutating.
+// migrateUsersAppUserCols 将 apikey_id + external_id 列改装到现有安装的
+// users 表上，并创建用于幂等配置的部分唯一索引。CREATE TABLE 仅在新数据库上
+// 触发；旧数据库以旧的 7 列 users 表到达此处，并以新的 9 列形状退出。
+// 幂等：每一步在变更之前探测现有状态。
 func (d *DBStore) migrateUsersAppUserCols(ctx context.Context) error {
 	hasAPIKey, err := d.tableHasColumn(ctx, "users", "apikey_id")
 	if err != nil {
@@ -891,14 +850,13 @@ func (d *DBStore) migrateUsersAppUserCols(ctx context.Context) error {
 	return nil
 }
 
-// migrateAgentFilesDropTemplate clears the legacy user_id='' template
-// rows from agent_files. Each row is reparented to the agent's owner
-// when no per-user row already exists for that (agent_id, filename) —
-// preserves existing content as the owner's personal copy. After this
-// pass the table holds (agent_id, real_user_id, filename) tuples only;
-// any "shared SOUL.md across all users" use case should live in a local
-// FS file at <agent_home>/<name>, which the runtime falls back to.
-// Idempotent: re-runs find no user_id='' rows and exit clean.
+// migrateAgentFilesDropTemplate 清除 agent_files 中旧的 user_id='' 模板行。
+// 每行在 (agent_id, filename) 没有已存在的按用户行时，被重新分配给 agent 的
+// 拥有者——保留现有内容作为拥有者的个人副本。在此次传递之后，表仅持有
+// (agent_id, real_user_id, filename) 元组；
+// 任何"跨所有用户共享 SOUL.md"的用例应位于本地文件系统中
+// <agent_home>/<name> 的文件中，运行时会回退到该文件。
+// 幂等：重新运行时找不到 user_id='' 的行并干净退出。
 func (d *DBStore) migrateAgentFilesDropTemplate(ctx context.Context) error {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT agent_files.agent_id, agent_files.filename, agent_files.content, agents.user_id
@@ -925,9 +883,8 @@ func (d *DBStore) migrateAgentFilesDropTemplate(ctx context.Context) error {
 	now := time.Now().UTC()
 	for _, t := range pending {
 		if t.ownerID.Valid && t.ownerID.String != "" {
-			// Reparent only when the owner has no row of their own
-			// for this (agent_id, filename) — never clobber an
-			// existing personal copy.
+			// 仅在拥有者对此 (agent_id, filename) 没有自己的行时才重新父化——
+			// 绝不覆盖现有的个人副本。
 			var exists int
 			row := d.db.QueryRowContext(ctx,
 				fmt.Sprintf(`SELECT 1 FROM agent_files
@@ -963,19 +920,15 @@ func (d *DBStore) migrateAgentFilesDropTemplate(ctx context.Context) error {
 	return nil
 }
 
-// migrateSkillsAgentEntriesSplit relocates per-agent skill env overrides
-// off the single user/system-scope skills.agentEntries row (a JSON blob
-// keyed by agent_id, which grew unboundedly with each agent × skill)
-// into one row per agent at scope=agent name=skills.entries — the same
-// shape the runtime now reads via scope.GetConfigByName per agent.
-// Idempotent: every legacy row found gets split + deleted in a single
-// pass; subsequent runs find no legacy rows and exit clean.
+// migrateSkillsAgentEntriesSplit 将每个 agent 的技能环境覆盖从单个用户/系统范围的
+// skills.agentEntries 行（一个以 agent_id 为键的 JSON blob，随着每个 agent × skill
+// 无限增长）迁移到每个 agent 一行，scope=agent, name=skills.entries——与运行时现在
+// 通过 scope.GetConfigByName 读取的形状相同。
+// 幂等：每个遗留行在单次传递中被拆分 + 删除；后续运行找不到遗留行并干净退出。
 func (d *DBStore) migrateSkillsAgentEntriesSplit(ctx context.Context) error {
-	// Gate on `scope_id`, not `scope`: the new schema brings back a
-	// `scope` column as a denormalized label, but `scope_id` is gone.
-	// Probing `scope_id` reliably detects "this is a pre-feature
-	// install" and avoids running the legacy SELECT against the new
-	// shape.
+	// 以 `scope_id` 而非 `scope` 为门控：新模式将 `scope` 列作为反规范化标签重新引入，
+	// 但 `scope_id` 已消失。探测 `scope_id` 可靠地检测"这是功能之前的安装"，
+	// 并避免对新形状运行旧的 SELECT。
 	hasScopeID, err := d.tableHasColumn(ctx, "configs", "scope_id")
 	if err != nil {
 		return err
@@ -1006,7 +959,7 @@ func (d *DBStore) migrateSkillsAgentEntriesSplit(ctx context.Context) error {
 		// data shape: { "<agent_id>": { "<skill_name>": { ...entry } } }
 		var byAgent map[string]map[string]interface{}
 		if err := json.Unmarshal([]byte(l.dataJSON), &byAgent); err != nil {
-			// Malformed row — drop it; not worth aborting migration.
+			// 格式错误的行——删除它；不值得中止迁移。
 			if _, derr := d.db.ExecContext(ctx,
 				fmt.Sprintf(`DELETE FROM configs WHERE id=%s`, d.ph(1)), l.id); derr != nil {
 				return fmt.Errorf("drop malformed legacy row: %w", derr)
@@ -1019,8 +972,7 @@ func (d *DBStore) migrateSkillsAgentEntriesSplit(ctx context.Context) error {
 			}
 			cid := configRowID("setting", "agent", agentID, "skills.entries")
 			innerBlob, _ := json.Marshal(inner)
-			// Skip if a per-agent row already exists (manual edit, prior
-			// partial migration, etc.) — don't clobber.
+			// 如果每个 agent 的行已存在则跳过（手动编辑、之前的部分迁移等）——不覆盖。
 			var exists int
 			err := d.db.QueryRowContext(ctx,
 				fmt.Sprintf(`SELECT 1 FROM configs WHERE id=%s LIMIT 1`, d.ph(1)), cid).Scan(&exists)
@@ -1045,12 +997,10 @@ func (d *DBStore) migrateSkillsAgentEntriesSplit(ctx context.Context) error {
 	return nil
 }
 
-// migrateAgentsDropModel relocates per-agent model overrides off the
-// agents.model column into the configs table (kind=setting, scope=agent,
-// scope_id=<aid>, name="agents.defaults", data={"model":"..."}). The
-// configs path is what the runtime now reads via scope.SettingInto, so
-// keeping the column would just duplicate state. Idempotent: silently
-// no-ops once the column is gone.
+// migrateAgentsDropModel 将每个 agent 的模型覆盖从 agents.model 列迁移到 configs
+// 表（kind=setting, scope=agent, scope_id=<aid>, name="agents.defaults",
+// data={"model":"..."})。configs 路径是运行时现在通过 scope.SettingInto 读取的方式，
+// 因此保留该列只会重复状态。幂等：列消失后静默无操作。
 func (d *DBStore) migrateAgentsDropModel(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "agents", "model")
 	if err != nil {
@@ -1059,20 +1009,16 @@ func (d *DBStore) migrateAgentsDropModel(ctx context.Context) error {
 	if !has {
 		return nil
 	}
-	// The relocation INSERTs into configs using the legacy (scope,
-	// scope_id) columns. Fresh installs that never had agents.model in
-	// the first place don't reach this branch (the column-presence
-	// check above already returned). But a legacy install that lost
-	// the scope_id column out of order would — gate it. (scope still
-	// exists post-refactor as a denormalized label, scope_id doesn't.)
+	// 迁移使用旧的 (scope, scope_id) 列 INSERT 到 configs 中。
+	// 最初就没有 agents.model 的新安装不会到达此分支（上面的列存在检查已经返回）。
+	// 但一个无序丢失 scope_id 列的旧安装会到达——门控它。（scope 在重构后仍然作为
+	// 反规范化标签存在，scope_id 不存在。）
 	hasScopeID, err := d.tableHasColumn(ctx, "configs", "scope_id")
 	if err != nil {
 		return err
 	}
 	if !hasScopeID {
-		// Legacy install in an unexpected state — drop the column so
-		// the orchestrator can move on; the data was probably already
-		// migrated by a prior run.
+		// 意外状态的旧安装——删除列以便编排器可以继续；数据可能已被先前的运行迁移。
 		stmt := `ALTER TABLE agents DROP COLUMN model`
 		if d.dialect == "postgres" {
 			stmt = `ALTER TABLE agents DROP COLUMN IF EXISTS model`
@@ -1097,9 +1043,8 @@ func (d *DBStore) migrateAgentsDropModel(ctx context.Context) error {
 	rows.Close()
 	now := time.Now().UTC()
 	for _, r := range legacy {
-		// Don't overwrite an already-existing configs row — the runtime
-		// has been writing there since this migration shipped, so an
-		// existing row is the source of truth.
+		// 不覆盖已存在的 configs 行——运行时自此迁移发布以来一直在那里写入，
+		// 因此现有行是事实来源。
 		var exists int
 		err := d.db.QueryRowContext(ctx,
 			fmt.Sprintf(`SELECT 1 FROM configs WHERE kind='setting' AND scope='agent' AND scope_id=%s AND name='agents.defaults' LIMIT 1`,
@@ -1130,10 +1075,9 @@ func (d *DBStore) migrateAgentsDropModel(ctx context.Context) error {
 	return nil
 }
 
-// migrateAgentsDropTemplateID removes the never-read template_id column
-// from existing installs. Idempotent: silently no-ops when the column
-// is already gone. SQLite needs 3.35+ for DROP COLUMN — every supported
-// runtime here ships well above that, so we don't fall back to rebuild.
+// migrateAgentsDropTemplateID 从现有安装中删除从未被读取的 template_id 列。
+// 幂等：列已消失时静默无操作。SQLite 需要 3.35+ 才能使用 DROP COLUMN——
+// 这里所有支持的运行时版本都远超于此，因此我们不回退到重建。
 func (d *DBStore) migrateAgentsDropTemplateID(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "agents", "template_id")
 	if err != nil {
@@ -1152,12 +1096,11 @@ func (d *DBStore) migrateAgentsDropTemplateID(ctx context.Context) error {
 	return nil
 }
 
-// migrateAgentFilesUserID retrofits the per-user override column on
-// pre-existing installs. CREATE TABLE IF NOT EXISTS only fires on a
-// fresh DB, so legacy databases keep the old (agent_id, filename) PK
-// until this runs. Idempotent: detects the missing column and rebuilds
-// the table once. SQLite has no ALTER TABLE for changing PKs, so we
-// copy-rename. Postgres can ALTER directly.
+// migrateAgentFilesUserID 在现有安装上改装每用户覆盖列。
+// CREATE TABLE IF NOT EXISTS 仅在新数据库上触发，因此旧数据库保留旧的
+// (agent_id, filename) 主键直到此函数运行。幂等：检测缺失的列并一次性重建表。
+// SQLite 没有用于更改主键的 ALTER TABLE，因此我们采用复制-重命名方式。
+// Postgres 可以直接 ALTER。
 func (d *DBStore) migrateAgentFilesUserID(ctx context.Context) error {
 	hasUserID, err := d.tableHasColumn(ctx, "agent_files", "user_id")
 	if err != nil {
@@ -1192,7 +1135,7 @@ func (d *DBStore) migrateAgentFilesUserID(ctx context.Context) error {
 		}
 		return nil
 	}
-	// SQLite: rebuild the table to widen the PK.
+	// SQLite: 重建表以扩展主键。
 	stmts := []string{
 		`CREATE TABLE agent_files_new (
 			agent_id TEXT NOT NULL,
@@ -1215,9 +1158,8 @@ func (d *DBStore) migrateAgentFilesUserID(ctx context.Context) error {
 	return nil
 }
 
-// tableHasColumn returns true when the named column exists on the table.
-// Backend-specific: Postgres reads information_schema; SQLite uses the
-// PRAGMA table_info() pseudo-table.
+// tableHasColumn 当表中存在指定列时返回 true。
+// 后端特定：Postgres 读取 information_schema；SQLite 使用 PRAGMA table_info() 伪表。
 func (d *DBStore) tableHasColumn(ctx context.Context, table, column string) (bool, error) {
 	if d.dialect == "postgres" {
 		row := d.db.QueryRowContext(ctx,
@@ -1264,15 +1206,12 @@ func (d *DBStore) tableHasColumn(ctx context.Context, table, column string) (boo
 
 func (d *DBStore) migrationSQL() []string {
 	return []string{
-		// users holds first-party humans (role=super_admin/user) AND
-		// app-provisioned end-users (role=app_user). The latter are
-		// minted by an api_key on behalf of a downstream application;
-		// they cannot log in (password_hash='' is rejected by the
-		// password login path). apikey_id + external_id together
-		// identify "which calling app, which of its end-users", and
-		// the partial UNIQUE makes provisioning idempotent on that
-		// pair so the same external user always resolves to the same
-		// bkclaw user_id.
+		// users 表保存第一方人类（role=super_admin/user）和
+		// 应用配置的最终用户（role=app_user）。后者由 api_key
+		// 代表下游应用创建；他们不能登录（password_hash='' 被密码登录路径拒绝）。
+		// apikey_id + external_id 共同标识"哪个调用应用，哪个最终用户"，
+		// 部分 UNIQUE 使配置在该对上幂等，因此同一外部用户始终解析为相同的
+		// bkclaw user_id。
 		`CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
 			username TEXT NOT NULL UNIQUE,
@@ -1288,11 +1227,9 @@ func (d *DBStore) migrationSQL() []string {
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
-		// Idempotency lookup for app_user provisioning lives in
-		// migrateUsersAppUserCols, not here — on existing installs the
-		// CREATE TABLE above is a no-op and the apikey_id column
-		// doesn't exist yet, so the index has to wait until the
-		// column-add step has run.
+		// app_user 配置的幂等性查找位于 migrateUsersAppUserCols 中，不在此处——
+		// 在现有安装上，上面的 CREATE TABLE 是无操作的，apikey_id 列尚不存在，
+		// 因此索引必须等到列添加步骤运行之后。
 		`CREATE TABLE IF NOT EXISTS web_sessions (
 			sid TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL,
@@ -1301,11 +1238,9 @@ func (d *DBStore) migrationSQL() []string {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions (user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions (expires_at)`,
-		// type values: "admin" | "user" | "agent". The default 'agent'
-		// preserves the pre-tier behavior on existing rows — every legacy
-		// key was implicitly an "agent-scoped" key (explicit list in
-		// apikey_agents), so the migration can backfill blindly. See
-		// migrateAPIKeysAddType for the ALTER on existing installs.
+		// type 值："admin" | "user" | "agent"。默认值 'agent' 在现有行上保留了
+		// 层级之前的行为——每个旧密钥隐式是"agent 范围"的密钥（在 apikey_agents 中的
+		// 显式列表），因此迁移可以盲目回填。参见 migrateAPIKeysAddType 了解现有安装的 ALTER。
 		`CREATE TABLE IF NOT EXISTS apikeys (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL,
@@ -1323,13 +1258,11 @@ func (d *DBStore) migrationSQL() []string {
 			PRIMARY KEY (apikey_id, agent_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_apikey_agents_agent ON apikey_agents (agent_id)`,
-		// is_public flips the "anyone with the link can chat" gate.
-		// Default 0 (private — owner-only). When 1, a non-owner who hits
-		// the agent's chat URL gets the agent lazy-attached into their
-		// own UserSpace; sessions/memory/agent_files stay keyed by the
-		// chatter's user_id, so each chatter gets a private history
-		// while the agent identity (SOUL.md, IDENTITY.md, skills) is
-		// shared from the owner's row.
+		// is_public 翻转"任何拥有链接的人都可以聊天"的门控。
+		// 默认 0（私有——仅拥有者）。当为 1 时，非拥有者访问 agent 的聊天 URL
+		// 会将 agent 懒加载到他们自己的 UserSpace 中；会话/记忆/agent 文件
+		// 仍按聊天者的 user_id 键控，因此每个聊天者都拥有私有历史记录，
+		// 而 agent 身份（SOUL.md, IDENTITY.md, skills）从拥有者的行共享。
 		`CREATE TABLE IF NOT EXISTS agents (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL,
@@ -1340,14 +1273,11 @@ func (d *DBStore) migrationSQL() []string {
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_agents_user ON agents (user_id)`,
-		// channel / account_id / chat_id together identify the
-		// (channel-type, channel-instance, conversation) the session
-		// belongs to. Multiple session_keys can share that triple — the
-		// active one for IM routing is the row with the latest
-		// updated_at, which is what `idx_sessions_chat_active` accelerates.
-		// session_key is the per-session opaque id (PK), independent of
-		// the triple, so a `/new` command in IM mints a fresh row under
-		// the same (channel, account_id, chat_id).
+		// channel / account_id / chat_id 一起标识会话所属的 (频道类型, 频道实例, 对话)。
+		// 多个 session_key 可以共享该三元组——IM 路由的活动行是具有最新 updated_at 的行，
+		// 这正是 `idx_sessions_chat_active` 加速查找的。
+		// session_key 是每个会话的不透明 id（主键），独立于三元组，
+		// 因此 IM 中的 `/new` 命令在同一 (channel, account_id, chat_id) 下创建新行。
 		`CREATE TABLE IF NOT EXISTS sessions (
 			user_id TEXT NOT NULL,
 			agent_id TEXT NOT NULL,
@@ -1360,29 +1290,23 @@ func (d *DBStore) migrationSQL() []string {
 			messages TEXT NOT NULL DEFAULT '[]',
 			message_count INTEGER NOT NULL DEFAULT 0,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			-- chatter_user_id is the actual conversation participant. For
-			-- web / dashboard chats it equals user_id (= the logged-in
-			-- user). For IM channels with per-sender app_users it's the
-			-- minted chatter row; user_id remains the channel-owner /
-			-- UserSpace owner for backward-compat with admin views that
-			-- list "all sessions on my bots". Empty on rows written
-			-- before this column existed — readers should COALESCE to
-			-- user_id in that case.
+			-- chatter_user_id 是实际的对话参与者。对于
+			-- web/dashboard 聊天，它等于 user_id（即登录用户）。
+			-- 对于具有按发送者 app_user 的 IM 频道，它是创建的聊天者行；
+			-- user_id 保持为频道拥有者 / UserSpace 拥有者，以向后兼容
+			-- 列出"我的 bot 上的所有会话"的管理员视图。在此列存在之前
+			-- 写入的行上为空——读取器应在这种情况下 COALESCE 到 user_id。
 			chatter_user_id TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (user_id, agent_id, session_key)
 		)`,
-		// Index creation is moved to migrateSessionsAddChannelTriple so
-		// it runs *after* the column-add ALTERs on legacy databases. If
-		// it lived here, an upgrade install would try to create an index
-		// referencing columns that the legacy table doesn't have yet.
-		// session_messages is the append-only archive of every turn ever
-		// written to a session. The sessions row above stores the
-		// LLM-facing working set (post-compaction); session_messages
-		// stores the original full history so UI / audit / multi-tenant
-		// recovery has a source of truth that compaction never touches.
-		// seq is a per-session monotonic counter assigned at INSERT time
-		// via COALESCE(MAX(seq), -1)+1 so callers don't need a separate
-		// SELECT round-trip. Composite PK doubles as the natural order.
+		// 索引创建已移至 migrateSessionsAddChannelTriple，以便在旧数据库上
+		// 在列添加 ALTER *之后*运行。如果放在这里，升级安装会尝试创建引用
+		// 旧表尚不具备的列的索引。
+		// session_messages 是写入会话的每一轮的仅追加存档。上面的 sessions 行
+		// 存储面向 LLM 的工作集（压缩后）；session_messages 存储原始完整历史记录，
+		// 因此 UI / 审计 / 多租户恢复拥有压缩从未触及的真实来源。
+		// seq 是在 INSERT 时通过 COALESCE(MAX(seq), -1)+1 分配的每会话单调计数器，
+		// 因此调用方不需要单独的 SELECT 往返。复合主键兼作自然排序顺序。
 		`CREATE TABLE IF NOT EXISTS session_messages (
 			user_id TEXT NOT NULL,
 			agent_id TEXT NOT NULL,
@@ -1397,28 +1321,24 @@ func (d *DBStore) migrationSQL() []string {
 			metadata TEXT NOT NULL DEFAULT '',
 			thinking TEXT NOT NULL DEFAULT '',
 			raw_assistant TEXT NOT NULL DEFAULT '',
-			-- origin marks runtime-injected rows (currently only
-			-- "goal_context"). Empty = real user / assistant exchange.
-			-- WebChatHistory + FTS skip non-empty origin to keep
-			-- synthetic prompts out of user-visible / searchable views.
+			-- origin 标记运行时注入的行（目前仅有 "goal_context"）。
+			-- 空值 = 真实的用户/助手交换。
+			-- WebChatHistory + FTS 跳过非空 origin 以将合成提示排除在
+			-- 用户可见/可搜索的视图之外。
 			origin TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			-- chatter_user_id mirrors sessions.chatter_user_id — see that
-			-- comment for semantics. Stored per row so a per-chatter
-			-- query doesn't have to join through sessions.
+			-- chatter_user_id 镜像 sessions.chatter_user_id——参见该注释了解语义。
+			-- 每行存储以便按聊天者的查询无需通过 sessions 表连接。
 			chatter_user_id TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (user_id, agent_id, session_key, seq)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_session_messages_lookup ON session_messages (user_id, agent_id, session_key, seq)`,
-		// session_events is the real-time event stream the agent emits
-		// during a turn (content chunks, tool_call, error, done).
-		// Persisted so that a client that refreshes / reconnects
-		// mid-turn can resume from its last-seen seq instead of
-		// missing the in-flight delta. seq is per-(user, agent,
-		// session) and assigned on INSERT via COALESCE(MAX(seq),-1)+1
-		// — same pattern as session_messages. Compaction never
-		// touches this table; the row only goes away when the parent
-		// session is deleted (DeleteSession cascade).
+		// session_events 是 agent 在一轮中发出的实时事件流
+		//（内容块、tool_call、error、done）。持久化以便在轮次中
+		// 刷新/重连的客户端可以从其最后看到的 seq 恢复，而不是丢失
+		// 进行中的增量。seq 是按 (user, agent, session) 并且在 INSERT 时
+		// 通过 COALESCE(MAX(seq),-1)+1 分配——与 session_messages 相同模式。
+		// 压缩从不触及此表；行只在父会话被删除时消失（DeleteSession 级联）。
 		`CREATE TABLE IF NOT EXISTS session_events (
 				user_id TEXT NOT NULL,
 				agent_id TEXT NOT NULL,
@@ -1427,24 +1347,21 @@ func (d *DBStore) migrationSQL() []string {
 				type TEXT NOT NULL,
 				data TEXT NOT NULL DEFAULT '',
 				created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-				-- chatter_user_id mirrors sessions.chatter_user_id — see
-				-- that comment for semantics.
+			-- chatter_user_id 镜像 sessions.chatter_user_id——参见该注释了解语义。
 				chatter_user_id TEXT NOT NULL DEFAULT '',
 				PRIMARY KEY (user_id, agent_id, session_key, seq)
 			)`,
 		`CREATE INDEX IF NOT EXISTS idx_session_events_lookup ON session_events (user_id, agent_id, session_key, seq)`,
-		// agent_files holds the agent's own files: SOUL.md, IDENTITY.md,
-		// MEMORY.md, AGENTS.md, BOOTSTRAP.md, etc.
+		// agent_files 保存 agent 自己的文件：SOUL.md, IDENTITY.md,
+		// MEMORY.md, AGENTS.md, BOOTSTRAP.md 等。
 		//
-		// user_id splits "agent template" from "per-user override":
-		//   user_id='' — shared template, edited by the agent owner via
-		//                the Customize page, visible to every chatter
-		//                that didn't author their own override
-		//   user_id=u_xxx — that user's personal copy (USER.md / MEMORY.md
-		//                during chat, or a Personalize-for-me override)
-		// Read path picks `user_id IN (chatter, '') ORDER BY user_id DESC
-		// LIMIT 1`, so a user-specific row wins and missing rows fall
-		// back to the template.
+		// user_id 将"agent 模板"与"每用户覆盖"分开：
+		//   user_id='' — 共享模板，由 agent 拥有者通过 Customize 页面编辑，
+		//                对未创建自己覆盖的每个聊天者可见
+		//   user_id=u_xxx — 该用户的个人副本（聊天期间的 USER.md / MEMORY.md，
+		//                或"为我个性化"覆盖）
+		// 读取路径选择 `user_id IN (chatter, '') ORDER BY user_id DESC LIMIT 1`，
+		// 因此用户特定行获胜，缺失的行回退到模板。
 		`CREATE TABLE IF NOT EXISTS agent_files (
 			agent_id TEXT NOT NULL,
 			user_id TEXT NOT NULL DEFAULT '',
@@ -1453,23 +1370,22 @@ func (d *DBStore) migrationSQL() []string {
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (agent_id, user_id, filename)
 		)`,
-		// configs uses (user_id, agent_id) as the ownership pair, matching
-		// agent_files / sessions / session_messages / session_events. The
-		// older (scope, scope_id) pair is gone — scope was redundant
-		// because the (user_id, agent_id) combo already encodes it:
-		//   ('', '')   = system / global
-		//   (X, '')    = user X's private config
-		//   ('', Y)    = agent Y's "official" config (anyone using Y inherits)
-		//   (X, Y)     = user X's per-agent override on agent Y — the
-		//                multi-tenant case; lets two users sharing a
-		//                public agent each bind their own channel.
+		// configs 使用 (user_id, agent_id) 作为所有权对，与
+		// agent_files / sessions / session_messages / session_events 匹配。
+		// 旧的 (scope, scope_id) 对已消失——scope 是多余的，因为 (user_id, agent_id)
+		// 组合已经编码了它：
+		//   ('', '')   = 系统 / 全局
+		//   (X, '')    = 用户 X 的私有配置
+		//   ('', Y)    = agent Y 的"官方"配置（任何使用 Y 的人都继承）
+		//   (X, Y)     = 用户 X 在 agent Y 上的每个 agent 覆盖——多租户场景；
+		//                允许共享公共 agent 的两个用户分别绑定自己的频道。
 		`CREATE TABLE IF NOT EXISTS configs (
 			id TEXT PRIMARY KEY,
 			kind TEXT NOT NULL,
-			-- scope is a denormalized 'system'|'user'|'agent'|'user-agent'
-			-- label derived from (user_id, agent_id). SaveConfig writes it
-			-- on every upsert; nothing else writes it. Kept for DB-dump
-			-- readability and ad-hoc admin queries.
+			-- scope 是从 (user_id, agent_id) 派生的反规范化
+			-- 'system'|'user'|'agent'|'user-agent' 标签。SaveConfig 在
+			-- 每次 upsert 时写入它；没有其他写入者。保留用于数据库转储
+			-- 可读性和临时管理员查询。
 			scope TEXT NOT NULL DEFAULT '',
 			user_id TEXT NOT NULL DEFAULT '',
 			agent_id TEXT NOT NULL DEFAULT '',
@@ -1481,12 +1397,10 @@ func (d *DBStore) migrationSQL() []string {
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE (kind, user_id, agent_id, name)
 		)`,
-		// idx_configs_lookup creation moved to
-		// migrateConfigsScopeToUserAgent so it runs after the column-add
-		// step on legacy databases (where the columns it references
-		// don't exist yet at this point in migrationSQL). Fresh installs
-		// hit the IF NOT EXISTS path inside the migrator and still get
-		// the index.
+		// idx_configs_lookup 的创建已移至 migrateConfigsScopeToUserAgent，
+		// 以便在旧数据库上在列添加步骤之后运行（在 migrationSQL 的这个点上
+		// 它引用的列尚不存在）。新安装通过迁移器内的 IF NOT EXISTS 路径
+		// 仍然获得该索引。
 		`CREATE INDEX IF NOT EXISTS idx_configs_credential ON configs (kind, credential_key)`,
 		`CREATE TABLE IF NOT EXISTS cron_jobs (
 			id TEXT PRIMARY KEY,
@@ -1505,26 +1419,23 @@ func (d *DBStore) migrationSQL() []string {
 			next_run TIMESTAMP,
 			locked_by TEXT,
 			locked_at TIMESTAMP,
-			-- failure_count tracks consecutive fire-attempts whose
-			-- destination channel was missing/unreachable. The cron
-			-- scheduler increments it on each miss and self-deletes the
-			-- row once it crosses the threshold so a dead bot doesn't
-			-- log forever.
+			-- failure_count 追踪连续触发尝试中目标频道缺失/不可达的次数。
+			-- cron 调度器在每次失败时递增它，并在超过阈值后自行删除该行，
+			-- 这样死掉的 bot 就不会永远记录日志。
 			failure_count INTEGER NOT NULL DEFAULT 0,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
-		// idx_cron_jobs_user creation is moved to migrateCronJobsAddUserID
-		// so legacy installs hit it after the column-add ALTER. Fresh
-		// installs reach the same code path via Migrate's full sweep.
+		// idx_cron_jobs_user 的创建已移至 migrateCronJobsAddUserID，
+		// 以便旧安装在其列添加 ALTER 之后命中它。新安装通过 Migrate 的
+		// 完整扫描到达相同的代码路径。
 		`CREATE INDEX IF NOT EXISTS idx_cron_jobs_schedule ON cron_jobs (enabled, next_run)`,
 		`CREATE INDEX IF NOT EXISTS idx_cron_jobs_agent ON cron_jobs (agent_id)`,
-		// projects groups sessions that share a workspace folder. PK
-		// matches sessions: a project is "user X's working folder on
-		// agent Y", same private-per-user ownership model. The on-disk
-		// workspace dir lives at workspaces/<agent>/projects/<pid>/ and
-		// is shared by every session whose project_id equals pid; the
-		// per-session sessions/<chat>/ subdir is bypassed for project
-		// sessions so files persist across chats inside the project.
+		// projects 对共享工作区文件夹的会话进行分组。主键匹配 sessions：
+		// 项目是"用户 X 在 agent Y 上的工作文件夹"，同一每用户私有所有权模型。
+		// 磁盘上的工作区目录位于 workspaces/<agent>/projects/<pid>/，
+		// 由 project_id 等于 pid 的每个会话共享；对于项目会话，
+		// 按会话的 sessions/<chat>/ 子目录被绕过，因此文件在项目内的
+		// 聊天之间持久存在。
 		`CREATE TABLE IF NOT EXISTS projects (
 			user_id TEXT NOT NULL,
 			agent_id TEXT NOT NULL,
@@ -1536,19 +1447,16 @@ func (d *DBStore) migrationSQL() []string {
 			PRIMARY KEY (user_id, agent_id, project_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_projects_listing ON projects (user_id, agent_id, updated_at DESC)`,
-		// agent_goals backs the /goal feature: one persistent objective
-		// per (agent, session). The UNIQUE (agent_id, session_key)
-		// constraint is the source of truth for "this session already
-		// has a goal" — CreateGoal translates the conflict into
-		// ErrGoalAlreadyExists.
+		// agent_goals 支持 /goal 功能：每个 (agent, session) 一个持久目标。
+		// UNIQUE (agent_id, session_key) 约束是"此会话已有目标"的真实来源——
+		// CreateGoal 将冲突转换为 ErrGoalAlreadyExists。
 		`CREATE TABLE IF NOT EXISTS agent_goals (
 			id TEXT PRIMARY KEY,
 			agent_id TEXT NOT NULL,
 			session_key TEXT NOT NULL,
 			owner_user_id TEXT NOT NULL,
-			-- Routing tuple, stamped at create time so a continuation
-			-- can publish onto the same bus address the original turn
-			-- arrived on. Mirrors cron_jobs' channel/chat_id columns.
+			-- 路由元组，在创建时标记，以便延续可以发布到原始轮次到达的
+			-- 相同总线地址。镜像 cron_jobs 的 channel/chat_id 列。
 			channel TEXT NOT NULL DEFAULT '',
 			account_id TEXT NOT NULL DEFAULT '',
 			chat_id TEXT NOT NULL DEFAULT '',
@@ -1561,16 +1469,13 @@ func (d *DBStore) migrationSQL() []string {
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_goals_session ON agent_goals (agent_id, session_key)`,
-		// token_usage_daily is the per-(day, user, agent, session,
-		// provider, model) counter behind the admin Usage dashboard.
-		// Every successful LLM Chat / ChatStream lands one row via
-		// UPSERT — see internal/usage.SQLMeter. Empty user_id is
-		// preserved on write (admin-owned or cron-fired agents) and
-		// rendered as "system" in the UI. Provider is the per-agent
-		// override key (e.g. "anthropic-messages"); "" means the agent
-		// used the shared provider with no override. The PK is the
-		// six-tuple so GROUP BY any subset rolls up cleanly without
-		// extra indexing.
+		// token_usage_daily 是管理员 Usage 仪表板背后的按 (day, user, agent, session,
+		// provider, model) 计数器。每次成功的 LLM Chat / ChatStream 通过 UPSERT
+		// 产生一行——参见 internal/usage.SQLMeter。空 user_id 在写入时保留
+		//（管理员拥有或 cron 触发的 agent）并在 UI 中显示为"system"。Provider 是
+		// 每个 agent 的覆盖键（例如 "anthropic-messages"）；"" 表示 agent 使用了
+		// 共享提供商且没有覆盖。主键是六元组，因此对任何子集的 GROUP BY
+		// 都能干净地聚合，无需额外索引。
 		`CREATE TABLE IF NOT EXISTS token_usage_daily (
 			day DATE NOT NULL,
 			user_id TEXT NOT NULL DEFAULT '',
@@ -1585,21 +1490,17 @@ func (d *DBStore) migrationSQL() []string {
 			request_count BIGINT NOT NULL DEFAULT 0,
 			PRIMARY KEY (day, user_id, agent_id, session_key, provider, model)
 		)`,
-		// Range scans on day are the dominant query (24h/7d/30d filter)
-		// — the PK starts with day so SQLite/Postgres both use it without
-		// a secondary index. The extra indexes below speed up
-		// non-time-prefixed lookups (e.g. "all rows for agent X across
-		// all time") when the table grows.
+		// 按 day 的范围扫描是主要查询（24h/7d/30d 过滤器）
+		// — 主键以 day 开头，因此 SQLite/Postgres 都使用它而无需
+		// 二级索引。下面的额外索引在表增长时加速非时间前缀查找
+		//（例如 "agent X 在所有时间内的所有行"）。
 		`CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage_daily (agent_id, day)`,
 		`CREATE INDEX IF NOT EXISTS idx_token_usage_user ON token_usage_daily (user_id, day)`,
-		// channel_leases gates polling / persistent-connection channel
-		// adapters (WeChat, Telegram, Discord, Slack, Feishu long-conn)
-		// to one process at a time. Without it, two cloud replicas
-		// sharing the same bot token would both long-poll the upstream
-		// server and the user would receive every reply twice. The
-		// leaseholder renews periodically; on crash the lease expires
-		// and another instance takes over. See channels.Manager and
-		// channels.runWithLease.
+		// channel_leases 将轮询/持久连接频道适配器（微信、Telegram、Discord、
+		// Slack、飞书长连接）限制为一次一个进程。没有它，共享同一 bot 令牌的
+		// 两个云副本都将长轮询上游服务器，用户将收到每个回复两次。
+		// 租约持有者定期续约；崩溃时租约过期，另一个实例接管。
+		// 参见 channels.Manager 和 channels.runWithLease。
 		`CREATE TABLE IF NOT EXISTS channel_leases (
 			channel TEXT NOT NULL,
 			account_id TEXT NOT NULL,
@@ -1614,7 +1515,7 @@ func (d *DBStore) Close() error {
 	return d.db.Close()
 }
 
-// ph returns the correct placeholder for the dialect.
+// ph 返回适用于当前方言的正确占位符。
 func (d *DBStore) ph(n int) string {
 	if d.dialect == "postgres" {
 		return fmt.Sprintf("$%d", n)
@@ -1622,7 +1523,7 @@ func (d *DBStore) ph(n int) string {
 	return "?"
 }
 
-// scanErr wraps sql.ErrNoRows in our public ErrNotFound.
+// scanErr 将 sql.ErrNoRows 包装到我们的公共 ErrNotFound 中。
 func scanErr(err error) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
@@ -1632,8 +1533,8 @@ func scanErr(err error) error {
 
 // --- Users ---
 
-// userColumns is the canonical select list — keep ordering aligned with
-// the Scan calls below so adding a column means editing both lines.
+// userColumns 是规范的选择列表——保持顺序与下面的 Scan 调用一致，
+// 这样添加一列就意味着编辑两行。
 const userColumns = `id, username, email, password_hash, display_name, role, status, apikey_id, external_id, avatar_url, agent_quota, created_at, updated_at`
 
 func scanUser(scanner interface{ Scan(dest ...any) error }) (*UserRecord, error) {
@@ -1679,10 +1580,9 @@ func (d *DBStore) GetUserByLogin(ctx context.Context, usernameOrEmail string) (*
 	return u, nil
 }
 
-// GetUserByExternal looks up an app_user by (apikey_id, external_id).
-// Returns ErrNotFound when nothing matches — used by the lazy-mint
-// flow on api_key chat calls and by the explicit provisioning endpoint
-// to make creation idempotent on re-entry.
+// GetUserByExternal 通过 (apikey_id, external_id) 查找 app_user。
+// 无匹配时返回 ErrNotFound——被 api_key 聊天调用上的惰性创建流程
+// 和显式配置端点用于使创建在重入时幂等。
 func (d *DBStore) GetUserByExternal(ctx context.Context, apikeyID, externalID string) (*UserRecord, error) {
 	if apikeyID == "" || externalID == "" {
 		return nil, ErrNotFound
@@ -1732,9 +1632,8 @@ func (d *DBStore) DeleteUser(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	// First, find every agent owned by this user — we'll cascade through
-	// per-agent state (cron, agent_files, sessions, configs) before
-	// dropping the agents themselves.
+	// 首先，查找此用户拥有的每个 agent——我们将在删除 agent 本身之前
+	// 级联处理每个 agent 的状态（cron, agent_files, sessions, configs）。
 	rows, err := tx.QueryContext(ctx,
 		fmt.Sprintf("SELECT id FROM agents WHERE user_id = %s", d.ph(1)), id)
 	if err != nil {
@@ -1770,16 +1669,16 @@ func (d *DBStore) DeleteUser(ctx context.Context, id string) error {
 		fmt.Sprintf("DELETE FROM agents WHERE user_id = %s", d.ph(1)), id); err != nil {
 		return err
 	}
-	// Per-user state that's not agent-scoped (agent_files is now agent-only).
+	// 非 agent 范围的每用户状态（agent_files 现在仅为 agent 所有）。
 	for _, t := range []string{"web_sessions", "apikeys", "sessions", "session_messages", "session_events"} {
 		if _, err := tx.ExecContext(ctx,
 			fmt.Sprintf("DELETE FROM %s WHERE user_id = %s", t, d.ph(1)), id); err != nil {
 			return err
 		}
 	}
-	// Drop every config row owned by this user — both their own
-	// ('user_id=X, agent_id="') and any per-agent overrides they
-	// authored on someone else's agent ('user_id=X, agent_id=Y').
+	// 删除此用户拥有的每个 config 行——包括他们自己的
+	// ('user_id=X, agent_id="') 以及他们在别人的 agent 上创建的任何
+	// 每个 agent 覆盖 ('user_id=X, agent_id=Y')。
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf("DELETE FROM configs WHERE user_id = %s", d.ph(1)), id); err != nil {
 		return err
@@ -2052,10 +1951,10 @@ func (d *DBStore) DeleteAgent(ctx context.Context, agentID string) error {
 		fmt.Sprintf(`DELETE FROM apikey_agents WHERE agent_id = %s`, d.ph(1)), agentID); err != nil {
 		return err
 	}
-	// Drop every config row pointing at this agent — owner's official
-	// rows (user_id='', agent_id=X), agent owner's per-agent overrides
-	// (user_id=owner, agent_id=X), and any non-owner per-agent
-	// overrides (user_id=other, agent_id=X).
+	// 删除指向此 agent 的每个 config 行——拥有者的官方行
+	// (user_id='', agent_id=X)、agent 拥有者的每个 agent 覆盖
+	// (user_id=owner, agent_id=X) 以及任何非拥有者的每个 agent 覆盖
+	// (user_id=other, agent_id=X)。
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM configs WHERE agent_id = %s`, d.ph(1)), agentID); err != nil {
 		return err
@@ -2107,11 +2006,9 @@ func (d *DBStore) GetSession(ctx context.Context, userID, agentID, sessionKey st
 	return &rec, nil
 }
 
-// SaveSession upserts the session row. Channel / AccountID / ChatID /
-// ProjectID are written on INSERT only; the ON CONFLICT branch
-// deliberately preserves the existing values so a callback that didn't
-// know the triple (e.g. compaction calling ReplaceMessages) can't
-// accidentally clear it.
+// SaveSession 对会话行进行 upsert。Channel / AccountID / ChatID /
+// ProjectID 仅在 INSERT 时写入；ON CONFLICT 分支故意保留现有值，
+// 以便不知道三元组的回调（例如压缩调用 ReplaceMessages）不会意外清除它。
 func (d *DBStore) SaveSession(ctx context.Context, userID, agentID, sessionKey string, session *SessionRecord) error {
 	if userID == "" {
 		return errors.New("store: SaveSession requires user_id")
@@ -2119,9 +2016,8 @@ func (d *DBStore) SaveSession(ctx context.Context, userID, agentID, sessionKey s
 	msgsData, _ := json.Marshal(session.Messages)
 	now := time.Now().UTC()
 	count := len(session.Messages)
-	// Per-turn chatter (= the actual conversation participant) is plumbed
-	// via ctx so this signature stays backward compatible. Empty when no
-	// upstream caller tagged ctx — readers fall back to user_id.
+	// 每轮的聊天者（= 实际的对话参与者）通过 ctx 传递，因此此签名保持向后兼容。
+	// 当没有上游调用者标记 ctx 时为空——读取器回退到 user_id。
 	chatterID := ChatterUserIDFromContext(ctx)
 	if d.dialect == mysqlDialect {
 		_, err := d.db.ExecContext(ctx,
@@ -2179,12 +2075,11 @@ func (d *DBStore) ListSessions(ctx context.Context, userID, agentID string) ([]S
 	return metas, rows.Err()
 }
 
-// ListSessionOwnerPairs enumerates every distinct (user_id, agent_id)
-// tuple in the sessions table. The admin Chats page calls this to find
-// all conversation owners (chatters/binders) across all agents — the
-// per-(owner, agent) ListSessions would miss sessions where a non-owner
-// user chats with a public agent or binds an IM bot to it, because
-// those rows live under the chatter's user_id, not the agent owner's.
+// ListSessionOwnerPairs 枚举 sessions 表中每个不同的 (user_id, agent_id)
+// 元组。管理员 Chats 页面调用此函数来查找所有 agent 上的所有对话拥有者
+//（聊天者/绑定者）——按 (拥有者, agent) 的 ListSessions 会遗漏非拥有者用户
+// 与公共 agent 聊天或绑定 IM bot 的会话，因为这些行位于聊天者的 user_id 下，
+// 而不是 agent 拥有者的 user_id 下。
 func (d *DBStore) ListSessionOwnerPairs(ctx context.Context) ([]SessionOwnerPair, error) {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT DISTINCT user_id, agent_id FROM sessions
@@ -2204,11 +2099,10 @@ func (d *DBStore) ListSessionOwnerPairs(ctx context.Context) ([]SessionOwnerPair
 	return pairs, rows.Err()
 }
 
-// LookupSessionTriple is ResolveActiveSessionKey's inverse: given a
-// session_key (the canonical row id), return the (channel, accountID,
-// chatID) it belongs to. Used by handlers that take a session_key from
-// a URL and need the original chat_id — e.g. to keep workspace files
-// namespaced by the conversation rather than the session.
+// LookupSessionTriple 是 ResolveActiveSessionKey 的逆操作：给定一个
+// session_key（规范行 id），返回它所属的 (channel, accountID, chatID)。
+// 被从 URL 获取 session_key 并需要原始 chat_id 的处理程序使用——例如，
+// 保持工作区文件按对话而非会话命名空间。
 func (d *DBStore) LookupSessionTriple(ctx context.Context, userID, agentID, sessionKey string) (string, string, string, error) {
 	row := d.db.QueryRowContext(ctx,
 		fmt.Sprintf(`SELECT channel, account_id, chat_id FROM sessions
@@ -2222,9 +2116,9 @@ func (d *DBStore) LookupSessionTriple(ctx context.Context, userID, agentID, sess
 	return ch, acc, ci, nil
 }
 
-// LookupSessionProject returns the project_id of a session_key (or "")
-// — the workspace path resolver consults this to decide between
-// projects/<id>/ and sessions/<chat>/ for the sandbox mount.
+// LookupSessionProject 返回 session_key 的 project_id（或 ""）
+// — 工作区路径解析器查阅此值来决定沙箱挂载时使用 projects/<id>/
+// 还是 sessions/<chat>/。
 func (d *DBStore) LookupSessionProject(ctx context.Context, userID, agentID, sessionKey string) (string, error) {
 	row := d.db.QueryRowContext(ctx,
 		fmt.Sprintf(`SELECT project_id FROM sessions
@@ -2238,12 +2132,10 @@ func (d *DBStore) LookupSessionProject(ctx context.Context, userID, agentID, ses
 	return pid, nil
 }
 
-// ResolveActiveSessionKey returns the most recently updated session_key
-// for the (channel, account_id, chat_id) triple within (user, agent), or
-// ErrNotFound. The triple is the natural address for IM routing — IM
-// adapters carry no session id of their own, so the gateway picks the
-// freshest thread when a message arrives. `/new` mints a fresh row that
-// then wins the ORDER BY on subsequent resolves.
+// ResolveActiveSessionKey 返回 (user, agent) 内 (channel, account_id, chat_id)
+// 三元组中最近更新的 session_key，或 ErrNotFound。该三元组是 IM 路由的自然地址——
+// IM 适配器本身不携带会话 id，因此网关在消息到达时选择最新的线程。`/new` 创建新行，
+// 该行随后在后续解析中赢得 ORDER BY。
 func (d *DBStore) ResolveActiveSessionKey(ctx context.Context, userID, agentID, channel, accountID, chatID string) (string, error) {
 	row := d.db.QueryRowContext(ctx,
 		fmt.Sprintf(`SELECT session_key FROM sessions
@@ -2275,13 +2167,11 @@ func (d *DBStore) DeleteSession(ctx context.Context, userID, agentID, sessionKey
 	return err
 }
 
-// AppendSessionMessage writes one message to the per-session archive.
-// seq is computed atomically inside the INSERT via
-// `COALESCE(MAX(seq), -1) + 1`, so two concurrent appenders racing on
-// the same session can't collide on the unique key — the second insert
-// reads MAX after the first commits. Multi-pod safety relies on the
-// engine's write serialization (sqlite global, postgres MVCC + the
-// composite PK uniqueness check on commit).
+// AppendSessionMessage 将一条消息写入每会话存档。
+// seq 通过 `COALESCE(MAX(seq), -1) + 1` 在 INSERT 内原子性地计算，
+// 因此两个在同一个会话上竞争的并发追加者不会在唯一键上冲突——
+// 第二个插入在第一个提交后读取 MAX。多 pod 安全性依赖于引擎的写入序列化
+//（sqlite 全局锁，postgres MVCC + 提交时的复合主键唯一性检查）。
 func (d *DBStore) AppendSessionMessage(ctx context.Context, userID, agentID, sessionKey string, msg SessionMessage) error {
 	if userID == "" {
 		return errors.New("store: AppendSessionMessage requires user_id")
@@ -2320,12 +2210,10 @@ func (d *DBStore) AppendSessionMessage(ctx context.Context, userID, agentID, ses
 	return err
 }
 
-// AppendSessionEvent persists one streaming-event delta and returns the
-// assigned seq. seq is per-(user, agent, session) — same pattern as
-// session_messages — and is allocated atomically inside a transaction
-// so concurrent appenders (e.g. fan-out + replay) can't collide on the
-// PK. Used by reconnecting clients to skip past events they've
-// already rendered.
+// AppendSessionEvent 持久化一个流式事件增量并返回分配的 seq。
+// seq 按 (user, agent, session) 分配——与 session_messages 相同模式——
+// 并在事务内原子性地分配，以便并发追加者（例如扇出 + 重放）不会在主键上冲突。
+// 被重连客户端用来跳过它们已经渲染过的事件。
 func (d *DBStore) AppendSessionEvent(ctx context.Context, userID, agentID, sessionKey, eventType string, data []byte) (int64, error) {
 	if userID == "" || agentID == "" || sessionKey == "" {
 		return 0, errors.New("store: AppendSessionEvent requires user_id, agent_id, session_key")
@@ -2370,8 +2258,8 @@ func (d *DBStore) AppendSessionEvent(ctx context.Context, userID, agentID, sessi
 	return seq, nil
 }
 
-// ListSessionEventsSince returns every chat event with seq strictly
-// greater than sinceSeq, ascending. Pass sinceSeq=-1 to get all.
+// ListSessionEventsSince 返回 seq 严格大于 sinceSeq 的每个聊天事件，按升序排列。
+// 传递 sinceSeq=-1 以获取所有事件。
 func (d *DBStore) ListSessionEventsSince(ctx context.Context, userID, agentID, sessionKey string, sinceSeq int64) ([]SessionEventRecord, error) {
 	rows, err := d.db.QueryContext(ctx,
 		fmt.Sprintf(`SELECT seq, type, data, created_at FROM session_events
@@ -2401,9 +2289,8 @@ func (d *DBStore) ListSessionEventsSince(ctx context.Context, userID, agentID, s
 	return out, rows.Err()
 }
 
-// LatestSessionEventSeq returns the highest seq for the session, or -1 if
-// none. Surfaced to clients via the chat history response so they
-// know where to subscribe from on a fresh page load.
+// LatestSessionEventSeq 返回会话的最高 seq，如果没有则返回 -1。
+// 通过聊天历史响应暴露给客户端，以便他们在新页面加载时知道从哪里订阅。
 func (d *DBStore) LatestSessionEventSeq(ctx context.Context, userID, agentID, sessionKey string) (int64, error) {
 	var seq sql.NullInt64
 	err := d.db.QueryRowContext(ctx,
@@ -2420,10 +2307,9 @@ func (d *DBStore) LatestSessionEventSeq(ctx context.Context, userID, agentID, se
 	return seq.Int64, nil
 }
 
-// ListSessionMessages returns every archived turn for one session in
-// ascending seq order. Empty slice on a session that has no archive
-// yet (e.g. rows pre-dating the table). Callers that want a fallback
-// to sessions.messages should check len() and decide.
+// ListSessionMessages 按升序 seq 顺序返回一个会话的每个存档轮次。
+// 对于尚未有存档的会话（例如早于该表的行）返回空切片。
+// 想要回退到 sessions.messages 的调用方应检查 len() 并决定。
 func (d *DBStore) ListSessionMessages(ctx context.Context, userID, agentID, sessionKey string) ([]SessionMessage, error) {
 	rows, err := d.db.QueryContext(ctx,
 		fmt.Sprintf(`SELECT role, content, content_parts, tool_calls, tool_call_id, name, metadata, thinking, raw_assistant, origin, created_at
@@ -2465,18 +2351,14 @@ func (d *DBStore) ListSessionMessages(ctx context.Context, userID, agentID, sess
 	return out, rows.Err()
 }
 
-// CountChatterUserMessages returns the count of user-role messages
-// this chatter has accumulated under the agent across all sessions.
-// Used by the autoPersist cadence gate as a durable counter — see the
-// interface doc on Store for why we don't reuse the in-memory turnCount.
+// CountChatterUserMessages 返回此聊天者在 agent 下所有会话中积累的
+// user 角色消息计数。被 autoPersist 节奏门控用作持久计数器——参见 Store
+// 上的接口文档了解为什么不重用内存中的 turnCount。
 //
-// Filter is strictly on chatter_user_id (no fallback to user_id). Old
-// rows written before the chatter_user_id column existed have it set
-// to '' and are not counted; those predate per-chatter resolution and
-// folding them in would over-count (they're keyed by channel owner,
-// not the actual chatter). New conversations write chatter_user_id
-// correctly so this is only a concern for sessions migrated from
-// pre-fix daemon runs.
+// 过滤器严格在 chatter_user_id 上（不回退到 user_id）。在 chatter_user_id
+// 列存在之前写入的旧行将其设置为 '' 并且不被计数；那些行早于按聊天者解析，
+// 将它们纳入会过度计数（它们按频道拥有者键控，而不是实际的聊天者）。
+// 新对话正确写入 chatter_user_id，因此这仅适用于从修复前的守护进程运行迁移的会话。
 func (d *DBStore) CountChatterUserMessages(ctx context.Context, agentID, chatterUserID string) (int, error) {
 	if chatterUserID == "" {
 		return 0, nil
@@ -2501,11 +2383,9 @@ func (d *DBStore) RenameSession(ctx context.Context, userID, agentID, sessionKey
 	return err
 }
 
-// MoveSession flips a session's project_id. Empty string detaches the
-// session from its current project (drag-out to "Chats"). The caller
-// must have already migrated the workspace files and validated that
-// projectID, when non-empty, is a real project the user owns under
-// this agent — this method only touches the sessions row.
+// MoveSession 翻转会话的 project_id。空字符串将会话从其当前项目中分离
+//（拖出到"Chats"）。调用方必须已经迁移了工作区文件并验证了 projectID
+//（当非空时）是用户在此 agent 下拥有的真实项目——此方法仅影响 sessions 行。
 func (d *DBStore) MoveSession(ctx context.Context, userID, agentID, sessionKey, projectID string) error {
 	_, err := d.db.ExecContext(ctx,
 		fmt.Sprintf(`UPDATE sessions SET project_id = %s WHERE user_id = %s AND agent_id = %s AND session_key = %s`,
@@ -2514,25 +2394,21 @@ func (d *DBStore) MoveSession(ctx context.Context, userID, agentID, sessionKey, 
 	return err
 }
 
-// --- Agent files ---
+// --- Agent 文件 ---
 //
-// SOUL.md / IDENTITY.md / MEMORY.md / AGENTS.md / BOOTSTRAP.md / etc.
-// Keyed on (agent_id, user_id, filename). Every row carries a real
-// user_id — there is no shared template row.
+// SOUL.md / IDENTITY.md / MEMORY.md / AGENTS.md / BOOTSTRAP.md / 等。
+// 键控在 (agent_id, user_id, filename) 上。每行都携带真实的
+// user_id——没有共享模板行。
 //
-// Read path: prefer the caller's own row; fall back to the agent
-// owner's row when the caller has no override. This lets non-owner
-// callers (other humans the agent is shared with, or app_user accounts
-// minted on behalf of a downstream app's end-users) inherit the
-// owner's customized SOUL.md / IDENTITY.md while still being able to
-// fork their own MEMORY.md / USER.md by saving — saves always go to
-// the caller's exact row, never the owner's. The runtime additionally
-// falls through to a local FS file at <agent_home>/<name> for installs
-// that want a global default for an agent.
+// 读取路径：优先使用调用方自己的行；当调用方没有覆盖时回退到 agent
+// 拥有者的行。这让非拥有者调用方（与之共享 agent 的其他人类，或代表
+// 下游应用最终用户创建的 app_user 账户）继承拥有者自定义的 SOUL.md /
+// IDENTITY.md，同时仍然能够通过保存来创建自己的 MEMORY.md / USER.md——
+// 保存始终写入调用方的精确行，从不写入拥有者的行。运行时还回退到
+// <agent_home>/<name> 处的本地 FS 文件，适用于希望为 agent 设置全局默认值的安装。
 
-// GetAgentFile returns the file for (agent_id, filename), preferring
-// the caller's own row and falling back to the agent owner's row.
-// userID is required.
+// GetAgentFile 返回 (agent_id, filename) 的文件，优先使用调用方自己的行，
+// 回退到 agent 拥有者的行。userID 是必需的。
 func (d *DBStore) GetAgentFile(ctx context.Context, agentID, userID, filename string) ([]byte, error) {
 	if agentID == "" {
 		return nil, errors.New("store: GetAgentFile requires agent_id")
@@ -2540,11 +2416,10 @@ func (d *DBStore) GetAgentFile(ctx context.Context, agentID, userID, filename st
 	if userID == "" {
 		return nil, errors.New("store: GetAgentFile requires user_id")
 	}
-	// Single round-trip: pick caller's row if present (sort key 0),
-	// else owner's (sort key 1). LIMIT 1 returns the winning row.
-	// The subselect resolves the agent's owner; if the agent is gone
-	// it just produces NULL and the IN ignores it — caller's row is
-	// still returned when present, otherwise NoRows.
+	// 单次往返：如果存在则选择调用方的行（排序键 0），否则选择拥有者的行
+	//（排序键 1）。LIMIT 1 返回胜出行。子查询解析 agent 的拥有者；
+	// 如果 agent 不存在，它只产生 NULL 且 IN 忽略它——调用方的行在存在时
+	// 仍然返回，否则返回 NoRows。
 	row := d.db.QueryRowContext(ctx,
 		fmt.Sprintf(`SELECT content FROM agent_files
 			WHERE agent_id = %s AND filename = %s
@@ -2560,11 +2435,9 @@ func (d *DBStore) GetAgentFile(ctx context.Context, agentID, userID, filename st
 	return []byte(content), nil
 }
 
-// GetAgentFileExact bypasses the owner-fallback overlay and returns
-// only the (agent_id, user_id, filename) row, or ErrNotFound. Used
-// when a caller explicitly needs to know whether *their own* override
-// row exists (e.g. a Customize page that distinguishes "you've
-// authored an override" from "you're seeing the owner's content").
+// GetAgentFileExact 绕过拥有者回退覆盖层，仅返回 (agent_id, user_id, filename)
+// 行，或 ErrNotFound。当调用方明确需要知道*他们自己的*覆盖行是否存在时使用
+//（例如 Customize 页面区分"你已创建覆盖"与"你正在查看拥有者的内容"）。
 func (d *DBStore) GetAgentFileExact(ctx context.Context, agentID, userID, filename string) ([]byte, error) {
 	if agentID == "" {
 		return nil, errors.New("store: GetAgentFileExact requires agent_id")
@@ -2584,9 +2457,9 @@ func (d *DBStore) GetAgentFileExact(ctx context.Context, agentID, userID, filena
 	return []byte(content), nil
 }
 
-// SaveAgentFile writes to the (agent_id, user_id, filename) row exactly.
-// userID is required — every write is per-user. Use a local FS file
-// at <agent_home>/<name> if you want one shared default for the agent.
+// SaveAgentFile 精确写入 (agent_id, user_id, filename) 行。
+// userID 是必需的——每次写入都是每用户的。如果你想要 agent 的一个共享默认值，
+// 请使用 <agent_home>/<name> 处的本地 FS 文件。
 func (d *DBStore) SaveAgentFile(ctx context.Context, agentID, userID, filename string, data []byte) error {
 	if agentID == "" {
 		return errors.New("store: SaveAgentFile requires agent_id")
@@ -2634,8 +2507,8 @@ func (d *DBStore) DeleteAgentFile(ctx context.Context, agentID, userID, filename
 	return err
 }
 
-// ListAgentFiles returns the filenames stored for (agent_id, user_id).
-// userID is required — there is no shared template fallback.
+// ListAgentFiles 返回为 (agent_id, user_id) 存储的文件名。
+// userID 是必需的——没有共享模板回退。
 func (d *DBStore) ListAgentFiles(ctx context.Context, agentID, userID string) ([]string, error) {
 	if agentID == "" {
 		return nil, errors.New("store: ListAgentFiles requires agent_id")
@@ -2663,15 +2536,13 @@ func (d *DBStore) ListAgentFiles(ctx context.Context, agentID, userID string) ([
 	return files, rows.Err()
 }
 
-// --- Scoped configs (providers + channels + settings) ---
+// --- 范围配置（providers + channels + settings）---
 
-// ListConfigs returns all rows of the given (kind, scope) tuple. When
-// scopeID is empty, it matches any scope_id within the scope — used by
-// boot-time enumeration paths (registerChannelsFromStore) that want
-// "every agent's channels" across all users without enumerating users
-// first. Existing callers that pass a real scopeID continue to get
-// exact-match semantics. System rows have scope_id="" anyway so
-// system-scope queries are unaffected by this widening.
+// ListConfigs 返回给定 (kind, scope) 元组的所有行。当 scopeID 为空时，
+// 它匹配范围内的任何 scope_id——被启动时枚举路径（registerChannelsFromStore）
+// 使用，这些路径想要所有用户中"每个 agent 的频道"而无需先枚举用户。
+// 传递真实 scopeID 的现有调用方继续获得精确匹配语义。系统行无论如何都有
+// scope_id=""，因此系统范围查询不受此放宽的影响。
 const configSelectCols = `id, kind, scope, user_id, agent_id, name, enabled, credential_key, data, created_at, updated_at`
 
 func (d *DBStore) ListConfigs(ctx context.Context, kind, userID, agentID string) ([]ConfigRecord, error) {
@@ -2732,10 +2603,9 @@ func (d *DBStore) SaveConfig(ctx context.Context, c *ConfigRecord) error {
 	if c.Kind == "" || c.Name == "" {
 		return errors.New("store: SaveConfig requires kind and name")
 	}
-	// scope is denormalized from (user_id, agent_id). SaveConfig is the
-	// only writer — recompute on every upsert so a caller-supplied
-	// stale value can't corrupt the column. The DB-dump readability
-	// promise depends on this invariant.
+	// scope 是从 (user_id, agent_id) 反规范化而来。SaveConfig 是唯一的写入者——
+	// 在每次 upsert 时重新计算，以便调用方提供的过时值不会破坏该列。
+	// 数据库转储可读性的保证依赖于这个不变量。
 	c.Scope = computeConfigScope(c.UserID, c.AgentID)
 	now := time.Now().UTC()
 	if c.CreatedAt.IsZero() {
@@ -2743,12 +2613,10 @@ func (d *DBStore) SaveConfig(ctx context.Context, c *ConfigRecord) error {
 	}
 	c.UpdatedAt = now
 	if c.ID == "" {
-		// Random id; the (kind, user_id, agent_id, name) unique index is
-		// what guarantees idempotency below. We used to derive id from a
-		// hash of those columns, but the column rename (scope/scope_id →
-		// user_id/agent_id) changed the hash for the same logical row,
-		// making the legacy and new ids drift apart. Upserting on the
-		// natural key sidesteps that mess entirely.
+		// 随机 id；(kind, user_id, agent_id, name) 唯一索引保证了下面的幂等性。
+		// 我们过去从这些列的哈希派生 id，但列重命名（scope/scope_id →
+		// user_id/agent_id）改变了同一逻辑行的哈希，使旧 id 和新 id 产生差异。
+		// 在自然键上 upserting 完全绕过了这个混乱。
 		c.ID = randomConfigID()
 	}
 	dataBytes, _ := json.Marshal(c.Data)
@@ -2781,14 +2649,12 @@ func (d *DBStore) SaveConfig(ctx context.Context, c *ConfigRecord) error {
 	return err
 }
 
-// randomConfigID generates an opaque id for a new configs row. Format
-// matches the historical hex-derived shape so anything keying off the
-// `sc_` prefix in logs / dashboards keeps recognizing it.
+// randomConfigID 为新的 configs 行生成一个不透明 id。格式匹配历史十六进制派生形状，
+// 因此任何在日志/仪表板中依赖 `sc_` 前缀的东西都能继续识别它。
 func randomConfigID() string {
 	var b [10]byte
 	if _, err := cryptorand.Read(b[:]); err != nil {
-		// fall back to time-derived bytes — collision is fine here, the
-		// natural-key upsert is what enforces uniqueness.
+		// 回退到时间派生字节——此处的冲突没问题，自然键 upsert 才是强制执行唯一性的机制。
 		now := time.Now().UnixNano()
 		for i := range b {
 			b[i] = byte(now >> (i * 8))
@@ -2812,12 +2678,10 @@ func (d *DBStore) LookupChannelByCredential(ctx context.Context, channelType, cr
 	return scanConfigRow(row)
 }
 
-// configRowID produces a stable id for a (kind, scope, scope_id,
-// name) tuple. Used by legacy migrations (migrateAgentsDropModel,
-// migrateSkillsAgentEntriesSplit) that wrote rows under the OLD column
-// layout — those callers compute IDs from the legacy 4-tuple and we
-// preserve the function so the historical ids stay reproducible. New
-// callers go through SaveConfig + the natural-key upsert instead.
+// configRowID 为 (kind, scope, scope_id, name) 元组生成稳定的 id。
+// 被在旧列布局下写入行的遗留迁移（migrateAgentsDropModel,
+// migrateSkillsAgentEntriesSplit）使用——那些调用方从遗留四元组计算 ID，
+// 我们保留此函数以便历史 id 保持可重现。新调用方改为通过 SaveConfig + 自然键 upsert。
 func configRowID(kind, scope, scopeID, name string) string {
 	h := sha256.New()
 	h.Write([]byte(kind))
@@ -2863,10 +2727,9 @@ func scanConfigs(rows *sql.Rows) ([]ConfigRecord, error) {
 const cronSelectCols = `id, user_id, agent_id, name, type, schedule, message, channel, chat_id, account_id, timezone, enabled, last_run, next_run, failure_count, created_at`
 
 func (d *DBStore) ListCronJobsByOwner(ctx context.Context, ownerUserID string) ([]CronJobRecord, error) {
-	// user_id is denormalized onto cron_jobs; the JOIN against agents
-	// is gone now. Cheaper, and lets us list crons for a user even if
-	// the agent row got deleted out from under us (orphan rows can be
-	// cleaned up by a separate sweep).
+	// user_id 已反规范化到 cron_jobs 上；与 agents 表的 JOIN 现已消失。
+	// 更便宜，并且允许我们即使在 agent 行被删除的情况下也能列出用户的 cron
+	//（孤行可以通过单独的清理操作清除）。
 	rows, err := d.db.QueryContext(ctx,
 		fmt.Sprintf(`SELECT `+cronSelectCols+` FROM cron_jobs WHERE user_id = %s ORDER BY created_at`, d.ph(1)),
 		ownerUserID)
@@ -2909,10 +2772,9 @@ func (d *DBStore) SaveCronJob(ctx context.Context, job *CronJobRecord) error {
 	if job.AgentID == "" {
 		return errors.New("store: cron job.agent_id is required")
 	}
-	// user_id was added to keep cron_jobs consistent with the rest of
-	// the codebase's (user_id, agent_id) keying. SaveCronJob auto-fills
-	// it from agents.user_id when the caller didn't set it, so existing
-	// callers don't have to be touched all at once.
+	// user_id 被添加以保持 cron_jobs 与代码库其余部分的 (user_id, agent_id)
+	// 键控一致。当调用方未设置时，SaveCronJob 从 agents.user_id 自动填充它，
+	// 因此现有调用方不必一次性修改。
 	if job.UserID == "" {
 		var uid sql.NullString
 		row := d.db.QueryRowContext(ctx,
@@ -3003,8 +2865,7 @@ func (d *DBStore) LockCronJob(ctx context.Context, jobID, instanceID string) (bo
 }
 
 func (d *DBStore) UpdateCronJobRun(ctx context.Context, jobID string, lastRun, nextRun time.Time) error {
-	// A successful tick clears failure_count too — the row only
-	// auto-deletes on a *consecutive* run of misses.
+	// 成功的 tick 也会清除 failure_count——该行仅在*连续*失败运行时自动删除。
 	if d.dialect == "postgres" {
 		_, err := d.db.ExecContext(ctx,
 			`UPDATE cron_jobs SET last_run=$1, next_run=$2, failure_count=0, locked_by=NULL, locked_at=NULL WHERE id=$3`,
@@ -3017,10 +2878,9 @@ func (d *DBStore) UpdateCronJobRun(ctx context.Context, jobID string, lastRun, n
 	return err
 }
 
-// IncrementCronJobFailure atomically bumps failure_count and returns
-// the new total. Also clears the lock so the next tick is free to
-// retry (or, if the caller decides to delete the row at threshold,
-// the row goes away cleanly without a stuck lock).
+// IncrementCronJobFailure 原子性地增加 failure_count 并返回新总数。
+// 同时清除锁，以便下一个 tick 可以自由重试（或者，如果调用方决定在阈值时
+// 删除该行，该行干净地消失而不会留下卡住的锁）。
 func (d *DBStore) IncrementCronJobFailure(ctx context.Context, jobID string) (int, error) {
 	if d.dialect == "postgres" {
 		var n int
@@ -3047,7 +2907,7 @@ func (d *DBStore) IncrementCronJobFailure(ctx context.Context, jobID string) (in
 func (d *DBStore) GetNextDueTime(ctx context.Context) (time.Time, error) {
 	var q string
 	if d.dialect != "sqlite" {
-		// Server databases return a proper timestamp; sql.NullTime works.
+		// 服务器数据库返回正确的时间戳；sql.NullTime 有效。
 		q = `SELECT MIN(next_run) FROM cron_jobs WHERE enabled = true AND next_run IS NOT NULL`
 		var t sql.NullTime
 		if err := d.db.QueryRowContext(ctx, q).Scan(&t); err != nil {
@@ -3058,7 +2918,7 @@ func (d *DBStore) GetNextDueTime(ctx context.Context) (time.Time, error) {
 		}
 		return t.Time, nil
 	}
-	// SQLite returns MIN() as a string — scan into NullString, then parse.
+	// SQLite 将 MIN() 作为字符串返回——扫描到 NullString 中，然后解析。
 	q = `SELECT MIN(next_run) FROM cron_jobs WHERE enabled = 1 AND next_run IS NOT NULL`
 	var s sql.NullString
 	if err := d.db.QueryRowContext(ctx, q).Scan(&s); err != nil {
@@ -3070,19 +2930,16 @@ func (d *DBStore) GetNextDueTime(ctx context.Context) (time.Time, error) {
 	return parseTimeString(s.String), nil
 }
 
-// --- Channel leases ---
+// --- 频道租约 ---
 //
-// Cross-process singleton gate for polling / persistent-connection
-// channel adapters. The pattern is one row per (channel, account_id);
-// the holder writes its instanceID into holder_id and renews
-// expires_at on a periodic tick. A peer wanting to take over has to
-// wait until expires_at has passed — at that point the same upsert
-// query atomically rotates the row to the new holder.
+// 轮询/持久连接频道适配器的跨进程单例门控。模式是每个 (channel, account_id)
+// 一行；持有者将其 instanceID 写入 holder_id 并在周期性 tick 上续约 expires_at。
+// 想要接管的对等方必须等到 expires_at 过去——此时相同的 upsert 查询原子性地
+// 将该行旋转到新持有者。
 
-// AcquireChannelLease attempts to take the (channel, accountID) lease
-// for `ttl`. Returns true only when the row was either absent, already
-// held by holderID (renew), or expired (steal). A concurrent acquirer
-// that loses the race gets (false, nil) — not an error.
+// AcquireChannelLease 尝试获取 (channel, accountID) 的 `ttl` 租约。
+// 仅当行不存在、已由 holderID 持有（续约）或已过期（抢占）时返回 true。
+// 在竞争中失败的并发获取者得到 (false, nil)——不是错误。
 func (d *DBStore) AcquireChannelLease(ctx context.Context, channel, accountID, holderID string, ttl time.Duration) (bool, error) {
 	now := time.Now()
 	expires := now.Add(ttl)
@@ -3101,10 +2958,8 @@ func (d *DBStore) AcquireChannelLease(ctx context.Context, channel, accountID, h
 		return n > 0, nil
 	}
 	if d.dialect == "postgres" {
-		// ON CONFLICT updates the row only when the previous holder's
-		// lease has expired OR we already hold it (renew). The WHERE
-		// clause is essential — without it, a second instance would
-		// steal the lease the moment its INSERT collided.
+		// ON CONFLICT 仅在前持有者的租约已过期或我们已持有时（续约）更新行。
+		// WHERE 子句至关重要——没有它，第二个实例会在其 INSERT 冲突的瞬间窃取租约。
 		res, err := d.db.ExecContext(ctx,
 			`INSERT INTO channel_leases (channel, account_id, holder_id, expires_at)
 				VALUES ($1, $2, $3, $4)
@@ -3118,9 +2973,8 @@ func (d *DBStore) AcquireChannelLease(ctx context.Context, channel, accountID, h
 		n, _ := res.RowsAffected()
 		return n > 0, nil
 	}
-	// SQLite path: ON CONFLICT DO UPDATE ... WHERE is supported in
-	// modernc.org/sqlite (SQLite 3.24+). Same semantics as the PG
-	// branch above; placeholder syntax differs.
+	// SQLite 路径：ON CONFLICT DO UPDATE ... WHERE 在 modernc.org/sqlite
+	//（SQLite 3.24+）中支持。语义与上面的 PG 分支相同；占位符语法不同。
 	res, err := d.db.ExecContext(ctx,
 		`INSERT INTO channel_leases (channel, account_id, holder_id, expires_at)
 			VALUES (?, ?, ?, ?)
@@ -3135,11 +2989,10 @@ func (d *DBStore) AcquireChannelLease(ctx context.Context, channel, accountID, h
 	return n > 0, nil
 }
 
-// RenewChannelLease extends an already-held lease. Returns false (not
-// an error) when the row's holder_id no longer matches — meaning the
-// previous holder's TTL elapsed and a peer took over while we were
-// off-cpu. Callers MUST treat false as "stop polling immediately": the
-// peer is now driving inbound for this (channel, account_id) pair.
+// RenewChannelLease 扩展已持有的租约。当行的 holder_id 不再匹配时返回 false
+//（不是错误）——意味着前持有者的 TTL 已过，并且在对等方在我们离线时接管了。
+// 调用方必须将 false 视为"立即停止轮询"：对等方现在正在驱动此 (channel, account_id)
+// 对的入站流量。
 func (d *DBStore) RenewChannelLease(ctx context.Context, channel, accountID, holderID string, ttl time.Duration) (bool, error) {
 	expires := time.Now().Add(ttl)
 	var res sql.Result
@@ -3162,10 +3015,9 @@ func (d *DBStore) RenewChannelLease(ctx context.Context, channel, accountID, hol
 	return n > 0, nil
 }
 
-// ReleaseChannelLease voluntarily drops the lease so a peer can pick
-// it up on its next acquire attempt without waiting for TTL. Bounded
-// by holder_id so a stale Release from an evicted instance can't
-// accidentally invalidate the current holder's row.
+// ReleaseChannelLease 自愿放弃租约，以便对等方可以在其下一次获取尝试中
+// 接手而无需等待 TTL。受 holder_id 限制，因此来自被驱逐实例的过时 Release
+// 不会意外地使当前持有者的行失效。
 func (d *DBStore) ReleaseChannelLease(ctx context.Context, channel, accountID, holderID string) error {
 	var err error
 	if d.dialect == "postgres" {
@@ -3216,9 +3068,8 @@ func (d *DBStore) GetProject(ctx context.Context, userID, agentID, projectID str
 	return &p, nil
 }
 
-// SaveProject upserts. created_at is preserved on update; updated_at
-// is bumped every write. Empty name is allowed at the row level — the
-// HTTP handler enforces non-empty so we don't double-validate here.
+// SaveProject 进行 upsert。created_at 在更新时保留；updated_at 每次写入时更新。
+// 行级别允许空名称——HTTP 处理程序强制执行非空名称，因此我们在此不必双重验证。
 func (d *DBStore) SaveProject(ctx context.Context, p *ProjectRecord) error {
 	if p.UserID == "" || p.AgentID == "" || p.ID == "" {
 		return errors.New("store: SaveProject requires user_id, agent_id, project_id")
@@ -3251,10 +3102,9 @@ func (d *DBStore) SaveProject(ctx context.Context, p *ProjectRecord) error {
 	return err
 }
 
-// DeleteProject removes the row. Caller must ensure no sessions still
-// reference it (via CountProjectSessions); this method does not check
-// because the handler decides the policy (block vs cascade) — the
-// store stays mechanical.
+// DeleteProject 删除该行。调用方必须确保没有会话仍然引用它（通过
+// CountProjectSessions）；此方法不检查，因为处理程序决定策略（阻止 vs 级联）
+// ——store 保持机械性。
 func (d *DBStore) DeleteProject(ctx context.Context, userID, agentID, projectID string) error {
 	_, err := d.db.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM projects WHERE user_id = %s AND agent_id = %s AND project_id = %s`,
@@ -3275,9 +3125,8 @@ func (d *DBStore) CountProjectSessions(ctx context.Context, userID, agentID, pro
 	return n, nil
 }
 
-// parseTimeString tries common time formats that modernc.org/sqlite may
-// produce for TIMESTAMP columns (RFC3339, RFC3339Nano, and the Go default
-// format that older code paths wrote).
+// parseTimeString 尝试 modernc.org/sqlite 可能为 TIMESTAMP 列生成的常见时间格式
+//（RFC3339, RFC3339Nano 以及旧代码路径写入的 Go 默认格式）。
 func parseTimeString(s string) time.Time {
 	for _, layout := range []string{
 		time.RFC3339Nano,
@@ -3314,17 +3163,14 @@ func scanCronJobs(rows *sql.Rows) ([]CronJobRecord, error) {
 	return jobs, rows.Err()
 }
 
-// --- Agent goals ---
+// --- Agent 目标 ---
 //
-// All goal columns ride together on every CRUD path — mutations happen
-// via "read, mutate domain object, write back" rather than partial
-// updates. Keeps the per-turn accounting logic in Go rather than
-// scattered across UPDATE … SET fragments.
+// 所有目标列在每个 CRUD 路径上一起操作——变更通过"读取、变异领域对象、写回"
+// 而非部分更新进行。将每轮记账逻辑保持在 Go 中，而不是分散在 UPDATE … SET 片段中。
 //
-// Legacy columns (last_accounted_token_usage / time_used_seconds /
-// last_accounted_at / safety_max_iterations / iterations) still exist
-// on old SQLite databases — they're not in the current CREATE TABLE
-// and the SQL below neither reads nor writes them.
+// 旧列（last_accounted_token_usage / time_used_seconds /
+// last_accounted_at / safety_max_iterations / iterations）仍然存在于旧的
+// SQLite 数据库上——它们不在当前的 CREATE TABLE 中，下面的 SQL 既不读取也不写入它们。
 const goalSelectCols = `id, agent_id, session_key, owner_user_id, channel, account_id, chat_id, project_id, objective, status, token_budget, tokens_used, created_at, updated_at`
 
 func (d *DBStore) CreateGoal(ctx context.Context, g *GoalRecord) error {
@@ -3396,8 +3242,8 @@ func (d *DBStore) DeleteGoal(ctx context.Context, goalID string) error {
 	return err
 }
 
-// scanGoal reads one row (from QueryRow) into a GoalRecord. Returns
-// ErrNotFound (via scanErr) when the query matched nothing.
+// scanGoal 从 QueryRow 读取一行到 GoalRecord。当查询无匹配时返回
+// ErrNotFound（通过 scanErr）。
 func scanGoal(row *sql.Row) (*GoalRecord, error) {
 	var g GoalRecord
 	var tokenBudget sql.NullInt64
@@ -3413,10 +3259,9 @@ func scanGoal(row *sql.Row) (*GoalRecord, error) {
 	return &g, nil
 }
 
-// isUniqueViolation reports whether err is a UNIQUE-constraint
-// violation in either Postgres (SQLSTATE 23505) or SQLite (substring
-// "UNIQUE constraint failed"). Both drivers expose enough detail in
-// the error text to identify this without importing driver packages.
+// isUniqueViolation 报告 err 是否是 Postgres（SQLSTATE 23505）或 SQLite
+//（子串 "UNIQUE constraint failed"）中的 UNIQUE 约束违规。两个驱动程序在错误文本中
+// 暴露了足够的细节来识别这一点，而无需导入驱动程序包。
 func isUniqueViolation(err error) bool {
 	if err == nil {
 		return false
@@ -3425,11 +3270,11 @@ func isUniqueViolation(err error) bool {
 		return true
 	}
 	msg := err.Error()
-	// Postgres lib/pq surfaces "pq: duplicate key value violates unique constraint"
+	// Postgres lib/pq 显示 "pq: duplicate key value violates unique constraint"
 	if strings.Contains(msg, "duplicate key value") {
 		return true
 	}
-	// modernc.org/sqlite reports "UNIQUE constraint failed: <table>.<col>"
+	// modernc.org/sqlite 报告 "UNIQUE constraint failed: <table>.<col>"
 	if strings.Contains(msg, "UNIQUE constraint failed") {
 		return true
 	}

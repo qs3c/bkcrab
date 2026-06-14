@@ -7,15 +7,15 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 )
 
-// ChannelAdapter wraps a channel plugin to implement the channels.Channel interface.
-// This lets plugin-based channels be registered with the channel manager seamlessly.
+// ChannelAdapter 包装了一个通道插件，用于实现 channels.Channel 接口。
+// 这使得基于插件的通道可以无缝注册到通道管理器。
 type ChannelAdapter struct {
 	manager  *Manager
 	pluginID string
 	manifest *Manifest
 }
 
-// NewChannelAdapter creates an adapter for a channel plugin.
+// NewChannelAdapter 为通道插件创建一个适配器。
 func NewChannelAdapter(mgr *Manager, pluginID string) *ChannelAdapter {
 	inst := mgr.Plugin(pluginID)
 	return &ChannelAdapter{
@@ -25,41 +25,40 @@ func NewChannelAdapter(mgr *Manager, pluginID string) *ChannelAdapter {
 	}
 }
 
-// Name returns the channel name (plugin ID, e.g. "feishu").
+// Name 返回通道名称（插件 ID，例如 "feishu"）。
 func (a *ChannelAdapter) Name() string {
 	return a.manifest.ID
 }
 
-// AccountID returns the plugin ID as account identifier.
+// AccountID 返回插件 ID 作为账户标识符。
 func (a *ChannelAdapter) AccountID() string {
 	return ""
 }
 
-// BotUsername returns empty since plugin channels manage their own identity.
+// BotUsername 返回空，因为插件通道管理自己的身份。
 func (a *ChannelAdapter) BotUsername() string {
 	return ""
 }
 
-// Start blocks until ctx is cancelled. The actual message receiving is handled
-// by the plugin process sending message.inbound notifications.
+// Start 阻塞直到 ctx 被取消。实际的消息接收由插件进程发送 message.inbound 通知来处理。
 func (a *ChannelAdapter) Start(ctx context.Context) error {
 	slog.Info("plugin channel started", "plugin", a.pluginID)
 	<-ctx.Done()
 	return nil
 }
 
-// Send sends a message through the plugin channel.
+// Send 通过插件通道发送消息。
 func (a *ChannelAdapter) Send(chatID string, text string) error {
 	ctx := context.Background()
 	return a.manager.SendToChannel(ctx, a.pluginID, chatID, text)
 }
 
-// SendMessage sends a rich outbound message. Plugin channels use plain text.
+// SendMessage 发送一条富文本出站消息。插件通道使用纯文本。
 func (a *ChannelAdapter) SendMessage(msg bus.OutboundMessage) error {
 	return a.Send(msg.ChatID, msg.Text)
 }
 
-// SendTyping is a no-op for plugin channels.
+// SendTyping 对插件通道来说是一个空操作。
 func (a *ChannelAdapter) SendTyping(_ string) error {
 	return nil
 }

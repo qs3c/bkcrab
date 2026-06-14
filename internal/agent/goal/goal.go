@@ -1,25 +1,25 @@
-// Package goal implements persisted thread goals — a `/goal <objective>`
-// becomes a long-running, audit-driven loop where the runtime keeps
-// injecting continuation prompts until the model marks the goal
-// complete, the token budget runs out, or the user pauses or clears
-// it.
+// 包目标实现持久线程目标 - `/goal <objective>`
+// 成为一个长期运行的、审计驱动的循环，运行时保持
+// 注入继续提示，直到模型标记目标
+// 完成、代币预算用完、或者用户暂停或清除
+// 它。
 //
-// The design is modeled on OpenAI Codex CLI's /goal (codex-rs/core/src/
-// goals.rs). See docs/design/goal.md for the rationale.
+// 该设计以 OpenAI Codex CLI 的 /goal (codex-rs/core/src/
+// 目标.rs）。请参阅 docs/design/goal.md 了解基本原理。
 package goal
 
 import "github.com/qs3c/bkclaw/internal/store"
 
-// Goal is the persisted record of an active or finished goal. One goal
-// per (agent, session) — enforced by a UNIQUE index on the underlying
-// table. The domain type is an alias to store.GoalRecord; there's no
-// separate set of fields to keep in sync.
+// 目标是活动或已完成目标的持久记录。一球
+// per (agent, session) — 由基础上的 UNIQUE 索引强制执行
+// 桌子。域类型是store.GoalRecord的别名；没有
+// 单独的一组字段以保持同步。
 type Goal = store.GoalRecord
 
-// Status is the lifecycle state of a goal, aliased to plain string so
-// fields on Goal (= store.GoalRecord) carry it directly. Four values;
-// "unmet" is intentionally absent — a goal that cannot complete simply
-// stays Active until the user pauses or clears it.
+// 状态是目标的生命周期状态，别名为纯字符串，因此
+// Goal 上的字段（= store.GoalRecord）直接携带它。四个价值观；
+// “unmet”是故意缺席的——一个无法简单完成的目标
+// 保持活动状态，直到用户暂停或清除它。
 type Status = string
 
 const (
@@ -29,8 +29,8 @@ const (
 	StatusComplete      Status = "complete"
 )
 
-// RemainingTokens returns budget − used (≥0). When the goal has no
-// budget, ok is false. Used only by the prompt renderer.
+// RemainingTokens 返回预算 - 已使用 (≥0)。当目标没有的时候
+// 预算，好吧是假的。仅由提示渲染器使用。
 func RemainingTokens(g *Goal) (remaining int64, ok bool) {
 	if g.TokenBudget == nil {
 		return 0, false

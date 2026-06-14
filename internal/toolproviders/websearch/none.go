@@ -6,25 +6,23 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// None is a sentinel provider meaning "do not expose web_search to the model."
-// The tool-registration layer (internal/agent/tools/web_search.go) detects
-// "none" anywhere in the chain and skips registering web_search at all, so
-// the model falls back to whatever native search capability it has (e.g. an
-// Anthropic server-side tool, if wired up later) or does without.
+// None 是一个标记提供商，表示"不要向模型暴露 web_search"。
+// 工具注册层（internal/agent/tools/web_search.go）检测到链中有 "none" 时
+// 会完全跳过注册 web_search，以便模型回退到原生搜索能力
+//（例如 Anthropic 服务端工具，如果后续接入）或没有。
 //
-// It opts into CredentialFree so chain.Available() reports true when "none"
-// is the only configured provider — the dashboard can distinguish "user made
-// an explicit choice" from "forgot to configure anything".
+// 它选择加入 CredentialFree，以便当 "none" 是唯一配置的提供商时，
+// chain.Available() 返回 true——仪表盘可以区分"用户做了明确选择"
+// 和"忘记配置任何东西"。
 type None struct{}
 
 func (None) Category() string     { return Category }
 func (None) Name() string         { return "none" }
 func (None) CredentialFree() bool { return true }
 
-// Execute should never be reached: web_search registration short-circuits on
-// "none" before the chain runs. The error is defensive — if someone wires the
-// chain a new way and bypasses the skip, the failure should surface loudly
-// rather than silently returning empty results.
+// Execute 不应被执行：web_search 注册在链运行前就会因 "none" 而短路。
+// 该错误是防御性的——如果有人以新的方式连接链并绕过了跳过逻辑，
+// 应该大声地暴露失败，而不是静默地返回空结果。
 func (None) Execute(_ context.Context, _ toolproviders.Request) (toolproviders.Response, error) {
 	return toolproviders.Response{}, toolproviders.ErrNoResults
 }

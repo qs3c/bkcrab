@@ -10,7 +10,7 @@ import (
 	"text/template"
 )
 
-// Install installs BkClaw as an OS service.
+// Install 将 BkClaw 安装为操作系统服务。
 func Install() error {
 	switch runtime.GOOS {
 	case "darwin":
@@ -23,7 +23,7 @@ func Install() error {
 	}
 }
 
-// Uninstall removes the BkClaw OS service.
+// Uninstall 移除 BkClaw 操作系统服务。
 func Uninstall() error {
 	switch runtime.GOOS {
 	case "darwin":
@@ -232,7 +232,7 @@ func installSystemd() error {
 		return fmt.Errorf("write unit file: %w", err)
 	}
 
-	// Enable and start
+	// 启用并启动
 	for _, args := range [][]string{
 		{"--user", "daemon-reload"},
 		{"--user", "enable", systemdUnit},
@@ -275,7 +275,7 @@ func uninstallSystemd() error {
 		return fmt.Errorf("remove unit file: %w", err)
 	}
 
-	// Reload
+	// 重新加载
 	exec.Command("systemctl", "--user", "daemon-reload").Run()
 
 	fmt.Println("Service uninstalled.")

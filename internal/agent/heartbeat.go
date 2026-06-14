@@ -13,23 +13,23 @@ import (
 )
 
 const (
-	// DefaultHeartbeatInterval is the default interval between heartbeat checks.
+	// DefaultHeartbeatInterval 是心跳检查的默认间隔。
 	DefaultHeartbeatInterval = 30 * time.Minute
 )
 
-// HeartbeatConfig holds heartbeat configuration.
+// HeartbeatConfig 持有心跳配置。
 type HeartbeatConfig struct {
 	Interval time.Duration
 }
 
-// Heartbeat runs periodic checks and triggers agent actions.
+// Heartbeat 运行定期检查并触发代理操作。
 type Heartbeat struct {
 	agent    *Agent
 	bus      *bus.MessageBus
 	interval time.Duration
 }
 
-// NewHeartbeat creates a new heartbeat for the given agent.
+// NewHeartbeat 为给定代理创建一个新的心跳。
 func NewHeartbeat(ag *Agent, mb *bus.MessageBus, interval time.Duration) *Heartbeat {
 	if interval <= 0 {
 		interval = DefaultHeartbeatInterval
@@ -41,7 +41,7 @@ func NewHeartbeat(ag *Agent, mb *bus.MessageBus, interval time.Duration) *Heartb
 	}
 }
 
-// Start begins the heartbeat goroutine. It blocks until ctx is cancelled.
+// Start 开始心跳 goroutine。它会阻塞直到 ctx 被取消。
 func (hb *Heartbeat) Start(ctx context.Context) {
 	slog.Info("heartbeat started",
 		"agent", hb.agent.Name(),
@@ -65,13 +65,12 @@ func (hb *Heartbeat) Start(ctx context.Context) {
 func (hb *Heartbeat) tick(ctx context.Context) {
 	slog.Info("heartbeat tick", "agent", hb.agent.Name())
 
-	// 1. Check HEARTBEAT.md for tasks
+	// 1. 检查 HEARTBEAT.md 中的任务
 	tasks := hb.loadHeartbeatTasks()
 	if tasks != "" {
-		// Agent-default timezone (chatterUID="" → agent/system prefs,
-		// else server local): heartbeat has no chatter, but HEARTBEAT.md
-		// conditions are written in the operator's wall clock, not the
-		// pod's (UTC on hosted deployments).
+		// 代理默认时区（chatterUID="" → 代理/系统偏好，否则为服务器本地）：
+		// 心跳没有聊天者，但 HEARTBEAT.md 的条件是用运维人员的挂钟时间编写的，
+		// 而不是 Pod 的时间（托管部署上为 UTC）。
 		now := time.Now().In(hb.agent.chatterLocation(""))
 		heartbeatMsg := fmt.Sprintf(
 			"[Heartbeat — %s]\nCurrent tasks from HEARTBEAT.md:\n%s\n\nReview these tasks and take action on any that need attention based on the current date/time.",
@@ -79,7 +78,7 @@ func (hb *Heartbeat) tick(ctx context.Context) {
 			tasks,
 		)
 
-		// Feed as an inbound message through the bus
+		// 通过消息总线作为入站消息发送
 		hb.bus.Inbound <- bus.InboundMessage{
 			Channel:  "heartbeat",
 			ChatID:   "heartbeat_" + hb.agent.Name(),
@@ -90,7 +89,7 @@ func (hb *Heartbeat) tick(ctx context.Context) {
 		}
 	}
 
-	// 2. Trigger memory update
+	// 2.触发内存更新
 	hb.updateMemory()
 }
 

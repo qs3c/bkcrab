@@ -12,8 +12,8 @@ import (
 	"strings"
 )
 
-// Result describes a successful install so callers can show the user what
-// happened and, if they care, where to find the files.
+// Result 描述一次成功的安装，以便调用者可以向用户显示发生了什么，
+// 以及如果用户关心的话，在哪里可以找到文件。
 type Result struct {
 	Source       string `json:"source"`           // "skills.sh" | "clawhub" | "github"
 	Name         string `json:"name"`             // final directory name under targetDir
@@ -24,15 +24,15 @@ type Result struct {
 
 const clawhubBaseURL = "https://clawhub.ai"
 
-// InstallFromClawHub downloads the latest version of `slug` from clawhub.ai
-// and extracts its ZIP into targetDir/<slug>/. Returns a Result on success.
+// InstallFromClawHub 从 clawhub.ai 下载 `slug` 的最新版本，
+// 并将其 ZIP 提取到 targetDir/<slug>/。成功时返回 Result。
 func InstallFromClawHub(slug, targetDir string) (*Result, error) {
 	if slug == "" {
 		return nil, fmt.Errorf("skill slug required")
 	}
 	client := defaultHTTPClient()
 
-	// Fetch metadata to discover the latest version.
+	// 获取元数据以发现最新版本。
 	metaURL := fmt.Sprintf("%s/api/v1/skills/%s", clawhubBaseURL, slug)
 	metaResp, err := client.Get(metaURL)
 	if err != nil {
@@ -88,8 +88,8 @@ func InstallFromClawHub(slug, targetDir string) (*Result, error) {
 	}, nil
 }
 
-// extractZipToDir unpacks a zip archive into destDir, skipping entries with
-// path-traversal components. Returns number of files written.
+// extractZipToDir 将 zip 归档解压到 destDir，跳过包含路径遍历组件的条目。
+// 返回写入的文件数量。
 func extractZipToDir(data []byte, destDir string) (int, error) {
 	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
@@ -143,13 +143,11 @@ func extractZipToDir(data []byte, destDir string) (int, error) {
 	return written, nil
 }
 
-// InstallAuto tries skills.sh first and falls back to clawhub. Returns the
-// Result of the first successful install, or a combined error describing
-// both misses. `name` is the skill slug/id the user asked for.
+// InstallAuto 首先尝试 skills.sh，然后回退到 clawhub。返回第一个成功安装的
+// Result，或描述两次未命中的组合错误。`name` 是用户要求的技能 slug/id。
 //
-// This is the default path for agent-initiated installs: if nothing matches
-// after both sources, the caller is expected to offer skill-creator as a
-// third option.
+// 这是 Agent 发起安装的默认路径：如果两个来源后都没有匹配项，
+// 调用者应该提供 skill-creator 作为第三个选项。
 func InstallAuto(name, targetDir string) (*Result, error) {
 	var firstErr error
 	results, err := SearchSkillsSh(name)
@@ -162,7 +160,7 @@ func InstallAuto(name, targetDir string) (*Result, error) {
 		}
 		firstErr = fmt.Errorf("skills.sh install: %w", err)
 	}
-	// ClawHub fallback.
+	// ClawHub 回退。
 	r, err := InstallFromClawHub(name, targetDir)
 	if err == nil {
 		return r, nil

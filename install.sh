@@ -1,13 +1,13 @@
 #!/bin/sh
-# BkClaw Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/qs3c/bkclaw/main/install.sh | sh
-# Or:    BKCLAW_INSTALL_DIR=~/bin curl -fsSL ... | sh
+# BkClaw 安装程序
+# 用法：curl -fsSL https://raw.githubusercontent.com/qs3c/bkclaw/main/install.sh | sh
+# 或者：BKCLAW_INSTALL_DIR=~/bin curl -fsSL ... | sh
 set -e
 
 REPO="qs3c/bkclaw"
 BINARY="bkclaw"
 
-# Colors (only if terminal supports it)
+# 颜色（仅在终端支持时）
 if [ -t 1 ]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
 else
@@ -19,7 +19,7 @@ warn()    { printf "${YELLOW}[WARN]${NC} %s\n" "$*"; }
 error()   { printf "${RED}[ERROR]${NC} %s\n" "$*" >&2; exit 1; }
 success() { printf "${GREEN}[✓]${NC} %s\n" "$*"; }
 
-# ── Detect OS & arch ────────────────────────────────────────────────────────
+# ── 检测操作系统和架构 ──────────────────────────────────────────────────────
 detect_platform() {
   _os="$(uname -s | tr '[:upper:]' '[:lower:]')"
   _arch="$(uname -m)"
@@ -45,7 +45,7 @@ detect_platform() {
   fi
 }
 
-# ── Decide install dir (no sudo, no password) ───────────────────────────────
+# ── 决定安装目录（无需 sudo，无需密码）─────────────────────────────────────
 choose_install_dir() {
   if [ -n "${BKCLAW_INSTALL_DIR:-}" ]; then
     INSTALL_DIR="$BKCLAW_INSTALL_DIR"
@@ -55,14 +55,14 @@ choose_install_dir() {
   mkdir -p "$INSTALL_DIR"
 }
 
-# ── Ensure install dir is in PATH and shell config ──────────────────────────
+# ── 确保安装目录在 PATH 和 shell 配置中 ─────────────────────────────────────
 ensure_path() {
-  # Check if already in PATH
+  # 检查是否已在 PATH 中
   case ":$PATH:" in
     *":$INSTALL_DIR:"*) return 0 ;;
   esac
 
-  # Detect shell config file
+  # 检测 shell 配置文件
   _shell="$(basename "${SHELL:-sh}")"
   case "$_shell" in
     zsh)  RC="$HOME/.zshrc" ;;
@@ -71,12 +71,12 @@ ensure_path() {
     *)    RC="$HOME/.profile" ;;
   esac
 
-  # Check if already written
+  # 检查是否已写入
   if [ -f "$RC" ] && grep -q "$INSTALL_DIR" "$RC" 2>/dev/null; then
     return 0
   fi
 
-  # Write PATH export
+  # 写入 PATH 导出
   if [ "$_shell" = "fish" ]; then
     mkdir -p "$(dirname "$RC")"
     printf '\n# BkClaw\nfish_add_path "%s"\n' "$INSTALL_DIR" >> "$RC"
@@ -88,7 +88,7 @@ ensure_path() {
   SHELL_RC="$RC"
 }
 
-# ── Fetch latest version ─────────────────────────────────────────────────────
+# ── 获取最新版本 ────────────────────────────────────────────────────────────
 get_latest_version() {
   if command -v curl >/dev/null 2>&1; then
     _resp=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest")
@@ -101,7 +101,7 @@ get_latest_version() {
   [ -n "$VERSION" ] || error "Could not fetch latest version. Check https://github.com/${REPO}/releases"
 }
 
-# ── Download & install binary ────────────────────────────────────────────────
+# ── 下载并安装二进制文件 ────────────────────────────────────────────────────
 install_binary() {
   TARBALL="${BINARY}_${PLATFORM}.${EXT}"
   URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARBALL}"
@@ -122,7 +122,7 @@ install_binary() {
     tar -xzf "${TMP_DIR}/${TARBALL}" -C "${TMP_DIR}"
   fi
 
-  # Atomic replace: backup old → move new → remove backup
+  # 原子替换：备份旧文件 → 移动新文件 → 删除备份
   DEST="${INSTALL_DIR}/${BINARY}"
   if [ -f "$DEST" ]; then
     mv "$DEST" "${DEST}.bak"
@@ -134,7 +134,7 @@ install_binary() {
   rm -rf "$TMP_DIR"
 }
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── 主程序 ───────────────────────────────────────────────────────────────────
 main() {
   printf "\n${BOLD}  ⚡ BkClaw Installer${NC}\n"
   printf "  ─────────────────────\n\n"

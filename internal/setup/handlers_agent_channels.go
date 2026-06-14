@@ -18,19 +18,15 @@ import (
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
-// Per-agent IM channel CRUD. Wraps the existing scope.SaveChannel +
-// bindings setting so the dashboard can present "connect Telegram" as
-// one click instead of asking users to wire two separate config rows
-// by hand.
+// 按 agent 的 IM 频道 CRUD。包装现有的 scope.SaveChannel + 绑定设置，
+// 以便仪表板可以将"连接 Telegram"呈现为一次点击，而不是要求用户手动连接两个单独的配置行。
 
-// channelOut is the wire shape returned by GET /api/agents/<id>/channels.
-// One row per (channelType, accountID); botToken is masked.
+// channelOut 是 GET /api/agents/<id>/channels 返回的线格式。
+// 每 (channelType, accountID) 一行；botToken 被屏蔽。
 //
-// Source distinguishes where this binding lives:
-//   - "agent" — the agent's "official" channel (visible to every user
-//     with read access; only the agent owner / admin can mutate)
-//   - "user"  — the caller's own per-user overlay on this agent
-//     (only the caller sees + can mutate it)
+// Source 区分此绑定的位置：
+//   - "agent" — agent 的"官方"频道（对具有读取权限的每个用户可见；仅 agent 拥有者/管理员可以变更）
+//   - "user"  — 调用者在此 agent 上的每个用户叠加层（仅调用者可见并可变更）
 type channelOut struct {
 	Type        string `json:"type"`
 	AccountID   string `json:"accountId"`
@@ -41,27 +37,20 @@ type channelOut struct {
 	Source      string `json:"source,omitempty"`
 }
 
-// resolveChannelBindingScope authorizes a connect/disconnect call and
-// returns the (userID, agentID) tuple the channel row should be written
-// under. Every channel row now carries the binder's user_id directly —
-// there's no "agent-official" overload anymore, because two users
-// sharing a public agent can't share one bot anyway (inbound messages
-// would route to the wrong space).
+// resolveChannelBindingScope 授权连接/断开调用并返回频道行应写入的 (userID, agentID) 元组。
+// 每个频道行现在直接携带绑定者的 user_id — 不再有"agent 官方"的重载，
+// 因为两个共享公共 agent 的用户无论如何不能共享同一个 bot（入站消息会路由到错误的空间）。
 //
-//   - Owner of the agent (or platform admin): (callerUID, agentID).
-//     The owner's bindings are just their personal bindings on their
-//     own agent.
-//   - Non-owner with read access (public agent or apikey ACL grant):
-//     (callerUID, agentID). Each user can bind their own bot to the
-//     same public agent without colliding with anyone else's row, and
-//     inbound messages route to the binder's UserSpace.
+//   - Agent 的拥有者（或平台管理员）：(callerUID, agentID)。
+//     拥有者的绑定只是他们在自己 agent 上的个人绑定。
+//   - 具有读取权限的非拥有者（公共 agent 或 apikey ACL 授权）：
+//     (callerUID, agentID)。每个用户可以将自己的 bot 绑定到同一个公共 agent 而不会与他人冲突，
+//     入站消息路由到绑定者的 UserSpace。
 //
-// Writes 4xx and returns ok=false on permission/lookup failures.
+// 在权限/查找失败时写入 4xx 并返回 ok=false。
 //
-// The legacy return shape was (scope, scopeID, ok). The new shape is
-// (userID, agentID, ok). Old callers passed (sc, scopeID) into
-// invalidateScope; the migration adapter at the bottom of this file
-// keeps that working.
+// 旧的返回形状是 (scope, scopeID, ok)。新形状是 (userID, agentID, ok)。
+// 旧调用者将 (sc, scopeID) 传入 invalidateScope；此文件底部的迁移适配器保持其正常工作。
 func (s *Server) resolveChannelBindingScope(w http.ResponseWriter, r *http.Request, agentID string) (userID, aid string, ok bool) {
 	if agentID == "" {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "agent id required"})
@@ -81,7 +70,7 @@ func (s *Server) resolveChannelBindingScope(w http.ResponseWriter, r *http.Reque
 	if rec.UserID == uid || (ident.AuthMethod != "" && ident.CanAdminPlatform()) {
 		return uid, agentID, true
 	}
-	// Non-owner: must be able to at least read the agent.
+	// 非拥有者：必须至少能够读取 agent。
 	if (ident.AuthMethod == "apikey" && ident.CanAccessAgent(agentID)) || rec.IsPublic {
 		return uid, agentID, true
 	}
@@ -89,12 +78,9 @@ func (s *Server) resolveChannelBindingScope(w http.ResponseWriter, r *http.Reque
 	return "", "", false
 }
 
-// ownsAgent gates channel-management calls. Returns (callerUID, true)
-// when the caller is the agent owner OR a platform admin (super_admin
-// session, type=admin apikey). Bindings/channel rows are agent-keyed so
-// the returned uid is the caller's, not the owner's — that matters for
-// per-caller flows like the WeChat QR session whose poll-side equality
-// check needs to match the start-side that stored it.
+// ownsAgent 门控频道管理调用。当调用者是 agent 拥有者或平台管理员（super_admin 会话、type=admin apikey）
+// 时返回 (callerUID, true)。绑定/频道行以 agent 为键，因此返回的 uid 是调用者的，而不是拥有者的 —
+// 这对每个调用者的流程（如 WeChat QR 会话，其轮询端的相等性检查需要与存储它的起始端匹配）很重要。
 func (s *Server) ownsAgent(r *http.Request, agentID string) (string, bool) {
 	if agentID == "" {
 		return "", false
@@ -129,16 +115,11 @@ func (s *Server) handleListAgentChannels(w http.ResponseWriter, r *http.Request)
 	caller := s.effectiveUserID(r)
 	_ = rec // kept around in case future logic gates on agent ownership again
 
-	// Channel rows always carry the binder's user_id + the target
-	// agent_id, so the caller's view is "what I bound to this agent" —
-	// (user_id=caller, agent_id=id). The first ListConfigs covers the
-	// owner's own bindings on their agent and a non-owner's per-(user,
-	// agent) overlay alike.
+	// 频道行始终携带绑定者的 user_id + 目标 agent_id，因此调用者的视角是"我绑定到此 agent 的内容"—
+	// (user_id=caller, agent_id=id)。第一个 ListConfigs 覆盖拥有者在其 agent 上的绑定以及非拥有者的每个 (user, agent) 叠加层。
 	//
-	// We additionally pull (user_id='', agent_id=id) for legacy
-	// installs whose pre-refactor "scope=agent" rows escaped the
-	// migration backfill (e.g. an agent without a user_id at the
-	// time). New rows are never written there.
+	// 我们额外拉取 (user_id='', agent_id=id) 以兼容那些重构前的"scope=agent"行逃脱了迁移回填的旧安装
+	//（例如当时没有 user_id 的 agent）。新行永远不会写入那里。
 	out := make([]channelOut, 0)
 	if caller != "" {
 		if rows, err := s.dataStore.ListConfigs(r.Context(), store.KindChannel, caller, id); err == nil {
@@ -151,11 +132,9 @@ func (s *Server) handleListAgentChannels(w http.ResponseWriter, r *http.Request)
 	jsonResponse(w, http.StatusOK, map[string]any{"channels": out})
 }
 
-// flattenChannelRows expands one config row per row into one channelOut
-// per (channelType, accountID). source stamps where the row came from
-// for the UI to render the badge. The (botToken, _, _) trio is unused
-// at present — kept variadic-style so a future caller can pre-mask
-// without an extra arg.
+// flattenChannelRows 将每个配置行展开为每个 (channelType, accountID) 一个 channelOut。
+// source 标记行的来源，供 UI 渲染徽章。(botToken, _, _) 三元组目前未使用 —
+// 保留为可变参数样式，以便将来的调用者可以在不增加额外参数的情况下预屏蔽。
 type accountFilter func(channelType, accountID string) bool
 
 func filterAccounts(allow map[[2]string]bool) accountFilter {
@@ -208,10 +187,8 @@ type connectTelegramRequest struct {
 	BotToken string `json:"botToken"`
 }
 
-// handleConnectAgentTelegram validates the bot token by hitting
-// Telegram's getMe, then persists a kind=channel + binding pair scoped
-// to this agent and hot-starts the adapter so the bot starts polling
-// immediately.
+// handleConnectAgentTelegram 通过调用 Telegram 的 getMe 验证 bot token，
+// 然后持久化一个作用域到此 agent 的 kind=channel + binding 对，并热启动适配器使 bot 立即开始轮询。
 func (s *Server) handleConnectAgentTelegram(w http.ResponseWriter, r *http.Request) {
 	if !s.requireWritable(w, r) {
 		return
@@ -233,28 +210,23 @@ func (s *Server) handleConnectAgentTelegram(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Validate via Telegram getMe; this also gives us the bot username
-	// which we use as the binding accountID.
+	// 通过 Telegram getMe 验证；这也给我们 bot 用户名，用作绑定的 accountID。
 	username, err := telegramGetMe(token)
 	if err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 
-	// Build channel config: one Account keyed by bot username so multi-
-	// bot setups are supported on the same agent if a user adds another
-	// bot later. Per-account BotToken so each can have its own.
+	// 构建频道配置：一个以 bot 用户名为键的 Account，以便如果用户稍后添加另一个 bot，
+	// 同一 agent 上支持多 bot 设置。每个账户有各自的 BotToken。
 	cc := config.ChannelConfig{
 		Enabled:  true,
 		Accounts: map[string]config.AccountConfig{username: {BotToken: token}},
 	}
-	// credential_key MUST equal the value the Telegram adapter ships as
-	// InboundMessage.AccountID — that's the column processInbound uses
-	// to find the owning user (LookupChannelByCredential). The adapter
-	// is created with accountID = the Accounts-map key, which is the
-	// bot's @username, so we mirror that here. Using the token-tail
-	// fallback (credentialKeyFor) silently dropped every inbound
-	// message because no row matched.
+	// credential_key 必须等于 Telegram 适配器作为 InboundMessage.AccountID 提供的值 —
+	// 这是 processInbound 用于查找拥有用户的列（LookupChannelByCredential）。适配器使用
+	// accountID = Accounts 映射键创建，即 bot 的 @username，因此我们在此镜像它。
+	// 使用 token-tail 回退（credentialKeyFor）会静默丢弃所有入站消息，因为没有匹配的行。
 	credKey := username
 	if err := s.assertChannelCredentialUnique(r, "telegram", credKey, "", uid, aid); err != nil {
 		jsonResponse(w, http.StatusConflict, map[string]any{"error": err.Error()})
@@ -265,11 +237,8 @@ func (s *Server) handleConnectAgentTelegram(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Append a binding so inbound messages route to this agent. Existing
-	// bindings (e.g. an earlier Discord bot) are preserved. AgentID
-	// inside the entry is always the path-resolved agent (= scopeID
-	// when sc=Agent; the foreign agent the caller is binding to when
-	// sc=User).
+	// 追加一个绑定，以便入站消息路由到此 agent。现有绑定（例如之前的 Discord bot）被保留。
+	// 条目内的 AgentID 始终是路径解析的 agent（= sc=Agent 时的 scopeID；sc=User 时调用者要绑定的外部 agent）。
 	if err := s.appendBinding(r, "", "", config.Binding{
 		AgentID: id,
 		Match:   config.Match{Channel: "telegram", AccountID: username},
@@ -300,9 +269,8 @@ func (s *Server) handleDisconnectAgentChannel(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Locate the channel row at the resolved scope (agent for owner /
-	// admin, user for non-owner overlay). Match by accountID inside the
-	// row's Accounts map.
+	// 在解析的作用域（拥有者/管理员为 agent，非拥有者叠加层为 user）中找到频道行。
+	// 通过行内 Accounts 映射中的 accountID 进行匹配。
 	rows, err := s.dataStore.ListConfigs(r.Context(), store.KindChannel, uid, aid)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -314,15 +282,14 @@ func (s *Server) handleDisconnectAgentChannel(w http.ResponseWriter, r *http.Req
 		}
 		cc := decodeChannelConfigFromRecord(&rec)
 		_, hasAcct := cc.Accounts[accountID]
-		// When the row has no Accounts map, treat it as the legacy
-		// single-bot shape; accountID must be empty to match.
+		// 当行没有 Accounts 映射时，将其视为传统的单 bot 形式；accountID 必须为空才能匹配。
 		if !hasAcct && !(len(cc.Accounts) == 0 && accountID == "") {
 			continue
 		}
 		if hasAcct {
 			delete(cc.Accounts, accountID)
 		}
-		// If nothing left, drop the row; otherwise rewrite it.
+		// 如果没有剩余内容，删除该行；否则重写它。
 		if len(cc.Accounts) == 0 && (cc.BotToken == "" || hasAcct) {
 			if err := s.dataStore.DeleteConfig(r.Context(), rec.ID); err != nil {
 				jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -334,7 +301,7 @@ func (s *Server) handleDisconnectAgentChannel(w http.ResponseWriter, r *http.Req
 				return
 			}
 		}
-		// Drop the matching binding too.
+		// 也删除匹配的绑定。
 		if err := s.removeBinding(r, "", "", id, channelType, accountID); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -347,15 +314,12 @@ func (s *Server) handleDisconnectAgentChannel(w http.ResponseWriter, r *http.Req
 	jsonResponse(w, http.StatusNotFound, map[string]any{"error": "binding not found"})
 }
 
-// appendBinding / removeBinding used to maintain a kind=setting,
-// name=bindings row that carried (channel, accountID → agentID)
-// mappings. Channel rows now carry agent_id directly, so the
-// indirection is gone — these stubs are kept so the many connect/
-// disconnect handlers don't all have to change shape at once.
+// appendBinding / removeBinding 曾经维护一个承载 (channel, accountID → agentID) 映射的
+// kind=setting, name=bindings 行。频道行现在直接携带 agent_id，因此间接层已消失 —
+// 保留这些存根以便许多连接/断开处理程序不必同时改变形状。
 //
-// The migration drops every existing kind=setting/name=bindings row,
-// and the runtime side (gateway/userspace.go::bindingsFromChannelRows)
-// rebuilds the routing table by walking channel rows directly.
+// 迁移删除所有现有的 kind=setting/name=bindings 行，
+// 运行时端（gateway/userspace.go::bindingsFromChannelRows）通过直接遍历频道行重建路由表。
 func (s *Server) appendBinding(r *http.Request, sc, scopeID string, b config.Binding) error {
 	_ = r
 	_ = sc
@@ -374,10 +338,8 @@ func (s *Server) removeBinding(r *http.Request, sc, scopeID, agentID, channelTyp
 	return nil
 }
 
-// telegramGetMe validates the bot token by hitting the Bot API. Returns
-// the bot's username on success. We avoid pulling tgbotapi here so this
-// handler doesn't drag in the full long-poll bot machinery for what's
-// just a HEAD-style validation.
+// telegramGetMe 通过调用 Bot API 验证 bot token。成功时返回 bot 的用户名。
+// 我们避免在此引入 tgbotapi，这样此处理程序不会为了一个 HEAD 样式的验证而拖入完整的长期轮询 bot 机制。
 func telegramGetMe(token string) (string, error) {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token)
 	resp, err := http.Get(url)
@@ -387,7 +349,7 @@ func telegramGetMe(token string) (string, error) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		// Telegram returns {"ok":false,"description":"..."} on bad tokens.
+		// Telegram 在 token 无效时返回 {"ok":false,"description":"..."}。
 		var apiErr struct {
 			Description string `json:"description"`
 		}
@@ -416,10 +378,9 @@ type connectDiscordRequest struct {
 	BotToken string `json:"botToken"`
 }
 
-// handleConnectAgentDiscord validates a Discord bot token by calling
-// /users/@me on the Discord REST API, then persists kind=channel +
-// binding rows just like the Telegram flow. accountID = bot user ID
-// (Discord's stable identifier, unlike username which can be changed).
+// handleConnectAgentDiscord 通过调用 Discord REST API 的 /users/@me 验证 Discord bot token，
+// 然后持久化 kind=channel + binding 行，就像 Telegram 流程一样。accountID = bot 用户 ID
+//（Discord 的稳定标识符，与可以更改的用户名不同）。
 func (s *Server) handleConnectAgentDiscord(w http.ResponseWriter, r *http.Request) {
 	if !s.requireWritable(w, r) {
 		return
@@ -447,9 +408,8 @@ func (s *Server) handleConnectAgentDiscord(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// accountID = Discord user ID. Stable across username changes
-	// and matches what the Discord adapter ships in
-	// InboundMessage.AccountID (it's set from the same value).
+	// accountID = Discord 用户 ID。在用户名更改时保持稳定，
+	// 并与 Discord 适配器在 InboundMessage.AccountID 中提供的值匹配（它从相同的值设置）。
 	cc := config.ChannelConfig{
 		Enabled:  true,
 		Accounts: map[string]config.AccountConfig{userID: {BotToken: token}},
@@ -481,11 +441,10 @@ func (s *Server) handleConnectAgentDiscord(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// discordGetMe validates the bot token via the Discord REST API.
-// Endpoint docs: GET /users/@me with `Authorization: Bot <token>`
-// returns the bot user object (id, username, discriminator). We avoid
-// pulling discordgo here so this handler doesn't open a gateway
-// connection just to check a token.
+// discordGetMe 通过 Discord REST API 验证 bot token。
+// 端点文档：GET /users/@me，带有 `Authorization: Bot <token>` 返回 bot 用户对象
+//（id, username, discriminator）。我们避免在此引入 discordgo，
+// 这样此处理程序不会仅仅为了检查 token 而打开网关连接。
 func discordGetMe(token string) (string, string, error) {
 	req, err := http.NewRequest("GET", "https://discord.com/api/v10/users/@me", nil)
 	if err != nil {
@@ -499,7 +458,7 @@ func discordGetMe(token string) (string, string, error) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		// Discord returns {"message": "...", "code": ...} on auth errors.
+		// Discord 在认证错误时返回 {"message": "...", "code": ...}。
 		var apiErr struct {
 			Message string `json:"message"`
 		}
@@ -525,8 +484,7 @@ func discordGetMe(token string) (string, string, error) {
 	}
 	display := me.Username
 	if me.Discriminator != "" && me.Discriminator != "0" {
-		// Legacy Discord usernames are user#1234. Modern (post-2023)
-		// accounts have discriminator "0" — display just the handle.
+		// 旧的 Discord 用户名格式为 user#1234。现代（2023 年后）账户的鉴别器为 "0" — 仅显示用户名。
 		display = me.Username + "#" + me.Discriminator
 	}
 	return me.ID, display, nil
@@ -539,11 +497,9 @@ type connectSlackRequest struct {
 	AppToken string `json:"appToken"`
 }
 
-// handleConnectAgentSlack persists the Slack bot+app token pair after
-// validating via auth.test. Slack needs both: bot token (xoxb-...)
-// for posting/reading, app token (xapp-...) for Socket Mode WS.
-// accountID = team_id so a workspace's events all route to the same
-// agent (per-workspace Slack apps are the common shape).
+// handleConnectAgentSlack 在通过 auth.test 验证后持久化 Slack bot+app token 对。
+// Slack 需要两者：bot token (xoxb-...) 用于发布/读取，app token (xapp-...) 用于 Socket Mode WS。
+// accountID = team_id，因此一个工作区的事件都路由到同一 agent（按工作区的 Slack 应用是常见形式）。
 func (s *Server) handleConnectAgentSlack(w http.ResponseWriter, r *http.Request) {
 	if !s.requireWritable(w, r) {
 		return
@@ -580,10 +536,8 @@ func (s *Server) handleConnectAgentSlack(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Slack channel rows put both tokens in top-level BotToken/AppToken
-	// (the Slack adapter constructor reads them as a pair). Accounts
-	// map keyed by team_id so the inbound side resolves owner via
-	// LookupChannelByCredential(channel="slack", credKey=teamID).
+	// Slack 频道行将两个 token 放在顶级的 BotToken/AppToken 中（Slack 适配器构造函数将它们作为一对读取）。
+	// Accounts 映射以 team_id 为键，以便入站端通过 LookupChannelByCredential(channel="slack", credKey=teamID) 解析拥有者。
 	cc := config.ChannelConfig{
 		Enabled:  true,
 		BotToken: botToken,
@@ -618,9 +572,8 @@ func (s *Server) handleConnectAgentSlack(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// slackAuthTest hits Slack's auth.test endpoint with the bot token to
-// validate it AND capture team_id/team_name/bot_user_id in one call.
-// Doc: https://api.slack.com/methods/auth.test
+// slackAuthTest 使用 bot token 调用 Slack 的 auth.test 端点以验证它并一次性捕获
+// team_id/team_name/bot_user_id。文档：https://api.slack.com/methods/auth.test
 func slackAuthTest(botToken string) (teamID, teamName, botUserID string, err error) {
 	req, rerr := http.NewRequest("POST", "https://slack.com/api/auth.test", nil)
 	if rerr != nil {
@@ -633,8 +586,7 @@ func slackAuthTest(botToken string) (teamID, teamName, botUserID string, err err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	// Slack always returns 200 + a JSON body; the `ok` field carries
-	// the actual result.
+	// Slack 总是返回 200 + JSON 体；`ok` 字段携带实际结果。
 	var ok struct {
 		OK     bool   `json:"ok"`
 		Error  string `json:"error"`
@@ -659,23 +611,20 @@ func slackAuthTest(botToken string) (teamID, teamName, botUserID string, err err
 	return ok.TeamID, ok.Team, ok.UserID, nil
 }
 
-// --- WeChat (iLink) ---
+// --- 微信 （iLink） ---
 //
-// Unlike Telegram/Discord/Slack, WeChat doesn't take a paste-it-in
-// token. The user scans a QR code with the WeChat phone app; on
-// confirmation iLink hands back a (bot_token, ilink_bot_id,
-// ilink_user_id, baseurl) tuple. Two-step flow:
+// 与 Telegram/Discord/Slack 不同，微信不接收粘贴的 token。
+// 用户使用微信手机应用扫描二维码；确认后 iLink 返回一个 (bot_token, ilink_bot_id,
+// ilink_user_id, baseurl) 元组。两步流程：
 //
 //   POST /api/agents/{id}/channels/wechat/login
-//     → fetch a QR token from iLink, render as image on the client.
-//       Returns {sessionID, qrCode, qrCodeImg}.
+//     → 从 iLink 获取 QR token，在客户端渲染为图片。返回 {sessionID, qrCode, qrCodeImg}。
 //
 //   GET  /api/agents/{id}/channels/wechat/login/status?session=<id>
-//     → poll iLink's get_qrcode_status one round-trip.
-//       Returns {status: wait|scaned|confirmed|expired, connected,
-//       accountId?}. On `confirmed`, persists the channel row +
-//       binding and hot-registers the adapter, so the next poll the
-//       client makes for sandbox/agent state shows the bot live.
+//     → 轮询 iLink 的 get_qrcode_status 一次往返。
+//       返回 {status: wait|scaned|confirmed|expired, connected, accountId?}。
+//       在 `confirmed` 时，持久化频道行 + 绑定并热注册适配器，
+//       因此客户端下次轮询沙箱/agent 状态时显示 bot 在线。
 
 const (
 	wechatILinkBase    = "https://ilinkai.weixin.qq.com"
@@ -687,12 +636,9 @@ const (
 	wechatStatusExpire = "expired"
 )
 
-// wechatLoginSession tracks an in-flight QR scan. Lives in memory only
-// — abandoned sessions get GC'd via the TTL sweep on the registry.
-// Saving to the store would let polls survive process restart but the
-// QR token itself expires in iLink server-side after a couple of
-// minutes anyway, so cross-restart resumption isn't worth the
-// complexity.
+// wechatLoginSession 跟踪进行中的二维码扫描。仅存在于内存中 —
+// 废弃的会话通过注册表上的 TTL 扫描进行垃圾回收。保存到存储会让轮询在进程重启后仍然存活，
+// 但 QR token 本身在 iLink 服务器端几分钟后就会过期，因此跨重启恢复不值得这么复杂。
 type wechatLoginSession struct {
 	qrCode    string // iLink token, used both as polling key + as QR payload
 	qrCodeImg string // optional pre-rendered QR image (base64 or URL)
@@ -716,8 +662,7 @@ func (r *wechatLoginRegistry) put(id string, s *wechatLoginSession) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sessions[id] = s
-	// Opportunistic GC: drop sessions older than 5 minutes (QR codes
-	// expire well before this server-side; anything older is dead).
+	// 机会性 GC：丢弃超过 5 分钟的会话（QR 码在此服务器端之前早已过期；任何更旧的都已死亡）。
 	cutoff := time.Now().Add(-5 * time.Minute)
 	for k, v := range r.sessions {
 		if v.createdAt.Before(cutoff) {
@@ -738,11 +683,9 @@ func (r *wechatLoginRegistry) delete(id string) {
 	delete(r.sessions, id)
 }
 
-// handleStartAgentWeChatLogin asks iLink for a fresh QR code, registers
-// a server-side session keyed by the returned qrCode token, and hands
-// the client back what it needs to render the QR image. The actual
-// scan happens out-of-band in the user's WeChat phone app; the client
-// then polls handleAgentWeChatLoginStatus to drive the state machine.
+// handleStartAgentWeChatLogin 向 iLink 请求新的 QR 码，注册一个以返回的 qrCode token 为键的服务器端会话，
+// 并将客户端渲染 QR 图像所需的内容返回。实际扫描在用户的微信手机应用中带外进行；
+// 然后客户端轮询 handleAgentWeChatLoginStatus 来驱动状态机。
 func (s *Server) handleStartAgentWeChatLogin(w http.ResponseWriter, r *http.Request) {
 	if !s.requireWritable(w, r) {
 		return
@@ -764,9 +707,8 @@ func (s *Server) handleStartAgentWeChatLogin(w http.ResponseWriter, r *http.Requ
 		qrCodeImg: qr.QRCodeImgContent,
 		agentID:   id,
 		userID:    uid,
-		// `scope`/`scopeID` are kept on the struct for backwards compat
-		// with the polling handler — repurposed as (userID, agentID) so
-		// persist time uses the same ownership the caller saw at start.
+		// `scope`/`scopeID` 保留在结构体上以与轮询处理程序向后兼容 —
+		// 重新用作 (userID, agentID)，以便持久化时使用调用者在开始时看到的相同拥有者。
 		scope:     uid,
 		scopeID:   aid,
 		createdAt: time.Now(),
@@ -778,11 +720,9 @@ func (s *Server) handleStartAgentWeChatLogin(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-// handleAgentWeChatLoginStatus polls iLink for the current scan state
-// of this session's QR code. On `confirmed`, persists the channel row
-// + binding + hot-registers the adapter — same shape as the Telegram /
-// Discord / Slack connect handlers, but driven by the QR status
-// machine instead of an immediate token validation.
+// handleAgentWeChatLoginStatus 轮询 iLink 获取此会话 QR 码的当前扫描状态。
+// 在 `confirmed` 时，持久化频道行 + 绑定 + 热注册适配器 — 与 Telegram / Discord / Slack
+// 连接处理程序相同的形状，但由 QR 状态机驱动，而不是立即验证 token。
 func (s *Server) handleAgentWeChatLoginStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, _, ok := s.resolveChannelBindingScope(w, r, id); !ok {
@@ -799,8 +739,7 @@ func (s *Server) handleAgentWeChatLoginStatus(w http.ResponseWriter, r *http.Req
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "session not found or expired"})
 		return
 	}
-	// Cross-tenant guard: don't let one user's poll observe another
-	// user's QR session even with a guessed sessionID.
+	// 跨租户防护：即使猜到 sessionID，也不让一个用户的轮询观察到另一个用户的 QR 会话。
 	if sess.userID != uid || sess.agentID != id {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "session not found"})
 		return
@@ -814,8 +753,7 @@ func (s *Server) handleAgentWeChatLoginStatus(w http.ResponseWriter, r *http.Req
 
 	switch status.Status {
 	case wechatStatusOK:
-		// User confirmed on phone. iLink returned credentials; persist
-		// + bind + hot-register, then drop the in-flight session.
+		// 用户在手机上确认。iLink 返回了凭证；持久化 + 绑定 + 热注册，然后丢弃进行中的会话。
 		creds := wechatCredentials{
 			BotToken:    status.BotToken,
 			ILinkBotID:  status.ILinkBotID,
@@ -845,9 +783,8 @@ func (s *Server) handleAgentWeChatLoginStatus(w http.ResponseWriter, r *http.Req
 		})
 		return
 	default:
-		// wait / scaned / unknown — keep polling. We surface "scaned"
-		// distinctly because the UI flips to "扫描完成,请确认" when the
-		// user has tapped the QR but not yet pressed confirm on phone.
+		// wait / scaned / unknown — 继续轮询。我们明确显示 "scaned"，
+		// 因为当用户已点击 QR 但尚未在手机上按确认时，UI 会切换到 "扫描完成,请确认"。
 		jsonResponse(w, http.StatusOK, map[string]any{
 			"status":    status.Status,
 			"connected": false,
@@ -856,11 +793,9 @@ func (s *Server) handleAgentWeChatLoginStatus(w http.ResponseWriter, r *http.Req
 	}
 }
 
-// persistWeChatAccount writes a kind=channel row + binding for a
-// freshly-confirmed iLink account. The legacy 3rd/4th args (sc,
-// scopeID) are now reused to carry (userID, agentID) — the wechat QR
-// flow stashes them on wechatLoginSession at start so persist time
-// uses the same ownership.
+// persistWeChatAccount 为新确认的 iLink 账户写入 kind=channel 行 + 绑定。
+// 旧的第三/四个参数 (sc, scopeID) 现在被重用为携带 (userID, agentID) —
+// 微信 QR 流程在开始时将它们存储在 wechatLoginSession 上，以便持久化时使用相同的拥有者。
 func (s *Server) persistWeChatAccount(r *http.Request, userID, agentIDArg, agentID string, creds wechatCredentials) error {
 	cc := config.ChannelConfig{
 		Enabled: true,
@@ -892,8 +827,7 @@ func (s *Server) persistWeChatAccount(r *http.Request, userID, agentIDArg, agent
 	return nil
 }
 
-// --- iLink HTTP helpers (validation-only; running adapter has its own
-//     client in internal/channels/wechat.go) ---
+// --- iLink HTTP 辅助函数（仅验证；运行中的适配器有自己的客户端在 internal/channels/wechat.go） ---
 
 type wechatCredentials struct {
 	BotToken    string
@@ -941,11 +875,10 @@ func wechatFetchQRCode(ctx context.Context) (*wechatQRCodeResp, error) {
 	return &out, nil
 }
 
-// wechatPollQRStatus does ONE round-trip — returns whatever the server
-// says right now. We don't long-poll on the server side because the
-// upstream endpoint already does (~40s); doing it on every status
-// request would mean a tab refresh stalls 40s. The client polls every
-// 3s instead, mirroring the workany-web shape.
+// wechatPollQRStatus 执行一次往返 — 返回服务器当前的状态。
+// 我们不在服务器端长轮询，因为上游端点已经在做了（约 40 秒）；
+// 在每个状态请求上都这样做意味着标签页刷新会卡住 40 秒。
+// 客户端改为每 3 秒轮询一次，镜像 workany-web 的形状。
 func wechatPollQRStatus(ctx context.Context, qrcode string) (*wechatQRStatusResp, error) {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
@@ -969,7 +902,7 @@ func wechatPollQRStatus(ctx context.Context, qrcode string) (*wechatQRStatusResp
 	return &out, nil
 }
 
-// --- Feishu / Feishu ---
+// --- 飞书 ---
 
 type connectFeishuRequest struct {
 	AppID             string `json:"appId"`
@@ -979,16 +912,13 @@ type connectFeishuRequest struct {
 	UseLongConn       bool   `json:"useLongConn"`
 }
 
-// handleConnectAgentFeishu validates a Feishu custom-app credential triple
-// by minting a tenant_access_token (proves app_id+app_secret are
-// valid) and fetching /bot/v3/info (captures the bot's display name).
-// Stores the triple as kind=channel + binding rows + hot-registers
-// the adapter.
+// handleConnectAgentFeishu 通过生成 tenant_access_token（证明 app_id+app_secret 有效）
+// 并获取 /bot/v3/info（捕获 bot 的显示名称）来验证飞书自定义应用凭证三元组。
+// 将三元组存储为 kind=channel + binding 行 + 热注册适配器。
 //
-// Storage layout mirrors slack/wechat: credKey = app_id (also the
-// accountID), AccountConfig.BotToken = app_secret, AccountConfig.UserID
-// = verification_token (matches the field's "extra account-scoped
-// identifier" comment).
+// 存储布局镜像 slack/wechat：credKey = app_id（同时也是 accountID），
+// AccountConfig.BotToken = app_secret，AccountConfig.UserID = verification_token
+//（与字段的"额外账户作用域标识符"注释匹配）。
 func (s *Server) handleConnectAgentFeishu(w http.ResponseWriter, r *http.Request) {
 	if !s.requireWritable(w, r) {
 		return
@@ -1029,7 +959,7 @@ func (s *Server) handleConnectAgentFeishu(w http.ResponseWriter, r *http.Request
 		Accounts: map[string]config.AccountConfig{
 			appID: {
 				BotToken:    appSecret,
-				UserID:      verificationToken, // see channels/feishu.go field-mapping note
+				UserID:      verificationToken, // 参见 channels/feishu.go 字段映射说明
 				EncryptKey:  encryptKey,
 				UseLongConn: useLongConn,
 			},
@@ -1062,20 +992,16 @@ func (s *Server) handleConnectAgentFeishu(w http.ResponseWriter, r *http.Request
 		"botOpenId":   botOpenID,
 		"useLongConn": useLongConn,
 	}
-	// Webhook URL is only meaningful when the user picked the
-	// public-URL transport. Long-connection accounts don't need it
-	// (no public ingress required) — omit so the UI doesn't show a
-	// step the user can't / shouldn't do.
+	// Webhook URL 仅在用户选择了公网 URL 传输方式时才有意义。长连接账户不需要它
+	//（无需公网入口）— 省略以免 UI 显示用户不能/不应该做的步骤。
 	if !useLongConn {
 		resp["webhookUrl"] = feishuWebhookPathFor(r, appID)
 	}
 	jsonResponse(w, http.StatusOK, resp)
 }
 
-// feishuWebhookPathFor builds the URL the user should paste into the
-// Feishu Developer Console's "Event Subscriptions → Request URL" field.
-// Best-effort — uses the request's Host so reverse-proxied deployments
-// surface the user-facing hostname rather than the bind address.
+// feishuWebhookPathFor 构建用户应粘贴到飞书开发者控制台"事件订阅 → 请求 URL"字段的 URL。
+// 尽力而为 — 使用请求的 Host，以便反向代理部署显示面向用户的主机名而不是绑定地址。
 func feishuWebhookPathFor(r *http.Request, appID string) string {
 	scheme := "https"
 	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") == "" {
@@ -1098,18 +1024,14 @@ type connectLINERequest struct {
 	ChannelSecret string `json:"channelSecret"`
 }
 
-// handleConnectAgentLINE validates a LINE Messaging API channel by
-// hitting /v2/bot/info with the channel access token. Captures the
-// bot's userId (used as accountID) + display name + basicId. Stores
-// channel_access_token in AccountConfig.BotToken, channel_secret in
-// AccountConfig.UserID (matching the field-mapping convention used by
-// the WeChat / Feishu adapters).
+// handleConnectAgentLINE 通过使用频道访问 token 访问 /v2/bot/info 来验证 LINE Messaging API 频道。
+// 捕获 bot 的 userId（用作 accountID）+ 显示名称 + basicId。
+// 将 channel_access_token 存储在 AccountConfig.BotToken，channel_secret 存储在 AccountConfig.UserID
+//（与微信/飞书适配器使用的字段映射约定匹配）。
 //
-// channel_secret is technically optional — the adapter can run without
-// signature validation — but webhook traffic flows over the open
-// internet so we strongly recommend setting it. The connect handler
-// accepts an empty string and warns at validation time only if the
-// secret is missing.
+// channel_secret 在技术上是可选的 — 适配器可以在没有签名验证的情况下运行 —
+// 但 webhook 流量经过开放互联网，因此我们强烈建议设置它。
+// 连接处理程序接受空字符串，仅在 secret 缺失时在验证时发出警告。
 func (s *Server) handleConnectAgentLINE(w http.ResponseWriter, r *http.Request) {
 	if !s.requireWritable(w, r) {
 		return
@@ -1176,10 +1098,8 @@ func (s *Server) handleConnectAgentLINE(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// lineWebhookPathFor returns the URL the user pastes into LINE
-// Developers Console under "Messaging API → Webhook URL". Same shape
-// as feishuWebhookPathFor — surfaces the public-facing host via the
-// usual reverse-proxy headers.
+// lineWebhookPathFor 返回用户粘贴到 LINE Developers Console 中"Messaging API → Webhook URL"的 URL。
+// 与 feishuWebhookPathFor 形状相同 — 通过通常的反向代理头部显示面向公众的主机。
 func lineWebhookPathFor(r *http.Request, userID string) string {
 	scheme := "https"
 	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") == "" {

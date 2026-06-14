@@ -8,12 +8,12 @@ import (
 	"syscall"
 )
 
-// setProcessGroup configures the command to spawn into a NEW process
-// group (Setpgid=true with Pgid=0 makes the child the group leader).
-// Must be set before cmd.Start. Together with killProcessGroup this
-// guarantees `kill_shell` reaches every descendant the command spawned
-// — without it, killing `sh -c "npm run dev"` leaves the node process
-// orphaned and still bound to the dev server's port.
+// setProcessGroup 配置命令以生成新进程
+// 组（Setpgid=true 且 Pgid=0 使子组成为组长）。
+// 必须在 cmd.Start 之前设置。与killProcessGroup一起使用
+// 保证“kill_shell”到达命令生成的每个后代
+// — 没有它，杀死 `sh -c "npm run dev"` 会留下节点进程
+// 孤立并且仍然绑定到开发服务器的端口。
 func setProcessGroup(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
@@ -21,11 +21,11 @@ func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setpgid = true
 }
 
-// killProcessGroup sends SIGKILL to the entire process group whose
-// leader's PID is groupLeaderPid. The negative-pid trick (kill(2) with
-// -pid) is the POSIX idiom for group signals. ESRCH ("no such process")
-// is mapped to nil — that just means the group already terminated,
-// which is the same end state we wanted.
+// KillProcessGroup 向其所属的整个进程组发送 SIGKILL
+// 领导者的 PID 是 groupLeaderPid。负 pid 技巧 (kill(2) 与
+// -pid) 是组信号的 POSIX 习惯用法。 ESRCH（“没有这样的过程”）
+// 映射到 nil — 这仅仅意味着该组已经终止，
+// 这与我们想要的最终状态相同。
 func killProcessGroup(groupLeaderPid int) error {
 	if groupLeaderPid <= 0 {
 		return nil

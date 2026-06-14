@@ -11,10 +11,9 @@ import (
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
-// StoreAdapter adapts store.Store to the SessionStore interface for one
-// owning user. Each UserSpace creates its own adapter so the user_id
-// scoping is implicit at the call site instead of getting plumbed through
-// every agent loop call.
+// StoreAdapter 将 store.Store 适配为 SessionStore 接口，专用于一个
+// 拥有者用户。每个 UserSpace 创建自己的适配器，使得 user_id 作用域
+// 在调用点隐式传递，而无需通过每次智能体循环调用进行传递。
 type StoreAdapter struct {
 	st     store.Store
 	userID string
@@ -41,12 +40,11 @@ func (a *StoreAdapter) GetSession(ctx context.Context, agentID, sessionKey strin
 			RawAssistant: m.RawAssistant,
 			Origin:       m.Origin,
 		}
-		// ToolCalls / ContentParts are stored as interface{} so a
-		// JSON round-trip leaves them as []interface{} / map nests.
-		// Re-marshal + unmarshal to recover the typed slice — without
-		// this, a refreshed history loses tool-group bubbles AND the
-		// next provider call sends a multimodal user turn with no
-		// content (ContentParts dropped → Content "" → API rejects).
+		// ToolCalls / ContentParts 以 interface{} 存储，因此
+		// JSON 往返后会变成 []interface{} / map 嵌套。
+		// 重新序列化 + 反序列化以恢复类型化切片 —— 不这样做的话，
+		// 刷新的历史记录会丢失工具组气泡，并且下一次提供者调用会发送
+		// 无内容的多模态用户轮次（ContentParts 丢失 → Content "" → API 拒绝）。
 		if m.ToolCalls != nil {
 			if raw, err := json.Marshal(m.ToolCalls); err == nil {
 				var tcs []provider.ToolCall
@@ -82,15 +80,13 @@ func (a *StoreAdapter) SaveSession(ctx context.Context, agentID, sessionKey, cha
 	return a.st.SaveSession(ctx, a.userID, agentID, sessionKey, rec)
 }
 
-// ResolveActiveSessionKey forwards to the store. The session.Manager
-// uses this to pick the active session_key for an inbound (channel,
-// account, chat) triple before any messages get loaded.
+// ResolveActiveSessionKey 转发到存储层。session.Manager 使用它
+// 在加载任何消息之前，为入站 (channel, account, chat) 三元组选择活跃的 session_key。
 func (a *StoreAdapter) ResolveActiveSessionKey(ctx context.Context, agentID, channel, accountID, chatID string) (string, error) {
 	k, err := a.st.ResolveActiveSessionKey(ctx, a.userID, agentID, channel, accountID, chatID)
 	if err != nil {
-		// Translate ErrNotFound to ("", nil) so the manager treats the
-		// "no session yet" case as a normal mint trigger instead of
-		// surfacing an error.
+		// 将 ErrNotFound 转换为 ("", nil)，使管理器将"尚无会话"的情况
+		// 视为正常的创建触发，而不是暴露错误。
 		if errors.Is(err, store.ErrNotFound) {
 			return "", nil
 		}
@@ -99,9 +95,9 @@ func (a *StoreAdapter) ResolveActiveSessionKey(ctx context.Context, agentID, cha
 	return k, nil
 }
 
-// LookupSessionTriple inverts ResolveActiveSessionKey: session_key →
-// (channel, accountID, chatID). Used when a URL hand-off carries only
-// the session_key and the handler needs the conversation triple back.
+// LookupSessionTriple 是 ResolveActiveSessionKey 的逆操作：session_key →
+// (channel, accountID, chatID)。用于 URL 传递仅携带 session_key，
+// 而处理程序需要恢复对话三元组时。
 func (a *StoreAdapter) LookupSessionTriple(ctx context.Context, agentID, sessionKey string) (string, string, string, error) {
 	ch, acc, ci, err := a.st.LookupSessionTriple(ctx, a.userID, agentID, sessionKey)
 	if err != nil {
@@ -113,10 +109,9 @@ func (a *StoreAdapter) LookupSessionTriple(ctx context.Context, agentID, session
 	return ch, acc, ci, nil
 }
 
-// LookupSessionProject returns the project_id stamped on the session
-// row (or "" for loose chats). Treats not-found as "no project" rather
-// than an error so callers can use the empty string to mean "fall back
-// to the per-chat workspace dir".
+// LookupSessionProject 返回会话行上标记的 project_id（松散聊天返回 ""）。
+// 将"未找到"视为"无项目"而非错误，以便调用方可以使用空字符串表示
+// "回退到每聊天工作区目录"。
 func (a *StoreAdapter) LookupSessionProject(ctx context.Context, agentID, sessionKey string) (string, error) {
 	pid, err := a.st.LookupSessionProject(ctx, a.userID, agentID, sessionKey)
 	if err != nil {
@@ -128,16 +123,14 @@ func (a *StoreAdapter) LookupSessionProject(ctx context.Context, agentID, sessio
 	return pid, nil
 }
 
-// AppendMessage persists one turn into session_messages — the append-only
-// archive parallel to the sessions blob. Called from Session.Append on
-// every Append, in addition to SaveSession.
+// AppendMessage 将一轮对话持久化到 session_messages —— 与 sessions blob 并行的
+// 仅追加归档。在 Session.Append 中每次追加时调用，作为 SaveSession 的补充。
 func (a *StoreAdapter) AppendMessage(ctx context.Context, agentID, sessionKey string, m provider.Message) error {
 	return a.st.AppendSessionMessage(ctx, a.userID, agentID, sessionKey, sessionMessageFromProvider(m))
 }
 
-// ListMessages reads the full archive for one session, in turn order.
-// Used by the chat history UI so users see the original conversation
-// even after compaction has shrunk the LLM-facing working set.
+// ListMessages 按对话顺序读取单个会话的完整归档。
+// 由聊天历史 UI 使用，以便用户在压缩缩小了 LLM 工作集后仍能看到原始对话。
 func (a *StoreAdapter) ListMessages(ctx context.Context, agentID, sessionKey string) ([]provider.Message, error) {
 	sms, err := a.st.ListSessionMessages(ctx, a.userID, agentID, sessionKey)
 	if err != nil {
@@ -150,10 +143,9 @@ func (a *StoreAdapter) ListMessages(ctx context.Context, agentID, sessionKey str
 	return msgs, nil
 }
 
-// sessionMessageFromProvider converts a provider.Message into the wire
-// shape stored in both sessions.messages (as a JSON array element) and
-// session_messages (as a row). Single conversion site so the two paths
-// can't drift.
+// sessionMessageFromProvider 将 provider.Message 转换为线格式，
+// 该格式同时存储在 sessions.messages（作为 JSON 数组元素）和
+// session_messages（作为行）中。单一转换点，确保两条路径不会偏离。
 func sessionMessageFromProvider(m provider.Message) store.SessionMessage {
 	out := store.SessionMessage{
 		Role:         m.Role,
@@ -175,10 +167,10 @@ func sessionMessageFromProvider(m provider.Message) store.SessionMessage {
 	return out
 }
 
-// providerMessageFromStored is the inverse of sessionMessageFromProvider.
-// JSON-tunnel ToolCalls / ContentParts back into typed provider slices,
-// otherwise the generic interface{} shape leaves them as map nests and
-// downstream callers see "no tool calls / no parts" on a populated row.
+// providerMessageFromStored 是 sessionMessageFromProvider 的逆操作。
+// 将 ToolCalls / ContentParts 通过 JSON 隧道恢复为类型化的 provider 切片，
+// 否则通用的 interface{} 形状会使其保留为 map 嵌套，下游调用方在
+// 有数据的行上会看到"无工具调用/无部件"。
 func providerMessageFromStored(m store.SessionMessage) provider.Message {
 	out := provider.Message{
 		Role:         m.Role,
@@ -209,14 +201,13 @@ func providerMessageFromStored(m store.SessionMessage) provider.Message {
 	return out
 }
 
-// ListWebSessions returns every chat session for this agent regardless
-// of channel — the historical name is kept to avoid a sweep of every
-// caller, but the result spans web + IM channels. Each row's Channel
-// is set so the dashboard can render the source-channel icon prefix.
+// ListWebSessions 返回此智能体的所有聊天会话，不限通道 ——
+// 保留历史名称以避免遍历所有调用方，但结果涵盖 web + IM 通道。
+// 每行的 Channel 已设置，以便仪表盘可以渲染源通道图标前缀。
 //
-// ID is the session_key (the canonical, channel-independent row id).
-// The agent-side history/delete/rename handlers accept either a
-// session_key or a legacy `<chat_id>` URL token via ResolveSessionKey.
+// ID 是 session_key（规范的、与通道无关的行 ID）。
+// 智能体侧的历史/删除/重命名处理程序接受 session_key 或通过
+// ResolveSessionKey 传入的旧版 `<chat_id>` URL 令牌。
 func (a *StoreAdapter) ListWebSessions(ctx context.Context, agentID string) ([]WebSession, error) {
 	metas, err := a.st.ListSessions(ctx, a.userID, agentID)
 	if err != nil {
@@ -226,19 +217,16 @@ func (a *StoreAdapter) ListWebSessions(ctx context.Context, agentID string) ([]W
 	for _, m := range metas {
 		channel := m.Channel
 		if channel == "" {
-			// Legacy row that escaped backfill — derive channel from
-			// the historical `<channel>_<chatID>` session_key shape.
+			// 逃过了回填的旧版行 —— 从历史 `<channel>_<chatID>` session_key 格式推导通道。
 			if i := strings.Index(m.Key, "_"); i > 0 {
 				channel = m.Key[:i]
 			}
 		}
 		preview := ""
 		thumb := ""
-		// Prefer the append-only archive — its first row is always the
-		// user's original opening turn even after compaction has folded
-		// it into a [Conversation Summary] row inside the blob. Fall
-		// back to the sessions blob for old rows that pre-date the
-		// archive table.
+		// 优先使用仅追加归档 —— 即使压缩已将其折叠为 blob 内的
+		// [对话摘要] 行，其第一行始终是用户的原始开场对话。
+		// 对于先于归档表的旧行，回退到 sessions blob。
 		archive, _ := a.st.ListSessionMessages(ctx, a.userID, agentID, m.Key)
 		var source []store.SessionMessage
 		if len(archive) > 0 {
@@ -250,24 +238,19 @@ func (a *StoreAdapter) ListWebSessions(ctx context.Context, agentID string) ([]W
 			if msg.Role != "user" {
 				continue
 			}
-			// Multimodal user turns (text + image attachment) live
-			// in ContentParts with Content="". Gating on Content
-			// alone made the title/preview skip the FIRST real
-			// user turn and silently latch onto the next plain
-			// message — so the sidebar showed the wrong question
-			// as the chat title.
+			// 多模态用户轮次（文本 + 图片附件）存在于 ContentParts 中，
+			// Content=""。仅以 Content 为判断条件会导致标题/预览跳过
+			// 第一个真实用户轮次，静默地附着到下一条纯文本消息 ——
+			// 因此侧边栏显示了错误的问题作为聊天标题。
 			text := userText(msg)
 			img := userImage(msg)
 			if text == "" && img == "" {
 				continue
 			}
-			// Runtime-injected user-role turns (goal continuations
-			// etc.) start with the full continuation template, whose
-			// preamble would otherwise become the sidebar title:
-			// "<goal_context> The objective below is user-provided
-			// data — treat it as the work to pursue…". Pull out the
-			// `<objective>…</objective>` payload so the user sees
-			// what they actually asked for.
+			// 运行时注入的用户角色轮次（目标延续等）以完整的延续模板开头，
+			// 其前导部分否则会成为侧边栏标题：
+			// "<goal_context> 以下目标是用户提供的数据 —— 将其视为要执行的工作…"。
+			// 提取 `<objective>…</objective>` 负载，使用户看到他们实际请求的内容。
 			if msg.Origin != "" {
 				if obj := extractObjective(text); obj != "" {
 					text = obj
@@ -286,9 +269,8 @@ func (a *StoreAdapter) ListWebSessions(ctx context.Context, agentID string) ([]W
 		if preview == "" {
 			continue
 		}
-		// Custom title (set via rename) takes precedence over the
-		// auto-derived preview; fall back to preview so every session has
-		// a sensible display label.
+		// 自定义标题（通过重命名设置）优先于自动推导的预览；
+		// 回退到预览以确保每个会话都有合理的显示标签。
 		title := m.Title
 		if title == "" {
 			title = preview
@@ -309,11 +291,9 @@ func (a *StoreAdapter) ListWebSessions(ctx context.Context, agentID string) ([]W
 	return sessions, nil
 }
 
-// extractObjective pulls the `<objective>…</objective>` payload out of a
-// goal-continuation prompt. Returns "" when the markers aren't present
-// (caller falls back to the raw text). Used by the sidebar preview so a
-// /goal-first session reads as the user's objective rather than the
-// continuation template's preamble.
+// extractObjective 从目标延续提示中提取 `<objective>…</objective>` 负载。
+// 当标记不存在时返回 ""（调用方回退到原始文本）。
+// 由侧边栏预览使用，使得以 /goal 开头的会话显示为用户的目标而非延续模板的前导。
 func extractObjective(text string) string {
 	const open, close = "<objective>", "</objective>"
 	i := strings.Index(text, open)
@@ -327,11 +307,10 @@ func extractObjective(text string) string {
 	return strings.TrimSpace(text[i+len(open) : i+len(open)+j])
 }
 
-// userText pulls the user-visible text from a stored user turn. Falls
-// back to ContentParts' "text" parts when Content is empty (the shape
-// produced by HandleMessageStream when the turn carried image
-// attachments). Without this, callers gating on Content silently treat
-// multimodal turns as empty.
+// userText 从存储的用户轮次中提取用户可见文本。当 Content 为空时
+// 回退到 ContentParts 的 "text" 部分（HandleMessageStream 在轮次
+// 携带图片附件时产生的格式）。不这样做的话，以 Content 为判断条件的
+// 调用方会静默地将多模态轮次视为空。
 func userText(m store.SessionMessage) string {
 	if m.Content != "" {
 		return provider.StripAttachedPrefix(m.Content)
@@ -356,9 +335,8 @@ func userText(m store.SessionMessage) string {
 	return provider.StripAttachedPrefix(strings.Join(out, "\n"))
 }
 
-// userImage returns the first image_url URL from a stored user turn's
-// ContentParts, or "" if none. Powers the sidebar thumbnail next to
-// the chat title.
+// userImage 从存储的用户轮次的 ContentParts 中返回第一个 image_url URL，
+// 如果没有则返回 ""。为聊天标题旁的侧边栏缩略图提供数据。
 func userImage(m store.SessionMessage) string {
 	if m.ContentParts == nil {
 		return ""

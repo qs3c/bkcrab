@@ -25,9 +25,8 @@ import (
 	"github.com/qs3c/bkclaw/internal/workspace"
 )
 
-// loadAgentSkillEntries collects every agent-scope skills.entries row
-// owned by this user. Mirrors the same logic in the HTTP layer; kept
-// here so the runtime gateway never imports the setup handlers package.
+// loadAgentSkillEntries 收集此用户拥有的每个代理作用域 skills.entries 行。
+// 镜像 HTTP 层中的相同逻辑；保留在此处以便运行时网关永远不会导入设置处理程序包。
 func loadAgentSkillEntries(ctx context.Context, st store.Store, userID string) (map[string]map[string]config.SkillEntryCfg, error) {
 	if st == nil {
 		return nil, nil
@@ -51,10 +50,9 @@ func loadAgentSkillEntries(ctx context.Context, st store.Store, userID string) (
 	return out, nil
 }
 
-// ensureAgentHome idempotently creates the agent's local FS layout. Only
-// `skills/` (FS-materialized SKILL.md bundles) and `memory/` (compaction
-// dumps history JSONL here for audit / recovery) live on disk; identity
-// files, session messages, and MEMORY.md are all in the DB.
+// ensureAgentHome 幂等地创建代理的本地文件系统布局。只有 `skills/`（文件系统物化的 SKILL.md 包）
+// 和 `memory/`（压缩将历史 JSONL 转储到此用于审计/恢复）存在于磁盘上；
+// 身份文件、会话消息和 MEMORY.md 都在数据库中。
 func ensureAgentHome(rc config.ResolvedAgent) {
 	if rc.Home == "" {
 		return
@@ -68,7 +66,7 @@ func ensureAgentHome(rc config.ResolvedAgent) {
 	}
 }
 
-// globalSkillsDirPath returns ~/.bkclaw/skills.
+// globalSkillsDirPath 返回 ~/.bkclaw/skills。
 func globalSkillsDirPath() (string, error) {
 	home, err := config.HomeDir()
 	if err != nil {
@@ -77,30 +75,24 @@ func globalSkillsDirPath() (string, error) {
 	return filepath.Join(home, "skills"), nil
 }
 
-// buildSystemSandboxPool constructs the gateway-wide sandbox pool from
-// the system-scope sandbox config. Returns nil when sandbox is not
-// enabled at system scope (each user space then attaches no pool, and
-// exec falls back to per-agent path roots).
+// buildSystemSandboxPool 从系统作用域沙箱配置构建网关范围的沙箱池。
+// 当沙箱在系统作用域未启用时返回 nil（每个用户空间随后不附加池，exec 回退到每个代理的路径根）。
 //
-// Lives at gateway scope, not per-UserSpace. The previous design built
-// one pool per user, which (a) duplicated docker pools across users
-// sharing the same image, and (b) left ad-hoc UserSpaces (notably the
-// `app_user` identity that API-key callers get switched to) without
-// any pool — those UserSpaces have zero of their own agents, so the
-// per-user builder ran with `resolved=[]` and produced nil. Lazy-
-// injected agents (super_admin chat, app-mode access) then ran exec
-// with sandbox Enabled but no executor and surfaced "sandbox required
-// but no executor available" to the user. Pulling the pool up to
-// gateway scope makes the borrow path the default for every UserSpace.
+// 存在于网关作用域，而不是每个 UserSpace。先前的设计为每个用户构建一个池，
+// 这（a）在共享相同镜像的用户之间重复了 docker 池，并且（b）使临时的 UserSpace
+//（特别是 API 密钥调用者被切换到的 `app_user` 身份）没有任何池 —
+// 这些 UserSpace 有零个自己的代理，因此每个用户的构建器使用 `resolved=[]` 运行并产生 nil。
+// 延迟注入的代理（super_admin 聊天、app 模式访问）然后使用启用沙箱但没有执行器的 exec 运行，
+// 并向用户显示"sandbox required but no executor available"。将池提升到网关作用域
+// 使借用路径成为每个 UserSpace 的默认配置。
 func buildSystemSandboxPool(cfg config.SandboxCfg, ws workspace.Store) sandbox.ExecutorPool {
 	if !cfg.Enabled {
 		return nil
 	}
 	var inner sandbox.ExecutorPool
 	home, _ := config.HomeDir()
-	// Prefer the per-backend image field (DockerImage / E2BTemplate /
-	// BoxliteSnapshot); fall back to the legacy shared Image slot for
-	// configs predating the split.
+	// 优先使用每个后端的镜像字段（DockerImage / E2BTemplate / BoxliteSnapshot）；
+	// 对于早于拆分的配置，回退到遗留的共享 Image 槽位。
 	switch cfg.Backend {
 	case "e2b":
 		apiKey := cfg.E2BKey
@@ -161,16 +153,13 @@ func buildSystemSandboxPool(cfg config.SandboxCfg, ws workspace.Store) sandbox.E
 	return lp
 }
 
-// attachSandboxToAgents wires the gateway's shared sandbox pool to every
-// agent in `agentMgr`. When `systemPool` is nil (sandbox disabled or
-// not configured at system scope), falls back to the path-only mode:
-// each agent's file tools are restricted to its own workspace dir.
+// attachSandboxToAgents 将网关的共享沙箱池挂接到 `agentMgr` 中的每个代理。
+// 当 `systemPool` 为 nil（沙箱已禁用或未在系统作用域配置）时，回退到仅路径模式：
+// 每个代理的文件工具被限制在自己的工作空间目录中。
 //
-// Pool ownership stays at the gateway: UserSpace eviction MUST NOT
-// close the pool. The returned reference is the same pointer the
-// gateway holds — kept on UserSpace.SandboxPool so per-request hot
-// paths (EnsureAgent for lazy-injected agents) can pick it up without
-// reaching back into the gateway.
+// 池所有权停留在网关：UserSpace 驱逐绝不能关闭池。返回的引用是网关持有的同一个指针 —
+// 保存在 UserSpace.SandboxPool 上，以便每个请求的热路径（延迟注入代理的 EnsureAgent）
+// 可以获取它而无需回溯到网关。
 func attachSandboxToAgents(
 	systemPool sandbox.ExecutorPool,
 	userID string,
@@ -196,15 +185,12 @@ func attachSandboxToAgents(
 	return nil
 }
 
-// assembleConfig reads the namespaced settings rows and the scope-merged
-// providers/channels for an (account, agent) and projects them into a
-// runtime config.Config. Pass userID="" / agentID="" to skip those layers
-// (agent boot uses the user-only view; system-only is for super_admin
-// dashboards).
+// assembleConfig 读取命名空间的设置行和作用域合并的提供者/通道对于一个 (account, agent)，
+// 并将它们投影到运行时 config.Config 中。传递 userID="" / agentID="" 以跳过这些层
+//（代理启动使用仅用户视图；仅系统用于 super_admin 仪表盘）。
 //
-// Each setting namespace is its own configs row. assembleConfig
-// reads them all in parallel-conceptually-but-serially-for-simplicity;
-// the per-namespace cost is one indexed point lookup.
+// 每个设置命名空间是其自己的配置行。assembleConfig 依次读取它们全部
+//（概念上并行但为了简单起见串行）；每个命名空间的成本是一次索引点查找。
 func assembleConfig(ctx context.Context, st store.Store, userID, agentID string) (*config.Config, error) {
 	cfg := &config.Config{
 		Providers: map[string]config.ProviderConfig{},
@@ -243,11 +229,10 @@ func assembleConfig(ctx context.Context, st store.Store, userID, agentID string)
 	if err := scope.SettingInto(ctx, st, NSSkillsEntries, userID, agentID, &cfg.Skills.Entries); err != nil {
 		return nil, err
 	}
-	// Per-agent skill env overrides used to live in a single user-scope
-	// row keyed by agentID; they now persist as one scope=agent row each
-	// at name=skills.entries (same namespace, narrower scope). Collect
-	// every agent owned by this user — the agent runtime still wants
-	// the keyed-by-agent map shape via cfg.Skills.AgentEntries.
+	// 每个代理的技能环境覆盖过去存在于一个以 agentID 为键的单用户作用域行中；
+	// 现在它们每个持久化为一个 scope=agent 行，名称为 skills.entries
+	//（相同命名空间，更窄的作用域）。收集此用户拥有的每个代理 —
+	// 代理运行时仍然需要通过 cfg.Skills.AgentEntries 获取以代理为键的映射形状。
 	if userID != "" {
 		entries, err := loadAgentSkillEntries(ctx, st, userID)
 		if err != nil {
@@ -292,37 +277,30 @@ func assembleConfig(ctx context.Context, st store.Store, userID, agentID string)
 	return cfg, nil
 }
 
-// UserSpace holds the per-user runtime: their config snapshot, LLM
-// provider, agent manager, and a sandbox pool reference. Lazy-loaded
-// on first auth.
+// UserSpace 持有每个用户的运行时：其配置快照、LLM 提供者、代理管理器和沙箱池引用。
+// 在首次认证时延迟加载。
 //
-// SandboxPool is BORROWED from the gateway — every UserSpace shares
-// the same pointer (or nil, when sandbox is disabled at system scope).
-// Eviction must not call CloseAll on it; the gateway owns the
-// lifecycle and tears it down once on shutdown.
+// SandboxPool 从网关**借用** — 每个 UserSpace 共享同一个指针
+//（或在系统作用域禁用沙箱时为 nil）。驱逐绝不能在其上调用 CloseAll；
+// 网关拥有生命周期并在关闭时一次性销毁它。
 type UserSpace struct {
 	UserID      string
 	Config      *config.Config
 	Provider    provider.Provider
 	Agents      *agent.Manager
 	SandboxPool sandbox.ExecutorPool
-	// PluginMgr is borrowed from the gateway (process-wide singleton).
-	// Held here so EnsureAgent — the foreign-agent attach path — can
-	// register hook plugins onto the lazy-built agent without
-	// reaching back into the gateway. Nil when systemPlugins is off.
+	// PluginMgr 从网关借用（进程范围单例）。在此持有以便 EnsureAgent —
+	// 外部代理附加路径 — 可以将钩子插件注册到延迟构建的代理上，
+	// 而无需回溯到网关。当 systemPlugins 关闭时为 nil。
 	PluginMgr *plugin.Manager
 
 	mu sync.Mutex
 }
 
-// readUserScopeAgentDefaults reads the (user=X, agent=”) agents.defaults
-// row raw — distinct from assembleConfig, which merges system + user and
-// can't tell apart "user explicitly chose the system value" from "no
-// user-scope row at all". EnsureAgent uses this to detect a chatter's
-// *explicit* model preference, so it can win over owner / agent-scope
-// overrides for foreign agents. Returns the zero value when there's no
-// row, the row's data can't be unmarshaled, or userID is empty (system
-// caller — no per-user pin to honor).
+// readUserScopeAgentDefaults 读取 (user=X, agent="") agents.defaults 行的原始数据 —
+// 与 assembleConfig 不同，后者合并系统+用户且无法区分"用户显式选择了系统值"和"根本没有用户作用域行"。
+// EnsureAgent 使用此函数检测聊天者的*显式*模型偏好，因此它可以胜过所有者/代理作用域对外部代理的覆盖。
+// 当没有行、行数据无法反序列化或 userID 为空（系统调用者 — 没有要遵守的每个用户固定）时返回零值。
 func readUserScopeAgentDefaults(ctx context.Context, st store.Store, userID string) config.AgentDefaults {
 	var out config.AgentDefaults
 	if userID == "" || st == nil {
@@ -340,15 +318,13 @@ func readUserScopeAgentDefaults(ctx context.Context, st store.Store, userID stri
 	return out
 }
 
-// EnsureAgent attaches an agent the user does not own to this UserSpace.
-// Used by super_admin chat: the admin operates on a foreign agent under
-// their own user_id namespace (sessions, memory, mem0 scope all stay
-// caller-keyed) while the agent's persistent identity — system prompt,
-// agent-scope config (`agents.defaults`), skills, and agent_files —
-// is reused because those are agent_id-keyed in the store, not
-// user_id-keyed.
+// EnsureAgent 将一个用户不拥有的代理附加到此 UserSpace。
+// 由 super_admin 聊天使用：管理员在其自己的 user_id 命名空间下操作外部代理
+//（会话、内存、mem0 作用域都保持调用者键控），而代理的持久身份 —
+// 系统提示、代理作用域配置 (`agents.defaults`)、技能和 agent_files —
+// 被重用，因为它们在存储中以 agent_id 为键，而不是 user_id 为键。
 //
-// Idempotent: returns nil if the agent is already loaded.
+// 幂等的：如果代理已加载则返回 nil。
 func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.MessageBus, ws workspace.Store, agentID string) error {
 	if sp == nil || sp.Agents == nil {
 		return fmt.Errorf("EnsureAgent: nil UserSpace")
@@ -370,44 +346,34 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 		return fmt.Errorf("EnsureAgent: ResolveAgents returned %d entries", len(resolved))
 	}
 	rc := resolved[0]
-	// Owner-fallback layer: when the calling UserSpace isn't the agent
-	// owner (super_admin, public-link viewer, apikey-shared user), pull
-	// the OWNER's user-scope settings/providers so the agent runs with
-	// the credentials and model the owner actually intended. Without
-	// this, a viewer with no providers of their own falls through to
-	// either the system shared provider (often a free-tier key that
-	// runs out) or no provider at all → 429 / "no provider configured".
-	// Order: viewer's resolved cfg → owner's user-scope (this block) →
-	// agent-scope `agents.defaults` → agent-scope providers. Agent-
-	// scope still wins, matching the precedence the owner's own
-	// loadUserSpace path uses.
+	// 所有者回退层：当调用 UserSpace 不是代理所有者时
+	//（super_admin、公开链接查看器、apikey 共享用户），拉取所有者的用户作用域设置/提供者，
+	// 以便代理使用所有者实际意图的凭据和模型运行。没有这个，
+	// 没有自己提供者的查看者会落到系统共享提供者（通常是会用完的免费层密钥）
+	// 或根本没有提供者 → 429 / "no provider configured"。
+	// 顺序：查看者的已解析 cfg → 所有者的用户作用域（此块）→
+	// 代理作用域 `agents.defaults` → 代理作用域提供者。代理作用域仍然获胜，
+	// 匹配所有者自己的 loadUserSpace 路径使用的优先级。
 	//
-	// shareModelConfig (agent record) gates this: default true —
-	// chatters inherit the owner's keys + model selection out of the
-	// box, matching the "owner already pays for the agent, they're the
-	// one sharing it" mental model. Setting it to false explicitly
-	// opts out, in which case the owner-fallback + agent-scope
-	// overlays are skipped entirely for chatters and they see only
-	// their own user-scope + system. Owner's own loadUserSpace path
-	// (sp.UserID == rec.UserID) is unaffected and still gets the full
-	// agent-scope overlay. The default lives in
-	// setup.agentShareModelConfig — read it via the same helper here
-	// (inlined to avoid a package cycle).
+	// shareModelConfig（代理记录）控制此行为：默认为 true —
+	// 聊天者开箱即用地继承所有者的密钥 + 模型选择，匹配"所有者已经为代理付费，
+	// 他们是分享它的人"的心智模型。显式设置为 false 则退出，
+	// 在这种情况下，所有者回退 + 代理作用域覆盖被完全跳过，
+	// 聊天者只看到自己的用户作用域 + 系统。所有者自己的 loadUserSpace 路径
+	//（sp.UserID == rec.UserID）不受影响，仍然获得完整的代理作用域覆盖。
+	// 默认值在 setup.agentShareModelConfig 中 — 通过这里的同一个辅助函数读取
+	//（内联以避免包循环）。
 	//
-	// Exception: when the viewer (chatter) has *explicitly* set their
-	// own user-scope agents.defaults.model row, that choice wins over
-	// both the owner's user-scope and the agent-scope override —
-	// "MY tokens, MY model". We detect this by reading the chatter's
-	// raw row directly (not the merged cfg, which can't distinguish
-	// "explicit user-scope = system default" from "no user-scope row")
-	// and re-pin the field after the overlay chain. Only Model is
-	// pinned today — fields like MaxTokens / Temp / Thinking still
-	// fall through the owner/agent overlays since the chatter doesn't
-	// have UI to set them per-agent.
+	// 异常：当查看者（聊天者）*显式*设置了自己的用户作用域 agents.defaults.model 行时，
+	// 该选择胜过所有者的用户作用域和代理作用域覆盖 —
+	// "我的令牌，我的模型"。我们通过直接读取聊天者的原始行来检测这一点
+	//（而不是合并的 cfg，它无法区分"显式用户作用域 = 系统默认"和"没有用户作用域行"）
+	// 并在覆盖链之后重新固定该字段。目前只有 Model 被固定 —
+	// MaxTokens / Temp / Thinking 等字段仍然通过所有者/代理覆盖，
+	// 因为聊天者没有 UI 来为每个代理设置它们。
 	chatterPin := readUserScopeAgentDefaults(ctx, st, sp.UserID)
 	isForeign := rec.UserID != "" && rec.UserID != sp.UserID
-	// Default true when the key is absent — keep aligned with
-	// setup.agentShareModelConfig.
+	// 当键缺失时默认为 true — 与 setup.agentShareModelConfig 保持一致。
 	shareCfg := true
 	if v, ok := rec.Config["shareModelConfig"].(bool); ok {
 		shareCfg = v
@@ -438,12 +404,10 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 				rc.PolicyPreset = ovr.PolicyPreset
 			}
 		}
-		// Pull only the owner's user-scope provider rows (not the
-		// owner's full merged view) so we don't re-apply system rows
-		// over the viewer's already-merged set. Owner's user-scope
-		// keys then sit between viewer's user-scope and the
-		// agent-scope overlay below — same precedence the owner's
-		// own UserSpace would have built.
+		// 仅拉取所有者的用户作用域提供者行（不是所有者的完整合并视图），
+		// 这样我们就不会在查看者已合并的集合上重新应用系统行。
+		// 所有者的用户作用域密钥然后位于查看者的用户作用域和下面的代理作用域覆盖之间 —
+		// 与所有者自己的 UserSpace 会构建的优先级相同。
 		if ownerProvs, err := scope.UserScopeProviders(ctx, st, rec.UserID); err == nil {
 			for k, v := range ownerProvs {
 				if rc.Providers == nil {
@@ -479,12 +443,10 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 			if ovr.PolicyPreset != "" {
 				rc.PolicyPreset = ovr.PolicyPreset
 			}
-			// Keep this overlay aligned with the owner-path equivalent in
-			// loadUserSpace — missing fields silently break per-agent
-			// settings for chatters who lazy-attach the agent via a
-			// channel binding (e.g. wechat multi-bubble hint never fires
-			// because rc.SplitReplies stays nil; chatbot persona renders
-			// in agent-prompt mode because rc.PromptMode stays "").
+			// 保持此覆盖与 loadUserSpace 中的所有者路径等效项对齐 —
+			// 缺失的字段会静默破坏通过通道绑定延迟附加代理的聊天者的每个代理设置
+			//（例如微信多气泡提示从不触发，因为 rc.SplitReplies 保持 nil；
+			// 聊天机器人角色以代理提示模式渲染，因为 rc.PromptMode 保持 ""）。
 			if ovr.PromptMode != "" {
 				rc.PromptMode = ovr.PromptMode
 			}
@@ -501,17 +463,14 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 	if chatterPin.Model != "" {
 		rc.Model = chatterPin.Model
 	}
-	// Overlay agent-scope providers — sp.Config.Providers carries only
-	// system+user rows (assembleConfig in loadUserSpace runs with
-	// agentID=""). Without this overlay, providerForAgent can't see the
-	// agent's own credentials and falls back to the shared provider,
-	// firing the agent's chosen model id at the wrong base URL.
+	// 叠加代理作用域提供者 — sp.Config.Providers 只携带系统+用户行
+	//（loadUserSpace 中的 assembleConfig 使用 agentID="" 运行）。没有此叠加，
+	// providerForAgent 看不到代理自己的凭据并回退到共享提供者，
+	// 在错误的 base URL 上触发代理选择的模型 id。
 	//
-	// Same gate as the agents.defaults overlay above: when a chatter
-	// uses a foreign agent whose owner hasn't opted into sharing,
-	// agent-scope provider rows stay private to the owner. The chatter
-	// runs on whatever their own user-scope providers (plus system)
-	// can offer.
+	// 与上面的 agents.defaults 覆盖相同的门：当聊天者使用所有者未选择共享的外部代理时，
+	// 代理作用域提供者行保持对所有者私有。聊天者在他们自己的用户作用域提供者
+	//（加上系统）能提供的任何东西上运行。
 	if applyOwnerOverlays {
 		if agentProvs, err := scope.AgentScopeProviders(ctx, st, rc.ID); err == nil {
 			for k, v := range agentProvs {
@@ -528,27 +487,19 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 			slog.Warn("skill hydrate failed", "agent", rc.ID, "error", err)
 		}
 	}
-	// Build a one-shot skills cfg that injects this agent's own
-	// agent-scope skill env (e.g. image-tool's REPLICATE_API_TOKEN)
-	// into the SkillsLoader closure the new agent will use.
+	// 构建一次性技能配置，将此代理自己的代理作用域技能环境（例如 image-tool 的 REPLICATE_API_TOKEN）
+	// 注入到新代理将使用的 SkillsLoader 闭包中。
 	//
-	// Why we can't just patch sp.Config: the manager's globalSkillsCfg
-	// is captured by-value at manager-construction time and again by
-	// the per-agent SkillsLoader on agent build, so patching sp.Config
-	// after the fact never reaches the closure. AddAgentWithSkillsCfg
-	// swaps the override only for the duration of this build.
+	// 为什么我们不能直接修补 sp.Config：管理器的 globalSkillsCfg 在管理器构建时按值捕获，
+	// 并在代理构建时由每个代理的 SkillsLoader 再次捕获，因此在事后修补 sp.Config 永远不会到达闭包。
+	// AddAgentWithSkillsCfg 仅在此构建期间交换覆盖。
 	//
-	// Symptom this fixes: web chat under the agent's owner works (the
-	// owner's user-space cfg already carries the agent's skill env),
-	// but API calls under an apikey/app_user that lands here silently
-	// fall through to whatever keyless path the skill provides (e.g.
-	// image-tool → pollinations, or "no provider configured" when
-	// edit mode has no free fallback).
+	// 此修复的症状：代理所有者下的 web 聊天正常工作（所有者的用户空间 cfg 已经携带代理的技能环境），
+	// 但在 apikey/app_user 下到达此处的 API 调用静默地落到技能提供的任何无密钥路径
+	//（例如 image-tool → pollinations，或当编辑模式没有免费回退时的 "no provider configured"）。
 	//
-	// Scope is deliberately tight: only the agent-scope row keyed by
-	// rc.ID. We do NOT pull the owner's user-scope global skill env —
-	// that would leak the owner's API keys into another user's session
-	// for skills they may not even be invoking.
+	// 作用域有意收紧：仅以 rc.ID 为键的代理作用域行。我们不拉取所有者的用户作用域全局技能环境 —
+	// 那会将所有者的 API 密钥泄漏到另一个用户的会话中，用于他们可能甚至没有调用的技能。
 	skillsCfg := sp.Config.Skills
 	if cfgRec, err := st.GetConfigByName(ctx, store.KindSetting, "", rc.ID, "skills.entries"); err == nil && cfgRec != nil && len(cfgRec.Data) > 0 {
 		blob, _ := json.Marshal(cfgRec.Data)
@@ -557,8 +508,7 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 			if skillsCfg.AgentEntries == nil {
 				skillsCfg.AgentEntries = map[string]map[string]config.SkillEntryCfg{}
 			} else {
-				// Copy-on-write: don't mutate the shared map the rest
-				// of UserSpace.Config still points at.
+				// 写时复制：不要改变 UserSpace.Config 其余部分仍然指向的共享映射。
 				cp := make(map[string]map[string]config.SkillEntryCfg, len(skillsCfg.AgentEntries)+1)
 				for k, v := range skillsCfg.AgentEntries {
 					cp[k] = v
@@ -581,11 +531,9 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 			ag.ToolRegistry().SetSandboxRoot(rc.Workspace)
 		}
 	}
-	// Wire hook plugins onto the freshly-attached agent. Mirrors what
-	// loadUserSpace does for owner agents — without this, hook
-	// plugins would only fire for the agent's owner and never for
-	// chatters who reach the agent through a foreign-attach (channel
-	// binding, public link, super_admin browse).
+	// 将钩子插件挂接到新附加的代理上。镜像 loadUserSpace 对所有者代理所做的操作 —
+	// 没有这个，钩子插件只会为代理的所有者触发，永远不会为通过外部附加
+	//（通道绑定、公开链接、super_admin 浏览）到达代理的聊天者触发。
 	if sp.PluginMgr != nil {
 		if ag := sp.Agents.AgentByID(rc.ID); ag != nil {
 			registerHookPluginsForAgent(ctx, sp.PluginMgr, st, ag)
@@ -596,17 +544,14 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 	return nil
 }
 
-// loadUserSpace builds a UserSpace by:
-//  1. snapshotting the system config (system_settings + system providers/
-//     channels)
-//  2. layering the user's own providers + channels rows on top
-//  3. listing the user's agent rows from the DB
-//  4. building an agent.Manager that owns those agents
+// loadUserSpace 通过以下方式构建 UserSpace：
+//  1. 快照系统配置（system_settings + 系统提供者/通道）
+//  2. 在上面叠加用户自己的提供者 + 通道行
+//  3. 从数据库列出用户的代理行
+//  4. 构建拥有这些代理的 agent.Manager
 //
-// `systemSandboxPool` is the gateway-wide pool — borrowed, not owned,
-// by the resulting UserSpace. Pass nil when sandbox is disabled at
-// system scope; agents will run with path-only file roots in that
-// case.
+// `systemSandboxPool` 是网关范围的池 — 由结果 UserSpace 借用，不拥有。
+// 当系统作用域禁用沙箱时传递 nil；在这种情况下代理将以仅路径文件根运行。
 func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, pluginMgr *plugin.Manager) (*UserSpace, error) {
 	if userID == "" {
 		return nil, fmt.Errorf("loadUserSpace: userID required")
@@ -623,46 +568,36 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 
 	prov := newProviderFromConfig(cfg)
 
-	// Pull the user's agents from the DB. ResolveAgents merges in the
-	// system+user defaults; per-agent overrides come from the configs
-	// table via the agent-scope `agents.defaults` row that the create /
-	// update agent handlers write to.
+	// 从数据库拉取用户的代理。ResolveAgents 合并系统+用户默认值；
+	// 每个代理覆盖来自 configs 表，通过创建/更新代理处理程序写入的代理作用域 `agents.defaults` 行。
 	agentRecords, err := st.ListAgents(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list agents: %w", err)
 	}
 
-	// Public agents owned by other users are NOT loaded eagerly here —
-	// they get lazy-attached via UserSpace.EnsureAgent the first time
-	// the chatter hits the public-agent chat URL (see resolveAgent).
-	// Sessions / memory / agent_files stay keyed by the chatter's
-	// user_id so each visitor gets a private history while the
-	// agent identity (SOUL/IDENTITY/skills) is shared from the
-	// owner's row.
+	// 其他用户拥有的公共代理不在此处急切加载 —
+	// 它们在聊天者首次访问公共代理聊天 URL 时通过 UserSpace.EnsureAgent 延迟附加（见 resolveAgent）。
+	// 会话/内存/agent_files 保持以聊天者的 user_id 为键，这样每个访问者获得私有历史记录，
+	// 而代理身份（SOUL/IDENTITY/skills）从所有者的行共享。
 
 	entries := make([]config.AgentEntry, 0, len(agentRecords))
 	for _, ar := range agentRecords {
 		entries = append(entries, config.AgentEntry{ID: ar.ID, UserID: ar.UserID, Name: ar.Name})
 	}
 
-	// Bindings used to live in their own kind=setting/name=bindings
-	// row. After the configs schema refactor, channel rows carry
-	// agent_id directly, so we synthesize Bindings from the channel
-	// table itself — every row whose agent_id == one of this user's
-	// owned agents contributes one Binding per Account in its data.
+	// Bindings 过去存在于自己的 kind=setting/name=bindings 行中。
+	// 在 configs 模式重构后，通道行直接携带 agent_id，
+	// 因此我们从通道表本身合成 Bindings — 每个 agent_id 等于此用户拥有的代理之一的行
+	// 为其数据中的每个 Account 贡献一个 Binding。
 	cfg.Bindings = append(cfg.Bindings, bindingsFromChannelRows(ctx, st, userID, agentRecords)...)
 	resolved := config.ResolveAgents(cfg, entries)
 	for i := range resolved {
-		// Layer the agent-scope agents.defaults on top of the
-		// system→user merge that ResolveAgents already applied. We
-		// read the agent-scope row directly (not via SettingInto
-		// system+user, which would re-merge those layers and clobber
-		// the user-scoped Model already in cfg.Agents.Defaults).
+		// 在 ResolveAgents 已应用的系统→用户合并之上叠加代理作用域 agents.defaults。
+		// 我们直接读取代理作用域行（不通过 SettingInto 系统+用户，
+		// 那样会重新合并这些层并破坏已在 cfg.Agents.Defaults 中的用户作用域 Model）。
 		//
-		// Index into resolved (not range-by-value) so the writes
-		// land on the slice element the manager later reads —
-		// otherwise the agent-scope Model never reaches NewManager
-		// and chat silently uses the system/user default.
+		// 索引到 resolved（不是按值范围），以便写入落到管理器稍后读取的切片元素上 —
+		// 否则代理作用域 Model 永远不会到达 NewManager，聊天静默使用系统/用户默认值。
 		rc := &resolved[i]
 		var agentOverride config.AgentDefaults
 		if rec, err := st.GetConfigByName(ctx, store.KindSetting, "", rc.ID, "agents.defaults"); err == nil && rec != nil {
@@ -692,32 +627,23 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 			if agentOverride.PromptMode != "" {
 				rc.PromptMode = agentOverride.PromptMode
 			}
-			// Per-agent WeChat split-replies — pointer semantics so
-			// "absent" (no row, or row without the key) is distinct
-			// from "explicitly false". Non-nil from the row means the
-			// operator made a deliberate choice; nil falls through to
-			// system WeChatCfg.SplitReplies later in NewAgentWithFullCfg.
+			// 每个代理微信分割回复 — 指针语义，以便"缺失"（无行或行没有键）与"显式 false"不同。
+			// 行中的非 nil 意味着操作员做出了深思熟虑的选择；nil 稍后在 NewAgentWithFullCfg 中落到系统 WeChatCfg.SplitReplies。
 			if agentOverride.SplitReplies != nil {
 				v := *agentOverride.SplitReplies
 				rc.SplitReplies = &v
 			}
-			// Per-agent autoPersist — same pointer semantics. Non-nil
-			// here overrides the system/user memory.autoPersist.enabled
-			// for this agent specifically. Used most by chatbot-mode
-			// personas where the LLM can't write_file directly so the
-			// background distill pass is the only persistence path.
+			// 每个代理的 autoPersist — 相同的指针语义。此处的非 nil 会专门为此代理覆盖系统/用户 memory.autoPersist.enabled。
+			// 最常用于聊天机器人模式的角色，其中 LLM 不能直接 write_file，因此后台蒸馏传递是唯一的持久化路径。
 			if agentOverride.AutoPersist != nil {
 				v := *agentOverride.AutoPersist
 				rc.AutoPersist = &v
 			}
 		}
-		// Same story for providers: assembleConfig was called with
-		// agentID="" so cfg.Providers (now in rc.Providers) only
-		// carries system+user rows. Without this, a per-agent
-		// provider key (e.g. an agent-scoped OpenRouter credential)
-		// is invisible to providerForAgent, which falls back to the
-		// shared provider — chat fires the agent's chosen model id
-		// at the wrong base URL and gets a 400 from the wrong vendor.
+		// 提供者同理：assembleConfig 使用 agentID="" 调用，因此 cfg.Providers（现在在 rc.Providers 中）
+		// 只携带系统+用户行。没有这个，每个代理的提供者密钥（例如代理作用域的 OpenRouter 凭证）
+		// 对 providerForAgent 不可见，它回退到共享提供者 —
+		// 聊天在错误的 base URL 上触发代理选择的模型 id，并从错误的供应商得到 400。
 		if agentProvs, err := scope.AgentScopeProviders(ctx, st, rc.ID); err == nil {
 			for k, v := range agentProvs {
 				if rc.Providers == nil {
@@ -768,10 +694,9 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 
 	pool := attachSandboxToAgents(systemSandboxPool, userID, resolved, agentMgr)
 
-	// Wire hook plugins onto each agent's HookRegistry. Per-agent
-	// enable comes from the configs row at (scope=agent, agent_id=X,
-	// name=plugins.enabled) — falling back to the plugin manifest's
-	// boot-time enabled state when there's no per-agent override.
+	// 将钩子插件挂接到每个代理的 HookRegistry。每个代理的启用来自 configs 行
+	// (scope=agent, agent_id=X, name=plugins.enabled) —
+	// 当没有每个代理的覆盖时，回退到插件清单的启动时启用状态。
 	if pluginMgr != nil {
 		for _, ag := range agentMgr.All() {
 			registerHookPluginsForAgent(ctx, pluginMgr, st, ag)
@@ -790,36 +715,27 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 	}, nil
 }
 
-// registerHookPluginsForAgent walks every running hook-type plugin
-// and attaches it to ag.HookRegistry IF this agent has explicitly
-// opted in via the per-agent plugins.enabled row.
+// registerHookPluginsForAgent 遍历每个正在运行的钩子类型插件，
+// 并仅在此代理通过每个代理的 plugins.enabled 行显式选择加入时将其附加到 ag.HookRegistry。
 //
-// Default is OPT-IN: a plugin being enabled system-wide only means
-// its process runs and is available to attach. Each agent must
-// individually set `plugins.enabled[<id>] = true` (via the dashboard
-// Plugins card or directly in the configs table) for the plugin's
-// hooks to fire on its turns. System-wide enable without per-agent
-// opt-in = plugin idle for that agent.
+// 默认是选择加入：插件在系统范围内启用仅意味着其进程运行并可附加。
+// 每个代理必须单独设置 `plugins.enabled[<id>] = true`（通过仪表盘插件卡片或直接在 configs 表中）
+// 才能使插件的钩子在其轮次上触发。系统范围启用而没有每个代理选择加入 = 该代理的插件空闲。
 //
-// Rationale: hook plugins can change agent behavior in surprising
-// ways (extra messages, modified prompts, recorded conversation
-// data). Default-deny avoids accidentally affecting agents the
-// operator didn't intend.
+// 理由：钩子插件可能以令人惊讶的方式改变代理行为（额外消息、修改提示、记录的对话数据）。
+// 默认拒绝避免意外影响操作员未打算影响的代理。
 //
-// Idempotent at the manager level (Process is already running), but
-// the HookRegistry side accumulates — call sites must not double-
-// register for the same agent. Today the only call sites are
-// loadUserSpace (once per UserSpace boot) and EnsureAgent (once per
-// foreign attach), neither of which fires twice for the same agent.
+// 在管理器级别是幂等的（进程已经在运行），但 HookRegistry 侧会累积 —
+// 调用站点不能为同一代理双重注册。目前唯一的调用站点是 loadUserSpace（每个 UserSpace 启动一次）
+// 和 EnsureAgent（每个外部附加一次），两者都不会为同一代理触发两次。
 func registerHookPluginsForAgent(ctx context.Context, pluginMgr *plugin.Manager, st store.Store, ag *agent.Agent) {
 	overrides := readAgentScopePluginsEnabled(ctx, st, ag.Name())
 	if len(overrides) == 0 {
-		return // fast path: no opt-ins for this agent
+		return // 快速路径：此代理没有选择加入
 	}
 	for _, inst := range pluginMgr.HookPlugins() {
 		id := inst.Manifest.ID
-		// Opt-in: only attach if this agent explicitly set true.
-		// Missing key or explicit false → skip.
+		// 选择加入：仅当此代理显式设置为 true 时才附加。缺少键或显式 false → 跳过。
 		if !overrides[id] {
 			continue
 		}
@@ -835,11 +751,9 @@ func registerHookPluginsForAgent(ctx context.Context, pluginMgr *plugin.Manager,
 	}
 }
 
-// readAgentScopePluginsEnabled reads the per-agent plugin enable
-// overlay from the configs table: scope=agent, name=plugins.enabled,
-// data = {"<pluginID>": true|false, ...}. Missing row / missing key
-// means "no override; use system default". Returns nil on lookup
-// error (callers treat nil as "no overrides").
+// readAgentScopePluginsEnabled 从 configs 表读取每个代理的插件启用覆盖：
+// scope=agent, name=plugins.enabled, data = {"<pluginID>": true|false, ...}。
+// 缺少行/缺少键意味着"无覆盖；使用系统默认"。查找错误时返回 nil（调用者将 nil 视为"无覆盖"）。
 func readAgentScopePluginsEnabled(ctx context.Context, st store.Store, agentID string) map[string]bool {
 	if st == nil || agentID == "" {
 		return nil
@@ -857,10 +771,8 @@ func readAgentScopePluginsEnabled(ctx context.Context, st store.Store, agentID s
 	return out
 }
 
-// newProviderFromConfig picks an LLM provider for the resolved default
-// model. Returns nil (with a clear log line) when nothing matches; the
-// agent loop surfaces the missing-provider state as an error on the
-// first turn rather than silently making bogus calls.
+// newProviderFromConfig 为已解析的默认模型选择一个 LLM 提供者。当没有匹配时返回 nil（带清晰的日志行）；
+// 代理循环在第一个轮次将缺失提供者状态作为错误暴露，而不是静默地发出虚假调用。
 func newProviderFromConfig(cfg *config.Config) provider.Provider {
 	defaultModel := cfg.Agents.Defaults.Model
 	parts := strings.SplitN(defaultModel, "/", 2)
@@ -897,12 +809,10 @@ func providerKeyList(m map[string]config.ProviderConfig) []string {
 	return keys
 }
 
-// userSpaceRegistry is a thread-safe lazy-loaded map of user spaces. There
-// are no preloaded / pinned spaces; every user is loaded on first auth and
-// evicted after idleTTL of inactivity.
+// userSpaceRegistry 是用户空间的线程安全延迟加载映射。没有预加载/固定的空间；
+// 每个用户在首次认证时加载，并在 idleTTL 不活动后驱逐。
 //
-// `systemSandboxPool` is held as a borrowed reference and handed to
-// each UserSpace at load time. The gateway owns its lifecycle.
+// `systemSandboxPool` 作为借用的引用持有，并在加载时交给每个 UserSpace。网关拥有其生命周期。
 type userSpaceRegistry struct {
 	mu                sync.RWMutex
 	spaces            map[string]*userSpaceEntry
@@ -911,10 +821,9 @@ type userSpaceRegistry struct {
 	workspace         workspace.Store
 	meter             usage.Meter
 	systemSandboxPool sandbox.ExecutorPool
-	// pluginMgr is the shared (process-wide) plugin manager. Nil
-	// when systemPlugins is disabled. Used by loadUserSpace and
-	// EnsureAgent to register hook-type plugins onto each agent's
-	// HookRegistry, gated by per-agent plugins.enabled config.
+	// pluginMgr 是共享的（进程范围）插件管理器。当 systemPlugins 禁用时为 nil。
+	// 由 loadUserSpace 和 EnsureAgent 使用，用于将钩子类型插件注册到每个代理的 HookRegistry，
+	// 由每个代理的 plugins.enabled 配置控制。
 	pluginMgr *plugin.Manager
 	idleTTL   time.Duration
 }
@@ -968,9 +877,8 @@ func (r *userSpaceRegistry) getOrLoad(ctx context.Context, userID string) (*User
 	return sp, nil
 }
 
-// invalidate drops a user's space so the next access reloads it. Used after
-// admin mutations (creating an agent, rotating a provider, etc.) so the
-// in-memory copy doesn't lag behind the DB.
+// invalidate 丢弃用户的空间，以便下次访问重新加载它。在管理员变更
+//（创建代理、轮换提供者等）后使用，以便内存中的副本不落后于数据库。
 func (r *userSpaceRegistry) invalidate(userID string) {
 	r.mu.Lock()
 	delete(r.spaces, userID)
@@ -1028,28 +936,20 @@ func (r *userSpaceRegistry) startEvictor(ctx context.Context) {
 	}
 }
 
-// bindingsFromChannelRows synthesizes the (channel, accountID) →
-// agentID routing table from channel rows themselves. It replaces the
-// old kind=setting/name=bindings indirection: every channel row whose
-// agent_id points at an agent this user can route contributes a Binding
-// per Account.
+// bindingsFromChannelRows 从通道行本身合成 (channel, accountID) → agentID 路由表。
+// 它替代了旧的 kind=setting/name=bindings 间接引用：每个 agent_id 指向此用户可以路由的代理的通道行，
+// 为其每个 Account 贡献一个 Binding。
 //
-// Pulls rows from three ownership corners this user can route:
-//   - (user_id=”, agent_id=Y): the agent's "official" rows for any
-//     agent Y the user owns (legacy / pre-refactor data)
-//   - (user_id=userID, agent_id=Y) where user owns Y: this user's
-//     bindings on their own agent (the normal post-refactor pattern)
-//   - (user_id=userID, agent_id=Z) where user does NOT own Z: this
-//     user authored a channel overlay on a foreign agent (e.g. a
-//     chatter binding their WeChat bot to a public agent). Without
-//     this reverse-lookup, resolveChannelOwner correctly routes
-//     inbound DMs to the binder's UserSpace but matchAgent finds an
-//     empty Bindings list because the agent isn't in ListAgents(userID).
-//     The matchAgent path then lazy-attaches the foreign agent via
-//     ensureForeignAgent on first match.
+// 从此用户可以路由的三个所有权角落拉取行：
+//   - (user_id="", agent_id=Y)：用户拥有的任何代理 Y 的"官方"行（遗留/重构前数据）
+//   - (user_id=userID, agent_id=Y) 其中用户拥有 Y：此用户在其自己代理上的绑定（正常重构后模式）
+//   - (user_id=userID, agent_id=Z) 其中用户不拥有 Z：此用户创作的外部代理上的通道覆盖
+//     （例如聊天者将其微信 bot 绑定到公共代理）。没有这个反向查找，
+//     resolveChannelOwner 正确地将入站 DM 路由到绑定者的 UserSpace，
+//     但 matchAgent 发现空的 Bindings 列表，因为代理不在 ListAgents(userID) 中。
+//     然后 matchAgent 路径在首次匹配时通过 ensureForeignAgent 延迟附加外部代理。
 //
-// Granted-agent bindings without an explicit channel-row overlay stay
-// outside — they live in the agent owner's space, not every grantee's.
+// 没有显式通道行覆盖的已授权代理绑定保持在外部 — 它们存在于代理所有者的空间中，而不是每个受让人的空间。
 func bindingsFromChannelRows(ctx context.Context, st store.Store, userID string, agents []store.AgentRecord) []config.Binding {
 	if st == nil {
 		return nil
@@ -1069,8 +969,7 @@ func bindingsFromChannelRows(ctx context.Context, st store.Store, userID string,
 			}
 		}
 	}
-	// Reverse-lookup: any channel row this user wrote against an agent
-	// they don't own. matchAgent will lazy-attach the agent on first hit.
+	// 反向查找：此用户针对其不拥有的代理编写的任何通道行。matchAgent 将在首次命中时延迟附加代理。
 	if userID != "" {
 		foreignRows, err := st.ListConfigsByUser(ctx, store.KindChannel, userID)
 		if err == nil {
@@ -1096,9 +995,8 @@ func expandChannelBindings(rows []store.ConfigRecord, agentID string) []config.B
 		if blob, err := json.Marshal(r.Data); err == nil {
 			_ = json.Unmarshal(blob, &cc)
 		}
-		// One Binding per account on the row; an empty Accounts map
-		// means a single bot whose accountID is implicit (older
-		// adapters that didn't index by username yet).
+		// 行上的每个账号一个 Binding；空的 Accounts 映射意味着单个 bot，
+		// 其 accountID 是隐式的（尚未按用户名索引的旧适配器）。
 		if len(cc.Accounts) == 0 {
 			out = append(out, config.Binding{
 				AgentID: agentID,

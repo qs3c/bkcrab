@@ -22,10 +22,10 @@ type execArgs struct {
 	RunInBackground bool   `json:"run_in_background,omitempty"` // launch detached, return bash_id for bash_output / kill_shell
 }
 
-// MetaSandboxPrefix marks an exec result as having run inside a sandbox.
-// Placed on the first line so the agent loop can extract it into the
-// tool_result event metadata and strip it from the content the model sees.
-// Uses the ASCII Unit Separator so it never collides with shell output.
+// MetaSandboxPrefix 将执行结果标记为已在沙箱内运行。
+// 放置在第一行，以便代理循环可以将其提取到
+// tool_result 事件元数据并将其从模型看到的内容中剥离。
+// 使用 ASCII 单位分隔符，因此它永远不会与 shell 输出冲突。
 const MetaSandboxPrefix = "\x1fFC_META:sandbox\x1f\n"
 
 var dangerousCommands = []string{
@@ -36,7 +36,7 @@ var dangerousCommands = []string{
 	"> /dev/sda",
 }
 
-// SandboxConfig holds sandbox settings passed to the exec tool registration.
+// SandboxConfig 保存传递给 exec 工具注册的沙箱设置。
 type SandboxConfig struct {
 	Enabled   bool
 	Image     string
@@ -46,7 +46,7 @@ type SandboxConfig struct {
 	Policy    *sandbox.Policy
 }
 
-// SkillEnvProvider returns environment variables for a skill by name.
+// SkillEnvProvider 按名称返回技能的环境变量。
 type SkillEnvProvider func(skillName string) map[string]string
 
 func registerExec(r *Registry) {
@@ -57,11 +57,11 @@ func registerExecWithSandbox(r *Registry, sbCfg *SandboxConfig) {
 	registerExecFull(r, sbCfg, nil, nil)
 }
 
-// RegisterExecWithSkillEnv registers the exec tool with skill environment injection support.
-// Caches envProvider + skillDirs on the Registry so a later SetExecutor
-// (per-session sandbox bind) can re-apply env injection when it
-// re-registers the exec closure — otherwise skills like image-tool run
-// in the container without their FAL_KEY / REPLICATE_API_TOKEN.
+// RegisterExecWithSkillEnv 注册具有技能环境注入支持的 exec 工具。
+// 在注册表上缓存 envProvider + SkillDirs，以便稍后使用 SetExecutor
+// （每会话沙箱绑定）可以重新应用 env 注入
+// 重新注册 exec 闭包——否则像 image-tool run 这样的技能
+// 在没有 FAL_KEY / REPLICATE_API_TOKEN 的容器中。
 func RegisterExecWithSkillEnv(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvProvider, skillDirs []string) {
 	r.envProvider = envProvider
 	r.skillDirs = skillDirs
@@ -101,12 +101,12 @@ func makeExecTool(sbCfg *SandboxConfig) ToolFunc {
 	return makeExecToolFull(nil, sbCfg, nil, nil)
 }
 
-// makeExecToolFull captures the registry pointer so it can consult the
-// runtime `sandboxRequired` flag at call time — that's the contract
-// SetSandboxRequired publishes when sandbox is configured at any layer
-// up the stack, even if it was off at agent construction. Without this,
-// a `pool.Get()` failure during bindSession would silently leak to the
-// host shell.
+// makeExecToolFull 捕获注册表指针，以便它可以查阅
+// 调用时的运行时 `sandboxRequired` 标志 - 这就是合同
+// SetSandboxRequired 在任意层配置沙箱时发布
+// 向上堆栈，即使它在代理构建时关闭。没有这个，
+// 在bindSession期间`pool.Get()`失败会悄悄地泄漏到
+// 主机外壳。
 func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvProvider, skillDirs []string) ToolFunc {
 	return func(ctx context.Context, rawArgs json.RawMessage) (string, error) {
 		var args execArgs
@@ -118,7 +118,7 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 			return "", fmt.Errorf("command is required")
 		}
 
-		// Check for dangerous commands
+		// 检查危险命令
 		lower := strings.ToLower(args.Command)
 		for _, dc := range dangerousCommands {
 			if strings.Contains(lower, dc) {
@@ -134,26 +134,26 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 		execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
 
-		// If stdin was supplied, prepend a heredoc-style pipe so the
-		// existing single-string exec path delivers it. Quoting `EOF`
-		// disables variable expansion inside the heredoc body, so JSON
-		// payloads don't get accidentally rewritten.
+		// 如果提供了 stdin，则在前面添加一个定界符样式的管道，以便
+		// 现有的单字符串执行路径提供它。引用“EOF”
+		// 禁用heredoc主体内的变量扩展，因此JSON
+		// 有效负载不会被意外重写。
 		command := args.Command
 		if args.Stdin != "" {
 			command = fmt.Sprintf("(cat <<'__FCSTDIN__'\n%s\n__FCSTDIN__\n) | %s", args.Stdin, args.Command)
 		}
 
-		// Use sandbox if enabled or forced. The registry's
-		// sandboxRequired flag covers the case where the runtime decided
-		// sandbox is mandatory after construction (sibling agent wanted
-		// it, or admin flipped settings.sandbox.enabled mid-process).
+		// 如果启用或强制使用沙箱。注册表的
+		// sandboxRequired 标志涵盖了运行时决定的情况
+		// 施工后必须使用沙箱（需要兄弟代理
+		// 它，或管理员在流程中翻转了settings.sandbox.enabled）。
 		useSandbox := args.Sandbox || (sbCfg != nil && sbCfg.Enabled) || (r != nil && r.sandboxRequired)
 
-		// Background mode is host-only in v1. Sandbox-mode background
-		// would need StartBackground / Poll / Kill on sandbox.Executor
-		// (or per-backend tmux-inside-container plumbing) — both are
-		// follow-ups. Until then, point the model at tmux as a
-		// workaround so it has a path forward inside sandboxes.
+		// 在 v1 中，后台模式仅适用于主机。沙盒模式背景
+		// 在 sandbox.Executor 上需要 StartBackground / Poll / Kill
+		// （或每个后端 tmux-inside-container 管道）——两者都是
+		// 后续行动。在那之前，将模型指向 tmux 作为
+		// 解决方法，使其在沙箱内有一条前进的路径。
 		if args.RunInBackground {
 			if useSandbox {
 				return "", fmt.Errorf("run_in_background is not yet supported in sandbox mode — start the long-running command via tmux inside the sandbox instead, e.g. exec({command: \"tmux new-session -d -s job '<your command>'\"}) then exec({command: \"tmux capture-pane -t job -p\"}) to read output and exec({command: \"tmux kill-session -t job\"}) to stop")
@@ -161,9 +161,9 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 			if r == nil || r.shellMgr == nil {
 				return "", fmt.Errorf("run_in_background unavailable: shell manager not initialised")
 			}
-			// Always pass an explicit (scrubbed) env so the child
-			// never inherits raw os.Environ() — that's the leak path
-			// that put OSS AccessKey + DB DSN in chat replies.
+			// 始终传递一个显式的（经过清理的）环境，以便子进程
+			// 永远不会继承原始 os.Environ() — 这是泄漏路径
+			// 将 OSS AccessKey + DB DSN 放入聊天回复中。
 			var skillEnv map[string]string
 			if envProvider != nil && skillDirs != nil {
 				skillEnv = resolveSkillEnv(args.Command, envProvider, skillDirs)
@@ -181,23 +181,23 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 			out, err := sb.Exec(execCtx, command, "/workspace")
 			return MetaSandboxPrefix + out, err
 		}
-		// Sandbox was requested but no executor is wired — refuse rather
-		// than running on the host shell. SetExecutor swaps this closure
-		// for the sandboxed variant on successful session bind, so we
-		// only land here when the executor pool failed (docker daemon
-		// down, image pull failed, container start error). Returning a
-		// clear error gives the model a chance to surface it instead of
-		// the user seeing host-shell `command not found` mysteries.
+		// 已请求沙箱，但没有连接执行器 - 拒绝
+		// 比在主机外壳上运行。 SetExecutor 交换了这个闭包
+		// 对于成功会话绑定的沙盒变体，所以我们
+		// 仅当执行程序池失败时才登陆此处（docker daemon
+		// 宕机、镜像拉取失败、容器启动错误）。返回一个
+		// 清除错误使模型有机会将其浮现出来，而不是
+		// 用户看到主机外壳“未找到命令”之谜。
 		if useSandbox {
 			return "", fmt.Errorf("sandbox required but no executor available — check that the sandbox backend (docker / e2b) is reachable and the configured image (%q) can start", sbCfgImage(sbCfg))
 		}
 
 		cmd := exec.CommandContext(execCtx, "sh", "-c", command)
 
-		// Always set cmd.Env explicitly. Default Go behavior is to
-		// inherit the parent's full env, which leaks daemon secrets
-		// (BKCLAW_STORAGE_DSN, BKCLAW_OBJECT_STORE_*, ...) into
-		// every shell the model can run.
+		// 始终显式设置 cmd.Env。默认的 Go 行为是
+		// 继承父级的完整环境，这会泄露守护进程的秘密
+		// (BKCLAW_STORAGE_DSN, BKCLAW_OBJECT_STORE_*, ...) 到
+		// 模型可以运行的每个 shell。
 		var skillEnv map[string]string
 		if envProvider != nil && skillDirs != nil {
 			skillEnv = resolveSkillEnv(args.Command, envProvider, skillDirs)
@@ -215,9 +215,9 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 	}
 }
 
-// sbCfgImage returns the sandbox image name for diagnostic error messages.
-// Returns "<unset>" so the user immediately sees that no image was even
-// configured (vs. configured-but-unreachable).
+// sbCfgImage 返回诊断错误消息的沙箱映像名称。
+// 返回“<unset>”，以便用户立即看到没有图像是均匀的
+// 已配置（与已配置但无法访问）。
 func sbCfgImage(sbCfg *SandboxConfig) string {
 	if sbCfg == nil || sbCfg.Image == "" {
 		return "<unset>"
@@ -225,20 +225,20 @@ func sbCfgImage(sbCfg *SandboxConfig) string {
 	return sbCfg.Image
 }
 
-// resolveSkillEnv checks if the command path references a skill directory
-// and returns the skill's configured env vars.
+// solveSkillEnv 检查命令路径是否引用技能目录
+// 并返回技能的配置环境变量。
 //
-// Two matching paths:
-//  1. host paths from skillDirs (e.g. "/Users/.../agents/<id>/skills") —
-//     used when exec runs on the host shell.
-//  2. sandbox-internal "/skills/<name>" prefix — every skill is mounted
-//     into the docker container at that location regardless of where it
-//     lives on the host, so commands the model writes inside the
-//     sandbox use this form. Without this branch, env injection
-//     silently broke for ALL sandbox calls (the host paths in
-//     skillDirs never appear in /workspace-cd'd commands).
+// 两条匹配路径：
+// 1. SkillDirs 中的主机路径（例如“/Users/.../agents/<id>/skills”） —
+// 当 exec 在主机 shell 上运行时使用。
+// 2. 沙箱内部“/skills/<name>”前缀 — 每个技能都已安装
+// 进入该位置的 docker 容器，无论它在哪里
+// 存在于主机上，因此模型在内部写入命令
+// 沙箱采用这种形式。没有这个分支，env注入
+// 默默地破坏了所有沙箱调用（主机路径
+// SkillDirs 永远不会出现在 /workspace-cd 命令中）。
 func resolveSkillEnv(command string, envProvider SkillEnvProvider, skillDirs []string) map[string]string {
-	// 1. host paths
+	// 1. 主机路径
 	for _, dir := range skillDirs {
 		if strings.Contains(command, dir) {
 			rest := command[strings.Index(command, dir)+len(dir):]
@@ -253,7 +253,7 @@ func resolveSkillEnv(command string, envProvider SkillEnvProvider, skillDirs []s
 			}
 		}
 	}
-	// 2. sandbox /skills/<name>/... — fixed mount layout
+	// 2. sandbox /skills/<name>/... — 固定安装布局
 	if idx := strings.Index(command, "/skills/"); idx >= 0 {
 		rest := command[idx+len("/skills/"):]
 		parts := strings.SplitN(rest, "/", 2)
@@ -266,7 +266,7 @@ func resolveSkillEnv(command string, envProvider SkillEnvProvider, skillDirs []s
 	return nil
 }
 
-// mergeEnv merges base env with additional vars. Additional vars override base.
+// mergeEnv 将基本环境与附加变量合并。附加变量覆盖基础。
 func mergeEnv(base []string, additional map[string]string) []string {
 	env := make([]string, 0, len(base)+len(additional))
 	overridden := make(map[string]bool, len(additional))
@@ -290,30 +290,30 @@ func mergeEnv(base []string, additional map[string]string) []string {
 	return env
 }
 
-// HostExecToolName is the tool name advertised for host-shell exec on
-// self-hosted installs. Exported so callers (loop.go skill-dirs slice,
-// future audit logs, etc.) can refer to it without re-stringing the
-// literal.
+// HostExecToolName 是为主机 shell 执行广告的工具名称
+// 自托管安装。导出的调用者（loop.go Skill-dirs slice，
+// 未来的审核日志等）可以参考它而无需重新串接
+// 文字。
 const HostExecToolName = "host_exec"
 
-// registerHostExec adds an escape-hatch exec tool that bypasses the
-// sandbox executor and runs straight on the operator's host shell.
-// Gated by buildinfo.IsHostExecAllowed() — only registered when the
-// operator has explicitly opted in via BKCLAW_ALLOW_HOST_EXEC=1
-// AND a sandbox executor is present (otherwise `exec` already IS the
-// host shell and host_exec would be a duplicate).
+// registerHostExec 添加了一个 escape-hatch 执行工具，可以绕过
+// 沙箱执行器并直接在操作员的主机外壳上运行。
+// 由 buildinfo.IsHostExecAllowed() 控制 — 仅在以下情况下注册
+// 操作员已通过 BKCLAW_ALLOW_HOST_EXEC=1 明确选择加入
+// 并且存在沙箱执行器（否则“exec”已经是
+// host shell 和 host_exec 将是重复的）。
 //
-// Tool description spells out the boundary loudly so the model picks
-// `exec` (sandbox) by default and only escapes to host_exec for
-// genuine operator-environment work (`bkclaw upgrade`, `~/Downloads`,
-// `launchctl`, system services, anything tied to the user's actual
-// machine). The dangerousCommands shortlist still applies — sandbox vs
-// host doesn't change the "no rm -rf /" rule.
+// 工具描述大声阐明边界，以便模型选择
+// 默认情况下`exec`（沙箱）并且仅转义到host_exec
+// 真正的操作员环境工作（`bkclaw update`、`~/Downloads`、
+// `launchctl`，系统服务，任何与用户实际相关的东西
+// 机器）。危险命令候选名单仍然适用——沙箱 vs
+// 主机不会更改“no rm -rf /”规则。
 //
-// Default-OFF rationale: in any deployment reachable through an
-// external IM channel (WeChat, Discord, Feishu, …), an unsuspecting
-// chatter coaxing the model into host_exec is a privilege-escalation
-// path. Operators who need host shell access opt in explicitly.
+// 默认关闭的基本原理：在任何可通过
+// 外部 IM 渠道（微信、Discord、飞书……），毫无戒心
+// 将模型引入 host_exec 的喋喋不休是一种特权升级
+// 小路。需要主机 shell 访问权限的操作员明确选择加入。
 func registerHostExec(r *Registry, envProvider SkillEnvProvider, skillDirs []string) {
 	r.Register(HostExecToolName,
 		"Execute a shell command on the OPERATOR's host machine, bypassing the sandbox. "+
@@ -366,10 +366,10 @@ func registerHostExec(r *Registry, envProvider SkillEnvProvider, skillDirs []str
 				command = fmt.Sprintf("(cat <<'__FCSTDIN__'\n%s\n__FCSTDIN__\n) | %s", args.Stdin, args.Command)
 			}
 			cmd := exec.CommandContext(execCtx, "sh", "-c", command)
-			// host_exec is the operator's escape hatch — even so, scrub
-			// daemon secrets from the inherited env. The operator
-			// rarely needs BKCLAW_STORAGE_DSN reachable from a host
-			// shell, and never needs the model to be able to read it.
+			// host_exec 是操作员的逃生舱口——即便如此，擦洗
+			// 来自继承的环境的守护进程秘密。操作员
+			// 很少需要从主机访问 BKCLAW_STORAGE_DSN
+			// shell，并且永远不需要模型能够读取它。
 			var skillEnv map[string]string
 			if envProvider != nil && skillDirs != nil {
 				skillEnv = resolveSkillEnv(args.Command, envProvider, skillDirs)
@@ -384,13 +384,13 @@ func registerHostExec(r *Registry, envProvider SkillEnvProvider, skillDirs []str
 		})
 }
 
-// registerSandboxedExec re-registers the exec tool so it delegates to a
-// sandbox.Executor instead of running on the host. Skill env vars
-// (FAL_KEY, REPLICATE_API_TOKEN, etc.) configured via the admin UI are
-// injected into the container by prepending POSIX `export` statements
-// to the command — sandbox.Executor.Exec only accepts a single command
-// string so we can't pass env via process attribute the way the host
-// path does.
+// registerSandboxedExec 重新注册 exec 工具，以便它委托给
+// sandbox.Executor而不是在主机上运行。技能环境变量
+// 通过管理 UI 配置的（FAL_KEY、REPLICATE_API_TOKEN 等）是
+// 通过预先添加 POSIX `export` 语句注入到容器中
+// 命令 - sandbox.Executor.Exec 只接受单个命令
+// 字符串，因此我们无法像主机那样通过进程属性传递 env
+// 路径确实如此。
 func registerSandboxedExec(r *Registry, ex sandbox.Executor) {
 	envProvider := r.envProvider
 	skillDirs := r.skillDirs
@@ -431,15 +431,15 @@ func registerSandboxedExec(r *Registry, ex sandbox.Executor) {
 			timeout = args.Timeout
 		}
 		command := args.Command
-		// Stdin via heredoc (mirror the host path) so callers can pipe
-		// JSON args to a skill script.
+		// 通过heredoc（镜像主机路径）的标准输入，以便调用者可以进行管道传输
+		// 技能脚本的 JSON 参数。
 		if args.Stdin != "" {
 			command = fmt.Sprintf("(cat <<'__FCSTDIN__'\n%s\n__FCSTDIN__\n) | %s", args.Stdin, args.Command)
 		}
-		// Inject the configured env for whichever skill the command
-		// references (SK skill dirs may be host paths or the
-		// container-internal /skills/<name> mount — resolveSkillEnv
-		// matches both).
+		// 为命令中的任意技能注入配置的环境
+		// 参考（SK 技能目录可以是主机路径或
+		// 容器内部 /skills/<name> 挂载 —resolveSkillEnv
+		// 两者都匹配）。
 		injected := []string{}
 		if envProvider != nil {
 			skillEnv := resolveSkillEnv(args.Command, envProvider, skillDirs)
@@ -468,16 +468,16 @@ func registerSandboxedExec(r *Registry, ex sandbox.Executor) {
 			"injected", injected,
 			"cmdHead", firstN(args.Command, 80))
 		out, err := ex.Exec(ctx, command, time.Duration(timeout)*time.Second)
-		// Hint, don't auto-fall-back: an auto-retry to host shell would
-		// silently breach the sandbox boundary on any prompt-injected
-		// "make it fail in sandbox" trick AND would re-run a possibly
-		// wrong command in a different filesystem. Surface a hint
-		// instead so the LLM (or its operator-trained ChatBot) makes
-		// an explicit decision. Only attach the hint when host_exec is
-		// actually available — on hosted deployments it's not, and
-		// suggesting a tool that doesn't exist just confuses the
-		// model. We probe by tool name so the check is decoupled from
-		// the deploy-mode flag — same answer, less coupling.
+		// 提示，不要自动回退：自动重试主机 shell 会
+		// 在任何提示注入上悄悄地突破沙箱边界
+		// “使其在沙箱中失败”技巧并会重新运行可能的
+		// 不同文件系统中的命令错误。表面提示
+		// 相反，LLM（或其经过操作员训练的 ChatBot）使得
+		// 明确的决定。仅当 host_exec 为时附加提示
+		// 实际上可用 - 在托管部署上它不可用，并且
+		// 建议一个不存在的工具只会让人们感到困惑
+		// 模型。我们通过工具名称进行探测，以便检查与
+		// 部署模式标志 - 相同的答案，更少的耦合。
 		if err != nil && looksLikeSandboxAbsence(err, out) && buildinfo.IsHostExecAllowed() {
 			err = fmt.Errorf("%w\n[hint: this looks like a sandbox-environment miss (binary or path not present in the container). If the command needs the user's actual host machine — e.g. `bkclaw upgrade`, `~/Downloads`, host CLI tools — retry with the `host_exec` tool instead.]", err)
 		}
@@ -485,12 +485,12 @@ func registerSandboxedExec(r *Registry, ex sandbox.Executor) {
 	})
 }
 
-// looksLikeSandboxAbsence sniffs an exec error / output for the common
-// "tried to run a host-only thing inside the sandbox" signatures so the
-// hint we attach to the error is targeted, not noisy. Conservative —
-// returns false unless we're fairly sure: a real failure (e.g. a script
-// crashed mid-run) shouldn't get a "use host_exec instead" suggestion
-// that would just send the LLM down the wrong path.
+// looksLikeSandboxAbsence 嗅探常见的执行错误/输出
+// “尝试在沙箱内运行仅主机的东西”签名，因此
+// 我们附加到错误的提示是有针对性的，而不是嘈杂的。保守的 -
+// 返回 false 除非我们相当确定：真正的失败（例如脚本
+// 运行中崩溃）不应得到“使用 host_exec 代替”建议
+// 那只会让法学硕士走上错误的道路。
 func looksLikeSandboxAbsence(err error, out string) bool {
 	if err == nil {
 		return false
@@ -517,9 +517,9 @@ func firstN(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// shellQuote single-quote-escapes a value for safe interpolation into
-// a POSIX shell command. Used by sandboxed exec to prepend env vars
-// without exposing the unescaped value to shell metacharacters.
+// shellQuote 单引号将值转义为安全插值
+// POSIX shell 命令。由沙盒执行程序用来前置环境变量
+// 而不将未转义的值暴露给 shell 元字符。
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }

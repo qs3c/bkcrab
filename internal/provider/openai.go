@@ -12,20 +12,19 @@ import (
 	"strings"
 )
 
-// OpenAIProvider implements the Provider interface for OpenAI-compatible APIs.
+// OpenAIProvider 为 OpenAI 兼容 API 实现 Provider 接口。
 type OpenAIProvider struct {
 	apiKey  string
 	apiBase string
 	client  *http.Client
 }
 
-// NewOpenAI creates a new OpenAI-compatible provider. apiBase is taken
-// verbatim — the operator's configured URL is the only source of truth.
-// We intentionally do NOT default to "https://api.openai.com/v1" when
-// apiBase is empty: that silent default produced "why is it calling
-// OpenAI" mysteries when users had only a deepseek provider configured
-// but the resolution path picked up an empty cfg. An empty apiBase now
-// causes calls to fail loudly, which is what we want.
+// NewOpenAI 创建一个新的 OpenAI 兼容提供者。apiBase 按原样使用——
+// 操作员配置的 URL 是唯一的事实来源。
+// 当 apiBase 为空时，我们故意不默认使用 "https://api.openai.com/v1"：
+// 那个静默默认值导致了当用户只配置了 deepseek 提供者但解析路径
+// 选择了空配置时，"为什么会调用 OpenAI" 的谜团。
+// 现在空的 apiBase 会导致调用显式失败，这正是我们想要的。
 func NewOpenAI(apiKey, apiBase string) *OpenAIProvider {
 	return &OpenAIProvider{
 		apiKey:  apiKey,
@@ -34,14 +33,14 @@ func NewOpenAI(apiKey, apiBase string) *OpenAIProvider {
 	}
 }
 
-// apiMessage is the wire format for a message sent to the OpenAI API.
-// It uses json.RawMessage for Content to support both string and array formats.
+// apiMessage 是发送给 OpenAI API 的消息的线路格式。
+// 它对 Content 使用 json.RawMessage 以支持字符串和数组两种格式。
 //
-// ReasoningContent is DeepSeek's thinking-mode field. DeepSeek requires
-// it to be echoed back on subsequent turns or it returns
+// ReasoningContent 是 DeepSeek 的思考模式字段。DeepSeek 要求
+// 在后续轮次中回显此字段，否则会返回
 // `invalid_request_error: The reasoning_content in the thinking mode
-// must be passed back to the API.` Pure OpenAI ignores unknown fields,
-// so omitempty keeps non-DeepSeek providers unaffected.
+// must be passed back to the API.` 纯 OpenAI 忽略未知字段，
+// 所以 omitempty 使非 DeepSeek 提供者不受影响。
 type apiMessage struct {
 	Role             string          `json:"role"`
 	Content          json.RawMessage `json:"content,omitempty"`
@@ -61,19 +60,19 @@ type chatRequest struct {
 	StreamOptions *streamOptions    `json:"stream_options,omitempty"`
 }
 
-// streamOptions.include_usage tells OpenAI-compat APIs to emit one final
-// chunk carrying total token counts before [DONE]. Without this flag the
-// streaming path returns no usage at all, which breaks per-turn goal
-// token accounting and admin metering.
+// streamOptions.include_usage 告诉 OpenAI 兼容 API 在 [DONE] 之前
+// 发出一个携带总令牌计数的最终数据块。没有这个标志，
+// 流式路径完全不返回使用量，这会破坏每轮目标令牌核算
+// 和管理员计量。
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage,omitempty"`
 }
 
-// sseUsage mirrors the `usage` block returned on the final SSE chunk
-// when stream_options.include_usage is set. Some OpenAI-compat APIs
-// (e.g. DeepSeek) expose prompt-cache hit/miss tokens via
-// prompt_tokens_details — we capture them so admin metering can split
-// cache reads out of input_tokens later if needed.
+// sseUsage 镜像了在设置 stream_options.include_usage 时最终 SSE 数据块
+// 返回的 `usage` 块。某些 OpenAI 兼容 API（例如 DeepSeek）通过
+// prompt_tokens_details 暴露提示缓存命中/未命中令牌——
+// 我们捕获它们，以便管理员计量在需要时可以将缓存读取
+// 从 input_tokens 中分离出来。
 type sseUsage struct {
 	PromptTokens        int `json:"prompt_tokens"`
 	CompletionTokens    int `json:"completion_tokens"`
@@ -82,21 +81,19 @@ type sseUsage struct {
 	} `json:"prompt_tokens_details,omitempty"`
 }
 
-// toAPIMessages converts provider Messages to wire-format apiMessages,
-// handling ContentParts for multimodal messages.
+// toAPIMessages 将提供者 Messages 转换为线路格式的 apiMessages，
+// 处理多模态消息的 ContentParts。
 //
-// Defensive sanitization: OpenAI/DeepSeek reject any request where an
-// assistant message with `tool_calls` is not immediately followed by a
-// `tool` message answering each tool_call_id. Dirty sessions can land
-// us in that state — e.g. the agent's tool-loop detector at
-// loop.go:1218 appends the assistant's tool_calls then breaks out
-// without executing the tools, leaving orphans behind. Old sessions
-// from before the streamed-RawAssistant fix can also carry orphan
-// tool_calls inside the persisted RawAssistant. Either case used to
-// surface as `An assistant message with 'tool_calls' must be followed
-// by tool messages`. We strip the offending tool_calls (and any
-// orphan tool replies) at wire-build time so the request goes through
-// — the session keeps its historical record untouched.
+// 防御性清理：OpenAI/DeepSeek 拒绝任何带有 `tool_calls` 的助手消息
+// 没有紧随其后的回答每个 tool_call_id 的 `tool` 消息的请求。
+// 脏会话可能使我们处于这种状态——例如，代理的工具循环检测器在
+// loop.go:1218 追加了助手的 tool_calls，然后跳出循环而
+// 未执行工具，留下孤儿。修复流式 RawAssistant 之前的旧会话
+// 也可能在持久化的 RawAssistant 中携带孤立的 tool_calls。
+// 这两种情况过去都表现为 `An assistant message with 'tool_calls'
+// must be followed by tool messages`。
+// 我们在构建线路格式时剥离有问题的 tool_calls（以及任何孤立的工具回复），
+// 以便请求能够通过——会话保持其历史记录不变。
 func toAPIMessages(msgs []Message) []json.RawMessage {
 	orphanAssistant, orphanTool := findOrphanToolCalls(msgs)
 	out := make([]json.RawMessage, 0, len(msgs))
@@ -105,10 +102,10 @@ func toAPIMessages(msgs []Message) []json.RawMessage {
 			continue
 		}
 
-		// For assistant messages with cached raw JSON, use it directly
-		// to guarantee prompt cache hits (byte-identical prefix) —
-		// unless the cached message has orphan tool_calls, in which
-		// case rebuild it without them.
+		// 对于带有缓存的原始 JSON 的助手消息，直接使用它
+		// 以保证提示缓存命中（字节相同的前缀）——
+		// 除非缓存的消息包含孤立的 tool_calls，
+		// 在这种情况下重新构建时不包含它们。
 		if m.Role == "assistant" && len(m.RawAssistant) > 0 && !orphanAssistant[i] {
 			out = append(out, m.RawAssistant)
 			continue
@@ -133,12 +130,11 @@ func toAPIMessages(msgs []Message) []json.RawMessage {
 	return out
 }
 
-// findOrphanToolCalls walks msgs and flags assistant messages whose
-// declared tool_calls are not fully answered by immediately-following
-// tool messages, plus the tool messages that would dangle after the
-// strip. Both `m.ToolCalls` and tool_calls embedded in
-// `m.RawAssistant` are considered, since old sessions only stored
-// them in the raw JSON.
+// findOrphanToolCalls 遍历 msgs 并标记那些声明的 tool_calls 未被
+// 紧随其后的工具消息完全回答的助手消息，
+// 以及在剥离后会悬空的工具消息。
+// `m.ToolCalls` 和嵌入在 `m.RawAssistant` 中的 tool_calls
+// 都会被考虑，因为旧会话只在原始 JSON 中存储它们。
 func findOrphanToolCalls(msgs []Message) (orphanAssistant, orphanTool map[int]bool) {
 	orphanAssistant = map[int]bool{}
 	orphanTool = map[int]bool{}
@@ -150,7 +146,7 @@ func findOrphanToolCalls(msgs []Message) (orphanAssistant, orphanTool map[int]bo
 		if len(want) == 0 {
 			continue
 		}
-		// Collect IDs from the run of tool messages immediately following.
+		// 从紧随其后的工具消息序列中收集 ID。
 		got := map[string]bool{}
 		j := i + 1
 		for j < len(msgs) && msgs[j].Role == "tool" {
@@ -170,9 +166,8 @@ func findOrphanToolCalls(msgs []Message) (orphanAssistant, orphanTool map[int]bo
 			continue
 		}
 		orphanAssistant[i] = true
-		// Drop any tool messages that referenced this assistant's
-		// (now-removed) tool_calls so the API doesn't reject them as
-		// dangling tool replies.
+		// 丢弃任何引用了这个助手（现已移除）的 tool_calls 的工具消息，
+		// 以免 API 将它们作为悬空的工具回复拒绝。
 		wantSet := map[string]bool{}
 		for _, id := range want {
 			wantSet[id] = true
@@ -186,10 +181,9 @@ func findOrphanToolCalls(msgs []Message) (orphanAssistant, orphanTool map[int]bo
 	return
 }
 
-// assistantToolCallIDs extracts tool_call IDs from a stored assistant
-// Message, checking both the parsed ToolCalls field and tool_calls
-// embedded in the raw JSON (older sessions that streamed the message
-// only carry the IDs inside RawAssistant).
+// assistantToolCallIDs 从存储的助手消息中提取 tool_call ID，
+// 同时检查解析后的 ToolCalls 字段和嵌入在原始 JSON 中的
+// tool_calls（旧会话流式传输消息时只在 RawAssistant 中携带 ID）。
 func assistantToolCallIDs(m Message) []string {
 	if len(m.ToolCalls) > 0 {
 		ids := make([]string, 0, len(m.ToolCalls))
@@ -216,7 +210,7 @@ func assistantToolCallIDs(m Message) []string {
 	return ids
 }
 
-// sseDelta mirrors the OpenAI streaming delta structure including tool call index.
+// sseDelta 镜像 OpenAI 流式 delta 结构，包括工具调用索引。
 type sseToolCallDelta struct {
 	Index    int          `json:"index"`
 	ID       string       `json:"id,omitempty"`
@@ -238,7 +232,7 @@ type sseChoice struct {
 
 type sseResponse struct {
 	Choices []sseChoice `json:"choices"`
-	Usage   *sseUsage   `json:"usage,omitempty"` // present only on the final chunk when include_usage=true
+	Usage   *sseUsage   `json:"usage,omitempty"` // 仅在 include_usage=true 时的最终数据块上出现
 }
 
 func (p *OpenAIProvider) buildRequest(ctx context.Context, messages []Message, tools []Tool, model string, maxTokens int, temperature float64, stream bool) (*http.Request, error) {
@@ -250,10 +244,9 @@ func (p *OpenAIProvider) buildRequest(ctx context.Context, messages []Message, t
 		Stream:      stream,
 	}
 	if stream {
-		// include_usage adds a terminal chunk carrying the call's token
-		// counts. Required for both admin metering and goal token-
-		// budget accounting on every streaming turn. Providers that
-		// don't honor the flag silently drop it.
+		// include_usage 添加一个携带调用令牌计数的终端数据块。
+		// 对于管理员计量和每轮流式调用的目标令牌预算核算都是必需的。
+		// 不支持此标志的提供者会静默忽略它。
 		req.StreamOptions = &streamOptions{IncludeUsage: true}
 	}
 	if len(tools) > 0 {
@@ -296,7 +289,7 @@ func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 	return p.parseSSE(resp.Body)
 }
 
-// ChatStream returns a StreamReader that yields chunks as they arrive from the LLM.
+// ChatStream 返回一个 StreamReader，在数据块从 LLM 到达时产生它们。
 func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, tools []Tool, model string, maxTokens int, temperature float64) (*StreamReader, error) {
 	httpReq, err := p.buildRequest(ctx, messages, tools, model, maxTokens, temperature, true)
 	if err != nil {
@@ -335,22 +328,19 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, too
 			}
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
-				// Send final chunk with accumulated tool calls and a
-				// fully-formed RawAssistant. DeepSeek thinking mode
-				// requires reasoning_content to round-trip on the next
-				// turn (or the API rejects with 400), so we serialize
-				// the assistant message in the OpenAI wire format here
-				// and let callers persist it verbatim.
+				// 发送包含累积的工具调用和完整 RawAssistant 的最终数据块。
+				// DeepSeek 思考模式要求 reasoning_content 在下一轮中往返
+				//（否则 API 会以 400 拒绝），因此我们在此处序列化
+				// OpenAI 线路格式的助手消息，并让调用者原样持久化它。
 				//
-				// tool_calls MUST be included. streamChatToResponse
-				// uses ChatStream for every model call (tool iterations
-				// included) so the live web UI can render text deltas
-				// — when the model emits tool_calls, the wire-format
-				// RawAssistant must carry them too, or the next turn's
-				// API call ships `assistant.RawAssistant` (no
-				// tool_calls) followed by tool replies, and OpenAI
-				// 400s with "Messages with role 'tool' must be a
-				// response to a preceding message with 'tool_calls'".
+				// tool_calls 必须包含在内。streamChatToResponse
+				// 对每个模型调用都使用 ChatStream（包括工具迭代），
+				// 以便实时 Web UI 可以渲染文本增量——
+				// 当模型发出 tool_calls 时，线路格式的 RawAssistant
+				// 也必须携带它们，否则下一轮的 API 调用会发送
+				// `assistant.RawAssistant`（无 tool_calls）后跟工具回复，
+				// 而 OpenAI 会以 400 拒绝："Messages with role 'tool'
+				// must be a response to a preceding message with 'tool_calls'"。
 				var tcs []ToolCall
 				for i := 0; i < len(toolCalls); i++ {
 					if tc, ok := toolCalls[i]; ok {
@@ -384,9 +374,9 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, too
 				continue
 			}
 
-			// Usage rides on a terminal chunk with empty choices when
-			// stream_options.include_usage=true. Capture so the [DONE]
-			// chunk emits it exactly once on the StreamChunk.Usage.
+			// 当 stream_options.include_usage=true 时，Usage 位于
+			// 带有空 choices 的终端数据块上。捕获它以便 [DONE]
+			// 数据块在 StreamChunk.Usage 上恰好发出一次。
 			if chunk.Usage != nil {
 				usage = openaiUsageToProvider(chunk.Usage)
 			}
@@ -397,7 +387,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, too
 
 			delta := chunk.Choices[0].Delta
 
-			// Accumulate tool calls
+			// 累积工具调用
 			for _, tc := range delta.ToolCalls {
 				existing, ok := toolCalls[tc.Index]
 				if !ok {
@@ -427,7 +417,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, too
 				reasoningBuilder.WriteString(delta.ReasoningContent)
 			}
 
-			// Yield content chunks
+			// 产生内容数据块
 			if delta.Content != "" {
 				contentBuilder.WriteString(delta.Content)
 				select {
@@ -448,7 +438,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, too
 
 func (p *OpenAIProvider) parseSSE(reader io.Reader) (*Response, error) {
 	scanner := bufio.NewScanner(reader)
-	// Increase buffer size for large SSE chunks
+	// 增加缓冲区大小以处理大型 SSE 数据块
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var contentBuilder strings.Builder
@@ -472,9 +462,9 @@ func (p *OpenAIProvider) parseSSE(reader io.Reader) (*Response, error) {
 			continue
 		}
 
-		// Stream usage arrives on a terminal chunk with choices=[] when
-		// stream_options.include_usage=true. Non-streaming chunks also
-		// carry it; either path lands here.
+		// 当 stream_options.include_usage=true 时，流式使用量在
+		// choices=[] 的终端数据块上到达。非流式数据块也携带它；
+		// 两种路径都汇集于此。
 		if chunk.Usage != nil {
 			usage = openaiUsageToProvider(chunk.Usage)
 		}
@@ -534,12 +524,11 @@ func (p *OpenAIProvider) parseSSE(reader io.Reader) (*Response, error) {
 		}
 	}
 
-	// Same leaked-XML recovery the Anthropic provider does — DeepSeek-flash
-	// served via api.deepseek.com (openai-chat compat, not the anthropic
-	// route) emits its tool calls as DSML-style text instead of, or in
-	// addition to, the structured tool_calls field. Strip the XML from
-	// content unconditionally; synthesize tool calls from it only when
-	// the structured channel was empty.
+	// 与 Anthropic 提供者相同的泄漏 XML 恢复——通过 api.deepseek.com
+	//（openai-chat 兼容模式，而非 anthropic 路由）提供的 DeepSeek-flash
+	// 将其工具调用作为 DSML 样式文本发出，而不是（或除了）结构化的
+	// tool_calls 字段。无条件地从内容中剥离 XML；
+	// 仅当结构化通道为空时才从其中合成工具调用。
 	if cleaned, calls := extractLeakedToolCalls(result.Content); cleaned != result.Content {
 		result.Content = cleaned
 		if len(result.ToolCalls) == 0 && len(calls) > 0 {
@@ -552,11 +541,11 @@ func (p *OpenAIProvider) parseSSE(reader io.Reader) (*Response, error) {
 		}
 	}
 
-	// Capture raw assistant message for cache-safe replay.
-	// Reconstruct the exact message format the API would expect back.
-	// reasoning_content must round-trip for DeepSeek's thinking mode
-	// (otherwise the next turn fails with `The reasoning_content in
-	// the thinking mode must be passed back to the API.`).
+	// 捕获原始助手消息以进行缓存安全的重放。
+	// 重建 API 期望返回的精确消息格式。
+	// reasoning_content 必须为 DeepSeek 的思考模式往返
+	//（否则下一轮会失败：`The reasoning_content in
+	// the thinking mode must be passed back to the API.`）。
 	rawMsg := apiMessage{
 		Role:             "assistant",
 		ToolCalls:        result.ToolCalls,
@@ -568,10 +557,10 @@ func (p *OpenAIProvider) parseSSE(reader io.Reader) (*Response, error) {
 	return result, nil
 }
 
-// openaiUsageToProvider folds an OpenAI-style usage block into the
-// provider-neutral Usage. Cached prompt tokens (if reported) are
-// surfaced as CacheReadTokens, and input_tokens is the *uncached*
-// remainder so input+cache_read still sums to total prompt size.
+// openaiUsageToProvider 将 OpenAI 风格的使用量块折叠为
+// 提供者中立的 Usage。缓存的提示令牌（如果报告了）作为
+// CacheReadTokens 呈现，而 input_tokens 是*未缓存*的剩余部分，
+// 因此 input+cache_read 仍然等于总提示大小。
 func openaiUsageToProvider(u *sseUsage) Usage {
 	out := Usage{
 		InputTokens:  u.PromptTokens,

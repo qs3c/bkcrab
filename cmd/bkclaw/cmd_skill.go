@@ -13,7 +13,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/skills"
 )
 
-// skillCmd handles skill management subcommands.
+// skillCmd 处理技能管理子命令。
 func skillCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skill",

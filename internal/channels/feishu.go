@@ -44,7 +44,7 @@ const (
 	feishuTokenRefreshSkew = 60 * time.Second
 )
 
-// Feishu implements the Channel interface for Feishu / Feishu custom apps.
+// Feishu 实现飞书 / 飞书自定义应用的 Channel 接口。
 type Feishu struct {
 	bus               *bus.MessageBus
 	accountID         string // == app_id

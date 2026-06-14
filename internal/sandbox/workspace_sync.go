@@ -10,32 +10,31 @@ import (
 	"strings"
 )
 
-// WorkspaceStore abstracts durable storage for user workspace files.
-// Implementations can be S3, MinIO, local filesystem, or database BLOBs.
+// WorkspaceStore 抽象了用户工作区文件的持久化存储。
+// 实现可以是 S3、MinIO、本地文件系统或数据库 BLOB。
 type WorkspaceStore interface {
-	// List returns all file paths for a user's workspace.
+	// List 返回用户工作区的所有文件路径。
 	List(ctx context.Context, userID string) ([]string, error)
-	// Get reads a file from durable storage.
+	// Get 从持久化存储中读取文件。
 	Get(ctx context.Context, userID, path string) (io.ReadCloser, error)
-	// Put writes a file to durable storage.
+	// Put 将文件写入持久化存储。
 	Put(ctx context.Context, userID, path string, r io.Reader) error
-	// Delete removes a file from durable storage.
+	// Delete 从持久化存储中删除文件。
 	Delete(ctx context.Context, userID, path string) error
 }
 
-// WorkspaceSync handles hydrating a sandbox workspace from durable storage
-// and flushing changes back.
+// WorkspaceSync 处理从持久化存储中填充沙箱工作区以及将更改刷新回去。
 type WorkspaceSync struct {
 	store WorkspaceStore
 }
 
-// NewWorkspaceSync creates a sync manager.
+// NewWorkspaceSync 创建一个同步管理器。
 func NewWorkspaceSync(store WorkspaceStore) *WorkspaceSync {
 	return &WorkspaceSync{store: store}
 }
 
-// Hydrate downloads all workspace files for a user into a local directory.
-// Called when a sandbox is first created for a user.
+// Hydrate 将用户的所有工作区文件下载到本地目录。
+// 在首次为用户创建沙箱时调用。
 func (ws *WorkspaceSync) Hydrate(ctx context.Context, userID, localDir string) error {
 	files, err := ws.store.List(ctx, userID)
 	if err != nil {
@@ -72,8 +71,8 @@ func (ws *WorkspaceSync) Hydrate(ctx context.Context, userID, localDir string) e
 	return nil
 }
 
-// Flush uploads all files from a local directory to durable storage.
-// Called when a sandbox is about to be destroyed.
+// Flush 将本地目录中的所有文件上传到持久化存储。
+// 在沙箱即将被销毁时调用。
 func (ws *WorkspaceSync) Flush(ctx context.Context, userID, localDir string) error {
 	var count int
 	err := filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
@@ -83,7 +82,7 @@ func (ws *WorkspaceSync) Flush(ctx context.Context, userID, localDir string) err
 		relPath, _ := filepath.Rel(localDir, path)
 		relPath = filepath.ToSlash(relPath)
 
-		// Skip hidden files and known temporaries
+		// 跳过隐藏文件和已知的临时文件
 		if strings.HasPrefix(filepath.Base(relPath), ".") {
 			return nil
 		}
@@ -108,8 +107,8 @@ func (ws *WorkspaceSync) Flush(ctx context.Context, userID, localDir string) err
 	return nil
 }
 
-// SyncFile uploads a single file to durable storage. Called after write_file
-// tool execution for real-time sync (optional — callers can batch via Flush).
+// SyncFile 将单个文件上传到持久化存储。在 write_file 工具执行后调用，
+// 用于实时同步（可选——调用者可以通过 Flush 批量处理）。
 func (ws *WorkspaceSync) SyncFile(ctx context.Context, userID, localDir, relPath string) error {
 	fullPath := filepath.Join(localDir, relPath)
 	f, err := os.Open(fullPath)

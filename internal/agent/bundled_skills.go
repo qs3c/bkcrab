@@ -16,18 +16,18 @@ import (
 //go:embed all:bundled_skills
 var bundledSkillsFS embed.FS
 
-// bundledHashFile is the per-skill sidecar that records the bundled-tree
-// hash from the most recent install. Its presence + match with the on-disk
-// tree is how InstallBundledSkills decides whether the user has customized
-// the skill (skip) or it's still the as-shipped copy (safe to overwrite
-// when a newer binary ships an updated bundle).
+// bundledHashFile是记录捆绑树的每技能sidecar
+// 最新安装的哈希。它的存在+与磁盘上的匹配
+// 树是InstallBundledSkills决定用户是否自定义
+// 技能（跳过） ，或者它仍然是已发布的副本（可以安全地覆盖
+// 当较新的二进制文件传送更新的捆绑包时）。
 const bundledHashFile = ".bundled-hash"
 
-// BundledSkillNames returns the folder names of every skill embedded in the
-// binary. Exposed so startup/reload code can protect these entries from
-// the object-store hydrator's "prune local-only dirs" step (bundled skills
-// aren't stored in the object store; they're always regenerated on startup
-// by InstallBundledSkills).
+// BundledSkillNames返回嵌入在
+// 二进制。暴露，以便启动/重新加载代码可以保护这些条目免受
+// object-Store Hydrator的“prune local-only dirs”步骤（捆绑技能
+// 不存储在对象存储中；它们始终在启动时重新生成
+// 由InstallBundledSkills提供）。
 func BundledSkillNames() []string {
 	entries, err := fs.ReadDir(bundledSkillsFS, "bundled_skills")
 	if err != nil {
@@ -42,21 +42,21 @@ func BundledSkillNames() []string {
 	return names
 }
 
-// InstallBundledSkills syncs every skill embedded under bundled_skills/ to
-// the managed skills directory. Honors BKCLAW_HOME so per-product
-// instances each get their own copy.
+// InstallBundledSkills将bundled_skills/下嵌入的所有技能同步到
+// 托管技能目录。荣誉BKCLAW_HOME因此每个产品
+// 每个实例都有自己的副本。
 //
-// Upgrade behavior is governed by a per-skill .bundled-hash sidecar:
-//   - Target absent → install fresh, write sidecar.
-//   - Sidecar present + on-disk hash matches sidecar + sidecar matches the
-//     newly-shipped bundle hash → already up to date, no-op.
-//   - Sidecar present + on-disk hash matches sidecar + bundle hash differs
-//     → user hasn't touched it, safely replace tree with new bundle.
-//   - Sidecar present but on-disk hash diverges → user customized, skip.
-//   - No sidecar (legacy install) + on-disk hash happens to match the
-//     current bundle → silently adopt the sidecar so future upgrades flow.
-//   - No sidecar + on-disk hash doesn't match → can't tell user-modified
-//     from older-bundle, conservative skip.
+// 升级行为由每项技能的.bundled-hash sidecar控制：
+// -缺少目标→安装新鲜，写入sidecar。
+// - Sidecar存在+磁盘上的哈希匹配Sidecar + Sidecar匹配
+// 新发货的捆绑包哈希→已经是最新的，无需操作。
+// - Sidecar存在+磁盘上的哈希匹配Sidecar +捆绑哈希不同
+// → 用户尚未触摸，请安全地用新捆绑包替换树。
+// -存在Sidecar ，但磁盘上的哈希发散→用户自定义，跳过。
+// -没有sidecar （旧版安装） +磁盘上的哈希发生匹配
+// 当前捆绑包→静默地采用Sidecar ，以便将来的升级流程。
+// -没有sidecar +磁盘上的哈希不匹配，→无法告诉用户已修改
+// 从较旧的捆绑包，保守的跳过。
 func InstallBundledSkills() {
 	targetDir := managedSkillsDir()
 	if targetDir == "" {
@@ -65,9 +65,9 @@ func InstallBundledSkills() {
 	installBundledSkillsTo(bundledSkillsFS, "bundled_skills", targetDir)
 }
 
-// installBundledSkillsTo is the testable core: pulls bundled skills from
-// any fs.FS rooted at srcRoot into targetDir on disk. Production callers
-// pass the embed.FS; tests pass an fstest.MapFS.
+// installBundledSkillsTo是可测试的核心：从
+// 任何根植于srcRoot的fs.FS进入磁盘上的targetDir。生产调用者
+// 传递embed.FS;测试传递fstest.MapFS。
 func installBundledSkillsTo(srcFS fs.FS, srcRoot, targetDir string) {
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		slog.Warn("failed to create bundled skills target", "dir", targetDir, "error", err)
@@ -105,7 +105,7 @@ func installBundledSkillsTo(srcFS fs.FS, srcRoot, targetDir string) {
 			}
 			slog.Info("installed bundled skill", "name", skillName, "path", skillTarget)
 		case decisionOverwrite:
-			// Wipe first so files removed in the new bundle don't linger.
+			// 首先擦除，以便在新捆绑包中删除的文件不会停留。
 			if err := os.RemoveAll(skillTarget); err != nil {
 				slog.Warn("failed to clear stale bundled skill", "name", skillName, "error", err)
 				continue
@@ -125,7 +125,7 @@ func installBundledSkillsTo(srcFS fs.FS, srcRoot, targetDir string) {
 			}
 			slog.Info("adopted bundled skill sidecar", "name", skillName, "path", skillTarget)
 		case decisionUpToDate:
-			// nothing to do
+			// 无所事事
 		case decisionUserModified:
 			slog.Debug("skipping bundled skill, user-modified", "name", skillName, "path", skillTarget, "reason", reason)
 		}
@@ -142,9 +142,9 @@ const (
 	decisionUserModified
 )
 
-// decideBundledInstall classifies what to do with one bundled skill's
-// target directory given the freshly-computed bundle hash. See
-// InstallBundledSkills for the policy rationale.
+// decideBundledInstall分类如何处理一个捆绑技能的
+// 给定新计算的捆绑包哈希的目标目录。请参阅
+// 用于策略基本原理的InstallBundledSkills。
 func decideBundledInstall(targetDir, bundleHash string) (installDecision, string) {
 	if _, err := os.Stat(filepath.Join(targetDir, "SKILL.md")); err != nil {
 		return decisionFresh, ""
@@ -155,9 +155,9 @@ func decideBundledInstall(targetDir, bundleHash string) (installDecision, string
 	}
 	sidecarHash, sidecarErr := readBundledHash(targetDir)
 	if sidecarErr != nil {
-		// Pre-sidecar install. Adopt the sidecar silently if disk content
-		// already matches the current bundle (so next upgrade flows). Else
-		// be conservative — we can't tell user-modified from older-bundle.
+		// 预sidecar安装。如果磁盘内容，则静默采用sidecar
+		// 已经与当前捆绑包匹配（因此下一次升级流程）。否则
+		// 要保守—我们无法区分用户修改和旧包。
 		if diskHash == bundleHash {
 			return decisionAdoptSidecar, ""
 		}
@@ -172,8 +172,8 @@ func decideBundledInstall(targetDir, bundleHash string) (installDecision, string
 	return decisionOverwrite, ""
 }
 
-// embedTreeHash hashes every file under root in lexical order, mixing in
-// the relative path so a rename can't masquerade as a content-only change.
+// embedTreeHash按词法顺序哈希根目录下的每个文件，混合
+// 相对路径，因此重命名不能伪装成仅限内容的更改。
 func embedTreeHash(srcFS fs.FS, root string) (string, error) {
 	h := sha256.New()
 	err := fs.WalkDir(srcFS, root, func(p string, d fs.DirEntry, err error) error {
@@ -203,9 +203,9 @@ func embedTreeHash(srcFS fs.FS, root string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// diskTreeHash mirrors embedTreeHash but walks an on-disk directory.
-// Skips dotfiles (the .bundled-hash sidecar, .DS_Store, etc.) so the
-// disk hash stays apples-to-apples with the bundle hash.
+// diskTreeHash镜像embedTreeHash ，但行走磁盘上的目录。
+// 跳过点文件（ .bundled-hash sidecar、.DS_Store等） ，因此
+// 磁盘哈希保持带有捆绑哈希的apples-to-apples。
 func diskTreeHash(root string) (string, error) {
 	h := sha256.New()
 	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
@@ -220,9 +220,9 @@ func diskTreeHash(root string) (string, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		// Skip dotfiles at any depth — bundled skills don't ship hidden
-		// files, so anything starting with "." on disk is either our
-		// sidecar or OS noise (.DS_Store, editor swap files, …).
+		// 跳过任何深度的点文件—捆绑技能不会隐藏
+		// 文件，因此磁盘上以“.”开头的任何内容都是我们的
+		// sidecar或操作系统噪音（ .DS_Store、编辑器交换文件等）。
 		for _, seg := range strings.Split(rel, "/") {
 			if strings.HasPrefix(seg, ".") {
 				return nil
@@ -255,9 +255,9 @@ func writeBundledHash(targetDir, hash string) error {
 	return os.WriteFile(filepath.Join(targetDir, bundledHashFile), []byte(hash+"\n"), 0o644)
 }
 
-// managedSkillsDir is the per-BkClaw-instance global skills location.
-// Mirrors bkclawManagedDir in internal/agent/skills.go but kept local
-// here so this file's only dependency is os/filepath.
+// managedSkillsDir是每个BkClaw实例的全局技能位置。
+// 在internal/agent/skills.go中镜像bkclawManagedDir ，但保留为本地
+// 因此，此文件的唯一依赖项是os/filepath。
 func managedSkillsDir() string {
 	if h := os.Getenv("BKCLAW_HOME"); h != "" {
 		return filepath.Join(h, "skills")
@@ -269,8 +269,8 @@ func managedSkillsDir() string {
 	return filepath.Join(home, ".bkclaw", "skills")
 }
 
-// copyEmbedTree walks src in the embed.FS and writes every regular file under
-// it to the corresponding path under dst, creating intermediate directories.
+// copyEmbedTree在embed.FS中遍历src ，并将每个常规文件写入
+// 到dst下的对应路径，创建中间目录。
 func copyEmbedTree(src fs.FS, srcRoot, dst string) error {
 	return fs.WalkDir(src, srcRoot, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {

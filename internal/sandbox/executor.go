@@ -5,83 +5,76 @@ import (
 	"time"
 )
 
-// Executor abstracts a sandboxed execution environment for one user.
-// All agent tool calls (exec, read_file, write_file, list_dir) are routed
-// through this interface in cloud mode so that each user gets an isolated
-// filesystem and runtime. Implementations can be Docker containers,
-// Firecracker microVMs, E2B hosted sandboxes, or any other backend.
+// Executor 抽象了单个用户的沙箱化执行环境。
+// 在云模式下，所有代理工具调用（exec、read_file、write_file、list_dir）
+// 都通过此接口路由，以便每个用户获得隔离的文件系统和运行时。
+// 实现可以是 Docker 容器、Firecracker 微 VM、E2B 托管沙箱或任何其他后端。
 type Executor interface {
-	// Exec runs a shell command and returns combined stdout+stderr.
+	// Exec 运行一个 shell 命令并返回合并的 stdout+stderr。
 	Exec(ctx context.Context, command string, timeout time.Duration) (string, error)
-	// ReadFile reads a file from the sandbox filesystem.
+	// ReadFile 从沙箱文件系统读取文件。
 	ReadFile(ctx context.Context, path string) (string, error)
-	// WriteFile writes content to a file (creating parent dirs as needed).
+	// WriteFile 将内容写入文件（根据需要创建父目录）。
 	WriteFile(ctx context.Context, path, content string) (string, error)
-	// ListDir lists a directory and returns a human-readable listing.
+	// ListDir 列出目录并返回人类可读的列表。
 	ListDir(ctx context.Context, path string) (string, error)
-	// Backend returns the short identifier of the underlying provider
-	// ("docker", "e2b", "boxlite"). Used for log lines so operators can
-	// confirm at a glance which provider handled a given exec.
+	// Backend 返回底层提供者的简短标识符
+	//（"docker"、"e2b"、"boxlite"）。用于日志行，以便操作员可以
+	// 一目了然地确认哪个提供者处理了给定的 exec。
 	Backend() string
-	// Close destroys the sandbox and releases resources.
+	// Close 销毁沙箱并释放资源。
 	Close() error
 }
 
-// ExecutorPool manages per-(agent, project, session) sandbox lifecycles.
-// Get lazily creates a sandbox on first access; Release tears it down.
+// ExecutorPool 管理每个（代理、项目、会话）的沙箱生命周期。
+// Get 在首次访问时延迟创建沙箱；Release 拆除它。
 //
-// Why agentID + projectID + sessionID: parallel sessions of the same
-// agent must not see each other's /workspace files (collision +
-// cross-talk) — each gets its own container with a session-scoped
-// bind mount. projectID overrides that isolation: every chat in the
-// same project shares one container mounted on the project folder, so
-// notes/files persist across the project's chats. Pool key is
-// (agentID, projectID, sessionID); empty project + empty session is
-// the agent-shared scope used by legacy callers.
+// 为什么是 agentID + projectID + sessionID：同一代理的并行会话
+// 不能看到彼此的 /workspace 文件（冲突 + 串扰）——
+// 每个会话获得自己的容器，具有会话作用域的绑定挂载。
+// projectID 覆盖该隔离：同一项目中的每个聊天共享一个挂载在项目文件夹上的容器，
+// 因此笔记/文件在项目的聊天之间持久存在。
+// 池键是 (agentID, projectID, sessionID)；空 project + 空 session
+// 是旧调用者使用的代理共享作用域。
 type ExecutorPool interface {
 	Get(ctx context.Context, agentID, projectID, sessionID string) (Executor, error)
 	Release(agentID, projectID, sessionID string) error
 	CloseAll()
-	// Backend returns the short identifier of the underlying provider
-	// ("docker", "e2b", "boxlite"). Mirrors Executor.Backend so callers
-	// holding a pool handle don't have to lazily resolve an executor
-	// just to learn the provider name.
+	// Backend 返回底层提供者的简短标识符
+	//（"docker"、"e2b"、"boxlite"）。镜像 Executor.Backend，
+	// 以便持有池句柄的调用者不必延迟解析执行器来了解提供者名称。
 	Backend() string
 }
 
-// WorkspaceSnapshotter is an optional capability an Executor can implement
-// to support flush-on-evict. Returns a map of sandbox-relative path →
-// file contents for everything under /workspace.
+// WorkspaceSnapshotter 是 Executor 可以实现的可选能力，以支持驱逐时刷新。
+// 返回从沙箱相对路径到 /workspace 下所有内容的文件内容映射。
 //
-// Implementations are expected to be best-effort: a file's content should
-// reflect what the sandbox sees at the time of the call, but perfect
-// consistency with a live shell is not promised (agent should not be
-// writing during flush). Large files / binaries are returned as-is.
+// 实现预期是尽力而为的：文件内容应反映调用时沙箱看到的内容，
+// 但不保证与活动 shell 的完全一致性（代理在刷新期间不应写入）。
+// 大文件/二进制文件按原样返回。
 //
-// Not part of the base Executor interface because not every backend can
-// cheaply enumerate its workspace (e.g. E2B requires an extra API call);
-// callers should type-assert and skip gracefully when absent.
+// 不是基础 Executor 接口的一部分，因为并非每个后端都可以廉价地枚举其工作区
+//（例如 E2B 需要额外的 API 调用）；调用者应进行类型断言并在缺失时优雅跳过。
 type WorkspaceSnapshotter interface {
 	SnapshotWorkspace(ctx context.Context) (map[string][]byte, error)
 }
 
-// RemoteWorkspace marks executors whose /workspace is NOT shared with the
-// host filesystem (no bind mount). Implementers need an explicit sync
-// after every successful exec — otherwise files the skill writes
-// inside the sandbox (e.g. image-tool's /workspace/gen_xxx.webp) never
-// become visible to the host's workspace.Store and the UI breaks
-// surfacing them. Docker doesn't implement this (its /workspace is a
-// bind mount, files are on host the moment exec returns); E2B does.
+// RemoteWorkspace 标记其 /workspace 不与主机文件系统共享（无绑定挂载）的执行器。
+// 实现者需要在每次成功执行后进行显式同步——否则技能在沙箱内写入的文件
+//（例如 image-tool 的 /workspace/gen_xxx.webp）永远无法对主机的
+// workspace.Store 可见，UI 呈现它们时会出问题。
+// Docker 不实现此接口（其 /workspace 是绑定挂载，exec 返回时文件已在主机上）；
+// E2B 实现它。
 type RemoteWorkspace interface {
 	IsRemoteWorkspace()
 }
 
-// PoolConfig holds configuration for creating sandbox pools.
+// PoolConfig 保存创建沙箱池的配置。
 type PoolConfig struct {
-	Backend   string // "docker", "e2b" (future)
-	Image     string // container image (for docker backend)
+	Backend   string // "docker"、"e2b"（未来）
+	Image     string // 容器镜像（用于 docker 后端）
 	Policy    *Policy
-	// E2B-specific fields (future)
+	// E2B 特定字段（未来）
 	E2BTemplate string
 	E2BAPIKey   string
 }

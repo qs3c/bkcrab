@@ -10,10 +10,9 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// Direct is the no-key built-in fetcher: net/http GET, strip HTML, truncate.
-// It opts into CredentialFree so the chain treats it as available even
-// without an API key — admins pick it from the dashboard the same way they
-// pick any other provider.
+// Direct 是无密钥的内置获取器：net/http GET，剥离 HTML，截断。
+// 它选择加入 CredentialFree，以便链在没有 API 密钥时也将其视为可用——
+// 管理员从仪表盘中选择它的方式与选择其他提供商相同。
 type Direct struct{}
 
 func (Direct) Category() string     { return Category }
@@ -45,8 +44,8 @@ func (d *Direct) Execute(ctx context.Context, req toolproviders.Request) (toolpr
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		// Promote 429/5xx to retriable so the chain falls through to the
-		// next provider; 4xx config-style errors are surfaced as-is.
+		// 将 429/5xx 提升为可重试，以便链回退到下一个提供商；
+		// 4xx 配置类错误原样暴露。
 		err := fmt.Errorf("direct HTTP %d", resp.StatusCode)
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests, resp.StatusCode >= 500:
@@ -56,8 +55,8 @@ func (d *Direct) Execute(ctx context.Context, req toolproviders.Request) (toolpr
 		}
 	}
 
-	// Read 3× the cap because HTML is verbose and stripping tags shrinks
-	// it substantially — same heuristic the legacy direct fetcher used.
+	// 读取上限的 3 倍，因为 HTML 很冗长，且剥离标签后会大幅缩小——
+	// 与旧版 direct 获取器使用的启发式算法相同。
 	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(a.MaxLen*3)))
 	if err != nil {
 		return toolproviders.Response{}, toolproviders.Retry(fmt.Errorf("direct read: %w", err))

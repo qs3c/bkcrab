@@ -6,7 +6,7 @@ import (
 	"log/slog"
 )
 
-// ChatEvent represents a real-time event emitted during the agent ReAct loop.
+// ChatEvent 表示代理 ReAct 循环期间发出的实时事件。
 type ChatEvent struct {
 	Type string         `json:"type"` // "content", "content_delta", "tool_call", "tool_result", "steer", "error", "done", "turn_pending", "subagent_progress"
 	Data map[string]any `json:"data,omitempty"`
@@ -14,46 +14,46 @@ type ChatEvent struct {
 
 type chatEventsKey struct{}
 
-// ChatEventsFromContext retrieves the events channel from context, if present.
+// ChatEventsFromContext 从上下文中检索事件通道（如果存在）。
 //
-// Deprecated: prefer ContextWithStream which carries the persistence
-// sink + hub alongside the legacy channel. Kept for callers that only
-// need the channel (tests, simple non-persistent flows).
+// 已弃用：更喜欢携带持久性的 ContextWithStream
+// 传统通道旁边的接收器+集线器。仅保留给来电者
+// 需要通道（测试、简单的非持久流）。
 func ChatEventsFromContext(ctx context.Context) chan<- ChatEvent {
 	ch, _ := ctx.Value(chatEventsKey{}).(chan<- ChatEvent)
 	return ch
 }
 
-// ContextWithChatEvents returns a new context with the events channel attached.
+// ContextWithChatEvents 返回一个附加了事件通道的新上下文。
 //
-// Deprecated: prefer ContextWithStream so events also persist + publish
-// to the hub for resume-on-reconnect.
+// 已弃用：更喜欢 ContextWithStream，因此事件也持久化 + 发布
+// 到集线器以重新连接时恢复。
 func ContextWithChatEvents(ctx context.Context, ch chan<- ChatEvent) context.Context {
 	return context.WithValue(ctx, chatEventsKey{}, ch)
 }
 
-// emitEvent fans one event out to every consumer registered on ctx:
-//   - the persistent sink (session_events table) — assigns a seq used by
-//     reconnecting clients to dedup replayed events
-//   - the in-process hub (live subscribers across tabs / handlers)
-//   - the legacy channel (the synchronous SSE handler that's still
-//     holding the request open)
+// emitEvent 将一个事件分发给在 ctx 上注册的每个消费者：
+// - 持久接收器（session_events 表）- 分配一个使用的 seq
+// 重新连接客户端以删除重播事件
+// - 进程内中心（跨选项卡/处理程序的实时订阅者）
+// - 遗留通道（同步 SSE 处理程序仍然存在）
+// 保持请求开放）
 //
-// Persistence is best-effort and logged on failure — a DB hiccup
-// shouldn't kill the turn. Hub publishes never block (full-buffer
-// subscribers are skipped). The legacy channel send respects
-// ctx.Done() so the agent goroutine doesn't leak when the channel
-// consumer is gone but the agent ctx is cancelled.
+// 持久化是尽力而为，但登录失败——数据库故障
+// 不应该杀死回合。集线器发布永不阻塞（全缓冲
+// 订阅者被跳过）。传统频道致以敬意
+// ctx.Done() 这样代理 goroutine 在通道运行时不会泄漏
+// 消费者消失了，但是代理ctx被取消。
 func emitEvent(ctx context.Context, evt ChatEvent) {
 	stream := streamFromContext(ctx)
 
 	var seq int64 = -1
-	// Skip persistence for high-volume live-only events. content_delta
-	// streams ~one chunk per generated token (100+ rows per turn for a
-	// modest answer), which would dwarf the rest of session_events for
-	// no replay value: the trailing `content` event carries the full
-	// final text, so a refresh in the middle of a turn just rejoins
-	// the live hub and gets the final on completion.
+	// 跳过大容量直播活动的持久性。内容增量
+	// 流 ~ 每个生成的令牌一个块（每轮 100 多行
+	// 谦虚的答案），这将使其余的 session_events 相形见绌
+	// 没有重播价值：尾随的“内容”事件携带完整的内容
+	// 最终文本，因此在转弯过程中刷新即可重新加入
+	// 现场中心并在完成后获得最终结果。
 	persist := evt.Type != "content_delta"
 
 	if persist && stream != nil && stream.sink != nil && stream.userID != "" && stream.sessionKey != "" {
@@ -72,9 +72,9 @@ func emitEvent(ctx context.Context, evt ChatEvent) {
 		stream.hub.Publish(stream.userID, stream.agentID, stream.sessionKey, EventEnvelope{Seq: seq, Event: evt})
 	}
 
-	// Legacy channel path: prefer the channel held on streamCtx (set by
-	// the new SSE handler); fall back to the deprecated chatEventsKey
-	// channel for callers that haven't migrated.
+	// 传统通道路径：更喜欢在streamCtx上保存的通道（由
+	// 新的 SSE 处理程序）；回退到已弃用的 chatEventsKey
+	// 尚未迁移的呼叫者的通道。
 	var ch chan<- ChatEvent
 	if stream != nil {
 		ch = stream.channel

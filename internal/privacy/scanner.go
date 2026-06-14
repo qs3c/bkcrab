@@ -6,7 +6,7 @@ import (
 	"unicode/utf8"
 )
 
-// ThreatType classifies a detected memory safety threat.
+// ThreatType 分类检测到的内存安全威胁。
 type ThreatType string
 
 const (
@@ -16,14 +16,14 @@ const (
 	ThreatInvisibleUnicode ThreatType = "invisible_unicode"
 )
 
-// Threat represents a single detected memory safety issue.
+// Threat 表示一个检测到的内存安全问题。
 type Threat struct {
 	Type    ThreatType
 	Pattern string
 	Context string // snippet of matching text
 }
 
-// Prompt injection patterns (case-insensitive).
+// 提示注入模式（不区分大小写）。
 var promptInjectionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)ignore\s+previous\s+instructions`),
 	regexp.MustCompile(`(?i)disregard\s+all\s+prior`),
@@ -33,7 +33,7 @@ var promptInjectionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)act\s+as\s+[^a-z]`),
 }
 
-// Credential leak patterns.
+// 凭据泄漏模式。
 var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`),
 	regexp.MustCompile(`\bAKIA[A-Z0-9]{16}\b`),
@@ -42,13 +42,13 @@ var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\d{18,}\.[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{20,}`), // Discord token
 }
 
-// SSH backdoor patterns.
+// SSH 后门模式。
 var sshBackdoorPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)authorized_keys`),
 	regexp.MustCompile(`(?i)(?:curl|wget)\s+[^\s]+\s*\|\s*(?:bash|sh)`),
 }
 
-// Invisible Unicode code points to detect.
+// 要检测的不可见 Unicode 码点。
 var invisibleRunes = map[rune]string{
 	'\u200B': "ZERO WIDTH SPACE",
 	'\u200C': "ZERO WIDTH NON-JOINER",
@@ -58,12 +58,12 @@ var invisibleRunes = map[rune]string{
 	'\u00AD': "SOFT HYPHEN",
 }
 
-// Scan checks text for memory safety threats.
-// Returns a list of detected threats (empty = safe).
+// Scan 检查文本中的内存安全威胁。
+// 返回检测到的威胁列表（空 = 安全）。
 func Scan(text string) []Threat {
 	var threats []Threat
 
-	// Prompt injection
+	// 提示注入
 	for _, re := range promptInjectionPatterns {
 		if loc := re.FindStringIndex(text); loc != nil {
 			threats = append(threats, Threat{
@@ -74,7 +74,7 @@ func Scan(text string) []Threat {
 		}
 	}
 
-	// Credential leaks
+	// 凭据泄漏
 	for _, re := range credentialPatterns {
 		if loc := re.FindStringIndex(text); loc != nil {
 			threats = append(threats, Threat{
@@ -85,7 +85,7 @@ func Scan(text string) []Threat {
 		}
 	}
 
-	// SSH backdoor
+	// SSH 后门
 	for _, re := range sshBackdoorPatterns {
 		if loc := re.FindStringIndex(text); loc != nil {
 			threats = append(threats, Threat{
@@ -96,7 +96,7 @@ func Scan(text string) []Threat {
 		}
 	}
 
-	// Invisible Unicode
+	// 不可见 Unicode
 	for i := 0; i < len(text); {
 		r, size := utf8.DecodeRuneInString(text[i:])
 		if name, ok := invisibleRunes[r]; ok {
@@ -105,7 +105,7 @@ func Scan(text string) []Threat {
 				Pattern: name,
 				Context: snippet(text, i, i+size),
 			})
-			break // one detection is enough
+			break // 检测到一个就足够
 		}
 		i += size
 	}
@@ -113,7 +113,7 @@ func Scan(text string) []Threat {
 	return threats
 }
 
-// snippet extracts surrounding context around a match.
+// snippet 提取匹配位置周围的上下文片段。
 func snippet(text string, start, end int) string {
 	const pad = 40
 	lo := start - pad

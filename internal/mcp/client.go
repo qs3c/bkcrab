@@ -2,7 +2,7 @@ package mcp
 
 import "encoding/json"
 
-// Client is the interface for communicating with an MCP server.
+// Client 是与 MCP 服务器通信的接口。
 type Client interface {
 	Connect() error
 	ListTools() ([]ToolDef, error)
@@ -10,14 +10,14 @@ type Client interface {
 	Close() error
 }
 
-// ToolDef represents a tool definition returned by an MCP server.
+// ToolDef 表示 MCP 服务器返回的工具定义。
 type ToolDef struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
 	InputSchema interface{} `json:"inputSchema"`
 }
 
-// JSON-RPC 2.0 types
+// JSON-RPC 2.0 类型
 
 type jsonRPCRequest struct {
 	JSONRPC string      `json:"jsonrpc"`

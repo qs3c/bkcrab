@@ -28,8 +28,8 @@ func mustParse(name string) *template.Template {
 	return t
 }
 
-// promptVars is the view passed to the embedded templates. Field names
-// match the {{ .X }} references in templates/*.md.
+// PromptVars 是传递给嵌入模板的视图。字段名称
+// 匹配 templates/*.md 中的 {{ .X }} 引用。
 type promptVars struct {
 	Objective       string
 	TokensUsed      int64
@@ -53,14 +53,14 @@ func newPromptVars(g *Goal) promptVars {
 	return v
 }
 
-// ContinuationPrompt renders the per-turn audit prompt injected while
-// the goal is Active.
+// ContinuationPrompt 呈现在注入时注入的每回合审核提示
+// 目标是主动的。
 func ContinuationPrompt(g *Goal) string {
 	return render(continuationTmpl, newPromptVars(g))
 }
 
-// BudgetLimitPrompt renders the wrap-up prompt injected once on the
-// turn that flips a goal to BudgetLimited.
+// BudgetLimitPrompt 呈现在上注入一次的总结提示
+// 将目标翻转为 BudgetLimited 的回合。
 func BudgetLimitPrompt(g *Goal) string {
 	return render(budgetLimitTmpl, newPromptVars(g))
 }
@@ -68,17 +68,17 @@ func BudgetLimitPrompt(g *Goal) string {
 func render(t *template.Template, v promptVars) string {
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, v); err != nil {
-		// Templates are embedded and validated at init time — a render
-		// error here means the variables struct drifted from the template.
+		// 模板在初始化时嵌入并验证——渲染
+		// 这里的错误意味着变量结构偏离了模板。
 		panic(fmt.Sprintf("goal: %s render: %v", t.Name(), err))
 	}
 	return buf.String()
 }
 
-// EscapeXMLText replaces the three characters that would otherwise let
-// user-supplied objective text break out of the <objective> wrapper or
-// inject a forged </goal_context> close tag. Mirrors codex-rs/core/src/
-// goals.rs:1515-1520.
+// EscapeXMLText 替换了三个字符，否则会使
+// 用户提供的目标文本脱离 <objective> 包装器或
+// 注入伪造的 </goal_context> 关闭标记。镜像 codex-rs/core/src/
+// 目标.rs：1515-1520。
 func EscapeXMLText(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 	return r.Replace(s)

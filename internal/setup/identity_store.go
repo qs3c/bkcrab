@@ -13,8 +13,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
-// loadAgentFileConfig returns an agent's per-row override JSON from the
-// agents.config column.
+// loadAgentFileConfig 从 agents.config 列返回 agent 的每行覆盖配置 JSON。
 func (s *Server) loadAgentFileConfig(r *http.Request, agentID string) (*config.AgentFileConfig, error) {
 	rec, err := s.dataStore.GetAgent(r.Context(), agentID)
 	if err != nil {
@@ -31,7 +30,7 @@ func (s *Server) loadAgentFileConfig(r *http.Request, agentID string) (*config.A
 	return cfg, nil
 }
 
-// saveAgentFileConfig persists per-agent overrides into agents.config.
+// saveAgentFileConfig 将每个 agent 的覆盖配置持久化到 agents.config 中。
 func (s *Server) saveAgentFileConfig(r *http.Request, agentID string, cfg *config.AgentFileConfig) error {
 	rec, err := s.dataStore.GetAgent(r.Context(), agentID)
 	if err != nil {
@@ -54,7 +53,7 @@ func (s *Server) saveAgentFileConfig(r *http.Request, agentID string, cfg *confi
 	return s.dataStore.SaveAgent(r.Context(), rec)
 }
 
-// isStoreNotFound recognises the "not found" signal across backends.
+// isStoreNotFound 识别跨后端的"未找到"信号。
 func isStoreNotFound(err error) bool {
 	if err == nil {
 		return false

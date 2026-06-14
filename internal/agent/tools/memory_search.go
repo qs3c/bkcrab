@@ -14,7 +14,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
-// FTSSearcher is the interface for FTS5-based memory search.
+// FTSSearcher 是基于 FTS5 的内存搜索的接口。
 type FTSSearcher interface {
 	Search(query string, limit int) ([]store.FTSResult, error)
 }
@@ -32,8 +32,8 @@ type searchResult struct {
 	Score     float64 `json:"-"`
 }
 
-// RegisterMemorySearch registers the memory_search tool.
-// If fts is non-nil, FTS5 search is used; otherwise falls back to file scan.
+// RegisterMemorySearch 注册 Memory_search 工具。
+// 如果 fts 非零，则使用 FTS5 搜索；否则回退到文件扫描。
 func RegisterMemorySearch(r *Registry, workspace string, fts ...FTSSearcher) {
 	var searcher FTSSearcher
 	if len(fts) > 0 {
@@ -72,13 +72,13 @@ func makeMemorySearch(workspace string, fts FTSSearcher) ToolFunc {
 			limit = 10
 		}
 
-		// Try FTS5 first if available
+		// 如果可用，请先尝试 FTS5
 		if fts != nil {
 			ftsResults, err := fts.Search(args.Query, limit)
 			if err == nil && len(ftsResults) > 0 {
 				return formatFTSResults(ftsResults, args.Query), nil
 			}
-			// Fall through to file scan on error or empty results
+			// 出现错误或空结果时进行文件扫描
 		}
 
 		results := searchMemoryLogs(workspace, args.Query, limit)
@@ -139,7 +139,7 @@ func searchMemoryLogs(workspace, query string, limit int) []searchResult {
 		results = append(results, fileResults...)
 	}
 
-	// Sort by score (higher = better match + more recent)
+	// 按分数排序（较高 = 更好匹配 + 更新）
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Score > results[j].Score
 	})
@@ -158,7 +158,7 @@ func searchFile(filePath string, keywords []string, now time.Time) []searchResul
 	}
 	defer f.Close()
 
-	// Extract file timestamp for recency weighting
+	// 提取文件时间戳以进行新近度加权
 	fileAge := fileRecencyWeight(filePath, now)
 
 	scanner := bufio.NewScanner(f)
@@ -172,7 +172,7 @@ func searchFile(filePath string, keywords []string, now time.Time) []searchResul
 		line := scanner.Text()
 		lower := strings.ToLower(line)
 
-		// Count keyword matches
+		// 统计关键词匹配数
 		matchCount := 0
 		for _, kw := range keywords {
 			if strings.Contains(lower, kw) {
@@ -184,10 +184,10 @@ func searchFile(filePath string, keywords []string, now time.Time) []searchResul
 			continue
 		}
 
-		// Score: keyword match ratio * recency weight
+		// 得分：关键词匹配率*新近度权重
 		score := float64(matchCount) / float64(len(keywords)) * fileAge
 
-		// Extract content preview
+		// 提取内容预览
 		content := line
 		if len(content) > 500 {
 			content = content[:500] + "..."
@@ -204,8 +204,8 @@ func searchFile(filePath string, keywords []string, now time.Time) []searchResul
 	return results
 }
 
-// fileRecencyWeight returns a weight based on how recent the file is.
-// Files from today get weight 1.0, older files decay.
+// fileRecencyWeight 根据文件的最新程度返回一个权重。
+// 今天的文件权重为 1.0，较旧的文件会衰减。
 func fileRecencyWeight(filePath string, now time.Time) float64 {
 	info, err := os.Stat(filePath)
 	if err != nil {
@@ -215,7 +215,7 @@ func fileRecencyWeight(filePath string, now time.Time) float64 {
 	age := now.Sub(info.ModTime())
 	days := age.Hours() / 24
 
-	// Exponential decay: half-life of 7 days
+	// 指数衰减：半衰期为7天
 	if days <= 0 {
 		return 1.0
 	}

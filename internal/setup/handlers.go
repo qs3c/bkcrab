@@ -33,11 +33,9 @@ import (
 
 type agentChatEvent = agent.ChatEvent
 
-// loadUserConfig reads the merged Config view for the request's user.
-// Walks system → user setting namespaces + the scope-aware provider /
-// channel rows. The result is the same shape gateway.assembleConfig
-// produces — UI-only fields like Storage/Gateway are filled by env
-// overlay, not by the DB.
+// loadUserConfig 读取请求用户的合并 Config 视图。
+// 遍历 system → user 设置命名空间 + 作用域感知的 provider/channel 行。
+// 结果与 gateway.assembleConfig 生成的形状相同 — Storage/Gateway 等仅 UI 字段由环境覆盖填充，不由数据库填充。
 func (s *Server) loadUserConfig(r *http.Request) (*config.Config, error) {
 	if s.dataStore == nil {
 		return &config.Config{}, nil
@@ -70,10 +68,9 @@ func (s *Server) loadUserConfig(r *http.Request) (*config.Config, error) {
 	return cfg, nil
 }
 
-// loadAgentSkillEntriesForUser collects every agent-scope skills.entries
-// row owned by this user. Replaces the legacy single-row keyed-by-agent
-// blob — each agent now persists its own row, so the JSON we hand back
-// is rebuilt by listing the user's agents and pulling each one's row.
+// loadAgentSkillEntriesForUser 收集此用户拥有的所有 agent 作用域 skills.entries 行。
+// 替换了旧的单行按 agent 键控的 blob — 每个 agent 现在持久化自己的行，
+// 因此我们返回的 JSON 通过列出用户的 agent 并拉取每个 agent 的行来重建。
 func loadAgentSkillEntriesForUser(ctx context.Context, st store.Store, userID string) (map[string]map[string]config.SkillEntryCfg, error) {
 	if st == nil || userID == "" {
 		return nil, nil
@@ -97,10 +94,8 @@ func loadAgentSkillEntriesForUser(ctx context.Context, st store.Store, userID st
 	return out, nil
 }
 
-// saveAgentSkillEntries upserts the agent-scope skills.entries row.
-// Empty inner map deletes the row (no overrides → no row, keeps the
-// configs table tight). Authorization is the caller's responsibility;
-// we just persist what was requested.
+// saveAgentSkillEntries 更新或插入 agent 作用域的 skills.entries 行。
+// 空的内部映射删除该行（无覆盖 → 无行，保持 configs 表紧凑）。授权是调用者的责任；我们只持久化请求的内容。
 func saveAgentSkillEntries(ctx context.Context, st store.Store, agentID string, entries map[string]config.SkillEntryCfg) error {
 	if len(entries) == 0 {
 		return scope.SaveSetting(ctx, st, "", agentID, "skills.entries", nil)
@@ -111,19 +106,17 @@ func saveAgentSkillEntries(ctx context.Context, st store.Store, agentID string, 
 	return scope.SaveSetting(ctx, st, "", agentID, "skills.entries", asMap)
 }
 
-// saveUserConfig persists the namespaced setting rows for the calling
-// user's scope. Providers/Channels live in their own configs rows
-// and are NOT touched here — the dedicated /api/providers and /api/channels
-// endpoints (and the onboard handler) write those.
+// saveUserConfig 持久化调用用户作用域的命名空间设置行。
+// Providers/Channels 位于它们自己的 configs 行中，此处不涉及 — 专用的 /api/providers 和 /api/channels 端点（以及 onboard handler）写入它们。
 func (s *Server) saveUserConfig(r *http.Request, cfg *config.Config) error {
 	if s.dataStore == nil {
 		return errors.New("store not configured")
 	}
 	ident, ok := authIdentity(r)
-	// Decide who owns the rows we're about to save:
-	//   - super_admin without ?actAs=  → system rows (user_id='')
-	//   - super_admin with ?actAs=X    → write into user X's scope
-	//   - regular user                 → write into their own scope
+	// 决定谁拥有我们将要保存的行：
+	//   - super_admin 无 ?actAs=  → system 行 (user_id='')
+	//   - super_admin 带 ?actAs=X    → 写入用户 X 的作用域
+	//   - 普通用户                 → 写入自己的作用域
 	uid := ""
 	if ok && ident.Role == "super_admin" {
 		if ident.IsActingAs() {
@@ -141,9 +134,8 @@ func (s *Server) saveUserConfig(r *http.Request, cfg *config.Config) error {
 	return nil
 }
 
-// settingNamespaces is the table that drives loadUserConfig /
-// saveUserConfig. Adding a new sub-block of Config to the round-trip is
-// a single append here.
+// settingNamespaces 是驱动 loadUserConfig / saveUserConfig 的表。
+// 向往返中添加新的 Config 子块只需在此添加一行。
 var settingNamespaces = []settingNamespace{
 	{namespace: "agents.defaults",
 		dst:     func(c *config.Config) interface{} { return &c.Agents.Defaults },
@@ -175,12 +167,10 @@ var settingNamespaces = []settingNamespace{
 	{namespace: "skills.entries",
 		dst:     func(c *config.Config) interface{} { return &c.Skills.Entries },
 		collect: func(c *config.Config) map[string]interface{} { return wrapKeyed(c.Skills.Entries) }},
-	// Per-agent skill env/key overrides have been split off this table
-	// into one row per agent at scope=agent, name=skills.entries — see
-	// loadAgentSkillEntriesForUser / saveAgentSkillEntries below. Lumping
-	// every agent's overrides into a single user/system-scope row let
-	// the JSON blob grow with every agent × skill, and forced a full
-	// rewrite on every patch.
+	// 每个 agent 的技能 env/key 覆盖已从此表拆分为每个 agent 一行，scope=agent, name=skills.entries —
+	// 请参见下面的 loadAgentSkillEntriesForUser / saveAgentSkillEntries。
+	// 将所有 agent 的覆盖合并到单个 user/system 作用域行会导致 JSON blob 随每个 agent × skill 增长，
+	// 并强制每次补丁都完全重写。
 	{namespace: "memory",
 		dst:     func(c *config.Config) interface{} { return &c.Memory },
 		collect: func(c *config.Config) map[string]interface{} { return toMap(c.Memory) }},
@@ -225,9 +215,8 @@ func toMap(v interface{}) map[string]interface{} {
 	return m
 }
 
-// wrapKeyed marshals a map[string]X into map[string]interface{} so it
-// fits the configs.data column. Empty maps return nil so
-// SaveSetting deletes the row instead of writing {}.
+// wrapKeyed 将 map[string]X 编组为 map[string]interface{} 以适配 configs.data 列。
+// 空的 map 返回 nil，以便 SaveSetting 删除行而不是写入 {}。
 func wrapKeyed(v interface{}) map[string]interface{} {
 	blob, err := json.Marshal(v)
 	if err != nil {
@@ -245,19 +234,14 @@ func authIdentity(r *http.Request) (auth.Identity, bool) {
 	return auth.FromContext(r.Context())
 }
 
-// resolveAgent returns the AgentHandle for the given agent within the
-// caller's user space. Apikey callers are additionally checked against
-// their access list before the handle is returned. super_admin without
-// an actAs override gets the foreign agent injected into their OWN
-// UserSpace — sessions, memory, and provider scope stay caller-keyed
-// (admin doesn't see the owner's chats), while the agent's persistent
-// resolveSessionProject reads sessions.project_id for the chat
-// the request is targeting so attachments and other workspace IO can
-// route to projects/<pid>/ when the chat belongs to a project. Returns
-// "" on any failure (caller treats as loose chat) — non-existent
-// session, no auth context, and "no datastore" all collapse to the
-// same outcome and we don't want a path lookup to break the chat
-// hot-path.
+// resolveAgent 返回调用者用户空间内给定 agent 的 AgentHandle。
+// Apikey 调用者在返回句柄之前还会根据其访问列表进行检查。
+// 没有 actAs 覆盖的 super_admin 会将外部 agent 注入到自己的 UserSpace 中 —
+// sessions、memory 和 provider 作用域保持按调用者键控（管理员看不到拥有者的聊天），而 agent 的持久
+// resolveSessionProject 读取请求目标聊天的 sessions.project_id，
+// 以便当聊天属于某个 project 时，附件和其他 workspace IO 可以路由到 projects/<pid>/。
+// 返回 ""（调用者将其视为松散聊天）— 不存在的 session、无 auth context 和 "no datastore"
+// 都归结为相同结果，我们不想让路径查找破坏聊天的热路径。
 func (s *Server) resolveSessionProject(ctx context.Context, r *http.Request, agentID, sessionKey string) string {
 	if sessionKey == "" || s.dataStore == nil {
 		return ""
@@ -277,8 +261,7 @@ func (s *Server) resolveSessionProject(ctx context.Context, r *http.Request, age
 	return pid
 }
 
-// identity (system prompt, agent-scope config, skills, files — all
-// keyed by agent_id) is reused.
+// 身份（system prompt、agent 作用域配置、skills、files — 全部按 agent_id 键控）被重用。
 func (s *Server) resolveAgent(r *http.Request, agentID string) AgentHandle {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok {
@@ -296,33 +279,28 @@ func (s *Server) resolveAgent(r *http.Request, agentID string) AgentHandle {
 		return nil
 	}
 	ag := space.Agents.AgentByID(agentID)
-	// Lazy-attach when the agent isn't in the caller's UserSpace but
-	// the caller is otherwise authorized to use it. Concrete scenarios:
+	// 延迟附加：当 agent 不在调用者的 UserSpace 中但调用者已被授权使用时。
+	// 具体场景：
 	//
-	//   1. super_admin browsing another user's agent.
-	//   2. api_key whose ACL grants this agent — typically the key
-	//      owner == agent owner, but this path also handles the
-	//      app_user case where SwitchToAppUser flipped the identity
-	//      to a fresh app_user whose UserSpace has no agents at all.
-	//      Sessions/files written under that UserSpace then partition
-	//      per end-user, which is the desired isolation.
-	//   3. session user accessing a public agent owned by someone else
-	//      (link-based sharing — gated on agents.is_public).
+	//   1. super_admin 浏览其他用户的 agent。
+	//   2. api_key 的 ACL 授予了此 agent — 通常是密钥拥有者 == agent 拥有者，
+	//      但此路径也处理 SwitchToAppUser 将身份翻转为新的 app_user 的情况，
+	//      该 app_user 的 UserSpace 根本没有 agent。在该 UserSpace 下写入的
+	//      Sessions/files 然后按最终用户分区，这是所需的隔离。
+	//   3. 会话用户访问其他人拥有的公开 agent（基于链接的共享 — 受 agents.is_public 门控）。
 	//
-	// For the public-agent path we DO need a DB hit to confirm
-	// is_public; everything else (super_admin, apikey ACL) is already
-	// answered by Identity. EnsureAgent is idempotent so the lookup
-	// only fires before the agent lands in the user's Manager — once
-	// attached, AgentByID succeeds on subsequent requests.
+	// 对于公开 agent 路径，我们确实需要数据库命中以确认 is_public；
+	// 其他所有情况（super_admin、apikey ACL）已由 Identity 回答。
+	// EnsureAgent 是幂等的，因此查找仅在 agent 进入用户的 Manager 之前触发一次，
+	// 一旦附加，AgentByID 在后续请求上成功。
 	if ag == nil {
 		injector, hasInjector := s.userResolver.(api.AgentInjector)
-		// super_admin can lazy-attach foreign agents regardless of actAs
-		// mode. In actAs mode, EffectiveUserID() is the impersonated user
-		// — attaching the agent to THAT user's UserSpace is exactly what
-		// the admin Chats "Open" flow needs to read sessions written
-		// under user_id=impersonated. The previous `!ident.IsActingAs()`
-		// gate blocked this case and the chat panel rendered empty even
-		// though the session_messages rows existed in the DB.
+		// super_admin 可以延迟附加外部 agent，无论 actAs 模式如何。
+		// 在 actAs 模式下，EffectiveUserID() 是被模拟的用户
+		// — 将该 agent 附加到该用户的 UserSpace 正是
+		// 管理 Chats "Open" 流程读取在 user_id=模拟用户 下写入的会话所需要的。
+		// 以前的 `!ident.IsActingAs()` 门控阻止了这种情况，
+		// 即使 session_messages 行存在于数据库中，聊天面板也会呈现空白。
 		canAttach := hasInjector &&
 			(ident.AuthMethod == "apikey" || ident.Role == users.RoleSuperAdmin)
 		if !canAttach && hasInjector && uid != "" && s.dataStore != nil {
@@ -402,13 +380,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg, err := s.loadUserConfig(r)
 	if err == nil {
-		// Pick the provider that actually backs the default model. The
-		// model id is "<providerName>/<modelID>" (split on first slash —
-		// modelIDs themselves can contain slashes, e.g.
-		// "openrouter/xiaomi/mimo-v2-flash"). Falling back to "first
-		// provider in the map" produced a mismatched panel where the
-		// header said one provider but the default model belonged to
-		// another.
+		// 选择实际支持默认模型的 provider。模型 ID 是 "<providerName>/<modelID>"
+		//（在第一个斜杠处分割 — modelID 本身可以包含斜杠，例如 "openrouter/xiaomi/mimo-v2-flash"）。
+		// 回退到"map 中的第一个 provider"会产生不匹配的面板，
+		// 其中标题说一个 provider 但默认模型属于另一个。
 		defaultModel := cfg.Agents.Defaults.Model
 		var provName string
 		if i := strings.IndexByte(defaultModel, '/'); i > 0 {
@@ -447,12 +422,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if len(allAgents) > 0 {
 		var agentList []map[string]string
 		for _, ag := range allAgents {
-			id := ag.Name() // AgentHandle.Name() returns the agent id
+			id := ag.Name() // AgentHandle.Name() 返回 agent id
 			entry := map[string]string{"id": id}
-			// Surface the human-friendly name from the agents row so the
-			// dashboard list reads "default" / "ImgAny" instead of
-			// "agt_…". Look-up failures fall back to id-only so a
-			// transient store error doesn't black out the panel.
+			// 从 agents 行中显示对人类友好的名称，以便仪表板列表显示
+			// "default" / "ImgAny" 而不是 "agt_…"。查找失败时回退到仅 ID，
+			// 这样短暂的存储错误不会导致面板变黑。
 			if s.dataStore != nil {
 				if rec, _ := s.dataStore.GetAgent(r.Context(), id); rec != nil && rec.Name != "" {
 					entry["name"] = rec.Name
@@ -497,18 +471,15 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		masked.Skills.AgentEntries = ma
 	}
-	// Compute the system-only resolution of agents.defaults so the
-	// dashboard can tell apart "inheriting from system" vs "overriding
-	// at my user scope" — `cfg` already merges user over system, so
-	// without this hint the UI sees the same value either way and
-	// can't render an Inheriting/Override badge.
+	// 计算 system-only 解析的 agents.defaults，以便仪表板可以区分
+	// "从 system 继承"与"在我的用户作用域覆盖" — `cfg` 已经合并了 user over system，
+	// 因此没有这个提示，UI 会在两种情况下看到相同的值，无法渲染 Inheriting/Override 徽章。
 	sysDefaults := config.AgentsConfig{}.Defaults
 	if s.dataStore != nil {
 		_ = scope.SettingInto(r.Context(), s.dataStore, "agents.defaults", "", "", &sysDefaults)
 	}
-	// Marshal-then-extend keeps the response shape compatible (existing
-	// callers ignore the extra `meta` key) without forcing a refactor of
-	// config.Config to carry presentation metadata.
+	// Marshal-then-extend 保持响应形状兼容（现有调用者忽略额外的 `meta` 键），
+	// 而无需强制重构 config.Config 以携带展示元数据。
 	blob, _ := json.Marshal(masked)
 	out := map[string]any{}
 	_ = json.Unmarshal(blob, &out)
@@ -524,11 +495,9 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})
 		return
 	}
-	// PATCH semantics: load existing cfg, then decode the request into
-	// it. Go's json.Unmarshal leaves struct fields and map entries that
-	// aren't present in the JSON untouched, so /settings POSTing just
-	// `{"sandbox":{...}}` no longer wipes agents.defaults / skills.* /
-	// every other namespace via saveUserConfig's namespace sweep.
+	// PATCH 语义：加载现有 cfg，然后将请求解码到其中。
+	// Go 的 json.Unmarshal 会保持 JSON 中不存在的结构体字段和映射条目不变，
+	// 因此仅 POST `{"sandbox":{...}}` 的 /settings 不再通过 saveUserConfig 的命名空间扫描擦除 agents.defaults / skills.* / 每个其他命名空间。
 	buf, err := io.ReadAll(r.Body)
 	if err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
@@ -539,10 +508,9 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	// Avoid merging stale per-agent skill entries back into the saved
-	// state — those are persisted via the per-agent loop below, not
-	// through the namespace sweep, and re-writing them here would
-	// re-build the legacy shape we just split apart.
+	// 避免将过时的每个 agent 技能条目合并回已保存的状态 —
+	// 这些通过下面的每个 agent 循环持久化，而不是通过命名空间扫描，
+	// 在此处重写它们会重建我们刚刚拆分开的旧形状。
 	merged.Skills.AgentEntries = nil
 	if err := json.Unmarshal(buf, merged); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
@@ -552,10 +520,9 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	// Per-agent skill env overrides (one row per agent at scope=agent,
-	// name=skills.entries). Pull from the raw body — not from the
-	// merged Config — so we only touch agents the caller actually
-	// patched, and don't echo every existing override back as a write.
+	// 每个 agent 的技能 env 覆盖（每个 agent 一行，scope=agent，name=skills.entries）。
+	// 从原始 body 中拉取 — 而不是从合并的 Config 中 — 这样我们只触及调用者实际修补的 agent，
+	// 不会将每个现有覆盖作为写入回显。
 	var raw struct {
 		Skills *struct {
 			AgentEntries map[string]map[string]config.SkillEntryCfg `json:"agentEntries"`
@@ -578,17 +545,15 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// Cached UserSpaces hold a snapshot of the merged config (including
-	// agents.defaults.model and the provider chain). Without this, an
-	// agent loaded before the change keeps seeing the stale model and
-	// surfaces "no usable LLM provider" in chat.
+	// 缓存的 UserSpaces 保存了合并配置的快照（包括 agents.defaults.model 和 provider 链）。
+	// 没有这步操作，在变更前加载的 agent 会一直看到过时的模型并在聊天中显示"no usable LLM provider"。
 	sc, scopeID := s.scopeForSave(r)
 	s.invalidateScope(sc, scopeID)
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// scopeForSave mirrors the scope-resolution logic in saveUserConfig so
-// callers can invalidate exactly the UserSpaces that were just touched.
+// scopeForSave 镜像 saveUserConfig 中的作用域解析逻辑，以便
+// 调用者可以精确地使刚被触及的 UserSpaces 失效。
 func (s *Server) scopeForSave(r *http.Request) (string, string) {
 	ident, ok := authIdentity(r)
 	if ok && ident.Role == "super_admin" {
@@ -622,10 +587,9 @@ func (s *Server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, runProviderTest(r.Context(), req))
 }
 
-// handleTestStoredProvider runs the same connection check, but reads the
-// apiKey + apiBase + apiType + authType from a saved provider row instead
-// of taking them from the request body. Lets the Edit dialog test against
-// the stored secret so users don't have to re-paste the key on every edit.
+// handleTestStoredProvider 运行相同的连接检查，但从已保存的 provider 行中读取
+// apiKey + apiBase + apiType + authType，而不是从请求体中获取。
+// 让编辑对话框针对存储的密钥进行测试，这样用户不必在每次编辑时重新粘贴密钥。
 func (s *Server) handleTestStoredProvider(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	rec, err := s.dataStore.GetConfig(r.Context(), id)
@@ -633,19 +597,16 @@ func (s *Server) handleTestStoredProvider(w http.ResponseWriter, r *http.Request
 		jsonResponse(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
 		return
 	}
-	// Test = read-equivalent: any user that can read the row can verify
-	// it works. They'll be using it via their agent runtime anyway, so a
-	// dashboard-side dry run shouldn't be more restrictive.
+	// 测试 = 读取等效：任何可以读取该行的用户都可以验证它是否有效。
+	// 他们无论如何都会通过其 agent 运行时使用它，因此仪表板端的试运行不应更严格。
 	if !s.authorizeScope(w, r, rec.LegacyScope(), rec.LegacyScopeID(), scopeRead) {
 		return
 	}
-	// The browser never receives the unmasked API key, so it stays
-	// server-side via the stored row. But everything else (apiBase,
-	// apiType, authType) is freely editable in the form and the user
-	// expects Test to exercise *what they typed*, not the saved row —
-	// otherwise tweaking the URL and clicking Test silently re-pings
-	// the old URL and reports green. Honor any overrides the client
-	// sends; fall back to the stored values when a field is omitted.
+	// 浏览器永远不会收到未掩码的 API 密钥，因此它通过存储的行保留在服务器端。
+	// 但其他所有内容（apiBase、apiType、authType）在表单中可自由编辑，
+	// 用户期望 Test 执行*他们输入的内容*，而不是保存的行 —
+	// 否则调整 URL 并单击 Test 会静默地重新 ping 旧 URL 并报告绿色。
+	// 当某个字段被省略时，采用客户端发送的任何覆盖；回退到存储的值。
 	var body struct {
 		Model    string  `json:"model"`
 		APIBase  *string `json:"apiBase,omitempty"`
@@ -678,17 +639,14 @@ func (s *Server) handleTestStoredProvider(w http.ResponseWriter, r *http.Request
 	}))
 }
 
-// runProviderTest issues a lightweight chat completion against the
-// upstream provider. Shared between the inline test (key supplied in
-// the request body, used during create / re-key) and the stored test
-// (key looked up server-side, used during edit).
+// runProviderTest 向上游 provider 发起轻量级聊天补全。
+// 在内联测试（请求体中提供密钥，在创建/重新密钥时使用）和存储测试
+//（服务器端查找密钥，在编辑时使用）之间共享。
 //
-// We're deliberately stricter than "HTTP 2xx = ok" because some
-// upstreams (one-api / new-api gateways, generic reverse proxies, even
-// a misconfigured nginx) happily return 200 with HTML on a wrong path.
-// A bare 2xx check there reports green for a URL that the runtime will
-// later 404 on. So after the request we also require the response to
-// look like a real Messages / ChatCompletion object.
+// 我们有意识地比"HTTP 2xx = ok"更严格，因为某些上游（one-api/new-api 网关、
+// 通用反向代理，甚至配置错误的 nginx）会在错误路径上愉快地返回 200 和 HTML。
+// 在这里仅检查 2xx 会在运行时稍后 404 的 URL 报告为绿色。
+// 因此在请求之后，我们还要求响应看起来像一个真正的 Messages / ChatCompletion 对象。
 func runProviderTest(ctx context.Context, req testProviderRequest) map[string]any {
 	base := provider.NormalizeAPIBase(req.APIBase, req.APIType)
 	var testURL string
@@ -742,9 +700,8 @@ func runProviderTest(ctx context.Context, req testProviderRequest) map[string]an
 	return map[string]any{"ok": true}
 }
 
-// validateProviderTestBody confirms the 2xx body is a real Messages /
-// ChatCompletion object rather than an HTML splash page or a generic
-// gateway "ok" payload. Returns nil if the shape matches.
+// validateProviderTestBody 确认 2xx 响应体是一个真正的 Messages / ChatCompletion 对象，
+// 而不是 HTML 启动页面或通用网关"ok"负载。如果形状匹配则返回 nil。
 func validateProviderTestBody(apiType string, body []byte) error {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
@@ -812,45 +769,39 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 type chatRequest struct {
 	AgentID   string `json:"agentId,omitempty"`
 	SessionID string `json:"sessionId"`
-	// ProjectID, when non-empty AND the session row doesn't yet exist,
-	// is the "this chat belongs to project X" hint the URL carries
-	// (`?project=<pid>`) before the first message. Once the row exists
-	// it's authoritative — the server reads project_id from the row
-	// and ignores any later hint.
+	// ProjectID，当非空且 session 行尚不存在时，
+	// 是 URL 在第一消息之前携带的"此聊天属于项目 X"提示（`?project=<pid>`）。
+	// 一旦行存在，它就是权威的 — 服务器从行中读取 project_id 并忽略任何后续提示。
 	ProjectID string `json:"projectId,omitempty"`
 	Message   string `json:"message"`
-	// Images carries data URLs / HTTPS URLs for image attachments. The
-	// web client historically sends them under `imageUrls` (camelCase)
-	// while the API path uses `images`; we accept both and merge below
-	// so server-side plumbing has one canonical slice. Without this the
-	// web's image_url content parts never reach the agent (empty slice
-	// → no ContentParts persisted → history reload shows no image, and
-	// vision LLMs see only the text breadcrumb).
+	// Images 携带用于图像附件的数据 URL / HTTPS URL。
+	// Web 客户端历史上在 `imageUrls`（驼峰式）下发送它们，
+	// 而 API 路径使用 `images`；我们两者都接受并在下面合并，
+	// 以便服务器端管道有一个规范的切片。没有这个，
+	// web 的 image_url 内容部分永远不会到达 agent（空切片
+	// → 没有 ContentParts 持久化 → 历史重载不显示图像，
+	// vision LLM 只看到文本面包屑）。
 	Images    []string `json:"images,omitempty"`
 	ImageURLs []string `json:"imageUrls,omitempty"`
-	// Attachments is the typed, general-purpose attachment field. Each
-	// entry can carry an optional Name which is sanitized and used as
-	// the on-disk filename so the LLM sees `report.pdf` instead of
-	// `image_3jk7l_0.pdf`. Unlike Images / ImageURLs, entries here are
-	// NOT inlined as vision content parts — they only land in
-	// /workspace and reach the LLM via the `[Attached: /workspace/X]`
-	// breadcrumb. Use Images / ImageURLs (not Attachments) when you
-	// want the bytes shown directly to a vision model.
+	// Attachments 是类型化的通用附件字段。每个条目可以携带一个可选的 Name，
+	// 该 Name 被清理并用作磁盘文件名，以便 LLM 看到 `report.pdf` 而不是
+	// `image_3jk7l_0.pdf`。与 Images / ImageURLs 不同，此处的条目
+	// 不会内联为 vision 内容部分 — 它们只进入 /workspace
+	// 并通过 `[Attached: /workspace/X]` 面包屑到达 LLM。
+	// 当你希望字节直接显示给视觉模型时，使用 Images / ImageURLs（而不是 Attachments）。
 	Attachments []attachmentRequest `json:"attachments,omitempty"`
 	Params      map[string]any      `json:"params,omitempty"`
 }
 
-// attachmentRequest is the wire form of a single attachment. URL is the
-// data: or http(s) URL; Name is the optional caller-supplied filename.
+// attachmentRequest 是单个附件的传输形式。URL 是 data: 或 http(s) URL；Name 是可选的调用者提供的文件名。
 type attachmentRequest struct {
 	URL  string `json:"url"`
 	Name string `json:"name,omitempty"`
 }
 
-// allAttachments flattens the three input shapes (Images, ImageURLs,
-// Attachments) into one ordered slice for materialization into
-// /workspace. Order: Images → ImageURLs → Attachments. Clients
-// normally pick one; mixing is allowed and not de-dup'd.
+// allAttachments 将三种输入形状（Images、ImageURLs、Attachments）
+// 扁平化为一个有序切片以物化到 /workspace。
+// 顺序：Images → ImageURLs → Attachments。客户端通常只选一个；允许混合且不进行去重。
 func (r chatRequest) allAttachments() []agent.Attachment {
 	n := len(r.Images) + len(r.ImageURLs) + len(r.Attachments)
 	if n == 0 {
@@ -869,15 +820,12 @@ func (r chatRequest) allAttachments() []agent.Attachment {
 	return out
 }
 
-// inlineImageURLs returns just the URLs that should be inlined as
-// vision content parts (PhotoURLs → image_url content blocks). Only
-// the legacy image-only fields qualify: Images and ImageURLs are by
-// contract caller-asserted images, so wrapping them as image_url is
-// safe. The newer Attachments field is general-purpose (pdf / zip /
-// txt are all legal), and feeding a non-image URL to provider vision
-// channels fails the whole turn upstream (Anthropic returns 400 for
-// `{type:image, source:{type:url, url:<pdf>}}`). Attachments reach
-// the LLM via the `[Attached: /workspace/<file>]` breadcrumb instead.
+// inlineImageURLs 返回应内联为 vision 内容部分（PhotoURLs → image_url 内容块）的 URL。
+// 只有遗留的纯图像字段符合条件：Images 和 ImageURLs 按约定是调用者断言的图像，
+// 因此将它们包裹为 image_url 是安全的。较新的 Attachments 字段是通用的（pdf / zip / txt 都是合法的），
+// 将非图像 URL 提供给 provider 视觉通道会导致整个轮次失败（Anthropic 对
+// `{type:image, source:{type:url, url:<pdf>}}` 返回 400）。
+// Attachments 通过 `[Attached: /workspace/<file>]` 面包屑到达 LLM。
 func (r chatRequest) inlineImageURLs() []string {
 	if len(r.Images) == 0 && len(r.ImageURLs) == 0 {
 		return nil
@@ -888,31 +836,25 @@ func (r chatRequest) inlineImageURLs() []string {
 	return out
 }
 
-// preMaterialized reports whether the caller already uploaded the
-// attachments + prefixed `[Attached: /workspace/...]` breadcrumb into
-// the message. The web client does this end-to-end (uploadAgentFiles +
-// inline breadcrumb in chat/page.tsx); doing it again server-side
-// double-writes the file under a generated name and emits a second
-// breadcrumb, which the LLM reads as two distinct images and tries to
-// edit each separately. API callers that just send raw images via the
-// chat-completions extension have no breadcrumb, so the server has to
-// materialize on their behalf.
+// preMaterialized 报告调用者是否已将附件 + 前缀 `[Attached: /workspace/...]` 面包屑
+// 上传到消息中。Web 客户端端到端地执行此操作（uploadAgentFiles + chat/page.tsx 中的内联面包屑）；
+// 在服务器端再次执行会以生成的名称重复写入文件并发出第二个面包屑，
+// 这会使 LLM 读取为两个不同的图像并尝试分别编辑每个。
+// 仅通过聊天补全扩展发送原始图像的 API 调用者没有面包屑，因此服务器必须代表他们物化。
 func (r chatRequest) preMaterialized() bool {
 	return strings.HasPrefix(r.Message, "[Attached:")
 }
 
-// annotateMessageWithAttachments prepends one `[Attached: /workspace/<file>]`
-// line per attachment to the user message — same breadcrumb format the web
-// UI uses (see web/src/app/agents/[id]/chat/page.tsx:639-645), so the wire
-// shape the LLM sees is identical regardless of whether the turn arrived
-// via the web chat or the chat API. provider.StripAttachedPrefix scrubs
-// these tags from stored history before they hit UI bubbles / page titles.
+// annotateMessageWithAttachments 在每个附件前向用户消息添加一行
+// `[Attached: /workspace/<file>]` — 与 Web UI 使用的相同面包屑格式
+//（参见 web/src/app/agents/[id]/chat/page.tsx:639-645），
+// 因此 LLM 看到的传输形状无论轮次是通过 Web 聊天还是聊天 API 到达都是相同的。
+// provider.StripAttachedPrefix 在存储的历史记录到达 UI 气泡/页面标题之前清除这些标签。
 //
-// We deliberately do NOT add a trailing "do not probe" block. An earlier
-// pass tried that — but the explicit negative directive triggered the
-// opposite of its intent (models reflexively `which`/`ls`/`file`'d the
-// path "to confirm" before using it). The web path proves a single bare
-// breadcrumb is enough; mirror that exactly.
+// 我们有意识地不添加尾随的"do not probe"块。早期的一次尝试这样做了 —
+// 但显式的负面指令引起了与预期相反的效果（模型反射性地
+// `which`/`ls`/`file` 路径"以确认"然后才使用它）。
+// Web 路径证明单个裸面包屑就足够了；精确镜像即可。
 func annotateMessageWithAttachments(message string, paths []string) string {
 	if len(paths) == 0 {
 		return message
@@ -955,13 +897,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"reply": reply})
 }
 
-// handleChatSteer buffers a message into an in-flight turn for the
-// session. It does NOT open a stream or emit an event — the running
-// turn (started by the earlier /api/chat/stream POST) folds the message
-// in between tool rounds and emits the "steer" event on its existing
-// SSE. 200 {"buffered":true} when a turn was active; 409
-// {"buffered":false} when none is running, so the client falls back to
-// a normal /api/chat/stream send.
+// handleChatSteer 将一个消息缓冲到正在进行的轮次中。
+// 它不会打开流或发出事件 — 正在运行的轮次（由先前的 /api/chat/stream POST 启动）
+// 在工具轮次之间折叠该消息并在其现有的 SSE 上发出 "steer" 事件。
+// 当有活跃轮次时返回 200 {"buffered":true}；没有运行时返回 409 {"buffered":false}，
+// 以便客户端回退到普通的 /api/chat/stream 发送。
 func (s *Server) handleChatSteer(w http.ResponseWriter, r *http.Request) {
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -988,14 +928,12 @@ func (s *Server) handleChatSteer(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusConflict, map[string]any{"buffered": false})
 }
 
-// agentTurnTimeout is the upper bound on how long an agent goroutine
-// is allowed to run after the client connection drops. Bumped to 45m
-// after fan-out delegate_task work (6 parallel subagents × ~10m each
-// driving camoufox-cli) routinely blew through the prior 15m budget
-// in the middle of a Chat call, surfacing as "context deadline
-// exceeded" to every sibling at once. 45m is comfortably above a
-// realistic max-parallel fan-out with browser automation; still
-// bounded so a genuine runaway loop doesn't pin a goroutine forever.
+// agentTurnTimeout 是客户端连接断开后允许 agent goroutine 运行的上限。
+// 在扇出 delegate_task 工作（6 个并行子 agent × 每个约 10 分钟驱动 camoufox-cli）
+// 在 Chat 调用中间常规性地突破之前 15m 预算后，提升到 45m，
+// 立即向所有兄弟显示"context deadline exceeded"。
+// 45m 舒适地超出带有浏览器自动化的实际最大并行扇出；
+// 仍然有边界，因此真正的失控循环不会永久占用 goroutine。
 const agentTurnTimeout = 45 * time.Minute
 
 func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
@@ -1022,9 +960,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	// Defeat nginx / Cloudflare buffering of long-lived responses; the
-	// agent loop emits chunks at human-typing pace and we want them on
-	// the wire immediately, not held until the response closes.
+	// 击败 nginx / Cloudflare 对长寿命响应的缓冲；
+	// agent 循环以人类打字速度发出块，我们希望它们立即在线路上传输，
+	// 而不是保持到响应关闭。
 	w.Header().Set("X-Accel-Buffering", "no")
 	flusher.Flush()
 	atts := req.allAttachments()
@@ -1036,67 +974,58 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		msgText = annotateMessageWithAttachments(req.Message, paths)
 	}
 
-	// Subscribe to the hub BEFORE starting the agent so we don't race
-	// the first emitted event. The hub buffers in-flight events so
-	// dispatch from emitEvent never blocks even if we're slow to drain.
+	// 在启动 agent 之前订阅 hub，这样我们就不会与第一个发出的事件竞争。
+	// hub 缓冲进行中的事件，因此 emitEvent 的分发即使我们消耗缓慢也永远不会阻塞。
 	hub := s.chatEventHub()
 	agentID := ag.Name()
 	sub, unsubscribe := hub.Subscribe(uid, agentID, req.SessionID)
 	defer unsubscribe()
 
-	// Detach the agent's ctx from the request: when the browser tab
-	// disconnects (refresh, close, network blip) we want the agent to
-	// keep running so its already-paid-for LLM call finishes and the
-	// reply lands in session_events. The 15-minute cap is the only thing
-	// that can kill it.
+	// 从请求中分离 agent 的 ctx：当浏览器标签页断开连接（刷新、关闭、网络抖动）时，
+	// 我们希望 agent 继续运行，以便其已付费的 LLM 调用完成并且回复记录在 session_events 中。
+	// 15 分钟的上限是唯一可以杀死它的因素。
 	agentCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), agentTurnTimeout)
-	// cancel lives on the handler, not the agent goroutine: when a slash
-	// queues a continuation we keep the SSE open past HandleMessage's
-	// return, and inner-scope cancel would tear down agentCtx before the
-	// continuation's events can reach this handler's safety-net check.
+	// cancel 活在 handler 上，而不是 agent goroutine 上：当斜杠命令
+	// 排队一个延续时，我们在 HandleMessage 返回之后保持 SSE 打开，
+	// 而内部作用域的 cancel 会在延续的事件到达此 handler 的安全网检查之前拆除 agentCtx。
 	defer cancel()
 	agentCtx = agent.ContextWithStream(agentCtx, nil, s.dataStore, hub, uid, agentID, req.SessionID)
 
 	agentDone := make(chan struct{})
 	go func() {
 		defer close(agentDone)
-		// events param stays nil — emitEvent now fans out via the
-		// streamCtx attached above (persist + hub). The legacy channel
-		// path is no longer needed for this handler.
+		// events 参数保持为 nil — emitEvent 现在通过上面附加的
+		// streamCtx 扇出（persist + hub）。此 handler 不再需要旧的通道路径。
 		_ = ag.HandleWebChatStream(agentCtx, req.SessionID, req.ProjectID, uid, msgText, imageURLs, req.Params, nil)
 	}()
 
-	// Heartbeat keeps proxies (nginx 60s default, Cloudflare 100s, ELB
-	// 60s) from killing an idle SSE connection while the agent is
-	// thinking but not yet emitting content.
+	// Heartbeat 防止代理（nginx 60s 默认、Cloudflare 100s、ELB 60s）
+	// 在 agent 正在思考但尚未发出内容时杀死空闲的 SSE 连接。
 	keepalive := time.NewTicker(30 * time.Second)
 	defer keepalive.Stop()
 
 	clientGone := r.Context().Done()
-	// turnPending flips on when the slash handler reports it queued a
-	// continuation via bus.Inbound (`turn_pending` event). The POST
-	// goroutine's HandleMessage has already returned, but the real
-	// reply is still 10–15s away on a different goroutine — we keep
-	// the SSE open so the browser's typing indicator stays visible
-	// and the continuation's content_delta/content events stream into
-	// the same connection. Cleared when the continuation's own `done`
-	// arrives, at which point the loop returns normally.
+	// turnPending 在斜杠命令 handler 报告它通过 bus.Inbound 排队了
+	// 一个延续（`turn_pending` 事件）时打开。
+	// POST goroutine 的 HandleMessage 已经返回，但真正的回复仍在
+	// 不同的 goroutine 上 10-15 秒外 — 我们保持 SSE 打开，
+	// 以便浏览器的打字指示器保持可见，延续的 content_delta/content 事件
+	// 流入同一个连接。当延续自己的 `done` 到达时清除，
+	// 此时循环正常返回。
 	turnPending := false
 	for {
 		select {
 		case <-clientGone:
-			// Client dropped; the agent goroutine keeps running on
-			// its detached ctx and persists every event it emits.
-			// User reloading the chat page will pick up the rest via
-			// /api/chat/subscribe?since=N.
+			// 客户端断开；agent goroutine 在其分离的 ctx 上继续运行
+			// 并持久化它发出的每个事件。重新加载聊天页面的用户
+			// 将通过 /api/chat/subscribe?since=N 获取其余内容。
 			return
 		case <-agentDone:
-			// Race: HandleMessage publishes `turn_pending` to the hub
-			// AND `defer close(agentDone)` fires from the same goroutine.
-			// Go's select picks at random when both are ready, so
-			// agentDone can win even when a turn_pending event is
-			// sitting in the sub buffer. Drain pending events first to
-			// make the decision deterministic.
+			// 竞争：HandleMessage 向 hub 发布 `turn_pending`
+			// 并且 `defer close(agentDone)` 从同一个 goroutine 触发。
+			// 当两者都就绪时，Go 的 select 随机选择，因此即使
+			// turn_pending 事件在 sub 缓冲区中，agentDone 也可能获胜。
+			// 首先排空待处理事件以使决策确定性。
 		drain:
 			for {
 				select {
@@ -1117,18 +1046,16 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if turnPending {
-				// HandleMessage returned silent after queueing a
-				// continuation. Don't close; wait for the continuation's
-				// `done` event over the hub instead. agentCtx.Done()
-				// (15-min timeout) is the upper bound if it never lands.
+				// HandleMessage 在排队一个延续后静默返回。
+				// 不要关闭；等待延续的 `done` 事件通过 hub。
+				// agentCtx.Done()（15 分钟超时）如果它永远不到达则是上限。
 				agentDone = nil
 				continue
 			}
 			return
 		case <-agentCtx.Done():
-			// Safety net for the turnPending path above: bail out at
-			// the agent context's hard timeout even if no `done` event
-			// ever arrives.
+			// 上面 turnPending 路径的安全网：
+			// 即使没有 `done` 事件到达，也在 agent 上下文硬超时时退出。
 			return
 		case <-keepalive.C:
 			fmt.Fprintf(w, ": ping\n\n")
@@ -1149,11 +1076,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// forwardEvent writes one EventEnvelope to the SSE response. Includes
-// seq inline in the JSON payload (in addition to the SSE `id:` line)
-// so the fetch-based parser used by the frontend's POST sendChatStream
-// can dedup against the parallel /api/chat/subscribe SSE connection.
-// Without this dedup, every chunk renders twice during an active turn.
+// forwardEvent 将一个 EventEnvelope 写入 SSE 响应。
+// 在 JSON 负载中包含 seq 内联（除了 SSE `id:` 行），
+// 以便前端 POST sendChatStream 使用的基于 fetch 的解析器
+// 可以针对并行的 /api/chat/subscribe SSE 连接进行去重。
+// 没有这个去重，每个块在活跃轮次期间会渲染两次。
 func forwardEvent(w http.ResponseWriter, flusher http.Flusher, env agent.EventEnvelope) {
 	payload := map[string]any{
 		"seq":  env.Seq,
@@ -1170,28 +1097,22 @@ func forwardEvent(w http.ResponseWriter, flusher http.Flusher, env agent.EventEn
 	flusher.Flush()
 }
 
-// handleChatSubscribe holds an SSE connection open for one (agent,
-// session) pair and forwards three kinds of traffic:
+// handleChatSubscribe 为一对（agent, session）保持一个 SSE 连接打开，
+// 并转发三种类型的流量：
 //
-//  1. Replay: session_events rows with seq > since (or > Last-Event-ID)
-//     that the client missed before connecting. Lets a freshly
-//     reloaded page pick up an in-flight turn without the rest of the
-//     reply disappearing.
+//  1. Replay：seq > since（或 > Last-Event-ID）的 session_events 行，
+//     客户端在连接之前错过了。让刚重新加载的页面拾取进行中的轮次，而无需回复的其余部分消失。
 //
-//  2. Live agent chat events from the hub — every emitEvent call from
-//     the agent loop fans through here. This covers both the
-//     synchronous POST /api/chat/stream path AND turns started by
-//     other tabs / cron firings, so any open chat panel sees them
-//     regardless of who triggered the work.
+//  2. 来自 hub 的实时 agent 聊天事件 — agent 循环中的每个 emitEvent 调用
+//     都通过这里扇出。这涵盖同步 POST /api/chat/stream 路径
+//     以及其他标签页/cron 触发启动的轮次，因此任何打开的聊天面板都能看到它们，
+//     无论谁触发了工作。
 //
-//  3. Legacy WebChannel bus messages — cron-fired final replies that
-//     route through bus.Outbound rather than the chat-event path.
-//     Kept so we don't lose pre-existing functionality during the
-//     transition.
+//  3. 遗留的 WebChannel bus 消息 — 通过 bus.Outbound 路由的 cron 触发最终回复，
+//     而不是聊天事件路径。保留以免我们在过渡期间丢失现有的功能。
 //
-// Auth gating reuses resolveAgent, so the caller must already have
-// permission to chat with this agent. The subscription doesn't
-// generate any traffic on its own — closes are silent (client gone).
+// Auth 门控重用 resolveAgent，因此调用者必须已经有权限与此 agent 聊天。
+// 订阅本身不会产生任何流量 — 关闭是静默的（客户端离开）。
 func (s *Server) handleChatSubscribe(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agentId")
 	sessionID := r.URL.Query().Get("sessionId")
@@ -1217,13 +1138,12 @@ func (s *Server) handleChatSubscribe(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
-	// Initial flush so the client EventSource fires `open` immediately.
+	// 初始刷新以便客户端 EventSource 立即触发 `open`。
 	fmt.Fprintf(w, ": ok\n\n")
 	flusher.Flush()
 
-	// Resume point: prefer Last-Event-ID (browser-managed reconnect),
-	// fall back to ?since=N for callers that pass it explicitly. -1
-	// means "stream live only, no replay".
+	// 恢复点：优先使用 Last-Event-ID（浏览器管理的重连），
+	// 回退到显式传递它的调用者的 ?since=N。 -1 表示"仅实时流，无回放"。
 	sinceSeq := int64(-1)
 	if hdr := r.Header.Get("Last-Event-ID"); hdr != "" {
 		if v, err := strconv.ParseInt(hdr, 10, 64); err == nil {
@@ -1237,13 +1157,12 @@ func (s *Server) handleChatSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hub := s.chatEventHub()
-	// Subscribe BEFORE replay so any event that lands while we're
-	// scanning the DB ends up either in the replayed range OR in the
-	// live channel — never both, never lost.
+	// 在回放之前订阅，这样在我们扫描数据库时到达的任何事件
+	// 最终要么在回放范围内，要么在实时通道中 — 永远不会两者都，永远不会丢失。
 	live, unsubscribeLive := hub.Subscribe(uid, agentID, sessionID)
 	defer unsubscribeLive()
 
-	// Replay missed events from the persistent log.
+	// 从持久化日志中回放错过的事件。
 	if s.dataStore != nil {
 		rows, err := s.dataStore.ListSessionEventsSince(r.Context(), uid, agentID, sessionID, sinceSeq)
 		if err != nil {
@@ -1263,9 +1182,8 @@ func (s *Server) handleChatSubscribe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Legacy webChan path: cron-fired bus.Outbound messages. Kept until
-	// the cron path is refactored to emit through the chat-event hub
-	// (then this can go away).
+	// 遗留的 webChan 路径：cron 触发的 bus.Outbound 消息。保留直到
+	// cron 路径被重构为通过聊天事件 hub 发出（然后这可以消失）。
 	var outbound <-chan bus.OutboundMessage
 	var unsubscribeOutbound func() = func() {}
 	if s.webChan != nil {
@@ -1288,21 +1206,16 @@ func (s *Server) handleChatSubscribe(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			// content_delta is the high-volume token-by-token stream
-			// that drives the active turn's bubble. It is intentionally
-			// NOT persisted (see emitEvent), arrives with seq=-1, and is
-			// already delivered to the initiating tab via the POST
-			// /api/chat/stream subscription on the same hub. Forwarding
-			// it here would double-render on the active tab; reloaders
-			// who join mid-turn miss the partial reveal but still get
-			// the trailing `content` event with the full text.
+			// content_delta 是驱动活跃轮次气泡的高吞吐量逐 token 流。
+			// 它有意识地被 NOT 持久化（参见 emitEvent），以 seq=-1 到达，
+			// 并且已经通过同一 hub 上的 POST /api/chat/stream 订阅传递给了发起标签页。
+			// 在这里转发它会在活跃标签页上双倍渲染；中途加入的重新加载者
+			// 会错过部分揭示但仍然获得包含完整文本的尾随 `content` 事件。
 			if env.Event.Type == "content_delta" {
 				continue
 			}
-			// Drop replay-overlap events: any event with seq <= the
-			// highest seq we already streamed during replay. Without
-			// this, a browser that reconnects at exactly the wrong
-			// moment would render the same content chunk twice.
+			// 丢弃回放重叠事件：任何 seq <= 我们在回放期间已经流式传输的最高 seq 的事件。
+			// 没有这个，在完全错误的时刻重新连接的浏览器会渲染相同的内容块两次。
 			if env.Seq >= 0 && env.Seq <= sinceSeq {
 				continue
 			}
@@ -1346,15 +1259,13 @@ func (s *Server) handleChatSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleChatTodo reads the per-session todo.md the agent maintains and
-// returns it as both raw markdown and a parsed checklist. We resolve
-// the session key → (chatID, projectID) here so the frontend doesn't
-// need to know the on-disk path layout (`sessions/<chat>/todo.md` vs
-// `projects/<pid>/<chat>/todo.md`).
+// handleChatTodo 读取 agent 维护的每个会话 todo.md，
+// 并同时以原始 markdown 和解析的检查列表形式返回。
+// 我们在这里解析 session key → (chatID, projectID)，
+// 以便前端不需要知道磁盘路径布局（`sessions/<chat>/todo.md` vs `projects/<pid>/<chat>/todo.md`）。
 //
-// A missing file is not an error — fresh sessions or runs that don't
-// use the todo convention return {items: [], raw: ""}. Frontend hides
-// the panel when items is empty.
+// 缺少的文件不是错误 — 不使用 todo 约定的新会话或运行返回 {items: [], raw: ""}。
+// 当 items 为空时前端隐藏面板。
 func (s *Server) handleChatTodo(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agentId")
 	sessionID := r.URL.Query().Get("sessionId")
@@ -1389,9 +1300,8 @@ func (s *Server) handleChatTodo(w http.ResponseWriter, r *http.Request) {
 
 	raw, err := s.readWorkspaceFileBytes(r.Context(), ag.Name(), relPath)
 	if err != nil {
-		// 404 / not-yet-written / FS miss — return empty rather than
-		// surfacing the error; the panel just stays hidden until the
-		// agent writes one.
+		// 404 / 未写入 / FS 未命中 — 返回空而不是显示错误；
+		// 面板保持隐藏，直到 agent 写入一个。
 		jsonResponse(w, http.StatusOK, map[string]any{"items": []any{}, "raw": ""})
 		return
 	}
@@ -1402,11 +1312,9 @@ func (s *Server) handleChatTodo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// readWorkspaceFileBytes reads a single agent-relative file via the
-// workspace store, falling back to the local FS layout when no store
-// is wired. Bare path-string interface used only by the todo endpoint
-// — workspaceStore.Get expects (projectID, chatID) but here we already
-// baked them into the path, so pass empties.
+// readWorkspaceFileBytes 通过 workspace store 读取单个 agent 相对路径的文件，
+// 当没有配置 store 时回退到本地 FS 布局。裸路径字符串接口仅由 todo 端点使用
+// — workspaceStore.Get 期望 (projectID, chatID)，但这里我们已经将它们烘焙到路径中，因此传递空字符串。
 func (s *Server) readWorkspaceFileBytes(ctx context.Context, agentID, relPath string) ([]byte, error) {
 	if s.workspaceStore != nil {
 		rc, err := s.workspaceStore.Get(ctx, agentID, "", "", relPath)
@@ -1428,25 +1336,21 @@ func (s *Server) readWorkspaceFileBytes(ctx context.Context, agentID, relPath st
 	return os.ReadFile(abs)
 }
 
-// parseTodoMarkdown extracts checkbox lines from a todo.md body and
-// returns them as structured items. Conventions:
+// parseTodoMarkdown 从 todo.md 主体中提取复选框行并以结构化条目返回。约定：
 //
-//   - [ ] text   → pending
-//   - [x] text   → completed
-//   - [X] text   → completed (case-insensitive)
+//   - [ ] text   → 待处理
+//   - [x] text   → 已完成
+//   - [X] text   → 已完成（不区分大小写）
 //
-// Anything else (heading lines, blank lines, non-checkbox bullets) is
-// ignored — todo.md doubles as a human-readable plan document, so we
-// don't force a rigid schema. Indented checkboxes are NOT supported
-// in v1 (no sub-tasks); flatten them in the model's nudge if needed.
+// 其他任何内容（标题行、空行、非复选框列表项）被忽略 —
+// todo.md 同时作为人类可读的计划文档，因此我们不强制严格的 schema。
+// v1 中不支持缩进复选框（无子任务）；如果需要，在模型的提示中扁平化。
 //
-// Duplicate-text entries get merged: first occurrence wins the slot,
-// `done` is OR'd across all occurrences. This is defensive — the
-// convention says use edit_file to flip a single item, but if the
-// model accidentally re-runs write_file and stacks old + new lists,
-// we'd otherwise show the same step twice. Progress (done=true) is
-// sticky on merge so a later pending duplicate can't regress an
-// already-checked item.
+// 重复文本的条目被合并：第一次出现赢得槽位，
+// `done` 在所有出现之间进行 OR。这是防御性的 —
+// 约定说使用 edit_file 翻转单个项目，但如果模型意外重新运行 write_file 并堆叠旧列表和新列表，
+// 我们否则会显示相同的步骤两次。进度（done=true）在合并时是粘性的，
+// 因此后面的待处理重复项不能回退已检查的项目。
 func parseTodoMarkdown(s string) []map[string]any {
 	out := []map[string]any{}
 	idx := map[string]int{}
@@ -1488,12 +1392,11 @@ func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{"history": ag.WebChatHistory(sessionID)}
-	// latestEventSeq is the resume cursor for /api/chat/subscribe — the
-	// client opens that endpoint with `since=<latestEventSeq>` so a
-	// fresh page load picks up only deltas it hasn't already rendered.
-	// Best-effort: a missing/zero value just means "stream live only,
-	// no replay", which is the right fallback when the session has no
-	// in-flight turn or when session_events isn't backfilled.
+	// latestEventSeq 是 /api/chat/subscribe 的恢复游标 —
+	// 客户端用 `since=<latestEventSeq>` 打开该端点，
+	// 以便新页面加载只拾取尚未渲染的增量。
+	// 尽力而为：丢失/零值仅表示"仅实时流，无回放"，
+	// 当会话没有进行中的轮次或 session_events 未被回填时，这是正确的回退。
 	if s.dataStore != nil {
 		uid := s.effectiveUserID(r)
 		if uid != "" {
@@ -1516,12 +1419,10 @@ func (s *Server) handleChatSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
-	// Body-or-query for agentId — the frontend sends it in the JSON body
-	// (see renameChatSession in web/src/lib/api.ts), matching the
-	// handleMoveSessionProject convention. The earlier query-only path
-	// always saw "" and bailed at resolveAgent with a silent 404, so
-	// "Edit chat title" looked like a no-op even though the dialog
-	// submitted cleanly.
+	// agentId 来自 body 或 query — 前端在 JSON body 中发送它
+	//（参见 web/src/lib/api.ts 中的 renameChatSession），与 handleMoveSessionProject 约定一致。
+	// 以前的仅 query 路径总是看到 "" 并在 resolveAgent 处以静默 404 退出，
+	// 因此即使对话框正常提交，"Edit chat title"也看起来像无操作。
 	agentID := r.URL.Query().Get("agentId")
 	var req struct {
 		AgentID string `json:"agentId"`
@@ -1560,23 +1461,19 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleMoveSessionProject reassigns one chat to a different project
-// (or detaches it back to the loose-chat list when projectId is "").
-// Backs the sidebar drag-and-drop affordance: dragging a chat row
-// onto a project header / out of one fires this endpoint.
+// handleMoveSessionProject 将一个聊天重新分配给不同的项目
+//（或在 projectId 为 "" 时将其分离回松散聊天列表）。
+// 支持侧边栏拖放功能：将聊天行拖到项目标题上/从项目标题拖出会触发此端点。
 //
-// Request body: { "agentId": "...", "projectId": "<pid>" | "" }
+// 请求体：{ "agentId": "...", "projectId": "<pid>" | "" }
 //
-// Side effects beyond the sessions.project_id flip:
-//   - Workspace files are moved between sessions/<sid>/ and
-//     projects/<pid>/<sid>/ so the next turn sees its own artifacts
-//     under the new scope. Empty source dir = no-op.
-//   - Any active sandbox bound to this chat is released so the
-//     replacement container starts with the new bind-mount path.
+// 除 sessions.project_id 翻转之外的副作用：
+//   - workspace 文件在 sessions/<sid>/ 和 projects/<pid>/<sid>/ 之间移动，
+//     以便下一个轮次在新作用域下看到自己的工件。空源目录 = 无操作。
+//   - 绑定到此聊天的任何活跃 sandbox 被释放，以便替换容器以新的绑定挂载路径启动。
 //
-// Returns 409 with code="destination_exists" when the target dir
-// already has files (defensive — session_keys are unique so this
-// shouldn't happen organically, but better than silent merge).
+// 当目标目录已有文件时返回 409，code="destination_exists"
+//（防御性 — session_keys 是唯一的，因此这不应自然发生，但比静默合并好）。
 func (s *Server) handleMoveSessionProject(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agentId")
 	var req struct {
@@ -1594,8 +1491,7 @@ func (s *Server) handleMoveSessionProject(w http.ResponseWriter, r *http.Request
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "agentId required"})
 		return
 	}
-	// Owner-only — moving a chat changes its workspace path, which a
-	// read-only viewer should never trigger.
+	// 仅拥有者 — 移动聊天会更改其 workspace 路径，只读查看器绝不应触发。
 	if rec := s.requireAgentOwner(w, r, agentID); rec == nil {
 		return
 	}
@@ -1603,8 +1499,8 @@ func (s *Server) handleMoveSessionProject(w http.ResponseWriter, r *http.Request
 		return
 	}
 	uid := s.effectiveUserID(r)
-	// Validate the target project exists and belongs to this caller.
-	// Empty projectId is the "detach" case — always allowed.
+	// 验证目标项目存在且属于此调用者。
+	// 空的 projectId 是"分离"情况 — 始终允许。
 	if req.ProjectID != "" && s.dataStore != nil {
 		p, err := s.dataStore.GetProject(r.Context(), uid, agentID, req.ProjectID)
 		if err != nil {
@@ -1635,16 +1531,14 @@ func (s *Server) handleMoveSessionProject(w http.ResponseWriter, r *http.Request
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleFeishuWebhook receives Feishu / Feishu event POSTs. The route is
-// public (Feishu doesn't auth via bkclaw bearer); per-event security
-// is enforced inside the Feishu adapter by validating the payload's
-// header.token against the verification token stored at connect time.
+// handleFeishuWebhook 接收飞书 / Feishu 事件 POST。路由是公开的
+//（飞书不通过 bkclaw bearer 认证）；每事件安全性
+// 在飞书适配器内部通过验证负载的 header.token 与连接时存储的验证令牌来强制执行。
 //
-// Hands the raw body to the gateway (via type-asserted dispatcher
-// hook) which finds the right adapter by accountID. The adapter
-// returns an HTTP body + status — handler just relays it. URL
-// verification challenges and real events both go through this same
-// path; the adapter discriminates internally.
+// 将原始 body 交给网关（通过类型断言的 dispatcher hook），
+// 后者通过 accountID 找到正确的适配器。适配器返回 HTTP body + status —
+// handler 仅中继它。URL 验证挑战和真实事件都通过此相同路径；
+// 适配器内部进行区分。
 func (s *Server) handleFeishuWebhook(w http.ResponseWriter, r *http.Request) {
 	appID := r.PathValue("appId")
 	if appID == "" {
@@ -1676,14 +1570,13 @@ func (s *Server) handleFeishuWebhook(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(respBody)
 }
 
-// handleLINEWebhook receives LINE Messaging API event POSTs. The route
-// is public (LINE doesn't auth via bkclaw bearer); per-event security
-// comes from the HMAC-SHA256 signature in `x-line-signature` which the
-// adapter validates against channel_secret + the raw body.
+// handleLINEWebhook 接收 LINE Messaging API 事件 POST。路由是公开的
+//（LINE 不通过 bkclaw bearer 认证）；每事件安全性
+// 来自 `x-line-signature` 中的 HMAC-SHA256 签名，
+// 适配器根据 channel_secret + 原始 body 进行验证。
 //
-// Reads the body once, hands the raw bytes + signature to the gateway
-// dispatcher (re-encoding the JSON would change the bytes the HMAC was
-// computed over and break verification).
+// 读取 body 一次，将原始字节 + 签名交给网关 dispatcher
+//（重新编码 JSON 会改变计算 HMAC 所用的字节并破坏验证）。
 func (s *Server) handleLINEWebhook(w http.ResponseWriter, r *http.Request) {
 	accountID := r.PathValue("accountId")
 	if accountID == "" {
@@ -1811,6 +1704,6 @@ func generateRandomToken(length int) string {
 	return hex.EncodeToString(b)
 }
 
-// debugLog is used from various handlers for diagnostic events; kept as a
-// thin wrapper so handler files don't import slog directly.
+// debugLog 被各种 handler 用于诊断事件；作为薄包装保留，
+// 以便 handler 文件不直接导入 slog。
 func debugLog(msg string, kv ...any) { slog.Debug(msg, kv...) }

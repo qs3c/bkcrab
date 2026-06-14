@@ -19,9 +19,9 @@ var (
 	passwordRe   = regexp.MustCompile(`(?i)("password"\s*:\s*)"[^"]*"`)
 )
 
-// Scrub replaces PII patterns with placeholders.
+// Scrub 用占位符替换 PII 模式。
 func Scrub(text string) string {
-	// Order matters: longer/more specific patterns first
+	// 顺序很重要：先处理更长/更具体的模式
 	text = privateKeyRe.ReplaceAllString(text, "[PRIVATE_KEY]")
 	text = jwtRe.ReplaceAllString(text, "[TOKEN]")
 	text = apiKeyRe.ReplaceAllString(text, "[API_KEY]")
@@ -34,7 +34,7 @@ func Scrub(text string) string {
 	return text
 }
 
-// ScrubMessages redacts PII from message content fields.
+// ScrubMessages 从消息内容字段中删除 PII。
 func ScrubMessages(messages []provider.Message) []provider.Message {
 	out := make([]provider.Message, len(messages))
 	for i, m := range messages {
@@ -54,10 +54,10 @@ func ScrubMessages(messages []provider.Message) []provider.Message {
 	return out
 }
 
-// ContainsPII returns true if the text contains any detectable PII patterns.
+// ContainsPII 如果文本包含任何可检测的 PII 模式，则返回 true。
 func ContainsPII(text string) bool {
 	return Scrub(text) != text
 }
 
-// Suppress unused import warning.
+// 抑制未使用导入的警告。
 var _ = strings.TrimSpace

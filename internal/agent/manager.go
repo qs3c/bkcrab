@@ -15,19 +15,18 @@ import (
 	"github.com/qs3c/bkclaw/internal/workspace"
 )
 
-// providerForAgent picks an LLM provider for a single agent. Resolution:
+// providerForAgent 为单个代理选择一个 LLM 提供商。解析：
 //
-//  1. Parse `rc.Model` as "<providerKey>/<modelId>".
-//  2. Look up `rc.Providers[providerKey]`. `Providers` is the merged view
-//     (global ← agent.json), so agent-exclusive providers shadow global
-//     ones with the same key.
-//  3. Fall back to the shared provider (the one the Manager/UserSpace
-//     picked from global defaults) so old deployments without per-agent
-//     providers keep working.
+//  1. 将 `rc.Model` 解析为 "<providerKey>/<modelId>"。
+//  2. 查找 `rc.Providers[providerKey]`。`Providers` 是合并后的视图
+//     （全局 ← agent.json），所以代理独占的提供商会遮蔽具有相同键的
+//     全局提供商。
+//  3. 回退到共享提供商（Manager/UserSpace 从全局默认值中选择的），
+//     使没有每个代理提供商的旧部署保持工作。
 //
-// This is what makes per-agent credentials real at runtime — each agent
-// builds its own provider.Provider from its own API key+base, not the
-// user-space-wide one.
+// 这就是使每个代理的凭证在运行时变真实的方式——每个代理从其自己的
+// API 密钥+基础 URL 构建自己的 provider.Provider，而不是使用用户空间
+// 范围的提供商。
 func providerForAgent(rc config.ResolvedAgent, shared provider.Provider) provider.Provider {
 	parts := strings.SplitN(rc.Model, "/", 2)
 	if len(parts) == 2 {
@@ -38,7 +37,7 @@ func providerForAgent(rc config.ResolvedAgent, shared provider.Provider) provide
 	return shared
 }
 
-// ManagerOption configures optional Manager behavior.
+// ManagerOption 配置可选的 Manager 行为。
 type ManagerOption func(*managerOpts)
 
 type managerOpts struct {
@@ -59,61 +58,57 @@ func WithMemoryStore(st MemoryStore) ManagerOption {
 	return func(o *managerOpts) { o.memoryStore = st }
 }
 
-// WithUserID tags every agent the Manager loads with the owning user, so
-// store-backed Memory + Session calls scope rows by user_id. UserSpace
-// passes the resolved user; local-mode gateway uses config.DefaultUserID.
+// WithUserID 用拥有者用户标记 Manager 加载的每个代理，使基于存储的
+// Memory + Session 调用按 user_id 作用域行。UserSpace 传递已解析的用户；
+// 本地模式网关使用 config.DefaultUserID。
 func WithUserID(userID string) ManagerOption {
 	return func(o *managerOpts) { o.userID = userID }
 }
 
-// WithWorkspaceStore installs a durable blob store on every agent's tool
-// registry so file operations (write_file / read_file / list_dir) land in
-// shared storage instead of pod-local filesystem.
+// WithWorkspaceStore 在每个代理的工具注册表上安装一个持久的 blob 存储，
+// 使文件操作（write_file / read_file / list_dir）落在共享存储中，而
+// 不是 Pod 本地文件系统。
 func WithWorkspaceStore(ws workspace.Store) ManagerOption {
 	return func(o *managerOpts) { o.workspaceStore = ws }
 }
 
-// WithDataStore exposes the platform's relational store to agents. The
-// cron tool needs it to persist scheduled jobs that the cron.Scheduler
-// later picks up; without it create_cron_job is omitted from the
-// agent's tool list and time-bound requests fall back to natural-
-// language reminders in HEARTBEAT.md (which only get a lazy 30-minute
-// review and are wrong for short-fuse reminders).
+// WithDataStore 将平台的关系型存储暴露给代理。cron 工具需要它来持久化
+// cron.Scheduler 稍后拾取的定时任务；没有它，create_cron_job 会从代理的
+// 工具列表中省略，有时限的请求会回退到 HEARTBEAT.md 中的自然语言提醒
+// （这些提醒只有懒散的 30 分钟审查，对于短时效提醒来说是错误的）。
 func WithDataStore(st store.Store) ManagerOption {
 	return func(o *managerOpts) { o.dataStore = st }
 }
 
-// WithMeter installs the admin-level token meter on every agent so each
-// provider.Chat / ChatStream call records into token_usage_daily. Omit
-// to disable metering (tests, single-user dev runs).
+// WithMeter 在每个代理上安装管理员级别的令牌计量器，使每个
+// provider.Chat / ChatStream 调用记录到 token_usage_daily。省略以禁用
+// 计量（测试、单用户开发运行）。
 func WithMeter(m usage.Meter) ManagerOption {
 	return func(o *managerOpts) { o.meter = m }
 }
 
-// WithGlobalSkillsCfg propagates cfg.Skills (entries + agentEntries
-// holding skill apiKey/env per skill or per (agent,skill)) into agents
-// the manager constructs. Without this, buildAgent → NewAgent passes a
-// zero-value SkillsCfg and SkillsLoader.SkillEnvVars sees empty
-// entries — every skill runs without its configured FAL_KEY /
-// REPLICATE_API_TOKEN regardless of what's saved in the DB.
+// WithGlobalSkillsCfg 将 cfg.Skills（持有每个技能或每个（代理，技能）
+// 的 apiKey/env 的 entries + agentEntries）传播到管理器构建的代理中。
+// 没有这个，buildAgent → NewAgent 会传递零值 SkillsCfg，并且
+// SkillsLoader.SkillEnvVars 会看到空条目——每个技能都会在没有配置的
+// FAL_KEY / REPLICATE_API_TOKEN 的情况下运行，无论数据库中保存了什么。
 func WithGlobalSkillsCfg(cfg config.SkillsCfg) ManagerOption {
 	return func(o *managerOpts) { o.globalSkillsCfg = cfg }
 }
 
-// Manager loads and manages all agent instances.
+// Manager 加载并管理所有代理实例。
 type Manager struct {
 	agents       map[string]*Agent
 	defaultAgent *Agent
-	// opts is retained so AddAgent (hot-reload after onboard / agent
-	// create) can apply the same store wiring the constructor did.
-	// Without this the freshly-added agent's tool registry never gets
-	// SetSystemFileStore, so read_file falls through to host FS and
-	// 404s on identity files (SOUL/IDENTITY/...) that live only in DB.
+	// opts 被保留，以便 AddAgent（入职/代理创建后的热重载）可以应用
+	// 构造函数所做的相同存储连接。没有这个，新添加的代理的工具注册表
+	// 永远不会得到 SetSystemFileStore，所以 read_file 会落到主机 FS 并
+	// 对仅存在于数据库中的身份文件（SOUL/IDENTITY/...）返回 404。
 	opts managerOpts
 	uid  string
 }
 
-// NewManager creates agents from resolved configs.
+// NewManager 从解析后的配置创建代理。
 func NewManager(resolved []config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBus, opts ...ManagerOption) (*Manager, error) {
 	m := &Manager{
 		agents: make(map[string]*Agent),
@@ -142,7 +137,7 @@ func NewManager(resolved []config.ResolvedAgent, prov provider.Provider, mb *bus
 		)
 	}
 
-	// If only one agent, make it the default
+	// 如果只有一个代理，将其设为默认
 	if len(m.agents) == 1 {
 		for _, ag := range m.agents {
 			m.defaultAgent = ag
@@ -152,29 +147,27 @@ func NewManager(resolved []config.ResolvedAgent, prov provider.Provider, mb *bus
 	return m, nil
 }
 
-// buildAgent constructs an Agent and wires every store the Manager
-// was configured with. Shared between NewManager's bootstrap loop and
-// AddAgent's hot-reload path so a freshly-onboarded agent picks up the
-// same DB-backed identity / memory / workspace plumbing.
+// buildAgent 构造一个 Agent 并连接 Manager 配置的每个存储。
+// 在 NewManager 的引导循环和 AddAgent 的热重载路径之间共享，
+// 使新入职的代理获得相同的基于数据库的身份/内存/工作空间管道。
 func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBus) *Agent {
 	homeDir, _ := config.HomeDir()
-	// Pass the global SkillsCfg through so SkillsLoader sees the
-	// admin-UI-configured per-skill apiKey + env (and the per-agent
-	// override map). Plain NewAgent constructs the loader with a
-	// zero-value SkillsCfg, which is why FAL_KEY / REPLICATE_API_TOKEN
-	// were never reaching the sandbox.
+	// 传递全局 SkillsCfg，使 SkillsLoader 看到管理 UI 配置的每个技能的
+	// apiKey + env（以及每个代理的覆盖映射）。普通的 NewAgent 使用零值
+	// SkillsCfg 构造加载器，这就是 FAL_KEY / REPLICATE_API_TOKEN 从未
+	// 到达沙箱的原因。
 	ag := NewAgentWithSkillsCfg(rc, providerForAgent(rc, prov), mb, homeDir, m.opts.globalSkillsCfg)
 	ag.SetOwnerUserID(m.uid)
-	// Per-user skills bucket: chat-time `skills/...` writes route to
-	// ~/.bkclaw/users/<uid>/, where SkillsLoader's "personal" layer
-	// also scans (see SkillsLoader.WithUserID). Set userID on the
-	// registry up front (the systemFileStore branch below also sets
-	// it, but only when memoryStore is wired — without this hoist a
-	// non-cloud install would store-mirror skills under agentID
-	// instead of the per-user owner key, splitting the same skill's
-	// content between two store namespaces). Skipped on legacy /
-	// single-user installs where m.uid is empty — file.go falls back
-	// to systemRoot (agent home) so existing skill bundles still work.
+	// 每个用户的技能桶：聊天时“技能/...”将路由写入
+	// ~/.bkclaw/users/<uid>/，其中 SkillsLoader 的“个人”层
+	// 还进行扫描（请参阅 SkillsLoader.WithUserID）。设置用户ID
+	// 预先注册（下面的 systemFileStore 分支也设置
+	// 它，但仅当内存存储已连接时 - 没有这个葫芦
+	// 非云安装会将镜像技能存储在agentID下
+	// 而不是每个用户的所有者密钥，拆分相同的技能
+	// 两个商店命名空间之间的内容）。跳过旧版/
+	// 单用户安装，其中 m.uid 为空 — file.go 会回退
+	// 到 systemRoot（代理主页），以便现有的技能包仍然有效。
 	if m.uid != "" {
 		ag.registry.SetOwnerUserID(m.uid)
 		if base := userSkillsRootDir(m.uid); base != "" {
@@ -190,60 +183,60 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		ag.ctxBuilder.agentID = rc.ID
 		ag.ctxBuilder.userID = m.uid
 		ag.memoryStore = m.opts.memoryStore
-		// Identity files (SOUL/IDENTITY/USER/...) share the same DB
-		// store as memory so write_file from the agent ends up in
-		// the same rows the admin UI's Customize page reads.
+		// 身份文件（SOUL/IDENTITY/USER/...）共享相同的数据库
+		// 存储为内存，因此来自代理的 write_file 最终位于
+		// 管理 UI 的“自定义”页面读取的行相同。
 		ag.registry.SetSystemFileStore(m.opts.memoryStore, rc.ID)
-		// Tag the chatter (m.uid) for per-user files (USER.md /
-		// MEMORY.md) and the agent's owner (rc.UserID) for identity
-		// files (SOUL.md / IDENTITY.md / BOOTSTRAP.md / ...). Without
-		// the second call, the agent's BOOTSTRAP flow would write
-		// SOUL/IDENTITY/BOOTSTRAP under the chatter and the Customize
-		// page (keyed on the agent owner) would never see them.
+		// 为每个用户文件（USER.md /
+		// MEMORY.md) 和代理所有者 (rc.UserID) 的身份
+		// 文件（SOUL.md / IDENTITY.md / BOOTSTRAP.md / ...）。没有
+		// 第二次调用时，代理的 BOOTSTRAP 流程将写入
+		// SOUL/IDENTITY/BOOTSTRAP下的喋喋不休和Customize
+		// 页面（以代理所有者为关键字）永远不会看到它们。
 		ag.registry.SetOwnerUserID(m.uid)
 		ag.registry.SetAgentOwnerUserID(rc.UserID)
 	}
 	if m.opts.workspaceStore != nil {
 		ag.registry.SetWorkspaceStore(m.opts.workspaceStore, rc.ID)
-		// Also make the store available to SkillsLoader so object-store
-		// skills (global + per-agent) are hydrated on every turn. Without
-		// this, pods that didn't handle the original upload will never
-		// see a new skill.
+		// 还使该存储可供 SkillsLoader 使用，以便对象存储
+		// 技能（全局+每个代理）在每个回合都会得到补充。没有
+		// 这个，没有处理原始上传的 Pod 永远不会
+		// 看到一个新技能。
 		ag.workspaceStore = m.opts.workspaceStore
 		ag.agentID = rc.ID
-		// Refresh skills now that workspaceStore is wired — the initial
-		// NewAgent pass loaded only the filesystem, missing anything that
-		// lives only in OSS.
+		// 现在，workspaceStore 已联网，请刷新技能 — 最初的
+		// NewAgent pass 仅加载文件系统，缺少任何内容
+		// 只存在于 OSS 中。
 		ag.ReloadWorkspaceFiles()
 	}
 	if m.opts.dataStore != nil {
-		// Cron tools need the relational store to persist scheduled
-		// jobs; the closure also reads channel/chatID off the registry
-		// at execute time (bindSession stamps them per-turn) so the
-		// fired message routes back to the originating chat.
+		// Cron 工具需要关系存储来持久保存计划
+		// 工作；关闭还会从注册表中读取频道/聊天ID
+		// 在执行时（bindSession 每回合都会标记它们），因此
+		// 触发的消息路由回原始聊天。
 		tools.RegisterCronTools(ag.registry, m.opts.dataStore, m.uid, rc.ID)
-		// set_timezone persists the chatter's IANA timezone into scope
-		// prefs — the same rows the system-prompt date line and cron
-		// scheduling resolve through. Needs the relational store, so it
-		// rides the same guard as cron.
+		// set_timezone 将聊天者的 IANA 时区保留到范围内
+		// prefs — 系统提示日期行和 cron 相同的行
+		// 调度解决通过。需要关系存储，所以它
+		// 与 cron 拥有相同的守卫。
 		tools.RegisterTimezoneTool(ag.registry, m.opts.dataStore)
-		// /goal feature: token-accounting hook + update_goal tool, all
-		// keyed on the agent's owner (set above by SetOwnerUserID).
-		// Same dataStore guard as cron because both features need the
-		// relational store; agents without one degrade quietly.
+		// /goal 功能：代币记账钩子 + update_goal 工具，全部
+		// 指定代理的所有者（上面通过 SetOwnerUserID 设置）。
+		// 与 cron 相同的数据存储保护，因为这两个功能都需要
+		// 关系商店；没有一个代理会悄悄降级。
 		ag.WireGoals(m.opts.dataStore)
-		// Stamp on Agent too so runtime checks (e.g. the autoPersist
-		// cadence gate that counts session_messages instead of relying
-		// on an in-memory counter that restart-clears) can hit the
-		// store directly without re-plumbing through Manager.
+		// 也在代理上标记，以便运行时检查（例如 autoPersist
+		// 节奏门计算 session_messages 而不是依赖
+		// 在重新启动清除的内存计数器上）可以命中
+		// 直接存储，无需通过 Manager 重新管道。
 		ag.dataStore = m.opts.dataStore
-		// Date line in the chatter's timezone — needs dataStore for the
-		// scope-prefs lookup, hence wired here and re-applied by
-		// ReloadWorkspaceFiles after every ctxBuilder rebuild.
+		// 聊天者所在时区的日期线 - 需要 dataStore
+		// 范围首选项查找，因此在此处连接并由
+		// 每次 ctxBuilder 重建后重新加载工作空间文件。
 		ag.ctxBuilder.SetTimezoneResolver(ag.chatterLocation)
 	}
-	// Stamp agentID even when no workspaceStore is wired (single-user
-	// local mode), so usage metering can record per-agent rollups.
+	// 即使没有连接workspaceStore，也要标记agentID（单用户
+	// 本地模式），因此使用情况计量可以记录每个代理的汇总。
 	ag.agentID = rc.ID
 	if m.opts.meter != nil {
 		ag.SetMeter(m.opts.meter)
@@ -251,7 +244,7 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 	return ag
 }
 
-// AddAgent creates and registers a new agent dynamically (for hot-reload).
+// AddAgent 动态创建并注册一个新代理（用于热重载）。
 func (m *Manager) AddAgent(rc config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBus) error {
 	if _, exists := m.agents[rc.ID]; exists {
 		return fmt.Errorf("agent %q already exists", rc.ID)
@@ -261,18 +254,18 @@ func (m *Manager) AddAgent(rc config.ResolvedAgent, prov provider.Provider, mb *
 	return nil
 }
 
-// AddAgentWithSkillsCfg is AddAgent + a one-shot skills cfg override that
-// replaces m.opts.globalSkillsCfg for just this build. EnsureAgent (which
-// injects a foreign agent into a different user's UserSpace) uses this so
-// the SkillsLoader closure baked into the new agent picks up the agent's
-// own agent-scope skill env (e.g. image-tool's REPLICATE_API_TOKEN) — the
-// caller's UserSpace cfg doesn't carry it because the agent isn't owned
-// by the caller.
+// AddAgentWithSkillsCfg 是 AddAgent + 一次性技能 cfg 覆盖
+// 仅在此版本中替换 m.opts.globalSkillsCfg。 EnsureAgent（其中
+// 将外部代理注入到不同用户的 UserSpace 中）使用此功能
+// 新代理中包含的 SkillsLoader 闭包会获取代理的
+// 自己的代理范围技能环境（例如 image-tool 的 REPLICATE_API_TOKEN） -
+// 呼叫者的 UserSpace cfg 不包含它，因为代理不属于其所有
+// 由来电者。
 //
-// The override is local: m.opts.globalSkillsCfg is restored before
-// returning so the next AddAgent on the same manager goes back to the
-// caller's own cfg. Held under no extra lock — callers (UserSpace.
-// EnsureAgent) already serialize via sp.mu.
+// 覆盖是本地的：m.opts.globalSkillsCfg 之前已恢复
+// 返回，以便同一管理器上的下一个 AddAgent 返回到
+// 调用者自己的cfg。没有额外的锁——调用者（UserSpace.
+// EnsureAgent) 已通过 sp.mu 序列化。
 func (m *Manager) AddAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBus, cfg config.SkillsCfg) error {
 	if _, exists := m.agents[rc.ID]; exists {
 		return fmt.Errorf("agent %q already exists", rc.ID)
@@ -285,7 +278,7 @@ func (m *Manager) AddAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.P
 	return nil
 }
 
-// RemoveAgent unregisters an agent by ID. No-op if the agent is not loaded.
+// RemoveAgent 通过 ID 取消注册代理。如果未加载代理，则无操作。
 func (m *Manager) RemoveAgent(id string) {
 	if _, ok := m.agents[id]; !ok {
 		return
@@ -297,17 +290,17 @@ func (m *Manager) RemoveAgent(id string) {
 	slog.Info("agent removed dynamically", "id", id)
 }
 
-// AgentByID returns an agent by its ID.
+// AgentByID 按 ID 返回代理。
 func (m *Manager) AgentByID(id string) *Agent {
 	return m.agents[id]
 }
 
-// DefaultAgent returns the default agent (set when only one agent exists).
+// DefaultAgent 返回默认代理（当仅存在一个代理时设置）。
 func (m *Manager) DefaultAgent() *Agent {
 	return m.defaultAgent
 }
 
-// All returns all loaded agents.
+// All 返回所有已加载的代理。
 func (m *Manager) All() []*Agent {
 	result := make([]*Agent, 0, len(m.agents))
 	for _, ag := range m.agents {
@@ -316,7 +309,7 @@ func (m *Manager) All() []*Agent {
 	return result
 }
 
-// Names returns all agent IDs.
+// 名称返回所有代理 ID。
 func (m *Manager) Names() []string {
 	names := make([]string, 0, len(m.agents))
 	for name := range m.agents {
@@ -325,20 +318,20 @@ func (m *Manager) Names() []string {
 	return names
 }
 
-// UpdateProvider replaces the LLM provider for all agents (hot-reload).
-// Agents with their own per-agent provider override (agent.json providers
-// shadowing the shared one) keep their dedicated provider — this call
-// only affects agents that were using the shared instance.
+// UpdateProvider 替换所有代理的 LLM 提供程序（热重载）。
+// 具有自己的每个代理提供程序覆盖的代理（agent.json 提供程序
+// 跟踪共享的）保留他们的专用提供商 - 这个电话
+// 仅影响正在使用共享实例的代理。
 func (m *Manager) UpdateProvider(prov provider.Provider) {
 	for _, ag := range m.agents {
 		ag.provider = prov
 	}
 }
 
-// UpdateProviderResolved is like UpdateProvider but aware of per-agent
-// provider overrides. For each agent it rebuilds the provider using the
-// same rule NewManager applied at construction: agent-level `providers`
-// in agent.json shadow the shared fallback.
+// UpdateProviderResolved 类似于 UpdateProvider 但了解每个代理
+// 提供者覆盖。对于每个代理，它使用以下方法重建提供者
+// NewManager 在构造时应用相同的规则：代理级别“providers”
+// 在 agent.json 中隐藏共享后备。
 func (m *Manager) UpdateProviderResolved(shared provider.Provider, resolved []config.ResolvedAgent) {
 	byID := make(map[string]config.ResolvedAgent, len(resolved))
 	for _, rc := range resolved {

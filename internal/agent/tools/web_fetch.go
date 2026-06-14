@@ -28,13 +28,13 @@ const (
 
 var htmlTagRe = regexp.MustCompile(`<[^>]*>`)
 
-// safeFetchClient is an http.Client whose dialer rejects private,
-// loopback, link-local, multicast, and CGNAT addresses — the SSRF
-// defense for web_fetch. The check runs at DIAL time, after DNS has
-// resolved, so a hostname that points at 169.254.169.254 (cloud
-// metadata) or a DNS-rebinding trick still gets stopped. We dial the
-// resolved IP directly instead of letting net.Dial re-resolve, to
-// close the TOCTOU between our check and the actual connection.
+// safeFetchClient 是一个 http.Client，其拨号器拒绝私有，
+// 环回、链路本地、多播和 CGNAT 地址 — SSRF
+// web_fetch 的防御。在 DNS 完成之后，检查在 DIAL 时间运行
+// 已解决，因此主机名指向 169.254.169.254（云
+// 元数据）或 DNS 重新绑定技巧仍然会被阻止。我们拨打
+// 直接解析IP而不是让net.Dial重新解析，
+// 关闭我们的检查和实际连接之间的 TOCTOU。
 var safeFetchClient = &http.Client{
 	Timeout: fetchTimeout,
 	Transport: &http.Transport{
@@ -44,9 +44,9 @@ var safeFetchClient = &http.Client{
 		ResponseHeaderTimeout: 20 * time.Second,
 		IdleConnTimeout:       60 * time.Second,
 	},
-	// Cap redirect chains so an attacker can't follow a public URL into
-	// an internal one. Each redirect target also goes through
-	// safeDialContext, but bounded depth keeps the request finite.
+	// 限制重定向链，以便攻击者无法跟踪公共 URL
+	// 一个内部的。每个重定向目标也会经过
+	// safeDialContext，但有限的深度使请求保持有限。
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return fmt.Errorf("too many redirects")
@@ -72,10 +72,10 @@ func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error
 			return nil, fmt.Errorf("blocked address %s for host %s", ip.IP, host)
 		}
 	}
-	// Dial the first IP we already validated; passing host:port back to
-	// net.Dialer would do a second resolution and an attacker controlling
-	// authoritative DNS could swap in 169.254.169.254 between our check
-	// and the dial.
+	// 拨打我们已经验证过的第一个IP；将主机：端口传递回
+	// net.Dialer 会进行第二次解析，攻击者控制
+	// 权威 DNS 可以在我们的检查之间交换 169.254.169.254
+	// 和表盘。
 	d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	return d.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
 }
@@ -89,14 +89,14 @@ func isBlockedAddr(ip net.IP) bool {
 		return true
 	}
 	if ip4 := ip.To4(); ip4 != nil {
-		// 100.64.0.0/10 — CGNAT, can route to internal infra at some providers
+		// 100.64.0.0/10 — CGNAT，可以路由到某些提供商的内部基础设施
 		if ip4[0] == 100 && ip4[1]&0xc0 == 0x40 {
 			return true
 		}
-		// 169.254/16 covered by IsLinkLocalUnicast, but AWS/GCP metadata
-		// uses 169.254.169.254 specifically; spell it out as a guard for
-		// readers and as belt-and-suspenders if a future Go release ever
-		// narrows IsLinkLocalUnicast.
+		// 169.254/16 由 IsLinkLocalUnicast 覆盖，但 AWS/GCP 元数据
+		// 具体使用169.254.169.254；把它拼出来作为守卫
+		// 如果未来的 Go 版本发布的话，读者和腰带和吊带者
+		// 缩小 IsLinkLocalUnicast。
 		if ip4[0] == 169 && ip4[1] == 254 {
 			return true
 		}
@@ -105,7 +105,7 @@ func isBlockedAddr(ip net.IP) bool {
 }
 
 func init() {
-	// Register will be called from registerWebFetch
+	// Register 将从 registerWebFetch 调用
 }
 
 const webFetchDescription = "Fetch a single known URL and return its plain text. " +
@@ -136,27 +136,27 @@ var webFetchSchema = map[string]interface{}{
 	"required": []string{"url"},
 }
 
-// RegisterWebFetch registers the web_fetch tool with the built-in
-// http.DefaultClient backend. This is the legacy zero-config path; callers
-// that want provider routing should use RegisterWebFetchChain instead and
-// skip this.
+// RegisterWebFetch 将 web_fetch 工具注册到内置的
+// http.DefaultClient 后端。这是传统的零配置路径；来电者
+// 想要提供者路由应该使用 RegisterWebFetchChain 代替并且
+// 跳过这个。
 //
-// The description is deliberately blunt about the "search-before-fetch"
-// rule and the URL-guessing failure mode. Models that have only
-// web_fetch tend to fall back on training-memory URLs — which are
-// often stale / hallucinated — and burn a dozen rounds 404'ing.
-// Calling that out here, where the tool catalog gets serialized into
-// the model's prompt, is far more effective than burying the
-// guidance in SOUL.md.
+// 该描述故意直白地描述了“在获取之前进行搜索”
+// 规则和 URL 猜测失败模式。仅有的型号
+// web_fetch 倾向于依赖训练内存 URL——这些 URL 是
+// 经常陈旧/产生幻觉——并燃烧十几发404'ing。
+// 在这里调用它，工具目录被序列化到
+// 模型的提示，远比埋葬更有效
+// SOUL.md 中的指导。
 func RegisterWebFetch(r *Registry) {
 	r.Register("web_fetch", webFetchDescription, webFetchSchema, webFetchToolWith(r))
 }
 
-// RegisterWebFetchChain registers web_fetch backed by a toolproviders.Chain.
-// When the chain is nil or unavailable, the registration falls back to the
-// legacy direct fetcher so the tool stays available — chain-first, built-in
-// fallback. Tool name + schema are unchanged so the model's perspective is
-// identical regardless of which backend services the call.
+// RegisterWebFetchChain 注册由 toolproviders.Chain 支持的 web_fetch。
+// 当链为零或不可用时，注册回退到
+// 传统的直接获取器，因此该工具保持可用 - 链优先，内置
+// 倒退。工具名称+模式不变，因此模型的视角是
+// 无论哪个后端为调用提供服务，都是相同的。
 func RegisterWebFetchChain(r *Registry, chain *toolproviders.Chain) {
 	if chain == nil || !chain.Available() {
 		RegisterWebFetch(r)
@@ -170,18 +170,18 @@ func RegisterWebFetchChain(r *Registry, chain *toolproviders.Chain) {
 		if args.URL == "" {
 			return "", fmt.Errorf("url is required")
 		}
-		// Mirror the direct-fetcher scheme guard on the chain path:
-		// the upstream provider may or may not reject file:// /
-		// gopher:// / data:// itself, and we'd rather not depend on
-		// a third-party to enforce our minimum bar. Same check the
-		// non-chain branch runs in webFetchTool.
+		// 在链路径上镜像直接获取器方案防护：
+		// 上游提供商可能会也可能不会拒绝 file:// /
+		// gopher:// / data:// 本身，我们不想依赖
+		// 第三方执行我们的最低标准。同样检查
+		// 非链分支在webFetchTool中运行。
 		if err := assertHTTPScheme(args.URL); err != nil {
 			return "", err
 		}
-		// Re-use the same per-turn duplicate-URL guard the direct
-		// fetcher uses so the model can't burn rounds rotating through
-		// guessed URLs that all 404. Applies regardless of which
-		// provider is actually backing the call.
+		// 重复使用相同的每轮重复 URL 来保护直接
+		// 使用 fetcher 使模型无法燃烧旋转的子弹
+		// 猜测的 URL 全部为 404。无论哪个都适用
+		// 提供商实际上正在支持这一呼吁。
 		if r != nil {
 			if prev := r.PriorFailure("web_fetch", string(rawArgs)); prev != "" {
 				return "", fmt.Errorf(
@@ -202,10 +202,10 @@ func RegisterWebFetchChain(r *Registry, chain *toolproviders.Chain) {
 	})
 }
 
-// webFetchToolWith binds the registry into the tool closure so the
-// implementation can consult turn-state failure history. Wrapping
-// instead of having the tool reach into a global keeps per-agent
-// registries isolated when the same process serves multiple agents.
+// webFetchToolWith 将注册表绑定到工具闭包中，以便
+// 实现时可以查阅转状态失败历史记录。包装
+// 而不是让该工具进入每个代理的全局保留
+// 当同一进程为多个代理服务时，注册表会被隔离。
 func webFetchToolWith(r *Registry) ToolFunc {
 	return func(ctx context.Context, rawArgs json.RawMessage) (string, error) {
 		return webFetchTool(ctx, r, rawArgs)
@@ -226,13 +226,13 @@ func webFetchTool(ctx context.Context, r *Registry, rawArgs json.RawMessage) (st
 		return "", err
 	}
 
-	// Refuse a retry of a URL that already failed in this turn. The
-	// agent loop's loop-detector catches "exact same call 3 times in
-	// a row" but not the more common pattern: the model rotates
-	// through five guessed URLs that all 404, then comes back to the
-	// first guess. Each attempt looks "different" to the loop
-	// detector but the user is paying for round-trips that we know
-	// up-front will fail.
+	// 拒绝重试本轮已失败的 URL。这
+	// 代理循环的循环检测器捕获“完全相同的调用 3 次”
+	// 一行”，但不是更常见的模式：模型旋转
+	// 通过 5 个猜测的 URL 全部都是 404，然后回到
+	// 第一个猜测。每次尝试对于循环来说看起来“不同”
+	// 检测器，但我们知道用户正在为往返付费
+	// 前期会失败。
 	if r != nil {
 		if prev := r.PriorFailure("web_fetch", string(rawArgs)); prev != "" {
 			return "", fmt.Errorf(
@@ -266,17 +266,17 @@ func webFetchTool(ctx context.Context, r *Registry, rawArgs json.RawMessage) (st
 		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	// Read body with a limit to prevent memory issues
+	// 限制读取正文以防止内存问题
 	limitReader := io.LimitReader(resp.Body, int64(maxLen*3)) // read more than needed since HTML is verbose
 	body, err := io.ReadAll(limitReader)
 	if err != nil {
 		return "", fmt.Errorf("read body: %w", err)
 	}
 
-	// Strip HTML tags
+	// 去除 HTML 标签
 	text := stripHTML(string(body))
 
-	// Truncate to max length
+	// 截断至最大长度
 	if len(text) > maxLen {
 		text = text[:maxLen] + "\n[...truncated]"
 	}
@@ -284,11 +284,11 @@ func webFetchTool(ctx context.Context, r *Registry, rawArgs json.RawMessage) (st
 	return text, nil
 }
 
-// assertHTTPScheme rejects non-http(s) URLs up front. file:// would
-// let the tool read the host filesystem; gopher:// / ftp:// / data://
-// open weird surfaces we never intended to support. Both the direct
-// fetcher and the toolproviders-chain fetcher call this so the gate
-// is uniform regardless of which backend services the call.
+// assertHTTPScheme 预先拒绝非 http(s) URL。文件:// 会
+// 让该工具读取主机文件系统； gopher:// / ftp:// / 数据://
+// 打开我们从未打算支持的奇怪表面。两者都直接
+// fetcher 和 toolproviders-chain fetcher 称此为门
+// 无论哪个后端为调用提供服务，都是统一的。
 func assertHTTPScheme(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -300,18 +300,18 @@ func assertHTTPScheme(rawURL string) error {
 	return nil
 }
 
-// stripHTML removes HTML tags and cleans up whitespace.
+// stripHTML 删除 HTML 标签并清理空白。
 func stripHTML(html string) string {
-	// Remove script and style elements entirely
+	// 完全删除脚本和样式元素
 	scriptRe := regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
 	html = scriptRe.ReplaceAllString(html, "")
 	styleRe := regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
 	html = styleRe.ReplaceAllString(html, "")
 
-	// Remove HTML tags
+	// 删除 HTML 标签
 	text := htmlTagRe.ReplaceAllString(html, " ")
 
-	// Decode common HTML entities
+	// 解码常见的 HTML 实体
 	text = strings.ReplaceAll(text, "&amp;", "&")
 	text = strings.ReplaceAll(text, "&lt;", "<")
 	text = strings.ReplaceAll(text, "&gt;", ">")
@@ -319,11 +319,11 @@ func stripHTML(html string) string {
 	text = strings.ReplaceAll(text, "&#39;", "'")
 	text = strings.ReplaceAll(text, "&nbsp;", " ")
 
-	// Collapse whitespace
+	// 折叠空白
 	spaceRe := regexp.MustCompile(`[ \t]+`)
 	text = spaceRe.ReplaceAllString(text, " ")
 
-	// Collapse multiple newlines
+	// 折叠多个换行符
 	nlRe := regexp.MustCompile(`\n{3,}`)
 	text = nlRe.ReplaceAllString(text, "\n\n")
 

@@ -8,23 +8,22 @@ import (
 	"strings"
 )
 
-// skillsShBaseURL is the hostname for https://skills.sh. It returns a public
-// JSON search endpoint but does not expose per-skill metadata — tarball
-// downloads go directly to codeload.github.com using the source repo listed
-// in each search result.
+// skillsShBaseURL 是 https://skills.sh 的主机名。它返回一个公共的
+// JSON 搜索端点，但不暴露每个技能的元数据 — tar 包
+// 下载直接使用每个搜索结果中列出的源仓库到 codeload.github.com。
 const skillsShBaseURL = "https://skills.sh"
 
-// SkillsShResult is one entry returned by the skills.sh search API.
+// SkillsShResult 是 skills.sh 搜索 API 返回的一个条目。
 type SkillsShResult struct {
-	ID       string `json:"id"`       // "<owner>/<repo>/<skillId>" (display-only)
-	SkillID  string `json:"skillId"`  // folder name of the skill inside the source repo
-	Name     string `json:"name"`     // human-readable name
-	Source   string `json:"source"`   // "<owner>/<repo>" — the GitHub location
-	Installs int    `json:"installs"` // popularity hint for ranking
+	ID       string `json:"id"`       // "<owner>/<repo>/<skillId>"（仅显示）
+	SkillID  string `json:"skillId"`  // 源仓库中的技能文件夹名称
+	Name     string `json:"name"`     // 人类可读的名称
+	Source   string `json:"source"`   // "<owner>/<repo>" — GitHub 位置
+	Installs int    `json:"installs"` // 用于排名的流行度提示
 }
 
-// SearchSkillsSh queries https://skills.sh/api/search?q=... and returns the
-// raw results. An empty slice means no matches.
+// SearchSkillsSh 查询 https://skills.sh/api/search?q=... 并返回
+// 原始结果。空切片表示没有匹配项。
 func SearchSkillsSh(query string) ([]SkillsShResult, error) {
 	u := fmt.Sprintf("%s/api/search?q=%s", skillsShBaseURL, url.QueryEscape(query))
 	resp, err := defaultHTTPClient().Get(u)
@@ -44,9 +43,8 @@ func SearchSkillsSh(query string) ([]SkillsShResult, error) {
 	return body.Skills, nil
 }
 
-// PickSkillsShExact returns the result that best matches name: exact skillId
-// match wins; otherwise falls back to the most-installed entry. Returns nil
-// when results is empty.
+// PickSkillsShExact 返回与 name 最匹配的结果：精确匹配 skillId
+// 优先；否则回退到安装次数最多的条目。results 为空时返回 nil。
 func PickSkillsShExact(results []SkillsShResult, name string) *SkillsShResult {
 	if len(results) == 0 {
 		return nil
@@ -64,10 +62,9 @@ func PickSkillsShExact(results []SkillsShResult, name string) *SkillsShResult {
 	return best
 }
 
-// InstallFromSkillsSh installs skills.sh result r into targetDir/<r.SkillID>/.
-// It fetches the source repo's tarball (trying main then master), finds the
-// in-tarball path of the skill folder (skills may live at arbitrary depth in
-// the repo), and extracts that folder.
+// InstallFromSkillsSh 将 skills.sh 结果 r 安装到 targetDir/<r.SkillID>/。
+// 它获取源仓库的 tar 包（依次尝试 main 和 master 分支），找到
+// tar 包内技能文件夹的路径（技能可能位于仓库的任意深度），并提取该文件夹。
 func InstallFromSkillsSh(r SkillsShResult, targetDir string) (*Result, error) {
 	if r.SkillID == "" || r.Source == "" {
 		return nil, fmt.Errorf("skills.sh result missing skillId/source")
@@ -77,10 +74,10 @@ func InstallFromSkillsSh(r SkillsShResult, targetDir string) (*Result, error) {
 		return nil, fmt.Errorf("skills.sh source %q is not owner/repo", r.Source)
 	}
 	owner, repo := parts[0], parts[1]
-	// The "source" field sometimes contains a repo-internal subpath appended
-	// to owner/repo (e.g. "claude-office-skills/skills"). GitHub repos only
-	// have two-segment slugs, so split again and treat the rest as a prefix
-	// hint we can use to disambiguate tarball probing.
+	// "source" 字段有时包含附加在 owner/repo 后的仓库内部子路径
+	//（例如 "claude-office-skills/skills"）。GitHub 仓库只有
+	// 两段式 slug，因此再次分割并将剩余部分作为前缀提示，
+	// 用于消除 tar 包探测的歧义。
 	prefixHint := ""
 	if idx := strings.IndexByte(repo, '/'); idx >= 0 {
 		prefixHint = repo[idx+1:]
@@ -89,35 +86,33 @@ func InstallFromSkillsSh(r SkillsShResult, targetDir string) (*Result, error) {
 
 	client := defaultHTTPClient()
 	var lastErr error
-	// Try the repo's actual default branch first, then the common
-	// conventions as fallback. Many skills.sh entries point at repos with
-	// non-standard branches (e.g. `trunk`, `develop`, `dev`) — without the
-	// API probe we'd 404 even though the repo exists and contains the
-	// skill. Dedup so we don't hit the same ref twice when default is
-	// already `main`/`master`.
+	// 首先尝试仓库的实际默认分支，然后回退到常见约定。
+	// 许多 skills.sh 条目指向具有非标准分支（例如 `trunk`、`develop`、`dev`）的仓库 —
+	// 没有 API 探测，即使仓库存在并包含技能，我们也会返回 404。
+	// 去重以避免当默认分支已经是 `main`/`master` 时重复访问同一引用。
 	refs := []string{"main", "master"}
 	if def := githubDefaultBranch(client, owner, repo); def != "" {
 		if def != "main" && def != "master" {
 			refs = append([]string{def}, refs...)
 		} else {
-			// Move matching ref to front to short-circuit the happy path.
+			// 将匹配的引用移到前面以短路快乐路径。
 			refs = append([]string{def}, filterOut(refs, def)...)
 		}
 	}
 	for _, ref := range refs {
 		tarURL := fmt.Sprintf("https://codeload.github.com/%s/%s/tar.gz/refs/heads/%s", owner, repo, ref)
 
-		// Probe once to discover the real in-tarball subpath of the skill
-		// folder. This is cheap for small repos and avoids double-downloads
-		// because the streaming tar reader bails out on the first match.
+		// 探测一次以发现技能文件夹在 tar 包中的真实子路径。
+		// 对于小型仓库来说这很廉价，并且避免了重复下载，
+		// 因为流式 tar 读取器在第一次匹配时就会退出。
 		subpath, err := findSkillDirInTarball(client, tarURL, r.SkillID)
 		if err != nil {
 			lastErr = err
 			continue
 		}
 		if subpath == "" {
-			// Fall back to prefix hint when the probe finds nothing but
-			// skills.sh's "source" hinted at a subpath.
+			// 当探测未找到任何内容但 skills.sh 的 "source" 提示了子路径时，
+			// 回退到前缀提示。
 			if prefixHint != "" {
 				subpath = prefixHint + "/" + r.SkillID
 			} else {
@@ -150,20 +145,19 @@ func InstallFromSkillsSh(r SkillsShResult, targetDir string) (*Result, error) {
 	return nil, lastErr
 }
 
-// githubDefaultBranch asks the GitHub API for the repo's default branch.
-// Returns "" on any error (API rate limit, private repo, etc.) — callers
-// fall back to the well-known conventions. Best-effort only; we never
-// block the install path on this call.
+// githubDefaultBranch 向 GitHub API 询问仓库的默认分支。
+// 任何错误时返回 ""（API 速率限制、私有仓库等）— 调用者
+// 回退到已知约定。仅尽力而为；我们从不因此调用阻塞安装路径。
 func githubDefaultBranch(client *http.Client, owner, repo string) string {
 	u := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)
 	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
 		return ""
 	}
-	// Explicit Accept keeps the v3 JSON format stable. No auth header —
-	// unauthenticated requests have a low rate limit (60/h per IP) but
-	// that's enough for interactive installs and we don't want to require
-	// configuring a token just for default-branch lookup.
+	// 显式 Accept 头使 v3 JSON 格式保持稳定。无认证头 —
+	// 未经认证的请求有较低的速率限制（每个 IP 60/小时），但
+	// 这对交互式安装来说已经足够，我们不想要求
+	// 仅为了默认分支查询而配置令牌。
 	req.Header.Set("Accept", "application/vnd.github+json")
 	resp, err := client.Do(req)
 	if err != nil {

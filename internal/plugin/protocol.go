@@ -2,9 +2,9 @@ package plugin
 
 import "encoding/json"
 
-// JSON-RPC 2.0 types for plugin communication over stdin/stdout.
+// JSON-RPC 2.0 类型，用于通过 stdin/stdout 的插件通信。
 
-// Request is a JSON-RPC 2.0 request sent to a plugin.
+// Request 是发送给插件的 JSON-RPC 2.0 请求。
 type Request struct {
 	JSONRPC string          `json:"jsonrpc"`
 	Method  string          `json:"method"`
@@ -12,7 +12,7 @@ type Request struct {
 	ID      int             `json:"id"`
 }
 
-// Response is a JSON-RPC 2.0 response from a plugin.
+// Response 是来自插件的 JSON-RPC 2.0 响应。
 type Response struct {
 	JSONRPC string          `json:"jsonrpc"`
 	Result  json.RawMessage `json:"result,omitempty"`
@@ -20,14 +20,14 @@ type Response struct {
 	ID      int             `json:"id"`
 }
 
-// Notification is a JSON-RPC 2.0 notification (no ID) from a plugin.
+// Notification 是来自插件的 JSON-RPC 2.0 通知（无 ID）。
 type Notification struct {
 	JSONRPC string          `json:"jsonrpc"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
-// RPCError is a JSON-RPC 2.0 error object.
+// RPCError 是 JSON-RPC 2.0 错误对象。
 type RPCError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -35,85 +35,83 @@ type RPCError struct {
 
 func (e *RPCError) Error() string { return e.Message }
 
-// Standard JSON-RPC methods.
+// 标准 JSON-RPC 方法。
 const (
 	MethodInitialize  = "initialize"
 	MethodShutdown    = "shutdown"
 	MethodChannelSend = "channel.send"
 	MethodToolList    = "tool.list"
 	MethodToolExecute = "tool.execute"
-	// MethodProviderList asks a plugin which tool-provider slots it fills
-	// (e.g. `{"category":"web_search","name":"kagi"}`). Plugins that don't
-	// implement it return an empty list or "method not found".
+	// MethodProviderList 询问插件它填充了哪些工具提供者槽位
+	// （例如 `{"category":"web_search","name":"kagi"}`）。未实现
+	// 该方法的插件返回空列表或"method not found"。
 	MethodProviderList = "provider.list"
-	// MethodProviderExecute invokes a specific provider inside the plugin.
-	// The call is orchestrated by the same Chain logic that routes built-in
-	// providers, so plugins compete with in-process providers on an equal
-	// footing (priority, fallback).
+	// MethodProviderExecute 调用插件内部的特定提供者。
+	// 该调用由与路由内置提供者相同的 Chain 逻辑编排，
+	// 因此插件与进程内提供者在平等基础上竞争（优先级、回退）。
 	MethodProviderExecute = "provider.execute"
 	MethodHookRegister    = "hook.register"
 	MethodHookFire        = "hook.fire"
 	MethodMessageInbound  = "message.inbound"
-	// MethodChatSend: plugin → bkclaw notification that delivers a
-	// new outbound message to a specific chat. Used by hook plugins
-	// (post-turn TTS, translation, etc.) to add follow-up content to
-	// the same chat the agent just replied to. Unlike message.inbound
-	// (which spawns another agent turn), this skips the agent and goes
-	// straight to the bus outbound path.
+	// MethodChatSend: plugin → bkclaw 通知，将新的出站消息发送到
+	// 指定的聊天。由钩子插件（post-turn TTS、翻译等）使用，用于向
+	// 代理刚刚回复的同一聊天添加后续内容。与 message.inbound
+	// （会触发另一个代理轮次）不同，此方法绕过代理直接进入
+	// 总线出站路径。
 	MethodChatSend = "chat.send"
 )
 
-// InitializeParams is sent with the initialize method.
+// InitializeParams 随 initialize 方法发送。
 type InitializeParams struct {
 	Config map[string]interface{} `json:"config"`
 }
 
-// ChannelSendParams is sent with channel.send.
+// ChannelSendParams 随 channel.send 发送。
 type ChannelSendParams struct {
 	ChatID string `json:"chatId"`
 	Text   string `json:"text"`
 }
 
-// ToolListResult is returned from tool.list.
+// ToolListResult 从 tool.list 返回。
 type ToolListResult struct {
 	Tools []ToolDef `json:"tools"`
 }
 
-// ToolDef describes a tool provided by a plugin.
+// ToolDef 描述插件提供的工具。
 type ToolDef struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
 	Parameters  interface{} `json:"parameters,omitempty"`
 }
 
-// ToolExecuteParams is sent with tool.execute.
+// ToolExecuteParams 随 tool.execute 发送。
 type ToolExecuteParams struct {
 	Name string                 `json:"name"`
 	Args map[string]interface{} `json:"args"`
 }
 
-// ToolExecuteResult is returned from tool.execute.
+// ToolExecuteResult 从 tool.execute 返回。
 type ToolExecuteResult struct {
 	Result string `json:"result"`
 }
 
-// ProviderDef describes one tool-provider slot a plugin can fill. Plugins
-// can advertise multiple of these (e.g. one plugin exposing both a
-// web_search and an image_gen provider).
+// ProviderDef 描述插件可以填充的一个工具提供者槽位。插件
+// 可以声明多个此类槽位（例如，一个插件同时暴露
+// web_search 和 image_gen 提供者）。
 type ProviderDef struct {
 	Category string `json:"category"` // "web_search" / "image_gen" / ...
 	Name     string `json:"name"`     // e.g. "kagi"
 }
 
-// ProviderListResult is returned from provider.list.
+// ProviderListResult 从 provider.list 返回。
 type ProviderListResult struct {
 	Providers []ProviderDef `json:"providers"`
 }
 
-// ProviderExecuteParams carries the per-call args and the resolved tenant
-// config (API key, endpoint, extra options, model id). The plugin process
-// must not cache credentials — BkClaw re-sends them every call so any
-// tenant can use the same plugin process safely.
+// ProviderExecuteParams 携带每次调用的参数和已解析的租户
+// 配置（API 密钥、端点、额外选项、模型 ID）。插件进程
+// 不得缓存凭据——BkClaw 在每次调用时重新发送它们，
+// 以便任何租户都可以安全地使用同一插件进程。
 type ProviderExecuteParams struct {
 	Category string                 `json:"category"`
 	Name     string                 `json:"name"`
@@ -121,9 +119,9 @@ type ProviderExecuteParams struct {
 	Config   ProviderConfigWire     `json:"config"`
 }
 
-// ProviderConfigWire mirrors toolproviders.ProviderConfig over the JSON-RPC
-// boundary. Structurally distinct to keep the plugin package free of a
-// dependency on internal/toolproviders.
+// ProviderConfigWire 在 JSON-RPC 边界上镜像
+// toolproviders.ProviderConfig。结构上保持独立，以使
+// plugin 包不依赖 internal/toolproviders。
 type ProviderConfigWire struct {
 	APIKey   string            `json:"apiKey,omitempty"`
 	Endpoint string            `json:"endpoint,omitempty"`
@@ -131,16 +129,16 @@ type ProviderConfigWire struct {
 	Model    string            `json:"model,omitempty"`
 }
 
-// ProviderExecuteResult carries the provider's response. Text is the
-// LLM-visible output; Retriable signals whether a non-empty error should
-// trigger fallback to the next provider.
+// ProviderExecuteResult 携带提供者的响应。Text 是
+// LLM 可见的输出；Retriable 表示非空错误是否应
+// 触发回退到下一个提供者。
 type ProviderExecuteResult struct {
 	Text      string `json:"text"`
 	Error     string `json:"error,omitempty"`
 	Retriable bool   `json:"retriable,omitempty"`
 }
 
-// InboundMessageParams is sent by channel plugins via message.inbound notifications.
+// InboundMessageParams 由通道插件通过 message.inbound 通知发送。
 type InboundMessageParams struct {
 	Channel    string `json:"channel"`
 	ChatID     string `json:"chatId"`
@@ -150,18 +148,17 @@ type InboundMessageParams struct {
 	SenderName string `json:"senderName,omitempty"`
 }
 
-// HookRegisterResult is returned from hook.register.
+// HookRegisterResult 从 hook.register 返回。
 type HookRegisterResult struct {
 	Points []string `json:"points"`
 }
 
-// HookFireParams is sent with hook.fire.
+// HookFireParams 随 hook.fire 发送。
 //
-// Channel / AccountID give the plugin the bus routing triple needed to
-// echo a follow-up message back to the same chat via chat.send. They
-// were added when the chat.send method shipped — older plugins that
-// only read AgentName / ChatID / UserID keep working since the new
-// fields are additive.
+// Channel / AccountID 为插件提供总线路由三元组，用于通过
+// chat.send 将后续消息回显到同一聊天。这些字段是在
+// chat.send 方法发布时添加的——仅读取 AgentName / ChatID / UserID
+// 的旧插件仍然可以工作，因为新字段是附加的。
 type HookFireParams struct {
 	Point      string            `json:"point"`
 	AgentName  string            `json:"agentName"`
@@ -176,38 +173,37 @@ type HookFireParams struct {
 	ToolResult string            `json:"toolResult,omitempty"`
 }
 
-// ChatSendParams: plugin → bkclaw push of an outbound message to a
-// specific chat. The plugin manager constructs a bus.OutboundMessage
-// from these fields and pushes it onto bus.Outbound — same path a
-// channel adapter or the agent loop would use. Distinct from
-// message.inbound (which simulates a new user inbound and triggers
-// an agent turn): chat.send delivers TO the user without invoking
-// the agent again.
+// ChatSendParams: plugin → bkclaw 将出站消息推送到
+// 指定聊天。插件管理器根据这些字段构建 bus.OutboundMessage
+// 并将其推送到 bus.Outbound——与通道适配器或代理循环
+// 使用的路径相同。与 message.inbound（模拟新的用户入站
+// 并触发代理轮次）不同：chat.send 直接发送给用户，
+// 而不再次调用代理。
 //
-// Used by PostTurn hook plugins to add follow-up content (audio,
-// translations, summaries, etc.) to the same chat the agent just
-// replied to. Plugin echoes the Channel / AccountID / ChatID it
-// received in the prior hook.fire's HookFireParams.
+// 由 PostTurn 钩子插件使用，用于向代理刚刚回复的
+// 同一聊天添加后续内容（音频、翻译、摘要等）。
+// 插件会回显它在之前的 hook.fire 的 HookFireParams 中
+// 接收到的 Channel / AccountID / ChatID。
 type ChatSendParams struct {
 	Channel   string          `json:"channel"`
 	AccountID string          `json:"accountId,omitempty"`
 	ChatID    string          `json:"chatId"`
-	AgentID   string          `json:"agentId,omitempty"` // used by web SSE routing
+	AgentID   string          `json:"agentId,omitempty"` // 用于 Web SSE 路由
 	Text      string          `json:"text,omitempty"`
 	Media     []ChatSendMedia `json:"media,omitempty"`
 }
 
-// ChatSendMedia is one attachment in a ChatSendParams. BytesB64 is the
-// file's bytes base64-encoded (so JSON-RPC can ship binary over
-// stdin/stdout). ContentType is optional — the channel adapter will
-// sniff from the filename / bytes when empty.
+// ChatSendMedia 是 ChatSendParams 中的一个附件。BytesB64 是
+// 文件的 base64 编码字节（以便 JSON-RPC 可以通过
+// stdin/stdout 传输二进制数据）。ContentType 是可选的——
+// 当为空时，通道适配器会从文件名/字节中嗅探。
 type ChatSendMedia struct {
 	Filename    string `json:"filename"`
 	ContentType string `json:"contentType,omitempty"`
 	BytesB64    string `json:"bytesB64"`
 }
 
-// HookMessage is a simplified message for hook communication.
+// HookMessage 是用于钩子通信的简化消息。
 type HookMessage struct {
 	Role       string          `json:"role"`
 	Content    string          `json:"content,omitempty"`
@@ -216,18 +212,18 @@ type HookMessage struct {
 	Name       string          `json:"name,omitempty"`
 }
 
-// HookResponseData is a simplified response for hook communication.
+// HookResponseData 是用于钩子通信的简化响应。
 type HookResponseData struct {
 	Content  string `json:"content"`
 	HasTools bool   `json:"hasTools"`
 }
 
-// HookFireResult is returned from hook.fire (for synchronous hooks).
+// HookFireResult 从 hook.fire 返回（用于同步钩子）。
 type HookFireResult struct {
 	Messages []HookMessage `json:"messages,omitempty"`
 }
 
-// newRequest creates a JSON-RPC 2.0 request.
+// newRequest 创建一个 JSON-RPC 2.0 请求。
 func newRequest(method string, params interface{}, id int) (*Request, error) {
 	var raw json.RawMessage
 	if params != nil {

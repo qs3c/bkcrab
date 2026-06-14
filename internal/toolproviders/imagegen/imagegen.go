@@ -1,7 +1,6 @@
-// Package imagegen bundles built-in image_gen providers. Providers accept a
-// prompt (+ optional size/n) and return an LLM-visible text payload that
-// embeds either inline base64 image data or a remote URL — whichever the
-// upstream gave us. The chat UI renders markdown image tags inline.
+// Package imagegen 包含内置的 image_gen 提供商。提供商接受提示词（+ 可选的 size/n），
+// 并返回 LLM 可见的文本负载，其中嵌入内联 base64 图像数据或远程 URL——
+// 根据上游提供的内容而定。聊天 UI 会内联渲染 markdown 图像标签。
 package imagegen
 
 import (
@@ -11,10 +10,10 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// Category is the tool category these providers plug into.
+// Category 是这些提供商插入的工具类别。
 const Category = "image_gen"
 
-// RegisterAll installs every built-in image_gen provider in r.
+// RegisterAll 在 r 中注册所有内置的 image_gen 提供商。
 func RegisterAll(r *toolproviders.Registry) {
 	r.Register(&OpenAI{})
 	r.Register(&Fal{})
@@ -54,9 +53,9 @@ func parseArgs(raw map[string]any) (args, error) {
 	return a, nil
 }
 
-// renderURLs builds a LLM-visible response from a list of image URLs. Each
-// URL is emitted as a markdown image tag so the chat UI renders it inline
-// without the model having to know about markdown quirks.
+// renderURLs 从图像 URL 列表构建 LLM 可见的响应。
+// 每个 URL 作为 markdown 图像标签发出，以便聊天 UI 内联渲染，
+// 而模型无需了解 markdown 细节。
 func renderURLs(prompt string, urls []string) string {
 	if len(urls) == 0 {
 		return ""
@@ -69,8 +68,8 @@ func renderURLs(prompt string, urls []string) string {
 	return sb.String()
 }
 
-// renderB64 emits base64 images inline. Used when the provider returns raw
-// bytes (e.g. gpt-image-1 with response_format=b64_json).
+// renderB64 内联输出 base64 图像。当提供商返回原始字节时使用
+//（例如 gpt-image-1 使用 response_format=b64_json）。
 func renderB64(prompt string, b64s []string) string {
 	if len(b64s) == 0 {
 		return ""

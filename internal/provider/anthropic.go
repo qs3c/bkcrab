@@ -12,14 +12,14 @@ import (
 	"strings"
 )
 
-// AnthropicProvider implements the Provider interface for Anthropic Messages API.
+// AnthropicProvider 为 Anthropic Messages API 实现 Provider 接口。
 type AnthropicProvider struct {
 	apiKey  string
 	apiBase string
 	client  *http.Client
 }
 
-// NewAnthropic creates a new Anthropic Messages API provider.
+// NewAnthropic 创建一个新的 Anthropic Messages API 提供者。
 func NewAnthropic(apiKey, apiBase string) *AnthropicProvider {
 	if strings.TrimSpace(apiBase) == "" {
 		apiBase = "https://api.anthropic.com"
@@ -31,7 +31,7 @@ func NewAnthropic(apiKey, apiBase string) *AnthropicProvider {
 	}
 }
 
-// anthropicMessage is the wire format for Anthropic Messages API.
+// anthropicMessage 是 Anthropic Messages API 的线路格式。
 type anthropicMessage struct {
 	Role    string          `json:"role"`
 	Content json.RawMessage `json:"content"`
@@ -52,22 +52,20 @@ type anthropicRequest struct {
 	Tools     []anthropicTool    `json:"tools,omitempty"`
 }
 
-// toAnthropicMessages converts provider Messages to Anthropic wire format.
-// Extracts the system message and returns the rest.
+// toAnthropicMessages 将提供者 Messages 转换为 Anthropic 线路格式。
+// 提取系统消息并返回其余部分。
 func toAnthropicMessages(msgs []Message) (string, []anthropicMessage) {
 	var system string
 	var out []anthropicMessage
 
-	// Anthropic rejects any tool_use whose tool_result doesn't appear
-	// in the immediately following message. The agent loop can produce
-	// this shape when loop detection / cap-reached synthesis injects a
-	// system or assistant message between the tool_use and the
-	// padOrphanToolResults pad. Reuse the openai-path scanner to flag
-	// orphan assistant tool_calls, then sweep the WHOLE message list
-	// for any tool replies whose tool_use we just decided to drop —
-	// the openai scanner only checks the immediate tool-run, which
-	// misses pad results that land after intervening non-tool messages.
-	// Session history stays untouched; this only affects wire build.
+	// Anthropic 拒绝任何 tool_result 没有出现在紧随其后的消息中的 tool_use。
+	// 当循环检测/达到上限的合成在 tool_use 和 padOrphanToolResults
+	// 填充之间注入了系统或助手消息时，代理循环可能产生这种形状。
+	// 重用 openai 路径的扫描器来标记孤立的助手 tool_calls，
+	// 然后扫描整个消息列表，查找我们刚刚决定丢弃的 tool_use
+	// 对应的工具回复——openai 扫描器只检查紧接着的工具运行，
+	// 这可能会漏掉在中间非工具消息之后出现的填充结果。
+	// 会话历史保持不变；这仅影响线路构建。
 	orphanAssistant, orphanTool := findOrphanToolCalls(msgs)
 	orphanIDs := map[string]bool{}
 	for i, m := range msgs {
@@ -93,21 +91,19 @@ func toAnthropicMessages(msgs []Message) (string, []anthropicMessage) {
 		if orphanTool[i] {
 			continue
 		}
-		// If stripping orphan tool_calls would leave the assistant
-		// message with nothing text-shaped to say (no Content, no
-		// ContentParts, no Thinking), drop it entirely. Anthropic
-		// rejects content-less messages with "expected a string or a
-		// list", so we can't just emit an empty hull.
+		// 如果剥离孤立的 tool_calls 后，助手消息没有文本形式的内容
+		//（没有 Content、没有 ContentParts、没有 Thinking），
+		// 则完全丢弃它。Anthropic 拒绝无内容的消息，错误信息为
+		// "expected a string or a list"，所以我们不能只发出一个空壳。
 		//
-		// RawAssistant is intentionally NOT part of this guard: when
-		// it's non-empty for an orphan turn it captured exactly the
-		// tool_use blocks we're about to strip (or an OpenAI-shape
-		// blob from a previous provider) — neither replays into a
-		// valid Anthropic message, so keeping the message around just
-		// to "preserve" RawAssistant produces `content: null` and a
-		// 400 ("messages.N.content: Input should be a valid array")
-		// on the next user turn. Real thinking content survives via
-		// Thinking / thinkingBlockFor, which DOES round-trip.
+		// RawAssistant 故意不在此守卫中：当它在孤立轮次中非空时，
+		// 它恰好捕获了我们即将剥离的 tool_use 块（或来自先前提供者的
+		// OpenAI 格式的 blob）——两者都不能重放为有效的 Anthropic 消息，
+		// 因此仅仅为了"保留"RawAssistant 而保留消息会在下一个用户轮次
+		// 产生 `content: null` 和 400 错误
+		//（"messages.N.content: Input should be a valid array"）。
+		// 真实的思考内容通过 Thinking / thinkingBlockFor 存活，
+		// 它们确实可以往返。
 		if orphanAssistant[i] && m.Content == "" && len(m.ContentParts) == 0 &&
 			m.Thinking == "" {
 			continue
@@ -115,12 +111,12 @@ func toAnthropicMessages(msgs []Message) (string, []anthropicMessage) {
 
 		am := anthropicMessage{Role: m.Role}
 
-		// Tool results become role "user" with tool_result content blocks.
-		// Anthropic requires every tool_result for a parallel tool_use batch
-		// to live in the SAME user message — separate user messages, even
-		// back-to-back, get rejected with "tool_use ids ... without tool_result
-		// blocks immediately after". So coalesce consecutive tool messages
-		// into a single user message containing one tool_result block each.
+		// 工具结果变为 role "user"，带有 tool_result 内容块。
+		// Anthropic 要求并行 tool_use 批次的每个 tool_result
+		// 都在同一个用户消息中——即使连续发送不同的用户消息，
+		// 也会被拒绝："tool_use ids ... without tool_result
+		// blocks immediately after"。因此将连续的工具消息合并为
+		// 一个包含各自 tool_result 块的单个用户消息。
 		if m.Role == "tool" {
 			block := map[string]interface{}{
 				"type":        "tool_result",
@@ -151,10 +147,9 @@ func toAnthropicMessages(msgs []Message) (string, []anthropicMessage) {
 			continue
 		}
 
-		// Assistant messages with tool calls. orphanAssistant flags
-		// the message whose tool_calls have no matching tool_result
-		// run — emit text-only in that case so the API doesn't reject
-		// the request for a dangling tool_use.
+		// 带有工具调用的助手消息。orphanAssistant 标记那些 tool_calls
+		// 没有匹配的 tool_result 运行的消息——在这种情况下只发出文本，
+		// 以免 API 因悬空的 tool_use 而拒绝请求。
 		if m.Role == "assistant" && len(m.ToolCalls) > 0 && !orphanAssistant[i] {
 			var blocks []interface{}
 			if tb := thinkingBlockFor(m); tb != nil {
@@ -167,14 +162,12 @@ func toAnthropicMessages(msgs []Message) (string, []anthropicMessage) {
 				})
 			}
 			for _, tc := range m.ToolCalls {
-				// Anthropic rejects tool_use blocks whose input isn't a
-				// JSON object — `Arguments` can land here as "" (model
-				// streamed a tool_use with empty input and no
-				// input_json_delta events ever fired), as `null`, or as
-				// a bare value like a string. Coerce all of those to an
-				// empty object so the historical message replays
-				// successfully. Real inputs round-trip unchanged.
-				input := parseToolInput(tc.Function.Arguments)
+			// Anthropic 拒绝其输入不是 JSON 对象的 tool_use 块——
+			// `Arguments` 可能以 ""（模型流式传输了带有空输入且从未触发
+			// input_json_delta 事件的 tool_use）、`null` 或
+			// 像字符串这样的裸值的形式出现。将所有情况强制转换为
+			// 空对象，以便历史消息成功重放。真实输入保持不变地往返。
+			input := parseToolInput(tc.Function.Arguments)
 				blocks = append(blocks, map[string]interface{}{
 					"type":  "tool_use",
 					"id":    tc.ID,
@@ -187,7 +180,7 @@ func toAnthropicMessages(msgs []Message) (string, []anthropicMessage) {
 			continue
 		}
 
-		// Regular text content
+		// 普通文本内容
 		if len(m.ContentParts) > 0 {
 			var blocks []interface{}
 			if m.Role == "assistant" {
@@ -231,12 +224,10 @@ func toAnthropicMessages(msgs []Message) (string, []anthropicMessage) {
 		} else if m.Content != "" {
 			am.Content, _ = json.Marshal(m.Content)
 		} else {
-			// Defensive: a content-less user/system message would marshal
-			// to a wire object missing the `content` field, which
-			// Anthropic rejects with "expected a string or a list". Send
-			// an empty string so it round-trips even if upstream callers
-			// produce a degenerate message (e.g. legacy session load
-			// pre-dating ContentParts persistence).
+			// 防御性：无内容的用户/系统消息将序列化为缺少 `content` 字段
+			// 的线路对象，Anthropic 会以 "expected a string or a list" 拒绝。
+			// 发送空字符串，以便即使上游调用者产生退化的消息
+			//（例如在 ContentParts 持久化之前的旧会话加载）也能往返。
 			am.Content, _ = json.Marshal("")
 		}
 
@@ -246,20 +237,20 @@ func toAnthropicMessages(msgs []Message) (string, []anthropicMessage) {
 	return system, out
 }
 
-// parseToolInput decodes a stored tool_use Arguments string into the
-// JSON object Anthropic's wire format requires. Anything that isn't
-// an object — empty string, null, JSON array, bare value — gets
-// coerced to the empty object {} so the message replays cleanly.
-// Real inputs round-trip unchanged.
+// parseToolInput 将存储的 tool_use Arguments 字符串解码为
+// Anthropic 线路格式所需的 JSON 对象。任何不是对象的内容——
+// 空字符串、null、JSON 数组、裸值——都会被强制转换为
+// 空对象 {}，以便消息干净地重放。真实输入保持不变地往返。
 //
-// Why coerce: when Anthropic streams a tool_use whose input is `{}`,
-// it emits the placeholder in `content_block_start` but no
-// `input_json_delta` events follow (nothing to stream), so our
-// argsJSON accumulator stays "". That gets persisted to
-// session_messages.tool_calls and rejected on the next turn replay
-// with "tool_use.input: Input should be an object". Coercing at
-// wire-build time is cheap and also covers any other future shape
-// drift from non-Anthropic providers serving via Claude-compat.
+// 为什么要强制转换：当 Anthropic 流式传输输入为 `{}` 的 tool_use 时，
+// 它在 `content_block_start` 中发出占位符，但没有后续的
+// `input_json_delta` 事件（没有要流式传输的内容），
+// 因此我们的 argsJSON 累加器保持为 ""。
+// 这会被持久化到 session_messages.tool_calls，
+// 并在下一次轮次重放时被拒绝："tool_use.input: Input should be an object"。
+// 在线路构建时强制转换成本低廉，
+// 并且还能涵盖来自通过 Claude-compat 提供服务的非 Anthropic 提供者
+// 的任何其他未来形状漂移。
 func parseToolInput(raw string) interface{} {
 	if raw == "" {
 		return map[string]interface{}{}
@@ -274,17 +265,18 @@ func parseToolInput(raw string) interface{} {
 	return v
 }
 
-// thinkingBlockFor returns a content-block map for an assistant message's
-// prior thinking, or nil if nothing to replay. Extended-thinking models
-// (real Anthropic, DeepSeek's /anthropic compat) reject the next turn when
-// the prior `content[].thinking` is dropped, so we echo it back verbatim.
+// thinkingBlockFor 返回助手消息先前思考的内容块映射，
+// 如果没有要重放的内容则返回 nil。扩展思考模型
+//（真正的 Anthropic、DeepSeek 的 /anthropic 兼容模式）
+// 在丢弃先前的 `content[].thinking` 时会拒绝下一轮，
+// 因此我们原样回显它。
 func thinkingBlockFor(m Message) map[string]interface{} {
 	if m.Role != "assistant" {
 		return nil
 	}
-	// Prefer the raw thinking block we captured on the response — preserves
-	// signature for real Anthropic. Falls back to the plain text we stored
-	// on Message.Thinking for sessions written before signature capture.
+	// 优先使用我们在响应中捕获的原始思考块——为真正的 Anthropic
+	// 保留签名。回退到我们在捕获签名之前写入的会话中存储在
+	// Message.Thinking 上的纯文本。
 	if len(m.RawAssistant) > 0 {
 		var raw map[string]interface{}
 		if err := json.Unmarshal(m.RawAssistant, &raw); err == nil {
@@ -309,11 +301,10 @@ func (p *AnthropicProvider) buildRequest(ctx context.Context, messages []Message
 		maxTokens = 4096
 	}
 
-	// Anthropic deprecated `temperature` on extended-thinking-capable
-	// models (Opus 4.x, Sonnet 4.5+, Haiku 4.5) — sending it returns a
-	// hard 400. Older models accept it but the system default 0.7 is
-	// rarely meaningfully tuned per-agent, so drop it on the wire across
-	// the board rather than gating per-model.
+	// Anthropic 在支持扩展思考的模型（Opus 4.x、Sonnet 4.5+、Haiku 4.5）
+	// 上弃用了 `temperature`——发送它会返回硬 400 错误。
+	// 较旧的模型接受它，但系统默认值 0.7 很少在每个代理上有意义地调整，
+	// 因此我们在所有情况下都丢弃它，而不是按模型进行门控。
 	_ = temperature
 	req := anthropicRequest{
 		Model:     StripProviderPrefix(model),
@@ -350,7 +341,7 @@ func (p *AnthropicProvider) buildRequest(ctx context.Context, messages []Message
 	return httpReq, nil
 }
 
-// Anthropic SSE event types
+// Anthropic SSE 事件类型
 type anthropicSSEEvent struct {
 	Type string `json:"type"`
 }
@@ -362,7 +353,7 @@ type anthropicContentBlockStart struct {
 }
 
 type anthropicContentBlockEntry struct {
-	Type  string          `json:"type"` // "text" or "tool_use"
+	Type  string          `json:"type"` // "text" 或 "tool_use"
 	ID    string          `json:"id,omitempty"`
 	Name  string          `json:"name,omitempty"`
 	Text  string          `json:"text,omitempty"`
@@ -383,10 +374,10 @@ type anthropicDeltaContent struct {
 	Signature   string `json:"signature,omitempty"`
 }
 
-// anthropicUsage mirrors the `usage` field returned by Anthropic Messages.
-// message_start carries the input tokens (and prompt-cache breakdown);
-// message_delta carries the final output_tokens. We capture both and
-// expose the totals on the Response / StreamChunk's provider.Usage.
+// anthropicUsage 镜像 Anthropic Messages 返回的 `usage` 字段。
+// message_start 携带输入令牌数（以及提示缓存细分）；
+// message_delta 携带最终的 output_tokens。我们捕获两者并
+// 在 Response / StreamChunk 的 provider.Usage 上暴露总数。
 type anthropicUsage struct {
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
@@ -658,7 +649,7 @@ func (p *AnthropicProvider) parseSSE(body io.Reader) (*Response, error) {
 			}
 
 		case "message_stop":
-			// Done
+			// 完成
 		}
 	}
 
@@ -698,10 +689,10 @@ func (p *AnthropicProvider) parseSSE(body io.Reader) (*Response, error) {
 	}
 	if thinking := thinkingBuilder.String(); thinking != "" {
 		result.Thinking = thinking
-		// DeepSeek's Anthropic-compat endpoint (and real Anthropic extended
-		// thinking) requires the thinking block to be echoed verbatim on the
-		// next turn. Pack {thinking, signature} into RawAssistant so
-		// toAnthropicMessages can replay it as a content block.
+		// DeepSeek 的 Anthropic 兼容端点（以及真正的 Anthropic 扩展思考）
+		// 要求思考块在下一轮中原样回显。将 {thinking, signature}
+		// 打包到 RawAssistant 中，以便 toAnthropicMessages
+		// 可以将其作为内容块重放。
 		type thinkingBlock struct {
 			Type      string `json:"type"`
 			Thinking  string `json:"thinking"`
@@ -716,25 +707,22 @@ func (p *AnthropicProvider) parseSSE(body io.Reader) (*Response, error) {
 		}
 	}
 
-	// Fallback: some non-Claude models served via anthropic-compat
-	// endpoints (e.g. MiMo, DeepSeek-flash) emit Claude-style tool-call
-	// XML inside a text content block. Two failure modes we need to
-	// guard separately:
+	// 回退：某些通过 anthropic-compat 端点提供的非 Claude 模型
+	//（例如 MiMo、DeepSeek-flash）在文本内容块中发出 Claude 风格的
+	// 工具调用 XML。我们需要分别防范两种失败模式：
 	//
-	//   1. XML INSTEAD OF a structured tool_use → we have to synthesize
-	//      tool calls from the XML, otherwise the agent loop sees a
-	//      text-only response and treats it as a final answer.
+	//   1. XML 替代了结构化的 tool_use → 我们必须从 XML 合成工具调用，
+	//      否则代理循环只看到文本响应并将其视为最终答案。
 	//
-	//   2. XML ALONGSIDE a structured tool_use (DeepSeek-flash echoes
-	//      its intended call as text every iteration) → the structural
-	//      calls already drive execution, but the textual DSML rides
-	//      along as assistant.content. That bloats every turn's prompt
-	//      and, worse, in the subagent cap-reached forced-delivery path
-	//      it ships back to the parent as the subagent's "final answer"
-	//      — surfacing as raw DSML in the chat UI.
+	//   2. XML 与结构化的 tool_use 并存（DeepSeek-flash 每次迭代都
+	//      将其预期调用作为文本回显）→ 结构化调用已经驱动执行，
+	//      但文本 DSML 作为 assistant.content 附带。这膨胀了每一轮的
+	//      提示，更糟的是，在子代理达到上限的强制交付路径中，
+	//      它会作为子代理的"最终答案"发送回父代理——
+	//      在聊天 UI 中以原始 DSML 形式呈现。
 	//
-	// So strip the XML from content unconditionally; only synthesize
-	// tool calls when there aren't already structured ones to dispatch.
+	// 因此无条件地从内容中剥离 XML；仅当没有要调度的结构化调用时
+	// 才合成工具调用。
 	if cleaned, calls := extractLeakedToolCalls(result.Content); cleaned != result.Content {
 		result.Content = cleaned
 		if len(result.ToolCalls) == 0 && len(calls) > 0 {

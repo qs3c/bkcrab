@@ -1,18 +1,18 @@
-// Package usage records LLM token consumption per (day, user, agent,
-// session, model) and answers admin "who burned what" queries.
+// Package usage 记录每(天、用户、代理、会话、模型)的 LLM token 消耗，
+// 并为管理员提供"谁消耗了多少"的查询。
 //
-// The data flows in one direction: every successful provider.Chat /
-// ChatStream call lands one RecordTokens() invocation; the admin
-// dashboard reads aggregates back out via Top* / Totals.
+// 数据单向流动：每次成功的 provider.Chat / ChatStream 调用
+// 触发一次 RecordTokens()；管理员仪表板通过 Top* / Totals
+// 读取聚合结果。
 //
-// Two implementations exist:
-//   - MemMeter: in-process map. Cheap, loses state on restart. Useful
-//     for unit tests and stand-alone dev runs.
-//   - SQLMeter: UPSERTs into token_usage_daily on the same DB the
-//     Store uses. This is what the prod admin endpoint reads from.
+// 存在两种实现：
+//   - MemMeter：进程内 map。轻量，重启后丢失状态。
+//     适用于单元测试和独立开发运行。
+//   - SQLMeter：对 Store 使用的同一数据库进行 UPSERT 到 token_usage_daily。
+//     生产环境的管理员端点读取的就是它。
 //
-// Empty user_id (admin-owned / cron-fired agents) is preserved on
-// write — handlers render it as "system" on the way out.
+// 空的 user_id（管理员拥有的/由 cron 触发的代理）在写入时保留，
+// 处理程序在输出时将其渲染为"system"。
 package usage
 
 import (
@@ -25,9 +25,9 @@ import (
 	"time"
 )
 
-// Tokens is one Chat call's token accounting. Mirrors provider.Usage
-// but lives here so the usage package doesn't depend on provider.
-// RequestCount is always 1 per call; the meter accumulates it.
+// Tokens 是一次 Chat 调用的 token 记账。镜像 provider.Usage，
+// 但放在此处以使 usage 包不依赖于 provider。
+// RequestCount 每次调用固定为 1；由 meter 累加。
 type Tokens struct {
 	Input         int
 	Output        int
@@ -35,27 +35,27 @@ type Tokens struct {
 	CacheCreation int
 }
 
-// Total returns input + output + cache (everything the model billed for).
+// Total 返回 input + output + cache（模型计费的所有内容）。
 func (t Tokens) Total() int64 {
 	return int64(t.Input) + int64(t.Output) + int64(t.CacheRead) + int64(t.CacheCreation)
 }
 
-// Range is a UTC half-open day window used for queries. Both ends are
-// inclusive at day granularity (the meter stores one row per day).
+// Range 是用于查询的 UTC 半开天窗口。两端在天粒度上都是包含的
+//（meter 每天存储一行）。
 type Range struct {
 	Since time.Time // first day to include (UTC, day-truncated)
 	Until time.Time // last day to include  (UTC, day-truncated)
 }
 
-// LastN returns the [today-(n-1) … today] range so callers can ask for
-// "last 1/7/30 days" without thinking about timezones.
+// LastN 返回 [今天-(n-1) … 今天] 范围，调用者可以查询
+// "最近 1/7/30 天"而无需考虑时区。
 func LastN(n int) Range {
 	today := dayBucket(time.Now())
 	return Range{Since: today.AddDate(0, 0, -(n - 1)), Until: today}
 }
 
-// Totals is the headline numbers for a range: one row per kind, plus
-// total request_count across the window.
+// Totals 是某个范围内的概要数字：每种类型一行，加上窗口内的
+// 总 request_count。
 type Totals struct {
 	Input         int64 `json:"inputTokens"`
 	Output        int64 `json:"outputTokens"`
@@ -64,7 +64,7 @@ type Totals struct {
 	Requests      int64 `json:"requestCount"`
 }
 
-// Rank is one row of a per-agent or per-user leaderboard.
+// Rank 是按代理或按用户排行榜中的一行。
 type Rank struct {
 	Key      string `json:"key"`    // agent_id or user_id ("" → "system" on render)
 	Tokens   int64  `json:"tokens"` // input+output+cache combined
@@ -73,35 +73,33 @@ type Rank struct {
 	Requests int64  `json:"requestCount"`
 }
 
-// Meter is the recording + readback interface.
+// Meter 是记录 + 回读接口。
 type Meter interface {
-	// RecordTokens adds one Chat call's token counts onto the
-	// (today, userID, agentID, sessionKey, provider, model) bucket.
-	// provider is the per-agent override key (e.g.
-	// "anthropic-messages") or "" when the agent uses the shared
-	// provider; model is the bare model id with no prefix. Splitting
-	// the two so the dashboard can answer "tokens by provider"
-	// without parsing "<prov>/<model>" strings in SQL. Zero counts
-	// still bump request_count so we can answer "how many calls".
+	// RecordTokens 将一次 Chat 调用的 token 计数累加到
+	// (today, userID, agentID, sessionKey, provider, model) 桶中。
+	// provider 是按代理覆盖的键（例如 "anthropic-messages"）
+	// 或当代理使用共享 provider 时为 ""；model 是不带前缀的裸模型 ID。
+	// 将两者分开，以便仪表板无需在 SQL 中解析 "<prov>/<model>" 字符串
+	// 即可回答"按 provider 统计的 token"。零计数仍会增加 request_count，
+	// 以便我们可以回答"多少次调用"。
 	RecordTokens(ctx context.Context, userID, agentID, sessionKey, provider, model string, t Tokens) error
-	// Totals returns the aggregate token counts for a range.
+	// Totals 返回某个范围内的聚合 token 计数。
 	Totals(ctx context.Context, r Range) (Totals, error)
-	// TopAgents returns the top-N agents by total tokens.
+	// TopAgents 返回按总 token 数排序的前 N 个代理。
 	TopAgents(ctx context.Context, r Range, limit int) ([]Rank, error)
-	// TopUsers returns the top-N users by total tokens.
+	// TopUsers 返回按总 token 数排序的前 N 个用户。
 	TopUsers(ctx context.Context, r Range, limit int) ([]Rank, error)
-	// SessionsForAgent returns per-session token rollups for one
-	// agent. Backs the per-agent "Token Usage" tab — owner asks
-	// "which of my chats burned the most"; the table is the answer.
-	// Optional userID scopes to one chatter (useful when the agent
-	// is public and you only want your own sessions); pass "" to
-	// include all chatters.
+	// SessionsForAgent 返回某个代理的按会话汇总的 token。
+	// 支撑按代理的"Token Usage"标签页——所有者询问
+	// "我的哪些聊天消耗最多"；表格就是答案。
+	// 可选的 userID 将范围限定为一个聊天者（当代理是公共的
+	// 且你只想看自己的会话时有用）；传入 "" 包含所有聊天者。
 	SessionsForAgent(ctx context.Context, agentID, userID string, r Range, limit int) ([]Rank, error)
 	Close() error
 }
 
-// dayBucket truncates a time to UTC midnight. Exported indirectly via
-// LastN; tests can call it through the helper.
+// dayBucket 将时间截断到 UTC 午夜。通过 LastN 间接导出；
+// 测试可以通过辅助函数调用它。
 func dayBucket(t time.Time) time.Time {
 	t = t.UTC()
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
@@ -125,8 +123,8 @@ type memCell struct {
 	requests                              int64
 }
 
-// MemMeter keeps everything in a map. Lost on process restart, which is
-// fine for dev / tests but useless for the admin dashboard in prod.
+// MemMeter 将所有数据保存在 map 中。进程重启后丢失，
+// 这对开发/测试可以接受，但对生产环境的管理员仪表板无用。
 type MemMeter struct {
 	mu   sync.Mutex
 	data map[memKey]*memCell
@@ -266,28 +264,27 @@ func inRange(day time.Time, r Range) bool {
 // SQLMeter
 // --------------------------------------------------------------------
 
-// SQLMeter writes to token_usage_daily using UPSERT semantics. Works on
-// both SQLite and Postgres — they both support
-// `INSERT … ON CONFLICT (…) DO UPDATE SET …` with the same column-ref
-// form.
+// SQLMeter 使用 UPSERT 语义写入 token_usage_daily。
+// 同时适用于 SQLite 和 Postgres——它们都支持
+// `INSERT … ON CONFLICT (…) DO UPDATE SET …` 的相同列引用形式。
 //
-// The table schema is owned by store/database.go's migration block (see
-// migrateTokenUsageDaily). SQLMeter is a thin query layer on top.
+// 表结构由 store/database.go 的迁移块拥有（参见 migrateTokenUsageDaily）。
+// SQLMeter 是上层的薄查询层。
 type SQLMeter struct {
 	db      *sql.DB
 	dialect string // "mysql" | "postgres" | "sqlite"
 }
 
-// NewSQLMeter wraps an open *sql.DB. The caller (gateway boot) supplies
-// the same db+dialect the Store was built on so we share the connection
-// pool and respect SetMaxOpenConns tuning.
+// NewSQLMeter 包装一个已打开的 *sql.DB。调用者（网关启动时）提供
+// 与 Store 相同的 db+dialect，以便共享连接池并遵守
+// SetMaxOpenConns 的调优设置。
 func NewSQLMeter(db *sql.DB, dialect string) *SQLMeter {
 	return &SQLMeter{db: db, dialect: dialect}
 }
 
-func (s *SQLMeter) Close() error { return nil } // pool owned by store
+func (s *SQLMeter) Close() error { return nil } // 连接池由 store 拥有
 
-// placeholders generates $1,$2,… for postgres and ?,?,… for sqlite.
+// placeholders 为 postgres 生成 $1,$2,…，为 sqlite 生成 ?,?,…。
 func (s *SQLMeter) ph(i int) string {
 	if s.dialect == "postgres" {
 		return fmt.Sprintf("$%d", i)
@@ -295,8 +292,8 @@ func (s *SQLMeter) ph(i int) string {
 	return "?"
 }
 
-// rebind rewrites a query written with ? placeholders to $1..$N when
-// running on postgres. Keeps query strings readable.
+// rebind 将在 postgres 上运行时用 ? 占位符编写的查询重写为
+// $1..$N。保持查询字符串可读。
 func (s *SQLMeter) rebind(q string) string {
 	if s.dialect != "postgres" {
 		return q
@@ -314,8 +311,8 @@ func (s *SQLMeter) rebind(q string) string {
 	return b.String()
 }
 
-// dayParam returns the value to bind for a day column. SQLite stores
-// DATE as TEXT 'YYYY-MM-DD'; Postgres accepts time.Time directly.
+// dayParam 返回要绑定到 day 列的值。SQLite 将 DATE 存储为
+// TEXT 'YYYY-MM-DD'；Postgres 直接接受 time.Time。
 func (s *SQLMeter) dayParam(t time.Time) any {
 	if s.dialect == "sqlite" {
 		return t.Format("2006-01-02")
@@ -342,8 +339,8 @@ func (s *SQLMeter) RecordTokens(ctx context.Context, userID, agentID, sessionKey
 		)
 		return err
 	}
-	// Both dialects support this six-column conflict target and the
-	// EXCLUDED reference. We additionally bump request_count by 1.
+	// 两种方言都支持这个六列冲突目标和 EXCLUDED 引用。
+	// 我们额外将 request_count 增加 1。
 	q := s.rebind(`
 		INSERT INTO token_usage_daily
 			(day, user_id, agent_id, session_key, provider, model,
@@ -392,9 +389,8 @@ func (s *SQLMeter) SessionsForAgent(ctx context.Context, agentID, userID string,
 	if limit <= 0 {
 		limit = 50
 	}
-	// userID is optional — when blank we don't constrain on it. Two
-	// variants of the query keep the prepared statement form clean
-	// rather than building NULL-checks into the WHERE.
+	// userID 是可选的——为空时不约束它。查询的两个变体
+	// 保持预处理语句形式简洁，而不是在 WHERE 中构建 NULL 检查。
 	if userID == "" {
 		q := s.rebind(`
 			SELECT session_key AS key,
@@ -423,9 +419,8 @@ func (s *SQLMeter) SessionsForAgent(ctx context.Context, agentID, userID string,
 	return s.scanRanks(ctx, q, agentID, userID, s.dayParam(r.Since), s.dayParam(r.Until), limit)
 }
 
-// scanRanks is the shared row-iterator for SessionsForAgent and
-// topBy — they only differ in WHERE/GROUP BY, so the scan boilerplate
-// is factored out.
+// scanRanks 是 SessionsForAgent 和 topBy 共享的行迭代器——
+// 它们仅在 WHERE/GROUP BY 上不同，因此扫描样板代码被提取出来。
 func (s *SQLMeter) scanRanks(ctx context.Context, q string, args ...any) ([]Rank, error) {
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -447,8 +442,8 @@ func (s *SQLMeter) topBy(ctx context.Context, r Range, limit int, col string) ([
 	if limit <= 0 {
 		limit = 20
 	}
-	// col is a hardcoded constant from TopAgents/TopUsers — never
-	// user-supplied — so concatenation is safe here.
+	// col 是来自 TopAgents/TopUsers 的硬编码常量——永远不是用户提供的
+	// ——所以这里的拼接是安全的。
 	q := s.rebind(`
 		SELECT ` + col + ` AS key,
 			COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_create_tokens),0) AS tokens,

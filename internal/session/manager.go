@@ -17,9 +17,8 @@ import (
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
-// Session holds the message history for one conversation thread within
-// a (channel, accountID, chatID) triple. session_key is the per-session
-// opaque id; the triple identifies "where" the conversation lives.
+// Session 保存 (channel, accountID, chatID) 三元组内一个对话线程的消息历史。
+// session_key 是每个会话的不透明 ID；三元组标识对话"在哪里"。
 type Session struct {
 	mu               sync.Mutex
 	Messages         []provider.Message
@@ -33,49 +32,40 @@ type Session struct {
 	channel          string
 	accountID        string
 	chatID           string
-	// projectID, when non-empty, is stamped on every SaveSession write
-	// for this session. Set on the FIRST turn of a brand-new chat that
-	// arrived with a project hint (URL `?project=<pid>`); for existing
-	// rows it's read back via Manager.Get and late-bound here so the
-	// next save preserves it.
+	// projectID 在非空时，会标记到该会话的每次 SaveSession 写入中。
+	// 在带有项目提示（URL `?project=<pid>`）的全新聊天的第一轮对话中设置；
+	// 对于现有行，通过 Manager.Get 读回并在此延迟绑定，以便下次保存时保留它。
 	projectID string
-	// chatterUserID is the per-turn conversation participant — distinct
-	// from userID (UserSpace owner = channel binder) whenever an IM
-	// channel routes a per-sender app_user into a channel-owner
-	// UserSpace. Set per-turn by the agent loop via SetChatter so the
-	// ctx() embeds it for DBStore session writes (sessions.chatter_user_id /
-	// session_messages.chatter_user_id / session_events.chatter_user_id).
-	// Empty when the caller hasn't bound a chatter — writes leave the
-	// column '' and readers fall back to user_id.
+	// chatterUserID 是每轮对话参与者 —— 当 IM 通道将每个发送者的
+	// app_user 路由到通道拥有者的 UserSpace 时，它与 userID（UserSpace 拥有者 = 通道绑定者）
+	// 不同。由智能体循环通过 SetChatter 每轮设置，使 ctx() 将其嵌入到
+	// DBStore 会话写入中（sessions.chatter_user_id /
+	// session_messages.chatter_user_id / session_events.chatter_user_id）。
+	// 当调用方未绑定对话参与者时为空 —— 写入将列留为 ''，读取方回退到 user_id。
 	chatterUserID string
 
-	// Steering: turnDepth counts in-flight HandleMessage turns for this
-	// session (a counter, not a bool, so re-entrant/overlapping turns
-	// don't strand the active flag). steerBuf holds user messages that
-	// arrived mid-turn; the running ReAct loop drains them between tool
-	// iterations. Both are guarded by mu. getByKey never touches these,
-	// so a Manager.Get reload (which overwrites Messages) can't clobber a
-	// pending steer.
+	// 转向：turnDepth 统计此会话中正在进行的 HandleMessage 轮次数
+	//（计数器而非布尔值，因此重入/重叠的轮次不会使活跃标志挂起）。
+	// steerBuf 保存在轮次中间到达的用户消息；正在运行的 ReAct 循环
+	// 在工具迭代之间从中取出消息。两者都由 mu 保护。getByKey 从不触碰这些，
+	// 因此 Manager.Get 重新加载（会覆盖 Messages）不会破坏待处理的转向。
 	turnDepth int
 	steerBuf  []provider.Message
 }
 
-// SessionKey returns the opaque session_key this Session is bound to.
-// Exposed so per-turn plumbing (e.g. the tool registry binding for
-// goal-scoped tools) can address the right row without re-resolving
-// the (channel, account, chat) quadruple every time.
+// SessionKey 返回此 Session 绑定的不透明 session_key。
+// 公开以便每轮对话的基础设施（例如目标作用域工具的工具注册绑定）
+// 可以访问正确的行，而无需每次重新解析 (channel, account, chat) 四元组。
 func (s *Session) SessionKey() string { return s.sessionKey }
 
-// ctx returns a context tagged with this Session's user so the store layer
-// can scope SQL by user_id. Falls back to context.Background() when no
-// user is set; the store will then default to config.DefaultUserID.
+// ctx 返回一个标记了此 Session 用户的上下文，使存储层可以按 user_id 限定 SQL 作用域。
+// 当未设置用户时回退到 context.Background()；存储层随后默认为 config.DefaultUserID。
 //
-// Also embeds the per-turn chatter (when set) so DBStore session writes
-// (sessions.chatter_user_id / session_messages.chatter_user_id /
-// session_events.chatter_user_id) can record the actual conversation
-// participant. user_id stays = UserSpace owner; chatter is the
-// additional dimension. Both tags are independent — empty chatter
-// just leaves the column ”.
+// 同时嵌入每轮对话的 chatter（如果已设置），使 DBStore 会话写入
+//（sessions.chatter_user_id / session_messages.chatter_user_id /
+// session_events.chatter_user_id）可以记录实际的对话参与者。
+// user_id 保持 = UserSpace 拥有者；chatter 是附加维度。
+// 两个标签是独立的 —— 空的 chatter 只是将列留为 ""。
 func (s *Session) ctx() context.Context {
 	ctx := context.Background()
 	if s.userID != "" {
@@ -87,34 +77,29 @@ func (s *Session) ctx() context.Context {
 	return ctx
 }
 
-// SetChatter binds the per-turn conversation participant to this
-// Session so the next Append / SaveSession write stamps the
-// chatter_user_id column. Called by the agent loop at the top of each
-// turn from the resolved chatterUID. Passing "" clears it (the next
-// write goes back to ” which readers fall back to user_id for).
+// SetChatter 将每轮对话参与者绑定到此 Session，以便下一次
+// Append / SaveSession 写入标记 chatter_user_id 列。
+// 由智能体循环在每轮开始时从解析的 chatterUID 调用。
+// 传入 "" 清除它（下一次写入恢复为 ""，读取方回退到 user_id）。
 func (s *Session) SetChatter(uid string) {
 	s.mu.Lock()
 	s.chatterUserID = uid
 	s.mu.Unlock()
 }
 
-// Manager manages sessions for one (user, agent). Sessions are keyed
-// internally by an opaque session_key; the (channel, accountID, chatID)
-// triple is what callers use to address "the conversation thread the
-// user is in right now". The active session for that triple is the
-// most recently updated row — `/new` mints a fresh one to start over.
+// Manager 管理单个 (user, agent) 的会话。会话内部通过不透明的 session_key 作为键；
+// (channel, accountID, chatID) 三元组是调用方用来定位"用户当前所在的对话线程"的。
+// 该三元组的活跃会话是最近更新的行 —— `/new` 创建新会话以重新开始。
 //
-// SessionStore is the optional persistence interface (DB-backed in
-// production; nil in file-only mode for single-binary dev installs).
+// SessionStore 是可选的持久化接口（生产环境中基于数据库；单二进制开发安装的
+// 仅文件模式下为 nil）。
 //
-// Two parallel persistence shapes:
-//   - GetSession / SaveSession operate on the LLM-facing working set
-//     (post-compaction). This is what the agent loop reads/writes every
-//     turn.
-//   - AppendMessage / ListMessages operate on the append-only per-turn
-//     archive (session_messages table). Compaction never touches it, so
-//     UI history / audit reads see the original conversation regardless
-//     of how many times the working set has been pruned/summarized.
+// 两种并行的持久化形态：
+//   - GetSession / SaveSession 操作面向 LLM 的工作集（压缩后）。
+//     这是智能体循环每轮读写的对象。
+//   - AppendMessage / ListMessages 操作仅追加的每轮归档（session_messages 表）。
+//     压缩从不触及它，因此 UI 历史/审计读取始终看到原始对话，
+//     无论工作集被修剪/汇总了多少次。
 type SessionStore interface {
 	GetSession(ctx context.Context, agentID, sessionKey string) ([]provider.Message, error)
 	SaveSession(ctx context.Context, agentID, sessionKey, channel, accountID, chatID, projectID string, messages []provider.Message) error
@@ -123,21 +108,18 @@ type SessionStore interface {
 	ListWebSessions(ctx context.Context, agentID string) ([]WebSession, error)
 	DeleteSession(ctx context.Context, agentID, sessionKey string) error
 	RenameSession(ctx context.Context, agentID, sessionKey, title string) error
-	// MoveSession reassigns a session to a different project (or
-	// detaches when projectID is ""). Used by the sidebar drag-and-drop
-	// affordance; workspace file migration is the caller's job.
+	// MoveSession 将会话重新分配到不同的项目（projectID 为 "" 时分离）。
+	// 由侧边栏拖放功能使用；工作区文件迁移是调用方的责任。
 	MoveSession(ctx context.Context, agentID, sessionKey, projectID string) error
-	// ResolveActiveSessionKey returns the most recent session_key for the
-	// (channel, accountID, chatID) triple, or empty string if none.
+	// ResolveActiveSessionKey 返回 (channel, accountID, chatID) 三元组
+	// 最近使用的 session_key，如果没有则返回空字符串。
 	ResolveActiveSessionKey(ctx context.Context, agentID, channel, accountID, chatID string) (string, error)
-	// LookupSessionTriple is the inverse — given a session_key, return
-	// the conversation it belongs to. Returns ("","","",nil) when the
-	// session doesn't exist (manager treats that as "not yet stored").
+	// LookupSessionTriple 是逆操作 —— 给定 session_key，返回其所属的对话。
+	// 当会话不存在时返回 ("","","",nil)（管理器将其视为"尚未存储"）。
 	LookupSessionTriple(ctx context.Context, agentID, sessionKey string) (channel, accountID, chatID string, err error)
-	// LookupSessionProject returns the project_id stamped on the session
-	// row, or "" for loose chats. Used by the agent runtime to thread
-	// project context onto inbound messages so the workspace store and
-	// sandbox both route to projects/<pid>/.
+	// LookupSessionProject 返回会话行上标记的 project_id，松散聊天返回 ""。
+	// 由智能体运行时用于将项目上下文传递到入站消息上，使工作区存储和
+	// 沙箱都路由到 projects/<pid>/。
 	LookupSessionProject(ctx context.Context, agentID, sessionKey string) (string, error)
 }
 
@@ -157,8 +139,8 @@ func NewManager(dataDir string) *Manager {
 	}
 }
 
-// NewManagerWithStoreForUser is the user-scoped constructor. Caller MUST
-// supply a real user_id resolved from auth — there is no fallback.
+// NewManagerWithStoreForUser 是用户作用域的构造函数。调用方必须
+// 提供从认证解析的真实 user_id —— 没有回退。
 func NewManagerWithStoreForUser(dataDir string, st SessionStore, userID, agentID string) *Manager {
 	if userID == "" {
 		panic("session.NewManagerWithStoreForUser: userID is required")
@@ -172,7 +154,7 @@ func NewManagerWithStoreForUser(dataDir string, st SessionStore, userID, agentID
 	}
 }
 
-// ctx returns a context tagged with this Manager's user for store calls.
+// ctx 返回一个标记了此 Manager 用户的上下文，用于存储调用。
 func (m *Manager) ctx() context.Context {
 	if m.userID == "" {
 		return context.Background()
@@ -180,18 +162,16 @@ func (m *Manager) ctx() context.Context {
 	return config.WithUserID(context.Background(), m.userID)
 }
 
-// generateSessionKey mints an opaque session_key for a fresh
-// conversation thread. The same generator is used regardless of channel
-// — `s-<unix_ms>-<rand>`. The (channel, accountID, chatID) triple is
-// stored alongside in dedicated columns; the literal session_key string
-// no longer encodes channel info, so a `/new` command in IM can mint a
-// second key under the same triple without colliding.
+// generateSessionKey 为新的对话线程生成一个不透明的 session_key。
+// 无论通道如何，都使用相同的生成器 —— `s-<unix_ms>-<rand>`。
+// (channel, accountID, chatID) 三元组存储在专门的列中；
+// session_key 字符串本身不再编码通道信息，因此 IM 中的 `/new` 命令
+// 可以在同一三元组下生成第二个键而不会冲突。
 func generateSessionKey() string {
 	const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
 	var rand6 [6]byte
 	if _, err := cryptorand.Read(rand6[:]); err != nil {
-		// fall back to time-derived bytes — collision is extremely
-		// unlikely once the timestamp prefix is in play
+		// 回退到时间派生的字节 —— 一旦时间戳前缀生效，碰撞概率极低
 		now := time.Now().UnixNano()
 		for i := range rand6 {
 			rand6[i] = byte(now >> (i * 8))
@@ -204,22 +184,18 @@ func generateSessionKey() string {
 	return fmt.Sprintf("s-%d-%s", time.Now().UnixMilli(), suffix)
 }
 
-// resolveOrMintKey picks the active session_key for (channel,
-// accountID, chatID) from the store, or mints a fresh one when nothing
-// exists yet (the very first message in a conversation). Pre-existing
-// rows from before the channel-triple migration may carry a key like
-// `web_<sid>` or `wechat_<openid>` — they're matched by the backfilled
-// triple, not by parsing the key, so the legacy format keeps working.
+// resolveOrMintKey 从存储中选择 (channel, accountID, chatID) 的活跃 session_key，
+// 或者当尚不存在时生成一个新的（对话的第一条消息）。
+// 通道三元组迁移之前的现有行可能带有 `web_<sid>` 或 `wechat_<openid>` 这样的键 ——
+// 它们通过回填的三元组匹配，而不是通过解析键，因此旧版格式仍然有效。
 //
-// New-row mint policy:
-//   - web: session_key == chatID. Web's chatID *is* the per-conversation
-//     identifier (the frontend generates one per "+New chat") so making
-//     it equal the session_key keeps the URL `?session=` token stable
-//     across reloads — no "URL changed after first message" surprises.
-//   - everywhere else: mint an opaque `s-<unix_ms>-<rand>`. IM channels
-//     reuse one chatID (the user's openid / chat_id) across many
-//     sessions, so the session_key has to be independent for `/new` to
-//     produce a sibling row.
+// 新行生成策略：
+//   - web：session_key == chatID。Web 的 chatID *就是*每个对话的标识符
+//    （前端每次 "+New chat" 生成一个），因此使其等于 session_key 可保持
+//    URL `?session=` 令牌在刷新间稳定 —— 不会出现"第一条消息后 URL 变化"的意外。
+//   - 其他所有地方：生成不透明的 `s-<unix_ms>-<rand>`。IM 通道在多个会话中
+//     重复使用同一个 chatID（用户的 openid / chat_id），因此 session_key 必须独立，
+//     以便 `/new` 可以生成并列行。
 func (m *Manager) resolveOrMintKey(channel, accountID, chatID string) string {
 	if m.store != nil {
 		if k, err := m.store.ResolveActiveSessionKey(m.ctx(), m.agentID, channel, accountID, chatID); err == nil && k != "" {
@@ -232,39 +208,33 @@ func (m *Manager) resolveOrMintKey(channel, accountID, chatID string) string {
 	return generateSessionKey()
 }
 
-// Get returns or creates the active session for the (channel, accountID,
-// chatID) triple. The session_key is resolved server-side rather than
-// derived from the inputs — see resolveOrMintKey.
+// Get 返回或创建 (channel, accountID, chatID) 三元组的活跃会话。
+// session_key 在服务端解析而非从输入推导 —— 见 resolveOrMintKey。
 //
-// projectID is the "this chat belongs to project X" hint from the chat
-// request (URL `?project=<pid>`). It only matters on first save: if the
-// session row already has project_id stored, that wins; if the row is
-// brand new, this hint is what gets persisted.
+// projectID 是聊天请求中的"此聊天属于项目 X"提示（URL `?project=<pid>`）。
+// 仅在首次保存时有效：如果会话行已存储了 project_id，则以存储为准；
+// 如果行是全新的，则此提示会被持久化。
 //
-// In multi-replica deployments (store-backed mode), every Get() reloads
-// Messages from the store so a request served by pod B sees writes made
-// by pod A. Without this, each pod's in-memory cache drifts away from
-// Postgres: the first refresh after a cross-pod write returns whichever
-// pod-local snapshot happened to be warm. We deliberately overwrite
-// Messages on the cached Session rather than re-creating the struct so
-// transient fields (snapshot, LastConsolidated) survive.
+// 在多副本部署中（基于存储模式），每次 Get() 都会从存储重新加载 Messages，
+// 因此由 pod B 处理的请求可以看到 pod A 的写入。否则每个 pod 的内存缓存
+// 会与 Postgres 偏离：跨 pod 写入后的第一次刷新会返回恰好暖缓存的
+// pod 本地快照。我们有意覆盖缓存 Session 上的 Messages 而非重新创建结构体，
+// 以便瞬态字段（snapshot, LastConsolidated）得以保留。
 //
-// File-backed mode stays cache-first since there's only one process.
+// 基于文件的模式保持缓存优先，因为只有一个进程。
 func (m *Manager) Get(channel, accountID, chatID, projectID string) *Session {
 	key := m.resolveOrMintKey(channel, accountID, chatID)
 	return m.getByKey(key, channel, accountID, chatID, projectID)
 }
 
-// GetByKey loads a specific session by its session_key. Used when the
-// caller already has a key in hand (e.g. web history fetch from a URL
-// `?session=…`) and wants to bypass the active-session lookup.
+// GetByKey 通过 session_key 加载特定会话。当调用方已经持有键时使用
+//（例如从 URL `?session=…` 获取 Web 历史记录），希望绕过活跃会话查找。
 func (m *Manager) GetByKey(sessionKey string) *Session {
 	return m.getByKey(sessionKey, "", "", "", "")
 }
 
-// LookupSessionProject returns the project_id of a session row (or ""
-// if loose / not yet stored). Used by the agent runtime to populate
-// InboundMessage.ProjectID so workspace IO routes to projects/<pid>/.
+// LookupSessionProject 返回会话行的 project_id（松散/尚未存储时返回 ""）。
+// 由智能体运行时用于填充 InboundMessage.ProjectID，使工作区 IO 路由到 projects/<pid>/。
 func (m *Manager) LookupSessionProject(sessionKey string) string {
 	if m.store == nil || sessionKey == "" {
 		return ""
@@ -276,11 +246,10 @@ func (m *Manager) LookupSessionProject(sessionKey string) string {
 	return pid
 }
 
-// LookupSessionTriple forwards to the store's session_key → triple
-// lookup. Returns ("","","",nil) when the row doesn't exist, mirroring
-// the SessionStore implementation. Callers should use SessionExists
-// first if they need to distinguish "no row" from "row with empty
-// triple" (e.g. file-backed dev mode where the store is nil).
+// LookupSessionTriple 转发到存储层的 session_key → 三元组查找。
+// 当行不存在时返回 ("","","",nil)，与 SessionStore 实现一致。
+// 如果调用方需要区分"没有行"和"三元组为空的行"（例如存储为 nil 的
+// 基于文件的开发模式），应先使用 SessionExists。
 func (m *Manager) LookupSessionTriple(sessionKey string) (channel, accountID, chatID string, err error) {
 	if m.store == nil {
 		return "", "", "", nil
@@ -288,31 +257,27 @@ func (m *Manager) LookupSessionTriple(sessionKey string) (channel, accountID, ch
 	return m.store.LookupSessionTriple(m.ctx(), m.agentID, sessionKey)
 }
 
-// SessionExists reports whether a session row already exists under the
-// given session_key. Used by agent-side URL resolvers: a `?session=…`
-// token can be either a canonical session_key or a legacy web chat_id,
-// and the lookup needs a cheap way to tell which.
+// SessionExists 报告给定 session_key 下是否已存在会话行。
+// 由智能体侧 URL 解析器使用：`?session=…` 令牌可以是规范的 session_key
+// 或旧版 web chat_id，查找需要一种轻量方式区分两者。
 func (m *Manager) SessionExists(sessionKey string) bool {
 	if m.store == nil {
-		// File-backed mode has no negative-lookup primitive — assume
-		// yes so the legacy chat_id fallback isn't preferred over the
-		// caller's intent. The follow-up GetByKey will load whatever's
-		// on disk (empty file → empty Session, harmless).
+		// 基于文件的模式没有反向查找原语 —— 假设存在，以免旧版 chat_id
+		// 回退优先于调用方的意图。后续的 GetByKey 将加载磁盘上的任何内容
+		//（空文件 → 空 Session，无害）。
 		return true
 	}
 	msgs, err := m.store.GetSession(m.ctx(), m.agentID, sessionKey)
 	return err == nil && msgs != nil
 }
 
-// ResolveSessionKey turns a URL token (`?session=…`) into the
-// canonical session_key. Accepts either:
-//   - a session_key directly (the ID surfaced by ListWebSessions)
-//   - a legacy web chat_id (older URLs and the frontend's freshly-
-//     generated id on the *first* turn of a "+New chat")
+// ResolveSessionKey 将 URL 令牌（`?session=…`）转换为规范的 session_key。
+// 接受以下任一形式：
+//   - 直接是 session_key（ListWebSessions 返回的 ID）
+//   - 旧版 web chat_id（旧 URL 和前端在"+New chat"的*第一轮*生成的 ID）
 //
-// Returns the input unchanged when nothing matches — callers' downstream
-// load/save will then create the row, which is correct for brand-new
-// web chats where the URL token is the about-to-exist session_key.
+// 当无匹配时返回输入不变 —— 调用方的下游加载/保存将创建该行，
+// 这对于全新的 Web 聊天是正确的，其中 URL 令牌就是即将存在的 session_key。
 func (m *Manager) ResolveSessionKey(sessionID string) string {
 	if sessionID == "" {
 		return ""
@@ -328,19 +293,15 @@ func (m *Manager) ResolveSessionKey(sessionID string) string {
 	return sessionID
 }
 
-// OpenNewSession mints a brand new session under the same (channel,
-// accountID, chatID) triple and returns its session_key. The next Get
-// for that triple will pick it up (it has the freshest updated_at).
-// Used by IM `/new` / `/reset` commands and any future "start new
-// conversation" UI affordance.
+// OpenNewSession 在同一 (channel, accountID, chatID) 三元组下生成一个全新会话
+// 并返回其 session_key。该三元组的下一次 Get 将获取到它（它具有最新的 updated_at）。
+// 由 IM 的 `/new` / `/reset` 命令和未来的"开始新对话"UI 功能使用。
 func (m *Manager) OpenNewSession(channel, accountID, chatID string) string {
 	key := generateSessionKey()
 	if m.store != nil {
-		// Persist an empty row immediately so the active-session lookup
-		// for the next inbound message resolves to this key, not the
-		// previous (still-newer-than-not-existing) row. IM `/new` is
-		// always a loose chat (project_id=""); project chats are
-		// minted lazily by the chat handler on first message.
+		// 立即持久化一个空行，使下一条入站消息的活跃会话查找解析到此键，
+		// 而非前一个（仍然比不存在更新）行。IM 的 `/new` 始终是松散聊天
+		//（project_id=""）；项目聊天由聊天处理程序在第一条消息时延迟创建。
 		_ = m.store.SaveSession(m.ctx(), m.agentID, key, channel, accountID, chatID, "", nil)
 	}
 	m.mu.Lock()
@@ -371,10 +332,9 @@ func (m *Manager) getByKey(key, channel, accountID, chatID, projectID string) *S
 				s.mu.Unlock()
 			}
 		}
-		// Late-bind the triple + project on cached entries created via
-		// GetByKey or earlier hint-less paths. Once stamped, project_id
-		// on the persisted row is authoritative — we only ever fill in
-		// the empty case so a hint mismatch can't overwrite the truth.
+		// 在通过 GetByKey 或早期无提示路径创建的缓存条目上延迟绑定
+		// 三元组 + 项目。一旦标记，持久化行上的 project_id 即被视为权威 ——
+		// 我们只填充空的情况，因此提示不匹配不会覆盖真相。
 		if channel != "" || projectID != "" {
 			s.mu.Lock()
 			if s.channel == "" && channel != "" {
@@ -402,7 +362,7 @@ func (m *Manager) getByKey(key, channel, accountID, chatID, projectID string) *S
 		projectID:  projectID,
 	}
 
-	// Load from store (DB) if available, otherwise from file
+	// 如果可用，从存储（数据库）加载，否则从文件加载
 	if m.store != nil {
 		msgs, err := m.store.GetSession(m.ctx(), m.agentID, key)
 		if err == nil && len(msgs) > 0 {
@@ -416,29 +376,24 @@ func (m *Manager) getByKey(key, channel, accountID, chatID, projectID string) *S
 	return s
 }
 
-// Append adds a message to the session and persists it.
+// Append 向会话添加消息并持久化。
 //
-// Store-backed mode writes to TWO places:
-//   - SaveSession overwrites the LLM-facing working set in the sessions
-//     table (the array the agent loop reads next turn);
-//   - AppendMessage inserts the new turn into session_messages, the
-//     append-only archive that survives compaction.
+// 基于存储的模式写入两个位置：
+//   - SaveSession 覆盖 sessions 表中面向 LLM 的工作集（智能体循环下一轮读取的数组）；
+//   - AppendMessage 将新轮次插入 session_messages，即存活于压缩的仅追加归档。
 //
-// The archive write is best-effort (logged on failure but not surfaced)
-// — losing one archive row is recoverable from the working set, and we
-// don't want history to silently drop chat replies if the audit table
-// hiccups.
-// Key returns the opaque session_key this Session is bound to.
-// Exposed so callers that need to tag external records by session
-// (e.g. usage metering's per-session token rollup) don't have to
-// reach into the struct.
+// 归档写入尽力而为（失败时记录日志但不暴露）—— 丢失一条归档行可从工作集恢复，
+// 我们不希望审计表打嗝时历史记录静默丢弃聊天回复。
+// Key 返回此 Session 绑定的不透明 session_key。
+// 公开以便需要按会话标记外部记录的调用方（例如使用计费的每会话令牌汇总）
+// 不必深入结构体内部。
 func (s *Session) Key() string { return s.sessionKey }
 
 func (s *Session) Append(msg provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Auto-set timestamp if not provided
+	// 如果未提供时间戳，自动设置
 	if msg.Timestamp == 0 {
 		msg.Timestamp = time.Now().UnixMilli()
 	}
@@ -455,10 +410,9 @@ func (s *Session) Append(msg provider.Message) {
 	}
 }
 
-// ArchivedMessages returns the full append-only history for this session.
-// Falls back to the in-memory working set when no store is configured or
-// the archive is empty (e.g. file-backed mode, or a session created
-// before the archive table existed).
+// ArchivedMessages 返回此会话的完整仅追加历史。
+// 当未配置存储或归档为空时回退到内存中的工作集
+//（例如基于文件的模式，或归档表存在之前创建的会话）。
 func (s *Session) ArchivedMessages() []provider.Message {
 	s.mu.Lock()
 	store := s.store
@@ -475,7 +429,7 @@ func (s *Session) ArchivedMessages() []provider.Message {
 	return msgs
 }
 
-// GetMessages returns a copy of all messages.
+// GetMessages 返回所有消息的副本。
 func (s *Session) GetMessages() []provider.Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -485,19 +439,17 @@ func (s *Session) GetMessages() []provider.Message {
 	return msgs
 }
 
-// BeginTurn marks a HandleMessage turn as in-flight for this session.
-// Paired with EndTurn. Steering messages are only accepted while at
-// least one turn is active.
+// BeginTurn 将会话的 HandleMessage 轮次标记为正在进行中。
+// 与 EndTurn 配对使用。只有当至少一个轮次活跃时才接受转向消息。
 func (s *Session) BeginTurn() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.turnDepth++
 }
 
-// EndTurn marks a turn as finished. When the last in-flight turn ends it
-// returns any steer messages still buffered (the end-of-turn race: a
-// message pushed after the loop's final drain). Callers redispatch the
-// leftovers as a fresh turn.
+// EndTurn 将一轮标记为完成。当最后一个进行中的轮次结束时，
+// 它返回仍缓冲的任何转向消息（轮次结束竞争：在循环最终取出后推入的消息）。
+// 调用方将剩余消息重新分派为新的一轮。
 func (s *Session) EndTurn() []provider.Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -512,11 +464,10 @@ func (s *Session) EndTurn() []provider.Message {
 	return leftover
 }
 
-// PushSteerIfActive buffers a steering message iff a turn is currently
-// in-flight. Returns false when no turn is active, so the caller can
-// fall back to dispatching the message as a normal new turn. The return
-// value is the single source of truth — there is deliberately no
-// separate "is running" probe to race against.
+// PushSteerIfActive 仅当轮次当前正在进行中时缓冲转向消息。
+// 当没有活跃轮次时返回 false，因此调用方可以回退到将消息作为
+// 正常的新轮次分派。返回值是唯一的真相来源 —— 故意不设单独的
+// "正在运行"探测以避免竞争。
 func (s *Session) PushSteerIfActive(msg provider.Message) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -527,8 +478,8 @@ func (s *Session) PushSteerIfActive(msg provider.Message) bool {
 	return true
 }
 
-// DrainSteer atomically returns and clears the buffered steer messages.
-// The running loop calls this between tool iterations.
+// DrainSteer 原子地返回并清除缓冲的转向消息。
+// 正在运行的循环在工具迭代之间调用此方法。
 func (s *Session) DrainSteer() []provider.Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -540,22 +491,22 @@ func (s *Session) DrainSteer() []provider.Message {
 	return drained
 }
 
-// UnconsolidatedCount returns the number of messages since last consolidation.
+// UnconsolidatedCount 返回自上次合并以来的消息数量。
 func (s *Session) UnconsolidatedCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.Messages) - s.LastConsolidated
 }
 
-// MarkConsolidated updates the consolidation pointer.
+// MarkConsolidated 更新合并指针。
 func (s *Session) MarkConsolidated(index int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.LastConsolidated = index
 }
 
-// ReplaceMessages replaces all session messages with the given list.
-// This is used after context compaction to trim the session.
+// ReplaceMessages 用给定的列表替换所有会话消息。
+// 在上下文压缩后用于修剪会话。
 func (s *Session) ReplaceMessages(msgs []provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -571,7 +522,7 @@ func (s *Session) ReplaceMessages(msgs []provider.Message) {
 	}
 }
 
-// Clear resets the session messages.
+// Clear 重置会话消息。
 func (s *Session) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -587,7 +538,7 @@ func (s *Session) Clear() {
 func (s *Session) load() {
 	f, err := os.Open(s.filePath)
 	if err != nil {
-		return // file doesn't exist yet
+		return // 文件尚不存在
 	}
 	defer f.Close()
 
@@ -642,35 +593,33 @@ func (s *Session) appendToFile(msg provider.Message) {
 	f.Write([]byte("\n"))
 }
 
-// WebSession holds metadata for one chat session surfaced to the
-// dashboard. Despite the historical name it now spans every channel —
-// the Channel field tells callers which one to render the icon for.
+// WebSession 保存展示给仪表盘的单个聊天会话的元数据。
+// 尽管名称有历史原因，它现在涵盖所有通道 —— Channel 字段
+// 告诉调用方应该渲染哪个通道的图标。
 //
-// ID is the session_key (the row's PK), not the chat_id. Older URLs
-// pointing at a chat_id still resolve via the agent-side fallback
-// (ResolveSessionKey) so existing bookmarks don't break.
+// ID 是 session_key（行的主键），而非 chat_id。
+// 指向 chat_id 的旧 URL 仍然通过智能体侧回退（ResolveSessionKey）解析，
+// 因此现有书签不会失效。
 type WebSession struct {
 	ID        string `json:"id"`
 	Channel   string `json:"channel,omitempty"`
 	AccountID string `json:"accountId,omitempty"`
 	ChatID    string `json:"chatId,omitempty"`
-	// ProjectID groups this chat under a per-(user, agent) project
-	// folder. Empty = loose chat. Surfaced so the sidebar can section
-	// chats by project.
+	// ProjectID 将此聊天分组到 per-(user, agent) 项目文件夹下。
+	// 空 = 松散聊天。公开以便侧边栏可以按项目对聊天进行分区。
 	ProjectID string `json:"projectId,omitempty"`
 	Title     string `json:"title"`
 	Preview   string `json:"preview"`
-	CreatedAt int64  `json:"createdAt"` // unix ms
-	UpdatedAt int64  `json:"updatedAt"` // unix ms
-	// ThumbnailURL is the first image_url attached to the FIRST user
-	// turn of the session, surfaced so the sidebar can show "image +
-	// text" instead of just the text label for multimodal chats.
-	// Empty for sessions whose opening message had no image.
+	CreatedAt int64  `json:"createdAt"` // 毫秒级 Unix 时间戳
+	UpdatedAt int64  `json:"updatedAt"` // 毫秒级 Unix 时间戳
+	// ThumbnailURL 是会话第一轮用户消息中附带的第一个 image_url，
+	// 公开以便侧边栏可以显示"图片 + 文本"而不仅仅是多模态聊天的文本标签。
+	// 对于开场消息没有图片的会话为空。
 	ThumbnailURL string `json:"thumbnailUrl,omitempty"`
 }
 
-// ListWebSessions scans session files for web chat sessions and returns
-// a list with id, title, preview, and timestamps.
+// ListWebSessions 扫描会话文件以查找 Web 聊天会话，并返回包含
+// id、标题、预览和时间戳的列表。
 func (m *Manager) ListWebSessions() []WebSession {
 	if m.store != nil {
 		sessions, err := m.store.ListWebSessions(m.ctx(), m.agentID)
@@ -687,7 +636,7 @@ func (m *Manager) ListWebSessions() []WebSession {
 	var sessions []WebSession
 	for _, f := range files {
 		base := filepath.Base(f)
-		// "web_<sessionId>.jsonl" -> "<sessionId>"
+		// "web_<sessionId>.jsonl" -> "<sessionId>"  // 文件名到会话 ID
 		sessionId := strings.TrimPrefix(base, "web_")
 		sessionId = strings.TrimSuffix(sessionId, ".jsonl")
 
@@ -696,7 +645,7 @@ func (m *Manager) ListWebSessions() []WebSession {
 			continue
 		}
 
-		// Read first user message as preview
+		// 读取第一条用户消息作为预览
 		preview := ""
 		thumb := ""
 		fh, err := os.Open(f)
@@ -706,11 +655,9 @@ func (m *Manager) ListWebSessions() []WebSession {
 		scanner := bufio.NewScanner(fh)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
-			// Multimodal user turns store text inside content_parts and
-			// leave content empty — read both shapes so the preview
-			// doesn't latch onto a later plain message and mislabel the
-			// session, and pull the first image_url so the sidebar can
-			// surface a thumbnail.
+			// 多模态用户轮次将文本存储在 content_parts 中，content 为空 ——
+			// 读取两种格式以使预览不会附着到后面的纯文本消息并错误标记会话，
+			// 并提取第一个 image_url 以便侧边栏可以显示缩略图。
 			var msg struct {
 				Role         string                 `json:"role"`
 				Content      string                 `json:"content"`
@@ -753,10 +700,10 @@ func (m *Manager) ListWebSessions() []WebSession {
 		fh.Close()
 
 		if preview == "" {
-			continue // skip empty sessions
+			continue // 跳过空会话
 		}
 
-		// Read title from metadata file, fallback to preview
+		// 从元数据文件读取标题，回退到预览
 		title := m.readSessionTitle(sessionId)
 		if title == "" {
 			title = preview
@@ -775,7 +722,7 @@ func (m *Manager) ListWebSessions() []WebSession {
 		})
 	}
 
-	// Sort by updatedAt descending (newest first)
+	// 按 updatedAt 降序排序（最新的在前）
 	for i := 0; i < len(sessions); i++ {
 		for j := i + 1; j < len(sessions); j++ {
 			if sessions[j].UpdatedAt > sessions[i].UpdatedAt {
@@ -787,12 +734,10 @@ func (m *Manager) ListWebSessions() []WebSession {
 	return sessions
 }
 
-// resolveWebSessionKey maps a web sessionId (the URL `?session=` token,
-// which is the conversation's chat_id) to its current session_key. New
-// rows have an opaque session_key (different from chat_id); legacy rows
-// still carry the `web_<sid>` form. Falls back to the legacy literal
-// when no row exists yet so file-backed mode and brand-new sessions
-// don't error on rename/delete.
+// resolveWebSessionKey 将 web sessionId（URL `?session=` 令牌，即对话的 chat_id）
+// 映射到其当前的 session_key。新行具有不透明的 session_key（与 chat_id 不同）；
+// 旧版行仍然使用 `web_<sid>` 格式。当行尚不存在时回退到旧版字面形式，
+// 以便基于文件的模式和全新会话在重命名/删除时不会出错。
 func (m *Manager) resolveWebSessionKey(sessionId string) string {
 	if m.store != nil {
 		if k, err := m.store.ResolveActiveSessionKey(m.ctx(), m.agentID, "web", "", sessionId); err == nil && k != "" {
@@ -802,9 +747,8 @@ func (m *Manager) resolveWebSessionKey(sessionId string) string {
 	return "web_" + sessionId
 }
 
-// DeleteSessionByID resolves a URL token (session_key or legacy web
-// chat_id) and deletes the matching session. Channel-agnostic — used
-// by the dashboard to delete any-channel chats.
+// DeleteSessionByID 解析 URL 令牌（session_key 或旧版 web chat_id）
+// 并删除匹配的会话。通道无关 —— 由仪表盘用于删除任何通道的聊天。
 func (m *Manager) DeleteSessionByID(sessionId string) error {
 	key := m.ResolveSessionKey(sessionId)
 	m.mu.Lock()
@@ -813,14 +757,12 @@ func (m *Manager) DeleteSessionByID(sessionId string) error {
 	if m.store != nil {
 		return m.store.DeleteSession(m.ctx(), m.agentID, key)
 	}
-	// File-backed mode only had a "web_<sid>" filename convention; non-
-	// web sessions don't reach this path in dev mode, so the legacy
-	// fallback in DeleteWebSession is sufficient.
+	// 基于文件的模式只有 "web_<sid>" 文件名约定；非 web 会话在开发模式中
+	// 不会到达此路径，因此 DeleteWebSession 中的旧版回退就足够了。
 	return m.DeleteWebSession(sessionId)
 }
 
-// RenameSessionByID resolves a URL token and renames the matching
-// session.
+// RenameSessionByID 解析 URL 令牌并重命名匹配的会话。
 func (m *Manager) RenameSessionByID(sessionId, title string) error {
 	key := m.ResolveSessionKey(sessionId)
 	if m.store != nil {
@@ -829,15 +771,12 @@ func (m *Manager) RenameSessionByID(sessionId, title string) error {
 	return m.RenameWebSession(sessionId, title)
 }
 
-// MoveSessionByID reassigns a session to a different project (or
-// detaches when projectID is ""). Resolves either a session_key or a
-// legacy web chat_id. Drops the in-memory cache entry so the next
-// Get re-loads the row with the freshly-stamped project_id — without
-// this drop, an open chat would keep saving with the old project_id
-// even after the sidebar shows it under a new project.
+// MoveSessionByID 将会话重新分配到不同的项目（projectID 为 "" 时分离）。
+// 解析 session_key 或旧版 web chat_id。删除内存缓存条目，使下一次
+// Get 重新加载带有新标记的 project_id 的行 —— 如果不删除，打开的聊天
+// 即使在侧边栏显示其在新项目下后仍会用旧的 project_id 保存。
 //
-// File-backed mode is a no-op (no project concept) — callers that
-// only run dev mode shouldn't reach this path.
+// 基于文件的模式为空操作（无项目概念）—— 仅运行开发模式的调用方不应到达此路径。
 func (m *Manager) MoveSessionByID(sessionId, projectID string) error {
 	key := m.ResolveSessionKey(sessionId)
 	m.mu.Lock()
@@ -853,11 +792,11 @@ func (m *Manager) MoveSessionByID(sessionId, projectID string) error {
 	return nil
 }
 
-// DeleteWebSession removes a web chat session file and its metadata.
+// DeleteWebSession 删除 Web 聊天会话文件及其元数据。
 func (m *Manager) DeleteWebSession(sessionId string) error {
 	key := m.resolveWebSessionKey(sessionId)
 
-	// Remove from in-memory cache
+	// 从内存缓存中移除
 	m.mu.Lock()
 	delete(m.sessions, key)
 	m.mu.Unlock()
@@ -874,7 +813,7 @@ func (m *Manager) DeleteWebSession(sessionId string) error {
 	return os.Remove(sessionFile)
 }
 
-// RenameWebSession sets a custom title for a web chat session.
+// RenameWebSession 为 Web 聊天会话设置自定义标题。
 func (m *Manager) RenameWebSession(sessionId, title string) error {
 	if m.store != nil {
 		return m.store.RenameSession(m.ctx(), m.agentID, m.resolveWebSessionKey(sessionId), title)
@@ -887,7 +826,7 @@ func (m *Manager) RenameWebSession(sessionId, title string) error {
 	return os.WriteFile(metaFile, data, 0o644)
 }
 
-// readSessionTitle reads the title from a session metadata file.
+// readSessionTitle 从会话元数据文件读取标题。
 func (m *Manager) readSessionTitle(sessionId string) string {
 	safeId := strings.ReplaceAll(sessionId, "/", "_")
 	safeId = strings.ReplaceAll(safeId, "..", "_")
@@ -904,7 +843,7 @@ func (m *Manager) readSessionTitle(sessionId string) string {
 	return meta.Title
 }
 
-// Snapshot saves the current message list as a restore point (for undo).
+// Snapshot 将当前消息列表保存为恢复点（用于撤销）。
 func (s *Session) Snapshot() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -912,7 +851,7 @@ func (s *Session) Snapshot() {
 	copy(s.snapshot, s.Messages)
 }
 
-// Undo restores the last snapshot. Returns false if no snapshot exists.
+// Undo 恢复上一个快照。如果不存在快照则返回 false。
 func (s *Session) Undo() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -927,7 +866,7 @@ func (s *Session) Undo() bool {
 	return true
 }
 
-// HasSnapshot returns true if an undo snapshot exists.
+// HasSnapshot 如果存在撤销快照则返回 true。
 func (s *Session) HasSnapshot() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

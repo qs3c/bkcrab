@@ -13,11 +13,11 @@ import (
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
 
-// Firecrawl calls api.firecrawl.dev's /v1/scrape endpoint, which renders
-// JS-heavy pages with a headless browser and returns markdown. Requires
-// an API key (Bearer). The default formats=["markdown"] keeps responses
-// LLM-readable; an admin can flip to "html" via the per-provider Options
-// map (key "format") if they want raw HTML to post-process.
+// Firecrawl 调用 api.firecrawl.dev 的 /v1/scrape 端点，使用无头浏览器渲染
+// JS 密集型页面并返回 markdown。需要 API 密钥（Bearer）。
+// 默认 formats=["markdown"] 保持响应 LLM 可读；
+// 如果管理员想要原始 HTML 进行后处理，可以通过每个提供商的 Options
+// 映射（键 "format"）切换到 "html"。
 type Firecrawl struct{}
 
 func (Firecrawl) Category() string { return Category }

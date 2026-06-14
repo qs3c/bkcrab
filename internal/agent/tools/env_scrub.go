@@ -5,12 +5,12 @@ import (
 	"strings"
 )
 
-// sensitiveEnvPrefixes are NAME prefixes (case-insensitive) that mark
-// an env var as operator-only and never inherited by LLM-driven
-// subprocesses. BKCLAW_STORAGE_* and BKCLAW_OBJECT_STORE_* carry
-// the daemon's DSN + object-store credentials; BKCLAW_SANDBOX_BOXLITE_*
-// carries the sandbox provider's apikey. The model has no business
-// reading any of these.
+// sensitiveEnvPrefixes 是标记的 NAME 前缀（不区分大小写）
+// 环境变量仅作为运算符且不会被 LLM 驱动继承
+// 子流程。 BKCLAW_STORAGE_* 和 BKCLAW_OBJECT_STORE_* 携带
+// 守护进程的 DSN + 对象存储凭据； BKCLAW_SANDBOX_BOXLITE_*
+// 携带沙箱提供商的 apikey。该模型没有业务
+// 阅读其中任何一个。
 var sensitiveEnvPrefixes = []string{
 	"BKCLAW_STORAGE_",
 	"BKCLAW_OBJECT_STORE_",
@@ -19,12 +19,12 @@ var sensitiveEnvPrefixes = []string{
 	"GOOGLE_APPLICATION_CREDENTIALS",
 }
 
-// sensitiveEnvSubstrings are case-insensitive NAME substrings that mark
-// a var as likely-secret. Deliberately wider than the prefix list — we
-// can't enumerate every operator's bespoke env, so any name containing
-// these is stripped. Skills inject their own env explicitly through
-// SkillEnvProvider, so legitimate skill credentials still reach the
-// child process; only INHERITED parent-env secrets get scrubbed.
+// sensitiveEnvSubstrings 是不区分大小写的 NAME 子字符串，用于标记
+// var 作为可能的秘密。故意比前缀列表更宽——我们
+// 无法枚举每个操作员的定制环境，因此任何包含
+// 这些被剥夺了。技能通过显式注入自己的env
+// SkillEnvProvider，因此合法的技能凭证仍然可以达到
+// 子进程；只有继承的父环境秘密才会被清除。
 var sensitiveEnvSubstrings = []string{
 	"SECRET",
 	"TOKEN",
@@ -42,9 +42,9 @@ var sensitiveEnvSubstrings = []string{
 	"DATABASE_URL",
 }
 
-// isSensitiveEnvKey reports whether the given env-var NAME (no =value
-// suffix) should be stripped from the parent env before spawning a
-// child shell the LLM agent can drive.
+// isSensitiveEnvKey 报告是否给定的环境变量名称（no =value
+// 后缀）应该在生成之前从父环境中删除
+// LLM 代理可以驱动的子 shell。
 func isSensitiveEnvKey(name string) bool {
 	upper := strings.ToUpper(name)
 	for _, p := range sensitiveEnvPrefixes {
@@ -60,13 +60,13 @@ func isSensitiveEnvKey(name string) bool {
 	return false
 }
 
-// scrubSensitiveEnv copies env with credential-bearing entries removed.
-// Use for every child process the agent can spawn (exec / bash_session
-// / host_exec) — the screenshot incident where a chatter coaxed the
-// model into `env | grep ALIYUN` and the AccessKey + DSN ended up in
-// the chat reply proved that "the model has shell" implies "the user
-// has all env vars" in practice, regardless of how the system prompt
-// instructs the model.
+// scrapSensitiveEnv 复制 env，并删除包含凭证的条目。
+// 用于代理可以生成的每个子进程（exec / bash_session
+// / host_exec) — 屏幕截图事件，其中一个喋喋不休的哄骗
+// 模型进入`env | grep ALIYUN` 和 AccessKey + DSN 最终在
+// 聊天回复证明“模型有壳”意味着“用户
+// 在实践中具有所有环境变量”，无论系统如何提示
+// 指导模型。
 func scrubSensitiveEnv(env []string) []string {
 	out := make([]string, 0, len(env))
 	for _, kv := range env {
@@ -83,11 +83,11 @@ func scrubSensitiveEnv(env []string) []string {
 	return out
 }
 
-// buildSubprocessEnv returns the full env for an LLM-driven child:
-// the parent env with sensitive entries scrubbed, then per-skill
-// overrides applied on top so skills can pass their own (legitimate)
-// credentials. Callers should use this everywhere instead of letting
-// Go default to bare inheritance of os.Environ().
+// buildSubprocessEnv 返回 LLM 驱动的子进程的完整环境：
+// 清除敏感条目的父环境，然后按技能
+// 覆盖应用于顶部，以便技能可以传递自己的（合法）
+// 证书。调用者应该在任何地方使用它而不是让
+// 默认为 os.Environ() 的裸继承。
 func buildSubprocessEnv(skillEnv map[string]string) []string {
 	return mergeEnv(scrubSensitiveEnv(os.Environ()), skillEnv)
 }

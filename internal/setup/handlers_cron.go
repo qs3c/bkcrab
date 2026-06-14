@@ -9,15 +9,13 @@ import (
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
-// --- Per-agent cron jobs (DB-backed) ---
+// --- 按 agent 的 cron 任务（数据库支持） ---
 //
-// The legacy /api/cron set below reads jobs out of the user's flat
-// bkclaw.json (cfg.CronJobs) — that's the install-time, statically-
-// configured catalog. Agents that schedule work at runtime via the
-// create_cron_job tool persist into the cron_jobs DB table instead, and
-// the cron.Scheduler (which actually fires them) only watches the DB.
-// So those agent-authored jobs were invisible to the dashboard.
-// handleListAgentCronJobs surfaces them at /api/agents/{id}/cron.
+// 下面传统的 /api/cron 从用户的扁平 bkclaw.json (cfg.CronJobs) 中读取任务 —
+// 那是安装时静态配置的目录。通过 create_cron_job 工具在运行时调度工作的 agent
+// 改为持久化到 cron_jobs 数据库表中，而 cron.Scheduler（实际触发它们的调度器）
+// 只监听数据库。因此那些 agent 编写的任务对仪表板不可见。
+// handleListAgentCronJobs 在 /api/agents/{id}/cron 上显示它们。
 
 func (s *Server) handleListAgentCronJobs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -41,9 +39,8 @@ func (s *Server) handleDeleteAgentCronJob(w http.ResponseWriter, r *http.Request
 	if s.requireAgentOwner(w, r, id) == nil {
 		return
 	}
-	// Verify the job belongs to this agent before deleting — otherwise
-	// the path param could be used to delete jobs the caller doesn't
-	// own (the cron table has no user_id; we gate via agent ownership).
+	// 在删除前验证任务属于此 agent — 否则路径参数可能被用来删除调用者不拥有的任务
+	//（cron 表没有 user_id；我们通过 agent 拥有者进行门控）。
 	job, err := s.dataStore.GetCronJob(r.Context(), jobID)
 	if err != nil || job == nil || job.AgentID != id {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "job not found for this agent"})
@@ -82,7 +79,7 @@ func (s *Server) handleToggleAgentCronJob(w http.ResponseWriter, r *http.Request
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "job": job})
 }
 
-// --- Cron Jobs ---
+// --- Cron 任务 ---
 
 func (s *Server) handleListCronJobs(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.loadUserConfig(r)
@@ -167,7 +164,7 @@ func (s *Server) handleUpdateCronJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For now, just acknowledge — cron enable/disable would need scheduler integration
+	// 目前仅确认 — cron 启用/禁用需要调度器集成
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 

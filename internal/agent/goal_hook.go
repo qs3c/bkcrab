@@ -9,28 +9,23 @@ import (
 	"github.com/qs3c/bkclaw/internal/bus"
 )
 
-// NewTokenAccountingHook returns an AfterModelCall hook that folds
-// the call's Usage into the active goal for the in-flight session
-// and persists the result. Returns nil when st is nil — callers can
-// register the result unconditionally without a guard.
+// NewTokenAccountingHook 返回一个 AfterModelCall 钩子，将调用的
+// Usage 计入进行中会话的活跃目标并持久化结果。当 st 为 nil 时返回 nil
+// ——调用者可以无保护地无条件注册结果。
 //
-// Gates before doing any work:
-//   - HookContext.GoalSessionKey must be non-empty (turn happened
-//     inside a chat context)
-//   - HookContext.Error must be nil (a failed call has no usage
-//     worth folding, even when the provider helpfully returns one)
-//   - Response.Usage must have at least one non-zero count (zero
-//     value means the provider didn't report)
+// 执行任何工作前的门控：
+//   - HookContext.GoalSessionKey 必须非空（轮次发生在聊天上下文中）
+//   - HookContext.Error 必须为 nil（即使提供者有用地返回了一个，
+//     失败的调用也没有值得归集的用量）
+//   - Response.Usage 必须至少有一个非零计数（零值表示提供者未报告）
 //
-// Past those gates the call routes through goal.FoldUsage and then
-// st.UpdateGoal. Errors are logged at warn and swallowed — a store
-// failure should not leak into the agent's response path; the next
-// call will see the same delta and retry.
+// 通过这些门控后，调用路由到 goal.FoldUsage 然后 st.UpdateGoal。
+// 错误以 warn 级别记录并被吞没——存储失败不应泄漏到代理的响应路径中；
+// 下一次调用会看到相同的 delta 并重试。
 //
-// When the fold flips a goal to BudgetLimited, this hook publishes
-// the budget_limit prompt directly. The transition is observed
-// exactly once: FoldUsage's "non-active goals are skipped" gate
-// prevents the next call from re-publishing.
+// 当归集将目标翻转为 BudgetLimited 时，此钩子直接发布 budget_limit
+// 提示。该转换被精确观察一次：FoldUsage 的"非活跃目标被跳过"门控
+// 阻止下一次调用重新发布。
 func NewTokenAccountingHook(st goal.Store, mb *bus.MessageBus, agentID string) HookFunc {
 	if st == nil {
 		return nil
@@ -48,10 +43,8 @@ func NewTokenAccountingHook(st goal.Store, mb *bus.MessageBus, agentID string) H
 		if hc.Response == nil {
 			return
 		}
-		// Treat the zero-value Usage as "provider didn't report" — same
-		// as the old nil check before provider.Usage became a value
-		// type. Budget enforcement is only meaningful when we have at
-		// least one non-zero count.
+		// 将零值 Usage 视为"提供者未报告"——与之前的 nil 检查相同。
+		// 预算强制执行仅在至少有一个非零计数时才有意义。
 		u := hc.Response.Usage
 		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheCreationTokens == 0 {
 			return
@@ -67,17 +60,16 @@ func NewTokenAccountingHook(st goal.Store, mb *bus.MessageBus, agentID string) H
 			return
 		}
 		if g.Status != goal.StatusActive {
-			// Continuation turns for budget_limited / complete goals
-			// still fire AfterModelCall; FoldUsage's own gate would
-			// reject them anyway, but skipping here saves a store
-			// round-trip and keeps the log line below honest.
+			// budget_limited / complete 目标的延续轮次仍然会触发
+			// AfterModelCall；FoldUsage 自身的门控本就会拒绝它们，
+			// 但在此处跳过可节省一次存储往返并保持下面的日志行诚实。
 			return
 		}
 
 		delta, exhausted := goal.FoldUsage(g, int64(u.InputTokens), int64(u.OutputTokens))
 		if delta == 0 && !exhausted {
-			// Nothing changed (e.g. all-cached prompt). Skip the
-			// persist round-trip — we'd just rewrite the same row.
+			// 没有任何变化（例如全缓存提示）。跳过持久化往返
+			// ——我们只会重写同一行。
 			return
 		}
 
