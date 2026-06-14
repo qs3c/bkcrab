@@ -4,8 +4,30 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/qs3c/bkclaw/internal/usage"
 )
+
+// UsageHandler 负责租户级与 per-agent 的用量统计。
+type UsageHandler struct {
+	usage usage.Meter
+	guard *agentGuard
+	mw    *Middleware
+}
+
+// NewUsageHandler 构造 UsageHandler。
+func NewUsageHandler(meter usage.Meter, guard *agentGuard, mw *Middleware) *UsageHandler {
+	return &UsageHandler{usage: meter, guard: guard, mw: mw}
+}
+
+// RegisterRoutes 注册用量统计路由。
+func (s *UsageHandler) RegisterRoutes(r *gin.Engine) {
+	// 租户级用量（仅管理员）
+	r.GET("/api/usage", wrap(s.mw.Admin(s.handleGetUsage)))
+	// per-agent 用量：agent 拥有者或超级管理员，权限在 handler 内部门控
+	r.GET("/api/agents/:id/usage", wrap(s.mw.Auth(s.handleGetAgentUsage)))
+}
 
 // rangeFromQuery 将 ?range=24h|7d|30d（默认 7d）解析为最近 N 天的 usage.Range。
 // 管理仪表板不暴露精确的小时窗口 — 按天统计已足够回答"谁消耗了什么"。

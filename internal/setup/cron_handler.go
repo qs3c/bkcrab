@@ -5,9 +5,39 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/qs3c/bkclaw/internal/config"
 	"github.com/qs3c/bkclaw/internal/store"
 )
+
+// CronHandler 负责 cron 任务：用户配置中的 cron 目录（config 表）
+// 以及 per-agent 的 DB cron 任务（含 agent 运行时自调度的任务）。
+type CronHandler struct {
+	dataStore store.Store
+	guard     *agentGuard
+	cfg       *configRepo
+	mw        *Middleware
+}
+
+// NewCronHandler 构造 CronHandler。
+func NewCronHandler(dataStore store.Store, guard *agentGuard, cfg *configRepo, mw *Middleware) *CronHandler {
+	return &CronHandler{dataStore: dataStore, guard: guard, cfg: cfg, mw: mw}
+}
+
+// RegisterRoutes 注册 cron 任务相关路由。
+func (s *CronHandler) RegisterRoutes(r *gin.Engine) {
+	// 用户配置中的 cron 目录（config 表驱动）
+	r.GET("/api/cron", wrap(s.mw.Auth(s.handleListCronJobs)))
+	r.POST("/api/cron", wrap(s.mw.Auth(s.handleCreateCronJob)))
+	r.PUT("/api/cron/:id", wrap(s.mw.Auth(s.handleUpdateCronJob)))
+	r.DELETE("/api/cron/:id", wrap(s.mw.Auth(s.handleDeleteCronJob)))
+
+	// per-agent cron 任务（DB 表驱动，包含 agent 运行时自调度的任务）
+	r.GET("/api/agents/:id/cron", wrap(s.mw.Auth(s.handleListAgentCronJobs)))
+	r.DELETE("/api/agents/:id/cron/:jobId", wrap(s.mw.Auth(s.handleDeleteAgentCronJob)))
+	r.PUT("/api/agents/:id/cron/:jobId", wrap(s.mw.Auth(s.handleToggleAgentCronJob)))
+}
 
 // --- 按 agent 的 cron 任务（数据库支持） ---
 //

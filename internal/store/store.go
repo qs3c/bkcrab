@@ -15,15 +15,8 @@ import (
 // errors.Is(err, store.ErrNotFound) 进行检查。
 var ErrNotFound = errors.New("store: not found")
 
-// Store 是所有持久化数据的统一接口。
-//
-// 表分为三类：
-//   - 账户范围（users, web_sessions, apikeys）：以 users.id 为键
-//   - agent 范围（agents, agent_files, cron_jobs）：以 agents.id 为键；
-//     所有权在 agents.user_id 上
-//   - 每个（用户, agent）（sessions）：聊天历史对单个用户是私有的
-//   - 范围标记（configs）：行携带（scope, scope_id, kind, name）
-type Store interface {
+// UserStore 管理 users 表（人类与 app_user 账户）。
+type UserStore interface {
 	// --- 用户 ---
 	CreateUser(ctx context.Context, u *UserRecord) error
 	GetUser(ctx context.Context, id string) (*UserRecord, error)
@@ -33,13 +26,19 @@ type Store interface {
 	UpdateUser(ctx context.Context, u *UserRecord) error
 	DeleteUser(ctx context.Context, id string) error
 	CountUsers(ctx context.Context) (int, error)
+}
 
+// WebSessionStore 管理基于 cookie 的登录会话。
+type WebSessionStore interface {
 	// --- Web 会话（登录 cookie）---
 	CreateWebSession(ctx context.Context, sess *WebSessionRecord) error
 	GetWebSession(ctx context.Context, sid string) (*WebSessionRecord, error)
 	DeleteWebSession(ctx context.Context, sid string) error
 	DeleteExpiredWebSessions(ctx context.Context, before time.Time) error
+}
 
+// APIKeyStore 管理 apikeys 表及其与 agent 的多对多授权。
+type APIKeyStore interface {
 	// --- API 密钥（每个用户）---
 	ListAPIKeys(ctx context.Context, userID string) ([]APIKeyRecord, error)
 	GetAPIKey(ctx context.Context, id string) (*APIKeyRecord, error)
@@ -52,14 +51,20 @@ type Store interface {
 	SetAPIKeyAgents(ctx context.Context, apikeyID string, agentIDs []string) error
 	ListAPIKeyAgents(ctx context.Context, apikeyID string) ([]string, error)
 	APIKeyCanAccessAgent(ctx context.Context, apikeyID, agentID string) (bool, error)
+}
 
+// AgentStore 管理 agents 表。
+type AgentStore interface {
 	// --- Agents（原子性；agents.id 全局唯一）---
 	ListAgents(ctx context.Context, ownerUserID string) ([]AgentRecord, error)
 	GetAgent(ctx context.Context, agentID string) (*AgentRecord, error)
 	SaveAgent(ctx context.Context, agent *AgentRecord) error
 	DeleteAgent(ctx context.Context, agentID string) error
 	ListAllAgents(ctx context.Context) ([]AgentRecord, error)
+}
 
+// SessionStore 管理 sessions 表（会话行、归属三元组、项目归属）。
+type SessionStore interface {
 	// --- 会话（每个用户、每个 agent — 聊天历史是私有的）---
 	GetSession(ctx context.Context, userID, agentID, sessionKey string) (*SessionRecord, error)
 	SaveSession(ctx context.Context, userID, agentID, sessionKey string, session *SessionRecord) error
@@ -91,7 +96,10 @@ type Store interface {
 	// 则返回 ""。被工作区路径解析器用来在挂载沙箱时选择 projects/<id>/
 	// 而不是 sessions/<chat>/。
 	LookupSessionProject(ctx context.Context, userID, agentID, sessionKey string) (string, error)
+}
 
+// ProjectStore 管理 projects 表（命名工作区文件夹）。
+type ProjectStore interface {
 	// --- 项目（每个用户、每个 agent — 工作区文件夹分组）---
 	//
 	// 项目只是 (name, description) 加一个稳定 ID；工作区目录由 ID 派生。
@@ -104,7 +112,11 @@ type Store interface {
 	SaveProject(ctx context.Context, p *ProjectRecord) error
 	DeleteProject(ctx context.Context, userID, agentID, projectID string) error
 	CountProjectSessions(ctx context.Context, userID, agentID, projectID string) (int, error)
+}
 
+// SessionMessageStore 管理 session_messages 与 session_events 表
+// （仅追加的每轮存档 + 流式增量恢复日志）。
+type SessionMessageStore interface {
 	// --- 会话消息（仅追加的每轮存档）---
 	//
 	// 将每个 Append 镜像到 session_messages，与 sessions.messages JSONB
@@ -132,7 +144,10 @@ type Store interface {
 	AppendSessionEvent(ctx context.Context, userID, agentID, sessionKey, eventType string, data []byte) (int64, error)
 	ListSessionEventsSince(ctx context.Context, userID, agentID, sessionKey string, sinceSeq int64) ([]SessionEventRecord, error)
 	LatestSessionEventSeq(ctx context.Context, userID, agentID, sessionKey string) (int64, error)
+}
 
+// AgentFileStore 管理 agent_files 表（SOUL/IDENTITY/MEMORY 等系统文件）。
+type AgentFileStore interface {
 	// --- Agent 文件 ---
 	//
 	// SOUL.md、IDENTITY.md、MEMORY.md、AGENTS.md、BOOTSTRAP.md 等。
@@ -148,7 +163,10 @@ type Store interface {
 	SaveAgentFile(ctx context.Context, agentID, userID, filename string, data []byte) error
 	DeleteAgentFile(ctx context.Context, agentID, userID, filename string) error
 	ListAgentFiles(ctx context.Context, agentID, userID string) ([]string, error)
+}
 
+// ConfigStore 管理 configs 表（providers / channels / settings 统一存放）。
+type ConfigStore interface {
 	// --- 配置（providers / channels / settings 都在这里）---
 	//
 	// 一个表支持所有三个概念家族。每行以 (kind, user_id, agent_id, name) 为键，
@@ -180,7 +198,10 @@ type Store interface {
 	SaveConfig(ctx context.Context, c *ConfigRecord) error
 	DeleteConfig(ctx context.Context, id string) error
 	LookupChannelByCredential(ctx context.Context, channelType, credKey string) (*ConfigRecord, error)
+}
 
+// CronStore 管理 cron_jobs 表（调度任务 + 到期/锁定/失败计数）。
+type CronStore interface {
 	// --- Cron 任务（每个 agent）---
 	//
 	// Cron 行由 agent 拥有；执行身份是 agent 的 user_id。
@@ -200,7 +221,10 @@ type Store interface {
 	// GetNextDueTime 返回所有启用的 cron 任务中最早的 next_run。
 	// 被调度器用来精确休眠直到下一个任务到期，而不是轮询。
 	GetNextDueTime(ctx context.Context) (time.Time, error)
+}
 
+// ChannelLeaseStore 管理跨进程的频道单例领导者选举（租约）。
+type ChannelLeaseStore interface {
 	// --- 频道租约（轮询频道的单例门控）---
 	//
 	// 跨进程领导者选举，针对一个 (channel, account_id) 对。
@@ -211,7 +235,10 @@ type Store interface {
 	AcquireChannelLease(ctx context.Context, channel, accountID, holderID string, ttl time.Duration) (bool, error)
 	RenewChannelLease(ctx context.Context, channel, accountID, holderID string, ttl time.Duration) (bool, error)
 	ReleaseChannelLease(ctx context.Context, channel, accountID, holderID string) error
+}
 
+// GoalStore 管理 agent_goals 表（每个 agent×会话最多一个目标）。
+type GoalStore interface {
 	// --- 目标（每个 agent × 会话）---
 	//
 	// 每个 (agent_id, session_key) 最多一行；由 UNIQUE 索引强制执行。
@@ -223,7 +250,32 @@ type Store interface {
 	//（ID、AgentID、SessionKey、OwnerUserID、Objective、CreatedAt）被忽略。
 	UpdateGoal(ctx context.Context, g *GoalRecord) error
 	DeleteGoal(ctx context.Context, goalID string) error
+}
 
+// Store 是所有持久化数据的统一接口，由按业务域拆分的子接口组合而成。
+// 单一实现 *DBStore（共享一个 *sql.DB）满足全部子接口，因此跨域原子事务能力保留；
+// 而调用方可以只依赖自己需要的窄接口（如 UserStore / CronStore），而非整个 Store。
+//
+// 表分为三类：
+//   - 账户范围（users, web_sessions, apikeys）：以 users.id 为键
+//   - agent 范围（agents, agent_files, cron_jobs）：以 agents.id 为键；所有权在 agents.user_id 上
+//   - 每个（用户, agent）（sessions）：聊天历史对单个用户是私有的
+//   - 范围标记（configs）：行携带（scope, scope_id, kind, name）
+type Store interface {
+	UserStore
+	WebSessionStore
+	APIKeyStore
+	AgentStore
+	SessionStore
+	ProjectStore
+	SessionMessageStore
+	AgentFileStore
+	ConfigStore
+	CronStore
+	ChannelLeaseStore
+	GoalStore
+
+	// Close 释放底层数据库连接。
 	Close() error
 }
 
@@ -315,7 +367,7 @@ type AgentRecord struct {
 // SessionRecord 持有一个对话会话。
 //
 // Channel / AccountID / ChatID 标识此会话所属的上游对话
-//（例如 ("wechat", "<bot account id>", "<openid>") 或
+// （例如 ("wechat", "<bot account id>", "<openid>") 或
 // ("web", "", "<frontend session id>")）。这些在 INSERT 时持久化一次，
 // 永远不会被 UPDATE 覆盖——会话的归属地在创建后不会移动。
 // 多个会话行可以共享相同的三元组；IM 路由的活动会话通过 max(updated_at) 解析。
@@ -351,7 +403,7 @@ type SessionMessage struct {
 
 // SessionEventRecord 是 session_events 表中的一行——agent 在一轮中发出的
 // 单个增量。Data 是不透明的 JSON，其形状取决于 Type
-//（"content", "tool_call", "error", "done", ...）。
+// （"content", "tool_call", "error", "done", ...）。
 type SessionEventRecord struct {
 	UserID     string    `json:"userId,omitempty"`
 	AgentID    string    `json:"agentId,omitempty"`
@@ -365,7 +417,7 @@ type SessionEventRecord struct {
 // SessionOwnerPair 是由 ListSessionOwnerPairs 返回的一个 (user_id, agent_id)
 // 元组——表示"该用户与此 agent 至少有一个会话。"管理员聊天视图按对展开，
 // 拉取每个聊天者的会话列表，以便公共 agent 上的非拥有者对话
-//（其中 session.user_id ≠ agent.user_id）被展示出来。
+// （其中 session.user_id ≠ agent.user_id）被展示出来。
 type SessionOwnerPair struct {
 	UserID  string `json:"userId"`
 	AgentID string `json:"agentId"`
@@ -445,7 +497,7 @@ type ConfigRecord struct {
 // computeConfigScope 从 (userID, agentID) 所有权对派生范围标签。
 // Scope 列的单一真相来源——SaveConfig 在每次写入前调用它，
 // 因此列与标签之间的任何差异都意味着绕过了 SaveConfig 的代码路径
-//（除了测试专用的临时 INSERT 外不应存在）。
+// （除了测试专用的临时 INSERT 外不应存在）。
 func computeConfigScope(userID, agentID string) string {
 	switch {
 	case userID != "" && agentID != "":

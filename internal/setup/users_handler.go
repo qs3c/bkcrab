@@ -7,314 +7,46 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/qs3c/bkclaw/internal/auth"
-	"github.com/qs3c/bkclaw/internal/buildinfo"
-	"github.com/qs3c/bkclaw/internal/config"
 	"github.com/qs3c/bkclaw/internal/scope"
 	"github.com/qs3c/bkclaw/internal/session"
 	"github.com/qs3c/bkclaw/internal/store"
 	"github.com/qs3c/bkclaw/internal/users"
 )
 
-// --- 登录/登出/我的信息 ---
-
-type loginRequest struct {
-	Login    string `json:"login"`
-	Password string `json:"password"`
+// UsersHandler 负责管理员用户 CRUD，以及嵌套的 per-user agent/apikey 配置。
+type UsersHandler struct {
+	accounts  *users.Accounts
+	apikeys   *users.APIKeys
+	dataStore store.Store
+	guard     *agentGuard
+	cfg       *configRepo
+	mw        *Middleware
 }
 
-func (s *SessionHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if s.accounts == nil || s.authResolver == nil {
-		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "auth not configured"})
-		return
-	}
-	var req loginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request"})
-		return
-	}
-	acct, err := s.accounts.Authenticate(r.Context(), req.Login, req.Password)
-	if err != nil {
-		jsonResponse(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "invalid credentials"})
-		return
-	}
-	cookie, err := s.authResolver.IssueSession(r.Context(), acct.ID)
-	if err != nil {
-		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	http.SetCookie(w, cookie)
-	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "user": acct})
+// NewUsersHandler 构造 UsersHandler。
+func NewUsersHandler(accounts *users.Accounts, apikeys *users.APIKeys, dataStore store.Store, guard *agentGuard, cfg *configRepo, mw *Middleware) *UsersHandler {
+	return &UsersHandler{accounts: accounts, apikeys: apikeys, dataStore: dataStore, guard: guard, cfg: cfg, mw: mw}
 }
 
-func (s *SessionHandler) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if s.authResolver != nil {
-		if c, err := r.Cookie(auth.SessionCookieName); err == nil {
-			_ = s.authResolver.RevokeSession(r.Context(), c.Value)
-		}
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:   auth.SessionCookieName,
-		Value:  "",
-		Path:   "/",
-		MaxAge: -1,
-	})
-	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
-}
+// RegisterRoutes 注册用户管理路由。
+func (s *UsersHandler) RegisterRoutes(r *gin.Engine) {
+	// 管理员：用户 CRUD
+	r.GET("/api/users", wrap(s.mw.Admin(s.handleListUsers)))
+	r.POST("/api/users", wrap(s.mw.Admin(s.handleCreateUser)))
+	r.PUT("/api/users/:id", wrap(s.mw.Admin(s.handleUpdateUser)))
+	r.DELETE("/api/users/:id", wrap(s.mw.Admin(s.handleDeleteUser)))
+	r.POST("/api/users/:id/password", wrap(s.mw.Admin(s.handleResetUserPassword)))
 
-func (s *SessionHandler) handleMe(w http.ResponseWriter, r *http.Request) {
-	ident, ok := auth.FromContext(r.Context())
-	if !ok {
-		jsonResponse(w, http.StatusUnauthorized, map[string]any{"ok": false})
-		return
-	}
-	acct, err := s.accounts.Get(r.Context(), ident.UserID)
-	if err != nil {
-		jsonResponse(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	// deployMode 让前端显示或隐藏仅限本地的便利功能
-	//（在工作区文件夹中打开 Finder、未来的"在 $EDITOR 中编辑 SOUL.md"钩子等）。
-	// 此处作为唯一事实来源，这样我们不必在 5 个不同的处理程序中读取环境变量；
-	// 前端可以将其与用户资料一起缓存，因为它在运行时不会改变。
-	deployMode := "self-hosted"
-	if buildinfo.IsHostedDeploy() {
-		deployMode = "hosted"
-	}
-	jsonResponse(w, http.StatusOK, map[string]any{
-		"ok":          true,
-		"user":        acct,
-		"authMethod":  ident.AuthMethod,
-		"actAsUserId": ident.ActAsUserID,
-		"readOnly":    ident.ReadOnly(),
-		"deployMode":  deployMode,
-	})
-}
+	// 嵌套资源：admin-or-self 权限在 handler 内部门控
+	r.POST("/api/users/:id/apikeys", wrap(s.mw.Auth(s.handleCreateUserAPIKey)))
+	r.GET("/api/users/:id/agents", wrap(s.mw.Auth(s.handleListUserAgents)))
+	r.POST("/api/users/:id/agents", wrap(s.mw.Auth(s.handleCreateUserAgent)))
 
-// --- 自助服务资料 ---
-
-// maxAvatarBytes 限制 base64 编码的头像负载大小。约 256KB
-// 对于一个合理的正方形（例如 256×256 PNG）足够了；更大的会将用户行推入 Postgres 的 TOAST 区域并减慢 /api/me。
-// 前端应在上传前调整大小/压缩 — 这只是一个限制墙。
-const maxAvatarBytes = 256 * 1024
-
-type updateMeReq struct {
-	DisplayName string `json:"displayName"`
-	AvatarURL   string `json:"avatarUrl"`
-}
-
-// handleUpdateMe 允许已登录用户编辑自己的显示名称和头像。
-// 头像必须为空（清除）或 data: URL — 完整的 HTTP URL
-// 会在渲染时通过 referer 泄露用户数据，因此我们限制为仅内联图像。
-func (s *SessionHandler) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
-	ident, ok := auth.FromContext(r.Context())
-	if !ok || ident.ReadOnly() {
-		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})
-		return
-	}
-	var req updateMeReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request"})
-		return
-	}
-	if req.AvatarURL != "" {
-		if !strings.HasPrefix(req.AvatarURL, "data:image/") {
-			jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "avatar must be a data:image/* URL"})
-			return
-		}
-		if len(req.AvatarURL) > maxAvatarBytes {
-			jsonResponse(w, http.StatusRequestEntityTooLarge, map[string]any{"ok": false, "error": "avatar too large (max 256KB)"})
-			return
-		}
-	}
-	acct, err := s.accounts.UpdateProfile(r.Context(), ident.UserID, req.DisplayName, req.AvatarURL)
-	if err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "user": acct})
-}
-
-type changePasswordReq struct {
-	OldPassword string `json:"oldPassword"`
-	NewPassword string `json:"newPassword"`
-}
-
-// handleChangeMyPassword 是管理员密码重置的自助服务变体 —
-// 在接受新密码之前需要当前密码。最小长度匹配其他地方的隐式默认值；
-// 我们不强制执行强规则，因为安装是单租户的，而且我们不想成为用正则表达式拒绝"correcthorse"的地方。
-func (s *SessionHandler) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) {
-	ident, ok := auth.FromContext(r.Context())
-	if !ok || ident.ReadOnly() {
-		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})
-		return
-	}
-	if ident.Role == users.RoleAppUser {
-		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "app_user has no password"})
-		return
-	}
-	var req changePasswordReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request"})
-		return
-	}
-	if req.NewPassword == "" {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "new password required"})
-		return
-	}
-	if err := s.accounts.VerifyPassword(r.Context(), ident.UserID, req.OldPassword); err != nil {
-		jsonResponse(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "current password incorrect"})
-		return
-	}
-	if err := s.accounts.SetPassword(r.Context(), ident.UserID, req.NewPassword); err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-// --- 引导 ---
-
-type onboardRequest struct {
-	Username    string `json:"username"`
-	Email       string `json:"email"`
-	Password    string `json:"password"`
-	DisplayName string `json:"displayName,omitempty"`
-
-	Provider string `json:"provider"`
-	APIBase  string `json:"apiBase"`
-	APIKey   string `json:"apiKey"`
-	APIType  string `json:"apiType,omitempty"`
-	AuthType string `json:"authType,omitempty"`
-	Model    string `json:"model"`
-
-	AgentName string `json:"agentName,omitempty"`
-
-	SandboxEnabled         bool   `json:"sandboxEnabled,omitempty"`
-	SandboxBackend         string `json:"sandboxBackend,omitempty"`
-	SandboxImage           string `json:"sandboxImage,omitempty"`
-	SandboxE2BKey          string `json:"sandboxE2BKey,omitempty"`
-	SandboxBoxliteURL      string `json:"sandboxBoxliteUrl,omitempty"`
-	SandboxBoxliteClientID string `json:"sandboxBoxliteClientId,omitempty"`
-	SandboxBoxliteKey      string `json:"sandboxBoxliteKey,omitempty"`
-	SandboxBoxlitePrefix   string `json:"sandboxBoxlitePrefix,omitempty"`
-}
-
-// handleOnboard 在单个逻辑操作中创建第一个 super_admin + 第一个系统提供者 + 第一个 agent。
-// 仅在用户表为空时可调用；后续调用返回 409。
-func (s *SessionHandler) handleOnboard(w http.ResponseWriter, r *http.Request) {
-	if s.dataStore == nil || s.accounts == nil {
-		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store not ready"})
-		return
-	}
-	count, err := s.accounts.Count(r.Context())
-	if err != nil {
-		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	if count > 0 {
-		jsonResponse(w, http.StatusConflict, map[string]any{"ok": false, "error": "already onboarded"})
-		return
-	}
-	var req onboardRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request"})
-		return
-	}
-	if req.Username == "" || req.Email == "" || req.Password == "" {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "username, email, password required"})
-		return
-	}
-	acct, err := s.accounts.Create(r.Context(), users.CreateInput{
-		Username:    req.Username,
-		Email:       req.Email,
-		Password:    req.Password,
-		DisplayName: req.DisplayName,
-		Role:        users.RoleSuperAdmin,
-	})
-	if err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	if req.Provider != "" && req.APIKey != "" {
-		pcfg := config.ProviderConfig{
-			APIBase:  req.APIBase,
-			APIKey:   req.APIKey,
-			APIType:  req.APIType,
-			AuthType: req.AuthType,
-		}
-		// 将选择的模型种子写入 Provider.Models，以便 Models/Providers
-		// 管理员页面立即显示它 — 没有这个，用户进入"编辑 Provider"对话框时，
-		// 即使 agents.defaults 已经命名了该模型，Models 列表也是空的，
-		// 测试连接按钮也是非活动的。
-		if req.Model != "" {
-			pcfg.Models = []config.ModelEntry{{ID: req.Model, Name: req.Model}}
-		}
-		if err := scope.SaveProviderByScope(r.Context(), s.dataStore, scope.System, "", req.Provider, pcfg); err != nil {
-			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
-			return
-		}
-		if req.Model != "" {
-			defaults := map[string]interface{}{
-				"model": req.Provider + "/" + req.Model,
-			}
-			if err := scope.SaveSettingByScope(r.Context(), s.dataStore, scope.System, "", "agents.defaults", defaults); err != nil {
-				jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
-				return
-			}
-		}
-	}
-	agentID, _ := generateID("agt_")
-	agentName := req.AgentName
-	if agentName == "" {
-		agentName = "default"
-	}
-	agentRec := &store.AgentRecord{
-		ID:     agentID,
-		UserID: acct.ID,
-		Name:   agentName,
-	}
-	if err := s.dataStore.SaveAgent(r.Context(), agentRec); err != nil {
-		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	if req.SandboxEnabled {
-		backend := req.SandboxBackend
-		if backend == "" {
-			backend = "docker"
-		}
-		sandbox := map[string]interface{}{
-			"enabled": true,
-			"backend": backend,
-		}
-		if req.SandboxImage != "" {
-			sandbox["image"] = req.SandboxImage
-		}
-		if req.SandboxE2BKey != "" {
-			sandbox["e2bKey"] = req.SandboxE2BKey
-		}
-		if req.SandboxBoxliteURL != "" {
-			sandbox["boxliteUrl"] = req.SandboxBoxliteURL
-		}
-		if req.SandboxBoxliteClientID != "" {
-			sandbox["boxliteClientId"] = req.SandboxBoxliteClientID
-		}
-		if req.SandboxBoxliteKey != "" {
-			sandbox["boxliteKey"] = req.SandboxBoxliteKey
-		}
-		if req.SandboxBoxlitePrefix != "" {
-			sandbox["boxlitePrefix"] = req.SandboxBoxlitePrefix
-		}
-		if err := scope.SaveSettingByScope(r.Context(), s.dataStore, scope.System, "", "sandbox", sandbox); err != nil {
-			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
-			return
-		}
-	}
-	cookie, err := s.authResolver.IssueSession(r.Context(), acct.ID)
-	if err == nil {
-		http.SetCookie(w, cookie)
-	}
-	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "user": acct, "agentId": agentID})
+	// 管理员：跨用户聊天记录
+	r.GET("/api/admin/chats", wrap(s.mw.Admin(s.handleAdminChats)))
 }
 
 // --- 管理员：用户管理 ---
@@ -449,55 +181,6 @@ func (s *UsersHandler) handleResetUserPassword(w http.ResponseWriter, r *http.Re
 		return
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-// respondAllAgents 返回每个用户的所有 agent，附带拥有者的用户名/电子邮件。
-// 为平台范围的管理视图支持 GET /api/agents?all=true；认证门控在 handleListAgents 中
-//（仅在 CanAdminPlatform 通过后调用此函数）。
-func (s *AgentsHandler) respondAllAgents(w http.ResponseWriter, r *http.Request) {
-	if s.dataStore == nil {
-		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "no data store"})
-		return
-	}
-	records, err := s.dataStore.ListAllAgents(r.Context())
-	if err != nil {
-		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	// 为每个唯一 userID 解析拥有者用户名一次 — N 个 agent 可能属于少数几个用户，
-	// 因此逐行查找会反复命中同一 id 的存储。
-	ownerCache := map[string]*users.Account{}
-	resolveOwner := func(uid string) *users.Account {
-		if uid == "" {
-			return nil
-		}
-		if a, ok := ownerCache[uid]; ok {
-			return a
-		}
-		a, _ := s.accounts.Get(r.Context(), uid)
-		ownerCache[uid] = a
-		return a
-	}
-	out := make([]map[string]any, 0, len(records))
-	for _, ar := range records {
-		desc, _ := ar.Config["description"].(string)
-		entry := map[string]any{
-			"id":          ar.ID,
-			"name":        ar.Name,
-			"description": desc,
-			"userId":      ar.UserID,
-			"createdAt":   ar.CreatedAt,
-		}
-		if owner := resolveOwner(ar.UserID); owner != nil {
-			entry["ownerUsername"] = owner.Username
-			entry["ownerEmail"] = owner.Email
-			if owner.DisplayName != "" {
-				entry["ownerDisplayName"] = owner.DisplayName
-			}
-		}
-		out = append(out, entry)
-	}
-	jsonResponse(w, http.StatusOK, map[string]any{"agents": out})
 }
 
 // handleAdminChats 返回跨所有 (user, agent) 对的每个聊天会话，附带上拥有用户的用户名和 agent 名称，
@@ -883,185 +566,6 @@ type createAPIKeyReq struct {
 	Name     string   `json:"name"`
 	Type     string   `json:"type,omitempty"` // "admin" | "user" | "agent"; default "agent"
 	AgentIDs []string `json:"agentIds,omitempty"`
-}
-
-func (s *APIKeysHandler) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
-	ident, ok := auth.FromContext(r.Context())
-	if !ok {
-		jsonResponse(w, http.StatusUnauthorized, map[string]any{"ok": false})
-		return
-	}
-	list, err := s.apikeys.List(r.Context(), ident.EffectiveUserID())
-	if err != nil {
-		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	enriched := make([]map[string]any, 0, len(list))
-	for _, ak := range list {
-		// 只有 type=agent 密钥携带显式的 agent 列表；user/admin 在认证时从拥有者派生作用域，
-		// 因此此处的空数组意味着"层级定义作用域，而不是行。"
-		var agents []string
-		if ak.Type == users.APIKeyTypeAgent {
-			agents, _ = s.apikeys.Agents(r.Context(), ak.ID)
-		}
-		enriched = append(enriched, map[string]any{
-			"id":        ak.ID,
-			"userId":    ak.UserID,
-			"name":      ak.Name,
-			"key":       ak.Key,
-			"type":      ak.Type,
-			"agents":    agents,
-			"createdAt": ak.CreatedAt,
-		})
-	}
-	jsonResponse(w, http.StatusOK, map[string]any{"apikeys": enriched})
-}
-
-// handleCreateAPIKey 强制执行角色 × 类型策略：
-//   - super_admin 可以发出 admin / user / agent 密钥
-//   - 普通用户可以发出 user / agent 密钥（仅限他们自己的 agent）
-//   - app_user（通过 apikey 配置）根本不能发出密钥
-//
-// type=agent 额外要求每个 agentId 解析为一个调用者被允许绑定的 agent —
-// 拥有者可以绑定自己的，super_admin 可以绑定任何人的。这是权威门控；
-// users 包只验证形状，不验证策略。
-func (s *APIKeysHandler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
-	ident, ok := auth.FromContext(r.Context())
-	if !ok || ident.ReadOnly() {
-		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})
-		return
-	}
-	if ident.Role == users.RoleAppUser {
-		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "app_user cannot issue api keys"})
-		return
-	}
-	var req createAPIKeyReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request"})
-		return
-	}
-	if req.Type == "" {
-		req.Type = users.APIKeyTypeAgent
-	}
-	if !users.IsAPIKeyType(req.Type) {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid type"})
-		return
-	}
-	if req.Type == users.APIKeyTypeAdmin && ident.Role != users.RoleSuperAdmin {
-		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "only super_admin may issue admin keys"})
-		return
-	}
-	if req.Type == users.APIKeyTypeAgent {
-		if len(req.AgentIDs) == 0 {
-			jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "type=agent requires at least one agentId"})
-			return
-		}
-		// 只绑定调用者控制的 agent。Super_admin 可以绑定任何人的；其他所有人都必须拥有每个 agent。
-		if ident.Role != users.RoleSuperAdmin {
-			for _, aid := range req.AgentIDs {
-				rec, err := s.dataStore.GetAgent(r.Context(), aid)
-				if err != nil || rec == nil || rec.UserID != ident.UserID {
-					jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "cannot bind agent " + aid})
-					return
-				}
-			}
-		}
-	}
-	ak, token, err := s.apikeys.Create(r.Context(), ident.UserID, req.Name, req.Type, req.AgentIDs)
-	if err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	ak.Key = token
-	jsonResponse(w, http.StatusCreated, map[string]any{"apikey": ak, "token": token})
-}
-
-func (s *APIKeysHandler) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
-	ident, ok := auth.FromContext(r.Context())
-	if !ok || ident.ReadOnly() {
-		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})
-		return
-	}
-	id := r.PathValue("id")
-	rec, err := s.apikeys.Get(r.Context(), id)
-	if err != nil {
-		jsonResponse(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
-		return
-	}
-	if rec.UserID != ident.UserID && ident.Role != users.RoleSuperAdmin {
-		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "forbidden"})
-		return
-	}
-	if err := s.apikeys.Delete(r.Context(), id); err != nil {
-		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (s *APIKeysHandler) handleRotateAPIKey(w http.ResponseWriter, r *http.Request) {
-	ident, ok := auth.FromContext(r.Context())
-	if !ok || ident.ReadOnly() {
-		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})
-		return
-	}
-	id := r.PathValue("id")
-	rec, err := s.apikeys.Get(r.Context(), id)
-	if err != nil {
-		jsonResponse(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
-		return
-	}
-	if rec.UserID != ident.UserID && ident.Role != users.RoleSuperAdmin {
-		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "forbidden"})
-		return
-	}
-	token, err := s.apikeys.Rotate(r.Context(), id)
-	if err != nil {
-		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	jsonResponse(w, http.StatusOK, map[string]any{"token": token})
-}
-
-type setAPIKeyAgentsReq struct {
-	AgentIDs []string `json:"agentIds"`
-}
-
-func (s *APIKeysHandler) handleSetAPIKeyAgents(w http.ResponseWriter, r *http.Request) {
-	ident, ok := auth.FromContext(r.Context())
-	if !ok || ident.ReadOnly() {
-		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})
-		return
-	}
-	id := r.PathValue("id")
-	rec, err := s.apikeys.Get(r.Context(), id)
-	if err != nil {
-		jsonResponse(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
-		return
-	}
-	if rec.UserID != ident.UserID && ident.Role != users.RoleSuperAdmin {
-		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "forbidden"})
-		return
-	}
-	var req setAPIKeyAgentsReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request"})
-		return
-	}
-	if ident.Role != users.RoleSuperAdmin {
-		for _, aid := range req.AgentIDs {
-			ar, err := s.dataStore.GetAgent(r.Context(), aid)
-			if err != nil || ar == nil || ar.UserID != ident.UserID {
-				jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "cannot bind agent " + aid})
-				return
-			}
-		}
-	}
-	if err := s.apikeys.SetAgents(r.Context(), id, req.AgentIDs); err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // generateID 返回带有给定前缀的随机十六进制 ID。

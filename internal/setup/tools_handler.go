@@ -5,10 +5,30 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/qs3c/bkclaw/internal/config"
 	"github.com/qs3c/bkclaw/internal/gateway"
 	"github.com/qs3c/bkclaw/internal/toolproviders"
 )
+
+// ToolsHandler 负责全局工具注册表配置。
+type ToolsHandler struct {
+	guard *agentGuard
+	cfg   *configRepo
+	mw    *Middleware
+}
+
+// NewToolsHandler 构造 ToolsHandler。
+func NewToolsHandler(guard *agentGuard, cfg *configRepo, mw *Middleware) *ToolsHandler {
+	return &ToolsHandler{guard: guard, cfg: cfg, mw: mw}
+}
+
+// RegisterRoutes 注册全局工具注册表配置路由（仅超级管理员）。
+func (s *ToolsHandler) RegisterRoutes(r *gin.Engine) {
+	r.GET("/api/tools", wrap(s.mw.Admin(s.handleGetTools)))
+	r.PUT("/api/tools", wrap(s.mw.Admin(s.handleSaveTools)))
+}
 
 // categoryCatalog 是管理 UI 的权威来源，用于定义哪些工具类别存在以及哪些提供者可以支持它们。
 // 扩展此列表（一旦新提供者在 toolproviders 包中存在）即可使它们自动出现在 UI 中。

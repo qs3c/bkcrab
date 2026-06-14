@@ -147,7 +147,7 @@ func resolveInstallTarget(r *http.Request, agentID string) (string, error) {
 }
 
 // runInstall 分发到正确的技能后端。当 source 为空时，先尝试 skills.sh 再尝试 clawhub
-//（skill-creator 是聊天级别的回退方式，不是注册表 — 当两个源都未命中时，agent 工具会提供它）。
+// （skill-creator 是聊天级别的回退方式，不是注册表 — 当两个源都未命中时，agent 工具会提供它）。
 func runInstall(source, name, repo, targetDir string) (*skills.Result, error) {
 	switch source {
 	case "github":

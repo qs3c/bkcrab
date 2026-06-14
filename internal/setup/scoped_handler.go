@@ -7,12 +7,74 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/qs3c/bkclaw/internal/auth"
 	"github.com/qs3c/bkclaw/internal/config"
 	"github.com/qs3c/bkclaw/internal/scope"
 	"github.com/qs3c/bkclaw/internal/store"
 	"github.com/qs3c/bkclaw/internal/users"
 )
+
+// ScopedHandler 负责 system/user/agent 作用域的提供者与频道 CRUD，
+// 以及运行时已注册频道适配器的只读列表。
+type ScopedHandler struct {
+	dataStore store.Store
+	guard     *agentGuard
+	cfg       *configRepo
+	chans     *channelRepo
+	mw        *Middleware
+}
+
+// NewScopedHandler 构造 ScopedHandler。
+func NewScopedHandler(dataStore store.Store, guard *agentGuard, cfg *configRepo, chans *channelRepo, mw *Middleware) *ScopedHandler {
+	return &ScopedHandler{dataStore: dataStore, guard: guard, cfg: cfg, chans: chans, mw: mw}
+}
+
+// RegisterRoutes 注册 scoped 提供者/频道 CRUD 路由。
+func (s *ScopedHandler) RegisterRoutes(r *gin.Engine) {
+	// 已注册的频道适配器（运行时只读列表）
+	r.GET("/api/channels", wrap(s.mw.Auth(s.handleListChannels)))
+
+	// 提供者 CRUD（system / user / agent 作用域）
+	r.GET("/api/providers", wrap(s.mw.Auth(s.handleListProviders)))
+	r.POST("/api/providers", wrap(s.mw.Auth(s.handleCreateProvider)))
+	r.PUT("/api/providers/:id", wrap(s.mw.Auth(s.handleUpdateProvider)))
+	r.DELETE("/api/providers/:id", wrap(s.mw.Auth(s.handleDeleteProvider)))
+
+	// scoped 频道 CRUD
+	r.GET("/api/scoped-channels", wrap(s.mw.Auth(s.handleListScopedChannels)))
+	r.POST("/api/scoped-channels", wrap(s.mw.Auth(s.handleCreateScopedChannel)))
+	r.PUT("/api/scoped-channels/:id", wrap(s.mw.Auth(s.handleUpdateScopedChannel)))
+	r.DELETE("/api/scoped-channels/:id", wrap(s.mw.Auth(s.handleDeleteScopedChannel)))
+}
+
+// handleListChannels 返回当前用户配置中频道的连接状态（只读列表）。
+func (s *ScopedHandler) handleListChannels(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.cfg.loadUserConfig(r)
+	if err != nil {
+		jsonResponse(w, http.StatusOK, []any{})
+		return
+	}
+
+	var channels []map[string]any
+	for chType, ch := range cfg.Channels {
+		status := "disconnected"
+		if ch.Enabled {
+			status = "connected"
+		}
+		channels = append(channels, map[string]any{
+			"type":    chType,
+			"enabled": ch.Enabled,
+			"status":  status,
+		})
+	}
+	if channels == nil {
+		jsonResponse(w, http.StatusOK, []any{})
+		return
+	}
+	jsonResponse(w, http.StatusOK, channels)
+}
 
 // 作用域感知的 providers + channels CRUD（以及一个通用设置端点）。授权规则：
 //

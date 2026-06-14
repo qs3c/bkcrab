@@ -6,8 +6,29 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/qs3c/bkclaw/internal/config"
 )
+
+// PluginsHandler 负责插件管理与 hook 插件发现。
+type PluginsHandler struct {
+	cfg *configRepo
+	mw  *Middleware
+}
+
+// NewPluginsHandler 构造 PluginsHandler。
+func NewPluginsHandler(cfg *configRepo, mw *Middleware) *PluginsHandler {
+	return &PluginsHandler{cfg: cfg, mw: mw}
+}
+
+// RegisterRoutes 注册插件管理路由（多数仅超级管理员）。
+func (s *PluginsHandler) RegisterRoutes(r *gin.Engine) {
+	r.GET("/api/plugins", wrap(s.mw.Admin(s.handleListPlugins)))
+	r.PUT("/api/plugins/:id", wrap(s.mw.Admin(s.handleUpdatePlugin)))
+	// hook 插件元数据：agent 拥有者（非仅管理员）需要查看可启用的插件
+	r.GET("/api/plugins/hook", wrap(s.mw.Auth(s.handleListHookPlugins)))
+}
 
 // --- 插件 ---
 

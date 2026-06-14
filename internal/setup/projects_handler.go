@@ -7,8 +7,30 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/qs3c/bkclaw/internal/store"
 )
+
+// ProjectsHandler 负责 per-agent 项目（命名工作区文件夹）。
+type ProjectsHandler struct {
+	dataStore store.Store
+	guard     *agentGuard
+	mw        *Middleware
+}
+
+// NewProjectsHandler 构造 ProjectsHandler。
+func NewProjectsHandler(dataStore store.Store, guard *agentGuard, mw *Middleware) *ProjectsHandler {
+	return &ProjectsHandler{dataStore: dataStore, guard: guard, mw: mw}
+}
+
+// RegisterRoutes 注册 per-agent 项目路由。
+func (s *ProjectsHandler) RegisterRoutes(r *gin.Engine) {
+	r.GET("/api/agents/:id/projects", wrap(s.mw.Auth(s.handleListProjects)))
+	r.POST("/api/agents/:id/projects", wrap(s.mw.Auth(s.handleCreateProject)))
+	r.PATCH("/api/agents/:id/projects/:pid", wrap(s.mw.Auth(s.handleUpdateProject)))
+	r.DELETE("/api/agents/:id/projects/:pid", wrap(s.mw.Auth(s.handleDeleteProject)))
+}
 
 // 项目是按 (user, agent) 命名的工作区文件夹，用于组织聊天会话。
 // 同一项目中的每个聊天共享一个工作区目录 workspaces/<agent>/projects/<pid>/，

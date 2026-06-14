@@ -7,10 +7,41 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/qs3c/bkclaw/internal/agent"
 	"github.com/qs3c/bkclaw/internal/config"
 	"github.com/qs3c/bkclaw/internal/skills"
+	"github.com/qs3c/bkclaw/internal/workspace"
 )
+
+// SkillsHandler 负责技能目录、安装/上传/搜索，以及 per-agent 技能。
+// 方法体跨 skills_handler.go（目录/列表/删除）与 skills_install.go（安装/上传/搜索）
+// 两个文件，因为安装逻辑较长；两者都属于本 handler。
+type SkillsHandler struct {
+	workspaceStore workspace.Store
+	guard          *agentGuard
+	mw             *Middleware
+}
+
+// NewSkillsHandler 构造 SkillsHandler。
+func NewSkillsHandler(workspaceStore workspace.Store, guard *agentGuard, mw *Middleware) *SkillsHandler {
+	return &SkillsHandler{workspaceStore: workspaceStore, guard: guard, mw: mw}
+}
+
+// RegisterRoutes 注册技能目录与 per-agent 技能路由。
+func (s *SkillsHandler) RegisterRoutes(r *gin.Engine) {
+	// 全局技能目录
+	r.GET("/api/skills", wrap(s.mw.Auth(s.handleListSkills)))
+	r.GET("/api/skills/search", wrap(s.mw.Auth(s.handleSearchSkills)))
+	r.POST("/api/skills/install", wrap(s.mw.Auth(s.handleInstallSkill)))
+	r.POST("/api/skills/upload", wrap(s.mw.Auth(s.handleUploadSkill)))
+	r.DELETE("/api/skills/:name", wrap(s.mw.Admin(s.handleDeleteSkill)))
+
+	// per-agent 已安装技能
+	r.GET("/api/agents/:id/skills", wrap(s.mw.Auth(s.handleListAgentSkills)))
+	r.DELETE("/api/agents/:id/skills/:name", wrap(s.mw.Auth(s.handleDeleteAgentSkill)))
+}
 
 // --- 技能 ---
 

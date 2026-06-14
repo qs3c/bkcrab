@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -16,7 +17,121 @@ import (
 	"github.com/qs3c/bkclaw/internal/config"
 	"github.com/qs3c/bkclaw/internal/scope"
 	"github.com/qs3c/bkclaw/internal/store"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/qs3c/bkclaw/internal/api"
 )
+
+// AgentChannelsHandler 负责 per-agent 的 IM bot 绑定与入站 webhook。
+type AgentChannelsHandler struct {
+	dataStore    store.Store
+	userResolver api.UserResolver
+	guard        *agentGuard
+	chans        *channelRepo
+	mw           *Middleware
+}
+
+// NewAgentChannelsHandler 构造 AgentChannelsHandler。
+func NewAgentChannelsHandler(dataStore store.Store, userResolver api.UserResolver, guard *agentGuard, chans *channelRepo, mw *Middleware) *AgentChannelsHandler {
+	return &AgentChannelsHandler{dataStore: dataStore, userResolver: userResolver, guard: guard, chans: chans, mw: mw}
+}
+
+// RegisterRoutes 注册 agent IM 频道绑定与入站 webhook 路由。
+func (s *AgentChannelsHandler) RegisterRoutes(r *gin.Engine) {
+	// 频道列表与连接
+	r.GET("/api/agents/:id/channels", wrap(s.mw.Auth(s.handleListAgentChannels)))
+	r.POST("/api/agents/:id/channels/telegram", wrap(s.mw.Auth(s.handleConnectAgentTelegram)))
+	r.POST("/api/agents/:id/channels/discord", wrap(s.mw.Auth(s.handleConnectAgentDiscord)))
+	r.POST("/api/agents/:id/channels/slack", wrap(s.mw.Auth(s.handleConnectAgentSlack)))
+	r.POST("/api/agents/:id/channels/wechat/login", wrap(s.mw.Auth(s.handleStartAgentWeChatLogin)))
+	r.GET("/api/agents/:id/channels/wechat/login/status", wrap(s.mw.Auth(s.handleAgentWeChatLoginStatus)))
+	r.POST("/api/agents/:id/channels/line", wrap(s.mw.Auth(s.handleConnectAgentLINE)))
+	r.POST("/api/agents/:id/channels/feishu", wrap(s.mw.Auth(s.handleConnectAgentFeishu)))
+	r.DELETE("/api/agents/:id/channels/:type/:accountId", wrap(s.mw.Auth(s.handleDisconnectAgentChannel)))
+
+	// 入站 webhook（无 bkclaw 认证；安全由各适配器内部校验）
+	r.POST("/api/feishu/webhook/:appId", wrap(s.handleFeishuWebhook))
+	r.POST("/api/line/webhook/:accountId", wrap(s.handleLINEWebhook))
+}
+
+// handleFeishuWebhook 接收飞书 / Feishu 事件 POST。路由是公开的
+// （飞书不通过 bkclaw bearer 认证）；每事件安全性
+// 在飞书适配器内部通过验证负载的 header.token 与连接时存储的验证令牌来强制执行。
+//
+// 将原始 body 交给网关（通过类型断言的 dispatcher hook），
+// 后者通过 accountID 找到正确的适配器。适配器返回 HTTP body + status —
+// handler 仅中继它。URL 验证挑战和真实事件都通过此相同路径；
+// 适配器内部进行区分。
+func (s *AgentChannelsHandler) handleFeishuWebhook(w http.ResponseWriter, r *http.Request) {
+	appID := r.PathValue("appId")
+	if appID == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "appId required"})
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	type feishuDispatcher interface {
+		DispatchFeishuWebhook(accountID string, body []byte) ([]byte, int, error)
+	}
+	d, ok := s.userResolver.(feishuDispatcher)
+	if !ok {
+		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "feishu webhook dispatch not available"})
+		return
+	}
+	respBody, status, derr := d.DispatchFeishuWebhook(appID, body)
+	if derr != nil {
+		slog.Warn("feishu webhook dispatch error", "appId", appID, "status", status, "error", derr)
+		if respBody == nil {
+			respBody = []byte(`{"ok":false}`)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(respBody)
+}
+
+// handleLINEWebhook 接收 LINE Messaging API 事件 POST。路由是公开的
+// （LINE 不通过 bkclaw bearer 认证）；每事件安全性
+// 来自 `x-line-signature` 中的 HMAC-SHA256 签名，
+// 适配器根据 channel_secret + 原始 body 进行验证。
+//
+// 读取 body 一次，将原始字节 + 签名交给网关 dispatcher
+// （重新编码 JSON 会改变计算 HMAC 所用的字节并破坏验证）。
+func (s *AgentChannelsHandler) handleLINEWebhook(w http.ResponseWriter, r *http.Request) {
+	accountID := r.PathValue("accountId")
+	if accountID == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "accountId required"})
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	signature := r.Header.Get("x-line-signature")
+	type lineDispatcher interface {
+		DispatchLINEWebhook(accountID string, body []byte, signature string) ([]byte, int, error)
+	}
+	d, ok := s.userResolver.(lineDispatcher)
+	if !ok {
+		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "line webhook dispatch not available"})
+		return
+	}
+	respBody, status, derr := d.DispatchLINEWebhook(accountID, body, signature)
+	if derr != nil {
+		slog.Warn("line webhook dispatch error", "accountId", accountID, "status", status, "error", derr)
+		if respBody == nil {
+			respBody = []byte(`{"ok":false}`)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(respBody)
+}
 
 // 按 agent 的 IM 频道 CRUD。包装现有的 scope.SaveChannel + 绑定设置，
 // 以便仪表板可以将"连接 Telegram"呈现为一次点击，而不是要求用户手动连接两个单独的配置行。
@@ -380,7 +495,7 @@ type connectDiscordRequest struct {
 
 // handleConnectAgentDiscord 通过调用 Discord REST API 的 /users/@me 验证 Discord bot token，
 // 然后持久化 kind=channel + binding 行，就像 Telegram 流程一样。accountID = bot 用户 ID
-//（Discord 的稳定标识符，与可以更改的用户名不同）。
+// （Discord 的稳定标识符，与可以更改的用户名不同）。
 func (s *AgentChannelsHandler) handleConnectAgentDiscord(w http.ResponseWriter, r *http.Request) {
 	if !requireWritable(w, r) {
 		return
@@ -443,7 +558,7 @@ func (s *AgentChannelsHandler) handleConnectAgentDiscord(w http.ResponseWriter, 
 
 // discordGetMe 通过 Discord REST API 验证 bot token。
 // 端点文档：GET /users/@me，带有 `Authorization: Bot <token>` 返回 bot 用户对象
-//（id, username, discriminator）。我们避免在此引入 discordgo，
+// （id, username, discriminator）。我们避免在此引入 discordgo，
 // 这样此处理程序不会仅仅为了检查 token 而打开网关连接。
 func discordGetMe(token string) (string, string, error) {
 	req, err := http.NewRequest("GET", "https://discord.com/api/v10/users/@me", nil)
@@ -918,7 +1033,7 @@ type connectFeishuRequest struct {
 //
 // 存储布局镜像 slack/wechat：credKey = app_id（同时也是 accountID），
 // AccountConfig.BotToken = app_secret，AccountConfig.UserID = verification_token
-//（与字段的"额外账户作用域标识符"注释匹配）。
+// （与字段的"额外账户作用域标识符"注释匹配）。
 func (s *AgentChannelsHandler) handleConnectAgentFeishu(w http.ResponseWriter, r *http.Request) {
 	if !requireWritable(w, r) {
 		return
@@ -1027,7 +1142,7 @@ type connectLINERequest struct {
 // handleConnectAgentLINE 通过使用频道访问 token 访问 /v2/bot/info 来验证 LINE Messaging API 频道。
 // 捕获 bot 的 userId（用作 accountID）+ 显示名称 + basicId。
 // 将 channel_access_token 存储在 AccountConfig.BotToken，channel_secret 存储在 AccountConfig.UserID
-//（与微信/飞书适配器使用的字段映射约定匹配）。
+// （与微信/飞书适配器使用的字段映射约定匹配）。
 //
 // channel_secret 在技术上是可选的 — 适配器可以在没有签名验证的情况下运行 —
 // 但 webhook 流量经过开放互联网，因此我们强烈建议设置它。
