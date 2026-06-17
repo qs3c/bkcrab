@@ -269,17 +269,12 @@ func (m *Memory) LoadUserFile() string {
 
 // AutoPersistMemory 使用 LLM 从最近的消息中提取事实并追加到 MEMORY.md
 // 和 USER.md。每 N 轮调用一次。
-func AutoPersistMemory(ctx context.Context, mem *Memory, prov provider.Provider, model string, messages []provider.Message) {
+func AutoPersistMemory(ctx context.Context, mem *Memory, prov provider.Provider, model string, messages []provider.Message) error {
 	// 为 LLM 构建最近消息的摘要
 	var sb strings.Builder
-	// 仅查看最后 20 条消息以保持提示词简短
-	start := 0
-	if len(messages) > 20 {
-		start = len(messages) - 20
-	}
-	for _, m := range messages[start:] {
-		if m.Role == "system" {
-			continue
+	for _, m := range messages {
+		if m.Role == "system" || m.Origin != "" {
+			continue // 跳过 system 与 goal_context 等合成注入行
 		}
 		content := m.Content
 		if len(content) > 300 {
@@ -319,7 +314,7 @@ If nothing worth saving, output: {"memory_facts": [], "user_notes": []}`,
 		// Warn（不是 Debug）——这里的隐形失败正是那种事后调试起来
 		// 很痛苦的"我打开了开关但什么也没持久化"的体验。
 		slog.Warn("auto-persist: LLM call failed", "error", err, "model", model)
-		return
+		return err
 	}
 
 	var result struct {
@@ -339,7 +334,7 @@ If nothing worth saving, output: {"memory_facts": [], "user_notes": []}`,
 		}
 		slog.Warn("auto-persist: failed to parse LLM response",
 			"error", err, "model", model, "preview", preview)
-		return
+		return fmt.Errorf("auto-persist parse: %w", err)
 	}
 	slog.Info("auto-persist: extracted",
 		"model", model,
@@ -381,6 +376,7 @@ If nothing worth saving, output: {"memory_facts": [], "user_notes": []}`,
 			slog.Info("auto-persist: updated USER.md", "notes", len(result.UserNotes))
 		}
 	}
+	return nil
 }
 
 func truncateStr(s string, n int) string {

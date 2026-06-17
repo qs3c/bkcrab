@@ -2448,52 +2448,8 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 		IsPlanMode:     isPlanMode(msg.Params),
 	})
 
-	// 每 N 个用户轮流自动保留内存。
-	//
-	// 节奏取决于持久计数器 — `session_messages.role='user'`
-	// 行（代理、聊天）。最初这是`a.turnCount`，
-	// Agent 上的 int 字段在守护进程重新启动时重置为 0，
-	// 用户空间失效（任何代理范围的仪表板都可以保存火灾）
-	// InvalidateAgent），以及 30 分钟空闲驱逐。这样就成功了
-	// 几乎无法测试——将仪表板切换至
-	// 观察下一次火灾，每次将计数器重置为 0。阅读
-	// 从数据库中完全删除了重置，并且还提供了自然的
-	// 每个聊天的节奏（内存中的计数器被共享
-	// 同一代理人的所有闲聊）。
-	//
-	// 当数据存储未连接时返回跳过火灾
-	// （单用户本地模式，无持久化）——autoPersist
-	// 没有坚持无论如何都是没有意义的。
-	var chatterUID string
-	if chatterMem != nil {
-		chatterUID = chatterMem.UserID()
-	}
-	willFire := false
-	chatterTurns := 0
-	if a.dataStore != nil && a.memoryCfg.AutoPersist.Enabled && a.memoryCfg.AutoPersist.EveryNTurns > 0 && chatterUID != "" {
-		n, err := a.dataStore.CountChatterUserMessages(ctx, a.name, chatterUID)
-		if err != nil {
-			slog.Warn("auto-persist: count query failed", "agent", a.name, "chatter", chatterUID, "error", err)
-		} else {
-			chatterTurns = n
-			willFire = n > 0 && n%a.memoryCfg.AutoPersist.EveryNTurns == 0
-		}
-	}
-	slog.Info("auto-persist gate",
-		"agent", a.name,
-		"chatter", chatterUID,
-		"enabled", a.memoryCfg.AutoPersist.Enabled,
-		"chatter_turns", chatterTurns,
-		"every_n_turns", a.memoryCfg.AutoPersist.EveryNTurns,
-		"will_fire", willFire)
-	if willFire {
-		model := a.memoryCfg.AutoPersist.Model
-		if model == "" {
-			model = a.model
-		}
-		slog.Info("auto-persist firing", "agent", a.name, "chatter", chatterUID, "model", model, "chatter_turns", chatterTurns, "messages", len(messages))
-		go AutoPersistMemory(ctx, chatterMem, a.provider, model, messages)
-	}
+	// turn 结束:把锚点翻成 done,并按"已完成且未提取 >= N"的节拍认领一批 turn 异步提取。
+	a.finishTurnAndMaybeExtract(ctx, chatterMem, anchor)
 
 	// 技能学习者
 	if a.skillsLearner != nil {
@@ -2503,6 +2459,57 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 			}
 		}()
 	}
+}
+
+// finishTurnAndMaybeExtract 在 turn 结束时把锚点翻成 done,并按"已完成且未提取 >= N"
+// 的节拍在单个写事务内认领一批 turn,异步从归档回放它们的原文做记忆提取。
+// 提取失败则补偿重置 extraction_id,让这批 turn 回到待提取池。
+// 无持久化存储或本次无锚点(计划模式)时直接跳过。
+func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memory, anchor *turnAnchor) {
+	if a.dataStore == nil || anchor == nil {
+		return
+	}
+	if err := a.dataStore.FinishTurn(ctx, a.ownerUserID, a.name, anchor.sessionKey, anchor.seq); err != nil {
+		slog.Warn("finish turn failed", "agent", a.name, "error", err)
+		// 锚点没翻成 done 只是本 turn 不计入提取,不阻塞主流程。
+	}
+	var chatterUID string
+	if chatterMem != nil {
+		chatterUID = chatterMem.UserID()
+	}
+	if !a.memoryCfg.AutoPersist.Enabled || a.memoryCfg.AutoPersist.EveryNTurns <= 0 || chatterUID == "" {
+		return
+	}
+	n := a.memoryCfg.AutoPersist.EveryNTurns
+	extractionID, refs, err := a.dataStore.ClaimCadenceBatch(ctx, a.name, chatterUID, n, 3*n)
+	if err != nil {
+		slog.Warn("auto-persist: claim failed", "agent", a.name, "chatter", chatterUID, "error", err)
+		return
+	}
+	if extractionID == "" {
+		return // 不足 N,不触发
+	}
+	model := a.memoryCfg.AutoPersist.Model
+	if model == "" {
+		model = a.model
+	}
+	slog.Info("auto-persist firing", "agent", a.name, "chatter", chatterUID, "model", model, "turns", len(refs), "extraction_id", extractionID)
+	go func() {
+		archived, err := a.dataStore.LoadTurnMessages(ctx, a.ownerUserID, a.name, refs)
+		if err != nil {
+			slog.Warn("auto-persist: load turn messages failed", "agent", a.name, "extraction_id", extractionID, "error", err)
+			_ = a.dataStore.ResetExtraction(ctx, extractionID)
+			return
+		}
+		msgs := make([]provider.Message, 0, len(archived))
+		for _, m := range archived {
+			msgs = append(msgs, provider.Message{Role: m.Role, Content: m.Content, Origin: m.Origin})
+		}
+		if err := AutoPersistMemory(ctx, chatterMem, a.provider, model, msgs); err != nil {
+			slog.Warn("auto-persist: extraction failed, resetting batch", "agent", a.name, "extraction_id", extractionID, "error", err)
+			_ = a.dataStore.ResetExtraction(ctx, extractionID)
+		}
+	}()
 }
 
 // HandleMessageStream通过ReAct循环处理消息并返回
