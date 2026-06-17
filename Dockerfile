@@ -16,6 +16,8 @@ RUN pnpm build
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS go-builder
 RUN apk add --no-cache git
 WORKDIR /src
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
