@@ -1844,7 +1844,12 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// `[SenderName]:` 内容前缀策略存在于此（仅限组；
 	// DM 保持裸露以避免 SOUL.md 语言偏差回归）。
 	userMsg := buildUserMessage(msg)
-	sess.Append(userMsg)
+	var anchor *turnAnchor
+	if seq, err := sess.AppendTurnAnchor(userMsg); err != nil {
+		slog.Warn("turn anchor append failed", "agent", a.name, "error", err)
+	} else if seq >= 0 {
+		anchor = &turnAnchor{sessionKey: sess.SessionKey(), seq: seq}
+	}
 
 	// 上下文压缩：检查会话消息是否太大
 	sessionMsgs := sess.GetMessages()
@@ -1993,7 +1998,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				continue
 			}
 			emitEvent(ctx, ChatEvent{Type: "done"})
-			a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem)
+			a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem, anchor)
 			return joinReplyParts(replyParts)
 		}
 
@@ -2270,7 +2275,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		replyParts = append(replyParts, finalContent)
 	}
 	emitEvent(ctx, ChatEvent{Type: "done"})
-	a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem)
+	a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem, anchor)
 	return joinReplyParts(replyParts)
 }
 
@@ -2392,12 +2397,21 @@ func padOrphanToolResults(sess *session.Session) {
 // 公共代理会累积他们的*自己的* MEMORY.md / USER.md，而不是
 // 业主的。 nil 回退到代理范围的内存（遗留行为）。
 //
+// turnAnchor 标识一个 turn 起点写入的锚点行(session_messages 中 turn_status='running'
+// 的那一行)。turn 结束时(runPostTurn)用它把锚点翻成 done 并参与提取节拍。
+// 并发/重叠 turn 各自持有独立的 turnAnchor,因此显式透传而非挂在 Session 上。
+// nil = 该次调用没有锚点(计划模式,或无持久化 store)。
+type turnAnchor struct {
+	sessionKey string
+	seq        int64
+}
+
 // 流式（HandleMessageStream）和非流式（HandleMessage）两者
 // 开火这个。流路径从后台内部调用它
 // 在最后一个助手之后，耗尽 SSE 流的 goroutine
 // 消息已被附加到会话中——即在用户的
 // 答复已完全记录在案。
-func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, messages []provider.Message, toolCallCount int, chatterMem *Memory) {
+func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, messages []provider.Message, toolCallCount int, chatterMem *Memory, anchor *turnAnchor) {
 	if chatterMem == nil {
 		chatterMem = a.memory
 	}
@@ -2548,7 +2562,12 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	// 展平 + 发送者元数据。群组消息保留其“[SenderName]：”
 	// 前缀（在 buildUserMessage 中应用）； DM 保持裸露状态。
 	userMsg := buildUserMessage(msg)
-	sess.Append(userMsg)
+	var anchor *turnAnchor
+	if seq, err := sess.AppendTurnAnchor(userMsg); err != nil {
+		slog.Warn("turn anchor append failed", "agent", a.name, "error", err)
+	} else if seq >= 0 {
+		anchor = &turnAnchor{sessionKey: sess.SessionKey(), seq: seq}
+	}
 
 	sessionMsgs := sess.GetMessages()
 	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model)
@@ -2610,7 +2629,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			if err != nil {
 				slog.Error("LLM stream failed, falling back", "agent", a.name, "error", err)
 				sess.Append(provider.Message{Role: "assistant", Content: resp.Content})
-				a.runPostTurn(ctx, msg, append(messages, provider.Message{Role: "assistant", Content: resp.Content}), totalToolCalls, chatterMem)
+				a.runPostTurn(ctx, msg, append(messages, provider.Message{Role: "assistant", Content: resp.Content}), totalToolCalls, chatterMem, anchor)
 				return a.stringStream(resp.Content)
 			}
 
@@ -2683,7 +2702,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 				// 坚持下来了。自动持久 (memory.go) 落后
 				// 转弯后运行；没有这个调用流路径
 				// 默默地跳过它 - 请参阅 runPostTurn 中的 FIXME。
-				a.runPostTurn(ctx, inboundMsg, append(messagesAtTurnStart, msg), capturedToolCalls, capturedChatterMem)
+				a.runPostTurn(ctx, inboundMsg, append(messagesAtTurnStart, msg), capturedToolCalls, capturedChatterMem, anchor)
 			}()
 			return outReader
 		}
@@ -2758,15 +2777,15 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	}
 
 	slog.Warn("max tool iterations reached — streaming forced final delivery", "agent", a.name, "max", a.maxToolIterations)
-	return a.streamFinalDeliveryAfterCap(ctx, msg, messages, sess, totalToolCalls, chatterMem)
+	return a.streamFinalDeliveryAfterCap(ctx, msg, messages, sess, totalToolCalls, chatterMem, anchor)
 }
 
 // StreamFinalDeliveryAfterCap 使用工具运行一个额外的 ChatStream
 // 禁用并合成轻推，然后保留助理消息
 // 使用迭代上限元数据，以便聊天 UI 可以标记气泡。
-// 返回的 StreamReader 与正常的“最终
+// 返回的 StreamReader 与正常的”最终
 // 上面的响应”分支，因此调用者不需要特殊情况。
-func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.InboundMessage, messages []provider.Message, sess *session.Session, toolCallCount int, chatterMem *Memory) *provider.StreamReader {
+func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.InboundMessage, messages []provider.Message, sess *session.Session, toolCallCount int, chatterMem *Memory, anchor *turnAnchor) *provider.StreamReader {
 	capMeta := iterationCapMetadata(a.maxToolIterations)
 	finalMessages := append(messages, capReachedNudge(a.maxToolIterations))
 	sr, err := a.provider.ChatStream(ctx, finalMessages, nil, a.model, a.maxTokens, a.temperature)
@@ -2777,7 +2796,7 @@ func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.
 		fallbackMsg := provider.Message{Role: "assistant", Content: fallback, Metadata: capMeta, Timestamp: time.Now().UnixMilli()}
 		sess.Append(fallbackMsg)
 		emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{"content": fallback, "metadata": capMeta}})
-		a.runPostTurn(ctx, inboundMsg, append(messages, fallbackMsg), toolCallCount, chatterMem)
+		a.runPostTurn(ctx, inboundMsg, append(messages, fallbackMsg), toolCallCount, chatterMem, anchor)
 		return a.stringStream(fallback)
 	}
 
@@ -2851,7 +2870,7 @@ func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.
 		// Fire PostTurn so AutoPersist（以及任何未来的 PostTurn 挂钩）
 		// 也在流路径上运行 - 请参阅 no-tool-calls
 		// HandleMessageStream 中的分支以了解其基本原理。
-		a.runPostTurn(ctx, inboundMsg, append(messages, finalMsg), toolCallCount, chatterMem)
+		a.runPostTurn(ctx, inboundMsg, append(messages, finalMsg), toolCallCount, chatterMem, anchor)
 	}()
 	return outReader
 }
