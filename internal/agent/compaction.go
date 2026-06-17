@@ -127,7 +127,7 @@ func CompactMessagesWithOptions(messages []provider.Message, opts CompactOptions
 	case CompactModeManual:
 		return compactMessagesTriggered(messages, opts, tokens)
 	case CompactModeEmergency:
-		return compactMessagesEmergencyPlaceholder(messages, opts, tokens)
+		return emergencyCompactMessages(messages, opts, tokens), nil
 	default:
 		if tokens < compactTriggerLimit(opts) {
 			sanitized, changed := sanitizeToolPairsWithChange(messages)
@@ -135,6 +135,47 @@ func CompactMessagesWithOptions(messages []provider.Message, opts CompactOptions
 		}
 		return compactMessagesTriggered(messages, opts, tokens)
 	}
+}
+
+func isContextLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if isRateLimitLikeError(msg) {
+		return false
+	}
+	for _, marker := range []string{
+		"context_length_exceeded",
+		"maximum context length",
+		"prompt too long",
+		"prompt is too long",
+		"too many tokens",
+		"too many tokens in request",
+		"input length exceeds context window",
+		"request too large",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRateLimitLikeError(msg string) bool {
+	for _, marker := range []string{
+		"rate limit",
+		"rate_limit",
+		"tokens per minute",
+		"requests per minute",
+		"quota",
+		"throttle",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeCompactOptions(opts CompactOptions) CompactOptions {
@@ -205,8 +246,47 @@ func compactionRequestMessages(messages, overhead []provider.Message) []provider
 	return request
 }
 
-func compactMessagesEmergencyPlaceholder(messages []provider.Message, opts CompactOptions, tokens int) (*CompactResult, error) {
-	return compactMessagesTriggered(messages, opts, tokens)
+func emergencyCompactMessages(messages []provider.Message, opts CompactOptions, beforeTokens int) *CompactResult {
+	sanitized, _ := sanitizeToolPairsWithChange(messages)
+	if len(sanitized) == 0 {
+		return &CompactResult{Messages: messages, Pruned: false}
+	}
+	if len(sanitized) == 1 {
+		return &CompactResult{Messages: sanitized, Pruned: false}
+	}
+
+	cutoff := emergencyCompactionCutoff(sanitized)
+	if cutoff <= 0 {
+		return &CompactResult{Messages: sanitized, Pruned: false}
+	}
+
+	dropped := cutoff
+	out := make([]provider.Message, 0, len(sanitized)-cutoff+1)
+	out = append(out, provider.Message{
+		Role: "user",
+		Content: fmt.Sprintf(
+			"[Context compressed without LLM]\n%d older message(s) were dropped after a context-limit error. Estimated request tokens before emergency compression: %d. Continue from the preserved recent conversation below.",
+			dropped,
+			beforeTokens,
+		),
+	})
+	out = append(out, sanitized[cutoff:]...)
+	out, _ = sanitizeToolPairsWithChange(out)
+
+	return &CompactResult{
+		Messages: out,
+		Pruned:   true,
+	}
+}
+
+func emergencyCompactionCutoff(messages []provider.Message) int {
+	cutoff := len(messages) / 2
+	for i := cutoff; i < len(messages); i++ {
+		if messages[i].Role == "user" && messages[i].Origin == provider.OriginUser {
+			return safeCompactionCutoff(messages, i)
+		}
+	}
+	return safeCompactionCutoff(messages, cutoff)
 }
 
 func compactMessagesTriggered(messages []provider.Message, opts CompactOptions, tokens int) (*CompactResult, error) {
