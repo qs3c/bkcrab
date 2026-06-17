@@ -104,6 +104,7 @@ type SessionStore interface {
 	GetSession(ctx context.Context, agentID, sessionKey string) ([]provider.Message, error)
 	SaveSession(ctx context.Context, agentID, sessionKey, channel, accountID, chatID, projectID string, messages []provider.Message) error
 	AppendMessage(ctx context.Context, agentID, sessionKey string, msg provider.Message) error
+	AppendTurnAnchor(ctx context.Context, agentID, sessionKey string, msg provider.Message) (int64, error)
 	ListMessages(ctx context.Context, agentID, sessionKey string) ([]provider.Message, error)
 	ListWebSessions(ctx context.Context, agentID string) ([]WebSession, error)
 	DeleteSession(ctx context.Context, agentID, sessionKey string) error
@@ -408,6 +409,25 @@ func (s *Session) Append(msg provider.Message) {
 	} else {
 		s.appendToFile(msg)
 	}
+}
+
+// AppendTurnAnchor 与 Append 等价地把消息加入内存工作集并 SaveSession,但归档行
+// 带 turn_status='running' 并返回分配的 seq——供 turn 起点登记锚点、turn 结束时
+// 按 (sessionKey, seq) 翻 done。仅用于真正开启一个 turn 的用户消息。
+// 无持久化 store 时退化为 Append 语义并返回 (-1, nil)。
+func (s *Session) AppendTurnAnchor(msg provider.Message) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if msg.Timestamp == 0 {
+		msg.Timestamp = time.Now().UnixMilli()
+	}
+	s.Messages = append(s.Messages, msg)
+	if s.store == nil {
+		s.appendToFile(msg)
+		return -1, nil
+	}
+	s.store.SaveSession(s.ctx(), s.agentID, s.sessionKey, s.channel, s.accountID, s.chatID, s.projectID, s.Messages)
+	return s.store.AppendTurnAnchor(s.ctx(), s.agentID, s.sessionKey, msg)
 }
 
 // ArchivedMessages 返回此会话的完整仅追加历史。
