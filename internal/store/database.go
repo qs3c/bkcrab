@@ -1,4 +1,4 @@
-package store
+﻿package store
 
 import (
 	"context"
@@ -1330,6 +1330,12 @@ func (d *DBStore) migrationSQL() []string {
 			-- chatter_user_id 镜像 sessions.chatter_user_id——参见该注释了解语义。
 			-- 每行存储以便按聊天者的查询无需通过 sessions 表连接。
 			chatter_user_id TEXT NOT NULL DEFAULT '',
+			-- turn_status 标记锚点行(代表一个完整 turn 的用户消息)：
+			-- '' = 非锚点(steer / 群聊注入 / goal_context / 历史存量行),
+			-- 'running' = 锚点,turn 进行中, 'done' = 锚点,turn 已完成。
+			turn_status TEXT NOT NULL DEFAULT '',
+			-- extraction_id：NULL = 未被任何记忆提取认领；非 NULL(uuid)= 已认领。
+			extraction_id TEXT,
 			PRIMARY KEY (user_id, agent_id, session_key, seq)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_session_messages_lookup ON session_messages (user_id, agent_id, session_key, seq)`,

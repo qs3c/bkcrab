@@ -1,4 +1,4 @@
-package store
+﻿package store
 
 import (
 	"context"
@@ -167,6 +167,8 @@ func mysqlMigrationSQL() []string {
 			origin VARCHAR(64) NOT NULL DEFAULT '',
 			created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
 			chatter_user_id VARCHAR(120) NOT NULL DEFAULT '',
+			turn_status VARCHAR(16) NOT NULL DEFAULT '',
+			extraction_id VARCHAR(64) NULL,
 			PRIMARY KEY (user_id, agent_id, session_key, seq),
 			KEY idx_session_messages_lookup (user_id, agent_id, session_key, seq)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
@@ -179,6 +181,8 @@ func mysqlMigrationSQL() []string {
 			data LONGTEXT NOT NULL,
 			created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
 			chatter_user_id VARCHAR(120) NOT NULL DEFAULT '',
+			turn_status VARCHAR(16) NOT NULL DEFAULT '',
+			extraction_id VARCHAR(64) NULL,
 			PRIMARY KEY (user_id, agent_id, session_key, seq),
 			KEY idx_session_events_lookup (user_id, agent_id, session_key, seq)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
