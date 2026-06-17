@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/qs3c/bkclaw/internal/provider"
@@ -29,6 +30,8 @@ const (
 	DefaultTailTurns                = 4
 	MinimumTailTurns                = 2
 	DefaultSummaryMaxRetries        = 3
+	fallbackSummaryMaxRunes         = 12000
+	fallbackSnippetMaxRunes         = 220
 )
 
 const (
@@ -366,22 +369,86 @@ func compressOlderMessages(messages []provider.Message, opts CompactOptions) ([]
 		},
 	}
 
-	if opts.Provider == nil {
-		return nil, fmt.Errorf("summarize conversation: provider is nil")
-	}
-	resp, err := opts.Provider.Chat(nil, summaryPrompt, nil, opts.Model, 2048, 0.3)
+	summary, err := summarizeWithRetries(opts, summaryPrompt)
 	if err != nil {
-		return nil, fmt.Errorf("summarize conversation: %w", err)
+		slog.Warn("summary failed after retries, using deterministic fallback", "error", err)
+		summary = deterministicSummaryFallback(olderMessages)
 	}
 
 	compressed := make([]provider.Message, 0, len(messages)-cutoff+1)
 	compressed = append(compressed, provider.Message{
 		Role:    "user",
-		Content: fmt.Sprintf("[Conversation Summary]\n%s", resp.Content),
+		Content: fmt.Sprintf("[Conversation Summary]\n%s", summary),
 	})
 	compressed = append(compressed, messages[cutoff:]...)
 
 	return compressed, nil
+}
+
+func summarizeWithRetries(opts CompactOptions, prompt []provider.Message) (string, error) {
+	opts = normalizeCompactOptions(opts)
+	if opts.Provider == nil {
+		return "", fmt.Errorf("summarize conversation: provider is nil")
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < opts.SummaryMaxRetries; attempt++ {
+		resp, err := opts.Provider.Chat(nil, prompt, nil, opts.Model, 2048, 0.3)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp == nil {
+			lastErr = fmt.Errorf("summary response is nil")
+			continue
+		}
+		if strings.TrimSpace(resp.Content) == "" {
+			lastErr = fmt.Errorf("summary response content is empty")
+			continue
+		}
+		return resp.Content, nil
+	}
+
+	return "", fmt.Errorf("summarize conversation failed after %d attempts: %w", opts.SummaryMaxRetries, lastErr)
+}
+
+func deterministicSummaryFallback(messages []provider.Message) string {
+	const marker = "deterministic fallback: LLM summary failed after retries. Older messages were compacted without an LLM."
+
+	lines := []string{marker}
+	totalRunes := runeCount(marker)
+	for _, m := range messages {
+		if m.Origin != provider.OriginUser {
+			continue
+		}
+		text := strings.TrimSpace(m.TextContent())
+		if text == "" {
+			continue
+		}
+		line := fmt.Sprintf("[%s] %s", m.Role, snippetForFallback(text))
+		nextRunes := totalRunes + 1 + runeCount(line)
+		if nextRunes > fallbackSummaryMaxRunes {
+			lines = append(lines, "[fallback summary truncated]")
+			break
+		}
+		lines = append(lines, line)
+		totalRunes = nextRunes
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func snippetForFallback(text string) string {
+	normalized := strings.Join(strings.Fields(text), " ")
+	runes := []rune(normalized)
+	if len(runes) <= fallbackSnippetMaxRunes {
+		return normalized
+	}
+	return string(runes[:fallbackSnippetMaxRunes]) + "..."
+}
+
+func runeCount(s string) int {
+	return len([]rune(s))
 }
 
 // writeHistoryLog writes full message history to a JSONL log.
