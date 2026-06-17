@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	_ "github.com/lib/pq"  // PostgreSQL 驱动程序
 	_ "modernc.org/sqlite" // SQLite 驱动程序（纯 Go）
 )
@@ -3391,6 +3392,62 @@ func isUniqueViolation(err error) bool {
 		return true
 	}
 	return false
+}
+
+// ClaimCadenceBatch 见接口文档。
+func (d *DBStore) ClaimCadenceBatch(ctx context.Context, agentID, chatterUserID string, n, batchCap int) (string, []TurnRef, error) {
+	if chatterUserID == "" || n <= 0 {
+		return "", nil, nil
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	defer tx.Rollback()
+
+	selSQL := `SELECT session_key, seq FROM session_messages
+		WHERE agent_id=%s AND chatter_user_id=%s AND turn_status='done' AND extraction_id IS NULL
+		ORDER BY created_at, seq LIMIT %d`
+	lock := ""
+	if d.dialect == "postgres" || d.dialect == mysqlDialect {
+		lock = " FOR UPDATE"
+	}
+	rows, err := tx.QueryContext(ctx,
+		fmt.Sprintf(selSQL+lock, d.ph(1), d.ph(2), batchCap), agentID, chatterUserID)
+	if err != nil {
+		return "", nil, err
+	}
+	var refs []TurnRef
+	for rows.Next() {
+		var r TurnRef
+		if err := rows.Scan(&r.SessionKey, &r.StartSeq); err != nil {
+			rows.Close()
+			return "", nil, err
+		}
+		refs = append(refs, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return "", nil, err
+	}
+	if len(refs) < n {
+		return "", nil, nil
+	}
+
+	id := uuid.NewString()
+	for _, r := range refs {
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf(`UPDATE session_messages SET extraction_id=%s
+				WHERE agent_id=%s AND session_key=%s AND seq=%s AND extraction_id IS NULL`,
+				d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
+			id, agentID, r.SessionKey, r.StartSeq); err != nil {
+			return "", nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", nil, err
+	}
+	return id, refs, nil
 }
 
 var _ Store = (*DBStore)(nil)

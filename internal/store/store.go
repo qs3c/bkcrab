@@ -120,6 +120,11 @@ type Store interface {
 	// FinishTurn 把锚点行翻成 turn_status='done'(按主键精确定位,避免认错
 	// 上次崩溃残留的僵尸 running 行)。turn 结束时由 runPostTurn 调用。
 	FinishTurn(ctx context.Context, userID, agentID, sessionKey string, seq int64) error
+	// ClaimCadenceBatch 在单个写事务内:统计该 (agent, chatter) 下 turn_status='done'
+	// 且 extraction_id IS NULL 的锚点,若 >= n 则生成 uuid、对其中至多 batchCap 条置位
+	// extraction_id 并返回 (uuid, 这批 TurnRef)。不足 n 返回 ("", nil, nil)。
+	// 事务保证并发 runPostTurn 不会重复认领同一批。
+	ClaimCadenceBatch(ctx context.Context, agentID, chatterUserID string, n, batchCap int) (string, []TurnRef, error)
 	ListSessionMessages(ctx context.Context, userID, agentID, sessionKey string) ([]SessionMessage, error)
 	// CountChatterUserMessages 返回该聊天者在 agent 下累计的
 	// role='user' 行数——跨越所有会话、所有频道。被 autoPersist 门控用作
@@ -336,6 +341,12 @@ type SessionRecord struct {
 	ProjectID string           `json:"projectId,omitempty"`
 	Messages  []SessionMessage `json:"messages"`
 	UpdatedAt time.Time        `json:"updatedAt"`
+}
+
+// TurnRef 指向一个已认领 turn 的锚点位置:用于从归档表回放该 turn 的消息区间。
+type TurnRef struct {
+	SessionKey string
+	StartSeq   int64
 }
 
 // SessionMessage 是会话中的单条消息。
