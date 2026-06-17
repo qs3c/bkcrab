@@ -2420,26 +2420,15 @@ func (d *DBStore) LatestSessionEventSeq(ctx context.Context, userID, agentID, se
 	return seq.Int64, nil
 }
 
-// ListSessionMessages 按升序 seq 顺序返回一个会话的每个存档轮次。
-// 对于尚未有存档的会话（例如早于该表的行）返回空切片。
-// 想要回退到 sessions.messages 的调用方应检查 len() 并决定。
-func (d *DBStore) ListSessionMessages(ctx context.Context, userID, agentID, sessionKey string) ([]SessionMessage, error) {
-	rows, err := d.db.QueryContext(ctx,
-		fmt.Sprintf(`SELECT role, content, content_parts, tool_calls, tool_call_id, name, metadata, thinking, raw_assistant, origin, created_at
-			FROM session_messages
-			WHERE user_id = %s AND agent_id = %s AND session_key = %s
-			ORDER BY seq ASC`, d.ph(1), d.ph(2), d.ph(3)),
-		userID, agentID, sessionKey)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []SessionMessage
+// scanSessionMessages 把 session_messages 查询结果(列顺序见下)追加到 out。
+// 调用方负责 rows.Close()。列顺序:role, content, content_parts, tool_calls,
+// tool_call_id, name, metadata, thinking, raw_assistant, origin, created_at。
+func scanSessionMessages(rows *sql.Rows, out *[]SessionMessage) error {
 	for rows.Next() {
 		var m SessionMessage
 		var contentParts, toolCalls, metadata, rawAssistant string
 		if err := rows.Scan(&m.Role, &m.Content, &contentParts, &toolCalls, &m.ToolCallID, &m.Name, &metadata, &m.Thinking, &rawAssistant, &m.Origin, &m.Timestamp); err != nil {
-			return nil, err
+			return err
 		}
 		if contentParts != "" && contentParts != "null" {
 			var v interface{}
@@ -2459,9 +2448,30 @@ func (d *DBStore) ListSessionMessages(ctx context.Context, userID, agentID, sess
 		if rawAssistant != "" && rawAssistant != "null" {
 			m.RawAssistant = json.RawMessage(rawAssistant)
 		}
-		out = append(out, m)
+		*out = append(*out, m)
 	}
-	return out, rows.Err()
+	return rows.Err()
+}
+
+// ListSessionMessages 按升序 seq 顺序返回一个会话的每个存档轮次。
+// 对于尚未有存档的会话（例如早于该表的行）返回空切片。
+// 想要回退到 sessions.messages 的调用方应检查 len() 并决定。
+func (d *DBStore) ListSessionMessages(ctx context.Context, userID, agentID, sessionKey string) ([]SessionMessage, error) {
+	rows, err := d.db.QueryContext(ctx,
+		fmt.Sprintf(`SELECT role, content, content_parts, tool_calls, tool_call_id, name, metadata, thinking, raw_assistant, origin, created_at
+			FROM session_messages
+			WHERE user_id = %s AND agent_id = %s AND session_key = %s
+			ORDER BY seq ASC`, d.ph(1), d.ph(2), d.ph(3)),
+		userID, agentID, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionMessage
+	if err := scanSessionMessages(rows, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // CountChatterUserMessages 返回此聊天者在 agent 下所有会话中积累的
@@ -3448,6 +3458,56 @@ func (d *DBStore) ClaimCadenceBatch(ctx context.Context, agentID, chatterUserID 
 		return "", nil, err
 	}
 	return id, refs, nil
+}
+
+// ResetExtraction 见接口文档。
+func (d *DBStore) ResetExtraction(ctx context.Context, extractionID string) error {
+	if extractionID == "" {
+		return nil
+	}
+	_, err := d.db.ExecContext(ctx,
+		fmt.Sprintf(`UPDATE session_messages SET extraction_id=NULL WHERE extraction_id=%s`, d.ph(1)),
+		extractionID)
+	return err
+}
+
+// LoadTurnMessages 见接口文档。
+func (d *DBStore) LoadTurnMessages(ctx context.Context, userID, agentID string, refs []TurnRef) ([]SessionMessage, error) {
+	var out []SessionMessage
+	for _, r := range refs {
+		// 同 session 内本 turn 之后的下一个锚点 seq(running 或 done 都算锚点边界)。
+		var nextSeq int64
+		err := d.db.QueryRowContext(ctx,
+			fmt.Sprintf(`SELECT COALESCE(MIN(seq), -1) FROM session_messages
+				WHERE user_id=%s AND agent_id=%s AND session_key=%s AND seq > %s AND turn_status <> ''`,
+				d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
+			userID, agentID, r.SessionKey, r.StartSeq).Scan(&nextSeq)
+		if err != nil {
+			return nil, err
+		}
+		base := `SELECT role, content, content_parts, tool_calls, tool_call_id, name, metadata, thinking, raw_assistant, origin, created_at
+			FROM session_messages
+			WHERE user_id=%s AND agent_id=%s AND session_key=%s AND seq >= %s`
+		var rows *sql.Rows
+		if nextSeq < 0 {
+			rows, err = d.db.QueryContext(ctx,
+				fmt.Sprintf(base+` ORDER BY seq ASC`, d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
+				userID, agentID, r.SessionKey, r.StartSeq)
+		} else {
+			rows, err = d.db.QueryContext(ctx,
+				fmt.Sprintf(base+` AND seq < %s ORDER BY seq ASC`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)),
+				userID, agentID, r.SessionKey, r.StartSeq, nextSeq)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := scanSessionMessages(rows, &out); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
 }
 
 var _ Store = (*DBStore)(nil)

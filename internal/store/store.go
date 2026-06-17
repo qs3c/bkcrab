@@ -125,6 +125,13 @@ type Store interface {
 	// extraction_id 并返回 (uuid, 这批 TurnRef)。不足 n 返回 ("", nil, nil)。
 	// 事务保证并发 runPostTurn 不会重复认领同一批。
 	ClaimCadenceBatch(ctx context.Context, agentID, chatterUserID string, n, batchCap int) (string, []TurnRef, error)
+	// ResetExtraction 把某次提取认领的所有行 extraction_id 重置回 NULL,
+	// 使它们回到待提取状态(异步提取失败时的补偿回滚)。
+	ResetExtraction(ctx context.Context, extractionID string) error
+	// LoadTurnMessages 按 TurnRef 列表从归档表回放每个 turn 的消息区间:
+	// 同 session 内 [StartSeq, 下一个锚点 seq)(无下一个锚点则到该 session 末尾)。
+	// 供记忆提取构建 prompt。
+	LoadTurnMessages(ctx context.Context, userID, agentID string, refs []TurnRef) ([]SessionMessage, error)
 	ListSessionMessages(ctx context.Context, userID, agentID, sessionKey string) ([]SessionMessage, error)
 	// CountChatterUserMessages 返回该聊天者在 agent 下累计的
 	// role='user' 行数——跨越所有会话、所有频道。被 autoPersist 门控用作

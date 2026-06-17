@@ -89,3 +89,38 @@ func TestClaimCadenceBatchNoDoubleClaim(t *testing.T) {
 		t.Fatalf("accounting off: pending=%d claimed=%d claimedTurns=%d", pending, claimed, claimedTurns)
 	}
 }
+
+func TestResetExtractionReturnsToPending(t *testing.T) {
+	db := newTestSQLite(t)
+	ctx := context.Background()
+	seedDoneTurns(t, db, "agentA", "chatterA", 5)
+	id, refs, _ := db.ClaimCadenceBatch(ctx, "agentA", "chatterA", 5, 15)
+	if id == "" || len(refs) != 5 {
+		t.Fatalf("setup claim failed")
+	}
+	if err := db.ResetExtraction(ctx, id); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	id2, refs2, _ := db.ClaimCadenceBatch(ctx, "agentA", "chatterA", 5, 15)
+	if id2 == "" || len(refs2) != 5 {
+		t.Fatalf("re-claim after reset failed: id=%q refs=%d", id2, len(refs2))
+	}
+}
+
+func TestLoadTurnMessagesRange(t *testing.T) {
+	db := newTestSQLite(t)
+	ctx := WithChatterUserID(context.Background(), "chatterA")
+	uid, agent, sk := "u1", "agentA", "sess1"
+	seq1, _ := db.AppendTurnAnchor(ctx, uid, agent, sk, SessionMessage{Role: "user", Content: "Q1"})
+	db.AppendSessionMessage(ctx, uid, agent, sk, SessionMessage{Role: "assistant", Content: "A1"})
+	db.FinishTurn(ctx, uid, agent, sk, seq1)
+	db.AppendTurnAnchor(ctx, uid, agent, sk, SessionMessage{Role: "user", Content: "Q2"})
+
+	msgs, err := db.LoadTurnMessages(ctx, uid, agent, []TurnRef{{SessionKey: sk, StartSeq: seq1}})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(msgs) != 2 || msgs[0].Content != "Q1" || msgs[1].Content != "A1" {
+		t.Fatalf("unexpected range: %+v", msgs)
+	}
+}
