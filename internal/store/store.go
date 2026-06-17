@@ -117,6 +117,9 @@ type Store interface {
 	// 并返回分配的 seq。仅由 turn 起点调用——普通 AppendSessionMessage 的
 	// turn_status 默认 ''(非锚点)。seq 在事务内分配,模式同 AppendSessionEvent。
 	AppendTurnAnchor(ctx context.Context, userID, agentID, sessionKey string, msg SessionMessage) (int64, error)
+	// FinishTurn 把锚点行翻成 turn_status='done'(按主键精确定位,避免认错
+	// 上次崩溃残留的僵尸 running 行)。turn 结束时由 runPostTurn 调用。
+	FinishTurn(ctx context.Context, userID, agentID, sessionKey string, seq int64) error
 	ListSessionMessages(ctx context.Context, userID, agentID, sessionKey string) ([]SessionMessage, error)
 	// CountChatterUserMessages 返回该聊天者在 agent 下累计的
 	// role='user' 行数——跨越所有会话、所有频道。被 autoPersist 门控用作

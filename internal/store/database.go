@@ -2312,6 +2312,16 @@ func (d *DBStore) AppendTurnAnchor(ctx context.Context, userID, agentID, session
 	return seq, nil
 }
 
+// FinishTurn 见接口文档。
+func (d *DBStore) FinishTurn(ctx context.Context, userID, agentID, sessionKey string, seq int64) error {
+	_, err := d.db.ExecContext(ctx,
+		fmt.Sprintf(`UPDATE session_messages SET turn_status='done'
+			WHERE user_id=%s AND agent_id=%s AND session_key=%s AND seq=%s AND turn_status='running'`,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
+		userID, agentID, sessionKey, seq)
+	return err
+}
+
 // AppendSessionEvent 持久化一个流式事件增量并返回分配的 seq。
 // seq 按 (user, agent, session) 分配——与 session_messages 相同模式——
 // 并在事务内原子性地分配，以便并发追加者（例如扇出 + 重放）不会在主键上冲突。

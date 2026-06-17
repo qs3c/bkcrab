@@ -31,3 +31,23 @@ func TestAppendTurnAnchorReturnsSeqAndStatus(t *testing.T) {
 		t.Fatalf("turn_status want running got %q", status)
 	}
 }
+
+func TestFinishTurnFlipsStatus(t *testing.T) {
+	db := newTestSQLite(t)
+	ctx := WithChatterUserID(context.Background(), "chatterA")
+	uid, agent, sk := "u1", "agentA", "sess1"
+	seq, err := db.AppendTurnAnchor(ctx, uid, agent, sk, SessionMessage{Role: "user", Content: "hi"})
+	if err != nil {
+		t.Fatalf("anchor: %v", err)
+	}
+	if err := db.FinishTurn(ctx, uid, agent, sk, seq); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	var status string
+	db.db.QueryRowContext(ctx,
+		`SELECT turn_status FROM session_messages WHERE user_id=? AND agent_id=? AND session_key=? AND seq=?`,
+		uid, agent, sk, seq).Scan(&status)
+	if status != "done" {
+		t.Fatalf("turn_status want done got %q", status)
+	}
+}
