@@ -36,8 +36,6 @@ const (
 	// the legacy compaction path. Later tasks replace this with turn-aware tail
 	// selection, so Task 2 intentionally keeps the existing behavior.
 	PruneTurnAge = 20
-
-	truncatedPlaceholder = "[Result truncated - see memory logs]"
 )
 
 type CompactOptions struct {
@@ -323,6 +321,7 @@ func pruneOldToolResultsWithChange(messages []provider.Message) ([]provider.Mess
 		return messages, false
 	}
 
+	infoByIndex := buildToolResultInfoByIndex(messages)
 	cutoff := len(messages) - PruneTurnAge
 	result := make([]provider.Message, len(messages))
 	copy(result, messages)
@@ -330,12 +329,8 @@ func pruneOldToolResultsWithChange(messages []provider.Message) ([]provider.Mess
 	changed := false
 	for i := 0; i < cutoff; i++ {
 		if result[i].Role == "tool" && len(result[i].Content) > 200 {
-			result[i] = provider.Message{
-				Role:       "tool",
-				Content:    truncatedPlaceholder,
-				ToolCallID: result[i].ToolCallID,
-				Name:       result[i].Name,
-			}
+			info := infoByIndex[i]
+			result[i] = summarizeToolResultWithInfo(result[i], info)
 			changed = true
 		}
 	}

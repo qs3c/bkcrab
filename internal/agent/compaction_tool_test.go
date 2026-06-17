@@ -2,6 +2,8 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/qs3c/bkclaw/internal/provider"
@@ -175,6 +177,296 @@ func TestSanitizeToolPairsDropsIncompleteRawAssistantOnlyGroupWithoutText(t *tes
 	if got[0].Role != "user" || got[0].Content != "after" {
 		t.Fatalf("unexpected sanitized messages: %+v", got)
 	}
+}
+
+func TestPruneOldToolResultsSummarizesTerminalResultLocally(t *testing.T) {
+	content := "Exit code: 2\nOutput:\nfirst line\nsecond line\n" + strings.Repeat("x", 220)
+	msgs := append([]provider.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []provider.ToolCall{
+				{
+					ID: "call_terminal",
+					Function: provider.FunctionCall{
+						Name:      "terminal",
+						Arguments: `{"command":"go test ./internal/agent","timeout":30}`,
+					},
+				},
+			},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call_terminal",
+			Name:       "terminal",
+			Content:    content,
+			Metadata:   map[string]any{"sandbox": true},
+		},
+	}, compactionFillerMessages(PruneTurnAge)...)
+
+	got, changed := pruneOldToolResultsWithChange(msgs)
+	if !changed {
+		t.Fatal("expected old terminal tool result to be summarized")
+	}
+	summary := got[1].Content
+	assertContainsAll(t, summary,
+		"[Tool Result Summary]",
+		"tool: terminal",
+		"command: go test ./internal/agent",
+		"exit_code: 2",
+		fmt.Sprintf("output_lines: %d", testLineCount(content)),
+		fmt.Sprintf("output_chars: %d", len([]rune(content))),
+	)
+	if strings.Contains(summary, "memory logs") {
+		t.Fatalf("summary must not mention memory logs: %q", summary)
+	}
+	if got[1].ToolCallID != "call_terminal" || got[1].Name != "terminal" {
+		t.Fatalf("tool identity changed: %+v", got[1])
+	}
+	if got[1].Metadata != nil {
+		t.Fatalf("metadata was not cleared: %+v", got[1].Metadata)
+	}
+}
+
+func TestPruneOldToolResultsSummarizesReadFileResult(t *testing.T) {
+	content := strings.Repeat("package agent\n", 20)
+	msgs := append([]provider.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []provider.ToolCall{
+				{
+					ID: "call_read",
+					Function: provider.FunctionCall{
+						Name:      "read_file",
+						Arguments: `{"path":"internal/agent/compaction.go"}`,
+					},
+				},
+			},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call_read",
+			Name:       "read_file",
+			Content:    content,
+		},
+	}, compactionFillerMessages(PruneTurnAge)...)
+
+	got, changed := pruneOldToolResultsWithChange(msgs)
+	if !changed {
+		t.Fatal("expected old read_file tool result to be summarized")
+	}
+	assertContainsAll(t, got[1].Content,
+		"tool: read_file",
+		"path: internal/agent/compaction.go",
+		fmt.Sprintf("output_chars: %d", len([]rune(content))),
+	)
+}
+
+func TestPruneOldToolResultsSummarizesSearchAndGenericResults(t *testing.T) {
+	searchContent := strings.Repeat("match\n", 50)
+	genericContent := strings.Repeat("row\n", 70)
+	msgs := append([]provider.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []provider.ToolCall{
+				{
+					ID: "call_search",
+					Function: provider.FunctionCall{
+						Name:      "grep",
+						Arguments: `{"pattern":"TODO","directory":"internal/agent","extra":"ignored"}`,
+					},
+				},
+				{
+					ID: "call_generic",
+					Function: provider.FunctionCall{
+						Name:      "custom_tool",
+						Arguments: `{"alpha":"one","beta":2,"gamma":"ignored"}`,
+					},
+				},
+			},
+		},
+		{Role: "tool", ToolCallID: "call_search", Name: "grep", Content: searchContent},
+		{Role: "tool", ToolCallID: "call_generic", Name: "custom_tool", Content: genericContent},
+	}, compactionFillerMessages(PruneTurnAge)...)
+
+	got, changed := pruneOldToolResultsWithChange(msgs)
+	if !changed {
+		t.Fatal("expected old search and generic tool results to be summarized")
+	}
+	assertContainsAll(t, got[1].Content,
+		"tool: grep",
+		"query: TODO",
+		"path: internal/agent",
+		fmt.Sprintf("output_lines: %d", testLineCount(searchContent)),
+		fmt.Sprintf("output_chars: %d", len([]rune(searchContent))),
+	)
+	assertContainsAll(t, got[2].Content,
+		"tool: custom_tool",
+		"arg.alpha: one",
+		"arg.beta: 2",
+		fmt.Sprintf("output_lines: %d", testLineCount(genericContent)),
+		fmt.Sprintf("output_chars: %d", len([]rune(genericContent))),
+	)
+	if strings.Contains(got[2].Content, "gamma") {
+		t.Fatalf("generic summary kept more than two args: %q", got[2].Content)
+	}
+}
+
+func TestPruneOldToolResultsTruncatesLargeArgumentValues(t *testing.T) {
+	largeContent := strings.Repeat("PATCH_LINE_", 80)
+	msgs := append([]provider.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []provider.ToolCall{
+				{
+					ID: "call_patch",
+					Function: provider.FunctionCall{
+						Name: "apply_patch",
+						Arguments: mustJSON(t, map[string]any{
+							"patch": largeContent,
+							"note":  "short",
+						}),
+					},
+				},
+			},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call_patch",
+			Name:       "apply_patch",
+			Content:    strings.Repeat("ok\n", 80),
+		},
+	}, compactionFillerMessages(PruneTurnAge)...)
+
+	got, changed := pruneOldToolResultsWithChange(msgs)
+	if !changed {
+		t.Fatal("expected old apply_patch tool result to be summarized")
+	}
+	summary := got[1].Content
+	assertContainsAll(t, summary,
+		"tool: apply_patch",
+		"arg.patch:",
+		fmt.Sprintf("[truncated, chars=%d]", len([]rune(largeContent))),
+		"arg.note: short",
+	)
+	if strings.Contains(summary, largeContent) {
+		t.Fatalf("summary included the full large argument: %q", summary)
+	}
+}
+
+func TestPruneOldToolResultsBindsDuplicateToolCallIDsByLocalGroup(t *testing.T) {
+	msgs := append([]provider.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []provider.ToolCall{
+				{
+					ID: "call_reused",
+					Function: provider.FunctionCall{
+						Name:      "read_file",
+						Arguments: `{"path":"old.txt"}`,
+					},
+				},
+			},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call_reused",
+			Name:       "read_file",
+			Content:    strings.Repeat("old result\n", 25),
+		},
+		{
+			Role: "assistant",
+			ToolCalls: []provider.ToolCall{
+				{
+					ID: "call_reused",
+					Function: provider.FunctionCall{
+						Name:      "read_file",
+						Arguments: `{"path":"new.txt"}`,
+					},
+				},
+			},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call_reused",
+			Name:       "read_file",
+			Content:    strings.Repeat("new result\n", 25),
+		},
+	}, compactionFillerMessages(PruneTurnAge)...)
+
+	got, changed := pruneOldToolResultsWithChange(msgs)
+	if !changed {
+		t.Fatal("expected old duplicate-id tool results to be summarized")
+	}
+	assertContainsAll(t, got[1].Content,
+		"tool: read_file",
+		"path: old.txt",
+	)
+	if strings.Contains(got[1].Content, "new.txt") {
+		t.Fatalf("first duplicate-id summary used later args: %q", got[1].Content)
+	}
+	assertContainsAll(t, got[3].Content,
+		"tool: read_file",
+		"path: new.txt",
+	)
+}
+
+func TestPruneOldToolResultsUsesRawAssistantOnlyArguments(t *testing.T) {
+	raw := json.RawMessage(`{"role":"assistant","tool_calls":[{"id":"call_raw_args","type":"function","function":{"name":"web_fetch","arguments":"{\"url\":\"https://example.com/doc\"}"}}]}`)
+	msgs := append([]provider.Message{
+		{Role: "assistant", RawAssistant: raw},
+		{
+			Role:       "tool",
+			ToolCallID: "call_raw_args",
+			Name:       "web_fetch",
+			Content:    strings.Repeat("fetched text\n", 20),
+		},
+	}, compactionFillerMessages(PruneTurnAge)...)
+
+	got, changed := pruneOldToolResultsWithChange(msgs)
+	if !changed {
+		t.Fatal("expected old raw assistant tool result to be summarized")
+	}
+	assertContainsAll(t, got[1].Content,
+		"tool: web_fetch",
+		"url: https://example.com/doc",
+	)
+}
+
+func compactionFillerMessages(n int) []provider.Message {
+	msgs := make([]provider.Message, n)
+	for i := range msgs {
+		msgs[i] = provider.Message{Role: "user", Content: "recent filler", Origin: provider.OriginUser}
+	}
+	return msgs
+}
+
+func assertContainsAll(t *testing.T, haystack string, needles ...string) {
+	t.Helper()
+	for _, needle := range needles {
+		if !strings.Contains(haystack, needle) {
+			t.Fatalf("summary %q does not contain %q", haystack, needle)
+		}
+	}
+}
+
+func testLineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	lines := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		lines++
+	}
+	return lines
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal JSON: %v", err)
+	}
+	return string(b)
 }
 
 func TestCompactionKeepsRecentFourUserTurns(t *testing.T) {
