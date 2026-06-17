@@ -80,7 +80,7 @@ func globalSkillsDirPath() (string, error) {
 //
 // 存在于网关作用域，而不是每个 UserSpace。先前的设计为每个用户构建一个池，
 // 这（a）在共享相同镜像的用户之间重复了 docker 池，并且（b）使临时的 UserSpace
-//（特别是 API 密钥调用者被切换到的 `app_user` 身份）没有任何池 —
+// （特别是 API 密钥调用者被切换到的 `app_user` 身份）没有任何池 —
 // 这些 UserSpace 有零个自己的代理，因此每个用户的构建器使用 `resolved=[]` 运行并产生 nil。
 // 延迟注入的代理（super_admin 聊天、app 模式访问）然后使用启用沙箱但没有执行器的 exec 运行，
 // 并向用户显示"sandbox required but no executor available"。将池提升到网关作用域
@@ -187,10 +187,10 @@ func attachSandboxToAgents(
 
 // assembleConfig 读取命名空间的设置行和作用域合并的提供者/通道对于一个 (account, agent)，
 // 并将它们投影到运行时 config.Config 中。传递 userID="" / agentID="" 以跳过这些层
-//（代理启动使用仅用户视图；仅系统用于 super_admin 仪表盘）。
+// （代理启动使用仅用户视图；仅系统用于 super_admin 仪表盘）。
 //
 // 每个设置命名空间是其自己的配置行。assembleConfig 依次读取它们全部
-//（概念上并行但为了简单起见串行）；每个命名空间的成本是一次索引点查找。
+// （概念上并行但为了简单起见串行）；每个命名空间的成本是一次索引点查找。
 func assembleConfig(ctx context.Context, st store.Store, userID, agentID string) (*config.Config, error) {
 	cfg := &config.Config{
 		Providers: map[string]config.ProviderConfig{},
@@ -281,7 +281,7 @@ func assembleConfig(ctx context.Context, st store.Store, userID, agentID string)
 // 在首次认证时延迟加载。
 //
 // SandboxPool 从网关**借用** — 每个 UserSpace 共享同一个指针
-//（或在系统作用域禁用沙箱时为 nil）。驱逐绝不能在其上调用 CloseAll；
+// （或在系统作用域禁用沙箱时为 nil）。驱逐绝不能在其上调用 CloseAll；
 // 网关拥有生命周期并在关闭时一次性销毁它。
 type UserSpace struct {
 	UserID      string
@@ -320,7 +320,7 @@ func readUserScopeAgentDefaults(ctx context.Context, st store.Store, userID stri
 
 // EnsureAgent 将一个用户不拥有的代理附加到此 UserSpace。
 // 由 super_admin 聊天使用：管理员在其自己的 user_id 命名空间下操作外部代理
-//（会话、内存、mem0 作用域都保持调用者键控），而代理的持久身份 —
+// （会话、内存、mem0 作用域都保持调用者键控），而代理的持久身份 —
 // 系统提示、代理作用域配置 (`agents.defaults`)、技能和 agent_files —
 // 被重用，因为它们在存储中以 agent_id 为键，而不是 user_id 为键。
 //
@@ -481,6 +481,7 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 			}
 		}
 	}
+	rc.RefreshModelContextWindow()
 	ensureAgentHome(rc)
 	if ws != nil {
 		if err := skills.HydrateSkillsDown(ctx, ws, rc.ID, filepath.Join(rc.Home, "skills")); err != nil {
@@ -652,6 +653,7 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 				rc.Providers[k] = v
 			}
 		}
+		rc.RefreshModelContextWindow()
 		ensureAgentHome(*rc)
 		if ws != nil {
 			if err := skills.HydrateSkillsDown(
@@ -878,7 +880,7 @@ func (r *userSpaceRegistry) getOrLoad(ctx context.Context, userID string) (*User
 }
 
 // invalidate 丢弃用户的空间，以便下次访问重新加载它。在管理员变更
-//（创建代理、轮换提供者等）后使用，以便内存中的副本不落后于数据库。
+// （创建代理、轮换提供者等）后使用，以便内存中的副本不落后于数据库。
 func (r *userSpaceRegistry) invalidate(userID string) {
 	r.mu.Lock()
 	delete(r.spaces, userID)
