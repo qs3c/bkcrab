@@ -133,13 +133,6 @@ type Store interface {
 	// 供记忆提取构建 prompt。
 	LoadTurnMessages(ctx context.Context, userID, agentID string, refs []TurnRef) ([]SessionMessage, error)
 	ListSessionMessages(ctx context.Context, userID, agentID, sessionKey string) ([]SessionMessage, error)
-	// CountChatterUserMessages 返回该聊天者在 agent 下累计的
-	// role='user' 行数——跨越所有会话、所有频道。被 autoPersist 门控用作
-	// 一个*持久化*的"每 N 用户轮次"计数器，在守护进程重启和 UserSpace
-	// 失效后仍然存在（之前在内存中的 `turnCount` 在两者上都会重置）。
-	// 只统计 chatter_user_id 匹配的行；列值为空的旧行被跳过——
-	// 那些行早于按聊天者解析的功能，将它们与新聊天者混在一起会过度计数。
-	CountChatterUserMessages(ctx context.Context, agentID, chatterUserID string) (int, error)
 
 	// --- 聊天事件（进行中的流式增量，持久化用于恢复）---
 	//

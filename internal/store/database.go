@@ -2474,30 +2474,6 @@ func (d *DBStore) ListSessionMessages(ctx context.Context, userID, agentID, sess
 	return out, nil
 }
 
-// CountChatterUserMessages 返回此聊天者在 agent 下所有会话中积累的
-// user 角色消息计数。被 autoPersist 节奏门控用作持久计数器——参见 Store
-// 上的接口文档了解为什么不重用内存中的 turnCount。
-//
-// 过滤器严格在 chatter_user_id 上（不回退到 user_id）。在 chatter_user_id
-// 列存在之前写入的旧行将其设置为 '' 并且不被计数；那些行早于按聊天者解析，
-// 将它们纳入会过度计数（它们按频道拥有者键控，而不是实际的聊天者）。
-// 新对话正确写入 chatter_user_id，因此这仅适用于从修复前的守护进程运行迁移的会话。
-func (d *DBStore) CountChatterUserMessages(ctx context.Context, agentID, chatterUserID string) (int, error) {
-	if chatterUserID == "" {
-		return 0, nil
-	}
-	var n int
-	err := d.db.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT COUNT(*) FROM session_messages
-			WHERE agent_id = %s AND chatter_user_id = %s AND role = 'user'`,
-			d.ph(1), d.ph(2)),
-		agentID, chatterUserID).Scan(&n)
-	if err != nil {
-		return 0, err
-	}
-	return n, nil
-}
-
 func (d *DBStore) RenameSession(ctx context.Context, userID, agentID, sessionKey, title string) error {
 	_, err := d.db.ExecContext(ctx,
 		fmt.Sprintf(`UPDATE sessions SET title = %s WHERE user_id = %s AND agent_id = %s AND session_key = %s`,
