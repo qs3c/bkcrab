@@ -151,6 +151,9 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 	if err := d.migrateSessionMessagesAddOrigin(ctx); err != nil {
 		return fmt.Errorf("migrate session_messages.origin: %w", err)
 	}
+	if err := d.migrateSessionMessagesAddTurnColumns(ctx); err != nil {
+		return fmt.Errorf("migrate session_messages turn columns: %w", err)
+	}
 	if err := d.migrateAgentGoalsAddRouting(ctx); err != nil {
 		return fmt.Errorf("migrate agent_goals routing: %w", err)
 	}
@@ -268,6 +271,41 @@ func (d *DBStore) migrateSessionMessagesAddOrigin(ctx context.Context) error {
 	if _, err := d.db.ExecContext(ctx,
 		fmt.Sprintf(`ALTER TABLE session_messages ADD COLUMN origin %s NOT NULL DEFAULT ''`, columnType)); err != nil {
 		return fmt.Errorf("add column: %w", err)
+	}
+	return nil
+}
+
+// migrateSessionMessagesAddTurnColumns 将 turn_status / extraction_id 列改装到
+// 旧的 session_messages 表上,并建立"待提取"部分索引。turn_status 默认 ''
+// (非锚点),extraction_id 默认 NULL(未提取),历史存量行无需回填。幂等。
+func (d *DBStore) migrateSessionMessagesAddTurnColumns(ctx context.Context) error {
+	statusType, idType := "TEXT", "TEXT"
+	if d.dialect == mysqlDialect {
+		statusType, idType = "VARCHAR(16)", "VARCHAR(64)"
+	}
+	if has, err := d.tableHasColumn(ctx, "session_messages", "turn_status"); err != nil {
+		return err
+	} else if !has {
+		if _, err := d.db.ExecContext(ctx,
+			fmt.Sprintf(`ALTER TABLE session_messages ADD COLUMN turn_status %s NOT NULL DEFAULT ''`, statusType)); err != nil {
+			return fmt.Errorf("add turn_status: %w", err)
+		}
+	}
+	if has, err := d.tableHasColumn(ctx, "session_messages", "extraction_id"); err != nil {
+		return err
+	} else if !has {
+		if _, err := d.db.ExecContext(ctx,
+			fmt.Sprintf(`ALTER TABLE session_messages ADD COLUMN extraction_id %s`, idType)); err != nil {
+			return fmt.Errorf("add extraction_id: %w", err)
+		}
+	}
+	// 待提取索引:SQLite/PG 用部分索引;MySQL 不支持,降级为普通复合索引。
+	idx := `CREATE INDEX IF NOT EXISTS idx_sm_pending ON session_messages (agent_id, chatter_user_id) WHERE turn_status = 'done' AND extraction_id IS NULL`
+	if d.dialect == mysqlDialect {
+		idx = `CREATE INDEX IF NOT EXISTS idx_sm_pending ON session_messages (agent_id, chatter_user_id, turn_status)`
+	}
+	if err := d.execDDL(ctx, idx); err != nil {
+		return fmt.Errorf("create idx_sm_pending: %w", err)
 	}
 	return nil
 }

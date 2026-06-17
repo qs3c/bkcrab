@@ -34,3 +34,19 @@ func TestSessionMessagesHasTurnColumns(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrateTurnColumnsIdempotent(t *testing.T) {
+	db := newTestSQLite(t)
+	ctx := context.Background()
+	// 再迁移一次必须无错(幂等)。
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	// pending 索引必须存在。
+	var name string
+	err := db.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_sm_pending'`).Scan(&name)
+	if err != nil {
+		t.Fatalf("idx_sm_pending not found: %v", err)
+	}
+}
