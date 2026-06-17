@@ -2254,6 +2254,64 @@ func (d *DBStore) AppendSessionMessage(ctx context.Context, userID, agentID, ses
 	return err
 }
 
+// AppendTurnAnchor 见接口文档。仿 AppendSessionEvent 的事务内分配 seq 模式,
+// 但写的是 session_messages 全列 + turn_status='running'。
+func (d *DBStore) AppendTurnAnchor(ctx context.Context, userID, agentID, sessionKey string, msg SessionMessage) (int64, error) {
+	if userID == "" {
+		return 0, errors.New("store: AppendTurnAnchor requires user_id")
+	}
+	contentParts, _ := json.Marshal(msg.ContentParts)
+	toolCalls, _ := json.Marshal(msg.ToolCalls)
+	metadata, _ := json.Marshal(msg.Metadata)
+	rawAssistant := string(msg.RawAssistant)
+	ts := msg.Timestamp
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	chatterID := ChatterUserIDFromContext(ctx)
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var seq int64
+	if d.dialect == "postgres" {
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages
+				WHERE user_id=$1 AND agent_id=$2 AND session_key=$3`,
+			userID, agentID, sessionKey).Scan(&seq); err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO session_messages
+				(user_id, agent_id, session_key, seq, role, content, content_parts, tool_calls, tool_call_id, name, metadata, thinking, raw_assistant, origin, created_at, chatter_user_id, turn_status)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'running')`,
+			userID, agentID, sessionKey, seq, msg.Role, msg.Content, string(contentParts), string(toolCalls),
+			msg.ToolCallID, msg.Name, string(metadata), msg.Thinking, rawAssistant, msg.Origin, ts, chatterID); err != nil {
+			return 0, err
+		}
+	} else {
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages
+				WHERE user_id=? AND agent_id=? AND session_key=?`,
+			userID, agentID, sessionKey).Scan(&seq); err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO session_messages
+				(user_id, agent_id, session_key, seq, role, content, content_parts, tool_calls, tool_call_id, name, metadata, thinking, raw_assistant, origin, created_at, chatter_user_id, turn_status)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'running')`,
+			userID, agentID, sessionKey, seq, msg.Role, msg.Content, string(contentParts), string(toolCalls),
+			msg.ToolCallID, msg.Name, string(metadata), msg.Thinking, rawAssistant, msg.Origin, ts, chatterID); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return seq, nil
+}
+
 // AppendSessionEvent 持久化一个流式事件增量并返回分配的 seq。
 // seq 按 (user, agent, session) 分配——与 session_messages 相同模式——
 // 并在事务内原子性地分配，以便并发追加者（例如扇出 + 重放）不会在主键上冲突。

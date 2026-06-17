@@ -113,6 +113,10 @@ type Store interface {
 	// 按 seq 升序返回一个会话的所有行——这是完整的历史记录，
 	// 不受压缩影响。DeleteSession 级联清理这些记录。
 	AppendSessionMessage(ctx context.Context, userID, agentID, sessionKey string, msg SessionMessage) error
+	// AppendTurnAnchor 写入一条 turn 起点的用户消息(turn_status='running')
+	// 并返回分配的 seq。仅由 turn 起点调用——普通 AppendSessionMessage 的
+	// turn_status 默认 ''(非锚点)。seq 在事务内分配,模式同 AppendSessionEvent。
+	AppendTurnAnchor(ctx context.Context, userID, agentID, sessionKey string, msg SessionMessage) (int64, error)
 	ListSessionMessages(ctx context.Context, userID, agentID, sessionKey string) ([]SessionMessage, error)
 	// CountChatterUserMessages 返回该聊天者在 agent 下累计的
 	// role='user' 行数——跨越所有会话、所有频道。被 autoPersist 门控用作
