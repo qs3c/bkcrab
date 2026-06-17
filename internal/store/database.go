@@ -2257,8 +2257,8 @@ func (d *DBStore) AppendSessionMessage(ctx context.Context, userID, agentID, ses
 // AppendTurnAnchor 见接口文档。仿 AppendSessionEvent 的事务内分配 seq 模式,
 // 但写的是 session_messages 全列 + turn_status='running'。
 func (d *DBStore) AppendTurnAnchor(ctx context.Context, userID, agentID, sessionKey string, msg SessionMessage) (int64, error) {
-	if userID == "" {
-		return 0, errors.New("store: AppendTurnAnchor requires user_id")
+	if userID == "" || agentID == "" || sessionKey == "" {
+		return 0, errors.New("store: AppendTurnAnchor requires user_id, agent_id, session_key")
 	}
 	contentParts, _ := json.Marshal(msg.ContentParts)
 	toolCalls, _ := json.Marshal(msg.ToolCalls)
