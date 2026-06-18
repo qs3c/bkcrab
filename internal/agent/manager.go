@@ -210,6 +210,7 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		ag.ReloadWorkspaceFiles()
 	}
 	if m.opts.dataStore != nil {
+		ag.registry.SetContextArchiveStore(m.opts.dataStore, rc.ID)
 		// Cron 工具需要关系存储来持久保存计划
 		// 工作；关闭还会从注册表中读取频道/聊天ID
 		// 在执行时（bindSession 每回合都会标记它们），因此

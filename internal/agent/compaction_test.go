@@ -49,7 +49,7 @@ func TestCompactionDropsGoalContextFromSummary(t *testing.T) {
 	}
 
 	f := &fakeSummarizer{}
-	out, err := compressOlderMessages(msgs, f, "fake-model")
+	out, err := compressOlderMessages(msgs, CompactOptions{Provider: f, Model: "fake-model"})
 	if err != nil {
 		t.Fatalf("compress: %v", err)
 	}
@@ -83,12 +83,46 @@ func TestCompactionPreservesContentWhenShortCircuits(t *testing.T) {
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello"},
 	}
-	out, err := compressOlderMessages(in, nil, "")
+	out, err := compressOlderMessages(in, CompactOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(out) != 2 {
 		t.Errorf("short input should pass through; got %d messages", len(out))
+	}
+}
+
+func TestManualCompactionRunsBelowProactiveThreshold(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: "user", Content: "old context", Origin: provider.OriginUser},
+		{Role: "assistant", Content: "old reply", Origin: provider.OriginUser},
+		{Role: "user", Content: "middle context", Origin: provider.OriginUser},
+		{Role: "assistant", Content: "middle reply", Origin: provider.OriginUser},
+		{Role: "user", Content: "current task", Origin: provider.OriginUser},
+		{Role: "assistant", Content: "current reply", Origin: provider.OriginUser},
+	}
+	f := &fakeSummarizer{}
+
+	out, err := CompactMessagesWithOptions(msgs, CompactOptions{
+		Mode:              CompactModeManual,
+		Workspace:         t.TempDir(),
+		Provider:          f,
+		Model:             "fake-model",
+		ContextWindow:     1000000,
+		MaxOutputTokens:   1000,
+		Focus:             "focus on filesystem changes",
+		TailTurns:         2,
+		MinTailTurns:      2,
+		SummaryMaxRetries: 3,
+	})
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if !out.Pruned {
+		t.Fatal("manual compaction should force a checkpoint summary")
+	}
+	if !strings.Contains(f.gotSummaryRequest, "Manual compaction focus:\nfocus on filesystem changes") {
+		t.Fatalf("manual focus missing from summary request: %s", f.gotSummaryRequest)
 	}
 }
 
@@ -194,7 +228,7 @@ func TestCompressOlderMessagesNeverStartsTailWithTool(t *testing.T) {
 	}
 
 	f := &fakeSummarizer{}
-	out, err := compressOlderMessages(msgs, f, "fake-model")
+	out, err := compressOlderMessages(msgs, CompactOptions{Provider: f, Model: "fake-model"})
 	if err != nil {
 		t.Fatalf("compress: %v", err)
 	}

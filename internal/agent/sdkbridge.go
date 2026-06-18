@@ -17,12 +17,13 @@ import (
 
 // readOnlyTools 列出可以安全并发执行的工具。
 var readOnlyTools = map[string]bool{
-	"read_file":     true,
-	"list_dir":      true,
-	"web_fetch":     true,
-	"web_search":    true,
-	"memory_search": true,
-	"load_skill":    true,
+	"read_file":                      true,
+	"list_dir":                       true,
+	"web_fetch":                      true,
+	"web_search":                     true,
+	"memory_search":                  true,
+	"load_skill":                     true,
+	"retrieve_compacted_tool_result": true,
 }
 
 // toolAdapter 将 BkClaw 工具包装为 SDK Tool 接口。

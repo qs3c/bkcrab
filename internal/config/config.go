@@ -12,6 +12,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -317,6 +318,78 @@ type ProviderConfig struct {
 	Models   []ModelEntry `json:"models,omitempty"`
 }
 
+const DefaultContextWindow = 128000
+
+// ResolveContextWindow returns the model context window from provider metadata.
+func ResolveContextWindow(providers map[string]ProviderConfig, model string, maxTokens int) int {
+	model = strings.TrimSpace(model)
+	if model != "" && len(providers) > 0 {
+		if contextWindow, ok := resolvePrefixedModelContextWindow(providers, model); ok {
+			return contextWindow
+		}
+		if contextWindow, ok := resolveAnyProviderModelContextWindow(providers, model); ok {
+			return contextWindow
+		}
+	}
+	return fallbackContextWindow(maxTokens)
+}
+
+func fallbackContextWindow(maxTokens int) int {
+	if maxTokens > DefaultContextWindow {
+		return maxTokens
+	}
+	return DefaultContextWindow
+}
+
+func resolvePrefixedModelContextWindow(providers map[string]ProviderConfig, model string) (int, bool) {
+	for _, providerID := range sortedProviderKeysByLength(providers) {
+		prefix := providerID + "/"
+		if !strings.HasPrefix(model, prefix) {
+			continue
+		}
+		return resolveProviderModelContextWindow(providers[providerID], strings.TrimPrefix(model, prefix))
+	}
+	return 0, false
+}
+
+func resolveAnyProviderModelContextWindow(providers map[string]ProviderConfig, model string) (int, bool) {
+	for _, providerID := range sortedProviderKeys(providers) {
+		if contextWindow, ok := resolveProviderModelContextWindow(providers[providerID], model); ok {
+			return contextWindow, true
+		}
+	}
+	return 0, false
+}
+
+func resolveProviderModelContextWindow(provider ProviderConfig, model string) (int, bool) {
+	for _, entry := range provider.Models {
+		if entry.ContextWindow <= 0 {
+			continue
+		}
+		if entry.ID == model || entry.Name == model {
+			return entry.ContextWindow, true
+		}
+	}
+	return 0, false
+}
+
+func sortedProviderKeys(providers map[string]ProviderConfig) []string {
+	keys := make([]string, 0, len(providers))
+	for key := range providers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedProviderKeysByLength(providers map[string]ProviderConfig) []string {
+	keys := sortedProviderKeys(providers)
+	sort.SliceStable(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+	return keys
+}
+
 // UnmarshalJSON 处理已弃用的 `api` 别名到 `apiType` 的转换。
 func (pc *ProviderConfig) UnmarshalJSON(data []byte) error {
 	type Alias ProviderConfig
@@ -569,6 +642,7 @@ type ResolvedAgent struct {
 	Workspace            string
 	Model                string
 	MaxTokens            int
+	ContextWindow        int
 	Temperature          float64
 	MaxToolIterations    int
 	MaxParallelToolCalls int
@@ -595,6 +669,13 @@ type ResolvedAgent struct {
 	// 每 N 轮触发 AutoPersistMemory（LLM 驱动的蒸馏到
 	// USER.md/MEMORY.md 流程）。
 	AutoPersist *bool
+}
+
+func (rc *ResolvedAgent) RefreshModelContextWindow() {
+	if rc == nil {
+		return
+	}
+	rc.ContextWindow = ResolveContextWindow(rc.Providers, rc.Model, rc.MaxTokens)
 }
 
 type TeamEntry struct {
@@ -638,7 +719,7 @@ func AgentHomeDir(agentID string) (string, error) {
 // AgentWorkspaceDir 返回 agent 的用户可见产物工作目录：
 // ~/.bkclaw/workspaces/<agent_id>/。agents.id 全局唯一，因此不需要
 // 用户命名空间；每会话子目录在写入时由工作区存储添加
-//（参见 workspace.LocalFS）。
+// （参见 workspace.LocalFS）。
 func AgentWorkspaceDir(agentID string) (string, error) {
 	if agentID == "" {
 		return "", errors.New("config.AgentWorkspaceDir: agentID is required")
@@ -818,6 +899,7 @@ func (cfg *Config) MergedAgentConfig(entry AgentEntry) ResolvedAgent {
 		}
 	}
 
+	resolved.RefreshModelContextWindow()
 	return resolved
 }
 

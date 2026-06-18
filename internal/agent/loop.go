@@ -41,6 +41,8 @@ type Agent struct {
 	hooks                *HookRegistry
 	model                string
 	maxTokens            int
+	contextWindow        int
+	providerConfigs      map[string]config.ProviderConfig
 	temperature          float64
 	maxToolIterations    int
 	maxParallelToolCalls int // 0 = unlimited
@@ -186,6 +188,17 @@ func NewAgent(rc config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBu
 	return NewAgentWithSkillsCfg(rc, prov, mb, homeDir, config.SkillsCfg{})
 }
 
+func cloneProviderConfigs(in map[string]config.ProviderConfig) map[string]config.ProviderConfig {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]config.ProviderConfig, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 // NewAgentWithFullCfg 创建一个具有完整配置支持（内存、隐私、技能学习者）的新代理。
 func NewAgentWithFullCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBus, homeDir string, fullCfg *config.Config) *Agent {
 	ag := NewAgentWithSkillsCfg(rc, prov, mb, homeDir, fullCfg.Skills)
@@ -291,6 +304,12 @@ func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *
 	hooks.Register(BeforeToolCall, LoggingHook())
 	hooks.Register(AfterToolCall, LoggingHook())
 
+	providerConfigs := cloneProviderConfigs(rc.Providers)
+	contextWindow := rc.ContextWindow
+	if contextWindow <= 0 {
+		contextWindow = config.ResolveContextWindow(providerConfigs, rc.Model, rc.MaxTokens)
+	}
+
 	eng := newSDKEngine(rc.ID)
 
 	ag := &Agent{
@@ -303,6 +322,8 @@ func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *
 		hooks:                hooks,
 		model:                rc.Model,
 		maxTokens:            rc.MaxTokens,
+		contextWindow:        contextWindow,
+		providerConfigs:      providerConfigs,
 		temperature:          rc.Temperature,
 		maxToolIterations:    rc.MaxToolIterations,
 		maxParallelToolCalls: rc.MaxParallelToolCalls,
@@ -732,6 +753,91 @@ func (a *Agent) streamChatToResponse(ctx context.Context, messages []provider.Me
 		Usage:        streamUsage,
 		RawAssistant: rawAssistant,
 	}, nil
+}
+
+func (a *Agent) buildRequestOverhead(systemPrompt string, msg bus.InboundMessage, chatterMem *Memory) []provider.Message {
+	overhead := []provider.Message{{Role: "system", Content: systemPrompt}}
+	if hints := renderChannelHints(msg, a.splitReplies); hints != "" {
+		overhead = append(overhead, provider.Message{Role: "system", Content: hints})
+	}
+	if senderMsg := renderSender(msg); senderMsg != "" {
+		overhead = append(overhead, provider.Message{Role: "system", Content: senderMsg})
+	}
+	if paramsMsg := renderClientParams(msg.Params); paramsMsg != "" {
+		overhead = append(overhead, provider.Message{Role: "system", Content: paramsMsg})
+	}
+
+	var userMD, memoryMD string
+	if chatterMem != nil {
+		userMD = chatterMem.LoadUserFile()
+		memoryMD = chatterMem.LoadMemory()
+	}
+	if reminder := renderChatbotPersistenceReminder(a.promptMode, a.displayName, userMD, memoryMD); reminder != "" {
+		overhead = append(overhead, provider.Message{Role: "system", Content: reminder})
+	}
+	return overhead
+}
+
+func (a *Agent) compactionOptions(mode CompactMode, overhead []provider.Message, toolDefs []provider.Tool, sessionKey string) CompactOptions {
+	return CompactOptions{
+		Mode:              mode,
+		Workspace:         a.homePath,
+		Provider:          a.provider,
+		Model:             a.model,
+		ContextWindow:     a.contextWindow,
+		MaxOutputTokens:   a.maxTokens,
+		OverheadMessages:  overhead,
+		ToolDefs:          toolDefs,
+		TailTurns:         DefaultTailTurns,
+		MinTailTurns:      MinimumTailTurns,
+		SummaryMaxRetries: DefaultSummaryMaxRetries,
+		ArchiveStore:      a.dataStore,
+		ArchiveUserID:     a.ownerUserID,
+		ArchiveAgentID:    a.name,
+		ArchiveSessionKey: sessionKey,
+	}
+}
+
+func (a *Agent) emergencyCompactRequestMessages(sess *session.Session, overhead []provider.Message, toolDefs []provider.Tool) ([]provider.Message, bool) {
+	result, err := CompactMessagesWithOptions(sess.GetMessages(), a.compactionOptions(CompactModeEmergency, overhead, toolDefs, sess.SessionKey()))
+	if err != nil {
+		slog.Warn("emergency compaction error", "agent", a.name, "error", err)
+		return nil, false
+	}
+	if result == nil || !result.Pruned {
+		slog.Warn("emergency compaction skipped", "agent", a.name)
+		return nil, false
+	}
+
+	sess.ReplaceMessages(result.Messages)
+	slog.Warn("context limit error triggered emergency compaction retry",
+		"agent", a.name,
+		"message_count", len(result.Messages),
+	)
+	return compactionRequestMessages(result.Messages, overhead), true
+}
+
+func (a *Agent) callLLMWithEmergencyRetry(
+	sess *session.Session,
+	overhead []provider.Message,
+	toolDefs []provider.Tool,
+	messages []provider.Message,
+	callTools []provider.Tool,
+	alreadyRetried bool,
+	call func([]provider.Message, []provider.Tool) (*provider.Response, error),
+) (*provider.Response, []provider.Message, bool, error) {
+	resp, err := call(messages, callTools)
+	if err == nil || alreadyRetried || !isContextLimitError(err) {
+		return resp, messages, false, err
+	}
+
+	rebuilt, ok := a.emergencyCompactRequestMessages(sess, overhead, toolDefs)
+	if !ok {
+		return resp, messages, false, err
+	}
+
+	resp, err = call(rebuilt, callTools)
+	return resp, rebuilt, true, err
 }
 
 // HookRegistry 返回代理的钩子注册表以进行外部钩子注册。
@@ -1795,6 +1901,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 标识符）；目标工具需要持久的 session.Session.SessionKey
 	// 寻址 agent_goals 中的行。
 	a.registry.SetGoalSessionKey(sess.SessionKey())
+	a.registry.SetContextArchiveSessionKey(sess.SessionKey())
 	// 每用户文件写入（USER.md / MEMORY.md）需要登陆
 	// 每回合喋喋不休的行，而不是 UserSpace 所有者 — 请参阅
 	// 路由规则的Registry.systemFileUserID。
@@ -1847,8 +1954,10 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	anchor := a.beginTurnAnchor(sess, userMsg)
 
 	// 上下文压缩：检查会话消息是否太大
+	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
+	overheadMessages := a.buildRequestOverhead(systemPrompt, msg, chatterMem)
 	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model)
+	compactResult, err := CompactMessagesWithOptions(sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs, sess.SessionKey()))
 	if err != nil {
 		slog.Warn("compaction error", "agent", a.name, "error", err)
 	}
@@ -1859,28 +1968,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		slog.Info("context compacted", "agent", a.name, "log_file", compactResult.LogFile)
 	}
 
-	messages := make([]provider.Message, 0, len(sessionMsgs)+4)
-	messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
-	if hints := renderChannelHints(msg, a.splitReplies); hints != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: hints})
-	}
-	if senderMsg := renderSender(msg); senderMsg != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: senderMsg})
-	}
-	if paramsMsg := renderClientParams(msg.Params); paramsMsg != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: paramsMsg})
-	}
-	// 持久性提醒——仅限聊天机器人，位于
-	// 会话历史记录，因此近期权重超过模型的训练
-	// “我没有跨会话内存”之前。看
-	// renderChatbotPersistenceReminder 为什么这还不够
-	// 仅在主系统提示符中。
-	if reminder := renderChatbotPersistenceReminder(a.promptMode, a.displayName, chatterMem.LoadUserFile(), chatterMem.LoadMemory()); reminder != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: reminder})
-	}
-	messages = append(messages, sessionMsgs...)
-
-	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
+	messages := compactionRequestMessages(sessionMsgs, overheadMessages)
 
 	// 循环检测：跟踪连续的相同工具调用
 	type toolCallSig struct {
@@ -1899,6 +1987,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 直接进行，而不是花费更多的时间去追逐无效的 URL。
 	allFailedRounds := 0
 	const failedRoundsLimit = 3
+	emergencyRetried := false
 
 	// replyParts 累积每个非空助理文本段
 	// 跨迭代发出（工具调用之前的前导行+
@@ -1922,12 +2011,6 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		hcBefore := &HookContext{AgentName: a.name, Point: BeforeModelCall, Messages: messages, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID}
 		a.hooks.Run(ctx, hcBefore)
 
-		// PII 清理：在发送给 LLM 之前编辑敏感数据
-		llmMessages := messages
-		if a.piiScrubEnabled {
-			llmMessages = privacy.ScrubMessages(messages)
-		}
-
 		if a.provider == nil {
 			slog.Error("agent has no provider configured", "agent", a.name, "model", a.model)
 			noProviderMsg := "Agent is not configured with a usable LLM provider. Check that cfg.Providers contains the prefix referenced by model `" + a.model + "`."
@@ -1941,11 +2024,12 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		// 请求之上的系统消息做出约束
 		// 明确，因此模型不会抱歉地悬而未决。
 		callTools := toolDefs
+		var requestAppend []provider.Message
 		if allFailedRounds >= failedRoundsLimit {
 			slog.Warn("disabling tools after consecutive failed rounds",
 				"agent", a.name, "failed_rounds", allFailedRounds)
 			callTools = nil
-			llmMessages = append(llmMessages, provider.Message{
+			requestAppend = append(requestAppend, provider.Message{
 				Role: "system",
 				Content: fmt.Sprintf(
 					"The last %d rounds of tool calls all failed (HTTP errors or empty results). Stop calling tools and answer the user directly with what you know — explain that authoritative sources weren't reachable and provide your best-effort response based on training knowledge, clearly marked as unverified.",
@@ -1953,8 +2037,22 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				),
 			})
 		}
-		dumpLLMRequest(a.name, a.model, llmMessages, callTools)
-		resp, err := a.streamChatToResponse(ctx, llmMessages, callTools)
+		resp, updatedMessages, retried, err := a.callLLMWithEmergencyRetry(sess, overheadMessages, toolDefs, messages, callTools, emergencyRetried, func(request []provider.Message, tools []provider.Tool) (*provider.Response, error) {
+			// PII 清理：在发送给 LLM 之前编辑敏感数据
+			llmMessages := request
+			if a.piiScrubEnabled {
+				llmMessages = privacy.ScrubMessages(request)
+			}
+			if len(requestAppend) > 0 {
+				llmMessages = append(llmMessages, requestAppend...)
+			}
+			dumpLLMRequest(a.name, a.model, llmMessages, tools)
+			return a.streamChatToResponse(ctx, llmMessages, tools)
+		})
+		if retried {
+			emergencyRetried = true
+			messages = updatedMessages
+		}
 
 		// 挂钩：AfterModelCall
 		hcAfter := &HookContext{AgentName: a.name, Point: AfterModelCall, Messages: messages, Response: resp, Error: err, StartTime: hcBefore.StartTime, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID, GoalSessionKey: a.registry.GoalSessionKey()}
@@ -2535,6 +2633,8 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 // 用于最终响应的 StreamReader。工具调用迭代使用非流式聊天；
 // 最终文本响应使用 ChatStream 进行真正的 SSE 流式传输。
 func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage) *provider.StreamReader {
+	emergencyRetried := false
+
 	// 重用 HandleMessage 中的设置逻辑。空回复是“已处理
 	// 但沉默”——参见 HandleMessage 双胞胎。仍然发出 Done
 	// 块，以便等待流的调用者不会挂起。
@@ -2563,6 +2663,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	a.bindSession(ctx, msg.Channel, msg.ChatID, msg.ProjectID)
 	a.registry.SetCallerIsAdmin(a.isAdminChatter(msg))
 	a.registry.SetGoalSessionKey(sess.SessionKey())
+	a.registry.SetContextArchiveSessionKey(sess.SessionKey())
 	// 每用户文件写入（USER.md / MEMORY.md）需要登陆
 	// 每回合喋喋不休的行，而不是 UserSpace 所有者 — 请参阅
 	// 路由规则的Registry.systemFileUserID。
@@ -2590,8 +2691,10 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	userMsg := buildUserMessage(msg)
 	anchor := a.beginTurnAnchor(sess, userMsg)
 
+	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
+	overheadMessages := a.buildRequestOverhead(systemPrompt, msg, chatterMem)
 	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model)
+	compactResult, err := CompactMessagesWithOptions(sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs, sess.SessionKey()))
 	if err != nil {
 		slog.Warn("compaction error", "agent", a.name, "error", err)
 	}
@@ -2600,23 +2703,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		sessionMsgs = compactResult.Messages
 	}
 
-	messages := make([]provider.Message, 0, len(sessionMsgs)+4)
-	messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
-	if hints := renderChannelHints(msg, a.splitReplies); hints != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: hints})
-	}
-	if senderMsg := renderSender(msg); senderMsg != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: senderMsg})
-	}
-	if paramsMsg := renderClientParams(msg.Params); paramsMsg != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: paramsMsg})
-	}
-	if reminder := renderChatbotPersistenceReminder(a.promptMode, a.displayName, chatterMem.LoadUserFile(), chatterMem.LoadMemory()); reminder != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: reminder})
-	}
-	messages = append(messages, sessionMsgs...)
-
-	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
+	messages := compactionRequestMessages(sessionMsgs, overheadMessages)
 
 	type toolCallSig struct {
 		name string
@@ -2631,8 +2718,14 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		hcBefore := &HookContext{AgentName: a.name, Point: BeforeModelCall, Messages: messages, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID}
 		a.hooks.Run(ctx, hcBefore)
 
-		dumpLLMRequest(a.name, a.model, messages, toolDefs)
-		resp, err := a.provider.Chat(ctx, messages, toolDefs, a.model, a.maxTokens, a.temperature)
+		resp, updatedMessages, retried, err := a.callLLMWithEmergencyRetry(sess, overheadMessages, toolDefs, messages, toolDefs, emergencyRetried, func(request []provider.Message, tools []provider.Tool) (*provider.Response, error) {
+			dumpLLMRequest(a.name, a.model, request, tools)
+			return a.provider.Chat(ctx, request, tools, a.model, a.maxTokens, a.temperature)
+		})
+		if retried {
+			emergencyRetried = true
+			messages = updatedMessages
+		}
 
 		hcAfter := &HookContext{AgentName: a.name, Point: AfterModelCall, Messages: messages, Response: resp, Error: err, StartTime: hcBefore.StartTime, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID, GoalSessionKey: a.registry.GoalSessionKey()}
 		a.hooks.Run(ctx, hcAfter)
@@ -3030,6 +3123,7 @@ var chatbotBuiltinAllowlist = []string{
 	"tts",
 	"write_file",
 	"edit_file",
+	"retrieve_compacted_tool_result",
 	// set_timezone 保持“他们的当地时间”适合聊天（问候语，
 	// "晚安" timing) — chatbots need it as much as full agents do.
 	"set_timezone",
@@ -3074,6 +3168,11 @@ func (a *Agent) chatterLocation(chatterUID string) *time.Location {
 func (a *Agent) UpdateConfig(rc config.ResolvedAgent) {
 	a.model = rc.Model
 	a.maxTokens = rc.MaxTokens
+	a.providerConfigs = cloneProviderConfigs(rc.Providers)
+	a.contextWindow = rc.ContextWindow
+	if a.contextWindow <= 0 {
+		a.contextWindow = config.ResolveContextWindow(a.providerConfigs, a.model, a.maxTokens)
+	}
 	a.temperature = rc.Temperature
 	a.maxToolIterations = rc.MaxToolIterations
 	a.maxParallelToolCalls = rc.MaxParallelToolCalls

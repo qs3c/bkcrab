@@ -6,25 +6,71 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/qs3c/bkclaw/internal/provider"
 )
 
 const (
-	// DefaultTokenThreshold是压缩触发的默认阈值（ 80K令牌）。
+	// DefaultTokenThreshold is kept for compatibility with older callers/tests.
 	DefaultTokenThreshold = 80000
-	// PruneTurnAge是保持不变的最近匝数；较旧的邮件将被修剪。
-	PruneTurnAge = 20
-	// truncatedPlaceholder替换已修剪的工具结果。
-	truncatedPlaceholder = "[Result truncated - see memory logs]"
+	DefaultContextWindow  = 128000
 )
 
-// EstimateTokens提供粗略的令牌估计： chars/4。
+type CompactMode string
+
+const (
+	CompactModeProactive CompactMode = "proactive"
+	CompactModeManual    CompactMode = "manual"
+	CompactModeEmergency CompactMode = "emergency"
+
+	DefaultCompactionTriggerPercent = 75
+	DefaultCompactionTargetPercent  = 55
+	DefaultTailTurns                = 4
+	MinimumTailTurns                = 2
+	DefaultSummaryMaxRetries        = 3
+	fallbackSummaryMaxRunes         = 12000
+	fallbackSnippetMaxRunes         = 220
+)
+
+const (
+	// PruneTurnAge is the number of most-recent messages preserved verbatim by
+	// the legacy compaction path. Later tasks replace this with turn-aware tail
+	// selection, so Task 2 intentionally keeps the existing behavior.
+	PruneTurnAge = 20
+)
+
+type CompactOptions struct {
+	Mode              CompactMode
+	Workspace         string
+	Provider          provider.Provider
+	Model             string
+	ContextWindow     int
+	MaxOutputTokens   int
+	TriggerPercent    int
+	TargetPercent     int
+	TailTurns         int
+	MinTailTurns      int
+	Focus             string
+	OverheadMessages  []provider.Message
+	ToolDefs          []provider.Tool
+	SummaryMaxRetries int
+	ArchiveStore      contextArchiveStore
+	ArchiveUserID     string
+	ArchiveAgentID    string
+	ArchiveSessionKey string
+}
+
+// EstimateTokens provides a rough token estimate: chars/4.
 func EstimateTokens(messages []provider.Message) int {
 	total := 0
 	for _, m := range messages {
-		total += len(m.Content) / 4
+		content := m.Content
+		if content == "" && len(m.ContentParts) > 0 {
+			content = m.TextContent()
+		}
+		total += len(content) / 4
 		for _, tc := range m.ToolCalls {
 			total += len(tc.Function.Arguments) / 4
 			total += len(tc.Function.Name) / 4
@@ -33,57 +79,273 @@ func EstimateTokens(messages []provider.Message) int {
 	return total
 }
 
-// CompactResult保存压缩操作的结果。
+func EstimateRequestTokens(messages []provider.Message, tools []provider.Tool) int {
+	total := EstimateTokens(messages)
+	for _, tool := range tools {
+		if b, err := json.Marshal(tool); err == nil {
+			total += len(b) / 4
+			continue
+		}
+		total += len(tool.Type) / 4
+		total += len(tool.Function.Name) / 4
+		total += len(tool.Function.Description) / 4
+	}
+	return total
+}
+
+// CompactResult stores the result of a compaction attempt.
 type CompactResult struct {
 	Messages []provider.Message
 	Pruned   bool
 	LogFile  string
 }
 
-// CompactMessages在消息历史记录超过令牌阈值时修剪并可选地压缩该历史记录。
-// 第1步（修剪） ：对于早于PruneTurnAge的消息，剥离工具结果内容。
-// 第2步（压缩） ：如果修剪后仍超过阈值，请总结较旧的消息
-// 使用LLM并将完整历史记录写入日志文件。
+// CompactMessages keeps the original API and delegates to the options-based
+// implementation with proactive defaults.
 func CompactMessages(messages []provider.Message, workspace string, prov provider.Provider, model string) (*CompactResult, error) {
-	tokens := EstimateTokens(messages)
-	if tokens < DefaultTokenThreshold {
-		return &CompactResult{Messages: messages}, nil
+	return CompactMessagesWithOptions(messages, CompactOptions{
+		Mode:              CompactModeProactive,
+		Workspace:         workspace,
+		Provider:          prov,
+		Model:             model,
+		ContextWindow:     DefaultContextWindow,
+		TriggerPercent:    DefaultCompactionTriggerPercent,
+		TargetPercent:     DefaultCompactionTargetPercent,
+		TailTurns:         DefaultTailTurns,
+		MinTailTurns:      MinimumTailTurns,
+		SummaryMaxRetries: DefaultSummaryMaxRetries,
+	})
+}
+
+func CompactMessagesWithOptions(messages []provider.Message, opts CompactOptions) (*CompactResult, error) {
+	opts = normalizeCompactOptions(opts)
+	tokens := EstimateRequestTokens(compactionRequestMessages(messages, opts.OverheadMessages), opts.ToolDefs)
+
+	switch opts.Mode {
+	case CompactModeProactive:
+		if tokens < compactTriggerLimit(opts) {
+			sanitized, changed := sanitizeToolPairsWithChange(messages)
+			return &CompactResult{Messages: sanitized, Pruned: changed}, nil
+		}
+		return compactMessagesTriggered(messages, opts, tokens)
+	case CompactModeManual:
+		return compactMessagesTriggered(messages, opts, tokens)
+	case CompactModeEmergency:
+		return emergencyCompactMessages(messages, opts, tokens), nil
+	default:
+		if tokens < compactTriggerLimit(opts) {
+			sanitized, changed := sanitizeToolPairsWithChange(messages)
+			return &CompactResult{Messages: sanitized, Pruned: changed}, nil
+		}
+		return compactMessagesTriggered(messages, opts, tokens)
+	}
+}
+
+func isContextLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if isRateLimitLikeError(msg) {
+		return false
+	}
+	for _, marker := range []string{
+		"context_length_exceeded",
+		"maximum context length",
+		"prompt too long",
+		"prompt is too long",
+		"too many tokens",
+		"too many tokens in request",
+		"input length exceeds context window",
+		"request too large",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRateLimitLikeError(msg string) bool {
+	for _, marker := range []string{
+		"rate limit",
+		"rate_limit",
+		"tokens per minute",
+		"requests per minute",
+		"quota",
+		"throttle",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeCompactOptions(opts CompactOptions) CompactOptions {
+	switch opts.Mode {
+	case "", CompactModeProactive:
+		opts.Mode = CompactModeProactive
+	case CompactModeManual, CompactModeEmergency:
+	default:
+		opts.Mode = CompactModeProactive
+	}
+	if opts.ContextWindow <= 0 {
+		opts.ContextWindow = DefaultContextWindow
+	}
+	if opts.MaxOutputTokens < 0 {
+		opts.MaxOutputTokens = 0
+	}
+	if opts.TriggerPercent <= 0 {
+		opts.TriggerPercent = DefaultCompactionTriggerPercent
+	}
+	if opts.TriggerPercent > 100 {
+		opts.TriggerPercent = 100
+	}
+	if opts.TargetPercent <= 0 {
+		opts.TargetPercent = DefaultCompactionTargetPercent
+	}
+	if opts.TargetPercent > 100 {
+		opts.TargetPercent = 100
+	}
+	if opts.TailTurns <= 0 {
+		opts.TailTurns = DefaultTailTurns
+	}
+	if opts.MinTailTurns <= 0 {
+		opts.MinTailTurns = MinimumTailTurns
+	}
+	if opts.SummaryMaxRetries <= 0 {
+		opts.SummaryMaxRetries = DefaultSummaryMaxRetries
+	}
+	return opts
+}
+
+func compactTriggerLimit(opts CompactOptions) int {
+	return percentOf(compactInputBudget(opts), opts.TriggerPercent)
+}
+
+func compactTargetLimit(opts CompactOptions) int {
+	return percentOf(compactInputBudget(opts), opts.TargetPercent)
+}
+
+func compactInputBudget(opts CompactOptions) int {
+	budget := opts.ContextWindow - opts.MaxOutputTokens
+	if budget <= 0 {
+		return 1
+	}
+	return budget
+}
+
+func percentOf(n, percent int) int {
+	if n <= 0 || percent <= 0 {
+		return 0
+	}
+	return n * percent / 100
+}
+
+func compactionRequestMessages(messages, overhead []provider.Message) []provider.Message {
+	request := make([]provider.Message, 0, len(overhead)+len(messages))
+	request = append(request, overhead...)
+	request = append(request, messages...)
+	return request
+}
+
+func emergencyCompactMessages(messages []provider.Message, opts CompactOptions, beforeTokens int) *CompactResult {
+	sanitized, _ := sanitizeToolPairsWithChange(messages)
+	if len(sanitized) == 0 {
+		return &CompactResult{Messages: messages, Pruned: false}
+	}
+	if len(sanitized) == 1 {
+		return &CompactResult{Messages: sanitized, Pruned: false}
 	}
 
-	slog.Info("context compaction triggered", "tokens", tokens, "threshold", DefaultTokenThreshold, "message_count", len(messages))
+	cutoff := emergencyCompactionCutoff(sanitized)
+	if cutoff <= 0 {
+		return &CompactResult{Messages: sanitized, Pruned: false}
+	}
 
-	// 在进行任何修改之前，将完整历史记录写入日志文件
-	logFile, err := writeHistoryLog(messages, workspace)
+	dropped := cutoff
+	out := make([]provider.Message, 0, len(sanitized)-cutoff+1)
+	out = append(out, provider.Message{
+		Role: "user",
+		Content: fmt.Sprintf(
+			"[Context compressed without LLM]\n%d older message(s) were dropped after a context-limit error. Estimated request tokens before emergency compression: %d. Continue from the preserved recent conversation below.",
+			dropped,
+			beforeTokens,
+		),
+	})
+	out = append(out, sanitized[cutoff:]...)
+	out, _ = sanitizeToolPairsWithChange(out)
+
+	return &CompactResult{
+		Messages: out,
+		Pruned:   true,
+	}
+}
+
+func emergencyCompactionCutoff(messages []provider.Message) int {
+	cutoff := len(messages) / 2
+	for i := cutoff; i < len(messages); i++ {
+		if messages[i].Role == "user" && messages[i].Origin == provider.OriginUser {
+			return safeCompactionCutoff(messages, i)
+		}
+	}
+	return safeCompactionCutoff(messages, cutoff)
+}
+
+func compactMessagesTriggered(messages []provider.Message, opts CompactOptions, tokens int) (*CompactResult, error) {
+	slog.Info(
+		"context compaction triggered",
+		"tokens", tokens,
+		"threshold", compactTriggerLimit(opts),
+		"message_count", len(messages),
+		"mode", opts.Mode,
+	)
+
+	logFile, err := writeHistoryLog(messages, opts.Workspace)
 	if err != nil {
 		slog.Warn("failed to write history log", "error", err)
 	}
 
-	// 第1步：修剪-从旧消息中删除工具结果
-	pruned := pruneOldToolResults(messages)
-	prunedTokens := EstimateTokens(pruned)
+	sanitized, sanitizedChanged := sanitizeToolPairsWithChange(messages)
+	pruned, prunedChanged := pruneOldToolResultsWithChange(sanitized, opts)
+	changed := sanitizedChanged || prunedChanged
+	prunedTokens := EstimateRequestTokens(compactionRequestMessages(pruned, opts.OverheadMessages), opts.ToolDefs)
 
 	slog.Info("after pruning", "tokens_before", tokens, "tokens_after", prunedTokens)
 
-	if prunedTokens < DefaultTokenThreshold {
+	if opts.Mode != CompactModeManual && prunedTokens < compactTargetLimit(opts) {
 		return &CompactResult{
 			Messages: pruned,
-			Pruned:   true,
+			Pruned:   changed,
 			LogFile:  logFile,
 		}, nil
 	}
 
-	// 第2步：压缩-总结较早的消息
-	compressed, err := compressOlderMessages(pruned, prov, model)
+	if compactionTailStart(pruned, opts) <= 0 {
+		return &CompactResult{
+			Messages: pruned,
+			Pruned:   changed,
+			LogFile:  logFile,
+		}, nil
+	}
+
+	compressed, err := compressOlderMessages(pruned, opts)
 	if err != nil {
 		slog.Warn("compression failed, using pruned messages", "error", err)
 		return &CompactResult{
 			Messages: pruned,
-			Pruned:   true,
+			Pruned:   changed,
 			LogFile:  logFile,
 		}, nil
 	}
+	compressed, _ = sanitizeToolPairsWithChange(compressed)
 
-	slog.Info("after compression", "tokens_before", prunedTokens, "tokens_after", EstimateTokens(compressed))
+	slog.Info(
+		"after compression",
+		"tokens_before", prunedTokens,
+		"tokens_after", EstimateRequestTokens(compactionRequestMessages(compressed, opts.OverheadMessages), opts.ToolDefs),
+	)
 
 	return &CompactResult{
 		Messages: compressed,
@@ -92,24 +354,9 @@ func CompactMessages(messages []provider.Message, workspace string, prov provide
 	}, nil
 }
 
-// safeCompactionCutoff将截止向前推进超过任何领先的工具
-// 消息，因此最近的尾部永远不会以“工具”角色开始。如果我们
-// 已将表单[summary_user, tool,...]的列表发送到
-// 提供程序， OpenAI兼容的API将拒绝：
-//
-// "角色为'tool'的消息必须是对前一个
-// 带有“TOOL_CALLS”的消息"
-//
-// —之前“工具”正在应答的assistant.tool_calls得到了
-// 吞咽到摘要本身的截止点。人择
-// 不会有400个，但合同是一样的：一个工具回复
-// 没有其父调用是语义垃圾。
-//
-// 我们只需要跳过领先的工具消息。如果尾巴开始
-// 使用助手（ tool_calls ） ，没关系—它的工具会回复（如果有的话）
-// 在尾巴后面跟着它。
-//
-// 纯函数；无分配；安全，具有任何值截止。
+// safeCompactionCutoff advances a cutoff beyond any leading tool messages so
+// the preserved tail never starts with a tool result without its parent
+// assistant.tool_calls message.
 func safeCompactionCutoff(messages []provider.Message, cutoff int) int {
 	if cutoff < 0 {
 		cutoff = 0
@@ -120,48 +367,81 @@ func safeCompactionCutoff(messages []provider.Message, cutoff int) int {
 	return cutoff
 }
 
-// pruneOldToolResults从早于PruneTurnAge的消息中剥离工具结果内容。
-func pruneOldToolResults(messages []provider.Message) []provider.Message {
-	if len(messages) <= PruneTurnAge {
-		return messages
+func compactionTailStart(messages []provider.Message, opts CompactOptions) int {
+	opts = normalizeCompactOptions(opts)
+	tailTurns := opts.TailTurns
+	minTailTurns := opts.MinTailTurns
+	if minTailTurns < MinimumTailTurns {
+		minTailTurns = MinimumTailTurns
+	}
+	if tailTurns < minTailTurns {
+		tailTurns = minTailTurns
 	}
 
+	seenUserTurns := 0
+	earliestUserTurn := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" || messages[i].Origin != provider.OriginUser {
+			continue
+		}
+		seenUserTurns++
+		earliestUserTurn = i
+		if seenUserTurns == tailTurns {
+			return safeCompactionCutoff(messages, i)
+		}
+	}
+
+	if earliestUserTurn >= 0 {
+		return safeCompactionCutoff(messages, earliestUserTurn)
+	}
+	return safeCompactionCutoff(messages, len(messages)-PruneTurnAge)
+}
+
+// pruneOldToolResults strips large tool result bodies from older messages.
+func pruneOldToolResults(messages []provider.Message) []provider.Message {
+	result, _ := pruneOldToolResultsWithChange(messages)
+	return result
+}
+
+func pruneOldToolResultsWithChange(messages []provider.Message, optList ...CompactOptions) ([]provider.Message, bool) {
+	if len(messages) <= PruneTurnAge {
+		return messages, false
+	}
+	var opts CompactOptions
+	if len(optList) > 0 {
+		opts = optList[0]
+	}
+
+	infoByIndex := buildToolResultInfoByIndex(messages)
 	cutoff := len(messages) - PruneTurnAge
 	result := make([]provider.Message, len(messages))
 	copy(result, messages)
 
+	changed := false
 	for i := 0; i < cutoff; i++ {
 		if result[i].Role == "tool" && len(result[i].Content) > 200 {
-			result[i] = provider.Message{
-				Role:       "tool",
-				Content:    truncatedPlaceholder,
-				ToolCallID: result[i].ToolCallID,
-				Name:       result[i].Name,
+			info := infoByIndex[i]
+			archiveID, err := archiveToolResult(opts, result[i], info)
+			if err != nil {
+				slog.Warn("failed to archive compacted tool result", "error", err)
 			}
+			result[i] = summarizeToolResultWithInfo(result[i], info, archiveID)
+			changed = true
 		}
 	}
 
-	return result
+	return result, changed
 }
 
-// compressOlderMessages要求LLM将旧消息汇总为压缩摘要。
-func compressOlderMessages(messages []provider.Message, prov provider.Provider, model string) ([]provider.Message, error) {
-	if len(messages) <= PruneTurnAge {
+// compressOlderMessages asks the LLM to summarize older messages.
+func compressOlderMessages(messages []provider.Message, opts CompactOptions) ([]provider.Message, error) {
+	opts = normalizeCompactOptions(opts)
+	cutoff := compactionTailStart(messages, opts)
+	if cutoff <= 0 {
 		return messages, nil
 	}
-
-	cutoff := safeCompactionCutoff(messages, len(messages)-PruneTurnAge)
 	olderMessages := messages[:cutoff]
 
-	// 构建用于总结的旧消息的文本表示形式。
-	// 跳过运行时注入的消息（当前仅GOAL_CONTEXT
-	// 延续） ：其内容是合成审计脚手架，
-	// 不值得总结的对话—最新的一个是
-	// 已经逐字保留在下面最近的尾巴中，所以
-	// 模型永远不会丢失当前的审计上下文。这是
-	// 固定头保护设计§ 5.3 (b)要求：旧
-	// goal_context消息完全从
-	// 压缩输出;实时一个骑通过不变。
 	var text string
 	for _, m := range olderMessages {
 		if m.Origin != provider.OriginUser {
@@ -170,6 +450,17 @@ func compressOlderMessages(messages []provider.Message, prov provider.Provider, 
 		text += fmt.Sprintf("[%s] %s\n", m.Role, m.Content)
 	}
 
+	var userPrompt strings.Builder
+	if opts.Mode == CompactModeManual {
+		if focus := strings.TrimSpace(opts.Focus); focus != "" {
+			userPrompt.WriteString("Manual compaction focus:\n")
+			userPrompt.WriteString(focus)
+			userPrompt.WriteString("\n\n")
+		}
+	}
+	userPrompt.WriteString("Summarize this conversation:\n\n")
+	userPrompt.WriteString(text)
+
 	summaryPrompt := []provider.Message{
 		{
 			Role:    "system",
@@ -177,27 +468,93 @@ func compressOlderMessages(messages []provider.Message, prov provider.Provider, 
 		},
 		{
 			Role:    "user",
-			Content: fmt.Sprintf("Summarize this conversation:\n\n%s", text),
+			Content: userPrompt.String(),
 		},
 	}
 
-	resp, err := prov.Chat(nil, summaryPrompt, nil, model, 2048, 0.3)
+	summary, err := summarizeWithRetries(opts, summaryPrompt)
 	if err != nil {
-		return nil, fmt.Errorf("summarize conversation: %w", err)
+		slog.Warn("summary failed after retries, using deterministic fallback", "error", err)
+		summary = deterministicSummaryFallback(olderMessages)
 	}
 
-	// 生成新消息列表：摘要+最近的消息
-	compressed := make([]provider.Message, 0, PruneTurnAge+1)
+	compressed := make([]provider.Message, 0, len(messages)-cutoff+1)
 	compressed = append(compressed, provider.Message{
 		Role:    "user",
-		Content: fmt.Sprintf("[Conversation Summary]\n%s", resp.Content),
+		Content: fmt.Sprintf("[Conversation Summary]\n%s", summary),
 	})
 	compressed = append(compressed, messages[cutoff:]...)
 
 	return compressed, nil
 }
 
-// writeHistoryLog将完整的消息历史记录写入JSONL日志文件。
+func summarizeWithRetries(opts CompactOptions, prompt []provider.Message) (string, error) {
+	opts = normalizeCompactOptions(opts)
+	if opts.Provider == nil {
+		return "", fmt.Errorf("summarize conversation: provider is nil")
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < opts.SummaryMaxRetries; attempt++ {
+		resp, err := opts.Provider.Chat(nil, prompt, nil, opts.Model, 2048, 0.3)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp == nil {
+			lastErr = fmt.Errorf("summary response is nil")
+			continue
+		}
+		if strings.TrimSpace(resp.Content) == "" {
+			lastErr = fmt.Errorf("summary response content is empty")
+			continue
+		}
+		return resp.Content, nil
+	}
+
+	return "", fmt.Errorf("summarize conversation failed after %d attempts: %w", opts.SummaryMaxRetries, lastErr)
+}
+
+func deterministicSummaryFallback(messages []provider.Message) string {
+	const marker = "deterministic fallback: LLM summary failed after retries. Older messages were compacted without an LLM."
+
+	lines := []string{marker}
+	totalRunes := runeCount(marker)
+	for _, m := range messages {
+		if m.Origin != provider.OriginUser {
+			continue
+		}
+		text := strings.TrimSpace(m.TextContent())
+		if text == "" {
+			continue
+		}
+		line := fmt.Sprintf("[%s] %s", m.Role, snippetForFallback(text))
+		nextRunes := totalRunes + 1 + runeCount(line)
+		if nextRunes > fallbackSummaryMaxRunes {
+			lines = append(lines, "[fallback summary truncated]")
+			break
+		}
+		lines = append(lines, line)
+		totalRunes = nextRunes
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func snippetForFallback(text string) string {
+	normalized := strings.Join(strings.Fields(text), " ")
+	runes := []rune(normalized)
+	if len(runes) <= fallbackSnippetMaxRunes {
+		return normalized
+	}
+	return string(runes[:fallbackSnippetMaxRunes]) + "..."
+}
+
+func runeCount(s string) int {
+	return len([]rune(s))
+}
+
+// writeHistoryLog writes full message history to a JSONL log.
 func writeHistoryLog(messages []provider.Message, workspace string) (string, error) {
 	logDir := filepath.Join(workspace, "memory", "logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
