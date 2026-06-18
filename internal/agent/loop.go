@@ -1844,12 +1844,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// `[SenderName]:` 内容前缀策略存在于此（仅限组；
 	// DM 保持裸露以避免 SOUL.md 语言偏差回归）。
 	userMsg := buildUserMessage(msg)
-	var anchor *turnAnchor
-	if seq, err := sess.AppendTurnAnchor(userMsg); err != nil {
-		slog.Warn("turn anchor append failed", "agent", a.name, "error", err)
-	} else if seq >= 0 {
-		anchor = &turnAnchor{sessionKey: sess.SessionKey(), seq: seq}
-	}
+	anchor := a.beginTurnAnchor(sess, userMsg)
 
 	// 上下文压缩：检查会话消息是否太大
 	sessionMsgs := sess.GetMessages()
@@ -2406,6 +2401,21 @@ type turnAnchor struct {
 	seq        int64
 }
 
+// beginTurnAnchor 在 turn 起点把用户消息作为锚点写入(turn_status='running')并返回
+// *turnAnchor。失败(已记日志)或无持久化 store(seq<0)时返回 nil——该 turn 不计入
+// 提取,但消息本身已由 AppendTurnAnchor 进入工作集。两个 ReAct 入口共用,避免重复。
+func (a *Agent) beginTurnAnchor(sess *session.Session, userMsg provider.Message) *turnAnchor {
+	seq, err := sess.AppendTurnAnchor(userMsg)
+	if err != nil {
+		slog.Warn("turn anchor append failed", "agent", a.name, "error", err)
+		return nil
+	}
+	if seq < 0 {
+		return nil
+	}
+	return &turnAnchor{sessionKey: sess.SessionKey(), seq: seq}
+}
+
 // 流式（HandleMessageStream）和非流式（HandleMessage）两者
 // 开火这个。流路径从后台内部调用它
 // 在最后一个助手之后，耗尽 SSE 流的 goroutine
@@ -2495,19 +2505,32 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 	}
 	slog.Info("auto-persist firing", "agent", a.name, "chatter", chatterUID, "model", model, "turns", len(refs), "extraction_id", extractionID)
 	go func() {
-		archived, err := a.dataStore.LoadTurnMessages(ctx, a.ownerUserID, a.name, refs)
+		// 提取脱离本回合请求 ctx 的取消:回合/流结束会取消 ctx,而批次已被
+		// ClaimCadenceBatch 持久认领;若提取与补偿重置都因 ctx 取消而失败,这批
+		// turn 会永久卡在已认领、再不被提取。WithoutCancel 保留 ctx 上的值(chatter
+		// 等),提取给 5 分钟上限防 LLM 挂死;补偿重置用独立短上下文,这样即使提取
+		// 因超时失败,重置仍能把批次放回待提取池。
+		base := context.WithoutCancel(ctx)
+		extractCtx, cancel := context.WithTimeout(base, 5*time.Minute)
+		defer cancel()
+		resetBatch := func() {
+			rctx, rcancel := context.WithTimeout(base, 30*time.Second)
+			defer rcancel()
+			_ = a.dataStore.ResetExtraction(rctx, extractionID)
+		}
+		archived, err := a.dataStore.LoadTurnMessages(extractCtx, a.ownerUserID, a.name, refs)
 		if err != nil {
 			slog.Warn("auto-persist: load turn messages failed", "agent", a.name, "extraction_id", extractionID, "error", err)
-			_ = a.dataStore.ResetExtraction(ctx, extractionID)
+			resetBatch()
 			return
 		}
 		msgs := make([]provider.Message, 0, len(archived))
 		for _, m := range archived {
 			msgs = append(msgs, provider.Message{Role: m.Role, Content: m.Content, Origin: m.Origin})
 		}
-		if err := AutoPersistMemory(ctx, chatterMem, a.provider, model, msgs); err != nil {
+		if err := AutoPersistMemory(extractCtx, chatterMem, a.provider, model, msgs); err != nil {
 			slog.Warn("auto-persist: extraction failed, resetting batch", "agent", a.name, "extraction_id", extractionID, "error", err)
-			_ = a.dataStore.ResetExtraction(ctx, extractionID)
+			resetBatch()
 		}
 	}()
 }
@@ -2569,12 +2592,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	// 展平 + 发送者元数据。群组消息保留其“[SenderName]：”
 	// 前缀（在 buildUserMessage 中应用）； DM 保持裸露状态。
 	userMsg := buildUserMessage(msg)
-	var anchor *turnAnchor
-	if seq, err := sess.AppendTurnAnchor(userMsg); err != nil {
-		slog.Warn("turn anchor append failed", "agent", a.name, "error", err)
-	} else if seq >= 0 {
-		anchor = &turnAnchor{sessionKey: sess.SessionKey(), seq: seq}
-	}
+	anchor := a.beginTurnAnchor(sess, userMsg)
 
 	sessionMsgs := sess.GetMessages()
 	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model)

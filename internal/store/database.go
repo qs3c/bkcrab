@@ -2276,36 +2276,21 @@ func (d *DBStore) AppendTurnAnchor(ctx context.Context, userID, agentID, session
 	}
 	defer tx.Rollback()
 	var seq int64
-	if d.dialect == "postgres" {
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages
-				WHERE user_id=$1 AND agent_id=$2 AND session_key=$3`,
-			userID, agentID, sessionKey).Scan(&seq); err != nil {
-			return 0, err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO session_messages
-				(user_id, agent_id, session_key, seq, role, content, content_parts, tool_calls, tool_call_id, name, metadata, thinking, raw_assistant, origin, created_at, chatter_user_id, turn_status)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'running')`,
-			userID, agentID, sessionKey, seq, msg.Role, msg.Content, string(contentParts), string(toolCalls),
-			msg.ToolCallID, msg.Name, string(metadata), msg.Thinking, rawAssistant, msg.Origin, ts, chatterID); err != nil {
-			return 0, err
-		}
-	} else {
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages
-				WHERE user_id=? AND agent_id=? AND session_key=?`,
-			userID, agentID, sessionKey).Scan(&seq); err != nil {
-			return 0, err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO session_messages
-				(user_id, agent_id, session_key, seq, role, content, content_parts, tool_calls, tool_call_id, name, metadata, thinking, raw_assistant, origin, created_at, chatter_user_id, turn_status)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'running')`,
-			userID, agentID, sessionKey, seq, msg.Role, msg.Content, string(contentParts), string(toolCalls),
-			msg.ToolCallID, msg.Name, string(metadata), msg.Thinking, rawAssistant, msg.Origin, ts, chatterID); err != nil {
-			return 0, err
-		}
+	if err := tx.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages
+			WHERE user_id=%s AND agent_id=%s AND session_key=%s`, d.ph(1), d.ph(2), d.ph(3)),
+		userID, agentID, sessionKey).Scan(&seq); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`INSERT INTO session_messages
+			(user_id, agent_id, session_key, seq, role, content, content_parts, tool_calls, tool_call_id, name, metadata, thinking, raw_assistant, origin, created_at, chatter_user_id, turn_status)
+		VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'running')`,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8),
+			d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14), d.ph(15), d.ph(16)),
+		userID, agentID, sessionKey, seq, msg.Role, msg.Content, string(contentParts), string(toolCalls),
+		msg.ToolCallID, msg.Name, string(metadata), msg.Thinking, rawAssistant, msg.Origin, ts, chatterID); err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
