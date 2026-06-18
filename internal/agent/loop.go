@@ -778,7 +778,7 @@ func (a *Agent) buildRequestOverhead(systemPrompt string, msg bus.InboundMessage
 	return overhead
 }
 
-func (a *Agent) compactionOptions(mode CompactMode, overhead []provider.Message, toolDefs []provider.Tool) CompactOptions {
+func (a *Agent) compactionOptions(mode CompactMode, overhead []provider.Message, toolDefs []provider.Tool, sessionKey string) CompactOptions {
 	return CompactOptions{
 		Mode:              mode,
 		Workspace:         a.homePath,
@@ -791,11 +791,15 @@ func (a *Agent) compactionOptions(mode CompactMode, overhead []provider.Message,
 		TailTurns:         DefaultTailTurns,
 		MinTailTurns:      MinimumTailTurns,
 		SummaryMaxRetries: DefaultSummaryMaxRetries,
+		ArchiveStore:      a.dataStore,
+		ArchiveUserID:     a.ownerUserID,
+		ArchiveAgentID:    a.name,
+		ArchiveSessionKey: sessionKey,
 	}
 }
 
 func (a *Agent) emergencyCompactRequestMessages(sess *session.Session, overhead []provider.Message, toolDefs []provider.Tool) ([]provider.Message, bool) {
-	result, err := CompactMessagesWithOptions(sess.GetMessages(), a.compactionOptions(CompactModeEmergency, overhead, toolDefs))
+	result, err := CompactMessagesWithOptions(sess.GetMessages(), a.compactionOptions(CompactModeEmergency, overhead, toolDefs, sess.SessionKey()))
 	if err != nil {
 		slog.Warn("emergency compaction error", "agent", a.name, "error", err)
 		return nil, false
@@ -1897,6 +1901,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 标识符）；目标工具需要持久的 session.Session.SessionKey
 	// 寻址 agent_goals 中的行。
 	a.registry.SetGoalSessionKey(sess.SessionKey())
+	a.registry.SetContextArchiveSessionKey(sess.SessionKey())
 	// 每用户文件写入（USER.md / MEMORY.md）需要登陆
 	// 每回合喋喋不休的行，而不是 UserSpace 所有者 — 请参阅
 	// 路由规则的Registry.systemFileUserID。
@@ -1952,7 +1957,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	overheadMessages := a.buildRequestOverhead(systemPrompt, msg, chatterMem)
 	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessagesWithOptions(sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs))
+	compactResult, err := CompactMessagesWithOptions(sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs, sess.SessionKey()))
 	if err != nil {
 		slog.Warn("compaction error", "agent", a.name, "error", err)
 	}
@@ -2618,6 +2623,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	a.bindSession(ctx, msg.Channel, msg.ChatID, msg.ProjectID)
 	a.registry.SetCallerIsAdmin(a.isAdminChatter(msg))
 	a.registry.SetGoalSessionKey(sess.SessionKey())
+	a.registry.SetContextArchiveSessionKey(sess.SessionKey())
 	// 每用户文件写入（USER.md / MEMORY.md）需要登陆
 	// 每回合喋喋不休的行，而不是 UserSpace 所有者 — 请参阅
 	// 路由规则的Registry.systemFileUserID。
@@ -2648,7 +2654,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	overheadMessages := a.buildRequestOverhead(systemPrompt, msg, chatterMem)
 	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessagesWithOptions(sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs))
+	compactResult, err := CompactMessagesWithOptions(sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs, sess.SessionKey()))
 	if err != nil {
 		slog.Warn("compaction error", "agent", a.name, "error", err)
 	}
@@ -3077,6 +3083,7 @@ var chatbotBuiltinAllowlist = []string{
 	"tts",
 	"write_file",
 	"edit_file",
+	"retrieve_compacted_tool_result",
 	// set_timezone 保持“他们的当地时间”适合聊天（问候语，
 	// "晚安" timing) — chatbots need it as much as full agents do.
 	"set_timezone",

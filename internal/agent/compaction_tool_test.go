@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 func TestSanitizeToolPairsDropsOrphanToolResult(t *testing.T) {
@@ -224,6 +226,82 @@ func TestPruneOldToolResultsSummarizesTerminalResultLocally(t *testing.T) {
 	}
 	if got[1].Metadata != nil {
 		t.Fatalf("metadata was not cleared: %+v", got[1].Metadata)
+	}
+}
+
+func TestPruneOldToolResultsArchivesOriginalAndKeepsHeadTailSnippets(t *testing.T) {
+	contentLines := []string{
+		"Exit code: 0",
+		"Output:",
+		"head one",
+		"head two",
+		"head three",
+	}
+	for i := 0; i < 30; i++ {
+		contentLines = append(contentLines, fmt.Sprintf("middle filler line %02d with enough text to make the result large", i))
+	}
+	contentLines = append(contentLines, "tail one", "tail two", "tail three")
+	content := strings.Join(contentLines, "\n")
+	archiveStore := &recordingContextArchiveStore{}
+	msgs := append([]provider.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []provider.ToolCall{
+				{
+					ID: "call_archive",
+					Function: provider.FunctionCall{
+						Name:      "exec",
+						Arguments: `{"command":"go test ./internal/agent"}`,
+					},
+				},
+			},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call_archive",
+			Name:       "exec",
+			Content:    content,
+		},
+	}, compactionFillerMessages(PruneTurnAge)...)
+
+	got, changed := pruneOldToolResultsWithChange(msgs, CompactOptions{
+		ArchiveStore:      archiveStore,
+		ArchiveUserID:     "user-a",
+		ArchiveAgentID:    "agent-a",
+		ArchiveSessionKey: "session-a",
+	})
+	if !changed {
+		t.Fatal("expected old tool result to be summarized")
+	}
+	if len(archiveStore.records) != 1 {
+		t.Fatalf("archive record count = %d, want 1", len(archiveStore.records))
+	}
+	rec := archiveStore.records[0]
+	if rec.Content != content {
+		t.Fatalf("archived content changed: got %q want %q", rec.Content, content)
+	}
+	if rec.AgentID != "agent-a" || rec.SessionKey != "session-a" || rec.ToolCallID != "call_archive" || rec.ToolName != "exec" {
+		t.Fatalf("archive scope/metadata mismatch: %+v", rec)
+	}
+	if rec.ID == "" {
+		t.Fatal("archive id was empty")
+	}
+
+	summary := got[1].Content
+	assertContainsAll(t, summary,
+		"archive_id: "+rec.ID,
+		"retrieve_compacted_tool_result",
+		"output_head:",
+		"Exit code: 0",
+		"Output:",
+		"head one",
+		"output_tail:",
+		"tail one",
+		"tail two",
+		"tail three",
+	)
+	if strings.Contains(summary, "middle filler line 10") {
+		t.Fatalf("summary retained middle output instead of snippets: %q", summary)
 	}
 }
 
@@ -467,6 +545,17 @@ func mustJSON(t *testing.T, v any) string {
 		t.Fatalf("marshal JSON: %v", err)
 	}
 	return string(b)
+}
+
+type recordingContextArchiveStore struct {
+	records []store.ContextArchiveRecord
+}
+
+func (s *recordingContextArchiveStore) SaveContextArchive(ctx context.Context, rec *store.ContextArchiveRecord) error {
+	if rec != nil {
+		s.records = append(s.records, *rec)
+	}
+	return nil
 }
 
 func TestCompactionKeepsRecentFourUserTurns(t *testing.T) {

@@ -56,6 +56,10 @@ type CompactOptions struct {
 	OverheadMessages  []provider.Message
 	ToolDefs          []provider.Tool
 	SummaryMaxRetries int
+	ArchiveStore      contextArchiveStore
+	ArchiveUserID     string
+	ArchiveAgentID    string
+	ArchiveSessionKey string
 }
 
 // EstimateTokens provides a rough token estimate: chars/4.
@@ -304,7 +308,7 @@ func compactMessagesTriggered(messages []provider.Message, opts CompactOptions, 
 	}
 
 	sanitized, sanitizedChanged := sanitizeToolPairsWithChange(messages)
-	pruned, prunedChanged := pruneOldToolResultsWithChange(sanitized)
+	pruned, prunedChanged := pruneOldToolResultsWithChange(sanitized, opts)
 	changed := sanitizedChanged || prunedChanged
 	prunedTokens := EstimateRequestTokens(compactionRequestMessages(pruned, opts.OverheadMessages), opts.ToolDefs)
 
@@ -399,9 +403,13 @@ func pruneOldToolResults(messages []provider.Message) []provider.Message {
 	return result
 }
 
-func pruneOldToolResultsWithChange(messages []provider.Message) ([]provider.Message, bool) {
+func pruneOldToolResultsWithChange(messages []provider.Message, optList ...CompactOptions) ([]provider.Message, bool) {
 	if len(messages) <= PruneTurnAge {
 		return messages, false
+	}
+	var opts CompactOptions
+	if len(optList) > 0 {
+		opts = optList[0]
 	}
 
 	infoByIndex := buildToolResultInfoByIndex(messages)
@@ -413,7 +421,11 @@ func pruneOldToolResultsWithChange(messages []provider.Message) ([]provider.Mess
 	for i := 0; i < cutoff; i++ {
 		if result[i].Role == "tool" && len(result[i].Content) > 200 {
 			info := infoByIndex[i]
-			result[i] = summarizeToolResultWithInfo(result[i], info)
+			archiveID, err := archiveToolResult(opts, result[i], info)
+			if err != nil {
+				slog.Warn("failed to archive compacted tool result", "error", err)
+			}
+			result[i] = summarizeToolResultWithInfo(result[i], info, archiveID)
 			changed = true
 		}
 	}

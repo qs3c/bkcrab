@@ -12,6 +12,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/buildinfo"
 	"github.com/qs3c/bkclaw/internal/provider"
 	"github.com/qs3c/bkclaw/internal/sandbox"
+	"github.com/qs3c/bkclaw/internal/store"
 	"github.com/qs3c/bkclaw/internal/workspace"
 )
 
@@ -61,10 +62,10 @@ func isIdentityFilePath(path string) bool {
 	if !identityFiles[base] {
 		return false
 	}
-	if filepath.IsAbs(path) {
+	if filepath.IsAbs(path) || strings.HasPrefix(path, "/") {
 		return true
 	}
-	return !strings.ContainsRune(clean, filepath.Separator)
+	return !strings.ContainsAny(clean, `/\`)
 }
 
 // IdentityFileRefusal 是规范的“礼貌拒绝，留在
@@ -113,8 +114,10 @@ type Registry struct {
 	// 它用于否则会落在 userRoot 下的路径。身份文件
 	// (systemRoot) 保留在文件系统上，因为运行时上下文
 	// 构建器仍然通过单独的小状态存储读取它们。
-	workspaceStore workspace.Store
-	agentID        string
+	workspaceStore           workspace.Store
+	agentID                  string
+	contextArchiveStore      ContextArchiveStore
+	contextArchiveSessionKey string
 	// sessionID 范围工作空间。存储读/写，以便并发会话
 	// 同一代理的不会在 `report.md` 等上发生碰撞。每回合设置为
 	// 通过 SetSessionID 进行代理循环；空值回落到
@@ -261,6 +264,10 @@ type SystemFileStore interface {
 	SaveWorkspaceFile(ctx context.Context, agentID, userID, filename string, data []byte) error
 }
 
+type ContextArchiveStore interface {
+	GetContextArchive(ctx context.Context, agentID, sessionKey, id string) (*store.ContextArchiveRecord, error)
+}
+
 // SetWorkspaceStore 在注册表上安装工作区存储。文件工具
 // 使用指向 userRoot 的路径调用将被重定向到商店
 // （由代理 ID 指定）。传递两者非空或注册表保持纯
@@ -268,6 +275,13 @@ type SystemFileStore interface {
 func (r *Registry) SetWorkspaceStore(ws workspace.Store, agentID string) {
 	r.workspaceStore = ws
 	r.agentID = agentID
+}
+
+func (r *Registry) SetContextArchiveStore(st ContextArchiveStore, agentID ...string) {
+	r.contextArchiveStore = st
+	if len(agentID) > 0 && agentID[0] != "" {
+		r.agentID = agentID[0]
+	}
 }
 
 // SetSystemFileStore 为身份文件安装持久存储，以便
@@ -391,6 +405,10 @@ func (r *Registry) SetSandboxRequired(required bool) {
 // 返回到代理共享范围（无会话隔离）。
 func (r *Registry) SetSessionID(sessionID string) {
 	r.sessionID = sessionID
+}
+
+func (r *Registry) SetContextArchiveSessionKey(sessionKey string) {
+	r.contextArchiveSessionKey = sessionKey
 }
 
 // SetCallerIsAdmin 记录本轮的喋喋不休是否是
@@ -715,6 +733,7 @@ func (r *Registry) registerBuiltins() {
 	registerBashOutput(r)
 	registerKillShell(r)
 	registerMessage(r)
+	registerContextArchive(r)
 }
 
 // StartTurn 重置每转工具调用状态。由代理循环调用

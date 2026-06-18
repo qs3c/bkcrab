@@ -264,8 +264,13 @@ func (a *Agent) slashCompact(msg bus.InboundMessage, focus string) slashResult {
 		TailTurns:         DefaultTailTurns,
 		MinTailTurns:      MinimumTailTurns,
 		SummaryMaxRetries: DefaultSummaryMaxRetries,
+		ArchiveStore:      a.dataStore,
+		ArchiveUserID:     a.ownerUserID,
+		ArchiveAgentID:    a.name,
+		ArchiveSessionKey: sess.SessionKey(),
 	}
 	if a.registry != nil {
+		a.registry.SetContextArchiveSessionKey(sess.SessionKey())
 		opts.ToolDefs = a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	}
 	result, err := CompactMessagesWithOptions(sessionMsgs, opts)

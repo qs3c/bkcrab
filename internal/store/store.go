@@ -122,6 +122,14 @@ type Store interface {
 	// 那些行早于按聊天者解析的功能，将它们与新聊天者混在一起会过度计数。
 	CountChatterUserMessages(ctx context.Context, agentID, chatterUserID string) (int, error)
 
+	// --- Context archives ---
+	//
+	// ContextArchiveRecord stores original tool results removed from the LLM
+	// working set by compaction. Summaries keep the opaque id; the model can
+	// retrieve the exact original by id through the scoped tool.
+	SaveContextArchive(ctx context.Context, rec *ContextArchiveRecord) error
+	GetContextArchive(ctx context.Context, agentID, sessionKey, id string) (*ContextArchiveRecord, error)
+
 	// --- 聊天事件（进行中的流式增量，持久化用于恢复）---
 	//
 	// agent 在一轮中发出的每个事件（内容块、tool_call、error、done）
@@ -347,6 +355,22 @@ type SessionMessage struct {
 	// 对运行时注入的消息非空（目前仅有 "goal_context"）。
 	// 作为 session_messages 上的列存储（参见 migrateSessionMessagesAddOrigin）。
 	Origin string `json:"origin,omitempty"`
+}
+
+// ContextArchiveRecord is the durable body behind a compacted tool-result
+// summary. Lookup is scoped by (agent_id, session_key, id); user_id is kept for
+// audit and cleanup but is not required for retrieval.
+type ContextArchiveRecord struct {
+	ID            string    `json:"id"`
+	UserID        string    `json:"userId,omitempty"`
+	AgentID       string    `json:"agentId,omitempty"`
+	SessionKey    string    `json:"sessionKey,omitempty"`
+	ToolCallID    string    `json:"toolCallId,omitempty"`
+	ToolName      string    `json:"toolName,omitempty"`
+	Content       string    `json:"content"`
+	ContentBytes  int       `json:"contentBytes"`
+	ContentSHA256 string    `json:"contentSha256,omitempty"`
+	CreatedAt     time.Time `json:"createdAt"`
 }
 
 // SessionEventRecord 是 session_events 表中的一行——agent 在一轮中发出的

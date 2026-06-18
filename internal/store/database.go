@@ -1352,6 +1352,20 @@ func (d *DBStore) migrationSQL() []string {
 				PRIMARY KEY (user_id, agent_id, session_key, seq)
 			)`,
 		`CREATE INDEX IF NOT EXISTS idx_session_events_lookup ON session_events (user_id, agent_id, session_key, seq)`,
+		`CREATE TABLE IF NOT EXISTS context_archives (
+			user_id TEXT NOT NULL DEFAULT '',
+			agent_id TEXT NOT NULL,
+			session_key TEXT NOT NULL,
+			id TEXT NOT NULL,
+			tool_call_id TEXT NOT NULL DEFAULT '',
+			tool_name TEXT NOT NULL DEFAULT '',
+			content TEXT NOT NULL DEFAULT '',
+			content_bytes INTEGER NOT NULL DEFAULT 0,
+			content_sha256 TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (agent_id, session_key, id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_context_archives_user ON context_archives (user_id, agent_id, session_key)`,
 		// agent_files 保存 agent 自己的文件：SOUL.md, IDENTITY.md,
 		// MEMORY.md, AGENTS.md, BOOTSTRAP.md 等。
 		//
@@ -1650,7 +1664,7 @@ func (d *DBStore) DeleteUser(ctx context.Context, id string) error {
 	}
 	rows.Close()
 	for _, aid := range ownedAgents {
-		for _, t := range []string{"agent_files", "sessions", "session_messages", "session_events", "cron_jobs"} {
+		for _, t := range []string{"agent_files", "sessions", "session_messages", "session_events", "context_archives", "cron_jobs"} {
 			if _, err := tx.ExecContext(ctx,
 				fmt.Sprintf("DELETE FROM %s WHERE agent_id = %s", t, d.ph(1)), aid); err != nil {
 				return err
@@ -1670,7 +1684,7 @@ func (d *DBStore) DeleteUser(ctx context.Context, id string) error {
 		return err
 	}
 	// 非 agent 范围的每用户状态（agent_files 现在仅为 agent 所有）。
-	for _, t := range []string{"web_sessions", "apikeys", "sessions", "session_messages", "session_events"} {
+	for _, t := range []string{"web_sessions", "apikeys", "sessions", "session_messages", "session_events", "context_archives"} {
 		if _, err := tx.ExecContext(ctx,
 			fmt.Sprintf("DELETE FROM %s WHERE user_id = %s", t, d.ph(1)), id); err != nil {
 			return err
@@ -1941,7 +1955,7 @@ func (d *DBStore) DeleteAgent(ctx context.Context, agentID string) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, t := range []string{"agent_files", "sessions", "session_messages", "session_events", "cron_jobs"} {
+	for _, t := range []string{"agent_files", "sessions", "session_messages", "session_events", "context_archives", "cron_jobs"} {
 		if _, err := tx.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE agent_id = %s`, t, d.ph(1)), agentID); err != nil {
 			return err
@@ -2160,11 +2174,112 @@ func (d *DBStore) DeleteSession(ctx context.Context, userID, agentID, sessionKey
 			return err
 		}
 	}
+	if _, err := d.db.ExecContext(ctx,
+		fmt.Sprintf(`DELETE FROM context_archives WHERE agent_id = %s AND session_key = %s`,
+			d.ph(1), d.ph(2)),
+		agentID, sessionKey); err != nil {
+		return err
+	}
 	_, err := d.db.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM sessions WHERE user_id = %s AND agent_id = %s AND session_key = %s`,
 			d.ph(1), d.ph(2), d.ph(3)),
 		userID, agentID, sessionKey)
 	return err
+}
+
+func (d *DBStore) SaveContextArchive(ctx context.Context, rec *ContextArchiveRecord) error {
+	if rec == nil {
+		return errors.New("store: SaveContextArchive requires record")
+	}
+	if rec.ID == "" {
+		return errors.New("store: SaveContextArchive requires id")
+	}
+	if rec.AgentID == "" {
+		return errors.New("store: SaveContextArchive requires agent_id")
+	}
+	if rec.SessionKey == "" {
+		return errors.New("store: SaveContextArchive requires session_key")
+	}
+	if rec.ContentBytes == 0 && rec.Content != "" {
+		rec.ContentBytes = len([]byte(rec.Content))
+	}
+	if rec.ContentSHA256 == "" {
+		sum := sha256.Sum256([]byte(rec.Content))
+		rec.ContentSHA256 = hex.EncodeToString(sum[:])
+	}
+	if rec.CreatedAt.IsZero() {
+		rec.CreatedAt = time.Now().UTC()
+	}
+
+	args := []any{
+		rec.ID,
+		rec.UserID,
+		rec.AgentID,
+		rec.SessionKey,
+		rec.ToolCallID,
+		rec.ToolName,
+		rec.Content,
+		rec.ContentBytes,
+		rec.ContentSHA256,
+		rec.CreatedAt,
+	}
+	if d.dialect == mysqlDialect {
+		_, err := d.db.ExecContext(ctx,
+			`INSERT INTO context_archives
+				(id, user_id, agent_id, session_key, tool_call_id, tool_name, content, content_bytes, content_sha256, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE
+				  user_id=VALUES(user_id),
+				  tool_call_id=VALUES(tool_call_id),
+				  tool_name=VALUES(tool_name),
+				  content=VALUES(content),
+				  content_bytes=VALUES(content_bytes),
+				  content_sha256=VALUES(content_sha256),
+				  created_at=VALUES(created_at)`,
+			args...)
+		return err
+	}
+
+	_, err := d.db.ExecContext(ctx,
+		fmt.Sprintf(`INSERT INTO context_archives
+			(id, user_id, agent_id, session_key, tool_call_id, tool_name, content, content_bytes, content_sha256, created_at)
+			VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+			ON CONFLICT (agent_id, session_key, id) DO UPDATE SET
+			  user_id=excluded.user_id,
+			  tool_call_id=excluded.tool_call_id,
+			  tool_name=excluded.tool_name,
+			  content=excluded.content,
+			  content_bytes=excluded.content_bytes,
+			  content_sha256=excluded.content_sha256,
+			  created_at=excluded.created_at`,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10)),
+		args...)
+	return err
+}
+
+func (d *DBStore) GetContextArchive(ctx context.Context, agentID, sessionKey, id string) (*ContextArchiveRecord, error) {
+	row := d.db.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT id, user_id, agent_id, session_key, tool_call_id, tool_name, content, content_bytes, content_sha256, created_at
+			FROM context_archives
+			WHERE agent_id = %s AND session_key = %s AND id = %s`,
+			d.ph(1), d.ph(2), d.ph(3)),
+		agentID, sessionKey, id)
+	var rec ContextArchiveRecord
+	if err := row.Scan(
+		&rec.ID,
+		&rec.UserID,
+		&rec.AgentID,
+		&rec.SessionKey,
+		&rec.ToolCallID,
+		&rec.ToolName,
+		&rec.Content,
+		&rec.ContentBytes,
+		&rec.ContentSHA256,
+		&rec.CreatedAt,
+	); err != nil {
+		return nil, scanErr(err)
+	}
+	return &rec, nil
 }
 
 // AppendSessionMessage 将一条消息写入每会话存档。

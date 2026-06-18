@@ -182,6 +182,20 @@ func mysqlMigrationSQL() []string {
 			PRIMARY KEY (user_id, agent_id, session_key, seq),
 			KEY idx_session_events_lookup (user_id, agent_id, session_key, seq)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS context_archives (
+			user_id VARCHAR(120) NOT NULL DEFAULT '',
+			agent_id VARCHAR(120) NOT NULL,
+			session_key VARCHAR(191) NOT NULL,
+			id VARCHAR(120) NOT NULL,
+			tool_call_id VARCHAR(191) NOT NULL DEFAULT '',
+			tool_name VARCHAR(191) NOT NULL DEFAULT '',
+			content LONGTEXT NOT NULL,
+			content_bytes BIGINT NOT NULL DEFAULT 0,
+			content_sha256 VARCHAR(64) NOT NULL DEFAULT '',
+			created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+			PRIMARY KEY (agent_id, session_key, id),
+			KEY idx_context_archives_user (user_id, agent_id, session_key)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS agent_files (
 			agent_id VARCHAR(120) NOT NULL,
 			user_id VARCHAR(120) NOT NULL DEFAULT '',

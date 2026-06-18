@@ -10,7 +10,11 @@ import (
 	"github.com/qs3c/bkclaw/internal/provider"
 )
 
-const maxToolArgValueRunes = 220
+const (
+	maxToolArgValueRunes        = 220
+	toolSummarySnippetLines     = 3
+	toolSummarySnippetLineRunes = 240
+)
 
 type toolArg struct {
 	Key   string
@@ -215,11 +219,15 @@ func summarizeToolResult(msg provider.Message, lookup map[string]toolCallInfo) p
 	return summarizeToolResultWithInfo(msg, lookup[msg.ToolCallID])
 }
 
-func summarizeToolResultWithInfo(msg provider.Message, info toolCallInfo) provider.Message {
+func summarizeToolResultWithInfo(msg provider.Message, info toolCallInfo, archiveIDs ...string) provider.Message {
 	if info.Name == "" {
 		info.Name = msg.Name
 	}
-	msg.Content = formatToolSummary(info, msg.Content)
+	archiveID := ""
+	if len(archiveIDs) > 0 {
+		archiveID = archiveIDs[0]
+	}
+	msg.Content = formatToolSummary(info, msg.Content, archiveID)
 	msg.Metadata = nil
 	return msg
 }
@@ -298,7 +306,7 @@ func truncateToolArgValue(s string, originalRunes int) string {
 	return fmt.Sprintf("%s [truncated, chars=%d]", string(runes), originalRunes)
 }
 
-func formatToolSummary(info toolCallInfo, content string) string {
+func formatToolSummary(info toolCallInfo, content string, archiveID string) string {
 	toolName := info.Name
 	if toolName == "" {
 		toolName = "unknown"
@@ -307,6 +315,10 @@ func formatToolSummary(info toolCallInfo, content string) string {
 	var lines []string
 	lines = append(lines, "[Tool Result Summary]")
 	lines = append(lines, "tool: "+toolName)
+	if archiveID != "" {
+		lines = append(lines, "archive_id: "+archiveID)
+		lines = append(lines, fmt.Sprintf(`retrieval: call retrieve_compacted_tool_result with {"id":%q} to inspect the full original result.`, archiveID))
+	}
 
 	switch toolKind(toolName) {
 	case "command":
@@ -348,6 +360,7 @@ func formatToolSummary(info toolCallInfo, content string) string {
 		}
 		lines = appendToolOutputStats(lines, content, true)
 	}
+	lines = appendToolOutputSnippets(lines, content)
 
 	return strings.Join(lines, "\n")
 }
@@ -392,6 +405,53 @@ func appendToolOutputStats(lines []string, content string, includeLines bool) []
 		lines = append(lines, fmt.Sprintf("output_lines: %d", toolOutputLineCount(content)))
 	}
 	return append(lines, fmt.Sprintf("output_chars: %d", utf8.RuneCountInString(content)))
+}
+
+func appendToolOutputSnippets(lines []string, content string) []string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	content = strings.TrimSuffix(content, "\n")
+	if content == "" {
+		return lines
+	}
+	outputLines := strings.Split(content, "\n")
+	headCount := minInt(toolSummarySnippetLines, len(outputLines))
+	lines = append(lines, "output_head:")
+	for _, line := range outputLines[:headCount] {
+		lines = append(lines, "  "+summarizeToolOutputLine(line))
+	}
+
+	tailCount := minInt(toolSummarySnippetLines, len(outputLines))
+	tailStart := len(outputLines) - tailCount
+	if tailStart < headCount {
+		tailStart = headCount
+	}
+	if tailStart < len(outputLines) {
+		lines = append(lines, "output_tail:")
+		for _, line := range outputLines[tailStart:] {
+			lines = append(lines, "  "+summarizeToolOutputLine(line))
+		}
+	}
+	return lines
+}
+
+func summarizeToolOutputLine(line string) string {
+	line = strings.TrimRight(line, " \t")
+	if line == "" {
+		return "<blank>"
+	}
+	runes := []rune(line)
+	if len(runes) <= toolSummarySnippetLineRunes {
+		return line
+	}
+	return fmt.Sprintf("%s [truncated, chars=%d]", string(runes[:toolSummarySnippetLineRunes]), len(runes))
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func toolOutputLineCount(content string) int {
