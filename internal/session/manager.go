@@ -391,6 +391,22 @@ func (m *Manager) getByKey(key, channel, accountID, chatID, projectID string) *S
 func (s *Session) Key() string { return s.sessionKey }
 
 func (s *Session) Append(msg provider.Message) {
+	_, _ = s.appendLocked(msg, false)
+}
+
+// AppendTurnAnchor 与 Append 等价地把消息加入内存工作集并 SaveSession,但归档行
+// 带 turn_status='running' 并返回分配的 seq——供 turn 起点登记锚点、turn 结束时
+// 按 (sessionKey, seq) 翻 done。仅用于真正开启一个 turn 的用户消息。
+// 无持久化 store 时退化为 Append 语义并返回 (-1, nil)。
+func (s *Session) AppendTurnAnchor(msg provider.Message) (int64, error) {
+	return s.appendLocked(msg, true)
+}
+
+// appendLocked 是 Append / AppendTurnAnchor 的唯一内存写路径:加锁、补时间戳、
+// 追加到工作集,再持久化。anchor=true 时归档行写 turn_status='running' 并返回其
+// seq;anchor=false 走普通归档(turn_status 默认 '')。无持久化 store 时只落盘文件、
+// 返回 (-1, nil)。收敛在一处,避免两个入口对内存路径产生分叉。
+func (s *Session) appendLocked(msg provider.Message, anchor bool) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -401,33 +417,18 @@ func (s *Session) Append(msg provider.Message) {
 
 	s.Messages = append(s.Messages, msg)
 
-	if s.store != nil {
-		s.store.SaveSession(s.ctx(), s.agentID, s.sessionKey, s.channel, s.accountID, s.chatID, s.projectID, s.Messages)
-		if err := s.store.AppendMessage(s.ctx(), s.agentID, s.sessionKey, msg); err != nil {
-			fmt.Fprintf(os.Stderr, "session archive append error: %v\n", err)
-		}
-	} else {
-		s.appendToFile(msg)
-	}
-}
-
-// AppendTurnAnchor 与 Append 等价地把消息加入内存工作集并 SaveSession,但归档行
-// 带 turn_status='running' 并返回分配的 seq——供 turn 起点登记锚点、turn 结束时
-// 按 (sessionKey, seq) 翻 done。仅用于真正开启一个 turn 的用户消息。
-// 无持久化 store 时退化为 Append 语义并返回 (-1, nil)。
-func (s *Session) AppendTurnAnchor(msg provider.Message) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if msg.Timestamp == 0 {
-		msg.Timestamp = time.Now().UnixMilli()
-	}
-	s.Messages = append(s.Messages, msg)
 	if s.store == nil {
 		s.appendToFile(msg)
 		return -1, nil
 	}
 	s.store.SaveSession(s.ctx(), s.agentID, s.sessionKey, s.channel, s.accountID, s.chatID, s.projectID, s.Messages)
-	return s.store.AppendTurnAnchor(s.ctx(), s.agentID, s.sessionKey, msg)
+	if anchor {
+		return s.store.AppendTurnAnchor(s.ctx(), s.agentID, s.sessionKey, msg)
+	}
+	if err := s.store.AppendMessage(s.ctx(), s.agentID, s.sessionKey, msg); err != nil {
+		fmt.Fprintf(os.Stderr, "session archive append error: %v\n", err)
+	}
+	return -1, nil
 }
 
 // ArchivedMessages 返回此会话的完整仅追加历史。
