@@ -310,7 +310,7 @@ func compactMessagesTriggered(messages []provider.Message, opts CompactOptions, 
 
 	slog.Info("after pruning", "tokens_before", tokens, "tokens_after", prunedTokens)
 
-	if prunedTokens < compactTargetLimit(opts) {
+	if opts.Mode != CompactModeManual && prunedTokens < compactTargetLimit(opts) {
 		return &CompactResult{
 			Messages: pruned,
 			Pruned:   changed,
@@ -438,6 +438,17 @@ func compressOlderMessages(messages []provider.Message, opts CompactOptions) ([]
 		text += fmt.Sprintf("[%s] %s\n", m.Role, m.Content)
 	}
 
+	var userPrompt strings.Builder
+	if opts.Mode == CompactModeManual {
+		if focus := strings.TrimSpace(opts.Focus); focus != "" {
+			userPrompt.WriteString("Manual compaction focus:\n")
+			userPrompt.WriteString(focus)
+			userPrompt.WriteString("\n\n")
+		}
+	}
+	userPrompt.WriteString("Summarize this conversation:\n\n")
+	userPrompt.WriteString(text)
+
 	summaryPrompt := []provider.Message{
 		{
 			Role:    "system",
@@ -445,7 +456,7 @@ func compressOlderMessages(messages []provider.Message, opts CompactOptions) ([]
 		},
 		{
 			Role:    "user",
-			Content: fmt.Sprintf("Summarize this conversation:\n\n%s", text),
+			Content: userPrompt.String(),
 		},
 	}
 

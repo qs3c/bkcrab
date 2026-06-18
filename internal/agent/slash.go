@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkclaw/internal/config"
 )
 
 // slashResult 保存斜杠命令的结果。
@@ -85,7 +86,7 @@ func (a *Agent) handleSlashCommand(msg bus.InboundMessage) slashResult {
 		return a.slashUndo(msg)
 
 	case "/compact":
-		return a.slashCompact(msg)
+		return a.slashCompact(msg, strings.Join(args, " "))
 
 	case "/status":
 		return a.slashStatus(msg)
@@ -244,7 +245,7 @@ func (a *Agent) slashUndo(msg bus.InboundMessage) slashResult {
 	return slashResult{handled: true, reply: "Nothing to undo."}
 }
 
-func (a *Agent) slashCompact(msg bus.InboundMessage) slashResult {
+func (a *Agent) slashCompact(msg bus.InboundMessage, focus string) slashResult {
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
 	sessionMsgs := sess.GetMessages()
 
@@ -252,15 +253,30 @@ func (a *Agent) slashCompact(msg bus.InboundMessage) slashResult {
 		return slashResult{handled: true, reply: "No messages to compact."}
 	}
 
-	result, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model)
+	opts := CompactOptions{
+		Mode:              CompactModeManual,
+		Workspace:         a.homePath,
+		Provider:          a.provider,
+		Model:             a.model,
+		ContextWindow:     a.contextWindow,
+		MaxOutputTokens:   a.maxTokens,
+		Focus:             focus,
+		TailTurns:         DefaultTailTurns,
+		MinTailTurns:      MinimumTailTurns,
+		SummaryMaxRetries: DefaultSummaryMaxRetries,
+	}
+	if a.registry != nil {
+		opts.ToolDefs = a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
+	}
+	result, err := CompactMessagesWithOptions(sessionMsgs, opts)
 	if err != nil {
 		return slashResult{handled: true, reply: fmt.Sprintf("Compaction error: %v", err)}
 	}
 	if result != nil && result.Pruned {
 		sess.ReplaceMessages(result.Messages)
-		return slashResult{handled: true, reply: fmt.Sprintf("✅ Compacted: %d → %d messages.", len(sessionMsgs), len(result.Messages))}
+		return slashResult{handled: true, reply: fmt.Sprintf("Compacted checkpoint: %d -> %d messages.", len(sessionMsgs), len(result.Messages))}
 	}
-	return slashResult{handled: true, reply: "Session is within limits, no compaction needed."}
+	return slashResult{handled: true, reply: "Nothing to compact."}
 }
 
 func (a *Agent) slashStatus(msg bus.InboundMessage) slashResult {
@@ -416,6 +432,7 @@ func (a *Agent) slashPersonalitySet(msg bus.InboundMessage, name string) slashRe
 func (a *Agent) slashModel(msg bus.InboundMessage, model string) slashResult {
 	old := a.model
 	a.model = model
+	a.contextWindow = config.ResolveContextWindow(a.providerConfigs, a.model, a.maxTokens)
 	return slashResult{handled: true, reply: fmt.Sprintf("🤖 Model switched: `%s` → `%s`", old, model)}
 }
 
@@ -458,7 +475,7 @@ Conversation
   /undo           — Undo last turn
 
 Context
-  /compact        — Compress context window
+  /compact [focus] — Create a compact context checkpoint
   /status         — Agent status & memory info
   /usage          — Session token/turn stats
   /insights [N]   — Activity insights (last N days, default 7)
