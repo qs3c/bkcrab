@@ -2405,6 +2405,29 @@ func (d *DBStore) LatestSessionEventSeq(ctx context.Context, userID, agentID, se
 	return seq.Int64, nil
 }
 
+// decodeMessageParts 把 session_messages 的 JSON 列回填到 m(空或 "null" 跳过)。
+// scanSessionMessages 与 LoadTurnMessages 共用,避免两处重复反序列化逻辑。
+func decodeMessageParts(m *SessionMessage, contentParts, toolCalls, metadata, rawAssistant string) {
+	if contentParts != "" && contentParts != "null" {
+		var v interface{}
+		if json.Unmarshal([]byte(contentParts), &v) == nil {
+			m.ContentParts = v
+		}
+	}
+	if toolCalls != "" && toolCalls != "null" {
+		var v interface{}
+		if json.Unmarshal([]byte(toolCalls), &v) == nil {
+			m.ToolCalls = v
+		}
+	}
+	if metadata != "" && metadata != "null" {
+		_ = json.Unmarshal([]byte(metadata), &m.Metadata)
+	}
+	if rawAssistant != "" && rawAssistant != "null" {
+		m.RawAssistant = json.RawMessage(rawAssistant)
+	}
+}
+
 // scanSessionMessages 把 session_messages 查询结果(列顺序见下)追加到 out。
 // 调用方负责 rows.Close()。列顺序:role, content, content_parts, tool_calls,
 // tool_call_id, name, metadata, thinking, raw_assistant, origin, created_at。
@@ -2415,24 +2438,7 @@ func scanSessionMessages(rows *sql.Rows, out *[]SessionMessage) error {
 		if err := rows.Scan(&m.Role, &m.Content, &contentParts, &toolCalls, &m.ToolCallID, &m.Name, &metadata, &m.Thinking, &rawAssistant, &m.Origin, &m.Timestamp); err != nil {
 			return err
 		}
-		if contentParts != "" && contentParts != "null" {
-			var v interface{}
-			if json.Unmarshal([]byte(contentParts), &v) == nil {
-				m.ContentParts = v
-			}
-		}
-		if toolCalls != "" && toolCalls != "null" {
-			var v interface{}
-			if json.Unmarshal([]byte(toolCalls), &v) == nil {
-				m.ToolCalls = v
-			}
-		}
-		if metadata != "" && metadata != "null" {
-			_ = json.Unmarshal([]byte(metadata), &m.Metadata)
-		}
-		if rawAssistant != "" && rawAssistant != "null" {
-			m.RawAssistant = json.RawMessage(rawAssistant)
-		}
+		decodeMessageParts(&m, contentParts, toolCalls, metadata, rawAssistant)
 		*out = append(*out, m)
 	}
 	return rows.Err()
@@ -3433,42 +3439,67 @@ func (d *DBStore) ResetExtraction(ctx context.Context, extractionID string) erro
 }
 
 // LoadTurnMessages 见接口文档。
-func (d *DBStore) LoadTurnMessages(ctx context.Context, userID, agentID string, refs []TurnRef) ([]SessionMessage, error) {
-	var out []SessionMessage
+func (d *DBStore) LoadTurnMessages(ctx context.Context, userID, agentID string, refs []TurnRef) ([]TurnGroup, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	// 按 session 归集本批被认领的起点 seq,记录每个 session 的最小起点与首次出现顺序。
+	claimed := map[string]map[int64]bool{}
+	minStart := map[string]int64{}
+	order := []string{}
 	for _, r := range refs {
-		// 同 session 内本 turn 之后的下一个锚点 seq(running 或 done 都算锚点边界)。
-		var nextSeq int64
-		err := d.db.QueryRowContext(ctx,
-			fmt.Sprintf(`SELECT COALESCE(MIN(seq), -1) FROM session_messages
-				WHERE user_id=%s AND agent_id=%s AND session_key=%s AND seq > %s AND turn_status <> ''`,
-				d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
-			userID, agentID, r.SessionKey, r.StartSeq).Scan(&nextSeq)
+		if claimed[r.SessionKey] == nil {
+			claimed[r.SessionKey] = map[int64]bool{}
+			minStart[r.SessionKey] = r.StartSeq
+			order = append(order, r.SessionKey)
+		}
+		claimed[r.SessionKey][r.StartSeq] = true
+		if r.StartSeq < minStart[r.SessionKey] {
+			minStart[r.SessionKey] = r.StartSeq
+		}
+	}
+	// 每个 session 一条查询(seq >= 该 session 被认领的最小起点),按 seq 升序游走:
+	// 遇到锚点行(turn_status<>'')切换当前 turn,只收录起点命中本批 refs 的 turn 的消息。
+	// 单条查询给出一致快照、边界由实际锚点决定——既消掉旧的逐 turn 两段查询(N+1)及其
+	// 非原子的 TOCTOU 窗口,又按 session 分组返回供提取分节拼 prompt。
+	groups := make([]TurnGroup, 0, len(order))
+	for _, sk := range order {
+		rows, err := d.db.QueryContext(ctx,
+			fmt.Sprintf(`SELECT role, content, content_parts, tool_calls, tool_call_id, name, metadata, thinking, raw_assistant, origin, created_at, seq, turn_status
+				FROM session_messages
+				WHERE user_id=%s AND agent_id=%s AND session_key=%s AND seq >= %s
+				ORDER BY seq ASC`, d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
+			userID, agentID, sk, minStart[sk])
 		if err != nil {
 			return nil, err
 		}
-		base := `SELECT role, content, content_parts, tool_calls, tool_call_id, name, metadata, thinking, raw_assistant, origin, created_at
-			FROM session_messages
-			WHERE user_id=%s AND agent_id=%s AND session_key=%s AND seq >= %s`
-		var rows *sql.Rows
-		if nextSeq < 0 {
-			rows, err = d.db.QueryContext(ctx,
-				fmt.Sprintf(base+` ORDER BY seq ASC`, d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
-				userID, agentID, r.SessionKey, r.StartSeq)
-		} else {
-			rows, err = d.db.QueryContext(ctx,
-				fmt.Sprintf(base+` AND seq < %s ORDER BY seq ASC`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)),
-				userID, agentID, r.SessionKey, r.StartSeq, nextSeq)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if err := scanSessionMessages(rows, &out); err != nil {
-			rows.Close()
-			return nil, err
+		g := TurnGroup{SessionKey: sk}
+		include := false
+		for rows.Next() {
+			var m SessionMessage
+			var contentParts, toolCalls, metadata, rawAssistant, turnStatus string
+			var seq int64
+			if err := rows.Scan(&m.Role, &m.Content, &contentParts, &toolCalls, &m.ToolCallID, &m.Name, &metadata, &m.Thinking, &rawAssistant, &m.Origin, &m.Timestamp, &seq, &turnStatus); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if turnStatus != "" { // 锚点行:开启一个新 turn,按其起点是否被认领决定后续是否收录
+				include = claimed[sk][seq]
+			}
+			if include {
+				decodeMessageParts(&m, contentParts, toolCalls, metadata, rawAssistant)
+				g.Messages = append(g.Messages, m)
+			}
 		}
 		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if len(g.Messages) > 0 {
+			groups = append(groups, g)
+		}
 	}
-	return out, nil
+	return groups, nil
 }
 
 var _ Store = (*DBStore)(nil)

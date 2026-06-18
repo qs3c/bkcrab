@@ -128,10 +128,9 @@ type Store interface {
 	// ResetExtraction 把某次提取认领的所有行 extraction_id 重置回 NULL,
 	// 使它们回到待提取状态(异步提取失败时的补偿回滚)。
 	ResetExtraction(ctx context.Context, extractionID string) error
-	// LoadTurnMessages 按 TurnRef 列表从归档表回放每个 turn 的消息区间:
-	// 同 session 内 [StartSeq, 下一个锚点 seq)(无下一个锚点则到该 session 末尾)。
-	// 供记忆提取构建 prompt。
-	LoadTurnMessages(ctx context.Context, userID, agentID string, refs []TurnRef) ([]SessionMessage, error)
+	// LoadTurnMessages 按 TurnRef 列表从归档回放被认领 turn 的消息,按 session 分组返回
+	// (每 session 一条查询,锚点边界决定每个 turn 的区间)。供记忆提取按 session 分节拼 prompt。
+	LoadTurnMessages(ctx context.Context, userID, agentID string, refs []TurnRef) ([]TurnGroup, error)
 	ListSessionMessages(ctx context.Context, userID, agentID, sessionKey string) ([]SessionMessage, error)
 
 	// --- 聊天事件（进行中的流式增量，持久化用于恢复）---
@@ -347,6 +346,13 @@ type SessionRecord struct {
 type TurnRef struct {
 	SessionKey string
 	StartSeq   int64
+}
+
+// TurnGroup 是一个 session 下被认领 turn 回放出的消息(按 seq 升序),
+// 供记忆提取按 session 分节拼 prompt。
+type TurnGroup struct {
+	SessionKey string
+	Messages   []SessionMessage
 }
 
 // SessionMessage 是会话中的单条消息。

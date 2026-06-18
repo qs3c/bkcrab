@@ -116,11 +116,60 @@ func TestLoadTurnMessagesRange(t *testing.T) {
 	db.FinishTurn(ctx, uid, agent, sk, seq1)
 	db.AppendTurnAnchor(ctx, uid, agent, sk, SessionMessage{Role: "user", Content: "Q2"})
 
-	msgs, err := db.LoadTurnMessages(ctx, uid, agent, []TurnRef{{SessionKey: sk, StartSeq: seq1}})
+	groups, err := db.LoadTurnMessages(ctx, uid, agent, []TurnRef{{SessionKey: sk, StartSeq: seq1}})
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
+	// 一个 session 分组,区间 = [seq1, 下一个锚点) = Q1 + A1,不含 Q2。
+	if len(groups) != 1 || groups[0].SessionKey != sk {
+		t.Fatalf("want 1 group for %s, got %+v", sk, groups)
+	}
+	msgs := groups[0].Messages
 	if len(msgs) != 2 || msgs[0].Content != "Q1" || msgs[1].Content != "A1" {
 		t.Fatalf("unexpected range: %+v", msgs)
+	}
+}
+
+// TestLoadTurnMessagesGroupsAndGaps 验证锚点游走切片:跨 session 分组、按 refs 首次
+// 出现排序、并排除区间内"未被认领"的 turn(gap)。
+func TestLoadTurnMessagesGroupsAndGaps(t *testing.T) {
+	db := newTestSQLite(t)
+	ctx := WithChatterUserID(context.Background(), "chatterA")
+	uid, agent := "u1", "agentA"
+	// s1:turnA(Q1+A1,认领) / turnB(Q2,不认领) / turnC(Q3,认领)
+	a0, _ := db.AppendTurnAnchor(ctx, uid, agent, "s1", SessionMessage{Role: "user", Content: "Q1"})
+	db.AppendSessionMessage(ctx, uid, agent, "s1", SessionMessage{Role: "assistant", Content: "A1"})
+	db.FinishTurn(ctx, uid, agent, "s1", a0)
+	b0, _ := db.AppendTurnAnchor(ctx, uid, agent, "s1", SessionMessage{Role: "user", Content: "Q2"})
+	db.FinishTurn(ctx, uid, agent, "s1", b0)
+	c0, _ := db.AppendTurnAnchor(ctx, uid, agent, "s1", SessionMessage{Role: "user", Content: "Q3"})
+	db.FinishTurn(ctx, uid, agent, "s1", c0)
+	// s2:单个认领 turn
+	d0, _ := db.AppendTurnAnchor(ctx, uid, agent, "s2", SessionMessage{Role: "user", Content: "S2Q1"})
+	db.FinishTurn(ctx, uid, agent, "s2", d0)
+
+	refs := []TurnRef{{SessionKey: "s1", StartSeq: a0}, {SessionKey: "s1", StartSeq: c0}, {SessionKey: "s2", StartSeq: d0}}
+	groups, err := db.LoadTurnMessages(ctx, uid, agent, refs)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(groups) != 2 || groups[0].SessionKey != "s1" || groups[1].SessionKey != "s2" {
+		t.Fatalf("want groups [s1 s2], got %+v", groups)
+	}
+	var got []string
+	for _, m := range groups[0].Messages {
+		got = append(got, m.Content)
+	}
+	want := []string{"Q1", "A1", "Q3"} // turnB(Q2)未认领,被排除
+	if len(got) != len(want) {
+		t.Fatalf("s1 contents = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("s1 contents = %v, want %v", got, want)
+		}
+	}
+	if len(groups[1].Messages) != 1 || groups[1].Messages[0].Content != "S2Q1" {
+		t.Fatalf("s2 contents unexpected: %+v", groups[1].Messages)
 	}
 }

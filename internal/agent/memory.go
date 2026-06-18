@@ -13,6 +13,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/config"
 	"github.com/qs3c/bkclaw/internal/privacy"
 	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkclaw/internal/store"
 )
 
 // MemoryStore 是一个可选的接口，用于基于数据库的内存持久化。
@@ -269,18 +270,34 @@ func (m *Memory) LoadUserFile() string {
 
 // AutoPersistMemory 使用 LLM 从最近的消息中提取事实并追加到 MEMORY.md
 // 和 USER.md。每 N 轮调用一次。
-func AutoPersistMemory(ctx context.Context, mem *Memory, prov provider.Provider, model string, messages []provider.Message) error {
-	// 为 LLM 构建最近消息的摘要
+func AutoPersistMemory(ctx context.Context, mem *Memory, prov provider.Provider, model string, groups []store.TurnGroup) error {
+	// 为 LLM 构建提取输入:按 session 分节(### Session),每条消息截断到 300 字符,
+	// 并对整批设总量上限,避免积压追赶时一次塞进过多 turn 把 prompt 撑爆
+	//(只约束输入拼装,与 max_tokens 控制的输出无关)。
+	const maxPromptChars = 12000
 	var sb strings.Builder
-	for _, m := range messages {
-		if m.Role == "system" || m.Origin != "" {
-			continue // 跳过 system 与 goal_context 等合成注入行
+	truncated := false
+buildPrompt:
+	for _, g := range groups {
+		sb.WriteString(fmt.Sprintf("### Session %s\n", g.SessionKey))
+		for _, m := range g.Messages {
+			if m.Role == "system" || m.Origin != "" {
+				continue // 跳过 system 与 goal_context 等合成注入行
+			}
+			content := m.Content
+			if len(content) > 300 {
+				content = content[:300] + "..."
+			}
+			line := fmt.Sprintf("[%s]: %s\n", m.Role, content)
+			if sb.Len()+len(line) > maxPromptChars {
+				truncated = true
+				break buildPrompt
+			}
+			sb.WriteString(line)
 		}
-		content := m.Content
-		if len(content) > 300 {
-			content = content[:300] + "..."
-		}
-		sb.WriteString(fmt.Sprintf("[%s]: %s\n", m.Role, content))
+	}
+	if truncated {
+		sb.WriteString("…(超出上限,后续内容已省略)\n")
 	}
 
 	currentMemory := mem.LoadMemory()

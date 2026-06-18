@@ -2518,17 +2518,13 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 			defer rcancel()
 			_ = a.dataStore.ResetExtraction(rctx, extractionID)
 		}
-		archived, err := a.dataStore.LoadTurnMessages(extractCtx, a.ownerUserID, a.name, refs)
+		groups, err := a.dataStore.LoadTurnMessages(extractCtx, a.ownerUserID, a.name, refs)
 		if err != nil {
 			slog.Warn("auto-persist: load turn messages failed", "agent", a.name, "extraction_id", extractionID, "error", err)
 			resetBatch()
 			return
 		}
-		msgs := make([]provider.Message, 0, len(archived))
-		for _, m := range archived {
-			msgs = append(msgs, provider.Message{Role: m.Role, Content: m.Content, Origin: m.Origin})
-		}
-		if err := AutoPersistMemory(extractCtx, chatterMem, a.provider, model, msgs); err != nil {
+		if err := AutoPersistMemory(extractCtx, chatterMem, a.provider, model, groups); err != nil {
 			slog.Warn("auto-persist: extraction failed, resetting batch", "agent", a.name, "extraction_id", extractionID, "error", err)
 			resetBatch()
 		}
