@@ -1040,7 +1040,19 @@ export interface ChatStreamEvent {
     max?: number;
     phase?: "thinking" | "running" | "final-delivery" | "done";
     tools?: string[];
+    // usage 载荷 — 仅在 type === "done" 时填充。汇报本轮结束后的
+    // 上下文占用，供聊天页面渲染「已用上下文百分比」指示器。
+    // usedTokens 优先取 provider 报告的真实输入侧 token，缺失时回退到
+    // chars/4 估算；triggerTokens 是后端自动压缩的触发阈值（token 数）。
+    usage?: ContextUsage;
   };
+}
+
+// ContextUsage 镜像后端 done 事件的 usage 载荷。
+export interface ContextUsage {
+  usedTokens: number;
+  contextWindow: number;
+  triggerTokens: number;
 }
 
 export async function sendChatStream(

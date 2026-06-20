@@ -667,6 +667,41 @@ func (a *Agent) meterTokens(ctx context.Context, sessionKey string, u provider.U
 	}
 }
 
+// usageInputTokens sums the input-side token counts a provider reports for one
+// LLM call: uncached input plus prompt-cache read + creation. Both provider
+// adapters normalize these so they never double-count (OpenAI subtracts cached
+// from input, Anthropic reports the three separately), so the sum is the real
+// number of context tokens the request occupied.
+func usageInputTokens(u provider.Usage) int {
+	return u.InputTokens + u.CacheReadTokens + u.CacheCreationTokens
+}
+
+// contextUsageData builds the payload attached to a turn's terminal "done"
+// event so the chat UI can render a context-utilization indicator. usedTokens
+// prefers the provider-reported input-side count (most accurate); when the
+// provider reported nothing this turn it falls back to the chars/4 estimate the
+// compaction trigger itself uses, so the indicator still tracks growth.
+// contextWindow and triggerTokens are echoed straight from the same normalized
+// compaction options the agent enforces, so the client renders the identical
+// budget and auto-compaction threshold without re-deriving them (and without
+// drifting if the constants change).
+func (a *Agent) contextUsageData(last provider.Usage, requestMessages []provider.Message, toolDefs []provider.Tool) map[string]any {
+	used := usageInputTokens(last)
+	if used <= 0 {
+		used = EstimateRequestTokens(requestMessages, toolDefs)
+	}
+	opts := normalizeCompactOptions(CompactOptions{
+		Mode:            CompactModeProactive,
+		ContextWindow:   a.contextWindow,
+		MaxOutputTokens: a.maxTokens,
+	})
+	return map[string]any{
+		"usedTokens":    used,
+		"contextWindow": opts.ContextWindow,
+		"triggerTokens": compactTriggerLimit(opts),
+	}
+}
+
 // StreamChatToResponse 是provider.Chat 的直接替代品
 // 通过管道将文本块实时传输到聊天事件通道
 // content_delta 事件。 Web UI 订阅者将每个增量附加到
@@ -1774,7 +1809,7 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 		"content":  resp.Content,
 		"metadata": planMeta,
 	}})
-	emitEvent(ctx, ChatEvent{Type: "done"})
+	emitEvent(ctx, ChatEvent{Type: "done", Data: map[string]any{"usage": a.contextUsageData(resp.Usage, messages, toolDefs)}})
 	return resp.Content
 }
 
@@ -1998,6 +2033,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 对其进行拆分 (AllowSplit=true) 或折叠为换行符。
 	var replyParts []string
 
+	// lastUsage 保存本轮最近一次 LLM 调用报告的 token 用量，
+	// 用于在 "done" 事件上向前端汇报上下文占用百分比。仅在
+	// provider 实际报告了用量时更新，避免后续零值调用抹掉真实值。
+	var lastUsage provider.Usage
+
 	// 反应循环
 	for i := 0; i < a.maxToolIterations; i++ {
 		slog.Info("agent loop iteration",
@@ -2065,6 +2105,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			return "Sorry, I encountered an error processing your request."
 		}
 		a.meterTokens(ctx, sess.Key(), resp.Usage)
+		if usageInputTokens(resp.Usage) > 0 {
+			lastUsage = resp.Usage
+		}
 		a.maybeRecoverToolCalls(resp)
 
 		if !resp.HasToolCalls() {
@@ -2090,7 +2133,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				messages = a.appendSteer(ctx, sess, messages, steer)
 				continue
 			}
-			emitEvent(ctx, ChatEvent{Type: "done"})
+			emitEvent(ctx, ChatEvent{Type: "done", Data: map[string]any{"usage": a.contextUsageData(lastUsage, messages, toolDefs)}})
 			a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem, anchor)
 			return joinReplyParts(replyParts)
 		}
@@ -2346,6 +2389,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	if finalErr == nil {
 		finalContent = finalResp.Content
 		a.meterTokens(ctx, sess.Key(), finalResp.Usage)
+		if usageInputTokens(finalResp.Usage) > 0 {
+			lastUsage = finalResp.Usage
+		}
 	}
 	if finalContent == "" {
 		// 综合调用本身失败或返回空 - 回退到
@@ -2367,7 +2413,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	if finalContent != "" {
 		replyParts = append(replyParts, finalContent)
 	}
-	emitEvent(ctx, ChatEvent{Type: "done"})
+	emitEvent(ctx, ChatEvent{Type: "done", Data: map[string]any{"usage": a.contextUsageData(lastUsage, finalMessages, toolDefs)}})
 	a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem, anchor)
 	return joinReplyParts(replyParts)
 }
