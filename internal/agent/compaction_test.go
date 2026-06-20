@@ -219,7 +219,7 @@ func TestEmergencyCompactionFallsBackToDeterministicSummaryWithFifteenMessageTai
 	}
 }
 
-func TestEmergencyCompactionSplitsSingleHugeTurnAtSafeMessageTail(t *testing.T) {
+func TestEmergencyCompactionSummarizesSingleHugeTurnWithoutTail(t *testing.T) {
 	msgs := []provider.Message{
 		{Role: "user", Content: "huge turn request", Origin: provider.OriginUser},
 	}
@@ -243,18 +243,12 @@ func TestEmergencyCompactionSplitsSingleHugeTurnAtSafeMessageTail(t *testing.T) 
 	if err != nil {
 		t.Fatalf("compact: %v", err)
 	}
-	if len(out.Messages) != 16 {
-		t.Fatalf("message count = %d, want summary + 15-message segment tail", len(out.Messages))
+	if len(out.Messages) != 1 {
+		t.Fatalf("message count = %d, want summary only with zero tail", len(out.Messages))
 	}
 	if !strings.Contains(f.gotSummaryRequest, "huge turn request") ||
-		!strings.Contains(f.gotSummaryRequest, "assistant segment 084") {
-		t.Fatalf("summary request should cover the compressed prefix inside the huge turn:\n%s", f.gotSummaryRequest)
-	}
-	if strings.Contains(f.gotSummaryRequest, "assistant segment 085") {
-		t.Fatalf("summary request included preserved segment tail:\n%s", f.gotSummaryRequest)
-	}
-	if got := out.Messages[1].Content; got != "assistant segment 085" {
-		t.Fatalf("segment tail should start at message 85, got %q", got)
+		!strings.Contains(f.gotSummaryRequest, "assistant segment 099") {
+		t.Fatalf("summary request should cover the whole huge turn:\n%s", f.gotSummaryRequest)
 	}
 }
 
@@ -293,7 +287,7 @@ func TestCompactionTailStartRelaxesMinimumTurnsWhenItWouldBlockCompression(t *te
 	}
 }
 
-func TestCompactionTailStartUsesMessageTailWhenSingleTurnExceedsTarget(t *testing.T) {
+func TestCompactionTailStartUsesZeroTailWhenSingleTurnExceedsTarget(t *testing.T) {
 	msgs := []provider.Message{
 		{Role: "user", Content: "single huge turn", Origin: provider.OriginUser},
 	}
@@ -305,9 +299,28 @@ func TestCompactionTailStartUsesMessageTailWhenSingleTurnExceedsTarget(t *testin
 		})
 	}
 
-	got := compactionTailStart(msgs, CompactOptions{TailTargetMessages: 20})
-	if got != 80 {
-		t.Fatalf("tail start = %d, want 80 to preserve a 20-message safe segment tail", got)
+	got := compactionTailStart(msgs, CompactOptions{
+		TailTargetMessages: 20,
+		ContextWindow:      1000,
+		TargetPercent:      55,
+	})
+	if got != len(msgs) {
+		t.Fatalf("tail start = %d, want %d to summarize the whole oversized turn", got, len(msgs))
+	}
+}
+
+func TestCompactionTailStartUsesZeroTailWhenSingleMessageExceedsTarget(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: "user", Content: strings.Repeat("large message ", 200), Origin: provider.OriginUser},
+	}
+
+	got := compactionTailStart(msgs, CompactOptions{
+		TailTargetMessages: 20,
+		ContextWindow:      1000,
+		TargetPercent:      55,
+	})
+	if got != len(msgs) {
+		t.Fatalf("tail start = %d, want %d to summarize the whole oversized message", got, len(msgs))
 	}
 }
 
