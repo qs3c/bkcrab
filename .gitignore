@@ -48,6 +48,7 @@ bkclaw.json
 debug/
 __debug_bin*
 DESIGN.md
+.worktrees/
 
 # Air hot reload
 tmp/
