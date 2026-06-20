@@ -396,14 +396,43 @@ func safeCompactionCutoff(messages []provider.Message, cutoff int) int {
 func compactionTailStart(messages []provider.Message, opts CompactOptions) int {
 	opts = normalizeCompactOptions(opts)
 	minTailTurns := opts.MinTailTurns
-	if minTailTurns < MinimumTailTurns {
-		minTailTurns = MinimumTailTurns
-	}
 	targetMessages := opts.TailTargetMessages
 	if len(messages) == 0 {
 		return 0
 	}
 
+	segment := segmentTailCandidate(messages, targetMessages)
+	strictComplete := completeTurnTailCandidate(messages, targetMessages, minTailTurns)
+	relaxedComplete := completeTurnTailCandidate(messages, targetMessages, 1)
+
+	complete := strictComplete
+	tolerance := tailBoundaryTolerance(targetMessages)
+	if !complete.ok || (relaxedComplete.ok && relaxedComplete.distance+tolerance < complete.distance) {
+		complete = relaxedComplete
+	}
+
+	if complete.ok {
+		if !segment.ok || complete.distance <= segment.distance+tolerance {
+			return complete.cutoff
+		}
+	}
+	if segment.ok {
+		return segment.cutoff
+	}
+	return 0
+}
+
+type tailCandidate struct {
+	cutoff   int
+	tailLen  int
+	distance int
+	ok       bool
+}
+
+func completeTurnTailCandidate(messages []provider.Message, targetMessages, minKeepTurns int) tailCandidate {
+	if minKeepTurns < 1 {
+		minKeepTurns = 1
+	}
 	userStarts := make([]int, 0)
 	for i, msg := range messages {
 		if msg.Role == "user" && msg.Origin == provider.OriginUser {
@@ -411,17 +440,11 @@ func compactionTailStart(messages []provider.Message, opts CompactOptions) int {
 		}
 	}
 	if len(userStarts) == 0 {
-		if len(messages) <= targetMessages {
-			return 0
-		}
-		return safeCompactionCutoff(messages, len(messages)-targetMessages)
+		return tailCandidate{}
 	}
-
-	minKeepTurns := minTailTurns
 	if len(userStarts) < minKeepTurns {
 		minKeepTurns = len(userStarts)
 	}
-
 	bestCutoff := -1
 	bestDistance := 0
 	bestTailLen := 0
@@ -431,6 +454,9 @@ func compactionTailStart(messages []provider.Message, opts CompactOptions) int {
 			continue
 		}
 		cutoff := safeCompactionCutoff(messages, userStarts[i])
+		if cutoff <= 0 {
+			continue
+		}
 		tailLen := len(messages) - cutoff
 		distance := absInt(tailLen - targetMessages)
 		if bestCutoff < 0 || distance < bestDistance || (distance == bestDistance && tailLen > bestTailLen) {
@@ -440,9 +466,45 @@ func compactionTailStart(messages []provider.Message, opts CompactOptions) int {
 		}
 	}
 	if bestCutoff < 0 {
-		return 0
+		return tailCandidate{}
 	}
-	return bestCutoff
+	return tailCandidate{
+		cutoff:   bestCutoff,
+		tailLen:  bestTailLen,
+		distance: bestDistance,
+		ok:       true,
+	}
+}
+
+func segmentTailCandidate(messages []provider.Message, targetMessages int) tailCandidate {
+	if len(messages) <= targetMessages {
+		return tailCandidate{}
+	}
+	cutoff := safeCompactionCutoff(messages, len(messages)-targetMessages)
+	if cutoff <= 0 {
+		return tailCandidate{}
+	}
+	if cutoff > len(messages) {
+		cutoff = len(messages)
+	}
+	tailLen := len(messages) - cutoff
+	return tailCandidate{
+		cutoff:   cutoff,
+		tailLen:  tailLen,
+		distance: absInt(tailLen - targetMessages),
+		ok:       true,
+	}
+}
+
+func tailBoundaryTolerance(targetMessages int) int {
+	tolerance := targetMessages / 4
+	if tolerance < 2 {
+		return 2
+	}
+	if tolerance > 6 {
+		return 6
+	}
+	return tolerance
 }
 
 func absInt(n int) int {
