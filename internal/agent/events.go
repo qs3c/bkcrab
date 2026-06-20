@@ -8,7 +8,7 @@ import (
 
 // ChatEvent 表示代理 ReAct 循环期间发出的实时事件。
 type ChatEvent struct {
-	Type string         `json:"type"` // "content", "content_delta", "tool_call", "tool_result", "steer", "error", "done", "turn_pending", "subagent_progress"
+	Type string         `json:"type"` // "content", "content_delta", "tool_call", "tool_result", "steer", "error", "done", "turn_pending", "subagent_progress", "compaction"
 	Data map[string]any `json:"data,omitempty"`
 }
 

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,8 +25,9 @@ type slashResult struct {
 	continuationQueued bool
 }
 
-// handleSlashCommand 检查消息是否为斜杠命令并处理它。
-func (a *Agent) handleSlashCommand(msg bus.InboundMessage) slashResult {
+// handleSlashCommand 检查消息是否为斜杠命令并处理它。ctx 透传给需要发起
+// LLM 调用的子命令（目前是 /compact 的摘要调用），其余子命令忽略它。
+func (a *Agent) handleSlashCommand(ctx context.Context, msg bus.InboundMessage) slashResult {
 	text := strings.TrimSpace(msg.Text)
 	if !strings.HasPrefix(text, "/") {
 		return slashResult{}
@@ -86,7 +88,7 @@ func (a *Agent) handleSlashCommand(msg bus.InboundMessage) slashResult {
 		return a.slashUndo(msg)
 
 	case "/compact":
-		return a.slashCompact(msg, strings.Join(args, " "))
+		return a.slashCompact(ctx, msg, strings.Join(args, " "))
 
 	case "/status":
 		return a.slashStatus(msg)
@@ -245,7 +247,7 @@ func (a *Agent) slashUndo(msg bus.InboundMessage) slashResult {
 	return slashResult{handled: true, reply: "Nothing to undo."}
 }
 
-func (a *Agent) slashCompact(msg bus.InboundMessage, focus string) slashResult {
+func (a *Agent) slashCompact(ctx context.Context, msg bus.InboundMessage, focus string) slashResult {
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
 	sessionMsgs := sess.GetMessages()
 
@@ -260,6 +262,9 @@ func (a *Agent) slashCompact(msg bus.InboundMessage, focus string) slashResult {
 		Model:             a.model,
 		ContextWindow:     a.contextWindow,
 		MaxOutputTokens:   a.maxTokens,
+		// 透传回合 ctx，使手动 /compact 的摘要 LLM 调用拿到非 nil
+		// context；否则 OpenAI 兼容 provider 每次都失败并退化为粗糙摘要。
+		Ctx:               ctx,
 		Focus:             focus,
 		TailTurns:         DefaultTailTurns,
 		MinTailTurns:      MinimumTailTurns,

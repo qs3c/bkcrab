@@ -1013,7 +1013,8 @@ export interface ChatStreamEvent {
     | "steer"
     | "error"
     | "done"
-    | "subagent_progress";
+    | "subagent_progress"
+    | "compaction";
   // 由 chat_events 分配的按会话单调序列号。让
   // 聊天页面去重在活跃 POST 流和并行
   // /api/chat/subscribe SSE 连接上到达的事件。-1 表示
@@ -1045,6 +1046,9 @@ export interface ChatStreamEvent {
     // usedTokens 优先取 provider 报告的真实输入侧 token，缺失时回退到
     // chars/4 估算；triggerTokens 是后端自动压缩的触发阈值（token 数）。
     usage?: ContextUsage;
+    // active — 仅在 type === "compaction" 时填充。true=开始同步压缩上下文，
+    // false=压缩结束。聊天页据此在消息流末尾显示/隐藏「正在压缩上下文…」横杠。
+    active?: boolean;
   };
 }
 

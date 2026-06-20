@@ -535,6 +535,10 @@ export function ChatScreen() {
   // 页脚渲染「已用上下文百分比」指示器。null = 本会话尚无完成的轮次
   // （页面刷新后会重置，待下一轮再次填充）。
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
+  // 后端正在同步压缩上下文时为 true（compaction active 事件）。驱动消息流
+  // 末尾的「正在压缩上下文…」横杠。压缩在轮次开始、产出任何回复前进行，
+  // 是个阻塞等待，因此需要单独提示而非复用打字指示器。
+  const [compacting, setCompacting] = useState(false);
   const [filesSheetOpen, setFilesSheetOpen] = useState(false);
   const [sessionTitle, setSessionTitle] = useState<string>("");
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -767,6 +771,8 @@ export function ChatScreen() {
           tools?: string[];
           // done 事件携带的上下文占用
           usage?: ContextUsage;
+          // compaction 事件：true=开始压缩，false=结束
+          active?: boolean;
         };
       };
       try {
@@ -864,9 +870,15 @@ export function ChatScreen() {
             applySteerEvent(data.data?.content || "");
             break;
           }
+          case "compaction": {
+            claim();
+            setCompacting(!!data.data?.active);
+            break;
+          }
           case "done": {
             claim();
             if (data.data?.usage) setContextUsage(data.data.usage);
+            setCompacting(false);
             // 防御性清理——content 事件应已封口流式气泡，但在 content 事件
             // 到达之前出错的轮次会使 ref 悬空，导致下一轮的首个
             // content_delta 写入过期的 id。
@@ -1496,6 +1508,13 @@ export function ChatScreen() {
               ...prev,
               { id: `e-${Date.now()}`, role: "agent", content: `Error: ${msg}`, timestamp: Date.now() },
             ]);
+            setCompacting(false);
+            break;
+          }
+          case "compaction": {
+            // 后端在轮次开始、产出回复前同步压缩上下文。active=true 时显示横杠，
+            // false 时收起。这是个阻塞等待，单独提示让用户知道延迟来自压缩而非模型。
+            setCompacting(!!evt.data?.active);
             break;
           }
           case "done": {
@@ -1503,6 +1522,7 @@ export function ChatScreen() {
             // 「已用上下文百分比」指示器。并行的 /api/chat/subscribe 路径也会
             // 收到同一个带 seq 的 done 事件，但上方的 seq 去重确保只处理一次。
             if (evt.data?.usage) setContextUsage(evt.data.usage);
+            setCompacting(false);
             break;
           }
         }
@@ -1625,6 +1645,9 @@ export function ChatScreen() {
       // 如果网络抖动丢失了该事件，我们不希望过时的"第 5/20 次迭代"
       // 停留在已完成的轮次下。
       setSubagentProgress(null);
+      // 同理兜底压缩横杠：轮次以任何方式结束（完成/出错/中止）都收起，
+      // 防止丢失 compaction(active=false) 事件时横杠卡住。
+      setCompacting(false);
       textareaRef.current?.focus();
     }
   }, [input, attachments, selectedAgent, sessionId, sending, loadSessions, pathname, router, urlProjectId, planMode]);
@@ -2147,7 +2170,21 @@ export function ChatScreen() {
               }
             })()}
 
-            {sending && (
+            {compacting && (
+              // 上下文压缩横杠：压缩在轮次开始、产出任何回复前同步进行，
+              // 用一道横贯的横杠 + 旋转图标提示「正在压缩上下文…」，让用户
+              // 明白此处的停顿来自压缩而非模型思考。压缩结束（或轮次终止）即收起。
+              <div className="my-1 flex items-center gap-3 text-xs text-amber-600 dark:text-amber-400" aria-live="polite">
+                <span className="h-px flex-1 bg-gradient-to-r from-transparent to-amber-500/40" />
+                <span className="flex shrink-0 items-center gap-1.5">
+                  <span className="size-3 shrink-0 rounded-full border-2 border-amber-500 border-t-transparent animate-spin" />
+                  正在压缩上下文…
+                </span>
+                <span className="h-px flex-1 bg-gradient-to-l from-transparent to-amber-500/40" />
+              </div>
+            )}
+
+            {sending && !compacting && (
               <div className="flex justify-start">
                 <div className="bg-muted rounded-2xl rounded-bl-md px-4 py-3">
                   <div className="flex items-center gap-1">

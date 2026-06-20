@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -60,6 +61,23 @@ type CompactOptions struct {
 	ArchiveUserID     string
 	ArchiveAgentID    string
 	ArchiveSessionKey string
+	// Ctx is the context passed to Provider.Chat for the summarizer LLM call.
+	// Callers thread the turn's context here so the summary inherits its
+	// request-scoped values (chatter user id, trace) and deadline. It must be
+	// non-nil for OpenAI-compatible providers: http.NewRequestWithContext
+	// rejects a nil context, so a nil ctx makes every summary attempt fail and
+	// silently degrades compaction to deterministicSummaryFallback.
+	// summarizeWithRetries falls back to context.Background() when this is unset
+	// (deterministic-output tests, emergency mode which never summarizes).
+	Ctx context.Context
+	// OnTriggered, when set, is called once at the start of the expensive
+	// (triggered) compaction path — i.e. proactive mode over the trigger
+	// threshold, or any manual compaction — but never on the no-op sanitize
+	// path taken by ordinary under-threshold turns. Callers use it to surface a
+	// "compacting context…" indicator for the synchronous wait that follows
+	// (pruning + the summarizer LLM call). It runs synchronously on the
+	// compaction goroutine, so keep it cheap and non-blocking.
+	OnTriggered func()
 }
 
 // EstimateTokens provides a rough token estimate: chars/4.
@@ -302,6 +320,10 @@ func compactMessagesTriggered(messages []provider.Message, opts CompactOptions, 
 		"mode", opts.Mode,
 	)
 
+	if opts.OnTriggered != nil {
+		opts.OnTriggered()
+	}
+
 	logFile, err := writeHistoryLog(messages, opts.Workspace)
 	if err != nil {
 		slog.Warn("failed to write history log", "error", err)
@@ -494,9 +516,14 @@ func summarizeWithRetries(opts CompactOptions, prompt []provider.Message) (strin
 		return "", fmt.Errorf("summarize conversation: provider is nil")
 	}
 
+	ctx := opts.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	var lastErr error
 	for attempt := 0; attempt < opts.SummaryMaxRetries; attempt++ {
-		resp, err := opts.Provider.Chat(nil, prompt, nil, opts.Model, 2048, 0.3)
+		resp, err := opts.Provider.Chat(ctx, prompt, nil, opts.Model, 2048, 0.3)
 		if err != nil {
 			lastErr = err
 			continue

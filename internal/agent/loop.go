@@ -833,6 +833,32 @@ func (a *Agent) compactionOptions(mode CompactMode, overhead []provider.Message,
 	}
 }
 
+// compactWithProgress runs proactive compaction and brackets the expensive
+// (triggered) path with "compaction" chat events, so the web UI can show a
+// "compacting context…" divider during the synchronous wait it imposes at the
+// top of a turn. The OnTriggered hook fires only when compaction actually does
+// work — over the trigger threshold — so the indicator never flashes on
+// ordinary under-threshold turns. The trailing event is emitted only when the
+// leading one was, keeping start/end balanced even if compaction errored.
+func (a *Agent) compactWithProgress(ctx context.Context, sessionMsgs []provider.Message, opts CompactOptions) (*CompactResult, error) {
+	// Thread the turn's ctx into the summarizer LLM call. The gateway already
+	// detaches this ctx from the request and caps it at agentTurnTimeout, so the
+	// summary survives a browser disconnect without us re-wrapping (and stripping
+	// that deadline) here. Without a non-nil ctx, OpenAI-compatible Chat() fails
+	// on every attempt and compaction silently falls back to a crude summary.
+	opts.Ctx = ctx
+	triggered := false
+	opts.OnTriggered = func() {
+		triggered = true
+		emitEvent(ctx, ChatEvent{Type: "compaction", Data: map[string]any{"active": true}})
+	}
+	res, err := CompactMessagesWithOptions(sessionMsgs, opts)
+	if triggered {
+		emitEvent(ctx, ChatEvent{Type: "compaction", Data: map[string]any{"active": false}})
+	}
+	return res, err
+}
+
 func (a *Agent) emergencyCompactRequestMessages(sess *session.Session, overhead []provider.Message, toolDefs []provider.Tool) ([]provider.Message, bool) {
 	result, err := CompactMessagesWithOptions(sess.GetMessages(), a.compactionOptions(CompactModeEmergency, overhead, toolDefs, sess.SessionKey()))
 	if err != nil {
@@ -1859,7 +1885,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 真正的答复将在下一个巴士发射的转弯处到来。”没有它，
 	// 流立即关闭并且打字指示器消失
 	// 当模型仍在预热时。
-	if result := a.handleSlashCommand(msg); result.handled {
+	if result := a.handleSlashCommand(ctx, msg); result.handled {
 		if result.reply != "" {
 			emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{"content": result.reply}})
 		}
@@ -1992,7 +2018,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	overheadMessages := a.buildRequestOverhead(systemPrompt, msg, chatterMem)
 	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessagesWithOptions(sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs, sess.SessionKey()))
+	compactResult, err := a.compactWithProgress(ctx, sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs, sess.SessionKey()))
 	if err != nil {
 		slog.Warn("compaction error", "agent", a.name, "error", err)
 	}
@@ -2684,7 +2710,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	// 重用 HandleMessage 中的设置逻辑。空回复是“已处理
 	// 但沉默”——参见 HandleMessage 双胞胎。仍然发出 Done
 	// 块，以便等待流的调用者不会挂起。
-	if result := a.handleSlashCommand(msg); result.handled {
+	if result := a.handleSlashCommand(ctx, msg); result.handled {
 		ch := make(chan provider.StreamChunk, 2)
 		go func() {
 			ch <- provider.StreamChunk{Content: result.reply, Done: true}
@@ -2740,7 +2766,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	overheadMessages := a.buildRequestOverhead(systemPrompt, msg, chatterMem)
 	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessagesWithOptions(sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs, sess.SessionKey()))
+	compactResult, err := a.compactWithProgress(ctx, sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs, sess.SessionKey()))
 	if err != nil {
 		slog.Warn("compaction error", "agent", a.name, "error", err)
 	}
