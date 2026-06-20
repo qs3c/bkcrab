@@ -281,10 +281,16 @@ buildPrompt:
 	for _, g := range groups {
 		sb.WriteString(fmt.Sprintf("### Session %s\n", g.SessionKey))
 		for _, m := range g.Messages {
-			if m.Role == "system" || m.Origin != "" {
-				continue // 跳过 system 与 goal_context 等合成注入行
+			if m.Origin != "" {
+				continue // 跳过 goal_context 等合成注入行
 			}
-			content := m.Content
+			if m.Role != "user" && m.Role != "assistant" {
+				continue
+			}
+			content := strings.TrimSpace(m.Content)
+			if content == "" {
+				continue
+			}
 			if len(content) > 300 {
 				content = content[:300] + "..."
 			}

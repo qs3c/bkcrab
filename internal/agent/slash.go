@@ -261,7 +261,6 @@ func (a *Agent) slashCompact(msg bus.InboundMessage, focus string) slashResult {
 		ContextWindow:     a.contextWindow,
 		MaxOutputTokens:   a.maxTokens,
 		Focus:             focus,
-		TailTurns:         DefaultTailTurns,
 		MinTailTurns:      MinimumTailTurns,
 		SummaryMaxRetries: DefaultSummaryMaxRetries,
 		ArchiveStore:      a.dataStore,

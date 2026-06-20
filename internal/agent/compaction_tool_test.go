@@ -558,9 +558,9 @@ func (s *recordingContextArchiveStore) SaveContextArchive(ctx context.Context, r
 	return nil
 }
 
-func TestCompactionKeepsRecentFourUserTurns(t *testing.T) {
+func TestCompactionKeepsDynamicTailNearTargetMessages(t *testing.T) {
 	var msgs []provider.Message
-	for i := 1; i <= 6; i++ {
+	for i := 1; i <= 12; i++ {
 		msgs = append(msgs,
 			provider.Message{Role: "user", Content: "user turn", Origin: provider.OriginUser},
 			provider.Message{Role: "user", Content: "runtime context", Origin: provider.OriginGoalContext},
@@ -570,8 +570,8 @@ func TestCompactionKeepsRecentFourUserTurns(t *testing.T) {
 
 	got := compactionTailStart(msgs, CompactOptions{})
 
-	if got != 6 {
-		t.Fatalf("tail start = %d, want 6 (the third real user turn)", got)
+	if got != 15 {
+		t.Fatalf("tail start = %d, want 15 to preserve a 21-message complete-turn tail", got)
 	}
 
 	userTurns := 0
@@ -580,7 +580,7 @@ func TestCompactionKeepsRecentFourUserTurns(t *testing.T) {
 			userTurns++
 		}
 	}
-	if userTurns != DefaultTailTurns {
-		t.Fatalf("tail has %d real user turns, want %d", userTurns, DefaultTailTurns)
+	if userTurns != 7 {
+		t.Fatalf("tail has %d real user turns, want 7 as closest complete-turn tail to %d messages", userTurns, DefaultTailTargetMessages)
 	}
 }

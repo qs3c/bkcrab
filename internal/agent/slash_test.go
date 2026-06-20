@@ -19,7 +19,7 @@ func TestSlashCompactUsesManualFocus(t *testing.T) {
 		Text:    "/compact preserve filesystem decisions",
 	}
 	sess := sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 12; i++ {
 		sess.Append(provider.Message{Role: "user", Content: "user turn", Origin: provider.OriginUser})
 		sess.Append(provider.Message{Role: "assistant", Content: "assistant turn", Origin: provider.OriginUser})
 	}
@@ -45,7 +45,7 @@ func TestSlashCompactUsesManualFocus(t *testing.T) {
 	if !strings.Contains(f.gotSummaryRequest, "Manual compaction focus:\npreserve filesystem decisions") {
 		t.Fatalf("manual focus missing from summary request: %s", f.gotSummaryRequest)
 	}
-	if got := len(sess.GetMessages()); got >= 10 {
+	if got := len(sess.GetMessages()); got >= 24 {
 		t.Fatalf("session messages were not compacted, got %d", got)
 	}
 }

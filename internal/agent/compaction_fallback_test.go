@@ -55,7 +55,7 @@ func TestIsContextLimitError(t *testing.T) {
 	}
 }
 
-func TestEmergencyCompactionUsesDeterministicFallbackWithoutLLM(t *testing.T) {
+func TestEmergencyCompactionUsesReactiveSummary(t *testing.T) {
 	msgs := []provider.Message{
 		{Role: "user", Content: "OLD_USER_SHOULD_DROP " + strings.Repeat("o", 160), Origin: provider.OriginUser},
 		{Role: "assistant", Content: "old assistant " + strings.Repeat("a", 160)},
@@ -98,8 +98,8 @@ func TestEmergencyCompactionUsesDeterministicFallbackWithoutLLM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compact: %v", err)
 	}
-	if f.calls != 0 {
-		t.Fatalf("summary calls = %d, want 0 for emergency compaction", f.calls)
+	if f.calls != 1 {
+		t.Fatalf("summary calls = %d, want 1 for emergency compaction", f.calls)
 	}
 	if !out.Pruned {
 		t.Fatal("expected emergency compaction to prune")
@@ -111,7 +111,7 @@ func TestEmergencyCompactionUsesDeterministicFallbackWithoutLLM(t *testing.T) {
 	if first.Role != "user" {
 		t.Fatalf("first role = %q, want user", first.Role)
 	}
-	for _, marker := range []string{"[Context compressed without LLM]", "context-limit error", "dropped"} {
+	for _, marker := range []string{"[Reactive Context Summary]", "llm summary"} {
 		if !strings.Contains(first.Content, marker) {
 			t.Fatalf("first message missing marker %q: %s", marker, first.Content)
 		}
@@ -168,15 +168,17 @@ func TestEmergencyCompactionPrunesShortHistory(t *testing.T) {
 			if len(out.Messages) < 2 {
 				t.Fatalf("expected marker plus recent history, got %+v", out.Messages)
 			}
-			if !strings.Contains(out.Messages[0].Content, "[Context compressed without LLM]") {
-				t.Fatalf("first message missing emergency marker: %+v", out.Messages[0])
+			assertContainsAll(t, out.Messages[0].Content,
+				"[Reactive Context Summary]",
+				"deterministic fallback",
+			)
+			tailText := messagesText(out.Messages[1:])
+			if strings.Contains(tailText, "OLD_") {
+				t.Fatalf("old message was preserved in raw tail:\n%s", tailText)
 			}
 			joined := messagesText(out.Messages)
 			if !strings.Contains(joined, "KEEP_RECENT_USER_TURN") {
 				t.Fatalf("recent user turn was not preserved:\n%s", joined)
-			}
-			if strings.Contains(joined, "OLD_") {
-				t.Fatalf("old message was not dropped:\n%s", joined)
 			}
 			assertValidToolPairs(t, out.Messages)
 		})
@@ -208,11 +210,8 @@ func TestEmergencyRetryRetriesWithinSameIteration(t *testing.T) {
 			return nil, errors.New("too many tokens")
 		}
 		joined := messagesText(request)
-		if !strings.Contains(joined, "[Context compressed without LLM]") {
-			t.Fatalf("retry request missing emergency marker:\n%s", joined)
-		}
-		if strings.Contains(joined, "OLD_USER_SHOULD_DROP") {
-			t.Fatalf("retry request kept old message:\n%s", joined)
+		if !strings.Contains(joined, "[Reactive Context Summary]") {
+			t.Fatalf("retry request missing emergency summary:\n%s", joined)
 		}
 		if !strings.Contains(joined, "KEEP_RECENT_USER_TURN") {
 			t.Fatalf("retry request dropped recent user turn:\n%s", joined)
@@ -231,8 +230,8 @@ func TestEmergencyRetryRetriesWithinSameIteration(t *testing.T) {
 	if !retried {
 		t.Fatal("expected emergency retry to be reported")
 	}
-	if !strings.Contains(messagesText(rebuilt), "[Context compressed without LLM]") {
-		t.Fatalf("rebuilt canonical messages missing marker:\n%s", messagesText(rebuilt))
+	if !strings.Contains(messagesText(rebuilt), "[Reactive Context Summary]") {
+		t.Fatalf("rebuilt canonical messages missing reactive summary:\n%s", messagesText(rebuilt))
 	}
 }
 

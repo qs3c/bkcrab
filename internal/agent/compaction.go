@@ -27,39 +27,40 @@ const (
 
 	DefaultCompactionTriggerPercent = 75
 	DefaultCompactionTargetPercent  = 55
-	DefaultTailTurns                = 4
+	DefaultTailTargetMessages       = 20
+	DefaultEmergencyTailMessages    = 15
 	MinimumTailTurns                = 2
 	DefaultSummaryMaxRetries        = 3
+	DefaultEmergencySummaryRetries  = 1
 	fallbackSummaryMaxRunes         = 12000
 	fallbackSnippetMaxRunes         = 220
 )
 
 const (
-	// PruneTurnAge is the number of most-recent messages preserved verbatim by
-	// the legacy compaction path. Later tasks replace this with turn-aware tail
-	// selection, so Task 2 intentionally keeps the existing behavior.
+	// PruneTurnAge is kept for compatibility with older tests/callers. The
+	// active pruning boundary now comes from the shared dynamic tail policy.
 	PruneTurnAge = 20
 )
 
 type CompactOptions struct {
-	Mode              CompactMode
-	Workspace         string
-	Provider          provider.Provider
-	Model             string
-	ContextWindow     int
-	MaxOutputTokens   int
-	TriggerPercent    int
-	TargetPercent     int
-	TailTurns         int
-	MinTailTurns      int
-	Focus             string
-	OverheadMessages  []provider.Message
-	ToolDefs          []provider.Tool
-	SummaryMaxRetries int
-	ArchiveStore      contextArchiveStore
-	ArchiveUserID     string
-	ArchiveAgentID    string
-	ArchiveSessionKey string
+	Mode               CompactMode
+	Workspace          string
+	Provider           provider.Provider
+	Model              string
+	ContextWindow      int
+	MaxOutputTokens    int
+	TriggerPercent     int
+	TargetPercent      int
+	TailTargetMessages int
+	MinTailTurns       int
+	Focus              string
+	OverheadMessages   []provider.Message
+	ToolDefs           []provider.Tool
+	SummaryMaxRetries  int
+	ArchiveStore       contextArchiveStore
+	ArchiveUserID      string
+	ArchiveAgentID     string
+	ArchiveSessionKey  string
 }
 
 // EstimateTokens provides a rough token estimate: chars/4.
@@ -111,7 +112,6 @@ func CompactMessages(messages []provider.Message, workspace string, prov provide
 		ContextWindow:     DefaultContextWindow,
 		TriggerPercent:    DefaultCompactionTriggerPercent,
 		TargetPercent:     DefaultCompactionTargetPercent,
-		TailTurns:         DefaultTailTurns,
 		MinTailTurns:      MinimumTailTurns,
 		SummaryMaxRetries: DefaultSummaryMaxRetries,
 	})
@@ -208,11 +208,17 @@ func normalizeCompactOptions(opts CompactOptions) CompactOptions {
 	if opts.TargetPercent > 100 {
 		opts.TargetPercent = 100
 	}
-	if opts.TailTurns <= 0 {
-		opts.TailTurns = DefaultTailTurns
+	if opts.TailTargetMessages <= 0 && opts.Mode == CompactModeEmergency {
+		opts.TailTargetMessages = DefaultEmergencyTailMessages
+	}
+	if opts.TailTargetMessages <= 0 {
+		opts.TailTargetMessages = DefaultTailTargetMessages
 	}
 	if opts.MinTailTurns <= 0 {
 		opts.MinTailTurns = MinimumTailTurns
+	}
+	if opts.SummaryMaxRetries <= 0 && opts.Mode == CompactModeEmergency {
+		opts.SummaryMaxRetries = DefaultEmergencySummaryRetries
 	}
 	if opts.SummaryMaxRetries <= 0 {
 		opts.SummaryMaxRetries = DefaultSummaryMaxRetries
@@ -251,46 +257,65 @@ func compactionRequestMessages(messages, overhead []provider.Message) []provider
 }
 
 func emergencyCompactMessages(messages []provider.Message, opts CompactOptions, beforeTokens int) *CompactResult {
-	sanitized, _ := sanitizeToolPairsWithChange(messages)
+	slog.Info(
+		"emergency context compaction triggered",
+		"tokens", beforeTokens,
+		"message_count", len(messages),
+	)
+
+	logFile, err := writeHistoryLog(messages, opts.Workspace)
+	if err != nil {
+		slog.Warn("failed to write emergency history log", "error", err)
+	}
+
+	sanitized, sanitizedChanged := sanitizeToolPairsWithChange(messages)
 	if len(sanitized) == 0 {
-		return &CompactResult{Messages: messages, Pruned: false}
+		return &CompactResult{Messages: messages, Pruned: false, LogFile: logFile}
 	}
 	if len(sanitized) == 1 {
-		return &CompactResult{Messages: sanitized, Pruned: false}
+		return &CompactResult{Messages: sanitized, Pruned: sanitizedChanged, LogFile: logFile}
 	}
 
-	cutoff := emergencyCompactionCutoff(sanitized)
+	pruned, prunedChanged := pruneOldToolResultsWithChange(sanitized, opts)
+	changed := sanitizedChanged || prunedChanged
+	cutoff := emergencyCompactionTailStart(pruned, opts)
 	if cutoff <= 0 {
-		return &CompactResult{Messages: sanitized, Pruned: false}
+		return &CompactResult{Messages: pruned, Pruned: changed, LogFile: logFile}
 	}
 
-	dropped := cutoff
-	out := make([]provider.Message, 0, len(sanitized)-cutoff+1)
-	out = append(out, provider.Message{
-		Role: "user",
-		Content: fmt.Sprintf(
-			"[Context compressed without LLM]\n%d older message(s) were dropped after a context-limit error. Estimated request tokens before emergency compression: %d. Continue from the preserved recent conversation below.",
-			dropped,
-			beforeTokens,
-		),
-	})
-	out = append(out, sanitized[cutoff:]...)
-	out, _ = sanitizeToolPairsWithChange(out)
+	compressed, err := compressOlderMessages(pruned, opts)
+	if err != nil {
+		slog.Warn("emergency compression failed, using pruned messages", "error", err)
+		return &CompactResult{Messages: pruned, Pruned: changed, LogFile: logFile}
+	}
+	compressed, _ = sanitizeToolPairsWithChange(compressed)
 
+	slog.Info(
+		"after emergency compression",
+		"tokens_after", EstimateRequestTokens(compactionRequestMessages(compressed, opts.OverheadMessages), opts.ToolDefs),
+		"tail_target_messages", opts.TailTargetMessages,
+	)
 	return &CompactResult{
-		Messages: out,
+		Messages: compressed,
 		Pruned:   true,
+		LogFile:  logFile,
 	}
 }
 
-func emergencyCompactionCutoff(messages []provider.Message) int {
-	cutoff := len(messages) / 2
-	for i := cutoff; i < len(messages); i++ {
+func emergencyCompactionTailStart(messages []provider.Message, opts CompactOptions) int {
+	cutoff := compactionTailStart(messages, opts)
+	if cutoff > 0 {
+		return cutoff
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" && messages[i].Origin == provider.OriginUser {
 			return safeCompactionCutoff(messages, i)
 		}
 	}
-	return safeCompactionCutoff(messages, cutoff)
+	if len(messages) <= 1 {
+		return 0
+	}
+	return safeCompactionCutoff(messages, len(messages)/2)
 }
 
 func compactMessagesTriggered(messages []provider.Message, opts CompactOptions, tokens int) (*CompactResult, error) {
@@ -322,7 +347,8 @@ func compactMessagesTriggered(messages []provider.Message, opts CompactOptions, 
 		}, nil
 	}
 
-	if compactionTailStart(pruned, opts) <= 0 {
+	cutoff := compactionTailStart(pruned, opts)
+	if cutoff <= 0 {
 		return &CompactResult{
 			Messages: pruned,
 			Pruned:   changed,
@@ -369,32 +395,61 @@ func safeCompactionCutoff(messages []provider.Message, cutoff int) int {
 
 func compactionTailStart(messages []provider.Message, opts CompactOptions) int {
 	opts = normalizeCompactOptions(opts)
-	tailTurns := opts.TailTurns
 	minTailTurns := opts.MinTailTurns
 	if minTailTurns < MinimumTailTurns {
 		minTailTurns = MinimumTailTurns
 	}
-	if tailTurns < minTailTurns {
-		tailTurns = minTailTurns
+	targetMessages := opts.TailTargetMessages
+	if len(messages) == 0 {
+		return 0
 	}
 
-	seenUserTurns := 0
-	earliestUserTurn := -1
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != "user" || messages[i].Origin != provider.OriginUser {
+	userStarts := make([]int, 0)
+	for i, msg := range messages {
+		if msg.Role == "user" && msg.Origin == provider.OriginUser {
+			userStarts = append(userStarts, i)
+		}
+	}
+	if len(userStarts) == 0 {
+		if len(messages) <= targetMessages {
+			return 0
+		}
+		return safeCompactionCutoff(messages, len(messages)-targetMessages)
+	}
+
+	minKeepTurns := minTailTurns
+	if len(userStarts) < minKeepTurns {
+		minKeepTurns = len(userStarts)
+	}
+
+	bestCutoff := -1
+	bestDistance := 0
+	bestTailLen := 0
+	for i := len(userStarts) - 1; i >= 0; i-- {
+		keepTurns := len(userStarts) - i
+		if keepTurns < minKeepTurns {
 			continue
 		}
-		seenUserTurns++
-		earliestUserTurn = i
-		if seenUserTurns == tailTurns {
-			return safeCompactionCutoff(messages, i)
+		cutoff := safeCompactionCutoff(messages, userStarts[i])
+		tailLen := len(messages) - cutoff
+		distance := absInt(tailLen - targetMessages)
+		if bestCutoff < 0 || distance < bestDistance || (distance == bestDistance && tailLen > bestTailLen) {
+			bestCutoff = cutoff
+			bestDistance = distance
+			bestTailLen = tailLen
 		}
 	}
-
-	if earliestUserTurn >= 0 {
-		return safeCompactionCutoff(messages, earliestUserTurn)
+	if bestCutoff < 0 {
+		return 0
 	}
-	return safeCompactionCutoff(messages, len(messages)-PruneTurnAge)
+	return bestCutoff
+}
+
+func absInt(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // pruneOldToolResults strips large tool result bodies from older messages.
@@ -404,16 +459,16 @@ func pruneOldToolResults(messages []provider.Message) []provider.Message {
 }
 
 func pruneOldToolResultsWithChange(messages []provider.Message, optList ...CompactOptions) ([]provider.Message, bool) {
-	if len(messages) <= PruneTurnAge {
-		return messages, false
-	}
 	var opts CompactOptions
 	if len(optList) > 0 {
 		opts = optList[0]
 	}
+	cutoff := compactionTailStart(messages, opts)
+	if cutoff <= 0 {
+		return messages, false
+	}
 
 	infoByIndex := buildToolResultInfoByIndex(messages)
-	cutoff := len(messages) - PruneTurnAge
 	result := make([]provider.Message, len(messages))
 	copy(result, messages)
 
@@ -437,10 +492,21 @@ func pruneOldToolResultsWithChange(messages []provider.Message, optList ...Compa
 func compressOlderMessages(messages []provider.Message, opts CompactOptions) ([]provider.Message, error) {
 	opts = normalizeCompactOptions(opts)
 	cutoff := compactionTailStart(messages, opts)
+	if opts.Mode == CompactModeEmergency {
+		cutoff = emergencyCompactionTailStart(messages, opts)
+	}
 	if cutoff <= 0 {
 		return messages, nil
 	}
 	olderMessages := messages[:cutoff]
+	summaryLabel := "[Conversation Summary]"
+	systemPrompt := "You are a conversation summarizer. Summarize the following conversation history into a compact summary that preserves key facts, decisions, and context. Be concise but don't lose important details."
+	requestTitle := "Summarize this conversation"
+	if opts.Mode == CompactModeEmergency {
+		summaryLabel = "[Reactive Context Summary]"
+		systemPrompt = "You are an emergency conversation summarizer. Summarize the older conversation history after a context-limit error. Preserve active tasks, user preferences, decisions, constraints, and unresolved work. Be concise."
+		requestTitle = "Summarize this conversation after a context-limit error"
+	}
 
 	var text string
 	for _, m := range olderMessages {
@@ -458,13 +524,14 @@ func compressOlderMessages(messages []provider.Message, opts CompactOptions) ([]
 			userPrompt.WriteString("\n\n")
 		}
 	}
-	userPrompt.WriteString("Summarize this conversation:\n\n")
+	userPrompt.WriteString(requestTitle)
+	userPrompt.WriteString(":\n\n")
 	userPrompt.WriteString(text)
 
 	summaryPrompt := []provider.Message{
 		{
 			Role:    "system",
-			Content: "You are a conversation summarizer. Summarize the following conversation history into a compact summary that preserves key facts, decisions, and context. Be concise but don't lose important details.",
+			Content: systemPrompt,
 		},
 		{
 			Role:    "user",
@@ -481,7 +548,7 @@ func compressOlderMessages(messages []provider.Message, opts CompactOptions) ([]
 	compressed := make([]provider.Message, 0, len(messages)-cutoff+1)
 	compressed = append(compressed, provider.Message{
 		Role:    "user",
-		Content: fmt.Sprintf("[Conversation Summary]\n%s", summary),
+		Content: fmt.Sprintf("%s\n%s", summaryLabel, summary),
 	})
 	compressed = append(compressed, messages[cutoff:]...)
 
