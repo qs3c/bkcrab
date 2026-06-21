@@ -216,7 +216,6 @@ func hasDuplicateThreat(threats []Threat, threat Threat) bool {
 
 func isDuplicateThreat(existing, threat Threat) bool {
 	return existing.Type == threat.Type &&
-		existing.Pattern == threat.Pattern &&
 		existing.Context == threat.Context
 }
 
