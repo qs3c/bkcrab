@@ -602,17 +602,15 @@ func TestCompactionKeepsDynamicTailNearTargetMessages(t *testing.T) {
 
 	got := compactionTailStart(msgs, CompactOptions{})
 
-	if got != 15 {
-		t.Fatalf("tail start = %d, want 15 to preserve a 21-message complete-turn tail", got)
+	// Runtime-injected user messages (OriginGoalContext) anchor turn
+	// boundaries too, so the cutoff can land on one. This keeps cutoff
+	// granularity fine even during /goal runs with few real user turns.
+	// With 36 messages and a 20-message target, the closest boundary is
+	// index 16, yielding an exact 20-message tail.
+	if got != 16 {
+		t.Fatalf("tail start = %d, want 16 for a 20-message tail at target", got)
 	}
-
-	userTurns := 0
-	for _, msg := range msgs[got:] {
-		if msg.Role == "user" && msg.Origin == provider.OriginUser {
-			userTurns++
-		}
-	}
-	if userTurns != 7 {
-		t.Fatalf("tail has %d real user turns, want 7 as closest complete-turn tail to %d messages", userTurns, DefaultTailTargetMessages)
+	if tailLen := len(msgs) - got; tailLen != DefaultTailTargetMessages {
+		t.Fatalf("tail messages = %d, want %d", tailLen, DefaultTailTargetMessages)
 	}
 }

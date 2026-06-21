@@ -431,9 +431,18 @@ func completeTurnTailCandidate(messages []provider.Message, targetMessages, minK
 	if minKeepTurns < 1 {
 		minKeepTurns = 1
 	}
+	// Anchor turn boundaries on every user-role message, including
+	// runtime-injected ones (e.g. /goal continuation context, tagged
+	// OriginGoalContext). An autonomous /goal run can have few or zero
+	// real user messages; filtering injected turns out would collapse the
+	// whole run into one giant turn, leaving no interior cutoff and
+	// forcing all-or-nothing (zero-tail or no compaction). Counting
+	// injected user turns preserves cutoff granularity. This is
+	// independent of summary-content filtering — compressOlderMessages
+	// still drops OriginGoalContext from the summary text itself.
 	userStarts := make([]int, 0)
 	for i, msg := range messages {
-		if msg.Role == "user" && msg.Origin == provider.OriginUser {
+		if msg.Role == "user" {
 			userStarts = append(userStarts, i)
 		}
 	}
