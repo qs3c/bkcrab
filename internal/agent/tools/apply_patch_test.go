@@ -807,6 +807,20 @@ func TestRunApplyPatch_ManagedMemoryRefusals(t *testing.T) {
 +name: Ada
 *** End Patch`,
 		},
+		{
+			name: "slash drive lower-case memory refused",
+			patch: `*** Begin Patch
+*** Add File: C:/Users/me/memory.md
++name: Ada
+*** End Patch`,
+		},
+		{
+			name: "top-level lower-case user refused",
+			patch: `*** Begin Patch
+*** Add File: user.md
++name: Ada
+*** End Patch`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

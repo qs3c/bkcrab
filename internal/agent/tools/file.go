@@ -61,7 +61,7 @@ var editSchema = map[string]interface{}{
 	"required": []string{"path", "old_string", "new_string"},
 }
 
-const editDescription = "Edit a file by replacing an exact substring. Prefer this over write_file when changing only part of a file (especially identity files like SOUL.md / MEMORY.md): it's cheaper, can't drop unrelated content, and validates the replacement was applied. old_string must match a unique substring unless replace_all is true; new_string must differ from old_string. Read the file first if you're unsure of the exact text."
+const editDescription = "Edit a non-memory file by replacing an exact substring. Prefer this over write_file when changing only part of an ordinary file: it's cheaper, can't drop unrelated content, and validates the replacement was applied. USER.md and MEMORY.md are managed memory resources; use the memory tool for them. old_string must match a unique substring unless replace_all is true; new_string must differ from old_string. Read the file first if you're unsure of the exact text."
 
 // validateFileTargetPath 拒绝类似写入操作的路径参数
 // 无法引用单个文件。空字符串、目录后缀路径
@@ -159,13 +159,23 @@ func isManagedMemoryFilePath(path string) bool {
 	clean := filepath.Clean(path)
 	slashClean := strings.ReplaceAll(clean, `\`, "/")
 	base := pathpkg.Base(slashClean)
-	if base != "USER.md" && base != "MEMORY.md" {
+	if !strings.EqualFold(base, "USER.md") && !strings.EqualFold(base, "MEMORY.md") {
 		return false
 	}
-	if filepath.IsAbs(path) || strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\\`) || strings.Contains(path, `:\`) {
+	if filepath.IsAbs(path) || strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\\`) || isWindowsAbsolutePath(path) {
 		return true
 	}
 	return !strings.Contains(slashClean, "/")
+}
+
+func isWindowsAbsolutePath(path string) bool {
+	if len(path) < 3 {
+		return false
+	}
+	drive := path[0]
+	return ((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) &&
+		path[1] == ':' &&
+		(path[2] == '\\' || path[2] == '/')
 }
 
 func (r *Registry) managedMemoryFileBlocked(path string) bool {
@@ -369,7 +379,7 @@ func (r *Registry) rootForPath(path string) string {
 }
 
 func registerFile(r *Registry) {
-	r.Register("read_file", "Read the contents of a file", map[string]interface{}{
+	r.Register("read_file", "Read the contents of a non-memory file. USER.md and MEMORY.md are managed memory resources; use the memory tool to inspect them.", map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
@@ -380,7 +390,7 @@ func registerFile(r *Registry) {
 		"required": []string{"path"},
 	}, makeReadFile(r))
 
-	r.Register("write_file", "Write content to a file (creates directories as needed)", map[string]interface{}{
+	r.Register("write_file", "Write content to a non-memory file (creates directories as needed). USER.md and MEMORY.md are managed memory resources; use the memory tool to update them.", map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
@@ -896,7 +906,7 @@ func makeListDir(r *Registry) ToolFunc {
 // 沙箱徽章仅针对执行程序回退路径发出 - store
 // 点击故意不标记，因为它们没有在沙箱中运行。
 func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
-	r.Register("read_file", "Read the contents of a file", map[string]interface{}{
+	r.Register("read_file", "Read the contents of a non-memory file. USER.md and MEMORY.md are managed memory resources; use the memory tool to inspect them.", map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
@@ -991,7 +1001,7 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		}
 	})
 
-	r.Register("write_file", "Write content to a file (creates directories as needed)", map[string]interface{}{
+	r.Register("write_file", "Write content to a non-memory file (creates directories as needed). USER.md and MEMORY.md are managed memory resources; use the memory tool to update them.", map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{

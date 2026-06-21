@@ -27,8 +27,10 @@ import (
 // 文件工具也使用此集作为“代理专用配置”
 // 由 callerIsAdmin 控制的白名单：普通聊天者无法阅读或
 // 通过 read_file / write_file / edit_file 修改这些，仅代理
-// 所有者/频道管理员可以。没有那扇门，一个喋喋不休的人问
-// “show me your SOUL.md”获取逐字角色规范。
+// 所有者/频道管理员可以。USER.md / MEMORY.md 不在此白名单；
+// 它们是每个聊天者的 managed memory，只能通过 memory 工具管理。
+// 没有那扇门，一个喋喋不休的人问“show me your SOUL.md”
+// 获取逐字角色规范。
 var identityFiles = map[string]bool{
 	"SOUL.md":      true,
 	"IDENTITY.md":  true,
