@@ -52,7 +52,7 @@ var sshBackdoorPatterns = []*regexp.Regexp{
 
 var strictMemoryPromptInjectionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions`),
-	regexp.MustCompile(`(?i)disregard\s+all\s+prior`),
+	regexp.MustCompile(`(?i)disregard\s+(?:all\s+)?prior(?:\s+instructions)?`),
 	regexp.MustCompile(`(?i)\b(?:reveal|output|show|print|leak|override|ignore)\s+(?:the\s+)?(?:system\s+prompt|developer\s+message)\b`),
 	regexp.MustCompile(`(?i)you\s+are\s+now\b`),
 	regexp.MustCompile(`(?i)forget\s+everything`),
@@ -68,7 +68,8 @@ var strictMemoryExfiltrationPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bread\s+(?:/etc/passwd|(?:the\s+)?(?:credentials?|tokens?|secrets?|secret\s+files?))\b`),
 	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*(?:-d|--data(?:-raw|-binary|-urlencode)?|--post-data|--body-data|--post-file)\s*=?\s*@?[^\s]*(?:secret|credential|token|key|passwd|\.?env)[^\s]*[^\n]*https?://[^\s]+`),
 	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*https?://[^\s]+[^\n]*(?:-d|--data(?:-raw|-binary|-urlencode)?|--post-data|--body-data|--post-file)\s*=?\s*@?[^\s]*(?:secret|credential|token|key|passwd|\.?env)[^\s]*`),
-	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*(?:-T|--upload-file|-F|--form)\s*=?\s*@?[^\s]*(?:secret|credentials?|token|key|private|env)[^\s]*[^\n]*https?://[^\s]+`),
+	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*(?:-T|--upload-file|-F|--form)\s*=?\s*@?[^\s]*(?:secret|credentials?|token|key|private|\.?env)[^\s]*[^\n]*https?://[^\s]+`),
+	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*https?://[^\s]+[^\n]*(?:-T|--upload-file|-F|--form)\s*=?\s*@?[^\s]*(?:secret|credentials?|token|key|private|\.?env)[^\s]*`),
 }
 
 var strictMemoryPersistencePatterns = []*regexp.Regexp{
@@ -187,16 +188,54 @@ func appendThreatMatches(threats *[]Threat, text string, threatType ThreatType, 
 }
 
 func dedupeThreats(threats []Threat) []Threat {
-	seen := make(map[ThreatType]struct{}, len(threats))
 	deduped := threats[:0]
 	for _, threat := range threats {
-		if _, ok := seen[threat.Type]; ok {
+		if hasDuplicateThreat(deduped, threat) {
 			continue
 		}
-		seen[threat.Type] = struct{}{}
 		deduped = append(deduped, threat)
 	}
 	return deduped
+}
+
+func hasDuplicateThreat(threats []Threat, threat Threat) bool {
+	for _, existing := range threats {
+		if isDuplicateThreat(existing, threat) {
+			return true
+		}
+	}
+	return false
+}
+
+func isDuplicateThreat(existing, threat Threat) bool {
+	if existing.Type != threat.Type {
+		return false
+	}
+	if existing.Type == ThreatCredentialLeak && existing.Pattern != threat.Pattern {
+		return false
+	}
+	return contextsOverlap(existing.Context, threat.Context)
+}
+
+func contextsOverlap(a, b string) bool {
+	if a == b || strings.Contains(a, b) || strings.Contains(b, a) {
+		return true
+	}
+
+	shorter, longer := a, b
+	if len(shorter) > len(longer) {
+		shorter, longer = longer, shorter
+	}
+	const minOverlap = 32
+	if len(shorter) < minOverlap {
+		return false
+	}
+	for i := 0; i+minOverlap <= len(shorter); i++ {
+		if strings.Contains(longer, shorter[i:i+minOverlap]) {
+			return true
+		}
+	}
+	return false
 }
 
 // snippet 提取匹配位置周围的上下文片段。
