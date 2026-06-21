@@ -63,11 +63,11 @@ var strictMemoryPromptInjectionPatterns = []*regexp.Regexp{
 
 var strictMemoryExfiltrationPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)output\s+(?:the\s+)?full\s+context`),
-	regexp.MustCompile(`(?i)send\s+(?:the\s+)?(?:(?:full|all)\s+)?(?:results?|context|memory|secrets?)\b[^.\n]*(?:https?://|webhook)`),
+	regexp.MustCompile(`(?i)send\s+(?:the\s+)?(?:(?:full|all)\s+)?(?:results?|context|memory|secrets?|credentials?|tokens?|keys?|\.?env|private\s+(?:keys?|tokens?|credentials?|secrets?|data|context|memory|env))\b[^.\n]*(?:https?://|webhook)`),
 	regexp.MustCompile(`(?i)(?:(?:context|results?|memory|secrets?|credentials?|tokens?)\b[^.\n]*(?:curl|wget)\s+https?://[^\s]+|(?:curl|wget)\s+https?://[^\s]*(?:context|result|secret|credential|token)[^\s]*)`),
 	regexp.MustCompile(`(?i)\bread\s+(?:/etc/passwd|(?:the\s+)?(?:credentials?|tokens?|secrets?|secret\s+files?))\b`),
-	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*(?:-d|--data(?:-raw|-binary|-urlencode)?|--post-data|--body-data|--post-file)\s*=?\s*@?[^\s]*(?:secret|credential|token|key|passwd)[^\s]*[^\n]*https?://[^\s]+`),
-	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*https?://[^\s]+[^\n]*(?:-d|--data(?:-raw|-binary|-urlencode)?|--post-data|--body-data|--post-file)\s*=?\s*@?[^\s]*(?:secret|credential|token|key|passwd)[^\s]*`),
+	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*(?:-d|--data(?:-raw|-binary|-urlencode)?|--post-data|--body-data|--post-file)\s*=?\s*@?[^\s]*(?:secret|credential|token|key|passwd|\.?env)[^\s]*[^\n]*https?://[^\s]+`),
+	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*https?://[^\s]+[^\n]*(?:-d|--data(?:-raw|-binary|-urlencode)?|--post-data|--body-data|--post-file)\s*=?\s*@?[^\s]*(?:secret|credential|token|key|passwd|\.?env)[^\s]*`),
 	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*(?:-T|--upload-file|-F|--form)\s*=?\s*@?[^\s]*(?:secret|credentials?|token|key|private|env)[^\s]*[^\n]*https?://[^\s]+`),
 }
 
