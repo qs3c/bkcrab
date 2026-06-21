@@ -182,7 +182,7 @@ func TestSanitizeToolPairsDropsIncompleteRawAssistantOnlyGroupWithoutText(t *tes
 }
 
 func TestPruneOldToolResultsSummarizesTerminalResultLocally(t *testing.T) {
-	content := "Exit code: 2\nOutput:\nfirst line\nsecond line\n" + strings.Repeat("x", 220)
+	content := "Exit code: 2\nOutput:\nfirst line\nsecond line\n" + strings.Repeat("x", 2200)
 	msgs := append([]provider.Message{
 		{
 			Role: "assistant",
@@ -229,6 +229,38 @@ func TestPruneOldToolResultsSummarizesTerminalResultLocally(t *testing.T) {
 	}
 }
 
+func TestPruneOldToolResultsKeepsResultsAtTwoThousandBytes(t *testing.T) {
+	content := strings.Repeat("x", 2000)
+	msgs := append([]provider.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []provider.ToolCall{
+				{
+					ID: "call_terminal",
+					Function: provider.FunctionCall{
+						Name:      "terminal",
+						Arguments: `{"command":"go test ./internal/agent"}`,
+					},
+				},
+			},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call_terminal",
+			Name:       "terminal",
+			Content:    content,
+		},
+	}, compactionFillerMessages(PruneTurnAge)...)
+
+	got, changed := pruneOldToolResultsWithChange(msgs)
+	if changed {
+		t.Fatal("tool result at 2000 bytes should be preserved")
+	}
+	if got[1].Content != content {
+		t.Fatalf("tool result content changed: got %q want %q", got[1].Content, content)
+	}
+}
+
 func TestPruneOldToolResultsArchivesOriginalAndKeepsHeadTailSnippets(t *testing.T) {
 	contentLines := []string{
 		"Exit code: 0",
@@ -237,7 +269,7 @@ func TestPruneOldToolResultsArchivesOriginalAndKeepsHeadTailSnippets(t *testing.
 		"head two",
 		"head three",
 	}
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 50; i++ {
 		contentLines = append(contentLines, fmt.Sprintf("middle filler line %02d with enough text to make the result large", i))
 	}
 	contentLines = append(contentLines, "tail one", "tail two", "tail three")
@@ -306,7 +338,7 @@ func TestPruneOldToolResultsArchivesOriginalAndKeepsHeadTailSnippets(t *testing.
 }
 
 func TestPruneOldToolResultsSummarizesReadFileResult(t *testing.T) {
-	content := strings.Repeat("package agent\n", 20)
+	content := strings.Repeat("package agent\n", 160)
 	msgs := append([]provider.Message{
 		{
 			Role: "assistant",
@@ -340,8 +372,8 @@ func TestPruneOldToolResultsSummarizesReadFileResult(t *testing.T) {
 }
 
 func TestPruneOldToolResultsSummarizesSearchAndGenericResults(t *testing.T) {
-	searchContent := strings.Repeat("match\n", 50)
-	genericContent := strings.Repeat("row\n", 70)
+	searchContent := strings.Repeat("match\n", 400)
+	genericContent := strings.Repeat("row\n", 700)
 	msgs := append([]provider.Message{
 		{
 			Role: "assistant",
@@ -411,7 +443,7 @@ func TestPruneOldToolResultsTruncatesLargeArgumentValues(t *testing.T) {
 			Role:       "tool",
 			ToolCallID: "call_patch",
 			Name:       "apply_patch",
-			Content:    strings.Repeat("ok\n", 80),
+			Content:    strings.Repeat("ok\n", 700),
 		},
 	}, compactionFillerMessages(PruneTurnAge)...)
 
@@ -449,7 +481,7 @@ func TestPruneOldToolResultsBindsDuplicateToolCallIDsByLocalGroup(t *testing.T) 
 			Role:       "tool",
 			ToolCallID: "call_reused",
 			Name:       "read_file",
-			Content:    strings.Repeat("old result\n", 25),
+			Content:    strings.Repeat("old result\n", 200),
 		},
 		{
 			Role: "assistant",
@@ -467,7 +499,7 @@ func TestPruneOldToolResultsBindsDuplicateToolCallIDsByLocalGroup(t *testing.T) 
 			Role:       "tool",
 			ToolCallID: "call_reused",
 			Name:       "read_file",
-			Content:    strings.Repeat("new result\n", 25),
+			Content:    strings.Repeat("new result\n", 200),
 		},
 	}, compactionFillerMessages(PruneTurnAge)...)
 
@@ -496,7 +528,7 @@ func TestPruneOldToolResultsUsesRawAssistantOnlyArguments(t *testing.T) {
 			Role:       "tool",
 			ToolCallID: "call_raw_args",
 			Name:       "web_fetch",
-			Content:    strings.Repeat("fetched text\n", 20),
+			Content:    strings.Repeat("fetched text\n", 180),
 		},
 	}, compactionFillerMessages(PruneTurnAge)...)
 

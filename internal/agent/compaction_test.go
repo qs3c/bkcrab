@@ -347,8 +347,8 @@ func TestCompactionTailStartUsesFewerTurnsWhenRecentTurnsAreToolHeavy(t *testing
 }
 
 func TestPruneOldToolResultsUsesDynamicTurnAwareTail(t *testing.T) {
-	oldBody := strings.Repeat("OLD_BODY ", 80)
-	recentBody := strings.Repeat("RECENT_BODY ", 80)
+	oldBody := strings.Repeat("OLD_BODY ", 250)
+	recentBody := strings.Repeat("RECENT_BODY ", 250)
 	msgs := []provider.Message{
 		{Role: "user", Content: "old user", Origin: provider.OriginUser},
 		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "old_call", Type: "function", Function: provider.FunctionCall{Name: "lookup", Arguments: "{}"}}}},

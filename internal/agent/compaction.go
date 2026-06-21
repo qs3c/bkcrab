@@ -32,6 +32,7 @@ const (
 	MinimumTailTurns                = 2
 	DefaultSummaryMaxRetries        = 3
 	DefaultEmergencySummaryRetries  = 1
+	toolResultPruneThresholdBytes   = 2000
 	fallbackSummaryMaxRunes         = 12000
 	fallbackSnippetMaxRunes         = 220
 )
@@ -501,7 +502,7 @@ func pruneOldToolResultsWithChange(messages []provider.Message, optList ...Compa
 
 	changed := false
 	for i := 0; i < cutoff; i++ {
-		if result[i].Role == "tool" && len(result[i].Content) > 200 {
+		if result[i].Role == "tool" && len(result[i].Content) > toolResultPruneThresholdBytes {
 			info := infoByIndex[i]
 			archiveID, err := archiveToolResult(opts, result[i], info)
 			if err != nil {
