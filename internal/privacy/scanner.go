@@ -14,6 +14,8 @@ const (
 	ThreatCredentialLeak   ThreatType = "credential_leak"
 	ThreatSSHBackdoor      ThreatType = "ssh_backdoor"
 	ThreatInvisibleUnicode ThreatType = "invisible_unicode"
+	ThreatExfiltration     ThreatType = "exfiltration"
+	ThreatPersistenceAbuse ThreatType = "persistence_abuse"
 )
 
 // Threat 表示一个检测到的内存安全问题。
@@ -48,11 +50,44 @@ var sshBackdoorPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:curl|wget)\s+[^\s]+\s*\|\s*(?:bash|sh)`),
 }
 
+var strictMemoryPromptInjectionPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions`),
+	regexp.MustCompile(`(?i)disregard\s+all\s+prior`),
+	regexp.MustCompile(`(?i)system\s+prompt`),
+	regexp.MustCompile(`(?i)developer\s+message`),
+	regexp.MustCompile(`(?i)you\s+are\s+now\b`),
+	regexp.MustCompile(`(?i)forget\s+everything`),
+	regexp.MustCompile(`(?i)new\s+persona`),
+	regexp.MustCompile(`(?i)act\s+as\s+[^a-z]`),
+}
+
+var strictMemoryExfiltrationPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)output\s+(?:the\s+)?full\s+context`),
+	regexp.MustCompile(`(?i)send\s+(?:the\s+)?(?:result|context|memory|secret)[^.\n]*(?:https?://|webhook)`),
+	regexp.MustCompile(`(?i)(?:curl|wget)\s+https?://[^\s]+`),
+	regexp.MustCompile(`(?i)read\s+(?:/etc/passwd|secret|credential|token)`),
+}
+
+var strictMemoryPersistencePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)authorized_keys`),
+	regexp.MustCompile(`(?i)\.ssh/`),
+	regexp.MustCompile(`(?i)(?:curl|wget)\s+[^\s]+\s*\|\s*(?:bash|sh)`),
+	regexp.MustCompile(`(?i)(?:modify|edit|overwrite)\s+(?:agent\.json|IDENTITY\.md|SOUL\.md|TOOLS\.md)`),
+}
+
 // 要检测的不可见 Unicode 码点。
 var invisibleRunes = map[rune]string{
 	'\u200B': "ZERO WIDTH SPACE",
 	'\u200C': "ZERO WIDTH NON-JOINER",
 	'\u200D': "ZERO WIDTH JOINER",
+	'\u202A': "LEFT-TO-RIGHT EMBEDDING",
+	'\u202B': "RIGHT-TO-LEFT EMBEDDING",
+	'\u202D': "LEFT-TO-RIGHT OVERRIDE",
+	'\u202E': "RIGHT-TO-LEFT OVERRIDE",
+	'\u2066': "LEFT-TO-RIGHT ISOLATE",
+	'\u2067': "RIGHT-TO-LEFT ISOLATE",
+	'\u2068': "FIRST STRONG ISOLATE",
+	'\u2069': "POP DIRECTIONAL ISOLATE",
 	'\uFEFF': "BOM / ZERO WIDTH NO-BREAK SPACE",
 	'\u2060': "WORD JOINER",
 	'\u00AD': "SOFT HYPHEN",
@@ -111,6 +146,39 @@ func Scan(text string) []Threat {
 	}
 
 	return threats
+}
+
+func ScanMemoryStrict(text string) []Threat {
+	threats := Scan(text)
+	appendThreatMatches(&threats, text, ThreatPromptInjection, strictMemoryPromptInjectionPatterns)
+	appendThreatMatches(&threats, text, ThreatExfiltration, strictMemoryExfiltrationPatterns)
+	appendThreatMatches(&threats, text, ThreatPersistenceAbuse, strictMemoryPersistencePatterns)
+	return dedupeThreats(threats)
+}
+
+func appendThreatMatches(threats *[]Threat, text string, threatType ThreatType, patterns []*regexp.Regexp) {
+	for _, re := range patterns {
+		if loc := re.FindStringIndex(text); loc != nil {
+			*threats = append(*threats, Threat{
+				Type:    threatType,
+				Pattern: re.String(),
+				Context: snippet(text, loc[0], loc[1]),
+			})
+		}
+	}
+}
+
+func dedupeThreats(threats []Threat) []Threat {
+	seen := make(map[Threat]struct{}, len(threats))
+	deduped := threats[:0]
+	for _, threat := range threats {
+		if _, ok := seen[threat]; ok {
+			continue
+		}
+		seen[threat] = struct{}{}
+		deduped = append(deduped, threat)
+	}
+	return deduped
 }
 
 // snippet 提取匹配位置周围的上下文片段。
