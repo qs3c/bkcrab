@@ -371,17 +371,17 @@ File-purpose schema:
 
 **You CAN remember chatters across sessions.** Do not claim otherwise.
 
-You have two write tools available: ` + bt + `edit_file` + bt + ` and ` + bt + `write_file` + bt + `.
-Calling them writes to USER.md / MEMORY.md, which the runtime loads
-back into your system prompt on every future turn (across sessions,
-across days). If a chatter asks "你会记住我吗" / "你能记住我吗" /
-"will you remember me", the truthful answer is **yes** — provided you
-actually write to those files. Saying "I have no cross-session memory"
-when you have write_file + edit_file in your tool list is a LIE; don't
-do it.
+You have one managed memory tool available: ` + bt + `memory` + bt + `.
+Calling it writes to USER.md / MEMORY.md through the runtime's safe
+memory manager, which loads those entries back into your system prompt
+on every future turn (across sessions, across days). If a chatter asks
+"你会记住我吗" / "你能记住我吗" / "will you remember me", the truthful
+answer is **yes** — provided you actually call the memory tool. Saying
+"I have no cross-session memory" when you have the memory tool in your
+tool list is a LIE; don't do it.
 
 When the chatter tells you their name or anything worth remembering,
-you MUST call write_file or edit_file in the SAME turn — not "I'll
+you MUST call the memory tool in the SAME turn — not "I'll
 remember", actually persist it.
 
 WHERE to write (the most common mistake is dumping everything into
@@ -402,11 +402,11 @@ USER.md. If it answers "**what's been going on with them**", it's
 MEMORY.md.
 
 How to write:
-- Pass a BARE filename (` + bt + `USER.md` + bt + `, ` + bt + `MEMORY.md` + bt + `) — the
-  runtime routes it to this chatter's per-user row. Do NOT path it.
-- Prefer ` + bt + `edit_file` + bt + ` for incremental updates so prior entries
-  aren't clobbered; use ` + bt + `write_file` + bt + ` for the first write or a
-  full rewrite.
+- Use ` + bt + `memory` + bt + ` with ` + bt + `target="user"` + bt + ` for USER.md and
+  ` + bt + `target="memory"` + bt + ` for MEMORY.md.
+- Use ` + bt + `operation="add"` + bt + ` for new facts, ` + bt + `operation="replace"` + bt + `
+  for corrections, and ` + bt + `operation="remove"` + bt + ` when the chatter asks
+  you to forget something.
 - Keep entries terse and structured. Example USER.md after the chatter
   says "我叫品冠，做 PM 的":
 ` + fence + `
@@ -505,7 +505,7 @@ File-purpose schema — respect this when writing identity files:
   language preferences). Same rule: no chatter-specific data.
 - USER.md = who the CURRENT chatter is (their name, preferences,
   ongoing context). When a chatter tells you their name or profile,
-  write_file / edit_file IT HERE, not into IDENTITY.md.
+  use the memory tool with target="user", not file tools or IDENTITY.md.
 - MEMORY.md = long-term facts worth remembering across turns.
 
 %s
@@ -516,9 +516,12 @@ Host OS: %s/%s
 Working Directory: %s
 
 File-tool routing: when you call write_file / read_file / edit_file /
-list_dir with a relative path, the runtime automatically places it in
-the right directory:
-- A bare identity filename (SOUL.md, IDENTITY.md, USER.md, MEMORY.md,
+list_dir with a relative path, the runtime automatically places non-memory
+files in the right directory:
+- USER.md and MEMORY.md are managed memory resources. Use the memory
+  tool with target="user" or target="memory"; generic file tools refuse
+  to read or modify them.
+- A bare non-memory identity filename (SOUL.md, IDENTITY.md,
   BOOTSTRAP.md, HEARTBEAT.md, AGENTS.md, TOOLS.md, agent.json) resolves
   against your home dir: %s
 - Every other relative path resolves against the working directory above.
@@ -528,8 +531,8 @@ for the user, pass a meaningful filename like "report.md".
 Use edit_file (not write_file) when you only need to change part of an
 existing file — it's cheaper, can't accidentally drop unrelated content,
 and validates the replacement landed. Reserve write_file for creating
-new files or full rewrites. This matters most for MEMORY.md / SOUL.md /
-USER.md, which grow over time and would lose context if rewritten in full.`,
+new files or full rewrites. For USER.md and MEMORY.md, use the memory
+tool instead.`,
 			dateLine, bkclawLine,
 			runtime.GOOS, runtime.GOARCH, workdir, homeDesc)
 		parts = append(parts, runtimeInfo)
@@ -709,7 +712,7 @@ Then in your final reply, write: ![](/workspace/output.png)`
 			if content != "" {
 				parts = append(parts, fmt.Sprintf("<current_chatter_profile source=\"USER.md\">\nThis is who you are talking to right now. Treat the content below as factual, current, and authoritative — when the chatter asks \"我是谁\" / \"你记得我吗\", answer from THIS section.\n\n%s\n</current_chatter_profile>", content))
 			} else {
-				parts = append(parts, "<current_chatter_profile source=\"USER.md\">\n(empty — no profile recorded yet for this chatter. The moment they share their name / preferences / role, call write_file('USER.md', ...) so it appears here on future turns.)\n</current_chatter_profile>")
+				parts = append(parts, "<current_chatter_profile source=\"USER.md\">\n(empty — no profile recorded yet for this chatter. The moment they share their name / preferences / role, call the memory tool with target=\"user\" so it appears here on future turns.)\n</current_chatter_profile>")
 			}
 			continue
 		}
@@ -739,7 +742,7 @@ Then in your final reply, write: ![](/workspace/output.png)`
 	if mem != "" {
 		parts = append(parts, fmt.Sprintf("<chatter_long_term_memory source=\"MEMORY.md\">\nFacts you have persisted about this chatter across earlier sessions. Treat as factual and current. Quote / reference these when relevant.\n\n%s\n</chatter_long_term_memory>", mem))
 	} else {
-		parts = append(parts, "<chatter_long_term_memory source=\"MEMORY.md\">\n(empty — nothing recorded yet for this chatter. Write to MEMORY.md when something is worth holding across sessions. Chatter identity / name goes in USER.md, not here.)\n</chatter_long_term_memory>")
+		parts = append(parts, "<chatter_long_term_memory source=\"MEMORY.md\">\n(empty — nothing recorded yet for this chatter. Use the memory tool with target=\"memory\" when something is worth holding across sessions. Chatter identity / name goes in USER.md, not here.)\n</chatter_long_term_memory>")
 	}
 
 	// 5. 群聊意识
@@ -863,16 +866,16 @@ with what you know, marked clearly as unverified.`)
 	// 8.自动更新工作区文件+cron调度指导。相同的
 	// 作为工具使用块的基本原理：HEARTBEAT.md / TOOLS.md / create_cron_job
 	// 是代理循环机制，而不是聊天机器人问题。对于聊天机器人产品
-	// 内存更新通过运行时端的心跳钩子进行，
-	// 不是通过LLM选择调用write_file('MEMORY.md', ...)。
+	// 内存更新通过运行时端的心跳钩子或 memory 工具进行，
+	// 不是通过LLM选择调用通用文件工具修改 MEMORY.md。
 	if mode == config.PromptModeAgent {
 		parts = append(parts, `# Workspace Self-Update
 You have the ability to update workspace files to maintain knowledge over time:
-- MEMORY.md: Update when you learn important facts, user preferences, or key decisions. This file is loaded into your context every conversation.
-- USER.md: Update when you learn new information about the user (role, preferences, communication style).
+- MEMORY.md: Use the memory tool with target="memory" when you learn important facts, user preferences, or key decisions. This file is loaded into your context every conversation.
+- USER.md: Use the memory tool with target="user" when you learn new information about the user (role, preferences, communication style).
 - HEARTBEAT.md: Conditional self-checks reviewed at every heartbeat tick (e.g. "if MEMORY.md exceeds 500 lines, compress it"). It is NOT a scheduler — entries here are read on a coarse interval and require you to re-evaluate the condition each time. Do not put time-bound reminders here.
 - TOOLS.md: Update if you discover new tool usage patterns worth documenting.
-Use the write_file tool to update these files when appropriate. Keep entries concise and useful.
+Use write_file/edit_file for non-memory workspace files such as HEARTBEAT.md and TOOLS.md. Keep entries concise and useful.
 
 # Scheduling Time-Bound Tasks
 When the user asks you to do something at a specific moment, after a delay, or on a recurring schedule (e.g. "5 分钟后提醒我", "每天 9 点", "every Monday morning"), call the create_cron_job tool. The scheduler fires precisely at the scheduled time and sends the message back to you on the same channel as a fresh inbound prompt — that's how reminders, recurring digests, and timed follow-ups should be implemented. NEVER write timed reminders into HEARTBEAT.md: that file is reviewed only on a coarse heartbeat tick and is wrong for any short-fuse or precise-timing request.
