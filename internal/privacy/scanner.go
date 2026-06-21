@@ -68,6 +68,7 @@ var strictMemoryExfiltrationPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bread\s+(?:/etc/passwd|(?:the\s+)?(?:credentials?|tokens?|secrets?|secret\s+files?))\b`),
 	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*(?:-d|--data(?:-raw|-binary|-urlencode)?|--post-data|--body-data|--post-file)\s*=?\s*@?[^\s]*(?:secret|credential|token|key|passwd)[^\s]*[^\n]*https?://[^\s]+`),
 	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*https?://[^\s]+[^\n]*(?:-d|--data(?:-raw|-binary|-urlencode)?|--post-data|--body-data|--post-file)\s*=?\s*@?[^\s]*(?:secret|credential|token|key|passwd)[^\s]*`),
+	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*(?:-T|--upload-file|-F|--form)\s*=?\s*@?[^\s]*(?:secret|credentials?|token|key|private|env)[^\s]*[^\n]*https?://[^\s]+`),
 }
 
 var strictMemoryPersistencePatterns = []*regexp.Regexp{
