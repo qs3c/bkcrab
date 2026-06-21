@@ -203,8 +203,8 @@ func TestEmergencyCompactionFallsBackToDeterministicSummaryWithPercentTail(t *te
 	if err != nil {
 		t.Fatalf("compact: %v", err)
 	}
-	if f.calls != 1 {
-		t.Fatalf("emergency summary attempts = %d, want 1", f.calls)
+	if f.calls != DefaultSummaryMaxRetries {
+		t.Fatalf("emergency summary attempts = %d, want %d", f.calls, DefaultSummaryMaxRetries)
 	}
 	if len(out.Messages) != 39 {
 		t.Fatalf("message count = %d, want fallback summary + the percent-selected dynamic tail", len(out.Messages))

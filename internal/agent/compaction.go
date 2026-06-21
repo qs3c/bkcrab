@@ -30,7 +30,6 @@ const (
 	DefaultTailTargetPercent        = 30
 	MinimumTailTurns                = 2
 	DefaultSummaryMaxRetries        = 3
-	DefaultEmergencySummaryRetries  = 1
 	toolResultPruneThresholdBytes   = 2000
 	fallbackSummaryMaxRunes         = 12000
 	fallbackSnippetMaxRunes         = 220
@@ -218,9 +217,6 @@ func normalizeCompactOptions(opts CompactOptions) CompactOptions {
 	}
 	if opts.MinTailTurns <= 0 {
 		opts.MinTailTurns = MinimumTailTurns
-	}
-	if opts.SummaryMaxRetries <= 0 && opts.Mode == CompactModeEmergency {
-		opts.SummaryMaxRetries = DefaultEmergencySummaryRetries
 	}
 	if opts.SummaryMaxRetries <= 0 {
 		opts.SummaryMaxRetries = DefaultSummaryMaxRetries
