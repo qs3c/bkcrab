@@ -27,8 +27,7 @@ const (
 
 	DefaultCompactionTriggerPercent = 75
 	DefaultCompactionTargetPercent  = 55
-	DefaultTailTargetMessages       = 20
-	DefaultEmergencyTailMessages    = 15
+	DefaultTailTargetPercent        = 30
 	MinimumTailTurns                = 2
 	DefaultSummaryMaxRetries        = 3
 	DefaultEmergencySummaryRetries  = 1
@@ -44,14 +43,16 @@ const (
 )
 
 type CompactOptions struct {
-	Mode               CompactMode
-	Workspace          string
-	Provider           provider.Provider
-	Model              string
-	ContextWindow      int
-	MaxOutputTokens    int
-	TriggerPercent     int
-	TargetPercent      int
+	Mode              CompactMode
+	Workspace         string
+	Provider          provider.Provider
+	Model             string
+	ContextWindow     int
+	MaxOutputTokens   int
+	TriggerPercent    int
+	TargetPercent     int
+	TailTargetPercent int
+	// Deprecated: tail selection is token-budget based; use TailTargetPercent.
 	TailTargetMessages int
 	MinTailTurns       int
 	Focus              string
@@ -209,11 +210,11 @@ func normalizeCompactOptions(opts CompactOptions) CompactOptions {
 	if opts.TargetPercent > 100 {
 		opts.TargetPercent = 100
 	}
-	if opts.TailTargetMessages <= 0 && opts.Mode == CompactModeEmergency {
-		opts.TailTargetMessages = DefaultEmergencyTailMessages
+	if opts.TailTargetPercent <= 0 {
+		opts.TailTargetPercent = DefaultTailTargetPercent
 	}
-	if opts.TailTargetMessages <= 0 {
-		opts.TailTargetMessages = DefaultTailTargetMessages
+	if opts.TailTargetPercent > 100 {
+		opts.TailTargetPercent = 100
 	}
 	if opts.MinTailTurns <= 0 {
 		opts.MinTailTurns = MinimumTailTurns
@@ -233,6 +234,10 @@ func compactTriggerLimit(opts CompactOptions) int {
 
 func compactTargetLimit(opts CompactOptions) int {
 	return percentOf(compactInputBudget(opts), opts.TargetPercent)
+}
+
+func compactTailTargetLimit(opts CompactOptions) int {
+	return percentOf(compactInputBudget(opts), opts.TailTargetPercent)
 }
 
 func compactInputBudget(opts CompactOptions) int {
@@ -294,7 +299,7 @@ func emergencyCompactMessages(messages []provider.Message, opts CompactOptions, 
 	slog.Info(
 		"after emergency compression",
 		"tokens_after", EstimateRequestTokens(compactionRequestMessages(compressed, opts.OverheadMessages), opts.ToolDefs),
-		"tail_target_messages", opts.TailTargetMessages,
+		"tail_target_percent", opts.TailTargetPercent,
 	)
 	return &CompactResult{
 		Messages: compressed,
@@ -389,36 +394,20 @@ func safeCompactionCutoff(messages []provider.Message, cutoff int) int {
 func compactionTailStart(messages []provider.Message, opts CompactOptions) int {
 	opts = normalizeCompactOptions(opts)
 	minTailTurns := opts.MinTailTurns
-	targetMessages := opts.TailTargetMessages
 	if len(messages) == 0 {
 		return 0
 	}
 
-	strictComplete := completeTurnTailCandidate(messages, targetMessages, minTailTurns)
-	relaxedComplete := completeTurnTailCandidate(messages, targetMessages, 1)
-
-	complete := strictComplete
-	if !complete.ok || (relaxedComplete.ok && relaxedComplete.distance < complete.distance) {
-		complete = relaxedComplete
+	includeZeroTail := opts.Mode == CompactModeEmergency
+	if includeZeroTail {
+		minTailTurns = 0
 	}
 
+	complete := completeTurnTailCandidate(messages, compactTailTargetLimit(opts), minTailTurns, includeZeroTail)
 	if complete.ok {
 		return complete.cutoff
 	}
-	if shouldUseZeroTail(messages, opts) {
-		return len(messages)
-	}
 	return 0
-}
-
-func shouldUseZeroTail(messages []provider.Message, opts CompactOptions) bool {
-	if len(messages) == 0 {
-		return false
-	}
-	if len(messages) > opts.TailTargetMessages {
-		return true
-	}
-	return EstimateRequestTokens(messages, nil) >= compactTargetLimit(opts)
 }
 
 type tailCandidate struct {
@@ -427,9 +416,13 @@ type tailCandidate struct {
 	ok       bool
 }
 
-func completeTurnTailCandidate(messages []provider.Message, targetMessages, minKeepTurns int) tailCandidate {
+func completeTurnTailCandidate(messages []provider.Message, targetTokens, minKeepTurns int, includeZeroTail bool) tailCandidate {
 	if minKeepTurns < 1 {
-		minKeepTurns = 1
+		if includeZeroTail {
+			minKeepTurns = 0
+		} else {
+			minKeepTurns = 1
+		}
 	}
 	// Anchor turn boundaries on every user-role message, including
 	// runtime-injected ones (e.g. /goal continuation context, tagged
@@ -446,15 +439,30 @@ func completeTurnTailCandidate(messages []provider.Message, targetMessages, minK
 			userStarts = append(userStarts, i)
 		}
 	}
-	if len(userStarts) == 0 {
-		return tailCandidate{}
-	}
-	if len(userStarts) < minKeepTurns {
-		minKeepTurns = len(userStarts)
-	}
 	bestCutoff := -1
 	bestDistance := 0
-	bestTailLen := 0
+	bestTailTokens := 0
+	consider := func(cutoff int) {
+		if cutoff < 0 || cutoff > len(messages) {
+			return
+		}
+		tailTokens := EstimateTokens(messages[cutoff:])
+		distance := absInt(tailTokens - targetTokens)
+		prefer := tailTokens > bestTailTokens
+		if includeZeroTail {
+			prefer = tailTokens < bestTailTokens
+		}
+		if bestCutoff < 0 || distance < bestDistance || (distance == bestDistance && prefer) {
+			bestCutoff = cutoff
+			bestDistance = distance
+			bestTailTokens = tailTokens
+		}
+	}
+
+	if includeZeroTail {
+		consider(len(messages))
+	}
+
 	for i := len(userStarts) - 1; i >= 0; i-- {
 		keepTurns := len(userStarts) - i
 		if keepTurns < minKeepTurns {
@@ -464,13 +472,7 @@ func completeTurnTailCandidate(messages []provider.Message, targetMessages, minK
 		if cutoff <= 0 {
 			continue
 		}
-		tailLen := len(messages) - cutoff
-		distance := absInt(tailLen - targetMessages)
-		if bestCutoff < 0 || distance < bestDistance || (distance == bestDistance && tailLen > bestTailLen) {
-			bestCutoff = cutoff
-			bestDistance = distance
-			bestTailLen = tailLen
-		}
+		consider(cutoff)
 	}
 	if bestCutoff < 0 {
 		return tailCandidate{}

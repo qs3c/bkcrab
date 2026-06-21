@@ -139,7 +139,7 @@ func TestManualCompactionRunsBelowProactiveThreshold(t *testing.T) {
 	}
 }
 
-func TestEmergencyCompactionUsesReactiveSummaryAndFifteenMessageTail(t *testing.T) {
+func TestEmergencyCompactionUsesReactiveSummaryAndPercentTail(t *testing.T) {
 	var msgs []provider.Message
 	for i := 0; i < 20; i++ {
 		suffix := string(rune('a' + i))
@@ -164,8 +164,8 @@ func TestEmergencyCompactionUsesReactiveSummaryAndFifteenMessageTail(t *testing.
 	if !out.Pruned {
 		t.Fatal("emergency compaction should produce a compacted message set")
 	}
-	if len(out.Messages) != 17 {
-		t.Fatalf("message count = %d, want summary + 16-message dynamic tail", len(out.Messages))
+	if len(out.Messages) != 39 {
+		t.Fatalf("message count = %d, want summary + the percent-selected dynamic tail", len(out.Messages))
 	}
 	if !strings.HasPrefix(out.Messages[0].Content, "[Reactive Context Summary]\n[fake summary]") {
 		t.Fatalf("first message should be a reactive summary, got: %q", out.Messages[0].Content)
@@ -173,15 +173,15 @@ func TestEmergencyCompactionUsesReactiveSummaryAndFifteenMessageTail(t *testing.
 	if !strings.Contains(f.gotSummaryRequest, "user turn a") {
 		t.Fatalf("summary request lost older content: %s", f.gotSummaryRequest)
 	}
-	if strings.Contains(f.gotSummaryRequest, "user turn t") {
+	if strings.Contains(f.gotSummaryRequest, "user turn b") {
 		t.Fatalf("summary request included preserved tail content: %s", f.gotSummaryRequest)
 	}
-	if got := out.Messages[1].Content; got != "user turn m" {
-		t.Fatalf("tail should start at the closest complete turn to 15 messages, got %q", got)
+	if got := out.Messages[1].Content; got != "user turn b" {
+		t.Fatalf("tail should start at the percent-selected complete turn, got %q", got)
 	}
 }
 
-func TestEmergencyCompactionFallsBackToDeterministicSummaryWithFifteenMessageTail(t *testing.T) {
+func TestEmergencyCompactionFallsBackToDeterministicSummaryWithPercentTail(t *testing.T) {
 	var msgs []provider.Message
 	for i := 0; i < 20; i++ {
 		suffix := string(rune('a' + i))
@@ -206,15 +206,15 @@ func TestEmergencyCompactionFallsBackToDeterministicSummaryWithFifteenMessageTai
 	if f.calls != 1 {
 		t.Fatalf("emergency summary attempts = %d, want 1", f.calls)
 	}
-	if len(out.Messages) != 17 {
-		t.Fatalf("message count = %d, want fallback summary + 16-message dynamic tail", len(out.Messages))
+	if len(out.Messages) != 39 {
+		t.Fatalf("message count = %d, want fallback summary + the percent-selected dynamic tail", len(out.Messages))
 	}
 	assertContainsAll(t, out.Messages[0].Content,
 		"[Reactive Context Summary]",
 		"deterministic fallback",
 		"user turn a",
 	)
-	if got := out.Messages[1].Content; got != "user turn m" {
+	if got := out.Messages[1].Content; got != "user turn b" {
 		t.Fatalf("tail should use the emergency dynamic tail, got %q", got)
 	}
 }
@@ -252,25 +252,78 @@ func TestEmergencyCompactionSummarizesSingleHugeTurnWithoutTail(t *testing.T) {
 	}
 }
 
-func TestCompactionTailStartTargetsTwentyMessagesWithCompleteTurns(t *testing.T) {
+func TestCompactionTailStartTargetsThirtyPercentTokensWithTwoTurnMinimum(t *testing.T) {
 	var msgs []provider.Message
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 10; i++ {
 		msgs = append(msgs,
-			provider.Message{Role: "user", Content: "user turn", Origin: provider.OriginUser},
-			provider.Message{Role: "assistant", Content: "assistant reply", Origin: provider.OriginUser},
+			provider.Message{Role: "user", Content: strings.Repeat("old user ", 5), Origin: provider.OriginUser},
+			provider.Message{Role: "assistant", Content: strings.Repeat("old assistant ", 5), Origin: provider.OriginUser},
+		)
+	}
+	for i := 0; i < 2; i++ {
+		msgs = append(msgs,
+			provider.Message{Role: "user", Content: strings.Repeat("recent user ", 80), Origin: provider.OriginUser},
+			provider.Message{Role: "assistant", Content: strings.Repeat("recent assistant ", 80), Origin: provider.OriginUser},
 		)
 	}
 
-	got := compactionTailStart(msgs, CompactOptions{})
-	if got != 4 {
-		t.Fatalf("tail start = %d, want 4 to preserve last 10 two-message turns", got)
+	got := compactionTailStart(msgs, CompactOptions{
+		ContextWindow:   1000,
+		MaxOutputTokens: 0,
+	})
+	if got != 20 {
+		t.Fatalf("tail start = %d, want 20 to preserve the minimum two recent turns near the 30%% token target", got)
 	}
-	if tailLen := len(msgs) - got; tailLen != DefaultTailTargetMessages {
-		t.Fatalf("tail messages = %d, want %d", tailLen, DefaultTailTargetMessages)
+	if tailTurns := realUserTurns(msgs[got:]); tailTurns != MinimumTailTurns {
+		t.Fatalf("tail real user turns = %d, want %d", tailTurns, MinimumTailTurns)
 	}
 }
 
-func TestCompactionTailStartRelaxesMinimumTurnsWhenItWouldBlockCompression(t *testing.T) {
+func TestEmergencyCompactionTailStartChoosesZeroTailWhenLatestTurnExceedsTarget(t *testing.T) {
+	var msgs []provider.Message
+	for i := 0; i < 3; i++ {
+		msgs = append(msgs,
+			provider.Message{Role: "user", Content: "old user", Origin: provider.OriginUser},
+			provider.Message{Role: "assistant", Content: "old assistant", Origin: provider.OriginUser},
+		)
+	}
+	msgs = append(msgs,
+		provider.Message{Role: "user", Content: strings.Repeat("latest user ", 120), Origin: provider.OriginUser},
+		provider.Message{Role: "assistant", Content: strings.Repeat("latest assistant ", 120), Origin: provider.OriginUser},
+	)
+
+	got := compactionTailStart(msgs, CompactOptions{
+		Mode:            CompactModeEmergency,
+		ContextWindow:   1000,
+		MaxOutputTokens: 0,
+	})
+	if got != len(msgs) {
+		t.Fatalf("tail start = %d, want %d so emergency summarizes the oversized latest turn instead of preserving it", got, len(msgs))
+	}
+}
+
+func TestCompactionTailStartTargetsCompleteTurnsNearThirtyPercent(t *testing.T) {
+	var msgs []provider.Message
+	for i := 0; i < 12; i++ {
+		msgs = append(msgs,
+			provider.Message{Role: "user", Content: strings.Repeat("user turn ", 50), Origin: provider.OriginUser},
+			provider.Message{Role: "assistant", Content: strings.Repeat("assistant reply ", 50), Origin: provider.OriginUser},
+		)
+	}
+
+	got := compactionTailStart(msgs, CompactOptions{
+		ContextWindow:   10000,
+		MaxOutputTokens: 0,
+	})
+	if got != 6 {
+		t.Fatalf("tail start = %d, want 6 to preserve the nine complete turns closest to 30%% of the input budget", got)
+	}
+	if tailTurns := realUserTurns(msgs[got:]); tailTurns != 9 {
+		t.Fatalf("tail real user turns = %d, want 9", tailTurns)
+	}
+}
+
+func TestCompactionTailStartKeepsMinimumTurnsHardForProactiveCompaction(t *testing.T) {
 	msgs := []provider.Message{
 		{Role: "user", Content: "first user", Origin: provider.OriginUser},
 		{Role: "assistant", Content: "first assistant", Origin: provider.OriginUser},
@@ -278,16 +331,13 @@ func TestCompactionTailStartRelaxesMinimumTurnsWhenItWouldBlockCompression(t *te
 		{Role: "assistant", Content: "second assistant", Origin: provider.OriginUser},
 	}
 
-	got := compactionTailStart(msgs, CompactOptions{
-		TailTargetMessages: 2,
-		MinTailTurns:       2,
-	})
-	if got != 2 {
-		t.Fatalf("tail start = %d, want 2 after relaxing the soft minimum turn preference", got)
+	got := compactionTailStart(msgs, CompactOptions{MinTailTurns: 2})
+	if got != 0 {
+		t.Fatalf("tail start = %d, want 0 because proactive compaction must preserve at least two turns", got)
 	}
 }
 
-func TestCompactionTailStartUsesZeroTailWhenSingleTurnExceedsTarget(t *testing.T) {
+func TestCompactionTailStartKeepsSingleTurnForProactiveCompaction(t *testing.T) {
 	msgs := []provider.Message{
 		{Role: "user", Content: "single huge turn", Origin: provider.OriginUser},
 	}
@@ -300,31 +350,27 @@ func TestCompactionTailStartUsesZeroTailWhenSingleTurnExceedsTarget(t *testing.T
 	}
 
 	got := compactionTailStart(msgs, CompactOptions{
-		TailTargetMessages: 20,
-		ContextWindow:      1000,
-		TargetPercent:      55,
+		ContextWindow: 1000,
 	})
-	if got != len(msgs) {
-		t.Fatalf("tail start = %d, want %d to summarize the whole oversized turn", got, len(msgs))
+	if got != 0 {
+		t.Fatalf("tail start = %d, want 0 because proactive compaction has no complete tail beyond the only turn", got)
 	}
 }
 
-func TestCompactionTailStartUsesZeroTailWhenSingleMessageExceedsTarget(t *testing.T) {
+func TestCompactionTailStartKeepsSingleMessageForProactiveCompaction(t *testing.T) {
 	msgs := []provider.Message{
 		{Role: "user", Content: strings.Repeat("large message ", 200), Origin: provider.OriginUser},
 	}
 
 	got := compactionTailStart(msgs, CompactOptions{
-		TailTargetMessages: 20,
-		ContextWindow:      1000,
-		TargetPercent:      55,
+		ContextWindow: 1000,
 	})
-	if got != len(msgs) {
-		t.Fatalf("tail start = %d, want %d to summarize the whole oversized message", got, len(msgs))
+	if got != 0 {
+		t.Fatalf("tail start = %d, want 0 because proactive compaction has no older turn to summarize", got)
 	}
 }
 
-func TestCompactionTailStartUsesFewerTurnsWhenRecentTurnsAreToolHeavy(t *testing.T) {
+func TestCompactionTailStartUsesFewerTurnsWhenRecentTurnsAreTokenHeavy(t *testing.T) {
 	var msgs []provider.Message
 	for i := 0; i < 4; i++ {
 		msgs = append(msgs,
@@ -336,13 +382,13 @@ func TestCompactionTailStartUsesFewerTurnsWhenRecentTurnsAreToolHeavy(t *testing
 		msgs = append(msgs, toolHeavyTurn("recent_call")...)
 	}
 
-	got := compactionTailStart(msgs, CompactOptions{})
+	got := compactionTailStart(msgs, CompactOptions{
+		ContextWindow:   22000,
+		MaxOutputTokens: 0,
+	})
 	tailTurns := realUserTurns(msgs[got:])
 	if tailTurns != 2 {
-		t.Fatalf("tail real user turns = %d, want 2 for tool-heavy recent turns", tailTurns)
-	}
-	if tailLen := len(msgs) - got; tailLen != 18 {
-		t.Fatalf("tail messages = %d, want 18 as closest complete-turn tail to 20", tailLen)
+		t.Fatalf("tail real user turns = %d, want 2 for token-heavy recent turns", tailTurns)
 	}
 }
 
@@ -360,10 +406,7 @@ func TestPruneOldToolResultsUsesDynamicTurnAwareTail(t *testing.T) {
 		{Role: "assistant", Content: "current assistant", Origin: provider.OriginUser},
 	}
 
-	got, changed := pruneOldToolResultsWithChange(msgs, CompactOptions{
-		TailTargetMessages: 5,
-		MinTailTurns:       2,
-	})
+	got, changed := pruneOldToolResultsWithChange(msgs, CompactOptions{MinTailTurns: 2})
 	if !changed {
 		t.Fatal("expected old tool result before dynamic tail to be pruned")
 	}
@@ -379,13 +422,13 @@ func toolHeavyTurn(callPrefix string) []provider.Message {
 	return []provider.Message{
 		{Role: "user", Content: "tool-heavy user", Origin: provider.OriginUser},
 		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: callPrefix + "_1", Type: "function", Function: provider.FunctionCall{Name: "lookup", Arguments: "{}"}}}},
-		{Role: "tool", ToolCallID: callPrefix + "_1", Name: "lookup", Content: "tool result"},
+		{Role: "tool", ToolCallID: callPrefix + "_1", Name: "lookup", Content: strings.Repeat("tool result ", 400)},
 		{Role: "assistant", Content: "tool result noted", Origin: provider.OriginUser},
 		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: callPrefix + "_2", Type: "function", Function: provider.FunctionCall{Name: "read", Arguments: "{}"}}}},
-		{Role: "tool", ToolCallID: callPrefix + "_2", Name: "read", Content: "tool result"},
+		{Role: "tool", ToolCallID: callPrefix + "_2", Name: "read", Content: strings.Repeat("tool result ", 400)},
 		{Role: "assistant", Content: "second result noted", Origin: provider.OriginUser},
 		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: callPrefix + "_3", Type: "function", Function: provider.FunctionCall{Name: "write", Arguments: "{}"}}}},
-		{Role: "tool", ToolCallID: callPrefix + "_3", Name: "write", Content: "tool result"},
+		{Role: "tool", ToolCallID: callPrefix + "_3", Name: "write", Content: strings.Repeat("tool result ", 400)},
 	}
 }
 

@@ -590,27 +590,28 @@ func (s *recordingContextArchiveStore) SaveContextArchive(ctx context.Context, r
 	return nil
 }
 
-func TestCompactionKeepsDynamicTailNearTargetMessages(t *testing.T) {
+func TestCompactionKeepsDynamicTailNearTargetTokens(t *testing.T) {
 	var msgs []provider.Message
-	for i := 1; i <= 12; i++ {
+	for i := 1; i <= 6; i++ {
 		msgs = append(msgs,
-			provider.Message{Role: "user", Content: "user turn", Origin: provider.OriginUser},
-			provider.Message{Role: "user", Content: "runtime context", Origin: provider.OriginGoalContext},
-			provider.Message{Role: "assistant", Content: "assistant reply", Origin: provider.OriginUser},
+			provider.Message{Role: "user", Content: strings.Repeat("user turn ", 20), Origin: provider.OriginUser},
+			provider.Message{Role: "user", Content: strings.Repeat("runtime context ", 25), Origin: provider.OriginGoalContext},
+			provider.Message{Role: "assistant", Content: strings.Repeat("assistant reply ", 20), Origin: provider.OriginUser},
 		)
 	}
 
-	got := compactionTailStart(msgs, CompactOptions{})
+	got := compactionTailStart(msgs, CompactOptions{
+		ContextWindow:   1333,
+		MaxOutputTokens: 0,
+	})
 
 	// Runtime-injected user messages (OriginGoalContext) anchor turn
 	// boundaries too, so the cutoff can land on one. This keeps cutoff
 	// granularity fine even during /goal runs with few real user turns.
-	// With 36 messages and a 20-message target, the closest boundary is
-	// index 16, yielding an exact 20-message tail.
-	if got != 16 {
-		t.Fatalf("tail start = %d, want 16 for a 20-message tail at target", got)
+	if got != 13 {
+		t.Fatalf("tail start = %d, want 13 for the token target to land on injected runtime context", got)
 	}
-	if tailLen := len(msgs) - got; tailLen != DefaultTailTargetMessages {
-		t.Fatalf("tail messages = %d, want %d", tailLen, DefaultTailTargetMessages)
+	if msgs[got].Origin != provider.OriginGoalContext {
+		t.Fatalf("tail starts at origin %q, want %q", msgs[got].Origin, provider.OriginGoalContext)
 	}
 }
