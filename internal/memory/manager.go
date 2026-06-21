@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/qs3c/bkclaw/internal/privacy"
 	"github.com/qs3c/bkclaw/internal/store"
@@ -123,7 +124,7 @@ func (m *Manager) List(ctx context.Context, target Target) Result {
 		return failureResult(target, nil, m.config, err.Error())
 	}
 	entries, _ := parseEntries(target, data)
-	return successResult(target, entries, m.config, "listed entries")
+	return listResult(target, entries, m.config, "listed entries")
 }
 
 func (m *Manager) Apply(ctx context.Context, target Target, ops []Operation) Result {
@@ -136,6 +137,14 @@ func (m *Manager) Apply(ctx context.Context, target Target, ops []Operation) Res
 	}
 	if len(ops) == 0 {
 		return failureResult(target, nil, m.config, "no memory operations requested")
+	}
+	if allListOperations(ops) {
+		data, err := m.load(ctx, target)
+		if err != nil {
+			return failureResult(target, nil, m.config, err.Error())
+		}
+		entries, _ := parseEntries(target, data)
+		return listResult(target, entries, m.config, "listed entries")
 	}
 
 	var opResult Result
@@ -179,24 +188,7 @@ func (m *Manager) Render(ctx context.Context, target Target) string {
 }
 
 func (m *Manager) RenderEntries(target Target, entries []string) string {
-	filename, err := Filename(target)
-	if err != nil {
-		filename = "memory file"
-	}
-
-	rendered := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if threats := privacy.ScanMemoryStrict(entry); len(threats) > 0 {
-			rendered = append(rendered, fmt.Sprintf(
-				"[BLOCKED: %s entry contained threat pattern(s): %s. Use memory(remove) to delete the original.]",
-				filename,
-				strings.Join(threatTypes(threats), ", "),
-			))
-			continue
-		}
-		rendered = append(rendered, entry)
-	}
-	return strings.Join(rendered, "\n\n")
+	return strings.Join(safeEntriesForList(target, entries), "\n\n")
 }
 
 func parseEntries(target Target, data []byte) (entries []string, managed bool) {
@@ -215,17 +207,21 @@ func parseEntries(target Target, data []byte) (entries []string, managed bool) {
 				entries = append(entries, entry)
 			}
 		}
-		return entries, true
+		return dedupeExactEntries(entries), true
+	}
+	if isComplexLegacyMarkdown(text) {
+		if trimmed := strings.TrimSpace(text); trimmed != "" {
+			return []string{trimmed}, false
+		}
+		return nil, false
 	}
 
 	var paragraph []string
-	seen := map[string]bool{}
 	addEntry := func(entry string) {
 		entry = strings.TrimSpace(entry)
-		if entry == "" || seen[entry] {
+		if entry == "" {
 			return
 		}
-		seen[entry] = true
 		entries = append(entries, entry)
 	}
 	flushParagraph := func() {
@@ -257,7 +253,7 @@ func parseEntries(target Target, data []byte) (entries []string, managed bool) {
 		paragraph = append(paragraph, trimmed)
 	}
 	flushParagraph()
-	return entries, false
+	return dedupeExactEntries(entries), false
 }
 
 func serialize(target Target, entries []string) []byte {
@@ -298,6 +294,9 @@ func applyOperations(target Target, current []string, ops []Operation, cfg Confi
 			if content == "" {
 				return original, failureResult(target, original, cfg, "add content is empty")
 			}
+			if containsManagedDelimiter(content) {
+				return original, failureResult(target, original, cfg, "add content contains managed delimiter")
+			}
 			if msg := unsafeMessage(content); msg != "" {
 				return original, failureResult(target, original, cfg, msg)
 			}
@@ -314,49 +313,42 @@ func applyOperations(target Target, current []string, ops []Operation, cfg Confi
 			if content == "" {
 				return original, failureResult(target, original, cfg, "replace content is empty")
 			}
+			if containsManagedDelimiter(content) {
+				return original, failureResult(target, original, cfg, "replace content contains managed delimiter")
+			}
 			if msg := unsafeMessage(content); msg != "" {
 				return original, failureResult(target, original, cfg, msg)
 			}
-			match, count := uniqueSubstringMatch(next, oldText)
+			matchIndex, count := uniqueSubstringMatch(next, oldText)
 			if count == 0 {
 				return original, failureResult(target, original, cfg, "old_text matches no entries")
 			}
 			if count > 1 {
 				return original, failureResult(target, original, cfg, fmt.Sprintf("old_text matches %d entries", count))
 			}
-			for i, entry := range next {
-				if entry == match {
-					next[i] = content
-				}
-			}
+			next[matchIndex] = content
 		case ActionRemove:
 			oldText := strings.TrimSpace(op.OldText)
 			if oldText == "" {
 				return original, failureResult(target, original, cfg, "remove old_text is required")
 			}
-			match, count := uniqueSubstringMatch(next, oldText)
+			matchIndex, count := uniqueSubstringMatch(next, oldText)
 			if count == 0 {
 				return original, failureResult(target, original, cfg, "old_text matches no entries")
 			}
 			if count > 1 {
 				return original, failureResult(target, original, cfg, fmt.Sprintf("old_text matches %d entries", count))
 			}
-			filtered := next[:0]
-			for _, entry := range next {
-				if entry != match {
-					filtered = append(filtered, entry)
-				}
-			}
-			next = filtered
+			next = append(next[:matchIndex], next[matchIndex+1:]...)
 		default:
 			return original, failureResult(target, original, cfg, fmt.Sprintf("unsupported memory action %q", op.Action))
 		}
 	}
 
 	if limit := limitForTarget(target, cfg); limit > 0 {
-		size := len(serialize(target, next))
+		size := serializedRuneCount(target, next)
 		if size > limit {
-			return original, failureResult(target, original, cfg, fmt.Sprintf("managed memory over limit: %d/%d bytes", size, limit))
+			return original, failureResult(target, original, cfg, fmt.Sprintf("managed memory over limit: %d/%d characters", size, limit))
 		}
 	}
 	return next, successResult(target, next, cfg, "applied operations")
@@ -511,6 +503,44 @@ func isAutoPersistedHeading(heading string) bool {
 	return strings.HasPrefix(lower, "auto-persisted") || strings.HasPrefix(lower, "auto-updated")
 }
 
+func isComplexLegacyMarkdown(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "```") || strings.Contains(line, "|") {
+			return true
+		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			return true
+		}
+	}
+	return false
+}
+
+func dedupeExactEntries(entries []string) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	deduped := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry == "" || seen[entry] {
+			continue
+		}
+		seen[entry] = true
+		deduped = append(deduped, entry)
+	}
+	if len(deduped) == 0 {
+		return nil
+	}
+	return deduped
+}
+
+func containsManagedDelimiter(content string) bool {
+	return strings.Contains(normalizeNewlines(content), entryDelimiter)
+}
+
 func containsExact(entries []string, content string) bool {
 	for _, entry := range entries {
 		if entry == content {
@@ -520,19 +550,54 @@ func containsExact(entries []string, content string) bool {
 	return false
 }
 
-func uniqueSubstringMatch(entries []string, oldText string) (string, int) {
-	seen := map[string]bool{}
-	var matches []string
-	for _, entry := range entries {
-		if strings.Contains(entry, oldText) && !seen[entry] {
-			seen[entry] = true
-			matches = append(matches, entry)
+func uniqueSubstringMatch(entries []string, oldText string) (int, int) {
+	matchIndex := -1
+	count := 0
+	for i, entry := range entries {
+		if strings.Contains(entry, oldText) {
+			if count == 0 {
+				matchIndex = i
+			}
+			count++
 		}
 	}
-	if len(matches) != 1 {
-		return "", len(matches)
+	return matchIndex, count
+}
+
+func allListOperations(ops []Operation) bool {
+	for _, op := range ops {
+		if op.Action != ActionList {
+			return false
+		}
 	}
-	return matches[0], 1
+	return len(ops) > 0
+}
+
+func safeEntriesForList(target Target, entries []string) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+	filename, err := Filename(target)
+	if err != nil {
+		filename = "memory file"
+	}
+	safe := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if threats := privacy.ScanMemoryStrict(entry); len(threats) > 0 {
+			safe = append(safe, blockedEntryPlaceholder(filename, threats))
+			continue
+		}
+		safe = append(safe, entry)
+	}
+	return safe
+}
+
+func blockedEntryPlaceholder(filename string, threats []privacy.Threat) string {
+	return fmt.Sprintf(
+		"[BLOCKED: %s entry contained threat pattern(s): %s. Use memory(remove) to delete the original.]",
+		filename,
+		strings.Join(threatTypes(threats), ", "),
+	)
 }
 
 func unsafeMessage(content string) string {
@@ -571,6 +636,19 @@ func failureResult(target Target, entries []string, cfg Config, message string) 
 	return resultWithEntries(false, target, entries, cfg, message)
 }
 
+func listResult(target Target, entries []string, cfg Config, message string) Result {
+	copied := cloneEntries(entries)
+	return Result{
+		Success:    true,
+		Done:       true,
+		Target:     target,
+		EntryCount: len(copied),
+		Usage:      usage(target, copied, cfg),
+		Message:    message,
+		Entries:    safeEntriesForList(target, copied),
+	}
+}
+
 func resultWithEntries(success bool, target Target, entries []string, cfg Config, message string) Result {
 	copied := cloneEntries(entries)
 	return Result{
@@ -585,12 +663,16 @@ func resultWithEntries(success bool, target Target, entries []string, cfg Config
 }
 
 func usage(target Target, entries []string, cfg Config) string {
-	size := len(serialize(target, entries))
+	size := serializedRuneCount(target, entries)
 	limit := limitForTarget(target, cfg)
 	if limit <= 0 {
-		return strconv.Itoa(size) + " bytes"
+		return strconv.Itoa(size) + " characters"
 	}
-	return fmt.Sprintf("%d/%d bytes", size, limit)
+	return fmt.Sprintf("%d/%d characters", size, limit)
+}
+
+func serializedRuneCount(target Target, entries []string) int {
+	return utf8.RuneCount(serialize(target, entries))
 }
 
 func limitForTarget(target Target, cfg Config) int {
