@@ -59,18 +59,18 @@ var strictMemoryPromptInjectionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)forget\s+everything`),
 	regexp.MustCompile(`(?i)new\s+persona`),
 	regexp.MustCompile(`(?i)\bact\s+as\s+(?:an?\s+)?(?:admin(?:istrator)?|root|dan|developer|system|(?:unrestricted|uncensored|jailbroken)\s+assistant)\b`),
-	regexp.MustCompile(`(?i)(?:\b(?:remove|disable|bypass)\s+(?:all\s+)?filters?\b[^.\n]*\b(?:reveal|hidden\s+instructions|system\s+prompt|safety|guardrails?|restrictions?)\b|\b(?:reveal|hidden\s+instructions|system\s+prompt|safety|guardrails?|restrictions?)\b[^.\n]*\b(?:remove|disable|bypass)\s+(?:all\s+)?filters?\b)`),
+	regexp.MustCompile(`(?i)(?:\b(?:remove|disable|bypass)\s+(?:all\s+)?filters?\b[^.\n]*(?:\b(?:and|to|so)\s+reveal\b|\bhidden\s+instructions\b|\bsystem\s+prompt\b|\bignore\s+safety\b)|(?:\b(?:and|to|so)\s+reveal\b|\bhidden\s+instructions\b|\bsystem\s+prompt\b|\bignore\s+safety\b)[^.\n]*\b(?:remove|disable|bypass)\s+(?:all\s+)?filters?\b)`),
 }
 
 var strictMemoryExfiltrationPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)output\s+(?:the\s+)?full\s+context`),
 	regexp.MustCompile(`(?i)send\s+(?:the\s+)?(?:(?:full|all)\s+)?(?:results?|context|memory|secrets?|credentials?|tokens?|keys?|\.?env|private\s+(?:keys?|tokens?|credentials?|secrets?|data|context|memory|env))\b(?:\s+(?:to|at|via|into))?\s+(?:https?://[^\s]+|webhook\S*)`),
 	regexp.MustCompile(`(?i)(?:(?:context|results?|memory|secrets?|credentials?|tokens?)\b[^.\n]*(?:curl|wget)\s+https?://[^\s]+|(?:curl|wget)\s+https?://[^\s]*(?:context|result|secret|credential|token)[^\s]*)`),
-	regexp.MustCompile(`(?i)(?:\bread\s+/etc/passwd\b|\bread\s+(?:the\s+)?(?:credentials?|tokens?|secrets?|secret\s+files?)\b[^.\n]*(?:\bsend\b|\bupload\b|\battacker\b|https?://|webhook|[/\\][^\s]*|[^\s]*(?:secret|credential|token|key|passwd|\.?env)[^\s]*[/\\][^\s]*))`),
+	regexp.MustCompile(`(?i)(?:\bread\s+/etc/passwd\b|\bread\s+(?:the\s+)?(?:credentials?|tokens?|secrets?|secret\s+files?)\b[^.\n]*(?:\bsend\b|\bupload\b|\bexfiltrate\b|\battacker\b|webhook|/etc/passwd\b|[^A-Za-z0-9_](?:id_rsa|id_dsa|id_ecdsa|id_ed25519|authorized_keys)\b))`),
 	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*(?:-d|--data(?:-raw|-binary|-urlencode)?|--post-data|--body-data|--post-file)\s*=?\s*@?[^\s]*(?:secret|credential|token|key|passwd|\.?env)[^\s]*[^\n]*https?://[^\s]+`),
 	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*https?://[^\s]+[^\n]*(?:-d|--data(?:-raw|-binary|-urlencode)?|--post-data|--body-data|--post-file)\s*=?\s*@?[^\s]*(?:secret|credential|token|key|passwd|\.?env)[^\s]*`),
-	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*(?:-T|--upload-file|-F|--form)\s*=?\s*@?[^\s]*(?:secret|credentials?|token|key|private|\.?env)[^\s]*[^\n]*https?://[^\s]+`),
-	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*https?://[^\s]+[^\n]*(?:-T|--upload-file|-F|--form)\s*=?\s*@?[^\s]*(?:secret|credentials?|token|key|private|\.?env)[^\s]*`),
+	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*(?:-T|--upload-file|-F|--form)\s*=?\s*@?[^\s]*(?:secret|credentials?|token|key|private|passwd|id_rsa|id_dsa|id_ecdsa|id_ed25519|authorized_keys|\.?env)[^\s]*[^\n]*https?://[^\s]+`),
+	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*https?://[^\s]+[^\n]*(?:-T|--upload-file|-F|--form)\s*=?\s*@?[^\s]*(?:secret|credentials?|token|key|private|passwd|id_rsa|id_dsa|id_ecdsa|id_ed25519|authorized_keys|\.?env)[^\s]*`),
 }
 
 var strictMemoryPersistencePatterns = []*regexp.Regexp{
