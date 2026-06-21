@@ -5,7 +5,7 @@ import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { getAgent, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, listAgentFiles, listProjects, renameChatSession, revealAgentWorkspace, sendChatStream, steerChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile } from "@/lib/api";
+import { getAgent, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, listAgentFiles, listProjects, renameChatSession, revealAgentWorkspace, sendChatStream, steerChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type ContextUsage, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile } from "@/lib/api";
 import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal } from "lucide-react";
 import Link from "next/link";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
@@ -531,6 +531,14 @@ export function ChatScreen() {
     tools?: string[];
   }>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  // 最近一轮完成时（done 事件）后端汇报的上下文占用。用于在输入框
+  // 页脚渲染「已用上下文百分比」指示器。null = 本会话尚无完成的轮次
+  // （页面刷新后会重置，待下一轮再次填充）。
+  const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
+  // 后端正在同步压缩上下文时为 true（compaction active 事件）。驱动消息流
+  // 末尾的「正在压缩上下文…」横杠。压缩在轮次开始、产出任何回复前进行，
+  // 是个阻塞等待，因此需要单独提示而非复用打字指示器。
+  const [compacting, setCompacting] = useState(false);
   const [filesSheetOpen, setFilesSheetOpen] = useState(false);
   const [sessionTitle, setSessionTitle] = useState<string>("");
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -761,6 +769,10 @@ export function ChatScreen() {
           max?: number;
           phase?: "thinking" | "running" | "final-delivery" | "done";
           tools?: string[];
+          // done 事件携带的上下文占用
+          usage?: ContextUsage;
+          // compaction 事件：true=开始压缩，false=结束
+          active?: boolean;
         };
       };
       try {
@@ -858,8 +870,15 @@ export function ChatScreen() {
             applySteerEvent(data.data?.content || "");
             break;
           }
+          case "compaction": {
+            claim();
+            setCompacting(!!data.data?.active);
+            break;
+          }
           case "done": {
             claim();
+            if (data.data?.usage) setContextUsage(data.data.usage);
+            setCompacting(false);
             // 防御性清理——content 事件应已封口流式气泡，但在 content 事件
             // 到达之前出错的轮次会使 ref 悬空，导致下一轮的首个
             // content_delta 写入过期的 id。
@@ -1489,6 +1508,21 @@ export function ChatScreen() {
               ...prev,
               { id: `e-${Date.now()}`, role: "agent", content: `Error: ${msg}`, timestamp: Date.now() },
             ]);
+            setCompacting(false);
+            break;
+          }
+          case "compaction": {
+            // 后端在轮次开始、产出回复前同步压缩上下文。active=true 时显示横杠，
+            // false 时收起。这是个阻塞等待，单独提示让用户知道延迟来自压缩而非模型。
+            setCompacting(!!evt.data?.active);
+            break;
+          }
+          case "done": {
+            // 轮次结束。后端附带本轮的上下文占用（usage），用于更新页脚的
+            // 「已用上下文百分比」指示器。并行的 /api/chat/subscribe 路径也会
+            // 收到同一个带 seq 的 done 事件，但上方的 seq 去重确保只处理一次。
+            if (evt.data?.usage) setContextUsage(evt.data.usage);
+            setCompacting(false);
             break;
           }
         }
@@ -1611,6 +1645,9 @@ export function ChatScreen() {
       // 如果网络抖动丢失了该事件，我们不希望过时的"第 5/20 次迭代"
       // 停留在已完成的轮次下。
       setSubagentProgress(null);
+      // 同理兜底压缩横杠：轮次以任何方式结束（完成/出错/中止）都收起，
+      // 防止丢失 compaction(active=false) 事件时横杠卡住。
+      setCompacting(false);
       textareaRef.current?.focus();
     }
   }, [input, attachments, selectedAgent, sessionId, sending, loadSessions, pathname, router, urlProjectId, planMode]);
@@ -2133,7 +2170,21 @@ export function ChatScreen() {
               }
             })()}
 
-            {sending && (
+            {compacting && (
+              // 上下文压缩横杠：压缩在轮次开始、产出任何回复前同步进行，
+              // 用一道横贯的横杠 + 旋转图标提示「正在压缩上下文…」，让用户
+              // 明白此处的停顿来自压缩而非模型思考。压缩结束（或轮次终止）即收起。
+              <div className="my-1 flex items-center gap-3 text-xs text-amber-600 dark:text-amber-400" aria-live="polite">
+                <span className="h-px flex-1 bg-gradient-to-r from-transparent to-amber-500/40" />
+                <span className="flex shrink-0 items-center gap-1.5">
+                  <span className="size-3 shrink-0 rounded-full border-2 border-amber-500 border-t-transparent animate-spin" />
+                  正在压缩上下文…
+                </span>
+                <span className="h-px flex-1 bg-gradient-to-l from-transparent to-amber-500/40" />
+              </div>
+            )}
+
+            {sending && !compacting && (
               <div className="flex justify-start">
                 <div className="bg-muted rounded-2xl rounded-bl-md px-4 py-3">
                   <div className="flex items-center gap-1">
@@ -2322,6 +2373,7 @@ export function ChatScreen() {
                           </span>
                         </div>
                       )}
+                      {contextUsage && <ContextUsageBadge usage={contextUsage} />}
                     </div>
                     {sending ? (
                       <Button
@@ -2404,6 +2456,7 @@ export function ChatScreen() {
                     className="flex-1 resize-none bg-transparent text-[15px] leading-8 placeholder:text-muted-foreground/50 outline-none disabled:opacity-50"
                     style={{ maxHeight: 200, minHeight: 32 }}
                   />
+                  {contextUsage && <ContextUsageBadge usage={contextUsage} />}
                   {sending ? (
                     <Button
                       onClick={handleStop}
@@ -2467,6 +2520,51 @@ export function ChatScreen() {
           onClose={() => setFilesSheetOpen(false)}
         />
       )}
+    </div>
+  );
+}
+
+// ContextUsageBadge 渲染输入框页脚的「已用上下文百分比」指示器。
+// 一条细进度条 + 百分比文字，并在阈值处画一道竖线标出后端自动压缩的
+// 触发点（triggerTokens）。占用接近/越过该阈值时变为琥珀色，提示下一轮
+// 可能触发压缩。百分比以完整上下文窗口为分母，便于直观对照模型上限。
+function ContextUsageBadge({ usage }: { usage: ContextUsage }) {
+  const { usedTokens, contextWindow, triggerTokens } = usage;
+  if (!contextWindow || contextWindow <= 0) return null;
+  const pct = Math.min(100, Math.max(0, (usedTokens / contextWindow) * 100));
+  const triggerPct =
+    triggerTokens > 0 ? Math.min(100, (triggerTokens / contextWindow) * 100) : 0;
+  const atLimit = triggerTokens > 0 && usedTokens >= triggerTokens;
+  const fmt = (n: number) =>
+    n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`;
+  const warn = atLimit || pct >= 90;
+  return (
+    <div
+      className={`flex shrink-0 items-center gap-1.5 text-xs tabular-nums ${
+        warn ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"
+      }`}
+      title={`上下文占用：${fmt(usedTokens)} / ${fmt(contextWindow)} tokens（${pct.toFixed(0)}%）${
+        triggerPct > 0
+          ? `\n自动压缩阈值约 ${triggerPct.toFixed(0)}%${atLimit ? " — 已达到，下一轮将压缩较早的历史" : ""}`
+          : ""
+      }`}
+    >
+      <span className="relative h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+        <span
+          className={`absolute inset-y-0 left-0 rounded-full ${
+            warn ? "bg-amber-500" : "bg-primary/60"
+          }`}
+          style={{ width: `${pct}%` }}
+        />
+        {triggerPct > 0 && triggerPct < 100 && (
+          <span
+            className="absolute inset-y-0 w-px bg-foreground/40"
+            style={{ left: `${triggerPct}%` }}
+            aria-hidden
+          />
+        )}
+      </span>
+      <span>{pct.toFixed(0)}%</span>
     </div>
   );
 }

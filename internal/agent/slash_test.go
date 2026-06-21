@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -9,6 +10,8 @@ import (
 	"github.com/qs3c/bkclaw/internal/provider"
 	"github.com/qs3c/bkclaw/internal/session"
 )
+
+type ctxKey string
 
 func TestSlashCompactUsesManualFocus(t *testing.T) {
 	sessions := session.NewManager(t.TempDir())
@@ -35,7 +38,10 @@ func TestSlashCompactUsesManualFocus(t *testing.T) {
 		ownerUserID:   "owner",
 	}
 
-	result := a.handleSlashCommand(msg)
+	const sentinel ctxKey = "compact-ctx-marker"
+	ctx := context.WithValue(context.Background(), sentinel, "present")
+
+	result := a.handleSlashCommand(ctx, msg)
 	if !result.handled {
 		t.Fatal("/compact should be handled")
 	}
@@ -44,6 +50,14 @@ func TestSlashCompactUsesManualFocus(t *testing.T) {
 	}
 	if !strings.Contains(f.gotSummaryRequest, "Manual compaction focus:\npreserve filesystem decisions") {
 		t.Fatalf("manual focus missing from summary request: %s", f.gotSummaryRequest)
+	}
+	// The turn ctx must reach Provider.Chat: a nil ctx fails every OpenAI-compatible
+	// summary attempt and silently degrades manual /compact to the crude fallback.
+	if f.gotCtx == nil {
+		t.Fatal("summary provider received a nil ctx; manual /compact would degrade to the deterministic fallback for OpenAI-compatible providers")
+	}
+	if got, _ := f.gotCtx.Value(sentinel).(string); got != "present" {
+		t.Fatalf("turn ctx did not propagate to summary provider: Value(%q) = %q, want %q", sentinel, got, "present")
 	}
 	if got := len(sess.GetMessages()); got >= 24 {
 		t.Fatalf("session messages were not compacted, got %d", got)

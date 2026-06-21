@@ -16,9 +16,14 @@ import (
 // about the summary content, only the input.
 type fakeSummarizer struct {
 	gotSummaryRequest string
+	gotCtx            context.Context
 }
 
-func (f *fakeSummarizer) Chat(_ context.Context, msgs []provider.Message, _ []provider.Tool, _ string, _ int, _ float64) (*provider.Response, error) {
+func (f *fakeSummarizer) Chat(ctx context.Context, msgs []provider.Message, _ []provider.Tool, _ string, _ int, _ float64) (*provider.Response, error) {
+	// Capture the ctx so tests can assert a real (non-nil, value-carrying)
+	// context reaches the provider — a nil ctx makes OpenAI-compatible Chat()
+	// fail on every attempt and silently degrades compaction to the fallback.
+	f.gotCtx = ctx
 	// compressOlderMessages builds the user-role prompt as the
 	// second message; the older-history text lives in its Content
 	// after the "Summarize this conversation:\n\n" prefix.

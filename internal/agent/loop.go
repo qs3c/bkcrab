@@ -667,6 +667,41 @@ func (a *Agent) meterTokens(ctx context.Context, sessionKey string, u provider.U
 	}
 }
 
+// usageInputTokens sums the input-side token counts a provider reports for one
+// LLM call: uncached input plus prompt-cache read + creation. Both provider
+// adapters normalize these so they never double-count (OpenAI subtracts cached
+// from input, Anthropic reports the three separately), so the sum is the real
+// number of context tokens the request occupied.
+func usageInputTokens(u provider.Usage) int {
+	return u.InputTokens + u.CacheReadTokens + u.CacheCreationTokens
+}
+
+// contextUsageData builds the payload attached to a turn's terminal "done"
+// event so the chat UI can render a context-utilization indicator. usedTokens
+// prefers the provider-reported input-side count (most accurate); when the
+// provider reported nothing this turn it falls back to the chars/4 estimate the
+// compaction trigger itself uses, so the indicator still tracks growth.
+// contextWindow and triggerTokens are echoed straight from the same normalized
+// compaction options the agent enforces, so the client renders the identical
+// budget and auto-compaction threshold without re-deriving them (and without
+// drifting if the constants change).
+func (a *Agent) contextUsageData(last provider.Usage, requestMessages []provider.Message, toolDefs []provider.Tool) map[string]any {
+	used := usageInputTokens(last)
+	if used <= 0 {
+		used = EstimateRequestTokens(requestMessages, toolDefs)
+	}
+	opts := normalizeCompactOptions(CompactOptions{
+		Mode:            CompactModeProactive,
+		ContextWindow:   a.contextWindow,
+		MaxOutputTokens: a.maxTokens,
+	})
+	return map[string]any{
+		"usedTokens":    used,
+		"contextWindow": opts.ContextWindow,
+		"triggerTokens": compactTriggerLimit(opts),
+	}
+}
+
 // StreamChatToResponse 是provider.Chat 的直接替代品
 // 通过管道将文本块实时传输到聊天事件通道
 // content_delta 事件。 Web UI 订阅者将每个增量附加到
@@ -795,6 +830,32 @@ func (a *Agent) compactionOptions(mode CompactMode, overhead []provider.Message,
 		ArchiveAgentID:    a.name,
 		ArchiveSessionKey: sessionKey,
 	}
+}
+
+// compactWithProgress runs proactive compaction and brackets the expensive
+// (triggered) path with "compaction" chat events, so the web UI can show a
+// "compacting context…" divider during the synchronous wait it imposes at the
+// top of a turn. The OnTriggered hook fires only when compaction actually does
+// work — over the trigger threshold — so the indicator never flashes on
+// ordinary under-threshold turns. The trailing event is emitted only when the
+// leading one was, keeping start/end balanced even if compaction errored.
+func (a *Agent) compactWithProgress(ctx context.Context, sessionMsgs []provider.Message, opts CompactOptions) (*CompactResult, error) {
+	// Thread the turn's ctx into the summarizer LLM call. The gateway already
+	// detaches this ctx from the request and caps it at agentTurnTimeout, so the
+	// summary survives a browser disconnect without us re-wrapping (and stripping
+	// that deadline) here. Without a non-nil ctx, OpenAI-compatible Chat() fails
+	// on every attempt and compaction silently falls back to a crude summary.
+	opts.Ctx = ctx
+	triggered := false
+	opts.OnTriggered = func() {
+		triggered = true
+		emitEvent(ctx, ChatEvent{Type: "compaction", Data: map[string]any{"active": true}})
+	}
+	res, err := CompactMessagesWithOptions(sessionMsgs, opts)
+	if triggered {
+		emitEvent(ctx, ChatEvent{Type: "compaction", Data: map[string]any{"active": false}})
+	}
+	return res, err
 }
 
 func (a *Agent) emergencyCompactRequestMessages(sess *session.Session, overhead []provider.Message, toolDefs []provider.Tool) ([]provider.Message, bool) {
@@ -1773,7 +1834,7 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 		"content":  resp.Content,
 		"metadata": planMeta,
 	}})
-	emitEvent(ctx, ChatEvent{Type: "done"})
+	emitEvent(ctx, ChatEvent{Type: "done", Data: map[string]any{"usage": a.contextUsageData(resp.Usage, messages, toolDefs)}})
 	return resp.Content
 }
 
@@ -1823,7 +1884,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 真正的答复将在下一个巴士发射的转弯处到来。”没有它，
 	// 流立即关闭并且打字指示器消失
 	// 当模型仍在预热时。
-	if result := a.handleSlashCommand(msg); result.handled {
+	if result := a.handleSlashCommand(ctx, msg); result.handled {
 		if result.reply != "" {
 			emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{"content": result.reply}})
 		}
@@ -1956,7 +2017,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	overheadMessages := a.buildRequestOverhead(systemPrompt, msg, chatterMem)
 	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessagesWithOptions(sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs, sess.SessionKey()))
+	compactResult, err := a.compactWithProgress(ctx, sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs, sess.SessionKey()))
 	if err != nil {
 		slog.Warn("compaction error", "agent", a.name, "error", err)
 	}
@@ -1996,6 +2057,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 返回时的channels.SplitMessageMarker； manager.dispatchOutb​​ound
 	// 对其进行拆分 (AllowSplit=true) 或折叠为换行符。
 	var replyParts []string
+
+	// lastUsage 保存本轮最近一次 LLM 调用报告的 token 用量，
+	// 用于在 "done" 事件上向前端汇报上下文占用百分比。仅在
+	// provider 实际报告了用量时更新，避免后续零值调用抹掉真实值。
+	var lastUsage provider.Usage
 
 	// 反应循环
 	for i := 0; i < a.maxToolIterations; i++ {
@@ -2064,6 +2130,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			return "Sorry, I encountered an error processing your request."
 		}
 		a.meterTokens(ctx, sess.Key(), resp.Usage)
+		if usageInputTokens(resp.Usage) > 0 {
+			lastUsage = resp.Usage
+		}
 		a.maybeRecoverToolCalls(resp)
 
 		if !resp.HasToolCalls() {
@@ -2089,7 +2158,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				messages = a.appendSteer(ctx, sess, messages, steer)
 				continue
 			}
-			emitEvent(ctx, ChatEvent{Type: "done"})
+			emitEvent(ctx, ChatEvent{Type: "done", Data: map[string]any{"usage": a.contextUsageData(lastUsage, messages, toolDefs)}})
 			a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem, anchor)
 			return joinReplyParts(replyParts)
 		}
@@ -2345,6 +2414,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	if finalErr == nil {
 		finalContent = finalResp.Content
 		a.meterTokens(ctx, sess.Key(), finalResp.Usage)
+		if usageInputTokens(finalResp.Usage) > 0 {
+			lastUsage = finalResp.Usage
+		}
 	}
 	if finalContent == "" {
 		// 综合调用本身失败或返回空 - 回退到
@@ -2366,7 +2438,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	if finalContent != "" {
 		replyParts = append(replyParts, finalContent)
 	}
-	emitEvent(ctx, ChatEvent{Type: "done"})
+	emitEvent(ctx, ChatEvent{Type: "done", Data: map[string]any{"usage": a.contextUsageData(lastUsage, finalMessages, toolDefs)}})
 	a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem, anchor)
 	return joinReplyParts(replyParts)
 }
@@ -2637,7 +2709,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	// 重用 HandleMessage 中的设置逻辑。空回复是“已处理
 	// 但沉默”——参见 HandleMessage 双胞胎。仍然发出 Done
 	// 块，以便等待流的调用者不会挂起。
-	if result := a.handleSlashCommand(msg); result.handled {
+	if result := a.handleSlashCommand(ctx, msg); result.handled {
 		ch := make(chan provider.StreamChunk, 2)
 		go func() {
 			ch <- provider.StreamChunk{Content: result.reply, Done: true}
@@ -2693,7 +2765,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	overheadMessages := a.buildRequestOverhead(systemPrompt, msg, chatterMem)
 	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessagesWithOptions(sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs, sess.SessionKey()))
+	compactResult, err := a.compactWithProgress(ctx, sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs, sess.SessionKey()))
 	if err != nil {
 		slog.Warn("compaction error", "agent", a.name, "error", err)
 	}

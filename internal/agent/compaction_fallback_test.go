@@ -304,6 +304,43 @@ func TestSummaryRetriesThenSucceeds(t *testing.T) {
 	}
 }
 
+func TestSummarizerReceivesThreadedCtx(t *testing.T) {
+	const key ctxKey = "summarizer-ctx-marker"
+	ctx := context.WithValue(context.Background(), key, "present")
+
+	f := &fakeSummarizer{}
+	if _, err := compressOlderMessages(longConversation(), CompactOptions{
+		Provider: f,
+		Model:    "fake-model",
+		Ctx:      ctx,
+	}); err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	if f.gotCtx == nil {
+		t.Fatal("provider received a nil ctx; OpenAI-compatible Chat would fail every attempt")
+	}
+	if got, _ := f.gotCtx.Value(key).(string); got != "present" {
+		t.Fatalf("threaded ctx did not reach provider: Value(%q) = %q, want %q", key, got, "present")
+	}
+}
+
+// TestSummarizerNilCtxFallsBackToNonNil pins the regression: when no ctx is
+// threaded (Ctx unset), summarizeWithRetries must still hand the provider a
+// non-nil context. The original bug passed nil straight through, so
+// http.NewRequestWithContext rejected it and every summary attempt failed.
+func TestSummarizerNilCtxFallsBackToNonNil(t *testing.T) {
+	f := &fakeSummarizer{}
+	if _, err := compressOlderMessages(longConversation(), CompactOptions{
+		Provider: f,
+		Model:    "fake-model",
+	}); err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	if f.gotCtx == nil {
+		t.Fatal("provider received a nil ctx; summarizeWithRetries should fall back to context.Background()")
+	}
+}
+
 func TestSummaryFallsBackAfterThreeFailures(t *testing.T) {
 	f := &flakySummarizer{failuresBeforeSuccess: 3}
 
