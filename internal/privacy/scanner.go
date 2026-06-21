@@ -53,24 +53,25 @@ var sshBackdoorPatterns = []*regexp.Regexp{
 var strictMemoryPromptInjectionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions`),
 	regexp.MustCompile(`(?i)disregard\s+all\s+prior`),
-	regexp.MustCompile(`(?i)system\s+prompt`),
+	regexp.MustCompile(`(?i)\b(?:reveal|output|leak)\s+(?:the\s+)?system\s+prompt\b`),
 	regexp.MustCompile(`(?i)developer\s+message`),
 	regexp.MustCompile(`(?i)you\s+are\s+now\b`),
 	regexp.MustCompile(`(?i)forget\s+everything`),
 	regexp.MustCompile(`(?i)new\s+persona`),
 	regexp.MustCompile(`(?i)\bact\s+as\s+(?:an?\s+)?[a-z][a-z0-9_-]*`),
+	regexp.MustCompile(`(?i)\b(?:remove|disable|bypass)\s+(?:all\s+)?filters?\b`),
 }
 
 var strictMemoryExfiltrationPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)output\s+(?:the\s+)?full\s+context`),
-	regexp.MustCompile(`(?i)send\s+(?:the\s+)?(?:result|context|memory|secret)[^.\n]*(?:https?://|webhook)`),
-	regexp.MustCompile(`(?i)(?:curl|wget)\s+https?://[^\s]+`),
+	regexp.MustCompile(`(?i)send\s+(?:the\s+)?(?:results?|context|memory|secrets?)\b[^.\n]*(?:https?://|webhook)`),
+	regexp.MustCompile(`(?i)(?:(?:context|results?|memory|secrets?|credentials?|tokens?)\b[^.\n]*(?:curl|wget)\s+https?://[^\s]+|(?:curl|wget)\s+https?://[^\s]*(?:context|result|secret|credential|token)[^\s]*)`),
 	regexp.MustCompile(`(?i)read\s+(?:/etc/passwd|secret|credential|token)`),
 }
 
 var strictMemoryPersistencePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)authorized_keys`),
-	regexp.MustCompile(`(?i)\.ssh/`),
+	regexp.MustCompile(`(?i)\.ssh/authorized_keys\b`),
 	regexp.MustCompile(`(?i)(?:curl|wget)\s+[^\s]+\s*\|\s*(?:bash|sh)`),
 	regexp.MustCompile(`(?i)(?:modify|edit|overwrite)\s+(?:agent\.json|IDENTITY\.md|SOUL\.md|TOOLS\.md)`),
 }
@@ -80,6 +81,12 @@ var invisibleRunes = map[rune]string{
 	'\u200B': "ZERO WIDTH SPACE",
 	'\u200C': "ZERO WIDTH NON-JOINER",
 	'\u200D': "ZERO WIDTH JOINER",
+	'\uFEFF': "BOM / ZERO WIDTH NO-BREAK SPACE",
+	'\u2060': "WORD JOINER",
+	'\u00AD': "SOFT HYPHEN",
+}
+
+var strictMemoryInvisibleRunes = map[rune]string{
 	'\u202A': "LEFT-TO-RIGHT EMBEDDING",
 	'\u202B': "RIGHT-TO-LEFT EMBEDDING",
 	'\u202D': "LEFT-TO-RIGHT OVERRIDE",
@@ -88,9 +95,6 @@ var invisibleRunes = map[rune]string{
 	'\u2067': "RIGHT-TO-LEFT ISOLATE",
 	'\u2068': "FIRST STRONG ISOLATE",
 	'\u2069': "POP DIRECTIONAL ISOLATE",
-	'\uFEFF': "BOM / ZERO WIDTH NO-BREAK SPACE",
-	'\u2060': "WORD JOINER",
-	'\u00AD': "SOFT HYPHEN",
 }
 
 // Scan 检查文本中的内存安全威胁。
@@ -153,6 +157,18 @@ func ScanMemoryStrict(text string) []Threat {
 	appendThreatMatches(&threats, text, ThreatPromptInjection, strictMemoryPromptInjectionPatterns)
 	appendThreatMatches(&threats, text, ThreatExfiltration, strictMemoryExfiltrationPatterns)
 	appendThreatMatches(&threats, text, ThreatPersistenceAbuse, strictMemoryPersistencePatterns)
+	for i := 0; i < len(text); {
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if name, ok := strictMemoryInvisibleRunes[r]; ok {
+			threats = append(threats, Threat{
+				Type:    ThreatInvisibleUnicode,
+				Pattern: name,
+				Context: snippet(text, i, i+size),
+			})
+			break
+		}
+		i += size
+	}
 	return dedupeThreats(threats)
 }
 
