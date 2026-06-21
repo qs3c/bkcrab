@@ -66,6 +66,7 @@ var strictMemoryExfiltrationPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)output\s+(?:the\s+)?full\s+context`),
 	regexp.MustCompile(`(?i)send\s+(?:the\s+)?(?:(?:full|all)\s+)?(?:results?|context|memory|secrets?|credentials?|tokens?|keys?|\.?env|private\s+(?:keys?|tokens?|credentials?|secrets?|data|context|memory|env))\b(?:\s+(?:to|at|via|into))?\s+(?:https?://[^\s]+|webhook\S*)`),
 	regexp.MustCompile(`(?i)(?:(?:context|results?|memory|secrets?|credentials?|tokens?)\b[^.\n]*(?:curl|wget)\s+https?://[^\s]+|(?:curl|wget)\s+https?://[^\s]*(?:context|result|secret|credential|token)[^\s]*)`),
+	regexp.MustCompile(`(?i)\bread\s+(?:the\s+)?(?:secret\s+files|tokens|secrets)\b`),
 	regexp.MustCompile(`(?i)(?:\bread\s+/etc/passwd\b|\bread\s+(?:the\s+)?(?:credentials?|tokens?|secrets?|secret\s+files?)\b[^.\n]*(?:\bsend\b|\bupload\b|\bexfiltrate\b|\battacker\b|webhook|/etc/passwd\b|[^A-Za-z0-9_](?:id_rsa|id_dsa|id_ecdsa|id_ed25519|authorized_keys)\b))`),
 	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*(?:-d|--data(?:-raw|-binary|-urlencode)?|--post-data|--body-data|--post-file)\s*=?\s*@?[^\s]*(?:secret|credential|token|key|passwd|\.?env)[^\s]*[^\n]*https?://[^\s]+`),
 	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*https?://[^\s]+[^\n]*(?:-d|--data(?:-raw|-binary|-urlencode)?|--post-data|--body-data|--post-file)\s*=?\s*@?[^\s]*(?:secret|credential|token|key|passwd|\.?env)[^\s]*`),
@@ -77,7 +78,7 @@ var strictMemoryPersistencePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)authorized_keys`),
 	regexp.MustCompile(`(?i)\.ssh/authorized_keys\b`),
 	regexp.MustCompile(`(?i)(?:curl|wget)\s+[^\s]+\s*\|\s*(?:bash|sh)`),
-	regexp.MustCompile(`(?i)(?:modify|edit|overwrite)\s+(?:agent\.json|IDENTITY\.md|SOUL\.md|TOOLS\.md)`),
+	regexp.MustCompile(`(?i)\b(?:modify|edit|overwrite|update|append\s+to|write\s+to)\s+(?:the\s+)?(?:\S*[\\/])?(?:agent\.json|IDENTITY\.md|SOUL\.md|TOOLS\.md)(?:\s+file)?\b`),
 }
 
 // 要检测的不可见 Unicode 码点。
