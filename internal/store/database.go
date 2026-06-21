@@ -2698,6 +2698,138 @@ func (d *DBStore) SaveAgentFile(ctx context.Context, agentID, userID, filename s
 	return err
 }
 
+// MutateAgentFile atomically transforms the exact (agent_id, user_id, filename)
+// row. It never uses owner fallback.
+func (d *DBStore) MutateAgentFile(ctx context.Context, agentID, userID, filename string, fn AgentFileMutator) ([]byte, error) {
+	if agentID == "" {
+		return nil, errors.New("store: MutateAgentFile requires agent_id")
+	}
+	if userID == "" {
+		return nil, errors.New("store: MutateAgentFile requires user_id")
+	}
+	if filename == "" {
+		return nil, errors.New("store: MutateAgentFile requires filename")
+	}
+	if fn == nil {
+		return nil, errors.New("store: MutateAgentFile requires mutator")
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	inserted, err := d.ensureAgentFileMutationRow(ctx, tx, agentID, userID, filename)
+	if err != nil {
+		return nil, err
+	}
+	current, err := d.readAgentFileForMutation(ctx, tx, agentID, userID, filename)
+	if err != nil {
+		return nil, err
+	}
+
+	exists := !inserted
+	original := cloneAgentFileBytes(current)
+	if !exists {
+		original = nil
+	}
+	next, deleteFile, err := fn(cloneAgentFileBytes(original), exists)
+	if err != nil {
+		return cloneAgentFileBytes(original), err
+	}
+	if deleteFile {
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf(`DELETE FROM agent_files WHERE agent_id = %s AND user_id = %s AND filename = %s`,
+				d.ph(1), d.ph(2), d.ph(3)),
+			agentID, userID, filename); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		committed = true
+		return nil, nil
+	}
+
+	final := cloneAgentFileBytes(next)
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`UPDATE agent_files SET content = %s, updated_at = %s
+			WHERE agent_id = %s AND user_id = %s AND filename = %s`,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)),
+		string(final), time.Now().UTC(), agentID, userID, filename); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	committed = true
+	return cloneAgentFileBytes(final), nil
+}
+
+func (d *DBStore) ensureAgentFileMutationRow(ctx context.Context, tx *sql.Tx, agentID, userID, filename string) (bool, error) {
+	now := time.Now().UTC()
+	var (
+		res sql.Result
+		err error
+	)
+	if d.dialect == mysqlDialect {
+		res, err = tx.ExecContext(ctx,
+			`INSERT IGNORE INTO agent_files (agent_id, user_id, filename, content, updated_at)
+				VALUES (?, ?, ?, '', ?)`,
+			agentID, userID, filename, now)
+	} else if d.dialect == "postgres" {
+		res, err = tx.ExecContext(ctx,
+			`INSERT INTO agent_files (agent_id, user_id, filename, content, updated_at)
+				VALUES ($1, $2, $3, '', $4)
+				ON CONFLICT (agent_id, user_id, filename) DO NOTHING`,
+			agentID, userID, filename, now)
+	} else {
+		res, err = tx.ExecContext(ctx,
+			`INSERT INTO agent_files (agent_id, user_id, filename, content, updated_at)
+				VALUES (?, ?, ?, '', ?)
+				ON CONFLICT (agent_id, user_id, filename) DO NOTHING`,
+			agentID, userID, filename, now)
+	}
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+func (d *DBStore) readAgentFileForMutation(ctx context.Context, tx *sql.Tx, agentID, userID, filename string) ([]byte, error) {
+	lock := ""
+	if d.dialect == "postgres" || d.dialect == mysqlDialect {
+		lock = " FOR UPDATE"
+	}
+	row := tx.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT content FROM agent_files
+			WHERE agent_id = %s AND user_id = %s AND filename = %s`+lock,
+			d.ph(1), d.ph(2), d.ph(3)),
+		agentID, userID, filename)
+	var content string
+	if err := row.Scan(&content); err != nil {
+		return nil, scanErr(err)
+	}
+	return []byte(content), nil
+}
+
+func cloneAgentFileBytes(in []byte) []byte {
+	if in == nil {
+		return nil
+	}
+	return append([]byte(nil), in...)
+}
+
 func (d *DBStore) DeleteAgentFile(ctx context.Context, agentID, userID, filename string) error {
 	if agentID == "" {
 		return errors.New("store: DeleteAgentFile requires agent_id")
