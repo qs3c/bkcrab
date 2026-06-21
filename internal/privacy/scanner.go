@@ -51,21 +51,22 @@ var sshBackdoorPatterns = []*regexp.Regexp{
 }
 
 var strictMemoryPromptInjectionPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions`),
+	regexp.MustCompile(`(?i)ignore\s+previous\s+instructions`),
+	regexp.MustCompile(`(?i)ignore\s+(?:all\s+previous|(?:all\s+)?prior)\s+instructions`),
 	regexp.MustCompile(`(?i)disregard\s+(?:all\s+)?prior(?:\s+instructions)?`),
 	regexp.MustCompile(`(?i)\b(?:reveal|output|show|print|leak|override|ignore)\s+(?:the\s+)?(?:system\s+prompt|developer\s+message)\b`),
 	regexp.MustCompile(`(?i)you\s+are\s+now\b`),
 	regexp.MustCompile(`(?i)forget\s+everything`),
 	regexp.MustCompile(`(?i)new\s+persona`),
 	regexp.MustCompile(`(?i)\bact\s+as\s+(?:an?\s+)?(?:admin(?:istrator)?|root|dan|developer|system|(?:unrestricted|uncensored|jailbroken)\s+assistant)\b`),
-	regexp.MustCompile(`(?i)\b(?:remove|disable|bypass)\s+(?:all\s+)?filters?\b`),
+	regexp.MustCompile(`(?i)(?:\b(?:remove|disable|bypass)\s+(?:all\s+)?filters?\b[^.\n]*\b(?:reveal|hidden\s+instructions|system\s+prompt|safety|guardrails?|restrictions?)\b|\b(?:reveal|hidden\s+instructions|system\s+prompt|safety|guardrails?|restrictions?)\b[^.\n]*\b(?:remove|disable|bypass)\s+(?:all\s+)?filters?\b)`),
 }
 
 var strictMemoryExfiltrationPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)output\s+(?:the\s+)?full\s+context`),
-	regexp.MustCompile(`(?i)send\s+(?:the\s+)?(?:(?:full|all)\s+)?(?:results?|context|memory|secrets?|credentials?|tokens?|keys?|\.?env|private\s+(?:keys?|tokens?|credentials?|secrets?|data|context|memory|env))\b[^.\n]*(?:https?://|webhook)`),
+	regexp.MustCompile(`(?i)send\s+(?:the\s+)?(?:(?:full|all)\s+)?(?:results?|context|memory|secrets?|credentials?|tokens?|keys?|\.?env|private\s+(?:keys?|tokens?|credentials?|secrets?|data|context|memory|env))\b(?:\s+(?:to|at|via|into))?\s+(?:https?://[^\s]+|webhook\S*)`),
 	regexp.MustCompile(`(?i)(?:(?:context|results?|memory|secrets?|credentials?|tokens?)\b[^.\n]*(?:curl|wget)\s+https?://[^\s]+|(?:curl|wget)\s+https?://[^\s]*(?:context|result|secret|credential|token)[^\s]*)`),
-	regexp.MustCompile(`(?i)\bread\s+(?:/etc/passwd|(?:the\s+)?(?:credentials?|tokens?|secrets?|secret\s+files?))\b`),
+	regexp.MustCompile(`(?i)(?:\bread\s+/etc/passwd\b|\bread\s+(?:the\s+)?(?:credentials?|tokens?|secrets?|secret\s+files?)\b[^.\n]*(?:\bsend\b|\bupload\b|\battacker\b|https?://|webhook|[/\\][^\s]*|[^\s]*(?:secret|credential|token|key|passwd|\.?env)[^\s]*[/\\][^\s]*))`),
 	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*(?:-d|--data(?:-raw|-binary|-urlencode)?|--post-data|--body-data|--post-file)\s*=?\s*@?[^\s]*(?:secret|credential|token|key|passwd|\.?env)[^\s]*[^\n]*https?://[^\s]+`),
 	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*https?://[^\s]+[^\n]*(?:-d|--data(?:-raw|-binary|-urlencode)?|--post-data|--body-data|--post-file)\s*=?\s*@?[^\s]*(?:secret|credential|token|key|passwd|\.?env)[^\s]*`),
 	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*(?:-T|--upload-file|-F|--form)\s*=?\s*@?[^\s]*(?:secret|credentials?|token|key|private|\.?env)[^\s]*[^\n]*https?://[^\s]+`),
@@ -157,6 +158,7 @@ func Scan(text string) []Threat {
 
 func ScanMemoryStrict(text string) []Threat {
 	threats := Scan(text)
+	appendThreatMatches(&threats, text, ThreatCredentialLeak, credentialPatterns)
 	appendThreatMatches(&threats, text, ThreatPromptInjection, strictMemoryPromptInjectionPatterns)
 	appendThreatMatches(&threats, text, ThreatExfiltration, strictMemoryExfiltrationPatterns)
 	appendThreatMatches(&threats, text, ThreatPersistenceAbuse, strictMemoryPersistencePatterns)
@@ -177,11 +179,15 @@ func ScanMemoryStrict(text string) []Threat {
 
 func appendThreatMatches(threats *[]Threat, text string, threatType ThreatType, patterns []*regexp.Regexp) {
 	for _, re := range patterns {
-		if loc := re.FindStringIndex(text); loc != nil {
+		for matchIndex, loc := range re.FindAllStringIndex(text, -1) {
+			context := snippet(text, loc[0], loc[1])
+			if matchIndex > 0 {
+				context = focusedSnippet(text, loc[0], loc[1])
+			}
 			*threats = append(*threats, Threat{
 				Type:    threatType,
 				Pattern: re.String(),
-				Context: snippet(text, loc[0], loc[1]),
+				Context: context,
 			})
 		}
 	}
@@ -208,39 +214,21 @@ func hasDuplicateThreat(threats []Threat, threat Threat) bool {
 }
 
 func isDuplicateThreat(existing, threat Threat) bool {
-	if existing.Type != threat.Type {
-		return false
-	}
-	if existing.Type == ThreatCredentialLeak && existing.Pattern != threat.Pattern {
-		return false
-	}
-	return contextsOverlap(existing.Context, threat.Context)
-}
-
-func contextsOverlap(a, b string) bool {
-	if a == b || strings.Contains(a, b) || strings.Contains(b, a) {
-		return true
-	}
-
-	shorter, longer := a, b
-	if len(shorter) > len(longer) {
-		shorter, longer = longer, shorter
-	}
-	const minOverlap = 32
-	if len(shorter) < minOverlap {
-		return false
-	}
-	for i := 0; i+minOverlap <= len(shorter); i++ {
-		if strings.Contains(longer, shorter[i:i+minOverlap]) {
-			return true
-		}
-	}
-	return false
+	return existing.Type == threat.Type &&
+		existing.Pattern == threat.Pattern &&
+		existing.Context == threat.Context
 }
 
 // snippet 提取匹配位置周围的上下文片段。
 func snippet(text string, start, end int) string {
-	const pad = 40
+	return snippetWithPad(text, start, end, 40)
+}
+
+func focusedSnippet(text string, start, end int) string {
+	return snippetWithPad(text, start, end, 16)
+}
+
+func snippetWithPad(text string, start, end, pad int) string {
 	lo := start - pad
 	if lo < 0 {
 		lo = 0
