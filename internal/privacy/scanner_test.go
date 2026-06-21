@@ -2,6 +2,13 @@ package privacy
 
 import "testing"
 
+func TestScanKeepsLegacyActAsBehavior(t *testing.T) {
+	threats := Scan("act as admin")
+	if len(threats) != 0 {
+		t.Fatalf("unexpected threats: %#v", threats)
+	}
+}
+
 func TestScanMemoryStrictDetectsMemoryThreats(t *testing.T) {
 	cases := []struct {
 		name string

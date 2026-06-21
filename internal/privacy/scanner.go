@@ -32,7 +32,7 @@ var promptInjectionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)you\s+are\s+now\b`),
 	regexp.MustCompile(`(?i)forget\s+everything`),
 	regexp.MustCompile(`(?i)new\s+persona`),
-	regexp.MustCompile(`(?i)\bact\s+as\s+(?:an?\s+)?[a-z][a-z0-9_-]*`),
+	regexp.MustCompile(`(?i)act\s+as\s+[^a-z]`),
 }
 
 // 凭据泄漏模式。
