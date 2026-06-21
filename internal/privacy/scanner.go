@@ -32,7 +32,7 @@ var promptInjectionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)you\s+are\s+now\b`),
 	regexp.MustCompile(`(?i)forget\s+everything`),
 	regexp.MustCompile(`(?i)new\s+persona`),
-	regexp.MustCompile(`(?i)act\s+as\s+[^a-z]`),
+	regexp.MustCompile(`(?i)\bact\s+as\s+(?:an?\s+)?[a-z][a-z0-9_-]*`),
 }
 
 // 凭据泄漏模式。
@@ -58,7 +58,7 @@ var strictMemoryPromptInjectionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)you\s+are\s+now\b`),
 	regexp.MustCompile(`(?i)forget\s+everything`),
 	regexp.MustCompile(`(?i)new\s+persona`),
-	regexp.MustCompile(`(?i)act\s+as\s+[^a-z]`),
+	regexp.MustCompile(`(?i)\bact\s+as\s+(?:an?\s+)?[a-z][a-z0-9_-]*`),
 }
 
 var strictMemoryExfiltrationPatterns = []*regexp.Regexp{
@@ -169,13 +169,18 @@ func appendThreatMatches(threats *[]Threat, text string, threatType ThreatType, 
 }
 
 func dedupeThreats(threats []Threat) []Threat {
-	seen := make(map[Threat]struct{}, len(threats))
+	type dedupeKey struct {
+		Type    ThreatType
+		Context string
+	}
+	seen := make(map[dedupeKey]struct{}, len(threats))
 	deduped := threats[:0]
 	for _, threat := range threats {
-		if _, ok := seen[threat]; ok {
+		key := dedupeKey{Type: threat.Type, Context: threat.Context}
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[threat] = struct{}{}
+		seen[key] = struct{}{}
 		deduped = append(deduped, threat)
 	}
 	return deduped
