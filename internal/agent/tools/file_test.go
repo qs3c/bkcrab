@@ -1,8 +1,11 @@
 package tools
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/qs3c/bkclaw/internal/memory"
 )
 
 // TestApplyEdit pins the contract that edit_file's three backends share:
@@ -117,5 +120,60 @@ func TestApplyEdit(t *testing.T) {
 				t.Errorf("count mismatch: got %d, want %d", count, tc.wantCount)
 			}
 		})
+	}
+}
+
+func TestManagedMemoryPathDetection(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"USER.md", true},
+		{"MEMORY.md", true},
+		{`C:\agents\foo\USER.md`, true},
+		{`\\server\share\MEMORY.md`, true},
+		{`/agents/foo/MEMORY.md`, true},
+		{"notes/USER.md", false},
+		{`notes\MEMORY.md`, false},
+		{"notes/MEMORY.md", false},
+		{"SOUL.md", false},
+	}
+	for _, tc := range cases {
+		if got := isManagedMemoryFilePath(tc.path); got != tc.want {
+			t.Fatalf("isManagedMemoryFilePath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestFileToolsRefuseManagedMemoryFiles(t *testing.T) {
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	assertFileToolsRefuseManagedMemoryFiles(t, r)
+}
+
+func TestFileToolsRefuseManagedMemoryFilesWhenManagedMemoryDisabled(t *testing.T) {
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	r.SetManagedMemoryConfig(memory.Config{Enabled: false})
+	assertFileToolsRefuseManagedMemoryFiles(t, r)
+}
+
+func assertFileToolsRefuseManagedMemoryFiles(t *testing.T, r *Registry) {
+	t.Helper()
+	for _, name := range []string{"read_file", "write_file", "edit_file"} {
+		var args string
+		switch name {
+		case "read_file":
+			args = `{"path":"USER.md"}`
+		case "write_file":
+			args = `{"path":"MEMORY.md","content":"x"}`
+		case "edit_file":
+			args = `{"path":"USER.md","old_string":"x","new_string":"y"}`
+		}
+		got, err := r.Execute(context.Background(), name, args)
+		if err != nil {
+			t.Fatalf("%s returned error: %v", name, err)
+		}
+		if !strings.Contains(got, "managed memory resources") {
+			t.Fatalf("%s result = %q", name, got)
+		}
 	}
 }

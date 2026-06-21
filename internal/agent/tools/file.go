@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 
@@ -134,6 +135,8 @@ const globalSkillsDirSuffix = "/.bkclaw/skills"
 // 具体如何恢复。
 var errGlobalSkillsDirWrite = fmt.Errorf("access denied: ~/.bkclaw/skills/ is the admin-managed global skills directory. To create a new skill, load the \"skill-creator\" skill and follow its workflow (it scaffolds into this agent's private skills dir). To install an existing one, use the install_skill tool")
 
+const ManagedMemoryFileRefusal = `[refused: USER.md and MEMORY.md are managed memory resources. Use the memory tool with target="user" or target="memory" to list, add, replace, remove, or batch-edit entries.]`
+
 // systemFiles 是代理元数据/身份文件。当相对路径
 // 通过基本名称引用其中之一，文件工具根据
 // 系统 root 而不是用户 root。
@@ -147,6 +150,26 @@ var systemFiles = map[string]bool{
 	"AGENTS.md":    true,
 	"TOOLS.md":     true,
 	"agent.json":   true,
+}
+
+func isManagedMemoryFilePath(path string) bool {
+	if path == "" {
+		return false
+	}
+	clean := filepath.Clean(path)
+	slashClean := strings.ReplaceAll(clean, `\`, "/")
+	base := pathpkg.Base(slashClean)
+	if base != "USER.md" && base != "MEMORY.md" {
+		return false
+	}
+	if filepath.IsAbs(path) || strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\\`) || strings.Contains(path, `:\`) {
+		return true
+	}
+	return !strings.Contains(slashClean, "/")
+}
+
+func (r *Registry) managedMemoryFileBlocked(path string) bool {
+	return isManagedMemoryFilePath(path)
 }
 
 // isWorkspacePath 决定 write/read/list_dir 路径是否属于
@@ -483,8 +506,9 @@ func makeReadFile(r *Registry) ToolFunc {
 			return "", fmt.Errorf("parse args: %w", err)
 		}
 
-		// 身份文件保密门。一个喋喋不休的人问“给我看看
-		// 你的 SOUL.md" 一定不能得到逐字的角色规范。
+		if r.managedMemoryFileBlocked(args.Path) {
+			return ManagedMemoryFileRefusal, nil
+		}
 		if r.identityFileBlocked(args.Path) {
 			return IdentityFileRefusal, nil
 		}
@@ -574,6 +598,10 @@ func makeWriteFile(r *Registry) ToolFunc {
 			return "", fmt.Errorf("write_file: %w", err)
 		}
 
+		if r.managedMemoryFileBlocked(args.Path) {
+			return ManagedMemoryFileRefusal, nil
+		}
+
 		// 身份文件保密门——也可以阻止闲聊
 		// 通过即时注入重写代理的角色。
 		if r.identityFileBlocked(args.Path) {
@@ -661,6 +689,10 @@ func makeEditFile(r *Registry) ToolFunc {
 		}
 		if err := validateFileTargetPath(args.Path); err != nil {
 			return "", fmt.Errorf("edit_file: %w", err)
+		}
+
+		if r.managedMemoryFileBlocked(args.Path) {
+			return ManagedMemoryFileRefusal, nil
 		}
 
 		// 身份文件保密门。
@@ -881,6 +913,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		// 身份文件机密性门 - 与主机路径相同。
 		// 在系统文件存储查找之前运行，因此永远不会出现喋喋不休的情况
 		// 完全到达数据库行。
+		if r.managedMemoryFileBlocked(args.Path) {
+			return ManagedMemoryFileRefusal, nil
+		}
 		if r.identityFileBlocked(args.Path) {
 			return IdentityFileRefusal, nil
 		}
@@ -976,6 +1011,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		}
 		if err := validateFileTargetPath(args.Path); err != nil {
 			return "", fmt.Errorf("write_file: %w", err)
+		}
+		if r.managedMemoryFileBlocked(args.Path) {
+			return ManagedMemoryFileRefusal, nil
 		}
 		if r.identityFileBlocked(args.Path) {
 			return IdentityFileRefusal, nil
@@ -1113,6 +1151,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		}
 		if err := validateFileTargetPath(args.Path); err != nil {
 			return "", fmt.Errorf("edit_file: %w", err)
+		}
+		if r.managedMemoryFileBlocked(args.Path) {
+			return ManagedMemoryFileRefusal, nil
 		}
 		if r.identityFileBlocked(args.Path) {
 			return IdentityFileRefusal, nil
