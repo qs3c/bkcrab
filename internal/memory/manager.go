@@ -86,7 +86,10 @@ type Manager struct {
 	config  Config
 }
 
-const entryDelimiter = "\n\n§\n\n"
+const (
+	entryDelimiter        = "\n\n\xC2\xA7\n\n"
+	escapedEntryDelimiter = "\n\n<!-- bkclaw-memory:escaped-delimiter -->\n\n"
+)
 
 var pathLocks sync.Map
 
@@ -202,7 +205,7 @@ func parseEntries(target Target, data []byte) (entries []string, managed bool) {
 			return nil, true
 		}
 		for _, part := range strings.Split(rest, entryDelimiter) {
-			entry := strings.TrimSpace(part)
+			entry := strings.TrimSpace(decodeEntry(part))
 			if entry != "" {
 				entries = append(entries, entry)
 			}
@@ -259,9 +262,9 @@ func parseEntries(target Target, data []byte) (entries []string, managed bool) {
 func serialize(target Target, entries []string) []byte {
 	cleaned := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		entry = strings.TrimSpace(entry)
+		entry = strings.TrimSpace(normalizeNewlines(entry))
 		if entry != "" {
-			cleaned = append(cleaned, entry)
+			cleaned = append(cleaned, encodeEntry(entry))
 		}
 	}
 	body := strings.Join(cleaned, entryDelimiter)
@@ -448,9 +451,6 @@ func marker(target Target) string {
 
 func normalizeConfig(cfg Config) Config {
 	defaults := DefaultConfig()
-	if cfg == (Config{}) {
-		return defaults
-	}
 	if cfg.UserCharLimit == 0 {
 		cfg.UserCharLimit = defaults.UserCharLimit
 	}
@@ -538,7 +538,16 @@ func dedupeExactEntries(entries []string) []string {
 }
 
 func containsManagedDelimiter(content string) bool {
-	return strings.Contains(normalizeNewlines(content), entryDelimiter)
+	content = normalizeNewlines(content)
+	return strings.Contains(content, entryDelimiter) || strings.Contains(content, escapedEntryDelimiter)
+}
+
+func encodeEntry(entry string) string {
+	return strings.ReplaceAll(entry, entryDelimiter, escapedEntryDelimiter)
+}
+
+func decodeEntry(entry string) string {
+	return strings.ReplaceAll(entry, escapedEntryDelimiter, entryDelimiter)
 }
 
 func containsExact(entries []string, content string) bool {
@@ -658,7 +667,7 @@ func resultWithEntries(success bool, target Target, entries []string, cfg Config
 		EntryCount: len(copied),
 		Usage:      usage(target, copied, cfg),
 		Message:    message,
-		Entries:    copied,
+		Entries:    safeEntriesForList(target, copied),
 	}
 }
 
