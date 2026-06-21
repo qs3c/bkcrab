@@ -7,7 +7,7 @@ import (
 
 // EnvConfig 是引导配置：存储 DSN、网关端口、沙箱后端。在进程启动时
 // 从 BKCLAW_* 环境变量读取——没有配置文件。所有用户可见的配置
-//（提供者、渠道、agent 等）都存储在数据库中。
+// （提供者、渠道、agent 等）都存储在数据库中。
 //
 // 在进程/容器层面以 `BKCLAW_<大写下划线形式>`（或下面 `env:` 标签中的
 // 显式名称）设置。systemd unit、docker-compose、k8s deployment env 是
@@ -17,6 +17,7 @@ type EnvConfig struct {
 	Storage EnvStorage
 	Sandbox EnvSandbox
 	Log     EnvLog
+	Redis   EnvRedis
 }
 
 type EnvGateway struct {
@@ -43,6 +44,16 @@ type EnvSandbox struct {
 
 type EnvLog struct {
 	Level string // BKCLAW_LOG_LEVEL — "debug" / "info" / "warn" / "error"
+}
+
+type EnvRedis struct {
+	Addr                  string // BKCLAW_REDIS_ADDR
+	Password              string // BKCLAW_REDIS_PASSWORD
+	DB                    int    // BKCLAW_REDIS_DB
+	KeyPrefix             string // BKCLAW_REDIS_KEY_PREFIX
+	OwnerID               string // BKCLAW_TURN_OWNER_ID
+	TurnLeaseTTLSeconds   int    // BKCLAW_TURN_LEASE_TTL_SECONDS
+	SteerStreamTTLSeconds int    // BKCLAW_STEER_STREAM_TTL_SECONDS
 }
 
 // LoadEnv 从 BKCLAW_* 环境变量读取引导配置。没有配置文件：
@@ -103,6 +114,33 @@ func LoadEnv() *EnvConfig {
 
 	if v := os.Getenv("BKCLAW_LOG_LEVEL"); v != "" {
 		cfg.Log.Level = v
+	}
+	if v := os.Getenv("BKCLAW_REDIS_ADDR"); v != "" {
+		cfg.Redis.Addr = v
+	}
+	if v := os.Getenv("BKCLAW_REDIS_PASSWORD"); v != "" {
+		cfg.Redis.Password = v
+	}
+	if v := os.Getenv("BKCLAW_REDIS_DB"); v != "" {
+		if db, err := strconv.Atoi(v); err == nil {
+			cfg.Redis.DB = db
+		}
+	}
+	if v := os.Getenv("BKCLAW_REDIS_KEY_PREFIX"); v != "" {
+		cfg.Redis.KeyPrefix = v
+	}
+	if v := os.Getenv("BKCLAW_TURN_OWNER_ID"); v != "" {
+		cfg.Redis.OwnerID = v
+	}
+	if v := os.Getenv("BKCLAW_TURN_LEASE_TTL_SECONDS"); v != "" {
+		if ttl, err := strconv.Atoi(v); err == nil {
+			cfg.Redis.TurnLeaseTTLSeconds = ttl
+		}
+	}
+	if v := os.Getenv("BKCLAW_STEER_STREAM_TTL_SECONDS"); v != "" {
+		if ttl, err := strconv.Atoi(v); err == nil {
+			cfg.Redis.SteerStreamTTLSeconds = ttl
+		}
 	}
 	return cfg
 }
@@ -171,6 +209,7 @@ func ScrubBootSecrets() {
 		"BKCLAW_OBJECT_STORE_ENDPOINT",
 		"BKCLAW_OBJECT_STORE_USESSL",
 		"BKCLAW_OBJECT_STORE_ALIYUN_INTERNAL",
+		"BKCLAW_REDIS_PASSWORD",
 		"BOXLITE_API_KEY",
 		"E2B_API_KEY",
 	}

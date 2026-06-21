@@ -80,7 +80,7 @@ func globalSkillsDirPath() (string, error) {
 //
 // 存在于网关作用域，而不是每个 UserSpace。先前的设计为每个用户构建一个池，
 // 这（a）在共享相同镜像的用户之间重复了 docker 池，并且（b）使临时的 UserSpace
-//（特别是 API 密钥调用者被切换到的 `app_user` 身份）没有任何池 —
+// （特别是 API 密钥调用者被切换到的 `app_user` 身份）没有任何池 —
 // 这些 UserSpace 有零个自己的代理，因此每个用户的构建器使用 `resolved=[]` 运行并产生 nil。
 // 延迟注入的代理（super_admin 聊天、app 模式访问）然后使用启用沙箱但没有执行器的 exec 运行，
 // 并向用户显示"sandbox required but no executor available"。将池提升到网关作用域
@@ -187,10 +187,10 @@ func attachSandboxToAgents(
 
 // assembleConfig 读取命名空间的设置行和作用域合并的提供者/通道对于一个 (account, agent)，
 // 并将它们投影到运行时 config.Config 中。传递 userID="" / agentID="" 以跳过这些层
-//（代理启动使用仅用户视图；仅系统用于 super_admin 仪表盘）。
+// （代理启动使用仅用户视图；仅系统用于 super_admin 仪表盘）。
 //
 // 每个设置命名空间是其自己的配置行。assembleConfig 依次读取它们全部
-//（概念上并行但为了简单起见串行）；每个命名空间的成本是一次索引点查找。
+// （概念上并行但为了简单起见串行）；每个命名空间的成本是一次索引点查找。
 func assembleConfig(ctx context.Context, st store.Store, userID, agentID string) (*config.Config, error) {
 	cfg := &config.Config{
 		Providers: map[string]config.ProviderConfig{},
@@ -281,7 +281,7 @@ func assembleConfig(ctx context.Context, st store.Store, userID, agentID string)
 // 在首次认证时延迟加载。
 //
 // SandboxPool 从网关**借用** — 每个 UserSpace 共享同一个指针
-//（或在系统作用域禁用沙箱时为 nil）。驱逐绝不能在其上调用 CloseAll；
+// （或在系统作用域禁用沙箱时为 nil）。驱逐绝不能在其上调用 CloseAll；
 // 网关拥有生命周期并在关闭时一次性销毁它。
 type UserSpace struct {
 	UserID      string
@@ -320,7 +320,7 @@ func readUserScopeAgentDefaults(ctx context.Context, st store.Store, userID stri
 
 // EnsureAgent 将一个用户不拥有的代理附加到此 UserSpace。
 // 由 super_admin 聊天使用：管理员在其自己的 user_id 命名空间下操作外部代理
-//（会话、内存、mem0 作用域都保持调用者键控），而代理的持久身份 —
+// （会话、内存、mem0 作用域都保持调用者键控），而代理的持久身份 —
 // 系统提示、代理作用域配置 (`agents.defaults`)、技能和 agent_files —
 // 被重用，因为它们在存储中以 agent_id 为键，而不是 user_id 为键。
 //
@@ -552,7 +552,7 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 //
 // `systemSandboxPool` 是网关范围的池 — 由结果 UserSpace 借用，不拥有。
 // 当系统作用域禁用沙箱时传递 nil；在这种情况下代理将以仅路径文件根运行。
-func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, pluginMgr *plugin.Manager) (*UserSpace, error) {
+func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, pluginMgr *plugin.Manager, turnCoordinator session.TurnCoordinator) (*UserSpace, error) {
 	if userID == "" {
 		return nil, fmt.Errorf("loadUserSpace: userID required")
 	}
@@ -684,6 +684,9 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 	}
 	if meter != nil {
 		managerOpts = append(managerOpts, agent.WithMeter(meter))
+	}
+	if turnCoordinator != nil {
+		managerOpts = append(managerOpts, agent.WithTurnCoordinator(turnCoordinator))
 	}
 	agentMgr, err := agent.NewManager(resolved, prov, mb, managerOpts...)
 	if err != nil {
@@ -821,6 +824,7 @@ type userSpaceRegistry struct {
 	workspace         workspace.Store
 	meter             usage.Meter
 	systemSandboxPool sandbox.ExecutorPool
+	turns             session.TurnCoordinator
 	// pluginMgr 是共享的（进程范围）插件管理器。当 systemPlugins 禁用时为 nil。
 	// 由 loadUserSpace 和 EnsureAgent 使用，用于将钩子类型插件注册到每个代理的 HookRegistry，
 	// 由每个代理的 plugins.enabled 配置控制。
@@ -833,7 +837,7 @@ type userSpaceEntry struct {
 	lastUsed time.Time
 }
 
-func newUserSpaceRegistry(mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, pluginMgr *plugin.Manager) *userSpaceRegistry {
+func newUserSpaceRegistry(mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, pluginMgr *plugin.Manager, turnCoordinator session.TurnCoordinator) *userSpaceRegistry {
 	return &userSpaceRegistry{
 		spaces:            make(map[string]*userSpaceEntry),
 		bus:               mb,
@@ -841,6 +845,7 @@ func newUserSpaceRegistry(mb *bus.MessageBus, st store.Store, ws workspace.Store
 		workspace:         ws,
 		meter:             meter,
 		systemSandboxPool: systemSandboxPool,
+		turns:             turnCoordinator,
 		pluginMgr:         pluginMgr,
 		idleTTL:           30 * time.Minute,
 	}
@@ -869,7 +874,7 @@ func (r *userSpaceRegistry) getOrLoad(ctx context.Context, userID string) (*User
 		e.lastUsed = time.Now()
 		return e.space, nil
 	}
-	sp, err := loadUserSpace(ctx, userID, r.bus, r.store, r.workspace, r.meter, r.systemSandboxPool, r.pluginMgr)
+	sp, err := loadUserSpace(ctx, userID, r.bus, r.store, r.workspace, r.meter, r.systemSandboxPool, r.pluginMgr, r.turns)
 	if err != nil {
 		return nil, err
 	}
@@ -878,7 +883,7 @@ func (r *userSpaceRegistry) getOrLoad(ctx context.Context, userID string) (*User
 }
 
 // invalidate 丢弃用户的空间，以便下次访问重新加载它。在管理员变更
-//（创建代理、轮换提供者等）后使用，以便内存中的副本不落后于数据库。
+// （创建代理、轮换提供者等）后使用，以便内存中的副本不落后于数据库。
 func (r *userSpaceRegistry) invalidate(userID string) {
 	r.mu.Lock()
 	delete(r.spaces, userID)

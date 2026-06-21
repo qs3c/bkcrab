@@ -4,6 +4,7 @@ This compose brings up:
 
 - **MySQL 8.4** — sessions, memory, identity files, agent metadata, bindings
 - **MinIO** — S3-compatible bucket for workspace artifacts (auto-creates `bkclaw` bucket)
+- **Redis 7** — active turn lease + steer stream for cross-pod steering
 - **pod-a** on `:18953` and **pod-b** on `:18954` — identical gateway binaries, pointed at the same DB and S3
 
 Both pods use `BKCLAW_AUTH_TOKEN=dev-admin-token`. Any admin API call takes `Authorization: Bearer dev-admin-token`.
@@ -112,7 +113,22 @@ curl -s -H "Authorization: Bearer dev-admin-token" \
 Query filters: `?apiKey=...`, `?agent=...`, `?kind=workspace_bytes,tokens_in`,
 `?since=2026-04-01`, `?until=2026-04-30`.
 
-### 7. Pod failover
+### 7. Cross-pod steering state
+
+Both pods are configured with:
+
+```bash
+BKCLAW_REDIS_ADDR=redis:6379
+BKCLAW_REDIS_KEY_PREFIX=bkclaw-dev
+```
+
+That means an active turn started on pod A owns a Redis lease, and a steer
+request that lands on pod B is appended to the same Redis stream. The owner
+turn drains that stream between model/tool rounds. Sticky sessions are still
+recommended for web SSE delivery because `EventHub` is process-local; Redis
+coordinates the turn state, not the browser event socket.
+
+### 8. Pod failover
 
 Kill pod A while pod B is running:
 
@@ -120,10 +136,12 @@ Kill pod A while pod B is running:
 docker compose -f deploy/multi-pod/docker-compose.yaml stop pod-a
 ```
 
-Every request above still works against pod B — no state was lost. Sandbox
-sessions in-flight on pod A would need to be re-initiated (the sandbox
-itself is pod-local), but the agent's identity / sessions / memory /
-workspace files are all in MySQL + MinIO.
+Every request above still works against pod B — no durable state was lost.
+An in-flight turn owned by pod A stops with that pod; its Redis lease expires
+after `BKCLAW_TURN_LEASE_TTL_SECONDS`. Sandbox sessions in-flight on pod A
+would also need to be re-initiated (the sandbox itself is pod-local), but the
+agent's identity / sessions / memory / workspace files are all in MySQL +
+MinIO.
 
 ## What this does NOT verify yet
 

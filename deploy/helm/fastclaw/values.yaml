@@ -86,6 +86,16 @@ objectStore:
   useSSL: true
   aliyunInternal: false         # ACK 同区域使用 OSS 内部端点
 
+## Redis 用于多副本 active-turn lease 与 steer buffer。
+## 生产建议使用托管 Redis；留空时退回进程内本地 coordinator（单副本/开发）。
+redis:
+  addr: ""
+  password: ""
+  db: 0
+  keyPrefix: "bkclaw"
+  turnLeaseTTLSeconds: 7200
+  steerStreamTTLSeconds: 86400
+
 ## 沙箱（技能执行容器）
 ##
 ## k8s Pod 没有 Docker 守护进程 — 仅支持 e2b（远程）或禁用。

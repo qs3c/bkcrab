@@ -36,6 +36,15 @@ data:
   BKCLAW_OBJECT_STORE_ALIYUN_INTERNAL: "true"
   {{- end }}
 
+  ## Redis turn coordinator
+  {{- with .Values.redis.addr }}
+  BKCLAW_REDIS_ADDR: {{ . | quote }}
+  BKCLAW_REDIS_DB: {{ $.Values.redis.db | quote }}
+  BKCLAW_REDIS_KEY_PREFIX: {{ $.Values.redis.keyPrefix | quote }}
+  BKCLAW_TURN_LEASE_TTL_SECONDS: {{ $.Values.redis.turnLeaseTTLSeconds | quote }}
+  BKCLAW_STEER_STREAM_TTL_SECONDS: {{ $.Values.redis.steerStreamTTLSeconds | quote }}
+  {{- end }}
+
   ## 沙箱
   {{- if .Values.sandbox.enabled }}
   BKCLAW_SANDBOX_BACKEND: {{ .Values.sandbox.backend | quote }}

@@ -48,6 +48,7 @@ type managerOpts struct {
 	meter           usage.Meter
 	userID          string
 	globalSkillsCfg config.SkillsCfg
+	turnCoordinator session.TurnCoordinator
 }
 
 func WithSessionStore(st session.SessionStore) ManagerOption {
@@ -85,6 +86,10 @@ func WithDataStore(st store.Store) ManagerOption {
 // 计量（测试、单用户开发运行）。
 func WithMeter(m usage.Meter) ManagerOption {
 	return func(o *managerOpts) { o.meter = m }
+}
+
+func WithTurnCoordinator(tc session.TurnCoordinator) ManagerOption {
+	return func(o *managerOpts) { o.turnCoordinator = tc }
 }
 
 // WithGlobalSkillsCfg 将 cfg.Skills（持有每个技能或每个（代理，技能）
@@ -158,6 +163,9 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 	// 到达沙箱的原因。
 	ag := NewAgentWithSkillsCfg(rc, providerForAgent(rc, prov), mb, homeDir, m.opts.globalSkillsCfg)
 	ag.SetOwnerUserID(m.uid)
+	if m.opts.turnCoordinator != nil {
+		ag.turns = m.opts.turnCoordinator
+	}
 	// 每个用户的技能桶：聊天时“技能/...”将路由写入
 	// ~/.bkclaw/users/<uid>/，其中 SkillsLoader 的“个人”层
 	// 还进行扫描（请参阅 SkillsLoader.WithUserID）。设置用户ID

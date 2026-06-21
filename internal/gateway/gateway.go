@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/qs3c/bkclaw/internal/agent"
 	"github.com/qs3c/bkclaw/internal/bus"
@@ -30,6 +31,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/plugin"
 	"github.com/qs3c/bkclaw/internal/sandbox"
 	"github.com/qs3c/bkclaw/internal/scope"
+	"github.com/qs3c/bkclaw/internal/session"
 	"github.com/qs3c/bkclaw/internal/store"
 	"github.com/qs3c/bkclaw/internal/taskqueue"
 	"github.com/qs3c/bkclaw/internal/toolproviders"
@@ -88,7 +90,7 @@ func registerAgentToolChains(cfg *config.Config, agents []*agent.Agent) {
 // synthesizeSearxNGChain 构建一个仅由 SearxNG 提供者支持的临时 web_search 链，
 // 从 BKCLAW_SEARXNG_ENDPOINT 配置。让新安装无需经过仪表盘的工具提供者配置即可启用搜索 —
 // 用户在实际环境中从未看到 web_search 的最常见原因是他们没有意识到需要在两个地方
-//（提供者条目 + 类别链）配置它。
+// （提供者条目 + 类别链）配置它。
 func synthesizeSearxNGChain(endpoint string) *toolproviders.Chain {
 	chain := &toolproviders.Chain{
 		Category:     "web_search",
@@ -155,6 +157,7 @@ type Gateway struct {
 	accounts    *users.Accounts
 	workspace   workspace.Store
 	sandboxPool sandbox.ExecutorPool
+	turns       session.TurnCoordinator
 	usage       usage.Meter
 	envCfg      *config.EnvConfig
 	// chatEvents 设置后，允许总线触发的 web 轮次（cron/目标延续/心跳/子代理）
@@ -246,6 +249,10 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	// 只能在我们过期后窃取租约。在启动时记录，以便运维可以将"谁当前正在驱动此微信 bot"与特定副本关联起来。
 	holderID := uuid.NewString()
 	slog.Info("gateway holder id", "id", holderID)
+	turnCoordinator, err := buildTurnCoordinator(env, holderID)
+	if err != nil {
+		return nil, fmt.Errorf("init turn coordinator: %w", err)
+	}
 	chanMgr := channels.NewManagerWithLeaser(mb, storeLeaser{st: st}, holderID)
 	// 常开的 web 通道：将 cron 触发的（和任何其他异步发出的）出站消息路由到仪表盘的 SSE 订阅者，
 	// 以便用户实时看到代理的回复，而不是仅在下次页面重新加载时。
@@ -317,7 +324,8 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		workspace:   ws,
 		usage:       meter,
 		sandboxPool: systemSandboxPool,
-		users:       newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, pluginMgr),
+		turns:       turnCoordinator,
+		users:       newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, pluginMgr, turnCoordinator),
 		chanMgr:     chanMgr,
 		webChan:     webChan,
 		scheduler:   scheduler,
@@ -536,6 +544,9 @@ func (g *Gateway) Run() error {
 	if g.sandboxPool != nil {
 		g.sandboxPool.CloseAll()
 	}
+	if g.turns != nil {
+		_ = g.turns.Close()
+	}
 	slog.Info("gateway stopped")
 	return nil
 }
@@ -573,6 +584,37 @@ func defaultStr(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func buildTurnCoordinator(env *config.EnvConfig, ownerID string) (session.TurnCoordinator, error) {
+	if env == nil || strings.TrimSpace(env.Redis.Addr) == "" {
+		slog.Info("turn coordinator", "backend", "local")
+		return session.NewLocalTurnCoordinator(), nil
+	}
+	redisOwnerID := strings.TrimSpace(env.Redis.OwnerID)
+	if redisOwnerID == "" {
+		redisOwnerID = ownerID
+	}
+	leaseTTL := time.Duration(env.Redis.TurnLeaseTTLSeconds) * time.Second
+	streamTTL := time.Duration(env.Redis.SteerStreamTTLSeconds) * time.Second
+	client := redis.NewClient(&redis.Options{
+		Addr:     env.Redis.Addr,
+		Password: env.Redis.Password,
+		DB:       env.Redis.DB,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+	slog.Info("turn coordinator", "backend", "redis", "addr", env.Redis.Addr, "owner", redisOwnerID)
+	return session.NewRedisTurnCoordinator(client, session.RedisTurnOptions{
+		KeyPrefix: env.Redis.KeyPrefix,
+		OwnerID:   redisOwnerID,
+		LeaseTTL:  leaseTTL,
+		StreamTTL: streamTTL,
+	}), nil
 }
 
 // readObjectStoreCfg 拉取"objectstore"设置命名空间，然后在上面叠加 BKCLAW_OBJECT_STORE_* 环境变量。
@@ -863,8 +905,8 @@ func decodeBase64Tolerant(s string) ([]byte, error) {
 }
 
 // maxAttachmentBytes 限制每个文件的出站附件。大小设计为适合我们关心的最严格的 IM 平台限制
-//（Discord 免费层 = 25MB），并远低于微信 CDN 上传超时的实际上限
-//（90 秒在典型住宅上行链路上为约 25MB 留有余量）。超过此大小的文件被跳过 + 记录，而不是截断；
+// （Discord 免费层 = 25MB），并远低于微信 CDN 上传超时的实际上限
+// （90 秒在典型住宅上行链路上为约 25MB 留有余量）。超过此大小的文件被跳过 + 记录，而不是截断；
 // 接收者看不到附件，但聊天侧文本仍然通过。
 const maxAttachmentBytes = 25 * 1024 * 1024
 
@@ -964,7 +1006,7 @@ func appendRecentWorkspaceMedia(ctx context.Context, ws workspace.Store, agentID
 
 // isShippableExt 是工作空间媒体回退使用的"这是可交付物"白名单。有意保守 —
 // 自动发送代理写入的每个 .md / .txt / .json 会将内部草稿板
-//（todo.md、计划、中间暂存）作为聊天附件暴露。仅当文件几乎总是代表"用户要求的东西"时才添加新扩展名。
+// （todo.md、计划、中间暂存）作为聊天附件暴露。仅当文件几乎总是代表"用户要求的东西"时才添加新扩展名。
 func isShippableExt(p string) bool {
 	switch strings.ToLower(filepath.Ext(p)) {
 	// 图片

@@ -35,6 +35,7 @@ type Agent struct {
 	provider             provider.Provider
 	registry             *tools.Registry
 	sessions             *session.Manager
+	turns                session.TurnCoordinator
 	memory               *Memory
 	ctxBuilder           *ContextBuilder
 	mcpMgr               *mcp.Manager
@@ -298,6 +299,7 @@ func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *
 		provider:             prov,
 		registry:             registry,
 		sessions:             session.NewManager(rc.Home + "/sessions"),
+		turns:                session.NewLocalTurnCoordinator(),
 		memory:               memory,
 		ctxBuilder:           newContextBuilderWithSandbox(rc.Home, workspace, memory, skillsSummary, rc.Thinking, rc.Sandbox.Enabled, rc.Sandbox.Backend, rc.PromptMode),
 		hooks:                hooks,
@@ -497,11 +499,16 @@ func (a *Agent) SteerWeb(sessionId, projectIDHint, text string) bool {
 		projectID = projectIDHint
 	}
 	sess := a.sessions.Get(channel, accountID, chatID, projectID)
-	return sess.PushSteerIfActive(provider.Message{
+	ok, err := a.turnCoordinator().PushSteer(context.Background(), sess.TurnKey(), provider.Message{
 		Role:      "user",
 		Content:   text,
 		Timestamp: time.Now().UnixMilli(),
 	})
+	if err != nil {
+		slog.Warn("steer buffer failed", "agent", a.name, "error", err)
+		return false
+	}
+	return ok
 }
 
 // SteerInbound 缓冲由以下命令控制的飞行中转向消息
@@ -513,12 +520,17 @@ func (a *Agent) SteerWeb(sessionId, projectIDHint, text string) bool {
 // turn 处于活动状态，因此调用者会退回到 taskQueue.Submit。
 func (a *Agent) SteerInbound(msg bus.InboundMessage, text string) bool {
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
-	return sess.PushSteerIfActive(provider.Message{
+	ok, err := a.turnCoordinator().PushSteer(context.Background(), sess.TurnKey(), provider.Message{
 		Role:      "user",
 		Content:   text,
 		Metadata:  senderMetadata(msg),
 		Timestamp: time.Now().UnixMilli(),
 	})
+	if err != nil {
+		slog.Warn("steer buffer failed", "agent", a.name, "error", err)
+		return false
+	}
+	return ok
 }
 
 // recoveryWebTriple 映射一个 URL `?session=` 标记（可以是
@@ -622,6 +634,13 @@ func (a *Agent) OwnerUserID() string { return a.ownerUserID }
 // 启动/热重载时的网关，因此每个聊天调用都会获得一个记录令牌
 // 调用。 Nil 没问题——未设置时，meterTokens() 是无操作的。
 func (a *Agent) SetMeter(m usage.Meter) { a.meter = m }
+
+func (a *Agent) turnCoordinator() session.TurnCoordinator {
+	if a.turns == nil {
+		a.turns = session.NewLocalTurnCoordinator()
+	}
+	return a.turns
+}
 
 // meterTokens 记录一次聊天调用的令牌计数。安全通话
 // 零使用（仍然会增加 request_count）。错误被记录但从未记录
@@ -1607,14 +1626,17 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 	// 进入，所以中间吃水的转向停在历史中并回答
 	// 用户的下一个回合——与计划模式合同相匹配
 	// （审查计划，然后回复执行）。
-	sess.BeginTurn()
-	defer a.flushLeftoverSteer(sess)
-	defer padOrphanToolResults(sess)
-
 	// 镜像常规路径的用户消息构造，实现多模式
 	// + IM-bridge 有效负载 (PhotoURL / PhotoURLs) 登陆会话
 	// 历史就像他们在非计划转弯时一样。
 	userMsg := buildUserMessage(msg)
+	turnLease, continueTurn := a.beginTurnOrSteer(ctx, sess, userMsg)
+	if !continueTurn {
+		return ""
+	}
+	defer a.flushLeftoverSteer(ctx, sess, turnLease)
+	defer padOrphanToolResults(sess)
+
 	sess.Append(userMsg)
 
 	if a.provider == nil {
@@ -1686,6 +1708,53 @@ func (a *Agent) appendSteer(ctx context.Context, sess *session.Session, messages
 	return messages
 }
 
+func (a *Agent) beginTurnOrSteer(ctx context.Context, sess *session.Session, userMsg provider.Message) (*session.TurnLease, bool) {
+	coord := a.turnCoordinator()
+	key := sess.TurnKey()
+	lease, ok, err := coord.BeginTurn(ctx, key)
+	if err != nil {
+		slog.Warn("turn begin failed; continuing without steer coordination", "agent", a.name, "error", err)
+		return nil, true
+	}
+	if ok {
+		return lease, true
+	}
+
+	buffered, err := coord.PushSteer(ctx, key, userMsg)
+	if err != nil {
+		slog.Warn("active turn exists but steer buffer failed; retrying turn begin", "agent", a.name, "error", err)
+	} else if buffered {
+		emitEvent(ctx, ChatEvent{Type: "turn_pending"})
+		emitEvent(ctx, ChatEvent{Type: "done"})
+		return nil, false
+	}
+
+	// The owner may have ended between the failed BeginTurn and PushSteer.
+	lease, ok, err = coord.BeginTurn(ctx, key)
+	if err != nil {
+		slog.Warn("turn begin retry failed; continuing without steer coordination", "agent", a.name, "error", err)
+		return nil, true
+	}
+	if ok {
+		return lease, true
+	}
+	emitEvent(ctx, ChatEvent{Type: "turn_pending"})
+	emitEvent(ctx, ChatEvent{Type: "done"})
+	return nil, false
+}
+
+func (a *Agent) drainSteer(ctx context.Context, lease *session.TurnLease) []provider.Message {
+	if lease == nil {
+		return nil
+	}
+	steer, err := a.turnCoordinator().DrainSteer(ctx, lease)
+	if err != nil {
+		slog.Warn("steer drain failed", "agent", a.name, "error", err)
+		return nil
+	}
+	return steer
+}
+
 // lushLeftoverSteer 处理回合结束比赛：接受的转向
 // PushSteerIfActive 在循环最后一次排水之后但在转弯之前
 // 声明完成（实际上只有最大迭代综合调用，
@@ -1694,8 +1763,15 @@ func (a *Agent) appendSteer(ctx context.Context, sess *session.Session, messages
 // 这样它就不会丢失并适应下一回合的上下文；我们故意
 // 不要为其重新运行隐藏回合（保持简单+避免
 // 递归重新调度的 IM 无回复不对称性）。
-func (a *Agent) flushLeftoverSteer(sess *session.Session) {
-	leftover := sess.EndTurn()
+func (a *Agent) flushLeftoverSteer(ctx context.Context, sess *session.Session, lease *session.TurnLease) {
+	if lease == nil {
+		return
+	}
+	leftover, err := a.turnCoordinator().EndTurn(ctx, lease)
+	if err != nil {
+		slog.Warn("turn end failed", "agent", a.name, "error", err)
+		return
+	}
 	for _, m := range leftover {
 		sess.Append(m)
 	}
@@ -1806,8 +1882,12 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 在回合结束比赛中失利的转向成为历史。挂号的
 	// 在 padOrphanToolResults 之前，因此它最后运行（延迟是后进先出） -
 	// 孤儿填充首先解决了历史问题。
-	sess.BeginTurn()
-	defer a.flushLeftoverSteer(sess)
+	userMsg := buildUserMessage(msg)
+	turnLease, continueTurn := a.beginTurnOrSteer(ctx, sess, userMsg)
+	if !continueTurn {
+		return ""
+	}
+	defer a.flushLeftoverSteer(ctx, sess, turnLease)
 
 	// 客户端中止转弯的安全网：如果循环退出时带有
 	// tool_use 从未附加其匹配的 tool_result （
@@ -1843,7 +1923,6 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// buildUserMessage 处理多图像拼合 + senderMetadata。
 	// `[SenderName]:` 内容前缀策略存在于此（仅限组；
 	// DM 保持裸露以避免 SOUL.md 语言偏差回归）。
-	userMsg := buildUserMessage(msg)
 	sess.Append(userMsg)
 
 	// 上下文压缩：检查会话消息是否太大
@@ -1980,7 +2059,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			// 在我们宣布回合结束之前，回合之间的资金会耗尽。
 			// 将其折叠起来并继续前进而不是返回，所以
 			// 用户的飞行中指令不会推迟到新的回合。
-			if steer := sess.DrainSteer(); len(steer) > 0 {
+			if steer := a.drainSteer(ctx, turnLease); len(steer) > 0 {
 				// 将刚刚生成的答案带入下一次 LLM 通话
 				// 仅当它有文本时。无文本、无工具调用
 				// 助理消息对 Anthropic 来说无效
@@ -2229,7 +2308,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		// 转向：此工具运行时到达的消息是
 		// 折叠在这里，在轮次之间，所以下一个法学硕士电话可以看到他们
 		// 并且可以改变路线。
-		if steer := sess.DrainSteer(); len(steer) > 0 {
+		if steer := a.drainSteer(ctx, turnLease); len(steer) > 0 {
 			messages = a.appendSteer(ctx, sess, messages, steer)
 		}
 	}

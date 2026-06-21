@@ -51,6 +51,13 @@ spec:
               name: {{ include "bkclaw.fullname" . }}-secrets
               key: OBJECT_STORE_SECRETKEY
         {{- end }}
+        {{- if .Values.redis.password }}
+        - name: BKCLAW_REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "bkclaw.fullname" . }}-secrets
+              key: REDIS_PASSWORD
+        {{- end }}
         {{- if and .Values.sandbox.enabled .Values.sandbox.e2bApiKey }}
         - name: E2B_API_KEY
           valueFrom:

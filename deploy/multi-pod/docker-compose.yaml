@@ -57,6 +57,16 @@ services:
       timeout: 2s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 1s
+      retries: 20
+
   # 在 MinIO 中初始化存储桶，以便网关在首次使用时不会崩溃。
   # 运行一次后退出 — compose 等待的是 "healthy" 而非 "exited"，
   # 因此两个网关 Pod 在此完成后通过 depends_on 启动。
@@ -86,6 +96,10 @@ services:
       BKCLAW_STORAGE_DSN: "bkclaw:bkclaw@tcp(db:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4"
       BKCLAW_MODE: cloud
       BKCLAW_AUTH_TOKEN: dev-admin-token
+      BKCLAW_REDIS_ADDR: redis:6379
+      BKCLAW_REDIS_KEY_PREFIX: bkclaw-dev
+      BKCLAW_TURN_LEASE_TTL_SECONDS: "7200"
+      BKCLAW_STEER_STREAM_TTL_SECONDS: "86400"
       # 对象存储 → MinIO。这些键镜像了 config.ObjectStoreCfg。
       BKCLAW_OBJECT_STORE_TYPE: minio
       BKCLAW_OBJECT_STORE_ENDPOINT: minio:9000
@@ -98,6 +112,8 @@ services:
         condition: service_healthy
       minio-bootstrap:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     ports:
       - "18953:18953"
 
@@ -112,6 +128,10 @@ services:
       BKCLAW_STORAGE_DSN: "bkclaw:bkclaw@tcp(db:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4"
       BKCLAW_MODE: cloud
       BKCLAW_AUTH_TOKEN: dev-admin-token
+      BKCLAW_REDIS_ADDR: redis:6379
+      BKCLAW_REDIS_KEY_PREFIX: bkclaw-dev
+      BKCLAW_TURN_LEASE_TTL_SECONDS: "7200"
+      BKCLAW_STEER_STREAM_TTL_SECONDS: "86400"
       BKCLAW_OBJECT_STORE_TYPE: minio
       BKCLAW_OBJECT_STORE_ENDPOINT: minio:9000
       BKCLAW_OBJECT_STORE_BUCKET: bkclaw
@@ -123,6 +143,8 @@ services:
         condition: service_healthy
       minio-bootstrap:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     ports:
       - "18954:18953"
 
