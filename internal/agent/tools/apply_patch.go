@@ -467,7 +467,8 @@ Format:
 Rules:
 - Hunks anchor on context lines (' ' prefix) plus '-' lines that must literally match the file. Provide enough context to make the location unambiguous; matching is in-order, first match wins.
 - Pure-add hunks (only '+' lines) only work with *** End of File or at the very top of a file.
-- Identity files (SOUL.md, IDENTITY.md, MEMORY.md, AGENTS.md, BOOTSTRAP.md, TOOLS.md, HEARTBEAT.md, USER.md, agent.json) accept Add and Update but NOT Delete or Move.
+- Managed memory files (USER.md, MEMORY.md) must be accessed through the memory tool and are refused for Add, Update, Delete, and Move.
+- Other identity files (SOUL.md, IDENTITY.md, AGENTS.md, BOOTSTRAP.md, TOOLS.md, HEARTBEAT.md, agent.json) accept Add and Update but NOT Delete or Move.
 - Path resolution matches read_file/write_file: workspace-relative paths go to the workspace store, identity-file basenames go to the system store, absolute paths go to disk.`
 
 var applyPatchSchema = map[string]interface{}{
@@ -490,6 +491,9 @@ type applyPatchArgs struct {
 // -----------------------------------------------------------------------------
 
 func (r *Registry) readForPatch(ctx context.Context, path string) (string, error) {
+	if r.managedMemoryFileBlocked(path) {
+		return "", fmt.Errorf("%s", ManagedMemoryFileRefusal)
+	}
 	if r.workspaceStore != nil && r.agentID != "" && r.isWorkspacePath(path) {
 		rc, err := r.workspaceStore.Get(ctx, r.agentID, r.projectID, r.sessionID, path)
 		if err != nil {
@@ -530,6 +534,9 @@ func (r *Registry) readForPatch(ctx context.Context, path string) (string, error
 }
 
 func (r *Registry) writeForPatch(ctx context.Context, path, content string) error {
+	if r.managedMemoryFileBlocked(path) {
+		return fmt.Errorf("%s", ManagedMemoryFileRefusal)
+	}
 	if r.workspaceStore != nil && r.agentID != "" && r.isWorkspacePath(path) {
 		return r.workspaceStore.Put(ctx, r.agentID, r.projectID, r.sessionID, path,
 			strings.NewReader(content), int64(len(content)), "")
@@ -564,6 +571,9 @@ func (r *Registry) writeForPatch(ctx context.Context, path, content string) erro
 }
 
 func (r *Registry) deleteForPatch(ctx context.Context, path string) error {
+	if r.managedMemoryFileBlocked(path) {
+		return fmt.Errorf("%s", ManagedMemoryFileRefusal)
+	}
 	// 身份文件拒绝删除：systemFileStore没有删除API并且
 	// 这些文件有一个固定的槽 - 通过删除清除它们
 	// 腐败代理人。使用目标内容为空的更新文件
@@ -590,6 +600,9 @@ func (r *Registry) deleteForPatch(ctx context.Context, path string) error {
 // -----------------------------------------------------------------------------
 
 func (r *Registry) readForPatchSandbox(ctx context.Context, ex sandbox.Executor, path string) (string, error) {
+	if r.managedMemoryFileBlocked(path) {
+		return "", fmt.Errorf("%s", ManagedMemoryFileRefusal)
+	}
 	if r.systemFileStore != nil && r.agentID != "" && basenameIsSystemFile(path) {
 		name := filepath.Base(filepath.Clean(path))
 		if data, err := r.readSystemFileForUser(ctx, r.systemFileUserID(name), name); err == nil {
@@ -612,6 +625,9 @@ func (r *Registry) readForPatchSandbox(ctx context.Context, ex sandbox.Executor,
 }
 
 func (r *Registry) writeForPatchSandbox(ctx context.Context, ex sandbox.Executor, path, content string) error {
+	if r.managedMemoryFileBlocked(path) {
+		return fmt.Errorf("%s", ManagedMemoryFileRefusal)
+	}
 	if r.systemFileStore != nil && r.agentID != "" && isSingleSegmentSystemFile(path) {
 		name := filepath.Clean(path)
 		return r.systemFileStore.SaveWorkspaceFile(ctx, r.agentID, r.systemFileUserID(name), name, []byte(content))
@@ -625,6 +641,9 @@ func (r *Registry) writeForPatchSandbox(ctx context.Context, ex sandbox.Executor
 }
 
 func (r *Registry) deleteForPatchSandbox(ctx context.Context, ex sandbox.Executor, path string) error {
+	if r.managedMemoryFileBlocked(path) {
+		return fmt.Errorf("%s", ManagedMemoryFileRefusal)
+	}
 	if isSingleSegmentSystemFile(path) {
 		return fmt.Errorf("apply_patch: refusing to delete identity file %q (use Update File with empty content instead)", path)
 	}
@@ -708,6 +727,9 @@ func runApplyPatch(
 			if op.Path == "" {
 				return "", errors.New("apply_patch: Add File requires a non-empty path")
 			}
+			if isManagedMemoryFilePath(op.Path) {
+				return "", fmt.Errorf("apply_patch: %s", ManagedMemoryFileRefusal)
+			}
 			writes = append(writes, plannedWrite{op.Path, op.AddBody})
 
 		case opDelete:
@@ -719,6 +741,9 @@ func runApplyPatch(
 			// 在引擎级别拒绝，因此后端 del() 不必
 			// 重复规则（纵深防御仍然适用）
 			// 删除ForPatch /删除ForPatchSandbox）。
+			if isManagedMemoryFilePath(op.Path) {
+				return "", fmt.Errorf("apply_patch: %s", ManagedMemoryFileRefusal)
+			}
 			if isSingleSegmentSystemFile(op.Path) {
 				return "", fmt.Errorf("apply_patch: refusing to delete identity file %q (use Update File with empty content instead)", op.Path)
 			}
@@ -727,6 +752,9 @@ func runApplyPatch(
 		case opUpdate:
 			if op.Path == "" {
 				return "", errors.New("apply_patch: Update File requires a non-empty path")
+			}
+			if isManagedMemoryFilePath(op.Path) || (op.MoveTo != "" && isManagedMemoryFilePath(op.MoveTo)) {
+				return "", fmt.Errorf("apply_patch: %s", ManagedMemoryFileRefusal)
 			}
 			if op.MoveTo != "" && (isSingleSegmentSystemFile(op.Path) || isSingleSegmentSystemFile(op.MoveTo)) {
 				return "", fmt.Errorf("apply_patch: refusing to Move identity file %q → %q", op.Path, op.MoveTo)

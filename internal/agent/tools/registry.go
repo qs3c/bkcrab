@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/qs3c/bkclaw/internal/buildinfo"
+	"github.com/qs3c/bkclaw/internal/memory"
 	"github.com/qs3c/bkclaw/internal/provider"
 	"github.com/qs3c/bkclaw/internal/sandbox"
 	"github.com/qs3c/bkclaw/internal/store"
@@ -26,8 +27,10 @@ import (
 // 文件工具也使用此集作为“代理专用配置”
 // 由 callerIsAdmin 控制的白名单：普通聊天者无法阅读或
 // 通过 read_file / write_file / edit_file 修改这些，仅代理
-// 所有者/频道管理员可以。没有那扇门，一个喋喋不休的人问
-// “show me your SOUL.md”获取逐字角色规范。
+// 所有者/频道管理员可以。USER.md / MEMORY.md 不在此白名单；
+// 它们是每个聊天者的 managed memory，只能通过 memory 工具管理。
+// 没有那扇门，一个喋喋不休的人问“show me your SOUL.md”
+// 获取逐字角色规范。
 var identityFiles = map[string]bool{
 	"SOUL.md":      true,
 	"IDENTITY.md":  true,
@@ -238,6 +241,8 @@ type Registry struct {
 	// 他们通过kill_shell。会话比个人轮流更长久；他们死了
 	// 仅在显式终止或Registry.Close时。
 	shellMgr *shellManager
+
+	managedMemoryCfg memory.Config
 }
 
 type turnFailKey struct {
@@ -259,9 +264,44 @@ type turnFailKey struct {
 // — 用于每个聊天文件（USER.md、MEMORY.md），因此是一个全新的
 // 访问者不会读取所有者累积的内存。
 type SystemFileStore interface {
+	systemFileStoreBase
+	MutateWorkspaceFile(ctx context.Context, agentID, userID, filename string, fn memory.Mutator) ([]byte, error)
+}
+
+type systemFileStoreBase interface {
 	GetWorkspaceFile(ctx context.Context, agentID, userID, filename string) ([]byte, error)
 	GetWorkspaceFileExact(ctx context.Context, agentID, userID, filename string) ([]byte, error)
 	SaveWorkspaceFile(ctx context.Context, agentID, userID, filename string, data []byte) error
+}
+
+type legacySystemFileStore struct {
+	systemFileStoreBase
+}
+
+func (s legacySystemFileStore) MutateWorkspaceFile(ctx context.Context, agentID, userID, filename string, fn memory.Mutator) ([]byte, error) {
+	current, err := s.GetWorkspaceFileExact(ctx, agentID, userID, filename)
+	exists := true
+	if err != nil {
+		if err != store.ErrNotFound {
+			return nil, err
+		}
+		current = nil
+		exists = false
+	}
+	if current == nil {
+		exists = false
+	}
+	next, deleteFile, err := fn(append([]byte(nil), current...), exists)
+	if err != nil {
+		return append([]byte(nil), current...), err
+	}
+	if deleteFile {
+		return nil, fmt.Errorf("system file store does not support delete without MutateWorkspaceFile")
+	}
+	if err := s.SaveWorkspaceFile(ctx, agentID, userID, filename, next); err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), next...), nil
 }
 
 type ContextArchiveStore interface {
@@ -289,11 +329,28 @@ func (r *Registry) SetContextArchiveStore(st ContextArchiveStore, agentID ...str
 // 使用管理 UI（自定义页面）。还记录agentID以便存储
 // 即使未配置 SetWorkspaceStore ，调用也能工作。通行证商店=nil
 // 禁用并回退到文件系统。
-func (r *Registry) SetSystemFileStore(s SystemFileStore, agentID string) {
-	r.systemFileStore = s
+func (r *Registry) SetSystemFileStore(s systemFileStoreBase, agentID string) {
+	if s == nil {
+		r.systemFileStore = nil
+	} else if mutating, ok := s.(SystemFileStore); ok {
+		r.systemFileStore = mutating
+	} else {
+		r.systemFileStore = legacySystemFileStore{systemFileStoreBase: s}
+	}
 	if agentID != "" {
 		r.agentID = agentID
 	}
+}
+
+func (r *Registry) SetManagedMemoryConfig(cfg memory.Config) {
+	defaults := memory.DefaultConfig()
+	if cfg.UserCharLimit == 0 {
+		cfg.UserCharLimit = defaults.UserCharLimit
+	}
+	if cfg.MemoryCharLimit == 0 {
+		cfg.MemoryCharLimit = defaults.MemoryCharLimit
+	}
+	r.managedMemoryCfg = cfg
 }
 
 // SetOwnerUserID 记录用作默认值的 UserSpace 所有者
@@ -474,10 +531,11 @@ type registeredTool struct {
 // 遗留的单根行为。
 func NewRegistry(systemRoot, userRoot string) *Registry {
 	r := &Registry{
-		tools:      make(map[string]registeredTool),
-		systemRoot: systemRoot,
-		userRoot:   userRoot,
-		shellMgr:   newShellManager(),
+		tools:            make(map[string]registeredTool),
+		systemRoot:       systemRoot,
+		userRoot:         userRoot,
+		shellMgr:         newShellManager(),
+		managedMemoryCfg: memory.DefaultConfig(),
 	}
 	r.registerBuiltins()
 	return r
@@ -729,6 +787,7 @@ func (r *Registry) SetExecutor(ex sandbox.Executor) {
 func (r *Registry) registerBuiltins() {
 	registerExec(r)
 	registerFile(r)
+	registerMemory(r)
 	registerApplyPatch(r)
 	registerBashOutput(r)
 	registerKillShell(r)

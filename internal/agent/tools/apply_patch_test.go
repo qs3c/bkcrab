@@ -749,6 +749,92 @@ func TestRunApplyPatch_IdentityRefusals(t *testing.T) {
 	}
 }
 
+func TestRunApplyPatch_ManagedMemoryRefusals(t *testing.T) {
+	noopRead := func(_ context.Context, _ string) (string, error) { return "old\n", nil }
+	noopWrite := func(_ context.Context, _, _ string) error { return nil }
+	noopDel := func(_ context.Context, _ string) error { return nil }
+
+	cases := []struct {
+		name  string
+		patch string
+	}{
+		{
+			name: "add USER refused",
+			patch: `*** Begin Patch
+*** Add File: USER.md
++name: Ada
+*** End Patch`,
+		},
+		{
+			name: "update MEMORY refused",
+			patch: `*** Begin Patch
+*** Update File: MEMORY.md
+@@
+-old
++new
+*** End Patch`,
+		},
+		{
+			name: "delete USER refused",
+			patch: `*** Begin Patch
+*** Delete File: USER.md
+*** End Patch`,
+		},
+		{
+			name: "move FROM MEMORY refused",
+			patch: `*** Begin Patch
+*** Update File: MEMORY.md
+*** Move to: notes.md
+@@
+-old
++new
+*** End Patch`,
+		},
+		{
+			name: "move TO USER refused",
+			patch: `*** Begin Patch
+*** Update File: notes.md
+*** Move to: USER.md
+@@
+-old
++new
+*** End Patch`,
+		},
+		{
+			name: "absolute MEMORY refused",
+			patch: `*** Begin Patch
+*** Add File: C:\Users\me\MEMORY.md
++name: Ada
+*** End Patch`,
+		},
+		{
+			name: "slash drive lower-case memory refused",
+			patch: `*** Begin Patch
+*** Add File: C:/Users/me/memory.md
++name: Ada
+*** End Patch`,
+		},
+		{
+			name: "top-level lower-case user refused",
+			patch: `*** Begin Patch
+*** Add File: user.md
++name: Ada
+*** End Patch`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := runApplyPatch(context.Background(), tc.patch, noopRead, noopWrite, noopDel)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", ManagedMemoryFileRefusal)
+			}
+			if !strings.Contains(err.Error(), ManagedMemoryFileRefusal) {
+				t.Errorf("error %q does not contain %q", err, ManagedMemoryFileRefusal)
+			}
+		})
+	}
+}
+
 // linesEq compares two hunkLine slices.
 func linesEq(a, b []hunkLine) bool {
 	if len(a) != len(b) {

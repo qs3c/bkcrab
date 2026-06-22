@@ -18,6 +18,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/channels"
 	"github.com/qs3c/bkclaw/internal/config"
 	"github.com/qs3c/bkclaw/internal/mcp"
+	"github.com/qs3c/bkclaw/internal/memory"
 	"github.com/qs3c/bkclaw/internal/privacy"
 	"github.com/qs3c/bkclaw/internal/provider"
 	"github.com/qs3c/bkclaw/internal/sandbox"
@@ -1548,7 +1549,7 @@ func renderChatbotPersistenceReminder(mode, displayName, userMD, memoryMD string
 		sb.WriteString(strings.TrimSpace(userMD))
 		sb.WriteString("\n```\n\n")
 	} else {
-		sb.WriteString("USER.md is empty — you do not yet know who this chatter is. When they share their name / role / preferences, you MUST call write_file('USER.md', ...) in the SAME turn so the next conversation has them.\n\n")
+		sb.WriteString("USER.md is empty — you do not yet know who this chatter is. When they share their name / role / preferences, you MUST call the memory tool with target=\"user\" in the SAME turn so the next conversation has them.\n\n")
 	}
 
 	if strings.TrimSpace(memoryMD) != "" {
@@ -1559,10 +1560,10 @@ func renderChatbotPersistenceReminder(mode, displayName, userMD, memoryMD string
 	}
 
 	sb.WriteString("## Persistence rules\n\n")
-	sb.WriteString("- You have `write_file` and `edit_file` in your tools — USE them whenever you learn something worth remembering.\n")
-	sb.WriteString("- Identity (name, role, preferences, location, what to call them) → `write_file('USER.md', ...)` or `edit_file('USER.md', ...)`. ALWAYS USER.md. Never MEMORY.md for these.\n")
-	sb.WriteString("- Recurring topics / decisions / project facts to hold across sessions → `MEMORY.md`.\n")
-	sb.WriteString("- **If MEMORY.md already contains identity-shaped content** (e.g. \"关于<name>\" with name / role / preferences mixed in), that's a prior mistake — when the chatter shares an identity update, MIGRATE the identity bits out of MEMORY.md into USER.md (write USER.md with the consolidated profile, then edit_file MEMORY.md to remove the identity bullets that just moved). Don't perpetuate the wrong structure by tacking on more identity in MEMORY.md.\n")
+	sb.WriteString("- You have the `memory` tool — USE it whenever you learn something worth remembering.\n")
+	sb.WriteString("- Identity (name, role, preferences, location, what to call them) → `memory` with target=\"user\". ALWAYS USER.md. Never MEMORY.md for these.\n")
+	sb.WriteString("- Recurring topics / decisions / project facts to hold across sessions → `memory` with target=\"memory\".\n")
+	sb.WriteString("- **If MEMORY.md already contains identity-shaped content** (e.g. \"关于<name>\" with name / role / preferences mixed in), that's a prior mistake — when the chatter shares an identity update, MIGRATE the identity bits out of MEMORY.md into USER.md with the memory tool. Don't perpetuate the wrong structure by tacking on more identity in MEMORY.md.\n")
 	sb.WriteString("- NEVER say \"我记住了\" / \"I'll remember\" without actually calling the tool. The text is a lie; the tool call is the truth.\n")
 	sb.WriteString("- NEVER say \"我没有跨对话记忆\" / \"I have no cross-session memory\" — that is FALSE; USER.md and MEMORY.md persist forever once you write them.\n")
 	sb.WriteString("- When asked \"你记住我了吗\" / \"我是谁\", READ the USER.md block above this message. If it has content, the answer is yes — quote the name. If it's empty, the answer is \"not yet — tell me\" and then write whatever they say.")
@@ -2693,7 +2694,13 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 			resetBatch()
 			return
 		}
-		if err := AutoPersistMemory(extractCtx, chatterMem, a.provider, model, groups); err != nil {
+		mgr := memory.NewManager(memory.Options{
+			Store:   NewMemoryStoreAdapter(a.dataStore),
+			AgentID: a.name,
+			UserID:  chatterUID,
+			Config:  memory.DefaultConfig(),
+		})
+		if err := AutoPersistMemory(extractCtx, mgr, a.provider, model, groups); err != nil {
 			slog.Warn("auto-persist: extraction failed, resetting batch", "agent", a.name, "extraction_id", extractionID, "error", err)
 			resetBatch()
 		}
@@ -3147,18 +3154,11 @@ func (a *Agent) RegisteredTools() []tools.ToolInfo {
 // - image_gen ：自行生成的图像（仅当
 // 提供者已配置；缺席也没关系）
 // - tts：语音消息（相同条件注册）
-// - write_file ：LLM学习时保留USER.md / MEMORY.md
-// 值得保留的东西。路由输入
-// systemFileUserID 将 USER.md/MEMORY.md 发送到
+// - memory ：LLM学习时保留USER.md / MEMORY.md
+// 值得保留的东西。工具内部将 USER.md/MEMORY.md 发送到
 // 每个聊天者行，因此每个聊天者都会积累他们的
-// 自己的个人资料/记忆。路径解析拒绝
-// 通过 IdentityFileBlocked + 任意路径
-// 工作空间范围，所以这不是一般情况
-// “让聊天机器人在任何地方写”漏洞——只是
-// 规范的每条聊天记录。
-// - edit_file ：相同的原理；优先于 write_file 时
-// 通过外科手术更新 MEMORY.md 模型
-// 不会意外破坏之前的条目。
+// 自己的个人资料/记忆。通用文件工具被禁止触碰这些文件；
+// 只有 memory 工具可以管理它们。
 //
 // 值得注意的是：“read_file”/“list_dir”不存在——聊天机器人模式不应该
 // 浏览文件系统； USER.md / MEMORY.md 内容已加载
@@ -3192,8 +3192,7 @@ func (a *Agent) RegisteredTools() []tools.ToolInfo {
 var chatbotBuiltinAllowlist = []string{
 	"image_gen",
 	"tts",
-	"write_file",
-	"edit_file",
+	"memory",
 	"retrieve_compacted_tool_result",
 	// set_timezone 保持“他们的当地时间”适合聊天（问候语，
 	// "晚安" timing) — chatbots need it as much as full agents do.

@@ -88,9 +88,6 @@ func (hb *Heartbeat) tick(ctx context.Context) {
 			Source:   bus.SourceHeartbeat,
 		}
 	}
-
-	// 2.触发内存更新
-	hb.updateMemory()
 }
 
 func (hb *Heartbeat) loadHeartbeatTasks() string {
@@ -104,9 +101,4 @@ func (hb *Heartbeat) loadHeartbeatTasks() string {
 		return ""
 	}
 	return content
-}
-
-func (hb *Heartbeat) updateMemory() {
-	slog.Info("heartbeat: triggering memory update", "agent", hb.agent.Name())
-	hb.agent.memory.ReviewAndUpdateMemory(hb.agent.home())
 }

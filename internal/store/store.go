@@ -15,6 +15,9 @@ import (
 // errors.Is(err, store.ErrNotFound) 进行检查。
 var ErrNotFound = errors.New("store: not found")
 
+// AgentFileMutator atomically transforms one exact agent_files row.
+type AgentFileMutator func(current []byte, exists bool) (next []byte, delete bool, err error)
+
 // Store 是所有持久化数据的统一接口。
 //
 // 表分为三类：
@@ -165,6 +168,7 @@ type Store interface {
 	GetAgentFile(ctx context.Context, agentID, userID, filename string) ([]byte, error)
 	GetAgentFileExact(ctx context.Context, agentID, userID, filename string) ([]byte, error)
 	SaveAgentFile(ctx context.Context, agentID, userID, filename string, data []byte) error
+	MutateAgentFile(ctx context.Context, agentID, userID, filename string, fn AgentFileMutator) ([]byte, error)
 	DeleteAgentFile(ctx context.Context, agentID, userID, filename string) error
 	ListAgentFiles(ctx context.Context, agentID, userID string) ([]string, error)
 

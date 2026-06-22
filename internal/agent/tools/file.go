@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 
@@ -60,7 +61,7 @@ var editSchema = map[string]interface{}{
 	"required": []string{"path", "old_string", "new_string"},
 }
 
-const editDescription = "Edit a file by replacing an exact substring. Prefer this over write_file when changing only part of a file (especially identity files like SOUL.md / MEMORY.md): it's cheaper, can't drop unrelated content, and validates the replacement was applied. old_string must match a unique substring unless replace_all is true; new_string must differ from old_string. Read the file first if you're unsure of the exact text."
+const editDescription = "Edit a non-memory file by replacing an exact substring. Prefer this over write_file when changing only part of an ordinary file: it's cheaper, can't drop unrelated content, and validates the replacement was applied. USER.md and MEMORY.md are managed memory resources; use the memory tool for them. old_string must match a unique substring unless replace_all is true; new_string must differ from old_string. Read the file first if you're unsure of the exact text."
 
 // validateFileTargetPath 拒绝类似写入操作的路径参数
 // 无法引用单个文件。空字符串、目录后缀路径
@@ -134,6 +135,8 @@ const globalSkillsDirSuffix = "/.bkclaw/skills"
 // 具体如何恢复。
 var errGlobalSkillsDirWrite = fmt.Errorf("access denied: ~/.bkclaw/skills/ is the admin-managed global skills directory. To create a new skill, load the \"skill-creator\" skill and follow its workflow (it scaffolds into this agent's private skills dir). To install an existing one, use the install_skill tool")
 
+const ManagedMemoryFileRefusal = `[refused: USER.md and MEMORY.md are managed memory resources. Use the memory tool with target="user" or target="memory" to list, add, replace, remove, or batch-edit entries.]`
+
 // systemFiles 是代理元数据/身份文件。当相对路径
 // 通过基本名称引用其中之一，文件工具根据
 // 系统 root 而不是用户 root。
@@ -147,6 +150,36 @@ var systemFiles = map[string]bool{
 	"AGENTS.md":    true,
 	"TOOLS.md":     true,
 	"agent.json":   true,
+}
+
+func isManagedMemoryFilePath(path string) bool {
+	if path == "" {
+		return false
+	}
+	clean := filepath.Clean(path)
+	slashClean := strings.ReplaceAll(clean, `\`, "/")
+	base := pathpkg.Base(slashClean)
+	if !strings.EqualFold(base, "USER.md") && !strings.EqualFold(base, "MEMORY.md") {
+		return false
+	}
+	if filepath.IsAbs(path) || strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\\`) || isWindowsAbsolutePath(path) {
+		return true
+	}
+	return !strings.Contains(slashClean, "/")
+}
+
+func isWindowsAbsolutePath(path string) bool {
+	if len(path) < 3 {
+		return false
+	}
+	drive := path[0]
+	return ((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) &&
+		path[1] == ':' &&
+		(path[2] == '\\' || path[2] == '/')
+}
+
+func (r *Registry) managedMemoryFileBlocked(path string) bool {
+	return isManagedMemoryFilePath(path)
 }
 
 // isWorkspacePath 决定 write/read/list_dir 路径是否属于
@@ -346,7 +379,7 @@ func (r *Registry) rootForPath(path string) string {
 }
 
 func registerFile(r *Registry) {
-	r.Register("read_file", "Read the contents of a file", map[string]interface{}{
+	r.Register("read_file", "Read the contents of a non-memory file. USER.md and MEMORY.md are managed memory resources; use the memory tool to inspect them.", map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
@@ -357,7 +390,7 @@ func registerFile(r *Registry) {
 		"required": []string{"path"},
 	}, makeReadFile(r))
 
-	r.Register("write_file", "Write content to a file (creates directories as needed)", map[string]interface{}{
+	r.Register("write_file", "Write content to a non-memory file (creates directories as needed). USER.md and MEMORY.md are managed memory resources; use the memory tool to update them.", map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
@@ -483,8 +516,9 @@ func makeReadFile(r *Registry) ToolFunc {
 			return "", fmt.Errorf("parse args: %w", err)
 		}
 
-		// 身份文件保密门。一个喋喋不休的人问“给我看看
-		// 你的 SOUL.md" 一定不能得到逐字的角色规范。
+		if r.managedMemoryFileBlocked(args.Path) {
+			return ManagedMemoryFileRefusal, nil
+		}
 		if r.identityFileBlocked(args.Path) {
 			return IdentityFileRefusal, nil
 		}
@@ -574,6 +608,10 @@ func makeWriteFile(r *Registry) ToolFunc {
 			return "", fmt.Errorf("write_file: %w", err)
 		}
 
+		if r.managedMemoryFileBlocked(args.Path) {
+			return ManagedMemoryFileRefusal, nil
+		}
+
 		// 身份文件保密门——也可以阻止闲聊
 		// 通过即时注入重写代理的角色。
 		if r.identityFileBlocked(args.Path) {
@@ -661,6 +699,10 @@ func makeEditFile(r *Registry) ToolFunc {
 		}
 		if err := validateFileTargetPath(args.Path); err != nil {
 			return "", fmt.Errorf("edit_file: %w", err)
+		}
+
+		if r.managedMemoryFileBlocked(args.Path) {
+			return ManagedMemoryFileRefusal, nil
 		}
 
 		// 身份文件保密门。
@@ -864,7 +906,7 @@ func makeListDir(r *Registry) ToolFunc {
 // 沙箱徽章仅针对执行程序回退路径发出 - store
 // 点击故意不标记，因为它们没有在沙箱中运行。
 func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
-	r.Register("read_file", "Read the contents of a file", map[string]interface{}{
+	r.Register("read_file", "Read the contents of a non-memory file. USER.md and MEMORY.md are managed memory resources; use the memory tool to inspect them.", map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
@@ -881,6 +923,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		// 身份文件机密性门 - 与主机路径相同。
 		// 在系统文件存储查找之前运行，因此永远不会出现喋喋不休的情况
 		// 完全到达数据库行。
+		if r.managedMemoryFileBlocked(args.Path) {
+			return ManagedMemoryFileRefusal, nil
+		}
 		if r.identityFileBlocked(args.Path) {
 			return IdentityFileRefusal, nil
 		}
@@ -956,7 +1001,7 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		}
 	})
 
-	r.Register("write_file", "Write content to a file (creates directories as needed)", map[string]interface{}{
+	r.Register("write_file", "Write content to a non-memory file (creates directories as needed). USER.md and MEMORY.md are managed memory resources; use the memory tool to update them.", map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
@@ -976,6 +1021,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		}
 		if err := validateFileTargetPath(args.Path); err != nil {
 			return "", fmt.Errorf("write_file: %w", err)
+		}
+		if r.managedMemoryFileBlocked(args.Path) {
+			return ManagedMemoryFileRefusal, nil
 		}
 		if r.identityFileBlocked(args.Path) {
 			return IdentityFileRefusal, nil
@@ -1113,6 +1161,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		}
 		if err := validateFileTargetPath(args.Path); err != nil {
 			return "", fmt.Errorf("edit_file: %w", err)
+		}
+		if r.managedMemoryFileBlocked(args.Path) {
+			return ManagedMemoryFileRefusal, nil
 		}
 		if r.identityFileBlocked(args.Path) {
 			return IdentityFileRefusal, nil

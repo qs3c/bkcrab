@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 
+	"github.com/qs3c/bkclaw/internal/memory"
 	"github.com/qs3c/bkclaw/internal/store"
 )
 
@@ -50,4 +51,8 @@ func (a *MemoryStoreAdapter) GetWorkspaceFileExact(ctx context.Context, agentID,
 
 func (a *MemoryStoreAdapter) SaveWorkspaceFile(ctx context.Context, agentID, userID, filename string, data []byte) error {
 	return a.st.SaveAgentFile(ctx, agentID, userID, filename, data)
+}
+
+func (a *MemoryStoreAdapter) MutateWorkspaceFile(ctx context.Context, agentID, userID, filename string, fn memory.Mutator) ([]byte, error) {
+	return a.st.MutateAgentFile(ctx, agentID, userID, filename, store.AgentFileMutator(fn))
 }

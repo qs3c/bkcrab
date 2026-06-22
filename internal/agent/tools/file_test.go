@@ -1,8 +1,13 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/qs3c/bkclaw/internal/memory"
 )
 
 // TestApplyEdit pins the contract that edit_file's three backends share:
@@ -119,3 +124,129 @@ func TestApplyEdit(t *testing.T) {
 		})
 	}
 }
+
+func TestManagedMemoryPathDetection(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"USER.md", true},
+		{"MEMORY.md", true},
+		{"User.md", true},
+		{"memory.md", true},
+		{`C:\agents\foo\USER.md`, true},
+		{`C:/agents/foo/memory.md`, true},
+		{`\\server\share\MEMORY.md`, true},
+		{`/agents/foo/MEMORY.md`, true},
+		{"notes/USER.md", false},
+		{`notes\MEMORY.md`, false},
+		{`notes\memory.md`, false},
+		{"notes/MEMORY.md", false},
+		{"SOUL.md", false},
+	}
+	for _, tc := range cases {
+		if got := isManagedMemoryFilePath(tc.path); got != tc.want {
+			t.Fatalf("isManagedMemoryFilePath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestFileToolsRefuseManagedMemoryFiles(t *testing.T) {
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	assertFileToolsRefuseManagedMemoryFiles(t, r)
+}
+
+func TestFileToolsRefuseManagedMemoryFilesWhenManagedMemoryDisabled(t *testing.T) {
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	r.SetManagedMemoryConfig(memory.Config{Enabled: false})
+	assertFileToolsRefuseManagedMemoryFiles(t, r)
+}
+
+func assertFileToolsRefuseManagedMemoryFiles(t *testing.T, r *Registry) {
+	t.Helper()
+	for _, name := range []string{"read_file", "write_file", "edit_file"} {
+		var args string
+		switch name {
+		case "read_file":
+			args = `{"path":"User.md"}`
+		case "write_file":
+			args = `{"path":"memory.md","content":"x"}`
+		case "edit_file":
+			args = `{"path":"USER.md","old_string":"x","new_string":"y"}`
+		}
+		got, err := r.Execute(context.Background(), name, args)
+		if err != nil {
+			t.Fatalf("%s returned error: %v", name, err)
+		}
+		if !strings.Contains(got, "managed memory resources") {
+			t.Fatalf("%s result = %q", name, got)
+		}
+	}
+}
+
+func TestSandboxedFileToolsRefuseManagedMemoryFiles(t *testing.T) {
+	ex := &fakeSandboxExecutor{}
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	r.SetExecutor(ex)
+
+	assertFileToolsRefuseManagedMemoryFiles(t, r)
+	if ex.readCalls != 0 || ex.writeCalls != 0 || ex.execCalls != 0 {
+		t.Fatalf("managed-memory refusal should happen before sandbox calls, got read=%d write=%d exec=%d",
+			ex.readCalls, ex.writeCalls, ex.execCalls)
+	}
+}
+
+func TestSandboxedApplyPatchRefusesManagedMemoryFiles(t *testing.T) {
+	ex := &fakeSandboxExecutor{}
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	r.SetExecutor(ex)
+
+	patch := `*** Begin Patch
+*** Add File: memory.md
++fact
+*** End Patch`
+	raw, err := json.Marshal(map[string]string{"input": patch})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	got, err := r.Execute(context.Background(), "apply_patch", string(raw))
+	if err == nil {
+		t.Fatalf("expected apply_patch refusal, got result %q", got)
+	}
+	if !strings.Contains(got+err.Error(), "managed memory resources") {
+		t.Fatalf("expected managed-memory refusal, got result %q err %v", got, err)
+	}
+	if ex.readCalls != 0 || ex.writeCalls != 0 || ex.execCalls != 0 {
+		t.Fatalf("managed-memory refusal should happen before sandbox calls, got read=%d write=%d exec=%d",
+			ex.readCalls, ex.writeCalls, ex.execCalls)
+	}
+}
+
+type fakeSandboxExecutor struct {
+	readCalls  int
+	writeCalls int
+	execCalls  int
+}
+
+func (f *fakeSandboxExecutor) Exec(ctx context.Context, command string, timeout time.Duration) (string, error) {
+	f.execCalls++
+	return "exec", nil
+}
+
+func (f *fakeSandboxExecutor) ReadFile(ctx context.Context, path string) (string, error) {
+	f.readCalls++
+	return "old\n", nil
+}
+
+func (f *fakeSandboxExecutor) WriteFile(ctx context.Context, path, content string) (string, error) {
+	f.writeCalls++
+	return "written", nil
+}
+
+func (f *fakeSandboxExecutor) ListDir(ctx context.Context, path string) (string, error) {
+	return "", nil
+}
+
+func (f *fakeSandboxExecutor) Backend() string { return "fake" }
+
+func (f *fakeSandboxExecutor) Close() error { return nil }
