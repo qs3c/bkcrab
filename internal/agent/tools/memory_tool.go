@@ -18,7 +18,7 @@ type memoryToolArgs struct {
 }
 
 func registerMemory(r *Registry) {
-	r.Register("memory", "Manage the current chatter's USER.md profile and MEMORY.md long-term memory with safe add/list/replace/remove operations", map[string]any{
+	r.Register("memory", "Manage the current chatter's USER.md profile and MEMORY.md long-term memory with safe add/replace/remove operations", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"target": map[string]any{
@@ -28,8 +28,8 @@ func registerMemory(r *Registry) {
 			},
 			"action": map[string]any{
 				"type":        "string",
-				"enum":        []string{"list", "add", "replace", "remove"},
-				"description": "Single operation action. Missing or empty means list.",
+				"enum":        []string{"add", "replace", "remove"},
+				"description": "Single operation action: add, replace, or remove.",
 			},
 			"content": map[string]any{
 				"type":        "string",
@@ -47,7 +47,7 @@ func registerMemory(r *Registry) {
 					"properties": map[string]any{
 						"action": map[string]any{
 							"type": "string",
-							"enum": []string{"list", "add", "replace", "remove"},
+							"enum": []string{"add", "replace", "remove"},
 						},
 						"content": map[string]any{
 							"type": "string",
@@ -74,6 +74,12 @@ func makeMemoryTool(r *Registry) ToolFunc {
 		if err != nil {
 			return "", err
 		}
+
+		ops := memoryToolOperations(args)
+		if err := validateMemoryOps(ops); err != nil {
+			return "", err
+		}
+
 		manager := memory.NewManager(memory.Options{
 			Store:   r.systemFileStore,
 			Root:    r.systemRoot,
@@ -82,14 +88,8 @@ func makeMemoryTool(r *Registry) ToolFunc {
 			Config:  r.managedMemoryCfg,
 		})
 
-		ops, mutation := memoryToolOperations(args)
-		var result memory.Result
-		if len(ops) == 1 && ops[0].Action == memory.ActionList {
-			result = manager.List(ctx, target)
-		} else {
-			result = manager.Apply(ctx, target, ops)
-		}
-		if result.Success && mutation {
+		result := manager.Apply(ctx, target, ops)
+		if result.Success {
 			result.Entries = nil
 		}
 		out, err := json.MarshalIndent(result, "", "  ")
@@ -111,28 +111,27 @@ func parseMemoryTarget(target memory.Target) (memory.Target, string, error) {
 	}
 }
 
-func memoryToolOperations(args memoryToolArgs) ([]memory.Operation, bool) {
+func memoryToolOperations(args memoryToolArgs) []memory.Operation {
 	if args.Operations != nil {
-		ops := append([]memory.Operation(nil), (*args.Operations)...)
-		return ops, memoryToolHasMutation(ops)
+		return append([]memory.Operation(nil), (*args.Operations)...)
 	}
-	action := args.Action
-	if strings.TrimSpace(string(action)) == "" {
-		action = memory.ActionList
-	}
-	ops := []memory.Operation{{
-		Action:  action,
+	return []memory.Operation{{
+		Action:  args.Action,
 		Content: args.Content,
 		OldText: args.OldText,
 	}}
-	return ops, action != memory.ActionList
 }
 
-func memoryToolHasMutation(ops []memory.Operation) bool {
+func validateMemoryOps(ops []memory.Operation) error {
+	if len(ops) == 0 {
+		return fmt.Errorf("memory tool requires at least one operation")
+	}
 	for _, op := range ops {
-		if op.Action != memory.ActionList {
-			return true
+		switch memory.Action(strings.TrimSpace(string(op.Action))) {
+		case memory.ActionAdd, memory.ActionReplace, memory.ActionRemove:
+		default:
+			return fmt.Errorf("memory action must be add, replace, or remove (got %q); the list action is no longer available - current memory is already in your context", op.Action)
 		}
 	}
-	return false
+	return nil
 }

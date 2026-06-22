@@ -4,33 +4,27 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/qs3c/bkclaw/internal/memory"
 )
 
-func TestMemoryToolAddListReplaceRemove(t *testing.T) {
-	r, _ := newMemoryToolTestRegistry(t)
+func TestMemoryToolAddReplaceRemove(t *testing.T) {
+	r, store := newMemoryToolTestRegistry(t)
 
 	add := executeMemoryTool(t, r, map[string]any{
 		"target":  "memory",
 		"action":  "add",
 		"content": "release checklist lives in docs/release.md",
 	})
-	if !add.Success || !add.Done {
-		t.Fatalf("add result = %+v, want success", add)
+	if !add.Success || add.EntryCount != 1 {
+		t.Fatalf("add result = %+v, want success with 1 entry", add)
 	}
-	if add.EntryCount != 1 {
-		t.Fatalf("add entry_count = %d, want 1", add.EntryCount)
-	}
-
-	listed := executeMemoryTool(t, r, map[string]any{"target": "memory"})
-	if !listed.Success {
-		t.Fatalf("list failed: %+v", listed)
-	}
-	if strings.Join(listed.Entries, "|") != "release checklist lives in docs/release.md" {
-		t.Fatalf("listed entries = %#v", listed.Entries)
+	if got := string(store.file("agent-1", "owner-user", "MEMORY.md")); !strings.Contains(got, "release checklist lives in docs/release.md") {
+		t.Fatalf("stored MEMORY.md = %q, want added entry", got)
 	}
 
 	replaced := executeMemoryTool(t, r, map[string]any{
@@ -42,13 +36,8 @@ func TestMemoryToolAddListReplaceRemove(t *testing.T) {
 	if !replaced.Success {
 		t.Fatalf("replace failed: %+v", replaced)
 	}
-
-	listed = executeMemoryTool(t, r, map[string]any{
-		"target": "memory",
-		"action": "",
-	})
-	if strings.Join(listed.Entries, "|") != "release checklist is owned by platform" {
-		t.Fatalf("listed entries after replace = %#v", listed.Entries)
+	if got := string(store.file("agent-1", "owner-user", "MEMORY.md")); !strings.Contains(got, "owned by platform") {
+		t.Fatalf("stored MEMORY.md after replace = %q", got)
 	}
 
 	removed := executeMemoryTool(t, r, map[string]any{
@@ -59,10 +48,8 @@ func TestMemoryToolAddListReplaceRemove(t *testing.T) {
 	if !removed.Success {
 		t.Fatalf("remove failed: %+v", removed)
 	}
-
-	listed = executeMemoryTool(t, r, map[string]any{"target": "memory"})
-	if listed.EntryCount != 0 || len(listed.Entries) != 0 {
-		t.Fatalf("listed entries after remove = %+v, want empty", listed)
+	if got := string(store.file("agent-1", "owner-user", "MEMORY.md")); strings.Contains(got, "platform") {
+		t.Fatalf("stored MEMORY.md after remove = %q, want entry gone", got)
 	}
 }
 
@@ -88,9 +75,9 @@ func TestMemoryToolBatchIsAtomic(t *testing.T) {
 		t.Fatalf("batch message = %q, want no-match explanation", result.Message)
 	}
 
-	listed := executeMemoryTool(t, r, map[string]any{"target": "memory"})
-	if strings.Join(listed.Entries, "|") != "alpha" {
-		t.Fatalf("batch was not atomic; entries = %#v", listed.Entries)
+	got := string(store.file("agent-1", "owner-user", "MEMORY.md"))
+	if !strings.Contains(got, "alpha") || strings.Contains(got, "beta") {
+		t.Fatalf("batch was not atomic; stored = %q", got)
 	}
 	if store.writeCount != 1 {
 		t.Fatalf("writeCount = %d, want only the initial add", store.writeCount)
@@ -161,7 +148,7 @@ func TestMemoryToolWritesChatterScopedFile(t *testing.T) {
 func TestMemoryToolInvalidTargetReturnsError(t *testing.T) {
 	r, _ := newMemoryToolTestRegistry(t)
 
-	_, err := r.Execute(context.Background(), "memory", `{"target":"profile","action":"list"}`)
+	_, err := r.Execute(context.Background(), "memory", `{"target":"profile","action":"add"}`)
 	if err == nil {
 		t.Fatalf("expected invalid target error")
 	}
@@ -184,9 +171,31 @@ func TestMemoryToolUsesFilesystemFallbackWithoutStore(t *testing.T) {
 		t.Fatalf("fallback add failed: %+v", result)
 	}
 
-	listed := executeMemoryTool(t, r, map[string]any{"target": "memory"})
-	if strings.Join(listed.Entries, "|") != "fallback works" {
-		t.Fatalf("fallback list entries = %#v", listed.Entries)
+	data, err := os.ReadFile(filepath.Join(systemRoot, "MEMORY.md"))
+	if err != nil {
+		t.Fatalf("read fallback file: %v", err)
+	}
+	if !strings.Contains(string(data), "fallback works") {
+		t.Fatalf("fallback file = %q, want added entry", string(data))
+	}
+}
+
+func TestMemoryToolRejectsListAction(t *testing.T) {
+	r, _ := newMemoryToolTestRegistry(t)
+	_, err := r.Execute(context.Background(), "memory", `{"target":"memory","action":"list"}`)
+	if err == nil {
+		t.Fatalf("expected error rejecting list action")
+	}
+	if !strings.Contains(err.Error(), "add, replace, or remove") {
+		t.Fatalf("error = %v, want action guidance", err)
+	}
+}
+
+func TestMemoryToolRejectsEmptyAction(t *testing.T) {
+	r, _ := newMemoryToolTestRegistry(t)
+	_, err := r.Execute(context.Background(), "memory", `{"target":"memory"}`)
+	if err == nil {
+		t.Fatalf("expected error rejecting empty action")
 	}
 }
 
