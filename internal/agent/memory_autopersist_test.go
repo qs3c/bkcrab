@@ -70,11 +70,14 @@ func newTestManager(fs *fakeMemStore) *memory.Manager {
 func TestAutoPersistMemoryAppliesOps(t *testing.T) {
 	fs := newFakeMemStore()
 	mgr := newTestManager(fs)
-	if res := mgr.Apply(context.Background(), memory.TargetMemory, []memory.Operation{{Action: memory.ActionAdd, Content: "old fact"}}); !res.Success {
+	if res := mgr.Apply(context.Background(), memory.TargetMemory, []memory.Operation{
+		{Action: memory.ActionAdd, Content: "old fact"},
+		{Action: memory.ActionAdd, Content: "obsolete fact"},
+	}); !res.Success {
 		t.Fatalf("seed failed: %+v", res)
 	}
 
-	prov := &fakeExtractProvider{resp: `{"memory_ops":[{"action":"replace","old_text":"old fact","content":"new fact"},{"action":"add","content":"second fact"}],"user_ops":[{"action":"add","content":"name is Ada"}]}`}
+	prov := &fakeExtractProvider{resp: `{"memory_ops":[{"action":"replace","old_text":"old fact","content":"new fact"},{"action":"add","content":"second fact"},{"action":"remove","old_text":"obsolete fact"}],"user_ops":[{"action":"add","content":"name is Ada"}]}`}
 	groups := []store.TurnGroup{{SessionKey: "s1", Messages: []store.SessionMessage{{Role: "user", Content: "call me Ada"}}}}
 
 	if err := AutoPersistMemory(context.Background(), mgr, prov, "test-model", groups); err != nil {
