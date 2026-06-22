@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -61,6 +62,12 @@ type Result struct {
 	Usage      string   `json:"usage"`
 	Message    string   `json:"message"`
 	Entries    []string `json:"entries,omitempty"`
+	// Size is the serialized rune count of the current entries; Limit is the
+	// target's character limit (0 = unlimited). Exposed so callers can act on how
+	// full a file is — the cadence path uses it to steer the model to prune near
+	// the limit.
+	Size  int `json:"size"`
+	Limit int `json:"limit"`
 }
 
 type Mutator func(current []byte, exists bool) (next []byte, delete bool, err error)
@@ -127,6 +134,7 @@ func (m *Manager) List(ctx context.Context, target Target) Result {
 		return failureResult(target, nil, m.config, err.Error())
 	}
 	entries, _ := parseEntries(target, data)
+	entries = safeEntriesForList(target, entries)
 	return listResult(target, entries, m.config, "listed entries")
 }
 
@@ -147,12 +155,17 @@ func (m *Manager) Apply(ctx context.Context, target Target, ops []Operation) Res
 			return failureResult(target, nil, m.config, err.Error())
 		}
 		entries, _ := parseEntries(target, data)
+		entries = safeEntriesForList(target, entries)
 		return listResult(target, entries, m.config, "listed entries")
 	}
 
 	var opResult Result
 	mutate := func(current []byte, exists bool) ([]byte, bool, error) {
-		entries, _ := parseEntries(target, current)
+		parsed, _ := parseEntries(target, current)
+		entries := safeEntriesForList(target, parsed)
+		if dropped := len(parsed) - len(entries); dropped > 0 {
+			slog.Warn("managed memory: dropped unsafe entries on write", "target", target, "dropped", dropped)
+		}
 		nextEntries, result := applyOperations(target, entries, ops, m.config)
 		opResult = result
 		if !result.Success {
@@ -180,18 +193,6 @@ func (m *Manager) Apply(ctx context.Context, target Target, ops []Operation) Res
 	}
 	entries, _ := parseEntries(target, data)
 	return successResult(target, entries, m.config, "applied operations")
-}
-
-func (m *Manager) Render(ctx context.Context, target Target) string {
-	result := m.List(ctx, target)
-	if !result.Success {
-		return ""
-	}
-	return m.RenderEntries(target, result.Entries)
-}
-
-func (m *Manager) RenderEntries(target Target, entries []string) string {
-	return strings.Join(safeEntriesForList(target, entries), "\n\n")
 }
 
 func parseEntries(target Target, data []byte) (entries []string, managed bool) {
@@ -582,31 +583,27 @@ func allListOperations(ops []Operation) bool {
 	return len(ops) > 0
 }
 
+// safeEntriesForList drops every entry that trips the strict scan. Such content is
+// never surfaced to the model, and on the write path (Apply) it is never persisted,
+// so the file self-heals. New threats can't arrive through the tool — add/replace
+// reject unsafe content up front — so this only ever scrubs legacy/foreign bytes
+// already sitting in storage. Apply logs how many entries it drops, so a scrub
+// (including a possible false positive) leaves an audit trail.
 func safeEntriesForList(target Target, entries []string) []string {
 	if len(entries) == 0 {
 		return nil
 	}
-	filename, err := Filename(target)
-	if err != nil {
-		filename = "memory file"
-	}
 	safe := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if threats := privacy.ScanMemoryStrict(entry); len(threats) > 0 {
-			safe = append(safe, blockedEntryPlaceholder(filename, threats))
+		if len(privacy.ScanMemoryStrict(entry)) > 0 {
 			continue
 		}
 		safe = append(safe, entry)
 	}
+	if len(safe) == 0 {
+		return nil
+	}
 	return safe
-}
-
-func blockedEntryPlaceholder(filename string, threats []privacy.Threat) string {
-	return fmt.Sprintf(
-		"[BLOCKED: %s entry contained threat pattern(s): %s. Use memory(remove) to delete the original.]",
-		filename,
-		strings.Join(threatTypes(threats), ", "),
-	)
 }
 
 func unsafeMessage(content string) string {
@@ -647,12 +644,16 @@ func failureResult(target Target, entries []string, cfg Config, message string) 
 
 func listResult(target Target, entries []string, cfg Config, message string) Result {
 	copied := cloneEntries(entries)
+	size := serializedRuneCount(target, copied)
+	limit := limitForTarget(target, cfg)
 	return Result{
 		Success:    true,
 		Done:       true,
 		Target:     target,
 		EntryCount: len(copied),
-		Usage:      usage(target, copied, cfg),
+		Usage:      usageString(size, limit),
+		Size:       size,
+		Limit:      limit,
 		Message:    message,
 		Entries:    safeEntriesForList(target, copied),
 	}
@@ -660,20 +661,22 @@ func listResult(target Target, entries []string, cfg Config, message string) Res
 
 func resultWithEntries(success bool, target Target, entries []string, cfg Config, message string) Result {
 	copied := cloneEntries(entries)
+	size := serializedRuneCount(target, copied)
+	limit := limitForTarget(target, cfg)
 	return Result{
 		Success:    success,
 		Done:       true,
 		Target:     target,
 		EntryCount: len(copied),
-		Usage:      usage(target, copied, cfg),
+		Usage:      usageString(size, limit),
+		Size:       size,
+		Limit:      limit,
 		Message:    message,
 		Entries:    safeEntriesForList(target, copied),
 	}
 }
 
-func usage(target Target, entries []string, cfg Config) string {
-	size := serializedRuneCount(target, entries)
-	limit := limitForTarget(target, cfg)
+func usageString(size, limit int) string {
 	if limit <= 0 {
 		return strconv.Itoa(size) + " characters"
 	}

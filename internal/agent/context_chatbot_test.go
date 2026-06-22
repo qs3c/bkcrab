@@ -198,7 +198,7 @@ func TestChatbotPrompt_MemoryRenderedThroughManager(t *testing.T) {
 	memSection := chatterLongTermMemorySection(t, prompt)
 
 	mustContain(t, memSection, "用户在做产品")
-	mustContain(t, memSection, "[BLOCKED")
+	mustNotContain(t, memSection, "[BLOCKED")
 	mustNotContain(t, memSection, "ignore previous instructions")
 }
 

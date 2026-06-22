@@ -8,11 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/qs3c/bkclaw/internal/config"
 	"github.com/qs3c/bkclaw/internal/memory"
-	"github.com/qs3c/bkclaw/internal/privacy"
 	"github.com/qs3c/bkclaw/internal/provider"
 	"github.com/qs3c/bkclaw/internal/store"
 )
@@ -89,11 +87,6 @@ func (m *Memory) memoryPath() string {
 	return filepath.Join(m.workspace, "MEMORY.md")
 }
 
-// historyPath 返回 HISTORY.md 的路径。
-func (m *Memory) historyPath() string {
-	return filepath.Join(m.workspace, "HISTORY.md")
-}
-
 // LoadMemory 读取此 Memory 用户的长期记忆。当配置了存储时，我们绝不
 // 回退到磁盘上的工作空间 MEMORY.md——该文件是代理所有者的副本，会泄漏
 // 给任何其行尚不存在的非所有者聊天者。FS 读取仅在无存储的旧版单用户
@@ -111,142 +104,6 @@ func (m *Memory) LoadMemory() string {
 		return ""
 	}
 	return string(data)
-}
-
-// SaveMemory 覆盖长期记忆。
-func (m *Memory) SaveMemory(content string) error {
-	if m.store != nil {
-		return m.store.SaveMemory(m.ctx(), m.agentID, m.userID, content)
-	}
-	os.MkdirAll(m.workspace, 0o755)
-	return os.WriteFile(m.memoryPath(), []byte(content), 0o644)
-}
-
-// AppendHistory 向历史日志添加一条条目。
-func (m *Memory) AppendHistory(entry string) error {
-	os.MkdirAll(m.workspace, 0o755)
-	f, err := os.OpenFile(m.historyPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	_, err = fmt.Fprintf(f, "- [%s] %s\n", timestamp, entry)
-	return err
-}
-
-// LoadHistory 读取历史日志。
-func (m *Memory) LoadHistory() string {
-	data, err := os.ReadFile(m.historyPath())
-	if err != nil {
-		return ""
-	}
-	return string(data)
-}
-
-// ReviewAndUpdateMemory 扫描最近的历史条目并将新的关键事实附加到 MEMORY.md。
-// 由心跳调用以保持长期记忆的新鲜度。
-func (m *Memory) ReviewAndUpdateMemory(workspace string) {
-	history := m.LoadHistory()
-	if history == "" {
-		return
-	}
-
-	// 获取要审查的最后 N 行历史
-	lines := strings.Split(strings.TrimSpace(history), "\n")
-	reviewCount := 50
-	if len(lines) < reviewCount {
-		reviewCount = len(lines)
-	}
-	recentLines := lines[len(lines)-reviewCount:]
-
-	// 从最近的历史中提取关键事实（简单的基于关键字的提取）
-	currentMemory := m.LoadMemory()
-	var newFacts []string
-
-	for _, line := range recentLines {
-		lower := strings.ToLower(line)
-		// 查找包含重要关键字的行
-		if containsAny(lower, []string{
-			"learned", "discovered", "user prefers", "important",
-			"remember", "note:", "key fact", "decision",
-			"preference", "configured", "set up",
-		}) {
-			// 提取时间戳之后的内容
-			if idx := strings.Index(line, "] "); idx >= 0 {
-				fact := strings.TrimSpace(line[idx+2:])
-				if fact != "" && !strings.Contains(currentMemory, fact) {
-					newFacts = append(newFacts, fact)
-				}
-			}
-		}
-	}
-
-	if len(newFacts) == 0 {
-		slog.Debug("memory review: no new facts to add")
-		return
-	}
-
-	// 将新事实追加到 MEMORY.md
-	var sb strings.Builder
-	sb.WriteString(currentMemory)
-	if currentMemory != "" && !strings.HasSuffix(currentMemory, "\n") {
-		sb.WriteString("\n")
-	}
-	sb.WriteString(fmt.Sprintf("\n## Auto-updated: %s\n", time.Now().Format("2006-01-02 15:04")))
-	for _, fact := range newFacts {
-		sb.WriteString(fmt.Sprintf("- %s\n", fact))
-	}
-
-	if err := m.SaveMemory(sb.String()); err != nil {
-		slog.Warn("failed to update memory", "error", err)
-		return
-	}
-
-	slog.Info("memory updated", "new_facts", len(newFacts))
-}
-
-func containsAny(s string, keywords []string) bool {
-	for _, kw := range keywords {
-		if strings.Contains(s, kw) {
-			return true
-		}
-	}
-	return false
-}
-
-// SaveMemoryWithScan 在写入 MEMORY.md 之前扫描内容中的威胁。
-// 对任何检测到的威胁记录警告，但仍然写入（以避免数据丢失）。
-func (m *Memory) SaveMemoryWithScan(content string) error {
-	if threats := privacy.Scan(content); len(threats) > 0 {
-		for _, t := range threats {
-			slog.Warn("memory safety threat detected in MEMORY.md write",
-				"type", t.Type,
-				"pattern", t.Pattern,
-				"context", t.Context,
-			)
-		}
-	}
-	return m.SaveMemory(content)
-}
-
-// SaveUserFile 使用威胁扫描写入 USER.md。
-func (m *Memory) SaveUserFile(content string) error {
-	if threats := privacy.Scan(content); len(threats) > 0 {
-		for _, t := range threats {
-			slog.Warn("memory safety threat detected in USER.md write",
-				"type", t.Type,
-				"pattern", t.Pattern,
-				"context", t.Context,
-			)
-		}
-	}
-	if m.store != nil {
-		return m.store.SaveWorkspaceFile(m.ctx(), m.agentID, m.userID, "USER.md", []byte(content))
-	}
-	os.MkdirAll(m.workspace, 0o755)
-	return os.WriteFile(filepath.Join(m.workspace, "USER.md"), []byte(content), 0o644)
 }
 
 // LoadUserFile 读取此 Memory 用户的 USER.md 文件。与 LoadMemory 相同
@@ -325,13 +182,14 @@ Current MEMORY.md (usage %s):
 Recent conversation:
 %s
 
-Output JSON only (no markdown fences):
+%sOutput JSON only (no markdown fences):
 {"memory_ops":[{"action":"add|replace|remove","old_text":"...","content":"..."}],"user_ops":[{"action":"add|replace|remove","old_text":"...","content":"..."}]}`,
 		userList.Usage,
 		formatEntriesForExtract(userList),
 		memList.Usage,
 		formatEntriesForExtract(memList),
 		sb.String(),
+		compactionPressureNote(memList, userList),
 	)
 
 	resp, err := prov.Chat(ctx, []provider.Message{
@@ -392,24 +250,90 @@ Output JSON only (no markdown fences):
 		"memory_ops", len(memOps),
 		"user_ops", len(userOps))
 
-	// Apply MEMORY.md changes atomically through the managed engine.
-	if len(memOps) > 0 {
-		if res := mgr.Apply(ctx, memory.TargetMemory, memOps); !res.Success {
-			slog.Warn("auto-persist: MEMORY.md apply rejected", "model", model, "message", res.Message)
-		} else {
-			slog.Info("auto-persist: updated MEMORY.md", "ops", len(memOps))
-		}
-	}
-
-	// Apply USER.md changes atomically through the managed engine.
-	if len(userOps) > 0 {
-		if res := mgr.Apply(ctx, memory.TargetUser, userOps); !res.Success {
-			slog.Warn("auto-persist: USER.md apply rejected", "model", model, "message", res.Message)
-		} else {
-			slog.Info("auto-persist: updated USER.md", "ops", len(userOps))
-		}
-	}
+	// Apply atomically through the managed engine. Each target gets a compaction
+	// fallback so a file already pinned at its character limit can still land the
+	// model's deletions/corrections instead of freezing forever.
+	applyCadenceOps(ctx, mgr, memory.TargetMemory, memOps, model)
+	applyCadenceOps(ctx, mgr, memory.TargetUser, userOps, model)
 	return nil
+}
+
+// applyCadenceOps applies a cadence batch through the managed engine. It tries the
+// whole batch atomically first (the common case). If that is rejected — because the
+// result would exceed the character limit, or because one op carried a stale or
+// ambiguous old_text — it retries best-effort: each op on its own, compacting ops
+// (remove / replace) before adds. A remove or a size-reducing replace applied alone
+// always fits, so it lands and frees space; only the ops that genuinely don't fit
+// (or no longer match) are skipped. This keeps a memory file pinned at its limit
+// from freezing — every round still lands the model's deletions and corrections —
+// and also salvages the good ops when the model returns one bad op in a batch.
+func applyCadenceOps(ctx context.Context, mgr *memory.Manager, target memory.Target, ops []memory.Operation, model string) {
+	if len(ops) == 0 {
+		return
+	}
+	if res := mgr.Apply(ctx, target, ops); res.Success {
+		slog.Info("auto-persist: applied", "model", model, "target", target, "ops", len(ops))
+		return
+	}
+	applied := 0
+	for _, op := range compactingFirst(ops) {
+		if mgr.Apply(ctx, target, []memory.Operation{op}).Success {
+			applied++
+		}
+	}
+	slog.Info("auto-persist: applied best-effort after batch rejection",
+		"model", model, "target", target, "applied", applied, "of", len(ops))
+}
+
+// compactingFirst orders remove/replace ops ahead of adds, so that when ops are
+// applied one at a time the space-freeing ones run before the space-consuming ones.
+func compactingFirst(ops []memory.Operation) []memory.Operation {
+	out := make([]memory.Operation, 0, len(ops))
+	for _, op := range ops {
+		if op.Action != memory.ActionAdd {
+			out = append(out, op)
+		}
+	}
+	for _, op := range ops {
+		if op.Action == memory.ActionAdd {
+			out = append(out, op)
+		}
+	}
+	return out
+}
+
+// compactionPressureThreshold is the fraction of a file's character limit at which
+// the cadence extraction prompt starts actively pushing the model to prune.
+const compactionPressureThreshold = 0.8
+
+// compactionPressureNote is the primary defense against a memory file filling up:
+// when a file is at/over 80% of its limit, it injects a prompt block steering the
+// model to prune (remove/replace stale or unimportant entries) instead of only
+// adding. Importance is the model's call; entries are shown oldest-first (incremental
+// append), so earlier ones are the natural eviction targets. Returns "" — no extra
+// pressure — while both files still have room. (applyCadenceOps is the mechanical
+// backstop for when the model over-fills anyway.)
+func compactionPressureNote(mem, user memory.Result) string {
+	var tight []string
+	if nearLimit(mem) {
+		tight = append(tight, "MEMORY.md ("+mem.Usage+")")
+	}
+	if nearLimit(user) {
+		tight = append(tight, "USER.md ("+user.Usage+")")
+	}
+	if len(tight) == 0 {
+		return ""
+	}
+	return "SPACE PRESSURE: " + strings.Join(tight, " and ") +
+		" near the character limit. Before adding anything, prune: remove or replace entries that are " +
+		"unimportant, redundant, or outdated. Entries are listed oldest-first (incremental append), so " +
+		"earlier ones are usually the best to evict — but keep older entries that are still important; you " +
+		"judge by importance. This round should NOT grow the file: prefer remove/replace over add, and add " +
+		"only if you free at least as much space.\n\n"
+}
+
+func nearLimit(r memory.Result) bool {
+	return r.Limit > 0 && float64(r.Size) >= compactionPressureThreshold*float64(r.Limit)
 }
 
 func formatEntriesForExtract(res memory.Result) string {
