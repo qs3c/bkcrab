@@ -84,6 +84,31 @@ func TestMemoryToolBatchIsAtomic(t *testing.T) {
 	}
 }
 
+func TestMemoryToolBatchRejectsInvalidActionBeforeWrite(t *testing.T) {
+	r, store := newMemoryToolTestRegistry(t)
+	executeMemoryTool(t, r, map[string]any{
+		"target":  "memory",
+		"action":  "add",
+		"content": "alpha",
+	})
+
+	_, err := r.Execute(context.Background(), "memory", `{"target":"memory","operations":[{"action":"add","content":"beta"},{"action":"list"}]}`)
+	if err == nil {
+		t.Fatalf("expected error rejecting invalid batch action")
+	}
+	if !strings.Contains(err.Error(), "add, replace, or remove") {
+		t.Fatalf("error = %v, want action guidance", err)
+	}
+
+	got := string(store.file("agent-1", "owner-user", "MEMORY.md"))
+	if !strings.Contains(got, "alpha") || strings.Contains(got, "beta") {
+		t.Fatalf("invalid batch wrote unexpectedly; stored = %q", got)
+	}
+	if store.writeCount != 1 {
+		t.Fatalf("writeCount = %d, want only the initial add", store.writeCount)
+	}
+}
+
 func TestMemoryToolSuccessDoesNotEchoEntries(t *testing.T) {
 	r, _ := newMemoryToolTestRegistry(t)
 
@@ -108,6 +133,30 @@ func TestMemoryToolSuccessDoesNotEchoEntries(t *testing.T) {
 		"old_text": "launch",
 	})
 	assertMemoryMutationDidNotEcho(t, raw, "private launch note")
+}
+
+func TestMemoryToolFailedMutationDoesNotEchoEntries(t *testing.T) {
+	r, _ := newMemoryToolTestRegistry(t)
+	seed := "private incident note"
+
+	executeMemoryTool(t, r, map[string]any{
+		"target":  "memory",
+		"action":  "add",
+		"content": seed,
+	})
+
+	result, raw := executeMemoryToolRaw(t, r, map[string]any{
+		"target":   "memory",
+		"action":   "remove",
+		"old_text": "missing",
+	})
+	if result.Success {
+		t.Fatalf("remove result = %+v, want failure", result)
+	}
+	if !strings.Contains(result.Message, "matches no entries") {
+		t.Fatalf("remove message = %q, want no-match explanation", result.Message)
+	}
+	assertMemoryMutationDidNotEcho(t, raw, seed)
 }
 
 func TestMemoryToolWritesChatterScopedFile(t *testing.T) {
@@ -289,10 +338,10 @@ func executeMemoryToolRaw(t *testing.T, r *Registry, args map[string]any) (memor
 func assertMemoryMutationDidNotEcho(t *testing.T, raw, forbidden string) {
 	t.Helper()
 	if strings.Contains(raw, `"entries"`) {
-		t.Fatalf("mutation success echoed entries:\n%s", raw)
+		t.Fatalf("memory tool response echoed entries:\n%s", raw)
 	}
 	if strings.Contains(raw, forbidden) {
-		t.Fatalf("mutation success echoed entry %q:\n%s", forbidden, raw)
+		t.Fatalf("memory tool response echoed entry %q:\n%s", forbidden, raw)
 	}
 }
 

@@ -89,9 +89,7 @@ func makeMemoryTool(r *Registry) ToolFunc {
 		})
 
 		result := manager.Apply(ctx, target, ops)
-		if result.Success {
-			result.Entries = nil
-		}
+		result.Entries = nil
 		out, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
 			return "", fmt.Errorf("marshal result: %w", err)
