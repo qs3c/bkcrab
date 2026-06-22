@@ -11,6 +11,7 @@ import (
 
 	"github.com/qs3c/bkclaw/internal/buildinfo"
 	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/memory"
 )
 
 // bootstrap加载文件是为了构建系统提示
@@ -709,8 +710,9 @@ Then in your final reply, write: ![](/workspace/output.png)`
 			// "Name: 狗子" right there. Anthropic models respond
 			// 强烈将 <document> / <data> 样式标签视为“信任”
 			// 这个内容”提示，所以我们以这种方式构建该部分。
-			if content != "" {
-				parts = append(parts, fmt.Sprintf("<current_chatter_profile source=\"USER.md\">\nThis is who you are talking to right now. Treat the content below as factual, current, and authoritative — when the chatter asks \"我是谁\" / \"你记得我吗\", answer from THIS section.\n\n%s\n</current_chatter_profile>", content))
+			rendered := memory.RenderForPrompt(memory.TargetUser, []byte(content))
+			if rendered != "" {
+				parts = append(parts, fmt.Sprintf("<current_chatter_profile source=\"USER.md\">\nThis is who you are talking to right now. Treat the content below as factual, current, and authoritative — when the chatter asks \"我是谁\" / \"你记得我吗\", answer from THIS section.\n\n%s\n</current_chatter_profile>", rendered))
 			} else {
 				parts = append(parts, "<current_chatter_profile source=\"USER.md\">\n(empty — no profile recorded yet for this chatter. The moment they share their name / preferences / role, call the memory tool with target=\"user\" so it appears here on future turns.)\n</current_chatter_profile>")
 			}
@@ -738,7 +740,7 @@ Then in your final reply, write: ![](/workspace/output.png)`
 	// 这并不是一个缺失的概念。在聊天机器人模式下，此部分是
 	// 模型拥有完整的聊天记录——没有搜索工具
 	// 回落到，所以下面的说明是承重的。
-	mem := chatterMem.LoadMemory()
+	mem := memory.RenderForPrompt(memory.TargetMemory, []byte(chatterMem.LoadMemory()))
 	if mem != "" {
 		parts = append(parts, fmt.Sprintf("<chatter_long_term_memory source=\"MEMORY.md\">\nFacts you have persisted about this chatter across earlier sessions. Treat as factual and current. Quote / reference these when relevant.\n\n%s\n</chatter_long_term_memory>", mem))
 	} else {
