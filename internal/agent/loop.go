@@ -18,6 +18,7 @@ import (
 	"github.com/qs3c/bkclaw/internal/channels"
 	"github.com/qs3c/bkclaw/internal/config"
 	"github.com/qs3c/bkclaw/internal/mcp"
+	"github.com/qs3c/bkclaw/internal/memory"
 	"github.com/qs3c/bkclaw/internal/privacy"
 	"github.com/qs3c/bkclaw/internal/provider"
 	"github.com/qs3c/bkclaw/internal/sandbox"
@@ -2694,7 +2695,13 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 			resetBatch()
 			return
 		}
-		if err := AutoPersistMemory(extractCtx, chatterMem, a.provider, model, groups); err != nil {
+		mgr := memory.NewManager(memory.Options{
+			Store:   NewMemoryStoreAdapter(a.dataStore),
+			AgentID: a.name,
+			UserID:  chatterUID,
+			Config:  memory.DefaultConfig(),
+		})
+		if err := AutoPersistMemory(extractCtx, mgr, a.provider, model, groups); err != nil {
 			slog.Warn("auto-persist: extraction failed, resetting batch", "agent", a.name, "extraction_id", extractionID, "error", err)
 			resetBatch()
 		}

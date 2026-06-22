@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkclaw/internal/memory"
 	"github.com/qs3c/bkclaw/internal/privacy"
 	"github.com/qs3c/bkclaw/internal/provider"
 	"github.com/qs3c/bkclaw/internal/store"
@@ -268,9 +269,9 @@ func (m *Memory) LoadUserFile() string {
 	return string(data)
 }
 
-// AutoPersistMemory 使用 LLM 从最近的消息中提取事实并追加到 MEMORY.md
-// 和 USER.md。每 N 轮调用一次。
-func AutoPersistMemory(ctx context.Context, mem *Memory, prov provider.Provider, model string, groups []store.TurnGroup) error {
+// AutoPersistMemory uses the LLM to extract add/replace/remove operations for
+// MEMORY.md and USER.md, then applies them through the managed memory engine.
+func AutoPersistMemory(ctx context.Context, mgr *memory.Manager, prov provider.Provider, model string, groups []store.TurnGroup) error {
 	// 为 LLM 构建提取输入:按 session 分节(### Session),每条消息截断到 300 字符,
 	// 并对整批设总量上限,避免积压追赶时一次塞进过多 turn 把 prompt 撑爆
 	//(只约束输入拼装,与 max_tokens 控制的输出无关)。
@@ -300,33 +301,42 @@ buildPrompt:
 		sb.WriteString("…(超出上限,后续内容已省略)\n")
 	}
 
-	currentMemory := mem.LoadMemory()
-	currentUser := mem.LoadUserFile()
+	userList := mgr.List(ctx, memory.TargetUser)
+	memList := mgr.List(ctx, memory.TargetMemory)
 
-	extractPrompt := fmt.Sprintf(`Analyze this conversation and extract:
-1. Key facts, decisions, or learnings worth remembering (for MEMORY.md)
-2. User preferences, profile details, or work style notes (for USER.md)
+	extractPrompt := fmt.Sprintf(`You maintain two long-term memory files for ONE chatter. Review the recent conversation and decide what to persist.
 
-Current MEMORY.md:
+Rules:
+- USER.md = who the chatter is (name, role, stable preferences/profile).
+- MEMORY.md = facts/decisions/context worth holding across sessions.
+- Per file, output operations:
+  - add: a new entry (one fact). Skip if already present below.
+  - replace: correct/refresh an existing entry. Set old_text to the EXACT verbatim text of the target entry shown below (the body under "--- entry N ---", NOT the marker line). content = the new text.
+  - remove: delete an entry the chatter asked to forget or that is now wrong. Set old_text to the exact verbatim entry text.
+- Stay within the character budget shown. If near the limit, prefer replace/remove to compress rather than only adding.
+- If nothing should change for a file, return an empty array for it.
+
+Current USER.md (usage %s):
 %s
 
-Current USER.md:
+Current MEMORY.md (usage %s):
 %s
 
 Recent conversation:
 %s
 
 Output JSON only (no markdown fences):
-{"memory_facts": ["fact1", "fact2"], "user_notes": ["note1"]}
-If nothing worth saving, output: {"memory_facts": [], "user_notes": []}`,
-		truncateStr(currentMemory, 500),
-		truncateStr(currentUser, 500),
+{"memory_ops":[{"action":"add|replace|remove","old_text":"...","content":"..."}],"user_ops":[{"action":"add|replace|remove","old_text":"...","content":"..."}]}`,
+		userList.Usage,
+		formatEntriesForExtract(userList),
+		memList.Usage,
+		formatEntriesForExtract(memList),
 		sb.String(),
 	)
 
 	resp, err := prov.Chat(ctx, []provider.Message{
 		{Role: "user", Content: extractPrompt},
-	}, nil, model, 200, 0.3)
+	}, nil, model, 2048, 0.3)
 	if err != nil {
 		// Warn（不是 Debug）——这里的隐形失败正是那种事后调试起来
 		// 很痛苦的"我打开了开关但什么也没持久化"的体验。
@@ -334,15 +344,20 @@ If nothing worth saving, output: {"memory_facts": [], "user_notes": []}`,
 		return err
 	}
 
-	var result struct {
-		MemoryFacts []string `json:"memory_facts"`
-		UserNotes   []string `json:"user_notes"`
+	type extractedOp struct {
+		Action  string `json:"action"`
+		OldText string `json:"old_text,omitempty"`
+		Content string `json:"content,omitempty"`
+	}
+	var parsed struct {
+		MemoryOps []extractedOp `json:"memory_ops"`
+		UserOps   []extractedOp `json:"user_ops"`
 	}
 	// 在解析之前去除 markdown 代码围栏——许多调优过的模型
 	// （Sonnet 4.x, Opus, …）会反射性地将结构化输出包装在
 	// ```json … ``` 中，即使提示词要求"没有 markdown 围栏"。
 	cleaned := stripJSONFence(resp.Content)
-	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
+	if err := json.Unmarshal([]byte(cleaned), &parsed); err != nil {
 		// 与上面相同的 Warn 升级——这里静默跳过隐藏了实际环境中
 		// "Sonnet 返回了包装的 JSON，解析失败"的问题。
 		preview := cleaned
@@ -353,54 +368,59 @@ If nothing worth saving, output: {"memory_facts": [], "user_notes": []}`,
 			"error", err, "model", model, "preview", preview)
 		return fmt.Errorf("auto-persist parse: %w", err)
 	}
+
+	toOps := func(in []extractedOp) []memory.Operation {
+		ops := make([]memory.Operation, 0, len(in))
+		for _, o := range in {
+			action := memory.Action(strings.TrimSpace(o.Action))
+			if action == "" || action == memory.ActionList {
+				continue
+			}
+			ops = append(ops, memory.Operation{
+				Action:  action,
+				Content: o.Content,
+				OldText: o.OldText,
+			})
+		}
+		return ops
+	}
+
+	memOps := toOps(parsed.MemoryOps)
+	userOps := toOps(parsed.UserOps)
 	slog.Info("auto-persist: extracted",
 		"model", model,
-		"memory_facts", len(result.MemoryFacts),
-		"user_notes", len(result.UserNotes))
+		"memory_ops", len(memOps),
+		"user_ops", len(userOps))
 
-	// 追加新的记忆事实
-	if len(result.MemoryFacts) > 0 {
-		var memSB strings.Builder
-		memSB.WriteString(currentMemory)
-		if currentMemory != "" && !strings.HasSuffix(currentMemory, "\n") {
-			memSB.WriteString("\n")
-		}
-		memSB.WriteString(fmt.Sprintf("\n## Auto-persisted: %s\n", time.Now().Format("2006-01-02 15:04")))
-		for _, fact := range result.MemoryFacts {
-			memSB.WriteString(fmt.Sprintf("- %s\n", fact))
-		}
-		if err := mem.SaveMemoryWithScan(memSB.String()); err != nil {
-			slog.Warn("auto-persist: failed to save MEMORY.md", "error", err)
+	// Apply MEMORY.md changes atomically through the managed engine.
+	if len(memOps) > 0 {
+		if res := mgr.Apply(ctx, memory.TargetMemory, memOps); !res.Success {
+			slog.Warn("auto-persist: MEMORY.md apply rejected", "model", model, "message", res.Message)
 		} else {
-			slog.Info("auto-persist: updated MEMORY.md", "facts", len(result.MemoryFacts))
+			slog.Info("auto-persist: updated MEMORY.md", "ops", len(memOps))
 		}
 	}
 
-	// 追加用户笔记
-	if len(result.UserNotes) > 0 {
-		var userSB strings.Builder
-		userSB.WriteString(currentUser)
-		if currentUser != "" && !strings.HasSuffix(currentUser, "\n") {
-			userSB.WriteString("\n")
-		}
-		userSB.WriteString(fmt.Sprintf("\n## Auto-persisted: %s\n", time.Now().Format("2006-01-02 15:04")))
-		for _, note := range result.UserNotes {
-			userSB.WriteString(fmt.Sprintf("- %s\n", note))
-		}
-		if err := mem.SaveUserFile(userSB.String()); err != nil {
-			slog.Warn("auto-persist: failed to save USER.md", "error", err)
+	// Apply USER.md changes atomically through the managed engine.
+	if len(userOps) > 0 {
+		if res := mgr.Apply(ctx, memory.TargetUser, userOps); !res.Success {
+			slog.Warn("auto-persist: USER.md apply rejected", "model", model, "message", res.Message)
 		} else {
-			slog.Info("auto-persist: updated USER.md", "notes", len(result.UserNotes))
+			slog.Info("auto-persist: updated USER.md", "ops", len(userOps))
 		}
 	}
 	return nil
 }
 
-func truncateStr(s string, n int) string {
-	if len(s) <= n {
-		return s
+func formatEntriesForExtract(res memory.Result) string {
+	if len(res.Entries) == 0 {
+		return "(none)"
 	}
-	return s[:n] + "..."
+	var b strings.Builder
+	for i, entry := range res.Entries {
+		fmt.Fprintf(&b, "--- entry %d ---\n%s\n", i+1, entry)
+	}
+	return b.String()
 }
 
 // stripJSONFence 从 LLM 响应中去除前导的 ```json（或 ```）和尾部的
