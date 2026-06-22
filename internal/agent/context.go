@@ -405,8 +405,8 @@ MEMORY.md.
 How to write:
 - Use ` + bt + `memory` + bt + ` with ` + bt + `target="user"` + bt + ` for USER.md and
   ` + bt + `target="memory"` + bt + ` for MEMORY.md.
-- Use ` + bt + `operation="add"` + bt + ` for new facts, ` + bt + `operation="replace"` + bt + `
-  for corrections, and ` + bt + `operation="remove"` + bt + ` when the chatter asks
+- Use ` + bt + `action="add"` + bt + ` for new facts, ` + bt + `action="replace"` + bt + `
+  for corrections, and ` + bt + `action="remove"` + bt + ` when the chatter asks
   you to forget something.
 - Keep entries terse and structured. Example USER.md after the chatter
   says "我叫品冠，做 PM 的":

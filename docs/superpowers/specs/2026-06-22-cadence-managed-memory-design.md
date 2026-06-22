@@ -46,7 +46,7 @@
 
 ### 5.1 引擎（`internal/memory`）
 
-不改。`Operation{Action, Content, OldText}`、`Manager.Apply`、`Manager.List`、`Manager.Render` 全部沿用。`Manager.List` 返回的 `Result.Entries` 已是经 `safeEntriesForList` 严格扫描消毒（威胁条目替换为 `[BLOCKED: …]` 占位符）的条目，`Result.Usage` 给出 `X/上限 字符`。
+不改。`Operation{Action, Content, OldText}`、`Manager.Apply`、`Manager.List`、`Manager.Render` 全部沿用。`Manager.List` 返回的 `Result.Entries` 已是经 `safeEntriesForList` 严格扫描消毒（命中威胁的条目**整条丢弃**，不进入视图，并记 warn 留审计痕迹）的条目，`Result.Usage` 给出 `X/上限 字符`。
 
 ### 5.2 节拍链路改造（`AutoPersistMemory` + 调用处）
 
@@ -108,7 +108,7 @@
 ## 7. 边界与已知限制
 
 - **legacy 文件迁移**：聊天者旧的 append 格式文件，首次 `List` 走 legacy 解析为条目，首次 `Apply` 即重写为受管格式——迁移自然发生，无需单独脚本。
-- **BLOCKED 条目冻结**：被严格扫描挡住的条目在 `List` 视图里是占位符，模型拿不到原文，故无法对其 replace/remove；该条目保持不变。罕见，接受。
+- **不安全条目清除**：被严格扫描挡住的条目从 `List` 视图里**整条丢弃**，模型看不到也无法对其 replace/remove；存储里的字节会在下一次成功 `Apply` 写入时被一并清除（写路径同样过 `safeEntriesForList`），文件自愈。罕见，接受。
 - **超限**：若模型产出的批使序列化结果超过 `MemoryCharLimit` / `UserCharLimit`，`Apply` 拒绝整批。本次提取按失败处理（记 warn + `ResetExtraction` 重置批次，与现有 parse 失败行为一致）。理论上下次仍可能失败，硬化（如回退为仅施加缩减性 ops）留作后续。
 - **并发**：`Apply` 经 `MutateAgentFile` 事务执行，节拍写与交互写互斥，安全。
 - **成本**：完整记忆进 prompt + 更大输出，比原 200-token 追加更贵；由 `AutoPersist.Model` 选便宜模型与 prompt "从简/压缩" 指示控制。
