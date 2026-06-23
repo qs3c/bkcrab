@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/qs3c/bkclaw/internal/config"
 	"github.com/qs3c/bkclaw/internal/memory"
@@ -126,32 +127,47 @@ func (m *Memory) LoadUserFile() string {
 	return string(data)
 }
 
+// 提取提示的默认字符预算(可被 autoPersist.perMessageChars / .maxPromptChars 覆盖)。
+// 单条消息截断与整批总量都按 rune(字符)计——按字节切会在中文等多字节字符中间断开。
+// 默认值取得宽松(现代模型动辄 100K+ 上下文,没必要扣扣嗖嗖),只在真的塞不下时才截。
+const (
+	defaultPerMessageChars = 4000
+	defaultMaxPromptChars  = 200000
+)
+
 // AutoPersistMemory uses the LLM to extract add/replace/remove operations for
 // MEMORY.md and USER.md, then applies them through the managed memory engine.
-func AutoPersistMemory(ctx context.Context, mgr *memory.Manager, prov provider.Provider, model string, groups []store.TurnGroup) error {
-	// 为 LLM 构建提取输入:按 session 分节(### Session),每条消息截断到 300 字符,
-	// 并对整批设总量上限,避免积压追赶时一次塞进过多 turn 把 prompt 撑爆
-	//(只约束输入拼装,与 max_tokens 控制的输出无关)。
-	const maxPromptChars = 12000
+// perMessageChars / maxPromptChars 是提取输入的字符(rune)预算;<=0 时回退到默认值。
+func AutoPersistMemory(ctx context.Context, mgr *memory.Manager, prov provider.Provider, model string, groups []store.TurnGroup, perMessageChars, maxPromptChars int) error {
+	if perMessageChars <= 0 {
+		perMessageChars = defaultPerMessageChars
+	}
+	if maxPromptChars <= 0 {
+		maxPromptChars = defaultMaxPromptChars
+	}
+	// 为 LLM 构建提取输入:按 session 分节(### Session),每条消息按 rune 截断到
+	// perMessageChars,并对整批设 maxPromptChars 的 rune 总量上限,避免积压追赶时一次
+	// 塞进过多 turn 把 prompt 撑爆(只约束输入拼装,与 max_tokens 控制的输出无关)。
 	var sb strings.Builder
+	total := 0
 	truncated := false
 buildPrompt:
 	for _, g := range groups {
-		sb.WriteString(fmt.Sprintf("### Session %s\n", g.SessionKey))
+		header := fmt.Sprintf("### Session %s\n", g.SessionKey)
+		sb.WriteString(header)
+		total += utf8.RuneCountInString(header)
 		for _, m := range g.Messages {
 			if m.Role == "system" || m.Origin != "" {
 				continue // 跳过 system 与 goal_context 等合成注入行
 			}
-			content := m.Content
-			if len(content) > 300 {
-				content = content[:300] + "..."
-			}
-			line := fmt.Sprintf("[%s]: %s\n", m.Role, content)
-			if sb.Len()+len(line) > maxPromptChars {
+			line := fmt.Sprintf("[%s]: %s\n", m.Role, truncateRunes(m.Content, perMessageChars))
+			lineRunes := utf8.RuneCountInString(line)
+			if total+lineRunes > maxPromptChars {
 				truncated = true
 				break buildPrompt
 			}
 			sb.WriteString(line)
+			total += lineRunes
 		}
 	}
 	if truncated {
@@ -345,6 +361,19 @@ func formatEntriesForExtract(res memory.Result) string {
 		fmt.Fprintf(&b, "--- entry %d ---\n%s\n", i+1, entry)
 	}
 	return b.String()
+}
+
+// truncateRunes 按 rune(而非字节)将 s 截断到最多 max 个字符,超出时追加 "..."。
+// 旧的 s[:N] 按字节切会在多字节字符(如中文,3 字节/字)中间断开,产生半个非法 UTF-8
+// 字节;按 rune 切保证边界落在完整字符上。max<=0 返回空串。
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return string([]rune(s)[:max]) + "..."
 }
 
 // stripJSONFence 从 LLM 响应中去除前导的 ```json（或 ```）和尾部的

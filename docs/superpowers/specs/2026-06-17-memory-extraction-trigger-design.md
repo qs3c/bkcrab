@@ -157,6 +157,8 @@ COMMIT
 
 这同时修掉问题 4 与 5:输入恰好等于被计数的那 N 个 turn,无重叠无遗漏,且完全不受工作集压缩影响(归档表 append-only,压缩从不触碰)。
 
+> **实现增补(2026-06-23)**:prompt 拼装的两个字符预算——单条消息截断长度与整批总量——已**按 rune(而非字节)**计算,修掉旧 `content[:300]` 在中文等多字节字符中间切断、产生半个非法 UTF-8 字节的 bug(见 `truncateRunes`)。两者也从写死常量提为可配置 `autoPersist.perMessageChars` / `autoPersist.maxPromptChars`,默认放宽到 4000 / 200000 rune(现代模型上下文充裕,不必扣扣嗖嗖)。`3N` 批次封顶不变——它是积压清理上限,不是 prompt 大小旋钮。测试见 `internal/agent/memory_limits_test.go`。
+
 ## 7. 失败处理:extraction_id + 补偿重置
 
 提取是异步 LLM 调用,会失败。采用**补偿重置**(用户已确认):
@@ -198,6 +200,8 @@ COMMIT  → 异步提取(不阻塞压缩)
 `isSteer` 是黑名单,只标得住 steer,标不住群聊注入和 goal_context,且每新增一种注入路径就得补一个标记字段,漏一种就切错 turn 区间。改用白名单:`turn_status` 默认 `''`,**全代码库只有三个 turn 起点**显式写 `'running'`,其余路径什么都不做、默认就是非锚点。安全性靠默认值兜底,而非靠每个开发者记得打标记。
 
 > turn 终点用主键 UPDATE(§4.2)而非"查 running 行":若上次崩溃在某 session 留下僵尸 `running`,按行查会命中两行、可能把僵尸行错标 `done` 混进提取;按主键改不存在认错行的可能。
+
+> **实现已对齐(2026-06-23)**:实现中 goal_context 续跑(以及 cron / heartbeat / subagent)走的是完整 `HandleMessage` 路径,曾一度被无条件写成锚点——与本节意图相悖,会让一次自治 `/goal` 的每个续跑都推进节拍,在合成的 `"goal"` chatter 上反复触发无意义提取。现已在 `beginTurnAnchor` 处用 `isUserTurn(source)`(仅 `bus.SourceUser`,即 `Source==""`)门控:只有真实用户 turn 写锚点(`AppendTurnAnchor`),运行时注入源走普通 `sess.Append`——消息照常进工作集供模型看到,但不锚定、不计入节拍。即白名单从"三个 turn 起点"收紧为"真实用户 turn 起点"。回归测试见 `internal/agent/turn_anchor_gate_test.go`。
 
 ## 10. 落地改动清单(供实现计划参考)
 

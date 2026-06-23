@@ -242,6 +242,12 @@ type AutoPersistCfg struct {
 	Enabled     bool   `json:"enabled"`
 	EveryNTurns int    `json:"everyNTurns,omitempty"`
 	Model       string `json:"model,omitempty"`
+	// PerMessageChars / MaxPromptChars 是提取提示的字符(rune)预算:单条消息截断长度与
+	// 整批输入总量。0/未设 = 用内置默认(见 agent.defaultPerMessageChars /
+	// defaultMaxPromptChars,取值宽松)。调大可让提取看到更完整的上下文,代价是每次
+	// 提取的 LLM 调用更贵/更慢。
+	PerMessageChars int `json:"perMessageChars,omitempty"`
+	MaxPromptChars  int `json:"maxPromptChars,omitempty"`
 }
 
 type FTSCfg struct {

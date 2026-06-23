@@ -84,7 +84,7 @@ func TestAutoPersistMemoryAppliesOps(t *testing.T) {
 	prov := &fakeExtractProvider{resp: `{"memory_ops":[{"action":"replace","old_text":"old fact","content":"new fact"},{"action":"add","content":"second fact"},{"action":"remove","old_text":"obsolete fact"}],"user_ops":[{"action":"add","content":"name is Ada"}]}`}
 	groups := []store.TurnGroup{{SessionKey: "s1", Messages: []store.SessionMessage{{Role: "user", Content: "call me Ada"}}}}
 
-	if err := AutoPersistMemory(context.Background(), mgr, prov, "test-model", groups); err != nil {
+	if err := AutoPersistMemory(context.Background(), mgr, prov, "test-model", groups, 0, 0); err != nil {
 		t.Fatalf("AutoPersistMemory: %v", err)
 	}
 
@@ -107,7 +107,7 @@ func TestAutoPersistMemoryStripsJSONFence(t *testing.T) {
 	prov := &fakeExtractProvider{resp: "```json\n{\"memory_ops\":[{\"action\":\"add\",\"content\":\"fenced fact\"}],\"user_ops\":[]}\n```"}
 	groups := []store.TurnGroup{{SessionKey: "s1", Messages: []store.SessionMessage{{Role: "user", Content: "hi"}}}}
 
-	if err := AutoPersistMemory(context.Background(), mgr, prov, "test-model", groups); err != nil {
+	if err := AutoPersistMemory(context.Background(), mgr, prov, "test-model", groups, 0, 0); err != nil {
 		t.Fatalf("AutoPersistMemory: %v", err)
 	}
 	if strings.Join(mgr.List(context.Background(), memory.TargetMemory).Entries, "|") != "fenced fact" {
@@ -121,7 +121,7 @@ func TestAutoPersistMemoryEmptyOpsNoWrite(t *testing.T) {
 	prov := &fakeExtractProvider{resp: `{"memory_ops":[],"user_ops":[]}`}
 	groups := []store.TurnGroup{{SessionKey: "s1", Messages: []store.SessionMessage{{Role: "user", Content: "hi"}}}}
 
-	if err := AutoPersistMemory(context.Background(), mgr, prov, "test-model", groups); err != nil {
+	if err := AutoPersistMemory(context.Background(), mgr, prov, "test-model", groups, 0, 0); err != nil {
 		t.Fatalf("AutoPersistMemory: %v", err)
 	}
 	if len(fs.files) != 0 {
@@ -153,7 +153,7 @@ func TestAutoPersistMemoryCompactsOverLimitBatch(t *testing.T) {
 	prov := &fakeExtractProvider{resp: resp}
 	groups := []store.TurnGroup{{SessionKey: "s1", Messages: []store.SessionMessage{{Role: "user", Content: "tidy up"}}}}
 
-	if err := AutoPersistMemory(context.Background(), mgr, prov, "test-model", groups); err != nil {
+	if err := AutoPersistMemory(context.Background(), mgr, prov, "test-model", groups, 0, 0); err != nil {
 		t.Fatalf("AutoPersistMemory: %v", err)
 	}
 
@@ -178,7 +178,7 @@ func TestAutoPersistMemoryInjectsCompactionPressureNearLimit(t *testing.T) {
 		t.Fatalf("seed low: %+v", res)
 	}
 	lowProv := &fakeExtractProvider{resp: `{"memory_ops":[],"user_ops":[]}`}
-	if err := AutoPersistMemory(context.Background(), lowMgr, lowProv, "m", groups); err != nil {
+	if err := AutoPersistMemory(context.Background(), lowMgr, lowProv, "m", groups, 0, 0); err != nil {
 		t.Fatalf("AutoPersistMemory low: %v", err)
 	}
 	if strings.Contains(lowProv.gotPrompt, "SPACE PRESSURE") {
@@ -197,7 +197,7 @@ func TestAutoPersistMemoryInjectsCompactionPressureNearLimit(t *testing.T) {
 		t.Fatalf("seed high: %+v", res)
 	}
 	highProv := &fakeExtractProvider{resp: `{"memory_ops":[],"user_ops":[]}`}
-	if err := AutoPersistMemory(context.Background(), highMgr, highProv, "m", groups); err != nil {
+	if err := AutoPersistMemory(context.Background(), highMgr, highProv, "m", groups, 0, 0); err != nil {
 		t.Fatalf("AutoPersistMemory high: %v", err)
 	}
 	if !strings.Contains(highProv.gotPrompt, "SPACE PRESSURE") {
@@ -211,7 +211,7 @@ func TestAutoPersistMemoryParseFailureReturnsError(t *testing.T) {
 	prov := &fakeExtractProvider{resp: "not json at all"}
 	groups := []store.TurnGroup{{SessionKey: "s1", Messages: []store.SessionMessage{{Role: "user", Content: "hi"}}}}
 
-	if err := AutoPersistMemory(context.Background(), mgr, prov, "test-model", groups); err == nil {
+	if err := AutoPersistMemory(context.Background(), mgr, prov, "test-model", groups, 0, 0); err == nil {
 		t.Fatalf("expected parse error to be returned")
 	}
 }

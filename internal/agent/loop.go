@@ -2013,7 +2013,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// `[SenderName]:` 内容前缀策略存在于此（仅限组；
 	// DM 保持裸露以避免 SOUL.md 语言偏差回归）。
 	userMsg := buildUserMessage(msg)
-	anchor := a.beginTurnAnchor(sess, userMsg)
+	anchor := a.beginTurnAnchor(sess, userMsg, msg.Source)
 
 	// 上下文压缩：检查会话消息是否太大
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
@@ -2572,10 +2572,26 @@ type turnAnchor struct {
 	seq        int64
 }
 
-// beginTurnAnchor 在 turn 起点把用户消息作为锚点写入(turn_status='running')并返回
-// *turnAnchor。失败(已记日志)或无持久化 store(seq<0)时返回 nil——该 turn 不计入
-// 提取,但消息本身已由 AppendTurnAnchor 进入工作集。两个 ReAct 入口共用,避免重复。
-func (a *Agent) beginTurnAnchor(sess *session.Session, userMsg provider.Message) *turnAnchor {
+// isUserTurn 报告一个入站 turn 是否应作为提取节拍锚点。只有真实用户发言才算
+// (Source 未设置 == bus.SourceUser);运行时注入(goal_context 续跑、cron、heartbeat、
+// subagent)驱动工作但不是 chatter 对话,不得推进 every-N-turns 节拍
+// (memory-extraction-trigger-design §9)。
+func isUserTurn(source string) bool {
+	return source == bus.SourceUser
+}
+
+// beginTurnAnchor 把 turn 起点的用户消息加入工作集,并——仅当它是真实用户 turn 时
+// (isUserTurn)——登记为提取节拍锚点(turn_status='running')并返回 *turnAnchor。
+// 运行时注入源(goal_context/cron/heartbeat/subagent)走普通 Append:消息照常进工作集
+// 供模型看到,但不锚定、不计入节拍,返回 nil(否则一次自治 /goal 的每个续跑都会被当成
+// 一个 turn 推进节拍,在合成的 "goal" chatter 上反复触发无意义的提取)。锚点写入失败
+// (已记日志)或无持久化 store(seq<0)时也返回 nil——该 turn 不计入提取,但消息已进工作集。
+// 两个 ReAct 入口共用,避免重复。
+func (a *Agent) beginTurnAnchor(sess *session.Session, userMsg provider.Message, source string) *turnAnchor {
+	if !isUserTurn(source) {
+		sess.Append(userMsg)
+		return nil
+	}
 	seq, err := sess.AppendTurnAnchor(userMsg)
 	if err != nil {
 		slog.Warn("turn anchor append failed", "agent", a.name, "error", err)
@@ -2701,7 +2717,8 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 			UserID:  chatterUID,
 			Config:  memory.DefaultConfig(),
 		})
-		if err := AutoPersistMemory(extractCtx, mgr, a.provider, model, groups); err != nil {
+		if err := AutoPersistMemory(extractCtx, mgr, a.provider, model, groups,
+			a.memoryCfg.AutoPersist.PerMessageChars, a.memoryCfg.AutoPersist.MaxPromptChars); err != nil {
 			slog.Warn("auto-persist: extraction failed, resetting batch", "agent", a.name, "extraction_id", extractionID, "error", err)
 			resetBatch()
 		}
@@ -2768,7 +2785,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	// 展平 + 发送者元数据。群组消息保留其“[SenderName]：”
 	// 前缀（在 buildUserMessage 中应用）； DM 保持裸露状态。
 	userMsg := buildUserMessage(msg)
-	anchor := a.beginTurnAnchor(sess, userMsg)
+	anchor := a.beginTurnAnchor(sess, userMsg, msg.Source)
 
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	overheadMessages := a.buildRequestOverhead(systemPrompt, msg, chatterMem)
