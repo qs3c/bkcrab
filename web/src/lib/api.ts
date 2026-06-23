@@ -794,18 +794,38 @@ export async function getChatHistory(agentId: string, sessionId: string): Promis
 export interface ChatHistoryResult {
   history: ChatHistoryMessage[];
   latestEventSeq: number; // -1 表示尚未记录任何事件
+  contextUsage: ContextUsage | null;
+}
+
+function parseContextUsage(value: unknown): ContextUsage | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const usedTokens = raw.usedTokens;
+  const contextWindow = raw.contextWindow;
+  const triggerTokens = raw.triggerTokens;
+  if (
+    typeof usedTokens !== "number" ||
+    typeof contextWindow !== "number" ||
+    typeof triggerTokens !== "number" ||
+    !Number.isFinite(usedTokens) ||
+    !Number.isFinite(contextWindow) ||
+    !Number.isFinite(triggerTokens)
+  ) {
+    return null;
+  }
+  return { usedTokens, contextWindow, triggerTokens };
 }
 
 export async function getChatHistoryWithCursor(agentId: string, sessionId: string): Promise<ChatHistoryResult> {
   const res = await apiFetch(`/api/chat/history?agentId=${encodeURIComponent(agentId)}&sessionId=${encodeURIComponent(sessionId)}`);
-  if (!res.ok) return { history: [], latestEventSeq: -1 };
+  if (!res.ok) return { history: [], latestEventSeq: -1, contextUsage: null };
   const data = await res.json();
   const history: ChatHistoryMessage[] = Array.isArray(data?.history)
     ? data.history
     : Array.isArray(data) ? data : [];
   const seqRaw = data?.latestEventSeq;
   const latestEventSeq = typeof seqRaw === "number" ? seqRaw : -1;
-  return { history, latestEventSeq };
+  return { history, latestEventSeq, contextUsage: parseContextUsage(data?.contextUsage) };
 }
 
 export interface ChatSessionEntry {

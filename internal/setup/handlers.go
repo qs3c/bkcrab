@@ -1399,7 +1399,10 @@ func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return
 	}
-	resp := map[string]any{"history": ag.WebChatHistory(sessionID)}
+	resp := map[string]any{
+		"history":      ag.WebChatHistory(sessionID),
+		"contextUsage": ag.ContextUsageBaseline(),
+	}
 	// latestEventSeq 是 /api/chat/subscribe 的恢复游标 —
 	// 客户端用 `since=<latestEventSeq>` 打开该端点，
 	// 以便新页面加载只拾取尚未渲染的增量。
@@ -1408,12 +1411,39 @@ func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 	if s.dataStore != nil {
 		uid := s.effectiveUserID(r)
 		if uid != "" {
-			if seq, err := s.dataStore.LatestSessionEventSeq(r.Context(), uid, ag.Name(), sessionID); err == nil {
+			if rows, err := s.dataStore.ListSessionEventsSince(r.Context(), uid, ag.Name(), sessionID, -1); err == nil {
+				if len(rows) > 0 {
+					resp["latestEventSeq"] = rows[len(rows)-1].Seq
+				}
+				if usage := latestContextUsageFromEvents(rows); usage != nil {
+					resp["contextUsage"] = usage
+				}
+			} else if seq, err := s.dataStore.LatestSessionEventSeq(r.Context(), uid, ag.Name(), sessionID); err == nil {
 				resp["latestEventSeq"] = seq
 			}
 		}
 	}
 	jsonResponse(w, http.StatusOK, resp)
+}
+
+func latestContextUsageFromEvents(rows []store.SessionEventRecord) map[string]any {
+	for i := len(rows) - 1; i >= 0; i-- {
+		switch rows[i].Type {
+		case "usage", "done":
+		default:
+			continue
+		}
+		var payload struct {
+			Usage map[string]any `json:"usage"`
+		}
+		if err := json.Unmarshal(rows[i].Data, &payload); err != nil {
+			continue
+		}
+		if len(payload.Usage) > 0 {
+			return payload.Usage
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleChatSessions(w http.ResponseWriter, r *http.Request) {

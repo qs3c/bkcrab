@@ -703,6 +703,12 @@ func (a *Agent) contextUsageData(last provider.Usage, requestMessages []provider
 	}
 }
 
+func (a *Agent) ContextUsageBaseline() map[string]any {
+	usage := a.contextUsageData(provider.Usage{}, nil, nil)
+	usage["usedTokens"] = 0
+	return usage
+}
+
 func (a *Agent) emitContextUsage(ctx context.Context, usage provider.Usage, requestMessages []provider.Message, toolDefs []provider.Tool) {
 	emitEvent(ctx, ChatEvent{Type: "usage", Data: map[string]any{
 		"usage": a.contextUsageData(usage, requestMessages, toolDefs),

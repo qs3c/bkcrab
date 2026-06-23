@@ -36,6 +36,7 @@ type AgentHandle interface {
 	WebChatSessions() []session.WebSession
 	DeleteWebChatSession(sessionId string) error
 	RenameWebChatSession(sessionId, title string) error
+	ContextUsageBaseline() map[string]any
 	// MoveWebChatSession 将聊天重新分配到另一个项目（当 projectID=="" 时分离）。
 	// 在旧和新作用域目录之间迁移工作区文件，并释放任何活动的沙箱，
 	// 以便下一轮在新绑定挂载路径上冷启动。

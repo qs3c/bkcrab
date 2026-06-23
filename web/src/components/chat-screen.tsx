@@ -43,6 +43,10 @@ function makeUrlTransform(agentId: string, sessionId: string) {
   };
 }
 
+function zeroContextUsage(usage: ContextUsage | null): ContextUsage | null {
+  return usage ? { ...usage, usedTokens: 0 } : null;
+}
+
 // 在 `![alt](data:image/...;base64,...)` 标记上分割字符串。
 //
 // 模型输出的实际内容比语法规则更凌乱：base64 载荷可能被换行/空格
@@ -531,8 +535,8 @@ export function ChatScreen() {
     tools?: string[];
   }>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  // 后端 usage/done 事件汇报的上下文占用。用于在输入框页脚渲染
-  // 「已用上下文百分比」指示器。null = 本会话尚无用量事件。
+  // 后端历史响应与 usage/done 事件汇报的上下文占用。用于在输入框页脚渲染
+  // 「已用上下文百分比」指示器。
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   // 后端正在同步压缩上下文时为 true（compaction active 事件）。驱动消息流
   // 末尾的「正在压缩上下文…」横杠。压缩在轮次开始、产出任何回复前进行，
@@ -905,9 +909,10 @@ export function ChatScreen() {
             if (transientBubbleIdRef.current) {
               transientBubbleIdRef.current = null;
               getChatHistoryWithCursor(selectedAgent, sessionId)
-                .then(({ history, latestEventSeq }) => {
+                .then(({ history, latestEventSeq, contextUsage }) => {
                   if (latestEventSeq > maxSeqRef.current) maxSeqRef.current = latestEventSeq;
                   subscribeSinceRef.current = latestEventSeq;
+                  setContextUsage(contextUsage);
                   setMessages(buildChatMessages(history));
                 })
                 .catch(() => {});
@@ -1072,6 +1077,7 @@ export function ChatScreen() {
 // 子智能体进度指示器同理——从不跨会话携带；全新加载意味着没有
       // 正在进行的 delegate_task 需要跟踪。
     setSubagentProgress(null);
+    setContextUsage((usage) => zeroContextUsage(usage));
 // 与历史获取一同刷新 todo.md。我们不让其余加载等待它——
       // 404（尚无 todo.md）是空白会话的正常情况。
     getChatTodo(selectedAgent, sessionId)
@@ -1079,10 +1085,11 @@ export function ChatScreen() {
       .catch(() => setTodoItems([]));
     let aborted = false;
     getChatHistoryWithCursor(selectedAgent, sessionId)
-      .then(async ({ history, latestEventSeq }) => {
+      .then(async ({ history, latestEventSeq, contextUsage }) => {
         if (aborted) return;
         if (latestEventSeq > maxSeqRef.current) maxSeqRef.current = latestEventSeq;
         subscribeSinceRef.current = latestEventSeq;
+        setContextUsage(contextUsage);
         if (!history || history.length === 0) {
           setMessages([]);
           setLoadedSessionId(sessionId);
@@ -1803,11 +1810,13 @@ export function ChatScreen() {
     const newId = generateSessionId();
     setSessionId(newId);
     setMessages([]);
+    setContextUsage((usage) => zeroContextUsage(usage));
     router.replace(`/agents/${selectedAgent}/chat/`);
   };
 
   const handleSelectSession = (sid: string) => {
     setSessionId(sid);
+    setContextUsage((usage) => zeroContextUsage(usage));
     // history.replaceState（而非 router.replace）——原因与 handleSend 相同：
     // /chat/[session] 在 output:'export' 下仅为 `_` 占位符预渲染，
     // 因此 router 驱动的导航到真实 sid 会硬重载。详见 handleSend 中的
