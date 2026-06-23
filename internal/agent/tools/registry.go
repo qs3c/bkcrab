@@ -219,6 +219,12 @@ type Registry struct {
 	// 配置。如果没有故障关闭默认设置，就会丢失电线
 	// 默默地让每一个闲聊成为管理员。
 	callerIsAdmin bool
+	// userTurn 标记当前回合是否由真实用户驱动(Source==bus.SourceUser),而非
+	// 运行时注入(goal_context 续跑 / cron / heartbeat / subagent)。memory 工具
+	// 据此门控持久化:只有用户回合才写 USER.md / MEMORY.md,运行时回合调工具时
+	// 跳过(不能把自治 /goal 之类的工作记到合成 chatter 名下,与节拍线的锚点门控
+	// 口径一致)。仿 callerIsAdmin:默认 false(故障关闭),由代理循环每回合显式设置。
+	userTurn bool
 	// envProvider + SkillDirs 缓存 Skill-env 注入接线集
 	// 在代理启动时通过 RegisterExecWithSkillEnv 稍后进行
 	// SetExecutor（每个会话）可以重新注册沙盒执行程序
@@ -481,6 +487,13 @@ func (r *Registry) SetContextArchiveSessionKey(sessionKey string) {
 // 否定。
 func (r *Registry) SetCallerIsAdmin(v bool) {
 	r.callerIsAdmin = v
+}
+
+// SetUserTurn 记录本轮是否由真实用户驱动。代理循环每回合从
+// isUserTurn(msg.Source) 设置(在 SetChatterUserID 旁边)。memory 工具据此决定
+// 是否持久化:运行时注入回合(goal_context / cron / heartbeat / subagent)不写记忆。
+func (r *Registry) SetUserTurn(v bool) {
+	r.userTurn = v
 }
 
 // SetProjectID 确定注册表工作区的范围。存储对项目的调用

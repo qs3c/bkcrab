@@ -1968,6 +1968,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 每回合喋喋不休的行，而不是 UserSpace 所有者 — 请参阅
 	// 路由规则的Registry.systemFileUserID。
 	a.registry.SetChatterUserID(chatterUID)
+	// 只有真实用户回合才持久化记忆;运行时注入(goal_context/cron/heartbeat/subagent)
+	// 调 memory 工具时跳过——与节拍线锚点门控同口径。
+	a.registry.SetUserTurn(isUserTurn(msg.Source))
 
 	// 转向：标记飞行中的转弯，以便在运行中到达的消息
 	// 缓冲到会话中（在下面的工具迭代之间耗尽）
@@ -2764,6 +2767,9 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	// 每回合喋喋不休的行，而不是 UserSpace 所有者 — 请参阅
 	// 路由规则的Registry.systemFileUserID。
 	a.registry.SetChatterUserID(chatterUID)
+	// 只有真实用户回合才持久化记忆;运行时注入(goal_context/cron/heartbeat/subagent)
+	// 调 memory 工具时跳过——与节拍线锚点门控同口径。
+	a.registry.SetUserTurn(isUserTurn(msg.Source))
 
 	// 与 HandleMessage 相同的 orphan-tool_use 安全网。流媒体路径
 	// 以前缺少这个，所以循环检测（它附加了一个助手

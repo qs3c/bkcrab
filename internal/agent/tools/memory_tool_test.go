@@ -194,6 +194,29 @@ func TestMemoryToolWritesChatterScopedFile(t *testing.T) {
 	}
 }
 
+func TestMemoryToolSkipsPersistOnNonUserTurn(t *testing.T) {
+	r, store := newMemoryToolTestRegistry(t)
+	r.SetUserTurn(false) // 运行时注入回合(goal_context / cron / heartbeat / subagent)
+
+	result := executeMemoryTool(t, r, map[string]any{
+		"target":  "memory",
+		"action":  "add",
+		"content": "should not persist on a runtime turn",
+	})
+	if result.Success {
+		t.Fatalf("result = %+v, want skipped (a non-user turn must not persist memory)", result)
+	}
+	if !strings.Contains(result.Message, "user turn") {
+		t.Fatalf("message = %q, want explanation about user turns", result.Message)
+	}
+	if got := store.file("agent-1", "owner-user", "MEMORY.md"); got != nil {
+		t.Fatalf("MEMORY.md was written on a non-user turn: %q", string(got))
+	}
+	if store.writeCount != 0 {
+		t.Fatalf("writeCount = %d, want 0 on a skipped turn", store.writeCount)
+	}
+}
+
 func TestMemoryToolInvalidTargetReturnsError(t *testing.T) {
 	r, _ := newMemoryToolTestRegistry(t)
 
@@ -210,6 +233,7 @@ func TestMemoryToolUsesFilesystemFallbackWithoutStore(t *testing.T) {
 	systemRoot := t.TempDir()
 	r := NewRegistry(systemRoot, t.TempDir())
 	r.SetOwnerUserID("owner-user")
+	r.SetUserTurn(true)
 
 	result := executeMemoryTool(t, r, map[string]any{
 		"target":  "memory",
@@ -307,6 +331,7 @@ func newMemoryToolTestRegistry(t *testing.T) (*Registry, *fakeSystemFileStore) {
 	t.Helper()
 	r := NewRegistry(t.TempDir(), t.TempDir())
 	r.SetOwnerUserID("owner-user")
+	r.SetUserTurn(true) // 这些测试代表真实用户回合
 	store := newFakeSystemFileStore()
 	r.SetSystemFileStore(store, "agent-1")
 	return r, store

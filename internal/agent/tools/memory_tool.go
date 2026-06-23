@@ -65,6 +65,18 @@ func registerMemory(r *Registry) {
 
 func makeMemoryTool(r *Registry) ToolFunc {
 	return func(ctx context.Context, rawArgs json.RawMessage) (string, error) {
+		// 只有真实用户回合才持久化记忆。运行时注入回合(goal_context 续跑 / cron /
+		// heartbeat / subagent)的 chatter 是合成身份("goal" 等),把工作记到它名下没有
+		// 意义——与节拍线"运行时源不写锚点、不提取"的口径保持一致。跳过时返回一个非
+		// 错误的 Result(Success=false + 说明),让模型知道没落库,又不计入工具失败。
+		if !r.userTurn {
+			out, _ := json.MarshalIndent(memory.Result{
+				Success: false,
+				Message: "memory is only persisted on a real user turn; this automated/runtime turn was skipped",
+			}, "", "  ")
+			return string(out), nil
+		}
+
 		var args memoryToolArgs
 		if err := json.Unmarshal(rawArgs, &args); err != nil {
 			return "", fmt.Errorf("parse args: %w", err)

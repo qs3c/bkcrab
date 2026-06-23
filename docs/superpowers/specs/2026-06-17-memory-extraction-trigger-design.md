@@ -202,6 +202,8 @@ COMMIT  → 异步提取(不阻塞压缩)
 > turn 终点用主键 UPDATE(§4.2)而非"查 running 行":若上次崩溃在某 session 留下僵尸 `running`,按行查会命中两行、可能把僵尸行错标 `done` 混进提取;按主键改不存在认错行的可能。
 
 > **实现已对齐(2026-06-23)**:实现中 goal_context 续跑(以及 cron / heartbeat / subagent)走的是完整 `HandleMessage` 路径,曾一度被无条件写成锚点——与本节意图相悖,会让一次自治 `/goal` 的每个续跑都推进节拍,在合成的 `"goal"` chatter 上反复触发无意义提取。现已在 `beginTurnAnchor` 处用 `isUserTurn(source)`(仅 `bus.SourceUser`,即 `Source==""`)门控:只有真实用户 turn 写锚点(`AppendTurnAnchor`),运行时注入源走普通 `sess.Append`——消息照常进工作集供模型看到,但不锚定、不计入节拍。即白名单从"三个 turn 起点"收紧为"真实用户 turn 起点"。回归测试见 `internal/agent/turn_anchor_gate_test.go`。
+>
+> **两条线统一(2026-06-23)**:记忆有两条写入线——节拍线(本节的后台提取)与交互线(agent 在回合内主动调内置 `memory` 工具)。上面的锚点门控只管住了节拍线;交互线此前没有门,自治 `/goal` 回合里 agent 调 `memory` 仍会写进合成 `"goal"` 档案。现已统一口径:代理循环每回合调 `registry.SetUserTurn(isUserTurn(msg.Source))`,`memory` 工具在非用户回合直接跳过持久化(返回 `Success=false` 的说明,不计工具失败)。该 `userTurn` 标志仿 `callerIsAdmin`——默认 false、故障关闭、每回合显式设置。于是"只有真实用户回合才持久化记忆"对两条线一致成立。回归测试见 `internal/agent/tools/memory_tool_test.go` 的 `TestMemoryToolSkipsPersistOnNonUserTurn`。
 
 ## 10. 落地改动清单(供实现计划参考)
 
