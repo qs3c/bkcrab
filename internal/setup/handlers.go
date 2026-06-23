@@ -1033,14 +1033,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 					if !ok {
 						return
 					}
-					if env.Event.Type == "turn_pending" {
+					turnPendingEvent, done := forwardChatStreamEvent(w, flusher, env)
+					if turnPendingEvent {
 						turnPending = true
 						continue
 					}
-					if env.Event.Type == "done" {
+					if done {
 						return
 					}
-					forwardEvent(w, flusher, env)
 				default:
 					break drain
 				}
@@ -1064,16 +1064,24 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			if env.Event.Type == "turn_pending" {
+			turnPendingEvent, done := forwardChatStreamEvent(w, flusher, env)
+			if turnPendingEvent {
 				turnPending = true
 				continue
 			}
-			forwardEvent(w, flusher, env)
-			if env.Event.Type == "done" {
+			if done {
 				return
 			}
 		}
 	}
+}
+
+func forwardChatStreamEvent(w http.ResponseWriter, flusher http.Flusher, env agent.EventEnvelope) (turnPending bool, done bool) {
+	if env.Event.Type == "turn_pending" {
+		return true, false
+	}
+	forwardEvent(w, flusher, env)
+	return false, env.Event.Type == "done"
 }
 
 // forwardEvent 将一个 EventEnvelope 写入 SSE 响应。

@@ -531,9 +531,8 @@ export function ChatScreen() {
     tools?: string[];
   }>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  // 最近一轮完成时（done 事件）后端汇报的上下文占用。用于在输入框
-  // 页脚渲染「已用上下文百分比」指示器。null = 本会话尚无完成的轮次
-  // （页面刷新后会重置，待下一轮再次填充）。
+  // 后端 usage/done 事件汇报的上下文占用。用于在输入框页脚渲染
+  // 「已用上下文百分比」指示器。null = 本会话尚无用量事件。
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   // 后端正在同步压缩上下文时为 true（compaction active 事件）。驱动消息流
   // 末尾的「正在压缩上下文…」横杠。压缩在轮次开始、产出任何回复前进行，
@@ -769,7 +768,7 @@ export function ChatScreen() {
           max?: number;
           phase?: "thinking" | "running" | "final-delivery" | "done";
           tools?: string[];
-          // done 事件携带的上下文占用
+          // usage/done 事件携带的上下文占用
           usage?: ContextUsage;
           // compaction 事件：true=开始压缩，false=结束
           active?: boolean;
@@ -800,14 +799,24 @@ export function ChatScreen() {
 // 活跃的 POST sendChatStream 正通过 content_delta 渲染此轮次到
               // streamingMsgIdRef。两个订阅监听同一 hub，因此 `content`
               // 事件会同时到达两个处理器；如果 subscribe 先到达，
-              // 会创建重复的临时气泡，此后 POST 回调无法去重。当
-              // POST 处理器正在流式传输时退出——它将在处理该事件时
-              // 自行封口气泡。
+              // 会创建重复的临时气泡。POST 处理器正在流式传输时退出，
+              // 但不要 claim 这个 seq：真正渲染它的是 POST 回调，提前
+              // claim 会让 POST 因去重跳过最终 content，从而丢掉 metadata。
               //
-              // 仅含元数据的事件（无内容）仍需通过，以便强制最终交付
-              // 的追溯标记生效。
+              // 如果 metadata 已经到达，先贴到当前流式气泡上；POST 稍后
+              // 再处理一次也是幂等的。仅含元数据的事件（无内容）仍需
+              // 通过，以便强制最终交付的追溯标记生效。
             if (streamingMsgIdRef.current && content) {
-              claim();
+              if (meta) {
+                const id = streamingMsgIdRef.current;
+                setMessages((prev) => {
+                  const idx = prev.findIndex((m) => m.id === id);
+                  if (idx < 0) return prev;
+                  const updated = [...prev];
+                  updated[idx] = { ...updated[idx], metadata: { ...updated[idx].metadata, ...meta } };
+                  return updated;
+                });
+              }
               break;
             }
             claim();
@@ -873,6 +882,11 @@ export function ChatScreen() {
           case "compaction": {
             claim();
             setCompacting(!!data.data?.active);
+            break;
+          }
+          case "usage": {
+            claim();
+            if (data.data?.usage) setContextUsage(data.data.usage);
             break;
           }
           case "done": {
@@ -1517,9 +1531,13 @@ export function ChatScreen() {
             setCompacting(!!evt.data?.active);
             break;
           }
+          case "usage": {
+            if (evt.data?.usage) setContextUsage(evt.data.usage);
+            break;
+          }
           case "done": {
-            // 轮次结束。后端附带本轮的上下文占用（usage），用于更新页脚的
-            // 「已用上下文百分比」指示器。并行的 /api/chat/subscribe 路径也会
+            // 轮次结束。后端仍附带本轮的上下文占用（usage）作为兜底更新。
+            // 并行的 /api/chat/subscribe 路径也会
             // 收到同一个带 seq 的 done 事件，但上方的 seq 去重确保只处理一次。
             if (evt.data?.usage) setContextUsage(evt.data.usage);
             setCompacting(false);

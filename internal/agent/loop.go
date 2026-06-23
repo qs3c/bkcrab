@@ -703,6 +703,12 @@ func (a *Agent) contextUsageData(last provider.Usage, requestMessages []provider
 	}
 }
 
+func (a *Agent) emitContextUsage(ctx context.Context, usage provider.Usage, requestMessages []provider.Message, toolDefs []provider.Tool) {
+	emitEvent(ctx, ChatEvent{Type: "usage", Data: map[string]any{
+		"usage": a.contextUsageData(usage, requestMessages, toolDefs),
+	}})
+}
+
 // StreamChatToResponse 是provider.Chat 的直接替代品
 // 通过管道将文本块实时传输到聊天事件通道
 // content_delta 事件。 Web UI 订阅者将每个增量附加到
@@ -1821,6 +1827,7 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 		return "Sorry, I couldn't draft the plan — the LLM call failed."
 	}
 	a.meterTokens(ctx, sess.Key(), resp.Usage)
+	a.emitContextUsage(ctx, resp.Usage, messages, toolDefs)
 
 	planMeta := map[string]any{"planMode": true}
 	sess.Append(provider.Message{
@@ -2134,6 +2141,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		if usageInputTokens(resp.Usage) > 0 {
 			lastUsage = resp.Usage
 		}
+		usageMessages := messages
+		if len(requestAppend) > 0 {
+			usageMessages = append(append([]provider.Message(nil), messages...), requestAppend...)
+		}
+		a.emitContextUsage(ctx, resp.Usage, usageMessages, callTools)
 		a.maybeRecoverToolCalls(resp)
 
 		if !resp.HasToolCalls() {
@@ -2418,6 +2430,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		if usageInputTokens(finalResp.Usage) > 0 {
 			lastUsage = finalResp.Usage
 		}
+		a.emitContextUsage(ctx, finalResp.Usage, finalMessages, nil)
 	}
 	if finalContent == "" {
 		// 综合调用本身失败或返回空 - 回退到

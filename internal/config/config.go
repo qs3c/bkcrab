@@ -751,7 +751,7 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Agents.Defaults.Temperature = 0.7
 	}
 	if cfg.Agents.Defaults.MaxToolIterations == 0 {
-		cfg.Agents.Defaults.MaxToolIterations = 20
+		cfg.Agents.Defaults.MaxToolIterations = 200
 	}
 }
 
