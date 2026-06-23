@@ -45,15 +45,25 @@ func (f *fakeMemStore) MutateWorkspaceFile(ctx context.Context, agentID, userID,
 }
 
 type fakeExtractProvider struct {
-	resp         string
+	resp         string // 作为正文返回(回退路径)
+	toolArgs     string // 非空时作为 persist_memory 工具调用的 arguments 返回(工具通道)
 	gotMaxTokens int
 	gotPrompt    string
+	gotTools     []provider.Tool
 }
 
 func (f *fakeExtractProvider) Chat(ctx context.Context, msgs []provider.Message, tools []provider.Tool, model string, maxTokens int, temperature float64) (*provider.Response, error) {
 	f.gotMaxTokens = maxTokens
+	f.gotTools = tools
 	if len(msgs) > 0 {
 		f.gotPrompt = msgs[0].Content
+	}
+	if f.toolArgs != "" {
+		return &provider.Response{ToolCalls: []provider.ToolCall{{
+			ID:       "c1",
+			Type:     "function",
+			Function: provider.FunctionCall{Name: extractMemoryToolName, Arguments: f.toolArgs},
+		}}}, nil
 	}
 	return &provider.Response{Content: f.resp}, nil
 }

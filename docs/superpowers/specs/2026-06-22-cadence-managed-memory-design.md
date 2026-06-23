@@ -99,11 +99,14 @@
   → 构造 Manager(agentID, chatterUID, store, cfg)
   → manager.List(memory) + manager.List(user)            // 完整消毒条目 + Usage
   → 组装 prompt（条目视图 + Usage + turn 材料 + 指示）
-  → prov.Chat(prompt, tools=nil, model, maxTokens=2048, 0.3)
-  → stripJSONFence + 解析 {memory_ops, user_ops}
+  → prov.Chat(prompt, tools=[persist_memory], model, maxTokens=2048, 0.3)
+  → 优先读 Response.ToolCalls 的工具入参;未调工具则回退 stripJSONFence(正文)
+  → 解析 {memory_ops, user_ops}
   → manager.Apply(memory, memoryOps)                      // 原子 + 去重 + 上限 + 扫描
   → manager.Apply(user, userOps)
 ```
+
+> **实现增补(2026-06-23)**:提取从 `tools=nil` 的纯文本 JSON 改为走**工具通道**——offer 一个 `persist_memory` 工具(schema 与 `{memory_ops, user_ops}` 同形,见 `extractionMemoryTool`),让模型把 ops 作为类型化工具入参返回,从独立字段 `Response.ToolCalls` 读取,免去从散文里捞 JSON 那一整类失败。模型未调工具时(便宜 `AutoPersist.Model` / 弱后端可能直接用正文回)**回退**到原 `stripJSONFence(正文)` 解析,保持全后端兼容。两条路解析同一套 `{memory_ops, user_ops}`。当前 provider 层尚无 `tool_choice` 强制,故"模型不调工具"仍可能发生,靠回退 + 现有补偿重置兜底;若实测便宜模型常不调,再补 `tool_choice` 这层硬保证。测试见 `internal/agent/memory_tool_channel_test.go`。
 
 ## 7. 边界与已知限制
 

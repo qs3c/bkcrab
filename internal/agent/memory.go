@@ -135,6 +135,56 @@ const (
 	defaultMaxPromptChars  = 200000
 )
 
+// extractMemoryToolName 是节拍提取走工具通道时使用的工具名。
+const extractMemoryToolName = "persist_memory"
+
+// extractionMemoryTool 是节拍提取的结构化工具:让模型把 add/replace/remove 操作作为
+// 类型化工具入参返回(memory_ops → MEMORY.md, user_ops → USER.md),而非塞在正文 JSON 里——
+// 入参走独立通道、不经正文,免去从散文里捞 JSON 那一整类失败。其 schema 与正文回退路径
+// 解析的 {memory_ops, user_ops} 同形,因此工具通道与回退共用同一套下游逻辑。
+func extractionMemoryTool() provider.Tool {
+	op := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"action":   map[string]any{"type": "string", "enum": []string{"add", "replace", "remove"}},
+			"old_text": map[string]any{"type": "string", "description": "Exact verbatim text of the entry to replace or remove."},
+			"content":  map[string]any{"type": "string", "description": "Entry text for add, or new text for replace."},
+		},
+		"required": []string{"action"},
+	}
+	return provider.Tool{
+		Type: "function",
+		Function: provider.ToolFunction{
+			Name:        extractMemoryToolName,
+			Description: "Persist long-term memory: emit add/replace/remove operations for MEMORY.md (memory_ops) and USER.md (user_ops). Pass an empty array for a file that needs no change.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"memory_ops": map[string]any{"type": "array", "items": op, "description": "Operations for MEMORY.md (long-term facts)."},
+					"user_ops":   map[string]any{"type": "array", "items": op, "description": "Operations for USER.md (chatter profile)."},
+				},
+			},
+		},
+	}
+}
+
+// firstToolCall 返回 resp 中第一个名为 name 的工具调用;名称不匹配但确实调了某个工具时
+// (我们只 offer 了一个工具)退而用第一个。没有任何工具调用返回 (_, false)。
+func firstToolCall(resp *provider.Response, name string) (provider.ToolCall, bool) {
+	if resp == nil {
+		return provider.ToolCall{}, false
+	}
+	for _, c := range resp.ToolCalls {
+		if c.Function.Name == name {
+			return c, true
+		}
+	}
+	if len(resp.ToolCalls) > 0 {
+		return resp.ToolCalls[0], true
+	}
+	return provider.ToolCall{}, false
+}
+
 // AutoPersistMemory uses the LLM to extract add/replace/remove operations for
 // MEMORY.md and USER.md, then applies them through the managed memory engine.
 // perMessageChars / maxPromptChars 是提取输入的字符(rune)预算;<=0 时回退到默认值。
@@ -198,7 +248,7 @@ Current MEMORY.md (usage %s):
 Recent conversation:
 %s
 
-%sOutput JSON only (no markdown fences):
+%sCall the persist_memory tool with your operations (memory_ops for MEMORY.md, user_ops for USER.md). Pass an empty array for a file that needs no change. The tool input shape is:
 {"memory_ops":[{"action":"add|replace|remove","old_text":"...","content":"..."}],"user_ops":[{"action":"add|replace|remove","old_text":"...","content":"..."}]}`,
 		userList.Usage,
 		formatEntriesForExtract(userList),
@@ -210,7 +260,7 @@ Recent conversation:
 
 	resp, err := prov.Chat(ctx, []provider.Message{
 		{Role: "user", Content: extractPrompt},
-	}, nil, model, 2048, 0.3)
+	}, []provider.Tool{extractionMemoryTool()}, model, 2048, 0.3)
 	if err != nil {
 		// Warn（不是 Debug）——这里的隐形失败正是那种事后调试起来
 		// 很痛苦的"我打开了开关但什么也没持久化"的体验。
@@ -227,14 +277,18 @@ Recent conversation:
 		MemoryOps []extractedOp `json:"memory_ops"`
 		UserOps   []extractedOp `json:"user_ops"`
 	}
-	// 在解析之前去除 markdown 代码围栏——许多调优过的模型
-	// （Sonnet 4.x, Opus, …）会反射性地将结构化输出包装在
-	// ```json … ``` 中，即使提示词要求"没有 markdown 围栏"。
-	cleaned := stripJSONFence(resp.Content)
-	if err := json.Unmarshal([]byte(cleaned), &parsed); err != nil {
-		// 与上面相同的 Warn 升级——这里静默跳过隐藏了实际环境中
-		// "Sonnet 返回了包装的 JSON，解析失败"的问题。
-		preview := cleaned
+	// 优先从工具通道读结构化入参:模型走 persist_memory 工具时,ops 作为类型化的工具
+	// 入参从独立字段返回、不经正文,免去从散文里捞 JSON。未调工具(便宜模型/弱后端可能
+	// 直接用正文回)则回退解析正文——沿用 stripJSONFence 剥模型反射性包裹的 ```json 围栏。
+	rawOps := ""
+	if call, ok := firstToolCall(resp, extractMemoryToolName); ok {
+		rawOps = call.Function.Arguments
+	} else {
+		rawOps = stripJSONFence(resp.Content)
+	}
+	if err := json.Unmarshal([]byte(rawOps), &parsed); err != nil {
+		// 与上面相同的 Warn 升级——静默跳过会隐藏"模型返回了不合规 JSON,解析失败"。
+		preview := rawOps
 		if len(preview) > 200 {
 			preview = preview[:200] + "…"
 		}
