@@ -656,6 +656,12 @@ func (a *Agent) meterTokens(ctx context.Context, sessionKey string, u provider.U
 		return
 	}
 	prov, mdl := provider.SplitProviderModel(a.model)
+	// token 记账是写后即忘的副作用,必须落库:LLM 调用已经发生并产生费用,即便请求
+	// 已取消也要记。流式回合的最终回复在后台 goroutine 里计费(见 HandleMessageStream),
+	// 届时 HTTP 请求 ctx 已随流结束被取消,否则这次回复的 token 会丢账。脱离取消、
+	// 保留 ctx 上的值,给一个有界超时防止 DB 挂死。
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
 	err := a.meter.RecordTokens(ctx, a.ownerUserID, a.agentID, sessionKey, prov, mdl,
 		usage.Tokens{
 			Input:         u.InputTokens,
@@ -2669,7 +2675,13 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 	if a.dataStore == nil || anchor == nil {
 		return
 	}
-	if err := a.dataStore.FinishTurn(ctx, a.ownerUserID, a.name, anchor.sessionKey, anchor.seq); err != nil {
+	// 流式回合的收尾在后台 goroutine 里执行,届时 HTTP 请求 ctx 已随流结束被取消
+	// (与下方异步提取处同一理由)。翻 done 与认领批次都是必须落库的记账:若随请求
+	// 取消而失败,锚点会永远卡在 turn_status='running',提取节拍也认领不到这一批。
+	// 脱离取消、保留 ctx 上的值,给一个有界超时防止 DB 挂死。
+	dbCtx, cancelDB := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancelDB()
+	if err := a.dataStore.FinishTurn(dbCtx, a.ownerUserID, a.name, anchor.sessionKey, anchor.seq); err != nil {
 		slog.Warn("finish turn failed", "agent", a.name, "error", err)
 		// 锚点没翻成 done 只是本 turn 不计入提取,不阻塞主流程。
 	}
@@ -2681,7 +2693,7 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 		return
 	}
 	n := a.memoryCfg.AutoPersist.EveryNTurns
-	extractionID, refs, err := a.dataStore.ClaimCadenceBatch(ctx, a.name, chatterUID, n, 3*n)
+	extractionID, refs, err := a.dataStore.ClaimCadenceBatch(dbCtx, a.name, chatterUID, n, 3*n)
 	if err != nil {
 		slog.Warn("auto-persist: claim failed", "agent", a.name, "chatter", chatterUID, "error", err)
 		return

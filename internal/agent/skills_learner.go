@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/qs3c/bkclaw/internal/provider"
 )
@@ -50,6 +51,13 @@ func (sl *SkillsLearner) MaybeExtract(ctx context.Context, messages []provider.M
 	if toolCallCount < sl.minToolCalls {
 		return nil
 	}
+
+	// MaybeExtract 在回合结束后的后台 goroutine 里运行;流式路径下 HTTP 请求 ctx
+	// 已随流结束被取消。技能提取要发一次完整的 LLM 调用(数秒),挂在已取消的 ctx 上
+	// 必然失败——等于这个功能在流式路径上完全提炼不到任何技能。脱离取消、保留 ctx
+	// 上的值,给一个有界超时防 LLM 挂死(与记忆自动提取同一处理)。
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+	defer cancel()
 
 	skill, err := sl.extractSkill(ctx, messages)
 	if err != nil {
