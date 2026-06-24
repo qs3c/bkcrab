@@ -803,6 +803,8 @@ function parseContextUsage(value: unknown): ContextUsage | null {
   const usedTokens = raw.usedTokens;
   const contextWindow = raw.contextWindow;
   const triggerTokens = raw.triggerTokens;
+  const budgetTokensRaw = raw.budgetTokens;
+  const sourceRaw = raw.source;
   if (
     typeof usedTokens !== "number" ||
     typeof contextWindow !== "number" ||
@@ -813,7 +815,12 @@ function parseContextUsage(value: unknown): ContextUsage | null {
   ) {
     return null;
   }
-  return { usedTokens, contextWindow, triggerTokens };
+  const budgetTokens =
+    typeof budgetTokensRaw === "number" && Number.isFinite(budgetTokensRaw)
+      ? budgetTokensRaw
+      : usedTokens;
+  const source = sourceRaw === "estimate" || sourceRaw === "provider" ? sourceRaw : "provider";
+  return { usedTokens, contextWindow, triggerTokens, budgetTokens, source };
 }
 
 export async function getChatHistoryWithCursor(agentId: string, sessionId: string): Promise<ChatHistoryResult> {
@@ -1078,6 +1085,8 @@ export interface ContextUsage {
   usedTokens: number;
   contextWindow: number;
   triggerTokens: number;
+  budgetTokens?: number;
+  source?: "provider" | "estimate";
 }
 
 export async function sendChatStream(

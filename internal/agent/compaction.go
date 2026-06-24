@@ -72,13 +72,13 @@ type CompactOptions struct {
 	// summarizeWithRetries falls back to context.Background() when this is unset
 	// (deterministic-output tests, emergency mode which never summarizes).
 	Ctx context.Context
-	// OnTriggered, when set, is called once at the start of the expensive
-	// (triggered) compaction path — i.e. proactive mode over the trigger
-	// threshold, or any manual compaction — but never on the no-op sanitize
-	// path taken by ordinary under-threshold turns. Callers use it to surface a
-	// "compacting context…" indicator for the synchronous wait that follows
-	// (pruning + the summarizer LLM call). It runs synchronously on the
-	// compaction goroutine, so keep it cheap and non-blocking.
+	// OnTriggered, when set, is called once at the start of an actual
+	// compaction path: proactive mode over the trigger threshold, manual
+	// compaction, or emergency compaction after a context-limit error. It is
+	// never called on the no-op sanitize path taken by ordinary under-threshold
+	// turns. Callers use it to surface a "compacting context…" indicator for
+	// the synchronous wait that follows. It runs synchronously on the compaction
+	// goroutine, so keep it cheap and non-blocking.
 	OnTriggered func()
 }
 
@@ -150,6 +150,9 @@ func CompactMessagesWithOptions(messages []provider.Message, opts CompactOptions
 	case CompactModeManual:
 		return compactMessagesTriggered(messages, opts, tokens)
 	case CompactModeEmergency:
+		if opts.OnTriggered != nil {
+			opts.OnTriggered()
+		}
 		return emergencyCompactMessages(messages, opts, tokens), nil
 	default:
 		if tokens < compactTriggerLimit(opts) {
@@ -177,6 +180,8 @@ func isContextLimitError(err error) bool {
 		"too many tokens in request",
 		"input length exceeds context window",
 		"request too large",
+		"eof",
+		"server closed idle connection",
 	} {
 		if strings.Contains(msg, marker) {
 			return true

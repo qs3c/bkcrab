@@ -43,6 +43,7 @@ type Agent struct {
 	model                string
 	maxTokens            int
 	contextWindow        int
+	usageCalibration     contextUsageCalibrator
 	providerConfigs      map[string]config.ProviderConfig
 	temperature          float64
 	maxToolIterations    int
@@ -687,20 +688,39 @@ func usageInputTokens(u provider.Usage) int {
 // budget and auto-compaction threshold without re-deriving them (and without
 // drifting if the constants change).
 func (a *Agent) contextUsageData(last provider.Usage, requestMessages []provider.Message, toolDefs []provider.Tool) map[string]any {
+	estimated := EstimateRequestTokens(requestMessages, toolDefs)
+	key := a.contextUsageCalibrationKey()
+	budgetTokens := a.usageCalibration.estimate(key, estimated)
 	used := usageInputTokens(last)
+	source := contextUsageSourceProvider
 	if used <= 0 {
-		used = EstimateRequestTokens(requestMessages, toolDefs)
+		used = budgetTokens
+		source = contextUsageSourceEstimate
 	}
 	opts := normalizeCompactOptions(CompactOptions{
 		Mode:            CompactModeProactive,
 		ContextWindow:   a.contextWindow,
 		MaxOutputTokens: a.maxTokens,
 	})
-	return map[string]any{
+	payload := map[string]any{
 		"usedTokens":    used,
+		"source":        source,
+		"budgetTokens":  budgetTokens,
 		"contextWindow": opts.ContextWindow,
 		"triggerTokens": compactTriggerLimit(opts),
 	}
+	if actual := usageInputTokens(last); actual > 0 {
+		a.usageCalibration.observe(key, estimated, actual)
+	}
+	return payload
+}
+
+func (a *Agent) contextUsageCalibrationKey() string {
+	prov, mdl := provider.SplitProviderModel(a.model)
+	if prov == "" {
+		return mdl
+	}
+	return prov + "/" + mdl
 }
 
 func (a *Agent) ContextUsageBaseline() map[string]any {
@@ -845,13 +865,12 @@ func (a *Agent) compactionOptions(mode CompactMode, overhead []provider.Message,
 	}
 }
 
-// compactWithProgress runs proactive compaction and brackets the expensive
-// (triggered) path with "compaction" chat events, so the web UI can show a
-// "compacting context…" divider during the synchronous wait it imposes at the
-// top of a turn. The OnTriggered hook fires only when compaction actually does
-// work — over the trigger threshold — so the indicator never flashes on
-// ordinary under-threshold turns. The trailing event is emitted only when the
-// leading one was, keeping start/end balanced even if compaction errored.
+// compactWithProgress brackets any triggered compaction path with "compaction"
+// chat events, so the web UI can show a "compacting context…" divider during
+// the synchronous wait. The OnTriggered hook fires only when compaction
+// actually starts, so the indicator never flashes on ordinary under-threshold
+// turns. The trailing event is emitted only when the leading one was, keeping
+// start/end balanced even if compaction errored.
 func (a *Agent) compactWithProgress(ctx context.Context, sessionMsgs []provider.Message, opts CompactOptions) (*CompactResult, error) {
 	// Thread the turn's ctx into the summarizer LLM call. The gateway already
 	// detaches this ctx from the request and caps it at agentTurnTimeout, so the
@@ -867,12 +886,15 @@ func (a *Agent) compactWithProgress(ctx context.Context, sessionMsgs []provider.
 	res, err := CompactMessagesWithOptions(sessionMsgs, opts)
 	if triggered {
 		emitEvent(ctx, ChatEvent{Type: "compaction", Data: map[string]any{"active": false}})
+		if res != nil {
+			a.emitContextUsage(ctx, provider.Usage{}, compactionRequestMessages(res.Messages, opts.OverheadMessages), opts.ToolDefs)
+		}
 	}
 	return res, err
 }
 
-func (a *Agent) emergencyCompactRequestMessages(sess *session.Session, overhead []provider.Message, toolDefs []provider.Tool) ([]provider.Message, bool) {
-	result, err := CompactMessagesWithOptions(sess.GetMessages(), a.compactionOptions(CompactModeEmergency, overhead, toolDefs, sess.SessionKey()))
+func (a *Agent) emergencyCompactRequestMessages(ctx context.Context, sess *session.Session, overhead []provider.Message, toolDefs []provider.Tool) ([]provider.Message, bool) {
+	result, err := a.compactWithProgress(ctx, sess.GetMessages(), a.compactionOptions(CompactModeEmergency, overhead, toolDefs, sess.SessionKey()))
 	if err != nil {
 		slog.Warn("emergency compaction error", "agent", a.name, "error", err)
 		return nil, false
@@ -891,6 +913,7 @@ func (a *Agent) emergencyCompactRequestMessages(sess *session.Session, overhead 
 }
 
 func (a *Agent) callLLMWithEmergencyRetry(
+	ctx context.Context,
 	sess *session.Session,
 	overhead []provider.Message,
 	toolDefs []provider.Tool,
@@ -904,7 +927,7 @@ func (a *Agent) callLLMWithEmergencyRetry(
 		return resp, messages, false, err
 	}
 
-	rebuilt, ok := a.emergencyCompactRequestMessages(sess, overhead, toolDefs)
+	rebuilt, ok := a.emergencyCompactRequestMessages(ctx, sess, overhead, toolDefs)
 	if !ok {
 		return resp, messages, false, err
 	}
@@ -2116,7 +2139,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				),
 			})
 		}
-		resp, updatedMessages, retried, err := a.callLLMWithEmergencyRetry(sess, overheadMessages, toolDefs, messages, callTools, emergencyRetried, func(request []provider.Message, tools []provider.Tool) (*provider.Response, error) {
+		resp, updatedMessages, retried, err := a.callLLMWithEmergencyRetry(ctx, sess, overheadMessages, toolDefs, messages, callTools, emergencyRetried, func(request []provider.Message, tools []provider.Tool) (*provider.Response, error) {
 			// PII 清理：在发送给 LLM 之前编辑敏感数据
 			llmMessages := request
 			if a.piiScrubEnabled {
@@ -2815,7 +2838,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		hcBefore := &HookContext{AgentName: a.name, Point: BeforeModelCall, Messages: messages, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID}
 		a.hooks.Run(ctx, hcBefore)
 
-		resp, updatedMessages, retried, err := a.callLLMWithEmergencyRetry(sess, overheadMessages, toolDefs, messages, toolDefs, emergencyRetried, func(request []provider.Message, tools []provider.Tool) (*provider.Response, error) {
+		resp, updatedMessages, retried, err := a.callLLMWithEmergencyRetry(ctx, sess, overheadMessages, toolDefs, messages, toolDefs, emergencyRetried, func(request []provider.Message, tools []provider.Tool) (*provider.Response, error) {
 			dumpLLMRequest(a.name, a.model, request, tools)
 			return a.provider.Chat(ctx, request, tools, a.model, a.maxTokens, a.temperature)
 		})

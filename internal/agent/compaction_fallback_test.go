@@ -42,6 +42,9 @@ func TestIsContextLimitError(t *testing.T) {
 		{name: "too many request tokens", err: errors.New("too many tokens in request"), want: true},
 		{name: "input exceeds window", err: errors.New("input length exceeds context window"), want: true},
 		{name: "request too large", err: errors.New("request too large"), want: true},
+		{name: "transport eof", err: errors.New("send request: EOF"), want: true},
+		{name: "stream unexpected eof", err: errors.New("read stream: unexpected EOF"), want: true},
+		{name: "server closed idle connection", err: errors.New("send request: http: server closed idle connection"), want: true},
 		{name: "rate limit", err: errors.New("rate limit exceeded"), want: false},
 		{name: "rate limit tokens per minute", err: errors.New("rate limit: too many tokens per minute"), want: false},
 	}
@@ -186,52 +189,64 @@ func TestEmergencyCompactionPrunesShortHistory(t *testing.T) {
 }
 
 func TestEmergencyRetryRetriesWithinSameIteration(t *testing.T) {
-	mgr := session.NewManager(t.TempDir())
-	sess := mgr.Get("test", "", "chat", "")
-	sess.ReplaceMessages([]provider.Message{
-		{Role: "user", Content: "OLD_USER_SHOULD_DROP", Origin: provider.OriginUser},
-		{Role: "assistant", Content: "old assistant should drop"},
-		{Role: "user", Content: "KEEP_RECENT_USER_TURN", Origin: provider.OriginUser},
-	})
+	cases := []struct {
+		name     string
+		firstErr error
+	}{
+		{name: "explicit token error", firstErr: errors.New("too many tokens")},
+		{name: "transport eof", firstErr: errors.New("send request: EOF")},
+	}
 
-	a := &Agent{
-		homePath:      t.TempDir(),
-		model:         "fake-model",
-		contextWindow: 120,
-		maxTokens:     20,
-	}
-	overhead := []provider.Message{{Role: "system", Content: "system prompt"}}
-	messages := compactionRequestMessages(sess.GetMessages(), overhead)
-	attempts := 0
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := session.NewManager(t.TempDir())
+			sess := mgr.Get("test", "", "chat", "")
+			sess.ReplaceMessages([]provider.Message{
+				{Role: "user", Content: "OLD_USER_SHOULD_DROP", Origin: provider.OriginUser},
+				{Role: "assistant", Content: "old assistant should drop"},
+				{Role: "user", Content: "KEEP_RECENT_USER_TURN", Origin: provider.OriginUser},
+			})
 
-	resp, rebuilt, retried, err := a.callLLMWithEmergencyRetry(sess, overhead, nil, messages, nil, false, func(request []provider.Message, tools []provider.Tool) (*provider.Response, error) {
-		attempts++
-		if attempts == 1 {
-			return nil, errors.New("too many tokens")
-		}
-		joined := messagesText(request)
-		if !strings.Contains(joined, "[Reactive Context Summary]") {
-			t.Fatalf("retry request missing emergency summary:\n%s", joined)
-		}
-		if !strings.Contains(joined, "KEEP_RECENT_USER_TURN") {
-			t.Fatalf("retry request dropped recent user turn:\n%s", joined)
-		}
-		return &provider.Response{Content: "ok"}, nil
-	})
-	if err != nil {
-		t.Fatalf("retry call returned error: %v", err)
-	}
-	if resp == nil || resp.Content != "ok" {
-		t.Fatalf("response = %+v, want ok content", resp)
-	}
-	if attempts != 2 {
-		t.Fatalf("attempts = %d, want original call plus one retry", attempts)
-	}
-	if !retried {
-		t.Fatal("expected emergency retry to be reported")
-	}
-	if !strings.Contains(messagesText(rebuilt), "[Reactive Context Summary]") {
-		t.Fatalf("rebuilt canonical messages missing reactive summary:\n%s", messagesText(rebuilt))
+			a := &Agent{
+				homePath:      t.TempDir(),
+				model:         "fake-model",
+				contextWindow: 120,
+				maxTokens:     20,
+			}
+			overhead := []provider.Message{{Role: "system", Content: "system prompt"}}
+			messages := compactionRequestMessages(sess.GetMessages(), overhead)
+			attempts := 0
+
+			resp, rebuilt, retried, err := a.callLLMWithEmergencyRetry(context.Background(), sess, overhead, nil, messages, nil, false, func(request []provider.Message, tools []provider.Tool) (*provider.Response, error) {
+				attempts++
+				if attempts == 1 {
+					return nil, tc.firstErr
+				}
+				joined := messagesText(request)
+				if !strings.Contains(joined, "[Reactive Context Summary]") {
+					t.Fatalf("retry request missing emergency summary:\n%s", joined)
+				}
+				if !strings.Contains(joined, "KEEP_RECENT_USER_TURN") {
+					t.Fatalf("retry request dropped recent user turn:\n%s", joined)
+				}
+				return &provider.Response{Content: "ok"}, nil
+			})
+			if err != nil {
+				t.Fatalf("retry call returned error: %v", err)
+			}
+			if resp == nil || resp.Content != "ok" {
+				t.Fatalf("response = %+v, want ok content", resp)
+			}
+			if attempts != 2 {
+				t.Fatalf("attempts = %d, want original call plus one retry", attempts)
+			}
+			if !retried {
+				t.Fatal("expected emergency retry to be reported")
+			}
+			if !strings.Contains(messagesText(rebuilt), "[Reactive Context Summary]") {
+				t.Fatalf("rebuilt canonical messages missing reactive summary:\n%s", messagesText(rebuilt))
+			}
+		})
 	}
 }
 
