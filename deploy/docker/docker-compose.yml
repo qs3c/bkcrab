@@ -7,6 +7,12 @@ services:
       dockerfile: Dockerfile
     image: bkclaw/bkclaw:local
     restart: unless-stopped
+    # Forward DNS to public resolvers instead of Docker Desktop's embedded
+    # resolver, which intermittently returns "server misbehaving" (SERVFAIL)
+    # under bursty lookups and breaks LLM/provider and web_fetch requests.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     ports:
       - "${BKCLAW_PORT:-18953}:18953"
     volumes:
