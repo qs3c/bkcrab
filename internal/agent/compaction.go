@@ -177,6 +177,8 @@ func isContextLimitError(err error) bool {
 		"too many tokens in request",
 		"input length exceeds context window",
 		"request too large",
+		"eof",
+		"server closed idle connection",
 	} {
 		if strings.Contains(msg, marker) {
 			return true
