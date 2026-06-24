@@ -516,7 +516,26 @@ export function ChatScreen() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
+  // 活跃会话集合：每个有进行中轮次的 sessionId 一个条目。此前是单个
+  // `sending` 布尔，但整个 agent 只有一个 ChatScreen 实例（见
+  // layout-client），单标志会跨会话误锁——A 流式进行时切到/新建 B 也无法
+  // 发送。改为按会话隔离后，`sending`（下方派生）只反映当前显示的会话。
+  // activeSessionsRef 是供异步流回调读取最新值的镜像，避免闭包陈旧。
+  const [activeSessions, setActiveSessions] = useState<Set<string>>(() => new Set());
+  const activeSessionsRef = useRef<Set<string>>(activeSessions);
+  const markActive = useCallback((sid: string, on: boolean) => {
+    setActiveSessions((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(sid);
+      else next.delete(sid);
+      activeSessionsRef.current = next;
+      return next;
+    });
+  }, []);
+  // 当前显示会话是否有进行中轮次。所有现有 UI（发送/停止按钮、输入框禁用
+  // 态、TodoPanel active、isLiveTurn、停止/转向逻辑等）继续读它，因此自动
+  // 随显示会话切换，无需逐处改动。
+  const sending = activeSessions.has(sessionId);
   // 单次组合器模式：下一次常规发送将生成工具禁用的计划，然后重置，
   // 以便后续轮次可以执行它。
   const [planMode, setPlanMode] = useState(false);
@@ -591,9 +610,16 @@ export function ChatScreen() {
   // 守卫不会在 POST 端触发，导致产生重复气泡。此 ref 在
   // startNewGroup 和 tool_call 将气泡卷入工具组时重置为 null。
   const streamingMsgIdRef = useRef<string | null>(null);
-  // 正在进行中的聊天流的 AbortController，以便停止按钮可以同时取消
-  // 上传和 SSE 连接。每次新轮次时重置。
-  const abortRef = useRef<AbortController | null>(null);
+  // 每个进行中轮次的 AbortController，按 sessionId 存储。使停止按钮只取消
+  // *当前显示*会话的轮次，且多个会话可各自拥有独立的可中止流。
+  const abortsRef = useRef<Map<string, AbortController>>(new Map());
+  // currentSessionIdRef 始终持有当前显示的 sessionId。后台轮次（用户中途
+  // 切到别的会话）的 POST 流回调据此判断自己是否仍是前台会话——不是则停止
+  // 写入共享视图状态，避免污染用户正在看的另一个会话。
+  const currentSessionIdRef = useRef(sessionId);
+  useEffect(() => {
+    currentSessionIdRef.current = sessionId;
+  }, [sessionId]);
 
   // 控制 EventSource 效果的门：保存其历史已被获取且 subscribeSinceRef
   // 现在准确的 sessionId。没有这个门，SSE 效果（声明更早因此先运行）
@@ -1186,8 +1212,11 @@ export function ChatScreen() {
     // force 绕过进行中保护；由 steer 409 回退使用（服务端确认无活跃轮次）。
     const composerText = (overrideText ?? input).trim();
     const text = composerText;
+    // sid 固定为本次发送的会话。用于按会话标记活跃/中止，并让后台轮次
+    // （用户中途切走）的流回调据此停止写入前台视图。
+    const sid = sessionId;
     // 允许仅发送附件（无文本），但至少需要一个。
-    if ((!text && attachments.length === 0) || !selectedAgent || (sending && !force)) return;
+    if ((!text && attachments.length === 0) || !selectedAgent || (activeSessionsRef.current.has(sid) && !force)) return;
 
     // `/project/<pid>` 是侧边栏放置我们的懒创建标记。在此捕获以便
     // 搭载到首次聊天请求体；会话行存在后，project_id 在行上，
@@ -1283,8 +1312,18 @@ export function ChatScreen() {
         attachments: userBubbleAttachments.length > 0 ? userBubbleAttachments : undefined,
       },
     ]);
-    setSending(true);
-    abortRef.current = new AbortController();
+    markActive(sid, true);
+    const abortController = new AbortController();
+    abortsRef.current.set(sid, abortController);
+    // wentBackground：一旦用户在本轮流式期间切到别的会话，本次 POST 回调即
+    // 停止写入共享视图状态（轮次仍在服务端继续并持久化；用户切回时靠历史
+    // 重载 + SSE 重放恢复，与现有"刷新页面恢复轮次"的路径一致）。一旦置位
+    // 即保持，不在切回时让 POST 回调重新接管渲染。
+    let wentBackground = false;
+    const isForeground = () => {
+      if (currentSessionIdRef.current !== sid) wentBackground = true;
+      return !wentBackground;
+    };
 
     // 在轮次前快照工作区，以便在 `done` 时对比并附加新创建/修改的文件
     // （PDF、图片等）到最终回复。即发即弃；如果快照失败，我们只是不在此
@@ -1321,6 +1360,10 @@ export function ChatScreen() {
         overrideText === undefined && planMode ? { planMode: true } : undefined;
       if (requestParams) setPlanMode(false);
       await sendChatStream(selectedAgent, sessionId, fullText, (evt: ChatStreamEvent) => {
+        // 后台轮次（用户已切到别的会话）不再写入前台视图，也不触碰本会话的
+        // 去重游标 maxSeqRef / 流式气泡 ref——这些都属于当前显示的会话。
+        // 服务端继续持久化事件；用户切回时由历史重载 + SSE 重放渲染。
+        if (!isForeground()) return;
         // 去重 /api/chat/subscribe SSE，两者服务端订阅同一 chat-events hub。
         // 先到达的路径渲染；另一方跳过。seq < 0 表示此事件持久化失败——
         // 在此回退并接受可能的双重渲染，而非完全丢弃事件。
@@ -1551,7 +1594,7 @@ export function ChatScreen() {
             break;
           }
         }
-      }, abortRef.current.signal, imageDataUrls, projectIdHint, requestParams);
+      }, abortController.signal, imageDataUrls, projectIdHint, requestParams);
       // 将工作区与轮次前快照对比，以便 *exec* 产出的文件（如保存 PDF 的
       // Python 脚本）也能显示——`turnFiles` 仅捕获具有相对、非身份路径的
       // write_file 工具调用，大多数真实流程都被遗漏。按路径合并两个来源。
@@ -1580,7 +1623,7 @@ export function ChatScreen() {
           attached: allFiles.length,
         });
       }
-      if (allFiles.length > 0) {
+      if (allFiles.length > 0 && isForeground()) {
         setMessages((prev) => {
           if (prev.length === 0) return prev;
           const updated = [...prev];
@@ -1620,7 +1663,9 @@ export function ChatScreen() {
       // 竞争并浮出水面）。两者在此看起来与用户按下停止相同，因此我们
       // 在当前轮次已有至少一条助手回复时额外抑制提示——用户已获得答案，
       // 不应再附加令人困惑的失败气泡。
-      if (isAbort) {
+      if (!isForeground()) {
+        // 后台轮次出错/中止：不向用户当前正在看的另一个会话注入停止/错误气泡。
+      } else if (isAbort) {
 // 解决当前工具组中所有进行中的工具，使它们停止旋转。
           // 服务端的 padOrphanToolResults 会写入匹配记录；此处只是保持
           // UI 一致直到下一次历史获取覆盖它。
@@ -1664,21 +1709,23 @@ export function ChatScreen() {
         });
       }
     } finally {
-      abortRef.current = null;
-      setSending(false);
-      // 双重保险：子智能体的 done 事件在正常路径上清除此状态，但
-      // 如果网络抖动丢失了该事件，我们不希望过时的"第 5/20 次迭代"
-      // 停留在已完成的轮次下。
-      setSubagentProgress(null);
-      // 同理兜底压缩横杠：轮次以任何方式结束（完成/出错/中止）都收起，
-      // 防止丢失 compaction(active=false) 事件时横杠卡住。
-      setCompacting(false);
-      textareaRef.current?.focus();
+      abortsRef.current.delete(sid);
+      markActive(sid, false);
+      // 前台 UI 清理只在本轮属于当前显示会话时执行；后台轮次结束不应抹掉
+      // 用户正在看的另一个会话的子智能体进度/压缩横杠/输入焦点。
+      // 双重保险：子智能体的 done 事件在正常路径上清除这些状态，但若网络
+      // 抖动丢失该事件，不希望过时的"第 5/20 次迭代"或压缩横杠卡住。
+      if (isForeground()) {
+        setSubagentProgress(null);
+        setCompacting(false);
+        textareaRef.current?.focus();
+      }
     }
-  }, [input, attachments, selectedAgent, sessionId, sending, loadSessions, pathname, router, urlProjectId, planMode]);
+  }, [input, attachments, selectedAgent, sessionId, loadSessions, pathname, router, urlProjectId, planMode, markActive]);
 
   const handleStop = useCallback(() => {
-    abortRef.current?.abort();
+    // 停止当前显示会话的进行中轮次（后台会话的轮次保持运行）。
+    abortsRef.current.get(currentSessionIdRef.current)?.abort();
   }, []);
 
   // handleSteer 在轮次流式传输期间触发：将消息缓冲到正在进行的轮次中
