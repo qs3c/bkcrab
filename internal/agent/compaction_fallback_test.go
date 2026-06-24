@@ -217,7 +217,7 @@ func TestEmergencyRetryRetriesWithinSameIteration(t *testing.T) {
 			messages := compactionRequestMessages(sess.GetMessages(), overhead)
 			attempts := 0
 
-			resp, rebuilt, retried, err := a.callLLMWithEmergencyRetry(sess, overhead, nil, messages, nil, false, func(request []provider.Message, tools []provider.Tool) (*provider.Response, error) {
+			resp, rebuilt, retried, err := a.callLLMWithEmergencyRetry(context.Background(), sess, overhead, nil, messages, nil, false, func(request []provider.Message, tools []provider.Tool) (*provider.Response, error) {
 				attempts++
 				if attempts == 1 {
 					return nil, tc.firstErr

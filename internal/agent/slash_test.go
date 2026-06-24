@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -61,6 +62,59 @@ func TestSlashCompactUsesManualFocus(t *testing.T) {
 	}
 	if got := len(sess.GetMessages()); got >= 24 {
 		t.Fatalf("session messages were not compacted, got %d", got)
+	}
+}
+
+func TestSlashCompactEmitsProgressEvents(t *testing.T) {
+	sessions := session.NewManager(t.TempDir())
+	msg := bus.InboundMessage{
+		Channel: "web",
+		ChatID:  "chat",
+		UserID:  "owner",
+		Text:    "/compact",
+	}
+	sess := sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
+	for i := 0; i < 12; i++ {
+		sess.Append(provider.Message{Role: "user", Content: "user turn", Origin: provider.OriginUser})
+		sess.Append(provider.Message{Role: "assistant", Content: "assistant turn", Origin: provider.OriginUser})
+	}
+
+	a := &Agent{
+		provider:      &fakeSummarizer{},
+		sessions:      sessions,
+		model:         "fake-model",
+		maxTokens:     1000,
+		contextWindow: 1000000,
+		homePath:      t.TempDir(),
+		ownerUserID:   "owner",
+	}
+
+	events := make(chan ChatEvent, 4)
+	ctx := ContextWithChatEvents(context.Background(), events)
+
+	result := a.handleSlashCommand(ctx, msg)
+	if !result.handled {
+		t.Fatal("/compact should be handled")
+	}
+
+	var got []bool
+	for {
+		select {
+		case evt := <-events:
+			if evt.Type == "compaction" {
+				active, ok := evt.Data["active"].(bool)
+				if !ok {
+					t.Fatalf("compaction event active = %#v, want bool", evt.Data["active"])
+				}
+				got = append(got, active)
+			}
+		default:
+			want := []bool{true, false}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("compaction active events = %v, want %v", got, want)
+			}
+			return
+		}
 	}
 }
 

@@ -255,29 +255,13 @@ func (a *Agent) slashCompact(ctx context.Context, msg bus.InboundMessage, focus 
 		return slashResult{handled: true, reply: "No messages to compact."}
 	}
 
-	opts := CompactOptions{
-		Mode:              CompactModeManual,
-		Workspace:         a.homePath,
-		Provider:          a.provider,
-		Model:             a.model,
-		ContextWindow:     a.contextWindow,
-		MaxOutputTokens:   a.maxTokens,
-		// 透传回合 ctx，使手动 /compact 的摘要 LLM 调用拿到非 nil
-		// context；否则 OpenAI 兼容 provider 每次都失败并退化为粗糙摘要。
-		Ctx:               ctx,
-		Focus:             focus,
-		MinTailTurns:      MinimumTailTurns,
-		SummaryMaxRetries: DefaultSummaryMaxRetries,
-		ArchiveStore:      a.dataStore,
-		ArchiveUserID:     a.ownerUserID,
-		ArchiveAgentID:    a.name,
-		ArchiveSessionKey: sess.SessionKey(),
-	}
+	opts := a.compactionOptions(CompactModeManual, nil, nil, sess.SessionKey())
+	opts.Focus = focus
 	if a.registry != nil {
 		a.registry.SetContextArchiveSessionKey(sess.SessionKey())
 		opts.ToolDefs = a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	}
-	result, err := CompactMessagesWithOptions(sessionMsgs, opts)
+	result, err := a.compactWithProgress(ctx, sessionMsgs, opts)
 	if err != nil {
 		return slashResult{handled: true, reply: fmt.Sprintf("Compaction error: %v", err)}
 	}

@@ -75,6 +75,51 @@ func TestCompactInputBudgetUsesMinimumWhenOutputConsumesWindow(t *testing.T) {
 	}
 }
 
+func TestCompactWithProgressEmitsEventsForEmergencyCompaction(t *testing.T) {
+	msgs := make([]provider.Message, 0, 24)
+	for i := 0; i < 12; i++ {
+		msgs = append(msgs,
+			provider.Message{Role: "user", Content: strings.Repeat("u", 200), Origin: provider.OriginUser},
+			provider.Message{Role: "assistant", Content: strings.Repeat("a", 200), Origin: provider.OriginUser},
+		)
+	}
+
+	events := make(chan ChatEvent, 4)
+	ctx := ContextWithChatEvents(context.Background(), events)
+	a := &Agent{}
+	out, err := a.compactWithProgress(ctx, msgs, CompactOptions{
+		Mode:            CompactModeEmergency,
+		Workspace:       t.TempDir(),
+		ContextWindow:   1200,
+		MaxOutputTokens: 400,
+	})
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if out == nil || !out.Pruned {
+		t.Fatal("expected emergency compaction to change history")
+	}
+
+	var got []bool
+	for {
+		select {
+		case evt := <-events:
+			if evt.Type == "compaction" {
+				active, ok := evt.Data["active"].(bool)
+				if !ok {
+					t.Fatalf("compaction event active = %#v, want bool", evt.Data["active"])
+				}
+				got = append(got, active)
+			}
+		default:
+			if len(got) != 2 || !got[0] || got[1] {
+				t.Fatalf("compaction active events = %v, want [true false]", got)
+			}
+			return
+		}
+	}
+}
+
 func TestTriggeredCompactionDoesNotClaimPrunedWhenHistoryCannotChange(t *testing.T) {
 	msgs := []provider.Message{
 		{Role: "user", Content: "short"},
