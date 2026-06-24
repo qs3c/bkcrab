@@ -43,6 +43,7 @@ type Agent struct {
 	model                string
 	maxTokens            int
 	contextWindow        int
+	usageCalibration     contextUsageCalibrator
 	providerConfigs      map[string]config.ProviderConfig
 	temperature          float64
 	maxToolIterations    int
@@ -687,20 +688,39 @@ func usageInputTokens(u provider.Usage) int {
 // budget and auto-compaction threshold without re-deriving them (and without
 // drifting if the constants change).
 func (a *Agent) contextUsageData(last provider.Usage, requestMessages []provider.Message, toolDefs []provider.Tool) map[string]any {
+	estimated := EstimateRequestTokens(requestMessages, toolDefs)
+	key := a.contextUsageCalibrationKey()
+	budgetTokens := a.usageCalibration.estimate(key, estimated)
 	used := usageInputTokens(last)
+	source := contextUsageSourceProvider
 	if used <= 0 {
-		used = EstimateRequestTokens(requestMessages, toolDefs)
+		used = budgetTokens
+		source = contextUsageSourceEstimate
 	}
 	opts := normalizeCompactOptions(CompactOptions{
 		Mode:            CompactModeProactive,
 		ContextWindow:   a.contextWindow,
 		MaxOutputTokens: a.maxTokens,
 	})
-	return map[string]any{
+	payload := map[string]any{
 		"usedTokens":    used,
+		"source":        source,
+		"budgetTokens":  budgetTokens,
 		"contextWindow": opts.ContextWindow,
 		"triggerTokens": compactTriggerLimit(opts),
 	}
+	if actual := usageInputTokens(last); actual > 0 {
+		a.usageCalibration.observe(key, estimated, actual)
+	}
+	return payload
+}
+
+func (a *Agent) contextUsageCalibrationKey() string {
+	prov, mdl := provider.SplitProviderModel(a.model)
+	if prov == "" {
+		return mdl
+	}
+	return prov + "/" + mdl
 }
 
 func (a *Agent) ContextUsageBaseline() map[string]any {
@@ -866,6 +886,9 @@ func (a *Agent) compactWithProgress(ctx context.Context, sessionMsgs []provider.
 	res, err := CompactMessagesWithOptions(sessionMsgs, opts)
 	if triggered {
 		emitEvent(ctx, ChatEvent{Type: "compaction", Data: map[string]any{"active": false}})
+		if res != nil {
+			a.emitContextUsage(ctx, provider.Usage{}, compactionRequestMessages(res.Messages, opts.OverheadMessages), opts.ToolDefs)
+		}
 	}
 	return res, err
 }

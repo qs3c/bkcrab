@@ -2557,20 +2557,28 @@ export function ChatScreen() {
 // 可能触发压缩。百分比以完整上下文窗口为分母，便于直观对照模型上限。
 function ContextUsageBadge({ usage }: { usage: ContextUsage }) {
   const { usedTokens, contextWindow, triggerTokens } = usage;
+  const budgetTokens = usage.budgetTokens ?? usedTokens;
+  const source = usage.source ?? "provider";
   if (!contextWindow || contextWindow <= 0) return null;
   const pct = Math.min(100, Math.max(0, (usedTokens / contextWindow) * 100));
+  const budgetPct = Math.min(100, Math.max(0, (budgetTokens / contextWindow) * 100));
   const triggerPct =
     triggerTokens > 0 ? Math.min(100, (triggerTokens / contextWindow) * 100) : 0;
-  const atLimit = triggerTokens > 0 && usedTokens >= triggerTokens;
+  const atLimit = triggerTokens > 0 && budgetTokens >= triggerTokens;
   const fmt = (n: number) =>
     n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`;
+  const isEstimated = source === "estimate";
   const warn = atLimit || pct >= 90;
   return (
     <div
       className={`flex shrink-0 items-center gap-1.5 text-xs tabular-nums ${
         warn ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"
       }`}
-      title={`上下文占用：${fmt(usedTokens)} / ${fmt(contextWindow)} tokens（${pct.toFixed(0)}%）${
+      title={`上下文占用：${isEstimated ? "约 " : ""}${fmt(usedTokens)} / ${fmt(contextWindow)} tokens（${pct.toFixed(0)}%）${
+        source === "provider" && budgetTokens !== usedTokens
+          ? `\n压缩判断口径约 ${fmt(budgetTokens)} tokens（${budgetPct.toFixed(0)}%）`
+          : ""
+      }${
         triggerPct > 0
           ? `\n自动压缩阈值约 ${triggerPct.toFixed(0)}%${atLimit ? " — 已达到，下一轮将压缩较早的历史" : ""}`
           : ""
@@ -2591,7 +2599,7 @@ function ContextUsageBadge({ usage }: { usage: ContextUsage }) {
           />
         )}
       </span>
-      <span>{pct.toFixed(0)}%</span>
+      <span>{isEstimated ? "~" : ""}{pct.toFixed(0)}%</span>
     </div>
   );
 }

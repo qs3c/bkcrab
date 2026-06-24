@@ -120,6 +120,70 @@ func TestCompactWithProgressEmitsEventsForEmergencyCompaction(t *testing.T) {
 	}
 }
 
+func TestCompactWithProgressEmitsEstimatedUsageAfterCompaction(t *testing.T) {
+	msgs := make([]provider.Message, 0, 24)
+	for i := 0; i < 12; i++ {
+		msgs = append(msgs,
+			provider.Message{Role: "user", Content: strings.Repeat("u", 200), Origin: provider.OriginUser},
+			provider.Message{Role: "assistant", Content: strings.Repeat("a", 200), Origin: provider.OriginUser},
+		)
+	}
+
+	events := make(chan ChatEvent, 8)
+	ctx := ContextWithChatEvents(context.Background(), events)
+	a := &Agent{
+		model:         "fake-model",
+		contextWindow: 1200,
+		maxTokens:     400,
+	}
+	out, err := a.compactWithProgress(ctx, msgs, CompactOptions{
+		Mode:            CompactModeEmergency,
+		Workspace:       t.TempDir(),
+		ContextWindow:   1200,
+		MaxOutputTokens: 400,
+	})
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if out == nil || !out.Pruned {
+		t.Fatal("expected emergency compaction to change history")
+	}
+
+	var sawInactive bool
+	for {
+		select {
+		case evt := <-events:
+			if evt.Type == "compaction" && evt.Data["active"] == false {
+				sawInactive = true
+				continue
+			}
+			if evt.Type != "usage" {
+				continue
+			}
+			if !sawInactive {
+				t.Fatal("usage event arrived before compaction inactive event")
+			}
+			usage, ok := evt.Data["usage"].(map[string]any)
+			if !ok {
+				t.Fatalf("usage event payload = %#v, want usage map", evt.Data)
+			}
+			if got := usage["source"]; got != "estimate" {
+				t.Fatalf("usage source = %#v, want estimate", got)
+			}
+			used, ok := usage["usedTokens"].(int)
+			if !ok || used <= 0 {
+				t.Fatalf("usedTokens = %#v, want positive int estimate", usage["usedTokens"])
+			}
+			if got := usage["budgetTokens"]; got != used {
+				t.Fatalf("budgetTokens = %#v, want same estimate as usedTokens %d", got, used)
+			}
+			return
+		default:
+			t.Fatal("expected usage event after compaction")
+		}
+	}
+}
+
 func TestTriggeredCompactionDoesNotClaimPrunedWhenHistoryCannotChange(t *testing.T) {
 	msgs := []provider.Message{
 		{Role: "user", Content: "short"},

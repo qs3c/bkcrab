@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/qs3c/bkclaw/internal/config"
@@ -89,4 +90,52 @@ func TestHandleMessageEmitsUsageAfterEachModelCall(t *testing.T) {
 		return
 	}
 	t.Fatal("expected a usage event before the terminal done event")
+}
+
+func TestContextUsageDataSeparatesProviderUsageFromBudgetEstimate(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: "system", Content: strings.Repeat("s", 2000)},
+		{Role: "user", Content: strings.Repeat("u", 2000)},
+	}
+	ag := &Agent{
+		model:         "openai/fake-model",
+		contextWindow: 8000,
+		maxTokens:     1000,
+	}
+
+	usage := ag.contextUsageData(provider.Usage{InputTokens: 1234, CacheReadTokens: 100}, msgs, nil)
+
+	if got := usage["usedTokens"]; got != 1334 {
+		t.Fatalf("usedTokens = %#v, want provider input + cache tokens 1334", got)
+	}
+	if got := usage["source"]; got != "provider" {
+		t.Fatalf("source = %#v, want provider", got)
+	}
+	if got := usage["budgetTokens"]; got != 1000 {
+		t.Fatalf("budgetTokens = %#v, want raw request estimate 1000", got)
+	}
+}
+
+func TestContextUsageDataUsesLongLivedCalibrationForEstimateFallback(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: "user", Content: strings.Repeat("u", 4000)},
+	}
+	ag := &Agent{
+		model:         "openai/fake-model",
+		contextWindow: 8000,
+		maxTokens:     1000,
+	}
+
+	ag.contextUsageData(provider.Usage{InputTokens: 2000}, msgs, nil)
+	usage := ag.contextUsageData(provider.Usage{}, msgs, nil)
+
+	if got := usage["source"]; got != "estimate" {
+		t.Fatalf("source = %#v, want estimate", got)
+	}
+	if got := usage["usedTokens"]; got != 1100 {
+		t.Fatalf("usedTokens = %#v, want calibrated estimate 1100", got)
+	}
+	if got := usage["budgetTokens"]; got != 1100 {
+		t.Fatalf("budgetTokens = %#v, want calibrated estimate 1100", got)
+	}
 }
