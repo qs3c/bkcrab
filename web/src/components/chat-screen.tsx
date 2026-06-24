@@ -6,7 +6,7 @@ import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getAgent, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, listAgentFiles, listProjects, renameChatSession, revealAgentWorkspace, sendChatStream, steerChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type ContextUsage, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile } from "@/lib/api";
-import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal } from "lucide-react";
+import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, History } from "lucide-react";
 import Link from "next/link";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -1904,22 +1904,23 @@ export function ChatScreen() {
                   pending = [];
                 }
               }
-              // 遍历消息一次，将连续的工具组回合打包为单个可折叠块。没有此逻辑，
-              // 长时间 ReAct 轮次中七个顺序回合会产生七个独立可折叠框，
-              // 占据整个聊天——打包将它们隐藏在一个标题后面，直到用户
-              // 实际想深入查看。
+              // renderSegment 把"一段消息"渲染成元素数组：合并连续工具回合（避免
+              // 长 ReAct 轮次里七个顺序回合占满整屏）、展开 <|split|> 多气泡、其余走
+              // 常规气泡。抽成函数后即可对同一轮内的"中间过程段"与"最终输出段"
+              // 分别调用——前者塞进可折叠的 TurnProcess。
+              function renderSegment(segMsgs: ChatMessage[]): React.ReactNode[] {
               const elements: React.ReactNode[] = [];
-              for (let i = 0; i < messages.length; i++) {
-                const msg = messages[i];
+              for (let i = 0; i < segMsgs.length; i++) {
+                const msg = segMsgs[i];
                 if (msg.role === "tool-group") {
                   const start = i;
                   while (
-                    i + 1 < messages.length &&
-                    messages[i + 1].role === "tool-group"
+                    i + 1 < segMsgs.length &&
+                    segMsgs[i + 1].role === "tool-group"
                   ) {
                     i++;
                   }
-                  const rounds = messages.slice(start, i + 1);
+                  const rounds = segMsgs.slice(start, i + 1);
 // 将每个回合产出文件的展示保留在此处，使每个回合面板仍按时间
                     // 顺序在打包下方渲染。
                   const filePanels = rounds
@@ -1983,6 +1984,52 @@ export function ChatScreen() {
                 elements.push(renderRegularBubble(msg));
               }
               return elements;
+              }
+
+              // 按"轮次"分段：每个 user 消息开启一轮，其后连续的非 user 消息属于该轮。
+              // 正在流式输出的最后一轮全程铺开（沿用现状，便于实时观察工具决策与执行）；
+              // 已结束的轮次把"最后一次工具回合及其之前的全部中间过程（工具回合 +
+              // 工具之间的叙述气泡）"折叠进单个 TurnProcess 容器，只把其后的最终输出
+              // 留在容器外展开。不含工具的轮次（纯文字直答）不折叠。
+              const out: React.ReactNode[] = [];
+              for (let i = 0; i < messages.length; i++) {
+                const msg = messages[i];
+                if (msg.role === "user") {
+                  out.push(renderRegularBubble(msg));
+                  continue;
+                }
+                // 收集本轮：从当前非 user 消息起，吃掉后续所有非 user 消息。
+                const turnStart = i;
+                while (i + 1 < messages.length && messages[i + 1].role !== "user") i++;
+                const turnMsgs = messages.slice(turnStart, i + 1);
+                const isLiveTurn = i === messages.length - 1 && sending;
+                const lastToolIdx = turnMsgs.map((m) => m.role).lastIndexOf("tool-group");
+                if (isLiveTurn || lastToolIdx === -1) {
+                  // 实时轮次或纯文字轮次：原样铺开。
+                  out.push(...renderSegment(turnMsgs));
+                  continue;
+                }
+                const processMsgs = turnMsgs.slice(0, lastToolIdx + 1);
+                const finalMsgs = turnMsgs.slice(lastToolIdx + 1);
+                const toolCount = processMsgs.reduce(
+                  (n, m) => n + (m.toolCalls?.length ?? 0),
+                  0,
+                );
+                const roundCount = processMsgs.filter(
+                  (m) => m.role === "tool-group",
+                ).length;
+                out.push(
+                  <TurnProcess
+                    key={`proc-${turnMsgs[0].id}`}
+                    toolCount={toolCount}
+                    roundCount={roundCount}
+                  >
+                    {renderSegment(processMsgs)}
+                  </TurnProcess>,
+                );
+                out.push(...renderSegment(finalMsgs));
+              }
+              return out;
 
               function renderRegularBubble(msg: ChatMessage) {
                 return (
@@ -2923,6 +2970,50 @@ function ToolRoundsBundle({
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** TurnProcess 把"一轮已完成对话的中间过程"（工具回合 + 工具之间的叙述气泡）
+ *  收进一个默认折叠的容器，标题只占一行："运行过程 · N 轮 · M 个工具"。最终输出
+ *  （最后一次工具回合之后的文字）由调用方在容器外单独渲染并保持展开，因此回看
+ *  历史时每条用户消息下方只剩「一行折叠条 + 最终回答」。点击标题展开后，内部按
+ *  原样显示完整的工具卡片与中间叙述，便于回溯执行细节。Codex 风格的运行日志。 */
+function TurnProcess({
+  children,
+  toolCount,
+  roundCount,
+}: {
+  children: React.ReactNode;
+  toolCount: number;
+  roundCount: number;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="flex justify-start">
+      <div className="w-full max-w-[85%]">
+        <button
+          onClick={() => setOpen(!open)}
+          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/50"
+        >
+          <History className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+          <span className="font-medium text-foreground/80">运行过程</span>
+          <span className="text-muted-foreground/60">
+            {roundCount} 轮 · {toolCount} 个工具
+          </span>
+          <span className="ml-auto" />
+          {open ? (
+            <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+          )}
+        </button>
+        {open && (
+          <div className="mt-1.5 space-y-2 border-l-2 border-border/60 pl-3">
+            {children}
+          </div>
+        )}
       </div>
     </div>
   );
