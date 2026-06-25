@@ -1988,9 +1988,10 @@ export function ChatScreen() {
 
               // 按"轮次"分段：每个 user 消息开启一轮，其后连续的非 user 消息属于该轮。
               // 正在流式输出的最后一轮全程铺开（沿用现状，便于实时观察工具决策与执行）；
-              // 已结束的轮次把"最后一次工具回合及其之前的全部中间过程（工具回合 +
-              // 工具之间的叙述气泡）"折叠进单个 TurnProcess 容器，只把其后的最终输出
-              // 留在容器外展开。不含工具的轮次（纯文字直答）不折叠。
+              // 已结束的轮次把中间过程（所有工具回合 + 工具之间的叙述气泡 + 收尾工具）
+              // 折叠进单个 TurnProcess 容器，只把"最终回答"（轮次末尾最后一段连续的
+              // agent 文本，跳过其后的收尾工具）留在容器外展开。不含工具的轮次
+              //（纯文字直答）不折叠。
               const out: React.ReactNode[] = [];
               for (let i = 0; i < messages.length; i++) {
                 const msg = messages[i];
@@ -2003,14 +2004,44 @@ export function ChatScreen() {
                 while (i + 1 < messages.length && messages[i + 1].role !== "user") i++;
                 const turnMsgs = messages.slice(turnStart, i + 1);
                 const isLiveTurn = i === messages.length - 1 && sending;
-                const lastToolIdx = turnMsgs.map((m) => m.role).lastIndexOf("tool-group");
-                if (isLiveTurn || lastToolIdx === -1) {
+                const hasTool = turnMsgs.some((m) => m.role === "tool-group");
+                if (isLiveTurn || !hasTool) {
                   // 实时轮次或纯文字轮次：原样铺开。
                   out.push(...renderSegment(turnMsgs));
                   continue;
                 }
-                const processMsgs = turnMsgs.slice(0, lastToolIdx + 1);
-                const finalMsgs = turnMsgs.slice(lastToolIdx + 1);
+                // 界定"最终输出"：从末尾跳过收尾工具回合（"最终答案 + 收尾工具"
+                // 模式，如 text + update_goal —— 答案文本紧跟在收尾工具调用之前，
+                // 而非之后），再取紧邻的连续 agent 气泡作为最终回答。这样无论模型
+                // 把答案放在最后一次工具回合之后还是之前，都能正确留在容器外展开。
+                // 收尾要跳过的不仅是工具回合，还有"空 agent 气泡"：实时路径在
+                // 模型于工具调用后以空内容结束时，会追加一个无文本气泡（历史重载
+                // 路径不会持久化它）。若把它当成最终回答，真正的答案就会被折进
+                // 过程里——这正是之前实时视图只剩折叠条、不显示回答的根因。
+                const isBlankAgent = (m: ChatMessage) =>
+                  m.role === "agent" &&
+                  !(m.content && m.content.trim()) &&
+                  !(m.files && m.files.length > 0);
+                let lastAgentIdx = turnMsgs.length - 1;
+                while (
+                  lastAgentIdx >= 0 &&
+                  (turnMsgs[lastAgentIdx].role === "tool-group" ||
+                    isBlankAgent(turnMsgs[lastAgentIdx]))
+                ) {
+                  lastAgentIdx--;
+                }
+                let finalStart = lastAgentIdx;
+                while (finalStart - 1 >= 0 && turnMsgs[finalStart - 1].role === "agent") {
+                  finalStart--;
+                }
+                // lastAgentIdx < 0：整轮没有任何实质 agent 文本（纯工具，多见于被
+                // 中断的轮次）——没有可展开的最终回答，全部折叠。
+                const finalMsgs =
+                  lastAgentIdx >= 0 ? turnMsgs.slice(finalStart, lastAgentIdx + 1) : [];
+                const processMsgs =
+                  lastAgentIdx >= 0
+                    ? [...turnMsgs.slice(0, finalStart), ...turnMsgs.slice(lastAgentIdx + 1)]
+                    : turnMsgs;
                 const toolCount = processMsgs.reduce(
                   (n, m) => n + (m.toolCalls?.length ?? 0),
                   0,
