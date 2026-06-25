@@ -1,14 +1,75 @@
+# VCS and local assistant/runtime state
+.git/
+.claude/
+.agents/
+.kilo/
+.worktrees/
+workspace/
+
+# Repository metadata/docs not used by the image build
+.github/
+docs/
+deploy/
+plugins/
+scripts/
+.goreleaser.yaml
+Makefile
+install.sh
+extract_comments.py
+
+# Build outputs and dependency caches
 bin/
 dist/
 tmp/
-web/node_modules/
+internal/setup/web/
+node_modules/
+**/node_modules/
 web/.next/
 web/out/
-internal/setup/web/
-.git/
+vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+
+# Local previews and debug artifacts
+previews/
+debug/
+__debug_bin*
+all_comments.txt
+DESIGN.md
+bkclaw-patched
+.air.toml
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment, credentials, and local config
 .env
 .env.*
-!deploy/docker/.env.example
-deploy/docker/.state/
+*.pem
+*.key
+config.json
+bkclaw.json
+openclaw.json
+env.toml
+go.work
+go.work.sum
+
+# Keep only the Go migration tool from tools/
+tools/*
+!tools/migrate-storage/
+!tools/migrate-storage/**
+
+# Archives
 *.tar.gz
 *.zip
