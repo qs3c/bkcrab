@@ -3100,6 +3100,14 @@ function zipUrl(agentId: string, sessionId: string, projectId?: string): string 
 
 function FilesPanel({ agentId, files }: { agentId: string; files: ProducedFile[] }) {
   const [previewing, setPreviewing] = useState<ProducedFile | null>(null);
+  // 按路径去重：同一文件可能经由多条来源进入 files（例如实时路径的
+  // allFiles = turnFiles + 工作区 diff，当写入路径与列目录返回的路径
+  // 形式略有差异、未被 seenPaths 命中时，会把同一个文件收两次），
+  // 导致面板里出现两张完全相同的卡片。一个文件面板永远不该重复列出
+  // 同一路径，因此在渲染前统一去重（也消除 React 重复 key 警告）。
+  const uniqueFiles = files.filter(
+    (f, i) => files.findIndex((g) => g.path === f.path) === i,
+  );
   return (
     <>
       <div className="mt-2 space-y-1.5 max-w-[85%]">
@@ -3107,7 +3115,7 @@ function FilesPanel({ agentId, files }: { agentId: string; files: ProducedFile[]
           你的文件
         </p>
         <div className="flex flex-col gap-1.5">
-          {files.map((f) => {
+          {uniqueFiles.map((f) => {
             const { icon: Icon } = fileKind(f.path);
             const basename = f.path.split("/").pop() || f.path;
             const downloadUrl = fileUrl(agentId, f.path, true);
