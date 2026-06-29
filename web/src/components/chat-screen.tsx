@@ -6,6 +6,7 @@ import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getAgent, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, listAgentFiles, listProjects, renameChatSession, revealAgentWorkspace, sendChatStream, steerChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type ContextUsage, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile } from "@/lib/api";
+import { getChatHistoryRenderState } from "@/components/chat-screen-state";
 import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, History } from "lucide-react";
 import Link from "next/link";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
@@ -1876,7 +1877,12 @@ export function ChatScreen() {
 
 // 空白新聊天状态：将消息滚动区从 flex-1 泳道折叠出来，垂直居中标题 + 输入框，
 // Manus 风格。有消息后布局切换回标准的"上方滚动，底部固定输入框"形态。
-  const isEmpty = messages.length === 0;
+  const { isHistoryLoading, isEmpty } = getChatHistoryRenderState({
+    messageCount: messages.length,
+    urlSessionId,
+    sessionId,
+    loadedSessionId,
+  });
 // 计算最新助手气泡是否为待定计划（编号计划 + "回复 `go` 执行" 页脚），
 // 仅当没有后续用户消息时。这是获得内联确认/取消按钮的唯一个气泡；
 // 历史中更早的计划不会重新渲染按钮。
@@ -1922,8 +1928,14 @@ export function ChatScreen() {
                 </h1>
               </div>
             )}
+            {isHistoryLoading && (
+              <div className="flex min-h-[45vh] items-center justify-center text-muted-foreground">
+                <RefreshCw className="h-5 w-5 animate-spin" aria-hidden="true" />
+                <span className="sr-only">正在加载会话</span>
+              </div>
+            )}
 
-            {(() => {
+            {!isHistoryLoading && (() => {
               // 工具组产物（如沙箱内 Python 脚本渲染为 base64 的图片）附加到
               // *下一个*助手回复气泡——使它们作为助手回答的一部分显示，
               // 而非在工具面板内。如果没有后续助手回复（工具仍在运行或
@@ -2322,7 +2334,7 @@ export function ChatScreen() {
               }
             })()}
 
-            {compacting && (
+            {!isHistoryLoading && compacting && (
               // 上下文压缩横杠：压缩在轮次开始、产出任何回复前同步进行，
               // 用一道横贯的横杠 + 旋转图标提示「正在压缩上下文…」，让用户
               // 明白此处的停顿来自压缩而非模型思考。压缩结束（或轮次终止）即收起。
@@ -2336,7 +2348,7 @@ export function ChatScreen() {
               </div>
             )}
 
-            {sending && !compacting && (
+            {!isHistoryLoading && sending && !compacting && (
               <div className="flex justify-start">
                 <div className="bg-muted rounded-2xl rounded-bl-md px-4 py-3">
                   <div className="flex items-center gap-1">
@@ -2355,7 +2367,7 @@ export function ChatScreen() {
         {/* 实时进度面板：智能体维护按会话的 `todo.md` 清单，我们在输入框上方
             渲染它，使用户视线聚焦在即将授权的下一步，而非埋在长滚动历史的顶部。
             文件不存在或无复选框项时自动隐藏。 */}
-        {!isEmpty && todoItems.length > 0 && (
+        {!isHistoryLoading && !isEmpty && todoItems.length > 0 && (
           <TodoPanel items={todoItems} active={sending} />
         )}
 
