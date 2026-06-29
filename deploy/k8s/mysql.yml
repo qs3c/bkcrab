@@ -3,14 +3,14 @@
 #
 # 与 fastclaw.yaml 一起使用：
 #   1. kubectl apply -f mysql.yml
-#   2. 设置 bkclaw-secrets.STORAGE_DSN 为：
-#        bkclaw:<MYSQL_PASSWORD>@tcp(bkclaw-db:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4
+#   2. 设置 bkcrab-secrets.STORAGE_DSN 为：
+#        bkcrab:<MYSQL_PASSWORD>@tcp(bkcrab-db:3306)/bkcrab?parseTime=true&loc=UTC&charset=utf8mb4
 #   3. kubectl apply -f fastclaw.yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  name: bkclaw-db
-  namespace: bkclaw
+  name: bkcrab-db
+  namespace: bkcrab
 type: Opaque
 stringData:
   MYSQL_PASSWORD: "change-me-in-production"
@@ -19,8 +19,8 @@ stringData:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: bkclaw-db
-  namespace: bkclaw
+  name: bkcrab-db
+  namespace: bkcrab
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -30,17 +30,17 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: bkclaw-db
-  namespace: bkclaw
+  name: bkcrab-db
+  namespace: bkcrab
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: bkclaw-db
+      app: bkcrab-db
   template:
     metadata:
       labels:
-        app: bkclaw-db
+        app: bkcrab-db
     spec:
       containers:
       - name: mysql
@@ -49,18 +49,18 @@ spec:
         - containerPort: 3306
         env:
         - name: MYSQL_DATABASE
-          value: bkclaw
+          value: bkcrab
         - name: MYSQL_USER
-          value: bkclaw
+          value: bkcrab
         - name: MYSQL_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: bkclaw-db
+              name: bkcrab-db
               key: MYSQL_PASSWORD
         - name: MYSQL_ROOT_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: bkclaw-db
+              name: bkcrab-db
               key: MYSQL_ROOT_PASSWORD
         volumeMounts:
         - name: data
@@ -70,21 +70,21 @@ spec:
             command:
               - sh
               - -c
-              - mysqladmin ping -h 127.0.0.1 -u bkclaw -p"$MYSQL_PASSWORD" --silent
+              - mysqladmin ping -h 127.0.0.1 -u bkcrab -p"$MYSQL_PASSWORD" --silent
           initialDelaySeconds: 10
           periodSeconds: 5
       volumes:
       - name: data
         persistentVolumeClaim:
-          claimName: bkclaw-db
+          claimName: bkcrab-db
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: bkclaw-db
-  namespace: bkclaw
+  name: bkcrab-db
+  namespace: bkcrab
 spec:
   selector:
-    app: bkclaw-db
+    app: bkcrab-db
   ports:
   - port: 3306

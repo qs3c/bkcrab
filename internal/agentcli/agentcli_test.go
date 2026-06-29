@@ -6,15 +6,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/store"
-	"github.com/qs3c/bkclaw/internal/users"
+	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/users"
 )
 
 // freshStore opens an in-memory sqlite store for the test, migrated and
 // ready to use.
 func freshStore(t *testing.T) store.Store {
 	t.Helper()
-	t.Setenv("BKCLAW_HOME", t.TempDir())
+	t.Setenv("BKCRAB_HOME", t.TempDir())
 	st, err := store.New(&store.StorageConfig{
 		Type:        store.StorageSQLite,
 		AutoMigrate: true,

@@ -157,7 +157,7 @@ export default function OnboardPage() {
   // 沙箱（可选——默认关闭；用户可开启并配置）
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
   const [sandboxBackend, setSandboxBackend] = useState("docker");
-  const [sandboxDockerImage, setSandboxDockerImage] = useState("thinkany/bkclaw-sandbox:latest");
+  const [sandboxDockerImage, setSandboxDockerImage] = useState("thinkany/bkcrab-sandbox:latest");
   const [sandboxE2BTemplate, setSandboxE2BTemplate] = useState("base");
   const [sandboxE2BKey, setSandboxE2BKey] = useState("");
   const [sandboxBoxliteImage, setSandboxBoxliteImage] = useState("");
@@ -448,7 +448,7 @@ function WelcomeStep() {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <PartyPopper className="size-5 text-primary" />
-          欢迎使用 BkClaw
+          欢迎使用 BkCrab
         </CardTitle>
         <CardDescription>
           只需几个步骤即可完成平台设置：管理员账户、第一个大模型服务商和第一个智能体。大约需要一分钟。
@@ -875,7 +875,7 @@ function SandboxStep(props: {
                     <Input
                       value={props.boxliteImage}
                       onChange={(e) => props.setBoxliteImage(e.target.value)}
-                      placeholder="bkclaw-sandbox"
+                      placeholder="bkcrab-sandbox"
                       className="font-mono text-sm"
                     />
                     <p className="text-xs text-muted-foreground">
@@ -898,7 +898,7 @@ function SandboxStep(props: {
                   <Input
                     value={props.dockerImage}
                     onChange={(e) => props.setDockerImage(e.target.value)}
-                    placeholder="thinkany/bkclaw-sandbox:latest"
+                    placeholder="thinkany/bkcrab-sandbox:latest"
                     className="font-mono text-sm"
                   />
                 </div>

@@ -45,7 +45,7 @@ type Request struct {
 }
 
 // ProviderConfig 保存为单个调用解析的凭据/端点。
-// 它来自 bkclaw.json 的 toolProviders.<name>，可被代理自身的配置覆盖。
+// 它来自 bkcrab.json 的 toolProviders.<name>，可被代理自身的配置覆盖。
 type ProviderConfig struct {
 	APIKey   string
 	Endpoint string

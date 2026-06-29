@@ -39,8 +39,8 @@ jobs:
           for pair in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64 windows/arm64 windows/amd64; do
             GOOS="${pair%/*}" GOARCH="${pair#*/}" CGO_ENABLED=0 \
               go build -ldflags "${{ env.LDFLAGS }}" \
-              -o "dist/bkclaw_${pair%/*}_${pair#*/}/bkclaw$( [ "${pair%/*}" = windows ] && echo .exe )" \
-              ./cmd/bkclaw
+              -o "dist/bkcrab_${pair%/*}_${pair#*/}/bkcrab$( [ "${pair%/*}" = windows ] && echo .exe )" \
+              ./cmd/bkcrab
           done
         env:
           LDFLAGS: -s -w -X main.version=${{ github.ref_name }} -X main.commit=${{ github.sha }} -X main.date=${{ github.event.head_commit.timestamp }}
@@ -48,11 +48,11 @@ jobs:
       - name: Package artifacts
         run: |
           cd dist
-          for d in bkclaw_darwin_* bkclaw_linux_*; do
-            tar -czf "${d}.tar.gz" -C "$d" bkclaw
+          for d in bkcrab_darwin_* bkcrab_linux_*; do
+            tar -czf "${d}.tar.gz" -C "$d" bkcrab
           done
-          for d in bkclaw_windows_*; do
-            (cd "$d" && zip -q "../${d}.zip" bkclaw.exe)
+          for d in bkcrab_windows_*; do
+            (cd "$d" && zip -q "../${d}.zip" bkcrab.exe)
           done
 
       - name: Create release

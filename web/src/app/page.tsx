@@ -72,8 +72,8 @@ export default function RootPage() {
       <div className="flex min-h-screen items-center justify-center bg-background">
         <div className="w-full max-w-sm space-y-6 p-6">
           <div className="flex flex-col items-center gap-3">
-            <img src="/logo.png" alt="BkClaw" className="h-12 w-12 object-contain" />
-            <h1 className="text-xl font-bold">BkClaw</h1>
+            <img src="/logo.png" alt="BkCrab" className="h-12 w-12 object-contain" />
+            <h1 className="text-xl font-bold">BkCrab</h1>
             <p className="text-sm text-muted-foreground">登录后继续</p>
           </div>
 

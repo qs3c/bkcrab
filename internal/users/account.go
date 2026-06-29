@@ -15,14 +15,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // 角色。super_admin 可以管理平台上的每个用户/代理/提供商；
 // user 只能操作自己的资源。app_user 由 api_key 代表下游应用
 // 进行配置——这些账户没有密码，无法通过仪表板或密码端点登录；
-// 它们的存在纯粹是为了给外部最终用户一个稳定的 bkclaw user_id，
+// 它们的存在纯粹是为了给外部最终用户一个稳定的 bkcrab user_id，
 // 以便会话/agent_files/scope=user 配置按最终用户清晰分区。
 // 有意不提供细粒度方案——任何更复杂的内容都存在于 apikey ACL 层。
 const (
@@ -91,7 +91,7 @@ func (a *Accounts) Count(ctx context.Context) (int, error) {
 // 读取，而不是从请求体中读取），以便该行可审计回配置密钥。
 // 将 ExternalID 设置为调用应用自身的用户标识符；
 // (apikey_id, external_id) 上的部分 UNIQUE 索引——参见 migrateUsersAppUserCols
-// ——意味着相同的对始终解析到相同的 bkclaw user_id，因此重试是安全的。
+// ——意味着相同的对始终解析到相同的 bkcrab user_id，因此重试是安全的。
 //
 // AvatarURL 必须为空或 `data:image/*` URL ≤256KB；处理程序调用者负责该验证。
 type CreateInput struct {
@@ -315,7 +315,7 @@ func (a *Accounts) SetPassword(ctx context.Context, id, newPassword string) erro
 	return a.store.UpdateUser(ctx, rec)
 }
 
-// EnsureAppUser 返回代表 (apikeyID, externalID) 的 bkclaw 用户，
+// EnsureAppUser 返回代表 (apikeyID, externalID) 的 bkcrab 用户，
 // 首次见到时创建一个 role=app_user 的用户。幂等：
 // 后续使用相同对的调用返回现有行。调用者应为 api_key 所有者
 // ——Mint 不进行认证，那是 auth 中间件的工作。Username/email
@@ -343,7 +343,7 @@ func (a *Accounts) EnsureAppUser(ctx context.Context, apikeyID, externalID, disp
 	rec := &store.UserRecord{
 		ID:           id,
 		Username:     "ext:" + syn,
-		Email:        syn + "@external.bkclaw.local",
+		Email:        syn + "@external.bkcrab.local",
 		PasswordHash: "",
 		DisplayName:  displayName,
 		Role:         RoleAppUser,

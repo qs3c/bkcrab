@@ -2,7 +2,7 @@
 
 // Run with:
 //   E2B_API_KEY=... E2B_TEMPLATE=9zaxtyw620z6xititg11 \
-//   BKCLAW_AGENT_ID=agt_ccc0add56d30398bcfa1 \
+//   BKCRAB_AGENT_ID=agt_ccc0add56d30398bcfa1 \
 //   go test ./internal/sandbox/ -run TestE2BReproWithRealWorkspace -v -count=1 -tags=manual -timeout 6m
 //
 // Reproduces the live-daemon path: real workspace.Store + real per-agent skill
@@ -21,19 +21,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 func TestE2BReproWithRealWorkspace(t *testing.T) {
 	apiKey := os.Getenv("E2B_API_KEY")
 	template := os.Getenv("E2B_TEMPLATE")
-	agentID := os.Getenv("BKCLAW_AGENT_ID")
+	agentID := os.Getenv("BKCRAB_AGENT_ID")
 	if apiKey == "" || template == "" || agentID == "" {
-		t.Skip("set E2B_API_KEY, E2B_TEMPLATE, BKCLAW_AGENT_ID")
+		t.Skip("set E2B_API_KEY, E2B_TEMPLATE, BKCRAB_AGENT_ID")
 	}
-	home := os.Getenv("BKCLAW_HOME")
+	home := os.Getenv("BKCRAB_HOME")
 	if home == "" {
-		home = filepath.Join(os.Getenv("HOME"), ".bkclaw")
+		home = filepath.Join(os.Getenv("HOME"), ".bkcrab")
 	}
 
 	ws := workspace.NewLocalFS(filepath.Join(home, "workspaces"))

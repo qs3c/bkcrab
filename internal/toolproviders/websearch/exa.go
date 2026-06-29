@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // Exa 调用 api.exa.ai。使用 x-api-key 头进行认证；请求体控制结果数量和搜索模式。

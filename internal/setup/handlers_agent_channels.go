@@ -11,11 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/auth"
-	"github.com/qs3c/bkclaw/internal/channels"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/scope"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/auth"
+	"github.com/qs3c/bkcrab/internal/channels"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/scope"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // 按 agent 的 IM 频道 CRUD。包装现有的 scope.SaveChannel + 绑定设置，

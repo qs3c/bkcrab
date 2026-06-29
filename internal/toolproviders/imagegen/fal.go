@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // Fal 向 https://fal.run/<model-path> 发送请求。

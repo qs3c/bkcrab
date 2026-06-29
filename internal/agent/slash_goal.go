@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/agent/goal"
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/agent/goal"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 // slashGoal 将 `/goal …` 分派到子处理器。参数语法遵循设计文档 § 6：

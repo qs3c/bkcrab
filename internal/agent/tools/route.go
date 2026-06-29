@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/buildinfo"
+	"github.com/qs3c/bkcrab/internal/buildinfo"
 )
 
 // RouteTarget 标识哪个后端应处理文件/执行调用。
@@ -98,9 +98,9 @@ func (r *Registry) routeFor(path string, op Operation) RouteTarget {
 	// 规则 2：已配置沙箱的本地 → 沙箱优先。主机磁盘是
 	// 仅可通过显式主机范围路径（操作员的
 	// 文档，绝对的 /Users/<u>/... 显然不是
-	// 用于升级操作的沙箱内部、bkclaw-内部子树）。
+	// 用于升级操作的沙箱内部、bkcrab-内部子树）。
 	if sandboxOK {
-		if isBkClawInternalPath(path) {
+		if isBkCrabInternalPath(path) {
 			return RouteHostFS
 		}
 		if isExplicitHostScope(path) {
@@ -125,7 +125,7 @@ func (r *Registry) routeFor(path string, op Operation) RouteTarget {
 //
 // 今天的启发式是基于路径前缀的：
 // - ~/文档、~/下载、~/桌面、~/项目、~/代码、~/工作
-// - /Users/<u>/... 和 /home/<u>/... 不是 bkclaw-internal
+// - /Users/<u>/... 和 /home/<u>/... 不是 bkcrab-internal
 // 并且不只是沙箱
 //
 // 裸 ~/ （没有可识别的用户内容子目录）不是主机范围：
@@ -133,7 +133,7 @@ func (r *Registry) routeFor(path string, op Operation) RouteTarget {
 // 主目录。如果操作员想要在他们的实际家下铺设一条路径，他们
 // 可以拼写出来（〜/ Documents / foo，/ Users / mike / code / foo）。
 func isExplicitHostScope(path string) bool {
-	if isBkClawInternalPath(path) || isSandboxOnlyPath(path) {
+	if isBkCrabInternalPath(path) || isSandboxOnlyPath(path) {
 		return false
 	}
 	if strings.HasPrefix(path, "~/") {
@@ -164,18 +164,18 @@ var hostHomeContentDirs = []string{
 	"projects", "code", "work", "src",
 }
 
-// isBkClawInternalPath 报告路径是否属于 BkClaw 的范围
-// 运行时管理的目录（~/.bkclaw/...）。这些有专用路由
+// isBkCrabInternalPath 报告路径是否属于 BkCrab 的范围
+// 运行时管理的目录（~/.bkcrab/...）。这些有专用路由
 // （workspaceStore、身份存储等）和工具不得写入它们
 // 通过面向聊天的主机路径，否则它们会破坏内部状态。
-func isBkClawInternalPath(path string) bool {
-	if strings.HasPrefix(path, "~/.bkclaw") {
+func isBkCrabInternalPath(path string) bool {
+	if strings.HasPrefix(path, "~/.bkcrab") {
 		return true
 	}
 	if filepath.IsAbs(path) {
 		if home, err := os.UserHomeDir(); err == nil {
-			bkclawDir := filepath.Join(home, ".bkclaw")
-			if path == bkclawDir || strings.HasPrefix(path, bkclawDir+string(filepath.Separator)) {
+			bkcrabDir := filepath.Join(home, ".bkcrab")
+			if path == bkcrabDir || strings.HasPrefix(path, bkcrabDir+string(filepath.Separator)) {
 				return true
 			}
 		}
@@ -188,7 +188,7 @@ func isBkClawInternalPath(path string) bool {
 // 不同的位置，因此简单的主机扩展将始终为 404。
 //
 // - ~/.agents/... ：npx 技能的安装目录（从绑定安装
-// 〜/.bkclaw/users/<uid>/skills/)
+// 〜/.bkcrab/users/<uid>/skills/)
 // - /root/.agents/.. ：相同，通过沙箱解析的绝对路径
 func isSandboxOnlyPath(path string) bool {
 	if strings.HasPrefix(path, "~/.agents") || strings.HasPrefix(path, "/root/.agents") {

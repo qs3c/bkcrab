@@ -8,7 +8,7 @@ import (
 )
 
 func TestParseManagedEntries(t *testing.T) {
-	data := []byte("<!-- bkclaw-memory:v1 target=memory -->\nalpha\n\n§\n\nmulti\nline\n\n§\n\n beta \n")
+	data := []byte("<!-- bkcrab-memory:v1 target=memory -->\nalpha\n\n§\n\nmulti\nline\n\n§\n\n beta \n")
 
 	entries, managed := parseEntries(TargetMemory, data)
 
@@ -509,7 +509,7 @@ func TestStoreBackedApplyWritesManagedFileAndListReturnsEntry(t *testing.T) {
 		t.Fatalf("apply failed: %s", result.Message)
 	}
 	written := store.files["MEMORY.md"]
-	if !bytes.Contains(written, []byte("<!-- bkclaw-memory:v1 target=memory -->")) {
+	if !bytes.Contains(written, []byte("<!-- bkcrab-memory:v1 target=memory -->")) {
 		t.Fatalf("written file missing managed marker: %q", string(written))
 	}
 

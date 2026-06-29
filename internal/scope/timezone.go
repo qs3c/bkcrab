@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // PrefsNamespace 是 kind=setting 命名空间，用于存储每个对话者的

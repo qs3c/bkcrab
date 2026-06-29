@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // Fish 向 https://api.fish.audio/v1/tts（即 fish.studio）发送请求。

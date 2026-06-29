@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 const shutdownTimeout = 5 * time.Second
@@ -22,7 +22,7 @@ const shutdownTimeout = 5 * time.Second
 const defaultChatSendDelay = 50 * time.Millisecond
 
 func pluginChatSendDelay() time.Duration {
-	v := os.Getenv("BKCLAW_PLUGIN_CHAT_SEND_DELAY_MS")
+	v := os.Getenv("BKCRAB_PLUGIN_CHAT_SEND_DELAY_MS")
 	if v == "" {
 		return defaultChatSendDelay
 	}
@@ -414,7 +414,7 @@ func (m *Manager) handleNotification(pluginID string, n Notification) {
 		// 一旦 HandleMessage 返回，网关的 bus.Outbound 入队
 		// 时间在亚毫秒级。这里的一个短异步延迟足以让它在
 		// 实践中胜出。异步操作使插件的 stdout 读取器不会被
-		// 阻塞。可通过 BKCLAW_PLUGIN_CHAT_SEND_DELAY_MS 调整；
+		// 阻塞。可通过 BKCRAB_PLUGIN_CHAT_SEND_DELAY_MS 调整；
 		// 设置为 0 可完全禁用延迟。
 		delay := pluginChatSendDelay()
 		go func() {

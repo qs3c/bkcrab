@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 // JobType 定义 cron 调度的类型。
@@ -32,7 +32,7 @@ type Job struct {
 	Channel     string  `json:"channel"`               // 将结果发送回的渠道
 	ChatID      string  `json:"chatId"`                // 要发送结果的聊天
 	Message     string  `json:"message"`               // 发送给 agent 的消息
-	OwnerUserID string  `json:"ownerUserId,omitempty"` // 拥有此作业的 bkclaw 用户
+	OwnerUserID string  `json:"ownerUserId,omitempty"` // 拥有此作业的 bkcrab 用户
 }
 
 // CronConfig 保存 cron 作业配置。

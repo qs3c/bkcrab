@@ -1,18 +1,18 @@
 # openclaw-proxy
 
-Bridge OpenClaw TypeScript plugins to BkClaw's JSON-RPC protocol.
+Bridge OpenClaw TypeScript plugins to BkCrab's JSON-RPC protocol.
 
 ## How it works
 
 ```
-BkClaw Gateway ←→ JSON-RPC (stdin/stdout) ←→ openclaw-proxy ←→ OpenClaw Plugin (JS/TS)
+BkCrab Gateway ←→ JSON-RPC (stdin/stdout) ←→ openclaw-proxy ←→ OpenClaw Plugin (JS/TS)
 ```
 
-The proxy loads an OpenClaw plugin, captures its `register()` calls (tools, channels, etc.), and exposes them via BkClaw's JSON-RPC protocol.
+The proxy loads an OpenClaw plugin, captures its `register()` calls (tools, channels, etc.), and exposes them via BkCrab's JSON-RPC protocol.
 
 ## Supported capabilities
 
-| OpenClaw API | BkClaw RPC | Status |
+| OpenClaw API | BkCrab RPC | Status |
 |---|---|---|
 | `api.registerTool()` | `tool.list` / `tool.execute` | ✅ |
 | `api.registerChannel()` | `channel.send` / `message.inbound` | ✅ |
@@ -28,12 +28,12 @@ cd tools/openclaw-proxy
 pnpm install && pnpm build
 ```
 
-### 2. Create a BkClaw plugin wrapper
+### 2. Create a BkCrab plugin wrapper
 
 Given an OpenClaw plugin installed at `./node_modules/@openclaw/some-plugin`:
 
 ```
-~/.bkclaw/plugins/some-plugin/
+~/.bkcrab/plugins/some-plugin/
 ├── plugin.json
 └── node_modules/@openclaw/some-plugin/   (npm install here)
 ```
@@ -49,7 +49,7 @@ Given an OpenClaw plugin installed at `./node_modules/@openclaw/some-plugin`:
 
 ### 3. That's it
 
-BkClaw will start the proxy as a subprocess, which loads the OpenClaw plugin and bridges all registered tools/channels.
+BkCrab will start the proxy as a subprocess, which loads the OpenClaw plugin and bridges all registered tools/channels.
 
 ## Example
 

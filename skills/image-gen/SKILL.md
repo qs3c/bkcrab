@@ -2,7 +2,7 @@
 name: image-gen
 description: Generate images, charts, plots, and visualizations. Use when the user asks to draw, plot, chart, visualize data, or create images.
 metadata:
-  bkclaw:
+  bkcrab:
     always: false
 ---
 

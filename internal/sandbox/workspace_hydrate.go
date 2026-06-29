@@ -7,7 +7,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // hydrateWorkspace 将工作区存储（S3/本地文件系统/其他）中的每个对象

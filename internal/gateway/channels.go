@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/bus"
-	"github.com/qs3c/bkclaw/internal/channels"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/bus"
+	"github.com/qs3c/bkcrab/internal/channels"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // storeLeaser 适配 store.Store 到 channels.Leaser。方法名称不同

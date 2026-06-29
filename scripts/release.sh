@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# BkClaw Release Script
+# BkCrab Release Script
 # Usage: ./scripts/release.sh v0.1.0
 
 VERSION="${1:-}"
@@ -13,11 +13,11 @@ fi
 
 # Strip 'v' prefix for directory names
 VER="${VERSION#v}"
-BINARY="bkclaw"
+BINARY="bkcrab"
 DIST_DIR="dist"
-MODULE="github.com/qs3c/bkclaw"
+MODULE="github.com/qs3c/bkcrab"
 
-echo "⚡ Building BkClaw ${VERSION}"
+echo "⚡ Building BkCrab ${VERSION}"
 echo ""
 
 # Clean
@@ -63,8 +63,8 @@ for platform in "${PLATFORMS[@]}"; do
         -o "${DIST_DIR}/${output}" \
         "./cmd/${BINARY}"
 
-    # Asset name is intentionally version-less (e.g. bkclaw_linux_amd64.tar.gz)
-    # so the in-binary `bkclaw upgrade` command (cmd_version.go) can find
+    # Asset name is intentionally version-less (e.g. bkcrab_linux_amd64.tar.gz)
+    # so the in-binary `bkcrab upgrade` command (cmd_version.go) can find
     # it via a stable suffix without parsing release tags.
     pkg_name="${BINARY}_${os}_${arch}"
     pkg_dir="${DIST_DIR}/${pkg_name}"
@@ -104,4 +104,4 @@ echo "  2. git push origin ${VERSION}"
 echo "  3. Create GitHub release and upload ${DIST_DIR}/* files"
 echo ""
 echo "Or use gh CLI:"
-echo "  gh release create ${VERSION} ${DIST_DIR}/*.tar.gz ${DIST_DIR}/*.zip ${DIST_DIR}/checksums.txt --title \"BkClaw ${VERSION}\" --generate-notes"
+echo "  gh release create ${VERSION} ${DIST_DIR}/*.tar.gz ${DIST_DIR}/*.zip ${DIST_DIR}/checksums.txt --title \"BkCrab ${VERSION}\" --generate-notes"

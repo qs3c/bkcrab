@@ -5,14 +5,14 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/auth"
+	"github.com/qs3c/bkcrab/internal/auth"
 )
 
 // HandleProvisionAppUser 处理 POST /v1/users。
 //
 // 仅通过 api_key 认证。创建（或返回）代表调用应用的终端用户（由 external_id 标识）
-// 的 bkclaw 用户。幂等：使用相同 external_id 重复调用返回相同的
-// bkclaw user_id，无论该行是否已存在。
+// 的 bkcrab 用户。幂等：使用相同 external_id 重复调用返回相同的
+// bkcrab user_id，无论该行是否已存在。
 //
 // 请求体：{ "external_id": "...", "display_name": "..."（可选） }
 // 响应：  { "user_id": "u_…", "external_id": "...", "created": bool }
@@ -21,7 +21,7 @@ import (
 // 因此一旦调用应用获得该 user_id，该终端用户的每个下游交互
 // 都能干净地分区。不想预创建的应用可以完全跳过此端点，
 // 在每次调用时通过 /v1/chat/completions 请求体中的 `user` 字段
-// （或 X-Bkclaw-End-User 头）传递 — 无论哪种方式，认证层都会在首次见到时懒创建。
+// （或 X-Bkcrab-End-User 头）传递 — 无论哪种方式，认证层都会在首次见到时懒创建。
 func (s *Server) HandleProvisionAppUser(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok || ident.AuthMethod != "apikey" || ident.APIKeyID == "" {

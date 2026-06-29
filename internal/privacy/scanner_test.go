@@ -305,7 +305,7 @@ func TestScanMemoryStrictKeepsDistinctSamePatternExfilFindings(t *testing.T) {
 }
 
 func TestScanMemoryStrictAllowsPlainFacts(t *testing.T) {
-	threats := ScanMemoryStrict("The user prefers concise Chinese replies and is working on BkClaw memory tooling.")
+	threats := ScanMemoryStrict("The user prefers concise Chinese replies and is working on BkCrab memory tooling.")
 	if len(threats) != 0 {
 		t.Fatalf("unexpected threats: %#v", threats)
 	}

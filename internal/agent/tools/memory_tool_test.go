@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/memory"
+	"github.com/qs3c/bkcrab/internal/memory"
 )
 
 func TestMemoryToolAddReplaceRemove(t *testing.T) {

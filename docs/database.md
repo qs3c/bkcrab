@@ -1,14 +1,14 @@
 # Database
 
-BkClaw uses MySQL by default and does not fall back to SQLite when the MySQL
+BkCrab uses MySQL by default and does not fall back to SQLite when the MySQL
 configuration is missing or unavailable.
 
 Required environment variables:
 
 ```bash
-BKCLAW_STORAGE_TYPE=mysql
-BKCLAW_STORAGE_DSN='bkclaw:password@tcp(mysql.example.com:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4'
-BKCLAW_STORAGE_AUTO_MIGRATE=true
+BKCRAB_STORAGE_TYPE=mysql
+BKCRAB_STORAGE_DSN='bkcrab:password@tcp(mysql.example.com:3306)/bkcrab?parseTime=true&loc=UTC&charset=utf8mb4'
+BKCRAB_STORAGE_AUTO_MIGRATE=true
 ```
 
 `parseTime=true` is enforced by the application. Configure `tls=true` or a
@@ -21,8 +21,8 @@ MySQL, and an empty MySQL DSN is a startup error.
 To copy a legacy SQLite database into MySQL:
 
 ```bash
-bkclaw-migrate-storage \
-  --sqlite /path/to/bkclaw.db \
-  --mysql 'bkclaw:password@tcp(mysql.example.com:3306)/bkclaw?parseTime=true' \
+bkcrab-migrate-storage \
+  --sqlite /path/to/bkcrab.db \
+  --mysql 'bkcrab:password@tcp(mysql.example.com:3306)/bkcrab?parseTime=true' \
   --replace
 ```

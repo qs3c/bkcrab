@@ -16,7 +16,7 @@ import (
 // 这是单主机部署的默认后端——与代理工具已使用的磁盘布局相同，
 // 因此现有代理可以原地升级。
 type LocalFS struct {
-	// root 通常是 ~/.bkclaw/workspaces。代理 foo 的对象位于
+	// root 通常是 ~/.bkcrab/workspaces。代理 foo 的对象位于
 	// <root>/foo/<path>。
 	root string
 }
@@ -28,9 +28,9 @@ func NewLocalFS(root string) *LocalFS {
 }
 
 // Root 返回构造 LocalFS 时使用的磁盘根目录（通常为
-// ~/.bkclaw/workspaces）。公开以便需要为外部工具计算主机路径的
+// ~/.bkcrab/workspaces）。公开以便需要为外部工具计算主机路径的
 // 调用者——例如"在 Finder 中打开"/外部调用——可以从 LocalFS 内部
-// 使用的同一锚点拼接路径，而无需从 BKCLAW_HOME 重新推导。
+// 使用的同一锚点拼接路径，而无需从 BKCRAB_HOME 重新推导。
 func (f *LocalFS) Root() string {
 	return f.root
 }

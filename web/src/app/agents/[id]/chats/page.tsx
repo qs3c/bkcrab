@@ -106,7 +106,7 @@ export default function AgentChatsPage() {
   function broadcastChange() {
     if (typeof window !== "undefined") {
       window.dispatchEvent(
-        new CustomEvent("bkclaw:sessions-changed", {
+        new CustomEvent("bkcrab:sessions-changed", {
           detail: { agentId },
         }),
       );

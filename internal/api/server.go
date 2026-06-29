@@ -6,9 +6,9 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/qs3c/bkclaw/internal/agent"
-	"github.com/qs3c/bkclaw/internal/auth"
-	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkcrab/internal/agent"
+	"github.com/qs3c/bkcrab/internal/auth"
+	"github.com/qs3c/bkcrab/internal/config"
 )
 
 // UserResolver 通过用户 ID 查找用户空间。
@@ -75,7 +75,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// 为下游终端用户显式配置 app_user。
 	// 始终可用 — 任何 api_key 调用都可以使用相同的身份切换
 	// （header 或 `user` 请求体字段）而无需预先创建，此端点
-	// 仅为偏好提前创建并本地存储返回的 bkclaw user_id 的
+	// 仅为偏好提前创建并本地存储返回的 bkcrab user_id 的
 	// 调用者而存在。
 	mux.HandleFunc("POST /v1/users",
 		s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleProvisionAppUser)))
@@ -89,7 +89,7 @@ func (s *Server) RegisterAdminRoutes(mux *http.ServeMux) {}
 func (s *Server) handleCORS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, x-bkclaw-agent-id, x-bkclaw-session-key")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, x-bkcrab-agent-id, x-bkcrab-session-key")
 	w.Header().Set("Access-Control-Max-Age", "86400")
 	w.WriteHeader(http.StatusNoContent)
 }

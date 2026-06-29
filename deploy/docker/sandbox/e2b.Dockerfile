@@ -1,4 +1,4 @@
-FROM thinkany/bkclaw-sandbox:latest
+FROM thinkany/bkcrab-sandbox:latest
 
 WORKDIR /workspace
 

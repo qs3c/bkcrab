@@ -8,15 +8,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/auth"
-	"github.com/qs3c/bkclaw/internal/store"
-	"github.com/qs3c/bkclaw/internal/users"
+	"github.com/qs3c/bkcrab/internal/auth"
+	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/users"
 )
 
 func TestListSkillsRequiresAuth(t *testing.T) {
 	ctx := context.Background()
 	s, resolver, adminUser, regularUser := newAuthTestServer(t, ctx)
-	t.Setenv("BKCLAW_HOME", t.TempDir())
+	t.Setenv("BKCRAB_HOME", t.TempDir())
 
 	handler := s.authMiddleware(s.handleListSkills)
 
@@ -54,7 +54,7 @@ func TestListSkillsRequiresAuth(t *testing.T) {
 func newAuthTestServer(t *testing.T, ctx context.Context) (*Server, *auth.Resolver, *users.Account, *users.Account) {
 	t.Helper()
 
-	dbPath := filepath.Join(t.TempDir(), "bkclaw.db")
+	dbPath := filepath.Join(t.TempDir(), "bkcrab.db")
 	st, err := store.NewDBStore("sqlite", "file:"+dbPath+"?cache=shared")
 	if err != nil {
 		t.Fatalf("NewDBStore: %v", err)

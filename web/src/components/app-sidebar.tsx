@@ -175,7 +175,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 
   // 当活跃智能体不在调用者的自有列表中时 — 例如
   // 超级管理员与其他用户的智能体对话 — 单独获取其名称
-  // 并插入，以便切换器标题显示真实名称而非回退到"BkClaw"。
+  // 并插入，以便切换器标题显示真实名称而非回退到"BkCrab"。
   // 单智能体端点也返回角色，因此在此一并捕获。
   React.useEffect(() => {
     if (!activeAgentId) return;
@@ -201,7 +201,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 
   // 会话和项目仅在选择特定智能体时才有意义。
   // 当活跃智能体变更或聊天页面广播
-  // `bkclaw:sessions-changed` 事件时（例如重命名 /
+  // `bkcrab:sessions-changed` 事件时（例如重命名 /
   // 新建对话 / 创建项目后），我们会重新获取两者，
   // 以便侧边栏无需刷新页面即可保持同步。项目与
   // 会话一起获取，因为项目内创建聊天也会影响其下的会话列表。
@@ -238,10 +238,10 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
         refetch();
       }
     };
-    window.addEventListener("bkclaw:sessions-changed", onChange);
+    window.addEventListener("bkcrab:sessions-changed", onChange);
     return () => {
       window.clearInterval(iv);
-      window.removeEventListener("bkclaw:sessions-changed", onChange);
+      window.removeEventListener("bkcrab:sessions-changed", onChange);
     };
   }, [activeAgentId]);
 
@@ -252,7 +252,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const broadcastSessionsChanged = React.useCallback(() => {
     if (typeof window !== "undefined" && activeAgentId) {
       window.dispatchEvent(
-        new CustomEvent("bkclaw:sessions-changed", {
+        new CustomEvent("bkcrab:sessions-changed", {
           detail: { agentId: activeAgentId },
         }),
       );

@@ -14,7 +14,7 @@ cp -r web/out internal/setup/web
 VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-BUILDINFO=github.com/qs3c/bkclaw/internal/buildinfo
+BUILDINFO=github.com/qs3c/bkcrab/internal/buildinfo
 LDFLAGS="-X main.version=$VERSION -X main.commit=$COMMIT -X main.date=$DATE \
  -X $BUILDINFO.Version=$VERSION -X $BUILDINFO.Commit=$COMMIT -X $BUILDINFO.Date=$DATE"
-go build -ldflags "$LDFLAGS" -o tmp/bkclaw ./cmd/bkclaw
+go build -ldflags "$LDFLAGS" -o tmp/bkcrab ./cmd/bkcrab

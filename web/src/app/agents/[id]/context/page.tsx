@@ -212,7 +212,7 @@ export default function AgentContextPage() {
           <span>
             插件和 MCP 工具不受模式影响，始终可用。创建插件请参阅{" "}
             <code className="text-[11px]">
-              ~/.bkclaw/plugins/bkclaw-plugin-demo
+              ~/.bkcrab/plugins/bkcrab-plugin-demo
             </code>{" "}
             查看最小示例。
           </span>

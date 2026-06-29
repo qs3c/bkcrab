@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/memory"
-	"github.com/qs3c/bkclaw/internal/provider"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/memory"
+	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 type fakeMemStore struct {

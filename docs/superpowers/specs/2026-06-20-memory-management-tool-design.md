@@ -6,7 +6,7 @@
 
 ## 1. Context
 
-BkClaw now has two reasonably complete memory extraction triggers:
+BkCrab now has two reasonably complete memory extraction triggers:
 
 - Model-initiated persistence: the model is instructed to update `USER.md` and `MEMORY.md` during the turn.
 - Cadence persistence: every N completed, unextracted turns are claimed via `turn_status` and `extraction_id`, then replayed from `session_messages` into `AutoPersistMemory`.
@@ -21,7 +21,7 @@ That creates several issues:
 - Generic file writes can overwrite the entire memory blob and lose unrelated entries.
 - Model-initiated writes and cadence extraction both mutate the same files, but not through a shared manager.
 
-Hermes has a useful pattern here: a dedicated `memory` tool with add, replace, remove, and batch operations; strict safety scanning; duplicate handling; size budgets; and a pending approval layer. BkClaw should adopt the dedicated managed-memory boundary first, without taking on a full provider plugin architecture yet.
+Hermes has a useful pattern here: a dedicated `memory` tool with add, replace, remove, and batch operations; strict safety scanning; duplicate handling; size budgets; and a pending approval layer. BkCrab should adopt the dedicated managed-memory boundary first, without taking on a full provider plugin architecture yet.
 
 ## 2. Decision
 
@@ -111,7 +111,7 @@ The manager should own serialization. Context building must render managed entri
 Use a stable marker and delimiter inside the existing `agent_files.content` blob:
 
 ```markdown
-<!-- bkclaw-memory:v1 target=memory -->
+<!-- bkcrab-memory:v1 target=memory -->
 entry one
 
 §

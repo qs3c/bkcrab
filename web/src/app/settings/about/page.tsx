@@ -6,9 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { getStatus, type StatusResponse } from "@/lib/api";
 
-const UPGRADE_CMD = "bkclaw upgrade";
+const UPGRADE_CMD = "bkcrab upgrade";
 
-const RELEASES_URL = "https://github.com/qs3c/bkclaw/releases";
+const RELEASES_URL = "https://github.com/qs3c/bkcrab/releases";
 
 export default function AboutSettingsPage() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -43,7 +43,7 @@ export default function AboutSettingsPage() {
 
       <div className="rounded-lg border border-border bg-card p-5 space-y-3">
         <div className="flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">BkClaw</span>
+          <span className="text-sm text-muted-foreground">BkCrab</span>
           <code className="text-sm font-mono bg-muted px-2 py-0.5 rounded">
             {version}
           </code>

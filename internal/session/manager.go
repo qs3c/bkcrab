@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/provider"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // Session 保存 (channel, accountID, chatID) 三元组内一个对话线程的消息历史。

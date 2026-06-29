@@ -2,7 +2,7 @@
 // 下载的文件、中间数据等）的持久化 blob 存储。
 //
 // 目前提供的两种实现：
-//   - LocalFS：写入 ~/.bkclaw/workspaces/<agent>/ 下。默认值；用于
+//   - LocalFS：写入 ~/.bkcrab/workspaces/<agent>/ 下。默认值；用于
 //     单主机部署，保持现有文件系统语义不变。
 //   - S3：写入任何兼容 S3 的存储桶（AWS S3, MinIO, R2, B2, ...）。
 //     无状态多 Pod 部署必需——即使文件系统是 Pod 本地的，

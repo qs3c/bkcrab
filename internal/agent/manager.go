@@ -5,14 +5,14 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/agent/tools"
-	"github.com/qs3c/bkclaw/internal/bus"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/provider"
-	"github.com/qs3c/bkclaw/internal/session"
-	"github.com/qs3c/bkclaw/internal/store"
-	"github.com/qs3c/bkclaw/internal/usage"
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/agent/tools"
+	"github.com/qs3c/bkcrab/internal/bus"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/session"
+	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/usage"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // providerForAgent 为单个代理选择一个 LLM 提供商。解析：
@@ -159,7 +159,7 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 	ag := NewAgentWithSkillsCfg(rc, providerForAgent(rc, prov), mb, homeDir, m.opts.globalSkillsCfg)
 	ag.SetOwnerUserID(m.uid)
 	// 每个用户的技能桶：聊天时“技能/...”将路由写入
-	// ~/.bkclaw/users/<uid>/，其中 SkillsLoader 的“个人”层
+	// ~/.bkcrab/users/<uid>/，其中 SkillsLoader 的“个人”层
 	// 还进行扫描（请参阅 SkillsLoader.WithUserID）。设置用户ID
 	// 预先注册（下面的 systemFileStore 分支也设置
 	// 它，但仅当内存存储已连接时 - 没有这个葫芦

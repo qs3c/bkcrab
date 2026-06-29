@@ -3,8 +3,8 @@ package agent
 import (
 	"context"
 
-	"github.com/qs3c/bkclaw/internal/memory"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/memory"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // MemoryStoreAdapter 通过底层存储暴露代理的身份和内存文件。

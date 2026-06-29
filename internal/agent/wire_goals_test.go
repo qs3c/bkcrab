@@ -3,9 +3,9 @@ package agent
 import (
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/agent/goal"
-	"github.com/qs3c/bkclaw/internal/agent/tools"
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/agent/goal"
+	"github.com/qs3c/bkcrab/internal/agent/tools"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 // newAgentForWireTest builds the minimal Agent skeleton the wiring

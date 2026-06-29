@@ -16,7 +16,7 @@ import { ChatRowActions } from "@/components/chat-row-actions";
 
 // 聊天会话拖拽时在 dataTransfer 中携带的 MIME 类型。自定义类型，
 // 避免响应无关拖放（从应用外拖入文本、桌面文件等）。
-export const CHAT_DRAG_MIME = "application/x-bkclaw-chat";
+export const CHAT_DRAG_MIME = "application/x-bkcrab-chat";
 
 // 限制侧边栏列表长度，避免一个活跃智能体把其他导航项推出屏幕。
 // 完整列表在 /agents/<id>/chats，带分页 —— 末尾的"更多…"行链接过去。
@@ -83,7 +83,7 @@ export function NavSessions({
   const broadcastChange = () => {
     if (typeof window !== "undefined") {
       window.dispatchEvent(
-        new CustomEvent("bkclaw:sessions-changed", {
+        new CustomEvent("bkcrab:sessions-changed", {
           detail: { agentId },
         }),
       );

@@ -18,16 +18,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 // Feishu（飞书）bot 适配器。Webhook 驱动：入站消息通过飞书开放平台
-// HTTPS POST 到 bkclaw 的 webhook 路由到达（在 internal/setup/server.go
+// HTTPS POST 到 bkcrab 的 webhook 路由到达（在 internal/setup/server.go
 // 中设置）；出站回复通过 /open-apis/im/v1/messages 发送，使用我们按需
 // 获取并缓存的 tenant_access_token。
 //
 // 飞书也提供长连接（WebSocket），但使用 Protobuf 帧格式——没有官方 SDK
-// 手写协议面积太大。Webhook 仅 JSON 且与现有 bkclaw HTTP 服务器集成。
+// 手写协议面积太大。Webhook 仅 JSON 且与现有 bkcrab HTTP 服务器集成。
 // 权衡：需要公共可达 URL。
 //
 // AppID 是 credential_key + accountID。AppSecret 存储在 AccountConfig.BotToken
@@ -258,7 +258,7 @@ func (l *Feishu) HandleWebhook(body []byte) (responseBody []byte, status int, er
 	_ = json.Unmarshal(body, &peek)
 	if peek.Encrypt != "" {
 		if l.encryptKey == "" {
-			return nil, http.StatusBadRequest, errors.New("feishu webhook is encrypted but no encryptKey configured (set 加密策略 → Encrypt Key in bkclaw connect dialog, or clear it in feishu console)")
+			return nil, http.StatusBadRequest, errors.New("feishu webhook is encrypted but no encryptKey configured (set 加密策略 → Encrypt Key in bkcrab connect dialog, or clear it in feishu console)")
 		}
 		plain, derr := decryptFeishuPayload(l.encryptKey, peek.Encrypt)
 		if derr != nil {
@@ -282,11 +282,11 @@ func (l *Feishu) HandleWebhook(body []byte) (responseBody []byte, status int, er
 		}
 		// 未配置验证令牌时安全失败。webhook URL 是公开的；没有共享密钥可以比对，
 		// 知道 /api/feishu/webhook/<appId> 的任何人都可以驱动机器人。操作员必须
-		// 在飞书开发者控制台设置验证令牌*并*将其粘贴到 bkclaw 连接对话框中。
+		// 在飞书开发者控制台设置验证令牌*并*将其粘贴到 bkcrab 连接对话框中。
 		// 使用常量时间比较以避免令牌的时序泄漏。
 		if l.verificationToken == "" {
 			return nil, http.StatusUnauthorized,
-				errors.New("feishu webhook rejected: no verification token configured — set it in the Feishu console and bkclaw connect dialog")
+				errors.New("feishu webhook rejected: no verification token configured — set it in the Feishu console and bkcrab connect dialog")
 		}
 		if subtle.ConstantTimeCompare([]byte(token), []byte(l.verificationToken)) != 1 {
 			return nil, http.StatusUnauthorized, errors.New("verification token mismatch")
@@ -310,7 +310,7 @@ func (l *Feishu) HandleWebhook(body []byte) (responseBody []byte, status int, er
 	// 使用常量时间比较以将令牌保持在时序攻击范围之外。
 	if l.verificationToken == "" {
 		return nil, http.StatusUnauthorized,
-			errors.New("feishu webhook rejected: no verification token configured — set it in the Feishu console and bkclaw connect dialog")
+			errors.New("feishu webhook rejected: no verification token configured — set it in the Feishu console and bkcrab connect dialog")
 	}
 	if subtle.ConstantTimeCompare([]byte(env.Header.Token), []byte(l.verificationToken)) != 1 {
 		return nil, http.StatusUnauthorized, errors.New("verification token mismatch")

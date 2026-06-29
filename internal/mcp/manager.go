@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkcrab/internal/config"
 )
 
 // Manager 管理与多个 MCP 服务器的连接。

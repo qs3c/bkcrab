@@ -22,9 +22,9 @@ func TestIdentityFileBlockedRespectsCallerFlag(t *testing.T) {
 		{"agent.json", false, true},
 
 		// Absolute path with identity basename still gets caught — model
-		// often produces "/data/.bkclaw/agents/<id>/SOUL.md" from the
+		// often produces "/data/.bkcrab/agents/<id>/SOUL.md" from the
 		// Working Directory hint in the system prompt.
-		{"/var/lib/bkclaw/agents/xyz/SOUL.md", false, true},
+		{"/var/lib/bkcrab/agents/xyz/SOUL.md", false, true},
 		{"./SOUL.md", false, true},
 
 		// Per-chatter files: NOT gated even for non-admin — they're the

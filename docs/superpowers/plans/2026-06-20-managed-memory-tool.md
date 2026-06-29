@@ -77,7 +77,7 @@ func TestScanMemoryStrictDetectsMemoryThreats(t *testing.T) {
 }
 
 func TestScanMemoryStrictAllowsPlainFacts(t *testing.T) {
-	threats := ScanMemoryStrict("The user prefers concise Chinese replies and is working on BkClaw memory tooling.")
+	threats := ScanMemoryStrict("The user prefers concise Chinese replies and is working on BkCrab memory tooling.")
 	if len(threats) != 0 {
 		t.Fatalf("unexpected threats: %#v", threats)
 	}
@@ -219,7 +219,7 @@ import (
 )
 
 func TestParseManagedEntries(t *testing.T) {
-	doc := "<!-- bkclaw-memory:v1 target=memory -->\nalpha\n\n\xC2\xA7\n\nbeta\nline two\n"
+	doc := "<!-- bkcrab-memory:v1 target=memory -->\nalpha\n\n\xC2\xA7\n\nbeta\nline two\n"
 	entries, managed := parseEntries(TargetMemory, []byte(doc))
 	if !managed {
 		t.Fatal("expected managed format")
@@ -373,7 +373,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/privacy"
+	"github.com/qs3c/bkcrab/internal/privacy"
 )
 
 type Target string
@@ -389,7 +389,7 @@ const (
 	ActionRemove  Action = "remove"
 )
 
-const markerPrefix = "<!-- bkclaw-memory:v1 target="
+const markerPrefix = "<!-- bkcrab-memory:v1 target="
 const delimiter = "\n\n\xC2\xA7\n\n"
 
 var ErrNotFound = errors.New("memory: not found")
@@ -821,7 +821,7 @@ If the concurrent SQLite test reports lock contention, update `NewDBStore` SQLit
 
 - [ ] **Step 5: Extend memory store adapter**
 
-In `internal/agent/memory_store_adapter.go`, import `github.com/qs3c/bkclaw/internal/memory` and add:
+In `internal/agent/memory_store_adapter.go`, import `github.com/qs3c/bkcrab/internal/memory` and add:
 
 ```go
 func (a *MemoryStoreAdapter) MutateWorkspaceFile(ctx context.Context, agentID, userID, filename string, fn memory.Mutator) ([]byte, error) {
@@ -872,7 +872,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/memory"
+	"github.com/qs3c/bkcrab/internal/memory"
 )
 
 type fakeSystemMemoryStore struct {
@@ -1014,7 +1014,7 @@ Expected: FAIL because `SetManagedMemoryConfig`, `MutateWorkspaceFile`, or the `
 
 - [ ] **Step 3: Extend registry state**
 
-In `internal/agent/tools/registry.go`, import `github.com/qs3c/bkclaw/internal/memory`, extend `SystemFileStore`, and add config:
+In `internal/agent/tools/registry.go`, import `github.com/qs3c/bkcrab/internal/memory`, extend `SystemFileStore`, and add config:
 
 ```go
 type SystemFileStore interface {
@@ -1051,7 +1051,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/qs3c/bkclaw/internal/memory"
+	"github.com/qs3c/bkcrab/internal/memory"
 )
 
 type memoryToolArgs struct {
@@ -1336,7 +1336,7 @@ Expected: FAIL because prompt still instructs `write_file` and raw unsafe memory
 
 - [ ] **Step 3: Render managed memory in `Memory` loads**
 
-In `internal/agent/memory.go`, import `github.com/qs3c/bkclaw/internal/memory` as `managedmemory` to avoid colliding with the `Memory` type. Add:
+In `internal/agent/memory.go`, import `github.com/qs3c/bkcrab/internal/memory` as `managedmemory` to avoid colliding with the `Memory` type. Add:
 
 ```go
 func (m *Memory) managedMemoryManager() *managedmemory.Manager {
@@ -1433,8 +1433,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/provider"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 type fakePersistProvider struct {
@@ -1459,13 +1459,13 @@ func TestAutoPersistMemoryWritesManagedEntries(t *testing.T) {
 	}
 	memoryRaw := string(st.files[testAgentID+"|"+chatterUID+"|MEMORY.md"])
 	userRaw := string(st.files[testAgentID+"|"+chatterUID+"|USER.md"])
-	if !strings.Contains(memoryRaw, "<!-- bkclaw-memory:v1 target=memory -->") {
+	if !strings.Contains(memoryRaw, "<!-- bkcrab-memory:v1 target=memory -->") {
 		t.Fatalf("MEMORY.md not managed: %q", memoryRaw)
 	}
 	if !strings.Contains(memoryRaw, "Project uses managed memory") {
 		t.Fatalf("missing memory fact: %q", memoryRaw)
 	}
-	if !strings.Contains(userRaw, "<!-- bkclaw-memory:v1 target=user -->") {
+	if !strings.Contains(userRaw, "<!-- bkcrab-memory:v1 target=user -->") {
 		t.Fatalf("USER.md not managed: %q", userRaw)
 	}
 	if !strings.Contains(userRaw, "Prefers Chinese") {
@@ -1663,7 +1663,7 @@ registry.SetManagedMemoryConfig(memory.Config{
 })
 ```
 
-Import `github.com/qs3c/bkclaw/internal/memory` in `loop.go`.
+Import `github.com/qs3c/bkcrab/internal/memory` in `loop.go`.
 
 - [ ] **Step 5: Run config tests and verify GREEN**
 

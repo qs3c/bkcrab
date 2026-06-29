@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/bus"
-	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkcrab/internal/bus"
+	"github.com/qs3c/bkcrab/internal/config"
 )
 
 // slashResult 保存斜杠命令的结果。
@@ -125,7 +125,7 @@ func (a *Agent) handleSlashCommand(ctx context.Context, msg bus.InboundMessage) 
 		return slashResult{handled: true, reply: a.slashHelp()}
 
 	case "/version":
-		return slashResult{handled: true, reply: fmt.Sprintf("⚡ BkClaw\nAgent: %s\nModel: %s", a.name, a.model)}
+		return slashResult{handled: true, reply: fmt.Sprintf("⚡ BkCrab\nAgent: %s\nModel: %s", a.name, a.model)}
 
 	case "/whoami":
 		return slashResult{
@@ -154,18 +154,18 @@ var writeSlashCommands = map[string]bool{
 
 // isAdminChatter 判断聊天者是否被允许在此频道运行写模式斜杠命令。
 //
-// Web / api：聊天者的 UserID 是 BkClaw 用户 UUID——拥有者通过
+// Web / api：聊天者的 UserID 是 BkCrab 用户 UUID——拥有者通过
 // 与代理的 ownerUserID 直接相等来识别。不需要每平台白名单。
 //
 // IM 渠道（discord、telegram、slack 等）：UserID 是平台自身的
-// 用户 ID（Discord 雪花、Telegram 数字 ID 等），与代理的 BkClaw
+// 用户 ID（Discord 雪花、Telegram 数字 ID 等），与代理的 BkCrab
 // 拥有者没有固有联系。拥有者在 agent.json 的 `admins[channel]`
 // 中注册平台 ID 以授予访问权限——并且为了防止单用户开发
 // 安装被锁定在自己的代理之外，渠道为空/缺失的白名单会回退到
 // "任何人都可以运行"（旧版行为）。关心群聊保护的运维人员填充
 // 列表以锁定。
 func (a *Agent) isAdminChatter(msg bus.InboundMessage) bool {
-	// Web / api 直接携带 BkClaw UUID；拥有者检查即可。
+	// Web / api 直接携带 BkCrab UUID；拥有者检查即可。
 	if msg.Channel == "web" || msg.Channel == "api" {
 		return msg.UserID != "" && msg.UserID == a.ownerUserID
 	}
@@ -284,7 +284,7 @@ func (a *Agent) slashStatus(msg bus.InboundMessage) slashResult {
 
 	soul := a.loadSoulName()
 
-	status := fmt.Sprintf("⚡ BkClaw Status\n"+
+	status := fmt.Sprintf("⚡ BkCrab Status\n"+
 		"─────────────────\n"+
 		"Agent:       %s\n"+
 		"Model:       %s\n"+
@@ -460,7 +460,7 @@ func (a *Agent) loadSoulName() string {
 }
 
 func (a *Agent) slashHelp() string {
-	return `⚡ BkClaw Commands
+	return `⚡ BkCrab Commands
 
 Conversation
   /new, /reset    — Clear session history

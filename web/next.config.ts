@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const isDevelopment = process.env.NODE_ENV === "development";
 const backendOrigin =
-  process.env.BKCLAW_BACKEND_ORIGIN || "http://127.0.0.1:18953";
+  process.env.BKCRAB_BACKEND_ORIGIN || "http://127.0.0.1:18953";
 
 const nextConfig: NextConfig = {
   ...(isDevelopment

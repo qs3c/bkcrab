@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/memory"
+	"github.com/qs3c/bkcrab/internal/memory"
 )
 
 // TestApplyEdit pins the contract that edit_file's three backends share:

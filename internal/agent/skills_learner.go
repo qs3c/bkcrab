@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkcrab/internal/provider"
 )
 
 // SkillsLearner 观察复杂任务并提取可复用的技能模式。
@@ -84,7 +84,7 @@ func (sl *SkillsLearner) MaybeExtract(ctx context.Context, messages []provider.M
 func (sl *SkillsLearner) loadSkillLearnerPrompt() string {
 	// 在技能目录中搜索 skill-learner SKILL.md
 	for _, dir := range sl.skillDirs {
-		path := filepath.Join(dir, "bkclaw-skill-learner", "SKILL.md")
+		path := filepath.Join(dir, "bkcrab-skill-learner", "SKILL.md")
 		if data, err := os.ReadFile(path); err == nil {
 			slog.Debug("loaded skill-learner prompt from file", "path", path)
 			return string(data)

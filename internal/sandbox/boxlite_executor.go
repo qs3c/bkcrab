@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // Boxlite REST 沙箱提供者——遵循 OpenAPI 规范
@@ -51,7 +51,7 @@ const (
 	defaultBoxliteURL      = "https://api.dev.boxlite.ai/api/v1"
 	defaultBoxliteClientID = "default"
 	defaultBoxlitePrefix   = "default"
-	defaultBoxliteImage    = "thinkany/bkclaw-sandbox:latest"
+	defaultBoxliteImage    = "thinkany/bkcrab-sandbox:latest"
 )
 
 // BoxliteExecutor 针对远程 Boxlite REST API 实现 Executor。

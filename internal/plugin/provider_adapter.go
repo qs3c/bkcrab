@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // pluginProvider 将 {plugin, category, name} 三元组包装为

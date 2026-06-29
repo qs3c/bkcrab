@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkcrab/internal/config"
 )
 
 // --- 插件 ---

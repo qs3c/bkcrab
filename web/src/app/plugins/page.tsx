@@ -97,7 +97,7 @@ export default function PluginsPage() {
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">插件</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            使用自定义插件扩展 BkClaw
+            使用自定义插件扩展 BkCrab
           </p>
         </div>
         <Button variant="outline">

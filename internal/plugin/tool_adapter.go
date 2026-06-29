@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/qs3c/bkclaw/internal/agent/tools"
+	"github.com/qs3c/bkcrab/internal/agent/tools"
 )
 
 // RegisterPluginTools 查询工具插件获取其工具列表，并在给定的工具注册表中

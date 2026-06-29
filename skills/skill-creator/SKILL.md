@@ -3,9 +3,9 @@ name: skill-creator
 description: Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.
 ---
 
-## BkClaw runtime — read this first
+## BkCrab runtime — read this first
 
-This skill is invoked from a BkClaw agent. The host runtime has its
+This skill is invoked from a BkCrab agent. The host runtime has its
 own path convention you MUST follow when persisting a new skill;
 ignoring it leaves the new skill in a workspace folder where nothing
 ever discovers it (symptom: the skill appears under "YOUR FILES" in
@@ -14,7 +14,7 @@ chat instead of being available the next turn).
 When you call the `write_file` tool for a new skill's files, prefix
 every path with `skills/<skill-name>/`. The runtime routes any path
 matching that prefix to the chatter's per-user skills bucket on host
-disk (`~/.bkclaw/users/<userId>/skills/<name>/`). SkillsLoader scans
+disk (`~/.bkcrab/users/<userId>/skills/<name>/`). SkillsLoader scans
 that bucket on the next turn and exposes the skill on every agent the
 chatter uses — so a "PDF generator" sunk while talking to agent A is
 also available when they switch to agent B. The write is also
@@ -36,7 +36,7 @@ message" so they don't expect immediate use.
 
 The rest of this document was written for Claude Code / claude.ai and
 talks about absolute paths, `/tmp/` staging, packaging `.skill` files,
-etc. On BkClaw, ignore those file-layout details: the only thing
+etc. On BkCrab, ignore those file-layout details: the only thing
 that persists a skill is `write_file` calls with the `skills/<name>/`
 prefix above. Eval / benchmark scaffolding (the "evaluate, iterate,
 package" parts of this guide) still applies if the user asks for it —

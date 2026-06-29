@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 // TaskStatus 表示任务的当前状态。

@@ -2,7 +2,7 @@
 
 > **给 agentic workers 的要求:** 执行本计划时必须使用 `superpowers:subagent-driven-development`，推荐；或使用 `superpowers:executing-plans`。步骤使用复选框格式，便于逐项推进和复核。
 
-**目标:** 为 BkClaw 增加三类上下文压缩流程：预判性压缩、手动 `/compact` 检查点压缩、上下文超限后的紧急压缩；同时移除对 `memory_log` 的 tool result 占位依赖，并在 LLM 总结失败时降级到非 LLM 压缩。
+**目标:** 为 BkCrab 增加三类上下文压缩流程：预判性压缩、手动 `/compact` 检查点压缩、上下文超限后的紧急压缩；同时移除对 `memory_log` 的 tool result 占位依赖，并在 LLM 总结失败时降级到非 LLM 压缩。
 
 **架构:** 现有 `CompactMessages` 从单一路径改为 options-driven 的压缩引擎。模型上下文窗口从 provider model metadata 解析，agent 在调用压缩时传入模型预算、输出预留、系统提示和工具定义等请求开销。旧 tool result 使用本地硬规则生成一行摘要，LLM summary 失败会重试 3 次，然后使用 deterministic fallback。
 
@@ -14,7 +14,7 @@
 
 工作区：
 
-- 路径：`D:\fromGithub\bkclaw\.worktrees\context-compaction-modes`
+- 路径：`D:\fromGithub\bkcrab\.worktrees\context-compaction-modes`
 - 分支：`context-compaction-modes`
 - 基于：`main`
 - 已确认是 linked worktree：`git rev-parse --git-dir` 与 `git rev-parse --git-common-dir` 不同。
@@ -23,18 +23,18 @@
 
 - 沙箱内 `go test ./...` 会被 Go build cache 权限挡住。
 - 非沙箱执行 `go test ./...` 在 main 上已有失败：
-  - `cmd/bkclaw` 和 `internal/setup`：`internal\setup\embed.go:5:12: pattern all:web: no matching files found`
-  - `internal/agent/tools`：`TestIdentityFileBlockedRespectsCallerFlag` 对 `/var/lib/bkclaw/agents/xyz/SOUL.md` 的阻断断言失败。
+  - `cmd/bkcrab` 和 `internal/setup`：`internal\setup\embed.go:5:12: pattern all:web: no matching files found`
+  - `internal/agent/tools`：`TestIdentityFileBlockedRespectsCallerFlag` 对 `/var/lib/bkcrab/agents/xyz/SOUL.md` 的阻断断言失败。
 - 与本次改动最相关的 `internal/agent` 基线已通过。
 
 ## 测试环境硬约束
 
 本机安全软件会拦截带 `claw` 字样的 exe，也会拦截路径中带 `claw` 的可执行文件运行。执行本计划时遵守以下规则：
 
-- 不从 `D:\fromGithub\bkclaw` 或其子路径运行任何生成的 exe。
+- 不从 `D:\fromGithub\bkcrab` 或其子路径运行任何生成的 exe。
 - 不主动生成文件名含 `claw` 的 exe。
 - 所有 Go 测试都把 build cache 和临时目录指到不含 `claw` 的路径。
-- 避免执行 `go test ./...`，因为它可能编译或运行 `cmd/bkclaw` 相关 test binary。
+- 避免执行 `go test ./...`，因为它可能编译或运行 `cmd/bkcrab` 相关 test binary。
 
 每次执行 Go 测试前，在同一个 PowerShell 会话中设置：
 
@@ -50,7 +50,7 @@ $env:GOTMPDIR = "D:\tmp\ctxmode-go-tmp"
 New-Item -ItemType Directory -Force D:\tmp\ctxmode-bin | Out-Null
 $env:GOCACHE = "D:\tmp\ctxmode-go-cache"
 $env:GOTMPDIR = "D:\tmp\ctxmode-go-tmp"
-go build -o D:\tmp\ctxmode-bin\agent.exe ./cmd/bkclaw
+go build -o D:\tmp\ctxmode-bin\agent.exe ./cmd/bkcrab
 ```
 
 本计划默认只跑聚焦包测试：`./internal/config`、`./internal/gateway`、`./internal/agent`。
@@ -297,7 +297,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkcrab/internal/provider"
 )
 
 type countingSummarizer struct {
@@ -511,7 +511,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkcrab/internal/provider"
 )
 
 func TestSanitizeToolPairsDropsOrphanToolResult(t *testing.T) {
@@ -873,7 +873,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkcrab/internal/provider"
 )
 
 type flakySummarizer struct {
@@ -1450,7 +1450,7 @@ go test ./internal/config ./internal/gateway ./internal/agent
 go test ./...
 ```
 
-原因：本机安全软件会拦截带 `claw` 的 exe 和路径，全量测试可能编译或运行 `cmd/bkclaw` 相关 test binary。最终说明中记录：
+原因：本机安全软件会拦截带 `claw` 的 exe 和路径，全量测试可能编译或运行 `cmd/bkcrab` 相关 test binary。最终说明中记录：
 
 - 全量测试按本机安全约束跳过。
 - 已运行 `./internal/config ./internal/gateway ./internal/agent`。

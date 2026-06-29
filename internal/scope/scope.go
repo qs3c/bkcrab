@@ -27,8 +27,8 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // HTTP 层的作用域标识符。存储层直接以 (user_id, agent_id) 为键；

@@ -269,15 +269,15 @@ let authToken = "";
 export function setAuthToken(token: string) {
   authToken = token;
   if (token) {
-    localStorage.setItem("bkclaw_token", token);
+    localStorage.setItem("bkcrab_token", token);
   } else {
-    localStorage.removeItem("bkclaw_token");
+    localStorage.removeItem("bkcrab_token");
   }
 }
 
 export function getAuthToken(): string {
   if (!authToken) {
-    authToken = localStorage.getItem("bkclaw_token") || "";
+    authToken = localStorage.getItem("bkcrab_token") || "";
   }
   return authToken;
 }
@@ -328,7 +328,7 @@ export interface MeResponse {
   actAsUserId?: string;
   readOnly?: boolean;
   // 'self-hosted'（默认）或 'hosted' — 由守护进程上的
-  // BKCLAW_DEPLOY 环境变量决定。前端据此限制仅限本地的
+  // BKCRAB_DEPLOY 环境变量决定。前端据此限制仅限本地的
   // 便利功能（在 Finder 中打开、未来的 $EDITOR 钩子）。
   deployMode?: "self-hosted" | "hosted";
   error?: string;

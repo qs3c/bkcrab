@@ -1,5 +1,5 @@
-﻿// Package agentcli 提供了 bkclaw 的 `agents …` CLI 子命令在操作员自身
-// BkClaw 存储上执行的数据层操作。CLI 是对网关和仪表盘所使用的同一
+﻿// Package agentcli 提供了 bkcrab 的 `agents …` CLI 子命令在操作员自身
+// BkCrab 存储上执行的数据层操作。CLI 是对网关和仪表盘所使用的同一
 // 存储的轻量便捷封装——通过此方式创建的代理与通过 Web 界面创建的
 // 代理完全一致。
 package agentcli
@@ -15,10 +15,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/scope"
-	"github.com/qs3c/bkclaw/internal/store"
-	"github.com/qs3c/bkclaw/internal/users"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/scope"
+	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/users"
 )
 
 // validateName 与仪表盘的唯一校验保持一致：去除空格后不为空。
@@ -208,7 +208,7 @@ func ensureOwner(ctx context.Context, st store.Store, opts InitOptions) (*users.
 		}
 		generated = password
 	}
-	email := defaultStr(opts.Email, username+"@local.bkclaw")
+	email := defaultStr(opts.Email, username+"@local.bkcrab")
 	acct, err := accts.Create(ctx, users.CreateInput{
 		Username:    username,
 		Email:       email,

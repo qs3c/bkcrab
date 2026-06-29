@@ -1,11 +1,11 @@
 #!/bin/sh
-# BkClaw 安装程序
-# 用法：curl -fsSL https://raw.githubusercontent.com/qs3c/bkclaw/main/install.sh | sh
-# 或者：BKCLAW_INSTALL_DIR=~/bin curl -fsSL ... | sh
+# BkCrab 安装程序
+# 用法：curl -fsSL https://raw.githubusercontent.com/qs3c/bkcrab/main/install.sh | sh
+# 或者：BKCRAB_INSTALL_DIR=~/bin curl -fsSL ... | sh
 set -e
 
-REPO="qs3c/bkclaw"
-BINARY="bkclaw"
+REPO="qs3c/bkcrab"
+BINARY="bkcrab"
 
 # 颜色（仅在终端支持时）
 if [ -t 1 ]; then
@@ -47,8 +47,8 @@ detect_platform() {
 
 # ── 决定安装目录（无需 sudo，无需密码）─────────────────────────────────────
 choose_install_dir() {
-  if [ -n "${BKCLAW_INSTALL_DIR:-}" ]; then
-    INSTALL_DIR="$BKCLAW_INSTALL_DIR"
+  if [ -n "${BKCRAB_INSTALL_DIR:-}" ]; then
+    INSTALL_DIR="$BKCRAB_INSTALL_DIR"
   else
     INSTALL_DIR="$HOME/.local/bin"
   fi
@@ -79,9 +79,9 @@ ensure_path() {
   # 写入 PATH 导出
   if [ "$_shell" = "fish" ]; then
     mkdir -p "$(dirname "$RC")"
-    printf '\n# BkClaw\nfish_add_path "%s"\n' "$INSTALL_DIR" >> "$RC"
+    printf '\n# BkCrab\nfish_add_path "%s"\n' "$INSTALL_DIR" >> "$RC"
   else
-    printf '\n# BkClaw\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$RC"
+    printf '\n# BkCrab\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$RC"
   fi
 
   NEEDS_SOURCE=1
@@ -136,7 +136,7 @@ install_binary() {
 
 # ── 主程序 ───────────────────────────────────────────────────────────────────
 main() {
-  printf "\n${BOLD}  ⚡ BkClaw Installer${NC}\n"
+  printf "\n${BOLD}  ⚡ BkCrab Installer${NC}\n"
   printf "  ─────────────────────\n\n"
 
   detect_platform
@@ -152,15 +152,15 @@ main() {
   ensure_path
 
   printf "\n"
-  success "BkClaw ${VERSION} installed → ${INSTALL_DIR}/${BINARY}"
+  success "BkCrab ${VERSION} installed → ${INSTALL_DIR}/${BINARY}"
   printf "\n"
 
   if [ "${NEEDS_SOURCE:-0}" = "1" ]; then
     printf "  ${YELLOW}Run this to activate:${NC}\n"
     printf "    source %s\n\n" "$SHELL_RC"
-    printf "  Or open a new terminal, then run: ${BOLD}bkclaw${NC}\n"
+    printf "  Or open a new terminal, then run: ${BOLD}bkcrab${NC}\n"
   else
-    printf "  Run: ${BOLD}bkclaw${NC}\n"
+    printf "  Run: ${BOLD}bkcrab${NC}\n"
     printf "  Opens the setup wizard in your browser.\n"
   fi
   printf "\n"

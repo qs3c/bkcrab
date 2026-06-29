@@ -20,7 +20,7 @@ import {
 import { Bot, ChevronsUpDownIcon, PlusIcon } from "lucide-react";
 
 // AgentAvatar 在可用时显示智能体上传的 /api/agents/{id}/files/avatar.png，
-// 无智能体时回退为 BkClaw 标志（平台头部），智能体未上传自定义头像时
+// 无智能体时回退为 BkCrab 标志（平台头部），智能体未上传自定义头像时
 //（图片 404）回退为 Bot 图标。
 function AgentAvatar({
   agentId,
@@ -38,7 +38,7 @@ function AgentAvatar({
     return (
       <img
         src="/logo.png"
-        alt="BkClaw"
+        alt="BkCrab"
         width={size}
         height={size}
         className="shrink-0 rounded-lg object-contain"
@@ -80,7 +80,7 @@ export interface AgentSwitcherItem {
   //
   //   activeAgentId 已设置   → 显示该智能体的显示名称和 ID，下拉列表
   //                           列出每个智能体供快速切换
-  //   activeAgentId 未设置   → 显示"BkClaw"（平台品牌）。下拉列表
+  //   activeAgentId 未设置   → 显示"BkCrab"（平台品牌）。下拉列表
   //                           仍然列出智能体，以便用户从任何非智能体页面跳入。
   //
   // 我们从不会自动将第一个智能体提升到头部 —— 管理页面（智能体列表、
@@ -115,7 +115,7 @@ export function AgentSwitcher({
     [onSelect, router],
   );
 
-  const headerLabel = active ? active.name || active.id : "BkClaw";
+  const headerLabel = active ? active.name || active.id : "BkCrab";
 
   if (locked) {
     return (

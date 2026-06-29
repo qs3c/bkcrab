@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/agent/goal"
-	"github.com/qs3c/bkclaw/internal/bus"
-	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkcrab/internal/agent/goal"
+	"github.com/qs3c/bkcrab/internal/bus"
+	"github.com/qs3c/bkcrab/internal/provider"
 )
 
 // memGoalStore is the in-memory goal.Store the hook tests use.

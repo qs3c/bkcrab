@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // fakeExecutor counts Exec calls so tests can prove the sandbox was actually

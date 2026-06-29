@@ -12,9 +12,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/skills"
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/skills"
+	"github.com/qs3c/bkcrab/internal/workspace"
 	"gopkg.in/yaml.v3"
 )
 
@@ -33,8 +33,8 @@ type Skill struct {
 // SkillFrontmatter 表示 SKILL.md 文件的 YAML frontmatter。
 //
 // Env 是声明可配置环境变量的便捷快捷方式——等同于将它们写在
-// metadata.bkclaw.env 下，但免去了技能作者在不需要将技能发布到
-// 非 bkclaw 运行时时的命名空间嵌套。HTTP 层合并两个来源，
+// metadata.bkcrab.env 下，但免去了技能作者在不需要将技能发布到
+// 非 bkcrab 运行时时的命名空间嵌套。HTTP 层合并两个来源，
 // 冲突时顶级 Env 优先。
 type SkillFrontmatter struct {
 	Name        string         `yaml:"name"`
@@ -45,16 +45,16 @@ type SkillFrontmatter struct {
 }
 
 // SkillMetadata 表示技能元数据块。
-// 支持 "bkclaw" 和 "openclaw" 两种键以实现向后兼容。
+// 支持 "bkcrab" 和 "openclaw" 两种键以实现向后兼容。
 type SkillMetadata struct {
-	BkClaw   *OpenClawMeta `json:"bkclaw"`
+	BkCrab   *OpenClawMeta `json:"bkcrab"`
 	OpenClaw *OpenClawMeta `json:"openclaw"`
 }
 
-// Meta 返回有效的元数据，bkclaw 优先于 openclaw。
+// Meta 返回有效的元数据，bkcrab 优先于 openclaw。
 func (m *SkillMetadata) Meta() *OpenClawMeta {
-	if m.BkClaw != nil {
-		return m.BkClaw
+	if m.BkCrab != nil {
+		return m.BkCrab
 	}
 	return m.OpenClaw
 }
@@ -80,7 +80,7 @@ type OpenClawMeta struct {
 // 可选的。当名称匹配 /KEY|TOKEN|SECRET|PASSWORD/i 时，Secret 在 UI
 // 层默认为 true，因此作者通常不必设置它。
 //
-// 同时携带 json 和 yaml 标签，使其可以通过 metadata.bkclaw.env 路径
+// 同时携带 json 和 yaml 标签，使其可以通过 metadata.bkcrab.env 路径
 // （yaml→generic→json→struct，json 标签）以及通过新的顶级
 // frontmatter.Env 快捷方式（yaml→struct 直接，yaml 标签）往返。
 type SkillEnvSpec struct {
@@ -112,7 +112,7 @@ type SkillsLoader struct {
 	workspaceStore workspace.Store
 	agentID        string
 	// userID 是聊天者。设置后，LoadSkills 还会扫描每个用户的技能目录
-	// （~/.bkclaw/users/<uid>/skills/），使用户在与任何代理聊天时创建的
+	// （~/.bkcrab/users/<uid>/skills/），使用户在与任何代理聊天时创建的
 	// 技能可以在他们与之聊天的每个其他代理上重复使用。空值禁用此层
 	// （早于每个用户技能的旧版/单用户安装）。
 	userID string
@@ -143,7 +143,7 @@ func (sl *SkillsLoader) WithObjectStore(ws workspace.Store, agentID string) *Ski
 	return sl
 }
 
-// WithUserID 启用每个用户的技能层（~/.bkclaw/users/<uid>/skills）。
+// WithUserID 启用每个用户的技能层（~/.bkcrab/users/<uid>/skills）。
 // 与 WithObjectStore 一起设置时，水合还会拉取用户的伪所有者命名空间，
 // 使在另一个 Pod 上创建的技能镜像到此 Pod 的磁盘。空 userID 禁用此层。
 func (sl *SkillsLoader) WithUserID(userID string) *SkillsLoader {
@@ -159,7 +159,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 	// 幂等水合；存储按对象执行"大小匹配则跳过"。
 	if sl.workspaceStore != nil {
 		ctx := context.Background()
-		managedDir := bkclawManagedDir()
+		managedDir := bkcrabManagedDir()
 		if managedDir != "" {
 			keep := BundledSkillNames()
 			if err := skills.HydrateSkillsDown(ctx, sl.workspaceStore, skills.GlobalSkillOwner, managedDir, keep...); err != nil {
@@ -212,15 +212,15 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 		}
 	}
 
-	// 第 3 层：托管技能（~/.bkclaw/skills/）
-	managedDir := bkclawManagedDir()
+	// 第 3 层：托管技能（~/.bkcrab/skills/）
+	managedDir := bkcrabManagedDir()
 	for name, skill := range discoverSkillsEnhanced(managedDir, "managed") {
 		if !disabled[name] {
 			skillsMap[name] = skill
 		}
 	}
 
-	// 第 2 层：用户安装（~/.bkclaw/skills/）
+	// 第 2 层：用户安装（~/.bkcrab/skills/）
 	userDir := filepath.Join(sl.homeDir, "skills")
 	for name, skill := range discoverSkillsEnhanced(userDir, "user") {
 		if !disabled[name] {
@@ -445,25 +445,25 @@ func (sl *SkillsLoader) allSkillDirs() []string {
 		dirs = append(dirs, userDir)
 	}
 	dirs = append(dirs, filepath.Join(sl.homeDir, "skills"))
-	dirs = append(dirs, bkclawManagedDir())
+	dirs = append(dirs, bkcrabManagedDir())
 	dirs = append(dirs, sl.globalCfg.Load.ExtraDirs...)
 	return dirs
 }
 
-// userSkillsDir 返回 ~/.bkclaw/users/<uid>/skills（支持 BKCLAW_HOME）。
+// userSkillsDir 返回 ~/.bkcrab/users/<uid>/skills（支持 BKCRAB_HOME）。
 // 未设置 userID 时返回空，使加载器在单用户安装/旧版路径上完全跳过此层。
 func (sl *SkillsLoader) userSkillsDir() string {
 	if sl.userID == "" {
 		return ""
 	}
-	base := bkclawBaseDir()
+	base := bkcrabBaseDir()
 	if base == "" {
 		return ""
 	}
 	return filepath.Join(base, "users", sl.userID, "skills")
 }
 
-// userSkillsRootDir 是每个用户技能子树的主机父目录（~/.bkclaw/users/<uid>/）。
+// userSkillsRootDir 是每个用户技能子树的主机父目录（~/.bkcrab/users/<uid>/）。
 // 返回的形式末尾不带 "skills/"，以便 file.go 的路径解析器可以像处理代理
 // 主目录一样将相对的 "skills/foo/SKILL.md" 与其拼接；SkillsLoader 层通过
 // userSkillsDir（附加了 "skills/"）到达实际的子目录。
@@ -471,7 +471,7 @@ func userSkillsRootDir(userID string) string {
 	if userID == "" {
 		return ""
 	}
-	base := bkclawBaseDir()
+	base := bkcrabBaseDir()
 	if base == "" {
 		return ""
 	}
@@ -744,24 +744,24 @@ func checkGating(meta *SkillMetadata) (bool, string) {
 	return false, ""
 }
 
-// bkclawBaseDir 返回 $BKCLAW_HOME 或 $HOME/.bkclaw。用作
-// Skills/、users/<uid>/skills/ 等的父级。 荣誉 BKCLAW_HOME
+// bkcrabBaseDir 返回 $BKCRAB_HOME 或 $HOME/.bkcrab。用作
+// Skills/、users/<uid>/skills/ 等的父级。 荣誉 BKCRAB_HOME
 // 因此多实例开发（每个产品一个堆栈）保持隔离。
-func bkclawBaseDir() string {
-	if h := os.Getenv("BKCLAW_HOME"); h != "" {
+func bkcrabBaseDir() string {
+	if h := os.Getenv("BKCRAB_HOME"); h != "" {
 		return h
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".bkclaw")
+	return filepath.Join(home, ".bkcrab")
 }
 
-// bkclawManagedDir 返回 BkClaw 托管技能目录
-// （~/.bkclaw/skills/，主机共享）。
-func bkclawManagedDir() string {
-	base := bkclawBaseDir()
+// bkcrabManagedDir 返回 BkCrab 托管技能目录
+// （~/.bkcrab/skills/，主机共享）。
+func bkcrabManagedDir() string {
+	base := bkcrabBaseDir()
 	if base == "" {
 		return ""
 	}

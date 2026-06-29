@@ -13,9 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/auth"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/skills"
+	"github.com/qs3c/bkcrab/internal/auth"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/skills"
 )
 
 // handleInstallSkill 从 skills.sh、clawhub.ai 或指定的 GitHub 仓库安装技能。请求体：

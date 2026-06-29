@@ -78,7 +78,7 @@ export default function ChannelsPage() {
             </div>
             <p className="text-sm text-muted-foreground mb-1">尚未配置渠道</p>
             <p className="text-xs text-muted-foreground/60">
-              在“设置”或 bkclaw.json 中配置渠道
+              在“设置”或 bkcrab.json 中配置渠道
             </p>
           </div>
         </div>

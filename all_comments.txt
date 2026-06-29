@@ -1,9 +1,9 @@
 Found 23 files
 
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\embed.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\embed.go ===
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\handlers.go ===
   L36: loadUserConfig reads the merged Config view for the request's user.
   L37: Walks system → user setting namespaces + the scope-aware provider /
   L38: channel rows. The result is the same shape gateway.assembleConfig
@@ -380,7 +380,7 @@ Found 23 files
   L1606: Validate the target project exists and belongs to this caller.
   L1607: Empty projectId is the "detach" case — always allowed.
   L1638: handleFeishuWebhook receives Feishu / Feishu event POSTs. The route is
-  L1639: public (Feishu doesn't auth via bkclaw bearer); per-event security
+  L1639: public (Feishu doesn't auth via bkcrab bearer); per-event security
   L1640: is enforced inside the Feishu adapter by validating the payload's
   L1641: header.token against the verification token stored at connect time.
   L1643: Hands the raw body to the gateway (via type-asserted dispatcher
@@ -389,7 +389,7 @@ Found 23 files
   L1646: verification challenges and real events both go through this same
   L1647: path; the adapter discriminates internally.
   L1679: handleLINEWebhook receives LINE Messaging API event POSTs. The route
-  L1680: is public (LINE doesn't auth via bkclaw bearer); per-event security
+  L1680: is public (LINE doesn't auth via bkcrab bearer); per-event security
   L1681: comes from the HMAC-SHA256 signature in `x-line-signature` which the
   L1682: adapter validates against channel_secret + the raw body.
   L1684: Reads the body once, hands the raw bytes + signature to the gateway
@@ -399,7 +399,7 @@ Found 23 files
   L1814: debugLog is used from various handlers for diagnostic events; kept as a
   L1815: thin wrapper so handler files don't import slog directly.
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_admin.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\handlers_admin.go ===
   L19: --- Login / logout / me ---
   L76: deployMode lets the frontend show or hide local-only conveniences
   L77: (open-in-Finder for the workspace folder, future "edit SOUL.md in
@@ -441,7 +441,7 @@ Found 23 files
   L364: ExternalID is the calling app's own user identifier. Combined
   L365: with the auth-derived apikey_id (NOT taken from the body) it
   L366: makes provisioning idempotent: the same upstream user always
-  L367: resolves to the same bkclaw user_id. Optional for session
+  L367: resolves to the same bkcrab user_id. Optional for session
   L368: callers (web admin clicks); typical for upstream apikey
   L369: provisioning where the caller wants a stable mapping back to
   L370: their own user table.
@@ -553,7 +553,7 @@ Found 23 files
   L1128: Force a compile reference so unused import warnings stay loud
   L1129: when refactoring; otherwise no-op.
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_agents.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\handlers_agents.go ===
   L29: agentShareModelConfig reports whether the agent's owner has opted to
   L30: share their model + provider configuration with chatters. Default
   L31: true: when the key is absent from rec.Config, sharing is on. Owners
@@ -626,7 +626,7 @@ Found 23 files
   L398: the URL can chat under their own user_id namespace, while the
   L399: agent's identity (SOUL/IDENTITY/skills) is reused from the owner's
   L400: row. This is the same gate /api/chat/history uses, so app_user
-  L401: requests proxied through an integration with X-Bkclaw-End-User
+  L401: requests proxied through an integration with X-Bkcrab-End-User
   L402: can read artifacts for sessions they own without 403'ing on the
   L403: strict ownership check.
   L404: callerOwnsAgent returns true when the caller is the agent's owner, a
@@ -851,7 +851,7 @@ Found 23 files
   L1254: Detach: we don't care about the file manager's lifetime.
   L1273: Workspace store not configured — fall back to direct FS read.
   L1274: The local FS layout mirrors the workspace store's:
-  L1275: ~/.bkclaw/workspaces/<agent_id>/<path>.
+  L1275: ~/.bkcrab/workspaces/<agent_id>/<path>.
   L1287: ServeFile sets Content-Type from the mime database itself; we just
   L1288: add the CSP sandbox for HTML on top — same rationale as in
   L1289: setFileResponseHeaders above.
@@ -897,7 +897,7 @@ Found 23 files
   L1459: only exist once the agent is attached), so a 404 here is
   L1460: honest rather than misleadingly returning just the builtins.
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_agent_channels.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\handlers_agent_channels.go ===
   L21: Per-agent IM channel CRUD. Wraps the existing scope.SaveChannel +
   L22: bindings setting so the dashboard can present "connect Telegram" as
   L23: one click instead of asking users to wire two separate config rows
@@ -1111,13 +1111,13 @@ Found 23 files
   L1181: as feishuWebhookPathFor — surfaces the public-facing host via the
   L1182: usual reverse-proxy headers.
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_channels.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\handlers_channels.go ===
   L7: --- Channels ---
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_cron.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\handlers_cron.go ===
   L12: --- Per-agent cron jobs (DB-backed) ---
   L14: The legacy /api/cron set below reads jobs out of the user's flat
-  L15: bkclaw.json (cfg.CronJobs) — that's the install-time, statically-
+  L15: bkcrab.json (cfg.CronJobs) — that's the install-time, statically-
   L16: configured catalog. Agents that schedule work at runtime via the
   L17: create_cron_job tool persist into the cron_jobs DB table instead, and
   L18: the cron.Scheduler (which actually fires them) only watches the DB.
@@ -1129,7 +1129,7 @@ Found 23 files
   L85: --- Cron Jobs ---
   L170: For now, just acknowledge — cron enable/disable would need scheduler integration
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_plugins.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\handlers_plugins.go ===
   L12: --- Plugins ---
   L36: Read plugin.json for metadata
   L79: handleListHookPlugins returns the discoverable hook-type plugins
@@ -1142,7 +1142,7 @@ Found 23 files
   L113: Older plugins use Type alone; newer ones may declare multiple
   L114: capabilities (e.g. a plugin that's both a tool AND a hook).
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_projects.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\handlers_projects.go ===
   L13: Projects are per-(user, agent) named workspace folders that group
   L14: chat sessions. Every chat in the same project shares one
   L15: workspace dir at workspaces/<agent>/projects/<pid>/, so notes /
@@ -1190,7 +1190,7 @@ Found 23 files
   L213: so a slip on the trash icon can't nuke a survey's worth of
   L214: notes.
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_register.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\handlers_register.go ===
   L12: registrationSettingNamespace is the configs-table key for the public
   L13: signup toggle. Stored as kind=setting, name=registration, data={"open": bool}.
   L14: Defaults to closed: a fresh instance shouldn't accept anonymous signups
@@ -1206,7 +1206,7 @@ Found 23 files
   L81: errors; passing them through gives the form a usable message.
   L92: --- Admin: read + write the toggle ---
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_scoped.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\handlers_scoped.go ===
   L17: Scope-aware CRUD for providers + channels (and a generic settings
   L18: endpoint). Authorization:
   L20: scope=system → READ: any authenticated user (system providers are
@@ -1313,7 +1313,7 @@ Found 23 files
   L621: in logs so an obviously-broken bot token is debuggable.
   L627: hotUnregisterChannel — paired with hotRegisterChannel for delete paths.
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_skills.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\handlers_skills.go ===
   L15: --- Skills ---
   L25: Hydrate from object store first so pods that didn't handle the
   L26: original install still see the skill bundle. Pass the bundled skill
@@ -1325,7 +1325,7 @@ Found 23 files
   L60: copy is gone already and a stale remote copy will just re-appear
   L61: next reload (annoying but not dangerous).
   L70: handleListAgentSkills lists skills installed into an agent's own home
-  L71: directory (~/.bkclaw/agents/<id>/skills/). Loader "Layer 1" picks
+  L71: directory (~/.bkcrab/agents/<id>/skills/). Loader "Layer 1" picks
   L72: these up at the highest precedence — they're exclusive to the agent.
   L75: Skill listing exposes per-skill env spec (which env keys the
   L76: owner has set). Owner-only — Identity.CanAccessAgent is a
@@ -1341,7 +1341,7 @@ Found 23 files
   L109: the agent-scoped one falling back to "first non-# line" which then
   L110: surfaced the literal `---` frontmatter delimiter as the description.
   L131: Top-level `env:` shortcut wins; fall back to the
-  L132: namespaced metadata.bkclaw|openclaw.env form.
+  L132: namespaced metadata.bkcrab|openclaw.env form.
   L163: handleDeleteAgentSkill removes a skill from an agent's own home dir
   L164: only. Global/shared skills are untouched.
   L171: Mutation — owner-only. Identity.CanAccessAgent is a
@@ -1350,7 +1350,7 @@ Found 23 files
   L187: Delete from object store so other pods drop it on their next hydrate.
   L194: Hot-reload the agent so the removed skill drops out of its context.
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_tools.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\handlers_tools.go ===
   L13: categoryCatalog is the admin UI's source of truth for which tool
   L14: categories exist and which providers can back them. Extending this list
   L15: (once the new providers exist in the toolproviders package) makes them
@@ -1382,7 +1382,7 @@ Found 23 files
   L133: apiKey is returned in full to the admin — the UI decides whether to
   L134: mask it — but cloud callers see 403 below, so this is local-only.
   L150: handleSaveTools atomically updates the toolProviders and tools sections of
-  L151: bkclaw.json. Only the admin/local user is allowed here — cloud tenants
+  L151: bkcrab.json. Only the admin/local user is allowed here — cloud tenants
   L152: get their own settings via a separate path (not wired yet). After save,
   L153: running agents are hot-reloaded so chains pick up new keys immediately.
   L155: requireSuperAdmin middleware already gates this route; no further check needed.
@@ -1395,7 +1395,7 @@ Found 23 files
   L190: providers validate the same as built-ins.
   L213: Silence unused-import warnings when the package grows.
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\handlers_usage.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\handlers_usage.go ===
   L10: rangeFromQuery parses ?range=24h|7d|30d (default 7d) into a usage.Range
   L11: of last-N days. We don't expose precise hour windows on the admin
   L12: dashboard — daily buckets is good enough for "who burned what".
@@ -1413,13 +1413,13 @@ Found 23 files
   L97: limit (10 from limitFromQuery) is too short. Cap at 50
   L98: rows unless the caller explicitly asked for fewer.
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\identity_store.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\identity_store.go ===
   L16: loadAgentFileConfig returns an agent's per-row override JSON from the
   L17: agents.config column.
   L34: saveAgentFileConfig persists per-agent overrides into agents.config.
   L57: isStoreNotFound recognises the "not found" signal across backends.
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\server.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\server.go ===
   L27: AgentHandle is the surface the web UI uses to talk to a running agent.
   L32: SteerWeb buffers a message into an in-flight turn for the session;
   L33: returns false when no turn is running (caller falls back to a
@@ -1493,11 +1493,11 @@ Found 23 files
   L275: workspace IO to projects/<pid>/.
   L281: Per-agent channels (IM bot bindings)
   L292: Feishu (飞书) event webhook. UNAUTHENTICATED — Feishu posts here
-  L293: without a bkclaw bearer token. Per-event security comes from
+  L293: without a bkcrab bearer token. Per-event security comes from
   L294: the verification_token validated inside the adapter against the
   L295: payload's header.token. The {appId} path segment scopes the
   L296: receive to one registered channel.
-  L299: LINE Messaging API event webhook. UNAUTHENTICATED at the bkclaw
+  L299: LINE Messaging API event webhook. UNAUTHENTICATED at the bkcrab
   L300: layer — per-event security is HMAC-SHA256(channel_secret, body)
   L301: validated by the adapter against the `x-line-signature` header.
   L302: The {accountId} path segment is the bot's userId, scoping the
@@ -1543,7 +1543,7 @@ Found 23 files
   L486: Add new dynamic routes to dynamicParents below as they
   L487: get introduced.
 
-=== E:\\fromGithub\\bkclaw\\internal\\setup\skill_install.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\setup\skill_install.go ===
   L21: handleInstallSkill installs a skill from skills.sh, clawhub.ai, or a
   L22: specific GitHub repo. Body:
   L25: "source": "skillssh" | "clawhub" | "github" | "" (auto),
@@ -1615,7 +1615,7 @@ Found 23 files
   L464: https://skills.sh; source=clawhub proxies clawhub.ai's search endpoint.
   L465: GET /api/skills/search?q=xxx&source=skillssh|clawhub
 
-=== E:\\fromGithub\\bkclaw\\internal\\skills\clawhub.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\skills\clawhub.go ===
   L17: SkillInfo holds metadata about a skill from the ClawHub registry.
   L27: ClawHubClient communicates with the ClawHub skill registry.
   L33: NewClawHubClient creates a client with defaults.
@@ -1632,7 +1632,7 @@ Found 23 files
   L213: ListInstalled scans a directory for installed skills (dirs containing SKILL.md).
   L240: InstalledSkill represents a locally installed skill.
 
-=== E:\\fromGithub\\bkclaw\\internal\\skills\github.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\skills\github.go ===
   L8: InstallFromGitHubRepo installs a skill folder from a public GitHub repo
   L9: identified by "owner/repo". If skillName is empty, the repo itself is
   L10: assumed to be the skill (tarball root is extracted into
@@ -1642,7 +1642,7 @@ Found 23 files
   L71: normalizeGitHubRepo strips common wrapper prefixes/suffixes so callers can
   L72: pass things like "https://github.com/owner/repo.git" directly.
 
-=== E:\\fromGithub\\bkclaw\\internal\\skills\install.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\skills\install.go ===
   L15: Result describes a successful install so callers can show the user what
   L16: happened and, if they care, where to find the files.
   L27: InstallFromClawHub downloads the latest version of `slug` from clawhub.ai
@@ -1658,7 +1658,7 @@ Found 23 files
   L152: third option.
   L165: ClawHub fallback.
 
-=== E:\\fromGithub\\bkclaw\\internal\\skills\objectstore.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\skills\objectstore.go ===
   L16: Skill bundles are static file trees that need to live on the local disk
   L17: for SkillsLoader to discover them, but in multi-pod deployments the
   L18: disk is pod-local. To make installs consistent across replicas we mirror
@@ -1667,7 +1667,7 @@ Found 23 files
   L22: Key layout under the workspace bucket:
   L24: <owner>/skills/<skillName>/<relFile>
   L26: Owner is the agent ID for per-agent skills, or GlobalSkillOwner for the
-  L27: platform-wide directory (`~/.bkclaw/skills/`).
+  L27: platform-wide directory (`~/.bkcrab/skills/`).
   L29: GlobalSkillOwner is the synthetic "agent ID" used as the prefix for
   L30: globally-installed skills in the object store. A real agent can
   L31: never collide with it because agent names are validated to be lower
@@ -1734,7 +1734,7 @@ Found 23 files
   L288: indistinguishable from "OSS misconfigured" or "fresh install with
   L289: only filesystem-installed skills". Pruning in that case is
   L290: destructive — it deletes every local skill the operator dropped
-  L291: into BKCLAW_HOME/skills/ for product agents that don't use OSS
+  L291: into BKCRAB_HOME/skills/ for product agents that don't use OSS
   L292: at all. Skip pruning entirely unless the remote authoritatively
   L293: has at least one skill, which is the only state where "missing
   L294: from remote" carries meaning.
@@ -1742,7 +1742,7 @@ Found 23 files
   L325: the object store under <owner>/skills/. Used so the admin UI can show
   L326: all skills the agent owns even if this pod hasn't hydrated them yet.
 
-=== E:\\fromGithub\\bkclaw\\internal\\skills\skillssh.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\skills\skillssh.go ===
   L11: skillsShBaseURL is the hostname for https://skills.sh. It returns a public
   L12: JSON search endpoint but does not expose per-skill metadata — tarball
   L13: downloads go directly to codeload.github.com using the source repo listed
@@ -1782,7 +1782,7 @@ Found 23 files
   L165: that's enough for interactive installs and we don't want to require
   L166: configuring a token just for default-branch lookup.
 
-=== E:\\fromGithub\\bkclaw\\internal\\skills\tarball.go ===
+=== E:\\fromGithub\\bkcrab\\internal\\skills\tarball.go ===
   L15: extractSubpath downloads a gzipped tar from url and writes files whose
   L16: in-tarball path matches <topLevel>/<subpath>/<rest> into destDir/<rest>.
   L17: If subpath is empty, everything under the top-level directory is extracted.

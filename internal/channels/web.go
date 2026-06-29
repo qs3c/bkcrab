@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 // WebChannel 是 Web 聊天客户端的进程内扇出。它满足 Channel 接口，

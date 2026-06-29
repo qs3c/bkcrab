@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 // SplitMessageMarker 是 LLM 在线路上发出的控制标记，用于请求 IM 风格
@@ -214,7 +214,7 @@ type Channel interface {
 	Name() string
 	// AccountID 返回渠道内的账号标识符。
 	AccountID() string
-	// BotUsername 返回此渠道的机器人用户名（例如 "mike_bkclaw_bot"）。
+	// BotUsername 返回此渠道的机器人用户名（例如 "mike_bkcrab_bot"）。
 	// 不适用时返回空字符串。
 	BotUsername() string
 	// Start 开始监听消息。应阻塞直到 ctx 被取消。

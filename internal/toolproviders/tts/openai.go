@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // OpenAI 向 /v1/audio/speech 发送请求。模型（如 "openai/tts-1"）默认为 "tts-1"。

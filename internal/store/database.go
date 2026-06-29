@@ -1259,7 +1259,7 @@ func (d *DBStore) migrationSQL() []string {
 		// 代表下游应用创建；他们不能登录（password_hash='' 被密码登录路径拒绝）。
 		// apikey_id + external_id 共同标识"哪个调用应用，哪个最终用户"，
 		// 部分 UNIQUE 使配置在该对上幂等，因此同一外部用户始终解析为相同的
-		// bkclaw user_id。
+		// bkcrab user_id。
 		`CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
 			username TEXT NOT NULL UNIQUE,

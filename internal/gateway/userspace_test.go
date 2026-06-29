@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/scope"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/scope"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // readUserScopeAgentDefaults must distinguish "user has no row" from

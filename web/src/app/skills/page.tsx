@@ -46,7 +46,7 @@ export default function SkillsPage() {
   // POST 保存时会保留仍为脱敏值的字段）。
   const [skillEntries, setSkillEntries] = useState<Record<string, SkillEntryView>>({});
   // 上传 zip 状态。后端路由与带 agent 作用域的上传路由相同，
-  // 但不带 ?agent= 查询参数 — 它会安装到全局 ~/.bkclaw/skills
+  // 但不带 ?agent= 查询参数 — 它会安装到全局 ~/.bkcrab/skills
   // 目录，resolveInstallTarget 处理程序会要求管理员权限
   // （此页面已限制仅管理员访问）。
   const uploadInputRef = useRef<HTMLInputElement>(null);
@@ -456,7 +456,7 @@ function InstallSkillDialog({
           <DialogTitle>安装技能</DialogTitle>
           <DialogDescription>
             在 skills.sh 中搜索已发布的技能。安装位置为{" "}
-            <code className="font-mono text-xs">~/.bkclaw/skills/</code> ，并可供所有智能体使用。
+            <code className="font-mono text-xs">~/.bkcrab/skills/</code> ，并可供所有智能体使用。
           </DialogDescription>
         </DialogHeader>
 

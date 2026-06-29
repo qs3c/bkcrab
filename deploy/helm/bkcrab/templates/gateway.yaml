@@ -1,0 +1,147 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-gateway
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      app: {{ include "bkcrab.fullname" . }}-gateway
+  template:
+    metadata:
+      labels:
+        app: {{ include "bkcrab.fullname" . }}-gateway
+    spec:
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: gateway
+        image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.gateway.port }}
+          name: http
+        envFrom:
+        - configMapRef:
+            name: {{ include "bkcrab.fullname" . }}-config
+        env:
+        - name: BKCRAB_HOME
+          value: "/data/.bkcrab"
+        - name: BKCRAB_STORAGE_DSN
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "bkcrab.fullname" . }}-secrets
+              key: STORAGE_DSN
+        {{- if and (ne .Values.objectStore.type "local") .Values.objectStore.accessKey }}
+        - name: BKCRAB_OBJECT_STORE_ACCESSKEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "bkcrab.fullname" . }}-secrets
+              key: OBJECT_STORE_ACCESSKEY
+        - name: BKCRAB_OBJECT_STORE_SECRETKEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "bkcrab.fullname" . }}-secrets
+              key: OBJECT_STORE_SECRETKEY
+        {{- end }}
+        {{- if and .Values.sandbox.enabled .Values.sandbox.e2bApiKey }}
+        - name: E2B_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "bkcrab.fullname" . }}-secrets
+              key: E2B_API_KEY
+        {{- end }}
+        volumeMounts:
+        - name: data
+          mountPath: /data/.bkcrab
+        resources:
+          {{- toYaml .Values.gateway.resources | nindent 10 }}
+        # /readyz 和 /livez 绕过认证 — 它们在引导前后都能可靠探测。
+        # 不要改用 /api/status：引导完成后该路径会返回 401。
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http
+          periodSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /livez
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        lifecycle:
+          preStop:
+            exec:
+              command: ["sh", "-c", "sleep {{ .Values.gateway.preStopSleepSeconds }}"]
+      terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
+      volumes:
+      # /data/.bkcrab 仅保存 Pod 本地临时状态；工作区工件进入对象存储。
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-gateway
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ include "bkcrab.fullname" . }}-gateway
+  # 多副本下 SSE/WS 连接必须保持在同一 Pod 上。
+  # Ingress 已处理 cookie 亲和性；这里的 ClientIP 是
+  # 针对直接访问 Service 的负载均衡器的回退。
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600
+  ports:
+  - port: {{ .Values.gateway.port }}
+    targetPort: http
+    name: http
+{{- if .Values.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-gateway
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "bkcrab.fullname" . }}-gateway
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- if .Values.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-gateway
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      app: {{ include "bkcrab.fullname" . }}-gateway
+{{- end }}

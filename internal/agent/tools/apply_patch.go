@@ -19,7 +19,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/qs3c/bkclaw/internal/sandbox"
+	"github.com/qs3c/bkcrab/internal/sandbox"
 )
 
 // -----------------------------------------------------------------------------

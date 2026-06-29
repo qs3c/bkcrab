@@ -87,7 +87,7 @@ export default function SignupPage() {
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center space-y-2">
           <h1 className="text-2xl font-bold text-zinc-100">创建你的账户</h1>
-          <p className="text-sm text-zinc-500">注册后即可开始使用 BkClaw</p>
+          <p className="text-sm text-zinc-500">注册后即可开始使用 BkCrab</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <input

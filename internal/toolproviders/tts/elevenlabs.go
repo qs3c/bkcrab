@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // ElevenLabs 向 /v1/text-to-speech/{voice_id} 发送请求，

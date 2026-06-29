@@ -1,7 +1,7 @@
 // Package config 包含运行时配置类型和 ctx 的 user-id 管道。
 //
-// 没有 bkclaw.json。引导设置（端口、绑定、存储 DSN、沙箱后端）
-// 来自 BKCLAW_* 环境变量；用户可见的配置（提供者、渠道、agent 等）
+// 没有 bkcrab.json。引导设置（端口、绑定、存储 DSN、沙箱后端）
+// 来自 BKCRAB_* 环境变量；用户可见的配置（提供者、渠道、agent 等）
 // 存储在数据库中。此处的 Config 结构体是网关在启动时从这些来源
 // 组装的内存快照；调用方从不从磁盘读取它。
 package config
@@ -263,7 +263,7 @@ type SkillsLearnerCfg struct {
 	Model        string `json:"model,omitempty"`
 }
 
-// Config 是内存中的运行时快照。网关在启动时从 BKCLAW_* 环境变量 +
+// Config 是内存中的运行时快照。网关在启动时从 BKCRAB_* 环境变量 +
 // 数据库（system_settings、providers、channels、agents）组装此结构；
 // 调用方从不会将其序列化回写——数据库表是持久化的真实来源。
 type Config struct {
@@ -501,7 +501,7 @@ const (
 	// 在 SOUL.md / IDENTITY.md 中放入所需的任何框架指导——此模式将
 	// 舞台完全交给角色文件。
 	// （从 PromptModeMinimal 重命名以使意图更明显：您是在自定义系统
-	// 提示，而不是要求 bkclaw 提供其内置提示的最小版本。）
+	// 提示，而不是要求 bkcrab 提供其内置提示的最小版本。）
 	PromptModeCustomize = "customize"
 )
 
@@ -528,7 +528,7 @@ type AccountConfig struct {
 	//（飞书的"加密策略 → Encrypt Key"）。当用户未在上游控制台配置加密
 	// 时为空——此时适配器期望明文请求体。
 	EncryptKey string `json:"encryptKey,omitempty"`
-	// UseLongConn 将入站传输切换为从 bkclaw 向外发起的长连接（WebSocket），
+	// UseLongConn 将入站传输切换为从 bkcrab 向外发起的长连接（WebSocket），
 	// 而非平台向公共 webhook POST。目前仅飞书适配器遵守；不提供此模式的
 	// 适配器会忽略它。为 true 时，验证/加密密钥未使用（WS 连接通过
 	// appID/appSecret 认证），且不需要公共可达 URL。
@@ -599,7 +599,7 @@ type AgentFileConfig struct {
 	// 空/缺失列表 = 无门控（任何人都可以运行命令——向后兼容的默认值）。
 	//
 	// 在 web/api 上，门控会穿透到 msg.UserID == agent owner UUID，
-	// 无论此字段如何，因为那些渠道直接携带 BkClaw 身份，不需要每平台白名单。
+	// 无论此字段如何，因为那些渠道直接携带 BkCrab 身份，不需要每平台白名单。
 	Admins map[string][]string `json:"admins,omitempty"`
 }
 
@@ -690,20 +690,20 @@ type TeamConfig struct {
 	Routing map[string]string `json:"routing"`
 }
 
-// HomeDir 返回 BkClaw 根目录（默认 ~/.bkclaw）。
+// HomeDir 返回 BkCrab 根目录（默认 ~/.bkcrab）。
 // 保存沙箱根目录、本地索引和 FS 物化的 agent 缓存。
 func HomeDir() (string, error) {
-	if h := os.Getenv("BKCLAW_HOME"); h != "" {
+	if h := os.Getenv("BKCRAB_HOME"); h != "" {
 		return h, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".bkclaw"), nil
+	return filepath.Join(home, ".bkcrab"), nil
 }
 
-// AgentHomeDir 返回 ~/.bkclaw/agents/{agentID}/agent——运行时物化
+// AgentHomeDir 返回 ~/.bkcrab/agents/{agentID}/agent——运行时物化
 // agent 身份文件的 FS 缓存目录。agents.id 全局唯一，因此不需要用户命名空间。
 func AgentHomeDir(agentID string) (string, error) {
 	if agentID == "" {
@@ -717,7 +717,7 @@ func AgentHomeDir(agentID string) (string, error) {
 }
 
 // AgentWorkspaceDir 返回 agent 的用户可见产物工作目录：
-// ~/.bkclaw/workspaces/<agent_id>/。agents.id 全局唯一，因此不需要
+// ~/.bkcrab/workspaces/<agent_id>/。agents.id 全局唯一，因此不需要
 // 用户命名空间；每会话子目录在写入时由工作区存储添加
 // （参见 workspace.LocalFS）。
 func AgentWorkspaceDir(agentID string) (string, error) {

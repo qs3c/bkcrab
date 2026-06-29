@@ -20,7 +20,7 @@ func New(cfg *StorageConfig, homeDir string) (Store, error) {
 	case StorageMySQL, StoragePostgres, StorageSQLite:
 		dsn := cfg.DSN
 		if cfg.Type == StorageMySQL && dsn == "" {
-			return nil, errors.New("mysql storage requires BKCLAW_STORAGE_DSN; SQLite fallback is disabled")
+			return nil, errors.New("mysql storage requires BKCRAB_STORAGE_DSN; SQLite fallback is disabled")
 		}
 		if cfg.Type == StorageSQLite && dsn == "" {
 			if err := os.MkdirAll(homeDir, 0o755); err != nil {
@@ -33,7 +33,7 @@ func New(cfg *StorageConfig, homeDir string) (Store, error) {
 			// "database is locked (SQLITE_BUSY)"——通过启用 WAL
 			//（并发读取 + 一个写入者）和 5 秒 busy_timeout 修复了这个问题，
 			// 这样竞争的写入者会等待而不是直接报错。
-			dsn = "file:" + filepath.Join(homeDir, "bkclaw.db") +
+			dsn = "file:" + filepath.Join(homeDir, "bkcrab.db") +
 				"?_pragma=journal_mode(WAL)" +
 				"&_pragma=busy_timeout(5000)" +
 				"&_pragma=synchronous(NORMAL)" +

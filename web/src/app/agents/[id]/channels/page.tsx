@@ -911,7 +911,7 @@ function ConnectLINEDialog({
                 className="font-mono text-sm"
               />
               <p className="text-xs text-muted-foreground">
-                可选但强烈建议配置。bkclaw 会使用此密钥通过 HMAC-SHA256 验证传入的 Webhook 请求。
+                可选但强烈建议配置。bkcrab 会使用此密钥通过 HMAC-SHA256 验证传入的 Webhook 请求。
               </p>
             </div>
             {error && <p className="text-xs text-destructive">{error}</p>}
@@ -1029,7 +1029,7 @@ function ConnectWeChatDialog({
   }, [agentId, onConnected, stopPolling]);
 
   // 对话框打开时自动获取二维码（无需单独的"命名"步骤——
-  // bkclaw 不展示每账户名称，accountId 即 ilink_bot_id）。
+  // bkcrab 不展示每账户名称，accountId 即 ilink_bot_id）。
   useEffect(() => {
     if (open && !qrPayload && !loading && !error) {
       startLogin();
@@ -1232,7 +1232,7 @@ function ConnectFeishuDialog({
               <div className="rounded-lg border bg-muted/30 p-4 space-y-2">
                 <p className="text-sm font-medium">长连接模式</p>
                 <p className="text-xs text-muted-foreground">
-                  bkclaw 正在通过 WebSocket 连接飞书，无需配置公网 URL。请在飞书开发者后台的{" "}
+                  bkcrab 正在通过 WebSocket 连接飞书，无需配置公网 URL。请在飞书开发者后台的{" "}
                   <strong>事件与回调 → 事件配置 → 订阅方式</strong>，选择{" "}
                   <strong>使用长连接接收事件</strong>，然后在{" "}
                   <strong>订阅机器人事件</strong> 添加{" "}
@@ -1245,7 +1245,7 @@ function ConnectFeishuDialog({
                 <p className="text-xs text-muted-foreground">
                   将此内容粘贴到飞书开发者后台 →{" "}
                   <strong>事件订阅 → 请求地址</strong>，然后点击 <em>保存</em>
-                  。飞书会向此处发送 POST 验证请求，bkclaw 会自动返回验证内容。
+                  。飞书会向此处发送 POST 验证请求，bkcrab 会自动返回验证内容。
                 </p>
                 <Input
                   readOnly
@@ -1267,7 +1267,7 @@ function ConnectFeishuDialog({
                   长连接模式
                 </Label>
                 <p className="text-xs text-muted-foreground">
-                  bkclaw 将通过 WebSocket 连接飞书，无需公网 URL。关闭后可使用传统 Webhook 流程。
+                  bkcrab 将通过 WebSocket 连接飞书，无需公网 URL。关闭后可使用传统 Webhook 流程。
                 </p>
               </div>
               <Switch
@@ -1310,7 +1310,7 @@ function ConnectFeishuDialog({
                 className="font-mono text-sm"
               />
               <p className="text-xs text-muted-foreground">
-                可选但建议配置。bkclaw 会拒绝 <code>header.token</code> 不匹配的 Webhook
+                可选但建议配置。bkcrab 会拒绝 <code>header.token</code> 不匹配的 Webhook
                 请求。
               </p>
             </div>

@@ -10,7 +10,7 @@ import (
 	"text/template"
 )
 
-// Install 将 BkClaw 安装为操作系统服务。
+// Install 将 BkCrab 安装为操作系统服务。
 func Install() error {
 	switch runtime.GOOS {
 	case "darwin":
@@ -23,7 +23,7 @@ func Install() error {
 	}
 }
 
-// Uninstall 移除 BkClaw 操作系统服务。
+// Uninstall 移除 BkCrab 操作系统服务。
 func Uninstall() error {
 	switch runtime.GOOS {
 	case "darwin":
@@ -38,7 +38,7 @@ func Uninstall() error {
 
 // --- macOS launchd ---
 
-const launchdLabel = "ai.bkclaw.gateway"
+const launchdLabel = "ai.bkcrab.gateway"
 
 var launchdPlistTemplate = template.Must(template.New("plist").Parse(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -85,7 +85,7 @@ func installLaunchd() error {
 		return err
 	}
 
-	logDir := filepath.Join(home, ".bkclaw", "logs")
+	logDir := filepath.Join(home, ".bkcrab", "logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return fmt.Errorf("create log dir: %w", err)
 	}
@@ -128,7 +128,7 @@ func installLaunchd() error {
 	}
 
 	fmt.Printf("Service installed: %s\n", plistPath)
-	fmt.Println("BkClaw gateway will start automatically on login.")
+	fmt.Println("BkCrab gateway will start automatically on login.")
 	return nil
 }
 
@@ -159,10 +159,10 @@ func uninstallLaunchd() error {
 
 // --- Linux systemd ---
 
-const systemdUnit = "bkclaw-gateway.service"
+const systemdUnit = "bkcrab-gateway.service"
 
 var systemdUnitTemplate = template.Must(template.New("unit").Parse(`[Unit]
-Description=BkClaw AI Agent Gateway
+Description=BkCrab AI Agent Gateway
 After=network.target
 
 [Service]
@@ -199,7 +199,7 @@ func installSystemd() error {
 		return err
 	}
 
-	logDir := filepath.Join(home, ".bkclaw", "logs")
+	logDir := filepath.Join(home, ".bkcrab", "logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return fmt.Errorf("create log dir: %w", err)
 	}
@@ -247,7 +247,7 @@ func installSystemd() error {
 	}
 
 	fmt.Printf("Service installed: %s\n", unitPath)
-	fmt.Println("BkClaw gateway is running and will start on boot.")
+	fmt.Println("BkCrab gateway is running and will start on boot.")
 	return nil
 }
 
@@ -289,10 +289,10 @@ func printWindowsInstructions() {
 	fmt.Println()
 	fmt.Println("Options:")
 	fmt.Println("  1. Use NSSM (Non-Sucking Service Manager):")
-	fmt.Println("     nssm install BkClaw <path-to-bkclaw.exe> gateway")
+	fmt.Println("     nssm install BkCrab <path-to-bkcrab.exe> gateway")
 	fmt.Println()
 	fmt.Println("  2. Use Task Scheduler:")
 	fmt.Println("     - Open Task Scheduler")
-	fmt.Println("     - Create a new task that runs 'bkclaw.exe gateway'")
+	fmt.Println("     - Create a new task that runs 'bkcrab.exe gateway'")
 	fmt.Println("     - Set it to run at startup")
 }

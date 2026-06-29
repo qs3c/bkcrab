@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/memory"
-	"github.com/qs3c/bkclaw/internal/provider"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/memory"
+	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // MemoryStore 是一个可选的接口，用于基于数据库的内存持久化。

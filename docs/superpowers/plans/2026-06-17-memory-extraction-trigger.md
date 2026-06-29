@@ -1275,14 +1275,14 @@ Expected: 全绿。
 
 Run: `sed -n '1,80p' internal/store/mysql_integration_test.go`
 
-按其约定(通常读 `BKCLAW_TEST_MYSQL_DSN` 之类的环境变量并 skip-if-unset)补一个用例,断言 MySQL 下:`AppendTurnAnchor` 返回递增 seq、`ClaimCadenceBatch` 够 5 认领、二次为空、`idx_sm_pending` 已建(`SHOW INDEX FROM session_messages` 含 `idx_sm_pending`)。
+按其约定(通常读 `BKCRAB_TEST_MYSQL_DSN` 之类的环境变量并 skip-if-unset)补一个用例,断言 MySQL 下:`AppendTurnAnchor` 返回递增 seq、`ClaimCadenceBatch` 够 5 认领、二次为空、`idx_sm_pending` 已建(`SHOW INDEX FROM session_messages` 含 `idx_sm_pending`)。
 
-Run(有 DSN 时): `BKCLAW_TEST_MYSQL_DSN='<dsn>' go test ./internal/store/ -run MySQL -v`
+Run(有 DSN 时): `BKCRAB_TEST_MYSQL_DSN='<dsn>' go test ./internal/store/ -run MySQL -v`
 Expected: PASS;无 DSN 时 SKIP(不阻塞)。
 
 - [ ] **Step 3: 手动冒烟(可选但推荐)**
 
-按项目 `run` 方式起服务(SQLite 单机模式最快:`BKCLAW_STORAGE=sqlite` 或等价配置),在同一 agent+chatter 下连发消息,观察日志出现 `auto-persist firing ... turns=5 extraction_id=...`,且不再出现旧的 `auto-persist gate ... chatter_turns=...`。确认 `MEMORY.md` 被追加。
+按项目 `run` 方式起服务(SQLite 单机模式最快:`BKCRAB_STORAGE=sqlite` 或等价配置),在同一 agent+chatter 下连发消息,观察日志出现 `auto-persist firing ... turns=5 extraction_id=...`,且不再出现旧的 `auto-persist gate ... chatter_turns=...`。确认 `MEMORY.md` 被追加。
 
 - [ ] **Step 4: 对照 spec 自查**
 

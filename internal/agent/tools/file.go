@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/sandbox"
-	"github.com/qs3c/bkclaw/internal/skills"
+	"github.com/qs3c/bkcrab/internal/sandbox"
+	"github.com/qs3c/bkcrab/internal/skills"
 )
 
 type readFileArgs struct {
@@ -124,16 +124,16 @@ func applyEdit(path, content, oldStr, newStr string, replaceAll bool) (string, i
 var errOutsideSandbox = fmt.Errorf("access denied: path is outside the allowed sandbox directory")
 
 // globalSkillsDirSuffix 用于检测写入的尝试
-// 管理员管理的全局技能目录（~/.bkclaw/skills/）。读取的内容是
+// 管理员管理的全局技能目录（~/.bkcrab/skills/）。读取的内容是
 // 很好——技能层已经暴露了这个内容——但是从
 // 聊天可以让特工默默地安装/覆盖其他人的技能
 // 主机上的代理。
-const globalSkillsDirSuffix = "/.bkclaw/skills"
+const globalSkillsDirSuffix = "/.bkcrab/skills"
 
 // 当 write_file 目标时返回 errGlobalSkillsDirWrite
-// ~/.bkclaw/skills/ 来自代理聊天。该消息告诉模型
+// ~/.bkcrab/skills/ 来自代理聊天。该消息告诉模型
 // 具体如何恢复。
-var errGlobalSkillsDirWrite = fmt.Errorf("access denied: ~/.bkclaw/skills/ is the admin-managed global skills directory. To create a new skill, load the \"skill-creator\" skill and follow its workflow (it scaffolds into this agent's private skills dir). To install an existing one, use the install_skill tool")
+var errGlobalSkillsDirWrite = fmt.Errorf("access denied: ~/.bkcrab/skills/ is the admin-managed global skills directory. To create a new skill, load the \"skill-creator\" skill and follow its workflow (it scaffolds into this agent's private skills dir). To install an existing one, use the install_skill tool")
 
 const ManagedMemoryFileRefusal = `[refused: USER.md and MEMORY.md are managed memory resources. Use the memory tool with target="user" or target="memory" to list, add, replace, remove, or batch-edit entries.]`
 
@@ -216,8 +216,8 @@ func (r *Registry) isWorkspacePath(path string) bool {
 // 守护进程的文件系统，因此暴露它会导致权限泄漏。
 //
 // 当路径不是主机主目录引用时返回 ("", false)，或者
-// 当它落入 BkClaw 管理的根源之一时
-// (~/.bkclaw/...) — 这些是运行时内部结构，应该保留
+// 当它落入 BkCrab 管理的根源之一时
+// (~/.bkcrab/...) — 这些是运行时内部结构，应该保留
 // 流经他们现有的路由（workspaceStore、身份
 // 存储等），因此聊天写入不能破坏代理的数据库文件。
 func hostHomePath(path string) (string, bool) {
@@ -225,18 +225,18 @@ func hostHomePath(path string) (string, bool) {
 		return "", false
 	}
 	if path == "~" || strings.HasPrefix(path, "~/") {
-		// 仅沙箱/BkClaw 内部子树：跳过主机扩展
+		// 仅沙箱/BkCrab 内部子树：跳过主机扩展
 		// 因此读/写会落入沙箱执行器
 		// 在路径不存在的主机磁盘上尝试（并失败）
 		// 存在。与下面的绝对路径防护对称。
-		// ~/.bkclaw/... — 运行时内部（数据库，工作区，...）
+		// ~/.bkcrab/... — 运行时内部（数据库，工作区，...）
 		// ~/.agents/... — npx 技能的沙箱绑定挂载目标。
-		// 主机在 <BKCLAW_HOME>/users/<uid>/skills/ 中有这些，
+		// 主机在 <BKCRAB_HOME>/users/<uid>/skills/ 中有这些，
 		// 不下～。 `ls ~/.agents/skills/<x>/` 运行后
 		// 在沙箱中模型自然调用
 		// read_file 具有相同的路径；仅那条路
 		// 在容器内解析。
-		if strings.HasPrefix(path, "~/.bkclaw") || strings.HasPrefix(path, "~/.agents") {
+		if strings.HasPrefix(path, "~/.bkcrab") || strings.HasPrefix(path, "~/.agents") {
 			return "", false
 		}
 		home, err := os.UserHomeDir()
@@ -252,12 +252,12 @@ func hostHomePath(path string) (string, bool) {
 		return "", false
 	}
 	if strings.HasPrefix(path, "/Users/") || strings.HasPrefix(path, "/home/") {
-		// 即使在喋喋不休时也拒绝 BkClaw-内部子路径
+		// 即使在喋喋不休时也拒绝 BkCrab-内部子路径
 		// 通过主机家庭频道联系他们。与同一个后卫
 		// errGlobalSkillsDirWrite，范围更广。
 		if home, err := os.UserHomeDir(); err == nil {
-			bkclawDir := filepath.Join(home, ".bkclaw")
-			if path == bkclawDir || strings.HasPrefix(path, bkclawDir+string(filepath.Separator)) {
+			bkcrabDir := filepath.Join(home, ".bkcrab")
+			if path == bkcrabDir || strings.HasPrefix(path, bkcrabDir+string(filepath.Separator)) {
 				return "", false
 			}
 		}
@@ -345,7 +345,7 @@ func (r *Registry) writeSkillToHost(ctx context.Context, path, content string) (
 
 // rootForPath 返回相对路径应解析的根：
 // - 身份文件的 systemRoot（代理主目录）（SOUL.md、IDENTITY.md，...）；
-// - userSkillsRoot (~/.bkclaw/users/<uid>/skills/) 用于“技能/...”
+// - userSkillsRoot (~/.bkcrab/users/<uid>/skills/) 用于“技能/...”
 // 当聊天者的用户技能目录连接时写入（默认为
 // 多用户安装）。在这里进行路由，以便积累聊天创建的技能
 // 在聊天者的个人存储桶中 - 与他们的每个代理共享
@@ -427,7 +427,7 @@ func resolvePath(root, path string) string {
 }
 
 // isGlobalSkillsPath 报告absPath 是否指向或低于
-// 管理员管理的 ~/.bkclaw/skills/ 目录。跨用户主页工作
+// 管理员管理的 ~/.bkcrab/skills/ 目录。跨用户主页工作
 // 通过匹配 stable 后缀来定位位置。
 func isGlobalSkillsPath(absPath string) bool {
 	clean := filepath.Clean(absPath)
@@ -555,7 +555,7 @@ func makeReadFile(r *Registry) ToolFunc {
 			}
 			// Store miss：直接尝试磁盘上代理的systemRoot，
 			// 绕过resolvePathSandboxed。 systemRoot是代理
-			// 元数据目录（例如 ~/.bkclaw/agents/<id>/agent）
+			// 元数据目录（例如 ~/.bkcrab/agents/<id>/agent）
 			// 在 K8s 部署中，位于 sandboxRoot 之外，因此
 			// 沙箱绑定总是会拒绝身份文件，即使
 			// 尽管文件名是固定的白名单，无法转义
@@ -933,7 +933,7 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		// （宽松）而不是严格的 isSingleSegmentSystemFile
 		// 路线供使用。需要单独检查读取情况，以便
 		// LLM 发出的绝对路径，如
-		// /data/.bkclaw/workspaces/<id>/IDENTITY.md 仍然会访问数据库。
+		// /data/.bkcrab/workspaces/<id>/IDENTITY.md 仍然会访问数据库。
 		if r.systemFileStore != nil && r.agentID != "" && basenameIsSystemFile(args.Path) {
 			name := filepath.Base(filepath.Clean(args.Path))
 			if data, err := r.readSystemFileForUser(ctx, r.systemFileUserID(name), name); err == nil {

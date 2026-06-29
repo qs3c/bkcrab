@@ -43,7 +43,7 @@ func BundledSkillNames() []string {
 }
 
 // InstallBundledSkills将bundled_skills/下嵌入的所有技能同步到
-// 托管技能目录。荣誉BKCLAW_HOME因此每个产品
+// 托管技能目录。荣誉BKCRAB_HOME因此每个产品
 // 每个实例都有自己的副本。
 //
 // 升级行为由每项技能的.bundled-hash sidecar控制：
@@ -255,18 +255,18 @@ func writeBundledHash(targetDir, hash string) error {
 	return os.WriteFile(filepath.Join(targetDir, bundledHashFile), []byte(hash+"\n"), 0o644)
 }
 
-// managedSkillsDir是每个BkClaw实例的全局技能位置。
-// 在internal/agent/skills.go中镜像bkclawManagedDir ，但保留为本地
+// managedSkillsDir是每个BkCrab实例的全局技能位置。
+// 在internal/agent/skills.go中镜像bkcrabManagedDir ，但保留为本地
 // 因此，此文件的唯一依赖项是os/filepath。
 func managedSkillsDir() string {
-	if h := os.Getenv("BKCLAW_HOME"); h != "" {
+	if h := os.Getenv("BKCRAB_HOME"); h != "" {
 		return filepath.Join(h, "skills")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".bkclaw", "skills")
+	return filepath.Join(home, ".bkcrab", "skills")
 }
 
 // copyEmbedTree在embed.FS中遍历src ，并将每个常规文件写入

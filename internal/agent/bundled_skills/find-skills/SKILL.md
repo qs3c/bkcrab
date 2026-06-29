@@ -3,7 +3,7 @@ name: find-skills
 description: |
   Run this BEFORE any package install (pip / npm / apt / brew / cargo / gem / go install) you would otherwise execute via the exec tool — including when the user asks for a deliverable that needs third-party libraries (PDF generation, image processing, scrapers, dashboards, charts, OCR, audio/video, …). It searches the open agent-skill ecosystem (skills.sh) for an installable skill that already does the job; only fall back to direct package install if find-skills returns no credible match. Also covers explicit "find a skill for X" / "how do I do X" / "is there a skill that can..." requests, and any time the user expresses interest in extending agent capabilities.
 metadata:
-  bkclaw:
+  bkcrab:
     requires:
       bins: [npx]
 ---
@@ -111,7 +111,7 @@ The 20-install case is FINE — it's a niche request, the skill is on-topic, tha
 
 ### Step 6: Install AND Use the Skill
 
-Install with `-g -y` — the BkClaw sandbox bind-mounts the global install location to the chatter's host skill bucket, so a `-g` install lands in `~/.bkclaw/users/<uid>/skills/<name>/` on host and is visible to the next chat turn.
+Install with `-g -y` — the BkCrab sandbox bind-mounts the global install location to the chatter's host skill bucket, so a `-g` install lands in `~/.bkcrab/users/<uid>/skills/<name>/` on host and is visible to the next chat turn.
 
 ```bash
 npx skills add <owner/repo@skill> -g -y

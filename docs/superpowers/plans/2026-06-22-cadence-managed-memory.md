@@ -52,7 +52,7 @@ func TestRenderForPromptStripsManagedWireFormat(t *testing.T) {
 	if got != "fact one\n\nfact two" {
 		t.Fatalf("rendered = %q", got)
 	}
-	if strings.Contains(got, "bkclaw-memory") || strings.Contains(got, "§") {
+	if strings.Contains(got, "bkcrab-memory") || strings.Contains(got, "§") {
 		t.Fatalf("rendered still contains wire format: %q", got)
 	}
 }
@@ -159,7 +159,7 @@ Expected: FAIL —— prompt 含原始 "ignore previous instructions"(当前注�
 在 `internal/agent/context.go` 的 import 块加入:
 
 ```go
-	"github.com/qs3c/bkclaw/internal/memory"
+	"github.com/qs3c/bkcrab/internal/memory"
 ```
 
 - [ ] **Step 4: 实现 —— USER.md 分支改渲染**
@@ -467,9 +467,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/memory"
-	"github.com/qs3c/bkclaw/internal/provider"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/memory"
+	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // fakeMemStore 是一个满足 memory.Store 的最小内存实现。
@@ -599,7 +599,7 @@ Expected: 编译失败 —— `AutoPersistMemory` 当前签名是 `(ctx, *Memory
 
 - [ ] **Step 3: 实现 —— 重写 AutoPersistMemory**
 
-在 `internal/agent/memory.go` 顶部 import 加入 `"github.com/qs3c/bkclaw/internal/memory"`。
+在 `internal/agent/memory.go` 顶部 import 加入 `"github.com/qs3c/bkcrab/internal/memory"`。
 
 将整个 `AutoPersistMemory` 函数替换为(保留文件内既有的 `truncateStr` / `stripJSONFence`,本函数不再用 `truncateStr` 亦无妨):
 
@@ -746,7 +746,7 @@ func formatEntriesForExtract(res memory.Result) string {
 在 `internal/agent/loop.go` import 块加入(若尚无):
 
 ```go
-	"github.com/qs3c/bkclaw/internal/memory"
+	"github.com/qs3c/bkcrab/internal/memory"
 ```
 
 将调用处(约 2696)：

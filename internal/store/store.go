@@ -1,4 +1,4 @@
-// Package store 是 BkClaw 的单一持久化层。数据库
+// Package store 是 BkCrab 的单一持久化层。数据库
 // 是必需的（默认为 MySQL）；没有
 // 仅文件的回退方案。每个按用户划分的表都需要一个真实的 users.id 行；
 // 尚未解析用户的调用方必须返回 401，而不是发明一个占位符。
@@ -260,7 +260,7 @@ var ErrGoalAlreadyExists = errors.New("goal already exists for this session")
 // "app_user" 由 api_key 代表下游应用进行配置；对于这些行，
 // APIKeyID 标识了创建它们的密钥，ExternalID 是调用应用自己的用户
 // 标识符（自由格式）。它们共同为每个外部最终用户提供了一个稳定的
-// bkclaw user_id，无需任何人登录。
+// bkcrab user_id，无需任何人登录。
 type UserRecord struct {
 	ID           string `json:"id"`
 	Username     string `json:"username"`
@@ -601,7 +601,7 @@ const (
 	StorageSQLite   StorageType = "sqlite"
 )
 
-// StorageConfig 持有数据库凭据。在启动时从 BKCLAW_STORAGE_* 环境变量填充。
+// StorageConfig 持有数据库凭据。在启动时从 BKCRAB_STORAGE_* 环境变量填充。
 type StorageConfig struct {
 	Type        StorageType `json:"type"`
 	DSN         string      `json:"dsn,omitempty"`

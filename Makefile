@@ -3,11 +3,11 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE    ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
-# 将构建身份标记到主包（旧的 `bkclaw version` 调用者）
+# 将构建身份标记到主包（旧的 `bkcrab version` 调用者）
 # 和 internal/buildinfo（agent 运行时 + 系统提示读取器）中。
 # 从一个 VERSION 变量保持两者同步意味着发布构建向模型提供
 # 与 CLI 报告相同的字符串。
-BUILDINFO = github.com/qs3c/bkclaw/internal/buildinfo
+BUILDINFO = github.com/qs3c/bkcrab/internal/buildinfo
 LDFLAGS  = -s -w \
 	-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE) \
 	-X $(BUILDINFO).Version=$(VERSION) -X $(BUILDINFO).Commit=$(COMMIT) -X $(BUILDINFO).Date=$(DATE)
@@ -37,13 +37,13 @@ bundle-skills:
 	@echo "==> bundled skills synced"
 
 build: build-web bundle-skills
-	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/bkclaw ./cmd/bkclaw
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/bkcrab ./cmd/bkcrab
 
 install: build
 	install -d $(PREFIX)/bin
-	install -m 0755 bin/bkclaw $(PREFIX)/bin/bkclaw
+	install -m 0755 bin/bkcrab $(PREFIX)/bin/bkcrab
 	@echo
-	@echo "==> installed: $(PREFIX)/bin/bkclaw"
+	@echo "==> installed: $(PREFIX)/bin/bkcrab"
 	@case ":$$PATH:" in *":$(PREFIX)/bin:"*) ;; *) \
 	  echo "    NOTE: $(PREFIX)/bin is not on your PATH."; \
 	  echo "    Add to ~/.zshrc:  export PATH=\"$(PREFIX)/bin:\$$PATH\"" ;; \
@@ -62,16 +62,16 @@ clean:
 release-local: build-web bundle-skills
 	@mkdir -p dist
 	@# macOS 系统
-	GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/bkclaw_darwin_arm64/bkclaw  ./cmd/bkclaw
-	GOOS=darwin  GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/bkclaw_darwin_amd64/bkclaw  ./cmd/bkclaw
+	GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/bkcrab_darwin_arm64/bkcrab  ./cmd/bkcrab
+	GOOS=darwin  GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/bkcrab_darwin_amd64/bkcrab  ./cmd/bkcrab
 	@# Linux 系统
-	GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/bkclaw_linux_arm64/bkclaw   ./cmd/bkclaw
-	GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/bkclaw_linux_amd64/bkclaw   ./cmd/bkclaw
+	GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/bkcrab_linux_arm64/bkcrab   ./cmd/bkcrab
+	GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/bkcrab_linux_amd64/bkcrab   ./cmd/bkcrab
 	@# Windows 系统
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/bkclaw_windows_amd64/bkclaw.exe ./cmd/bkclaw
-	GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/bkclaw_windows_arm64/bkclaw.exe ./cmd/bkclaw
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/bkcrab_windows_amd64/bkcrab.exe ./cmd/bkcrab
+	GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/bkcrab_windows_arm64/bkcrab.exe ./cmd/bkcrab
 	@# 打包：unix 用 tar.gz，windows 用 zip
-	@cd dist && for d in bkclaw_darwin_* bkclaw_linux_*; do tar -czf "$${d}.tar.gz" -C "$$d" bkclaw; done
-	@cd dist && for d in bkclaw_windows_*; do (cd "$$d" && zip -q "../$${d}.zip" bkclaw.exe); done
+	@cd dist && for d in bkcrab_darwin_* bkcrab_linux_*; do tar -czf "$${d}.tar.gz" -C "$$d" bkcrab; done
+	@cd dist && for d in bkcrab_windows_*; do (cd "$$d" && zip -q "../$${d}.zip" bkcrab.exe); done
 	@echo "Release artifacts:"
 	@ls -lh dist/*.tar.gz dist/*.zip 2>/dev/null

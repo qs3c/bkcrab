@@ -8,7 +8,7 @@
 // 目标.rs）。请参阅 docs/design/goal.md 了解基本原理。
 package goal
 
-import "github.com/qs3c/bkclaw/internal/store"
+import "github.com/qs3c/bkcrab/internal/store"
 
 // 目标是活动或已完成目标的持久记录。一球
 // per (agent, session) — 由基础上的 UNIQUE 索引强制执行

@@ -3,7 +3,7 @@ package imagegen
 import (
 	"context"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // None 是一个标记提供商，表示"不要向模型暴露 image_gen"。

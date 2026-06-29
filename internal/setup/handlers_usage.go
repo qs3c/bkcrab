@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/qs3c/bkclaw/internal/usage"
+	"github.com/qs3c/bkcrab/internal/usage"
 )
 
 // rangeFromQuery 将 ?range=24h|7d|30d（默认 7d）解析为最近 N 天的 usage.Range。

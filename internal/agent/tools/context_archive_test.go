@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 func TestRetrieveCompactedToolResultReturnsOriginalByArchiveID(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/scope"
-	"github.com/qs3c/bkclaw/internal/users"
+	"github.com/qs3c/bkcrab/internal/scope"
+	"github.com/qs3c/bkcrab/internal/users"
 )
 
 // registrationSettingNamespace 是公开注册开关的 configs 表键。

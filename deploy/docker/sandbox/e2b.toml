@@ -1,16 +1,16 @@
 # 这是 E2B 沙箱模板的配置。
-# 你可以使用模板 ID (95m23hiiqsx9u65ayuvo) 或模板名称 (bkclaw-sandbox) 来创建沙箱：
+# 你可以使用模板 ID (95m23hiiqsx9u65ayuvo) 或模板名称 (bkcrab-sandbox) 来创建沙箱：
 
 # Python SDK
 # from e2b import Sandbox, AsyncSandbox
-# sandbox = Sandbox.create("bkclaw-sandbox") # 同步沙箱
-# sandbox = await AsyncSandbox.create("bkclaw-sandbox") # 异步沙箱
+# sandbox = Sandbox.create("bkcrab-sandbox") # 同步沙箱
+# sandbox = await AsyncSandbox.create("bkcrab-sandbox") # 异步沙箱
 
 # JS SDK
 # import { Sandbox } from 'e2b'
-# const sandbox = await Sandbox.create('bkclaw-sandbox')
+# const sandbox = await Sandbox.create('bkcrab-sandbox')
 
 start_cmd = "sleep infinity"
 dockerfile = "e2b.Dockerfile"
-template_name = "bkclaw-sandbox"
+template_name = "bkcrab-sandbox"
 template_id = "95m23hiiqsx9u65ayuvo"

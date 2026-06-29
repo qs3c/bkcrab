@@ -11,18 +11,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/agent"
-	"github.com/qs3c/bkclaw/internal/bus"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/plugin"
-	"github.com/qs3c/bkclaw/internal/provider"
-	"github.com/qs3c/bkclaw/internal/sandbox"
-	"github.com/qs3c/bkclaw/internal/scope"
-	"github.com/qs3c/bkclaw/internal/session"
-	"github.com/qs3c/bkclaw/internal/skills"
-	"github.com/qs3c/bkclaw/internal/store"
-	"github.com/qs3c/bkclaw/internal/usage"
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/agent"
+	"github.com/qs3c/bkcrab/internal/bus"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/plugin"
+	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/sandbox"
+	"github.com/qs3c/bkcrab/internal/scope"
+	"github.com/qs3c/bkcrab/internal/session"
+	"github.com/qs3c/bkcrab/internal/skills"
+	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/usage"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // loadAgentSkillEntries 收集此用户拥有的每个代理作用域 skills.entries 行。
@@ -66,7 +66,7 @@ func ensureAgentHome(rc config.ResolvedAgent) {
 	}
 }
 
-// globalSkillsDirPath 返回 ~/.bkclaw/skills。
+// globalSkillsDirPath 返回 ~/.bkcrab/skills。
 func globalSkillsDirPath() (string, error) {
 	home, err := config.HomeDir()
 	if err != nil {

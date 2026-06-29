@@ -10,18 +10,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/agent"
-	"github.com/qs3c/bkclaw/internal/agent/tools"
-	"github.com/qs3c/bkclaw/internal/api"
-	"github.com/qs3c/bkclaw/internal/auth"
-	"github.com/qs3c/bkclaw/internal/channels"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/session"
-	"github.com/qs3c/bkclaw/internal/store"
-	"github.com/qs3c/bkclaw/internal/taskqueue"
-	"github.com/qs3c/bkclaw/internal/usage"
-	"github.com/qs3c/bkclaw/internal/users"
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/agent"
+	"github.com/qs3c/bkcrab/internal/agent/tools"
+	"github.com/qs3c/bkcrab/internal/api"
+	"github.com/qs3c/bkcrab/internal/auth"
+	"github.com/qs3c/bkcrab/internal/channels"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/session"
+	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/taskqueue"
+	"github.com/qs3c/bkcrab/internal/usage"
+	"github.com/qs3c/bkcrab/internal/users"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // AgentHandle 是 Web UI 与运行中的 agent 通信的接口。
@@ -271,12 +271,12 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/agents/{id}/channels/feishu", auth(s.handleConnectAgentFeishu))
 	mux.HandleFunc("DELETE /api/agents/{id}/channels/{type}/{accountId}", auth(s.handleDisconnectAgentChannel))
 
-	// 飞书事件 webhook。无需认证 — 飞书不带 bkclaw bearer token 直接发送到此端点。
+	// 飞书事件 webhook。无需认证 — 飞书不带 bkcrab bearer token 直接发送到此端点。
 	// 每个事件的安全性来自 verification_token，在适配器内部针对 payload 的 header.token 进行验证。
 	// {appId} 路径段将接收范围限定到一个已注册的频道。
 	mux.HandleFunc("POST /api/feishu/webhook/{appId}", s.handleFeishuWebhook)
 
-	// LINE Messaging API 事件 webhook。在 bkclaw 层无需认证 —
+	// LINE Messaging API 事件 webhook。在 bkcrab 层无需认证 —
 	// 每个事件的安全性通过 HMAC-SHA256(channel_secret, body) 实现，
 	// 由适配器根据 `x-line-signature` 头部验证。{accountId} 路径段是机器人的 userId，
 	// 将接收范围限定到一个已注册的频道。

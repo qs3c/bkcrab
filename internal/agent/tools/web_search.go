@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // RegisterWebSearchChain 公开了由 a 支持的 web_search 工具
@@ -18,7 +18,7 @@ func RegisterWebSearchChain(r *Registry, chain *toolproviders.Chain) {
 		return
 	}
 	// “none”是一个哨兵，意味着管理员明确选择退出
-	// bkclaw 的 web_search。在链条中的任何位置检测到 → 不检测
+	// bkcrab 的 web_search。在链条中的任何位置检测到 → 不检测
 	// 完全注册该工具，以便模型恢复到它自己的状态
 	// 本机搜索（或根本没有搜索）。
 	for _, ref := range chain.Order {

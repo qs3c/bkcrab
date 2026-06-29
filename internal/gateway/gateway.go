@@ -22,25 +22,25 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/qs3c/bkclaw/internal/agent"
-	"github.com/qs3c/bkclaw/internal/bus"
-	"github.com/qs3c/bkclaw/internal/channels"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/cron"
-	"github.com/qs3c/bkclaw/internal/plugin"
-	"github.com/qs3c/bkclaw/internal/sandbox"
-	"github.com/qs3c/bkclaw/internal/scope"
-	"github.com/qs3c/bkclaw/internal/store"
-	"github.com/qs3c/bkclaw/internal/taskqueue"
-	"github.com/qs3c/bkclaw/internal/toolproviders"
-	"github.com/qs3c/bkclaw/internal/toolproviders/imagegen"
-	"github.com/qs3c/bkclaw/internal/toolproviders/tts"
-	"github.com/qs3c/bkclaw/internal/toolproviders/webfetch"
-	"github.com/qs3c/bkclaw/internal/toolproviders/websearch"
-	"github.com/qs3c/bkclaw/internal/usage"
-	"github.com/qs3c/bkclaw/internal/users"
-	"github.com/qs3c/bkclaw/internal/webhook"
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/agent"
+	"github.com/qs3c/bkcrab/internal/bus"
+	"github.com/qs3c/bkcrab/internal/channels"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/cron"
+	"github.com/qs3c/bkcrab/internal/plugin"
+	"github.com/qs3c/bkcrab/internal/sandbox"
+	"github.com/qs3c/bkcrab/internal/scope"
+	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/taskqueue"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders/imagegen"
+	"github.com/qs3c/bkcrab/internal/toolproviders/tts"
+	"github.com/qs3c/bkcrab/internal/toolproviders/webfetch"
+	"github.com/qs3c/bkcrab/internal/toolproviders/websearch"
+	"github.com/qs3c/bkcrab/internal/usage"
+	"github.com/qs3c/bkcrab/internal/users"
+	"github.com/qs3c/bkcrab/internal/webhook"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 var toolProviderRegistry = func() *toolproviders.Registry {
@@ -57,11 +57,11 @@ func ToolProviderRegistry() *toolproviders.Registry { return toolProviderRegistr
 
 // registerAgentToolChains 使用合并的配置视图（解析器叠加的系统+用户+代理作用域）将每个提供者支持的工具类别挂接到给定的代理上。
 func registerAgentToolChains(cfg *config.Config, agents []*agent.Agent) {
-	envSearxNG := strings.TrimSpace(os.Getenv("BKCLAW_SEARXNG_ENDPOINT"))
+	envSearxNG := strings.TrimSpace(os.Getenv("BKCRAB_SEARXNG_ENDPOINT"))
 	for _, ag := range agents {
 		resolved := cfg.MergedAgentConfig(config.AgentEntry{ID: ag.Name()})
 		chain := buildToolChainFromResolved(resolved, "web_search")
-		// 回退：如果没有配置 web_search 链且环境中设置了 BKCLAW_SEARXNG_ENDPOINT，
+		// 回退：如果没有配置 web_search 链且环境中设置了 BKCRAB_SEARXNG_ENDPOINT，
 		// 合成一个指向该端点的单提供者链。一行设置（"docker run searxng …" + 环境变量）
 		// 是一个可以在第一次尝试就找到正确 URL 的代理与一个耗费 11 轮猜测的代理之间的区别 —
 		// 我们在实际环境中观察到了后者，让用户没有搜索的代价不值得注入合理默认值的代价。
@@ -86,9 +86,9 @@ func registerAgentToolChains(cfg *config.Config, agents []*agent.Agent) {
 }
 
 // synthesizeSearxNGChain 构建一个仅由 SearxNG 提供者支持的临时 web_search 链，
-// 从 BKCLAW_SEARXNG_ENDPOINT 配置。让新安装无需经过仪表盘的工具提供者配置即可启用搜索 —
+// 从 BKCRAB_SEARXNG_ENDPOINT 配置。让新安装无需经过仪表盘的工具提供者配置即可启用搜索 —
 // 用户在实际环境中从未看到 web_search 的最常见原因是他们没有意识到需要在两个地方
-//（提供者条目 + 类别链）配置它。
+// （提供者条目 + 类别链）配置它。
 func synthesizeSearxNGChain(endpoint string) *toolproviders.Chain {
 	chain := &toolproviders.Chain{
 		Category:     "web_search",
@@ -185,7 +185,7 @@ func (g *Gateway) Store() store.Store { return g.store }
 // TaskQueue 返回网关的任务队列。
 func (g *Gateway) TaskQueue() *taskqueue.Queue { return g.taskQueue }
 
-// EnvConfig 返回引导配置（BKCLAW_* 环境变量）。
+// EnvConfig 返回引导配置（BKCRAB_* 环境变量）。
 func (g *Gateway) EnvConfig() *config.EnvConfig { return g.envCfg }
 
 // New 创建一个 Gateway。存储 + 工作空间 + 插件管理器 + 通道管理器 + cron 调度器 + webhook 都在此初始化，
@@ -210,7 +210,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	config.AgentFileConfigLoader = makeStoreFirstAgentFileLoader(st)
 
 	// 代理产生的工作成果的对象存储。对象存储配置位于 system_settings 中用于运行时编辑的字段，
-	// 以及 BKCLAW_OBJECT_STORE_* 环境变量用于运维管理的覆盖。
+	// 以及 BKCRAB_OBJECT_STORE_* 环境变量用于运维管理的覆盖。
 	osCfg := readObjectStoreCfg(st)
 	wsInner, err := workspace.Factory{
 		Type:         osCfg.Type,
@@ -253,7 +253,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	chanMgr.Register(webChan)
 
 	// Cron 调度器每次时钟滴答时直接从数据库读取任务 — 没有内存中的任务列表，
-	// 没有 bkclaw.json 副本。每个触发的任务携带其 OwnerUserID，
+	// 没有 bkcrab.json 副本。每个触发的任务携带其 OwnerUserID，
 	// 以便 processInbound 可以路由到正确的空间。
 	scheduler := cron.NewSchedulerFromStore(&cronStoreAdapter{st: st}, mb)
 	// 预检投递检查：当配置的目标通道适配器未注册时（例如微信令牌过期且行被清除），
@@ -303,7 +303,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	systemSandboxPool := buildSystemSandboxPool(readSystemSandboxCfg(st), ws)
 
 	// Accounts 服务由入站路由循环用于延迟铸造每个（通道，IM 发送者）的 app_user 行，
-	// 以便 IM 通道上的每个聊天者最终拥有自己稳定的 bkclaw u_xxx id
+	// 以便 IM 通道上的每个聊天者最终拥有自己稳定的 bkcrab u_xxx id
 	//（从而拥有自己的每个聊天者的 USER.md / MEMORY.md）。
 	accts, err := users.NewAccounts(st)
 	if err != nil {
@@ -575,7 +575,7 @@ func defaultStr(v, fallback string) string {
 	return v
 }
 
-// readObjectStoreCfg 拉取"objectstore"设置命名空间，然后在上面叠加 BKCLAW_OBJECT_STORE_* 环境变量。
+// readObjectStoreCfg 拉取"objectstore"设置命名空间，然后在上面叠加 BKCRAB_OBJECT_STORE_* 环境变量。
 func readObjectStoreCfg(st store.Store) config.ObjectStoreCfg {
 	cfg := &config.Config{}
 	if st != nil {
@@ -609,7 +609,7 @@ func readSystemTaskQueue(st store.Store) config.TaskQueueCfg {
 	return out
 }
 
-// readSystemSandboxCfg 读取系统作用域沙箱设置，并在上面合并 BKCLAW_SANDBOX_* 环境变量。
+// readSystemSandboxCfg 读取系统作用域沙箱设置，并在上面合并 BKCRAB_SANDBOX_* 环境变量。
 // 网关范围沙箱池的事实来源。
 func readSystemSandboxCfg(st store.Store) config.SandboxCfg {
 	cfg := &config.Config{}
@@ -863,8 +863,8 @@ func decodeBase64Tolerant(s string) ([]byte, error) {
 }
 
 // maxAttachmentBytes 限制每个文件的出站附件。大小设计为适合我们关心的最严格的 IM 平台限制
-//（Discord 免费层 = 25MB），并远低于微信 CDN 上传超时的实际上限
-//（90 秒在典型住宅上行链路上为约 25MB 留有余量）。超过此大小的文件被跳过 + 记录，而不是截断；
+// （Discord 免费层 = 25MB），并远低于微信 CDN 上传超时的实际上限
+// （90 秒在典型住宅上行链路上为约 25MB 留有余量）。超过此大小的文件被跳过 + 记录，而不是截断；
 // 接收者看不到附件，但聊天侧文本仍然通过。
 const maxAttachmentBytes = 25 * 1024 * 1024
 
@@ -964,7 +964,7 @@ func appendRecentWorkspaceMedia(ctx context.Context, ws workspace.Store, agentID
 
 // isShippableExt 是工作空间媒体回退使用的"这是可交付物"白名单。有意保守 —
 // 自动发送代理写入的每个 .md / .txt / .json 会将内部草稿板
-//（todo.md、计划、中间暂存）作为聊天附件暴露。仅当文件几乎总是代表"用户要求的东西"时才添加新扩展名。
+// （todo.md、计划、中间暂存）作为聊天附件暴露。仅当文件几乎总是代表"用户要求的东西"时才添加新扩展名。
 func isShippableExt(p string) bool {
 	switch strings.ToLower(filepath.Ext(p)) {
 	// 图片

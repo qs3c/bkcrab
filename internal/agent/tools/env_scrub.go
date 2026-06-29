@@ -7,14 +7,14 @@ import (
 
 // sensitiveEnvPrefixes 是标记的 NAME 前缀（不区分大小写）
 // 环境变量仅作为运算符且不会被 LLM 驱动继承
-// 子流程。 BKCLAW_STORAGE_* 和 BKCLAW_OBJECT_STORE_* 携带
-// 守护进程的 DSN + 对象存储凭据； BKCLAW_SANDBOX_BOXLITE_*
+// 子流程。 BKCRAB_STORAGE_* 和 BKCRAB_OBJECT_STORE_* 携带
+// 守护进程的 DSN + 对象存储凭据； BKCRAB_SANDBOX_BOXLITE_*
 // 携带沙箱提供商的 apikey。该模型没有业务
 // 阅读其中任何一个。
 var sensitiveEnvPrefixes = []string{
-	"BKCLAW_STORAGE_",
-	"BKCLAW_OBJECT_STORE_",
-	"BKCLAW_SANDBOX_BOXLITE_",
+	"BKCRAB_STORAGE_",
+	"BKCRAB_OBJECT_STORE_",
+	"BKCRAB_SANDBOX_BOXLITE_",
 	"AWS_",
 	"GOOGLE_APPLICATION_CREDENTIALS",
 }

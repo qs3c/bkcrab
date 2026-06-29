@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // Firecrawl 调用 api.firecrawl.dev 的 /v1/scrape 端点，使用无头浏览器渲染

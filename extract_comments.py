@@ -1,7 +1,7 @@
 import re, os, sys
 
-DIRS = [r"E:\\fromGithub\\bkclaw\\internal\\setup", r"E:\\fromGithub\\bkclaw\\internal\\skills"]
-OUT = open(r"E:\\fromGithub\\bkclaw\\all_comments.txt", "w", encoding="utf-8")
+DIRS = [r"E:\\fromGithub\\bkcrab\\internal\\setup", r"E:\\fromGithub\\bkcrab\\internal\\skills"]
+OUT = open(r"E:\\fromGithub\\bkcrab\\all_comments.txt", "w", encoding="utf-8")
 
 files = []
 for d in DIRS:

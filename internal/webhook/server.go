@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 // AgentHandler 处理消息并返回响应。
@@ -24,7 +24,7 @@ type UserLookup interface {
 // WebhookRequest 是 webhook POST 请求的请求体。
 type WebhookRequest struct {
 	AgentID string `json:"agentId"`
-	UserID  string `json:"userId,omitempty"` // bkclaw user to route to (cloud mode)
+	UserID  string `json:"userId,omitempty"` // bkcrab user to route to (cloud mode)
 	Message string `json:"message"`
 	Channel string `json:"channel"`
 	ChatID  string `json:"chatId"`

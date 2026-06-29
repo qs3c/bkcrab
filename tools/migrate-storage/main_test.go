@@ -6,13 +6,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 func TestRunSQLiteToMySQL(t *testing.T) {
-	dsn := os.Getenv("BKCLAW_TEST_MYSQL_DSN")
+	dsn := os.Getenv("BKCRAB_TEST_MYSQL_DSN")
 	if dsn == "" {
-		t.Skip("BKCLAW_TEST_MYSQL_DSN is not set")
+		t.Skip("BKCRAB_TEST_MYSQL_DSN is not set")
 	}
 
 	ctx := context.Background()

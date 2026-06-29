@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-config
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+data:
+  BKCRAB_PORT: {{ .Values.gateway.port | quote }}
+  BKCRAB_BIND: "all"
+  BKCRAB_STORAGE_TYPE: {{ include "bkcrab.storageType" . | quote }}
+  BKCRAB_STORAGE_AUTO_MIGRATE: "true"
+  {{- with .Values.timezone }}
+  ## 服务器默认时区 — 聊天/agent/系统偏好之后的最后回退。
+  TZ: {{ . | quote }}
+  {{- end }}
+
+  ## 对象存储
+  BKCRAB_OBJECT_STORE_TYPE: {{ .Values.objectStore.type | quote }}
+  {{- with .Values.objectStore.bucket }}
+  BKCRAB_OBJECT_STORE_BUCKET: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.objectStore.region }}
+  BKCRAB_OBJECT_STORE_REGION: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.objectStore.endpoint }}
+  BKCRAB_OBJECT_STORE_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.objectStore.accountId }}
+  BKCRAB_OBJECT_STORE_ACCOUNTID: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.objectStore.prefix }}
+  BKCRAB_OBJECT_STORE_PREFIX: {{ . | quote }}
+  {{- end }}
+  BKCRAB_OBJECT_STORE_USESSL: {{ .Values.objectStore.useSSL | quote }}
+  {{- if .Values.objectStore.aliyunInternal }}
+  BKCRAB_OBJECT_STORE_ALIYUN_INTERNAL: "true"
+  {{- end }}
+
+  ## 沙箱
+  {{- if .Values.sandbox.enabled }}
+  BKCRAB_SANDBOX_BACKEND: {{ .Values.sandbox.backend | quote }}
+  {{- with .Values.sandbox.image }}
+  BKCRAB_SANDBOX_IMAGE: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+
+  {{- with .Values.extraEnv }}
+  {{- range $k, $v := . }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+  {{- end }}

@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // Replicate 向 https://api.replicate.com/v1/models/<owner>/<name>/predictions

@@ -24,10 +24,10 @@ func NewPool() *SandboxPool {
 //
 // 创建时，我们将两个技能目录都连接到沙箱中，
 // 以便 LLM 的 `python /skills/<name>/main.py` 可以解析技能是位于
-// 全局 $BKCLAW_HOME/skills/ 树中还是此代理的私有
-// $BKCLAW_HOME/agents/<agentID>/agent/skills/ 中。
+// 全局 $BKCRAB_HOME/skills/ 树中还是此代理的私有
+// $BKCRAB_HOME/agents/<agentID>/agent/skills/ 中。
 // 没有按代理挂载，操作员放入 agents/<id>/agent/skills/ 的技能
-//（例如通过 SkillsLoader 的按代理层）会在容器内静默地加载失败。
+// （例如通过 SkillsLoader 的按代理层）会在容器内静默地加载失败。
 func (p *SandboxPool) Get(agentID, image, workspace string, policy *Policy) *DockerSandbox {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -62,7 +62,7 @@ func homeFromWorkspace(workspace, agentID string) string {
 // 应挂载到沙箱内的 /skills/<skill-name>/ 下。
 // 按代理目录优先，以便其技能覆盖同名的全局技能，匹配 SkillsLoader 优先级。
 //
-// home 是解析后的 BKCLAW_HOME（池的 workspaceRoot），
+// home 是解析后的 BKCRAB_HOME（池的 workspaceRoot），
 // 而不是进程环境——保持测试/多实例调试的真实性。
 func skillDirsForAgent(home, agentID string) []string {
 	if home == "" {

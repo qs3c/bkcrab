@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // bytesReader 将字节切片包装为 io.Reader——内联辅助函数，

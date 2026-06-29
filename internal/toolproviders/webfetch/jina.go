@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // Jina 调用 r.jina.ai，它代理任意 URL 并返回对 LLM 友好的 markdown。

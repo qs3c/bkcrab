@@ -16,14 +16,14 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/agent/tools"
-	"github.com/qs3c/bkclaw/internal/auth"
-	"github.com/qs3c/bkclaw/internal/buildinfo"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/scope"
-	"github.com/qs3c/bkclaw/internal/store"
-	"github.com/qs3c/bkclaw/internal/users"
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/agent/tools"
+	"github.com/qs3c/bkcrab/internal/auth"
+	"github.com/qs3c/bkcrab/internal/buildinfo"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/scope"
+	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/users"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // agentShareModelConfig 报告 agent 拥有者是否选择与聊天者共享其模型+提供者配置。
@@ -102,7 +102,7 @@ func (s *Server) applyAgentScopeDefaultsPatch(r *http.Request, agentID string, p
 // applyAgentScopePluginsPatch 将 per-agent 插件启用覆盖合并到 (scope=agent, name=plugins.enabled) 行中。
 //
 // 值为 true/false 的补丁键被写入；行的其余部分被保留
-//（这样对一个插件的 UI 切换不会破坏兄弟插件的覆盖）。
+// （这样对一个插件的 UI 切换不会破坏兄弟插件的覆盖）。
 // 当 reset 为 true 时，整行被删除 — agent 回退到系统范围的插件启用状态。
 func (s *Server) applyAgentScopePluginsPatch(r *http.Request, agentID string, patch map[string]bool, reset bool) error {
 	if reset {
@@ -374,11 +374,11 @@ func (s *Server) requireAgentOwner(w http.ResponseWriter, r *http.Request, agent
 // 或者 agent 标记为公开且调用者至少是经过认证的会话时允许访问。
 // 公开 agent 通过链接共享：任何访问 URL 的已登录用户可以在自己的 user_id 命名空间下聊天，
 // 而 agent 的身份（SOUL/IDENTITY/skills）从拥有者的行重用。
-// 这是 /api/chat/history 使用的相同门控，因此通过 X-Bkclaw-End-User 集成代理的 app_user
+// 这是 /api/chat/history 使用的相同门控，因此通过 X-Bkcrab-End-User 集成代理的 app_user
 // 请求可以读取他们拥有的会话的工件，而不会在严格的拥有者检查上返回 403。
 // callerOwnsAgent 在调用者是 agent 的拥有者、super_admin 或明确作用域到该 agent 的 apikey 时返回 true。
 // 与 requireAgentReadable 不同，它不授予公开 agent 的读取者权限 — 由需要区分"浏览所有内容"
-//（拥有者）和"限定到自己的会话"（公开 agent 上的外部调用者）的文件作用域代码使用。
+// （拥有者）和"限定到自己的会话"（公开 agent 上的外部调用者）的文件作用域代码使用。
 // 失败时静默：由调用者决定如何响应。
 func (s *Server) callerOwnsAgent(r *http.Request, agentID string) bool {
 	rec, err := s.dataStore.GetAgent(r.Context(), agentID)
@@ -822,7 +822,7 @@ func (s *Server) resolveSystemFileTarget(w http.ResponseWriter, r *http.Request,
 
 // workspaceSessionScope 将 URL 中的 `?sessionId=` token 转换为
 // workspaces/<agent>/sessions/ 下使用的目录名。URL token 是 session_key
-//（因此仪表板可以统一地寻址任何会话），但工作区工件按 chat_id 命名空间 —
+// （因此仪表板可以统一地寻址任何会话），但工作区工件按 chat_id 命名空间 —
 // 那是 agent 运行时在写入时传递的。
 //
 // 当 session_key 在调用者的 (user_id, agent_id) 下解析时返回 chat_id。
@@ -913,8 +913,8 @@ func stripScopePrefix(p string) string {
 			// 项目路径可以有第二个 id 段用于每个聊天的子目录；存在时也折叠它。
 			if top == "projects/" {
 				if j := strings.IndexByte(rest, '/'); j >= 0 {
-				// 仅当第一个段看起来像聊天 id（s-... 前缀）时才将其视为聊天 id。
-				// 否则保持 rest 不变，以便遗留的"子目录/file.md"结构不会被过度剥离。
+					// 仅当第一个段看起来像聊天 id（s-... 前缀）时才将其视为聊天 id。
+					// 否则保持 rest 不变，以便遗留的"子目录/file.md"结构不会被过度剥离。
 					if first := rest[:j]; strings.HasPrefix(first, "s-") {
 						rest = rest[j+1:]
 					}
@@ -971,7 +971,7 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 				if strings.HasPrefix(p, ownPrefix) {
 					return true
 				}
-			// 位于 projects/<pid>/<file> 的顶级文件（没有进一步的 "/" — 即不在任何 sid 子目录中）。
+				// 位于 projects/<pid>/<file> 的顶级文件（没有进一步的 "/" — 即不在任何 sid 子目录中）。
 				if strings.HasPrefix(p, rootPrefix) {
 					rest := p[len(rootPrefix):]
 					return rest != "" && !strings.Contains(rest, "/")
@@ -1172,7 +1172,7 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 	}
 	// Workspace store 未配置 — 回退到直接 FS 读取。
 	// 本地 FS 布局镜像 workspace store：
-	// ~/.bkclaw/workspaces/<agent_id>/<path>。
+	// ~/.bkcrab/workspaces/<agent_id>/<path>。
 	home, err := config.HomeDir()
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -1207,7 +1207,7 @@ func (s *Server) serveFileFromWorkspaceStore(w http.ResponseWriter, r *http.Requ
 // setFileResponseHeaders 为用户产生的工作区文件选择正确的 Content-Type，
 // 并锁定 agent 生成的 HTML，使其即使在用户直接在标签页中打开 URL 时也无法访问
 // 应用的 cookie/存储。从扩展名派生的 Content-Type 允许 iframe 渲染文件
-//（octet-stream → about:blank，因为 iframe 不嗅探）。CSP `sandbox` 头部
+// （octet-stream → about:blank，因为 iframe 不嗅探）。CSP `sandbox` 头部
 // 与聊天预览通过 iframe `sandbox` 属性获得的保护相同，但在 HTTP 层应用，
 // 因此无论文件如何加载都能生效。
 func setFileResponseHeaders(w http.ResponseWriter, path string) {

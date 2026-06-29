@@ -44,13 +44,13 @@ type DockerSandbox struct {
 // NewDockerSandbox 创建一个新的沙箱配置（容器延迟创建）。
 //
 // 默认策略让 NetMode 保持未设置状态，这意味着 Docker 使用默认桥接网络
-//（= 互联网访问）。大多数产品代理需要出站 HTTP 用于 LLM 提供者调用/
+// （= 互联网访问）。大多数产品代理需要出站 HTTP 用于 LLM 提供者调用/
 // 图片 API/pip 安装；过去以 NetMode="none" 锁定沙箱是默认行为，
 // 并静默地破坏了生成图像类技能，导致 DNS 解析错误。
 // 想要硬隔离的操作员传递具有 NetMode: "none" 的显式策略。
 func NewDockerSandbox(image, workspace string, policy *Policy) *DockerSandbox {
 	if image == "" {
-		image = "thinkany/bkclaw-sandbox:latest"
+		image = "thinkany/bkcrab-sandbox:latest"
 	}
 	if policy == nil {
 		policy = &Policy{}
@@ -114,11 +114,11 @@ func (s *DockerSandbox) Create() error {
 	args := []string{
 		"create",
 		"--interactive",
-		"--label", "bkclaw=sandbox",
+		"--label", "bkcrab=sandbox",
 	}
 
 	// 继承主机的 HTTP(S)_PROXY 配置，以便沙箱内的 curl/pip/npm/git
-	// 可以通过 bkclaw 自身使用的任何代理访问被屏蔽的来源。
+	// 可以通过 bkcrab 自身使用的任何代理访问被屏蔽的来源。
 	// 没有这个，在受限网络（GFW 等）中，目标域名的 DNS 解析到黑洞，
 	// 容器会看到 TLS 重置，在 Camoufox/Playwright 中表现为
 	// NS_ERROR_NET_INTERRUPT。绑定到 localhost 的代理 URL 被重写为
@@ -167,14 +167,14 @@ func (s *DockerSandbox) Create() error {
 	// 将每个技能目录以只读方式挂载到 /skills/<basename>/。
 	// LLM 被告知通过 `python /skills/<name>/main.py` 调用技能，
 	// 因此没有这些挂载，脚本文件在容器中不存在。
-	// 当没有显式设置目录时，自动默认使用 BKCLAW_HOME/skills/，
+	// 当没有显式设置目录时，自动默认使用 BKCRAB_HOME/skills/，
 	// 以便新安装的产品代理无需操作员自己配置 SetSkillDirs 即可工作。
 	dirs := s.skillDirs
 	if len(dirs) == 0 {
-		if h := os.Getenv("BKCLAW_HOME"); h != "" {
+		if h := os.Getenv("BKCRAB_HOME"); h != "" {
 			dirs = []string{filepath.Join(h, "skills")}
 		} else if home, err := os.UserHomeDir(); err == nil {
-			dirs = []string{filepath.Join(home, ".bkclaw", "skills")}
+			dirs = []string{filepath.Join(home, ".bkcrab", "skills")}
 		}
 	}
 	mounted := make(map[string]bool)
@@ -280,7 +280,7 @@ func (s *DockerSandbox) Exec(ctx context.Context, command string, workdir string
 
 // ExecWithStdin 在容器内运行命令，并将给定的字节通过管道传入 stdin。
 // 用于写入二进制文件（PNG、音频等）——通过 argv 传递原始字节
-//（就像我们基于 heredoc 的 WriteFile 所做的那样）会在内容包含 NULL 字节时
+// （就像我们基于 heredoc 的 WriteFile 所做的那样）会在内容包含 NULL 字节时
 // 立即报错 "fork/exec: invalid argument"，因为 execve 拒绝 argv 元素中的 NUL。
 func (s *DockerSandbox) ExecWithStdin(ctx context.Context, command string, workdir string, stdin io.Reader) (string, error) {
 	s.mu.Lock()

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // SearxNG 是特例：不需要 API 密钥，只需要自托管 SearxNG 实例的端点 URL。
@@ -39,7 +39,7 @@ func (s *SearxNG) Execute(ctx context.Context, req toolproviders.Request) (toolp
 	q.Set("format", "json")
 	httpReq.URL.RawQuery = q.Encode()
 	// 大多数 SearxNG 部署需要类似浏览器的 UA；空的 UA 会返回 403。
-	httpReq.Header.Set("User-Agent", "bkclaw/1.0")
+	httpReq.Header.Set("User-Agent", "bkcrab/1.0")
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {

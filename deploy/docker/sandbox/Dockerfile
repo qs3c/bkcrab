@@ -1,4 +1,4 @@
-# bkclaw-sandbox — agent 执行沙箱的运行时镜像。
+# bkcrab-sandbox — agent 执行沙箱的运行时镜像。
 #
 # 为什么存在：默认的 `python:3.12-slim` 镜像只有 Python。
 # 捆绑的技能（如 camoufox-cli）驱动真正的浏览器，因此我们需要

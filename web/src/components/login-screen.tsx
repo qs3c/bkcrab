@@ -100,7 +100,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
         <div className="w-full max-w-sm space-y-6">
           <div className="text-center space-y-2">
             <h1 className="text-2xl font-bold text-zinc-100">创建你的账户</h1>
-            <p className="text-sm text-zinc-500">注册后即可开始使用 BkClaw</p>
+            <p className="text-sm text-zinc-500">注册后即可开始使用 BkCrab</p>
           </div>
           <form onSubmit={handleSignUp} className="space-y-4">
             <input
@@ -164,7 +164,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
     <div className="flex min-h-screen items-center justify-center bg-zinc-950 p-4">
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center space-y-2">
-          <h1 className="text-2xl font-bold text-zinc-100">BkClaw</h1>
+          <h1 className="text-2xl font-bold text-zinc-100">BkCrab</h1>
           <p className="text-sm text-zinc-500">使用用户名或邮箱登录</p>
         </div>
         <form onSubmit={handleSignIn} className="space-y-4">

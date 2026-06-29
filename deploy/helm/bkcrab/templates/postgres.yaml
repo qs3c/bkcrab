@@ -1,0 +1,66 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-db
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "bkcrab.fullname" . }}-db
+  template:
+    metadata:
+      labels:
+        app: {{ include "bkcrab.fullname" . }}-db
+    spec:
+      containers:
+      - name: postgres
+        image: {{ .Values.postgres.image }}
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: bkcrab
+        - name: POSTGRES_USER
+          value: bkcrab
+        - name: POSTGRES_PASSWORD
+          value: {{ .Values.postgres.password | quote }}
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "bkcrab"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "bkcrab.fullname" . }}-db
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-db
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ .Values.postgres.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-db
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: {{ include "bkcrab.fullname" . }}-db
+  ports:
+  - port: 5432
+{{- end }}

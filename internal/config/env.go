@@ -6,10 +6,10 @@ import (
 )
 
 // EnvConfig 是引导配置：存储 DSN、网关端口、沙箱后端。在进程启动时
-// 从 BKCLAW_* 环境变量读取——没有配置文件。所有用户可见的配置
-//（提供者、渠道、agent 等）都存储在数据库中。
+// 从 BKCRAB_* 环境变量读取——没有配置文件。所有用户可见的配置
+// （提供者、渠道、agent 等）都存储在数据库中。
 //
-// 在进程/容器层面以 `BKCLAW_<大写下划线形式>`（或下面 `env:` 标签中的
+// 在进程/容器层面以 `BKCRAB_<大写下划线形式>`（或下面 `env:` 标签中的
 // 显式名称）设置。systemd unit、docker-compose、k8s deployment env 是
 // 规范的设置位置。
 type EnvConfig struct {
@@ -20,32 +20,32 @@ type EnvConfig struct {
 }
 
 type EnvGateway struct {
-	Port int    // BKCLAW_PORT       — 默认 18953
-	Bind string // BKCLAW_BIND       — "loopback"（默认）或 "all"
+	Port int    // BKCRAB_PORT       — 默认 18953
+	Bind string // BKCRAB_BIND       — "loopback"（默认）或 "all"
 }
 
 type EnvStorage struct {
-	Type        string // BKCLAW_STORAGE_TYPE  — 默认 "mysql"
-	DSN         string // BKCLAW_STORAGE_DSN   — 必需；无 SQLite 回退
-	AutoMigrate bool   // BKCLAW_STORAGE_AUTO_MIGRATE — 默认 true
+	Type        string // BKCRAB_STORAGE_TYPE  — 默认 "mysql"
+	DSN         string // BKCRAB_STORAGE_DSN   — 必需；无 SQLite 回退
+	AutoMigrate bool   // BKCRAB_STORAGE_AUTO_MIGRATE — 默认 true
 }
 
 type EnvSandbox struct {
-	Enabled         bool   // BKCLAW_SANDBOX_ENABLED
-	Backend         string // BKCLAW_SANDBOX_BACKEND  — "docker"、"e2b" 或 "boxlite"
-	Image           string // BKCLAW_SANDBOX_IMAGE
+	Enabled         bool   // BKCRAB_SANDBOX_ENABLED
+	Backend         string // BKCRAB_SANDBOX_BACKEND  — "docker"、"e2b" 或 "boxlite"
+	Image           string // BKCRAB_SANDBOX_IMAGE
 	E2BKey          string // E2B_API_KEY
-	BoxliteURL      string // BKCLAW_SANDBOX_BOXLITE_URL — 完整基础 URL，例如 https://api.boxlite.ai/v1
-	BoxliteClientID string // BKCLAW_SANDBOX_BOXLITE_CLIENT_ID — 默认 "default"
+	BoxliteURL      string // BKCRAB_SANDBOX_BOXLITE_URL — 完整基础 URL，例如 https://api.boxlite.ai/v1
+	BoxliteClientID string // BKCRAB_SANDBOX_BOXLITE_CLIENT_ID — 默认 "default"
 	BoxliteKey      string // BOXLITE_API_KEY — 作为 Authorization: Bearer 发送的 apikey
-	BoxlitePrefix   string // BKCLAW_SANDBOX_BOXLITE_PREFIX — 工作区前缀，默认 "default"
+	BoxlitePrefix   string // BKCRAB_SANDBOX_BOXLITE_PREFIX — 工作区前缀，默认 "default"
 }
 
 type EnvLog struct {
-	Level string // BKCLAW_LOG_LEVEL — "debug" / "info" / "warn" / "error"
+	Level string // BKCRAB_LOG_LEVEL — "debug" / "info" / "warn" / "error"
 }
 
-// LoadEnv 从 BKCLAW_* 环境变量读取引导配置。没有配置文件：
+// LoadEnv 从 BKCRAB_* 环境变量读取引导配置。没有配置文件：
 // 部署时设置是部署清单（systemd / docker-compose / k8s env）的一部分。
 func LoadEnv() *EnvConfig {
 	cfg := &EnvConfig{
@@ -54,62 +54,62 @@ func LoadEnv() *EnvConfig {
 		Storage: EnvStorage{Type: "mysql", AutoMigrate: true},
 	}
 
-	if v := os.Getenv("BKCLAW_PORT"); v != "" {
+	if v := os.Getenv("BKCRAB_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {
 			cfg.Gateway.Port = p
 		}
 	}
-	if v := os.Getenv("BKCLAW_BIND"); v != "" {
+	if v := os.Getenv("BKCRAB_BIND"); v != "" {
 		cfg.Gateway.Bind = v
 	}
 
-	if v := os.Getenv("BKCLAW_STORAGE_TYPE"); v != "" {
+	if v := os.Getenv("BKCRAB_STORAGE_TYPE"); v != "" {
 		cfg.Storage.Type = v
 	}
-	if v := os.Getenv("BKCLAW_STORAGE_DSN"); v != "" {
+	if v := os.Getenv("BKCRAB_STORAGE_DSN"); v != "" {
 		cfg.Storage.DSN = v
 	}
-	if v := os.Getenv("BKCLAW_STORAGE_AUTO_MIGRATE"); v != "" {
+	if v := os.Getenv("BKCRAB_STORAGE_AUTO_MIGRATE"); v != "" {
 		cfg.Storage.AutoMigrate = v == "true" || v == "1"
 	}
 
-	if v := os.Getenv("BKCLAW_SANDBOX_ENABLED"); v != "" {
+	if v := os.Getenv("BKCRAB_SANDBOX_ENABLED"); v != "" {
 		cfg.Sandbox.Enabled = v == "true" || v == "1"
 	}
-	if v := os.Getenv("BKCLAW_SANDBOX_BACKEND"); v != "" {
+	if v := os.Getenv("BKCRAB_SANDBOX_BACKEND"); v != "" {
 		cfg.Sandbox.Backend = v
 		// 设置后端意味着操作员希望沙箱开启；这反映了
 		// 之前的 LoadEnv 行为。
 		cfg.Sandbox.Enabled = true
 	}
-	if v := os.Getenv("BKCLAW_SANDBOX_IMAGE"); v != "" {
+	if v := os.Getenv("BKCRAB_SANDBOX_IMAGE"); v != "" {
 		cfg.Sandbox.Image = v
 	}
 	if v := os.Getenv("E2B_API_KEY"); v != "" {
 		cfg.Sandbox.E2BKey = v
 	}
-	if v := os.Getenv("BKCLAW_SANDBOX_BOXLITE_URL"); v != "" {
+	if v := os.Getenv("BKCRAB_SANDBOX_BOXLITE_URL"); v != "" {
 		cfg.Sandbox.BoxliteURL = v
 	}
-	if v := os.Getenv("BKCLAW_SANDBOX_BOXLITE_CLIENT_ID"); v != "" {
+	if v := os.Getenv("BKCRAB_SANDBOX_BOXLITE_CLIENT_ID"); v != "" {
 		cfg.Sandbox.BoxliteClientID = v
 	}
 	if v := os.Getenv("BOXLITE_API_KEY"); v != "" {
 		cfg.Sandbox.BoxliteKey = v
 	}
-	if v := os.Getenv("BKCLAW_SANDBOX_BOXLITE_PREFIX"); v != "" {
+	if v := os.Getenv("BKCRAB_SANDBOX_BOXLITE_PREFIX"); v != "" {
 		cfg.Sandbox.BoxlitePrefix = v
 	}
 
-	if v := os.Getenv("BKCLAW_LOG_LEVEL"); v != "" {
+	if v := os.Getenv("BKCRAB_LOG_LEVEL"); v != "" {
 		cfg.Log.Level = v
 	}
 	return cfg
 }
 
-// applyObjectStoreEnv 将 BKCLAW_OBJECT_STORE_* 环境变量读入 cfg。
+// applyObjectStoreEnv 将 BKCRAB_OBJECT_STORE_* 环境变量读入 cfg。
 func applyObjectStoreEnv(cfg *Config) {
-	read := func(key string) string { return os.Getenv("BKCLAW_OBJECT_STORE_" + key) }
+	read := func(key string) string { return os.Getenv("BKCRAB_OBJECT_STORE_" + key) }
 	if v := read("TYPE"); v != "" {
 		cfg.ObjectStore.Type = v
 	}
@@ -159,18 +159,18 @@ func applyObjectStoreEnv(cfg *Config) {
 // 希望在运行时轮换凭据的操作员应通过管理 UI 编辑数据库存储的配置。
 func ScrubBootSecrets() {
 	keys := []string{
-		"BKCLAW_STORAGE_DSN",
-		"BKCLAW_OBJECT_STORE_TYPE",
-		"BKCLAW_OBJECT_STORE_LOCAL_ROOT",
-		"BKCLAW_OBJECT_STORE_REGION",
-		"BKCLAW_OBJECT_STORE_BUCKET",
-		"BKCLAW_OBJECT_STORE_PREFIX",
-		"BKCLAW_OBJECT_STORE_ACCESSKEY",
-		"BKCLAW_OBJECT_STORE_SECRETKEY",
-		"BKCLAW_OBJECT_STORE_ACCOUNTID",
-		"BKCLAW_OBJECT_STORE_ENDPOINT",
-		"BKCLAW_OBJECT_STORE_USESSL",
-		"BKCLAW_OBJECT_STORE_ALIYUN_INTERNAL",
+		"BKCRAB_STORAGE_DSN",
+		"BKCRAB_OBJECT_STORE_TYPE",
+		"BKCRAB_OBJECT_STORE_LOCAL_ROOT",
+		"BKCRAB_OBJECT_STORE_REGION",
+		"BKCRAB_OBJECT_STORE_BUCKET",
+		"BKCRAB_OBJECT_STORE_PREFIX",
+		"BKCRAB_OBJECT_STORE_ACCESSKEY",
+		"BKCRAB_OBJECT_STORE_SECRETKEY",
+		"BKCRAB_OBJECT_STORE_ACCOUNTID",
+		"BKCRAB_OBJECT_STORE_ENDPOINT",
+		"BKCRAB_OBJECT_STORE_USESSL",
+		"BKCRAB_OBJECT_STORE_ALIYUN_INTERNAL",
 		"BOXLITE_API_KEY",
 		"E2B_API_KEY",
 	}
@@ -180,7 +180,7 @@ func ScrubBootSecrets() {
 }
 
 // ApplyToConfig 将环境派生的值叠加到运行时 Config 上。由网关引导
-// 使用，用于在数据库存储的对象存储命名空间之上叠加 BKCLAW_OBJECT_STORE_*。
+// 使用，用于在数据库存储的对象存储命名空间之上叠加 BKCRAB_OBJECT_STORE_*。
 func (e *EnvConfig) ApplyToConfig(cfg *Config) {
 	if e.Gateway.Port > 0 {
 		cfg.Gateway.Port = e.Gateway.Port

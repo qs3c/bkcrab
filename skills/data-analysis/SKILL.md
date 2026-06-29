@@ -2,7 +2,7 @@
 name: data-analysis
 description: Analyze data, process CSV/JSON files, compute statistics, and create data visualizations. Use when the user asks about data processing, statistics, or analysis.
 metadata:
-  bkclaw:
+  bkcrab:
     always: false
 ---
 

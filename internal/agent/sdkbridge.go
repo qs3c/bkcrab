@@ -11,8 +11,8 @@ import (
 	sdktools "github.com/codeany-ai/open-agent-sdk-go/tools"
 	sdktypes "github.com/codeany-ai/open-agent-sdk-go/types"
 
-	"github.com/qs3c/bkclaw/internal/agent/tools"
-	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkcrab/internal/agent/tools"
+	"github.com/qs3c/bkcrab/internal/provider"
 )
 
 // readOnlyTools 列出可以安全并发执行的工具。
@@ -26,7 +26,7 @@ var readOnlyTools = map[string]bool{
 	"retrieve_compacted_tool_result": true,
 }
 
-// toolAdapter 将 BkClaw 工具包装为 SDK Tool 接口。
+// toolAdapter 将 BkCrab 工具包装为 SDK Tool 接口。
 type toolAdapter struct {
 	name        string
 	description string
@@ -38,7 +38,7 @@ func (t *toolAdapter) Name() string        { return t.name }
 func (t *toolAdapter) Description() string { return t.description }
 
 func (t *toolAdapter) InputSchema() sdktypes.ToolInputSchema {
-	// 将 BkClaw 参数 (interface{}) 转换为 SDK ToolInputSchema
+	// 将 BkCrab 参数 (interface{}) 转换为 SDK ToolInputSchema
 	if t.params == nil {
 		return sdktypes.ToolInputSchema{Type: "object"}
 	}
@@ -54,7 +54,7 @@ func (t *toolAdapter) InputSchema() sdktypes.ToolInputSchema {
 }
 
 func (t *toolAdapter) Call(ctx context.Context, input map[string]interface{}, tCtx *sdktypes.ToolUseContext) (*sdktypes.ToolResult, error) {
-	// 将输入映射转换为 JSON 供 BkClaw 的 ToolFunc 使用
+	// 将输入映射转换为 JSON 供 BkCrab 的 ToolFunc 使用
 	argsJSON, err := json.Marshal(input)
 	if err != nil {
 		return &sdktypes.ToolResult{IsError: true, Error: err.Error()}, nil
@@ -105,7 +105,7 @@ func newSDKEngine(sessionID string) *sdkEngine {
 	}
 }
 
-// buildSDKRegistry 将 BkClaw 的工具注册表转换为 SDK 注册表。
+// buildSDKRegistry 将 BkCrab 的工具注册表转换为 SDK 注册表。
 func buildSDKRegistry(fcRegistry *tools.Registry) *sdktools.Registry {
 	sdkReg := sdktools.NewRegistry()
 	for _, def := range fcRegistry.Definitions() {
@@ -139,7 +139,7 @@ func (e *sdkEngine) executeToolsConcurrently(ctx context.Context, fcRegistry *to
 		AbortCtx:   ctx,
 	})
 
-	// 将 BkClaw 工具调用转换为 SDK 格式
+	// 将 BkCrab 工具调用转换为 SDK 格式
 	calls := make([]sdktools.ToolCallRequest, len(toolCalls))
 	for i, tc := range toolCalls {
 		var input map[string]interface{}

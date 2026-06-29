@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkcrab/internal/provider"
 )
 
 type countingSummarizer struct {

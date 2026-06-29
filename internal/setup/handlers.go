@@ -17,18 +17,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/agent"
-	"github.com/qs3c/bkclaw/internal/api"
-	"github.com/qs3c/bkclaw/internal/auth"
-	"github.com/qs3c/bkclaw/internal/buildinfo"
-	"github.com/qs3c/bkclaw/internal/bus"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/provider"
-	"github.com/qs3c/bkclaw/internal/scope"
-	"github.com/qs3c/bkclaw/internal/session"
-	"github.com/qs3c/bkclaw/internal/store"
-	"github.com/qs3c/bkclaw/internal/users"
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/agent"
+	"github.com/qs3c/bkcrab/internal/api"
+	"github.com/qs3c/bkcrab/internal/auth"
+	"github.com/qs3c/bkcrab/internal/buildinfo"
+	"github.com/qs3c/bkcrab/internal/bus"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/scope"
+	"github.com/qs3c/bkcrab/internal/session"
+	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/users"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 type agentChatEvent = agent.ChatEvent
@@ -1570,7 +1570,7 @@ func (s *Server) handleMoveSessionProject(w http.ResponseWriter, r *http.Request
 }
 
 // handleFeishuWebhook 接收飞书 / Feishu 事件 POST。路由是公开的
-//（飞书不通过 bkclaw bearer 认证）；每事件安全性
+//（飞书不通过 bkcrab bearer 认证）；每事件安全性
 // 在飞书适配器内部通过验证负载的 header.token 与连接时存储的验证令牌来强制执行。
 //
 // 将原始 body 交给网关（通过类型断言的 dispatcher hook），
@@ -1609,7 +1609,7 @@ func (s *Server) handleFeishuWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleLINEWebhook 接收 LINE Messaging API 事件 POST。路由是公开的
-//（LINE 不通过 bkclaw bearer 认证）；每事件安全性
+//（LINE 不通过 bkcrab bearer 认证）；每事件安全性
 // 来自 `x-line-signature` 中的 HMAC-SHA256 签名，
 // 适配器根据 channel_secret + 原始 body 进行验证。
 //
@@ -1737,7 +1737,7 @@ func newRandID() (string, error) {
 func generateRandomToken(length int) string {
 	b := make([]byte, length)
 	if _, err := rand.Read(b); err != nil {
-		return "bkclaw-default-token"
+		return "bkcrab-default-token"
 	}
 	return hex.EncodeToString(b)
 }

@@ -11,7 +11,7 @@ func TestRenderForPromptStripsManagedWireFormat(t *testing.T) {
 	if got != "fact one\n\nfact two" {
 		t.Fatalf("rendered = %q", got)
 	}
-	if strings.Contains(got, "bkclaw-memory") || strings.Contains(got, "\u00a7") {
+	if strings.Contains(got, "bkcrab-memory") || strings.Contains(got, "\u00a7") {
 		t.Fatalf("rendered still contains wire format: %q", got)
 	}
 }

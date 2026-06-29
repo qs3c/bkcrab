@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/buildinfo"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/memory"
+	"github.com/qs3c/bkcrab/internal/buildinfo"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/memory"
 )
 
 // bootstrap加载文件是为了构建系统提示
@@ -298,7 +298,7 @@ func (cb *ContextBuilder) BuildSystemPromptAs(chatterUID string, chatterMem *Mem
 	// 跟踪、工具使用规则、工作空间自我更新、日程安排。
 	// 聊天机器人模式会删除代理循环位，因此角色文件 (SOUL.md
 	// /IDENTITY.md/USER.md/MEMORY.md) 直接塑造语音，无需
-	// “我是一个在 BkClaw 上运行的人工智能代理”渗入朋友机器人的
+	// “我是一个在 BkCrab 上运行的人工智能代理”渗入朋友机器人的
 	// 语气。最小模式将空间完全交给引导程序
 	// 文件；仅保留日期锚，因此法学硕士不会猜测
 	// 距离训练截止的时间。
@@ -332,8 +332,8 @@ func (cb *ContextBuilder) BuildSystemPromptAs(chatterUID string, chatterMem *Mem
 
 	case config.PromptModeChatbot:
 		// 仅纤薄的身份脚手架。不“你是人工智能代理
-		// BkClaw”框架，没有沙箱路径，没有文件工具路由，
-		// 没有 bkclaw 品牌。角色文件从这里驱动声音。
+		// BkCrab”框架，没有沙箱路径，没有文件工具路由，
+		// 没有 bkcrab 品牌。角色文件从这里驱动声音。
 		const bt = "`"
 		const fence = "```"
 		// 身份后备线。当 IDENTITY.md 为空时（并且 SOUL.md
@@ -345,7 +345,7 @@ func (cb *ContextBuilder) BuildSystemPromptAs(chatterUID string, chatterMem *Mem
 		// 目前，仍然通过下面的引导文件部分进行覆盖。
 		identityHeader := ""
 		if cb.displayName != "" {
-			identityHeader = fmt.Sprintf("Your name is **%s** (this is the registered agent name in the BkClaw runtime). Introduce yourself as %s when asked \"你是谁\" / \"who are you\". If IDENTITY.md / SOUL.md below give a richer identity, use that on top of this; if they don't, this name stands.\n\n", cb.displayName, cb.displayName)
+			identityHeader = fmt.Sprintf("Your name is **%s** (this is the registered agent name in the BkCrab runtime). Introduce yourself as %s when asked \"你是谁\" / \"who are you\". If IDENTITY.md / SOUL.md below give a richer identity, use that on top of this; if they don't, this name stands.\n\n", cb.displayName, cb.displayName)
 		}
 		chatbotInfo := identityHeader + `Your identity (name, role, personality) is
 defined by IDENTITY.md and SOUL.md below. If those are empty, you do not
@@ -454,25 +454,25 @@ identity files.
 			homeDesc = cb.home
 		}
 
-		// 主机操作系统——bkclaw 二进制文件本身运行的操作系统。里面一个
+		// 主机操作系统——bkcrab 二进制文件本身运行的操作系统。里面一个
 		// 沙箱（docker/e2b）实际执行环境是Linux
 		// 不管;我们将此行标记为“主机操作系统”以保留模型
 		// 自信地回答“我在 macOS 上”
 		// 在 Linux 容器中运行命令。沙箱部分
 		// 下面在相关时添加了自己的文件系统注释。
 		//
-		// 部署模式（BKCLAW_DEPLOY env var）拆分构建
+		// 部署模式（BKCRAB_DEPLOY env var）拆分构建
 		// 信息披露：自托管安装查看版本+ CLI
-		// 提示代理可以帮助“bkclaw 升级”等；
+		// 提示代理可以帮助“bkcrab 升级”等；
 		// 托管/多租户部署隐藏版本（没有好处
 		// 对于喋喋不休，可能会毫无根据地提示“我将升级
 		// 你”提供）并替换重定向到管理员注释
 		// 升级问题。
-		var bkclawLine string
+		var bkcrabLine string
 		if buildinfo.IsHostedDeploy() {
-			bkclawLine = "BkClaw: hosted deployment. The chatter does NOT operate this runtime — if they ask about the version, upgrades, or installing/changing skills at the platform level, tell them those are administrator-controlled and offer to help with what's actually in your reach (config, skills you can author, files in the workspace)."
+			bkcrabLine = "BkCrab: hosted deployment. The chatter does NOT operate this runtime — if they ask about the version, upgrades, or installing/changing skills at the platform level, tell them those are administrator-controlled and offer to help with what's actually in your reach (config, skills you can author, files in the workspace)."
 		} else {
-			bkclawLine = fmt.Sprintf(`BkClaw: %s (commit %s, built %s). Self-hosted install — the chatter is the operator. If they ask about upgrading, tell them: run %sbkclaw upgrade%s in a terminal (and %sbkclaw version%s to verify). Don't try to run those yourself unless the chatter explicitly asks you to and you have host shell access (no sandbox).`,
+			bkcrabLine = fmt.Sprintf(`BkCrab: %s (commit %s, built %s). Self-hosted install — the chatter is the operator. If they ask about upgrading, tell them: run %sbkcrab upgrade%s in a terminal (and %sbkcrab version%s to verify). Don't try to run those yourself unless the chatter explicitly asks you to and you have host shell access (no sandbox).`,
 				buildinfo.Version, buildinfo.Commit, buildinfo.Date,
 				"`", "`", "`", "`")
 		}
@@ -482,9 +482,9 @@ identity files.
 		// IDENTITY.md 也不介绍自己为 Claude。
 		agentIdentityHeader := ""
 		if cb.displayName != "" {
-			agentIdentityHeader = fmt.Sprintf("Your registered name in this BkClaw deployment is **%s**. Use that as your name unless IDENTITY.md / SOUL.md below give you a richer one.\n\n", cb.displayName)
+			agentIdentityHeader = fmt.Sprintf("Your registered name in this BkCrab deployment is **%s**. Use that as your name unless IDENTITY.md / SOUL.md below give you a richer one.\n\n", cb.displayName)
 		}
-		runtimeInfo := agentIdentityHeader + fmt.Sprintf(`You are an AI agent running on the BkClaw runtime.
+		runtimeInfo := agentIdentityHeader + fmt.Sprintf(`You are an AI agent running on the BkCrab runtime.
 Your identity (name, role, personality) is defined by IDENTITY.md and SOUL.md
 below — if those are empty, you do NOT yet have a name and must follow the
 bootstrap instructions in BOOTSTRAP.md before answering the user.
@@ -534,7 +534,7 @@ existing file — it's cheaper, can't accidentally drop unrelated content,
 and validates the replacement landed. Reserve write_file for creating
 new files or full rewrites. For USER.md and MEMORY.md, use the memory
 tool instead.`,
-			dateLine, bkclawLine,
+			dateLine, bkcrabLine,
 			runtime.GOOS, runtime.GOARCH, workdir, homeDesc)
 		parts = append(parts, runtimeInfo)
 	}

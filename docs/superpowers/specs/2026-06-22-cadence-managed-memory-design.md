@@ -14,7 +14,7 @@
 
 节拍链路因此只会让记忆文件单调膨胀，且当前喂给模型的旧记忆只截前 500 字符、无法支持改写/删除。
 
-此外，系统 prompt 注入存在一处不一致：`context.go` 注入 `USER.md` / `MEMORY.md` 时走 `LoadMemory` / `loadFileForUser` 读**原始文件字节**，未经过 manager 渲染，也未经严格扫描。结果是模型在系统 prompt 里会看到受管格式的存储编码（`<!-- bkclaw-memory:v1 -->` 标记与 `§` 分隔符），且 List 提供的消毒在主注入路径上被绕过。
+此外，系统 prompt 注入存在一处不一致：`context.go` 注入 `USER.md` / `MEMORY.md` 时走 `LoadMemory` / `loadFileForUser` 读**原始文件字节**，未经过 manager 渲染，也未经严格扫描。结果是模型在系统 prompt 里会看到受管格式的存储编码（`<!-- bkcrab-memory:v1 -->` 标记与 `§` 分隔符），且 List 提供的消毒在主注入路径上被绕过。
 
 ## 2. 目标
 

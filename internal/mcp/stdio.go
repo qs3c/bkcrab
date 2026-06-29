@@ -68,7 +68,7 @@ func (c *StdioClient) Connect() error {
 	// 发送初始化请求
 	_, err = c.sendRequest("initialize", initializeParams{
 		ProtocolVersion: "2024-11-05",
-		ClientInfo:      clientInfo{Name: "bkclaw", Version: "0.1.0"},
+		ClientInfo:      clientInfo{Name: "bkcrab", Version: "0.1.0"},
 	})
 	return err
 }

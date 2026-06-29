@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/auth"
-	"github.com/qs3c/bkclaw/internal/store"
-	"github.com/qs3c/bkclaw/internal/users"
+	"github.com/qs3c/bkcrab/internal/auth"
+	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/users"
 )
 
 func TestAuthorizeSkillInstallTargetRequiresAdminForGlobalInstalls(t *testing.T) {
@@ -150,7 +150,7 @@ func skillInstallRequest(ident auth.Identity) *http.Request {
 func newSkillInstallAuthServer(t *testing.T, ctx context.Context) (*Server, store.Store, *users.Accounts) {
 	t.Helper()
 
-	dbPath := filepath.Join(t.TempDir(), "bkclaw.db")
+	dbPath := filepath.Join(t.TempDir(), "bkcrab.db")
 	st, err := store.NewDBStore("sqlite", "file:"+dbPath+"?cache=shared")
 	if err != nil {
 		t.Fatalf("NewDBStore: %v", err)

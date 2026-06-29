@@ -1,4 +1,4 @@
-module github.com/qs3c/bkclaw
+module github.com/qs3c/bkcrab
 
 go 1.25.0
 

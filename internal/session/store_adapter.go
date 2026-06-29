@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/provider"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // StoreAdapter 将 store.Store 适配为 SessionStore 接口，专用于一个

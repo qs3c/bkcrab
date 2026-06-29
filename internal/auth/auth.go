@@ -1,5 +1,5 @@
 // Package auth 将 HTTP 请求解析为用户身份。它支持两种凭证类型：
-//   - cookie 会话 ("bkclaw_session")：由 /api/login 设置，基于 web_sessions 表验证；供 Web UI 使用
+//   - cookie 会话 ("bkcrab_session")：由 /api/login 设置，基于 web_sessions 表验证；供 Web UI 使用
 //   - Bearer apikey：基于 apikeys 表验证；供 API 消费者和 CLI 客户端使用
 //
 // 两条路径最终汇聚为同一个 Identity 结构体，通过 config.WithUserID 印入 ctx。
@@ -15,13 +15,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/store"
-	"github.com/qs3c/bkclaw/internal/users"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/users"
 )
 
 // SessionCookieName 是支撑 Web UI 登录状态的 cookie 名称。
-const SessionCookieName = "bkclaw_session"
+const SessionCookieName = "bkcrab_session"
 
 // SessionTTL 是新签发的登录 cookie 的有效时长。
 const SessionTTL = 30 * 24 * time.Hour
@@ -265,17 +265,17 @@ func (r *Resolver) SwitchToAppUser(ctx context.Context, ident Identity, external
 
 // EndUserHeader 是每个请求的头部，指明调用应用的终端用户。
 // 当在 api_key 认证的请求上设置此头部时，auth 中间件会延迟创建（或查找）
-// 一个 (apikey, header) 对应的 bkclaw 用户，并将请求身份切换为该用户。
+// 一个 (apikey, header) 对应的 bkcrab 用户，并将请求身份切换为该用户。
 // 在该身份下写入的 Session 和 agent_files 将按终端用户清晰隔离，
 // 而不是堆积在 api_key 拥有者名下。
-const EndUserHeader = "X-Bkclaw-End-User"
+const EndUserHeader = "X-Bkcrab-End-User"
 
 // ErrUnauthorized 在没有有效凭证时返回。
 var ErrUnauthorized = errors.New("unauthorized")
 
 // extract 从请求中返回 bearer token（如果有）和 session cookie SID（如果有）。
 // 也接受 `?token=` 查询参数，但仅限确实需要它的狭窄路径集合——文件下载
-//（浏览器在通过 <img> / <a download> 渲染时无法添加 Authorization 头部）
+// （浏览器在通过 <img> / <a download> 渲染时无法添加 Authorization 头部）
 // 和聊天 SSE 订阅（EventSource 没有头部 API）。其他所有地方都拒绝查询参数
 // 回退：URL 中的 token 会通过 Referer、浏览器历史、反向代理访问日志和可观测
 // 性管道泄漏。在 /v1/* 和 /api/* 其余路径上仅强制使用头部，堵住了泄漏面；
@@ -377,7 +377,7 @@ done:
 			ident.ActAsUserID = act
 		}
 	}
-	// 如果调用应用在 api_key 请求上通过 X-Bkclaw-End-User 指定了终端用户，
+	// 如果调用应用在 api_key 请求上通过 X-Bkcrab-End-User 指定了终端用户，
 	// 则重新绑定到对应的 app_user（延迟创建）。这里我们吞掉错误，以使格式错误的
 	// 头部不会导致请求返回 401——请求仍保持在 api_key 拥有者名下。OpenAI
 	// /v1/chat/completions 处理程序也会为偏好 OpenAI 格式的客户端处理请求体中的

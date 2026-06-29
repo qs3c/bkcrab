@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/gateway"
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/gateway"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // categoryCatalog 是管理 UI 的权威来源，用于定义哪些工具类别存在以及哪些提供者可以支持它们。
@@ -132,7 +132,7 @@ func (s *Server) handleGetTools(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleSaveTools 原子地更新 bkclaw.json 的 toolProviders 和 tools 部分。
+// handleSaveTools 原子地更新 bkcrab.json 的 toolProviders 和 tools 部分。
 // 仅允许管理员/本地用户 — 云端租户通过单独的路径获取自己的设置（尚未接入）。
 // 保存后，运行中的 agent 会被热重载，以便链立即获取新密钥。
 func (s *Server) handleSaveTools(w http.ResponseWriter, r *http.Request) {

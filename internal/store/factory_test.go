@@ -18,7 +18,7 @@ func TestNewRequiresMySQLDSNByDefault(t *testing.T) {
 }
 
 func TestNormalizeMySQLDSNForcesTimeParsing(t *testing.T) {
-	dsn, err := normalizeMySQLDSN("user:pass@tcp(localhost:3306)/bkclaw")
+	dsn, err := normalizeMySQLDSN("user:pass@tcp(localhost:3306)/bkcrab")
 	if err != nil {
 		t.Fatalf("normalize DSN: %v", err)
 	}

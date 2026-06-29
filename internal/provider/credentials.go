@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkcrab/internal/config"
 )
 
 // CredentialEntry 表示一个存储的凭据。
@@ -34,7 +34,7 @@ type CredentialManager struct {
 }
 
 // NewCredentialManagerForUser 创建一个限定于特定用户的凭据管理器。
-// 凭据存储在 ~/.bkclaw/users/{userID}/credentials.json 中，
+// 凭据存储在 ~/.bkcrab/users/{userID}/credentials.json 中，
 // 并使用从用户 ID 派生的密钥加密，因此即使一个用户的文件
 // 被移动到磁盘上其他位置，也无法用另一个用户的密钥解密。
 func NewCredentialManagerForUser(userID, passphrase string) (*CredentialManager, error) {
@@ -263,7 +263,7 @@ func (cm *CredentialManager) load() error {
 func legacyDeriveKey() []byte {
 	hostname, _ := os.Hostname()
 	home, _ := os.UserHomeDir()
-	hash := sha256.Sum256([]byte("bkclaw:" + hostname + ":" + home))
+	hash := sha256.Sum256([]byte("bkcrab:" + hostname + ":" + home))
 	return hash[:]
 }
 
@@ -278,11 +278,11 @@ func deriveKeyForUser(userID, passphrase string) []byte {
 	}
 	var seed string
 	if passphrase != "" {
-		seed = "bkclaw:user:" + userID + ":pp:" + passphrase
+		seed = "bkcrab:user:" + userID + ":pp:" + passphrase
 	} else {
 		hostname, _ := os.Hostname()
 		home, _ := os.UserHomeDir()
-		seed = "bkclaw:user:" + userID + ":host:" + hostname + ":" + home
+		seed = "bkcrab:user:" + userID + ":host:" + hostname + ":" + home
 	}
 	hash := sha256.Sum256([]byte(seed))
 	return hash[:]

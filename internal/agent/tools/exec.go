@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/buildinfo"
-	"github.com/qs3c/bkclaw/internal/sandbox"
+	"github.com/qs3c/bkcrab/internal/buildinfo"
+	"github.com/qs3c/bkcrab/internal/sandbox"
 )
 
 type execArgs struct {
@@ -196,7 +196,7 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 
 		// 始终显式设置 cmd.Env。默认的 Go 行为是
 		// 继承父级的完整环境，这会泄露守护进程的秘密
-		// (BKCLAW_STORAGE_DSN, BKCLAW_OBJECT_STORE_*, ...) 到
+		// (BKCRAB_STORAGE_DSN, BKCRAB_OBJECT_STORE_*, ...) 到
 		// 模型可以运行的每个 shell。
 		var skillEnv map[string]string
 		if envProvider != nil && skillDirs != nil {
@@ -299,13 +299,13 @@ const HostExecToolName = "host_exec"
 // registerHostExec 添加了一个 escape-hatch 执行工具，可以绕过
 // 沙箱执行器并直接在操作员的主机外壳上运行。
 // 由 buildinfo.IsHostExecAllowed() 控制 — 仅在以下情况下注册
-// 操作员已通过 BKCLAW_ALLOW_HOST_EXEC=1 明确选择加入
+// 操作员已通过 BKCRAB_ALLOW_HOST_EXEC=1 明确选择加入
 // 并且存在沙箱执行器（否则“exec”已经是
 // host shell 和 host_exec 将是重复的）。
 //
 // 工具描述大声阐明边界，以便模型选择
 // 默认情况下`exec`（沙箱）并且仅转义到host_exec
-// 真正的操作员环境工作（`bkclaw update`、`~/Downloads`、
+// 真正的操作员环境工作（`bkcrab update`、`~/Downloads`、
 // `launchctl`，系统服务，任何与用户实际相关的东西
 // 机器）。危险命令候选名单仍然适用——沙箱 vs
 // 主机不会更改“no rm -rf /”规则。
@@ -317,7 +317,7 @@ const HostExecToolName = "host_exec"
 func registerHostExec(r *Registry, envProvider SkillEnvProvider, skillDirs []string) {
 	r.Register(HostExecToolName,
 		"Execute a shell command on the OPERATOR's host machine, bypassing the sandbox. "+
-			"Use this ONLY for tasks tied to the user's actual environment — `bkclaw upgrade`, "+
+			"Use this ONLY for tasks tied to the user's actual environment — `bkcrab upgrade`, "+
 			"reading their `~/Downloads`, listing host processes, running CLI tools they have "+
 			"installed locally, similar host-side ops. For everything else (running scripts, "+
 			"web requests, data processing, generating files for the user) use `exec` instead "+
@@ -368,7 +368,7 @@ func registerHostExec(r *Registry, envProvider SkillEnvProvider, skillDirs []str
 			cmd := exec.CommandContext(execCtx, "sh", "-c", command)
 			// host_exec 是操作员的逃生舱口——即便如此，擦洗
 			// 来自继承的环境的守护进程秘密。操作员
-			// 很少需要从主机访问 BKCLAW_STORAGE_DSN
+			// 很少需要从主机访问 BKCRAB_STORAGE_DSN
 			// shell，并且永远不需要模型能够读取它。
 			var skillEnv map[string]string
 			if envProvider != nil && skillDirs != nil {
@@ -479,7 +479,7 @@ func registerSandboxedExec(r *Registry, ex sandbox.Executor) {
 		// 模型。我们通过工具名称进行探测，以便检查与
 		// 部署模式标志 - 相同的答案，更少的耦合。
 		if err != nil && looksLikeSandboxAbsence(err, out) && buildinfo.IsHostExecAllowed() {
-			err = fmt.Errorf("%w\n[hint: this looks like a sandbox-environment miss (binary or path not present in the container). If the command needs the user's actual host machine — e.g. `bkclaw upgrade`, `~/Downloads`, host CLI tools — retry with the `host_exec` tool instead.]", err)
+			err = fmt.Errorf("%w\n[hint: this looks like a sandbox-environment miss (binary or path not present in the container). If the command needs the user's actual host machine — e.g. `bkcrab upgrade`, `~/Downloads`, host CLI tools — retry with the `host_exec` tool instead.]", err)
 		}
 		return MetaSandboxPrefix + out, err
 	})

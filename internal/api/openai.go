@@ -8,35 +8,35 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/agent"
-	"github.com/qs3c/bkclaw/internal/auth"
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/agent"
+	"github.com/qs3c/bkcrab/internal/auth"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 // chatCompletionRequest 映射 OpenAI 聊天补全请求。
 //
 // User 是 OpenAI 标准的"终端用户标识符"字段。当请求使用
 // api_key 认证时，非空值会触发将请求身份重新绑定到以
-// (apikey_id, user) 为键的 bkclaw app_user，从而使会话
+// (apikey_id, user) 为键的 bkcrab app_user，从而使会话
 // 和 agent_files 按终端用户分区。偏好仅使用 header 的客户端
-// 可以改用 X-Bkclaw-End-User — 两者最终走同一代码路径。
+// 可以改用 X-Bkcrab-End-User — 两者最终走同一代码路径。
 type chatCompletionRequest struct {
 	Model    string        `json:"model"`
 	Messages []chatMessage `json:"messages"`
 	Stream   *bool         `json:"stream,omitempty"`
 	User     string        `json:"user,omitempty"`
-	// AgentID 是 bkclaw 扩展：允许调用者在请求体中选择 agent，
-	// 而不是（或除了）`x-bkclaw-agent-id` 头。当两者都设置时，
+	// AgentID 是 bkcrab 扩展：允许调用者在请求体中选择 agent，
+	// 而不是（或除了）`x-bkcrab-agent-id` 头。当两者都设置时，
 	// 请求体优先 — 与 `user` 使用的模式一致。可选。
 	AgentID string `json:"agent_id,omitempty"`
-	// Params 是 bkclaw 扩展：调用应用随聊天提交的自由格式
+	// Params 是 bkcrab 扩展：调用应用随聊天提交的自由格式
 	// 结构化参数块。渲染为每轮系统消息，使 agent 的 LLM
 	// 在调用工具时可以遵循（例如，第三方应用的"模型选择器" +
 	// "设置" UI 转换为此处的 {provider, aspect_ratio, n}，
 	// 而非用户在提示中输入这些内容）。范围为每次请求 —
 	// 参数不会跨轮持久化。不了解此字段的 OpenAI 客户端不受影响（omitempty）。
 	Params map[string]any `json:"params,omitempty"`
-	// Images 是 bkclaw 扩展：当前轮次的图片附件。
+	// Images 是 bkcrab 扩展：当前轮次的图片附件。
 	// 每个条目为以下之一：
 	//   - HTTPS URL: "https://example.com/photo.jpg"（必须可从
 	//     LLM provider 访问；此处不做验证）
@@ -45,7 +45,7 @@ type chatCompletionRequest struct {
 	// 接受的 MIME 类型取决于 LLM 模型。Anthropic / OpenAI
 	// 视觉模型均支持 png、jpeg、webp；gif 则不一定。
 	// 单图和总请求大小限制也取决于模型侧
-	//（Anthropic ~5MB/图，OpenAI ~20MB）— bkclaw 不强制
+	//（Anthropic ~5MB/图，OpenAI ~20MB）— bkcrab 不强制
 	// 自己的上限，由上游 provider 返回拒绝。
 	Images []string `json:"images,omitempty"`
 	// ImageURLs 是 Images 的可接受别名。面向 Web 的聊天端点
@@ -91,7 +91,7 @@ func (r chatCompletionRequest) allAttachments() []agent.Attachment {
 }
 
 // inlineImageURLs 仅返回符合内联视觉条件的 URL
-//（PhotoURLs → image_url 内容块）。仅 Images 和 ImageURLs
+// （PhotoURLs → image_url 内容块）。仅 Images 和 ImageURLs
 // 符合条件 — 按约定它们是调用者断言为图片的。通用的
 // Attachments 字段被排除：通过视觉通道传入 PDF/zip URL 会
 // 导致上游 provider 返回 HTTP 400 并使整个轮次失败。
@@ -173,7 +173,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// OpenAI 的 `user` 请求体字段，在 api_key 调用中出现时，
 	// 会将身份重新绑定到对应的 app_user（懒创建）。
-	// Header X-Bkclaw-End-User 在认证中间件中的预处理阶段完成
+	// Header X-Bkcrab-End-User 在认证中间件中的预处理阶段完成
 	// 相同的工作；我们在中间件*之后*运行此逻辑，因此当两者
 	// 同时存在时请求体值优先（请求体字段比静态 header 更具体
 	// 地针对本次调用）。此处的错误是非致命的 — 请求在未切换的
@@ -197,7 +197,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// 请求体字段优先于 header — 与 `user` 的优先级一致。
 	// 让应用调用者可以在一个 JSON 中发送所有内容，无需处理 header。
-	agentID := r.Header.Get("x-bkclaw-agent-id")
+	agentID := r.Header.Get("x-bkcrab-agent-id")
 	if req.AgentID != "" {
 		agentID = req.AgentID
 	}
@@ -211,7 +211,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Apikey ACL 门控。UserSpaceFor 加载所有者拥有的每个 agent，
 	// 无论此特定 apikey 限定到哪个子集。无此检查时，限定到
 	// 一个 agent 的 type=agent apikey 可以传入
-	// `x-bkclaw-agent-id: <同级>`（或省略并回退到 default / all[0]）
+	// `x-bkcrab-agent-id: <同级>`（或省略并回退到 default / all[0]）
 	// 并与所有者的任何 agent 通信。/v1/agents 列表已经通过
 	// CanAccessAgent 进行过滤 — 在此镜像该逻辑以便统一执行
 	// apikey 范围。使用 404（而非 403），使响应与真正的
@@ -224,7 +224,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 从 header 构建会话密钥
-	sessionKey := r.Header.Get("x-bkclaw-session-key")
+	sessionKey := r.Header.Get("x-bkcrab-session-key")
 	if sessionKey == "" {
 		sessionKey = "api-" + fmt.Sprintf("%d", time.Now().UnixNano())
 	}
@@ -267,10 +267,10 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 构建入站消息。
-	// X-Bkclaw-Channel 允许调用者覆盖回复通道，使此轮创建的
+	// X-Bkcrab-Channel 允许调用者覆盖回复通道，使此轮创建的
 	// 定时任务通过正确的适配器路由（例如 "pinclaw" → plugin
 	// channel.send → Cloud API）。
-	channel := r.Header.Get("x-bkclaw-channel")
+	channel := r.Header.Get("x-bkcrab-channel")
 	if channel == "" {
 		channel = "api"
 	}
@@ -391,7 +391,7 @@ func (s *Server) fullResponse(w http.ResponseWriter, reply, chatID, model string
 }
 
 // resolveAgent 从调用者的用户空间中选取一个 agent，优先使用
-// x-bkclaw-agent-id 头中的显式 agent ID，回退到默认/第一个 agent。
+// x-bkcrab-agent-id 头中的显式 agent ID，回退到默认/第一个 agent。
 func resolveAgent(space *UserSpaceView, agentID string) *agent.Agent {
 	mgr := space.Agents
 	if agentID != "" {

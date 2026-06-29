@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/agent"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/skills"
+	"github.com/qs3c/bkcrab/internal/agent"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/skills"
 )
 
 // --- 技能 ---
@@ -63,7 +63,7 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleListAgentSkills 列出安装到 agent 自身主目录（~/.bkclaw/agents/<id>/skills/）中的技能。
+// handleListAgentSkills 列出安装到 agent 自身主目录（~/.bkcrab/agents/<id>/skills/）中的技能。
 // 加载器"Layer 1"以最高优先级获取这些技能 — 它们专属于该 agent。
 func (s *Server) handleListAgentSkills(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -119,7 +119,7 @@ func scanSkillsDir(dir string) []map[string]any {
 				if fm.Description != "" {
 					desc = fm.Description
 				}
-				// 顶级 `env:` 快捷方式优先；回退到带命名空间的 metadata.bkclaw|openclaw.env 形式。
+				// 顶级 `env:` 快捷方式优先；回退到带命名空间的 metadata.bkcrab|openclaw.env 形式。
 				if len(fm.Env) > 0 {
 					envSpec = fm.Env
 				} else if meta := agent.ParseSkillMetadata(&fm.Metadata); meta != nil && meta.Meta() != nil {

@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/agent"
-	"github.com/qs3c/bkclaw/internal/agent/tools"
-	"github.com/qs3c/bkclaw/internal/bus"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/agent"
+	"github.com/qs3c/bkcrab/internal/agent/tools"
+	"github.com/qs3c/bkcrab/internal/bus"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // chatKey 是任务队列使用的每会话序列化键，以便一个聊天的消息顺序运行。包含 accountID
@@ -54,7 +54,7 @@ func (g *Gateway) processInbound(ctx context.Context) {
 				continue
 			}
 
-			// 将 msg.UserID 归一化为 bkclaw `u_xxx` id。IM 通道
+			// 将 msg.UserID 归一化为 bkcrab `u_xxx` id。IM 通道
 			//（微信、Telegram、LINE、Discord、飞书、Slack）发出原始的平台侧标识符，
 			// 这与每个聊天者数据（USER.md、MEMORY.md、每个用户的技能）存储的键不匹配 —
 			// 因此没有转换，代理每轮都会得到一个空的聊天者配置文件。延迟铸造语义见 resolveChatter。
@@ -109,7 +109,7 @@ func (g *Gateway) resolveChannelOwner(ctx context.Context, msg bus.InboundMessag
 	return ""
 }
 
-// resolveChatter 将 msg.UserID 归一化为 bkclaw `u_xxx` id。IM 通道传递平台侧标识符
+// resolveChatter 将 msg.UserID 归一化为 bkcrab `u_xxx` id。IM 通道传递平台侧标识符
 //（微信 openid、Telegram 数字 id 等），代理循环然后将每个聊天者文件
 //（USER.md、MEMORY.md、每个用户的技能）以该原始字符串为键存储 — 这与仪表盘写入的 u_xxx 行从不匹配。
 // 在路由接缝处转换一次，保持 msg.UserID 的每个下游消费者一致，无需让每个消费者了解 IM 侧命名空间。

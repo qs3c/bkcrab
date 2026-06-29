@@ -26,13 +26,13 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/qs3c/bkclaw/internal/bus"
-	"github.com/qs3c/bkclaw/internal/config"
+	"github.com/qs3c/bkcrab/internal/bus"
+	"github.com/qs3c/bkcrab/internal/config"
 )
 
 // WeChat 实现了 iLink（微信）bot 平台的 Channel 接口。
 // 模式镜像 telegram.go：单一文件拥有 HTTP 客户端、长轮询循环和出站发送。
-// 我们故意不导入更高级的库——将协议面保持在项目内使其易于与 bkclaw
+// 我们故意不导入更高级的库——将协议面保持在项目内使其易于与 bkcrab
 // 自身的消息类型一起演进，并避免对树外项目的 Go 模块依赖。
 
 // iLink 协议常量。匹配上游微信 bot API。

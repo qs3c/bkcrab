@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 // Manager 管理所有渠道实例并路由出站消息。

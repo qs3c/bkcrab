@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 type webFetchArgs struct {
@@ -23,7 +23,7 @@ type webFetchArgs struct {
 const (
 	defaultMaxLen  = 10000
 	fetchTimeout   = 30 * time.Second
-	fetchUserAgent = "BkClaw/1.0 (AI Agent Web Fetcher)"
+	fetchUserAgent = "BkCrab/1.0 (AI Agent Web Fetcher)"
 )
 
 var htmlTagRe = regexp.MustCompile(`<[^>]*>`)

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // FTSSearcher 是基于 FTS5 的内存搜索的接口。

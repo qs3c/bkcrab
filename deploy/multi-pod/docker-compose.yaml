@@ -9,7 +9,7 @@
 #   Pod A           http://localhost:18953  （管理员令牌：dev-admin-token）
 #   Pod B           http://localhost:18954  （相同状态，不同 Pod）
 #   MinIO 控制台    http://localhost:9001   （用户：minioadmin / 密码：minioadmin）
-#   MySQL           bkclaw:bkclaw@tcp(localhost:3306)/bkclaw
+#   MySQL           bkcrab:bkcrab@tcp(localhost:3306)/bkcrab
 #
 # 冒烟测试清单（curl 示例使用 Pod A，然后从 Pod B 读取）：
 #   1. 通过 A 执行 curl POST /api/agents          — 在共享数据库中创建 agent
@@ -26,16 +26,16 @@ services:
   db:
     image: mysql:8.4
     environment:
-      MYSQL_DATABASE: bkclaw
-      MYSQL_USER: bkclaw
-      MYSQL_PASSWORD: bkclaw
+      MYSQL_DATABASE: bkcrab
+      MYSQL_USER: bkcrab
+      MYSQL_PASSWORD: bkcrab
       MYSQL_ROOT_PASSWORD: root
     ports:
       - "3306:3306"
     volumes:
       - mysqldata:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u bkclaw -pbkclaw --silent"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u bkcrab -pbkcrab --silent"]
       interval: 2s
       timeout: 1s
       retries: 20
@@ -68,12 +68,12 @@ services:
     entrypoint: >
       sh -c "
         mc alias set local http://minio:9000 minioadmin minioadmin;
-        mc mb --ignore-existing local/bkclaw;
+        mc mb --ignore-existing local/bkcrab;
         echo 'bucket ready';
       "
 
   pod-a:
-    image: bkclaw:local
+    image: bkcrab:local
     build:
       context: ../..
       dockerfile: Dockerfile
@@ -82,17 +82,17 @@ services:
       # 包含 TZ 以便跨 Pod 运行以与单 Pod 部署相同的方式
       # 测试服务器默认时区回退。
       TZ: Asia/Shanghai
-      BKCLAW_STORAGE_TYPE: mysql
-      BKCLAW_STORAGE_DSN: "bkclaw:bkclaw@tcp(db:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4"
-      BKCLAW_MODE: cloud
-      BKCLAW_AUTH_TOKEN: dev-admin-token
+      BKCRAB_STORAGE_TYPE: mysql
+      BKCRAB_STORAGE_DSN: "bkcrab:bkcrab@tcp(db:3306)/bkcrab?parseTime=true&loc=UTC&charset=utf8mb4"
+      BKCRAB_MODE: cloud
+      BKCRAB_AUTH_TOKEN: dev-admin-token
       # 对象存储 → MinIO。这些键镜像了 config.ObjectStoreCfg。
-      BKCLAW_OBJECT_STORE_TYPE: minio
-      BKCLAW_OBJECT_STORE_ENDPOINT: minio:9000
-      BKCLAW_OBJECT_STORE_BUCKET: bkclaw
-      BKCLAW_OBJECT_STORE_ACCESSKEY: minioadmin
-      BKCLAW_OBJECT_STORE_SECRETKEY: minioadmin
-      BKCLAW_OBJECT_STORE_USESSL: "false"
+      BKCRAB_OBJECT_STORE_TYPE: minio
+      BKCRAB_OBJECT_STORE_ENDPOINT: minio:9000
+      BKCRAB_OBJECT_STORE_BUCKET: bkcrab
+      BKCRAB_OBJECT_STORE_ACCESSKEY: minioadmin
+      BKCRAB_OBJECT_STORE_SECRETKEY: minioadmin
+      BKCRAB_OBJECT_STORE_USESSL: "false"
     depends_on:
       db:
         condition: service_healthy
@@ -102,22 +102,22 @@ services:
       - "18953:18953"
 
   pod-b:
-    image: bkclaw:local
+    image: bkcrab:local
     build:
       context: ../..
       dockerfile: Dockerfile
     environment:
       TZ: Asia/Shanghai
-      BKCLAW_STORAGE_TYPE: mysql
-      BKCLAW_STORAGE_DSN: "bkclaw:bkclaw@tcp(db:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4"
-      BKCLAW_MODE: cloud
-      BKCLAW_AUTH_TOKEN: dev-admin-token
-      BKCLAW_OBJECT_STORE_TYPE: minio
-      BKCLAW_OBJECT_STORE_ENDPOINT: minio:9000
-      BKCLAW_OBJECT_STORE_BUCKET: bkclaw
-      BKCLAW_OBJECT_STORE_ACCESSKEY: minioadmin
-      BKCLAW_OBJECT_STORE_SECRETKEY: minioadmin
-      BKCLAW_OBJECT_STORE_USESSL: "false"
+      BKCRAB_STORAGE_TYPE: mysql
+      BKCRAB_STORAGE_DSN: "bkcrab:bkcrab@tcp(db:3306)/bkcrab?parseTime=true&loc=UTC&charset=utf8mb4"
+      BKCRAB_MODE: cloud
+      BKCRAB_AUTH_TOKEN: dev-admin-token
+      BKCRAB_OBJECT_STORE_TYPE: minio
+      BKCRAB_OBJECT_STORE_ENDPOINT: minio:9000
+      BKCRAB_OBJECT_STORE_BUCKET: bkcrab
+      BKCRAB_OBJECT_STORE_ACCESSKEY: minioadmin
+      BKCRAB_OBJECT_STORE_SECRETKEY: minioadmin
+      BKCRAB_OBJECT_STORE_USESSL: "false"
     depends_on:
       db:
         condition: service_healthy

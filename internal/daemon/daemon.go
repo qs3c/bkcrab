@@ -11,15 +11,15 @@ import (
 	"time"
 )
 
-// Paths 返回 ~/.bkclaw 下的守护进程目录路径。
+// Paths 返回 ~/.bkcrab 下的守护进程目录路径。
 func Paths() (pidFile, logFile, logDir string, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", "", "", err
 	}
-	base := filepath.Join(home, ".bkclaw")
+	base := filepath.Join(home, ".bkcrab")
 	logDir = filepath.Join(base, "logs")
-	pidFile = filepath.Join(base, "bkclaw.pid")
+	pidFile = filepath.Join(base, "bkcrab.pid")
 	logFile = filepath.Join(logDir, "gateway.log")
 	return
 }

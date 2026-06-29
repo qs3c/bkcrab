@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/agent"
-	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkcrab/internal/agent"
+	"github.com/qs3c/bkcrab/internal/provider"
 )
 
 // hookPointName 将 HookPoint 常量映射为蛇形命名法的协议名称。

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // Direct 是无密钥的内置获取器：net/http GET，剥离 HTML，截断。
@@ -21,7 +21,7 @@ func (Direct) CredentialFree() bool { return true }
 
 const (
 	directTimeout   = 30 * time.Second
-	directUserAgent = "BkClaw/1.0 (AI Agent Web Fetcher)"
+	directUserAgent = "BkCrab/1.0 (AI Agent Web Fetcher)"
 )
 
 func (d *Direct) Execute(ctx context.Context, req toolproviders.Request) (toolproviders.Response, error) {

@@ -187,7 +187,7 @@ type DockerExecutorPool struct {
 	executors map[string]*DockerExecutor // key = poolKey(agentID, sessionID)
 	image     string
 	policy    *Policy
-	// workspaceRoot 是 BKCLAW_HOME——每个会话获得一个私有挂载，
+	// workspaceRoot 是 BKCRAB_HOME——每个会话获得一个私有挂载，
 	// 根目录为 workspaceRoot/workspaces/<agentID>/sessions/<sessionID>/。
 	workspaceRoot string
 }
@@ -196,7 +196,7 @@ type DockerExecutorPool struct {
 // 都有自己的槽位——包括属于同一项目的聊天——因为并行运行的两个项目聊天
 // 会共享 Python 内核/shell 状态并相互干扰。
 // 项目挂载本身在文件系统级别共享，因此兄弟会话保持可见
-//（参见 pool.Get 了解挂载逻辑）。
+// （参见 pool.Get 了解挂载逻辑）。
 //
 // 两者都为空时回退到代理共享的沙箱槽位，用于旧调用者（管理员 shell、fixtures）。
 func poolKey(agentID, projectID, sessionID string) string {
@@ -219,7 +219,7 @@ func (p *DockerExecutorPool) Backend() string { return "docker" }
 // NewDockerExecutorPool 创建一个 Docker 后端执行器池。
 func NewDockerExecutorPool(image, workspaceRoot string, policy *Policy) *DockerExecutorPool {
 	if image == "" {
-		image = "thinkany/bkclaw-sandbox:latest"
+		image = "thinkany/bkcrab-sandbox:latest"
 	}
 	return &DockerExecutorPool{
 		executors:     make(map[string]*DockerExecutor),
@@ -284,10 +284,10 @@ func (p *DockerExecutorPool) Get(ctx context.Context, agentID, projectID, sessio
 	//（由 HandleMessage/HandleMessageStream 设置）；空值跳过挂载，
 	// 这对于非聊天调用者是正确的回退。
 	if uid := UserIDFromContext(ctx); uid != "" {
-		base := os.Getenv("BKCLAW_HOME")
+		base := os.Getenv("BKCRAB_HOME")
 		if base == "" {
 			if h, err := os.UserHomeDir(); err == nil {
-				base = filepath.Join(h, ".bkclaw")
+				base = filepath.Join(h, ".bkcrab")
 			}
 		}
 		if base != "" {

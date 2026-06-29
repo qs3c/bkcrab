@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // Category 是这些提供商插入的工具类别。
@@ -51,7 +51,7 @@ func writeAudio(data []byte, ext string) (toolproviders.Response, error) {
 	if ext == "" {
 		ext = "mp3"
 	}
-	f, err := os.CreateTemp("", "bkclaw-tts-*."+ext)
+	f, err := os.CreateTemp("", "bkcrab-tts-*."+ext)
 	if err != nil {
 		return toolproviders.Response{}, fmt.Errorf("create tmp: %w", err)
 	}

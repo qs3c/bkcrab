@@ -5,8 +5,8 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/qs3c/bkclaw/internal/agent/goal"
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/agent/goal"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 // NewTokenAccountingHook 返回一个 AfterModelCall 钩子，将调用的

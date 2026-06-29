@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/memory"
+	"github.com/qs3c/bkcrab/internal/memory"
 )
 
 type memoryToolArgs struct {

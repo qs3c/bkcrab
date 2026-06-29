@@ -1,0 +1,267 @@
+# BkCrab — 单文件 K8s 部署。
+#
+# ┌─ 一次性部署 ──────────────────────────────────────────────────────────┐
+# │  1. 编辑 `bkcrab-secrets` 中的 3（或 4）个值                          │
+# │     （DSN + 对象存储 AK/SK，可选 E2B 密钥）。                           │
+# │  2. 在 `bkcrab-config` 中，选择一个对象存储提供者块；                   │
+# │     将其余的注释掉。                                                   │
+# │  3. 编辑 Ingress 主机名（如果不需要公共访问，则删除整个 Ingress 部分）。│
+# │  4. kubectl apply -f bkcrab.yaml                                     │
+# │  5. 创建超级管理员：                                                   │
+# │     kubectl -n bkcrab exec deploy/bkcrab -- \                      │
+# │       bkcrab admin create-user --username alice \                    │
+# │         --email alice@example.com --password 'hunter2' \               │
+# │         --role super_admin                                             │
+# │     然后在 /login 登录 — 无需管理员令牌。                              │
+# └────────────────────────────────────────────────────────────────────────┘
+#
+# 先决条件：
+#   - 托管的 MySQL 8.0+（阿里云 RDS / AWS RDS 等）
+#   - 一个对象存储桶（AWS S3 / R2 / B2 / OSS / MinIO — 任选其一）
+#   - 镜像：ghcr.io/qs3c/bkcrab:dev（由 GitHub Actions 自动推送，公开）
+#   - 可选：cert-manager + ClusterIssuer（如果需要 HTTPS）
+#
+# 配置完全由 BKCRAB_* 环境变量驱动 — 没有配置文件。
+# 用户/agent/提供者/渠道都存储在 MySQL 中。
+
+---
+apiVersion: v1
+kind: Namespace
+metadata: { name: bkcrab }
+
+---
+# ========================= 在此编辑（密钥）=============================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bkcrab-secrets
+  namespace: bkcrab
+type: Opaque
+stringData:
+  # MySQL DSN。为托管服务添加 tls=true 或注册的 TLS 配置文件。
+  STORAGE_DSN: "bkcrab:PASS@tcp(rm-xxxxx.mysql.rds.aliyuncs.com:3306)/bkcrab?parseTime=true&loc=UTC&charset=utf8mb4"
+
+  # 对象存储凭证。每个提供者使用相同的两个字段：
+  #   AWS S3：       Access Key ID / Secret Access Key
+  #   R2：           API Token（Access Key ID / Secret Access Key）
+  #   Backblaze B2： Key ID / Application Key
+  #   Aliyun OSS：   AccessKey / AccessSecret（使用限定到单个存储桶的 RAM 子账户）
+  #   MinIO：        root user / root password
+  OBJECT_STORE_ACCESSKEY: "REPLACE_WITH_ACCESS_KEY"
+  OBJECT_STORE_SECRETKEY: "REPLACE_WITH_SECRET_KEY"
+
+  # 启用沙箱时设置，然后在下方 Deployment 中取消对应环境变量条目的注释。
+  # E2B_API_KEY: "REPLACE_WITH_E2B_KEY"
+
+---
+# =================== 在此编辑（对象存储提供者）==========================
+# 选择一个提供者 — 取消对应块的注释，其他保持注释状态。
+#
+# BKCRAB_OBJECT_STORE_TYPE 接受以下值：
+#   local          Pod 本地磁盘（单节点/仅开发）
+#   aws-s3         AWS S3
+#   cloudflare-r2  Cloudflare R2（需要 ACCOUNTID）
+#   backblaze-b2   Backblaze B2（兼容 S3）
+#   aliyun-oss     阿里云 OSS
+#   minio          自托管 MinIO（需要 ENDPOINT）
+#   s3             通用 S3 兼容（需要 ENDPOINT — 例如 DO Spaces / Wasabi）
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bkcrab-config
+  namespace: bkcrab
+data:
+  BKCRAB_PORT: "18953"
+  BKCRAB_BIND: "all"
+  BKCRAB_STORAGE_TYPE: "mysql"
+  BKCRAB_STORAGE_AUTO_MIGRATE: "true"
+
+  # 服务器默认时区（IANA 名称）— 链中最后的回退
+  # 聊天偏好 → agent 默认 → 系统默认 → TZ。没有它，Pod 将
+  # 运行 UTC，因此其聊天者从未设置时区的 agent 会看到 UTC
+  # 时钟并接收 UTC 触发的计划任务。
+  TZ: "Asia/Shanghai"
+
+  # ─── 提供者 1：阿里云 OSS（默认示例）───
+  BKCRAB_OBJECT_STORE_TYPE: "aliyun-oss"
+  BKCRAB_OBJECT_STORE_REGION: "cn-hangzhou"
+  BKCRAB_OBJECT_STORE_BUCKET: "your-bkcrab-bucket"
+  BKCRAB_OBJECT_STORE_ALIYUN_INTERNAL: "true"    # 同区域 ACK 使用内部端点，节省出站流量
+
+  # ─── 提供者 2：AWS S3 ───
+  # BKCRAB_OBJECT_STORE_TYPE: "aws-s3"
+  # BKCRAB_OBJECT_STORE_REGION: "us-east-1"
+  # BKCRAB_OBJECT_STORE_BUCKET: "your-bkcrab-bucket"
+
+  # ─── 提供者 3：Cloudflare R2 ───
+  # BKCRAB_OBJECT_STORE_TYPE: "cloudflare-r2"
+  # BKCRAB_OBJECT_STORE_ACCOUNTID: "<cloudflare-account-id>"
+  # BKCRAB_OBJECT_STORE_BUCKET: "your-bkcrab-bucket"
+
+  # ─── 提供者 4：Backblaze B2 ───
+  # BKCRAB_OBJECT_STORE_TYPE: "backblaze-b2"
+  # BKCRAB_OBJECT_STORE_REGION: "us-west-004"
+  # BKCRAB_OBJECT_STORE_BUCKET: "your-bkcrab-bucket"
+
+  # ─── 提供者 5：自托管 MinIO（集群内）───
+  # BKCRAB_OBJECT_STORE_TYPE: "minio"
+  # BKCRAB_OBJECT_STORE_ENDPOINT: "minio.default.svc.cluster.local:9000"
+  # BKCRAB_OBJECT_STORE_BUCKET: "bkcrab"
+  # BKCRAB_OBJECT_STORE_USESSL: "false"
+
+  # ─── 提供者 6：通用 S3 兼容（DigitalOcean Spaces / Wasabi / …）───
+  # BKCRAB_OBJECT_STORE_TYPE: "s3"
+  # BKCRAB_OBJECT_STORE_ENDPOINT: "nyc3.digitaloceanspaces.com"
+  # BKCRAB_OBJECT_STORE_REGION: "nyc3"
+  # BKCRAB_OBJECT_STORE_BUCKET: "your-bkcrab-bucket"
+
+  # 可选：前缀，用于在多个环境间共享一个存储桶。
+  # BKCRAB_OBJECT_STORE_PREFIX: "prod"
+
+  # ─── 沙箱（可选）───
+  # k8s Pod 没有 Docker 守护进程，因此唯一的沙箱后端
+  # 是 E2B（远程）— 或者禁用它。要启用：在上面
+  # bkcrab-secrets 中设置 E2B_API_KEY 并取消下方行的注释。
+  # BKCRAB_SANDBOX_BACKEND: "e2b"
+  # BKCRAB_SANDBOX_IMAGE: "thinkany/bkcrab-sandbox:latest"   # 使用 E2B 自定义模板时使用
+
+---
+# =================== 应用程序（通常无需编辑）============================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bkcrab
+  namespace: bkcrab
+  labels: { app: bkcrab }
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector: { matchLabels: { app: bkcrab } }
+  template:
+    metadata: { labels: { app: bkcrab } }
+    spec:
+      containers:
+        - name: bkcrab
+          image: ghcr.io/qs3c/bkcrab:dev    # 生产环境：固定到 :<sha7> 或 :vX.Y.Z
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 18953 }
+          envFrom:
+            - configMapRef: { name: bkcrab-config }
+          env:
+            - { name: BKCRAB_HOME,                    value: "/data/.bkcrab" }
+            - { name: BKCRAB_STORAGE_DSN,             valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: STORAGE_DSN } } }
+            - { name: BKCRAB_OBJECT_STORE_ACCESSKEY,  valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: OBJECT_STORE_ACCESSKEY } } }
+            - { name: BKCRAB_OBJECT_STORE_SECRETKEY,  valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: OBJECT_STORE_SECRETKEY } } }
+            # - { name: E2B_API_KEY, valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: E2B_API_KEY } } }
+          volumeMounts:
+            - { name: data, mountPath: /data/.bkcrab }
+          # /healthz 和 /readyz 跳过认证中间件，因此 kubelet 可以直接探测。
+          # 不要使用 /api/status — 它在 userAuth 后面，每次匿名请求都返回 401。
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /livez, port: http }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "1",    memory: "512Mi" }
+          lifecycle:
+            # 给 SSE / WebSocket 连接时间排空。
+            # terminationGracePeriod=30s；preStop 休眠 15s，剩余时间留给 Go 的优雅关闭。
+            preStop:
+              exec: { command: ["sh", "-c", "sleep 15"] }
+      terminationGracePeriodSeconds: 30
+      volumes:
+        # /data/.bkcrab 仅保存 Pod 本地临时状态（沙箱缓存等）。
+        # 工作区工件进入对象存储（BKCRAB_OBJECT_STORE_*），
+        # 因此它们在 Pod 之间共享并能承受水平扩展。
+        - { name: data, emptyDir: {} }
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bkcrab
+  namespace: bkcrab
+spec:
+  type: ClusterIP
+  selector: { app: bkcrab }
+  # SSE / WebSocket 连接必须保持在同一 Pod 上直到关闭。
+  # Ingress 已处理 cookie 亲和性；这里是绕过 Ingress 直接访问 Service 的
+  # 负载均衡器的 ClientIP 回退，否则 /api/chat/subscribe 会循环重连。
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600
+  ports:
+    - { name: http, port: 80, targetPort: http }
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: bkcrab
+  namespace: bkcrab
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: bkcrab }
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 60 }
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: bkcrab
+  namespace: bkcrab
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: bkcrab } }
+
+---
+# ========================= 在此编辑（主机名）============================
+# 如果不需要公共访问，请删除整个块。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bkcrab
+  namespace: bkcrab
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "32m"
+    # SSE (/api/chat/subscribe) 和 WebSocket (/ws) 是长连接 — 默认
+    # 60s 超时会不断断开客户端。将读/写超时提高到 1h 并禁用缓冲，
+    # 以便令牌实时刷新。
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # 在多副本下将客户端固定到同一 Pod — SSE/WS 无法跨 Pod 恢复。
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "bkcrab-affinity"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "86400"
+    # 阿里云 ACK 默认提供 nginx-ingress；如果你改用 ALB Ingress，
+    # 将上述注释替换为对应的 alb.ingress.kubernetes.io/* 等价项
+    #（语义相同）。
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [bkcrab.example.com]
+      secretName: bkcrab-tls
+  rules:
+    - host: bkcrab.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: bkcrab, port: { number: 80 } }

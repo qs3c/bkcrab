@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // Category 是这些提供商插入的工具类别。

@@ -28,7 +28,7 @@ type S3 struct {
 	prefix string // prepended to every key; can be "" for bucket root
 }
 
-// S3Config 包含 NewS3 所需的配置项。字段命名遵循 bkclaw.json
+// S3Config 包含 NewS3 所需的配置项。字段命名遵循 bkcrab.json
 // 约定，以便通过 encoding/json 干净地往返。
 type S3Config struct {
 	Endpoint  string `json:"endpoint"`            // e.g. "s3.amazonaws.com", "<acct>.r2.cloudflarestorage.com"

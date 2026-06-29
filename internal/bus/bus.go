@@ -26,7 +26,7 @@ type InboundMessage struct {
 	// 运行时将工作区 I/O 路由到 projects/<id>/ 而不是 sessions/<chat>/。
 	ProjectID   string
 	UserID      string // 用户标识符
-	OwnerUserID string // 拥有该 agent 的 bkclaw 用户（用于多用户路由）
+	OwnerUserID string // 拥有该 agent 的 bkcrab 用户（用于多用户路由）
 	// AgentID 是一个*显式*的 agent 目标。当消息来源已知应由哪个 agent 处理时
 	// 非空（cron 任务、Web 聊天、子 agent 生成）——绕过 routeDM 中的绑定查找
 	// + 默认 agent 回退。对于 IM 渠道消息为空，网关必须从绑定中确定 agent。

@@ -1,17 +1,17 @@
 # 可选 — 集群内自托管 Postgres，适用于开发/单节点试验。
 # 生产环境建议使用托管服务（阿里云 RDS / AWS RDS 等），
-# 将 bkclaw.yaml 的 bkclaw-secrets.STORAGE_DSN 指向它；此文件不是必需的。
+# 将 bkcrab.yaml 的 bkcrab-secrets.STORAGE_DSN 指向它；此文件不是必需的。
 #
-# 与 bkclaw.yaml 一起使用：
+# 与 bkcrab.yaml 一起使用：
 #   1. kubectl apply -f postgres.yml          （创建以下资源）
-#   2. 在 bkclaw.yaml 中，设置 bkclaw-secrets.STORAGE_DSN 为：
-#        postgres://bkclaw:<POSTGRES_PASSWORD above>@bkclaw-db:5432/bkclaw?sslmode=disable
-#   3. kubectl apply -f bkclaw.yaml
+#   2. 在 bkcrab.yaml 中，设置 bkcrab-secrets.STORAGE_DSN 为：
+#        postgres://bkcrab:<POSTGRES_PASSWORD above>@bkcrab-db:5432/bkcrab?sslmode=disable
+#   3. kubectl apply -f bkcrab.yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  name: bkclaw-db
-  namespace: bkclaw
+  name: bkcrab-db
+  namespace: bkcrab
 type: Opaque
 stringData:
   POSTGRES_PASSWORD: "change-me-in-production"
@@ -19,8 +19,8 @@ stringData:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: bkclaw-db
-  namespace: bkclaw
+  name: bkcrab-db
+  namespace: bkcrab
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -30,17 +30,17 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: bkclaw-db
-  namespace: bkclaw
+  name: bkcrab-db
+  namespace: bkcrab
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: bkclaw-db
+      app: bkcrab-db
   template:
     metadata:
       labels:
-        app: bkclaw-db
+        app: bkcrab-db
     spec:
       containers:
       - name: postgres
@@ -49,34 +49,34 @@ spec:
         - containerPort: 5432
         env:
         - name: POSTGRES_DB
-          value: bkclaw
+          value: bkcrab
         - name: POSTGRES_USER
-          value: bkclaw
+          value: bkcrab
         - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: bkclaw-db
+              name: bkcrab-db
               key: POSTGRES_PASSWORD
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
         readinessProbe:
           exec:
-            command: ["pg_isready", "-U", "bkclaw"]
+            command: ["pg_isready", "-U", "bkcrab"]
           initialDelaySeconds: 5
           periodSeconds: 5
       volumes:
       - name: data
         persistentVolumeClaim:
-          claimName: bkclaw-db
+          claimName: bkcrab-db
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: bkclaw-db
-  namespace: bkclaw
+  name: bkcrab-db
+  namespace: bkcrab
 spec:
   selector:
-    app: bkclaw-db
+    app: bkcrab-db
   ports:
   - port: 5432

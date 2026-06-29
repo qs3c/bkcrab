@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkcrab/internal/provider"
 )
 
 // subagentDefaultTimeout 限制单个子代理在循环中可花费的挂钟时间，

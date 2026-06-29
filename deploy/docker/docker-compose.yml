@@ -1,11 +1,11 @@
-name: bkclaw
+name: bkcrab
 
 services:
-  bkclaw:
+  bkcrab:
     build:
       context: ../..
       dockerfile: Dockerfile
-    image: bkclaw/bkclaw:local
+    image: bkcrab/bkcrab:local
     restart: unless-stopped
     # Forward DNS to public resolvers instead of Docker Desktop's embedded
     # resolver, which intermittently returns "server misbehaving" (SERVFAIL)
@@ -14,24 +14,24 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     ports:
-      - "${BKCLAW_PORT:-18953}:18953"
+      - "${BKCRAB_PORT:-18953}:18953"
     volumes:
-      - bkclaw-data:/data/.bkclaw
+      - bkcrab-data:/data/.bkcrab
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
-      BKCLAW_HOME: /data/.bkclaw
-      BKCLAW_BIND: all
-      BKCLAW_PORT: "18953"
-      BKCLAW_STORAGE_TYPE: mysql
-      BKCLAW_STORAGE_DSN: "bkclaw:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in deploy/docker/.env}@tcp(mysql:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4"
-      BKCLAW_STORAGE_AUTO_MIGRATE: "true"
-      BKCLAW_OBJECT_STORE_TYPE: minio
-      BKCLAW_OBJECT_STORE_ENDPOINT: minio:9000
-      BKCLAW_OBJECT_STORE_BUCKET: "${MINIO_BUCKET:-bkclaw}"
-      BKCLAW_OBJECT_STORE_PREFIX: "${MINIO_PREFIX:-}"
-      BKCLAW_OBJECT_STORE_ACCESSKEY: "${MINIO_ROOT_USER:?set MINIO_ROOT_USER in deploy/docker/.env}"
-      BKCLAW_OBJECT_STORE_SECRETKEY: "${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in deploy/docker/.env}"
-      BKCLAW_OBJECT_STORE_USESSL: "false"
+      BKCRAB_HOME: /data/.bkcrab
+      BKCRAB_BIND: all
+      BKCRAB_PORT: "18953"
+      BKCRAB_STORAGE_TYPE: mysql
+      BKCRAB_STORAGE_DSN: "bkcrab:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in deploy/docker/.env}@tcp(mysql:3306)/bkcrab?parseTime=true&loc=UTC&charset=utf8mb4"
+      BKCRAB_STORAGE_AUTO_MIGRATE: "true"
+      BKCRAB_OBJECT_STORE_TYPE: minio
+      BKCRAB_OBJECT_STORE_ENDPOINT: minio:9000
+      BKCRAB_OBJECT_STORE_BUCKET: "${MINIO_BUCKET:-bkcrab}"
+      BKCRAB_OBJECT_STORE_PREFIX: "${MINIO_PREFIX:-}"
+      BKCRAB_OBJECT_STORE_ACCESSKEY: "${MINIO_ROOT_USER:?set MINIO_ROOT_USER in deploy/docker/.env}"
+      BKCRAB_OBJECT_STORE_SECRETKEY: "${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in deploy/docker/.env}"
+      BKCRAB_OBJECT_STORE_USESSL: "false"
       DOCKER_HOST: tcp://sandbox-docker:2375
     depends_on:
       mysql:
@@ -53,14 +53,14 @@ services:
     ports:
       - "127.0.0.1:3306:3306"
     environment:
-      MYSQL_DATABASE: bkclaw
-      MYSQL_USER: bkclaw
+      MYSQL_DATABASE: bkcrab
+      MYSQL_USER: bkcrab
       MYSQL_PASSWORD: "${MYSQL_PASSWORD:?set MYSQL_PASSWORD in deploy/docker/.env}"
       MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in deploy/docker/.env}"
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u bkclaw -p$${MYSQL_PASSWORD} --silent"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u bkcrab -p$${MYSQL_PASSWORD} --silent"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -92,7 +92,7 @@ services:
     environment:
       MINIO_ROOT_USER: "${MINIO_ROOT_USER:?set MINIO_ROOT_USER in deploy/docker/.env}"
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in deploy/docker/.env}"
-      MINIO_BUCKET: "${MINIO_BUCKET:-bkclaw}"
+      MINIO_BUCKET: "${MINIO_BUCKET:-bkcrab}"
     entrypoint:
       - /bin/sh
       - -ec
@@ -111,7 +111,7 @@ services:
       - --host=unix:///var/run/docker.sock
       - --tls=false
     volumes:
-      - bkclaw-data:/data/.bkclaw
+      - bkcrab-data:/data/.bkcrab
       - sandbox-docker-data:/var/lib/docker
     healthcheck:
       test: ["CMD", "docker", "info"]
@@ -121,7 +121,7 @@ services:
 
   migrate-storage:
     profiles: ["migration"]
-    image: bkclaw/bkclaw:local
+    image: bkcrab/bkcrab:local
     build:
       context: ../..
       dockerfile: Dockerfile
@@ -130,16 +130,16 @@ services:
         condition: service_healthy
     volumes:
       - ./.state:/migration:ro
-    entrypoint: ["bkclaw-migrate-storage"]
+    entrypoint: ["bkcrab-migrate-storage"]
     command:
       - --sqlite
-      - /migration/bkclaw.db
+      - /migration/bkcrab.db
       - --mysql
-      - "bkclaw:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in deploy/docker/.env}@tcp(mysql:3306)/bkclaw?parseTime=true&loc=UTC&charset=utf8mb4"
+      - "bkcrab:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in deploy/docker/.env}@tcp(mysql:3306)/bkcrab?parseTime=true&loc=UTC&charset=utf8mb4"
       - --replace
 
 volumes:
-  bkclaw-data:
+  bkcrab-data:
   mysql-data:
   minio-data:
   sandbox-docker-data:

@@ -42,7 +42,7 @@ debug/
 __debug_bin*
 all_comments.txt
 DESIGN.md
-bkclaw-patched
+bkcrab-patched
 .air.toml
 
 # Editor and OS files
@@ -59,7 +59,7 @@ bkclaw-patched
 *.pem
 *.key
 config.json
-bkclaw.json
+bkcrab.json
 openclaw.json
 env.toml
 go.work

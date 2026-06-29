@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 构建 agent 执行沙箱使用的 bkclaw-sandbox 运行时镜像。
+# 构建 agent 执行沙箱使用的 bkcrab-sandbox 运行时镜像。
 # 捆绑 Python + Node + Camoufox（反检测 Firefox），
 # 使 camoufox-cli 技能在第一回合无需任何 pip/npm 往返即可工作。
 #
@@ -11,14 +11,14 @@
 #                                                       # 多架构 buildx
 #
 # 构建后，通过设置 → 沙箱 → 镜像或在引导期间将网关指向它。
-# 默认：thinkany/bkclaw-sandbox:latest。
+# 默认：thinkany/bkcrab-sandbox:latest。
 
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../../.." && pwd)
 
-IMAGE_NAME=${IMAGE_NAME:-thinkany/bkclaw-sandbox}
+IMAGE_NAME=${IMAGE_NAME:-thinkany/bkcrab-sandbox}
 TAG=latest
 PUSH=0
 PLATFORM=""

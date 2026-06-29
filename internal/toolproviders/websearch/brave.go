@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // Brave 调用 api.search.brave.com。需要 X-Subscription-Token API 密钥。

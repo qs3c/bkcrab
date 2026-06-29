@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 // LINE Messaging API 适配器。Webhook 驱动的入站 + REST 出站，
@@ -256,9 +256,9 @@ func (l *LINE) dispatchEvent(ev LINEEvent) {
 	}
 }
 
-// lineChatKey 从源块中选择最具体的聊天标识符，并与 bkclaw 的
+// lineChatKey 从源块中选择最具体的聊天标识符，并与 bkcrab 的
 // peerKind 标签一起返回。LINE 有三种聊天范围：用户 1:1、多人房间、
-// 群组。我们将 room/group 折叠为 "group"，因为 bkclaw 不会在
+// 群组。我们将 room/group 折叠为 "group"，因为 bkcrab 不会在
 // 下游进一步区分两者。
 func lineChatKey(s LINESource) (chatID, peerKind string) {
 	switch s.Type {

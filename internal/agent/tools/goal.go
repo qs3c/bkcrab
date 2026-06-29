@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/qs3c/bkclaw/internal/agent/goal"
+	"github.com/qs3c/bkcrab/internal/agent/goal"
 )
 
 // RegisterGoalTools 将单个模型可调用目标工具连接到 r 上。

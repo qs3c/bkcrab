@@ -98,7 +98,7 @@ export default function AgentPluginsPage() {
             </p>
             <p className="text-xs text-muted-foreground/60 max-w-sm text-center">
               将插件目录放入{" "}
-              <code className="text-[10px]">~/.bkclaw/plugins/</code>{" "}
+              <code className="text-[10px]">~/.bkcrab/plugins/</code>{" "}
               并在 <code className="text-[10px]">plugin.json</code> 中设置{" "}
               <code className="text-[10px]">type: &quot;hook&quot;</code>，然后重启守护进程。
             </p>

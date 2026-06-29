@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // 项目是按 (user, agent) 命名的工作区文件夹，用于组织聊天会话。

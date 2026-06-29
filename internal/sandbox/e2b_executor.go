@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // E2B API：https://e2b.dev/docs
@@ -166,11 +166,11 @@ func (e *E2BExecutor) SetHydrationSources(skillDirs []string, ws workspace.Store
 //     hydrateWorkspace 相同的契约）
 //
 // 实现：将所有内容打包成一个 tar.gz，通过 envd 的 /files 多部分端点上传
-//（与 writeFileOnce 使用的路径相同——已知有效），
+// （与 writeFileOnce 使用的路径相同——已知有效），
 // 然后运行一个小型 `bash -c` 来解压+chown。
 // 早期版本将 base64 编码的 tar 内联在 `bash -c` 参数中；
 // 这对于微小包有效，但经验上一旦编码后的有效负载超过约 80KB 的 base64
-//（8 个捆绑技能已经是 103KB 并触发了问题），Connect 协议响应就被截断。
+// （8 个捆绑技能已经是 103KB 并触发了问题），Connect 协议响应就被截断。
 // 截断表现为 envd 的 End-frame，其中 `exited=false` 且无退出状态——
 // 旧代码将其视为成功，因为 exitCode 仍然是 0，
 // 因此 Hydrate 看起来运行了，而 chown 步骤实际上在中途被截断。
@@ -686,7 +686,7 @@ func (e *E2BExecutor) IsRemoteWorkspace() {}
 // 将字节发送回来。这是 Hydrate 的 tar+base64 推送的逆操作——
 // 由 LifecyclePool 使用，在每次成功 exec 后将沙箱端文件刷新回持久化
 // workspace.Store，以便技能在沙箱内写入的文件
-//（image-tool 的 /workspace/gen_xxx.webp 等）最终可以从主机的 UI/
+// （image-tool 的 /workspace/gen_xxx.webp 等）最终可以从主机的 UI/
 // 签名 URL 路径访问。
 //
 // 返回 /workspace 相对路径到内容的映射。当 /workspace 为空或不存在时静默跳过。
@@ -807,7 +807,7 @@ type E2BExecutorPool struct {
 	workspace workspace.Store // 可选——设置时，/workspace 与 /skills 一起被填充
 }
 
-// NewE2BExecutorPool——`home` 是 docker 后端用于 `-v` 挂载的 BKCLAW_HOME；
+// NewE2BExecutorPool——`home` 是 docker 后端用于 `-v` 挂载的 BKCRAB_HOME；
 // 池使用它来解析要将哪些技能目录推送到每个新沙箱中。
 func NewE2BExecutorPool(apiKey, template, home string, timeout time.Duration) *E2BExecutorPool {
 	return &E2BExecutorPool{

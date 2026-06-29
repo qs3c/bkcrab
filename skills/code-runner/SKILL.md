@@ -2,7 +2,7 @@
 name: code-runner
 description: Execute code in multiple programming languages. Use when the user asks to run, test, or debug code in Python, JavaScript, shell, or other languages.
 metadata:
-  bkclaw:
+  bkcrab:
     always: true
 ---
 

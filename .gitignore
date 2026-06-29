@@ -1,5 +1,5 @@
 # Binaries
-/bkclaw
+/bkcrab
 *.exe
 *.exe~
 *.dll
@@ -42,7 +42,7 @@ node_modules/
 
 # Config with secrets (users create their own)
 config.json
-bkclaw.json
+bkcrab.json
 
 # Debug
 debug/
@@ -71,4 +71,4 @@ env.toml
 
 # Local data
 web/node_modules/
-bkclaw-patched
+bkcrab-patched

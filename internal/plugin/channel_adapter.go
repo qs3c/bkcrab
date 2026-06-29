@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 // ChannelAdapter 包装了一个通道插件，用于实现 channels.Channel 接口。

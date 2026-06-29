@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkcrab/internal/provider"
 )
 
 // maybeRecoverToolCalls 在模型没有返回原生 tool_calls 但输出了文本时，

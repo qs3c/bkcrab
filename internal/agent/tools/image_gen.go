@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // RegisterImageGenChain 针对提供者注册 image_gen 工具
@@ -18,7 +18,7 @@ func RegisterImageGenChain(r *Registry, chain *toolproviders.Chain) {
 		return
 	}
 	// “none”是一个哨兵，意味着管理员明确选择退出
-	// bkclaw 的 image_gen。在链条中的任何位置检测到 → 不检测
+	// bkcrab 的 image_gen。在链条中的任何位置检测到 → 不检测
 	// 完全注册该工具，以便模型恢复到它自己的状态
 	// 本机图像生成功能（或没有）。
 	for _, ref := range chain.Order {

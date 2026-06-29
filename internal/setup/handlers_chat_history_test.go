@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/agent"
-	"github.com/qs3c/bkclaw/internal/api"
-	"github.com/qs3c/bkclaw/internal/auth"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkcrab/internal/agent"
+	"github.com/qs3c/bkcrab/internal/api"
+	"github.com/qs3c/bkcrab/internal/auth"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/provider"
 )
 
 type chatHistoryNoopProvider struct{}
@@ -107,7 +107,7 @@ func newChatHistoryTestManager(t *testing.T, userID string) *agent.Manager {
 	t.Helper()
 
 	root := t.TempDir()
-	t.Setenv("BKCLAW_HOME", root)
+	t.Setenv("BKCRAB_HOME", root)
 	manager, err := agent.NewManager([]config.ResolvedAgent{{
 		ID:            "ctx-agent",
 		UserID:        userID,

@@ -89,7 +89,7 @@ export function NavProjectsList({
   projects: ProjectEntry[];
   sessions: ProjectChatItem[];
   // 调用者在此触发时重新拉取项目和会话（重命名、删除、创建对话）。
-  // 与 NavSessions 广播的 `bkclaw:sessions-changed` 事件模式相同；
+  // 与 NavSessions 广播的 `bkcrab:sessions-changed` 事件模式相同；
   // 我们保留为回调属性，因为 Project 状态住在上一层 AppSidebar 中。
   onChanged: () => void;
 }) {

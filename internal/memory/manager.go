@@ -14,8 +14,8 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/qs3c/bkclaw/internal/privacy"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/privacy"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 type Target string
@@ -95,7 +95,7 @@ type Manager struct {
 
 const (
 	entryDelimiter        = "\n\n\xC2\xA7\n\n"
-	escapedEntryDelimiter = "\n\n<!-- bkclaw-memory:escaped-delimiter -->\n\n"
+	escapedEntryDelimiter = "\n\n<!-- bkcrab-memory:escaped-delimiter -->\n\n"
 )
 
 var pathLocks sync.Map
@@ -447,7 +447,7 @@ func (m *Manager) path(filename string) string {
 }
 
 func marker(target Target) string {
-	return fmt.Sprintf("<!-- bkclaw-memory:v1 target=%s -->", target)
+	return fmt.Sprintf("<!-- bkcrab-memory:v1 target=%s -->", target)
 }
 
 func normalizeConfig(cfg Config) Config {

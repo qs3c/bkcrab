@@ -5,7 +5,7 @@ package tools
 import "os/exec"
 
 // Windows 没有通过 syscall.SysProcAttr 公开的 Setpgid 类似物 — 作业
-// 对象存在但需要不平凡的接线。 BkClaw的执行路径是
+// 对象存在但需要不平凡的接线。 BkCrab的执行路径是
 // 实际上已经仅限于 Unix（使用 `sh -c`），因此这里的无操作保留
 // 绿色交叉编译，无需假装支持Windows。
 //

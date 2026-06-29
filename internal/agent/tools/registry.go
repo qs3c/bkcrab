@@ -9,12 +9,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/qs3c/bkclaw/internal/buildinfo"
-	"github.com/qs3c/bkclaw/internal/memory"
-	"github.com/qs3c/bkclaw/internal/provider"
-	"github.com/qs3c/bkclaw/internal/sandbox"
-	"github.com/qs3c/bkclaw/internal/store"
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/buildinfo"
+	"github.com/qs3c/bkcrab/internal/memory"
+	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/sandbox"
+	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // IdentityFiles 是代理拥有的文件的规范列表，其密钥位于
@@ -47,7 +47,7 @@ var identityFiles = map[string]bool{
 // - 裸基名（“SOUL.md”，“agent.json”）：规范
 // 单段表单文件工具路由至systemRoot；
 // - 基名是身份文件的绝对路径
-// （“/var/lib/bkclaw/agents/xyz/SOUL.md”）：复制的法学硕士
+// （“/var/lib/bkcrab/agents/xyz/SOUL.md”）：复制的法学硕士
 // 从系统提示符中粘贴了“工作目录”提示
 // 可以构建这种形式。抓住它，这样大门就不会被绕过
 // 通过 `read_file("/.../SOUL.md")`。
@@ -185,7 +185,7 @@ type Registry struct {
 	// 区别” — 然后 systemFileUserID 回退到 userID。
 	agentOwnerUserID string
 	// userSkillsRoot 是聊天者的每个用户的磁盘上父级
-	// 技能/子目录（~/.bkclaw/users/<uid>/）。写信给亲戚
+	// 技能/子目录（~/.bkcrab/users/<uid>/）。写信给亲戚
 	// 具有此设置的路径“skills/foo/SKILL.md”位于
 	// <userSkillsRoot>/skills/foo/SKILL.md — 相同形状 rootForPath +
 	// 解析路径沙盒化，需要系统根目录。将每个代理设置为
@@ -397,7 +397,7 @@ func (r *Registry) SetAgentOwnerUserID(uid string) {
 }
 
 // SetUserSkillsRoot 点聊天时 `skills/...` 写入
-// chatter 的每用户技能目录 (~/.bkclaw/users/<uid>/skills/)。
+// chatter 的每用户技能目录 (~/.bkcrab/users/<uid>/skills/)。
 // 空禁用 - `skills/...` 然后回退到 systemRoot（代理
 // 家）。与 SkillsLoader.WithUserID 配对，以便加载程序扫描
 // 下一回合相同的方向，新技能就会变得可见。
@@ -545,7 +545,7 @@ func NewRegistry(systemRoot, userRoot string) *Registry {
 // 运行后台 shell（通过带有 run_in_background 的 exec 启动）
 // 所以他们不会比他们的经纪人活得更久。安全拨打多个电话
 // 次。没有干净的关闭挂钩的调用者可以忽略它 -
-// 无论如何，当 BkClaw 进程退出时，操作系统都会收获僵尸。
+// 无论如何，当 BkCrab 进程退出时，操作系统都会收获僵尸。
 func (r *Registry) Close() {
 	if r.shellMgr != nil {
 		r.shellMgr.Close()
@@ -636,7 +636,7 @@ type ToolInfo struct {
 	Description string `json:"description"`
 	// 来源将内置工具与 MCP/插件贡献区分开来
 	// 因此 UI 可以提示工具的来源。之一：
-	// "builtin" — 编译成 bkclaw
+	// "builtin" — 编译成 bkcrab
 	// "mcp" — 由连接的 MCP 服务器公开
 	// "plugin" — 由 JSON-RPC 插件子进程公开
 	Source string `json:"source"`
@@ -756,7 +756,7 @@ func (r *Registry) SetSandboxConfig(sbCfg *SandboxConfig) {
 // 超过它的部分将被拒绝。当 root 为空时（默认），无
 // 应用限制——这是本地单用户模式。在云端
 // root 模式通常设置为用户目录
-// (~/.bkclaw/users/{userID})。
+// (~/.bkcrab/users/{userID})。
 func (r *Registry) SetSandboxRoot(root string) {
 	r.sandboxRoot = root
 }
@@ -766,9 +766,9 @@ func (r *Registry) SetSandboxRoot(root string) {
 // 在主机文件系统上。这是用于云部署的模式，其中
 // 每个用户都会获得一个独立的容器/虚拟机，其中包含自己的运行时+文件。
 //
-// 使用 BKCLAW_ALLOW_HOST_EXEC=1 显式选择加入的安装
+// 使用 BKCRAB_ALLOW_HOST_EXEC=1 显式选择加入的安装
 // 另外获得一个“host_exec”逃生舱口，以便特工可以提供帮助
-// 与操作员环境任务（bkclaw升级，〜/下载
+// 与操作员环境任务（bkcrab升级，〜/下载
 // 访问，系统工具），而不丢失沙箱默认值
 // 其他一切。默认关闭——host_exec 暴露给一个喋喋不休的人
 // can提示注入是一个特权升级表面，所以门

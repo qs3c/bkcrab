@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
 /**
- * openclaw-proxy: Bridge OpenClaw TypeScript plugins to BkClaw JSON-RPC protocol.
+ * openclaw-proxy: Bridge OpenClaw TypeScript plugins to BkCrab JSON-RPC protocol.
  *
  * Usage:
  *   node proxy.js <path-to-openclaw-plugin>
  *
  * The proxy loads an OpenClaw plugin, captures its register() calls,
- * and exposes the registered capabilities via BkClaw's JSON-RPC stdin/stdout protocol.
+ * and exposes the registered capabilities via BkCrab's JSON-RPC stdin/stdout protocol.
  */
 
 import { createInterface } from "readline";

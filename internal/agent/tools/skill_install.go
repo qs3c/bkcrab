@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/skills"
+	"github.com/qs3c/bkcrab/internal/skills"
 )
 
 // RegisterSkillInstall 连接每个代理的技能搜索和安装工具
@@ -14,7 +14,7 @@ import (
 //
 // agentSkillsDir 是每个代理的技能目录（通常
 // <agentHome>/技能）。代理启动的安装始终落在该路径下 -
-// 永远不会在全局 ~/.bkclaw/skills/ — 所以一个特工无法改变另一个特工
+// 永远不会在全局 ~/.bkcrab/skills/ — 所以一个特工无法改变另一个特工
 // 只需通过聊天即可了解代理的能力。
 //
 // onReload 在成功安装后调用，以便拥有代理可以

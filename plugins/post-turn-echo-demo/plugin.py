@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Demo hook plugin for BkClaw.
+Demo hook plugin for BkCrab.
 
 On every `post_turn` hook fire, sends a fixed follow-up message back to
 the same chat via the `chat.send` notification. Skeleton you can copy
@@ -8,8 +8,8 @@ for richer plugins (post-reply audio, translation, summarization, ...).
 
 Protocol:
 - JSON-RPC 2.0 over stdin/stdout, NDJSON framing.
-- bkclaw -> plugin:  initialize, hook.register, hook.fire (notification).
-- plugin -> bkclaw:  result for the synchronous calls, plus chat.send
+- bkcrab -> plugin:  initialize, hook.register, hook.fire (notification).
+- plugin -> bkcrab:  result for the synchronous calls, plus chat.send
                        (notification — fire-and-forget).
 """
 
@@ -45,7 +45,7 @@ def handle_initialize(params, req_id):
 
 
 def handle_hook_register(params, req_id):
-    # Tell bkclaw we want to be notified on post_turn. The server will
+    # Tell bkcrab we want to be notified on post_turn. The server will
     # invoke `hook.fire` (as a notification, async) for every agent turn
     # whose HookRegistry has us attached — see registerHookPluginsForAgent
     # in internal/gateway/userspace.go.
@@ -73,7 +73,7 @@ def handle_hook_fire(params):
         log(f"post_turn missing routing — channel={channel!r} chatId={chat_id!r}; skipping")
         return
 
-    # Push a fixed follow-up message into the same chat. bkclaw's
+    # Push a fixed follow-up message into the same chat. bkcrab's
     # plugin manager turns this into a bus.OutboundMessage and hands
     # it to the channel adapter — same path the agent's own reply
     # took, so the chatter sees a second bubble.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/agent"
+	"github.com/qs3c/bkcrab/internal/agent"
 )
 
 func TestForwardChatStreamEventWritesDoneBeforeReturning(t *testing.T) {

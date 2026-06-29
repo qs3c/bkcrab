@@ -26,7 +26,7 @@ function urlTransform(url: string, key: string): string {
 // `/workspace/<name>` 重映射到活跃智能体的认证文件 API URL。
 // 产出文件的技能返回沙箱路径如 /workspace/img_xxx.png，LLM 将其写入
 // `![](/workspace/...)`。docker bind-mount 是会话级的（host:
-// ~/.bkclaw/workspaces/<agent>/sessions/<sid>/ ↔ container:/workspace），
+// ~/.bkcrab/workspaces/<agent>/sessions/<sid>/ ↔ container:/workspace），
 // 因此 workspace.Store 在 sessions/<sid>/<name> 处找到文件。我们必须
 // 预置该前缀，否则文件 API 会从智能体根目录解析并返回 404。
 function makeUrlTransform(agentId: string, sessionId: string) {
@@ -947,7 +947,7 @@ export function ChatScreen() {
             // 通知侧边栏刷新——新轮次可能产生了更新后的会话标题。
             if (typeof window !== "undefined") {
               window.dispatchEvent(
-                new CustomEvent("bkclaw:sessions-changed", {
+                new CustomEvent("bkcrab:sessions-changed", {
                   detail: { agentId: selectedAgent },
                 }),
               );
@@ -1043,7 +1043,7 @@ export function ChatScreen() {
         // 重命名不会触发。
         if (typeof window !== "undefined") {
           window.dispatchEvent(
-            new CustomEvent("bkclaw:sessions-changed", {
+            new CustomEvent("bkcrab:sessions-changed", {
               detail: { agentId: selectedAgent },
             }),
           );
@@ -1645,7 +1645,7 @@ export function ChatScreen() {
       // 使新标题无需整页刷新即可出现。
       if (typeof window !== "undefined") {
         window.dispatchEvent(
-          new CustomEvent("bkclaw:sessions-changed", {
+          new CustomEvent("bkcrab:sessions-changed", {
             detail: { agentId: selectedAgent },
           }),
         );

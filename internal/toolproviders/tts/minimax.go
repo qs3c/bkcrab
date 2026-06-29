@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
 // MiniMax 向 /v1/t2a_v2 发送请求。模型默认为 "speech-02-hd"。

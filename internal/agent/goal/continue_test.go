@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/qs3c/bkclaw/internal/bus"
+	"github.com/qs3c/bkcrab/internal/bus"
 )
 
 // memStore is the in-memory goal.Store used by continue_test.go to

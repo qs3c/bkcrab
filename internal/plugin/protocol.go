@@ -53,7 +53,7 @@ const (
 	MethodHookRegister    = "hook.register"
 	MethodHookFire        = "hook.fire"
 	MethodMessageInbound  = "message.inbound"
-	// MethodChatSend: plugin → bkclaw 通知，将新的出站消息发送到
+	// MethodChatSend: plugin → bkcrab 通知，将新的出站消息发送到
 	// 指定的聊天。由钩子插件（post-turn TTS、翻译等）使用，用于向
 	// 代理刚刚回复的同一聊天添加后续内容。与 message.inbound
 	// （会触发另一个代理轮次）不同，此方法绕过代理直接进入
@@ -110,7 +110,7 @@ type ProviderListResult struct {
 
 // ProviderExecuteParams 携带每次调用的参数和已解析的租户
 // 配置（API 密钥、端点、额外选项、模型 ID）。插件进程
-// 不得缓存凭据——BkClaw 在每次调用时重新发送它们，
+// 不得缓存凭据——BkCrab 在每次调用时重新发送它们，
 // 以便任何租户都可以安全地使用同一插件进程。
 type ProviderExecuteParams struct {
 	Category string                 `json:"category"`
@@ -173,7 +173,7 @@ type HookFireParams struct {
 	ToolResult string            `json:"toolResult,omitempty"`
 }
 
-// ChatSendParams: plugin → bkclaw 将出站消息推送到
+// ChatSendParams: plugin → bkcrab 将出站消息推送到
 // 指定聊天。插件管理器根据这些字段构建 bus.OutboundMessage
 // 并将其推送到 bus.Outbound——与通道适配器或代理循环
 // 使用的路径相同。与 message.inbound（模拟新的用户入站

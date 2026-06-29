@@ -28,7 +28,7 @@ ARG TARGETARCH
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG DATE=unknown
-# 标记两个符号集 — `main.*` 用于旧的 `bkclaw version` CLI
+# 标记两个符号集 — `main.*` 用于旧的 `bkcrab version` CLI
 # 调用者，`internal/buildinfo.*` 用于 agent 运行时和 Web UI 中的关于
 # 页面。镜像 Makefile / scripts/release.sh 的 ldflags，
 # 使得 Docker 构建的镜像与发布的二进制文件以相同方式标识自己；
@@ -37,28 +37,28 @@ ARG DATE=unknown
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags "-s -w \
       -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE} \
-      -X github.com/qs3c/bkclaw/internal/buildinfo.Version=${VERSION} \
-      -X github.com/qs3c/bkclaw/internal/buildinfo.Commit=${COMMIT} \
-      -X github.com/qs3c/bkclaw/internal/buildinfo.Date=${DATE}" \
-    -o /bkclaw ./cmd/bkclaw
+      -X github.com/qs3c/bkcrab/internal/buildinfo.Version=${VERSION} \
+      -X github.com/qs3c/bkcrab/internal/buildinfo.Commit=${COMMIT} \
+      -X github.com/qs3c/bkcrab/internal/buildinfo.Date=${DATE}" \
+    -o /bkcrab ./cmd/bkcrab
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -o /bkclaw-migrate-storage ./tools/migrate-storage
+    go build -o /bkcrab-migrate-storage ./tools/migrate-storage
 
 # --- 阶段 3：运行时 ---
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates docker-cli tzdata
-COPY --from=go-builder /bkclaw /usr/local/bin/bkclaw
-COPY --from=go-builder /bkclaw-migrate-storage /usr/local/bin/bkclaw-migrate-storage
+COPY --from=go-builder /bkcrab /usr/local/bin/bkcrab
+COPY --from=go-builder /bkcrab-migrate-storage /usr/local/bin/bkcrab-migrate-storage
 
-# 默认数据目录。数据库启动仍需通过 BKCLAW_STORAGE_DSN 提供显式的 MySQL DSN。
-ENV BKCLAW_HOME=/data/.bkclaw \
+# 默认数据目录。数据库启动仍需通过 BKCRAB_STORAGE_DSN 提供显式的 MySQL DSN。
+ENV BKCRAB_HOME=/data/.bkcrab \
     HOME=/data
-RUN mkdir -p /data/.bkclaw /data/.bkclaw/skills
-VOLUME /data/.bkclaw
+RUN mkdir -p /data/.bkcrab /data/.bkcrab/skills
+VOLUME /data/.bkcrab
 
 # 捆绑内置技能
-COPY skills/ /data/.bkclaw/skills/
+COPY skills/ /data/.bkcrab/skills/
 
 EXPOSE 18953
-ENTRYPOINT ["bkclaw"]
+ENTRYPOINT ["bkcrab"]
 CMD ["gateway"]

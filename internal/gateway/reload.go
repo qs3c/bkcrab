@@ -5,8 +5,8 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/qs3c/bkclaw/internal/channels"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/channels"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // InvalidateUser 丢弃用户缓存的 UserSpace，以便下次访问时从数据库重新加载。

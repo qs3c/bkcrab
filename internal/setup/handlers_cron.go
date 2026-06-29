@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // --- 按 agent 的 cron 任务（数据库支持） ---
 //
-// 下面传统的 /api/cron 从用户的扁平 bkclaw.json (cfg.CronJobs) 中读取任务 —
+// 下面传统的 /api/cron 从用户的扁平 bkcrab.json (cfg.CronJobs) 中读取任务 —
 // 那是安装时静态配置的目录。通过 create_cron_job 工具在运行时调度工作的 agent
 // 改为持久化到 cron_jobs 数据库表中，而 cron.Scheduler（实际触发它们的调度器）
 // 只监听数据库。因此那些 agent 编写的任务对仪表板不可见。

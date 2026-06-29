@@ -2,7 +2,7 @@
 name: web-search
 description: Search the web and fetch web pages. Use when the user asks to search for information, look something up, or fetch a URL.
 metadata:
-  bkclaw:
+  bkcrab:
     always: false
 ---
 

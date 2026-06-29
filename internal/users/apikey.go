@@ -8,7 +8,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/store"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // APIKey 类型层级。在创建时设置在 apikey 上；不可变。

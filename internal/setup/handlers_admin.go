@@ -7,13 +7,13 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/auth"
-	"github.com/qs3c/bkclaw/internal/buildinfo"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/scope"
-	"github.com/qs3c/bkclaw/internal/session"
-	"github.com/qs3c/bkclaw/internal/store"
-	"github.com/qs3c/bkclaw/internal/users"
+	"github.com/qs3c/bkcrab/internal/auth"
+	"github.com/qs3c/bkcrab/internal/buildinfo"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/scope"
+	"github.com/qs3c/bkcrab/internal/session"
+	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/users"
 )
 
 // --- 登录/登出/我的信息 ---
@@ -352,7 +352,7 @@ type createUserReq struct {
 	// AvatarURL 是一个可选的内联 data:image/* URL（≤256KB）。与自助服务 /api/me 端点相同的形状和上限。
 	AvatarURL string `json:"avatarUrl,omitempty"`
 	// ExternalID 是调用应用自己的用户标识符。与认证派生的 apikey_id（不从请求体获取）结合，
-	// 使配置幂等：相同的上游用户始终解析为相同的 bkclaw user_id。
+	// 使配置幂等：相同的上游用户始终解析为相同的 bkcrab user_id。
 	// 对于会话调用者（Web 管理员点击）是可选的；对于上游 apikey 配置是典型的，
 	// 其中调用者希望稳定映射回自己的用户表。
 	ExternalID string `json:"externalId,omitempty"`

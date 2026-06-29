@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
 
 export type Theme = "dark" | "light" | "system";
 
-const STORAGE_KEY = "bkclaw-theme";
+const STORAGE_KEY = "bkcrab-theme";
 
 const ThemeContext = createContext<{
   theme: Theme;

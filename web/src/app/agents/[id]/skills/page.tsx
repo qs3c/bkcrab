@@ -486,7 +486,7 @@ function InstallSkillDialog({
     setInstallError(null);
     setInstallingId(r.id);
     try {
-      // agent: agentId → 后端安装到 ~/.bkclaw/agents/<id>/skills
+      // agent: agentId → 后端安装到 ~/.bkcrab/agents/<id>/skills
       const resp = await installSkill({
         source: "skillssh",
         name: r.skillId,
@@ -512,7 +512,7 @@ function InstallSkillDialog({
           <DialogDescription>
             搜索 skills.sh 并安装到{" "}
             <code className="font-mono text-xs">
-              ~/.bkclaw/agents/{agentId}/skills/
+              ~/.bkcrab/agents/{agentId}/skills/
             </code>
             . 只有此智能体能看到新技能。
           </DialogDescription>

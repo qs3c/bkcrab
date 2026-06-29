@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // 技能包是需要存在于本地磁盘上的静态文件树，供 SkillsLoader 发现，
@@ -23,7 +23,7 @@ import (
 //	<owner>/skills/<skillName>/<relFile>
 //
 // Owner 是每个 Agent 技能的 Agent ID，或者是全局技能目录
-//（`~/.bkclaw/skills/`）的 GlobalSkillOwner。
+// （`~/.bkcrab/skills/`）的 GlobalSkillOwner。
 const (
 	// GlobalSkillOwner 是用作对象存储中全局安装技能前缀的合成 "agent ID"。
 	// 真实 Agent 不会与之冲突，因为 Agent 名称被验证为小写字母数字加连字符
@@ -58,7 +58,7 @@ func buildKey(skillName, relPath string) string {
 
 // SyncSkillUp 将 <rootDir>/<skillName>/ 下的每个文件上传到
 // 对象存储中的 <owner>/skills/<skillName>/。符号链接被跟随
-//（os.Lstat 过滤器排除它们以避免重复目标）。每次安装后调用是安全的；
+// （os.Lstat 过滤器排除它们以避免重复目标）。每次安装后调用是安全的；
 // 现有键会被覆盖。
 func SyncSkillUp(ctx context.Context, ws workspace.Store, owner, skillName, rootDir string) error {
 	if ws == nil {
@@ -116,7 +116,7 @@ func SyncSkillUp(ctx context.Context, ws workspace.Store, owner, skillName, root
 // 任何本地技能子目录。与 HydrateSkillsDown 配对使用：
 // hydrate-down 在 LoadSkills 入口处将远程→本地同步，
 // mirror-up 捕获 Agent 刚才在本地写入的内容
-//（通常是 `npx skills add -g -y` 到每个用户的绑定挂载中）并推送，
+// （通常是 `npx skills add -g -y` 到每个用户的绑定挂载中）并推送，
 // 以便兄弟 Pod 在下一个水合周期中看到。
 //
 // 跳过标准是"远程不存在技能名称"，而不是逐文件比较，
@@ -207,7 +207,7 @@ func DeleteSkillUp(ctx context.Context, ws workspace.Store, owner, skillName str
 //
 // `keepLocal` 是一个允许列表，其中的技能文件夹名称无论远程状态如何
 // 都不会被修剪。全局技能目录使用此列表来保护捆绑技能
-//（从启动时的嵌入 FS 安装，从未上传到对象存储）。
+// （从启动时的嵌入 FS 安装，从未上传到对象存储）。
 // 对于每个 Agent 的目录，传递 nil。
 //
 // 幸存的技能内的文件级差异（远程从捆绑包中删除了一个文件）不会被协调；
@@ -276,7 +276,7 @@ func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir s
 	//
 	// 安全说明：当远程有零个技能对象时，该列表与"OSS 配置错误"或
 	// "仅安装文件系统技能的全新安装"无法区分。在这种情况下进行修剪
-	// 是破坏性的 — 它会删除操作员放入 BKCLAW_HOME/skills/ 中的
+	// 是破坏性的 — 它会删除操作员放入 BKCRAB_HOME/skills/ 中的
 	// 每个本地技能（对于完全不使用 OSS 的产品 Agent）。
 	// 除非远程权威地至少有一个技能，否则完全跳过修剪，
 	// 这是唯一"远程缺失"具有含义的状态。

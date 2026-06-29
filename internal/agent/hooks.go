@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/qs3c/bkclaw/internal/provider"
+	"github.com/qs3c/bkcrab/internal/provider"
 )
 
 // HookPoint 标识代理循环中钩子触发的位置。

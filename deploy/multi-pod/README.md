@@ -3,10 +3,10 @@
 This compose brings up:
 
 - **MySQL 8.4** — sessions, memory, identity files, agent metadata, bindings
-- **MinIO** — S3-compatible bucket for workspace artifacts (auto-creates `bkclaw` bucket)
+- **MinIO** — S3-compatible bucket for workspace artifacts (auto-creates `bkcrab` bucket)
 - **pod-a** on `:18953` and **pod-b** on `:18954` — identical gateway binaries, pointed at the same DB and S3
 
-Both pods use `BKCLAW_AUTH_TOKEN=dev-admin-token`. Any admin API call takes `Authorization: Bearer dev-admin-token`.
+Both pods use `BKCRAB_AUTH_TOKEN=dev-admin-token`. Any admin API call takes `Authorization: Bearer dev-admin-token`.
 
 ## Run
 
@@ -39,7 +39,7 @@ curl -sX POST -H "Authorization: Bearer dev-admin-token" \
 # Pod B sees it (may need a moment — hot-reload is async):
 curl -s -H "Authorization: Bearer dev-admin-token" \
      http://localhost:18954/api/agents | jq '.[].id'
-# → "bkclaw", "test-alpha", ...
+# → "bkcrab", "test-alpha", ...
 ```
 
 ### 3. Edit SOUL.md on pod A, read it back on pod B
@@ -78,12 +78,12 @@ curl -sX POST -H "Authorization: Bearer dev-admin-token" \
 # Customer-1 lists agents — sees only test-alpha
 curl -s -H "Authorization: Bearer $CUST_KEY" \
      http://localhost:18954/api/agents | jq '.[].id'
-# → "test-alpha"   (not "bkclaw")
+# → "test-alpha"   (not "bkcrab")
 
 # Customer-1 tries to read a non-owned agent — forbidden
 curl -s -o /dev/null -w "%{http_code}\n" \
      -H "Authorization: Bearer $CUST_KEY" \
-     http://localhost:18954/api/agents/bkclaw/system-files/SOUL.md
+     http://localhost:18954/api/agents/bkcrab/system-files/SOUL.md
 # → 403
 ```
 
@@ -93,7 +93,7 @@ When an agent calls `write_file("report.pdf", ...)` the bytes land in MinIO, not
 
 ```bash
 # MinIO console is at http://localhost:9001 (minioadmin / minioadmin).
-# Browse bucket "bkclaw" and expect keys like:
+# Browse bucket "bkcrab" and expect keys like:
 #   <agent-id>/<filename>
 ```
 
@@ -131,7 +131,7 @@ workspace files are all in MySQL + MinIO.
   and unit-tested, but live behavior requires either the Docker backend
   (which needs docker-in-docker inside the pod; see
   `internal/sandbox/docker.go` for the image expectations) or a live E2B
-  API key. Set `BKCLAW_SANDBOX_BACKEND=docker` or `e2b` plus an `E2B_API_KEY`
+  API key. Set `BKCRAB_SANDBOX_BACKEND=docker` or `e2b` plus an `E2B_API_KEY`
   to test.
 
 - **Chat flow** — this compose ships the gateway bare. Hook it up to your

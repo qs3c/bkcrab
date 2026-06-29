@@ -12,22 +12,22 @@ import (
 
 	"github.com/codeany-ai/open-agent-sdk-go/costtracker"
 
-	"github.com/qs3c/bkclaw/internal/agent/goal"
-	"github.com/qs3c/bkclaw/internal/agent/tools"
-	"github.com/qs3c/bkclaw/internal/bus"
-	"github.com/qs3c/bkclaw/internal/channels"
-	"github.com/qs3c/bkclaw/internal/config"
-	"github.com/qs3c/bkclaw/internal/mcp"
-	"github.com/qs3c/bkclaw/internal/memory"
-	"github.com/qs3c/bkclaw/internal/privacy"
-	"github.com/qs3c/bkclaw/internal/provider"
-	"github.com/qs3c/bkclaw/internal/sandbox"
-	"github.com/qs3c/bkclaw/internal/scope"
-	"github.com/qs3c/bkclaw/internal/session"
-	"github.com/qs3c/bkclaw/internal/store"
-	"github.com/qs3c/bkclaw/internal/toolproviders"
-	"github.com/qs3c/bkclaw/internal/usage"
-	"github.com/qs3c/bkclaw/internal/workspace"
+	"github.com/qs3c/bkcrab/internal/agent/goal"
+	"github.com/qs3c/bkcrab/internal/agent/tools"
+	"github.com/qs3c/bkcrab/internal/bus"
+	"github.com/qs3c/bkcrab/internal/channels"
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/mcp"
+	"github.com/qs3c/bkcrab/internal/memory"
+	"github.com/qs3c/bkcrab/internal/privacy"
+	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/sandbox"
+	"github.com/qs3c/bkcrab/internal/scope"
+	"github.com/qs3c/bkcrab/internal/session"
+	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/toolproviders"
+	"github.com/qs3c/bkcrab/internal/usage"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // Agent 是 ReAct 代理循环。
@@ -58,7 +58,7 @@ type Agent struct {
 	promptMode    string
 	homePath      string // agent's home: SOUL.md, sessions, memory, skills
 	workspacePath string // working dir where agent creates user files
-	homeDir       string // BkClaw root, ~/.bkclaw
+	homeDir       string // BkCrab root, ~/.bkcrab
 	ownerUserID   string // the user that owns this agent (for hook namespacing)
 	// admins 是可以运行 write- 的聊天者的每个频道白名单
 	// 模式斜线命令（/new /undo /retry /compact /model /personality）。
@@ -1307,8 +1307,8 @@ func (a *Agent) CostTracker() *costtracker.Tracker {
 }
 
 // dumpLLMRequest 将完整的 LLM 绑定负载附加到专用文件
-// 当设置 BKCLAW_DUMP_LLM 时。默认路径是~/.bkclaw/logs/llm-dump.log
-// (可通过 BKCLAW_DUMP_LLM_FILE 覆盖) — 与 gateway.log 分开，因此
+// 当设置 BKCRAB_DUMP_LLM 时。默认路径是~/.bkcrab/logs/llm-dump.log
+// (可通过 BKCRAB_DUMP_LLM_FILE 覆盖) — 与 gateway.log 分开，因此
 // 数千行的系统提示并没有淹没结构化的日志
 // 条目，并且无论网关是否在空中运行，都可尾部，
 // 守护进程，或作为前台进程。
@@ -1316,15 +1316,15 @@ func (a *Agent) CostTracker() *costtracker.Tracker {
 // 多行内容被写入为每回合一个块（而不是每行slog
 // 调用），因此时间戳不会破坏系统提示。
 func dumpLLMRequest(agentName, model string, messages []provider.Message, tools []provider.Tool) {
-	if os.Getenv("BKCLAW_DUMP_LLM") == "" {
+	if os.Getenv("BKCRAB_DUMP_LLM") == "" {
 		return
 	}
-	path := os.Getenv("BKCLAW_DUMP_LLM_FILE")
+	path := os.Getenv("BKCRAB_DUMP_LLM_FILE")
 	if path == "" {
-		home := os.Getenv("BKCLAW_HOME")
+		home := os.Getenv("BKCRAB_HOME")
 		if home == "" {
 			if h, err := os.UserHomeDir(); err == nil {
-				home = h + "/.bkclaw"
+				home = h + "/.bkcrab"
 			}
 		}
 		if home == "" {
@@ -3293,7 +3293,7 @@ func (a *Agent) UpdateConfig(rc config.ResolvedAgent) {
 	// 启用沙箱之前存在的传播代理将保留
 	// 告诉LLM它的家是主机绝对路径，即使在
 	// 执行器本身已更换为 Docker — 模型尽职尽责地调用
-	// list_dir /Users/idoubi/.bkclaw/agents/<id>/agent 和 404s
+	// list_dir /Users/idoubi/.bkcrab/agents/<id>/agent 和 404s
 	// 容器。
 	a.ctxBuilder.sandboxEnabled = rc.Sandbox.Enabled
 	a.ctxBuilder.sandboxBackend = rc.Sandbox.Backend
