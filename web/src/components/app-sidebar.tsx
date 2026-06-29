@@ -221,6 +221,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
               thumbnailUrl: s.thumbnailUrl,
               channel: s.channel,
               projectId: s.projectId,
+              lastTurnStatus: s.lastTurnStatus,
             })),
           ),
         )
@@ -230,6 +231,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
         .catch(() => {});
     };
     refetch();
+    const iv = window.setInterval(refetch, 5000);
     const onChange = (e: Event) => {
       const detail = (e as CustomEvent<{ agentId?: string }>).detail;
       if (!detail || !detail.agentId || detail.agentId === activeAgentId) {
@@ -238,6 +240,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
     };
     window.addEventListener("bkclaw:sessions-changed", onChange);
     return () => {
+      window.clearInterval(iv);
       window.removeEventListener("bkclaw:sessions-changed", onChange);
     };
   }, [activeAgentId]);

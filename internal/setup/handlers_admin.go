@@ -558,19 +558,20 @@ func (s *Server) handleAdminChats(w http.ResponseWriter, r *http.Request) {
 		owner := resolveOwner(p.UserID)
 		for _, ws := range sessions {
 			entry := map[string]any{
-				"id":           ws.ID,
-				"agentId":      p.AgentID,
-				"agentName":    ag.Name,
-				"userId":       p.UserID,
-				"channel":      ws.Channel,
-				"accountId":    ws.AccountID,
-				"chatId":       ws.ChatID,
-				"projectId":    ws.ProjectID,
-				"title":        ws.Title,
-				"preview":      ws.Preview,
-				"thumbnailUrl": ws.ThumbnailURL,
-				"createdAt":    ws.CreatedAt,
-				"updatedAt":    ws.UpdatedAt,
+				"id":             ws.ID,
+				"agentId":        p.AgentID,
+				"agentName":      ag.Name,
+				"userId":         p.UserID,
+				"channel":        ws.Channel,
+				"accountId":      ws.AccountID,
+				"chatId":         ws.ChatID,
+				"projectId":      ws.ProjectID,
+				"title":          ws.Title,
+				"preview":        ws.Preview,
+				"thumbnailUrl":   ws.ThumbnailURL,
+				"createdAt":      ws.CreatedAt,
+				"updatedAt":      ws.UpdatedAt,
+				"lastTurnStatus": ws.LastTurnStatus,
 			}
 			if owner != nil {
 				entry["ownerUsername"] = owner.Username

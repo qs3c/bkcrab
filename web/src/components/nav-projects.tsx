@@ -9,7 +9,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-import { MoreHorizontal } from "lucide-react";
+import { CheckCircle2, LoaderCircle, MoreHorizontal } from "lucide-react";
 import { moveChatSessionToProject } from "@/lib/api";
 import { ChannelIcon, channelLabel } from "@/components/channel-icon";
 import { ChatRowActions } from "@/components/chat-row-actions";
@@ -36,6 +36,7 @@ export interface SessionItem {
   // 过滤掉这些对话，使它们仅嵌套显示在项目下方
   //（NavProjectsList 渲染它们）。
   projectId?: string;
+  lastTurnStatus?: "running" | "done" | string;
 }
 
 export function NavSessions({
@@ -217,7 +218,10 @@ function SessionRow({
         ) : (
           <ChannelIcon channel={session.channel} />
         )}
-        <span className="truncate">{session.title || session.id}</span>
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+          <span className="truncate">{session.title || session.id}</span>
+          <SessionStatusIndicator status={session.lastTurnStatus} />
+        </span>
       </SidebarMenuButton>
       <ChatRowActions
         agentId={agentId}
@@ -226,4 +230,36 @@ function SessionRow({
       />
     </SidebarMenuItem>
   );
+}
+
+export function SessionStatusIndicator({
+  status,
+}: {
+  status?: SessionItem["lastTurnStatus"];
+}) {
+  if (status === "running") {
+    return (
+      <span
+        className="inline-flex size-3.5 shrink-0 items-center justify-center text-amber-500"
+        title="运行中"
+        aria-label="运行中"
+      >
+        <LoaderCircle className="size-3.5 animate-spin" />
+        <span className="sr-only">运行中</span>
+      </span>
+    );
+  }
+  if (status === "done") {
+    return (
+      <span
+        className="inline-flex size-3.5 shrink-0 items-center justify-center text-emerald-600 dark:text-emerald-400"
+        title="已完成"
+        aria-label="已完成"
+      >
+        <CheckCircle2 className="size-3.5" />
+        <span className="sr-only">已完成</span>
+      </span>
+    );
+  }
+  return null;
 }

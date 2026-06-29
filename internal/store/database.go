@@ -2128,8 +2128,18 @@ func (d *DBStore) SaveSession(ctx context.Context, userID, agentID, sessionKey s
 
 func (d *DBStore) ListSessions(ctx context.Context, userID, agentID string) ([]SessionMeta, error) {
 	rows, err := d.db.QueryContext(ctx,
-		fmt.Sprintf(`SELECT session_key, channel, account_id, chat_id, project_id, title, message_count, updated_at FROM sessions
-			WHERE user_id = %s AND agent_id = %s ORDER BY updated_at DESC`, d.ph(1), d.ph(2)),
+		fmt.Sprintf(`SELECT s.session_key, s.channel, s.account_id, s.chat_id, s.project_id, s.title, s.message_count, s.updated_at,
+				COALESCE((
+					SELECT sm.turn_status FROM session_messages sm
+					WHERE sm.user_id = s.user_id
+						AND sm.agent_id = s.agent_id
+						AND sm.session_key = s.session_key
+						AND sm.turn_status <> ''
+					ORDER BY sm.seq DESC
+					LIMIT 1
+				), '') AS last_turn_status
+			FROM sessions s
+			WHERE s.user_id = %s AND s.agent_id = %s ORDER BY s.updated_at DESC`, d.ph(1), d.ph(2)),
 		userID, agentID)
 	if err != nil {
 		return nil, err
@@ -2138,7 +2148,7 @@ func (d *DBStore) ListSessions(ctx context.Context, userID, agentID string) ([]S
 	var metas []SessionMeta
 	for rows.Next() {
 		var m SessionMeta
-		if err := rows.Scan(&m.Key, &m.Channel, &m.AccountID, &m.ChatID, &m.ProjectID, &m.Title, &m.MessageCount, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.Key, &m.Channel, &m.AccountID, &m.ChatID, &m.ProjectID, &m.Title, &m.MessageCount, &m.UpdatedAt, &m.LastTurnStatus); err != nil {
 			return nil, err
 		}
 		metas = append(metas, m)

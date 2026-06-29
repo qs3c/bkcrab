@@ -51,3 +51,46 @@ func TestFinishTurnFlipsStatus(t *testing.T) {
 		t.Fatalf("turn_status want done got %q", status)
 	}
 }
+
+func TestListSessionsIncludesLatestTurnStatus(t *testing.T) {
+	db := newTestSQLite(t)
+	ctx := WithChatterUserID(context.Background(), "chatterA")
+	uid, agent := "u1", "agentA"
+
+	if err := db.SaveSession(ctx, uid, agent, "done-session", &SessionRecord{
+		Messages: []SessionMessage{{Role: "user", Content: "finished"}},
+	}); err != nil {
+		t.Fatalf("save done session: %v", err)
+	}
+	doneSeq, err := db.AppendTurnAnchor(ctx, uid, agent, "done-session", SessionMessage{Role: "user", Content: "finished"})
+	if err != nil {
+		t.Fatalf("append done anchor: %v", err)
+	}
+	if err := db.FinishTurn(ctx, uid, agent, "done-session", doneSeq); err != nil {
+		t.Fatalf("finish done session: %v", err)
+	}
+
+	if err := db.SaveSession(ctx, uid, agent, "running-session", &SessionRecord{
+		Messages: []SessionMessage{{Role: "user", Content: "still running"}},
+	}); err != nil {
+		t.Fatalf("save running session: %v", err)
+	}
+	if _, err := db.AppendTurnAnchor(ctx, uid, agent, "running-session", SessionMessage{Role: "user", Content: "still running"}); err != nil {
+		t.Fatalf("append running anchor: %v", err)
+	}
+
+	metas, err := db.ListSessions(ctx, uid, agent)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	statuses := map[string]string{}
+	for _, m := range metas {
+		statuses[m.Key] = m.LastTurnStatus
+	}
+	if statuses["done-session"] != "done" {
+		t.Fatalf("done-session status = %q; want done", statuses["done-session"])
+	}
+	if statuses["running-session"] != "running" {
+		t.Fatalf("running-session status = %q; want running", statuses["running-session"])
+	}
+}

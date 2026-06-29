@@ -849,6 +849,7 @@ export interface ChatSessionEntry {
   title?: string;
   preview: string;
   thumbnailUrl?: string;
+  lastTurnStatus?: "running" | "done" | string;
   createdAt?: number;
   updatedAt?: number;
 }

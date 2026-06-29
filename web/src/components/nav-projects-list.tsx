@@ -61,6 +61,7 @@ import {
 } from "@/lib/api";
 import {
   CHAT_DRAG_MIME,
+  SessionStatusIndicator,
   hasChatPayload,
   type SessionItem,
 } from "@/components/nav-projects";
@@ -454,7 +455,10 @@ function ProjectRow({
                    // pr-7 ≈ 5 单位芯片宽度 + 间距。
                   className="pr-7"
                 >
-                  <span className="truncate">{s.title || s.id}</span>
+                  <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                    <span className="truncate">{s.title || s.id}</span>
+                    <SessionStatusIndicator status={s.lastTurnStatus} />
+                  </span>
                 </SidebarMenuSubButton>
                 <ChatRowActions
                   agentId={agentId}

@@ -636,7 +636,8 @@ type WebSession struct {
 	// ThumbnailURL 是会话第一轮用户消息中附带的第一个 image_url，
 	// 公开以便侧边栏可以显示"图片 + 文本"而不仅仅是多模态聊天的文本标签。
 	// 对于开场消息没有图片的会话为空。
-	ThumbnailURL string `json:"thumbnailUrl,omitempty"`
+	LastTurnStatus string `json:"lastTurnStatus,omitempty"`
+	ThumbnailURL   string `json:"thumbnailUrl,omitempty"`
 }
 
 // ListWebSessions 扫描会话文件以查找 Web 聊天会话，并返回包含

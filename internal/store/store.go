@@ -429,14 +429,15 @@ type SessionOwnerPair struct {
 
 // SessionMeta 是会话的摘要信息（用于列表展示）。
 type SessionMeta struct {
-	Key          string    `json:"key"`
-	Channel      string    `json:"channel,omitempty"`
-	AccountID    string    `json:"accountId,omitempty"`
-	ChatID       string    `json:"chatId,omitempty"`
-	ProjectID    string    `json:"projectId,omitempty"`
-	Title        string    `json:"title,omitempty"`
-	MessageCount int       `json:"messageCount"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	Key            string    `json:"key"`
+	Channel        string    `json:"channel,omitempty"`
+	AccountID      string    `json:"accountId,omitempty"`
+	ChatID         string    `json:"chatId,omitempty"`
+	ProjectID      string    `json:"projectId,omitempty"`
+	Title          string    `json:"title,omitempty"`
+	MessageCount   int       `json:"messageCount"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+	LastTurnStatus string    `json:"lastTurnStatus,omitempty"`
 }
 
 // ProjectRecord 是一个按 (user, agent) 划分的命名工作区文件夹。会话通过
