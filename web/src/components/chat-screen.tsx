@@ -2528,14 +2528,26 @@ export function ChatScreen() {
                       {contextUsage && <ContextUsageBadge usage={contextUsage} />}
                     </div>
                     {sending ? (
-                      <Button
-                        onClick={handleStop}
-                        size="icon"
-                        className="h-9 w-9 shrink-0 rounded-full"
-                        aria-label="停止生成"
-                      >
-                        <Square className="h-3.5 w-3.5 fill-current" />
-                      </Button>
+                      input.trim() ? (
+                        <Button
+                          onClick={handleSteer}
+                          size="icon"
+                          className="h-9 w-9 shrink-0 rounded-full"
+                          aria-label="引导对话"
+                          title="引导对话"
+                        >
+                          <Send className="h-4 w-4" />
+                        </Button>
+                      ) : (
+                        <Button
+                          onClick={handleStop}
+                          size="icon"
+                          className="h-9 w-9 shrink-0 rounded-full"
+                          aria-label="停止生成"
+                        >
+                          <Square className="h-3.5 w-3.5 fill-current" />
+                        </Button>
+                      )
                     ) : (
                       <Button
                         onClick={() => handleSend()}
@@ -2610,14 +2622,26 @@ export function ChatScreen() {
                   />
                   {contextUsage && <ContextUsageBadge usage={contextUsage} />}
                   {sending ? (
-                    <Button
-                      onClick={handleStop}
-                      size="icon"
-                      className="h-8 w-8 shrink-0 rounded-lg"
-                      aria-label="停止生成"
-                    >
-                      <Square className="h-3.5 w-3.5 fill-current" />
-                    </Button>
+                    input.trim() ? (
+                      <Button
+                        onClick={handleSteer}
+                        size="icon"
+                        className="h-8 w-8 shrink-0 rounded-lg"
+                        aria-label="引导对话"
+                        title="引导对话"
+                      >
+                        <Send className="h-4 w-4" />
+                      </Button>
+                    ) : (
+                      <Button
+                        onClick={handleStop}
+                        size="icon"
+                        className="h-8 w-8 shrink-0 rounded-lg"
+                        aria-label="停止生成"
+                      >
+                        <Square className="h-3.5 w-3.5 fill-current" />
+                      </Button>
+                    )
                   ) : (
                     <Button
                       onClick={() => handleSend()}
