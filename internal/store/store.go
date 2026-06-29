@@ -355,9 +355,13 @@ type SessionRecord struct {
 }
 
 // TurnRef 指向一个已认领 turn 的锚点位置:用于从归档表回放该 turn 的消息区间。
+// EndSeq 是该 turn 最后一条消息的 seq(FinishTurn 时记下),回放时据此做精确区间
+// 查询(seq BETWEEN StartSeq AND EndSeq),避免从 StartSeq 扫到 session 末尾。
+// nil = 旧存量行(迁移前完成、end_seq 为 NULL),回放回退到无上界扫描 + 锚点切片。
 type TurnRef struct {
 	SessionKey string
 	StartSeq   int64
+	EndSeq     *int64
 }
 
 // TurnGroup 是一个 session 下被认领 turn 回放出的消息(按 seq 升序),

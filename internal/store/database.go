@@ -300,6 +300,15 @@ func (d *DBStore) migrateSessionMessagesAddTurnColumns(ctx context.Context) erro
 			return fmt.Errorf("add extraction_id: %w", err)
 		}
 	}
+	// end_seq：可空整型,锚点行记 turn 结束 seq;历史存量行保持 NULL,回放时回退。
+	if has, err := d.tableHasColumn(ctx, "session_messages", "end_seq"); err != nil {
+		return err
+	} else if !has {
+		if _, err := d.db.ExecContext(ctx,
+			`ALTER TABLE session_messages ADD COLUMN end_seq INTEGER`); err != nil {
+			return fmt.Errorf("add end_seq: %w", err)
+		}
+	}
 	// 待提取索引:SQLite/PG 用部分索引;MySQL 不支持,降级为普通复合索引。
 	idx := `CREATE INDEX IF NOT EXISTS idx_sm_pending ON session_messages (agent_id, chatter_user_id) WHERE turn_status = 'done' AND extraction_id IS NULL`
 	if d.dialect == mysqlDialect {
@@ -1375,6 +1384,9 @@ func (d *DBStore) migrationSQL() []string {
 			turn_status TEXT NOT NULL DEFAULT '',
 			-- extraction_id：NULL = 未被任何记忆提取认领；非 NULL(uuid)= 已认领。
 			extraction_id TEXT,
+			-- end_seq：锚点行专用,记该 turn 最后一条消息的 seq(FinishTurn 写入),
+			-- 供回放做精确区间查询;NULL = 非锚点行或迁移前完成的旧存量行。
+			end_seq INTEGER,
 			PRIMARY KEY (user_id, agent_id, session_key, seq)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_session_messages_lookup ON session_messages (user_id, agent_id, session_key, seq)`,
@@ -2415,12 +2427,32 @@ func (d *DBStore) AppendTurnAnchor(ctx context.Context, userID, agentID, session
 
 // FinishTurn 见接口文档。
 func (d *DBStore) FinishTurn(ctx context.Context, userID, agentID, sessionKey string, seq int64) error {
-	_, err := d.db.ExecContext(ctx,
-		fmt.Sprintf(`UPDATE session_messages SET turn_status='done'
-			WHERE user_id=%s AND agent_id=%s AND session_key=%s AND seq=%s AND turn_status='running'`,
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// end_seq = 完成时该 session 的 MAX(seq):此刻本 turn 的消息已全部 append 落库
+	// (Session.appendLocked 同步镜像),后续 turn 的锚点尚未写入,故 MAX 即本 turn 最后
+	// 一条消息的 seq。回放据此把扫描上界钉死在 turn 末尾,而非 session 末尾。
+	// 用 SELECT 取值再 UPDATE 字面量(而非 UPDATE 内自引用子查询),兼容 MySQL 的
+	// "不能在更新目标表上做子查询"限制。
+	var endSeq int64
+	if err := tx.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT COALESCE(MAX(seq), %s) FROM session_messages
+			WHERE user_id=%s AND agent_id=%s AND session_key=%s`,
 			d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
-		userID, agentID, sessionKey, seq)
-	return err
+		seq, userID, agentID, sessionKey).Scan(&endSeq); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`UPDATE session_messages SET turn_status='done', end_seq=%s
+			WHERE user_id=%s AND agent_id=%s AND session_key=%s AND seq=%s AND turn_status='running'`,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)),
+		endSeq, userID, agentID, sessionKey, seq); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // AppendSessionEvent 持久化一个流式事件增量并返回分配的 seq。
@@ -3629,7 +3661,7 @@ func (d *DBStore) ClaimCadenceBatch(ctx context.Context, agentID, chatterUserID 
 	}
 	defer tx.Rollback()
 
-	selSQL := `SELECT session_key, seq FROM session_messages
+	selSQL := `SELECT session_key, seq, end_seq FROM session_messages
 		WHERE agent_id=%s AND chatter_user_id=%s AND turn_status='done' AND extraction_id IS NULL
 		ORDER BY created_at, seq LIMIT %d`
 	lock := ""
@@ -3644,9 +3676,14 @@ func (d *DBStore) ClaimCadenceBatch(ctx context.Context, agentID, chatterUserID 
 	var refs []TurnRef
 	for rows.Next() {
 		var r TurnRef
-		if err := rows.Scan(&r.SessionKey, &r.StartSeq); err != nil {
+		var end sql.NullInt64
+		if err := rows.Scan(&r.SessionKey, &r.StartSeq, &end); err != nil {
 			rows.Close()
 			return "", nil, err
+		}
+		if end.Valid {
+			v := end.Int64
+			r.EndSeq = &v
 		}
 		refs = append(refs, r)
 	}
@@ -3690,33 +3727,50 @@ func (d *DBStore) LoadTurnMessages(ctx context.Context, userID, agentID string, 
 	if len(refs) == 0 {
 		return nil, nil
 	}
-	// 按 session 归集本批被认领的起点 seq,记录每个 session 的最小起点与首次出现顺序。
+	// 按 session 归集本批被认领的起点 seq,以及每个 turn 的 [start, end] 区间。
+	type seqRange struct {
+		start int64
+		end   *int64 // nil = 旧存量行(end_seq 为 NULL),回退为无上界
+	}
 	claimed := map[string]map[int64]bool{}
-	minStart := map[string]int64{}
+	ranges := map[string][]seqRange{}
 	order := []string{}
 	for _, r := range refs {
 		if claimed[r.SessionKey] == nil {
 			claimed[r.SessionKey] = map[int64]bool{}
-			minStart[r.SessionKey] = r.StartSeq
 			order = append(order, r.SessionKey)
 		}
 		claimed[r.SessionKey][r.StartSeq] = true
-		if r.StartSeq < minStart[r.SessionKey] {
-			minStart[r.SessionKey] = r.StartSeq
-		}
+		ranges[r.SessionKey] = append(ranges[r.SessionKey], seqRange{start: r.StartSeq, end: r.EndSeq})
 	}
-	// 每个 session 一条查询(seq >= 该 session 被认领的最小起点),按 seq 升序游走:
-	// 遇到锚点行(turn_status<>'')切换当前 turn,只收录起点命中本批 refs 的 turn 的消息。
-	// 单条查询给出一致快照、边界由实际锚点决定——既消掉旧的逐 turn 两段查询(N+1)及其
-	// 非原子的 TOCTOU 窗口,又按 session 分组返回供提取分节拼 prompt。
+	// 每个 session 一条查询,WHERE 用各被认领 turn 的 [start, end] 区间 OR 起来:只读被
+	// 认领 turn 的行——跳过中间未认领 turn(gap)、也不扫到 session 末尾(tail)。结果仍按
+	// seq 升序游走,遇锚点行(turn_status<>'')按起点是否被认领切换收录,以兜住 end_seq 偏大
+	// (turn 重叠时 MAX 可能越过下个锚点)及旧存量行无上界两种情况。end_seq 为 NULL 的旧
+	// turn 退化为 seq>=start 的无上界项,语义同改造前。单条查询保留一致快照,消掉逐 turn
+	// 两段查询的 N+1 与非原子 TOCTOU 窗口。
 	groups := make([]TurnGroup, 0, len(order))
 	for _, sk := range order {
+		args := []any{userID, agentID, sk}
+		nph := 4
+		conds := make([]string, 0, len(ranges[sk]))
+		for _, rg := range ranges[sk] {
+			if rg.end != nil {
+				conds = append(conds, fmt.Sprintf("(seq >= %s AND seq <= %s)", d.ph(nph), d.ph(nph+1)))
+				args = append(args, rg.start, *rg.end)
+				nph += 2
+			} else {
+				conds = append(conds, fmt.Sprintf("(seq >= %s)", d.ph(nph)))
+				args = append(args, rg.start)
+				nph++
+			}
+		}
 		rows, err := d.db.QueryContext(ctx,
 			fmt.Sprintf(`SELECT role, content, content_parts, tool_calls, tool_call_id, name, metadata, thinking, raw_assistant, origin, created_at, seq, turn_status
 				FROM session_messages
-				WHERE user_id=%s AND agent_id=%s AND session_key=%s AND seq >= %s
-				ORDER BY seq ASC`, d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
-			userID, agentID, sk, minStart[sk])
+				WHERE user_id=%s AND agent_id=%s AND session_key=%s AND (%s)
+				ORDER BY seq ASC`, d.ph(1), d.ph(2), d.ph(3), strings.Join(conds, " OR ")),
+			args...)
 		if err != nil {
 			return nil, err
 		}
