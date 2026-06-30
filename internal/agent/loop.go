@@ -2691,7 +2691,15 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 	if a.dataStore == nil || anchor == nil {
 		return
 	}
-	if err := a.dataStore.FinishTurn(ctx, a.ownerUserID, a.name, anchor.sessionKey, anchor.seq); err != nil {
+	// 本函数在 post-turn goroutine 里跑,而流式路径下它在 SSE 响应送达之后才执行——
+	// 那时 HTTP 请求 ctx 往往已被取消(handler 读完流即返回)。turn 起点的锚点
+	// (turn_status='running')走 Session 自建的 background ctx 总能落库,但这里的收尾
+	// 写若仍挂在请求 ctx 上,回合一结束就被取消:FinishTurn 的 UPDATE 被中止 ——
+	// 锚点永远翻不成 done,侧边栏会话一直显示 running 转圈;ClaimCadenceBatch 也会
+	// 静默认领不到批次。脱离取消(保留 ctx 上的 chatter 等值),给独立超时防收尾写挂死。
+	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if err := a.dataStore.FinishTurn(finishCtx, a.ownerUserID, a.name, anchor.sessionKey, anchor.seq); err != nil {
 		slog.Warn("finish turn failed", "agent", a.name, "error", err)
 		// 锚点没翻成 done 只是本 turn 不计入提取,不阻塞主流程。
 	}
@@ -2703,7 +2711,7 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 		return
 	}
 	n := a.memoryCfg.AutoPersist.EveryNTurns
-	extractionID, refs, err := a.dataStore.ClaimCadenceBatch(ctx, a.name, chatterUID, n, 3*n)
+	extractionID, refs, err := a.dataStore.ClaimCadenceBatch(finishCtx, a.name, chatterUID, n, 3*n)
 	if err != nil {
 		slog.Warn("auto-persist: claim failed", "agent", a.name, "chatter", chatterUID, "error", err)
 		return
