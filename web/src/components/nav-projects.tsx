@@ -219,8 +219,8 @@ function SessionRow({
           <ChannelIcon channel={session.channel} />
         )}
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
-          <span className="truncate">{session.title || session.id}</span>
           <SessionStatusIndicator status={session.lastTurnStatus} />
+          <span className="truncate">{session.title || session.id}</span>
         </span>
       </SidebarMenuButton>
       <ChatRowActions

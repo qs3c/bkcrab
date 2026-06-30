@@ -456,8 +456,8 @@ function ProjectRow({
                   className="pr-7"
                 >
                   <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                    <span className="truncate">{s.title || s.id}</span>
                     <SessionStatusIndicator status={s.lastTurnStatus} />
+                    <span className="truncate">{s.title || s.id}</span>
                   </span>
                 </SidebarMenuSubButton>
                 <ChatRowActions
