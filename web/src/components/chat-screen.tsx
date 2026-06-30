@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo, type ComponentProps } from "react";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { Button } from "@/components/ui/button";
@@ -113,7 +113,7 @@ function renderContentWithDataImages(
           );
         }
         return (
-          <ReactMarkdown key={i} remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={urlTransformFn} components={{ a: ExternalAnchor }}>
+          <ReactMarkdown key={i} remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={urlTransformFn} components={MD_COMPONENTS}>
             {p.text}
           </ReactMarkdown>
         );
@@ -203,6 +203,27 @@ const CHAT_PROSE_CLASS =
   "prose-table:my-2 prose-table:text-[14px] " +
   "prose-th:py-1 prose-th:px-2 prose-td:py-1 prose-td:px-2 " +
   "prose-hr:my-3";
+
+// MarkdownTable 把聊天气泡里的 markdown 表格包进可横向滚动的容器。
+// 没有它，宽表格（如多模型对比表）会被强行压进气泡宽度——CJK 文本可
+// 逐字换行，于是列被挤到一字一行（"维度"竖排成「维/度」）。`w-max` 让
+// 表格按内容自然宽度排版（覆盖 typography 的 :where() 零优先级样式），
+// 超出气泡时由外层 `overflow-x-auto` 单独横向滚动；窄表格仍按自身宽度
+// 显示。正文段落不受影响——只有 <table> 被改。
+// 丢弃 react-markdown 透传的 hast `node`，避免它作为未知属性落到 DOM 上。
+function MarkdownTable(props: ComponentProps<"table"> & { node?: unknown }) {
+  const { node, ...rest } = props;
+  void node;
+  return (
+    <div className="overflow-x-auto">
+      <table {...rest} className="w-max max-w-none" />
+    </div>
+  );
+}
+
+// 所有聊天 ReactMarkdown 渲染点共用的组件覆盖：外链走 ExternalAnchor，
+// 表格走可横向滚动的 MarkdownTable。
+const MD_COMPONENTS = { a: ExternalAnchor, table: MarkdownTable };
 
 // 智能体发出的分词标记，用于请求多气泡回复——必须与
 // internal/channels/base.go 中的 channels.SplitMessageMarker 匹配。
@@ -387,10 +408,10 @@ function TodoPanel({ items, active }: { items: TodoItem[]; active: boolean }) {
   const currentIdx = allDone ? total - 1 : items.findIndex((i) => !i.done);
   const current = currentIdx >= 0 ? items[currentIdx] : null;
   return (
-// 包装器将面板与输入框的 max-w-2xl 列对齐。仅内部 div 携带
+// 包装器将面板与输入框的 max-w-4xl 列对齐。仅内部 div 携带
         // 边框/背景，使周围聊天区域保持简洁——没有横跨页面的全宽条带。
     <div className="shrink-0 px-4 pt-2">
-      <div className="mx-auto max-w-2xl">
+      <div className="mx-auto max-w-4xl">
         <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 shadow-sm">
           <button
             type="button"
@@ -1920,7 +1941,7 @@ export function ChatScreen() {
             (isEmpty ? "shrink-0" : "flex-1 overflow-y-auto py-4")
           }
         >
-          <div className="mx-auto max-w-2xl space-y-3">
+          <div className="mx-auto max-w-4xl space-y-3">
             {isEmpty && (
               <div className="py-8 text-center">
                 <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">
@@ -2210,7 +2231,7 @@ export function ChatScreen() {
                             (attachedImages.get(msg.id)?.length ?? 0) > 0,
                             makeUrlTransform(selectedAgent, sessionId),
                           ) ?? (
-                            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={makeUrlTransform(selectedAgent, sessionId)} components={{ a: ExternalAnchor }}>
+                            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={makeUrlTransform(selectedAgent, sessionId)} components={MD_COMPONENTS}>
                               {msg.content}
                             </ReactMarkdown>
                           )}
@@ -2373,7 +2394,7 @@ export function ChatScreen() {
 
         {/* 输入 */}
         <div className="shrink-0 px-4 pb-6 pt-2">
-          <div className="mx-auto max-w-2xl relative">
+          <div className="mx-auto max-w-4xl relative">
             {isReadOnlyChannel && (
 // Web 输入路径无法将消息送达上游 IM 平台（没有反向通道适配器，
                 // 没有出站路由），因此在此处写入会静默损坏会话：智能体会处理该轮次，
@@ -2872,7 +2893,7 @@ function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, 
         <div className="bg-muted rounded-2xl rounded-bl-md px-4 py-2.5">
           <div className={CHAT_PROSE_CLASS}>
             {renderContentWithDataImages(msg.content, surfacedSrcs, false, makeUrlTransform(agentId, sessionId)) ?? (
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={makeUrlTransform(agentId, sessionId)} components={{ a: ExternalAnchor }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={makeUrlTransform(agentId, sessionId)} components={MD_COMPONENTS}>
                 {msg.content}
               </ReactMarkdown>
             )}
@@ -3583,7 +3604,7 @@ function FilePreview({ agentId, file, onClose }: { agentId: string; file: Produc
             : text === null ? <p className="text-sm text-muted-foreground">正在加载…</p>
             : (
               <div className="prose prose-sm dark:prose-invert max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ExternalAnchor }}>{text}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{text}</ReactMarkdown>
               </div>
             )
           )}
