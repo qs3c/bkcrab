@@ -10,10 +10,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/qs3c/bkcrab/internal/modelspec"
 )
 
 type userIDKey struct{}
@@ -320,7 +323,12 @@ type ProviderConfig struct {
 
 const DefaultContextWindow = 128000
 
-// ResolveContextWindow returns the model context window from provider metadata.
+// DefaultMaxOutputTokens is the final fallback when no explicit or catalog
+// output limit can be resolved.
+const DefaultMaxOutputTokens = 8192
+
+// ResolveContextWindow returns the model context window from provider metadata
+// or the embedded models.dev catalog before falling back to the default.
 func ResolveContextWindow(providers map[string]ProviderConfig, model string, maxTokens int) int {
 	model = strings.TrimSpace(model)
 	if model != "" && len(providers) > 0 {
@@ -331,7 +339,65 @@ func ResolveContextWindow(providers map[string]ProviderConfig, model string, max
 			return contextWindow
 		}
 	}
+	if bareID, apiHost := modelBareIDAndHost(providers, model); bareID != "" {
+		if spec, ok := modelspec.Lookup(bareID, apiHost); ok && spec.ContextWindow > 0 {
+			return spec.ContextWindow
+		}
+	}
 	return fallbackContextWindow(maxTokens)
+}
+
+// ResolveMaxOutputTokens returns the effective output limit for a model.
+// Explicit per-agent or file values win; the global default is only a fallback.
+func ResolveMaxOutputTokens(providers map[string]ProviderConfig, model string, explicit, fallback int) int {
+	if explicit > 0 {
+		return explicit
+	}
+	if bareID, apiHost := modelBareIDAndHost(providers, model); bareID != "" {
+		if spec, ok := modelspec.Lookup(bareID, apiHost); ok && spec.MaxOutputTokens > 0 {
+			return spec.MaxOutputTokens
+		}
+	}
+	if fallback > 0 {
+		return fallback
+	}
+	return DefaultMaxOutputTokens
+}
+
+func apiBaseHost(apiBase string) string {
+	apiBase = strings.TrimSpace(apiBase)
+	if apiBase == "" {
+		return ""
+	}
+	if !strings.Contains(apiBase, "://") {
+		apiBase = "https://" + apiBase
+	}
+	u, err := url.Parse(apiBase)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
+
+func modelBareIDAndHost(providers map[string]ProviderConfig, model string) (string, string) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", ""
+	}
+	for _, providerID := range sortedProviderKeysByLength(providers) {
+		prefix := providerID + "/"
+		if strings.HasPrefix(model, prefix) {
+			return strings.TrimPrefix(model, prefix), apiBaseHost(providers[providerID].APIBase)
+		}
+	}
+	for _, providerID := range sortedProviderKeys(providers) {
+		for _, entry := range providers[providerID].Models {
+			if entry.ID == model || entry.Name == model {
+				return model, apiBaseHost(providers[providerID].APIBase)
+			}
+		}
+	}
+	return model, ""
 }
 
 func fallbackContextWindow(maxTokens int) int {
@@ -745,7 +811,7 @@ func expandPath(path string) string {
 // ApplyDefaults 填充 Agents.Defaults 上为零值的旋钮。
 func ApplyDefaults(cfg *Config) {
 	if cfg.Agents.Defaults.MaxTokens == 0 {
-		cfg.Agents.Defaults.MaxTokens = 8192
+		cfg.Agents.Defaults.MaxTokens = DefaultMaxOutputTokens
 	}
 	if cfg.Agents.Defaults.Temperature == 0 {
 		cfg.Agents.Defaults.Temperature = 0.7
@@ -770,7 +836,6 @@ func (cfg *Config) MergedAgentConfig(entry AgentEntry) ResolvedAgent {
 		Home:                 home,
 		Workspace:            workspace,
 		Model:                cfg.Agents.Defaults.Model,
-		MaxTokens:            cfg.Agents.Defaults.MaxTokens,
 		Temperature:          cfg.Agents.Defaults.Temperature,
 		MaxToolIterations:    cfg.Agents.Defaults.MaxToolIterations,
 		MaxParallelToolCalls: cfg.Agents.Defaults.MaxParallelToolCalls,
@@ -779,8 +844,9 @@ func (cfg *Config) MergedAgentConfig(entry AgentEntry) ResolvedAgent {
 		PolicyPreset:         cfg.Agents.Defaults.PolicyPreset,
 	}
 
+	explicitMaxTokens := 0
 	if entry.MaxTokens > 0 {
-		resolved.MaxTokens = entry.MaxTokens
+		explicitMaxTokens = entry.MaxTokens
 	}
 	if entry.Temperature > 0 {
 		resolved.Temperature = entry.Temperature
@@ -842,7 +908,7 @@ func (cfg *Config) MergedAgentConfig(entry AgentEntry) ResolvedAgent {
 			resolved.Model = fileCfg.Model
 		}
 		if fileCfg.MaxTokens > 0 {
-			resolved.MaxTokens = fileCfg.MaxTokens
+			explicitMaxTokens = fileCfg.MaxTokens
 		}
 		if fileCfg.Temperature > 0 {
 			resolved.Temperature = fileCfg.Temperature
@@ -899,6 +965,9 @@ func (cfg *Config) MergedAgentConfig(entry AgentEntry) ResolvedAgent {
 		}
 	}
 
+	resolved.MaxTokens = ResolveMaxOutputTokens(
+		resolved.Providers, resolved.Model, explicitMaxTokens, cfg.Agents.Defaults.MaxTokens,
+	)
 	resolved.RefreshModelContextWindow()
 	return resolved
 }
