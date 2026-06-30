@@ -34,8 +34,14 @@
 2. **解析范围 = contextWindow + maxTokens**(两者都要,见决策 3 的 maxTokens 语义)。
 3. **maxTokens 真正接通生效(选项 a)**:对没有显式设过 maxTokens 的模型,有效
    输出上限从 8192 提升到模型上限(如 GLM 约 64000)。这是真实行为变化(更长输出、
-   更高单次成本),用户已知悉并接受。
-4. **纯运行时回退,不写回配置**:解析在 `ResolveContextWindow` / 新增的
+   更高单次成本),用户已知悉并接受。自动值**来自 catalog 查表**,**不引入 per-model
+   的 `ModelEntry.MaxTokens`**(决策 Z,见下)。
+4. **决策 Z:后端最小改,不消费 per-model 字段**。`ModelEntry.MaxTokens` 当前未被
+   后端读取,且模型配置页对它(及 `contextWindow`)预填默认值(8192 / 200000),
+   若把该字段排在 catalog 之上会让"未改过默认值"的用户旁路掉自动解析。因此 maxTokens
+   一律不读 `ModelEntry.MaxTokens`;contextWindow 维持只读 `ModelEntry.ContextWindow`
+   的现状。代价见"已知限制"。
+5. **纯运行时回退,不写回配置**:解析在 `ResolveContextWindow` / 新增的
    `ResolveMaxOutputTokens` 内完成,不改 save 流程、不写 DB。用户仍能在聊天页脚
    tooltip 看到解析后的窗口数值,反馈足够。
 
@@ -83,19 +89,18 @@
   优先级:`entry.ContextWindow(>0)` → `modelspec 查表` → `默认 128000`。
   解析时把用户该 provider 的 apiBase 的主机名传给 `Lookup` 做歧义消解。
 
-- **maxTokens(有效输出上限)** —— 新增对称函数 `ResolveMaxOutputTokens`:
+- **maxTokens(有效输出上限)** —— 新增 `ResolveMaxOutputTokens`:
   ```go
   func ResolveMaxOutputTokens(providers map[string]ProviderConfig, model string, explicit int) int
   ```
-  优先级:
-  1. `explicit`(agent/file 显式设置的 maxTokens,>0)
-  2. 所选模型的 `ModelEntry.MaxTokens`(>0)——顺带"激活"这个此前未用的字段
-  3. `modelspec.Lookup(...).MaxOutputTokens`(>0)
-  4. 默认 `8192`
+  优先级(决策 Z:**不读** per-model 的 `ModelEntry.MaxTokens`):
+  1. `explicit`(agent 层用户显式设置的输出上限:file > agent entry > 全局 defaults,任一 >0)
+  2. `modelspec.Lookup(...).MaxOutputTokens`(>0)
+  3. 硬兜底 `8192`
 
   **关键约束**:必须能区分"用户显式设了 8192"与"默认回退到 8192"。当前
-  `MergedAgentConfig` 先铺默认 8192 再被覆盖,无法区分。实现时需把"模型派生上限"
-  的解析放在"应用 8192 默认"**之前**,即默认值作为最后兜底,仅当前三层都为 0 时才用。
+  `MergedAgentConfig` 先铺默认 8192 再被覆盖,无法区分。实现时需把 catalog 查表放在
+  "应用 8192 硬默认"**之前**,即 8192 仅当 agent 层未显式设置且查表未命中时才用。
   解析出的有效值同时供 provider 请求与压缩预算(二者已共用 `rc.MaxTokens`)。
 
 ### 匹配规则
@@ -115,7 +120,7 @@
    ├─ ContextWindow = ResolveContextWindow(providers, model, maxTokens)
    │     entry.ContextWindow>0 ? → modelspec.Lookup.context>0 ? → 128000
    └─ MaxTokens     = ResolveMaxOutputTokens(providers, model, explicitMaxTokens)
-         explicit>0 ? → ModelEntry.MaxTokens>0 ? → modelspec.Lookup.output>0 ? → 8192
+         explicit>0 ? → modelspec.Lookup.output>0 ? → 8192
    ↓
 loop.go 使用 a.contextWindow / a.maxTokens(发请求 + 压缩预算)
    ↓
@@ -144,7 +149,7 @@ usage 事件回传 contextWindow → 前端页脚 tooltip 显示真实窗口
   [`context_window_test.go`](../../../internal/config/context_window_test.go)):
   - 用户没填时 `glm-5.1` 经查表解析为 202752;用户显式 `entry.ContextWindow` 仍优先;
     未知模型仍回 128000。
-  - `ResolveMaxOutputTokens` 四级优先级各一例;尤其验证"显式 8192 被尊重"
+  - `ResolveMaxOutputTokens` 三级优先级各一例;尤其验证"agent 层显式 8192 被尊重"
     与"未设时被模型上限覆盖"两种路径可区分。
 
 ## 影响面 / 风险
@@ -154,6 +159,17 @@ usage 事件回传 contextWindow → 前端页脚 tooltip 显示真实窗口
 - 二进制体积:+几十 KB(精简快照)。可忽略。
 - 启动:首次查表多一次 JSON 解析(`sync.Once`,几十 KB),可忽略。
 - 数据时效:快照随构建固化;数值偏差风险低且有用户手填覆盖兜底。
+
+## 已知限制(决策 Z 的代价)
+
+- **UI 预填会旁路 contextWindow 查表**:模型配置页新建模型时预填 `contextWindow: 200000`
+  ([web/.../models/page.tsx](../../../web/src/app/agents/[id]/models/page.tsx))。一旦该值
+  写入配置则 `>0` 成立,`ResolveContextWindow` 取它而不查 catalog。因此本特性对
+  "通过当前 UI 新建、且接受了 200000 预填"的模型不生效;对 `ContextWindow=0`(如用户
+  当前的 glm-5.1、CLI/种子创建的条目)生效。彻底修复需把 UI 默认改为留空(方案 X),
+  本期不做,留作后续。
+- **per-model maxTokens 手动覆盖能力不做**:`ModelEntry.MaxTokens` 维持未被后端读取的
+  现状(它本就不生效)。需要 per-model 覆盖输出上限的用户仍走 agent 层的 maxTokens。
 
 ## 范围外(后续可单独立项)
 
