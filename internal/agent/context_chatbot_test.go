@@ -84,7 +84,7 @@ func TestChatbotPrompt_EmptyChatter(t *testing.T) {
 	cb := newChatbotBuilder(store)
 	chatterMem := cb.memory.WithUserID(chatterUID)
 
-	prompt := cb.BuildSystemPromptAs(chatterUID, chatterMem)
+	prompt := cb.BuildSystemPromptAs(chatterUID, chatterMem, "")
 
 	// Headers we depend on for the fingerprint log.
 	mustContain(t, prompt, "# SOUL.md")
@@ -122,7 +122,7 @@ func TestChatbotPrompt_PopulatedChatter(t *testing.T) {
 	cb := newChatbotBuilder(store)
 	chatterMem := cb.memory.WithUserID(chatterUID)
 
-	prompt := cb.BuildSystemPromptAs(chatterUID, chatterMem)
+	prompt := cb.BuildSystemPromptAs(chatterUID, chatterMem, "")
 
 	// Populated USER.md must show real content, not the placeholder.
 	mustContain(t, prompt, "Name: 品冠")
@@ -139,7 +139,7 @@ func TestChatbotPrompt_NoMemorySearchEscapeHatch(t *testing.T) {
 	store := newFakeMemoryStore()
 	cb := newChatbotBuilder(store)
 	chatterMem := cb.memory.WithUserID(chatterUID)
-	prompt := cb.BuildSystemPromptAs(chatterUID, chatterMem)
+	prompt := cb.BuildSystemPromptAs(chatterUID, chatterMem, "")
 
 	// memory_search must not appear in the chatbot prompt — it's a) not
 	// in the chatbot tool allowlist and b) we explicitly tell the model
@@ -182,7 +182,7 @@ func TestAgentMode_NoChatbotPersistenceInstructions(t *testing.T) {
 	cb.userID = ownerUID
 	// promptMode left empty → defaults to agent mode.
 
-	prompt := cb.BuildSystemPromptAs(chatterUID, mem.WithUserID(chatterUID))
+	prompt := cb.BuildSystemPromptAs(chatterUID, mem.WithUserID(chatterUID), "")
 
 	mustNotContain(t, prompt, "Remembering things across conversations")
 	mustNotContain(t, prompt, "You CAN remember chatters across sessions")
@@ -194,7 +194,7 @@ func TestChatbotPrompt_MemoryRenderedThroughManager(t *testing.T) {
 	cb := newChatbotBuilder(store)
 	chatterMem := cb.memory.WithUserID(chatterUID)
 
-	prompt := cb.BuildSystemPromptAs(chatterUID, chatterMem)
+	prompt := cb.BuildSystemPromptAs(chatterUID, chatterMem, "")
 	memSection := chatterLongTermMemorySection(t, prompt)
 
 	mustContain(t, memSection, "用户在做产品")

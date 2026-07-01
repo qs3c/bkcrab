@@ -32,6 +32,15 @@ type deleteCronJobArgs struct {
 // 代理运行。代理循环的bindSession 标记每轮
 // 在任何工具触发之前将值写入注册表。
 func RegisterCronTools(r *Registry, st store.Store, userID, agentID string) {
+	registerCronToolsOn(r, st, userID, agentID)
+	// create_cron_job 捕获 registry 并读 r.MessageChannel()/MessageChatID()/
+	// ChatterUserID()（每回合状态）。forTurn 为每个回合克隆独立 registry 时回放
+	// 此钩子把工具重绑到回合私有副本，否则并发会话会把定时任务记到错误的频道/
+	// 会话/用户上。
+	r.onForTurn(func(rt *Registry) { registerCronToolsOn(rt, st, userID, agentID) })
+}
+
+func registerCronToolsOn(r *Registry, st store.Store, userID, agentID string) {
 	r.Register("create_cron_job",
 		"Create a scheduled task. Use this for any user request that names a specific time, an interval, or a recurring schedule (e.g. \"5 分钟后提醒\", \"every Monday 9am\", \"each day at 8\"). When the schedule fires, the agent receives `message` as a fresh inbound prompt on the same channel the request originated from. Do NOT write timed reminders into HEARTBEAT.md — that file is only for conditional self-checks reviewed at every heartbeat tick.",
 		map[string]interface{}{

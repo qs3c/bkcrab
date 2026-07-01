@@ -21,6 +21,14 @@ import (
 // 暂停/恢复/预算限制是用户或运行时控制的，而不是
 // 模型控制。镜像 codex-rs/core/src/tools/handlers/goal_spec.rs。
 func RegisterGoalTools(r *Registry, st goal.Store, agentID string) {
+	registerGoalToolsOn(r, st, agentID)
+	// update_goal 捕获 registry 并读 r.GoalSessionKey()（每回合状态）。forTurn
+	// 为每个回合克隆独立 registry 时，回放此钩子把工具重绑到回合私有副本，
+	// 否则并发会话会共享同一个 goalSessionKey。
+	r.onForTurn(func(rt *Registry) { registerGoalToolsOn(rt, st, agentID) })
+}
+
+func registerGoalToolsOn(r *Registry, st goal.Store, agentID string) {
 	r.Register("update_goal",
 		"Mark the active goal complete. Status is restricted to \"complete\"; "+
 			"pausing, resuming, and budget_limited transitions are controlled by "+

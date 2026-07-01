@@ -198,7 +198,10 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 			"tools":     toolNames,
 		}})
 
-		results := a.engine.executeToolsConcurrently(ctx, a.registry, resp.ToolCalls, a.workspacePath)
+		// 用本回合私有的 Registry（由父回合经 ctx 传入），使子代理的工具调用
+		// 沿用父会话的 workspace 作用域与沙箱执行器，而不是共享的 agent 级模板
+		// ——后者在并发会话下没有绑定本回合上下文。ctx 未携带时回退到 a.registry。
+		results := a.engine.executeToolsConcurrently(ctx, a.turnRegistry(ctx), resp.ToolCalls, a.workspacePath)
 		roundAllFailed := true
 		for idx, r := range results {
 			tc := resp.ToolCalls[idx]

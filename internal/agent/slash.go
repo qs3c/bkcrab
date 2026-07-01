@@ -258,8 +258,13 @@ func (a *Agent) slashCompact(ctx context.Context, msg bus.InboundMessage, focus 
 	opts := a.compactionOptions(CompactModeManual, nil, nil, sess.SessionKey())
 	opts.Focus = focus
 	if a.registry != nil {
-		a.registry.SetContextArchiveSessionKey(sess.SessionKey())
-		opts.ToolDefs = a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
+		// 用回合私有副本，避免在共享 a.registry 上就地改写每回合状态——
+		// /compact 与其它会话的回合可能并发。归档本身已由 opts.ArchiveSessionKey
+		// （= sess.SessionKey()）作用域化；这里设 archive key 仅为与回合路径对齐，
+		// DefinitionsForMode 只是读取工具清单。
+		reg := a.registry.ForTurn()
+		reg.SetContextArchiveSessionKey(sess.SessionKey())
+		opts.ToolDefs = reg.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	}
 	result, err := a.compactWithProgress(ctx, sessionMsgs, opts)
 	if err != nil {

@@ -243,6 +243,14 @@ type Registry struct {
 	shellMgr *shellManager
 
 	managedMemoryCfg memory.Config
+
+	// perTurnRebind 收集那些捕获了每回合状态、但 *不* 由 registerBuiltins
+	// 重新注册的非内置工具的重绑钩子（目前是 goal 的 update_goal 与 cron 的
+	// create_cron_job 等——它们读 GoalSessionKey / MessageChannel 等每回合字段）。
+	// forTurn 为每个回合克隆出独立 registry 时，会对克隆体逐一回放这些钩子，
+	// 使这些工具的闭包也捕获回合私有的 registry，而不是共享模板。
+	// 仅在 agent 启动期（单线程）追加；回合私有副本不携带此切片。
+	perTurnRebind []func(*Registry)
 }
 
 type turnFailKey struct {
@@ -539,6 +547,74 @@ func NewRegistry(systemRoot, userRoot string) *Registry {
 	}
 	r.registerBuiltins()
 	return r
+}
+
+// onForTurn 登记一个"回合重绑"钩子。捕获每回合状态的非内置工具
+// （goal / cron 等）在 agent 启动期注册时调用它，使 forTurn 能把同一份
+// 工具重新绑定到回合私有的 registry 上。仅在启动期（单线程）调用。
+func (r *Registry) onForTurn(fn func(*Registry)) {
+	r.perTurnRebind = append(r.perTurnRebind, fn)
+}
+
+// ForTurn 返回一个回合私有的 Registry 副本，用于隔离并发会话。
+//
+// 背景：每个 agent 只有一个长生命周期的 *Registry（持有全部已注册工具与
+// 不可变依赖）。回合开始时 bindSession 要把本回合的会话上下文（sessionID /
+// projectID / executor / chatterUserID / goalSessionKey / messageChannel ...）
+// 绑定进去。若直接就地改写这唯一的共享 registry，同一 agent 的多个会话并发
+// 时就会互相覆盖——表现为 write_file("todo.md") 等工作区写入串到别的会话，
+// 以及对共享 tools map 的并发读写竞争。
+//
+// forTurn 复制不可变 / agent 级依赖（store、根路径、配置；后台 shell 管理器
+// 按指针共享，使其跨回合存活），但给副本一份独立的 tools map、独立的每回合
+// 失败追踪和独立的每回合状态字段，并把内置工具重新注册到副本上——这样工具
+// 闭包读到的是本回合的 sessionID 等，而非共享状态。调用方随后在返回的副本上
+// 调用 Set*（SetSessionID / SetExecutor / ...）绑定本回合上下文。
+//
+// 维护提示：每回合状态字段刻意留零值（由 bindSession 重新绑定）；不可变依赖
+// 逐字段复制。给 Registry 新增字段时，请在此处同步决定它属于"共享依赖"还是
+// "每回合状态"。
+func (r *Registry) ForTurn() *Registry {
+	rt := &Registry{
+		// —— 不可变 / agent 级依赖：按值或按指针共享 ——
+		systemRoot:          r.systemRoot,
+		userRoot:            r.userRoot,
+		sandboxRoot:         r.sandboxRoot,
+		workspaceStore:      r.workspaceStore,
+		agentID:             r.agentID,
+		contextArchiveStore: r.contextArchiveStore,
+		systemFileStore:     r.systemFileStore,
+		userID:              r.userID,
+		agentOwnerUserID:    r.agentOwnerUserID,
+		userSkillsRoot:      r.userSkillsRoot,
+		sandboxRequired:     r.sandboxRequired,
+		envProvider:         r.envProvider,
+		skillDirs:           r.skillDirs,
+		managedMemoryCfg:    r.managedMemoryCfg,
+		// 后台 shell 比单个回合存活更久——按指针共享，回合间一致。
+		shellMgr: r.shellMgr,
+		// —— 每回合独立：fresh map（避免与父/兄弟回合争用），fresh 失败追踪 ——
+		// （turnFailMu 不复制：留零值即为新互斥量，避免 copylocks。）
+		tools:     make(map[string]registeredTool, len(r.tools)),
+		turnFails: nil,
+		// —— 每回合状态字段留零值，由 bindSession 重新绑定 ——
+		// sessionID / projectID / executor / chatterUserID / goalSessionKey /
+		// contextArchiveSessionKey / messageChannel / messageChatID / callerIsAdmin。
+	}
+	// 先继承父 registry 的非内置工具（子代理、各 chain、load_skill、MCP/插件、
+	// 以及 goal/cron 的旧绑定）——绝大多数只用不可变依赖，跨回合安全。
+	for name, tool := range r.tools {
+		rt.tools[name] = tool
+	}
+	// 再把内置工具重新注册到 rt，使其闭包捕获 rt、读到本回合状态，覆盖上面
+	// 从父继承来的同名条目。
+	rt.registerBuiltins()
+	// 最后回放"回合重绑"钩子，把捕获每回合状态的非内置工具（goal/cron）也
+	// 重新绑定到 rt。
+	for _, fn := range r.perTurnRebind {
+		fn(rt)
+	}
+	return rt
 }
 
 // 关闭释放每个注册表的资源。目前终止每个

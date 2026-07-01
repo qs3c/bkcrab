@@ -169,7 +169,11 @@ type GroupContext struct {
 type ContextBuilder struct {
 	home          string // agent's home: SOUL.md, IDENTITY.md,内存,会话
 	workspace     string // 代理创建面向用户的文件的工作目录
-	memory        *Memory
+	memory *Memory
+	// skillsSummary 是构造期（NewContextBuilder / ReloadWorkspaceFiles）烘焙进来的
+	// 技能摘要，仅用作 owner 默认路径（BuildSystemPrompt）的回退。每回合按聊天者
+	// 解析的摘要由 BuildSystemPromptAs 的 skillsSummary 参数逐次传入，绝不写回此
+	// 共享字段——否则并发会话会互相覆盖。见 loop.go 的 refreshSkillsFromStore。
 	skillsSummary string
 	// displayName是来自agents.name的运算符给定的名称。用作
 	// iDENTITY.md为空时的回退标识行，因此模型
@@ -221,12 +225,6 @@ func NewContextBuilder(home string, memory *Memory, skillsSummary string) *Conte
 // 与代理的家（身份）目录不同。
 func (cb *ContextBuilder) SetWorkspace(p string) { cb.workspace = p }
 
-// SetSkillsSummary更新烘焙到系统提示符中的技能摘要。
-// 从refreshSkillsFromStore调用，以便从对象中水合技能
-// 轮流开始时的存储最终对模型可见，而无需重建
-// 整个上下文生成器。
-func (cb *ContextBuilder) SetSkillsSummary(s string) { cb.skillsSummary = s }
-
 // SetPromptMode选择系统提示程序集配置文件。空/未知
 // 值回退到代理模式（当前默认值）。请参阅config.PromptMode *。
 func (cb *ContextBuilder) SetPromptMode(m string) { cb.promptMode = m }
@@ -273,7 +271,7 @@ func (cb *ContextBuilder) resolvedPromptMode() string {
 // 业主与自己的经纪人聊天。对于公共链接调用者
 // 需要每个聊天 USER.md + 内存隔离，请使用 BuildSystemPromptAs。
 func (cb *ContextBuilder) BuildSystemPrompt() string {
-	return cb.BuildSystemPromptAs(cb.userID, cb.memory)
+	return cb.BuildSystemPromptAs(cb.userID, cb.memory, cb.skillsSummary)
 }
 
 // BuildSystemPromptAs 是具有显式聊天标识的 BuildSystemPrompt。
@@ -283,7 +281,12 @@ func (cb *ContextBuilder) BuildSystemPrompt() string {
 // AGENTS、BOOTSTRAP、HEARTBEAT、TOOLS — 仍然从代理加载
 // 所有者的存储桶，因为它们定义了代理是什么，而不是代理是谁
 // 与它交谈。传递 cb.userID / cb.memory 来模仿遗留行为。
-func (cb *ContextBuilder) BuildSystemPromptAs(chatterUID string, chatterMem *Memory) string {
+//
+// skillsSummary 是本回合按聊天者解析出的技能摘要，由调用方每回合传入，而不是
+// 读共享的 cb.skillsSummary 字段——后者在同一 agent 的多个会话并发时会被互相
+// 覆盖，导致系统提示里的技能清单串到别的会话。owner 默认路径（BuildSystemPrompt）
+// 传 cb.skillsSummary 作为构造期默认值。
+func (cb *ContextBuilder) BuildSystemPromptAs(chatterUID string, chatterMem *Memory, skillsSummary string) string {
 	if chatterUID == "" {
 		chatterUID = cb.userID
 	}
@@ -730,8 +733,8 @@ Then in your final reply, write: ![](/workspace/output.png)`
 	// 因此一些已安装的技能可以使系统提示膨胀
 	// 数以万计的代币。删除整个部分
 	// 非代理模式。
-	if mode == config.PromptModeAgent && cb.skillsSummary != "" {
-		parts = append(parts, fmt.Sprintf("# Skills\n%s", cb.skillsSummary))
+	if mode == config.PromptModeAgent && skillsSummary != "" {
+		parts = append(parts, fmt.Sprintf("# Skills\n%s", skillsSummary))
 	}
 
 	// 4. 长期记忆——以聊天为关键，原理与 USER.md 相同。

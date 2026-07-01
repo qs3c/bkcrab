@@ -154,22 +154,46 @@ func (a *Agent) SetSandboxPool(p sandbox.ExecutorPool) {
 	}
 }
 
-// bindSession 将每轮会话状态连接到工具注册表中：
-// 会话范围的沙箱执行器（配置池时），
-// sessionID Workspace.Store 调用用于命名空间工件，并且
-// (channel, chatID) 总线地址所以延迟工作工具 (create_cron_job)
-// 可以将其标记到持久的行上以供以后重播。在顶部调用
-// 在任何工具运行之前的 HandleMessage / HandleMessageStream。
+// turnRegistryKey 是 ctx 中存放回合私有工具 Registry 的键。
+type turnRegistryKey struct{}
+
+// withTurnRegistry 把本回合的工具 Registry 写入 ctx，供回合内更深层的执行点
+// （子代理循环、runPostTurn 的 PostTurn 钩子）取用，而无需层层传参。
+func withTurnRegistry(ctx context.Context, reg *tools.Registry) context.Context {
+	return context.WithValue(ctx, turnRegistryKey{}, reg)
+}
+
+// turnRegistry 取回本回合的工具 Registry；ctx 未携带（非回合路径 / 旧调用 /
+// 测试）时回退到 agent 级模板 a.registry。
+func (a *Agent) turnRegistry(ctx context.Context) *tools.Registry {
+	if reg, ok := ctx.Value(turnRegistryKey{}).(*tools.Registry); ok && reg != nil {
+		return reg
+	}
+	return a.registry
+}
+
+// bindSession 为本回合派生一个回合私有的工具 Registry，并把会话上下文绑定到
+// 这个副本上——workspace 作用域（sessionID/projectID 命名空间化工件）、会话私有
+// 的沙箱执行器（配置池时）、以及 (channel, chatID) 总线地址（延迟工作工具如
+// create_cron_job 据此标记持久行以便日后回放）。返回这个副本供本回合使用。
 //
-// 在并发聊天中改变共享注册表会产生竞争，但是
-// 当前的不变量是每个代理一次聊天 - 网关
-// 序列化每个代理的回合。在这里记录下来以防发生变化。
-func (a *Agent) bindSession(ctx context.Context, channel, sessionID, projectID string) {
-	a.registry.SetSessionID(sessionID)
-	a.registry.SetProjectID(projectID)
-	a.registry.SetMessageContext(channel, sessionID)
+// 为什么是副本而非就地改写 a.registry：a.registry 是 agent 级长生命周期的共享
+// 对象。同一 agent 的多个会话会并发进入回合——Web 流式聊天直接并发调用
+// HandleMessage；IM 走任务队列也是 per-chat 并发，并非 per-agent 串行。早期实现
+// 就地改写这唯一的共享 registry，于是并发会话互相覆盖 sessionID 等，导致
+// write_file("todo.md") 等工作区写入串到别的会话、列计划面板错乱，以及对共享
+// tools map 的并发读写。现在每个回合各自持有 a.registry.ForTurn() 的私有副本。
+//
+// 调用方在拿到返回的 reg 后，应通过 withTurnRegistry 把它写入 ctx，使回合内更深
+// 层的执行点也能取到同一副本。在 HandleMessage / HandleMessageStream 顶部、任何
+// 工具运行之前调用。
+func (a *Agent) bindSession(ctx context.Context, channel, sessionID, projectID string) *tools.Registry {
+	reg := a.registry.ForTurn()
+	reg.SetSessionID(sessionID)
+	reg.SetProjectID(projectID)
+	reg.SetMessageContext(channel, sessionID)
 	if a.sandboxPool == nil {
-		return
+		return reg
 	}
 	ex, err := a.sandboxPool.Get(ctx, a.name, projectID, sessionID)
 	if err != nil {
@@ -180,9 +204,10 @@ func (a *Agent) bindSession(ctx context.Context, channel, sessionID, projectID s
 		// 在用户面临的错误旁边捕获。
 		slog.Error("sandbox executor unavailable; exec will refuse host fallback",
 			"agent", a.name, "session", sessionID, "error", err)
-		return
+		return reg
 	}
-	a.registry.SetExecutor(ex)
+	reg.SetExecutor(ex)
+	return reg
 }
 
 // NewAgent 从已解析的配置创建一个新代理。
@@ -1826,7 +1851,9 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 		return noProviderMsg
 	}
 
-	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, a.memory.WithUserID(chatterUID))
+	// 计划模式不刷新每聊天者技能，沿用构造期的默认摘要（cb.skillsSummary），
+	// 与改动前一致；这里不写共享字段，只读取。
+	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, a.memory.WithUserID(chatterUID), a.ctxBuilder.skillsSummary)
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 	// 工具目录注入：计划模式将tools=nil传递给LLM，因此
 	// 它不会意外地调用任何东西，但这也隐藏了
@@ -1975,7 +2002,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 追查“IM 看不到代理技能”的报告。
 	slog.Info("turn: refreshing skills",
 		"agent", a.name, "channel", msg.Channel, "chat_id", msg.ChatID, "user", chatterUID)
-	a.refreshSkillsFromStore(chatterUID)
+	skillDirs, skillsSummary := a.refreshSkillsFromStore(chatterUID)
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
 	// 将chatter 绑定到sess 上。 Session.ctx() 构建自己的
 	// context.Background-rooted ctx 用于存储调用，因此
@@ -1983,26 +2010,32 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 自行到达 AppendSessionMessage / SaveSession — sess 必须
 	// 携带喋喋不休的内容。
 	sess.SetChatter(chatterUID)
-	// 将注册表绑定到此聊天会话，以便工作区.Store 读取
-	// + 写入获取会话范围的路径并且（当沙箱池处于
-	// 有线） exec/read_file/list_dir 使用的执行器绑定到
-	// 会话私有容器。
-	a.bindSession(ctx, msg.Channel, msg.ChatID, msg.ProjectID)
+	// 为本回合派生回合私有的工具 Registry（隔离并发会话），并写入 ctx，使
+	// 子代理循环 / PostTurn 钩子等更深层执行点取到同一副本。reg 承载本回合的
+	// workspace 作用域（sessionID/projectID）与会话私有的沙箱执行器，因此
+	// write_file("todo.md")、exec、read_file 等都落在本会话而不会与并发会话串。
+	reg := a.bindSession(ctx, msg.Channel, msg.ChatID, msg.ProjectID)
+	ctx = withTurnRegistry(ctx, reg)
+	// 把该聊天者可见的技能目录注册到回合私有 reg 的 load_skill 上（按人解析）；
+	// 不写共享 a.registry，避免并发回合并发改写同一张 tools map。
+	if len(skillDirs) > 0 {
+		tools.RegisterLoadSkill(reg, skillDirs)
+	}
 	// 标记本回合的聊天是否是代理所有者/频道
 	// 行政。文件工具使用它来拒绝身份文件读取
 	// 常规聊天内容（灵魂/身份/BOOTSTRAP/...逐字泄漏
 	// 否则聊天回复）。
-	a.registry.SetCallerIsAdmin(a.isAdminChatter(msg))
+	reg.SetCallerIsAdmin(a.isAdminChatter(msg))
 	// 探索目标范围工具的持久 session_key。
 	// 上面的 SetSessionID 使用 msg.ChatID （频道级聊天
 	// 标识符）；目标工具需要持久的 session.Session.SessionKey
 	// 寻址 agent_goals 中的行。
-	a.registry.SetGoalSessionKey(sess.SessionKey())
-	a.registry.SetContextArchiveSessionKey(sess.SessionKey())
+	reg.SetGoalSessionKey(sess.SessionKey())
+	reg.SetContextArchiveSessionKey(sess.SessionKey())
 	// 每用户文件写入（USER.md / MEMORY.md）需要登陆
 	// 每回合喋喋不休的行，而不是 UserSpace 所有者 — 请参阅
 	// 路由规则的Registry.systemFileUserID。
-	a.registry.SetChatterUserID(chatterUID)
+	reg.SetChatterUserID(chatterUID)
 
 	// 转向：标记飞行中的转弯，以便在运行中到达的消息
 	// 缓冲到会话中（在下面的工具迭代之间耗尽）
@@ -2028,13 +2061,13 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// PriorFailure 拒绝保证失败重试
 	// 相同的回合 - 此处没有 StartTurn，之前的失败
 	// 转会毒害用户明确要求的合法重试。
-	a.registry.StartTurn()
+	reg.StartTurn()
 
 	// 挂钩：BeforeSystemPrompt
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeSystemPrompt, UserID: a.ownerUserID})
 
 	chatterMem := a.memory.WithUserID(chatterUID)
-	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem)
+	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, skillsSummary)
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 
 	// 挂钩：AfterSystemPrompt
@@ -2051,7 +2084,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	anchor := a.beginTurnAnchor(sess, userMsg)
 
 	// 上下文压缩：检查会话消息是否太大
-	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
+	toolDefs := reg.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	overheadMessages := a.buildRequestOverhead(systemPrompt, msg, chatterMem)
 	sessionMsgs := sess.GetMessages()
 	compactResult, err := a.compactWithProgress(ctx, sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs, sess.SessionKey()))
@@ -2157,7 +2190,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		}
 
 		// 挂钩：AfterModelCall
-		hcAfter := &HookContext{AgentName: a.name, Point: AfterModelCall, Messages: messages, Response: resp, Error: err, StartTime: hcBefore.StartTime, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID, GoalSessionKey: a.registry.GoalSessionKey()}
+		hcAfter := &HookContext{AgentName: a.name, Point: AfterModelCall, Messages: messages, Response: resp, Error: err, StartTime: hcBefore.StartTime, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID, GoalSessionKey: reg.GoalSessionKey()}
 		a.hooks.Run(ctx, hcAfter)
 
 		if err != nil {
@@ -2301,7 +2334,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			"agent", a.name,
 			"count", len(executeCalls),
 		)
-		results := a.engine.executeToolsConcurrently(ctx, a.registry, executeCalls, a.workspacePath)
+		results := a.engine.executeToolsConcurrently(ctx, reg, executeCalls, a.workspacePath)
 		// 附加合成延迟结果，以便每个原始 tool_use
 		// id 有一个配对的 tool_result。延迟消息告诉
 		// 准确地模拟它没有运行的原因 - 接下来可以重新发出
@@ -2364,7 +2397,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				AccountID:      msg.AccountID,
 				ChatID:         msg.ChatID,
 				UserID:         a.ownerUserID,
-				GoalSessionKey: a.registry.GoalSessionKey(),
+				GoalSessionKey: reg.GoalSessionKey(),
 				IsPlanMode:     isPlanMode(msg.Params),
 				Source:         msg.Source,
 			})
@@ -2387,7 +2420,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				if summary == "" || summary == "<nil>" {
 					summary = firstNonEmptyLine(resultContent)
 				}
-				a.registry.RecordToolFailure(r.toolName, tc.Function.Arguments, summary)
+				reg.RecordToolFailure(r.toolName, tc.Function.Arguments, summary)
 			} else {
 				// 这一轮的一次通话产生了一个真实的结果——
 				// 整个回合并不是“全部失败”。
@@ -2666,7 +2699,7 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 		AccountID:      msg.AccountID,
 		ChatID:         msg.ChatID,
 		Source:         msg.Source,
-		GoalSessionKey: a.registry.GoalSessionKey(),
+		GoalSessionKey: a.turnRegistry(ctx).GoalSessionKey(),
 		IsPlanMode:     isPlanMode(msg.Params),
 	})
 
@@ -2782,20 +2815,26 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	ctx = store.WithChatterUserID(ctx, chatterUID)
 	slog.Info("turn: refreshing skills",
 		"agent", a.name, "channel", msg.Channel, "chat_id", msg.ChatID, "user", chatterUID)
-	a.refreshSkillsFromStore(chatterUID)
+	skillDirs, skillsSummary := a.refreshSkillsFromStore(chatterUID)
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
 	// 将chatter绑定到sess上，使其ctx()嵌入WithChatterUserID
 	// 对于 DBStore 会话写入 — Session.ctx() 从其重建 ctx
 	// 自己的领域，所以喋喋不休必须生活在 ses 本身。
 	sess.SetChatter(chatterUID)
-	a.bindSession(ctx, msg.Channel, msg.ChatID, msg.ProjectID)
-	a.registry.SetCallerIsAdmin(a.isAdminChatter(msg))
-	a.registry.SetGoalSessionKey(sess.SessionKey())
-	a.registry.SetContextArchiveSessionKey(sess.SessionKey())
+	// 回合私有的工具 Registry（隔离并发会话），并写入 ctx 供子代理 / PostTurn
+	// 钩子取用。与 HandleMessage 路径同形——见 bindSession 文档。
+	reg := a.bindSession(ctx, msg.Channel, msg.ChatID, msg.ProjectID)
+	ctx = withTurnRegistry(ctx, reg)
+	if len(skillDirs) > 0 {
+		tools.RegisterLoadSkill(reg, skillDirs)
+	}
+	reg.SetCallerIsAdmin(a.isAdminChatter(msg))
+	reg.SetGoalSessionKey(sess.SessionKey())
+	reg.SetContextArchiveSessionKey(sess.SessionKey())
 	// 每用户文件写入（USER.md / MEMORY.md）需要登陆
 	// 每回合喋喋不休的行，而不是 UserSpace 所有者 — 请参阅
 	// 路由规则的Registry.systemFileUserID。
-	a.registry.SetChatterUserID(chatterUID)
+	reg.SetChatterUserID(chatterUID)
 
 	// 与 HandleMessage 相同的 orphan-tool_use 安全网。流媒体路径
 	// 以前缺少这个，所以循环检测（它附加了一个助手
@@ -2809,7 +2848,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeSystemPrompt, UserID: a.ownerUserID})
 	chatterMem := a.memory.WithUserID(chatterUID)
-	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem)
+	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, skillsSummary)
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterSystemPrompt, UserID: a.ownerUserID})
 
@@ -2819,7 +2858,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	userMsg := buildUserMessage(msg)
 	anchor := a.beginTurnAnchor(sess, userMsg)
 
-	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
+	toolDefs := reg.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	overheadMessages := a.buildRequestOverhead(systemPrompt, msg, chatterMem)
 	sessionMsgs := sess.GetMessages()
 	compactResult, err := a.compactWithProgress(ctx, sessionMsgs, a.compactionOptions(CompactModeProactive, overheadMessages, toolDefs, sess.SessionKey()))
@@ -2855,7 +2894,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			messages = updatedMessages
 		}
 
-		hcAfter := &HookContext{AgentName: a.name, Point: AfterModelCall, Messages: messages, Response: resp, Error: err, StartTime: hcBefore.StartTime, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID, GoalSessionKey: a.registry.GoalSessionKey()}
+		hcAfter := &HookContext{AgentName: a.name, Point: AfterModelCall, Messages: messages, Response: resp, Error: err, StartTime: hcBefore.StartTime, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID, GoalSessionKey: reg.GoalSessionKey()}
 		a.hooks.Run(ctx, hcAfter)
 
 		if err != nil {
@@ -2996,13 +3035,13 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		}
 
 		// 通过SDK引擎同时执行工具
-		results := a.engine.executeToolsConcurrently(ctx, a.registry, resp.ToolCalls, a.workspacePath)
+		results := a.engine.executeToolsConcurrently(ctx, reg, resp.ToolCalls, a.workspacePath)
 		totalToolCalls += len(results)
 
 		for idx, r := range results {
 			tc := resp.ToolCalls[idx]
 			resultContent, meta := extractToolMeta(r.result)
-			a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterToolCall, ToolName: r.toolName, ToolResult: resultContent, Error: r.err, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID, GoalSessionKey: a.registry.GoalSessionKey(), IsPlanMode: isPlanMode(msg.Params), Source: msg.Source})
+			a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterToolCall, ToolName: r.toolName, ToolResult: resultContent, Error: r.err, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID, GoalSessionKey: reg.GoalSessionKey(), IsPlanMode: isPlanMode(msg.Params), Source: msg.Source})
 
 			if r.err != nil {
 				slog.Warn("tool execution error", "agent", a.name, "name", r.toolName, "error", r.err)
@@ -3345,7 +3384,15 @@ func (a *Agent) chatterUserID(msg bus.InboundMessage) string {
 // 传递聊天者（而不是代理所有者），以便安装技能聊天者 A
 // 即使聊天者 A 与同一个客服人员聊天，该信息也仅对聊天者 A 可见。空的
 // 禁用每用户层。
-func (a *Agent) refreshSkillsFromStore(userID string) {
+// refreshSkillsFromStore 在每个回合顶部刷新该聊天者可见的技能集，返回两样按
+// 聊天者解析（因人而异）的每回合结果：load_skill 工具应暴露的技能目录列表，以及
+// 烘焙进系统提示 # Skills 段的技能摘要。两者都由调用方在 *本回合* 用掉——目录
+// 注册到回合私有 Registry 的 load_skill、摘要作为参数传给 BuildSystemPromptAs——
+// 而不是写共享的 a.registry / a.ctxBuilder：后者在多会话并发下会被互相覆盖
+//（tools map 并发写是 Go 致命 panic；技能摘要串扰会让系统提示列错技能）。
+// 无 store 时返回零值，回合私有副本沿用模板继承的 load_skill、系统提示用构造期
+// 的默认摘要。
+func (a *Agent) refreshSkillsFromStore(userID string) (skillDirs []string, skillsSummary string) {
 	if a.workspaceStore == nil {
 		// IM-vs-web“缺少代理技能”诊断：何时触发
 		// 在 IM 轮次上，但不在相同的匹配网络轮次上
@@ -3354,15 +3401,14 @@ func (a *Agent) refreshSkillsFromStore(userID string) {
 		// debug），因此它会出现在默认级别的生产日志中。
 		slog.Warn("refresh skills skipped: no workspace store",
 			"agent", a.name, "agentID", a.agentID, "user", userID)
-		return
+		return nil, ""
 	}
 	loader := NewSkillsLoaderWithGlobal(a.homeDir, a.homePath, "", a.skillsCfg, a.globalSkillsCfg).
 		WithObjectStore(a.workspaceStore, a.agentID).
 		WithUserID(userID)
 	skills := loader.LoadSkills()
 	summary := loader.BuildSkillsSummary(skills)
-	a.ctxBuilder.SetSkillsSummary(summary)
-	tools.RegisterLoadSkill(a.registry, loader.AllSkillDirs())
+	skillDirs = loader.AllSkillDirs()
 	// 系统提示会显示技能组的每回合指纹
 	// 船。让我们比较 IM 与 Web 的相同点（座席、聊天）和
 	// 确认——或排除——座席范围的技能正在达到
@@ -3375,6 +3421,7 @@ func (a *Agent) refreshSkillsFromStore(userID string) {
 	slog.Info("skills summary refreshed",
 		"agent", a.name, "agentID", a.agentID, "user", userID,
 		"count", len(skills), "summary_bytes", len(summary), "names", names)
+	return skillDirs, summary
 }
 
 // ReloadWorkspaceFiles 重新读取工作区 .md 文件（SOUL.md、AGENTS.md 等）
