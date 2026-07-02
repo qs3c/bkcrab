@@ -253,7 +253,7 @@ func NewAgentWithFullCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bu
 	}
 
 	// 设置技能学习者（如果已配置）
-	if fullCfg.SkillsLearner.Enabled {
+	if fullCfg.SkillsLearner.IsEnabled() {
 		model := fullCfg.SkillsLearner.Model
 		if model == "" {
 			model = rc.Model
