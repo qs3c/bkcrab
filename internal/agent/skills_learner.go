@@ -10,25 +10,26 @@ import (
 	"strings"
 
 	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/skills"
 )
 
-// SkillsLearner 观察复杂任务并提取可复用的技能模式。
 type SkillsLearner struct {
 	workspace    string
 	provider     provider.Provider
 	model        string
-	minToolCalls int      // 考虑提取的最少工具调用次数（默认：3）
-	skillDirs    []string // 搜索技能学习器技能的目录
+	minToolCalls int
+	skillDirs    []string
+	manager      *skills.Manager
 }
 
-// NewSkillsLearner 创建一个新的 SkillsLearner。
 func NewSkillsLearner(workspace string, p provider.Provider, model string, skillDirs ...string) *SkillsLearner {
 	return &SkillsLearner{
 		workspace:    workspace,
 		provider:     p,
 		model:        model,
-		minToolCalls: 3,
+		minToolCalls: 10,
 		skillDirs:    skillDirs,
+		manager:      skills.NewManager(filepath.Join(workspace, "skills"), skills.DefaultManagerConfig()),
 	}
 }
 
@@ -44,8 +45,6 @@ type extractionResponse struct {
 	Skill   extractedSkill `json:"skill"`
 }
 
-// MaybeExtract 检查对话是否值得技能提取。
-// 在代理轮次完成后调用。提取并保存到 workspace/skills/<name>/SKILL.md。
 func (sl *SkillsLearner) MaybeExtract(ctx context.Context, messages []provider.Message, toolCallCount int) error {
 	if toolCallCount < sl.minToolCalls {
 		return nil
@@ -59,30 +58,32 @@ func (sl *SkillsLearner) MaybeExtract(ctx context.Context, messages []provider.M
 		return nil
 	}
 
-	// 检查是否已存在类似技能
-	skillDir := filepath.Join(sl.workspace, "skills", skill.Slug)
-	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err == nil {
-		slog.Debug("skill already exists, skipping", "slug", skill.Slug)
+	if existing, ok := sl.manager.Read(skill.Slug); ok {
+		merged, err := sl.decideUpdate(ctx, existing, skill)
+		if err != nil {
+			return fmt.Errorf("decide update: %w", err)
+		}
+		if merged == "" {
+			slog.Debug("skill exists, update not needed", "slug", skill.Slug)
+			return nil
+		}
+		if err := sl.manager.Update(skill.Slug, merged); err != nil {
+			slog.Warn("skill update rejected", "slug", skill.Slug, "error", err)
+			return nil
+		}
+		slog.Info("updated existing skill", "name", skill.Name, "slug", skill.Slug)
 		return nil
 	}
 
-	// 保存提取的技能
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		return fmt.Errorf("create skill dir: %w", err)
+	if err := sl.manager.Create(skill.Slug, skill.Content); err != nil {
+		slog.Warn("skill create rejected", "slug", skill.Slug, "error", err)
+		return nil
 	}
-
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skill.Content), 0o644); err != nil {
-		return fmt.Errorf("write skill: %w", err)
-	}
-
 	slog.Info("extracted new skill", "name", skill.Name, "slug", skill.Slug)
 	return nil
 }
 
-// loadSkillLearnerPrompt 从磁盘加载技能学习器的 SKILL.md。
-// 如果未找到则回退到最小化的内置提示词。
 func (sl *SkillsLearner) loadSkillLearnerPrompt() string {
-	// 在技能目录中搜索 skill-learner SKILL.md
 	for _, dir := range sl.skillDirs {
 		path := filepath.Join(dir, "bkcrab-skill-learner", "SKILL.md")
 		if data, err := os.ReadFile(path); err == nil {
@@ -90,15 +91,13 @@ func (sl *SkillsLearner) loadSkillLearnerPrompt() string {
 			return string(data)
 		}
 	}
-
-	// 回退：最小化的内置提示词
 	return fallbackExtractionPrompt
 }
 
 const fallbackExtractionPrompt = `Analyze the following conversation and determine if it demonstrates a reusable multi-step skill.
 
 Criteria for extraction:
-- The task involved 3+ tool calls in a clear, repeatable sequence
+- The task involved multiple tool calls in a clear, repeatable sequence
 - The task is general enough to be useful in other contexts
 - The steps can be described as a clear procedure
 
@@ -116,9 +115,7 @@ Step-by-step instructions in markdown...
 
 Output ONLY the JSON, no markdown fences.`
 
-// extractSkill 使用 LLM 从对话生成 SKILL.md。
 func (sl *SkillsLearner) extractSkill(ctx context.Context, messages []provider.Message) (*extractedSkill, error) {
-	// 为提取提示词构建对话摘要
 	var sb strings.Builder
 	for _, m := range messages {
 		if m.Role == "system" {
@@ -135,30 +132,68 @@ func (sl *SkillsLearner) extractSkill(ctx context.Context, messages []provider.M
 	}
 
 	prompt := sl.loadSkillLearnerPrompt()
-
 	extractMsgs := []provider.Message{
 		{Role: "system", Content: prompt + "\n\nOutput ONLY the JSON, no markdown fences."},
 		{Role: "user", Content: sb.String()},
 	}
 
-	resp, err := sl.provider.Chat(ctx, extractMsgs, nil, sl.model, 1024, 0.3)
+	resp, err := sl.provider.Chat(ctx, extractMsgs, nil, sl.model, 4096, 0.3)
 	if err != nil {
 		return nil, err
 	}
 
 	var result extractionResponse
-	// 尝试将响应解析为 JSON
 	content := strings.TrimSpace(resp.Content)
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
 		slog.Debug("skill extraction: LLM response not valid JSON", "error", err)
 		return nil, nil
 	}
-
 	if !result.Extract || result.Skill.Slug == "" || result.Skill.Content == "" {
 		return nil, nil
 	}
-
 	return &result.Skill, nil
+}
+
+const updateDecisionPrompt = `You maintain a library of agent skills (SKILL.md files).
+An existing skill and a newly extracted skill share the same slug.
+Decide whether the existing skill should be updated with what the new extraction learned.
+
+Update when the new extraction adds real value: missing steps, corrections, pitfalls, broader applicability.
+Do NOT update when the existing skill already covers the workflow adequately.
+
+If updating, output JSON:
+{"update": true, "content": "full merged SKILL.md content with YAML frontmatter"}
+The content must merge the best of both versions and keep valid YAML frontmatter with name and description.
+
+If not updating, output: {"update": false}
+
+Output ONLY the JSON, no markdown fences.`
+
+type updateDecision struct {
+	Update  bool   `json:"update"`
+	Content string `json:"content"`
+}
+
+func (sl *SkillsLearner) decideUpdate(ctx context.Context, existing string, skill *extractedSkill) (string, error) {
+	user := fmt.Sprintf("EXISTING SKILL:\n%s\n\nNEWLY EXTRACTED SKILL:\n%s", existing, skill.Content)
+	msgs := []provider.Message{
+		{Role: "system", Content: updateDecisionPrompt},
+		{Role: "user", Content: user},
+	}
+	resp, err := sl.provider.Chat(ctx, msgs, nil, sl.model, 4096, 0.3)
+	if err != nil {
+		return "", err
+	}
+
+	var dec updateDecision
+	if err := json.Unmarshal([]byte(strings.TrimSpace(resp.Content)), &dec); err != nil {
+		slog.Debug("skill update decision: LLM response not valid JSON", "error", err)
+		return "", nil
+	}
+	if !dec.Update || strings.TrimSpace(dec.Content) == "" {
+		return "", nil
+	}
+	return dec.Content, nil
 }
 
 func truncate(s string, n int) string {
