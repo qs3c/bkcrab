@@ -10,8 +10,6 @@ workspace/
 .github/
 docs/
 deploy/
-plugins/
-scripts/
 .goreleaser.yaml
 Makefile
 install.sh
@@ -64,6 +62,11 @@ openclaw.json
 env.toml
 go.work
 go.work.sum
+
+# Keep the runtime entrypoint script needed by Dockerfile while excluding
+# other development scripts from the image build context.
+scripts/*
+!scripts/docker-entrypoint.sh
 
 # Keep only the Go migration tool from tools/
 tools/*

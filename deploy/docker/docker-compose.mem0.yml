@@ -1,0 +1,10 @@
+services:
+  bkcrab:
+    networks:
+      - default
+      - mem0
+
+networks:
+  mem0:
+    external: true
+    name: mem0-dev_mem0_network
