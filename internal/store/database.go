@@ -1389,7 +1389,6 @@ func (d *DBStore) migrationSQL() []string {
 			end_seq INTEGER,
 			PRIMARY KEY (user_id, agent_id, session_key, seq)
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_session_messages_lookup ON session_messages (user_id, agent_id, session_key, seq)`,
 		// session_events 是 agent 在一轮中发出的实时事件流
 		//（内容块、tool_call、error、done）。持久化以便在轮次中
 		// 刷新/重连的客户端可以从其最后看到的 seq 恢复，而不是丢失
@@ -1408,7 +1407,6 @@ func (d *DBStore) migrationSQL() []string {
 				chatter_user_id TEXT NOT NULL DEFAULT '',
 				PRIMARY KEY (user_id, agent_id, session_key, seq)
 			)`,
-		`CREATE INDEX IF NOT EXISTS idx_session_events_lookup ON session_events (user_id, agent_id, session_key, seq)`,
 		`CREATE TABLE IF NOT EXISTS context_archives (
 			user_id TEXT NOT NULL DEFAULT '',
 			agent_id TEXT NOT NULL,
