@@ -96,7 +96,8 @@ func (m *Manager) validateContent(content string) error {
 	}
 
 	rest := strings.TrimPrefix(content, "---\n")
-	end := strings.Index(rest, "\n---")
+	const frontmatterEnd = "\n---\n"
+	end := strings.Index(rest, frontmatterEnd)
 	if end < 0 {
 		return errors.New("SKILL.md frontmatter is not closed with ---")
 	}
@@ -114,7 +115,7 @@ func (m *Manager) validateContent(content string) error {
 	if utf8.RuneCountInString(fm.Description) > m.config.MaxDescriptionChars {
 		return fmt.Errorf("description exceeds %d chars", m.config.MaxDescriptionChars)
 	}
-	body := rest[end+len("\n---"):]
+	body := rest[end+len(frontmatterEnd):]
 	if strings.TrimSpace(body) == "" {
 		return errors.New("SKILL.md must have content after the frontmatter")
 	}

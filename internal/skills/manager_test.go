@@ -90,6 +90,7 @@ func TestManagerRejectsBadContent(t *testing.T) {
 	}{
 		{"no frontmatter", "just some text"},
 		{"frontmatter not closed", "---\nname: X\ndescription: Y\n\nbody"},
+		{"frontmatter delimiter has suffix", "---\nname: X\ndescription: Y\n---oops\nbody"},
 		{"missing name", "---\ndescription: Y\n---\n\nbody"},
 		{"missing description", "---\nname: X\n---\n\nbody"},
 		{"empty body", "---\nname: X\ndescription: Y\n---\n\n"},
