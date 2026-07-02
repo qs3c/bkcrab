@@ -50,9 +50,11 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 		}
 
 		enabled := false
+		var pluginConfig map[string]interface{}
 		if cfg != nil && cfg.Plugins.Entries != nil {
 			if pe, ok := cfg.Plugins.Entries[id]; ok {
 				enabled = pe.Enabled
+				pluginConfig = pe.Config
 			}
 		}
 
@@ -67,6 +69,7 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 			"version": version,
 			"status":  status,
 			"enabled": enabled,
+			"config":  pluginConfig,
 		})
 	}
 	if plugins == nil {
@@ -166,6 +169,7 @@ func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
 		entry.Config = req.Config
 	}
 	cfg.Plugins.Entries[id] = entry
+	cfg.Plugins.Enabled = anyPluginEntryEnabled(cfg.Plugins.Entries)
 
 	if err := s.saveUserConfig(r, cfg); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
@@ -173,4 +177,13 @@ func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func anyPluginEntryEnabled(entries map[string]config.PluginEntryCfg) bool {
+	for _, entry := range entries {
+		if entry.Enabled {
+			return true
+		}
+	}
+	return false
 }

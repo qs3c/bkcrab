@@ -81,12 +81,6 @@ def handle_before_model_call(params, req_id):
         send_response({"jsonrpc": "2.0", "result": {}, "id": req_id})
         return
 
-    # Only inject on first model call (no assistant messages yet)
-    has_assistant = any(m.get("role") == "assistant" for m in messages)
-    if has_assistant:
-        send_response({"jsonrpc": "2.0", "result": {}, "id": req_id})
-        return
-
     # Get last user message
     last_msg = messages[-1]
     if last_msg.get("role") != "user":
@@ -174,7 +168,7 @@ def search_memories(user_id, query):
 
         resp = requests.post(
             f"{config['url']}/search",
-            json={"query": query, "user_id": user_id, "limit": config["topK"]},
+            json={"query": query, "user_id": user_id, "top_k": config["topK"]},
             headers=headers,
             timeout=3,
         )

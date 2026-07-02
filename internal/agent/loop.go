@@ -2143,8 +2143,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		)
 
 		// 挂钩：BeforeModelCall
-		hcBefore := &HookContext{AgentName: a.name, Point: BeforeModelCall, Messages: messages, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID}
-		a.hooks.Run(ctx, hcBefore)
+		messages, hcBefore := a.runBeforeModelCallHooks(ctx, messages, msg)
 
 		if a.provider == nil {
 			slog.Error("agent has no provider configured", "agent", a.name, "model", a.model)
@@ -2882,8 +2881,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 	// ReAct 循环 - 使用 Chat 进行工具迭代
 	for i := 0; i < a.maxToolIterations; i++ {
-		hcBefore := &HookContext{AgentName: a.name, Point: BeforeModelCall, Messages: messages, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID}
-		a.hooks.Run(ctx, hcBefore)
+		messages, hcBefore := a.runBeforeModelCallHooks(ctx, messages, msg)
 
 		resp, updatedMessages, retried, err := a.callLLMWithEmergencyRetry(ctx, sess, overheadMessages, toolDefs, messages, toolDefs, emergencyRetried, func(request []provider.Message, tools []provider.Tool) (*provider.Response, error) {
 			dumpLLMRequest(a.name, a.model, request, tools)

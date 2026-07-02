@@ -46,19 +46,22 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 
 # --- 阶段 3：运行时 ---
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates docker-cli tzdata
+RUN apk add --no-cache ca-certificates docker-cli py3-requests python3 tzdata
 COPY --from=go-builder /bkcrab /usr/local/bin/bkcrab
 COPY --from=go-builder /bkcrab-migrate-storage /usr/local/bin/bkcrab-migrate-storage
 
 # 默认数据目录。数据库启动仍需通过 BKCRAB_STORAGE_DSN 提供显式的 MySQL DSN。
 ENV BKCRAB_HOME=/data/.bkcrab \
     HOME=/data
-RUN mkdir -p /data/.bkcrab /data/.bkcrab/skills
+RUN mkdir -p /data/.bkcrab /data/.bkcrab/skills /data/.bkcrab/plugins /usr/local/share/bkcrab/plugins
 VOLUME /data/.bkcrab
 
 # 捆绑内置技能
 COPY skills/ /data/.bkcrab/skills/
+COPY plugins/ /usr/local/share/bkcrab/plugins/
+COPY scripts/docker-entrypoint.sh /usr/local/bin/bkcrab-entrypoint
+RUN chmod +x /usr/local/bin/bkcrab-entrypoint
 
 EXPOSE 18953
-ENTRYPOINT ["bkcrab"]
+ENTRYPOINT ["bkcrab-entrypoint", "bkcrab"]
 CMD ["gateway"]
