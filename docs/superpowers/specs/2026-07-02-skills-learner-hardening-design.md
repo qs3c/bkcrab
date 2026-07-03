@@ -197,5 +197,5 @@ if a.skillsLearner != nil {
 - **learner**:fake provider 注入脚本化 JSON,覆盖四条路径:门槛不足直接返回;新建;撞名→update;撞名→skip
 - **config**:`IsEnabled()` 的 nil/true/false 三态
 - **store(新增)**:`FinishTurn` 正确落 `tool_call_count`;`ClaimSkillBatch` 累计不足不认领 / 达标整批认领 / 并发无双认领(照 `TestClaimCadenceBatchNoDoubleClaim`)/ 与记忆 `extraction_id` 互不干扰(同批 turn 两条线各消费一次);`ResetSkillExtraction` 放回后可再次认领
-- **agent(新增)**:cadence 路径 claim→回放→提取全链路(fake provider);"判定不提取"不放回、基础设施错误放回;无 store/无 anchor 回退单 turn 判定
+- **agent(新增)**:cadence 路径 claim→回放→提取全链路(fake provider);"判定不提取"不放回、基础设施错误放回。回退路径(无 store/无 anchor)即原单 turn 判定,由既有 MaybeExtract 用例覆盖,分支逻辑在评审中核对(runPostTurn 依赖装配过重,不值得直构)
 - 收尾 `go test ./...` 全绿
