@@ -33,6 +33,24 @@ func TestClaimSkillBatchBelowThreshold(t *testing.T) {
 	}
 }
 
+func TestClaimSkillBatchIgnoresZeroCountAnchors(t *testing.T) {
+	db := newTestSQLite(t)
+	ctx := context.Background()
+	counts := make([]int, 0, 34)
+	for i := 0; i < 32; i++ {
+		counts = append(counts, 0)
+	}
+	counts = append(counts, 5, 5)
+	seedSkillTurns(t, db, "agentA", "s1", counts)
+	id, refs, err := db.ClaimSkillBatch(ctx, "agentA", "s1", 10, 32)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if id == "" || len(refs) != 2 {
+		t.Fatalf("want positive-count turns claimed past zero prefix, got id=%q refs=%d", id, len(refs))
+	}
+}
+
 func TestClaimSkillBatchClaimsWholeBatch(t *testing.T) {
 	db := newTestSQLite(t)
 	ctx := context.Background()

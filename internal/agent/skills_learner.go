@@ -144,10 +144,7 @@ func summarizeProviderMessages(messages []provider.Message) string {
 		if m.Role == "system" {
 			continue
 		}
-		content := m.Content
-		if len(content) > 500 {
-			content = content[:500] + "..."
-		}
+		content := truncate(m.Content, 500)
 		sb.WriteString(fmt.Sprintf("[%s]: %s\n", m.Role, content))
 		for _, tc := range m.ToolCalls {
 			sb.WriteString(fmt.Sprintf("  -> tool: %s(%s)\n", tc.Function.Name, truncate(tc.Function.Arguments, 200)))
@@ -163,10 +160,7 @@ func summarizeTurnGroups(groups []store.TurnGroup) string {
 			if m.Role == "system" {
 				continue
 			}
-			content := m.Content
-			if len(content) > 500 {
-				content = content[:500] + "..."
-			}
+			content := truncate(m.Content, 500)
 			sb.WriteString(fmt.Sprintf("[%s]: %s\n", m.Role, content))
 			if m.ToolCalls != nil {
 				if b, err := json.Marshal(m.ToolCalls); err == nil {
@@ -247,8 +241,15 @@ func (sl *SkillsLearner) decideUpdate(ctx context.Context, existing string, skil
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
+	if n < 0 {
+		n = 0
 	}
-	return s[:n] + "..."
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i] + "..."
+		}
+		count++
+	}
+	return s
 }

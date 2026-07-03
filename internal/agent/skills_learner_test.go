@@ -6,7 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -247,5 +249,23 @@ func TestExtractFromTurnsEmptyGroupsSkipsLLM(t *testing.T) {
 	}
 	if p.calls != 0 {
 		t.Fatalf("empty batch should not call provider, calls=%d", p.calls)
+	}
+}
+
+func TestSkillLearnerSummariesPreserveUTF8WhenTruncated(t *testing.T) {
+	text := strings.Repeat("中文", 260)
+	providerSummary := summarizeProviderMessages([]provider.Message{{Role: "user", Content: text}})
+	if !utf8.ValidString(providerSummary) {
+		t.Fatalf("provider summary is invalid UTF-8: %q", providerSummary)
+	}
+	turnSummary := summarizeTurnGroups([]store.TurnGroup{{
+		SessionKey: "s1",
+		Messages:   []store.SessionMessage{{Role: "user", Content: text}},
+	}})
+	if !utf8.ValidString(turnSummary) {
+		t.Fatalf("turn summary is invalid UTF-8: %q", turnSummary)
+	}
+	if !strings.Contains(providerSummary, "...") || !strings.Contains(turnSummary, "...") {
+		t.Fatalf("expected truncated summaries, got provider=%q turn=%q", providerSummary, turnSummary)
 	}
 }

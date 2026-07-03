@@ -2741,7 +2741,9 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 			a.maybeExtractSkillsCadence(ctx, anchor)
 		} else {
 			go func() {
-				if err := a.skillsLearner.MaybeExtract(ctx, messages, toolCallCount); err != nil {
+				extractCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+				defer cancel()
+				if err := a.skillsLearner.MaybeExtract(extractCtx, messages, toolCallCount); err != nil {
 					slog.Debug("skills learner error", "error", err)
 				}
 			}()

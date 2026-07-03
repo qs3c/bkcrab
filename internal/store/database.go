@@ -3729,7 +3729,7 @@ func (d *DBStore) ClaimSkillBatch(ctx context.Context, agentID, sessionKey strin
 	defer tx.Rollback()
 
 	selSQL := `SELECT seq, tool_call_count FROM session_messages
-		WHERE agent_id=%s AND session_key=%s AND turn_status='done' AND skill_extraction_id IS NULL
+		WHERE agent_id=%s AND session_key=%s AND turn_status='done' AND skill_extraction_id IS NULL AND tool_call_count > 0
 		ORDER BY created_at, seq LIMIT %d`
 	lock := ""
 	if d.dialect == "postgres" || d.dialect == mysqlDialect {
