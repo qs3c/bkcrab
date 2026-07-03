@@ -1026,6 +1026,8 @@ export interface ToolResultMetadata {
   // 可能不完整。
   iterationCapReached?: boolean;
   iterationCapValue?: number;
+  loopGuardReached?: boolean;
+  loopGuardTool?: string;
   // 标记在由计划模式（编辑器切换）生成的助手消息上。
   // 该气泡是一个计划，而非执行结果 — UI 显示不同的
   // 标记，以便用户知道需要审阅并回复"go"（或编辑）。

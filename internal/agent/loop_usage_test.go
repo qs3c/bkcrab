@@ -47,6 +47,41 @@ func (p *usageEventProvider) ChatStream(context.Context, []provider.Message, []p
 	return provider.NewStreamReader(ch), nil
 }
 
+type loopGuardProvider struct {
+	calls int
+}
+
+func (p *loopGuardProvider) Chat(context.Context, []provider.Message, []provider.Tool, string, int, float64) (*provider.Response, error) {
+	return nil, errors.New("unexpected chat call")
+}
+
+func (p *loopGuardProvider) ChatStream(context.Context, []provider.Message, []provider.Tool, string, int, float64) (*provider.StreamReader, error) {
+	p.calls++
+	ch := make(chan provider.StreamChunk, 1)
+	if p.calls <= 3 {
+		ch <- provider.StreamChunk{
+			ToolCalls: []provider.ToolCall{{
+				ID:   []string{"call_repeat_1", "call_repeat_2", "call_repeat_3"}[p.calls-1],
+				Type: "function",
+				Function: provider.FunctionCall{
+					Name:      "test_tool",
+					Arguments: `{"value":"same"}`,
+				},
+			}},
+			Done: true,
+		}
+		close(ch)
+		return provider.NewStreamReader(ch), nil
+	}
+	if p.calls == 4 {
+		ch <- provider.StreamChunk{Content: "final after loop guard", Done: true}
+		close(ch)
+		return provider.NewStreamReader(ch), nil
+	}
+	close(ch)
+	return nil, errors.New("unexpected chat stream call")
+}
+
 func TestHandleMessageEmitsUsageAfterEachModelCall(t *testing.T) {
 	tmp := t.TempDir()
 	ag := NewAgent(config.ResolvedAgent{
@@ -90,6 +125,54 @@ func TestHandleMessageEmitsUsageAfterEachModelCall(t *testing.T) {
 		return
 	}
 	t.Fatal("expected a usage event before the terminal done event")
+}
+
+func TestHandleMessageToolLoopMarksLoopGuardNotIterationCap(t *testing.T) {
+	tmp := t.TempDir()
+	ag := NewAgent(config.ResolvedAgent{
+		ID:                "loop-guard-agent",
+		UserID:            "owner",
+		Home:              filepath.Join(tmp, "home"),
+		Workspace:         filepath.Join(tmp, "workspace"),
+		Model:             "fake/model",
+		MaxTokens:         100,
+		ContextWindow:     100000,
+		MaxToolIterations: 200,
+	}, &loopGuardProvider{}, nil, tmp)
+	ag.ToolRegistry().Register("test_tool", "test tool", map[string]any{"type": "object"}, func(context.Context, json.RawMessage) (string, error) {
+		return "ok", nil
+	})
+
+	events := make(chan ChatEvent, 64)
+	reply := ag.HandleWebChatStream(context.Background(), "session-loop-guard", "", "user-1", "repeat a tool", nil, nil, events)
+	if reply != "final after loop guard" {
+		t.Fatalf("reply = %q, want final after loop guard", reply)
+	}
+	close(events)
+
+	sawFinalContent := false
+	for evt := range events {
+		if evt.Type != "content" || evt.Data["content"] != "final after loop guard" {
+			continue
+		}
+		sawFinalContent = true
+		metadata, ok := evt.Data["metadata"].(map[string]any)
+		if !ok {
+			t.Fatalf("final loop guard content missing metadata: %#v", evt.Data)
+		}
+		if reached, _ := metadata["iterationCapReached"].(bool); reached {
+			t.Fatalf("tool loop content was marked as iteration cap reached: %#v", metadata)
+		}
+		if reached, _ := metadata["loopGuardReached"].(bool); !reached {
+			t.Fatalf("loopGuardReached = %#v, want true", metadata["loopGuardReached"])
+		}
+		if got := metadata["loopGuardTool"]; got != "test_tool" {
+			t.Fatalf("loopGuardTool = %#v, want test_tool", got)
+		}
+	}
+	if !sawFinalContent {
+		t.Fatal("expected final content event")
+	}
 }
 
 func TestContextUsageDataSeparatesProviderUsageFromBudgetEstimate(t *testing.T) {

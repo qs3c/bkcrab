@@ -2245,6 +2245,15 @@ export function ChatScreen() {
                           </span>
                         </div>
                       )}
+                      {msg.role === "agent" && msg.metadata?.loopGuardReached && (
+                        <div className="mt-2 flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-900 dark:text-amber-200">
+                          <Wrench className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          <span className="font-medium">已停止重复工具调用</span>
+                          <span className="opacity-80">
+                            检测到 {msg.metadata.loopGuardTool ? ` ${msg.metadata.loopGuardTool} ` : "同一工具"} 连续使用相同参数，已停止继续调用工具，并基于已有结果生成上方回答。
+                          </span>
+                        </div>
+                      )}
                       {msg.role === "agent" && msg.metadata?.planMode && (
                         <div className="mt-2 flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-900 dark:text-amber-200">
                           <ListChecks className="mt-0.5 h-3.5 w-3.5 shrink-0" />

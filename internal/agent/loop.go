@@ -2119,6 +2119,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	const failedRoundsLimit = 3
 	emergencyRetried := false
 	toolsDisabledByLoop := false
+	loopGuardTool := ""
 
 	// replyParts 累积每个非空助理文本段
 	// 跨迭代发出（工具调用之前的前导行+
@@ -2214,8 +2215,15 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 
 		if !resp.HasToolCalls() {
 			asst := provider.Message{Role: "assistant", Content: resp.Content, Thinking: resp.Thinking, Timestamp: time.Now().UnixMilli(), RawAssistant: resp.RawAssistant}
+			if toolsDisabledByLoop {
+				asst.Metadata = loopGuardMetadata(loopGuardTool)
+			}
 			sess.Append(asst)
-			emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{"content": resp.Content}})
+			contentEvent := map[string]any{"content": resp.Content}
+			if asst.Metadata != nil {
+				contentEvent["metadata"] = asst.Metadata
+			}
+			emitEvent(ctx, ChatEvent{Type: "content", Data: contentEvent})
 			if resp.Content != "" {
 				replyParts = append(replyParts, resp.Content)
 			}
@@ -2281,6 +2289,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			}
 			if consecutiveCount >= 3 {
 				slog.Warn("tool loop detected", "agent", a.name, "tool", tc.Function.Name)
+				loopGuardTool = tc.Function.Name
 				loopDetected = true
 				break
 			}
@@ -2583,6 +2592,13 @@ const toolLoopGuardWarning = "Loop detected: the same tool was requested with th
 
 func toolLoopGuardResult(toolName string) string {
 	return fmt.Sprintf("Skipped %s: the same tool with the same arguments was requested 3 times in a row. Tools are disabled for the final response.", toolName)
+}
+
+func loopGuardMetadata(toolName string) map[string]any {
+	return map[string]any{
+		"loopGuardReached": true,
+		"loopGuardTool":    toolName,
+	}
 }
 
 func appendToolLoopGuardMessages(ctx context.Context, sess *session.Session, messages []provider.Message, calls []provider.ToolCall, emitEvents bool) []provider.Message {
@@ -2952,6 +2968,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	consecutiveCount := 0
 	totalToolCalls := 0
 	toolsDisabledByLoop := false
+	loopGuardTool := ""
 
 	// ReAct 循环 - 使用 Chat 进行工具迭代
 	for i := 0; i < a.maxToolIterations; i++ {
@@ -3002,6 +3019,8 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			messagesAtTurnStart := messages
 			capturedToolCalls := totalToolCalls
 			capturedChatterMem := chatterMem
+			capturedLoopGuard := toolsDisabledByLoop
+			capturedLoopGuardTool := loopGuardTool
 			outCh := make(chan provider.StreamChunk, 64)
 			outReader := provider.NewStreamReader(outCh)
 			go func() {
@@ -3039,6 +3058,9 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 				}
 				a.meterTokens(ctx, sess.Key(), streamUsage)
 				msg := provider.Message{Role: "assistant", Content: full.String(), Thinking: thinking}
+				if capturedLoopGuard {
+					msg.Metadata = loopGuardMetadata(capturedLoopGuardTool)
+				}
 				switch {
 				case len(rawAssistant) > 0:
 					// 提供者已经序列化了助手消息
@@ -3059,6 +3081,12 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 					}
 				}
 				sess.Append(msg)
+				if msg.Metadata != nil {
+					emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{
+						"content":  "",
+						"metadata": msg.Metadata,
+					}})
+				}
 				// 现在助理消息是 Fire PostTurn
 				// 坚持下来了。自动持久 (memory.go) 落后
 				// 转弯后运行；没有这个调用流路径
@@ -3095,6 +3123,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			}
 			if consecutiveCount >= 3 {
 				slog.Warn("tool loop detected", "agent", a.name, "tool", tc.Function.Name)
+				loopGuardTool = tc.Function.Name
 				loopDetected = true
 				break
 			}
