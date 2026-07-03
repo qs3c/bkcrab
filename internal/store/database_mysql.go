@@ -169,6 +169,8 @@ func mysqlMigrationSQL() []string {
 			chatter_user_id VARCHAR(120) NOT NULL DEFAULT '',
 			turn_status VARCHAR(16) NOT NULL DEFAULT '',
 			extraction_id VARCHAR(64) NULL,
+			tool_call_count INT NOT NULL DEFAULT 0,
+			skill_extraction_id VARCHAR(64) NULL,
 			PRIMARY KEY (user_id, agent_id, session_key, seq)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS session_events (

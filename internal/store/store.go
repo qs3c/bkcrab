@@ -121,8 +121,9 @@ type Store interface {
 	// turn_status 默认 ''(非锚点)。seq 在事务内分配,模式同 AppendSessionEvent。
 	AppendTurnAnchor(ctx context.Context, userID, agentID, sessionKey string, msg SessionMessage) (int64, error)
 	// FinishTurn 把锚点行翻成 turn_status='done'(按主键精确定位,避免认错
-	// 上次崩溃残留的僵尸 running 行)。turn 结束时由 runPostTurn 调用。
-	FinishTurn(ctx context.Context, userID, agentID, sessionKey string, seq int64) error
+	// 上次崩溃残留的僵尸 running 行),并写入本 turn 的工具调用数(供技能提取
+	// 按 session 累计判定)。turn 结束时由 runPostTurn 调用。
+	FinishTurn(ctx context.Context, userID, agentID, sessionKey string, seq int64, toolCallCount int) error
 	// ClaimCadenceBatch 在单个写事务内:统计该 (agent, chatter) 下 turn_status='done'
 	// 且 extraction_id IS NULL 的锚点,若 >= n 则生成 uuid、对其中至多 batchCap 条置位
 	// extraction_id 并返回 (uuid, 这批 TurnRef)。不足 n 返回 ("", nil, nil)。
@@ -131,6 +132,15 @@ type Store interface {
 	// ResetExtraction 把某次提取认领的所有行 extraction_id 重置回 NULL,
 	// 使它们回到待提取状态(异步提取失败时的补偿回滚)。
 	ResetExtraction(ctx context.Context, extractionID string) error
+	// ClaimSkillBatch 在单个写事务内:选出该 (agent, session) 下 turn_status='done'
+	// 且 skill_extraction_id IS NULL 的锚点(按 created_at,seq 至多 batchCap 条,
+	// MySQL/PG 加 FOR UPDATE),若 SUM(tool_call_count) >= minTotal 则生成 uuid、
+	// 整批置位 skill_extraction_id 并返回 (uuid, TurnRef 列表);不足返回 ("", nil, nil)。
+	// 事务保证并发收尾(同实例异步 post-turn / 直连入口 / 跨实例)不会重复认领。
+	ClaimSkillBatch(ctx context.Context, agentID, sessionKey string, minTotal, batchCap int) (string, []TurnRef, error)
+	// ResetSkillExtraction 把某次技能认领的所有行 skill_extraction_id 重置回 NULL。
+	// 仅基础设施错误(回放失败/LLM 故障)时补偿调用;"判定不提取"视为已消费,不重置。
+	ResetSkillExtraction(ctx context.Context, skillExtractionID string) error
 	// LoadTurnMessages 按 TurnRef 列表从归档回放被认领 turn 的消息,按 session 分组返回
 	// (每 session 一条查询,锚点边界决定每个 turn 的区间)。供记忆提取按 session 分节拼 prompt。
 	LoadTurnMessages(ctx context.Context, userID, agentID string, refs []TurnRef) ([]TurnGroup, error)

@@ -261,9 +261,16 @@ type PIIScrubCfg struct {
 }
 
 type SkillsLearnerCfg struct {
-	Enabled      bool   `json:"enabled"`
+	Enabled *bool `json:"enabled,omitempty"`
+	// MinToolCalls is the trigger threshold. With a persistent store it is
+	// cumulative across completed turns in the same session; without one it
+	// falls back to the single-turn check.
 	MinToolCalls int    `json:"minToolCalls,omitempty"`
 	Model        string `json:"model,omitempty"`
+}
+
+func (c SkillsLearnerCfg) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
 }
 
 // Config 是内存中的运行时快照。网关在启动时从 BKCRAB_* 环境变量 +

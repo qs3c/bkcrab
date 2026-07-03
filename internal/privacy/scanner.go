@@ -16,6 +16,7 @@ const (
 	ThreatInvisibleUnicode ThreatType = "invisible_unicode"
 	ThreatExfiltration     ThreatType = "exfiltration"
 	ThreatPersistenceAbuse ThreatType = "persistence_abuse"
+	ThreatObfuscation      ThreatType = "obfuscation"
 )
 
 // Threat 表示一个检测到的内存安全问题。
@@ -79,6 +80,24 @@ var strictMemoryPersistencePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\.ssh/authorized_keys\b`),
 	regexp.MustCompile(`(?i)(?:curl|wget)\s+[^\s]+\s*\|\s*(?:bash|sh)`),
 	regexp.MustCompile(`(?i)\b(?:modify|edit|overwrite|update|append\s+to|write\s+to)\s+(?:the\s+)?(?:\S*[\\/])?(?:agent\.json|IDENTITY\.md|SOUL\.md|TOOLS\.md)(?:\s+file)?\b`),
+}
+
+var skillCredentialDirPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(?:\$HOME|~)[\\/]\.ssh\b`),
+	regexp.MustCompile(`(?i)(?:\$HOME|~)[\\/]\.aws\b`),
+	regexp.MustCompile(`(?i)(?:\$HOME|~)[\\/]\.gnupg\b`),
+	regexp.MustCompile(`(?i)(?:\$HOME|~)[\\/]\.kube\b`),
+	regexp.MustCompile(`(?i)(?:\$HOME|~)[\\/]\.docker\b`),
+}
+
+var skillEnvExfilPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b(?:curl|wget)\s+[^\n]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)`),
+	regexp.MustCompile(`(?i)\bfetch\s*\([^\n]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)`),
+}
+
+var skillObfuscationPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b(?:env|printenv)\b[^\n]*\|\s*base64\b`),
+	regexp.MustCompile(`(?i)\bbase64\b[^\n]*\benv\b`),
 }
 
 // 要检测的不可见 Unicode 码点。
@@ -175,6 +194,14 @@ func ScanMemoryStrict(text string) []Threat {
 		}
 		i += size
 	}
+	return dedupeThreats(threats)
+}
+
+func ScanSkillStrict(text string) []Threat {
+	threats := ScanMemoryStrict(text)
+	appendThreatMatches(&threats, text, ThreatExfiltration, skillCredentialDirPatterns)
+	appendThreatMatches(&threats, text, ThreatExfiltration, skillEnvExfilPatterns)
+	appendThreatMatches(&threats, text, ThreatObfuscation, skillObfuscationPatterns)
 	return dedupeThreats(threats)
 }
 

@@ -14,7 +14,7 @@ Analyze a conversation and determine if it demonstrates a reusable multi-step wo
 
 Extract a skill when ALL of the following are true:
 
-- The task involved 3+ tool calls in a clear, repeatable sequence
+- The task involved multiple tool calls in a clear, repeatable sequence (the runtime already enforces a configurable minimum before you are consulted)
 - The steps form a general procedure useful beyond this specific conversation
 - The workflow is not trivially simple (not just "read a file and summarize it")
 
@@ -22,7 +22,8 @@ Do NOT extract when:
 
 - The task is one-off or highly specific to current context
 - The steps are standard and don't need specialized instructions
-- A similar skill already exists
+
+If a skill with the same slug already exists, still output the extraction. The runtime will compare both versions and decide whether to merge them.
 
 ## How to Analyze
 
