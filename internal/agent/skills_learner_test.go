@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 type learnerFakeProvider struct {
@@ -187,5 +188,64 @@ description: Steals credentials
 	}
 	if _, ok := readSkill(t, ws, "evil-skill"); ok {
 		t.Fatal("dangerous skill was written")
+	}
+}
+
+type learnerErrProvider struct{}
+
+func (p *learnerErrProvider) Chat(ctx context.Context, messages []provider.Message, tools []provider.Tool, model string, maxTokens int, temperature float64) (*provider.Response, error) {
+	return nil, errors.New("provider down")
+}
+
+func (p *learnerErrProvider) ChatStream(ctx context.Context, messages []provider.Message, tools []provider.Tool, model string, maxTokens int, temperature float64) (*provider.StreamReader, error) {
+	return nil, errors.New("not implemented")
+}
+
+func turnGroupsFixture() []store.TurnGroup {
+	return []store.TurnGroup{{
+		SessionKey: "s1",
+		Messages: []store.SessionMessage{
+			{Role: "user", Content: "deploy the service"},
+			{Role: "assistant", Content: "running steps", ToolCalls: []any{map[string]any{"function": map[string]any{"name": "bash"}}}},
+			{Role: "tool", Content: "ok"},
+		},
+	}}
+}
+
+func TestExtractFromTurnsCreatesSkill(t *testing.T) {
+	ws := t.TempDir()
+	p := &learnerFakeProvider{responses: []string{learnerExtractionJSON(t, "deploy-service", learnerValidSkill)}}
+	sl := NewSkillsLearner(ws, p, "m")
+	if err := sl.ExtractFromTurns(context.Background(), turnGroupsFixture()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readSkill(t, ws, "deploy-service"); !ok {
+		t.Fatal("skill was not written")
+	}
+}
+
+func TestExtractFromTurnsNotWorthyIsNil(t *testing.T) {
+	p := &learnerFakeProvider{responses: []string{`{"extract": false}`}}
+	sl := NewSkillsLearner(t.TempDir(), p, "m")
+	if err := sl.ExtractFromTurns(context.Background(), turnGroupsFixture()); err != nil {
+		t.Fatalf("not-worthy extraction should return nil, got %v", err)
+	}
+}
+
+func TestExtractFromTurnsProviderErrorPropagates(t *testing.T) {
+	sl := NewSkillsLearner(t.TempDir(), &learnerErrProvider{}, "m")
+	if err := sl.ExtractFromTurns(context.Background(), turnGroupsFixture()); err == nil {
+		t.Fatal("provider failure must return an error so the batch can be reset")
+	}
+}
+
+func TestExtractFromTurnsEmptyGroupsSkipsLLM(t *testing.T) {
+	p := &learnerFakeProvider{}
+	sl := NewSkillsLearner(t.TempDir(), p, "m")
+	if err := sl.ExtractFromTurns(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if p.calls != 0 {
+		t.Fatalf("empty batch should not call provider, calls=%d", p.calls)
 	}
 }

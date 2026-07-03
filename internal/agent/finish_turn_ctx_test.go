@@ -46,7 +46,7 @@ func TestFinishTurnSurvivesCanceledRequestCtx(t *testing.T) {
 	// 模拟回合结束:请求 ctx 已被取消。
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	a.finishTurnAndMaybeExtract(ctx, nil, &turnAnchor{sessionKey: sk, seq: seq})
+	a.finishTurnAndMaybeExtract(ctx, nil, &turnAnchor{sessionKey: sk, seq: seq}, 0)
 
 	metas, err := db.ListSessions(context.Background(), uid, agentID)
 	if err != nil {

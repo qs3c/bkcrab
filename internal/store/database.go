@@ -300,6 +300,26 @@ func (d *DBStore) migrateSessionMessagesAddTurnColumns(ctx context.Context) erro
 			return fmt.Errorf("add extraction_id: %w", err)
 		}
 	}
+	countType, skillIDType := "INTEGER", "TEXT"
+	if d.dialect == mysqlDialect {
+		countType, skillIDType = "INT", "VARCHAR(64)"
+	}
+	if has, err := d.tableHasColumn(ctx, "session_messages", "tool_call_count"); err != nil {
+		return err
+	} else if !has {
+		if _, err := d.db.ExecContext(ctx,
+			fmt.Sprintf(`ALTER TABLE session_messages ADD COLUMN tool_call_count %s NOT NULL DEFAULT 0`, countType)); err != nil {
+			return fmt.Errorf("add tool_call_count: %w", err)
+		}
+	}
+	if has, err := d.tableHasColumn(ctx, "session_messages", "skill_extraction_id"); err != nil {
+		return err
+	} else if !has {
+		if _, err := d.db.ExecContext(ctx,
+			fmt.Sprintf(`ALTER TABLE session_messages ADD COLUMN skill_extraction_id %s`, skillIDType)); err != nil {
+			return fmt.Errorf("add skill_extraction_id: %w", err)
+		}
+	}
 	// 待提取索引:SQLite/PG 用部分索引;MySQL 不支持,降级为普通复合索引。
 	idx := `CREATE INDEX IF NOT EXISTS idx_sm_pending ON session_messages (agent_id, chatter_user_id) WHERE turn_status = 'done' AND extraction_id IS NULL`
 	if d.dialect == mysqlDialect {
@@ -1375,6 +1395,10 @@ func (d *DBStore) migrationSQL() []string {
 			turn_status TEXT NOT NULL DEFAULT '',
 			-- extraction_id：NULL = 未被任何记忆提取认领；非 NULL(uuid)= 已认领。
 			extraction_id TEXT,
+			-- tool_call_count records the completed turn's tool calls for skill cadence.
+			tool_call_count INTEGER NOT NULL DEFAULT 0,
+			-- skill_extraction_id is parallel to memory extraction_id.
+			skill_extraction_id TEXT,
 			PRIMARY KEY (user_id, agent_id, session_key, seq)
 		)`,
 		// session_events 是 agent 在一轮中发出的实时事件流
@@ -2422,12 +2446,12 @@ func (d *DBStore) AppendTurnAnchor(ctx context.Context, userID, agentID, session
 }
 
 // FinishTurn 见接口文档。
-func (d *DBStore) FinishTurn(ctx context.Context, userID, agentID, sessionKey string, seq int64) error {
+func (d *DBStore) FinishTurn(ctx context.Context, userID, agentID, sessionKey string, seq int64, toolCallCount int) error {
 	_, err := d.db.ExecContext(ctx,
-		fmt.Sprintf(`UPDATE session_messages SET turn_status='done'
+		fmt.Sprintf(`UPDATE session_messages SET turn_status='done', tool_call_count=%s
 			WHERE user_id=%s AND agent_id=%s AND session_key=%s AND seq=%s AND turn_status='running'`,
-			d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
-		userID, agentID, sessionKey, seq)
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)),
+		toolCallCount, userID, agentID, sessionKey, seq)
 	return err
 }
 
@@ -3690,6 +3714,76 @@ func (d *DBStore) ResetExtraction(ctx context.Context, extractionID string) erro
 	_, err := d.db.ExecContext(ctx,
 		fmt.Sprintf(`UPDATE session_messages SET extraction_id=NULL WHERE extraction_id=%s`, d.ph(1)),
 		extractionID)
+	return err
+}
+
+// ClaimSkillBatch 见接口文档。
+func (d *DBStore) ClaimSkillBatch(ctx context.Context, agentID, sessionKey string, minTotal, batchCap int) (string, []TurnRef, error) {
+	if sessionKey == "" || minTotal <= 0 || batchCap <= 0 {
+		return "", nil, nil
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	defer tx.Rollback()
+
+	selSQL := `SELECT seq, tool_call_count FROM session_messages
+		WHERE agent_id=%s AND session_key=%s AND turn_status='done' AND skill_extraction_id IS NULL
+		ORDER BY created_at, seq LIMIT %d`
+	lock := ""
+	if d.dialect == "postgres" || d.dialect == mysqlDialect {
+		lock = " FOR UPDATE"
+	}
+	rows, err := tx.QueryContext(ctx,
+		fmt.Sprintf(selSQL+lock, d.ph(1), d.ph(2), batchCap), agentID, sessionKey)
+	if err != nil {
+		return "", nil, err
+	}
+	var refs []TurnRef
+	total := 0
+	for rows.Next() {
+		var seq int64
+		var count int
+		if err := rows.Scan(&seq, &count); err != nil {
+			rows.Close()
+			return "", nil, err
+		}
+		refs = append(refs, TurnRef{SessionKey: sessionKey, StartSeq: seq})
+		total += count
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return "", nil, err
+	}
+	if total < minTotal {
+		return "", nil, nil
+	}
+
+	id := uuid.NewString()
+	for _, r := range refs {
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf(`UPDATE session_messages SET skill_extraction_id=%s
+				WHERE agent_id=%s AND session_key=%s AND seq=%s AND skill_extraction_id IS NULL`,
+				d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
+			id, agentID, r.SessionKey, r.StartSeq); err != nil {
+			return "", nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", nil, err
+	}
+	return id, refs, nil
+}
+
+// ResetSkillExtraction 见接口文档。
+func (d *DBStore) ResetSkillExtraction(ctx context.Context, skillExtractionID string) error {
+	if skillExtractionID == "" {
+		return nil
+	}
+	_, err := d.db.ExecContext(ctx,
+		fmt.Sprintf(`UPDATE session_messages SET skill_extraction_id=NULL WHERE skill_extraction_id=%s`, d.ph(1)),
+		skillExtractionID)
 	return err
 }
 

@@ -2118,6 +2118,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	allFailedRounds := 0
 	const failedRoundsLimit = 3
 	emergencyRetried := false
+	toolsDisabledByLoop := false
 
 	// replyParts 累积每个非空助理文本段
 	// 跨迭代发出（工具调用之前的前导行+
@@ -2159,7 +2160,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		// 明确，因此模型不会抱歉地悬而未决。
 		callTools := toolDefs
 		var requestAppend []provider.Message
-		if allFailedRounds >= failedRoundsLimit {
+		if toolsDisabledByLoop {
+			callTools = nil
+		} else if allFailedRounds >= failedRoundsLimit {
 			slog.Warn("disabling tools after consecutive failed rounds",
 				"agent", a.name, "failed_rounds", allFailedRounds)
 			callTools = nil
@@ -2278,18 +2281,14 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			}
 			if consecutiveCount >= 3 {
 				slog.Warn("tool loop detected", "agent", a.name, "tool", tc.Function.Name)
-				warnMsg := provider.Message{
-					Role:    "system",
-					Content: "Loop detected: you called the same tool with the same arguments 3 times. Please try a different approach.",
-				}
-				sess.Append(warnMsg)
-				messages = append(messages, warnMsg)
 				loopDetected = true
 				break
 			}
 		}
 		if loopDetected {
-			break
+			messages = appendToolLoopGuardMessages(ctx, sess, messages, resp.ToolCalls, true)
+			toolsDisabledByLoop = true
+			continue
 		}
 
 		// 触发 BeforeToolCall 挂钩
@@ -2580,6 +2579,37 @@ func firstNonEmptyLine(s string) string {
 	return ""
 }
 
+const toolLoopGuardWarning = "Loop detected: the same tool was requested with the same arguments 3 times in a row. Tools are disabled for the final response; answer directly using the results already available, and clearly note anything still unresolved."
+
+func toolLoopGuardResult(toolName string) string {
+	return fmt.Sprintf("Skipped %s: the same tool with the same arguments was requested 3 times in a row. Tools are disabled for the final response.", toolName)
+}
+
+func appendToolLoopGuardMessages(ctx context.Context, sess *session.Session, messages []provider.Message, calls []provider.ToolCall, emitEvents bool) []provider.Message {
+	for _, tc := range calls {
+		result := toolLoopGuardResult(tc.Function.Name)
+		toolMsg := provider.Message{
+			Role:       "tool",
+			Content:    result,
+			ToolCallID: tc.ID,
+			Name:       tc.Function.Name,
+		}
+		sess.Append(toolMsg)
+		messages = append(messages, toolMsg)
+		if emitEvents {
+			emitEvent(ctx, ChatEvent{Type: "tool_result", Data: map[string]any{
+				"id":     tc.ID,
+				"name":   tc.Function.Name,
+				"result": result,
+			}})
+		}
+	}
+
+	warnMsg := provider.Message{Role: "system", Content: toolLoopGuardWarning}
+	sess.Append(warnMsg)
+	return append(messages, warnMsg)
+}
+
 // padOrphanToolResults 遍历会话并附加合成
 // tool_result 为来自最新助手消息的任何 tool_use id
 // 还没有匹配的 tool_result。前几轮不是
@@ -2703,15 +2733,19 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 	})
 
 	// turn 结束:把锚点翻成 done,并按"已完成且未提取 >= N"的节拍认领一批 turn 异步提取。
-	a.finishTurnAndMaybeExtract(ctx, chatterMem, anchor)
+	a.finishTurnAndMaybeExtract(ctx, chatterMem, anchor, toolCallCount)
 
-	// 技能学习者
+	// 技能学习者:有持久化锚点走 cadence 累计路径;计划模式/无持久化 store 回退单 turn 判定。
 	if a.skillsLearner != nil {
-		go func() {
-			if err := a.skillsLearner.MaybeExtract(ctx, messages, toolCallCount); err != nil {
-				slog.Debug("skills learner error", "error", err)
-			}
-		}()
+		if a.dataStore != nil && anchor != nil {
+			a.maybeExtractSkillsCadence(ctx, anchor)
+		} else {
+			go func() {
+				if err := a.skillsLearner.MaybeExtract(ctx, messages, toolCallCount); err != nil {
+					slog.Debug("skills learner error", "error", err)
+				}
+			}()
+		}
 	}
 }
 
@@ -2719,7 +2753,7 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 // 的节拍在单个写事务内认领一批 turn,异步从归档回放它们的原文做记忆提取。
 // 提取失败则补偿重置 extraction_id,让这批 turn 回到待提取池。
 // 无持久化存储或本次无锚点(计划模式)时直接跳过。
-func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memory, anchor *turnAnchor) {
+func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memory, anchor *turnAnchor, toolCallCount int) {
 	if a.dataStore == nil || anchor == nil {
 		return
 	}
@@ -2731,7 +2765,7 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 	// 静默认领不到批次。脱离取消(保留 ctx 上的 chatter 等值),给独立超时防收尾写挂死。
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	if err := a.dataStore.FinishTurn(finishCtx, a.ownerUserID, a.name, anchor.sessionKey, anchor.seq); err != nil {
+	if err := a.dataStore.FinishTurn(finishCtx, a.ownerUserID, a.name, anchor.sessionKey, anchor.seq, toolCallCount); err != nil {
 		slog.Warn("finish turn failed", "agent", a.name, "error", err)
 		// 锚点没翻成 done 只是本 turn 不计入提取,不阻塞主流程。
 	}
@@ -2787,6 +2821,43 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 			resetBatch()
 		}
 	}()
+}
+
+const skillClaimBatchCap = 32
+
+func (a *Agent) maybeExtractSkillsCadence(ctx context.Context, anchor *turnAnchor) {
+	claimCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	batchID, refs, err := a.dataStore.ClaimSkillBatch(claimCtx, a.name, anchor.sessionKey, a.skillsLearner.minToolCalls, skillClaimBatchCap)
+	if err != nil {
+		slog.Warn("skills cadence: claim failed", "agent", a.name, "session", anchor.sessionKey, "error", err)
+		return
+	}
+	if batchID == "" {
+		return
+	}
+	slog.Info("skills cadence firing", "agent", a.name, "session", anchor.sessionKey, "turns", len(refs), "batch_id", batchID)
+	go a.runSkillBatchExtraction(context.WithoutCancel(ctx), batchID, refs)
+}
+
+func (a *Agent) runSkillBatchExtraction(base context.Context, batchID string, refs []store.TurnRef) {
+	extractCtx, cancel := context.WithTimeout(base, 5*time.Minute)
+	defer cancel()
+	resetBatch := func() {
+		rctx, rcancel := context.WithTimeout(base, 30*time.Second)
+		defer rcancel()
+		_ = a.dataStore.ResetSkillExtraction(rctx, batchID)
+	}
+	groups, err := a.dataStore.LoadTurnMessages(extractCtx, a.ownerUserID, a.name, refs)
+	if err != nil {
+		slog.Warn("skills cadence: load turn messages failed", "agent", a.name, "batch_id", batchID, "error", err)
+		resetBatch()
+		return
+	}
+	if err := a.skillsLearner.ExtractFromTurns(extractCtx, groups); err != nil {
+		slog.Warn("skills cadence: extract failed", "agent", a.name, "batch_id", batchID, "error", err)
+		resetBatch()
+	}
 }
 
 // HandleMessageStream通过ReAct循环处理消息并返回
@@ -2878,12 +2949,17 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	var lastSig toolCallSig
 	consecutiveCount := 0
 	totalToolCalls := 0
+	toolsDisabledByLoop := false
 
 	// ReAct 循环 - 使用 Chat 进行工具迭代
 	for i := 0; i < a.maxToolIterations; i++ {
 		messages, hcBefore := a.runBeforeModelCallHooks(ctx, messages, msg)
 
-		resp, updatedMessages, retried, err := a.callLLMWithEmergencyRetry(ctx, sess, overheadMessages, toolDefs, messages, toolDefs, emergencyRetried, func(request []provider.Message, tools []provider.Tool) (*provider.Response, error) {
+		callTools := toolDefs
+		if toolsDisabledByLoop {
+			callTools = nil
+		}
+		resp, updatedMessages, retried, err := a.callLLMWithEmergencyRetry(ctx, sess, overheadMessages, toolDefs, messages, callTools, emergencyRetried, func(request []provider.Message, tools []provider.Tool) (*provider.Response, error) {
 			dumpLLMRequest(a.name, a.model, request, tools)
 			return a.provider.Chat(ctx, request, tools, a.model, a.maxTokens, a.temperature)
 		})
@@ -2904,7 +2980,11 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 		if !resp.HasToolCalls() {
 			// 最终响应 - 使用流媒体
-			sr, err := a.provider.ChatStream(ctx, messages, toolDefs, a.model, a.maxTokens, a.temperature)
+			finalTools := toolDefs
+			if toolsDisabledByLoop {
+				finalTools = nil
+			}
+			sr, err := a.provider.ChatStream(ctx, messages, finalTools, a.model, a.maxTokens, a.temperature)
 			if err != nil {
 				slog.Error("LLM stream failed, falling back", "agent", a.name, "error", err)
 				sess.Append(provider.Message{Role: "assistant", Content: resp.Content})
@@ -3013,18 +3093,14 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			}
 			if consecutiveCount >= 3 {
 				slog.Warn("tool loop detected", "agent", a.name, "tool", tc.Function.Name)
-				warnMsg := provider.Message{
-					Role:    "system",
-					Content: "Loop detected: you called the same tool with the same arguments 3 times. Please try a different approach.",
-				}
-				sess.Append(warnMsg)
-				messages = append(messages, warnMsg)
 				loopDetected = true
 				break
 			}
 		}
 		if loopDetected {
-			break
+			messages = appendToolLoopGuardMessages(ctx, sess, messages, resp.ToolCalls, false)
+			toolsDisabledByLoop = true
+			continue
 		}
 
 		// 触发 BeforeToolCall 挂钩
@@ -3387,7 +3463,7 @@ func (a *Agent) chatterUserID(msg bus.InboundMessage) string {
 // 烘焙进系统提示 # Skills 段的技能摘要。两者都由调用方在 *本回合* 用掉——目录
 // 注册到回合私有 Registry 的 load_skill、摘要作为参数传给 BuildSystemPromptAs——
 // 而不是写共享的 a.registry / a.ctxBuilder：后者在多会话并发下会被互相覆盖
-//（tools map 并发写是 Go 致命 panic；技能摘要串扰会让系统提示列错技能）。
+// （tools map 并发写是 Go 致命 panic；技能摘要串扰会让系统提示列错技能）。
 // 无 store 时返回零值，回合私有副本沿用模板继承的 load_skill、系统提示用构造期
 // 的默认摘要。
 func (a *Agent) refreshSkillsFromStore(userID string) (skillDirs []string, skillsSummary string) {

@@ -261,7 +261,10 @@ type PIIScrubCfg struct {
 }
 
 type SkillsLearnerCfg struct {
-	Enabled      *bool  `json:"enabled,omitempty"`
+	Enabled *bool `json:"enabled,omitempty"`
+	// MinToolCalls is the trigger threshold. With a persistent store it is
+	// cumulative across completed turns in the same session; without one it
+	// falls back to the single-turn check.
 	MinToolCalls int    `json:"minToolCalls,omitempty"`
 	Model        string `json:"model,omitempty"`
 }

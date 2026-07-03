@@ -14,7 +14,7 @@ func seedDoneTurns(t *testing.T, db *DBStore, agent, chatter string, n int) {
 		if err != nil {
 			t.Fatalf("anchor: %v", err)
 		}
-		if err := db.FinishTurn(ctx, "u1", agent, "sess1", seq); err != nil {
+		if err := db.FinishTurn(ctx, "u1", agent, "sess1", seq, 0); err != nil {
 			t.Fatalf("finish: %v", err)
 		}
 	}
@@ -113,7 +113,7 @@ func TestLoadTurnMessagesRange(t *testing.T) {
 	uid, agent, sk := "u1", "agentA", "sess1"
 	seq1, _ := db.AppendTurnAnchor(ctx, uid, agent, sk, SessionMessage{Role: "user", Content: "Q1"})
 	db.AppendSessionMessage(ctx, uid, agent, sk, SessionMessage{Role: "assistant", Content: "A1"})
-	db.FinishTurn(ctx, uid, agent, sk, seq1)
+	db.FinishTurn(ctx, uid, agent, sk, seq1, 0)
 	db.AppendTurnAnchor(ctx, uid, agent, sk, SessionMessage{Role: "user", Content: "Q2"})
 
 	groups, err := db.LoadTurnMessages(ctx, uid, agent, []TurnRef{{SessionKey: sk, StartSeq: seq1}})
@@ -139,14 +139,14 @@ func TestLoadTurnMessagesGroupsAndGaps(t *testing.T) {
 	// s1:turnA(Q1+A1,认领) / turnB(Q2,不认领) / turnC(Q3,认领)
 	a0, _ := db.AppendTurnAnchor(ctx, uid, agent, "s1", SessionMessage{Role: "user", Content: "Q1"})
 	db.AppendSessionMessage(ctx, uid, agent, "s1", SessionMessage{Role: "assistant", Content: "A1"})
-	db.FinishTurn(ctx, uid, agent, "s1", a0)
+	db.FinishTurn(ctx, uid, agent, "s1", a0, 0)
 	b0, _ := db.AppendTurnAnchor(ctx, uid, agent, "s1", SessionMessage{Role: "user", Content: "Q2"})
-	db.FinishTurn(ctx, uid, agent, "s1", b0)
+	db.FinishTurn(ctx, uid, agent, "s1", b0, 0)
 	c0, _ := db.AppendTurnAnchor(ctx, uid, agent, "s1", SessionMessage{Role: "user", Content: "Q3"})
-	db.FinishTurn(ctx, uid, agent, "s1", c0)
+	db.FinishTurn(ctx, uid, agent, "s1", c0, 0)
 	// s2:单个认领 turn
 	d0, _ := db.AppendTurnAnchor(ctx, uid, agent, "s2", SessionMessage{Role: "user", Content: "S2Q1"})
-	db.FinishTurn(ctx, uid, agent, "s2", d0)
+	db.FinishTurn(ctx, uid, agent, "s2", d0, 0)
 
 	refs := []TurnRef{{SessionKey: "s1", StartSeq: a0}, {SessionKey: "s1", StartSeq: c0}, {SessionKey: "s2", StartSeq: d0}}
 	groups, err := db.LoadTurnMessages(ctx, uid, agent, refs)

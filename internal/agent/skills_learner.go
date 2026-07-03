@@ -11,6 +11,7 @@ import (
 
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/skills"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 type SkillsLearner struct {
@@ -45,19 +46,41 @@ type extractionResponse struct {
 	Skill   extractedSkill `json:"skill"`
 }
 
+// MaybeExtract checks a single turn for reusable skill extraction.
+// The persistent cadence path enforces the threshold in ClaimSkillBatch.
 func (sl *SkillsLearner) MaybeExtract(ctx context.Context, messages []provider.Message, toolCallCount int) error {
 	if toolCallCount < sl.minToolCalls {
 		return nil
 	}
 
-	skill, err := sl.extractSkill(ctx, messages)
+	skill, err := sl.extractFromSummary(ctx, summarizeProviderMessages(messages))
 	if err != nil {
 		return fmt.Errorf("extract skill: %w", err)
 	}
 	if skill == nil {
 		return nil
 	}
+	return sl.persistExtracted(ctx, skill)
+}
 
+// ExtractFromTurns extracts a skill from archived turn groups claimed by cadence.
+// Non-nil errors are infrastructure failures; validation/scan rejections are consumed.
+func (sl *SkillsLearner) ExtractFromTurns(ctx context.Context, groups []store.TurnGroup) error {
+	summary := summarizeTurnGroups(groups)
+	if strings.TrimSpace(summary) == "" {
+		return nil
+	}
+	skill, err := sl.extractFromSummary(ctx, summary)
+	if err != nil {
+		return fmt.Errorf("extract skill: %w", err)
+	}
+	if skill == nil {
+		return nil
+	}
+	return sl.persistExtracted(ctx, skill)
+}
+
+func (sl *SkillsLearner) persistExtracted(ctx context.Context, skill *extractedSkill) error {
 	if existing, ok := sl.manager.Read(skill.Slug); ok {
 		merged, err := sl.decideUpdate(ctx, existing, skill)
 		if err != nil {
@@ -115,7 +138,7 @@ Step-by-step instructions in markdown...
 
 Output ONLY the JSON, no markdown fences.`
 
-func (sl *SkillsLearner) extractSkill(ctx context.Context, messages []provider.Message) (*extractedSkill, error) {
+func summarizeProviderMessages(messages []provider.Message) string {
 	var sb strings.Builder
 	for _, m := range messages {
 		if m.Role == "system" {
@@ -130,11 +153,38 @@ func (sl *SkillsLearner) extractSkill(ctx context.Context, messages []provider.M
 			sb.WriteString(fmt.Sprintf("  -> tool: %s(%s)\n", tc.Function.Name, truncate(tc.Function.Arguments, 200)))
 		}
 	}
+	return sb.String()
+}
 
+func summarizeTurnGroups(groups []store.TurnGroup) string {
+	var sb strings.Builder
+	for _, g := range groups {
+		for _, m := range g.Messages {
+			if m.Role == "system" {
+				continue
+			}
+			content := m.Content
+			if len(content) > 500 {
+				content = content[:500] + "..."
+			}
+			sb.WriteString(fmt.Sprintf("[%s]: %s\n", m.Role, content))
+			if m.ToolCalls != nil {
+				if b, err := json.Marshal(m.ToolCalls); err == nil {
+					if s := string(b); s != "null" && s != `""` && s != "[]" {
+						sb.WriteString(fmt.Sprintf("  -> tools: %s\n", truncate(s, 300)))
+					}
+				}
+			}
+		}
+	}
+	return sb.String()
+}
+
+func (sl *SkillsLearner) extractFromSummary(ctx context.Context, summary string) (*extractedSkill, error) {
 	prompt := sl.loadSkillLearnerPrompt()
 	extractMsgs := []provider.Message{
 		{Role: "system", Content: prompt + "\n\nOutput ONLY the JSON, no markdown fences."},
-		{Role: "user", Content: sb.String()},
+		{Role: "user", Content: summary},
 	}
 
 	resp, err := sl.provider.Chat(ctx, extractMsgs, nil, sl.model, 4096, 0.3)

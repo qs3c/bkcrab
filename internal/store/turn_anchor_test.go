@@ -40,7 +40,7 @@ func TestFinishTurnFlipsStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("anchor: %v", err)
 	}
-	if err := db.FinishTurn(ctx, uid, agent, sk, seq); err != nil {
+	if err := db.FinishTurn(ctx, uid, agent, sk, seq, 0); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 	var status string
@@ -66,7 +66,7 @@ func TestListSessionsIncludesLatestTurnStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append done anchor: %v", err)
 	}
-	if err := db.FinishTurn(ctx, uid, agent, "done-session", doneSeq); err != nil {
+	if err := db.FinishTurn(ctx, uid, agent, "done-session", doneSeq, 0); err != nil {
 		t.Fatalf("finish done session: %v", err)
 	}
 
@@ -92,5 +92,25 @@ func TestListSessionsIncludesLatestTurnStatus(t *testing.T) {
 	}
 	if statuses["running-session"] != "running" {
 		t.Fatalf("running-session status = %q; want running", statuses["running-session"])
+	}
+}
+
+func TestFinishTurnRecordsToolCallCount(t *testing.T) {
+	db := newTestSQLite(t)
+	ctx := context.Background()
+	seq, err := db.AppendTurnAnchor(ctx, "u1", "agentA", "s-tcc", SessionMessage{Role: "user", Content: "q"})
+	if err != nil {
+		t.Fatalf("anchor: %v", err)
+	}
+	if err := db.FinishTurn(ctx, "u1", "agentA", "s-tcc", seq, 7); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	var got int
+	if err := db.db.QueryRowContext(ctx,
+		`SELECT tool_call_count FROM session_messages WHERE session_key='s-tcc' AND seq=?`, seq).Scan(&got); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if got != 7 {
+		t.Fatalf("tool_call_count = %d; want 7", got)
 	}
 }
