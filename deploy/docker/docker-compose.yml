@@ -40,6 +40,8 @@ services:
         condition: service_completed_successfully
       sandbox-docker:
         condition: service_healthy
+      sandbox-image-init:
+        condition: service_completed_successfully
     command: ["gateway"]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:18953/readyz"]
@@ -104,8 +106,20 @@ services:
     image: docker:28-dind
     privileged: true
     restart: unless-stopped
+    # The inner Docker daemon is the runtime for agent sandbox containers.
+    # Use stable upstream DNS instead of inheriting Docker Desktop's
+    # intermittently flaky embedded resolver.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     environment:
       DOCKER_TLS_CERTDIR: ""
+      HTTP_PROXY: "${HTTP_PROXY:-}"
+      HTTPS_PROXY: "${HTTPS_PROXY:-}"
+      NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,sandbox-docker}"
+      http_proxy: "${http_proxy:-}"
+      https_proxy: "${https_proxy:-}"
+      no_proxy: "${no_proxy:-localhost,127.0.0.1,sandbox-docker}"
     command:
       - --host=tcp://0.0.0.0:2375
       - --host=unix:///var/run/docker.sock
@@ -118,6 +132,61 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
+
+  sandbox-image-init:
+    image: docker:28-dind
+    restart: "no"
+    depends_on:
+      sandbox-docker:
+        condition: service_healthy
+    environment:
+      DOCKER_HOST: tcp://sandbox-docker:2375
+      SANDBOX_IMAGE: "${BKCRAB_SANDBOX_IMAGE:-thinkany/bkcrab-sandbox:latest}"
+      HTTP_PROXY: "${HTTP_PROXY:-}"
+      HTTPS_PROXY: "${HTTPS_PROXY:-}"
+      NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,sandbox-docker}"
+      http_proxy: "${http_proxy:-}"
+      https_proxy: "${https_proxy:-}"
+      no_proxy: "${no_proxy:-localhost,127.0.0.1,sandbox-docker}"
+    volumes:
+      - ./sandbox:/sandbox:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        host_docker="docker --host unix:///var/run/docker.sock"
+        dind_docker="docker --host tcp://sandbox-docker:2375"
+
+        if $${dind_docker} image inspect "$${SANDBOX_IMAGE}" >/dev/null 2>&1; then
+          echo "==> sandbox image already present in DinD: $${SANDBOX_IMAGE}"
+        else
+          if ! $${host_docker} image inspect "$${SANDBOX_IMAGE}" >/dev/null 2>&1; then
+            if [ ! -f /sandbox/Dockerfile ]; then
+              echo "sandbox image missing on host Docker and /sandbox/Dockerfile was not mounted"
+              echo "prepare $${SANDBOX_IMAGE} on the host Docker daemon, or restore deploy/docker/sandbox/Dockerfile"
+              exit 1
+            fi
+
+            echo "==> sandbox image missing on host Docker; building on host: $${SANDBOX_IMAGE}"
+            $${host_docker} build \
+              --build-arg HTTP_PROXY="$${HTTP_PROXY:-}" \
+              --build-arg HTTPS_PROXY="$${HTTPS_PROXY:-}" \
+              --build-arg NO_PROXY="$${NO_PROXY:-}" \
+              --build-arg http_proxy="$${http_proxy:-}" \
+              --build-arg https_proxy="$${https_proxy:-}" \
+              --build-arg no_proxy="$${no_proxy:-}" \
+              -t "$${SANDBOX_IMAGE}" \
+              /sandbox
+          fi
+
+          echo "==> loading sandbox image into DinD: $${SANDBOX_IMAGE}"
+          $${host_docker} save "$${SANDBOX_IMAGE}" | $${dind_docker} load
+        fi
+
+        echo "==> verifying sandbox image has Python"
+        $${dind_docker} run --rm "$${SANDBOX_IMAGE}" python --version
 
   migrate-storage:
     profiles: ["migration"]
