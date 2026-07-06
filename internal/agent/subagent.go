@@ -147,8 +147,6 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 			}
 			return "", fmt.Errorf("subagent chat failed at iteration %d: %w", i+1, err)
 		}
-		a.maybeRecoverToolCalls(resp)
-		a.normalizeToolCallIDs(resp)
 
 		if !resp.HasToolCalls() {
 			return resp.Content, nil
