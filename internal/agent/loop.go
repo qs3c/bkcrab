@@ -2100,12 +2100,8 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 
 	messages := compactionRequestMessages(sessionMsgs, overheadMessages)
 
-	// 循环检测：跟踪连续的相同工具调用
-	type toolCallSig struct {
-		name string
-		hash [32]byte
-	}
-	var lastSig toolCallSig
+	// 循环检测：跟踪连续的相同工具调用批次。
+	var lastSig toolLoopSig
 	consecutiveCount := 0
 	totalToolCalls := 0
 	// allFailedRounds 是连续回合的计数，其中每个
@@ -2275,24 +2271,18 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		messages = append(messages, assistantMsg)
 
 		// 循环检测：执行前检查
+		sig := toolLoopSignature(resp.ToolCalls)
+		if sig.summary == lastSig.summary && sig.hash == lastSig.hash {
+			consecutiveCount++
+		} else {
+			consecutiveCount = 1
+			lastSig = sig
+		}
 		loopDetected := false
-		for _, tc := range resp.ToolCalls {
-			sig := toolCallSig{
-				name: tc.Function.Name,
-				hash: sha256.Sum256([]byte(tc.Function.Arguments)),
-			}
-			if sig.name == lastSig.name && sig.hash == lastSig.hash {
-				consecutiveCount++
-			} else {
-				consecutiveCount = 1
-				lastSig = sig
-			}
-			if consecutiveCount >= 3 {
-				slog.Warn("tool loop detected", "agent", a.name, "tool", tc.Function.Name)
-				loopGuardTool = tc.Function.Name
-				loopDetected = true
-				break
-			}
+		if consecutiveCount >= 3 {
+			slog.Warn("tool loop detected", "agent", a.name, "tools", sig.summary)
+			loopGuardTool = sig.summary
+			loopDetected = true
 		}
 		if loopDetected {
 			messages = appendToolLoopGuardMessages(ctx, sess, messages, resp.ToolCalls, true)
@@ -2588,10 +2578,28 @@ func firstNonEmptyLine(s string) string {
 	return ""
 }
 
-const toolLoopGuardWarning = "Loop detected: the same tool was requested with the same arguments 3 times in a row. Tools are disabled for the final response; answer directly using the results already available, and clearly note anything still unresolved."
+type toolLoopSig struct {
+	summary string
+	hash    [32]byte
+}
+
+func toolLoopSignature(calls []provider.ToolCall) toolLoopSig {
+	var b strings.Builder
+	names := make([]string, 0, len(calls))
+	for _, tc := range calls {
+		names = append(names, tc.Function.Name)
+		fmt.Fprintf(&b, "%d:%s:%d:%s;", len(tc.Function.Name), tc.Function.Name, len(tc.Function.Arguments), tc.Function.Arguments)
+	}
+	return toolLoopSig{
+		summary: strings.Join(names, ","),
+		hash:    sha256.Sum256([]byte(b.String())),
+	}
+}
+
+const toolLoopGuardWarning = "Loop detected: the same tool-call batch was requested with the same arguments 3 times in a row. Tools are disabled for the final response; answer directly using the results already available, and clearly note anything still unresolved."
 
 func toolLoopGuardResult(toolName string) string {
-	return fmt.Sprintf("Skipped %s: the same tool with the same arguments was requested 3 times in a row. Tools are disabled for the final response.", toolName)
+	return fmt.Sprintf("Skipped %s: this call was part of the same repeated tool-call batch requested 3 times in a row. Tools are disabled for the final response.", toolName)
 }
 
 func loopGuardMetadata(toolName string) map[string]any {
@@ -2960,11 +2968,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 	messages := compactionRequestMessages(sessionMsgs, overheadMessages)
 
-	type toolCallSig struct {
-		name string
-		hash [32]byte
-	}
-	var lastSig toolCallSig
+	var lastSig toolLoopSig
 	consecutiveCount := 0
 	totalToolCalls := 0
 	toolsDisabledByLoop := false
@@ -3109,24 +3113,18 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		messages = append(messages, assistantMsg)
 
 		// 环路检测
+		sig := toolLoopSignature(resp.ToolCalls)
+		if sig.summary == lastSig.summary && sig.hash == lastSig.hash {
+			consecutiveCount++
+		} else {
+			consecutiveCount = 1
+			lastSig = sig
+		}
 		loopDetected := false
-		for _, tc := range resp.ToolCalls {
-			sig := toolCallSig{
-				name: tc.Function.Name,
-				hash: sha256.Sum256([]byte(tc.Function.Arguments)),
-			}
-			if sig.name == lastSig.name && sig.hash == lastSig.hash {
-				consecutiveCount++
-			} else {
-				consecutiveCount = 1
-				lastSig = sig
-			}
-			if consecutiveCount >= 3 {
-				slog.Warn("tool loop detected", "agent", a.name, "tool", tc.Function.Name)
-				loopGuardTool = tc.Function.Name
-				loopDetected = true
-				break
-			}
+		if consecutiveCount >= 3 {
+			slog.Warn("tool loop detected", "agent", a.name, "tools", sig.summary)
+			loopGuardTool = sig.summary
+			loopDetected = true
 		}
 		if loopDetected {
 			messages = appendToolLoopGuardMessages(ctx, sess, messages, resp.ToolCalls, false)
