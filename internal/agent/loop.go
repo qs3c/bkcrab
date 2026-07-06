@@ -2105,6 +2105,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	var lastSig toolLoopSig
 	consecutiveCount := 0
 	totalToolCalls := 0
+	successfulToolResults := toolSuccessCache{}
 	// allFailedRounds 是连续回合的计数，其中每个
 	// 工具结果作为 4xx/5xx HTTP 错误或执行程序返回
 	// 错误。这抓住了“模型旋转了五个猜测
@@ -2333,7 +2334,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			"agent", a.name,
 			"count", len(executeCalls),
 		)
-		results := a.engine.executeToolsConcurrently(ctx, reg, executeCalls, a.workspacePath)
+		results := a.executeToolsWithSuccessCache(ctx, reg, executeCalls, successfulToolResults)
 		// 附加合成延迟结果，以便每个原始 tool_use
 		// id 有一个配对的 tool_result。延迟消息告诉
 		// 准确地模拟它没有运行的原因 - 接下来可以重新发出
@@ -2424,6 +2425,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				// 这一轮的一次通话产生了一个真实的结果——
 				// 整个回合并不是“全部失败”。
 				roundAllFailed = false
+				recordSuccessfulToolResult(successfulToolResults, tc, resultContent)
 			}
 
 			// FTS 中的索引（如果可用）
@@ -2639,6 +2641,104 @@ func planningScratchBase(p string) string {
 		return ""
 	}
 	return strings.ToLower(path.Base(clean))
+}
+
+type toolSuccessKey struct {
+	tool string
+	hash [32]byte
+}
+
+type toolSuccessCache map[toolSuccessKey]string
+
+const cachedToolResultPrefix = "Cached result from an earlier successful "
+
+func cacheableSuccessfulTool(name string) bool {
+	switch name {
+	case "web_fetch":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolSuccessCacheKey(tc provider.ToolCall) toolSuccessKey {
+	return toolSuccessKey{
+		tool: tc.Function.Name,
+		hash: sha256.Sum256([]byte(tc.Function.Arguments)),
+	}
+}
+
+func cachedSuccessfulToolResult(toolName, content string) string {
+	return fmt.Sprintf(
+		"%s%s call with the same arguments in this turn. Do not call %s with these arguments again; answer the user directly from this result.\n\n%s",
+		cachedToolResultPrefix,
+		toolName,
+		toolName,
+		content,
+	)
+}
+
+func lookupSuccessfulToolResult(cache toolSuccessCache, tc provider.ToolCall) (string, bool) {
+	if !cacheableSuccessfulTool(tc.Function.Name) {
+		return "", false
+	}
+	content, ok := cache[toolSuccessCacheKey(tc)]
+	if !ok {
+		return "", false
+	}
+	return cachedSuccessfulToolResult(tc.Function.Name, content), true
+}
+
+func recordSuccessfulToolResult(cache toolSuccessCache, tc provider.ToolCall, content string) {
+	if !cacheableSuccessfulTool(tc.Function.Name) || strings.TrimSpace(content) == "" {
+		return
+	}
+	if strings.HasPrefix(content, cachedToolResultPrefix) {
+		return
+	}
+	cache[toolSuccessCacheKey(tc)] = content
+}
+
+func (a *Agent) executeToolsWithSuccessCache(ctx context.Context, reg *tools.Registry, calls []provider.ToolCall, cache toolSuccessCache) []toolCallResult {
+	if len(calls) == 0 {
+		return nil
+	}
+	results := make([]toolCallResult, len(calls))
+	executeCalls := make([]provider.ToolCall, 0, len(calls))
+	executeIndexes := make([]int, 0, len(calls))
+	for i, tc := range calls {
+		if cached, ok := lookupSuccessfulToolResult(cache, tc); ok {
+			results[i] = toolCallResult{
+				toolCallID: tc.ID,
+				toolName:   tc.Function.Name,
+				result:     cached,
+			}
+			continue
+		}
+		executeIndexes = append(executeIndexes, i)
+		executeCalls = append(executeCalls, tc)
+	}
+	if len(executeCalls) > 0 {
+		executed := a.engine.executeToolsConcurrently(ctx, reg, executeCalls, a.workspacePath)
+		for i, r := range executed {
+			if i >= len(executeIndexes) {
+				break
+			}
+			results[executeIndexes[i]] = r
+		}
+	}
+	for i, tc := range calls {
+		if results[i].toolCallID != "" {
+			continue
+		}
+		results[i] = toolCallResult{
+			toolCallID: tc.ID,
+			toolName:   tc.Function.Name,
+			result:     "tool execution did not return a result",
+			err:        fmt.Errorf("missing executor response for %s", tc.ID),
+		}
+	}
+	return results
 }
 
 const toolLoopGuardWarning = "Loop detected: the same tool-call pattern was requested 3 times in a row. Tools are disabled for the final response; answer directly using the results already available, and clearly note anything still unresolved."
@@ -3016,6 +3116,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	var lastSig toolLoopSig
 	consecutiveCount := 0
 	totalToolCalls := 0
+	successfulToolResults := toolSuccessCache{}
 	toolsDisabledByLoop := false
 	loopGuardTool := ""
 
@@ -3184,7 +3285,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		}
 
 		// 通过SDK引擎同时执行工具
-		results := a.engine.executeToolsConcurrently(ctx, reg, resp.ToolCalls, a.workspacePath)
+		results := a.executeToolsWithSuccessCache(ctx, reg, resp.ToolCalls, successfulToolResults)
 		totalToolCalls += len(results)
 
 		for idx, r := range results {
@@ -3198,6 +3299,9 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 			if mediaPaths := extractMediaPaths(resultContent); len(mediaPaths) > 0 {
 				a.sendMediaFiles(msg, mediaPaths)
+			}
+			if !isFailedToolResult(r.err, resultContent) {
+				recordSuccessfulToolResult(successfulToolResults, tc, resultContent)
 			}
 
 			toolMsg := provider.Message{Role: "tool", Content: resultContent, ToolCallID: tc.ID, Name: r.toolName, Metadata: meta}

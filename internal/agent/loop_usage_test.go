@@ -210,6 +210,40 @@ func (p *missingToolIDProvider) ChatStream(context.Context, []provider.Message, 
 	return provider.NewStreamReader(ch), nil
 }
 
+type repeatedSuccessfulFetchProvider struct {
+	calls int
+}
+
+func (p *repeatedSuccessfulFetchProvider) Chat(context.Context, []provider.Message, []provider.Tool, string, int, float64) (*provider.Response, error) {
+	return nil, errors.New("unexpected chat call")
+}
+
+func (p *repeatedSuccessfulFetchProvider) ChatStream(context.Context, []provider.Message, []provider.Tool, string, int, float64) (*provider.StreamReader, error) {
+	p.calls++
+	ch := make(chan provider.StreamChunk, 1)
+	switch p.calls {
+	case 1, 2:
+		ch <- provider.StreamChunk{
+			ToolCalls: []provider.ToolCall{{
+				ID:   []string{"call_fetch_1", "call_fetch_2"}[p.calls-1],
+				Type: "function",
+				Function: provider.FunctionCall{
+					Name:      "web_fetch",
+					Arguments: `{"url":"https://example.com/page"}`,
+				},
+			}},
+			Done: true,
+		}
+	case 3:
+		ch <- provider.StreamChunk{Content: "final from fetched page", Done: true}
+	default:
+		close(ch)
+		return nil, errors.New("unexpected chat stream call")
+	}
+	close(ch)
+	return provider.NewStreamReader(ch), nil
+}
+
 func TestHandleMessageEmitsUsageAfterEachModelCall(t *testing.T) {
 	tmp := t.TempDir()
 	ag := NewAgent(config.ResolvedAgent{
@@ -380,6 +414,34 @@ func TestHandleMessageSynthesizesMissingToolCallIDs(t *testing.T) {
 	}
 	if raw.ToolCalls[0].ID != assistant.ToolCalls[0].ID {
 		t.Fatalf("RawAssistant id = %q, want assistant id %q", raw.ToolCalls[0].ID, assistant.ToolCalls[0].ID)
+	}
+}
+
+func TestHandleMessageCachesRepeatedSuccessfulWebFetch(t *testing.T) {
+	tmp := t.TempDir()
+	ag := NewAgent(config.ResolvedAgent{
+		ID:                "repeated-fetch-agent",
+		UserID:            "owner",
+		Home:              filepath.Join(tmp, "home"),
+		Workspace:         filepath.Join(tmp, "workspace"),
+		Model:             "fake/model",
+		MaxTokens:         100,
+		ContextWindow:     100000,
+		MaxToolIterations: 10,
+	}, &repeatedSuccessfulFetchProvider{}, nil, tmp)
+	fetchRuns := 0
+	ag.ToolRegistry().Register("web_fetch", "fetch url", map[string]any{"type": "object"}, func(context.Context, json.RawMessage) (string, error) {
+		fetchRuns++
+		return "PAGE CONTENT", nil
+	})
+
+	events := make(chan ChatEvent, 32)
+	reply := ag.HandleWebChatStream(context.Background(), "session-repeated-fetch", "", "user-1", "fetch a page", nil, nil, events)
+	if reply != "final from fetched page" {
+		t.Fatalf("reply = %q, want final from fetched page", reply)
+	}
+	if fetchRuns != 1 {
+		t.Fatalf("web_fetch executions = %d, want 1", fetchRuns)
 	}
 }
 
