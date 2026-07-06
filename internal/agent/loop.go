@@ -2208,6 +2208,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		}
 		a.emitContextUsage(ctx, resp.Usage, usageMessages, callTools)
 		a.maybeRecoverToolCalls(resp)
+		a.normalizeToolCallIDs(resp)
 
 		if !resp.HasToolCalls() {
 			asst := provider.Message{Role: "assistant", Content: resp.Content, Thinking: resp.Thinking, Timestamp: time.Now().UnixMilli(), RawAssistant: resp.RawAssistant}
@@ -3000,6 +3001,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		}
 		a.meterTokens(ctx, sess.Key(), resp.Usage)
 		a.maybeRecoverToolCalls(resp)
+		a.normalizeToolCallIDs(resp)
 
 		if !resp.HasToolCalls() {
 			// 最终响应 - 使用流媒体

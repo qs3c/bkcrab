@@ -129,6 +129,40 @@ func (p *batchLoopGuardProvider) ChatStream(_ context.Context, _ []provider.Mess
 	return provider.NewStreamReader(ch), nil
 }
 
+type missingToolIDProvider struct {
+	calls int
+}
+
+func (p *missingToolIDProvider) Chat(context.Context, []provider.Message, []provider.Tool, string, int, float64) (*provider.Response, error) {
+	return nil, errors.New("unexpected chat call")
+}
+
+func (p *missingToolIDProvider) ChatStream(context.Context, []provider.Message, []provider.Tool, string, int, float64) (*provider.StreamReader, error) {
+	p.calls++
+	ch := make(chan provider.StreamChunk, 1)
+	switch p.calls {
+	case 1:
+		ch <- provider.StreamChunk{
+			ToolCalls: []provider.ToolCall{{
+				Type: "function",
+				Function: provider.FunctionCall{
+					Name:      "test_tool",
+					Arguments: `{"value":"x"}`,
+				},
+			}},
+			RawAssistant: json.RawMessage(`{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"test_tool","arguments":"{\"value\":\"x\"}"}}]}`),
+			Done:         true,
+		}
+	case 2:
+		ch <- provider.StreamChunk{Content: "done after synthesized id", Done: true}
+	default:
+		close(ch)
+		return nil, errors.New("unexpected chat stream call")
+	}
+	close(ch)
+	return provider.NewStreamReader(ch), nil
+}
+
 func TestHandleMessageEmitsUsageAfterEachModelCall(t *testing.T) {
 	tmp := t.TempDir()
 	ag := NewAgent(config.ResolvedAgent{
@@ -219,6 +253,86 @@ func TestHandleMessageToolLoopMarksLoopGuardNotIterationCap(t *testing.T) {
 	}
 	if !sawFinalContent {
 		t.Fatal("expected final content event")
+	}
+}
+
+func TestHandleMessageSynthesizesMissingToolCallIDs(t *testing.T) {
+	tmp := t.TempDir()
+	ag := NewAgent(config.ResolvedAgent{
+		ID:                "missing-tool-id-agent",
+		UserID:            "owner",
+		Home:              filepath.Join(tmp, "home"),
+		Workspace:         filepath.Join(tmp, "workspace"),
+		Model:             "fake/model",
+		MaxTokens:         100,
+		ContextWindow:     100000,
+		MaxToolIterations: 3,
+	}, &missingToolIDProvider{}, nil, tmp)
+	ag.ToolRegistry().Register("test_tool", "test tool", map[string]any{"type": "object"}, func(context.Context, json.RawMessage) (string, error) {
+		return "ok", nil
+	})
+
+	const sessionID = "session-missing-tool-id"
+	events := make(chan ChatEvent, 16)
+	reply := ag.HandleWebChatStream(context.Background(), sessionID, "", "user-1", "please use a tool", nil, nil, events)
+	if reply != "done after synthesized id" {
+		t.Fatalf("reply = %q, want final response", reply)
+	}
+	close(events)
+
+	var toolCallID, toolResultID string
+	for evt := range events {
+		switch evt.Type {
+		case "tool_call":
+			toolCallID, _ = evt.Data["id"].(string)
+		case "tool_result":
+			toolResultID, _ = evt.Data["id"].(string)
+		}
+	}
+	if toolCallID == "" {
+		t.Fatal("tool_call event had empty id")
+	}
+	if toolResultID != toolCallID {
+		t.Fatalf("tool_result id = %q, want matching %q", toolResultID, toolCallID)
+	}
+
+	msgs := ag.sessions.Get("web", "", sessionID, "").GetMessages()
+	var assistant *provider.Message
+	var tool *provider.Message
+	for i := range msgs {
+		if msgs[i].Role == "assistant" && len(msgs[i].ToolCalls) > 0 {
+			assistant = &msgs[i]
+		}
+		if msgs[i].Role == "tool" {
+			tool = &msgs[i]
+		}
+	}
+	if assistant == nil {
+		t.Fatal("session missing assistant tool-call message")
+	}
+	if tool == nil {
+		t.Fatal("session missing tool result message")
+	}
+	if assistant.ToolCalls[0].ID == "" {
+		t.Fatal("assistant tool_call id was persisted empty")
+	}
+	if tool.ToolCallID != assistant.ToolCalls[0].ID {
+		t.Fatalf("tool message id = %q, want assistant id %q", tool.ToolCallID, assistant.ToolCalls[0].ID)
+	}
+
+	var raw struct {
+		ToolCalls []struct {
+			ID string `json:"id"`
+		} `json:"tool_calls"`
+	}
+	if err := json.Unmarshal(assistant.RawAssistant, &raw); err != nil {
+		t.Fatalf("RawAssistant is not valid JSON: %v\n%s", err, string(assistant.RawAssistant))
+	}
+	if len(raw.ToolCalls) != 1 {
+		t.Fatalf("RawAssistant tool_calls len = %d, want 1", len(raw.ToolCalls))
+	}
+	if raw.ToolCalls[0].ID != assistant.ToolCalls[0].ID {
+		t.Fatalf("RawAssistant id = %q, want assistant id %q", raw.ToolCalls[0].ID, assistant.ToolCalls[0].ID)
 	}
 }
 
