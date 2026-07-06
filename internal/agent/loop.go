@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -2589,7 +2590,8 @@ func toolLoopSignature(calls []provider.ToolCall) toolLoopSig {
 	names := make([]string, 0, len(calls))
 	for _, tc := range calls {
 		names = append(names, tc.Function.Name)
-		fmt.Fprintf(&b, "%d:%s:%d:%s;", len(tc.Function.Name), tc.Function.Name, len(tc.Function.Arguments), tc.Function.Arguments)
+		args := toolLoopSignatureArgs(tc)
+		fmt.Fprintf(&b, "%d:%s:%d:%s;", len(tc.Function.Name), tc.Function.Name, len(args), args)
 	}
 	return toolLoopSig{
 		summary: strings.Join(names, ","),
@@ -2597,10 +2599,52 @@ func toolLoopSignature(calls []provider.ToolCall) toolLoopSig {
 	}
 }
 
-const toolLoopGuardWarning = "Loop detected: the same tool-call batch was requested with the same arguments 3 times in a row. Tools are disabled for the final response; answer directly using the results already available, and clearly note anything still unresolved."
+func toolLoopSignatureArgs(tc provider.ToolCall) string {
+	switch tc.Function.Name {
+	case "load_skill":
+		if name, ok := stringJSONField(tc.Function.Arguments, "name"); ok {
+			return "name=" + strings.ToLower(strings.TrimSpace(name))
+		}
+	case "write_file", "edit_file":
+		if p, ok := stringJSONField(tc.Function.Arguments, "path"); ok && isPlanningScratchPath(p) {
+			return "path=" + planningScratchBase(p)
+		}
+	}
+	return tc.Function.Arguments
+}
+
+func stringJSONField(raw, key string) (string, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return "", false
+	}
+	val, ok := obj[key]
+	if !ok {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(val, &s); err != nil {
+		return "", false
+	}
+	return s, true
+}
+
+func isPlanningScratchPath(p string) bool {
+	return planningScratchBase(p) == "todo.md"
+}
+
+func planningScratchBase(p string) string {
+	clean := strings.TrimSpace(strings.ReplaceAll(p, "\\", "/"))
+	if clean == "" {
+		return ""
+	}
+	return strings.ToLower(path.Base(clean))
+}
+
+const toolLoopGuardWarning = "Loop detected: the same tool-call pattern was requested 3 times in a row. Tools are disabled for the final response; answer directly using the results already available, and clearly note anything still unresolved."
 
 func toolLoopGuardResult(toolName string) string {
-	return fmt.Sprintf("Skipped %s: this call was part of the same repeated tool-call batch requested 3 times in a row. Tools are disabled for the final response.", toolName)
+	return fmt.Sprintf("Skipped %s: this call was part of the same repeated tool-call pattern requested 3 times in a row. Tools are disabled for the final response.", toolName)
 }
 
 func loopGuardMetadata(toolName string) map[string]any {

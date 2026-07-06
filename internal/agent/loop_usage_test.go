@@ -129,6 +129,53 @@ func (p *batchLoopGuardProvider) ChatStream(_ context.Context, _ []provider.Mess
 	return provider.NewStreamReader(ch), nil
 }
 
+type planningLoopGuardProvider struct {
+	calls            int
+	toolEnabledCalls int
+}
+
+func (p *planningLoopGuardProvider) Chat(context.Context, []provider.Message, []provider.Tool, string, int, float64) (*provider.Response, error) {
+	return nil, errors.New("unexpected chat call")
+}
+
+func (p *planningLoopGuardProvider) ChatStream(_ context.Context, _ []provider.Message, toolDefs []provider.Tool, _ string, _ int, _ float64) (*provider.StreamReader, error) {
+	p.calls++
+	ch := make(chan provider.StreamChunk, 1)
+	if len(toolDefs) == 0 {
+		ch <- provider.StreamChunk{Content: "final after planning loop guard", Done: true}
+		close(ch)
+		return provider.NewStreamReader(ch), nil
+	}
+	p.toolEnabledCalls++
+	if p.toolEnabledCalls > 3 {
+		close(ch)
+		return nil, errors.New("planning loop was not loop-guarded")
+	}
+	ch <- provider.StreamChunk{
+		ToolCalls: []provider.ToolCall{
+			{
+				ID:   "call_write_" + string(rune('0'+p.toolEnabledCalls)),
+				Type: "function",
+				Function: provider.FunctionCall{
+					Name:      "write_file",
+					Arguments: `{"path":"todo.md","content":"plan version ` + string(rune('0'+p.toolEnabledCalls)) + `"}`,
+				},
+			},
+			{
+				ID:   "call_skill_" + string(rune('0'+p.toolEnabledCalls)),
+				Type: "function",
+				Function: provider.FunctionCall{
+					Name:      "load_skill",
+					Arguments: `{"name":"web-search"}`,
+				},
+			},
+		},
+		Done: true,
+	}
+	close(ch)
+	return provider.NewStreamReader(ch), nil
+}
+
 type missingToolIDProvider struct {
 	calls int
 }
@@ -381,6 +428,58 @@ func TestHandleMessageRepeatedToolBatchTriggersLoopGuard(t *testing.T) {
 		}
 		if reached, _ := metadata["iterationCapReached"].(bool); reached {
 			t.Fatalf("batch loop guard was reported as iteration cap: %#v", metadata)
+		}
+	}
+	if !sawFinalContent {
+		t.Fatal("expected final content event")
+	}
+}
+
+func TestHandleMessagePlanningSetupLoopTriggersLoopGuard(t *testing.T) {
+	tmp := t.TempDir()
+	prov := &planningLoopGuardProvider{}
+	ag := NewAgent(config.ResolvedAgent{
+		ID:                "planning-loop-guard-agent",
+		UserID:            "owner",
+		Home:              filepath.Join(tmp, "home"),
+		Workspace:         filepath.Join(tmp, "workspace"),
+		Model:             "fake/model",
+		MaxTokens:         100,
+		ContextWindow:     100000,
+		MaxToolIterations: 20,
+	}, prov, nil, tmp)
+	ag.ToolRegistry().Register("write_file", "write file", map[string]any{"type": "object"}, func(context.Context, json.RawMessage) (string, error) {
+		return "wrote", nil
+	})
+	ag.ToolRegistry().Register("load_skill", "load skill", map[string]any{"type": "object"}, func(context.Context, json.RawMessage) (string, error) {
+		return "loaded", nil
+	})
+
+	events := make(chan ChatEvent, 64)
+	reply := ag.HandleWebChatStream(context.Background(), "session-planning-loop-guard", "", "user-1", "load a skill and plan", nil, nil, events)
+	if reply != "final after planning loop guard" {
+		t.Fatalf("reply = %q, want final after planning loop guard", reply)
+	}
+	if prov.toolEnabledCalls != 3 {
+		t.Fatalf("tool-enabled model calls = %d, want 3", prov.toolEnabledCalls)
+	}
+	close(events)
+
+	sawFinalContent := false
+	for evt := range events {
+		if evt.Type != "content" || evt.Data["content"] != "final after planning loop guard" {
+			continue
+		}
+		sawFinalContent = true
+		metadata, ok := evt.Data["metadata"].(map[string]any)
+		if !ok {
+			t.Fatalf("final loop guard content missing metadata: %#v", evt.Data)
+		}
+		if reached, _ := metadata["loopGuardReached"].(bool); !reached {
+			t.Fatalf("loopGuardReached = %#v, want true", metadata["loopGuardReached"])
+		}
+		if got := metadata["loopGuardTool"]; got != "write_file,load_skill" {
+			t.Fatalf("loopGuardTool = %#v, want write_file,load_skill", got)
 		}
 	}
 	if !sawFinalContent {
