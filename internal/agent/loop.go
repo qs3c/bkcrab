@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -2100,14 +2101,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 
 	messages := compactionRequestMessages(sessionMsgs, overheadMessages)
 
-	// 循环检测：跟踪连续的相同工具调用
-	type toolCallSig struct {
-		name string
-		hash [32]byte
-	}
-	var lastSig toolCallSig
+	// 循环检测：跟踪连续的相同工具调用批次。
+	var lastSig toolLoopSig
 	consecutiveCount := 0
 	totalToolCalls := 0
+	successfulToolResults := toolSuccessCache{}
 	// allFailedRounds 是连续回合的计数，其中每个
 	// 工具结果作为 4xx/5xx HTTP 错误或执行程序返回
 	// 错误。这抓住了“模型旋转了五个猜测
@@ -2212,6 +2210,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		}
 		a.emitContextUsage(ctx, resp.Usage, usageMessages, callTools)
 		a.maybeRecoverToolCalls(resp)
+		a.normalizeToolCallIDs(resp)
 
 		if !resp.HasToolCalls() {
 			asst := provider.Message{Role: "assistant", Content: resp.Content, Thinking: resp.Thinking, Timestamp: time.Now().UnixMilli(), RawAssistant: resp.RawAssistant}
@@ -2275,24 +2274,18 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		messages = append(messages, assistantMsg)
 
 		// 循环检测：执行前检查
+		sig := toolLoopSignature(resp.ToolCalls)
+		if sig.summary == lastSig.summary && sig.hash == lastSig.hash {
+			consecutiveCount++
+		} else {
+			consecutiveCount = 1
+			lastSig = sig
+		}
 		loopDetected := false
-		for _, tc := range resp.ToolCalls {
-			sig := toolCallSig{
-				name: tc.Function.Name,
-				hash: sha256.Sum256([]byte(tc.Function.Arguments)),
-			}
-			if sig.name == lastSig.name && sig.hash == lastSig.hash {
-				consecutiveCount++
-			} else {
-				consecutiveCount = 1
-				lastSig = sig
-			}
-			if consecutiveCount >= 3 {
-				slog.Warn("tool loop detected", "agent", a.name, "tool", tc.Function.Name)
-				loopGuardTool = tc.Function.Name
-				loopDetected = true
-				break
-			}
+		if consecutiveCount >= 3 {
+			slog.Warn("tool loop detected", "agent", a.name, "tools", sig.summary)
+			loopGuardTool = sig.summary
+			loopDetected = true
 		}
 		if loopDetected {
 			messages = appendToolLoopGuardMessages(ctx, sess, messages, resp.ToolCalls, true)
@@ -2341,7 +2334,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			"agent", a.name,
 			"count", len(executeCalls),
 		)
-		results := a.engine.executeToolsConcurrently(ctx, reg, executeCalls, a.workspacePath)
+		results := a.executeToolsWithSuccessCache(ctx, reg, executeCalls, successfulToolResults)
 		// 附加合成延迟结果，以便每个原始 tool_use
 		// id 有一个配对的 tool_result。延迟消息告诉
 		// 准确地模拟它没有运行的原因 - 接下来可以重新发出
@@ -2432,6 +2425,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				// 这一轮的一次通话产生了一个真实的结果——
 				// 整个回合并不是“全部失败”。
 				roundAllFailed = false
+				recordSuccessfulToolResult(successfulToolResults, tc, resultContent)
 			}
 
 			// FTS 中的索引（如果可用）
@@ -2588,10 +2582,169 @@ func firstNonEmptyLine(s string) string {
 	return ""
 }
 
-const toolLoopGuardWarning = "Loop detected: the same tool was requested with the same arguments 3 times in a row. Tools are disabled for the final response; answer directly using the results already available, and clearly note anything still unresolved."
+type toolLoopSig struct {
+	summary string
+	hash    [32]byte
+}
+
+func toolLoopSignature(calls []provider.ToolCall) toolLoopSig {
+	var b strings.Builder
+	names := make([]string, 0, len(calls))
+	for _, tc := range calls {
+		names = append(names, tc.Function.Name)
+		args := toolLoopSignatureArgs(tc)
+		fmt.Fprintf(&b, "%d:%s:%d:%s;", len(tc.Function.Name), tc.Function.Name, len(args), args)
+	}
+	return toolLoopSig{
+		summary: strings.Join(names, ","),
+		hash:    sha256.Sum256([]byte(b.String())),
+	}
+}
+
+func toolLoopSignatureArgs(tc provider.ToolCall) string {
+	switch tc.Function.Name {
+	case "load_skill":
+		if name, ok := stringJSONField(tc.Function.Arguments, "name"); ok {
+			return "name=" + strings.ToLower(strings.TrimSpace(name))
+		}
+	case "write_file", "edit_file":
+		if p, ok := stringJSONField(tc.Function.Arguments, "path"); ok && isPlanningScratchPath(p) {
+			return "path=" + planningScratchBase(p)
+		}
+	}
+	return tc.Function.Arguments
+}
+
+func stringJSONField(raw, key string) (string, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return "", false
+	}
+	val, ok := obj[key]
+	if !ok {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(val, &s); err != nil {
+		return "", false
+	}
+	return s, true
+}
+
+func isPlanningScratchPath(p string) bool {
+	return planningScratchBase(p) == "todo.md"
+}
+
+func planningScratchBase(p string) string {
+	clean := strings.TrimSpace(strings.ReplaceAll(p, "\\", "/"))
+	if clean == "" {
+		return ""
+	}
+	return strings.ToLower(path.Base(clean))
+}
+
+type toolSuccessKey struct {
+	tool string
+	hash [32]byte
+}
+
+type toolSuccessCache map[toolSuccessKey]string
+
+const cachedToolResultPrefix = "Cached result from an earlier successful "
+
+func cacheableSuccessfulTool(name string) bool {
+	switch name {
+	case "web_fetch":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolSuccessCacheKey(tc provider.ToolCall) toolSuccessKey {
+	return toolSuccessKey{
+		tool: tc.Function.Name,
+		hash: sha256.Sum256([]byte(tc.Function.Arguments)),
+	}
+}
+
+func cachedSuccessfulToolResult(toolName, content string) string {
+	return fmt.Sprintf(
+		"%s%s call with the same arguments in this turn. Do not call %s with these arguments again; answer the user directly from this result.\n\n%s",
+		cachedToolResultPrefix,
+		toolName,
+		toolName,
+		content,
+	)
+}
+
+func lookupSuccessfulToolResult(cache toolSuccessCache, tc provider.ToolCall) (string, bool) {
+	if !cacheableSuccessfulTool(tc.Function.Name) {
+		return "", false
+	}
+	content, ok := cache[toolSuccessCacheKey(tc)]
+	if !ok {
+		return "", false
+	}
+	return cachedSuccessfulToolResult(tc.Function.Name, content), true
+}
+
+func recordSuccessfulToolResult(cache toolSuccessCache, tc provider.ToolCall, content string) {
+	if !cacheableSuccessfulTool(tc.Function.Name) || strings.TrimSpace(content) == "" {
+		return
+	}
+	if strings.HasPrefix(content, cachedToolResultPrefix) {
+		return
+	}
+	cache[toolSuccessCacheKey(tc)] = content
+}
+
+func (a *Agent) executeToolsWithSuccessCache(ctx context.Context, reg *tools.Registry, calls []provider.ToolCall, cache toolSuccessCache) []toolCallResult {
+	if len(calls) == 0 {
+		return nil
+	}
+	results := make([]toolCallResult, len(calls))
+	executeCalls := make([]provider.ToolCall, 0, len(calls))
+	executeIndexes := make([]int, 0, len(calls))
+	for i, tc := range calls {
+		if cached, ok := lookupSuccessfulToolResult(cache, tc); ok {
+			results[i] = toolCallResult{
+				toolCallID: tc.ID,
+				toolName:   tc.Function.Name,
+				result:     cached,
+			}
+			continue
+		}
+		executeIndexes = append(executeIndexes, i)
+		executeCalls = append(executeCalls, tc)
+	}
+	if len(executeCalls) > 0 {
+		executed := a.engine.executeToolsConcurrently(ctx, reg, executeCalls, a.workspacePath)
+		for i, r := range executed {
+			if i >= len(executeIndexes) {
+				break
+			}
+			results[executeIndexes[i]] = r
+		}
+	}
+	for i, tc := range calls {
+		if results[i].toolCallID != "" {
+			continue
+		}
+		results[i] = toolCallResult{
+			toolCallID: tc.ID,
+			toolName:   tc.Function.Name,
+			result:     "tool execution did not return a result",
+			err:        fmt.Errorf("missing executor response for %s", tc.ID),
+		}
+	}
+	return results
+}
+
+const toolLoopGuardWarning = "Loop detected: the same tool-call pattern was requested 3 times in a row. Tools are disabled for the final response; answer directly using the results already available, and clearly note anything still unresolved."
 
 func toolLoopGuardResult(toolName string) string {
-	return fmt.Sprintf("Skipped %s: the same tool with the same arguments was requested 3 times in a row. Tools are disabled for the final response.", toolName)
+	return fmt.Sprintf("Skipped %s: this call was part of the same repeated tool-call pattern requested 3 times in a row. Tools are disabled for the final response.", toolName)
 }
 
 func loopGuardMetadata(toolName string) map[string]any {
@@ -2960,13 +3113,10 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 	messages := compactionRequestMessages(sessionMsgs, overheadMessages)
 
-	type toolCallSig struct {
-		name string
-		hash [32]byte
-	}
-	var lastSig toolCallSig
+	var lastSig toolLoopSig
 	consecutiveCount := 0
 	totalToolCalls := 0
+	successfulToolResults := toolSuccessCache{}
 	toolsDisabledByLoop := false
 	loopGuardTool := ""
 
@@ -2996,6 +3146,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		}
 		a.meterTokens(ctx, sess.Key(), resp.Usage)
 		a.maybeRecoverToolCalls(resp)
+		a.normalizeToolCallIDs(resp)
 
 		if !resp.HasToolCalls() {
 			// 最终响应 - 使用流媒体
@@ -3109,24 +3260,18 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		messages = append(messages, assistantMsg)
 
 		// 环路检测
+		sig := toolLoopSignature(resp.ToolCalls)
+		if sig.summary == lastSig.summary && sig.hash == lastSig.hash {
+			consecutiveCount++
+		} else {
+			consecutiveCount = 1
+			lastSig = sig
+		}
 		loopDetected := false
-		for _, tc := range resp.ToolCalls {
-			sig := toolCallSig{
-				name: tc.Function.Name,
-				hash: sha256.Sum256([]byte(tc.Function.Arguments)),
-			}
-			if sig.name == lastSig.name && sig.hash == lastSig.hash {
-				consecutiveCount++
-			} else {
-				consecutiveCount = 1
-				lastSig = sig
-			}
-			if consecutiveCount >= 3 {
-				slog.Warn("tool loop detected", "agent", a.name, "tool", tc.Function.Name)
-				loopGuardTool = tc.Function.Name
-				loopDetected = true
-				break
-			}
+		if consecutiveCount >= 3 {
+			slog.Warn("tool loop detected", "agent", a.name, "tools", sig.summary)
+			loopGuardTool = sig.summary
+			loopDetected = true
 		}
 		if loopDetected {
 			messages = appendToolLoopGuardMessages(ctx, sess, messages, resp.ToolCalls, false)
@@ -3140,7 +3285,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		}
 
 		// 通过SDK引擎同时执行工具
-		results := a.engine.executeToolsConcurrently(ctx, reg, resp.ToolCalls, a.workspacePath)
+		results := a.executeToolsWithSuccessCache(ctx, reg, resp.ToolCalls, successfulToolResults)
 		totalToolCalls += len(results)
 
 		for idx, r := range results {
@@ -3154,6 +3299,9 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 			if mediaPaths := extractMediaPaths(resultContent); len(mediaPaths) > 0 {
 				a.sendMediaFiles(msg, mediaPaths)
+			}
+			if !isFailedToolResult(r.err, resultContent) {
+				recordSuccessfulToolResult(successfulToolResults, tc, resultContent)
 			}
 
 			toolMsg := provider.Message{Role: "tool", Content: resultContent, ToolCallID: tc.ID, Name: r.toolName, Metadata: meta}

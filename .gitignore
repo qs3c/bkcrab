@@ -9,6 +9,7 @@
 # Build output
 /bin/
 /dist/
+*.bundle
 
 # Test binary, built with `go test -c`
 *.test
@@ -46,6 +47,7 @@ bkcrab.json
 
 # Debug
 debug/
+.tmp/
 __debug_bin*
 DESIGN.md
 .worktrees/
