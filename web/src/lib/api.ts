@@ -89,6 +89,7 @@ export interface AgentDetail {
   // 聊天者仅能看到自己的用户级 + 系统级配置 — 他们需要自带
   // 模型/提供者，否则 agent 对他们不可用。
   shareModelConfig?: boolean;
+  shareMcpConfig?: boolean;
   model: string;
   workspace?: string;
   maxTokens?: number;
@@ -1265,6 +1266,42 @@ export interface AgentSkillsConfig {
   alwaysLoad?: string[];
 }
 
+export interface MCPServerConfig {
+  type: "stdio" | "http";
+  url?: string;
+  headers?: Record<string, string>;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  transport?: "sse" | "streamable-http";
+  enabled?: boolean;
+}
+
+export interface AgentMCPConfigResponse {
+  mcpServers: Record<string, MCPServerConfig>;
+  shareMcpConfig: boolean;
+  gateway?: {
+    status?: string;
+    baseUrl?: string;
+    image?: string;
+    lastAccessedAt?: string;
+    errorMessage?: string;
+  };
+  error?: string;
+}
+
+export interface MCPToolPreview {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+}
+
+export interface AgentMCPTestResponse {
+  ok: boolean;
+  tools?: MCPToolPreview[];
+  error?: string;
+}
+
 // 后端接受 model / soul / skills / providers 进行更新。
 // AgentDetail.skills 是扁平 string[]（遗留），但按 agent 技能
 // 配置实际是 { disabled, alwaysLoad } — 使用明确的载荷类型
@@ -1283,6 +1320,7 @@ export interface AgentUpdatePayload {
   // 切换使用此 agent 的聊天者是否继承所有者的
   // 模型 + 提供者配置。省略以保持不变。
   shareModelConfig?: boolean;
+  shareMcpConfig?: boolean;
   // PromptMode 选择框架系统提示的参与程度："agent"（完整，默认）、
   // "chatbot"（精简 — 去掉任务委派/工具使用规范/工作区更新，以
   // 保持伴侣/角色扮演人设）、"customize"（仅有日期锚点 + 引导
@@ -1345,12 +1383,38 @@ export interface AgentFileConfig {
   workspace?: string;
   skills?: AgentSkillsConfig;
   providers?: Record<string, ProviderData>;
+  mcpServers?: Record<string, MCPServerConfig>;
+  shareMcpConfig?: boolean;
 }
 
 // 获取单个 agent 的原始 agent.json（仅按 agent 覆盖 —
 // 不是合并/解析后的配置）。用于按 agent 的模型和技能管理页面。
 export async function getAgentConfig(id: string): Promise<AgentFileConfig> {
   const res = await apiFetch(`/api/agents/${id}/config`);
+  return res.json();
+}
+
+export async function getAgentMCPConfig(id: string): Promise<AgentMCPConfigResponse> {
+  const res = await apiFetch(`/api/agents/${encodeURIComponent(id)}/mcp`);
+  return res.json();
+}
+
+export async function saveAgentMCPConfig(
+  id: string,
+  payload: { mcpServers: Record<string, MCPServerConfig>; shareMcpConfig: boolean },
+): Promise<AgentMCPConfigResponse> {
+  const res = await apiFetch(`/api/agents/${encodeURIComponent(id)}/mcp`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
+export async function testAgentMCP(id: string): Promise<AgentMCPTestResponse> {
+  const res = await apiFetch(`/api/agents/${encodeURIComponent(id)}/mcp/test`, {
+    method: "POST",
+  });
   return res.json();
 }
 

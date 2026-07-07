@@ -3,6 +3,7 @@
 import * as React from "react";
 import {
   BrainIcon,
+  Cable,
   ClockIcon,
   CoinsIcon,
   IdCardIcon,
@@ -25,6 +26,7 @@ import AgentModelsPage from "@/app/agents/[id]/models/page";
 import AgentContextPage from "@/app/agents/[id]/context/page";
 import AgentSkillsPage from "@/app/agents/[id]/skills/page";
 import AgentPluginsPage from "@/app/agents/[id]/plugins/page";
+import AgentMCPPage from "@/app/agents/[id]/mcp/page";
 import AgentChannelsPage from "@/app/agents/[id]/channels/page";
 import AgentSchedulerPage from "@/app/agents/[id]/scheduler/page";
 import AgentUsagePage from "@/app/agents/[id]/usage/page";
@@ -40,6 +42,7 @@ export type AgentSettingsTab =
   | "context"
   | "skills"
   | "plugins"
+  | "mcp"
   | "channels"
   | "scheduler"
   | "usage"
@@ -56,6 +59,7 @@ const AGENT_TABS: Array<{ id: AgentSettingsTab; label: string; icon: TabIcon }> 
   { id: "context", label: "上下文", icon: LayersIcon },
   { id: "skills", label: "技能", icon: SparklesIcon },
   { id: "plugins", label: "插件", icon: Plug },
+  { id: "mcp", label: "MCP", icon: Cable },
   { id: "channels", label: "渠道", icon: RadioIcon },
   { id: "scheduler", label: "定时任务", icon: ClockIcon },
   { id: "usage", label: "令牌用量", icon: CoinsIcon },
@@ -163,6 +167,7 @@ export function AgentSettingsDialog({
           {tab === "context" && <AgentContextPage />}
           {tab === "skills" && <AgentSkillsPage />}
           {tab === "plugins" && <AgentPluginsPage />}
+          {tab === "mcp" && <AgentMCPPage />}
           {tab === "channels" && <AgentChannelsPage />}
           {tab === "scheduler" && <AgentSchedulerPage />}
           {tab === "usage" && <AgentUsagePage />}

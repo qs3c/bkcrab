@@ -51,7 +51,7 @@ import {
 // 仍然显示平台导航
 function extractAgentId(pathname: string): string | null {
   const match = pathname.match(
-    /^\/agents\/([^/]+)\/(chat|customize|skills|models|sessions|channels|chats|scheduler|project)/,
+    /^\/agents\/([^/]+)\/(chat|customize|skills|models|sessions|channels|chats|scheduler|project|mcp)/,
   );
   return match ? match[1] : null;
 }
