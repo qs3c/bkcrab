@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/agent/tools"
 	"github.com/qs3c/bkcrab/internal/bus"
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/mcp"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/session"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -40,6 +42,16 @@ func providerForAgent(rc config.ResolvedAgent, shared provider.Provider) provide
 // ManagerOption 配置可选的 Manager 行为。
 type ManagerOption func(*managerOpts)
 
+type MCPManagerFactory interface {
+	NewMCPManager(ctx context.Context, rc config.ResolvedAgent) (*mcp.Manager, error)
+}
+
+type MCPManagerFactoryFunc func(ctx context.Context, rc config.ResolvedAgent) (*mcp.Manager, error)
+
+func (f MCPManagerFactoryFunc) NewMCPManager(ctx context.Context, rc config.ResolvedAgent) (*mcp.Manager, error) {
+	return f(ctx, rc)
+}
+
 type managerOpts struct {
 	sessionStore     session.SessionStore
 	memoryStore      MemoryStore
@@ -49,6 +61,7 @@ type managerOpts struct {
 	userID           string
 	globalSkillsCfg  config.SkillsCfg
 	skillsLearnerCfg config.SkillsLearnerCfg
+	mcpFactory       MCPManagerFactory
 }
 
 func WithSessionStore(st session.SessionStore) ManagerOption {
@@ -103,6 +116,10 @@ func WithGlobalSkillsCfg(cfg config.SkillsCfg) ManagerOption {
 // 该配置此前只在无人调用的 NewAgentWithFullCfg 里接线)。
 func WithSkillsLearner(cfg config.SkillsLearnerCfg) ManagerOption {
 	return func(o *managerOpts) { o.skillsLearnerCfg = cfg }
+}
+
+func WithMCPManagerFactory(f MCPManagerFactory) ManagerOption {
+	return func(o *managerOpts) { o.mcpFactory = f }
 }
 
 // Manager 加载并管理所有代理实例。
@@ -166,7 +183,7 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 	// SkillsCfg 构造加载器，这就是 FAL_KEY / REPLICATE_API_TOKEN 从未
 	// 到达沙箱的原因。
 	agProv := providerForAgent(rc, prov)
-	ag := NewAgentWithSkillsCfg(rc, agProv, mb, homeDir, m.opts.globalSkillsCfg)
+	ag := newAgentWithSkillsCfg(rc, agProv, mb, homeDir, m.opts.globalSkillsCfg, m.opts.mcpFactory)
 	// 技能学习者 + 生命周期:生产路径此前从不装配(learner 配置历史上只接在
 	// 无人调用的 NewAgentWithFullCfg 上)。在此构造,使下方 dataStore 块能接上
 	// ledger、runPostTurn 的 cadence 提取与生命周期过滤/清理在生产真正生效。
@@ -301,14 +318,27 @@ func (m *Manager) AddAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.P
 
 // RemoveAgent 通过 ID 取消注册代理。如果未加载代理，则无操作。
 func (m *Manager) RemoveAgent(id string) {
-	if _, ok := m.agents[id]; !ok {
+	ag, ok := m.agents[id]
+	if !ok {
 		return
 	}
+	ag.Close()
 	delete(m.agents, id)
 	if m.defaultAgent != nil && m.defaultAgent.Name() == id {
 		m.defaultAgent = nil
 	}
 	slog.Info("agent removed dynamically", "id", id)
+}
+
+func (m *Manager) CloseAll() {
+	if m == nil {
+		return
+	}
+	for id, ag := range m.agents {
+		ag.Close()
+		delete(m.agents, id)
+	}
+	m.defaultAgent = nil
 }
 
 // AgentByID 按 ID 返回代理。

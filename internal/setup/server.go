@@ -16,6 +16,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/auth"
 	"github.com/qs3c/bkcrab/internal/channels"
 	"github.com/qs3c/bkcrab/internal/config"
+	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
 	"github.com/qs3c/bkcrab/internal/session"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/taskqueue"
@@ -73,6 +74,7 @@ type Server struct {
 	dataStore      store.Store
 	workspaceStore workspace.Store
 	webChan        *channels.WebChannel
+	mcpRuntime     *mcpruntime.Service
 	// chatEvents 将实时的 agent 聊天事件分发到跨浏览器标签页的已订阅 SSE 客户端。
 	// 首次使用时延迟初始化，以便没有显式连接它的旧调用者仍然可以工作。
 	chatEvents *agent.EventHub
@@ -141,6 +143,10 @@ func (s *Server) SetAuth(resolver *auth.Resolver) {
 // agent 回复实时显示在仪表板聊天面板中的方式。
 func (s *Server) SetWebChannel(wc *channels.WebChannel) {
 	s.webChan = wc
+}
+
+func (s *Server) SetMCPRuntime(runtime *mcpruntime.Service) {
+	s.mcpRuntime = runtime
 }
 
 // chatEventHub 返回延迟初始化的 hub。集中化使得每个聊天处理程序访问同一个实例 —

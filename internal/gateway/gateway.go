@@ -27,6 +27,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/channels"
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/cron"
+	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
 	"github.com/qs3c/bkcrab/internal/plugin"
 	"github.com/qs3c/bkcrab/internal/sandbox"
 	"github.com/qs3c/bkcrab/internal/scope"
@@ -155,6 +156,7 @@ type Gateway struct {
 	accounts    *users.Accounts
 	workspace   workspace.Store
 	sandboxPool sandbox.ExecutorPool
+	mcpRuntime  *mcpruntime.Service
 	usage       usage.Meter
 	envCfg      *config.EnvConfig
 	// chatEvents 设置后，允许总线触发的 web 轮次（cron/目标延续/心跳/子代理）
@@ -184,6 +186,9 @@ func (g *Gateway) Store() store.Store { return g.store }
 
 // TaskQueue 返回网关的任务队列。
 func (g *Gateway) TaskQueue() *taskqueue.Queue { return g.taskQueue }
+
+// MCPRuntime returns the gateway-backed MCP runtime service.
+func (g *Gateway) MCPRuntime() *mcpruntime.Service { return g.mcpRuntime }
 
 // EnvConfig 返回引导配置（BKCRAB_* 环境变量）。
 func (g *Gateway) EnvConfig() *config.EnvConfig { return g.envCfg }
@@ -301,6 +306,11 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	// 每个用户的构建器为这些空间产生 nil，代理的 exec 工具拒绝运行并显示
 	// "sandbox required but no executor available"。
 	systemSandboxPool := buildSystemSandboxPool(readSystemSandboxCfg(st), ws)
+	mcpRuntime := mcpruntime.NewService(mcpruntime.Options{
+		Store:  st,
+		Docker: mcpruntime.NewDockerCLIClient(),
+		Config: mcpruntime.FromEnv(env.MCPGateway),
+	})
 
 	// Accounts 服务由入站路由循环用于延迟铸造每个（通道，IM 发送者）的 app_user 行，
 	// 以便 IM 通道上的每个聊天者最终拥有自己稳定的 bkcrab u_xxx id
@@ -317,7 +327,8 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		workspace:   ws,
 		usage:       meter,
 		sandboxPool: systemSandboxPool,
-		users:       newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, pluginMgr),
+		mcpRuntime:  mcpRuntime,
+		users:       newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, mcpRuntime, pluginMgr),
 		chanMgr:     chanMgr,
 		webChan:     webChan,
 		scheduler:   scheduler,
@@ -489,6 +500,9 @@ func (g *Gateway) Run() error {
 	}()
 
 	var wg sync.WaitGroup
+	if g.mcpRuntime != nil {
+		g.mcpRuntime.Start(ctx)
+	}
 	wg.Add(1)
 	go func() { defer wg.Done(); g.users.startEvictor(ctx) }()
 	wg.Add(1)
@@ -532,6 +546,12 @@ func (g *Gateway) Run() error {
 	}
 	if g.pluginMgr != nil {
 		g.pluginMgr.StopAll()
+	}
+	if g.users != nil {
+		g.users.closeAll()
+	}
+	if g.mcpRuntime != nil {
+		_ = g.mcpRuntime.StopAll(context.Background())
 	}
 	if g.sandboxPool != nil {
 		g.sandboxPool.CloseAll()

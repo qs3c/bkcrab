@@ -52,6 +52,10 @@ func NewCLIClient() *CLIClient {
 	return &CLIClient{Runner: execRunner{}}
 }
 
+func NewDockerCLIClient() *CLIClient {
+	return NewCLIClient()
+}
+
 func (c *CLIClient) Ensure(ctx context.Context, spec ContainerSpec) (ContainerRef, error) {
 	if c.Runner == nil {
 		c.Runner = execRunner{}

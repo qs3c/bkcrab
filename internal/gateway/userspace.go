@@ -14,6 +14,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/agent"
 	"github.com/qs3c/bkcrab/internal/bus"
 	"github.com/qs3c/bkcrab/internal/config"
+	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
 	"github.com/qs3c/bkcrab/internal/plugin"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/sandbox"
@@ -289,12 +290,19 @@ type UserSpace struct {
 	Provider    provider.Provider
 	Agents      *agent.Manager
 	SandboxPool sandbox.ExecutorPool
+	MCPRuntime  *mcpruntime.Service
 	// PluginMgr 从网关借用（进程范围单例）。在此持有以便 EnsureAgent —
 	// 外部代理附加路径 — 可以将钩子插件注册到延迟构建的代理上，
 	// 而无需回溯到网关。当 systemPlugins 关闭时为 nil。
 	PluginMgr *plugin.Manager
 
 	mu sync.Mutex
+}
+
+func (sp *UserSpace) Close() {
+	if sp != nil && sp.Agents != nil {
+		sp.Agents.CloseAll()
+	}
 }
 
 // readUserScopeAgentDefaults 读取 (user=X, agent="") agents.defaults 行的原始数据 —
@@ -316,6 +324,22 @@ func readUserScopeAgentDefaults(ctx context.Context, st store.Store, userID stri
 	}
 	_ = json.Unmarshal(blob, &out)
 	return out
+}
+
+func applyForeignMCPSharing(rc *config.ResolvedAgent, rec *store.AgentRecord, viewerUserID string) {
+	if rc == nil || rec == nil {
+		return
+	}
+	isForeign := rec.UserID != "" && rec.UserID != viewerUserID
+	if !isForeign {
+		return
+	}
+	if v, ok := rec.Config["shareMcpConfig"].(bool); ok && v {
+		rc.ShareMCPConfig = true
+		return
+	}
+	rc.MCPServers = nil
+	rc.ShareMCPConfig = false
 }
 
 // EnsureAgent 将一个用户不拥有的代理附加到此 UserSpace。
@@ -373,6 +397,7 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 	// 因为聊天者没有 UI 来为每个代理设置它们。
 	chatterPin := readUserScopeAgentDefaults(ctx, st, sp.UserID)
 	isForeign := rec.UserID != "" && rec.UserID != sp.UserID
+	applyForeignMCPSharing(&rc, rec, sp.UserID)
 	// 当键缺失时默认为 true — 与 setup.agentShareModelConfig 保持一致。
 	shareCfg := true
 	if v, ok := rec.Config["shareModelConfig"].(bool); ok {
@@ -553,7 +578,7 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 //
 // `systemSandboxPool` 是网关范围的池 — 由结果 UserSpace 借用，不拥有。
 // 当系统作用域禁用沙箱时传递 nil；在这种情况下代理将以仅路径文件根运行。
-func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, pluginMgr *plugin.Manager) (*UserSpace, error) {
+func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, mcpRuntime *mcpruntime.Service, pluginMgr *plugin.Manager) (*UserSpace, error) {
 	if userID == "" {
 		return nil, fmt.Errorf("loadUserSpace: userID required")
 	}
@@ -688,6 +713,9 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 	if meter != nil {
 		managerOpts = append(managerOpts, agent.WithMeter(meter))
 	}
+	if mcpRuntime != nil {
+		managerOpts = append(managerOpts, agent.WithMCPManagerFactory(agent.MCPManagerFactoryFunc(mcpRuntime.NewManagerForAgent)))
+	}
 	agentMgr, err := agent.NewManager(resolved, prov, mb, managerOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create agent manager for user %q: %w", userID, err)
@@ -714,6 +742,7 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 		Provider:    prov,
 		Agents:      agentMgr,
 		SandboxPool: pool,
+		MCPRuntime:  mcpRuntime,
 		PluginMgr:   pluginMgr,
 	}, nil
 }
@@ -824,6 +853,7 @@ type userSpaceRegistry struct {
 	workspace         workspace.Store
 	meter             usage.Meter
 	systemSandboxPool sandbox.ExecutorPool
+	mcpRuntime        *mcpruntime.Service
 	// pluginMgr 是共享的（进程范围）插件管理器。当 systemPlugins 禁用时为 nil。
 	// 由 loadUserSpace 和 EnsureAgent 使用，用于将钩子类型插件注册到每个代理的 HookRegistry，
 	// 由每个代理的 plugins.enabled 配置控制。
@@ -836,7 +866,7 @@ type userSpaceEntry struct {
 	lastUsed time.Time
 }
 
-func newUserSpaceRegistry(mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, pluginMgr *plugin.Manager) *userSpaceRegistry {
+func newUserSpaceRegistry(mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, mcpRuntime *mcpruntime.Service, pluginMgr *plugin.Manager) *userSpaceRegistry {
 	return &userSpaceRegistry{
 		spaces:            make(map[string]*userSpaceEntry),
 		bus:               mb,
@@ -844,6 +874,7 @@ func newUserSpaceRegistry(mb *bus.MessageBus, st store.Store, ws workspace.Store
 		workspace:         ws,
 		meter:             meter,
 		systemSandboxPool: systemSandboxPool,
+		mcpRuntime:        mcpRuntime,
 		pluginMgr:         pluginMgr,
 		idleTTL:           30 * time.Minute,
 	}
@@ -872,7 +903,7 @@ func (r *userSpaceRegistry) getOrLoad(ctx context.Context, userID string) (*User
 		e.lastUsed = time.Now()
 		return e.space, nil
 	}
-	sp, err := loadUserSpace(ctx, userID, r.bus, r.store, r.workspace, r.meter, r.systemSandboxPool, r.pluginMgr)
+	sp, err := loadUserSpace(ctx, userID, r.bus, r.store, r.workspace, r.meter, r.systemSandboxPool, r.mcpRuntime, r.pluginMgr)
 	if err != nil {
 		return nil, err
 	}
@@ -883,9 +914,16 @@ func (r *userSpaceRegistry) getOrLoad(ctx context.Context, userID string) (*User
 // invalidate 丢弃用户的空间，以便下次访问重新加载它。在管理员变更
 // （创建代理、轮换提供者等）后使用，以便内存中的副本不落后于数据库。
 func (r *userSpaceRegistry) invalidate(userID string) {
+	var sp *UserSpace
 	r.mu.Lock()
-	delete(r.spaces, userID)
+	if e, ok := r.spaces[userID]; ok {
+		sp = e.space
+		delete(r.spaces, userID)
+	}
 	r.mu.Unlock()
+	if sp != nil {
+		sp.Close()
+	}
 }
 
 func (r *userSpaceRegistry) all() []*UserSpace {
@@ -903,18 +941,37 @@ func (r *userSpaceRegistry) evictIdle() int {
 		return 0
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	cutoff := time.Now().Add(-r.idleTTL)
-	evicted := 0
+	var evicted []*UserSpace
 	for uid, e := range r.spaces {
 		if e.lastUsed.Before(cutoff) {
 			delete(r.spaces, uid)
-			evicted++
+			evicted = append(evicted, e.space)
 			slog.Info("evicted idle user space", "user", uid,
 				"idle", time.Since(e.lastUsed).Round(time.Second))
 		}
 	}
-	return evicted
+	r.mu.Unlock()
+	for _, sp := range evicted {
+		sp.Close()
+	}
+	return len(evicted)
+}
+
+func (r *userSpaceRegistry) closeAll() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	spaces := make([]*UserSpace, 0, len(r.spaces))
+	for uid, e := range r.spaces {
+		spaces = append(spaces, e.space)
+		delete(r.spaces, uid)
+	}
+	r.mu.Unlock()
+	for _, sp := range spaces {
+		sp.Close()
+	}
 }
 
 func (r *userSpaceRegistry) startEvictor(ctx context.Context) {

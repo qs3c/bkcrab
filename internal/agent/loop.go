@@ -40,6 +40,7 @@ type Agent struct {
 	memory               *Memory
 	ctxBuilder           *ContextBuilder
 	mcpMgr               *mcp.Manager
+	mcpFactory           MCPManagerFactory
 	hooks                *HookRegistry
 	model                string
 	maxTokens            int
@@ -339,6 +340,10 @@ func NewAgentWithFullCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bu
 
 // NewAgentWithSkillsCfg 创建一个具有全局技能配置的新代理，用于环境注入。
 func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBus, homeDir string, globalSkillsCfg config.SkillsCfg) *Agent {
+	return newAgentWithSkillsCfg(rc, prov, mb, homeDir, globalSkillsCfg, nil)
+}
+
+func newAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBus, homeDir string, globalSkillsCfg config.SkillsCfg, mcpFactory MCPManagerFactory) *Agent {
 	workspace := rc.Workspace
 	if workspace == "" {
 		// 未填充的调用者（测试、遗留配置）的后备
@@ -409,6 +414,7 @@ func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *
 		sessions:             session.NewManager(rc.Home + "/sessions"),
 		memory:               memory,
 		ctxBuilder:           newContextBuilderWithSandbox(rc.Home, workspace, memory, skillsSummary, rc.Thinking, rc.Sandbox.Enabled, rc.Sandbox.Backend, rc.PromptMode),
+		mcpFactory:           mcpFactory,
 		hooks:                hooks,
 		model:                rc.Model,
 		maxTokens:            rc.MaxTokens,
@@ -481,20 +487,29 @@ func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *
 
 	// 连接 MCP 服务器并注册其工具
 	if len(rc.MCPServers) > 0 {
-		mcpMgr := mcp.NewManager(rc.MCPServers)
-		ag.mcpMgr = mcpMgr
-
-		for _, td := range mcpMgr.ToolDefs() {
-			toolName := td.Name
-			ag.registry.Register(toolName, td.Description, td.InputSchema,
-				func(ctx context.Context, args json.RawMessage) (string, error) {
-					return mcpMgr.CallTool(ctx, toolName, args)
-				},
-			)
+		var mcpMgr *mcp.Manager
+		if ag.mcpFactory != nil {
+			var err error
+			mcpMgr, err = ag.mcpFactory.NewMCPManager(context.Background(), rc)
+			if err != nil {
+				slog.Warn("failed to create gateway-backed MCP manager", "agent", rc.ID, "error", err)
+			}
+		} else {
+			mcpMgr = mcp.NewManager(rc.MCPServers)
 		}
-
-		if mcpMgr.HasTools() {
-			slog.Info("registered MCP tools", "agent", rc.ID)
+		if mcpMgr != nil {
+			ag.mcpMgr = mcpMgr
+			for _, td := range mcpMgr.ToolDefs() {
+				toolName := td.Name
+				ag.registry.Register(toolName, td.Description, td.InputSchema,
+					func(ctx context.Context, args json.RawMessage) (string, error) {
+						return mcpMgr.CallTool(ctx, toolName, args)
+					},
+				)
+			}
+			if mcpMgr.HasTools() {
+				slog.Info("registered MCP tools", "agent", rc.ID)
+			}
 		}
 	}
 
@@ -521,6 +536,14 @@ func newContextBuilderWithSandbox(home, workspace string, memory *Memory, skills
 // 名称返回代理的姓名。
 func (a *Agent) Name() string {
 	return a.name
+}
+
+func (a *Agent) Close() {
+	if a == nil || a.mcpMgr == nil {
+		return
+	}
+	a.mcpMgr.Close()
+	a.mcpMgr = nil
 }
 
 // HandleWebChat 使用会话 ID 处理来自 Web UI 的聊天消息。

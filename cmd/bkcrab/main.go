@@ -171,6 +171,7 @@ func runGateway(port int) error {
 	webSrv.SetUsageMeter(gw.Usage())
 	webSrv.SetAuth(authResolver)
 	webSrv.SetWebChannel(gw.WebChannel())
+	webSrv.SetMCPRuntime(gw.MCPRuntime())
 	// 共享聊天事件集线器，使得总线触发的 web 轮次（cron / 目标
 	// 延续 / 心跳 / 子代理）通过与用户输入轮次相同的 SSE 管道传输。
 	// 必须在 gw.Run() 启动总线消费者之前连接。
