@@ -272,6 +272,21 @@ func mysqlMigrationSQL() []string {
 			UNIQUE KEY idx_agent_goals_session (agent_id, session_key)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		mysqlTokenUsageTableSQL(),
+		`CREATE TABLE IF NOT EXISTS skill_usage (
+			agent_id VARCHAR(120) NOT NULL,
+			slug VARCHAR(64) NOT NULL,
+			origin VARCHAR(16) NOT NULL DEFAULT 'learner',
+			activity DOUBLE NOT NULL DEFAULT 0,
+			last_load_seq BIGINT NOT NULL DEFAULT 0,
+			total_loads BIGINT NOT NULL DEFAULT 0,
+			explicit_uses BIGINT NOT NULL DEFAULT 0,
+			created_seq BIGINT NOT NULL DEFAULT 0,
+			edited_seq BIGINT NOT NULL DEFAULT 0,
+			content_hash CHAR(64) NOT NULL DEFAULT '',
+			created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+			updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+			PRIMARY KEY (agent_id, slug)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS channel_leases (
 			channel VARCHAR(64) NOT NULL,
 			account_id VARCHAR(191) NOT NULL,

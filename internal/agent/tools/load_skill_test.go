@@ -7,7 +7,28 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/qs3c/bkcrab/internal/store"
 )
+
+type loadRecord struct {
+	agentID       string
+	slug          string
+	invokedByUser bool
+	halfLifeLoads int
+	explicitGain  int
+	diskHash      string
+}
+
+type fakeLoadRecorder struct {
+	ch chan loadRecord
+}
+
+func (f *fakeLoadRecorder) RecordSkillLoad(ctx context.Context, agentID, slug, diskHash string, invokedByUser bool, halfLifeLoads, explicitGain int) (*store.SkillUsageRow, error) {
+	f.ch <- loadRecord{agentID: agentID, slug: slug, diskHash: diskHash, invokedByUser: invokedByUser, halfLifeLoads: halfLifeLoads, explicitGain: explicitGain}
+	return nil, nil
+}
 
 func TestLoadSkillRegisteredByDefaultAndLoadsFullContent(t *testing.T) {
 	home := t.TempDir()
@@ -80,5 +101,39 @@ func TestLoadSkillUsesDirectoryPrecedence(t *testing.T) {
 	}
 	if strings.Contains(got, "user version") {
 		t.Fatalf("load_skill should not include lower-priority skill:\n%s", got)
+	}
+}
+
+func TestLoadSkillWithLedgerRecordsSuccessfulLoad(t *testing.T) {
+	agentSkills := filepath.Join(t.TempDir(), "skills")
+	skillDir := filepath.Join(agentSkills, "shared")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "ledger version"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	rec := &fakeLoadRecorder{ch: make(chan loadRecord, 1)}
+	RegisterLoadSkillWithLedger(r, []string{agentSkills}, rec, "agentA", 32, 3)
+	rawArgs, err := json.Marshal(map[string]any{"name": "shared", "invoked_by_user": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.GetFunc("load_skill")(context.Background(), rawArgs); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-rec.ch:
+		if got.agentID != "agentA" || got.slug != "shared" || !got.invokedByUser || got.halfLifeLoads != 32 || got.explicitGain != 3 {
+			t.Fatalf("unexpected ledger record: %+v", got)
+		}
+		if got.diskHash != store.HashSkillContent(body) {
+			t.Fatalf("diskHash=%s want %s", got.diskHash, store.HashSkillContent(body))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ledger record")
 	}
 }

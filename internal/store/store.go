@@ -141,6 +141,10 @@ type Store interface {
 	// ResetSkillExtraction 把某次技能认领的所有行 skill_extraction_id 重置回 NULL。
 	// 仅基础设施错误(回放失败/LLM 故障)时补偿调用;"判定不提取"视为已消费,不重置。
 	ResetSkillExtraction(ctx context.Context, skillExtractionID string) error
+	UpsertSkillUsage(ctx context.Context, agentID, slug, contentHash string, firstCreate bool) error
+	RecordSkillLoad(ctx context.Context, agentID, slug, diskHash string, invokedByUser bool, halfLifeLoads, explicitGain int) (*SkillUsageRow, error)
+	ListSkillUsage(ctx context.Context, agentID string) ([]SkillUsageRow, error)
+	DeleteSkillUsage(ctx context.Context, agentID, slug string) error
 	// LoadTurnMessages 按 TurnRef 列表从归档回放被认领 turn 的消息,按 session 分组返回
 	// (每 session 一条查询,锚点边界决定每个 turn 的区间)。供记忆提取按 session 分节拼 prompt。
 	LoadTurnMessages(ctx context.Context, userID, agentID string, refs []TurnRef) ([]TurnGroup, error)

@@ -1577,6 +1577,21 @@ func (d *DBStore) migrationSQL() []string {
 		//（例如 "agent X 在所有时间内的所有行"）。
 		`CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage_daily (agent_id, day)`,
 		`CREATE INDEX IF NOT EXISTS idx_token_usage_user ON token_usage_daily (user_id, day)`,
+		`CREATE TABLE IF NOT EXISTS skill_usage (
+			agent_id TEXT NOT NULL,
+			slug TEXT NOT NULL,
+			origin TEXT NOT NULL DEFAULT 'learner',
+			activity REAL NOT NULL DEFAULT 0,
+			last_load_seq INTEGER NOT NULL DEFAULT 0,
+			total_loads INTEGER NOT NULL DEFAULT 0,
+			explicit_uses INTEGER NOT NULL DEFAULT 0,
+			created_seq INTEGER NOT NULL DEFAULT 0,
+			edited_seq INTEGER NOT NULL DEFAULT 0,
+			content_hash TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (agent_id, slug)
+		)`,
 		// channel_leases 将轮询/持久连接频道适配器（微信、Telegram、Discord、
 		// Slack、飞书长连接）限制为一次一个进程。没有它，共享同一 bot 令牌的
 		// 两个云副本都将长轮询上游服务器，用户将收到每个回复两次。

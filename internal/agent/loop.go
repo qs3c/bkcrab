@@ -24,6 +24,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/sandbox"
 	"github.com/qs3c/bkcrab/internal/scope"
 	"github.com/qs3c/bkcrab/internal/session"
+	skillspkg "github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/toolproviders"
 	"github.com/qs3c/bkcrab/internal/usage"
@@ -101,6 +102,7 @@ type Agent struct {
 	// 启动后或同级副本上上传的内容在此处可见。
 	workspaceStore workspace.Store
 	skillsLearner  *SkillsLearner
+	lifecycleCfg   config.SkillLifecycleCfg
 	turnCount      int
 	engine         *sdkEngine
 	costTracker    *costtracker.Tracker
@@ -211,6 +213,77 @@ func (a *Agent) bindSession(ctx context.Context, channel, sessionID, projectID s
 }
 
 // NewAgent 从已解析的配置创建一个新代理。
+func lifecycleHalfLife(c config.SkillLifecycleCfg) int {
+	if c.HalfLifeLoads > 0 {
+		return c.HalfLifeLoads
+	}
+	return skillspkg.DefaultLifecycleHalfLifeLoads
+}
+
+func lifecycleExplicitGain(c config.SkillLifecycleCfg) int {
+	if c.ExplicitGain > 0 {
+		return c.ExplicitGain
+	}
+	return skillspkg.DefaultLifecycleExplicitGain
+}
+
+func lifecycleRankConfig(c config.SkillLifecycleCfg) skillspkg.LifecycleConfig {
+	return skillspkg.LifecycleConfig{
+		ActiveMax:        c.ActiveMax,
+		HalfLifeLoads:    c.HalfLifeLoads,
+		ProtectLoads:     c.ProtectLoads,
+		EditProtectLoads: c.EditProtectLoads,
+		DeleteAfterLoads: c.DeleteAfterLoads,
+	}
+}
+
+func (a *Agent) skillLifecycleEnabled() bool {
+	return a != nil && a.skillsLearner != nil && a.dataStore != nil && a.lifecycleCfg.IsEnabled()
+}
+
+// configureSkillsLearner 在启用时为 agent 构造技能学习者。由 NewAgentWithFullCfg
+// (测试/本地全配置路径)与 Manager 的 buildAgent(生产路径)共用,确保 learner 在
+// 两条路径都被装配——历史上它只在前者接线,生产 buildAgent 从不构造(见
+// WithSkillsLearner 注释)。lifecycleCfg 由各调用方单独赋值(它在 learner 禁用时
+// 也无害,且 skillLifecycleEnabled 已要求 skillsLearner 非 nil)。
+func configureSkillsLearner(ag *Agent, rc config.ResolvedAgent, prov provider.Provider, homeDir string, globalSkillsCfg config.SkillsCfg, cfg config.SkillsLearnerCfg) {
+	if ag == nil || !cfg.IsEnabled() {
+		return
+	}
+	model := cfg.Model
+	if model == "" {
+		model = rc.Model
+	}
+	learnerLoader := NewSkillsLoaderWithGlobal(homeDir, rc.Home, "", rc.Skills, globalSkillsCfg)
+	learnerLoader.agentID = rc.ID
+	ag.skillsLearner = NewSkillsLearner(rc.Home, prov, model, learnerLoader.AllSkillDirs()...)
+	ag.skillsLearner.agentID = rc.ID
+	if cfg.MinToolCalls > 0 {
+		ag.skillsLearner.minToolCalls = cfg.MinToolCalls
+	}
+}
+
+func (a *Agent) configureSkillsLoaderLifecycle(loader *SkillsLoader) {
+	if loader == nil || !a.skillLifecycleEnabled() {
+		return
+	}
+	loader.lifecycleOn = true
+	loader.lifecycleCfg = lifecycleRankConfig(a.lifecycleCfg)
+	loader.usageStore = a.dataStore
+}
+
+func (a *Agent) registerLoadSkillTool(reg *tools.Registry, skillDirs []string) {
+	if reg == nil {
+		return
+	}
+	if a.skillLifecycleEnabled() {
+		tools.RegisterLoadSkillWithLedger(reg, skillDirs, a.dataStore, a.name, lifecycleHalfLife(a.lifecycleCfg), lifecycleExplicitGain(a.lifecycleCfg))
+		return
+	}
+	tools.RegisterLoadSkill(reg, skillDirs)
+}
+
+// NewAgent creates an agent from resolved configuration.
 func NewAgent(rc config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBus, homeDir string) *Agent {
 	return NewAgentWithSkillsCfg(rc, prov, mb, homeDir, config.SkillsCfg{})
 }
@@ -231,6 +304,7 @@ func NewAgentWithFullCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bu
 	ag := NewAgentWithSkillsCfg(rc, prov, mb, homeDir, fullCfg.Skills)
 	ag.memoryCfg = fullCfg.Memory
 	ag.piiScrubEnabled = fullCfg.Privacy.PIIScrubbing.Enabled
+	ag.lifecycleCfg = fullCfg.SkillsLearner.Lifecycle
 	// splitReplies 是在 NewAgentWithSkillsCfg 内部进行检测的，所以很陌生-
 	// 附属特工也拿起开关；不要在这里重新盖章。
 
@@ -253,18 +327,7 @@ func NewAgentWithFullCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bu
 	}
 
 	// 设置技能学习者（如果已配置）
-	if fullCfg.SkillsLearner.IsEnabled() {
-		model := fullCfg.SkillsLearner.Model
-		if model == "" {
-			model = rc.Model
-		}
-		learnerLoader := NewSkillsLoaderWithGlobal(homeDir, rc.Home, "", rc.Skills, fullCfg.Skills)
-		learnerLoader.agentID = rc.ID
-		ag.skillsLearner = NewSkillsLearner(rc.Home, prov, model, learnerLoader.AllSkillDirs()...)
-		if fullCfg.SkillsLearner.MinToolCalls > 0 {
-			ag.skillsLearner.minToolCalls = fullCfg.SkillsLearner.MinToolCalls
-		}
-	}
+	configureSkillsLearner(ag, rc, prov, homeDir, fullCfg.Skills, fullCfg.SkillsLearner)
 
 	// 设置内存自动保留默认值
 	if ag.memoryCfg.AutoPersist.EveryNTurns == 0 {
@@ -2019,7 +2082,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 把该聊天者可见的技能目录注册到回合私有 reg 的 load_skill 上（按人解析）；
 	// 不写共享 a.registry，避免并发回合并发改写同一张 tools map。
 	if len(skillDirs) > 0 {
-		tools.RegisterLoadSkill(reg, skillDirs)
+		a.registerLoadSkillTool(reg, skillDirs)
 	}
 	// 标记本回合的聊天是否是代理所有者/频道
 	// 行政。文件工具使用它来拒绝身份文件读取
@@ -2844,6 +2907,51 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 
 const skillClaimBatchCap = 32
 
+type skillCleanupStore interface {
+	ListSkillUsage(ctx context.Context, agentID string) ([]store.SkillUsageRow, error)
+	DeleteSkillUsage(ctx context.Context, agentID, slug string) error
+}
+
+func cleanupDeadSkills(ctx context.Context, st skillCleanupStore, mgr *skillspkg.Manager, agentID string, nowSeq int64, cfg skillspkg.LifecycleConfig) {
+	if st == nil || mgr == nil || agentID == "" {
+		return
+	}
+	rows, err := st.ListSkillUsage(ctx, agentID)
+	if err != nil {
+		slog.Warn("skill cleanup: list failed", "agent", agentID, "error", err)
+		return
+	}
+	if nowSeq < 0 {
+		nowSeq = skillspkg.NowSeq(rows)
+	}
+	_, deletable := skillspkg.Rank(rows, nowSeq, cfg)
+	for _, slug := range deletable {
+		if err := mgr.Delete(slug); err != nil {
+			// 目录已不存在(带外 rm / 兄弟副本竞争 / 上次部分清理)→ 仍需回收孤儿
+			// 账本行,否则它每轮重新符合删除条件、反复告警、永不回收。仅当目录仍在
+			// (真实删除失败,如权限)才保留行、下轮重试——避免误删行后盘上死技能
+			// 因"无账本行=永久 active"复活。
+			if _, exists := mgr.Read(slug); exists {
+				slog.Warn("skill cleanup: dir delete failed", "agent", agentID, "skill", slug, "error", err)
+				continue
+			}
+			slog.Warn("skill cleanup: dir already absent, reaping orphan ledger row", "agent", agentID, "skill", slug)
+		}
+		if err := st.DeleteSkillUsage(ctx, agentID, slug); err != nil {
+			slog.Warn("skill cleanup: ledger delete failed", "agent", agentID, "skill", slug, "error", err)
+		}
+	}
+}
+
+func (a *Agent) runSkillCleanup(base context.Context) {
+	if !a.skillLifecycleEnabled() || a.skillsLearner.Manager() == nil {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(base, 30*time.Second)
+	defer cancel()
+	cleanupDeadSkills(cleanupCtx, a.dataStore, a.skillsLearner.Manager(), a.name, -1, lifecycleRankConfig(a.lifecycleCfg))
+}
+
 func (a *Agent) maybeExtractSkillsCadence(ctx context.Context, anchor *turnAnchor) {
 	claimCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
@@ -2853,6 +2961,9 @@ func (a *Agent) maybeExtractSkillsCadence(ctx context.Context, anchor *turnAncho
 		return
 	}
 	if batchID == "" {
+		// 未认领批次(常见路径):不做清理。清理只搭 runSkillBatchExtraction 的
+		// defer 顺风车,避免每 turn 一次 ListSkillUsage+Rank 的热路径扫描——删除
+		// 极罕见(需 D 次加载机会零使用),没必要每 turn 空扫。
 		return
 	}
 	slog.Info("skills cadence firing", "agent", a.name, "session", anchor.sessionKey, "turns", len(refs), "batch_id", batchID)
@@ -2860,6 +2971,7 @@ func (a *Agent) maybeExtractSkillsCadence(ctx context.Context, anchor *turnAncho
 }
 
 func (a *Agent) runSkillBatchExtraction(base context.Context, batchID string, refs []store.TurnRef) {
+	defer a.runSkillCleanup(base)
 	extractCtx, cancel := context.WithTimeout(base, 5*time.Minute)
 	defer cancel()
 	resetBatch := func() {
@@ -2915,7 +3027,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	reg := a.bindSession(ctx, msg.Channel, msg.ChatID, msg.ProjectID)
 	ctx = withTurnRegistry(ctx, reg)
 	if len(skillDirs) > 0 {
-		tools.RegisterLoadSkill(reg, skillDirs)
+		a.registerLoadSkillTool(reg, skillDirs)
 	}
 	reg.SetCallerIsAdmin(a.isAdminChatter(msg))
 	reg.SetGoalSessionKey(sess.SessionKey())
@@ -3513,7 +3625,9 @@ func (a *Agent) refreshSkillsFromStore(userID string) (skillDirs []string, skill
 	loader := NewSkillsLoaderWithGlobal(a.homeDir, a.homePath, "", a.skillsCfg, a.globalSkillsCfg).
 		WithObjectStore(a.workspaceStore, a.agentID).
 		WithUserID(userID)
+	a.configureSkillsLoaderLifecycle(loader)
 	skills := loader.LoadSkills()
+	skills = loader.FilterActive(context.Background(), skills)
 	summary := loader.BuildSkillsSummary(skills)
 	skillDirs = loader.AllSkillDirs()
 	// 系统提示会显示技能组的每回合指纹
@@ -3548,9 +3662,11 @@ func (a *Agent) ReloadWorkspaceFiles() {
 	if a.workspaceStore != nil {
 		loader.WithObjectStore(a.workspaceStore, a.agentID)
 	}
+	a.configureSkillsLoaderLifecycle(loader)
 	skills := loader.LoadSkills()
+	skills = loader.FilterActive(context.Background(), skills)
 	skillsSummary := loader.BuildSkillsSummary(skills)
-	tools.RegisterLoadSkill(a.registry, loader.AllSkillDirs())
+	a.registerLoadSkillTool(a.registry, loader.AllSkillDirs())
 	a.ctxBuilder = NewContextBuilder(a.homePath, a.memory, skillsSummary)
 	a.ctxBuilder.SetWorkspace(a.workspacePath)
 	a.ctxBuilder.SetPromptMode(a.promptMode)

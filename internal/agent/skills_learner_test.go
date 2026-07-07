@@ -68,6 +68,27 @@ func learnerUpdateJSON(t *testing.T, update bool, content string) string {
 	return string(b)
 }
 
+type skillLedgerCall struct {
+	AgentID     string
+	Slug        string
+	ContentHash string
+	FirstCreate bool
+}
+
+type fakeSkillLedger struct {
+	calls []skillLedgerCall
+}
+
+func (f *fakeSkillLedger) UpsertSkillUsage(ctx context.Context, agentID, slug, contentHash string, firstCreate bool) error {
+	f.calls = append(f.calls, skillLedgerCall{
+		AgentID:     agentID,
+		Slug:        slug,
+		ContentHash: contentHash,
+		FirstCreate: firstCreate,
+	})
+	return nil
+}
+
 func writeExistingSkill(t *testing.T, ws, slug, content string) {
 	t.Helper()
 	dir := filepath.Join(ws, "skills", slug)
@@ -115,6 +136,32 @@ func TestMaybeExtractCreatesNewSkill(t *testing.T) {
 	}
 }
 
+func TestPersistExtractedUpsertsLedgerOnCreate(t *testing.T) {
+	ws := t.TempDir()
+	ledger := &fakeSkillLedger{}
+	sl := NewSkillsLearner(ws, &learnerFakeProvider{}, "m")
+	sl.agentID = "agentA"
+	sl.ledger = ledger
+
+	if err := sl.persistExtracted(context.Background(), &extractedSkill{
+		Name:    "Test Skill",
+		Slug:    "test-skill",
+		Content: learnerValidSkill,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.calls) != 1 {
+		t.Fatalf("ledger calls=%d want 1", len(ledger.calls))
+	}
+	call := ledger.calls[0]
+	if call.AgentID != "agentA" || call.Slug != "test-skill" || !call.FirstCreate {
+		t.Fatalf("unexpected ledger call: %+v", call)
+	}
+	if call.ContentHash != store.HashSkillContent(learnerValidSkill) {
+		t.Fatalf("hash=%s want %s", call.ContentHash, store.HashSkillContent(learnerValidSkill))
+	}
+}
+
 func TestMaybeExtractUpdatesExistingSkill(t *testing.T) {
 	ws := t.TempDir()
 	old := `---
@@ -147,6 +194,45 @@ description: A reusable test skill
 	got, _ := readSkill(t, ws, "test-skill")
 	if got != merged {
 		t.Fatalf("update not applied: %q", got)
+	}
+}
+
+func TestPersistExtractedUpsertsLedgerOnUpdate(t *testing.T) {
+	ws := t.TempDir()
+	old := `---
+name: Test Skill
+description: A reusable test skill
+---
+
+1. Old step only.
+`
+	merged := `---
+name: Test Skill
+description: A reusable test skill
+---
+
+1. Old step only.
+2. New step.
+`
+	writeExistingSkill(t, ws, "test-skill", old)
+	ledger := &fakeSkillLedger{}
+	p := &learnerFakeProvider{responses: []string{learnerUpdateJSON(t, true, merged)}}
+	sl := NewSkillsLearner(ws, p, "m")
+	sl.agentID = "agentA"
+	sl.ledger = ledger
+
+	if err := sl.persistExtracted(context.Background(), &extractedSkill{
+		Name:    "Test Skill",
+		Slug:    "test-skill",
+		Content: learnerValidSkill,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.calls) != 1 {
+		t.Fatalf("ledger calls=%d want 1", len(ledger.calls))
+	}
+	if call := ledger.calls[0]; call.FirstCreate || call.ContentHash != store.HashSkillContent(merged) {
+		t.Fatalf("unexpected ledger update call: %+v", call)
 	}
 }
 

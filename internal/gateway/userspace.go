@@ -677,6 +677,7 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 	managerOpts := []agent.ManagerOption{
 		agent.WithUserID(userID),
 		agent.WithGlobalSkillsCfg(cfg.Skills),
+		agent.WithSkillsLearner(cfg.SkillsLearner),
 		agent.WithSessionStore(session.NewStoreAdapter(st, userID)),
 		agent.WithMemoryStore(agent.NewMemoryStoreAdapter(st)),
 		agent.WithDataStore(st),
