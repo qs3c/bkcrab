@@ -13,10 +13,11 @@ import (
 // 显式名称）设置。systemd unit、docker-compose、k8s deployment env 是
 // 规范的设置位置。
 type EnvConfig struct {
-	Gateway EnvGateway
-	Storage EnvStorage
-	Sandbox EnvSandbox
-	Log     EnvLog
+	Gateway    EnvGateway
+	Storage    EnvStorage
+	Sandbox    EnvSandbox
+	MCPGateway EnvMCPGateway
+	Log        EnvLog
 }
 
 type EnvGateway struct {
@@ -41,6 +42,15 @@ type EnvSandbox struct {
 	BoxlitePrefix   string // BKCRAB_SANDBOX_BOXLITE_PREFIX — 工作区前缀，默认 "default"
 }
 
+type EnvMCPGateway struct {
+	Enabled       bool
+	Image         string
+	RuntimeDir    string
+	ContainerPort int
+	Protocol      string
+	IdleTTLSec    int
+}
+
 type EnvLog struct {
 	Level string // BKCRAB_LOG_LEVEL — "debug" / "info" / "warn" / "error"
 }
@@ -52,6 +62,13 @@ func LoadEnv() *EnvConfig {
 		// MySQL 默认必需。AutoMigrate 创建全新 schema，但仍需 DSN，
 		// 且启动时绝不回退到 SQLite。
 		Storage: EnvStorage{Type: "mysql", AutoMigrate: true},
+		MCPGateway: EnvMCPGateway{
+			Enabled:       true,
+			Image:         "ghcr.io/lucky-aeon/mcp-gateway:latest",
+			ContainerPort: 8080,
+			Protocol:      "all",
+			IdleTTLSec:    1800,
+		},
 	}
 
 	if v := os.Getenv("BKCRAB_PORT"); v != "" {
@@ -99,6 +116,29 @@ func LoadEnv() *EnvConfig {
 	}
 	if v := os.Getenv("BKCRAB_SANDBOX_BOXLITE_PREFIX"); v != "" {
 		cfg.Sandbox.BoxlitePrefix = v
+	}
+
+	if v := os.Getenv("BKCRAB_MCP_GATEWAY_ENABLED"); v != "" {
+		cfg.MCPGateway.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("BKCRAB_MCP_GATEWAY_IMAGE"); v != "" {
+		cfg.MCPGateway.Image = v
+	}
+	if v := os.Getenv("BKCRAB_MCP_GATEWAY_RUNTIME_DIR"); v != "" {
+		cfg.MCPGateway.RuntimeDir = v
+	}
+	if v := os.Getenv("BKCRAB_MCP_GATEWAY_CONTAINER_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			cfg.MCPGateway.ContainerPort = p
+		}
+	}
+	if v := os.Getenv("BKCRAB_MCP_GATEWAY_PROTOCOL"); v != "" {
+		cfg.MCPGateway.Protocol = v
+	}
+	if v := os.Getenv("BKCRAB_MCP_GATEWAY_IDLE_TTL_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.MCPGateway.IdleTTLSec = n
+		}
 	}
 
 	if v := os.Getenv("BKCRAB_LOG_LEVEL"); v != "" {
