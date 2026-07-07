@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/qs3c/bkcrab/internal/config"
+	skillspkg "github.com/qs3c/bkcrab/internal/skills"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 func TestBuildSkillsSummaryUsesProgressiveDisclosureByDefault(t *testing.T) {
@@ -100,5 +102,33 @@ ALWAYS_LOAD_BODY_SHOULD_APPEAR`
 
 	if !strings.Contains(summary, "ALWAYS_LOAD_BODY_SHOULD_APPEAR") {
 		t.Fatalf("summary should inline explicitly always-loaded skill:\n%s", summary)
+	}
+}
+
+func TestFilterLearnerSkillsByActive(t *testing.T) {
+	all := []Skill{
+		{Name: "manual", Layer: "user"},
+		{Name: "hi", Layer: "agent"},
+		{Name: "lo", Layer: "agent"},
+	}
+	rows := []store.SkillUsageRow{
+		{Slug: "hi", Origin: "learner", Activity: 10, LastLoadSeq: 100, TotalLoads: 3, CreatedSeq: 0},
+		{Slug: "lo", Origin: "learner", Activity: 1, LastLoadSeq: 100, TotalLoads: 3, CreatedSeq: 0},
+	}
+	out := filterActiveSkills(all, rows, skillspkg.LifecycleConfig{ActiveMax: 1, ProtectLoads: 20})
+	names := map[string]bool{}
+	for _, s := range out {
+		names[s.Name] = true
+	}
+	if !names["manual"] || !names["hi"] || names["lo"] {
+		t.Fatalf("want manual+hi kept, lo dropped. got %+v", names)
+	}
+}
+
+func TestFilterActiveSkillsFailOpenOnEmptyRows(t *testing.T) {
+	all := []Skill{{Name: "a", Layer: "agent"}, {Name: "b", Layer: "agent"}}
+	out := filterActiveSkills(all, nil, skillspkg.LifecycleConfig{ActiveMax: 1})
+	if len(out) != len(all) {
+		t.Fatalf("empty ledger should keep all skills, got %d", len(out))
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/qs3c/bkcrab/internal/provider"
@@ -21,6 +22,12 @@ type SkillsLearner struct {
 	minToolCalls int
 	skillDirs    []string
 	manager      *skills.Manager
+	agentID      string
+	ledger       skillLedger
+}
+
+type skillLedger interface {
+	UpsertSkillUsage(ctx context.Context, agentID, slug, contentHash string, firstCreate bool) error
 }
 
 func NewSkillsLearner(workspace string, p provider.Provider, model string, skillDirs ...string) *SkillsLearner {
@@ -32,6 +39,13 @@ func NewSkillsLearner(workspace string, p provider.Provider, model string, skill
 		skillDirs:    skillDirs,
 		manager:      skills.NewManager(filepath.Join(workspace, "skills"), skills.DefaultManagerConfig()),
 	}
+}
+
+func (sl *SkillsLearner) Manager() *skills.Manager {
+	if sl == nil {
+		return nil
+	}
+	return sl.manager
 }
 
 type extractedSkill struct {
@@ -94,6 +108,7 @@ func (sl *SkillsLearner) persistExtracted(ctx context.Context, skill *extractedS
 			slog.Warn("skill update rejected", "slug", skill.Slug, "error", err)
 			return nil
 		}
+		sl.upsertLedger(ctx, skill.Slug, merged, false)
 		slog.Info("updated existing skill", "name", skill.Name, "slug", skill.Slug)
 		return nil
 	}
@@ -102,8 +117,18 @@ func (sl *SkillsLearner) persistExtracted(ctx context.Context, skill *extractedS
 		slog.Warn("skill create rejected", "slug", skill.Slug, "error", err)
 		return nil
 	}
+	sl.upsertLedger(ctx, skill.Slug, skill.Content, true)
 	slog.Info("extracted new skill", "name", skill.Name, "slug", skill.Slug)
 	return nil
+}
+
+func (sl *SkillsLearner) upsertLedger(ctx context.Context, slug, content string, firstCreate bool) {
+	if sl == nil || sl.ledger == nil || sl.agentID == "" {
+		return
+	}
+	if err := sl.ledger.UpsertSkillUsage(ctx, sl.agentID, slug, store.HashSkillContent(content), firstCreate); err != nil {
+		slog.Warn("skill ledger upsert failed", "slug", slug, "error", err)
+	}
 }
 
 func (sl *SkillsLearner) loadSkillLearnerPrompt() string {
@@ -176,6 +201,9 @@ func summarizeTurnGroups(groups []store.TurnGroup) string {
 
 func (sl *SkillsLearner) extractFromSummary(ctx context.Context, summary string) (*extractedSkill, error) {
 	prompt := sl.loadSkillLearnerPrompt()
+	if existing := sl.existingSkillsPrompt(); existing != "" {
+		prompt += "\n\n" + existing
+	}
 	extractMsgs := []provider.Message{
 		{Role: "system", Content: prompt + "\n\nOutput ONLY the JSON, no markdown fences."},
 		{Role: "user", Content: summary},
@@ -196,6 +224,31 @@ func (sl *SkillsLearner) extractFromSummary(ctx context.Context, summary string)
 		return nil, nil
 	}
 	return &result.Skill, nil
+}
+
+func (sl *SkillsLearner) existingSkillsPrompt() string {
+	if sl == nil || sl.workspace == "" {
+		return ""
+	}
+	found := discoverSkillsEnhanced(filepath.Join(sl.workspace, "skills"), "agent")
+	if len(found) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(found))
+	for name := range found {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var sb strings.Builder
+	sb.WriteString("Existing skills in this workspace. If a newly extracted skill is substantially similar to one of these, reuse that slug so the existing skill is updated instead of creating a duplicate:\n")
+	for _, name := range names {
+		desc := firstSentence(found[name].Description)
+		if desc == "" {
+			desc = "(no description)"
+		}
+		fmt.Fprintf(&sb, "- %s - %s\n", name, desc)
+	}
+	return sb.String()
 }
 
 const updateDecisionPrompt = `You maintain a library of agent skills (SKILL.md files).

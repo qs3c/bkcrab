@@ -231,6 +231,11 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		// 在重新启动清除的内存计数器上）可以命中
 		// 直接存储，无需通过 Manager 重新管道。
 		ag.dataStore = m.opts.dataStore
+		if ag.skillsLearner != nil && ag.lifecycleCfg.IsEnabled() {
+			ag.skillsLearner.agentID = rc.ID
+			ag.skillsLearner.ledger = m.opts.dataStore
+		}
+		ag.ReloadWorkspaceFiles()
 		// 聊天者所在时区的日期线 - 需要 dataStore
 		// 范围首选项查找，因此在此处连接并由
 		// 每次 ctxBuilder 重建后重新加载工作空间文件。

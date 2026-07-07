@@ -14,6 +14,7 @@ import (
 
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/skills"
+	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/workspace"
 	"gopkg.in/yaml.v3"
 )
@@ -116,6 +117,10 @@ type SkillsLoader struct {
 	// 技能可以在他们与之聊天的每个其他代理上重复使用。空值禁用此层
 	// （早于每个用户技能的旧版/单用户安装）。
 	userID string
+
+	usageLister  func(ctx context.Context, agentID string) ([]store.SkillUsageRow, error)
+	lifecycleCfg skills.LifecycleConfig
+	lifecycleOn  bool
 }
 
 // NewSkillsLoader 创建一个新的技能加载器。
@@ -180,9 +185,9 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 			if err := skills.HydrateSkillsDown(ctx, sl.workspaceStore, owner, userDir); err != nil {
 				slog.Warn("user skill hydrate failed", "user", sl.userID, "error", err)
 			}
-		// 代理在聊天过程中安装到绑定挂载的每个用户目录中的任何内容
-		// （例如通过 `npx skills add -g -y`）此时仅为本地。将其推送到上层，
-		// 使兄弟 Pod 在下一个水合周期中获取它。没有新内容时成本很低。
+			// 代理在聊天过程中安装到绑定挂载的每个用户目录中的任何内容
+			// （例如通过 `npx skills add -g -y`）此时仅为本地。将其推送到上层，
+			// 使兄弟 Pod 在下一个水合周期中获取它。没有新内容时成本很低。
 			if err := skills.MirrorSkillsUp(ctx, sl.workspaceStore, owner, userDir); err != nil {
 				slog.Warn("user skill mirror-up failed", "user", sl.userID, "error", err)
 			}
@@ -281,6 +286,43 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 // 技能默认使用渐进式披露：将提示的常开上下文保持在较小的名称+描述目录，
 // 让模型在需要完整 SKILL.md 指令时调用 load_skill。显式的始终加载技能
 // 保持内联，以便与必须在第一次工具调用之前存在的技能兼容。
+func (sl *SkillsLoader) FilterActive(ctx context.Context, list []Skill) []Skill {
+	if !sl.lifecycleOn || sl.usageLister == nil || sl.agentID == "" {
+		return list
+	}
+	rows, err := sl.usageLister(ctx, sl.agentID)
+	if err != nil {
+		slog.Warn("skill usage list failed; keeping all skills", "agent", sl.agentID, "error", err)
+		return list
+	}
+	return filterActiveSkills(list, rows, sl.lifecycleCfg)
+}
+
+func filterActiveSkills(all []Skill, rows []store.SkillUsageRow, cfg skills.LifecycleConfig) []Skill {
+	if len(rows) == 0 {
+		return all
+	}
+	ledger := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		if r.Slug != "" {
+			ledger[r.Slug] = true
+		}
+	}
+	active, _ := skills.Rank(rows, skills.NowSeq(rows), cfg)
+	out := make([]Skill, 0, len(all))
+	for _, s := range all {
+		// 仅过滤 agent 层技能——learner 产物写入 workspace/skills，在 LoadSkills 里
+		// 归为 "agent" 层。此限定保证账本 slug 与其他层(user/team/managed/bundled)
+		// 同名的技能不被误藏。若将来 learner 写入层变化，此处会 fail-safe 地退化为
+		// "不过滤"(技能全展示)，而非误删/误藏。
+		if s.Layer == "agent" && ledger[s.Name] && !active[s.Name] {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 func (sl *SkillsLoader) BuildSkillsSummary(skills []Skill) string {
 	if len(skills) == 0 {
 		return ""
@@ -365,6 +407,8 @@ func firstSentence(s string) string {
 // 对已发布技能能处理的任务产生反射性的 `pip install` 调用。
 const skillsDirective = `<skill_usage_rules>
 The skills listed below are pre-installed for this agent. Only the catalog is always in context. Before using a skill, call the "load_skill" tool with its name to load the full SKILL.md instructions, then follow those instructions exactly. If an always-loaded skill is included inline below, you may use those inline instructions directly.
+
+When you call load_skill, set invoked_by_user=true only if the user explicitly named or clearly asked for that specific skill; set it false when you chose the skill on your own initiative.
 
 The sandbox image already has: python3 + pip, uv + uvx, node + npm + npx, the camoufox-cli anti-detect browser (run as ` + "`camoufox-cli open <url>`" + ` then ` + "`camoufox-cli snapshot -i`" + ` for refs; Camoufox/Firefox is pre-downloaded), git, curl, requests / pillow / beautifulsoup4 / lxml. DO NOT reinstall any of these — wasted tool calls and timeouts. If you see "command not found", check the spelling before reaching for npm/pip.
 
