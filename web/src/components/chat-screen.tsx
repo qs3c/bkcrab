@@ -6,7 +6,7 @@ import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getAgent, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, listAgentFiles, listProjects, renameChatSession, revealAgentWorkspace, sendChatStream, steerChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type ContextUsage, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile } from "@/lib/api";
-import { getChatHistoryRenderState } from "@/components/chat-screen-state";
+import { findProducedFileAttachmentIndex, getChatHistoryRenderState, isInternalWorkspaceFile, splitToolTurnForRender } from "@/components/chat-screen-state";
 import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, History } from "lucide-react";
 import Link from "next/link";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
@@ -238,17 +238,6 @@ function splitOnMarker(s: string): string[] {
   if (!s.includes(SPLIT_MARKER)) return [s];
   const parts = s.split(SPLIT_MARKER).map((p) => p.trim()).filter((p) => p.length > 0);
   return parts.length > 0 ? parts : [s];
-}
-
-// 路由到智能体主目录（而非工作区）的单段身份文件名——从
-// "你的文件"面板中排除。
-const SYSTEM_FILES = new Set([
-  "SOUL.md", "IDENTITY.md", "USER.md", "BOOTSTRAP.md",
-  "MEMORY.md", "HEARTBEAT.md", "AGENTS.md", "TOOLS.md", "agent.json",
-]);
-
-function isSystemFile(path: string): boolean {
-  return !path.includes("/") && SYSTEM_FILES.has(path);
 }
 
 function parseWrittenSize(result: string): number | undefined {
@@ -1152,14 +1141,20 @@ export function ChatScreen() {
           const sessionFiles: ProducedFile[] = (
             await listAgentFiles(selectedAgent, sessionId)
           )
-            .filter((f) => !isSystemFile(f.path))
+            .filter((f) => !isInternalWorkspaceFile(f.path))
             .map((f) => ({ path: f.path, size: f.size }));
           if (sessionFiles.length > 0) {
-            for (let i = built.length - 1; i >= 0; i--) {
-              if (built[i].role === "agent" || built[i].role === "tool-group") {
-                built[i] = { ...built[i], files: sessionFiles };
-                break;
-              }
+            const targetIdx = findProducedFileAttachmentIndex(built);
+            if (targetIdx >= 0) {
+              built[targetIdx] = { ...built[targetIdx], files: sessionFiles };
+            } else {
+              built.push({
+                id: `h-files-${sessionId}`,
+                role: "agent",
+                content: "",
+                timestamp: 0,
+                files: sessionFiles,
+              });
             }
           }
         } catch { /* 列出失败 — 回退为无面板 */ }
@@ -1529,7 +1524,7 @@ export function ChatScreen() {
               try {
                 const args = JSON.parse(tc.arguments);
                 const p: string = typeof args?.path === "string" ? args.path : "";
-                if (p && !p.startsWith("/") && !isSystemFile(p) && !seenPaths.has(p)) {
+                if (p && !p.startsWith("/") && !isInternalWorkspaceFile(p) && !seenPaths.has(p)) {
                   seenPaths.add(p);
                   turnFiles.push({ path: p, size: parseWrittenSize(resultText) });
                 }
@@ -1624,13 +1619,13 @@ export function ChatScreen() {
       const preSnap = await preTurnFilesPromise;
       const diffFiles: ProducedFile[] = [];
       for (const f of postTurnFiles) {
-        if (isSystemFile(f.path)) continue;
+        if (isInternalWorkspaceFile(f.path)) continue;
         const key = `${f.size}|${f.modTime}`;
         if (preSnap.get(f.path) === key) continue; // unchanged
         if (seenPaths.has(f.path)) continue;
         diffFiles.push({ path: f.path, size: f.size });
       }
-      const allFiles = [...turnFiles, ...diffFiles];
+      const allFiles = [...turnFiles, ...diffFiles].filter((f) => !isInternalWorkspaceFile(f.path));
       // 诊断：当沙箱执行产出文件但文件面板不显示时，我们需要知道 API
       // 是否返回了该文件以及差异在何处丢弃。保留成本低。
       if (typeof console !== "undefined") {
@@ -1649,12 +1644,27 @@ export function ChatScreen() {
         setMessages((prev) => {
           if (prev.length === 0) return prev;
           const updated = [...prev];
-          const last = updated[updated.length - 1];
-          updated[updated.length - 1] = { ...last, files: allFiles };
+          const targetIdx = findProducedFileAttachmentIndex(updated);
+          if (targetIdx >= 0) {
+            const target = updated[targetIdx];
+            const mergedFiles = [...(target.files || []), ...allFiles].filter(
+              (f, i, arr) =>
+                !isInternalWorkspaceFile(f.path) &&
+                arr.findIndex((g) => g.path === f.path) === i,
+            );
+            updated[targetIdx] = { ...target, files: mergedFiles };
+          } else {
+            updated.push({
+              id: `files-${Date.now()}`,
+              role: "agent",
+              content: "",
+              timestamp: Date.now(),
+              files: allFiles,
+            });
+          }
           if (typeof console !== "undefined") {
-            console.log("[chat] attached files to last message", {
-              lastId: last.id,
-              lastRole: last.role,
+            console.log("[chat] attached files to message", {
+              targetIdx,
               files: allFiles,
             });
           }
@@ -2098,30 +2108,7 @@ export function ChatScreen() {
                 // 模型于工具调用后以空内容结束时，会追加一个无文本气泡（历史重载
                 // 路径不会持久化它）。若把它当成最终回答，真正的答案就会被折进
                 // 过程里——这正是之前实时视图只剩折叠条、不显示回答的根因。
-                const isBlankAgent = (m: ChatMessage) =>
-                  m.role === "agent" &&
-                  !(m.content && m.content.trim()) &&
-                  !(m.files && m.files.length > 0);
-                let lastAgentIdx = turnMsgs.length - 1;
-                while (
-                  lastAgentIdx >= 0 &&
-                  (turnMsgs[lastAgentIdx].role === "tool-group" ||
-                    isBlankAgent(turnMsgs[lastAgentIdx]))
-                ) {
-                  lastAgentIdx--;
-                }
-                let finalStart = lastAgentIdx;
-                while (finalStart - 1 >= 0 && turnMsgs[finalStart - 1].role === "agent") {
-                  finalStart--;
-                }
-                // lastAgentIdx < 0：整轮没有任何实质 agent 文本（纯工具，多见于被
-                // 中断的轮次）——没有可展开的最终回答，全部折叠。
-                const finalMsgs =
-                  lastAgentIdx >= 0 ? turnMsgs.slice(finalStart, lastAgentIdx + 1) : [];
-                const processMsgs =
-                  lastAgentIdx >= 0
-                    ? [...turnMsgs.slice(0, finalStart), ...turnMsgs.slice(lastAgentIdx + 1)]
-                    : turnMsgs;
+                const { processMsgs, finalMsgs } = splitToolTurnForRender(turnMsgs);
                 const toolCount = processMsgs.reduce(
                   (n, m) => n + (m.toolCalls?.length ?? 0),
                   0,
@@ -2143,6 +2130,29 @@ export function ChatScreen() {
               return out;
 
               function renderRegularBubble(msg: ChatMessage) {
+                const attached = attachedImages.get(msg.id) || [];
+                const visibleFiles = (msg.files || []).filter((f) => !isInternalWorkspaceFile(f.path));
+                const hasText = !!(msg.content && msg.content.trim());
+                const hasUserAttachments = msg.role === "user" && !!(msg.attachments && msg.attachments.length > 0);
+                const hasStatus =
+                  msg.role === "agent" &&
+                  !!(
+                    msg.metadata?.iterationCapReached ||
+                    msg.metadata?.loopGuardReached ||
+                    msg.metadata?.planMode ||
+                    msg.id === pendingPlanId
+                  );
+                const hasBubbleBody = hasText || attached.length > 0 || hasUserAttachments || hasStatus;
+                if (!hasBubbleBody) {
+                  if (visibleFiles.length === 0) return null;
+                  return (
+                    <div key={msg.id} className="flex justify-start">
+                      <div className="group relative max-w-[80%] min-w-0">
+                        <FilesPanel agentId={selectedAgent} files={visibleFiles} />
+                      </div>
+                    </div>
+                  );
+                }
                 return (
                 <div
                   key={msg.id}
@@ -2178,8 +2188,7 @@ export function ChatScreen() {
                       }`}
                     >
                       {(() => {
-                        const attached = attachedImages.get(msg.id);
-                        return attached && attached.length > 0 ? (
+                        return attached.length > 0 ? (
                           <div className="space-y-2 mb-2">
                             {attached.map((img, i) => (
                               // eslint-disable-next-line @next/next/no-img-element
@@ -2295,8 +2304,8 @@ export function ChatScreen() {
                         </div>
                       )}
                     </div>
-                    {msg.files && msg.files.length > 0 && (
-                      <FilesPanel agentId={selectedAgent} files={msg.files} />
+                    {visibleFiles.length > 0 && (
+                      <FilesPanel agentId={selectedAgent} files={visibleFiles} />
                     )}
                     <div
                       className={`flex items-center gap-1.5 mt-1 ${
@@ -3219,11 +3228,14 @@ function FilesPanel({ agentId, files }: { agentId: string; files: ProducedFile[]
   // 导致面板里出现两张完全相同的卡片。一个文件面板永远不该重复列出
   // 同一路径，因此在渲染前统一去重（也消除 React 重复 key 警告）。
   const uniqueFiles = files.filter(
-    (f, i) => files.findIndex((g) => g.path === f.path) === i,
+    (f, i) =>
+      !isInternalWorkspaceFile(f.path) &&
+      files.findIndex((g) => g.path === f.path) === i,
   );
+  if (uniqueFiles.length === 0) return null;
   return (
     <>
-      <div className="mt-2 space-y-1.5 max-w-[85%]">
+      <div className="mt-2 w-72 max-w-full space-y-1.5 sm:w-80 md:w-96">
         <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
           你的文件
         </p>
@@ -3382,7 +3394,7 @@ function WorkspacePanel({
         ? await listAgentFiles(agentId, undefined, projectId)
         : await listAgentFiles(agentId, sessionId);
       const cleaned = list
-        .filter((f) => !isSystemFile(f.path))
+        .filter((f) => !isInternalWorkspaceFile(f.path))
         .sort((a, b) => (b.modTime || 0) - (a.modTime || 0));
       setFiles(cleaned);
     } finally {
