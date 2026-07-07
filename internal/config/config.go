@@ -54,13 +54,47 @@ func MustUserIDFromContext(ctx context.Context) (string, error) {
 }
 
 // MCPServerConfig 保存单个 MCP 服务器的配置。
+const (
+	MCPTransportSSE            = "sse"
+	MCPTransportStreamableHTTP = "streamable-http"
+)
+
 type MCPServerConfig struct {
-	Type    string            `json:"type"`
-	URL     string            `json:"url,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Command string            `json:"command,omitempty"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
+	Type      string            `json:"type"`
+	URL       string            `json:"url,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Command   string            `json:"command,omitempty"`
+	Args      []string          `json:"args,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	Transport string            `json:"transport,omitempty"`
+	Enabled   *bool             `json:"enabled,omitempty"`
+}
+
+func MCPServerEnabled(cfg MCPServerConfig) bool {
+	if cfg.Enabled == nil {
+		return true
+	}
+	return *cfg.Enabled
+}
+
+func NormalizeMCPTransport(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "streamhttp", "streamable", "streamable-http":
+		return MCPTransportStreamableHTTP
+	case "sse":
+		return MCPTransportSSE
+	default:
+		return strings.ToLower(strings.TrimSpace(v))
+	}
+}
+
+func MCPTransportValid(v string) bool {
+	switch NormalizeMCPTransport(v) {
+	case MCPTransportSSE, MCPTransportStreamableHTTP:
+		return true
+	default:
+		return false
+	}
 }
 
 // CronJob 定义加载到网关运行时的定时作业。
@@ -669,6 +703,7 @@ type AgentFileConfig struct {
 	Workspace            string                     `json:"workspace,omitempty"`
 	Skills               SkillsConfig               `json:"skills,omitempty"`
 	MCPServers           map[string]MCPServerConfig `json:"mcpServers,omitempty"`
+	ShareMCPConfig       bool                       `json:"shareMcpConfig,omitempty"`
 	ToolProviders        map[string]ToolProviderCfg `json:"toolProviders,omitempty"`
 	Tools                map[string]ToolCategoryCfg `json:"tools,omitempty"`
 	Providers            map[string]ProviderConfig  `json:"providers,omitempty"`
@@ -737,6 +772,7 @@ type ResolvedAgent struct {
 	Thinking             string
 	Skills               SkillsConfig
 	MCPServers           map[string]MCPServerConfig
+	ShareMCPConfig       bool
 	Sandbox              SandboxCfg
 	PolicyPreset         string
 	ToolProviders        map[string]ToolProviderCfg
@@ -955,6 +991,9 @@ func (cfg *Config) MergedAgentConfig(entry AgentEntry) ResolvedAgent {
 				resolved.MCPServers = make(map[string]MCPServerConfig)
 			}
 			resolved.MCPServers[k] = v
+		}
+		if fileCfg.ShareMCPConfig {
+			resolved.ShareMCPConfig = true
 		}
 		for k, v := range fileCfg.Providers {
 			if resolved.Providers == nil {
