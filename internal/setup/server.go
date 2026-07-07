@@ -243,6 +243,10 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/agents/{id}", auth(s.handleGetAgent))
 	mux.HandleFunc("PUT /api/agents/{id}", auth(s.handleUpdateAgent))
 	mux.HandleFunc("GET /api/agents/{id}/config", auth(s.handleGetAgentConfig))
+	mux.HandleFunc("GET /api/agents/{id}/mcp", auth(s.handleGetAgentMCP))
+	mux.HandleFunc("PUT /api/agents/{id}/mcp", auth(s.handlePutAgentMCP))
+	mux.HandleFunc("POST /api/agents/{id}/mcp/test", auth(s.handleTestAgentMCP))
+	mux.HandleFunc("GET /api/agents/{id}/mcp/status", auth(s.handleGetAgentMCPStatus))
 	mux.HandleFunc("GET /api/agents/{id}/tools/registered", auth(s.handleListAgentRegisteredTools))
 	mux.HandleFunc("DELETE /api/agents/{id}", auth(s.handleDeleteAgent))
 

@@ -132,6 +132,15 @@ func (s *Service) NewManagerForAgent(ctx context.Context, rc config.ResolvedAgen
 	return s.NewManagerFromServers(ctx, rc.UserID, rc.MCPServers)
 }
 
+func (s *Service) TestServers(ctx context.Context, userID string, servers map[string]config.MCPServerConfig) ([]mcp.ToolDef, error) {
+	mgr, err := s.NewManagerFromServers(ctx, userID, servers)
+	if err != nil {
+		return nil, err
+	}
+	defer mgr.Close()
+	return mgr.ToolDefs(), nil
+}
+
 func (s *Service) NewManagerFromServers(ctx context.Context, userID string, servers map[string]config.MCPServerConfig) (*mcp.Manager, error) {
 	rec, err := s.Deploy(ctx, userID, servers)
 	if err != nil {
