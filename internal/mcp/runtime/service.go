@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -51,10 +50,6 @@ func NewService(opts Options) *Service {
 	if docker == nil {
 		docker = NewCLIClient()
 	}
-	httpClient := opts.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
 	cfg := opts.Config
 	if cfg.Image == "" {
 		cfg.Image = defaultImage
@@ -67,6 +62,17 @@ func NewService(opts Options) *Service {
 	}
 	if cfg.IdleTTL <= 0 {
 		cfg.IdleTTL = 30 * time.Minute
+	}
+	if cfg.DeployTimeout <= 0 {
+		cfg.DeployTimeout = 5 * time.Minute
+	}
+	if cfg.RequestTimeout <= 0 {
+		cfg.RequestTimeout = 30 * time.Second
+	}
+	httpClient := opts.HTTPClient
+	if httpClient == nil {
+		// 独立的带超时客户端；绝不改动 http.DefaultClient 这个进程级全局单例。
+		httpClient = &http.Client{Timeout: cfg.RequestTimeout}
 	}
 	return &Service{
 		store:      opts.Store,
@@ -86,6 +92,15 @@ func (s *Service) Deploy(ctx context.Context, userID string, servers map[string]
 	}
 	if userID == "" {
 		return nil, errors.New("mcp gateway runtime user_id is required")
+	}
+	// 给整条部署链路（docker 拉镜像/启动 + /deploy）一个上界。请求上下文可能是
+	// context.Background()（agent 构建路径），若不设界，卡死的 docker/网关会永久
+	// 占住用户空间加载锁。用 Background 派生而非请求 ctx：部署惠及该用户整个网关，
+	// 不应因单个请求取消而中断，但仍需有界。
+	if s.cfg.DeployTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.cfg.DeployTimeout)
+		defer cancel()
 	}
 	name := containerName(userID)
 	ref, err := s.docker.Ensure(ctx, ContainerSpec{
@@ -142,6 +157,11 @@ func (s *Service) TestServers(ctx context.Context, userID string, servers map[st
 }
 
 func (s *Service) NewManagerFromServers(ctx context.Context, userID string, servers map[string]config.MCPServerConfig) (*mcp.Manager, error) {
+	// 没有任何启用的服务器时不要拉起网关容器：一个全部 enabled=false 的配置
+	// 不应触发 docker.Ensure。直接返回空管理器（无工具、无 close hook）。
+	if len(enabledServers(servers)) == 0 {
+		return mcp.NewManager(nil), nil
+	}
 	rec, err := s.Deploy(ctx, userID, servers)
 	if err != nil {
 		return nil, err
@@ -294,8 +314,4 @@ func enabledServers(servers map[string]config.MCPServerConfig) map[string]config
 		}
 	}
 	return out
-}
-
-func endpoint(baseURL, path string) string {
-	return fmt.Sprintf("%s/%s", strings.TrimRight(baseURL, "/"), strings.TrimLeft(path, "/"))
 }

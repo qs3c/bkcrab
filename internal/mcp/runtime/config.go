@@ -16,6 +16,11 @@ type Config struct {
 	ContainerPort int
 	Protocol      string
 	IdleTTL       time.Duration
+	// DeployTimeout 限制一次 Deploy（含 docker 拉镜像/启动 + /deploy 调用）的总时长，
+	// 使卡死的 docker 守护进程或网关无法无限期阻塞 agent 构建（进而阻塞用户空间加载锁）。
+	DeployTimeout time.Duration
+	// RequestTimeout 是网关 HTTP 客户端（/deploy 及运行时工具调用）的单请求超时。
+	RequestTimeout time.Duration
 }
 
 func FromEnv(env config.EnvMCPGateway) Config {

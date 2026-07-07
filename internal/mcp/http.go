@@ -9,7 +9,13 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
+
+// defaultMCPHTTPTimeout 限制每个 MCP HTTP 请求的时长。缺少它时，一个卡死的
+// 网关或上游会无限期挂起一次 agent 轮次。取值需足够宽以容纳慢工具调用，
+// 又要有上界。initialize / tools/list 通常很快；此上限只在病态情况下生效。
+const defaultMCPHTTPTimeout = 120 * time.Second
 
 // HTTPClient 实现了基于 HTTP（Streamable HTTP）的 MCP 客户端。
 type HTTPClient struct {
@@ -25,7 +31,7 @@ func NewHTTPClient(url string, headers map[string]string) *HTTPClient {
 	return &HTTPClient{
 		url:     url,
 		headers: expandHeaders(headers),
-		client:  &http.Client{},
+		client:  &http.Client{Timeout: defaultMCPHTTPTimeout},
 		nextID:  1,
 	}
 }

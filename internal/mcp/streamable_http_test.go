@@ -66,3 +66,45 @@ func TestStreamableHTTPClientHandshakeAndTools(t *testing.T) {
 		t.Fatalf("call output = %q", out)
 	}
 }
+
+// TestStreamableHTTPClientConnectsWithoutSession proves the handshake no longer
+// requires a Mcp-Session-Id response header. Stateless gateways (including
+// lucky-aeon's aggregated /stream in some versions) omit it; the client must
+// continue with an empty session instead of failing at connect.
+func TestStreamableHTTPClientConnectsWithoutSession(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonRPCRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		switch req.Method {
+		case "initialize":
+			// intentionally no Mcp-Session-Id header
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  json.RawMessage(`{"protocolVersion":"2025-03-26"}`),
+			})
+		case "notifications/initialized":
+			if r.Header.Get("Mcp-Session-Id") != "" {
+				t.Fatalf("no session issued, client must not send Mcp-Session-Id")
+			}
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(jsonRPCResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  json.RawMessage(`{"tools":[]}`),
+			})
+		default:
+			t.Fatalf("unexpected method %s", req.Method)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewStreamableHTTPClient(srv.URL, nil)
+	if err := client.Connect(); err != nil {
+		t.Fatalf("connect without session: %v", err)
+	}
+	if _, err := client.ListTools(); err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+}

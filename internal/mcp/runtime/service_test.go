@@ -151,6 +151,33 @@ func TestServiceStopsIdleRuntimeWhenRefsAreZero(t *testing.T) {
 	}
 }
 
+func TestNewManagerFromServersSkipsDeployWhenNoEnabledServers(t *testing.T) {
+	fd := &fakeDocker{}
+	fs := &fakeRuntimeStore{}
+	svc := NewService(Options{
+		Store:  fs,
+		Docker: fd,
+		Config: Config{Enabled: true, IdleTTL: time.Minute},
+	})
+	disabled := false
+	mgr, err := svc.NewManagerFromServers(ctxWithTestDeadline(t), "u1", map[string]config.MCPServerConfig{
+		"time": {Type: "stdio", Command: "uvx", Enabled: &disabled},
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	defer mgr.Close()
+	if len(fd.started) != 0 {
+		t.Fatalf("all-disabled config must not start a gateway container: %#v", fd.started)
+	}
+	if len(mgr.ToolDefs()) != 0 {
+		t.Fatalf("expected no tools, got %#v", mgr.ToolDefs())
+	}
+	if fs.rec != nil {
+		t.Fatalf("no runtime record should be written: %#v", fs.rec)
+	}
+}
+
 func ctxWithTestDeadline(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

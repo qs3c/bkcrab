@@ -30,7 +30,7 @@ func NewStreamableHTTPClient(url string, headers map[string]string) *StreamableH
 	return &StreamableHTTPClient{
 		url:     url,
 		headers: expandHeaders(headers),
-		client:  &http.Client{},
+		client:  &http.Client{Timeout: defaultMCPHTTPTimeout},
 		nextID:  1,
 	}
 }
@@ -43,9 +43,9 @@ func (c *StreamableHTTPClient) Connect() error {
 	if err != nil {
 		return err
 	}
-	if resp.SessionID == "" {
-		return fmt.Errorf("streamable HTTP initialize did not return %s", mcpSessionHeader)
-	}
+	// MCP streamable-HTTP 规范中会话 ID 是可选的：无状态网关（含 lucky-aeon 的
+	// 聚合 /stream 端点在某些版本下）可能不返回 Mcp-Session-Id。缺失时以空会话
+	// 继续（后续请求不再携带该头），而不是让整条网关 MCP 链路在握手阶段直接失败。
 	c.sessionID = resp.SessionID
 	return c.sendNotification("notifications/initialized", struct{}{})
 }
