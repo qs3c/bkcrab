@@ -118,9 +118,15 @@ type SkillsLoader struct {
 	// （早于每个用户技能的旧版/单用户安装）。
 	userID string
 
-	usageLister  func(ctx context.Context, agentID string) ([]store.SkillUsageRow, error)
+	usageStore   skillUsageLister
 	lifecycleCfg skills.LifecycleConfig
 	lifecycleOn  bool
+}
+
+// skillUsageLister 是 catalog 过滤读取生命周期账本所需的最小接口(store.Store 满足)。
+// 用接口而非闭包,避免 loader 捕获整个 Agent、也免去与 sl.agentID 冗余的参数。
+type skillUsageLister interface {
+	ListSkillUsage(ctx context.Context, agentID string) ([]store.SkillUsageRow, error)
 }
 
 // NewSkillsLoader 创建一个新的技能加载器。
@@ -287,10 +293,10 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 // 让模型在需要完整 SKILL.md 指令时调用 load_skill。显式的始终加载技能
 // 保持内联，以便与必须在第一次工具调用之前存在的技能兼容。
 func (sl *SkillsLoader) FilterActive(ctx context.Context, list []Skill) []Skill {
-	if !sl.lifecycleOn || sl.usageLister == nil || sl.agentID == "" {
+	if !sl.lifecycleOn || sl.usageStore == nil || sl.agentID == "" {
 		return list
 	}
-	rows, err := sl.usageLister(ctx, sl.agentID)
+	rows, err := sl.usageStore.ListSkillUsage(ctx, sl.agentID)
 	if err != nil {
 		slog.Warn("skill usage list failed; keeping all skills", "agent", sl.agentID, "error", err)
 		return list
@@ -304,7 +310,8 @@ func filterActiveSkills(all []Skill, rows []store.SkillUsageRow, cfg skills.Life
 	}
 	ledger := make(map[string]bool, len(rows))
 	for _, r := range rows {
-		if r.Slug != "" {
+		// 只认 learner-origin 账本行(当前所有行都是,显式判定为未来防错)。
+		if r.Slug != "" && r.Origin == "learner" {
 			ledger[r.Slug] = true
 		}
 	}

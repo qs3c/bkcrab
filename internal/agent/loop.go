@@ -269,9 +269,7 @@ func (a *Agent) configureSkillsLoaderLifecycle(loader *SkillsLoader) {
 	}
 	loader.lifecycleOn = true
 	loader.lifecycleCfg = lifecycleRankConfig(a.lifecycleCfg)
-	loader.usageLister = func(ctx context.Context, agentID string) ([]store.SkillUsageRow, error) {
-		return a.dataStore.ListSkillUsage(ctx, agentID)
-	}
+	loader.usageStore = a.dataStore
 }
 
 func (a *Agent) registerLoadSkillTool(reg *tools.Registry, skillDirs []string) {
@@ -2963,7 +2961,9 @@ func (a *Agent) maybeExtractSkillsCadence(ctx context.Context, anchor *turnAncho
 		return
 	}
 	if batchID == "" {
-		go a.runSkillCleanup(context.WithoutCancel(ctx))
+		// 未认领批次(常见路径):不做清理。清理只搭 runSkillBatchExtraction 的
+		// defer 顺风车,避免每 turn 一次 ListSkillUsage+Rank 的热路径扫描——删除
+		// 极罕见(需 D 次加载机会零使用),没必要每 turn 空扫。
 		return
 	}
 	slog.Info("skills cadence firing", "agent", a.name, "session", anchor.sessionKey, "turns", len(refs), "batch_id", batchID)

@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	DefaultLifecycleActiveMax        = 10
-	DefaultLifecycleHalfLifeLoads    = 32
+	DefaultLifecycleActiveMax = 10
+	// 引用 store 的单一真相源,与 DecayFactor 的默认保持一致、杜绝漂移。
+	DefaultLifecycleHalfLifeLoads    = store.DefaultHalfLifeLoads
 	DefaultLifecycleProtectLoads     = 20
 	DefaultLifecycleEditProtectLoads = 30
 	DefaultLifecycleDeleteAfterLoads = 200

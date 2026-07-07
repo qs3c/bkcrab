@@ -23,10 +23,15 @@ type SkillUsageRow struct {
 	ContentHash  string
 }
 
+// DefaultHalfLifeLoads 是活跃度衰减半衰期的默认值(加载机会数)。定义在 store
+// (叶子包,DecayFactor 所在处)作为单一真相源;skills.DefaultLifecycleHalfLifeLoads
+// 反向引用它,避免跨包字面量漂移(store 不能引 skills,否则成环)。
+const DefaultHalfLifeLoads = 32
+
 // DecayFactor is the shared exponential decay formula for skill activity.
 func DecayFactor(dt int64, halfLifeLoads int) float64 {
 	if halfLifeLoads <= 0 {
-		halfLifeLoads = 32
+		halfLifeLoads = DefaultHalfLifeLoads
 	}
 	if dt <= 0 {
 		return 1
@@ -76,26 +81,28 @@ func (d *DBStore) UpsertSkillUsage(ctx context.Context, agentID, slug, contentHa
 	if err != nil {
 		return err
 	}
-	var insertSQL string
+	// 单条 upsert:新行插入(created_seq=当前时钟);撞已存在行(learner 重新提取
+	// 同 slug)只刷 content_hash,保留原 created_seq——避免旧实现的 INSERT+UPDATE
+	// 两次往返。
+	var upsertSQL string
 	switch d.dialect {
 	case mysqlDialect:
-		insertSQL = fmt.Sprintf(`INSERT IGNORE INTO skill_usage (agent_id, slug, origin, created_seq, content_hash)
-			VALUES (%s, %s, 'learner', %s, %s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4))
+		upsertSQL = fmt.Sprintf(`INSERT INTO skill_usage (agent_id, slug, origin, created_seq, content_hash)
+			VALUES (%s, %s, 'learner', %s, %s)
+			ON DUPLICATE KEY UPDATE content_hash=VALUES(content_hash), updated_at=CURRENT_TIMESTAMP`,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4))
 	case "postgres":
-		insertSQL = fmt.Sprintf(`INSERT INTO skill_usage (agent_id, slug, origin, created_seq, content_hash)
-			VALUES (%s, %s, 'learner', %s, %s) ON CONFLICT (agent_id, slug) DO NOTHING`,
+		upsertSQL = fmt.Sprintf(`INSERT INTO skill_usage (agent_id, slug, origin, created_seq, content_hash)
+			VALUES (%s, %s, 'learner', %s, %s)
+			ON CONFLICT (agent_id, slug) DO UPDATE SET content_hash=EXCLUDED.content_hash, updated_at=CURRENT_TIMESTAMP`,
 			d.ph(1), d.ph(2), d.ph(3), d.ph(4))
 	default:
-		insertSQL = fmt.Sprintf(`INSERT OR IGNORE INTO skill_usage (agent_id, slug, origin, created_seq, content_hash)
-			VALUES (%s, %s, 'learner', %s, %s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4))
+		upsertSQL = fmt.Sprintf(`INSERT INTO skill_usage (agent_id, slug, origin, created_seq, content_hash)
+			VALUES (%s, %s, 'learner', %s, %s)
+			ON CONFLICT(agent_id, slug) DO UPDATE SET content_hash=excluded.content_hash, updated_at=CURRENT_TIMESTAMP`,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4))
 	}
-	if _, err := d.db.ExecContext(ctx, insertSQL, agentID, slug, createdSeq, contentHash); err != nil {
-		return err
-	}
-	_, err = d.db.ExecContext(ctx,
-		fmt.Sprintf(`UPDATE skill_usage SET content_hash=%s, updated_at=CURRENT_TIMESTAMP
-			WHERE agent_id=%s AND slug=%s`, d.ph(1), d.ph(2), d.ph(3)),
-		contentHash, agentID, slug)
+	_, err = d.db.ExecContext(ctx, upsertSQL, agentID, slug, createdSeq, contentHash)
 	return err
 }
 
