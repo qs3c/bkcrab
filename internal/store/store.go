@@ -217,6 +217,9 @@ type Store interface {
 	SaveConfig(ctx context.Context, c *ConfigRecord) error
 	DeleteConfig(ctx context.Context, id string) error
 	LookupChannelByCredential(ctx context.Context, channelType, credKey string) (*ConfigRecord, error)
+	GetMCPGatewayRuntime(ctx context.Context, userID string) (*MCPGatewayRuntimeRecord, error)
+	SaveMCPGatewayRuntime(ctx context.Context, rec *MCPGatewayRuntimeRecord) error
+	ListMCPGatewayRuntimesByStatus(ctx context.Context, statuses ...string) ([]MCPGatewayRuntimeRecord, error)
 
 	// --- Cron 任务（每个 agent）---
 	//
@@ -347,6 +350,24 @@ type AgentRecord struct {
 	IsPublic  bool                   `json:"isPublic"`
 	CreatedAt time.Time              `json:"createdAt"`
 	UpdatedAt time.Time              `json:"updatedAt"`
+}
+
+type MCPGatewayRuntimeRecord struct {
+	ID                  string    `json:"id"`
+	UserID              string    `json:"userId"`
+	Status              string    `json:"status"`
+	DockerContainerID   string    `json:"dockerContainerId,omitempty"`
+	ContainerName       string    `json:"containerName,omitempty"`
+	Image               string    `json:"image"`
+	InternalPort        int       `json:"internalPort"`
+	ExternalPort        int       `json:"externalPort,omitempty"`
+	BaseURL             string    `json:"baseUrl,omitempty"`
+	APIKey              string    `json:"-"`
+	DeployedServersJSON string    `json:"deployedServersJson,omitempty"`
+	LastAccessedAt      time.Time `json:"lastAccessedAt"`
+	ErrorMessage        string    `json:"errorMessage,omitempty"`
+	CreatedAt           time.Time `json:"createdAt"`
+	UpdatedAt           time.Time `json:"updatedAt"`
 }
 
 // SessionRecord 持有一个对话会话。

@@ -1483,6 +1483,24 @@ func (d *DBStore) migrationSQL() []string {
 		// 它引用的列尚不存在）。新安装通过迁移器内的 IF NOT EXISTS 路径
 		// 仍然获得该索引。
 		`CREATE INDEX IF NOT EXISTS idx_configs_credential ON configs (kind, credential_key)`,
+		`CREATE TABLE IF NOT EXISTS mcp_gateway_runtimes (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL UNIQUE,
+			status TEXT NOT NULL,
+			docker_container_id TEXT NOT NULL DEFAULT '',
+			container_name TEXT NOT NULL DEFAULT '',
+			image TEXT NOT NULL,
+			internal_port INTEGER NOT NULL,
+			external_port INTEGER NOT NULL DEFAULT 0,
+			base_url TEXT NOT NULL DEFAULT '',
+			api_key TEXT NOT NULL DEFAULT '',
+			deployed_servers_json TEXT NOT NULL DEFAULT '',
+			last_accessed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			error_message TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_mcp_gateway_runtimes_status ON mcp_gateway_runtimes (status, last_accessed_at)`,
 		`CREATE TABLE IF NOT EXISTS cron_jobs (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL DEFAULT '',
@@ -3060,6 +3078,140 @@ func (d *DBStore) LookupChannelByCredential(ctx context.Context, channelType, cr
 			d.ph(1), d.ph(2)),
 		channelType, credKey)
 	return scanConfigRow(row)
+}
+
+const mcpGatewayRuntimeColumns = `id, user_id, status, docker_container_id, container_name, image, internal_port, external_port, base_url, api_key, deployed_servers_json, last_accessed_at, error_message, created_at, updated_at`
+
+func scanMCPGatewayRuntime(scanner interface{ Scan(dest ...any) error }) (*MCPGatewayRuntimeRecord, error) {
+	var rec MCPGatewayRuntimeRecord
+	if err := scanner.Scan(&rec.ID, &rec.UserID, &rec.Status, &rec.DockerContainerID, &rec.ContainerName, &rec.Image, &rec.InternalPort, &rec.ExternalPort, &rec.BaseURL, &rec.APIKey, &rec.DeployedServersJSON, &rec.LastAccessedAt, &rec.ErrorMessage, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (d *DBStore) GetMCPGatewayRuntime(ctx context.Context, userID string) (*MCPGatewayRuntimeRecord, error) {
+	row := d.db.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT `+mcpGatewayRuntimeColumns+` FROM mcp_gateway_runtimes WHERE user_id = %s`, d.ph(1)),
+		userID)
+	rec, err := scanMCPGatewayRuntime(row)
+	if err != nil {
+		return nil, scanErr(err)
+	}
+	return rec, nil
+}
+
+func (d *DBStore) SaveMCPGatewayRuntime(ctx context.Context, rec *MCPGatewayRuntimeRecord) error {
+	if rec == nil {
+		return errors.New("store: mcp gateway runtime record is required")
+	}
+	if rec.ID == "" {
+		rec.ID = "mcpgr_" + uuid.NewString()
+	}
+	if rec.UserID == "" {
+		return errors.New("store: mcp gateway runtime.user_id is required")
+	}
+	now := time.Now().UTC()
+	if rec.CreatedAt.IsZero() {
+		rec.CreatedAt = now
+	}
+	rec.UpdatedAt = now
+	if rec.LastAccessedAt.IsZero() {
+		rec.LastAccessedAt = now
+	}
+
+	args := []any{
+		rec.ID, rec.UserID, rec.Status, rec.DockerContainerID, rec.ContainerName, rec.Image,
+		rec.InternalPort, rec.ExternalPort, rec.BaseURL, rec.APIKey, rec.DeployedServersJSON,
+		rec.LastAccessedAt, rec.ErrorMessage, rec.CreatedAt, rec.UpdatedAt,
+	}
+	if d.dialect == mysqlDialect {
+		_, err := d.db.ExecContext(ctx,
+			`INSERT INTO mcp_gateway_runtimes (`+mcpGatewayRuntimeColumns+`)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE
+				  status=VALUES(status),
+				  docker_container_id=VALUES(docker_container_id),
+				  container_name=VALUES(container_name),
+				  image=VALUES(image),
+				  internal_port=VALUES(internal_port),
+				  external_port=VALUES(external_port),
+				  base_url=VALUES(base_url),
+				  api_key=VALUES(api_key),
+				  deployed_servers_json=VALUES(deployed_servers_json),
+				  last_accessed_at=VALUES(last_accessed_at),
+				  error_message=VALUES(error_message),
+				  updated_at=VALUES(updated_at)`,
+			args...)
+		return err
+	}
+	if d.dialect == "postgres" {
+		_, err := d.db.ExecContext(ctx,
+			`INSERT INTO mcp_gateway_runtimes (`+mcpGatewayRuntimeColumns+`)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+				ON CONFLICT (user_id) DO UPDATE SET
+				  status=excluded.status,
+				  docker_container_id=excluded.docker_container_id,
+				  container_name=excluded.container_name,
+				  image=excluded.image,
+				  internal_port=excluded.internal_port,
+				  external_port=excluded.external_port,
+				  base_url=excluded.base_url,
+				  api_key=excluded.api_key,
+				  deployed_servers_json=excluded.deployed_servers_json,
+				  last_accessed_at=excluded.last_accessed_at,
+				  error_message=excluded.error_message,
+				  updated_at=excluded.updated_at`,
+			args...)
+		return err
+	}
+	_, err := d.db.ExecContext(ctx,
+		`INSERT INTO mcp_gateway_runtimes (`+mcpGatewayRuntimeColumns+`)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (user_id) DO UPDATE SET
+			  status=excluded.status,
+			  docker_container_id=excluded.docker_container_id,
+			  container_name=excluded.container_name,
+			  image=excluded.image,
+			  internal_port=excluded.internal_port,
+			  external_port=excluded.external_port,
+			  base_url=excluded.base_url,
+			  api_key=excluded.api_key,
+			  deployed_servers_json=excluded.deployed_servers_json,
+			  last_accessed_at=excluded.last_accessed_at,
+			  error_message=excluded.error_message,
+			  updated_at=excluded.updated_at`,
+		args...)
+	return err
+}
+
+func (d *DBStore) ListMCPGatewayRuntimesByStatus(ctx context.Context, statuses ...string) ([]MCPGatewayRuntimeRecord, error) {
+	query := `SELECT ` + mcpGatewayRuntimeColumns + ` FROM mcp_gateway_runtimes`
+	args := make([]any, 0, len(statuses))
+	if len(statuses) > 0 {
+		parts := make([]string, len(statuses))
+		for i, status := range statuses {
+			parts[i] = d.ph(i + 1)
+			args = append(args, status)
+		}
+		query += ` WHERE status IN (` + strings.Join(parts, ", ") + `)`
+	}
+	query += ` ORDER BY last_accessed_at`
+
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MCPGatewayRuntimeRecord
+	for rows.Next() {
+		rec, err := scanMCPGatewayRuntime(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *rec)
+	}
+	return out, rows.Err()
 }
 
 // configRowID 为 (kind, scope, scope_id, name) 元组生成稳定的 id。

@@ -221,6 +221,24 @@ func mysqlMigrationSQL() []string {
 			UNIQUE KEY configs_kind_user_agent_name_key (kind, user_id, agent_id, name),
 			KEY idx_configs_credential (kind, credential_key)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS mcp_gateway_runtimes (
+			id VARCHAR(120) PRIMARY KEY,
+			user_id VARCHAR(120) NOT NULL UNIQUE,
+			status VARCHAR(32) NOT NULL,
+			docker_container_id VARCHAR(191) NOT NULL DEFAULT '',
+			container_name VARCHAR(191) NOT NULL DEFAULT '',
+			image VARCHAR(255) NOT NULL,
+			internal_port INTEGER NOT NULL,
+			external_port INTEGER NOT NULL DEFAULT 0,
+			base_url VARCHAR(512) NOT NULL DEFAULT '',
+			api_key VARCHAR(255) NOT NULL DEFAULT '',
+			deployed_servers_json LONGTEXT NOT NULL,
+			last_accessed_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+			error_message LONGTEXT NOT NULL,
+			created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+			updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+			KEY idx_mcp_gateway_runtimes_status (status, last_accessed_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS cron_jobs (
 			id VARCHAR(120) PRIMARY KEY,
 			user_id VARCHAR(120) NOT NULL DEFAULT '',
