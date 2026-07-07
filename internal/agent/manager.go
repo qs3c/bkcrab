@@ -41,13 +41,14 @@ func providerForAgent(rc config.ResolvedAgent, shared provider.Provider) provide
 type ManagerOption func(*managerOpts)
 
 type managerOpts struct {
-	sessionStore    session.SessionStore
-	memoryStore     MemoryStore
-	workspaceStore  workspace.Store
-	dataStore       store.Store
-	meter           usage.Meter
-	userID          string
-	globalSkillsCfg config.SkillsCfg
+	sessionStore     session.SessionStore
+	memoryStore      MemoryStore
+	workspaceStore   workspace.Store
+	dataStore        store.Store
+	meter            usage.Meter
+	userID           string
+	globalSkillsCfg  config.SkillsCfg
+	skillsLearnerCfg config.SkillsLearnerCfg
 }
 
 func WithSessionStore(st session.SessionStore) ManagerOption {
@@ -94,6 +95,14 @@ func WithMeter(m usage.Meter) ManagerOption {
 // FAL_KEY / REPLICATE_API_TOKEN 的情况下运行，无论数据库中保存了什么。
 func WithGlobalSkillsCfg(cfg config.SkillsCfg) ManagerOption {
 	return func(o *managerOpts) { o.globalSkillsCfg = cfg }
+}
+
+// WithSkillsLearner 把系统级 SkillsLearner 配置(启用/门槛/模型/生命周期)
+// 线程进 Manager 的生产构造路径。没有它,buildAgent 走 NewAgentWithSkillsCfg
+// 从不构造 learner——技能自动提炼与生命周期在生产中静默不启用(历史缺口:
+// 该配置此前只在无人调用的 NewAgentWithFullCfg 里接线)。
+func WithSkillsLearner(cfg config.SkillsLearnerCfg) ManagerOption {
+	return func(o *managerOpts) { o.skillsLearnerCfg = cfg }
 }
 
 // Manager 加载并管理所有代理实例。
@@ -156,7 +165,13 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 	// apiKey + env（以及每个代理的覆盖映射）。普通的 NewAgent 使用零值
 	// SkillsCfg 构造加载器，这就是 FAL_KEY / REPLICATE_API_TOKEN 从未
 	// 到达沙箱的原因。
-	ag := NewAgentWithSkillsCfg(rc, providerForAgent(rc, prov), mb, homeDir, m.opts.globalSkillsCfg)
+	agProv := providerForAgent(rc, prov)
+	ag := NewAgentWithSkillsCfg(rc, agProv, mb, homeDir, m.opts.globalSkillsCfg)
+	// 技能学习者 + 生命周期:生产路径此前从不装配(learner 配置历史上只接在
+	// 无人调用的 NewAgentWithFullCfg 上)。在此构造,使下方 dataStore 块能接上
+	// ledger、runPostTurn 的 cadence 提取与生命周期过滤/清理在生产真正生效。
+	ag.lifecycleCfg = m.opts.skillsLearnerCfg.Lifecycle
+	configureSkillsLearner(ag, rc, agProv, homeDir, m.opts.globalSkillsCfg, m.opts.skillsLearnerCfg)
 	ag.SetOwnerUserID(m.uid)
 	// 每个用户的技能桶：聊天时“技能/...”将路由写入
 	// ~/.bkcrab/users/<uid>/，其中 SkillsLoader 的“个人”层

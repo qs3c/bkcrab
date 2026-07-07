@@ -241,6 +241,28 @@ func (a *Agent) skillLifecycleEnabled() bool {
 	return a != nil && a.skillsLearner != nil && a.dataStore != nil && a.lifecycleCfg.IsEnabled()
 }
 
+// configureSkillsLearner 在启用时为 agent 构造技能学习者。由 NewAgentWithFullCfg
+// (测试/本地全配置路径)与 Manager 的 buildAgent(生产路径)共用,确保 learner 在
+// 两条路径都被装配——历史上它只在前者接线,生产 buildAgent 从不构造(见
+// WithSkillsLearner 注释)。lifecycleCfg 由各调用方单独赋值(它在 learner 禁用时
+// 也无害,且 skillLifecycleEnabled 已要求 skillsLearner 非 nil)。
+func configureSkillsLearner(ag *Agent, rc config.ResolvedAgent, prov provider.Provider, homeDir string, globalSkillsCfg config.SkillsCfg, cfg config.SkillsLearnerCfg) {
+	if ag == nil || !cfg.IsEnabled() {
+		return
+	}
+	model := cfg.Model
+	if model == "" {
+		model = rc.Model
+	}
+	learnerLoader := NewSkillsLoaderWithGlobal(homeDir, rc.Home, "", rc.Skills, globalSkillsCfg)
+	learnerLoader.agentID = rc.ID
+	ag.skillsLearner = NewSkillsLearner(rc.Home, prov, model, learnerLoader.AllSkillDirs()...)
+	ag.skillsLearner.agentID = rc.ID
+	if cfg.MinToolCalls > 0 {
+		ag.skillsLearner.minToolCalls = cfg.MinToolCalls
+	}
+}
+
 func (a *Agent) configureSkillsLoaderLifecycle(loader *SkillsLoader) {
 	if loader == nil || !a.skillLifecycleEnabled() {
 		return
@@ -307,19 +329,7 @@ func NewAgentWithFullCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bu
 	}
 
 	// 设置技能学习者（如果已配置）
-	if fullCfg.SkillsLearner.IsEnabled() {
-		model := fullCfg.SkillsLearner.Model
-		if model == "" {
-			model = rc.Model
-		}
-		learnerLoader := NewSkillsLoaderWithGlobal(homeDir, rc.Home, "", rc.Skills, fullCfg.Skills)
-		learnerLoader.agentID = rc.ID
-		ag.skillsLearner = NewSkillsLearner(rc.Home, prov, model, learnerLoader.AllSkillDirs()...)
-		ag.skillsLearner.agentID = rc.ID
-		if fullCfg.SkillsLearner.MinToolCalls > 0 {
-			ag.skillsLearner.minToolCalls = fullCfg.SkillsLearner.MinToolCalls
-		}
-	}
+	configureSkillsLearner(ag, rc, prov, homeDir, fullCfg.Skills, fullCfg.SkillsLearner)
 
 	// 设置内存自动保留默认值
 	if ag.memoryCfg.AutoPersist.EveryNTurns == 0 {
