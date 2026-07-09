@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -2967,10 +2968,13 @@ func (a *Agent) maybeExtractSkillsCadence(ctx context.Context, anchor *turnAncho
 		return
 	}
 	slog.Info("skills cadence firing", "agent", a.name, "session", anchor.sessionKey, "turns", len(refs), "batch_id", batchID)
-	go a.runSkillBatchExtraction(context.WithoutCancel(ctx), batchID, refs)
+	go a.runSkillBatchExtraction(context.WithoutCancel(ctx), batchID, anchor.sessionKey)
 }
 
-func (a *Agent) runSkillBatchExtraction(base context.Context, batchID string, refs []store.TurnRef) {
+// runSkillBatchExtraction 以 sessions.messages 工作集的完整快照为素材提取
+// 技能。被认领的 turn 批次只是触发凭证:技能提取需要整个 session 的工作流
+// 叙事,归档 turn 片段拼不出 SOP;快照体量上界由上下文压缩保证。
+func (a *Agent) runSkillBatchExtraction(base context.Context, batchID, sessionKey string) {
 	defer a.runSkillCleanup(base)
 	extractCtx, cancel := context.WithTimeout(base, 5*time.Minute)
 	defer cancel()
@@ -2979,13 +2983,18 @@ func (a *Agent) runSkillBatchExtraction(base context.Context, batchID string, re
 		defer rcancel()
 		_ = a.dataStore.ResetSkillExtraction(rctx, batchID)
 	}
-	groups, err := a.dataStore.LoadTurnMessages(extractCtx, a.ownerUserID, a.name, refs)
+	rec, err := a.dataStore.GetSession(extractCtx, a.ownerUserID, a.name, sessionKey)
 	if err != nil {
-		slog.Warn("skills cadence: load turn messages failed", "agent", a.name, "batch_id", batchID, "error", err)
+		if errors.Is(err, store.ErrNotFound) {
+			// 会话行已删除:素材源不复存在,重置批次只会永远重试,消费掉。
+			slog.Warn("skills cadence: session gone, consuming batch", "agent", a.name, "session", sessionKey, "batch_id", batchID)
+			return
+		}
+		slog.Warn("skills cadence: load session failed", "agent", a.name, "session", sessionKey, "batch_id", batchID, "error", err)
 		resetBatch()
 		return
 	}
-	if err := a.skillsLearner.ExtractFromTurns(extractCtx, groups); err != nil {
+	if err := a.skillsLearner.ExtractFromSession(extractCtx, rec.Messages); err != nil {
 		slog.Warn("skills cadence: extract failed", "agent", a.name, "batch_id", batchID, "error", err)
 		resetBatch()
 	}

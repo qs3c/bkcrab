@@ -17,9 +17,14 @@ import (
 type learnerFakeProvider struct {
 	responses []string
 	calls     int
+	// prompts 记录每次调用发给模型的素材(最后一条 user 消息),供断言素材完整性。
+	prompts []string
 }
 
 func (p *learnerFakeProvider) Chat(ctx context.Context, messages []provider.Message, tools []provider.Tool, model string, maxTokens int, temperature float64) (*provider.Response, error) {
+	if len(messages) > 0 {
+		p.prompts = append(p.prompts, messages[len(messages)-1].Content)
+	}
 	if p.calls >= len(p.responses) {
 		p.calls++
 		return &provider.Response{Content: `{"extract": false}`}, nil
@@ -289,22 +294,19 @@ func (p *learnerErrProvider) ChatStream(ctx context.Context, messages []provider
 	return nil, errors.New("not implemented")
 }
 
-func turnGroupsFixture() []store.TurnGroup {
-	return []store.TurnGroup{{
-		SessionKey: "s1",
-		Messages: []store.SessionMessage{
-			{Role: "user", Content: "deploy the service"},
-			{Role: "assistant", Content: "running steps", ToolCalls: []any{map[string]any{"function": map[string]any{"name": "bash"}}}},
-			{Role: "tool", Content: "ok"},
-		},
-	}}
+func sessionMessagesFixture() []store.SessionMessage {
+	return []store.SessionMessage{
+		{Role: "user", Content: "deploy the service"},
+		{Role: "assistant", Content: "running steps", ToolCalls: []any{map[string]any{"function": map[string]any{"name": "bash", "arguments": `{"cmd":"make deploy"}`}}}},
+		{Role: "tool", Content: "ok"},
+	}
 }
 
-func TestExtractFromTurnsCreatesSkill(t *testing.T) {
+func TestExtractFromSessionCreatesSkill(t *testing.T) {
 	ws := t.TempDir()
 	p := &learnerFakeProvider{responses: []string{learnerExtractionJSON(t, "deploy-service", learnerValidSkill)}}
 	sl := NewSkillsLearner(ws, p, "m")
-	if err := sl.ExtractFromTurns(context.Background(), turnGroupsFixture()); err != nil {
+	if err := sl.ExtractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := readSkill(t, ws, "deploy-service"); !ok {
@@ -312,46 +314,84 @@ func TestExtractFromTurnsCreatesSkill(t *testing.T) {
 	}
 }
 
-func TestExtractFromTurnsNotWorthyIsNil(t *testing.T) {
+func TestExtractFromSessionNotWorthyIsNil(t *testing.T) {
 	p := &learnerFakeProvider{responses: []string{`{"extract": false}`}}
 	sl := NewSkillsLearner(t.TempDir(), p, "m")
-	if err := sl.ExtractFromTurns(context.Background(), turnGroupsFixture()); err != nil {
+	if err := sl.ExtractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
 		t.Fatalf("not-worthy extraction should return nil, got %v", err)
 	}
 }
 
-func TestExtractFromTurnsProviderErrorPropagates(t *testing.T) {
+func TestExtractFromSessionProviderErrorPropagates(t *testing.T) {
 	sl := NewSkillsLearner(t.TempDir(), &learnerErrProvider{}, "m")
-	if err := sl.ExtractFromTurns(context.Background(), turnGroupsFixture()); err == nil {
+	if err := sl.ExtractFromSession(context.Background(), sessionMessagesFixture()); err == nil {
 		t.Fatal("provider failure must return an error so the batch can be reset")
 	}
 }
 
-func TestExtractFromTurnsEmptyGroupsSkipsLLM(t *testing.T) {
+func TestExtractFromSessionEmptySkipsLLM(t *testing.T) {
 	p := &learnerFakeProvider{}
 	sl := NewSkillsLearner(t.TempDir(), p, "m")
-	if err := sl.ExtractFromTurns(context.Background(), nil); err != nil {
+	if err := sl.ExtractFromSession(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if p.calls != 0 {
-		t.Fatalf("empty batch should not call provider, calls=%d", p.calls)
+		t.Fatalf("empty snapshot should not call provider, calls=%d", p.calls)
 	}
 }
 
-func TestSkillLearnerSummariesPreserveUTF8WhenTruncated(t *testing.T) {
-	text := strings.Repeat("中文", 260)
-	providerSummary := summarizeProviderMessages([]provider.Message{{Role: "user", Content: text}})
-	if !utf8.ValidString(providerSummary) {
-		t.Fatalf("provider summary is invalid UTF-8: %q", providerSummary)
+// 素材必须是完整的 session 工作集:不截断消息正文、不截断 tool 结果与
+// tool 调用参数;system 消息除外。工作流细节(工具参数、长结果)是
+// SOP 提取的主体,任何截断都会掏空技能内容。上界由上下文压缩天然保证。
+func TestExtractFromSessionSendsFullUntruncatedMaterial(t *testing.T) {
+	longUser := strings.Repeat("用户需求细节。", 300)  // ~2100 字符,远超旧的 500 上限
+	longResult := strings.Repeat("tool output line\n", 200) // ~3400 字符
+	longArgs := `{"path":"` + strings.Repeat("a/", 400) + `x"}` // ~810 字符,超旧的 300 上限
+	msgs := []store.SessionMessage{
+		{Role: "system", Content: "system prompt must not leak into material"},
+		{Role: "user", Content: longUser},
+		{Role: "assistant", Content: "working", ToolCalls: []any{map[string]any{"function": map[string]any{"name": "bash", "arguments": longArgs}}}},
+		{Role: "tool", Content: longResult},
 	}
-	turnSummary := summarizeTurnGroups([]store.TurnGroup{{
-		SessionKey: "s1",
-		Messages:   []store.SessionMessage{{Role: "user", Content: text}},
-	}})
-	if !utf8.ValidString(turnSummary) {
-		t.Fatalf("turn summary is invalid UTF-8: %q", turnSummary)
+	p := &learnerFakeProvider{responses: []string{`{"extract": false}`}}
+	sl := NewSkillsLearner(t.TempDir(), p, "m")
+	if err := sl.ExtractFromSession(context.Background(), msgs); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(providerSummary, "...") || !strings.Contains(turnSummary, "...") {
-		t.Fatalf("expected truncated summaries, got provider=%q turn=%q", providerSummary, turnSummary)
+	if len(p.prompts) != 1 {
+		t.Fatalf("prompts captured=%d want 1", len(p.prompts))
+	}
+	material := p.prompts[0]
+	if !utf8.ValidString(material) {
+		t.Fatal("material is invalid UTF-8")
+	}
+	if strings.Contains(material, "system prompt must not leak") {
+		t.Fatal("system message leaked into extraction material")
+	}
+	for name, want := range map[string]string{
+		"user content":   longUser,
+		"tool result":    longResult,
+		"tool call args": strings.Repeat("a/", 400),
+	} {
+		if !strings.Contains(material, want) {
+			t.Fatalf("%s was truncated or dropped from material", name)
+		}
+	}
+}
+
+// MaybeExtract(无持久化 store 的回退路径)与 cadence 路径同一决策:
+// 素材为完整工作集,不截断。
+func TestMaybeExtractSendsFullUntruncatedMaterial(t *testing.T) {
+	longUser := strings.Repeat("回退路径素材。", 300)
+	p := &learnerFakeProvider{responses: []string{`{"extract": false}`}}
+	sl := NewSkillsLearner(t.TempDir(), p, "m")
+	if err := sl.MaybeExtract(context.Background(), []provider.Message{{Role: "user", Content: longUser}}, 10); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.prompts) != 1 {
+		t.Fatalf("prompts captured=%d want 1", len(p.prompts))
+	}
+	if !strings.Contains(p.prompts[0], longUser) {
+		t.Fatal("fallback path truncated the material")
 	}
 }

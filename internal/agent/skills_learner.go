@@ -67,7 +67,7 @@ func (sl *SkillsLearner) MaybeExtract(ctx context.Context, messages []provider.M
 		return nil
 	}
 
-	skill, err := sl.extractFromSummary(ctx, summarizeProviderMessages(messages))
+	skill, err := sl.extractFromMaterial(ctx, renderProviderMessages(messages))
 	if err != nil {
 		return fmt.Errorf("extract skill: %w", err)
 	}
@@ -77,14 +77,17 @@ func (sl *SkillsLearner) MaybeExtract(ctx context.Context, messages []provider.M
 	return sl.persistExtracted(ctx, skill)
 }
 
-// ExtractFromTurns extracts a skill from archived turn groups claimed by cadence.
-// Non-nil errors are infrastructure failures; validation/scan rejections are consumed.
-func (sl *SkillsLearner) ExtractFromTurns(ctx context.Context, groups []store.TurnGroup) error {
-	summary := summarizeTurnGroups(groups)
-	if strings.TrimSpace(summary) == "" {
+// ExtractFromSession 从 sessions.messages 工作集的完整快照提取技能。
+// cadence 认领只作触发凭证;素材是整个 session 的叙事(旧段为压缩摘要、
+// 近段为原文),而非被认领 turn 的归档片段——SOP 提取需要全局工作流,
+// 局部 turn 拼不出来。非 nil 错误代表基础设施故障(调用方重置批次);
+// 校验/扫描类拒绝在内部消化。
+func (sl *SkillsLearner) ExtractFromSession(ctx context.Context, msgs []store.SessionMessage) error {
+	material := renderSessionMessages(msgs)
+	if strings.TrimSpace(material) == "" {
 		return nil
 	}
-	skill, err := sl.extractFromSummary(ctx, summary)
+	skill, err := sl.extractFromMaterial(ctx, material)
 	if err != nil {
 		return fmt.Errorf("extract skill: %w", err)
 	}
@@ -144,10 +147,12 @@ func (sl *SkillsLearner) loadSkillLearnerPrompt() string {
 
 const fallbackExtractionPrompt = `Analyze the following conversation and determine if it demonstrates a reusable multi-step skill.
 
-Criteria for extraction:
-- The task involved multiple tool calls in a clear, repeatable sequence
-- The task is general enough to be useful in other contexts
-- The steps can be described as a clear procedure
+The input is the full working context of one session: recent messages verbatim; if the session was long, the older span appears as a [Conversation Summary] block.
+
+Extract when the conversation shows at least one of:
+- A repeatable multi-step workflow: multiple tool calls in a clear sequence, general enough to be useful in other contexts
+- A hard-won approach: the task required trial and error, or the course changed because of findings along the way — capture the path that worked and the dead ends to avoid
+- An expectation correction: the user expected a different method or outcome than the first attempt
 
 If this conversation demonstrates a reusable skill, output JSON:
 {"extract": true, "skill": {"name": "Human readable name", "slug": "kebab-case-slug", "description": "One line description", "content": "Full SKILL.md content with YAML frontmatter"}}
@@ -163,35 +168,35 @@ Step-by-step instructions in markdown...
 
 Output ONLY the JSON, no markdown fences.`
 
-func summarizeProviderMessages(messages []provider.Message) string {
+// 两个渲染函数都不截断:工作流细节(工具参数、长结果)是 SOP 提取的
+// 主体,截断会掏空技能内容。素材上界由上下文压缩天然保证——工作集
+// 本身就是发给主模型的内容,提取模型的上下文窗口不小于主模型即可。
+
+func renderProviderMessages(messages []provider.Message) string {
 	var sb strings.Builder
 	for _, m := range messages {
 		if m.Role == "system" {
 			continue
 		}
-		content := truncate(m.Content, 500)
-		sb.WriteString(fmt.Sprintf("[%s]: %s\n", m.Role, content))
+		sb.WriteString(fmt.Sprintf("[%s]: %s\n", m.Role, m.Content))
 		for _, tc := range m.ToolCalls {
-			sb.WriteString(fmt.Sprintf("  -> tool: %s(%s)\n", tc.Function.Name, truncate(tc.Function.Arguments, 200)))
+			sb.WriteString(fmt.Sprintf("  -> tool: %s(%s)\n", tc.Function.Name, tc.Function.Arguments))
 		}
 	}
 	return sb.String()
 }
 
-func summarizeTurnGroups(groups []store.TurnGroup) string {
+func renderSessionMessages(msgs []store.SessionMessage) string {
 	var sb strings.Builder
-	for _, g := range groups {
-		for _, m := range g.Messages {
-			if m.Role == "system" {
-				continue
-			}
-			content := truncate(m.Content, 500)
-			sb.WriteString(fmt.Sprintf("[%s]: %s\n", m.Role, content))
-			if m.ToolCalls != nil {
-				if b, err := json.Marshal(m.ToolCalls); err == nil {
-					if s := string(b); s != "null" && s != `""` && s != "[]" {
-						sb.WriteString(fmt.Sprintf("  -> tools: %s\n", truncate(s, 300)))
-					}
+	for _, m := range msgs {
+		if m.Role == "system" {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("[%s]: %s\n", m.Role, m.Content))
+		if m.ToolCalls != nil {
+			if b, err := json.Marshal(m.ToolCalls); err == nil {
+				if s := string(b); s != "null" && s != `""` && s != "[]" {
+					sb.WriteString(fmt.Sprintf("  -> tools: %s\n", s))
 				}
 			}
 		}
@@ -199,14 +204,14 @@ func summarizeTurnGroups(groups []store.TurnGroup) string {
 	return sb.String()
 }
 
-func (sl *SkillsLearner) extractFromSummary(ctx context.Context, summary string) (*extractedSkill, error) {
+func (sl *SkillsLearner) extractFromMaterial(ctx context.Context, material string) (*extractedSkill, error) {
 	prompt := sl.loadSkillLearnerPrompt()
 	if existing := sl.existingSkillsPrompt(); existing != "" {
 		prompt += "\n\n" + existing
 	}
 	extractMsgs := []provider.Message{
 		{Role: "system", Content: prompt + "\n\nOutput ONLY the JSON, no markdown fences."},
-		{Role: "user", Content: summary},
+		{Role: "user", Content: material},
 	}
 
 	resp, err := sl.provider.Chat(ctx, extractMsgs, nil, sl.model, 4096, 0.3)
@@ -293,16 +298,3 @@ func (sl *SkillsLearner) decideUpdate(ctx context.Context, existing string, skil
 	return dec.Content, nil
 }
 
-func truncate(s string, n int) string {
-	if n < 0 {
-		n = 0
-	}
-	count := 0
-	for i := range s {
-		if count == n {
-			return s[:i] + "..."
-		}
-		count++
-	}
-	return s
-}

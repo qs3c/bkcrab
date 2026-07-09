@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +44,14 @@ func seedAgentTurns(t *testing.T, db *store.DBStore, counts []int) *turnAnchor {
 	return &turnAnchor{sessionKey: "s1", seq: last}
 }
 
+// seedSessionRecord 写入 s1 的 sessions.messages 工作集——提取素材的来源。
+func seedSessionRecord(t *testing.T, db *store.DBStore, msgs []store.SessionMessage) {
+	t.Helper()
+	if err := db.SaveSession(context.Background(), "u1", "agentA", "s1", &store.SessionRecord{Messages: msgs}); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+}
+
 func TestSkillsCadenceBelowThresholdNoClaimNoLLM(t *testing.T) {
 	a, db, _, fp := newCadenceFixture(t, nil)
 	anchor := seedAgentTurns(t, db, []int{3, 4})
@@ -59,6 +68,7 @@ func TestSkillsCadenceBelowThresholdNoClaimNoLLM(t *testing.T) {
 func TestSkillsCadenceExtractsAndWrites(t *testing.T) {
 	a, db, ws, _ := newCadenceFixture(t, []string{learnerExtractionJSON(t, "cadence-skill", learnerValidSkill)})
 	anchor := seedAgentTurns(t, db, []int{4, 4, 4})
+	seedSessionRecord(t, db, sessionMessagesFixture())
 	a.maybeExtractSkillsCadence(context.Background(), anchor)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -70,15 +80,60 @@ func TestSkillsCadenceExtractsAndWrites(t *testing.T) {
 	t.Fatal("cadence extraction timed out before writing the skill")
 }
 
+// 提取素材必须来自 sessions.messages 完整快照(含未被截断的长内容),
+// 而不是被认领 turn 的归档片段。
+func TestRunSkillBatchExtractionUsesSessionSnapshot(t *testing.T) {
+	a, db, _, fp := newCadenceFixture(t, []string{`{"extract": false}`})
+	seedAgentTurns(t, db, []int{6, 6})
+	longDetail := strings.Repeat("完整会话素材。", 300)
+	seedSessionRecord(t, db, []store.SessionMessage{
+		{Role: "user", Content: longDetail},
+		{Role: "assistant", Content: "done"},
+	})
+	id, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 10, 32)
+	if err != nil || id == "" {
+		t.Fatalf("claim: id=%q err=%v", id, err)
+	}
+	a.runSkillBatchExtraction(context.Background(), id, "s1")
+	if len(fp.prompts) != 1 {
+		t.Fatalf("provider prompts=%d want 1", len(fp.prompts))
+	}
+	if !strings.Contains(fp.prompts[0], longDetail) {
+		t.Fatal("extraction material does not carry the full session working set")
+	}
+}
+
+// 会话行已不存在(被删除):批次消费而非重置,否则会对着空会话无限重试。
+func TestRunSkillBatchExtractionSessionGoneConsumesBatch(t *testing.T) {
+	a, db, _, fp := newCadenceFixture(t, nil)
+	seedAgentTurns(t, db, []int{6, 6})
+	id, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 10, 32)
+	if err != nil || id == "" {
+		t.Fatalf("claim: id=%q err=%v", id, err)
+	}
+	a.runSkillBatchExtraction(context.Background(), id, "s1")
+	if fp.calls != 0 {
+		t.Fatalf("missing session must not reach the LLM, calls=%d", fp.calls)
+	}
+	id2, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 1, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id2 != "" {
+		t.Fatal("missing session should keep the batch consumed, not reset it")
+	}
+}
+
 func TestRunSkillBatchExtractionResetsOnProviderError(t *testing.T) {
 	a, db, _, _ := newCadenceFixture(t, nil)
 	a.skillsLearner = NewSkillsLearner(t.TempDir(), &learnerErrProvider{}, "m")
 	seedAgentTurns(t, db, []int{6, 6})
-	id, refs, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 10, 32)
+	seedSessionRecord(t, db, sessionMessagesFixture())
+	id, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 10, 32)
 	if err != nil || id == "" {
 		t.Fatalf("claim: id=%q err=%v", id, err)
 	}
-	a.runSkillBatchExtraction(context.Background(), id, refs)
+	a.runSkillBatchExtraction(context.Background(), id, "s1")
 	id2, refs2, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 10, 32)
 	if err != nil || id2 == "" || len(refs2) != 2 {
 		t.Fatalf("batch was not reset: id=%q refs=%d err=%v", id2, len(refs2), err)
@@ -88,11 +143,12 @@ func TestRunSkillBatchExtractionResetsOnProviderError(t *testing.T) {
 func TestRunSkillBatchExtractionNotWorthyConsumes(t *testing.T) {
 	a, db, _, _ := newCadenceFixture(t, []string{`{"extract": false}`})
 	seedAgentTurns(t, db, []int{6, 6})
-	id, refs, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 10, 32)
+	seedSessionRecord(t, db, sessionMessagesFixture())
+	id, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 10, 32)
 	if err != nil || id == "" {
 		t.Fatalf("claim: id=%q err=%v", id, err)
 	}
-	a.runSkillBatchExtraction(context.Background(), id, refs)
+	a.runSkillBatchExtraction(context.Background(), id, "s1")
 	id2, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 1, 32)
 	if err != nil {
 		t.Fatal(err)

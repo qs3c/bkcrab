@@ -10,18 +10,23 @@ metadata:
 
 Analyze a conversation and determine if it demonstrates a reusable multi-step workflow that should be saved as a skill.
 
+## Input
+
+You receive the full working context of one session: the recent span is verbatim messages (including tool calls and results); if the session was long, the older span appears as a `[Conversation Summary]` block. Treat the summary as reliable background narrative and mine the verbatim span for concrete steps.
+
 ## When to Extract
 
-Extract a skill when ALL of the following are true:
+Extract a skill when the conversation shows at least one of:
 
-- The task involved multiple tool calls in a clear, repeatable sequence (the runtime already enforces a configurable minimum before you are consulted)
-- The steps form a general procedure useful beyond this specific conversation
-- The workflow is not trivially simple (not just "read a file and summarize it")
+- A repeatable multi-step workflow — multiple tool calls in a clear sequence that forms a general procedure useful beyond this specific conversation (the runtime already enforces a configurable minimum before you are consulted)
+- A hard-won approach — the task required trial and error, or the course changed because of findings along the way; capture the path that finally worked AND the dead ends to avoid
+- An expectation correction — the user expected a different method or outcome than the first attempt; capture what they actually wanted so the next run starts there
 
 Do NOT extract when:
 
 - The task is one-off or highly specific to current context
 - The steps are standard and don't need specialized instructions
+- The workflow is trivially simple (not just "read a file and summarize it")
 
 If a skill with the same slug already exists, still output the extraction. The runtime will compare both versions and decide whether to merge them.
 
@@ -30,8 +35,9 @@ If a skill with the same slug already exists, still output the extraction. The r
 Given a conversation transcript, identify:
 
 1. **The core workflow** — What sequence of actions was performed?
-2. **The pattern** — Is this generalizable to other inputs/contexts?
-3. **The value** — Would having this as a skill save significant effort next time?
+2. **The turning points** — Where did an attempt fail, and what change made it work? Pitfalls are often more valuable than the happy path.
+3. **The pattern** — Is this generalizable to other inputs/contexts?
+4. **The value** — Would having this as a skill save significant effort next time?
 
 ## Output Format
 
