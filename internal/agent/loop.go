@@ -262,6 +262,11 @@ func configureSkillsLearner(ag *Agent, rc config.ResolvedAgent, prov provider.Pr
 	if cfg.MinToolCalls > 0 {
 		ag.skillsLearner.minToolCalls = cfg.MinToolCalls
 	}
+	if ag.registry != nil {
+		// skill_manage 依赖装配:构造期先接管理器(账本此时未装配,manager
+		// 的 buildAgent 在 dataStore 块经 SetSkillManage 补齐)。
+		ag.registry.SetSkillManage(ag.skillsLearner.Manager(), nil)
+	}
 }
 
 func (a *Agent) configureSkillsLoaderLifecycle(loader *SkillsLoader) {
