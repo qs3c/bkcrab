@@ -132,12 +132,15 @@ type Store interface {
 	// ResetExtraction 把某次提取认领的所有行 extraction_id 重置回 NULL,
 	// 使它们回到待提取状态(异步提取失败时的补偿回滚)。
 	ResetExtraction(ctx context.Context, extractionID string) error
-	// ClaimSkillBatch 在单个写事务内:选出该 (agent, session) 下 turn_status='done'
-	// 且 skill_extraction_id IS NULL 的锚点(按 created_at,seq 至多 batchCap 条,
+	// ClaimSkillBatch 在单个写事务内:选出该 (agent, session, chatter) 下
+	// turn_status='done' 且 skill_extraction_id IS NULL 的锚点(按 created_at,seq
+	// 至多 batchCap 条,
 	// MySQL/PG 加 FOR UPDATE),若 SUM(tool_call_count) >= minTotal 则生成 uuid、
 	// 整批置位 skill_extraction_id 并返回 (uuid, TurnRef 列表);不足返回 ("", nil, nil)。
 	// 事务保证并发收尾(同实例异步 post-turn / 直连入口 / 跨实例)不会重复认领。
-	ClaimSkillBatch(ctx context.Context, agentID, sessionKey string, minTotal, batchCap int) (string, []TurnRef, error)
+	// chatterUserID 必须非空；技能提炼调用方传入真实 agent owner，避免共享
+	// session 中访客回合被 owner 的后续回合间接认领。
+	ClaimSkillBatch(ctx context.Context, agentID, sessionKey, chatterUserID string, minTotal, batchCap int) (string, []TurnRef, error)
 	// ResetSkillExtraction 把某次技能认领的所有行 skill_extraction_id 重置回 NULL。
 	// 仅基础设施错误(回放失败/LLM 故障)时补偿调用;"判定不提取"视为已消费,不重置。
 	ResetSkillExtraction(ctx context.Context, skillExtractionID string) error

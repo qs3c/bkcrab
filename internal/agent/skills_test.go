@@ -108,8 +108,8 @@ ALWAYS_LOAD_BODY_SHOULD_APPEAR`
 func TestFilterLearnerSkillsByActive(t *testing.T) {
 	all := []Skill{
 		{Name: "manual", Layer: "user"},
-		{Name: "hi", Layer: "agent"},
-		{Name: "lo", Layer: "agent"},
+		{Name: "hi", Layer: "learner"},
+		{Name: "lo", Layer: "learner"},
 	}
 	rows := []store.SkillUsageRow{
 		{Slug: "hi", Origin: "learner", Activity: 10, LastLoadSeq: 100, TotalLoads: 3, CreatedSeq: 0},
@@ -126,9 +126,54 @@ func TestFilterLearnerSkillsByActive(t *testing.T) {
 }
 
 func TestFilterActiveSkillsFailOpenOnEmptyRows(t *testing.T) {
-	all := []Skill{{Name: "a", Layer: "agent"}, {Name: "b", Layer: "agent"}}
+	all := []Skill{{Name: "a", Layer: "learner"}, {Name: "b", Layer: "learner"}}
 	out := filterActiveSkills(all, nil, skillspkg.LifecycleConfig{ActiveMax: 1})
 	if len(out) != len(all) {
 		t.Fatalf("empty ledger should keep all skills, got %d", len(out))
+	}
+}
+
+func TestLoadSkillsLearnerLayerIsSharedAndLowestPriority(t *testing.T) {
+	t.Setenv("BKCRAB_HOME", t.TempDir())
+	home := t.TempDir()
+	agentDir := t.TempDir()
+	writeSkill := func(root, slug, description, marker string) {
+		t.Helper()
+		dir := filepath.Join(root, slug)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "---\nname: " + slug + "\ndescription: " + description + "\n---\n" + marker + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	learnerDir := skillspkg.LearnerSkillsDir(agentDir)
+	writeSkill(learnerDir, "learner-only", "generated asset", "learner")
+	writeSkill(learnerDir, "same-slug", "generated duplicate", "learner")
+	writeSkill(filepath.Join(agentDir, "skills"), "same-slug", "manual asset", "manual")
+
+	for _, chatter := range []string{"owner-a", "guest-b"} {
+		loader := NewSkillsLoaderWithGlobal(home, agentDir, "", config.SkillsConfig{}, config.SkillsCfg{}).
+			WithUserID(chatter)
+		loaded := loader.LoadSkills()
+		byName := make(map[string]Skill, len(loaded))
+		for _, skill := range loaded {
+			byName[skill.Name] = skill
+		}
+		if got := byName["learner-only"]; got.Layer != "learner" {
+			t.Fatalf("chatter %s learner-only = %+v, want learner layer", chatter, got)
+		}
+		if got := byName["same-slug"]; got.Layer != "agent" || got.Description != "manual asset" {
+			t.Fatalf("chatter %s same-slug = %+v, want manual agent skill to win", chatter, got)
+		}
+		dirs := loader.AllSkillDirs()
+		if len(dirs) == 0 || dirs[len(dirs)-1] != learnerDir {
+			t.Fatalf("chatter %s skill dir order = %v, want learner dir last", chatter, dirs)
+		}
+		if loader.LearnerSkillsDir() != learnerDir {
+			t.Fatalf("chatter %s learner dir = %q, want %q", chatter, loader.LearnerSkillsDir(), learnerDir)
+		}
 	}
 }

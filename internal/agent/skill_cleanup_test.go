@@ -2,11 +2,13 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
 	skillspkg "github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 type fakeCleanupStore struct {
@@ -33,7 +35,7 @@ func TestCleanupDeletesDeadLearnerSkills(t *testing.T) {
 		{Slug: "dead", Origin: "learner", TotalLoads: 0, CreatedSeq: 0, EditedSeq: 0},
 	}}
 
-	cleanupDeadSkills(context.Background(), st, mgr, "agentA", 300, skillspkg.LifecycleConfig{DeleteAfterLoads: 200})
+	cleanupDeadSkills(context.Background(), st, nil, mgr, "agentA", 300, skillspkg.LifecycleConfig{DeleteAfterLoads: 200})
 
 	if len(st.deleted) != 1 || st.deleted[0] != "dead" {
 		t.Fatalf("ledger delete calls=%+v want [dead]", st.deleted)
@@ -55,9 +57,74 @@ func TestCleanupReapsOrphanLedgerRowWhenDirGone(t *testing.T) {
 		{Slug: "ghost", Origin: "learner", TotalLoads: 0, CreatedSeq: 0, EditedSeq: 0},
 	}}
 
-	cleanupDeadSkills(context.Background(), st, mgr, "agentA", 300, skillspkg.LifecycleConfig{DeleteAfterLoads: 200})
+	cleanupDeadSkills(context.Background(), st, nil, mgr, "agentA", 300, skillspkg.LifecycleConfig{DeleteAfterLoads: 200})
 
 	if len(st.deleted) != 1 || st.deleted[0] != "ghost" {
 		t.Fatalf("orphan ledger row should be reaped even without dir, got %+v", st.deleted)
+	}
+}
+
+type failingLearnerDeleteStore struct {
+	workspace.Store
+}
+
+func (f *failingLearnerDeleteStore) Delete(context.Context, string, string, string, string) error {
+	return errors.New("delete unavailable")
+}
+
+func TestCleanupDeletesRemoteLearnerBeforeLocalAndLedger(t *testing.T) {
+	ctx := context.Background()
+	agentHome := t.TempDir()
+	root := skillspkg.LearnerSkillsDir(agentHome)
+	mgr := skillspkg.NewManager(root, skillspkg.DefaultManagerConfig())
+	if err := mgr.Create("dead", "---\nname: Dead\ndescription: d\n---\nbody\n"); err != nil {
+		t.Fatal(err)
+	}
+	ws := workspace.NewLocalFS(t.TempDir())
+	if err := skillspkg.SyncLearnerSkillUp(ctx, ws, "agentA", "dead", root); err != nil {
+		t.Fatal(err)
+	}
+	st := &fakeCleanupStore{rows: []store.SkillUsageRow{{Slug: "dead", Origin: "learner"}}}
+
+	cleanupDeadSkills(ctx, st, ws, mgr, "agentA", 300, skillspkg.LifecycleConfig{DeleteAfterLoads: 200})
+
+	if _, ok := mgr.Read("dead"); ok {
+		t.Fatal("local learner survived cleanup")
+	}
+	if len(st.deleted) != 1 || st.deleted[0] != "dead" {
+		t.Fatalf("ledger deletes = %v, want [dead]", st.deleted)
+	}
+	objects, err := ws.List(ctx, "agentA", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range objects {
+		if object.Path == "learner-skills/dead/SKILL.md" {
+			t.Fatal("remote learner survived cleanup")
+		}
+	}
+}
+
+func TestCleanupRemoteFailureRetainsLocalAndLedger(t *testing.T) {
+	ctx := context.Background()
+	agentHome := t.TempDir()
+	root := skillspkg.LearnerSkillsDir(agentHome)
+	mgr := skillspkg.NewManager(root, skillspkg.DefaultManagerConfig())
+	if err := mgr.Create("dead", "---\nname: Dead\ndescription: d\n---\nbody\n"); err != nil {
+		t.Fatal(err)
+	}
+	base := workspace.NewLocalFS(t.TempDir())
+	if err := skillspkg.SyncLearnerSkillUp(ctx, base, "agentA", "dead", root); err != nil {
+		t.Fatal(err)
+	}
+	st := &fakeCleanupStore{rows: []store.SkillUsageRow{{Slug: "dead", Origin: "learner"}}}
+
+	cleanupDeadSkills(ctx, st, &failingLearnerDeleteStore{Store: base}, mgr, "agentA", 300, skillspkg.LifecycleConfig{DeleteAfterLoads: 200})
+
+	if _, ok := mgr.Read("dead"); !ok {
+		t.Fatal("local learner was deleted after remote failure")
+	}
+	if len(st.deleted) != 0 {
+		t.Fatalf("ledger was deleted after remote failure: %v", st.deleted)
 	}
 }

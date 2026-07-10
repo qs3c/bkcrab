@@ -3,7 +3,7 @@ name: bkcrab-skill-learner
 description: Analyze conversations to extract reusable skill patterns. Used internally by BkCrab to auto-generate skills from complex multi-step tasks.
 metadata:
   bkcrab:
-    always: true
+    internal: true
 ---
 
 # Skill Learner
@@ -12,7 +12,7 @@ Analyze a conversation and determine if it demonstrates a reusable multi-step wo
 
 ## Input
 
-You receive the full working context of one session: the recent span is verbatim messages (including tool calls and results); if the session was long, the older span appears as a `[Conversation Summary]` block. Treat the summary as reliable background narrative and mine the verbatim span for concrete steps.
+You receive a batch of completed turns from the agent owner's conversation. Every selected turn is replayed verbatim from the archive, including user/assistant messages, tool calls, arguments, and tool results. The batch may be only part of a longer session; extract only what the supplied evidence supports.
 
 ## When to Extract
 

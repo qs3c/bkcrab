@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // SkillLedgerUpserter / SkillLedgerDeleter 是 skill_manage 写路径同步的
@@ -35,6 +37,9 @@ type SkillManageDeps struct {
 	Upserter SkillLedgerUpserter // 可为 nil(无 store 装配):跳过记账
 	Deleter  SkillLedgerDeleter  // 可为 nil:delete 只删目录
 	AgentID  string
+	// Workspace mirrors learner CRUD into <agent>/learner-skills. A nil store
+	// keeps the single-node/local-only behaviour.
+	Workspace workspace.Store
 	// AllowDelete=false 时拒绝 delete 动作——后台提取循环禁止删技能,
 	// 删除只归主对话(owner)与生命周期清理。
 	AllowDelete bool
@@ -46,7 +51,7 @@ type skillManageArgs struct {
 	Content string `json:"content,omitempty"`
 }
 
-const skillManageDescription = "Manage this agent's shared skill library (SKILL.md files): create a new skill, read/update/delete an existing one, or list all skills. Use when the user asks to save, change, or remove a skill, or when a proven reusable workflow is worth persisting."
+const skillManageDescription = "Manage only this agent's learner-generated skill library (SKILL.md files): create, read, update, delete, or list learner skills. It does not manage installed, manually created, or personal skills. Use when the owner asks to maintain an automatically learned workflow, or when a proven reusable workflow is worth extracting."
 
 func skillManageSchema() map[string]any {
 	return map[string]any{
@@ -70,8 +75,9 @@ func skillManageSchema() map[string]any {
 	}
 }
 
-// SkillManageToolDef 返回 skill_manage 的 provider 工具定义,供不经过
-// Registry 的调用方(技能提取循环)把同一工具喂给 Chat。
+// SkillManageToolDef returns the same provider tool schema to the background
+// extraction loop. The model still acts through a structured skill_manage
+// ToolCall; only the chat-specific Registry authorization wrapper is absent.
 func SkillManageToolDef() provider.Tool {
 	return provider.Tool{
 		Type: "function",
@@ -83,23 +89,18 @@ func SkillManageToolDef() provider.Tool {
 	}
 }
 
-// SkillManageExec 返回无权限门控的 skill_manage 执行函数,供后台提取循环
-// 直接分发模型的工具调用。主对话路径走 registerSkillManage(带 owner 门控)。
+// SkillManageExec returns the structured skill_manage tool executor used by
+// the background learner to dispatch model ToolCalls. This is still the tool
+// path (schema -> ToolCall -> executor), not a direct Manager call. Background
+// owner authorization happens before the learner loop starts; the main-chat
+// path additionally enforces its per-turn gate in registerSkillManage.
 func SkillManageExec(deps SkillManageDeps) ToolFunc {
 	return makeSkillManage(func() SkillManageDeps { return deps }, nil)
 }
 
-func isSkillWriteAction(action string) bool {
-	switch action {
-	case "create", "update", "delete":
-		return true
-	}
-	return false
-}
-
 // makeSkillManage 构造 skill_manage 的 ToolFunc。deps 以函数注入按调用时
 // 求值——builtin 注册发生在 SetSkillManage 之前,晚装配的管理器/账本因此
-// 无需重新注册即可生效。gate 非 nil 时写动作先过门控。
+// 无需重新注册即可生效。gate 非 nil 时所有动作先过门控。
 func makeSkillManage(deps func() SkillManageDeps, gate func(action string) error) ToolFunc {
 	return func(ctx context.Context, rawArgs json.RawMessage) (string, error) {
 		var args skillManageArgs
@@ -107,7 +108,7 @@ func makeSkillManage(deps func() SkillManageDeps, gate func(action string) error
 			return "", fmt.Errorf("parse args: %w", err)
 		}
 		action := strings.ToLower(strings.TrimSpace(args.Action))
-		if gate != nil && isSkillWriteAction(action) {
+		if gate != nil {
 			if err := gate(action); err != nil {
 				return "", err
 			}
@@ -128,14 +129,31 @@ func applySkillManage(ctx context.Context, deps SkillManageDeps, action, slug, c
 		if err := deps.Manager.Create(slug, content); err != nil {
 			return "", err
 		}
+		if err := syncLearnerSkill(ctx, deps, slug); err != nil {
+			localRollback := deps.Manager.Delete(slug)
+			remoteRollback := deleteLearnerSkill(ctx, deps, slug)
+			return "", fmt.Errorf("persist created skill %q: %w", slug, errors.Join(err, localRollback, remoteRollback))
+		}
 		upsertSkillLedger(ctx, deps, slug, content, true)
 		return fmt.Sprintf("created skill %q", slug), nil
 	case "update":
 		if slug == "" || strings.TrimSpace(content) == "" {
 			return "", fmt.Errorf("update requires slug and content")
 		}
+		previous, ok := deps.Manager.Read(slug)
+		if !ok {
+			return "", fmt.Errorf("skill %q does not exist", slug)
+		}
 		if err := deps.Manager.Update(slug, content); err != nil {
 			return "", err
+		}
+		if err := syncLearnerSkill(ctx, deps, slug); err != nil {
+			localRollback := deps.Manager.Update(slug, previous)
+			var remoteRollback error
+			if localRollback == nil {
+				remoteRollback = syncLearnerSkill(ctx, deps, slug)
+			}
+			return "", fmt.Errorf("persist updated skill %q: %w", slug, errors.Join(err, localRollback, remoteRollback))
 		}
 		upsertSkillLedger(ctx, deps, slug, content, false)
 		return fmt.Sprintf("updated skill %q", slug), nil
@@ -155,8 +173,19 @@ func applySkillManage(ctx context.Context, deps SkillManageDeps, action, slug, c
 		if slug == "" {
 			return "", fmt.Errorf("delete requires slug")
 		}
+		_, ok := deps.Manager.Read(slug)
+		if !ok {
+			return "", fmt.Errorf("skill %q does not exist", slug)
+		}
+		if err := deleteLearnerSkill(ctx, deps, slug); err != nil {
+			return "", fmt.Errorf("delete remote skill %q: %w", slug, err)
+		}
 		if err := deps.Manager.Delete(slug); err != nil {
-			return "", err
+			// The local copy still exists, so best-effort restore the remote copy
+			// before surfacing the error. Hydration must not turn a local failure
+			// into an implicit successful delete on the next turn.
+			remoteRollback := syncLearnerSkill(ctx, deps, slug)
+			return "", fmt.Errorf("delete local skill %q: %w", slug, errors.Join(err, remoteRollback))
 		}
 		if deps.Deleter != nil && deps.AgentID != "" {
 			if err := deps.Deleter.DeleteSkillUsage(ctx, deps.AgentID, slug); err != nil {
@@ -179,8 +208,28 @@ func applySkillManage(ctx context.Context, deps SkillManageDeps, action, slug, c
 	}
 }
 
+func syncLearnerSkill(ctx context.Context, deps SkillManageDeps, slug string) error {
+	if deps.Workspace == nil {
+		return nil
+	}
+	if deps.AgentID == "" {
+		return fmt.Errorf("agent id is required for learner skill persistence")
+	}
+	return skills.SyncLearnerSkillUp(ctx, deps.Workspace, deps.AgentID, slug, deps.Manager.RootDir())
+}
+
+func deleteLearnerSkill(ctx context.Context, deps SkillManageDeps, slug string) error {
+	if deps.Workspace == nil {
+		return nil
+	}
+	if deps.AgentID == "" {
+		return fmt.Errorf("agent id is required for learner skill persistence")
+	}
+	return skills.DeleteLearnerSkillUp(ctx, deps.Workspace, deps.AgentID, slug)
+}
+
 // registerSkillManage 把 skill_manage 注册为 builtin。依赖按调用时从
-// Registry 字段读取;写动作过 owner 门控。ForTurn 重新注册 builtins,
+// Registry 字段读取;所有动作过 owner 门控。ForTurn 重新注册 builtins,
 // 闭包因此捕获回合副本、读到本回合的 chatterUserID。
 func registerSkillManage(r *Registry) {
 	r.Register("skill_manage", skillManageDescription, skillManageSchema(), makeSkillManage(
@@ -190,14 +239,15 @@ func registerSkillManage(r *Registry) {
 				Upserter:    r.skillLedger,
 				Deleter:     r.skillLedger,
 				AgentID:     r.agentID,
+				Workspace:   r.workspaceStore,
 				AllowDelete: true,
 			}
 		},
 		func(action string) error {
-			if r.skillWriteAllowed() {
+			if r.skillManageAllowed {
 				return nil
 			}
-			return fmt.Errorf("skill %s is restricted to the agent owner; suggest the change to the owner instead", action)
+			return fmt.Errorf("skill management is restricted to the agent owner")
 		},
 	))
 }

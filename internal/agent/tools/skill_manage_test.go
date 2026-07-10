@@ -3,11 +3,14 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/qs3c/bkcrab/internal/skills"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 const validSkillMD = "---\nname: Test Skill\ndescription: a test skill\n---\n1. step one\n"
@@ -150,6 +153,111 @@ func TestSkillManageNilManagerFails(t *testing.T) {
 	}
 }
 
+func readSkillManageObject(t *testing.T, ws workspace.Store, path string) string {
+	t.Helper()
+	r, err := ws.Get(context.Background(), "agent-1", "", "", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	b, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestSkillManagePersistsOnlyLearnerNamespace(t *testing.T) {
+	mgr := skills.NewManager(filepath.Join(t.TempDir(), skills.LearnerSkillsDirName), skills.DefaultManagerConfig())
+	ledger := &fakeSkillManageLedger{}
+	ws := workspace.NewLocalFS(t.TempDir())
+	fn := SkillManageExec(SkillManageDeps{
+		Manager: mgr, Upserter: ledger, Deleter: ledger,
+		AgentID: "agent-1", Workspace: ws, AllowDelete: true,
+	})
+
+	if _, err := execSkillManage(t, fn, map[string]any{"action": "create", "slug": "remote", "content": validSkillMD}); err != nil {
+		t.Fatal(err)
+	}
+	if got := readSkillManageObject(t, ws, "learner-skills/remote/SKILL.md"); got != validSkillMD {
+		t.Fatalf("remote create = %q", got)
+	}
+	if _, err := ws.Stat(context.Background(), "agent-1", "", "", "skills/remote/SKILL.md"); !errors.Is(err, workspace.ErrNotFound) {
+		t.Fatalf("skill_manage wrote ordinary skills namespace: %v", err)
+	}
+
+	updated := strings.Replace(validSkillMD, "step one", "step two", 1)
+	if _, err := execSkillManage(t, fn, map[string]any{"action": "update", "slug": "remote", "content": updated}); err != nil {
+		t.Fatal(err)
+	}
+	if got := readSkillManageObject(t, ws, "learner-skills/remote/SKILL.md"); got != updated {
+		t.Fatalf("remote update = %q", got)
+	}
+
+	if _, err := execSkillManage(t, fn, map[string]any{"action": "delete", "slug": "remote"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.Stat(context.Background(), "agent-1", "", "", "learner-skills/remote/SKILL.md"); !errors.Is(err, workspace.ErrNotFound) {
+		t.Fatalf("remote learner survived delete: %v", err)
+	}
+}
+
+type failingSkillPutStore struct{ workspace.Store }
+
+func (f *failingSkillPutStore) Put(context.Context, string, string, string, string, io.Reader, int64, string) error {
+	return errors.New("put unavailable")
+}
+
+type failingSkillDeleteStore struct{ workspace.Store }
+
+func (f *failingSkillDeleteStore) Delete(context.Context, string, string, string, string) error {
+	return errors.New("delete unavailable")
+}
+
+func TestSkillManageRemoteFailureDoesNotReportDivergentSuccess(t *testing.T) {
+	root := filepath.Join(t.TempDir(), skills.LearnerSkillsDirName)
+	mgr := skills.NewManager(root, skills.DefaultManagerConfig())
+	ledger := &fakeSkillManageLedger{}
+	base := workspace.NewLocalFS(t.TempDir())
+	working := SkillManageExec(SkillManageDeps{
+		Manager: mgr, Upserter: ledger, Deleter: ledger,
+		AgentID: "agent-1", Workspace: base, AllowDelete: true,
+	})
+
+	failingPut := SkillManageExec(SkillManageDeps{
+		Manager: mgr, Upserter: ledger, Deleter: ledger,
+		AgentID: "agent-1", Workspace: &failingSkillPutStore{Store: base}, AllowDelete: true,
+	})
+	if _, err := execSkillManage(t, failingPut, map[string]any{"action": "create", "slug": "new", "content": validSkillMD}); err == nil {
+		t.Fatal("create reported success after remote failure")
+	}
+	if _, ok := mgr.Read("new"); ok {
+		t.Fatal("failed remote create left a local-only learner skill")
+	}
+
+	if _, err := execSkillManage(t, working, map[string]any{"action": "create", "slug": "existing", "content": validSkillMD}); err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(validSkillMD, "step one", "step two", 1)
+	if _, err := execSkillManage(t, failingPut, map[string]any{"action": "update", "slug": "existing", "content": updated}); err == nil {
+		t.Fatal("update reported success after remote failure")
+	}
+	if got, _ := mgr.Read("existing"); got != validSkillMD {
+		t.Fatalf("failed update did not restore local content: %q", got)
+	}
+
+	failingDelete := SkillManageExec(SkillManageDeps{
+		Manager: mgr, Upserter: ledger, Deleter: ledger,
+		AgentID: "agent-1", Workspace: &failingSkillDeleteStore{Store: base}, AllowDelete: true,
+	})
+	if _, err := execSkillManage(t, failingDelete, map[string]any{"action": "delete", "slug": "existing"}); err == nil {
+		t.Fatal("delete reported success after remote failure")
+	}
+	if _, ok := mgr.Read("existing"); !ok {
+		t.Fatal("remote delete failure removed local learner")
+	}
+}
+
 func newSkillManageTestRegistry(t *testing.T) *Registry {
 	t.Helper()
 	r := NewRegistry(t.TempDir(), t.TempDir())
@@ -173,35 +281,48 @@ func execRegistrySkillManage(t *testing.T, r *Registry, args map[string]any) (st
 	return tool.fn(context.Background(), raw)
 }
 
+func registryHasToolDef(r *Registry, name string) bool {
+	for _, def := range r.DefinitionsForMode(nil) {
+		if def.Function.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSkillManageOwnerGateOnTurnRegistry(t *testing.T) {
 	base := newSkillManageTestRegistry(t)
 
 	guest := base.ForTurn()
 	guest.SetChatterUserID("guest-9")
-	if _, err := execRegistrySkillManage(t, guest, map[string]any{
-		"action": "create", "slug": "s1", "content": validSkillMD,
-	}); err == nil || !strings.Contains(err.Error(), "owner") {
-		t.Fatalf("guest create err = %v, want owner-restriction refusal", err)
+	if registryHasToolDef(guest, "skill_manage") {
+		t.Fatal("guest tool definitions expose skill_manage")
 	}
-	// read/list 不受门控
-	if _, err := execRegistrySkillManage(t, guest, map[string]any{"action": "list"}); err != nil {
-		t.Fatalf("guest list err = %v, want allowed", err)
+	for _, action := range []string{"create", "update", "read", "delete", "list"} {
+		args := map[string]any{"action": action, "slug": "s1", "content": validSkillMD}
+		if _, err := execRegistrySkillManage(t, guest, args); err == nil || !strings.Contains(err.Error(), "owner") {
+			t.Fatalf("guest %s err = %v, want owner-restriction refusal", action, err)
+		}
 	}
 
 	owner := base.ForTurn()
 	owner.SetChatterUserID("owner-1")
+	owner.SetSkillManageAllowed(true)
+	if !registryHasToolDef(owner, "skill_manage") {
+		t.Fatal("owner tool definitions do not expose skill_manage")
+	}
 	if _, err := execRegistrySkillManage(t, owner, map[string]any{
 		"action": "create", "slug": "s1", "content": validSkillMD,
 	}); err != nil {
 		t.Fatalf("owner create err = %v, want allowed", err)
 	}
 
-	// chatter 未设置(web 回合/旧版单用户)视为所有者语境
+	// Missing per-turn authorization is fail-closed, including legacy callers.
 	blank := base.ForTurn()
 	if _, err := execRegistrySkillManage(t, blank, map[string]any{
 		"action": "update", "slug": "s1", "content": strings.Replace(validSkillMD, "step one", "step two", 1),
-	}); err != nil {
-		t.Fatalf("blank-chatter update err = %v, want allowed", err)
+	}); err == nil || !strings.Contains(err.Error(), "owner") {
+		t.Fatalf("blank-chatter update err = %v, want fail-closed refusal", err)
 	}
 }
 
@@ -209,9 +330,24 @@ func TestSkillManageDepsSurviveForTurn(t *testing.T) {
 	base := newSkillManageTestRegistry(t)
 	turn := base.ForTurn()
 	turn.SetChatterUserID("owner-1")
+	turn.SetSkillManageAllowed(true)
 	if _, err := execRegistrySkillManage(t, turn, map[string]any{
 		"action": "create", "slug": "turn-skill", "content": validSkillMD,
 	}); err != nil {
 		t.Fatalf("create on ForTurn copy err = %v — skillManager/skillLedger 未复制进回合副本", err)
+	}
+}
+
+func TestSkillManageAuthorizationDoesNotLeakAcrossForTurnCopies(t *testing.T) {
+	base := newSkillManageTestRegistry(t)
+	base.SetSkillManageAllowed(true)
+
+	turn := base.ForTurn()
+	turn.SetChatterUserID("guest-9")
+	if registryHasToolDef(turn, "skill_manage") {
+		t.Fatal("ForTurn inherited skill_manage authorization from parent")
+	}
+	if _, err := execRegistrySkillManage(t, turn, map[string]any{"action": "list"}); err == nil {
+		t.Fatal("ForTurn inherited executable skill_manage authorization from parent")
 	}
 }

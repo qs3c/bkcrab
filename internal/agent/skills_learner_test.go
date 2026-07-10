@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +14,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/qs3c/bkcrab/internal/provider"
+	skillspkg "github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // learnerFakeProvider 按脚本逐次返回响应;脚本耗尽后返回纯文本(结束工具
@@ -93,7 +98,7 @@ func (f *fakeSkillLedger) UpsertSkillUsage(ctx context.Context, agentID, slug, c
 
 func writeExistingSkill(t *testing.T, ws, slug, content string) {
 	t.Helper()
-	dir := filepath.Join(ws, "skills", slug)
+	dir := filepath.Join(skillspkg.LearnerSkillsDir(ws), slug)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +109,7 @@ func writeExistingSkill(t *testing.T, ws, slug, content string) {
 
 func readSkill(t *testing.T, ws, slug string) (string, bool) {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(ws, "skills", slug, "SKILL.md"))
+	data, err := os.ReadFile(filepath.Join(skillspkg.LearnerSkillsDir(ws), slug, "SKILL.md"))
 	if err != nil {
 		return "", false
 	}
@@ -158,12 +163,23 @@ func TestExtractFromSessionCreatesViaToolCall(t *testing.T) {
 	sl := NewSkillsLearner(ws, p, "m")
 	ledger := &fakeSkillLedger{}
 	sl.ledger, sl.agentID = ledger, "agent-1"
+	remote := workspace.NewLocalFS(t.TempDir())
+	sl.workspaceStore = remote
 
 	if err := sl.ExtractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
 		t.Fatal(err)
 	}
 	if got, ok := readSkill(t, ws, "test-skill"); !ok || got != learnerValidSkill {
 		t.Fatalf("skill on disk = (%q, %v), want created content", got, ok)
+	}
+	r, err := remote.Get(context.Background(), "agent-1", "", "", "learner-skills/test-skill/SKILL.md")
+	if err != nil {
+		t.Fatalf("background learner did not persist remote skill: %v", err)
+	}
+	remoteBody, err := io.ReadAll(r)
+	r.Close()
+	if err != nil || string(remoteBody) != learnerValidSkill {
+		t.Fatalf("remote learner body = %q, err=%v", remoteBody, err)
 	}
 	if len(ledger.calls) != 1 || !ledger.calls[0].FirstCreate || ledger.calls[0].AgentID != "agent-1" {
 		t.Fatalf("ledger calls = %+v, want one firstCreate for agent-1", ledger.calls)
@@ -189,7 +205,7 @@ func TestExtractFromSessionNothingToSave(t *testing.T) {
 	if p.calls != 1 {
 		t.Fatalf("provider calls = %d, want 1", p.calls)
 	}
-	if entries, _ := os.ReadDir(filepath.Join(ws, "skills")); len(entries) != 0 {
+	if entries, _ := os.ReadDir(skillspkg.LearnerSkillsDir(ws)); len(entries) != 0 {
 		t.Fatalf("skills dir entries = %d, want 0", len(entries))
 	}
 }
@@ -215,9 +231,14 @@ func TestExtractFromSessionEmptySkipsLLM(t *testing.T) {
 
 func TestExtractFromSessionMergeReadsThenUpdates(t *testing.T) {
 	ws := t.TempDir()
-	existing := strings.Replace(learnerValidSkill, "second step", "old step", 1)
+	const privateMarker = "PRIVATE_SKILL_BODY_7f14"
+	existing := strings.Replace(learnerValidSkill, "second step", "old step "+privateMarker, 1)
 	writeExistingSkill(t, ws, "test-skill", existing)
 	merged := strings.Replace(learnerValidSkill, "second step", "merged step", 1)
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 	p := &learnerFakeProvider{responses: []*provider.Response{
 		skillToolCallResp(t, "tc1", map[string]any{"action": "read", "slug": "test-skill"}),
 		skillToolCallResp(t, "tc2", map[string]any{"action": "update", "slug": "test-skill", "content": merged}),
@@ -240,6 +261,42 @@ func TestExtractFromSessionMergeReadsThenUpdates(t *testing.T) {
 	}
 	if len(ledger.calls) != 1 || ledger.calls[0].FirstCreate {
 		t.Fatalf("ledger calls = %+v, want one update(firstCreate=false)", ledger.calls)
+	}
+	logOutput := logs.String()
+	if strings.Contains(logOutput, privateMarker) {
+		t.Fatalf("skill body leaked into extraction log: %s", logOutput)
+	}
+	decoder := json.NewDecoder(strings.NewReader(logOutput))
+	actionLogs := make([]map[string]any, 0, 2)
+	for {
+		var record map[string]any
+		if err := decoder.Decode(&record); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatalf("decode captured log: %v\n%s", err, logOutput)
+		}
+		if record["msg"] == "skill extraction action applied" {
+			actionLogs = append(actionLogs, record)
+		}
+	}
+	if len(actionLogs) != 2 {
+		t.Fatalf("action log count = %d, want 2: %s", len(actionLogs), logOutput)
+	}
+	wantActions := map[string]bool{"read": true, "update": true}
+	for _, record := range actionLogs {
+		if record["agent"] != "agent-1" || record["slug"] != "test-skill" {
+			t.Fatalf("unexpected sanitized action log fields: %+v", record)
+		}
+		action, _ := record["action"].(string)
+		if !wantActions[action] {
+			t.Fatalf("unexpected action %q in log: %+v", action, record)
+		}
+		delete(wantActions, action)
+		for _, forbidden := range []string{"result", "content", "arguments"} {
+			if _, ok := record[forbidden]; ok {
+				t.Fatalf("action log exposes %q: %+v", forbidden, record)
+			}
+		}
 	}
 }
 
@@ -317,12 +374,12 @@ func TestExtractFromSessionIterationCap(t *testing.T) {
 	}
 }
 
-// 素材必须是完整的 session 工作集:不截断消息正文、不截断 tool 结果与
+// 素材必须是完整的已认领 turn 回放:不截断消息正文、不截断 tool 结果与
 // tool 调用参数;system 消息除外。工作流细节(工具参数、长结果)是
 // SOP 提取的主体,任何截断都会掏空技能内容。上界由上下文压缩天然保证。
 func TestExtractFromSessionSendsFullUntruncatedMaterial(t *testing.T) {
-	longUser := strings.Repeat("用户需求细节。", 300)       // ~2100 字符,远超旧的 500 上限
-	longResult := strings.Repeat("tool output line\n", 200)  // ~3400 字符
+	longUser := strings.Repeat("用户需求细节。", 300)                  // ~2100 字符,远超旧的 500 上限
+	longResult := strings.Repeat("tool output line\n", 200)     // ~3400 字符
 	longArgs := `{"path":"` + strings.Repeat("a/", 400) + `x"}` // ~810 字符,超旧的 300 上限
 	msgs := []store.SessionMessage{
 		{Role: "system", Content: "system prompt must not leak into material"},

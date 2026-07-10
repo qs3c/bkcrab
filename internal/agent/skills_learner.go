@@ -7,24 +7,25 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/qs3c/bkcrab/internal/agent/tools"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 type SkillsLearner struct {
-	workspace    string
-	provider     provider.Provider
-	model        string
-	minToolCalls int
-	skillDirs    []string
-	manager      *skills.Manager
-	agentID      string
-	ledger       tools.SkillLedgerUpserter
+	workspace      string
+	provider       provider.Provider
+	model          string
+	minToolCalls   int
+	skillDirs      []string
+	manager        *skills.Manager
+	agentID        string
+	ledger         tools.SkillLedgerUpserter
+	workspaceStore workspace.Store
 }
 
 func NewSkillsLearner(workspace string, p provider.Provider, model string, skillDirs ...string) *SkillsLearner {
@@ -34,7 +35,7 @@ func NewSkillsLearner(workspace string, p provider.Provider, model string, skill
 		model:        model,
 		minToolCalls: 10,
 		skillDirs:    skillDirs,
-		manager:      skills.NewManager(filepath.Join(workspace, "skills"), skills.DefaultManagerConfig()),
+		manager:      skills.NewManager(skills.LearnerSkillsDir(workspace), skills.DefaultManagerConfig()),
 	}
 }
 
@@ -54,11 +55,10 @@ func (sl *SkillsLearner) MaybeExtract(ctx context.Context, messages []provider.M
 	return sl.extractWithTools(ctx, renderProviderMessages(messages))
 }
 
-// ExtractFromSession 从 sessions.messages 工作集的完整快照提取技能。
-// cadence 认领只作触发凭证;素材是整个 session 的叙事(旧段为压缩摘要、
-// 近段为原文),而非被认领 turn 的归档片段——SOP 提取需要全局工作流,
-// 局部 turn 拼不出来。非 nil 错误代表基础设施故障(调用方重置批次);
-// 校验/扫描类拒绝在工具循环内反馈给模型消化。
+// ExtractFromSession 从已认领并回放的 owner turns 提取技能。调用方负责按
+// agent owner 过滤归档素材；这里保留每条消息、工具参数和结果的全文，不再
+// 读取可能混入 guest 内容的 sessions.messages 工作集快照。非 nil 错误代表
+// 基础设施故障(调用方重置批次)；校验/扫描拒绝在工具循环内反馈给模型消化。
 func (sl *SkillsLearner) ExtractFromSession(ctx context.Context, msgs []store.SessionMessage) error {
 	material := renderSessionMessages(msgs)
 	if strings.TrimSpace(material) == "" {
@@ -92,6 +92,7 @@ func (sl *SkillsLearner) extractWithTools(ctx context.Context, material string) 
 		Manager:     sl.manager,
 		Upserter:    sl.ledger,
 		AgentID:     sl.agentID,
+		Workspace:   sl.workspaceStore,
 		AllowDelete: false,
 	})
 	for i := 0; i < skillExtractMaxIterations; i++ {
@@ -117,7 +118,16 @@ func (sl *SkillsLearner) extractWithTools(ctx context.Context, material string) 
 				result = "error: " + execErr.Error()
 			} else {
 				result = out
-				slog.Info("skill extraction action applied", "agent", sl.agentID, "result", out)
+				var logArgs struct {
+					Action string `json:"action"`
+					Slug   string `json:"slug"`
+				}
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &logArgs)
+				slog.Info("skill extraction action applied",
+					"agent", sl.agentID,
+					"action", strings.ToLower(strings.TrimSpace(logArgs.Action)),
+					"slug", strings.TrimSpace(logArgs.Slug),
+				)
 			}
 			messages = append(messages, provider.Message{
 				Role:       "tool",
@@ -142,9 +152,9 @@ func (sl *SkillsLearner) loadSkillLearnerPrompt() string {
 	return fallbackExtractionPrompt
 }
 
-const fallbackExtractionPrompt = `You maintain this agent's skill library. Analyze the conversation and decide whether it demonstrates a reusable multi-step skill worth saving, acting through the skill_manage tool.
+const fallbackExtractionPrompt = `You maintain this agent's learner-generated skill library. Analyze the supplied owner turns and decide whether they demonstrate a reusable multi-step skill worth saving, acting through the skill_manage tool.
 
-The input is the full working context of one session: recent messages verbatim; if the session was long, the older span appears as a [Conversation Summary] block.
+The input is a batch of completed turns replayed verbatim from one agent owner's archive, including tool calls, arguments, and results. It may be only part of a longer session; infer only what the supplied evidence supports.
 
 Save a skill when the conversation shows at least one of:
 - A repeatable multi-step workflow: multiple tool calls in a clear sequence, general enough to be useful in other contexts
@@ -194,26 +204,21 @@ func renderSessionMessages(msgs []store.SessionMessage) string {
 }
 
 func (sl *SkillsLearner) existingSkillsPrompt() string {
-	if sl == nil || sl.workspace == "" {
+	if sl == nil || sl.manager == nil {
 		return ""
 	}
-	found := discoverSkillsEnhanced(filepath.Join(sl.workspace, "skills"), "agent")
-	if len(found) == 0 {
+	items := sl.manager.List()
+	if len(items) == 0 {
 		return ""
 	}
-	names := make([]string, 0, len(found))
-	for name := range found {
-		names = append(names, name)
-	}
-	sort.Strings(names)
 	var sb strings.Builder
-	sb.WriteString("Existing skills in this workspace. If a newly extracted skill is substantially similar to one of these, read it and update that slug instead of creating a duplicate:\n")
-	for _, name := range names {
-		desc := firstSentence(found[name].Description)
+	sb.WriteString("Existing learner-managed skills for this agent. If a newly extracted skill is substantially similar to one of these, read it and update that slug instead of creating a duplicate:\n")
+	for _, item := range items {
+		desc := firstSentence(item.Description)
 		if desc == "" {
 			desc = "(no description)"
 		}
-		fmt.Fprintf(&sb, "- %s - %s\n", name, desc)
+		fmt.Fprintf(&sb, "- %s - %s\n", item.Slug, desc)
 	}
 	return sb.String()
 }

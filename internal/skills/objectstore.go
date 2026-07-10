@@ -25,6 +25,12 @@ import (
 // Owner 是每个 Agent 技能的 Agent ID，或者是全局技能目录
 // （`~/.bkcrab/skills/`）的 GlobalSkillOwner。
 const (
+	// LearnerSkillsDirName is both the agent-local directory name and the
+	// object-store key prefix reserved for skills produced by the learner.
+	// Keeping it separate from "skills" prevents skill_manage/lifecycle
+	// operations from touching installed or manually maintained skills.
+	LearnerSkillsDirName = "learner-skills"
+
 	// GlobalSkillOwner 是用作对象存储中全局安装技能前缀的合成 "agent ID"。
 	// 真实 Agent 不会与之冲突，因为 Agent 名称被验证为小写字母数字加连字符
 	//（参见 setup/handlers_agents.go:agentNameRE），
@@ -35,11 +41,20 @@ const (
 	// 调用者必须通过 buildKey 来保持一致。
 	skillsKeyPrefix = "skills"
 
+	learnerSkillsKeyPrefix = LearnerSkillsDirName
+	learnerNamespaceMarker = learnerSkillsKeyPrefix + "/.initialized"
+
 	// userSkillOwnerPrefix 是每个用户伪 owner 键的前导标记
 	//（`_user_<uid>`）。与 GlobalSkillOwner 相同的前导下划线约定，
 	// 因此它永远不会与真实 Agent ID 冲突。
 	userSkillOwnerPrefix = "_user_"
 )
+
+// LearnerSkillsDir returns the dedicated learner-managed skill root for an
+// agent home directory.
+func LearnerSkillsDir(agentDir string) string {
+	return filepath.Join(agentDir, LearnerSkillsDirName)
+}
 
 // UserSkillOwner 返回聊天者每个用户技能的工作空间.Store 伪 owner 键。
 // 空的 userID 返回 ""，以便调用者可以在传统/单用户安装上短路。
@@ -50,10 +65,10 @@ func UserSkillOwner(userID string) string {
 	return userSkillOwnerPrefix + userID
 }
 
-func buildKey(skillName, relPath string) string {
+func buildKey(keyPrefix, skillName, relPath string) string {
 	// relPath 已经规范化（当我们通过此辅助函数时，filepath.Walk 通过 filepath.ToSlash 产生正斜杠等价物）。
 	rel := strings.TrimPrefix(filepath.ToSlash(relPath), "/")
-	return skillsKeyPrefix + "/" + skillName + "/" + rel
+	return keyPrefix + "/" + skillName + "/" + rel
 }
 
 // SyncSkillUp 将 <rootDir>/<skillName>/ 下的每个文件上传到
@@ -61,6 +76,76 @@ func buildKey(skillName, relPath string) string {
 // （os.Lstat 过滤器排除它们以避免重复目标）。每次安装后调用是安全的；
 // 现有键会被覆盖。
 func SyncSkillUp(ctx context.Context, ws workspace.Store, owner, skillName, rootDir string) error {
+	return syncSkillUp(ctx, ws, owner, skillsKeyPrefix, skillName, rootDir)
+}
+
+// SyncLearnerSkillUp mirrors one learner-managed skill to the dedicated
+// <owner>/learner-skills/<skillName>/ namespace. It never writes keys under
+// the existing installed-skill namespace.
+func SyncLearnerSkillUp(ctx context.Context, ws workspace.Store, owner, skillName, rootDir string) error {
+	if err := syncSkillUp(ctx, ws, owner, learnerSkillsKeyPrefix, skillName, rootDir); err != nil {
+		return err
+	}
+	return markLearnerNamespace(ctx, ws, owner)
+}
+
+// MirrorLearnerSkillsUp initializes a previously unused learner namespace from
+// a dedicated local learner directory. Once the marker (or any learner object)
+// exists, remote state is authoritative and this function does nothing; that
+// prevents an intentionally deleted remote skill from being resurrected by a
+// stale Pod. It is primarily the local-only -> object-store upgrade bridge.
+func MirrorLearnerSkillsUp(ctx context.Context, ws workspace.Store, owner, rootDir string) error {
+	if ws == nil || owner == "" {
+		return nil
+	}
+	objects, err := ws.List(ctx, owner, "", "")
+	if err != nil {
+		return fmt.Errorf("list learner namespace for %s: %w", owner, err)
+	}
+	prefix := learnerSkillsKeyPrefix + "/"
+	for _, object := range objects {
+		if object.Path == learnerNamespaceMarker || strings.HasPrefix(object.Path, prefix) {
+			return nil
+		}
+	}
+	entries, err := os.ReadDir(rootDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read local learner skills %s: %w", rootDir, err)
+	}
+	mirrored := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(rootDir, entry.Name(), "SKILL.md")); err != nil {
+			continue
+		}
+		if err := SyncLearnerSkillUp(ctx, ws, owner, entry.Name(), rootDir); err != nil {
+			return err
+		}
+		mirrored++
+	}
+	if mirrored > 0 {
+		slog.Info("initialized learner skill namespace from local assets", "owner", owner, "count", mirrored)
+	}
+	return nil
+}
+
+func markLearnerNamespace(ctx context.Context, ws workspace.Store, owner string) error {
+	if ws == nil {
+		return nil
+	}
+	const body = "v1\n"
+	if err := ws.Put(ctx, owner, "", "", learnerNamespaceMarker, strings.NewReader(body), int64(len(body)), "text/plain"); err != nil {
+		return fmt.Errorf("mark learner skill namespace for %s: %w", owner, err)
+	}
+	return nil
+}
+
+func syncSkillUp(ctx context.Context, ws workspace.Store, owner, keyPrefix, skillName, rootDir string) error {
 	if ws == nil {
 		return nil // 未配置对象存储 — 无需镜像
 	}
@@ -94,7 +179,7 @@ func SyncSkillUp(ctx context.Context, ws workspace.Store, owner, skillName, root
 		}
 		defer f.Close()
 
-		key := buildKey(skillName, rel)
+		key := buildKey(keyPrefix, skillName, rel)
 		// 技能位于 Agent 共享作用域中（project 和 session 均为空），
 		// 因此 Agent 的每次聊天都会看到相同的集合；每个作用域
 		// 的子树保留给聊天产物。
@@ -108,7 +193,7 @@ func SyncSkillUp(ctx context.Context, ws workspace.Store, owner, skillName, root
 		return walkErr
 	}
 	slog.Info("skill mirrored to object store",
-		"owner", owner, "skill", skillName, "files", uploaded)
+		"owner", owner, "namespace", keyPrefix, "skill", skillName, "files", uploaded)
 	return nil
 }
 
@@ -171,6 +256,23 @@ func MirrorSkillsUp(ctx context.Context, ws workspace.Store, owner, rootDir stri
 // DeleteSkillUp 删除 <owner>/skills/<skillName>/ 下的所有对象。
 // 缺失的键会被容忍。
 func DeleteSkillUp(ctx context.Context, ws workspace.Store, owner, skillName string) error {
+	return deleteSkillUp(ctx, ws, owner, skillsKeyPrefix, skillName)
+}
+
+// DeleteLearnerSkillUp removes only objects in the learner-managed namespace.
+// An installed/manual skill with the same slug under <owner>/skills is left
+// untouched.
+func DeleteLearnerSkillUp(ctx context.Context, ws workspace.Store, owner, skillName string) error {
+	// Keep a namespace marker after the last skill is removed. Without it an
+	// empty authoritative remote set is indistinguishable from an older/local
+	// installation that has never mirrored learner skills and must be migrated.
+	if err := markLearnerNamespace(ctx, ws, owner); err != nil {
+		return err
+	}
+	return deleteSkillUp(ctx, ws, owner, learnerSkillsKeyPrefix, skillName)
+}
+
+func deleteSkillUp(ctx context.Context, ws workspace.Store, owner, keyPrefix, skillName string) error {
 	if ws == nil {
 		return nil
 	}
@@ -178,7 +280,7 @@ func DeleteSkillUp(ctx context.Context, ws workspace.Store, owner, skillName str
 	if err != nil {
 		return fmt.Errorf("list skills for %s: %w", owner, err)
 	}
-	prefix := skillsKeyPrefix + "/" + skillName + "/"
+	prefix := keyPrefix + "/" + skillName + "/"
 	removed := 0
 	for _, o := range objs {
 		if !strings.HasPrefix(o.Path, prefix) {
@@ -193,7 +295,7 @@ func DeleteSkillUp(ctx context.Context, ws workspace.Store, owner, skillName str
 		removed++
 	}
 	slog.Info("skill removed from object store",
-		"owner", owner, "skill", skillName, "files", removed)
+		"owner", owner, "namespace", keyPrefix, "skill", skillName, "files", removed)
 	return nil
 }
 
@@ -213,6 +315,20 @@ func DeleteSkillUp(ctx context.Context, ws workspace.Store, owner, skillName str
 // 幸存的技能内的文件级差异（远程从捆绑包中删除了一个文件）不会被协调；
 // 技能在安装时被整体替换，因此实践中不应发生逐文件漂移。
 func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir string, keepLocal ...string) error {
+	return hydrateSkillsDown(ctx, ws, owner, skillsKeyPrefix, rootDir, false, false, keepLocal...)
+}
+
+// HydrateLearnerSkillsDown reconciles the dedicated learner namespace into
+// rootDir. Unlike the compatibility behaviour of HydrateSkillsDown, the
+// learner namespace is fully managed, so an authoritative empty remote set
+// prunes every local learner skill. Learner files are also fetched even when
+// their byte size matches the local copy: an update may preserve length while
+// changing content.
+func HydrateLearnerSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir string) error {
+	return hydrateSkillsDown(ctx, ws, owner, learnerSkillsKeyPrefix, rootDir, true, true)
+}
+
+func hydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, keyPrefix, rootDir string, fetchSameSize, pruneWhenEmpty bool, keepLocal ...string) error {
 	if ws == nil {
 		return nil
 	}
@@ -220,13 +336,18 @@ func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir s
 	if err != nil {
 		return fmt.Errorf("list object store skills for %s: %w", owner, err)
 	}
-	prefix := skillsKeyPrefix + "/"
+	prefix := keyPrefix + "/"
 
 	// 远程视图：存储中存在哪些技能名称目录。
 	remoteSkills := make(map[string]bool)
+	namespaceInitialized := false
 	fetched := 0
 	for _, o := range objs {
 		if !strings.HasPrefix(o.Path, prefix) {
+			continue
+		}
+		if o.Path == learnerNamespaceMarker {
+			namespaceInitialized = true
 			continue
 		}
 		rest := strings.TrimPrefix(o.Path, prefix)
@@ -236,7 +357,7 @@ func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir s
 		}
 
 		target := filepath.Join(rootDir, filepath.FromSlash(rest))
-		if existing, statErr := os.Stat(target); statErr == nil && !existing.IsDir() {
+		if existing, statErr := os.Stat(target); statErr == nil && !existing.IsDir() && !fetchSameSize {
 			// 相同大小 → 已水合。我们在每次安装时覆盖远程键，
 			// 因此内容变化时大小也会变化；真正的校验和匹配需要额外的 HEAD/ETag，
 			// 对于静态技能包来说很少值得这样做。
@@ -254,18 +375,13 @@ func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir s
 			}
 			return fmt.Errorf("get %s: %w", o.Path, err)
 		}
-		f, err := os.Create(target)
-		if err != nil {
+		if err := replaceHydratedFile(target, rc); err != nil {
 			rc.Close()
-			return fmt.Errorf("create %s: %w", target, err)
+			return err
 		}
-		if _, err := io.Copy(f, rc); err != nil {
-			f.Close()
-			rc.Close()
-			return fmt.Errorf("copy %s: %w", target, err)
+		if err := rc.Close(); err != nil {
+			return fmt.Errorf("close remote %s: %w", o.Path, err)
 		}
-		f.Close()
-		rc.Close()
 		fetched++
 	}
 
@@ -285,7 +401,8 @@ func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir s
 		keep[name] = true
 	}
 	removed := 0
-	if entries, err := os.ReadDir(rootDir); err == nil && len(remoteSkills) > 0 {
+	remoteIsAuthoritative := len(remoteSkills) > 0 || (pruneWhenEmpty && namespaceInitialized)
+	if entries, err := os.ReadDir(rootDir); err == nil && remoteIsAuthoritative {
 		for _, e := range entries {
 			if !e.IsDir() {
 				continue
@@ -304,8 +421,42 @@ func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir s
 
 	if fetched > 0 || removed > 0 {
 		slog.Info("skills reconciled with object store",
-			"owner", owner, "dir", rootDir, "fetched", fetched, "pruned", removed)
+			"owner", owner, "namespace", keyPrefix, "dir", rootDir, "fetched", fetched, "pruned", removed)
 	}
+	return nil
+}
+
+// replaceHydratedFile writes through a sibling temporary file and renames it
+// into place. LoadSkills may run concurrently for several sessions; writing
+// directly to SKILL.md would expose truncated/partial content to load_skill and
+// let two hydrations interleave their writes.
+func replaceHydratedFile(target string, src io.Reader) error {
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".hydrate-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create hydrate temp for %s: %w", target, err)
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := io.Copy(tmp, src); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("copy %s: %w", target, err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod %s: %w", target, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", target, err)
+	}
+	if err := os.Rename(tmpName, target); err != nil {
+		return fmt.Errorf("replace %s: %w", target, err)
+	}
+	cleanup = false
 	return nil
 }
 

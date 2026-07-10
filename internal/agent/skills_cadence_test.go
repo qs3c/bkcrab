@@ -31,7 +31,7 @@ func newCadenceFixture(t *testing.T, responses []*provider.Response) (*Agent, *s
 
 func seedAgentTurns(t *testing.T, db *store.DBStore, counts []int) *turnAnchor {
 	t.Helper()
-	ctx := context.Background()
+	ctx := store.WithChatterUserID(context.Background(), "u1")
 	var last int64
 	for _, c := range counts {
 		seq, err := db.AppendTurnAnchor(ctx, "u1", "agentA", "s1", store.SessionMessage{Role: "user", Content: "q"})
@@ -46,6 +46,24 @@ func seedAgentTurns(t *testing.T, db *store.DBStore, counts []int) *turnAnchor {
 	return &turnAnchor{sessionKey: "s1", seq: last}
 }
 
+func seedAgentTurnForChatter(t *testing.T, db *store.DBStore, chatter, userContent, assistantContent string, toolCalls int) int64 {
+	t.Helper()
+	ctx := store.WithChatterUserID(context.Background(), chatter)
+	seq, err := db.AppendTurnAnchor(ctx, "u1", "agentA", "s1", store.SessionMessage{Role: "user", Content: userContent})
+	if err != nil {
+		t.Fatalf("anchor: %v", err)
+	}
+	if assistantContent != "" {
+		if err := db.AppendSessionMessage(ctx, "u1", "agentA", "s1", store.SessionMessage{Role: "assistant", Content: assistantContent}); err != nil {
+			t.Fatalf("assistant message: %v", err)
+		}
+	}
+	if err := db.FinishTurn(ctx, "u1", "agentA", "s1", seq, toolCalls); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	return seq
+}
+
 // seedSessionRecord 写入 s1 的 sessions.messages 工作集——提取素材的来源。
 func seedSessionRecord(t *testing.T, db *store.DBStore, msgs []store.SessionMessage) {
 	t.Helper()
@@ -57,11 +75,11 @@ func seedSessionRecord(t *testing.T, db *store.DBStore, msgs []store.SessionMess
 func TestSkillsCadenceBelowThresholdNoClaimNoLLM(t *testing.T) {
 	a, db, _, fp := newCadenceFixture(t, nil)
 	anchor := seedAgentTurns(t, db, []int{3, 4})
-	a.maybeExtractSkillsCadence(context.Background(), anchor)
+	a.maybeExtractSkillsCadence(context.Background(), anchor, "u1")
 	if fp.calls != 0 {
 		t.Fatalf("below threshold should not call LLM, calls=%d", fp.calls)
 	}
-	id, refs, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 7, 32)
+	id, refs, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", "u1", 7, 32)
 	if err != nil || id == "" || len(refs) != 2 {
 		t.Fatalf("anchors were consumed unexpectedly: id=%q refs=%d err=%v", id, len(refs), err)
 	}
@@ -74,7 +92,7 @@ func TestSkillsCadenceExtractsAndWrites(t *testing.T) {
 	})
 	anchor := seedAgentTurns(t, db, []int{4, 4, 4})
 	seedSessionRecord(t, db, sessionMessagesFixture())
-	a.maybeExtractSkillsCadence(context.Background(), anchor)
+	a.maybeExtractSkillsCadence(context.Background(), anchor, "u1")
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, ok := readSkill(t, ws, "cadence-skill"); ok {
@@ -87,24 +105,26 @@ func TestSkillsCadenceExtractsAndWrites(t *testing.T) {
 
 // 提取素材必须来自 sessions.messages 完整快照(含未被截断的长内容),
 // 而不是被认领 turn 的归档片段。
-func TestRunSkillBatchExtractionUsesSessionSnapshot(t *testing.T) {
+func TestRunSkillBatchExtractionReplaysOnlyClaimedOwnerTurns(t *testing.T) {
 	a, db, _, fp := newCadenceFixture(t, []*provider.Response{textResp("Nothing to save.")})
-	seedAgentTurns(t, db, []int{6, 6})
-	longDetail := strings.Repeat("完整会话素材。", 300)
-	seedSessionRecord(t, db, []store.SessionMessage{
-		{Role: "user", Content: longDetail},
-		{Role: "assistant", Content: "done"},
-	})
-	id, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 10, 32)
-	if err != nil || id == "" {
-		t.Fatalf("claim: id=%q err=%v", id, err)
+	guestDetail := strings.Repeat("GUEST_MATERIAL_MUST_NOT_LEAK ", 100)
+	seedAgentTurnForChatter(t, db, "guest-9", guestDetail, "guest answer", 20)
+	longDetail := strings.Repeat("OWNER_WORKFLOW_DETAIL ", 300)
+	seedAgentTurnForChatter(t, db, "u1", longDetail, "owner answer one", 6)
+	seedAgentTurnForChatter(t, db, "u1", "owner follow-up", "owner answer two", 6)
+	id, refs, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", "u1", 10, 32)
+	if err != nil || id == "" || len(refs) != 2 {
+		t.Fatalf("claim: id=%q refs=%d err=%v", id, len(refs), err)
 	}
-	a.runSkillBatchExtraction(context.Background(), id, "s1")
+	a.runSkillBatchExtraction(context.Background(), id, refs)
 	if len(fp.prompts) != 1 {
 		t.Fatalf("provider prompts=%d want 1", len(fp.prompts))
 	}
 	if !strings.Contains(fp.prompts[0], longDetail) {
-		t.Fatal("extraction material does not carry the full session working set")
+		t.Fatal("extraction material does not carry claimed owner turn details")
+	}
+	if strings.Contains(fp.prompts[0], guestDetail) {
+		t.Fatal("guest turn leaked into owner extraction material")
 	}
 }
 
@@ -112,15 +132,19 @@ func TestRunSkillBatchExtractionUsesSessionSnapshot(t *testing.T) {
 func TestRunSkillBatchExtractionSessionGoneConsumesBatch(t *testing.T) {
 	a, db, _, fp := newCadenceFixture(t, nil)
 	seedAgentTurns(t, db, []int{6, 6})
-	id, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 10, 32)
+	seedSessionRecord(t, db, sessionMessagesFixture())
+	id, refs, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", "u1", 10, 32)
 	if err != nil || id == "" {
 		t.Fatalf("claim: id=%q err=%v", id, err)
 	}
-	a.runSkillBatchExtraction(context.Background(), id, "s1")
+	if err := db.DeleteSession(context.Background(), "u1", "agentA", "s1"); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	a.runSkillBatchExtraction(context.Background(), id, refs)
 	if fp.calls != 0 {
 		t.Fatalf("missing session must not reach the LLM, calls=%d", fp.calls)
 	}
-	id2, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 1, 32)
+	id2, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", "u1", 1, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,12 +158,12 @@ func TestRunSkillBatchExtractionResetsOnProviderError(t *testing.T) {
 	a.skillsLearner = NewSkillsLearner(t.TempDir(), &learnerFakeProvider{err: errors.New("provider down")}, "m")
 	seedAgentTurns(t, db, []int{6, 6})
 	seedSessionRecord(t, db, sessionMessagesFixture())
-	id, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 10, 32)
+	id, refs, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", "u1", 10, 32)
 	if err != nil || id == "" {
 		t.Fatalf("claim: id=%q err=%v", id, err)
 	}
-	a.runSkillBatchExtraction(context.Background(), id, "s1")
-	id2, refs2, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 10, 32)
+	a.runSkillBatchExtraction(context.Background(), id, refs)
+	id2, refs2, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", "u1", 10, 32)
 	if err != nil || id2 == "" || len(refs2) != 2 {
 		t.Fatalf("batch was not reset: id=%q refs=%d err=%v", id2, len(refs2), err)
 	}
@@ -149,12 +173,12 @@ func TestRunSkillBatchExtractionNotWorthyConsumes(t *testing.T) {
 	a, db, _, _ := newCadenceFixture(t, []*provider.Response{textResp("Nothing to save.")})
 	seedAgentTurns(t, db, []int{6, 6})
 	seedSessionRecord(t, db, sessionMessagesFixture())
-	id, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 10, 32)
+	id, refs, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", "u1", 10, 32)
 	if err != nil || id == "" {
 		t.Fatalf("claim: id=%q err=%v", id, err)
 	}
-	a.runSkillBatchExtraction(context.Background(), id, "s1")
-	id2, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 1, 32)
+	a.runSkillBatchExtraction(context.Background(), id, refs)
+	id2, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", "u1", 1, 32)
 	if err != nil {
 		t.Fatal(err)
 	}

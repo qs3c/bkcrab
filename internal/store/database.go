@@ -3733,8 +3733,8 @@ func (d *DBStore) ResetExtraction(ctx context.Context, extractionID string) erro
 }
 
 // ClaimSkillBatch 见接口文档。
-func (d *DBStore) ClaimSkillBatch(ctx context.Context, agentID, sessionKey string, minTotal, batchCap int) (string, []TurnRef, error) {
-	if sessionKey == "" || minTotal <= 0 || batchCap <= 0 {
+func (d *DBStore) ClaimSkillBatch(ctx context.Context, agentID, sessionKey, chatterUserID string, minTotal, batchCap int) (string, []TurnRef, error) {
+	if sessionKey == "" || chatterUserID == "" || minTotal <= 0 || batchCap <= 0 {
 		return "", nil, nil
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
@@ -3744,14 +3744,16 @@ func (d *DBStore) ClaimSkillBatch(ctx context.Context, agentID, sessionKey strin
 	defer tx.Rollback()
 
 	selSQL := `SELECT seq, tool_call_count FROM session_messages
-		WHERE agent_id=%s AND session_key=%s AND turn_status='done' AND skill_extraction_id IS NULL AND tool_call_count > 0
+		WHERE agent_id=%s AND session_key=%s
+		  AND COALESCE(NULLIF(chatter_user_id,''), user_id)=%s
+		  AND turn_status='done' AND skill_extraction_id IS NULL AND tool_call_count > 0
 		ORDER BY created_at, seq LIMIT %d`
 	lock := ""
 	if d.dialect == "postgres" || d.dialect == mysqlDialect {
 		lock = " FOR UPDATE"
 	}
 	rows, err := tx.QueryContext(ctx,
-		fmt.Sprintf(selSQL+lock, d.ph(1), d.ph(2), batchCap), agentID, sessionKey)
+		fmt.Sprintf(selSQL+lock, d.ph(1), d.ph(2), d.ph(3), batchCap), agentID, sessionKey, chatterUserID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -3779,9 +3781,11 @@ func (d *DBStore) ClaimSkillBatch(ctx context.Context, agentID, sessionKey strin
 	for _, r := range refs {
 		if _, err := tx.ExecContext(ctx,
 			fmt.Sprintf(`UPDATE session_messages SET skill_extraction_id=%s
-				WHERE agent_id=%s AND session_key=%s AND seq=%s AND skill_extraction_id IS NULL`,
-				d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
-			id, agentID, r.SessionKey, r.StartSeq); err != nil {
+				WHERE agent_id=%s AND session_key=%s AND seq=%s
+				  AND COALESCE(NULLIF(chatter_user_id,''), user_id)=%s
+				  AND skill_extraction_id IS NULL`,
+				d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)),
+			id, agentID, r.SessionKey, r.StartSeq, chatterUserID); err != nil {
 			return "", nil, err
 		}
 	}

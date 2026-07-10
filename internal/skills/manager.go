@@ -53,6 +53,16 @@ func NewManager(root string, cfg ManagerConfig) *Manager {
 	return &Manager{root: root, config: normalizeManagerConfig(cfg)}
 }
 
+// RootDir returns the directory this manager owns. It is exposed only inside
+// the repository so the learner tool can mirror the exact managed tree to the
+// dedicated object-store namespace without reconstructing paths independently.
+func (m *Manager) RootDir() string {
+	if m == nil {
+		return ""
+	}
+	return m.root
+}
+
 var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
 var skillPathLocks sync.Map

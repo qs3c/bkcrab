@@ -250,6 +250,10 @@ type Registry struct {
 	// manager 装配 dataStore 时补齐。agent 级共享依赖,ForTurn 按值复制。
 	skillManager *skills.Manager
 	skillLedger  SkillManageLedger
+	// skillManageAllowed is a fail-closed, per-turn authorization bit. The
+	// agent loop sets it only after it has matched the authenticated chatter
+	// against agents.user_id. It is intentionally not inherited by ForTurn.
+	skillManageAllowed bool
 
 	// perTurnRebind 收集那些捕获了每回合状态、但 *不* 由 registerBuiltins
 	// 重新注册的非内置工具的重绑钩子（目前是 goal 的 update_goal 与 cron 的
@@ -419,16 +423,11 @@ func (r *Registry) SetSkillManage(mgr *skills.Manager, ledger SkillManageLedger)
 	r.skillLedger = ledger
 }
 
-// skillWriteAllowed 判定本回合聊天者是否可写 agent 级共享技能库。所有者键
-// 取 agentOwnerUserID(agent.user_id),单用户安装未设置时回退 UserSpace 所有
-// 者 userID;chatterUserID 为空表示本回合就是所有者语境(web 回合或旧版单用
-// 户),仅 IM 多发件人回合的非所有者聊天者被拒。
-func (r *Registry) skillWriteAllowed() bool {
-	owner := r.agentOwnerUserID
-	if owner == "" {
-		owner = r.userID
-	}
-	return owner == "" || r.chatterUserID == "" || r.chatterUserID == owner
+// SetSkillManageAllowed controls whether this turn may discover and execute
+// skill_manage. Callers must set it from an authenticated, agent-owner check;
+// the zero value denies access.
+func (r *Registry) SetSkillManageAllowed(allowed bool) {
+	r.skillManageAllowed = allowed
 }
 
 // SetUserSkillsRoot 点聊天时 `skills/...` 写入
@@ -821,6 +820,12 @@ func (r *Registry) DefinitionsForMode(builtinAllow []string) []provider.Tool {
 	}
 	defs := make([]provider.Tool, 0, len(r.tools))
 	for name, t := range r.tools {
+		// skill_manage is an owner-only learner maintenance surface. Hiding the
+		// definition prevents non-owners from being invited to call it; the
+		// executor repeats the same check in case a model fabricates a call.
+		if name == "skill_manage" && (!r.skillManageAllowed || r.skillManager == nil) {
+			continue
+		}
 		if t.source != SourceBuiltin {
 			// 插件/MCP/未来来源——始终通过。
 			defs = append(defs, t.def)

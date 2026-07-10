@@ -117,7 +117,7 @@ func TestLoadSkillWithLedgerRecordsSuccessfulLoad(t *testing.T) {
 
 	r := NewRegistry(t.TempDir(), t.TempDir())
 	rec := &fakeLoadRecorder{ch: make(chan loadRecord, 1)}
-	RegisterLoadSkillWithLedger(r, []string{agentSkills}, rec, "agentA", 32, 3)
+	RegisterLoadSkillWithLedger(r, []string{agentSkills}, agentSkills, rec, "agentA", 32, 3)
 	rawArgs, err := json.Marshal(map[string]any{"name": "shared", "invoked_by_user": true})
 	if err != nil {
 		t.Fatal(err)
@@ -135,5 +135,41 @@ func TestLoadSkillWithLedgerRecordsSuccessfulLoad(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for ledger record")
+	}
+}
+
+func TestLoadSkillManualShadowDoesNotRefreshLearnerLedger(t *testing.T) {
+	manualSkills := filepath.Join(t.TempDir(), "skills")
+	learnerSkills := filepath.Join(t.TempDir(), "learner-skills")
+	for _, dir := range []string{manualSkills, learnerSkills} {
+		if err := os.MkdirAll(filepath.Join(dir, "shared"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(manualSkills, "shared", "SKILL.md"), []byte("manual version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(learnerSkills, "shared", "SKILL.md"), []byte("learner version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	rec := &fakeLoadRecorder{ch: make(chan loadRecord, 1)}
+	RegisterLoadSkillWithLedger(r, []string{manualSkills, learnerSkills}, learnerSkills, rec, "agentA", 32, 3)
+	rawArgs, err := json.Marshal(map[string]any{"name": "shared", "invoked_by_user": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.GetFunc("load_skill")(context.Background(), rawArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "manual version") || strings.Contains(got, "learner version") {
+		t.Fatalf("load_skill precedence result:\n%s", got)
+	}
+	select {
+	case record := <-rec.ch:
+		t.Fatalf("manual shadow unexpectedly refreshed learner ledger: %+v", record)
+	case <-time.After(100 * time.Millisecond):
 	}
 }

@@ -1,15 +1,18 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/qs3c/bkcrab/internal/agent/tools"
 	"github.com/qs3c/bkcrab/internal/bus"
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/session"
+	"github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/usage"
 	"github.com/qs3c/bkcrab/internal/workspace"
@@ -173,6 +176,13 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 	ag.lifecycleCfg = m.opts.skillsLearnerCfg.Lifecycle
 	configureSkillsLearner(ag, rc, agProv, homeDir, m.opts.globalSkillsCfg, m.opts.skillsLearnerCfg)
 	ag.SetOwnerUserID(m.uid)
+	ag.agentID = rc.ID
+	// m.uid is the runtime UserSpace owner and may be a public-agent visitor.
+	// rc.UserID is the authoritative agents.user_id and must be wired
+	// independently for owner-only learner operations.
+	ag.registry.SetOwnerUserID(m.uid)
+	ag.registry.SetAgentOwnerUserID(rc.UserID)
+	learnerStorageReady := true
 	// 每个用户的技能桶：聊天时“技能/...”将路由写入
 	// ~/.bkcrab/users/<uid>/，其中 SkillsLoader 的“个人”层
 	// 还进行扫描（请参阅 SkillsLoader.WithUserID）。设置用户ID
@@ -184,7 +194,6 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 	// 单用户安装，其中 m.uid 为空 — file.go 会回退
 	// 到 systemRoot（代理主页），以便现有的技能包仍然有效。
 	if m.uid != "" {
-		ag.registry.SetOwnerUserID(m.uid)
 		if base := userSkillsRootDir(m.uid); base != "" {
 			ag.registry.SetUserSkillsRoot(base)
 		}
@@ -208,8 +217,6 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		// 第二次调用时，代理的 BOOTSTRAP 流程将写入
 		// SOUL/IDENTITY/BOOTSTRAP下的喋喋不休和Customize
 		// 页面（以代理所有者为关键字）永远不会看到它们。
-		ag.registry.SetOwnerUserID(m.uid)
-		ag.registry.SetAgentOwnerUserID(rc.UserID)
 	}
 	if m.opts.workspaceStore != nil {
 		ag.registry.SetWorkspaceStore(m.opts.workspaceStore, rc.ID)
@@ -218,11 +225,23 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		// 这个，没有处理原始上传的 Pod 永远不会
 		// 看到一个新技能。
 		ag.workspaceStore = m.opts.workspaceStore
-		ag.agentID = rc.ID
-		// 现在，workspaceStore 已联网，请刷新技能 — 最初的
-		// NewAgent pass 仅加载文件系统，缺少任何内容
-		// 只存在于 OSS 中。
-		ag.ReloadWorkspaceFiles()
+		if ag.skillsLearner != nil {
+			ag.skillsLearner.workspaceStore = m.opts.workspaceStore
+			// Reconcile only the already-isolated learner namespace before local
+			// migration. This is safe for legacy <agent>/skills and prevents a
+			// stale Pod-local learner copy from overwriting a newer remote copy
+			// during the migration/reconciliation pass below.
+			hydrateCtx, cancelHydrate := context.WithTimeout(context.Background(), 30*time.Second)
+			if err := skills.HydrateLearnerSkillsDown(hydrateCtx, m.opts.workspaceStore, rc.ID, skills.LearnerSkillsDir(rc.Home)); err != nil {
+				slog.Warn("initial learner skill hydrate failed", "agent", rc.ID, "error", err)
+				learnerStorageReady = false
+			}
+			cancelHydrate()
+		}
+		// Defer the first hydrate until after the dataStore block below has had a
+		// chance to migrate verified legacy learner directories. Hydrating the
+		// ordinary agent/skills namespace first could prune an old local learner
+		// whenever that namespace already contains any authoritative remote skill.
 	}
 	if m.opts.dataStore != nil {
 		ag.registry.SetContextArchiveStore(m.opts.dataStore, rc.ID)
@@ -246,22 +265,34 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		// 在重新启动清除的内存计数器上）可以命中
 		// 直接存储，无需通过 Manager 重新管道。
 		ag.dataStore = m.opts.dataStore
-		if ag.skillsLearner != nil && ag.lifecycleCfg.IsEnabled() {
+		if ag.skillsLearner != nil {
 			ag.skillsLearner.agentID = rc.ID
 			ag.skillsLearner.ledger = m.opts.dataStore
 			// skill_manage 与 learner 共用管理器与账本:主对话工具的
 			// create/update/delete 与提取路径同一份生命周期记账。
 			ag.registry.SetSkillManage(ag.skillsLearner.Manager(), m.opts.dataStore)
+			migrationStore := m.opts.workspaceStore
+			if !learnerStorageReady {
+				// Still move a hash-verified legacy source out of the ordinary
+				// skills directory before full hydration, but do not write to a
+				// remote store whose current state we could not read.
+				migrationStore = nil
+			}
+			migrationCtx, cancelMigration := context.WithTimeout(context.Background(), 30*time.Second)
+			migrateLegacyLearnerSkills(migrationCtx, m.opts.dataStore, migrationStore, rc.ID, rc.Home, ag.skillsLearner.Manager())
+			cancelMigration()
 		}
-		ag.ReloadWorkspaceFiles()
 		// 聊天者所在时区的日期线 - 需要 dataStore
 		// 范围首选项查找，因此在此处连接并由
 		// 每次 ctxBuilder 重建后重新加载工作空间文件。
 		ag.ctxBuilder.SetTimezoneResolver(ag.chatterLocation)
 	}
-	// 即使没有连接workspaceStore，也要标记agentID（单用户
-	// 本地模式），因此使用情况计量可以记录每个代理的汇总。
-	ag.agentID = rc.ID
+	// One initial refresh after every store dependency is wired: migration has
+	// completed, lifecycle filtering can see its ledger, and object-store-only
+	// skills become visible without a second redundant hydrate.
+	if m.opts.workspaceStore != nil || m.opts.dataStore != nil {
+		ag.ReloadWorkspaceFiles()
+	}
 	if m.opts.meter != nil {
 		ag.SetMeter(m.opts.meter)
 	}

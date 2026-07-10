@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -61,7 +60,12 @@ type Agent struct {
 	homePath      string // agent's home: SOUL.md, sessions, memory, skills
 	workspacePath string // working dir where agent creates user files
 	homeDir       string // BkCrab root, ~/.bkcrab
-	ownerUserID   string // the user that owns this agent (for hook namespacing)
+	// ownerUserID is the runtime UserSpace/session owner. For an agent injected
+	// into a public visitor's UserSpace this is the visitor, not agents.user_id.
+	ownerUserID string
+	// agentOwnerUserID is the authoritative agents.user_id copied from the
+	// resolved agent record. Learner management/extraction must use this field.
+	agentOwnerUserID string
 	// admins 是可以运行 write- 的聊天者的每个频道白名单
 	// 模式斜线命令（/new /undo /retry /compact /model /personality）。
 	// 按频道名称键入（例如“discord”→ [“123...”，“456...”]）。空的
@@ -283,7 +287,7 @@ func (a *Agent) registerLoadSkillTool(reg *tools.Registry, skillDirs []string) {
 		return
 	}
 	if a.skillLifecycleEnabled() {
-		tools.RegisterLoadSkillWithLedger(reg, skillDirs, a.dataStore, a.name, lifecycleHalfLife(a.lifecycleCfg), lifecycleExplicitGain(a.lifecycleCfg))
+		tools.RegisterLoadSkillWithLedger(reg, skillDirs, skillspkg.LearnerSkillsDir(a.homePath), a.dataStore, a.name, lifecycleHalfLife(a.lifecycleCfg), lifecycleExplicitGain(a.lifecycleCfg))
 		return
 	}
 	tools.RegisterLoadSkill(reg, skillDirs)
@@ -358,6 +362,11 @@ func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *
 
 	memory := NewMemory(rc.Home)
 	registry := tools.NewRegistry(rc.Home, workspace)
+	// ResolvedAgent.UserID mirrors agents.user_id. Wire it at the base
+	// constructor so every construction path (including tests/local mode) has
+	// the real agent owner independently of the runtime UserSpace owner.
+	registry.SetOwnerUserID(rc.UserID)
+	registry.SetAgentOwnerUserID(rc.UserID)
 	// 消息工具在代理结构构建后重新注册（请参阅
 	// 如下），因此其出站端闭包可以读取 agent.splitReplies
 	// 在发送时。 registerBuiltins 已在 NewRegistry 中传递
@@ -410,6 +419,8 @@ func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *
 
 	ag := &Agent{
 		name:                 rc.ID,
+		ownerUserID:          rc.UserID,
+		agentOwnerUserID:     rc.UserID,
 		provider:             prov,
 		registry:             registry,
 		sessions:             session.NewManager(rc.Home + "/sessions"),
@@ -722,9 +733,8 @@ func (a *Agent) ToolRegistry() *tools.Registry {
 	return a.registry
 }
 
-// SetOwnerUserID 使用拥有的用户 ID 标记此代理。其值为
-// 传播到每个 HookContext 中，因此像 mem0 这样的插件可以命名空间
-// 每个用户的数据。
+// SetOwnerUserID sets the runtime UserSpace/session owner. This may differ
+// from agents.user_id when a public agent is injected into a visitor's space.
 func (a *Agent) SetOwnerUserID(uid string) {
 	a.ownerUserID = uid
 }
@@ -733,7 +743,7 @@ func (a *Agent) SetOwnerUserID(uid string) {
 // 创建/拥有该代理。暴露制造记录的调用者
 // 代表用户（例如/目标斜线）可以标记所有权
 // 无需深入代理内部。
-func (a *Agent) OwnerUserID() string { return a.ownerUserID }
+func (a *Agent) OwnerUserID() string { return a.agentOwnerUserID }
 
 // SetMeter 将管理令牌计量器连接到该代理上。被称为
 // 启动/热重载时的网关，因此每个聊天调用都会获得一个记录令牌
@@ -1930,7 +1940,10 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 	// 就好像 delegate_task / web_search / camoufox-cli 不存在一样 —
 	// 这击败了计划模式设置扇出的全部意义
 	// 为执行轮而努力。
-	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
+	planReg := a.registry.ForTurn()
+	planReg.SetChatterUserID(chatterUID)
+	a.authorizeSkillManageForTurn(planReg, msg, chatterUID)
+	toolDefs := planReg.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	catalog := buildToolCatalogForPlan(toolDefs)
 	messages := []provider.Message{
 		{Role: "system", Content: systemPrompt},
@@ -2105,6 +2118,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 每回合喋喋不休的行，而不是 UserSpace 所有者 — 请参阅
 	// 路由规则的Registry.systemFileUserID。
 	reg.SetChatterUserID(chatterUID)
+	a.authorizeSkillManageForTurn(reg, msg, chatterUID)
 
 	// 转向：标记飞行中的转弯，以便在运行中到达的消息
 	// 缓冲到会话中（在下面的工具迭代之间耗尽）
@@ -2822,9 +2836,10 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 	a.finishTurnAndMaybeExtract(ctx, chatterMem, anchor, toolCallCount)
 
 	// 技能学习者:有持久化锚点走 cadence 累计路径;计划模式/无持久化 store 回退单 turn 判定。
-	if a.skillsLearner != nil {
+	chatterUID := a.chatterUserID(msg)
+	if a.skillsLearner != nil && a.isLearnerOwnerTurn(msg, chatterUID) {
 		if a.dataStore != nil && anchor != nil {
-			a.maybeExtractSkillsCadence(ctx, anchor)
+			a.maybeExtractSkillsCadence(ctx, anchor, chatterUID)
 		} else {
 			go func() {
 				extractCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
@@ -2918,7 +2933,7 @@ type skillCleanupStore interface {
 	DeleteSkillUsage(ctx context.Context, agentID, slug string) error
 }
 
-func cleanupDeadSkills(ctx context.Context, st skillCleanupStore, mgr *skillspkg.Manager, agentID string, nowSeq int64, cfg skillspkg.LifecycleConfig) {
+func cleanupDeadSkills(ctx context.Context, st skillCleanupStore, ws workspace.Store, mgr *skillspkg.Manager, agentID string, nowSeq int64, cfg skillspkg.LifecycleConfig) {
 	if st == nil || mgr == nil || agentID == "" {
 		return
 	}
@@ -2932,6 +2947,13 @@ func cleanupDeadSkills(ctx context.Context, st skillCleanupStore, mgr *skillspkg
 	}
 	_, deletable := skillspkg.Rank(rows, nowSeq, cfg)
 	for _, slug := range deletable {
+		// Remote is authoritative when configured. Delete it first; otherwise a
+		// sibling Pod (or this Pod's next hydrate) would resurrect the local dir.
+		// On failure retain both local state and ledger so cleanup can retry.
+		if err := skillspkg.DeleteLearnerSkillUp(ctx, ws, agentID, slug); err != nil {
+			slog.Warn("skill cleanup: remote delete failed", "agent", agentID, "skill", slug, "error", err)
+			continue
+		}
 		if err := mgr.Delete(slug); err != nil {
 			// 目录已不存在(带外 rm / 兄弟副本竞争 / 上次部分清理)→ 仍需回收孤儿
 			// 账本行,否则它每轮重新符合删除条件、反复告警、永不回收。仅当目录仍在
@@ -2955,13 +2977,13 @@ func (a *Agent) runSkillCleanup(base context.Context) {
 	}
 	cleanupCtx, cancel := context.WithTimeout(base, 30*time.Second)
 	defer cancel()
-	cleanupDeadSkills(cleanupCtx, a.dataStore, a.skillsLearner.Manager(), a.name, -1, lifecycleRankConfig(a.lifecycleCfg))
+	cleanupDeadSkills(cleanupCtx, a.dataStore, a.workspaceStore, a.skillsLearner.Manager(), a.name, -1, lifecycleRankConfig(a.lifecycleCfg))
 }
 
-func (a *Agent) maybeExtractSkillsCadence(ctx context.Context, anchor *turnAnchor) {
+func (a *Agent) maybeExtractSkillsCadence(ctx context.Context, anchor *turnAnchor, chatterUserID string) {
 	claimCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	batchID, refs, err := a.dataStore.ClaimSkillBatch(claimCtx, a.name, anchor.sessionKey, a.skillsLearner.minToolCalls, skillClaimBatchCap)
+	batchID, refs, err := a.dataStore.ClaimSkillBatch(claimCtx, a.name, anchor.sessionKey, chatterUserID, a.skillsLearner.minToolCalls, skillClaimBatchCap)
 	if err != nil {
 		slog.Warn("skills cadence: claim failed", "agent", a.name, "session", anchor.sessionKey, "error", err)
 		return
@@ -2973,13 +2995,13 @@ func (a *Agent) maybeExtractSkillsCadence(ctx context.Context, anchor *turnAncho
 		return
 	}
 	slog.Info("skills cadence firing", "agent", a.name, "session", anchor.sessionKey, "turns", len(refs), "batch_id", batchID)
-	go a.runSkillBatchExtraction(context.WithoutCancel(ctx), batchID, anchor.sessionKey)
+	go a.runSkillBatchExtraction(context.WithoutCancel(ctx), batchID, refs)
 }
 
-// runSkillBatchExtraction 以 sessions.messages 工作集的完整快照为素材提取
-// 技能。被认领的 turn 批次只是触发凭证:技能提取需要整个 session 的工作流
-// 叙事,归档 turn 片段拼不出 SOP;快照体量上界由上下文压缩保证。
-func (a *Agent) runSkillBatchExtraction(base context.Context, batchID, sessionKey string) {
+// runSkillBatchExtraction 只回放本次认领的 owner turn。ClaimSkillBatch 已按
+// chatter 过滤 refs，沿用同一批 refs 回放可避免共享 session 中访客的历史内容
+// 被 owner 后续回合间接送入 learner 模型。
+func (a *Agent) runSkillBatchExtraction(base context.Context, batchID string, refs []store.TurnRef) {
 	defer a.runSkillCleanup(base)
 	extractCtx, cancel := context.WithTimeout(base, 5*time.Minute)
 	defer cancel()
@@ -2988,18 +3010,26 @@ func (a *Agent) runSkillBatchExtraction(base context.Context, batchID, sessionKe
 		defer rcancel()
 		_ = a.dataStore.ResetSkillExtraction(rctx, batchID)
 	}
-	rec, err := a.dataStore.GetSession(extractCtx, a.ownerUserID, a.name, sessionKey)
+	sessionKey := ""
+	if len(refs) > 0 {
+		sessionKey = refs[0].SessionKey
+	}
+	groups, err := a.dataStore.LoadTurnMessages(extractCtx, a.ownerUserID, a.name, refs)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			// 会话行已删除:素材源不复存在,重置批次只会永远重试,消费掉。
-			slog.Warn("skills cadence: session gone, consuming batch", "agent", a.name, "session", sessionKey, "batch_id", batchID)
-			return
-		}
-		slog.Warn("skills cadence: load session failed", "agent", a.name, "session", sessionKey, "batch_id", batchID, "error", err)
+		slog.Warn("skills cadence: replay owner turns failed", "agent", a.name, "session", sessionKey, "batch_id", batchID, "error", err)
 		resetBatch()
 		return
 	}
-	if err := a.skillsLearner.ExtractFromSession(extractCtx, rec.Messages); err != nil {
+	var messages []store.SessionMessage
+	for _, group := range groups {
+		messages = append(messages, group.Messages...)
+	}
+	if len(messages) == 0 {
+		// 认领后归档行已删除：素材无法恢复，重置只会无限重试。
+		slog.Warn("skills cadence: claimed turns gone, consuming batch", "agent", a.name, "session", sessionKey, "batch_id", batchID)
+		return
+	}
+	if err := a.skillsLearner.ExtractFromSession(extractCtx, messages); err != nil {
 		slog.Warn("skills cadence: extract failed", "agent", a.name, "batch_id", batchID, "error", err)
 		resetBatch()
 	}
@@ -3050,6 +3080,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	// 每回合喋喋不休的行，而不是 UserSpace 所有者 — 请参阅
 	// 路由规则的Registry.systemFileUserID。
 	reg.SetChatterUserID(chatterUID)
+	a.authorizeSkillManageForTurn(reg, msg, chatterUID)
 
 	// 与 HandleMessage 相同的 orphan-tool_use 安全网。流媒体路径
 	// 以前缺少这个，所以循环检测（它附加了一个助手
@@ -3591,6 +3622,27 @@ func (a *Agent) UpdateConfig(rc config.ResolvedAgent) {
 	if rc.SplitReplies != nil {
 		a.splitReplies = *rc.SplitReplies
 	}
+}
+
+// isLearnerOwnerTurn reports whether this is an authenticated, direct user
+// turn from the agent's real owner. Empty/legacy owners fail closed. Group
+// sessions are excluded even when the current sender is the owner because the
+// shared session snapshot can contain messages from other participants.
+func (a *Agent) isLearnerOwnerTurn(msg bus.InboundMessage, chatterUID string) bool {
+	if a == nil || a.agentOwnerUserID == "" || msg.UserID == "" {
+		return false
+	}
+	if msg.Source != bus.SourceUser || msg.PeerKind == "group" {
+		return false
+	}
+	return chatterUID == a.agentOwnerUserID
+}
+
+func (a *Agent) authorizeSkillManageForTurn(reg *tools.Registry, msg bus.InboundMessage, chatterUID string) {
+	if reg == nil {
+		return
+	}
+	reg.SetSkillManageAllowed(a.skillsLearner != nil && a.isLearnerOwnerTurn(msg, chatterUID))
 }
 
 // chatterUserID 选择每条消息的聊天身份，回退

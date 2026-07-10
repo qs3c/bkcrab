@@ -22,7 +22,7 @@ import (
 // Skill 表示一个已发现的技能。
 type Skill struct {
 	Name        string         // 目录名称
-	Layer       string         // "agent", "user", "managed", "bundled", "extra"
+	Layer       string         // "agent", "personal", "team", "user", "managed", "extra", "learner"
 	Content     string         // 可选的内联 SKILL.md 内容，用于始终加载的技能
 	BaseDir     string         // 技能目录的绝对路径
 	Description string         // 来自 frontmatter
@@ -62,9 +62,13 @@ func (m *SkillMetadata) Meta() *OpenClawMeta {
 
 // OpenClawMeta 持有 OpenClaw 特定的元数据。
 type OpenClawMeta struct {
-	Emoji      string         `json:"emoji"`
-	Homepage   string         `json:"homepage"`
-	Always     bool           `json:"always"`
+	Emoji    string `json:"emoji"`
+	Homepage string `json:"homepage"`
+	Always   bool   `json:"always"`
+	// Internal marks runtime-only instruction resources. They remain readable
+	// by the subsystem that owns them, but never enter the normal skill catalog
+	// or an agent conversation's always-loaded prompt.
+	Internal   bool           `json:"internal,omitempty"`
 	OS         []string       `json:"os"`
 	Requires   *SkillRequires `json:"requires"`
 	PrimaryEnv string         `json:"primaryEnv"`
@@ -163,7 +167,7 @@ func (sl *SkillsLoader) WithUserID(userID string) *SkillsLoader {
 }
 
 // LoadSkills 从所有层发现技能并返回合并后的结果。
-// 优先级：代理工作空间 > 用户安装 > 托管 > 额外目录。
+// 优先级：代理工作空间 > 个人 > 团队 > 用户安装 > 托管 > 额外目录 > learner。
 func (sl *SkillsLoader) LoadSkills() []Skill {
 	// 将对象存储中的技能镜像到本地文件系统，使上传到 OSS（或在另一个
 	// 副本上安装）的技能在此轮次可见——而不是在下次 Pod 重启后。廉价的
@@ -181,6 +185,13 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 			agentSkills := filepath.Join(sl.agentDir, "skills")
 			if err := skills.HydrateSkillsDown(ctx, sl.workspaceStore, sl.agentID, agentSkills); err != nil {
 				slog.Warn("agent skill hydrate failed", "error", err)
+			}
+			learnerSkills := skills.LearnerSkillsDir(sl.agentDir)
+			if err := skills.HydrateLearnerSkillsDown(ctx, sl.workspaceStore, sl.agentID, learnerSkills); err != nil {
+				slog.Warn("learner skill hydrate failed", "agent", sl.agentID, "error", err)
+			}
+			if err := skills.MirrorLearnerSkillsUp(ctx, sl.workspaceStore, sl.agentID, learnerSkills); err != nil {
+				slog.Warn("learner skill initial mirror failed", "agent", sl.agentID, "error", err)
 			}
 		}
 		// 每个用户的技能桶：在聊天者使用的每个代理之间共享，与其他聊天者隔离。
@@ -213,7 +224,17 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 		}
 	}
 
-	// 第 4 层（最低）：来自配置的额外目录
+	// learner 层优先级最低。它是 agent 共享资产，但由后台自动生成；任何
+	// 显式安装、手工维护、团队或个人同名技能都应覆盖它，避免自动内容改变
+	// 既有技能解析语义。
+	learnerDir := skills.LearnerSkillsDir(sl.agentDir)
+	for name, skill := range discoverSkillsEnhanced(learnerDir, "learner") {
+		if !disabled[name] {
+			skillsMap[name] = skill
+		}
+	}
+
+	// 显式来源中的最低层：来自配置的额外目录（仍高于 learner）。
 	for _, dir := range sl.globalCfg.Load.ExtraDirs {
 		dir = expandPath(dir)
 		for name, skill := range discoverSkillsEnhanced(dir, "extra") {
@@ -318,11 +339,9 @@ func filterActiveSkills(all []Skill, rows []store.SkillUsageRow, cfg skills.Life
 	active, _ := skills.Rank(rows, skills.NowSeq(rows), cfg)
 	out := make([]Skill, 0, len(all))
 	for _, s := range all {
-		// 仅过滤 agent 层技能——learner 产物写入 workspace/skills，在 LoadSkills 里
-		// 归为 "agent" 层。此限定保证账本 slug 与其他层(user/team/managed/bundled)
-		// 同名的技能不被误藏。若将来 learner 写入层变化，此处会 fail-safe 地退化为
-		// "不过滤"(技能全展示)，而非误删/误藏。
-		if s.Layer == "agent" && ledger[s.Name] && !active[s.Name] {
+		// 仅过滤 learner 专属层。即使其他来源存在同 slug 的技能，生命周期
+		// 账本也不能把安装/手工/个人技能误藏。
+		if s.Layer == "learner" && ledger[s.Name] && !active[s.Name] {
 			continue
 		}
 		out = append(out, s)
@@ -486,6 +505,14 @@ func (sl *SkillsLoader) AllSkillDirs() []string {
 	return sl.allSkillDirs()
 }
 
+// LearnerSkillsDir returns the agent-shared, learner-managed skill root.
+// Callers that record lifecycle usage need this explicit path so a higher
+// priority manual skill with the same slug is not mistaken for the learner
+// copy merely because the ledger is keyed by slug.
+func (sl *SkillsLoader) LearnerSkillsDir() string {
+	return skills.LearnerSkillsDir(sl.agentDir)
+}
+
 func (sl *SkillsLoader) allSkillDirs() []string {
 	var dirs []string
 	dirs = append(dirs, filepath.Join(sl.agentDir, "skills"))
@@ -498,6 +525,9 @@ func (sl *SkillsLoader) allSkillDirs() []string {
 	dirs = append(dirs, filepath.Join(sl.homeDir, "skills"))
 	dirs = append(dirs, bkcrabManagedDir())
 	dirs = append(dirs, sl.globalCfg.Load.ExtraDirs...)
+	// load_skill 按第一个命中目录解析。learner 放在最后，与 LoadSkills 中
+	// 的最低合并优先级保持一致，确保它不覆盖任何显式技能来源。
+	dirs = append(dirs, sl.LearnerSkillsDir())
 	return dirs
 }
 
@@ -562,6 +592,9 @@ func discoverSkillsEnhanced(dir string, layer string) map[string]Skill {
 			if fm.Metadata.Kind == yaml.MappingNode {
 				meta = parseMetadata(&fm.Metadata)
 			}
+		}
+		if meta != nil && meta.Meta() != nil && meta.Meta().Internal {
+			continue
 		}
 
 		// 应用门控

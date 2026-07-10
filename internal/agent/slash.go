@@ -264,6 +264,9 @@ func (a *Agent) slashCompact(ctx context.Context, msg bus.InboundMessage, focus 
 		// DefinitionsForMode 只是读取工具清单。
 		reg := a.registry.ForTurn()
 		reg.SetContextArchiveSessionKey(sess.SessionKey())
+		chatterUID := a.chatterUserID(msg)
+		reg.SetChatterUserID(chatterUID)
+		a.authorizeSkillManageForTurn(reg, msg, chatterUID)
 		opts.ToolDefs = reg.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	}
 	result, err := a.compactWithProgress(ctx, sessionMsgs, opts)

@@ -24,14 +24,14 @@ type skillLoadRecorder interface {
 
 // RegisterLoadSkill 注册读取完整 SKILL.md 内容的 load_skill 工具。
 func RegisterLoadSkill(r *Registry, skillDirs []string) {
-	registerLoadSkill(r, skillDirs, nil, "", 0, 0)
+	registerLoadSkill(r, skillDirs, "", nil, "", 0, 0)
 }
 
-func RegisterLoadSkillWithLedger(r *Registry, skillDirs []string, recorder skillLoadRecorder, agentID string, halfLifeLoads, explicitGain int) {
-	registerLoadSkill(r, skillDirs, recorder, agentID, halfLifeLoads, explicitGain)
+func RegisterLoadSkillWithLedger(r *Registry, skillDirs []string, learnerSkillDir string, recorder skillLoadRecorder, agentID string, halfLifeLoads, explicitGain int) {
+	registerLoadSkill(r, skillDirs, learnerSkillDir, recorder, agentID, halfLifeLoads, explicitGain)
 }
 
-func registerLoadSkill(r *Registry, skillDirs []string, recorder skillLoadRecorder, agentID string, halfLifeLoads, explicitGain int) {
+func registerLoadSkill(r *Registry, skillDirs []string, learnerSkillDir string, recorder skillLoadRecorder, agentID string, halfLifeLoads, explicitGain int) {
 	r.Register("load_skill", "Load the full content of a skill by name. Use this when you need detailed instructions for a specific skill.", map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
@@ -45,10 +45,10 @@ func registerLoadSkill(r *Registry, skillDirs []string, recorder skillLoadRecord
 			},
 		},
 		"required": []string{"name"},
-	}, makeLoadSkill(skillDirs, recorder, agentID, halfLifeLoads, explicitGain))
+	}, makeLoadSkill(skillDirs, learnerSkillDir, recorder, agentID, halfLifeLoads, explicitGain))
 }
 
-func makeLoadSkill(skillDirs []string, recorder skillLoadRecorder, agentID string, halfLifeLoads, explicitGain int) ToolFunc {
+func makeLoadSkill(skillDirs []string, learnerSkillDir string, recorder skillLoadRecorder, agentID string, halfLifeLoads, explicitGain int) ToolFunc {
 	return func(ctx context.Context, rawArgs json.RawMessage) (string, error) {
 		var args loadSkillArgs
 		if err := json.Unmarshal(rawArgs, &args); err != nil {
@@ -70,13 +70,30 @@ func makeLoadSkill(skillDirs []string, recorder skillLoadRecorder, agentID strin
 				skillDir, _ := filepath.Abs(filepath.Join(dir, args.Name))
 				rawContent := string(data)
 				content := strings.ReplaceAll(rawContent, "{baseDir}", skillDir)
-				recordSkillLoad(ctx, recorder, agentID, args.Name, store.HashSkillContent(rawContent), args.InvokedByUser, halfLifeLoads, explicitGain)
+				// A deliberate/manual skill may shadow a learner skill with the same
+				// slug. Only the file actually loaded from the learner layer should
+				// refresh that learner's lifecycle ledger row.
+				if sameSkillRoot(dir, learnerSkillDir) {
+					recordSkillLoad(ctx, recorder, agentID, args.Name, store.HashSkillContent(rawContent), args.InvokedByUser, halfLifeLoads, explicitGain)
+				}
 				return wrapSkillContentInternal(args.Name, content), nil
 			}
 		}
 
 		return "", fmt.Errorf("skill %q not found", args.Name)
 	}
+}
+
+func sameSkillRoot(got, want string) bool {
+	if got == "" || want == "" {
+		return false
+	}
+	gotAbs, gotErr := filepath.Abs(got)
+	wantAbs, wantErr := filepath.Abs(want)
+	if gotErr != nil || wantErr != nil {
+		return filepath.Clean(got) == filepath.Clean(want)
+	}
+	return filepath.Clean(gotAbs) == filepath.Clean(wantAbs)
 }
 
 // recordSkillLoad 在后台异步把一次成功加载记入生命周期账本，不阻塞工具返回。
