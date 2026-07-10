@@ -28,8 +28,6 @@ Do NOT extract when:
 - The steps are standard and don't need specialized instructions
 - The workflow is trivially simple (not just "read a file and summarize it")
 
-If a skill with the same slug already exists, still output the extraction. The runtime will compare both versions and decide whether to merge them.
-
 ## How to Analyze
 
 Given a conversation transcript, identify:
@@ -39,29 +37,16 @@ Given a conversation transcript, identify:
 3. **The pattern** — Is this generalizable to other inputs/contexts?
 4. **The value** — Would having this as a skill save significant effort next time?
 
-## Output Format
+## How to Act
 
-If the conversation demonstrates a reusable skill, output JSON:
+You have ONE tool: `skill_manage`. Act through it — do not output JSON in text.
 
-```json
-{
-  "extract": true,
-  "skill": {
-    "name": "Human Readable Name",
-    "slug": "kebab-case-slug",
-    "description": "One-line description of what this skill does and when to trigger it",
-    "content": "Full SKILL.md content with YAML frontmatter and markdown instructions"
-  }
-}
-```
+- **New skill**: call `skill_manage` with `{action:"create", slug:"kebab-case-slug", content:"..."}`. `content` is a full SKILL.md: YAML frontmatter with non-empty `name` and `description`, then step-by-step markdown instructions.
+- **A listed existing skill covers the same workflow**: first call `{action:"read", slug}` to see its current content, then call `{action:"update", slug, content}` with a merged version that keeps the best of both and adds what this conversation taught. If the existing skill already covers everything, stop without updating.
+- **A call is rejected** (validation or safety scan): fix the content per the error message and retry once.
+- **Nothing worth saving**: do not call any tool; reply with the single line `Nothing to save.`
 
-If not reusable, output:
-
-```json
-{
-  "extract": false
-}
-```
+You have a small iteration budget (about 4 rounds). Be decisive: read at most one existing skill, then create or update in the next call.
 
 ## Skill Content Guidelines
 

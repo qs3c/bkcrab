@@ -2,14 +2,16 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
-func newCadenceFixture(t *testing.T, responses []string) (*Agent, *store.DBStore, string, *learnerFakeProvider) {
+func newCadenceFixture(t *testing.T, responses []*provider.Response) (*Agent, *store.DBStore, string, *learnerFakeProvider) {
 	t.Helper()
 	dir := t.TempDir()
 	dsn := "file:" + dir + "/test.db?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
@@ -66,7 +68,10 @@ func TestSkillsCadenceBelowThresholdNoClaimNoLLM(t *testing.T) {
 }
 
 func TestSkillsCadenceExtractsAndWrites(t *testing.T) {
-	a, db, ws, _ := newCadenceFixture(t, []string{learnerExtractionJSON(t, "cadence-skill", learnerValidSkill)})
+	a, db, ws, _ := newCadenceFixture(t, []*provider.Response{
+		skillToolCallResp(t, "tc1", map[string]any{"action": "create", "slug": "cadence-skill", "content": learnerValidSkill}),
+		textResp("done"),
+	})
 	anchor := seedAgentTurns(t, db, []int{4, 4, 4})
 	seedSessionRecord(t, db, sessionMessagesFixture())
 	a.maybeExtractSkillsCadence(context.Background(), anchor)
@@ -83,7 +88,7 @@ func TestSkillsCadenceExtractsAndWrites(t *testing.T) {
 // 提取素材必须来自 sessions.messages 完整快照(含未被截断的长内容),
 // 而不是被认领 turn 的归档片段。
 func TestRunSkillBatchExtractionUsesSessionSnapshot(t *testing.T) {
-	a, db, _, fp := newCadenceFixture(t, []string{`{"extract": false}`})
+	a, db, _, fp := newCadenceFixture(t, []*provider.Response{textResp("Nothing to save.")})
 	seedAgentTurns(t, db, []int{6, 6})
 	longDetail := strings.Repeat("完整会话素材。", 300)
 	seedSessionRecord(t, db, []store.SessionMessage{
@@ -126,7 +131,7 @@ func TestRunSkillBatchExtractionSessionGoneConsumesBatch(t *testing.T) {
 
 func TestRunSkillBatchExtractionResetsOnProviderError(t *testing.T) {
 	a, db, _, _ := newCadenceFixture(t, nil)
-	a.skillsLearner = NewSkillsLearner(t.TempDir(), &learnerErrProvider{}, "m")
+	a.skillsLearner = NewSkillsLearner(t.TempDir(), &learnerFakeProvider{err: errors.New("provider down")}, "m")
 	seedAgentTurns(t, db, []int{6, 6})
 	seedSessionRecord(t, db, sessionMessagesFixture())
 	id, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 10, 32)
@@ -141,7 +146,7 @@ func TestRunSkillBatchExtractionResetsOnProviderError(t *testing.T) {
 }
 
 func TestRunSkillBatchExtractionNotWorthyConsumes(t *testing.T) {
-	a, db, _, _ := newCadenceFixture(t, []string{`{"extract": false}`})
+	a, db, _, _ := newCadenceFixture(t, []*provider.Response{textResp("Nothing to save.")})
 	seedAgentTurns(t, db, []int{6, 6})
 	seedSessionRecord(t, db, sessionMessagesFixture())
 	id, _, err := db.ClaimSkillBatch(context.Background(), "agentA", "s1", 10, 32)

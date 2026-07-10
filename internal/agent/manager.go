@@ -249,6 +249,9 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		if ag.skillsLearner != nil && ag.lifecycleCfg.IsEnabled() {
 			ag.skillsLearner.agentID = rc.ID
 			ag.skillsLearner.ledger = m.opts.dataStore
+			// skill_manage 与 learner 共用管理器与账本:主对话工具的
+			// create/update/delete 与提取路径同一份生命周期记账。
+			ag.registry.SetSkillManage(ag.skillsLearner.Manager(), m.opts.dataStore)
 		}
 		ag.ReloadWorkspaceFiles()
 		// 聊天者所在时区的日期线 - 需要 dataStore

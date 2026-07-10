@@ -13,6 +13,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/memory"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/sandbox"
+	"github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/workspace"
 )
@@ -244,6 +245,12 @@ type Registry struct {
 
 	managedMemoryCfg memory.Config
 
+	// skillManager / skillLedger 是 skill_manage 工具的依赖:learner 的
+	// agent 级技能管理器与生命周期账本。经 SetSkillManage 装配;账本在
+	// manager 装配 dataStore 时补齐。agent 级共享依赖,ForTurn 按值复制。
+	skillManager *skills.Manager
+	skillLedger  SkillManageLedger
+
 	// perTurnRebind 收集那些捕获了每回合状态、但 *不* 由 registerBuiltins
 	// 重新注册的非内置工具的重绑钩子（目前是 goal 的 update_goal 与 cron 的
 	// create_cron_job 等——它们读 GoalSessionKey / MessageChannel 等每回合字段）。
@@ -402,6 +409,26 @@ func (r *Registry) ChatterUserID() string {
 // 代理的 BOOTSTRAP 流程。
 func (r *Registry) SetAgentOwnerUserID(uid string) {
 	r.agentOwnerUserID = uid
+}
+
+// SetSkillManage 装配 skill_manage 工具的依赖:learner 的技能管理器与生命
+// 周期账本(可为 nil,无 store 时跳过记账)。builtin 处理器按调用时读取字段,
+// 因此 manager 装配路径晚于构造注册也无需重新注册。
+func (r *Registry) SetSkillManage(mgr *skills.Manager, ledger SkillManageLedger) {
+	r.skillManager = mgr
+	r.skillLedger = ledger
+}
+
+// skillWriteAllowed 判定本回合聊天者是否可写 agent 级共享技能库。所有者键
+// 取 agentOwnerUserID(agent.user_id),单用户安装未设置时回退 UserSpace 所有
+// 者 userID;chatterUserID 为空表示本回合就是所有者语境(web 回合或旧版单用
+// 户),仅 IM 多发件人回合的非所有者聊天者被拒。
+func (r *Registry) skillWriteAllowed() bool {
+	owner := r.agentOwnerUserID
+	if owner == "" {
+		owner = r.userID
+	}
+	return owner == "" || r.chatterUserID == "" || r.chatterUserID == owner
 }
 
 // SetUserSkillsRoot 点聊天时 `skills/...` 写入
@@ -591,6 +618,8 @@ func (r *Registry) ForTurn() *Registry {
 		envProvider:         r.envProvider,
 		skillDirs:           r.skillDirs,
 		managedMemoryCfg:    r.managedMemoryCfg,
+		skillManager:        r.skillManager,
+		skillLedger:         r.skillLedger,
 		// 后台 shell 比单个回合存活更久——按指针共享，回合间一致。
 		shellMgr: r.shellMgr,
 		// —— 每回合独立：fresh map（避免与父/兄弟回合争用），fresh 失败追踪 ——
@@ -864,6 +893,7 @@ func (r *Registry) registerBuiltins() {
 	registerExec(r)
 	registerFile(r)
 	registerMemory(r)
+	registerSkillManage(r)
 	registerApplyPatch(r)
 	registerBashOutput(r)
 	registerKillShell(r)
