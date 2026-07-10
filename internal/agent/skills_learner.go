@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/qs3c/bkcrab/internal/agent/tools"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -23,11 +24,7 @@ type SkillsLearner struct {
 	skillDirs    []string
 	manager      *skills.Manager
 	agentID      string
-	ledger       skillLedger
-}
-
-type skillLedger interface {
-	UpsertSkillUsage(ctx context.Context, agentID, slug, contentHash string, firstCreate bool) error
+	ledger       tools.SkillLedgerUpserter
 }
 
 func NewSkillsLearner(workspace string, p provider.Provider, model string, skillDirs ...string) *SkillsLearner {
@@ -48,90 +45,90 @@ func (sl *SkillsLearner) Manager() *skills.Manager {
 	return sl.manager
 }
 
-type extractedSkill struct {
-	Name        string `json:"name"`
-	Slug        string `json:"slug"`
-	Description string `json:"description"`
-	Content     string `json:"content"`
-}
-
-type extractionResponse struct {
-	Extract bool           `json:"extract"`
-	Skill   extractedSkill `json:"skill"`
-}
-
 // MaybeExtract checks a single turn for reusable skill extraction.
 // The persistent cadence path enforces the threshold in ClaimSkillBatch.
 func (sl *SkillsLearner) MaybeExtract(ctx context.Context, messages []provider.Message, toolCallCount int) error {
 	if toolCallCount < sl.minToolCalls {
 		return nil
 	}
-
-	skill, err := sl.extractFromMaterial(ctx, renderProviderMessages(messages))
-	if err != nil {
-		return fmt.Errorf("extract skill: %w", err)
-	}
-	if skill == nil {
-		return nil
-	}
-	return sl.persistExtracted(ctx, skill)
+	return sl.extractWithTools(ctx, renderProviderMessages(messages))
 }
 
 // ExtractFromSession 从 sessions.messages 工作集的完整快照提取技能。
 // cadence 认领只作触发凭证;素材是整个 session 的叙事(旧段为压缩摘要、
 // 近段为原文),而非被认领 turn 的归档片段——SOP 提取需要全局工作流,
 // 局部 turn 拼不出来。非 nil 错误代表基础设施故障(调用方重置批次);
-// 校验/扫描类拒绝在内部消化。
+// 校验/扫描类拒绝在工具循环内反馈给模型消化。
 func (sl *SkillsLearner) ExtractFromSession(ctx context.Context, msgs []store.SessionMessage) error {
 	material := renderSessionMessages(msgs)
 	if strings.TrimSpace(material) == "" {
 		return nil
 	}
-	skill, err := sl.extractFromMaterial(ctx, material)
-	if err != nil {
-		return fmt.Errorf("extract skill: %w", err)
-	}
-	if skill == nil {
-		return nil
-	}
-	return sl.persistExtracted(ctx, skill)
+	return sl.extractWithTools(ctx, material)
 }
 
-func (sl *SkillsLearner) persistExtracted(ctx context.Context, skill *extractedSkill) error {
-	if existing, ok := sl.manager.Read(skill.Slug); ok {
-		merged, err := sl.decideUpdate(ctx, existing, skill)
+// skillExtractMaxIterations 限制提取工具循环轮数:新建 1 轮;撞 slug 走
+// read→update 2-3 轮;再留一轮给校验拒绝后的自我修正。达到上限时已落盘
+// 的写入保留,循环静默收尾。
+const skillExtractMaxIterations = 4
+
+// extractWithTools 把会话素材交给提取模型,模型通过 skill_manage 工具直接
+// 落盘(create/update/read/list;delete 被禁)。相比旧的裸 JSON 输出+二次合并
+// 调用:结构化工具调用不怕 markdown 围栏;撞 slug 时模型能 read 现有技能全文
+// 再合并(旧路径只有名字+一句话描述);校验/安全扫描拒绝作为工具结果反馈给
+// 模型修正,而非静默丢弃。无工具调用的回复即"无可提取"或"已完成"。
+// 非 nil 返回值只代表基础设施故障(Chat 调用失败),调用方据此重置批次。
+func (sl *SkillsLearner) extractWithTools(ctx context.Context, material string) error {
+	prompt := sl.loadSkillLearnerPrompt()
+	if existing := sl.existingSkillsPrompt(); existing != "" {
+		prompt += "\n\n" + existing
+	}
+	messages := []provider.Message{
+		{Role: "system", Content: prompt},
+		{Role: "user", Content: material},
+	}
+	toolDefs := []provider.Tool{tools.SkillManageToolDef()}
+	exec := tools.SkillManageExec(tools.SkillManageDeps{
+		Manager:     sl.manager,
+		Upserter:    sl.ledger,
+		AgentID:     sl.agentID,
+		AllowDelete: false,
+	})
+	for i := 0; i < skillExtractMaxIterations; i++ {
+		resp, err := sl.provider.Chat(ctx, messages, toolDefs, sl.model, 4096, 0.3)
 		if err != nil {
-			return fmt.Errorf("decide update: %w", err)
+			return err
 		}
-		if merged == "" {
-			slog.Debug("skill exists, update not needed", "slug", skill.Slug)
+		if len(resp.ToolCalls) == 0 {
 			return nil
 		}
-		if err := sl.manager.Update(skill.Slug, merged); err != nil {
-			slog.Warn("skill update rejected", "slug", skill.Slug, "error", err)
-			return nil
+		messages = append(messages, provider.Message{
+			Role:         "assistant",
+			Content:      resp.Content,
+			ToolCalls:    resp.ToolCalls,
+			Thinking:     resp.Thinking,
+			RawAssistant: resp.RawAssistant,
+		})
+		for _, tc := range resp.ToolCalls {
+			var result string
+			if tc.Function.Name != "skill_manage" {
+				result = fmt.Sprintf("error: unknown tool %q — only skill_manage is available", tc.Function.Name)
+			} else if out, execErr := exec(ctx, json.RawMessage(tc.Function.Arguments)); execErr != nil {
+				result = "error: " + execErr.Error()
+			} else {
+				result = out
+				slog.Info("skill extraction action applied", "agent", sl.agentID, "result", out)
+			}
+			messages = append(messages, provider.Message{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: tc.ID,
+				Name:       tc.Function.Name,
+			})
 		}
-		sl.upsertLedger(ctx, skill.Slug, merged, false)
-		slog.Info("updated existing skill", "name", skill.Name, "slug", skill.Slug)
-		return nil
 	}
-
-	if err := sl.manager.Create(skill.Slug, skill.Content); err != nil {
-		slog.Warn("skill create rejected", "slug", skill.Slug, "error", err)
-		return nil
-	}
-	sl.upsertLedger(ctx, skill.Slug, skill.Content, true)
-	slog.Info("extracted new skill", "name", skill.Name, "slug", skill.Slug)
+	slog.Debug("skill extraction reached iteration cap", "max", skillExtractMaxIterations)
 	return nil
-}
-
-func (sl *SkillsLearner) upsertLedger(ctx context.Context, slug, content string, firstCreate bool) {
-	if sl == nil || sl.ledger == nil || sl.agentID == "" {
-		return
-	}
-	if err := sl.ledger.UpsertSkillUsage(ctx, sl.agentID, slug, store.HashSkillContent(content), firstCreate); err != nil {
-		slog.Warn("skill ledger upsert failed", "slug", slug, "error", err)
-	}
 }
 
 func (sl *SkillsLearner) loadSkillLearnerPrompt() string {
@@ -145,28 +142,20 @@ func (sl *SkillsLearner) loadSkillLearnerPrompt() string {
 	return fallbackExtractionPrompt
 }
 
-const fallbackExtractionPrompt = `Analyze the following conversation and determine if it demonstrates a reusable multi-step skill.
+const fallbackExtractionPrompt = `You maintain this agent's skill library. Analyze the conversation and decide whether it demonstrates a reusable multi-step skill worth saving, acting through the skill_manage tool.
 
 The input is the full working context of one session: recent messages verbatim; if the session was long, the older span appears as a [Conversation Summary] block.
 
-Extract when the conversation shows at least one of:
+Save a skill when the conversation shows at least one of:
 - A repeatable multi-step workflow: multiple tool calls in a clear sequence, general enough to be useful in other contexts
 - A hard-won approach: the task required trial and error, or the course changed because of findings along the way — capture the path that worked and the dead ends to avoid
 - An expectation correction: the user expected a different method or outcome than the first attempt
 
-If this conversation demonstrates a reusable skill, output JSON:
-{"extract": true, "skill": {"name": "Human readable name", "slug": "kebab-case-slug", "description": "One line description", "content": "Full SKILL.md content with YAML frontmatter"}}
-
-If not reusable, output: {"extract": false}
-
-The SKILL.md format uses YAML frontmatter:
----
-name: Skill Name
-description: What it does
----
-Step-by-step instructions in markdown...
-
-Output ONLY the JSON, no markdown fences.`
+How to act:
+- New skill: call skill_manage {action:"create", slug:"kebab-case-slug", content:"..."}. content is a full SKILL.md: YAML frontmatter with non-empty name and description, then step-by-step markdown instructions.
+- A listed existing skill covers the same workflow: first call {action:"read", slug} to see its current content, then {action:"update", slug, content} with a merged version keeping the best of both. Skip the update if the existing skill already covers everything this conversation taught.
+- If a call is rejected, fix the content per the error message and retry once.
+- Nothing worth saving: do not call any tool; reply with the single line: Nothing to save.`
 
 // 两个渲染函数都不截断:工作流细节(工具参数、长结果)是 SOP 提取的
 // 主体,截断会掏空技能内容。素材上界由上下文压缩天然保证——工作集
@@ -204,33 +193,6 @@ func renderSessionMessages(msgs []store.SessionMessage) string {
 	return sb.String()
 }
 
-func (sl *SkillsLearner) extractFromMaterial(ctx context.Context, material string) (*extractedSkill, error) {
-	prompt := sl.loadSkillLearnerPrompt()
-	if existing := sl.existingSkillsPrompt(); existing != "" {
-		prompt += "\n\n" + existing
-	}
-	extractMsgs := []provider.Message{
-		{Role: "system", Content: prompt + "\n\nOutput ONLY the JSON, no markdown fences."},
-		{Role: "user", Content: material},
-	}
-
-	resp, err := sl.provider.Chat(ctx, extractMsgs, nil, sl.model, 4096, 0.3)
-	if err != nil {
-		return nil, err
-	}
-
-	var result extractionResponse
-	content := strings.TrimSpace(resp.Content)
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		slog.Debug("skill extraction: LLM response not valid JSON", "error", err)
-		return nil, nil
-	}
-	if !result.Extract || result.Skill.Slug == "" || result.Skill.Content == "" {
-		return nil, nil
-	}
-	return &result.Skill, nil
-}
-
 func (sl *SkillsLearner) existingSkillsPrompt() string {
 	if sl == nil || sl.workspace == "" {
 		return ""
@@ -245,7 +207,7 @@ func (sl *SkillsLearner) existingSkillsPrompt() string {
 	}
 	sort.Strings(names)
 	var sb strings.Builder
-	sb.WriteString("Existing skills in this workspace. If a newly extracted skill is substantially similar to one of these, reuse that slug so the existing skill is updated instead of creating a duplicate:\n")
+	sb.WriteString("Existing skills in this workspace. If a newly extracted skill is substantially similar to one of these, read it and update that slug instead of creating a duplicate:\n")
 	for _, name := range names {
 		desc := firstSentence(found[name].Description)
 		if desc == "" {
@@ -255,46 +217,3 @@ func (sl *SkillsLearner) existingSkillsPrompt() string {
 	}
 	return sb.String()
 }
-
-const updateDecisionPrompt = `You maintain a library of agent skills (SKILL.md files).
-An existing skill and a newly extracted skill share the same slug.
-Decide whether the existing skill should be updated with what the new extraction learned.
-
-Update when the new extraction adds real value: missing steps, corrections, pitfalls, broader applicability.
-Do NOT update when the existing skill already covers the workflow adequately.
-
-If updating, output JSON:
-{"update": true, "content": "full merged SKILL.md content with YAML frontmatter"}
-The content must merge the best of both versions and keep valid YAML frontmatter with name and description.
-
-If not updating, output: {"update": false}
-
-Output ONLY the JSON, no markdown fences.`
-
-type updateDecision struct {
-	Update  bool   `json:"update"`
-	Content string `json:"content"`
-}
-
-func (sl *SkillsLearner) decideUpdate(ctx context.Context, existing string, skill *extractedSkill) (string, error) {
-	user := fmt.Sprintf("EXISTING SKILL:\n%s\n\nNEWLY EXTRACTED SKILL:\n%s", existing, skill.Content)
-	msgs := []provider.Message{
-		{Role: "system", Content: updateDecisionPrompt},
-		{Role: "user", Content: user},
-	}
-	resp, err := sl.provider.Chat(ctx, msgs, nil, sl.model, 4096, 0.3)
-	if err != nil {
-		return "", err
-	}
-
-	var dec updateDecision
-	if err := json.Unmarshal([]byte(strings.TrimSpace(resp.Content)), &dec); err != nil {
-		slog.Debug("skill update decision: LLM response not valid JSON", "error", err)
-		return "", nil
-	}
-	if !dec.Update || strings.TrimSpace(dec.Content) == "" {
-		return "", nil
-	}
-	return dec.Content, nil
-}
-
