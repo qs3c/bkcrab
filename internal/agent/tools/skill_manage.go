@@ -179,6 +179,29 @@ func applySkillManage(ctx context.Context, deps SkillManageDeps, action, slug, c
 	}
 }
 
+// registerSkillManage 把 skill_manage 注册为 builtin。依赖按调用时从
+// Registry 字段读取;写动作过 owner 门控。ForTurn 重新注册 builtins,
+// 闭包因此捕获回合副本、读到本回合的 chatterUserID。
+func registerSkillManage(r *Registry) {
+	r.Register("skill_manage", skillManageDescription, skillManageSchema(), makeSkillManage(
+		func() SkillManageDeps {
+			return SkillManageDeps{
+				Manager:     r.skillManager,
+				Upserter:    r.skillLedger,
+				Deleter:     r.skillLedger,
+				AgentID:     r.agentID,
+				AllowDelete: true,
+			}
+		},
+		func(action string) error {
+			if r.skillWriteAllowed() {
+				return nil
+			}
+			return fmt.Errorf("skill %s is restricted to the agent owner; suggest the change to the owner instead", action)
+		},
+	))
+}
+
 // upsertSkillLedger 尽力同步生命周期账本;记账失败只 Warn,绝不回滚已
 // 落盘的技能——与 load_skill 的记账语义一致。
 func upsertSkillLedger(ctx context.Context, deps SkillManageDeps, slug, content string, firstCreate bool) {

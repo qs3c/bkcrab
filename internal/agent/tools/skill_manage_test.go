@@ -149,3 +149,69 @@ func TestSkillManageNilManagerFails(t *testing.T) {
 		t.Fatal("nil manager list succeeded, want not-configured error")
 	}
 }
+
+func newSkillManageTestRegistry(t *testing.T) *Registry {
+	t.Helper()
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	r.SetOwnerUserID("owner-1")
+	r.SetAgentOwnerUserID("owner-1")
+	mgr := skills.NewManager(filepath.Join(t.TempDir(), "skills"), skills.DefaultManagerConfig())
+	r.SetSkillManage(mgr, nil)
+	return r
+}
+
+func execRegistrySkillManage(t *testing.T, r *Registry, args map[string]any) (string, error) {
+	t.Helper()
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := r.tools["skill_manage"]
+	if !ok {
+		t.Fatal("skill_manage not registered")
+	}
+	return tool.fn(context.Background(), raw)
+}
+
+func TestSkillManageOwnerGateOnTurnRegistry(t *testing.T) {
+	base := newSkillManageTestRegistry(t)
+
+	guest := base.ForTurn()
+	guest.SetChatterUserID("guest-9")
+	if _, err := execRegistrySkillManage(t, guest, map[string]any{
+		"action": "create", "slug": "s1", "content": validSkillMD,
+	}); err == nil || !strings.Contains(err.Error(), "owner") {
+		t.Fatalf("guest create err = %v, want owner-restriction refusal", err)
+	}
+	// read/list 不受门控
+	if _, err := execRegistrySkillManage(t, guest, map[string]any{"action": "list"}); err != nil {
+		t.Fatalf("guest list err = %v, want allowed", err)
+	}
+
+	owner := base.ForTurn()
+	owner.SetChatterUserID("owner-1")
+	if _, err := execRegistrySkillManage(t, owner, map[string]any{
+		"action": "create", "slug": "s1", "content": validSkillMD,
+	}); err != nil {
+		t.Fatalf("owner create err = %v, want allowed", err)
+	}
+
+	// chatter 未设置(web 回合/旧版单用户)视为所有者语境
+	blank := base.ForTurn()
+	if _, err := execRegistrySkillManage(t, blank, map[string]any{
+		"action": "update", "slug": "s1", "content": strings.Replace(validSkillMD, "step one", "step two", 1),
+	}); err != nil {
+		t.Fatalf("blank-chatter update err = %v, want allowed", err)
+	}
+}
+
+func TestSkillManageDepsSurviveForTurn(t *testing.T) {
+	base := newSkillManageTestRegistry(t)
+	turn := base.ForTurn()
+	turn.SetChatterUserID("owner-1")
+	if _, err := execRegistrySkillManage(t, turn, map[string]any{
+		"action": "create", "slug": "turn-skill", "content": validSkillMD,
+	}); err != nil {
+		t.Fatalf("create on ForTurn copy err = %v — skillManager/skillLedger 未复制进回合副本", err)
+	}
+}
