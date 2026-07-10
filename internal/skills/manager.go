@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -87,24 +88,32 @@ type skillFrontmatter struct {
 	Description string `yaml:"description"`
 }
 
-func (m *Manager) validateContent(content string) error {
-	if utf8.RuneCountInString(content) > m.config.MaxContentChars {
-		return fmt.Errorf("skill content exceeds %d chars", m.config.MaxContentChars)
-	}
+// parseFrontmatter 解析 SKILL.md 的 YAML frontmatter,返回 frontmatter 与正文。
+// 与 validateContent 共用,保证 List 与写入校验对"合法 frontmatter"判定一致。
+func parseFrontmatter(content string) (skillFrontmatter, string, error) {
+	var fm skillFrontmatter
 	if !strings.HasPrefix(content, "---\n") {
-		return errors.New("SKILL.md must start with YAML frontmatter (---)")
+		return fm, "", errors.New("SKILL.md must start with YAML frontmatter (---)")
 	}
-
 	rest := strings.TrimPrefix(content, "---\n")
 	const frontmatterEnd = "\n---\n"
 	end := strings.Index(rest, frontmatterEnd)
 	if end < 0 {
-		return errors.New("SKILL.md frontmatter is not closed with ---")
+		return fm, "", errors.New("SKILL.md frontmatter is not closed with ---")
 	}
-
-	var fm skillFrontmatter
 	if err := yaml.Unmarshal([]byte(rest[:end]), &fm); err != nil {
-		return fmt.Errorf("frontmatter parse error: %w", err)
+		return fm, "", fmt.Errorf("frontmatter parse error: %w", err)
+	}
+	return fm, rest[end+len(frontmatterEnd):], nil
+}
+
+func (m *Manager) validateContent(content string) error {
+	if utf8.RuneCountInString(content) > m.config.MaxContentChars {
+		return fmt.Errorf("skill content exceeds %d chars", m.config.MaxContentChars)
+	}
+	fm, body, err := parseFrontmatter(content)
+	if err != nil {
+		return err
 	}
 	if strings.TrimSpace(fm.Name) == "" {
 		return errors.New("frontmatter must include non-empty 'name'")
@@ -115,7 +124,6 @@ func (m *Manager) validateContent(content string) error {
 	if utf8.RuneCountInString(fm.Description) > m.config.MaxDescriptionChars {
 		return fmt.Errorf("description exceeds %d chars", m.config.MaxDescriptionChars)
 	}
-	body := rest[end+len(frontmatterEnd):]
 	if strings.TrimSpace(body) == "" {
 		return errors.New("SKILL.md must have content after the frontmatter")
 	}
@@ -226,4 +234,38 @@ func (m *Manager) Delete(slug string) error {
 		return fmt.Errorf("skill %q does not exist", slug)
 	}
 	return os.RemoveAll(dir)
+}
+
+// SkillListItem 是 List 的一项:目录 slug 加 SKILL.md frontmatter 元数据。
+type SkillListItem struct {
+	Slug        string
+	Name        string
+	Description string
+}
+
+// List 枚举根目录下所有带合法 SKILL.md 的技能,按 slug 升序。单个技能的
+// frontmatter 损坏只跳过该项,不让整个列表失败;根目录不存在返回 nil。
+func (m *Manager) List() []SkillListItem {
+	entries, err := os.ReadDir(m.root)
+	if err != nil {
+		return nil
+	}
+	var out []SkillListItem
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		slug := e.Name()
+		content, ok := m.Read(slug)
+		if !ok {
+			continue
+		}
+		fm, _, err := parseFrontmatter(content)
+		if err != nil {
+			continue
+		}
+		out = append(out, SkillListItem{Slug: slug, Name: fm.Name, Description: fm.Description})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
+	return out
 }
