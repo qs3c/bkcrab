@@ -12,6 +12,7 @@ import (
 
 	"github.com/qs3c/bkcrab/internal/buildinfo"
 	"github.com/qs3c/bkcrab/internal/sandbox"
+	"github.com/qs3c/bkcrab/internal/skills"
 )
 
 type execArgs struct {
@@ -20,6 +21,18 @@ type execArgs struct {
 	Timeout         int    `json:"timeout,omitempty"`           // seconds, default 120
 	Sandbox         bool   `json:"sandbox,omitempty"`           // force sandbox for this call
 	RunInBackground bool   `json:"run_in_background,omitempty"` // launch detached, return bash_id for bash_output / kill_shell
+}
+
+func rejectLearnerManagedCommand(command string) error {
+	// This is a guardrail against accidental direct shell edits, not an OS
+	// security boundary: an unrestricted host shell can construct the path via
+	// variables, scripts, or symlinks. Strong isolation requires sandbox mode,
+	// where the agent home/learner cache is not mounted writable.
+	normalized := strings.ToLower(strings.ReplaceAll(command, `\`, "/"))
+	if strings.Contains(normalized, strings.ToLower(skills.LearnerSkillsDirName)) {
+		return fmt.Errorf("%s", LearnerSkillsFileRefusal)
+	}
+	return nil
 }
 
 // MetaSandboxPrefix 将执行结果标记为已在沙箱内运行。
@@ -116,6 +129,9 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 
 		if args.Command == "" {
 			return "", fmt.Errorf("command is required")
+		}
+		if err := rejectLearnerManagedCommand(args.Command); err != nil {
+			return "", err
 		}
 
 		// 检查危险命令
@@ -349,6 +365,9 @@ func registerHostExec(r *Registry, envProvider SkillEnvProvider, skillDirs []str
 			if args.Command == "" {
 				return "", fmt.Errorf("command is required")
 			}
+			if err := rejectLearnerManagedCommand(args.Command); err != nil {
+				return "", err
+			}
 			lower := strings.ToLower(args.Command)
 			for _, dc := range dangerousCommands {
 				if strings.Contains(lower, dc) {
@@ -422,6 +441,9 @@ func registerSandboxedExec(r *Registry, ex sandbox.Executor) {
 		}
 		if args.Command == "" {
 			return "", fmt.Errorf("command is required")
+		}
+		if err := rejectLearnerManagedCommand(args.Command); err != nil {
+			return "", err
 		}
 		if args.RunInBackground {
 			return "", fmt.Errorf("run_in_background is not yet supported in sandbox mode — use tmux inside the sandbox instead: exec({command: \"tmux new-session -d -s job '<your command>'\"}) to start, exec({command: \"tmux capture-pane -t job -p\"}) to read, exec({command: \"tmux kill-session -t job\"}) to stop")

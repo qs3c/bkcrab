@@ -373,6 +373,21 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 	// 因为聊天者没有 UI 来为每个代理设置它们。
 	chatterPin := readUserScopeAgentDefaults(ctx, st, sp.UserID)
 	isForeign := rec.UserID != "" && rec.UserID != sp.UserID
+	ownerLearnerCfg := sp.Config.SkillsLearner
+	var ownerCfg *config.Config
+	if isForeign {
+		if loaded, loadErr := assembleConfig(ctx, st, rec.UserID, ""); loadErr == nil && loaded != nil {
+			config.LoadEnv().ApplyToConfig(loaded)
+			config.ApplyDefaults(loaded)
+			ownerCfg = loaded
+			ownerLearnerCfg = loaded.SkillsLearner
+		} else if loadErr != nil {
+			// Shared asset policy is security-sensitive: falling back to a
+			// visitor-controlled lifecycle configuration would let that visitor
+			// manipulate or hide the owner's learner library.
+			return fmt.Errorf("EnsureAgent: load owner learner policy: %w", loadErr)
+		}
+	}
 	// 当键缺失时默认为 true — 与 setup.agentShareModelConfig 保持一致。
 	shareCfg := true
 	if v, ok := rec.Config["shareModelConfig"].(bool); ok {
@@ -380,7 +395,7 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 	}
 	applyOwnerOverlays := !isForeign || shareCfg
 	if isForeign && applyOwnerOverlays {
-		if ownerCfg, err := assembleConfig(ctx, st, rec.UserID, ""); err == nil && ownerCfg != nil {
+		if ownerCfg != nil {
 			ovr := ownerCfg.Agents.Defaults
 			if ovr.Model != "" {
 				rc.Model = ovr.Model
@@ -483,11 +498,11 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 	}
 	rc.RefreshModelContextWindow()
 	ensureAgentHome(rc)
-	if ws != nil {
-		if err := skills.HydrateSkillsDown(ctx, ws, rc.ID, filepath.Join(rc.Home, "skills")); err != nil {
-			slog.Warn("skill hydrate failed", "agent", rc.ID, "error", err)
-		}
-	}
+	// Agent-owned skill hydration is intentionally deferred to Manager.buildAgent.
+	// That path hydrates the isolated learner namespace, migrates verified
+	// pre-isolation learner assets, and only then hydrates ordinary skills. Doing
+	// ordinary hydration here can prune the sole legacy learner copy before the
+	// migration code has a chance to identify it.
 	// 构建一次性技能配置，将此代理自己的代理作用域技能环境（例如 image-tool 的 REPLICATE_API_TOKEN）
 	// 注入到新代理将使用的 SkillsLoader 闭包中。
 	//
@@ -519,7 +534,7 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 			skillsCfg.AgentEntries[rc.ID] = entries
 		}
 	}
-	if err := sp.Agents.AddAgentWithSkillsCfg(rc, sp.Provider, mb, skillsCfg); err != nil {
+	if err := sp.Agents.AddAgentWithOwnerPolicies(rc, sp.Provider, mb, skillsCfg, ownerLearnerCfg); err != nil {
 		return fmt.Errorf("EnsureAgent: add agent: %w", err)
 	}
 	if sp.SandboxPool != nil {
@@ -655,13 +670,8 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 		}
 		rc.RefreshModelContextWindow()
 		ensureAgentHome(*rc)
-		if ws != nil {
-			if err := skills.HydrateSkillsDown(
-				ctx, ws, rc.ID, filepath.Join(rc.Home, "skills"),
-			); err != nil {
-				slog.Warn("skill hydrate failed", "agent", rc.ID, "error", err)
-			}
-		}
+		// Per-agent skill hydration belongs to Manager.buildAgent so verified
+		// learner migration always precedes authoritative ordinary hydration.
 	}
 	if ws != nil {
 		if dir, gerr := globalSkillsDirPath(); gerr == nil {
@@ -884,8 +894,18 @@ func (r *userSpaceRegistry) getOrLoad(ctx context.Context, userID string) (*User
 // （创建代理、轮换提供者等）后使用，以便内存中的副本不落后于数据库。
 func (r *userSpaceRegistry) invalidate(userID string) {
 	r.mu.Lock()
+	entry := r.spaces[userID]
 	delete(r.spaces, userID)
 	r.mu.Unlock()
+	if entry != nil && entry.space != nil && entry.space.Agents != nil {
+		entry.space.mu.Lock()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := entry.space.Agents.Close(ctx); err != nil {
+			slog.Warn("stop learner jobs while invalidating user space failed", "user", userID, "error", err)
+		}
+		cancel()
+		entry.space.mu.Unlock()
+	}
 }
 
 func (r *userSpaceRegistry) all() []*UserSpace {
@@ -903,16 +923,30 @@ func (r *userSpaceRegistry) evictIdle() int {
 		return 0
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	cutoff := time.Now().Add(-r.idleTTL)
 	evicted := 0
+	var stale []*UserSpace
 	for uid, e := range r.spaces {
 		if e.lastUsed.Before(cutoff) {
 			delete(r.spaces, uid)
+			stale = append(stale, e.space)
 			evicted++
 			slog.Info("evicted idle user space", "user", uid,
 				"idle", time.Since(e.lastUsed).Round(time.Second))
 		}
+	}
+	r.mu.Unlock()
+	for _, sp := range stale {
+		if sp == nil || sp.Agents == nil {
+			continue
+		}
+		sp.mu.Lock()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := sp.Agents.Close(ctx); err != nil {
+			slog.Warn("stop learner jobs while evicting user space failed", "error", err)
+		}
+		cancel()
+		sp.mu.Unlock()
 	}
 	return evicted
 }

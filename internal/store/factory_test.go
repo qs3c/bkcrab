@@ -18,7 +18,7 @@ func TestNewRequiresMySQLDSNByDefault(t *testing.T) {
 }
 
 func TestNormalizeMySQLDSNForcesTimeParsing(t *testing.T) {
-	dsn, err := normalizeMySQLDSN("user:pass@tcp(localhost:3306)/bkcrab")
+	dsn, err := normalizeMySQLDSN("user:pass@tcp(localhost:3306)/bkcrab?clientFoundRows=true")
 	if err != nil {
 		t.Fatalf("normalize DSN: %v", err)
 	}
@@ -31,5 +31,8 @@ func TestNormalizeMySQLDSNForcesTimeParsing(t *testing.T) {
 	}
 	if cfg.Loc.String() != "UTC" {
 		t.Fatalf("UTC location not enabled: %s", cfg.Loc)
+	}
+	if cfg.ClientFoundRows {
+		t.Fatal("clientFoundRows must be disabled for exclusive lease semantics")
 	}
 }

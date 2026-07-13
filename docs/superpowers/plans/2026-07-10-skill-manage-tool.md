@@ -1,5 +1,7 @@
 # skill_manage 工具化实施计划
 
+> **已取代：** 本文记录历史实施过程，当前行为与不变量以 [Skill 自动提炼（自进化）Canonical 设计与实现](../../skill-self-evolution.md) 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把 skills.Manager 与模型的交互从裸 JSON prompt 驱动改为原生工具调用：新增 `skill_manage` 工具（create/update/read/delete/list），注册给主对话 agent（写动作仅 owner），后台技能提取路径改为有界工具循环，删除两处 JSON 裸解析。

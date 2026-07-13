@@ -125,11 +125,15 @@ func TestFilterLearnerSkillsByActive(t *testing.T) {
 	}
 }
 
-func TestFilterActiveSkillsFailOpenOnEmptyRows(t *testing.T) {
-	all := []Skill{{Name: "a", Layer: "learner"}, {Name: "b", Layer: "learner"}}
+func TestFilterActiveSkillsAppliesHardCapWhenLedgerIsEmpty(t *testing.T) {
+	all := []Skill{
+		{Name: "manual", Layer: "agent"},
+		{Name: "b", Layer: "learner"},
+		{Name: "a", Layer: "learner"},
+	}
 	out := filterActiveSkills(all, nil, skillspkg.LifecycleConfig{ActiveMax: 1})
-	if len(out) != len(all) {
-		t.Fatalf("empty ledger should keep all skills, got %d", len(out))
+	if len(out) != 2 || out[0].Name != "manual" || out[1].Name != "a" {
+		t.Fatalf("empty ledger should keep manual skills and one deterministic learner, got %+v", out)
 	}
 }
 

@@ -137,6 +137,69 @@ var errGlobalSkillsDirWrite = fmt.Errorf("access denied: ~/.bkcrab/skills/ is th
 
 const ManagedMemoryFileRefusal = `[refused: USER.md and MEMORY.md are managed memory resources. Use the memory tool with target="user" or target="memory" to list, add, replace, remove, or batch-edit entries.]`
 
+const LearnerSkillsFileRefusal = `[refused: learner-skills is a protected runtime-managed asset namespace. Use load_skill to consume a skill, or the owner-only skill_manage tool to inspect/update it; generic file tools cannot read, write, edit, list, move, or delete this namespace.]`
+
+func isLearnerManagedPath(path string) bool {
+	clean := strings.ReplaceAll(filepath.Clean(path), `\`, "/")
+	for _, segment := range strings.Split(clean, "/") {
+		if strings.EqualFold(segment, skills.LearnerSkillsDirName) {
+			return true
+		}
+	}
+	return false
+}
+
+func rejectLearnerManagedPath(path string) error {
+	if isLearnerManagedPath(path) {
+		return fmt.Errorf("%s", LearnerSkillsFileRefusal)
+	}
+	return nil
+}
+
+func canonicalPathForProtection(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = filepath.Clean(path)
+	}
+	current := abs
+	var missing []string
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			if resolved, err := filepath.EvalSymlinks(current); err == nil {
+				current = resolved
+			}
+			for i := len(missing) - 1; i >= 0; i-- {
+				current = filepath.Join(current, missing[i])
+			}
+			return filepath.Clean(current)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return filepath.Clean(abs)
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
+func pathWithin(root, candidate string) bool {
+	if root == "" || candidate == "" {
+		return false
+	}
+	rel, err := filepath.Rel(canonicalPathForProtection(root), canonicalPathForProtection(candidate))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func (r *Registry) rejectResolvedLearnerPath(path string) error {
+	if r != nil && r.systemRoot != "" && pathWithin(filepath.Join(r.systemRoot, skills.LearnerSkillsDirName), path) {
+		return fmt.Errorf("%s", LearnerSkillsFileRefusal)
+	}
+	return nil
+}
+
 // systemFiles 是代理元数据/身份文件。当相对路径
 // 通过基本名称引用其中之一，文件工具根据
 // 系统 root 而不是用户 root。
@@ -515,6 +578,9 @@ func makeReadFile(r *Registry) ToolFunc {
 		if err := json.Unmarshal(rawArgs, &args); err != nil {
 			return "", fmt.Errorf("parse args: %w", err)
 		}
+		if err := rejectLearnerManagedPath(args.Path); err != nil {
+			return "", err
+		}
 
 		if r.managedMemoryFileBlocked(args.Path) {
 			return ManagedMemoryFileRefusal, nil
@@ -577,6 +643,9 @@ func makeReadFile(r *Registry) ToolFunc {
 		if err != nil {
 			return "", err
 		}
+		if err := r.rejectResolvedLearnerPath(fullPath); err != nil {
+			return "", err
+		}
 		data, err := os.ReadFile(fullPath)
 		if err != nil {
 			// 身份文件（SOUL/IDENTITY/BOOTSTRAP/...）通常会被取消设置
@@ -606,6 +675,9 @@ func makeWriteFile(r *Registry) ToolFunc {
 		}
 		if err := validateFileTargetPath(args.Path); err != nil {
 			return "", fmt.Errorf("write_file: %w", err)
+		}
+		if err := rejectLearnerManagedPath(args.Path); err != nil {
+			return "", err
 		}
 
 		if r.managedMemoryFileBlocked(args.Path) {
@@ -672,6 +744,9 @@ func makeWriteFile(r *Registry) ToolFunc {
 		if err != nil {
 			return "", err
 		}
+		if err := r.rejectResolvedLearnerPath(fullPath); err != nil {
+			return "", err
+		}
 		if isGlobalSkillsPath(fullPath) {
 			return "", errGlobalSkillsDirWrite
 		}
@@ -699,6 +774,9 @@ func makeEditFile(r *Registry) ToolFunc {
 		}
 		if err := validateFileTargetPath(args.Path); err != nil {
 			return "", fmt.Errorf("edit_file: %w", err)
+		}
+		if err := rejectLearnerManagedPath(args.Path); err != nil {
+			return "", err
 		}
 
 		if r.managedMemoryFileBlocked(args.Path) {
@@ -772,6 +850,9 @@ func makeEditFile(r *Registry) ToolFunc {
 		if err != nil {
 			return "", err
 		}
+		if err := r.rejectResolvedLearnerPath(fullPath); err != nil {
+			return "", err
+		}
 		if isGlobalSkillsPath(fullPath) {
 			return "", errGlobalSkillsDirWrite
 		}
@@ -829,6 +910,9 @@ func makeListDir(r *Registry) ToolFunc {
 		if err := json.Unmarshal(rawArgs, &args); err != nil {
 			return "", fmt.Errorf("parse args: %w", err)
 		}
+		if err := rejectLearnerManagedPath(args.Path); err != nil {
+			return "", err
+		}
 
 		// 工作区存储有一个平键命名空间；我们合成一个“dir
 		// 列表”通过过滤列表输出到其代理相关的条目
@@ -870,6 +954,9 @@ func makeListDir(r *Registry) ToolFunc {
 		root := r.rootForPath(args.Path)
 		fullPath, err := resolvePathSandboxed(root, r.effectiveSandboxRoot(root), args.Path)
 		if err != nil {
+			return "", err
+		}
+		if err := r.rejectResolvedLearnerPath(fullPath); err != nil {
 			return "", err
 		}
 		entries, err := os.ReadDir(fullPath)
@@ -919,6 +1006,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		var args readFileArgs
 		if err := json.Unmarshal(rawArgs, &args); err != nil {
 			return "", fmt.Errorf("parse args: %w", err)
+		}
+		if err := rejectLearnerManagedPath(args.Path); err != nil {
+			return "", err
 		}
 		// 身份文件机密性门 - 与主机路径相同。
 		// 在系统文件存储查找之前运行，因此永远不会出现喋喋不休的情况
@@ -982,6 +1072,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 			if !ok {
 				full = args.Path // explicit absolute non-home path
 			}
+			if err := r.rejectResolvedLearnerPath(full); err != nil {
+				return "", err
+			}
 			data, err := os.ReadFile(full)
 			if err != nil {
 				return "", fmt.Errorf("host read %s: %w", full, err)
@@ -1022,6 +1115,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		if err := validateFileTargetPath(args.Path); err != nil {
 			return "", fmt.Errorf("write_file: %w", err)
 		}
+		if err := rejectLearnerManagedPath(args.Path); err != nil {
+			return "", err
+		}
 		if r.managedMemoryFileBlocked(args.Path) {
 			return ManagedMemoryFileRefusal, nil
 		}
@@ -1058,6 +1154,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 			if !ok {
 				full = args.Path
 			}
+			if err := r.rejectResolvedLearnerPath(full); err != nil {
+				return "", err
+			}
 			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 				return "", fmt.Errorf("create directory: %w", err)
 			}
@@ -1086,6 +1185,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		var args listDirArgs
 		if err := json.Unmarshal(rawArgs, &args); err != nil {
 			return "", fmt.Errorf("parse args: %w", err)
+		}
+		if err := rejectLearnerManagedPath(args.Path); err != nil {
+			return "", err
 		}
 		switch r.routeFor(args.Path, OpList) {
 		case RouteWorkspaceStore:
@@ -1128,6 +1230,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 			if !ok {
 				full = args.Path
 			}
+			if err := r.rejectResolvedLearnerPath(full); err != nil {
+				return "", err
+			}
 			entries, err := os.ReadDir(full)
 			if err != nil {
 				return "", fmt.Errorf("host list %s: %w", full, err)
@@ -1161,6 +1266,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		}
 		if err := validateFileTargetPath(args.Path); err != nil {
 			return "", fmt.Errorf("edit_file: %w", err)
+		}
+		if err := rejectLearnerManagedPath(args.Path); err != nil {
+			return "", err
 		}
 		if r.managedMemoryFileBlocked(args.Path) {
 			return ManagedMemoryFileRefusal, nil
@@ -1243,6 +1351,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 			full, ok := hostHomePath(args.Path)
 			if !ok {
 				full = args.Path
+			}
+			if err := r.rejectResolvedLearnerPath(full); err != nil {
+				return "", err
 			}
 			data, err := os.ReadFile(full)
 			if err != nil {

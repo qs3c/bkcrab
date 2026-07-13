@@ -2,10 +2,18 @@ package gateway
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/qs3c/bkcrab/internal/bus"
+	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/scope"
+	"github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // readUserScopeAgentDefaults must distinguish "user has no row" from
@@ -65,4 +73,138 @@ func TestReadUserScopeAgentDefaults(t *testing.T) {
 	if got.MaxTokens != 8192 {
 		t.Fatalf("other fields should still parse, got MaxTokens=%d", got.MaxTokens)
 	}
+}
+
+func TestLoadUserSpaceMigratesLegacyLearnerBeforeOrdinaryHydration(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("BKCRAB_HOME", home)
+	db, err := store.NewDBStore("sqlite", "file:userspace-learner-migration?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := db.SaveAgent(ctx, &store.AgentRecord{
+		ID: "agent-a", UserID: "owner-a", Name: "Agent A", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	agentHome, err := config.AgentHomeDir("agent-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const legacy = "---\nname: Legacy\ndescription: pre-isolation learner\n---\n\n1. Keep this workflow.\n"
+	legacyDir := filepath.Join(agentHome, "skills", "legacy")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "SKILL.md"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertSkillUsage(ctx, "agent-a", "legacy", store.HashSkillContent(legacy), true); err != nil {
+		t.Fatal(err)
+	}
+
+	remote := workspace.NewLocalFS(t.TempDir())
+	manualRoot := filepath.Join(t.TempDir(), "skills")
+	manualDir := filepath.Join(manualRoot, "manual")
+	if err := os.MkdirAll(manualDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const manual = "---\nname: Manual\ndescription: ordinary remote skill\n---\n\n1. Stay installed.\n"
+	if err := os.WriteFile(filepath.Join(manualDir, "SKILL.md"), []byte(manual), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := skills.SyncSkillUp(ctx, remote, "agent-a", "manual", manualRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := loadUserSpace(ctx, "owner-a", bus.New(), db, remote, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	learner := skills.NewManager(skills.LearnerSkillsDir(agentHome), skills.DefaultManagerConfig())
+	if got, ok := learner.Read("legacy"); !ok || got != legacy {
+		t.Fatalf("legacy learner was lost before migration: got (%q, %v)", got, ok)
+	}
+	r, err := remote.Get(ctx, "agent-a", "", "", "learner-skills/legacy/SKILL.md")
+	if err != nil {
+		t.Fatalf("migrated learner missing from remote: %v", err)
+	}
+	r.Close()
+	if _, err := os.Stat(filepath.Join(agentHome, "skills", "legacy", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy source was not removed after verified migration: %v", err)
+	}
+}
+
+func TestEnsureAgentMigratesLegacyLearnerBeforeOrdinaryHydration(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("BKCRAB_HOME", home)
+	db, err := store.NewDBStore("sqlite", "file:ensure-agent-learner-migration?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := db.SaveAgent(ctx, &store.AgentRecord{
+		ID: "agent-a", UserID: "owner-a", Name: "Agent A", IsPublic: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agentHome, err := config.AgentHomeDir("agent-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const legacy = "---\nname: Legacy\ndescription: guest-first migration source\n---\n\n1. Keep this workflow.\n"
+	legacyDir := filepath.Join(agentHome, "skills", "legacy")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "SKILL.md"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertSkillUsage(ctx, "agent-a", "legacy", store.HashSkillContent(legacy), true); err != nil {
+		t.Fatal(err)
+	}
+
+	remote := workspace.NewLocalFS(t.TempDir())
+	manualRoot := filepath.Join(t.TempDir(), "skills")
+	manualDir := filepath.Join(manualRoot, "manual")
+	if err := os.MkdirAll(manualDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const manual = "---\nname: Manual\ndescription: ordinary remote skill\n---\n\n1. Stay installed.\n"
+	if err := os.WriteFile(filepath.Join(manualDir, "SKILL.md"), []byte(manual), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := skills.SyncSkillUp(ctx, remote, "agent-a", "manual", manualRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	sp, err := loadUserSpace(ctx, "guest-a", bus.New(), db, remote, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sp.EnsureAgent(ctx, db, bus.New(), remote, "agent-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	learner := skills.NewManager(skills.LearnerSkillsDir(agentHome), skills.DefaultManagerConfig())
+	if got, ok := learner.Read("legacy"); !ok || got != legacy {
+		t.Fatalf("guest-first EnsureAgent lost legacy learner before migration: got (%q, %v)", got, ok)
+	}
+	r, err := remote.Get(ctx, "agent-a", "", "", "learner-skills/legacy/SKILL.md")
+	if err != nil {
+		t.Fatalf("guest-first migrated learner missing from remote: %v", err)
+	}
+	r.Close()
 }

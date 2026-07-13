@@ -3,11 +3,16 @@ package agentcli
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/users"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // freshStore opens an in-memory sqlite store for the test, migrated and
@@ -407,6 +412,40 @@ func TestRemoveDeletesAgentAndFiles(t *testing.T) {
 	files, _ := st.ListAgentFiles(context.Background(), res.Agent.ID, res.Agent.UserID)
 	if len(files) != 0 {
 		t.Fatalf("files leak after remove: %#v", files)
+	}
+}
+
+func TestRemoveWithWorkspaceQuiescesAndDeletesLearnerAssets(t *testing.T) {
+	st := freshStore(t)
+	res, err := Init(context.Background(), st, "learner-owner", InitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err := config.AgentHomeDir(res.Agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := skills.NewManager(skills.LearnerSkillsDir(home), skills.DefaultManagerConfig())
+	content := "---\nname: Learned\ndescription: learned workflow\n---\nsteps"
+	if err := manager.Create("learned", content); err != nil {
+		t.Fatal(err)
+	}
+	remote := workspace.NewLocalFS(t.TempDir())
+	if err := skills.SyncLearnerSkillContent(context.Background(), remote, res.Agent.ID, "learned", content); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RemoveWithWorkspace(context.Background(), st, remote, res.Agent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := remote.Stat(context.Background(), res.Agent.ID, "", "", "learner-skills/learned/SKILL.md"); !errors.Is(err, workspace.ErrNotFound) {
+		t.Fatalf("remote learner asset survived CLI deletion: %v", err)
+	}
+	if _, err := remote.Stat(context.Background(), res.Agent.ID, "", "", "learner-skills/.initialized"); err != nil {
+		t.Fatalf("authoritative empty learner marker missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skills.LearnerSkillsDir(home), "learned")); !os.IsNotExist(err) {
+		t.Fatalf("local learner asset survived CLI deletion: %v", err)
 	}
 }
 

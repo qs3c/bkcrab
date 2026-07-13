@@ -15,12 +15,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/qs3c/bkcrab/internal/agent/tools"
 	"github.com/qs3c/bkcrab/internal/auth"
 	"github.com/qs3c/bkcrab/internal/buildinfo"
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/scope"
+	"github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/users"
 	"github.com/qs3c/bkcrab/internal/workspace"
@@ -630,14 +632,71 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	if rec == nil {
 		return
 	}
-	if err := s.dataStore.DeleteAgent(r.Context(), id); err != nil {
+	deleteCtx, release, err := s.beginLearnerAgentDeletion(r.Context(), rec.ID)
+	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	// 从每个缓存的 UserSpace 中删除 agent，而不仅仅是拥有者的，
-	// 这样外部调用者停止通过 EnsureAgent 的延迟附加路径解析已删除的 agent。
-	s.invalidateAgent(rec.ID)
+	defer func() {
+		if err := release(); err != nil {
+			slog.Warn("release learner deletion lease failed", "agent", rec.ID, "error", err)
+		}
+	}()
+	if err := s.deleteLearnerAgentAssets(deleteCtx, rec.ID); err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := s.dataStore.DeleteAgent(deleteCtx, id); err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+type agentDeletionMarker interface {
+	MarkAgentDeleting(ctx context.Context, agentID string) error
+}
+
+func (s *Server) beginLearnerAgentDeletion(ctx context.Context, agentID string) (context.Context, func() error, error) {
+	marker, ok := s.dataStore.(agentDeletionMarker)
+	if !ok {
+		return nil, nil, fmt.Errorf("data store does not support durable agent deletion markers")
+	}
+	if err := marker.MarkAgentDeleting(ctx, agentID); err != nil {
+		return nil, nil, fmt.Errorf("mark agent %s deleting: %w", agentID, err)
+	}
+	// Quiesce every cached owner/guest instance. The durable marker also blocks
+	// mutations on sibling Pods; the agent-wide lease waits for a mutation that
+	// had already passed its guard before the marker was committed.
+	s.invalidateAgent(agentID)
+	leaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 35*time.Second)
+	lease, err := skills.WaitForLearnerAgentLeaseGuard(leaseCtx, s.dataStore, agentID)
+	if err != nil {
+		cancel()
+		return nil, nil, fmt.Errorf("quiesce learner mutations for %s: %w", agentID, err)
+	}
+	release := func() error {
+		err := lease.Release()
+		cancel()
+		return err
+	}
+	return lease.Context(), release, nil
+}
+
+func (s *Server) deleteLearnerAgentAssets(ctx context.Context, agentID string) error {
+	if s.workspaceStore != nil {
+		if err := skills.DeleteLearnerNamespace(ctx, s.workspaceStore, agentID); err != nil {
+			return fmt.Errorf("delete remote learner assets for %s: %w", agentID, err)
+		}
+	}
+	agentHome, err := config.AgentHomeDir(agentID)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(skills.LearnerSkillsDir(agentHome)); err != nil {
+		return fmt.Errorf("delete local learner assets for %s: %w", agentID, err)
+	}
+	return nil
 }
 
 // Agent identity / memory files 文件 — 都存在于 agent_files 中，按 agent 作用域划分。

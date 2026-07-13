@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -58,6 +59,40 @@ func TestMigrateLegacyLearnerSkillsMovesVerifiedAssetAndSyncsRemote(t *testing.T
 		t.Fatalf("remote learner missing: %v", err)
 	}
 	r.Close()
+}
+
+func TestMigrateLegacyLearnerSkillsMigratesWholeBatchBeforeMarkerBecomesAuthoritative(t *testing.T) {
+	agentDir := t.TempDir()
+	contents := map[string]string{
+		"first":  "---\nname: First\ndescription: first migrated learner\n---\n\nFirst steps.\n",
+		"second": "---\nname: Second\ndescription: second migrated learner\n---\n\nSecond steps.\n",
+	}
+	usage := &fakeLearnerMigrationUsage{}
+	for _, slug := range []string{"first", "second"} {
+		content := contents[slug]
+		writeLegacyMigrationSkill(t, agentDir, slug, content, false)
+		usage.rows = append(usage.rows, store.SkillUsageRow{
+			Slug: slug, Origin: "learner", ContentHash: store.HashSkillContent(content),
+		})
+	}
+	remote := workspace.NewLocalFS(t.TempDir())
+	target := skills.NewManager(skills.LearnerSkillsDir(agentDir), skills.DefaultManagerConfig())
+
+	migrateLegacyLearnerSkills(context.Background(), usage, remote, "agent-a", agentDir, target)
+
+	for _, slug := range []string{"first", "second"} {
+		if got, ok := target.Read(slug); !ok || got != contents[slug] {
+			t.Fatalf("batch target %q = (%q,%v)", slug, got, ok)
+		}
+		if _, err := os.Stat(filepath.Join(agentDir, "skills", slug)); !os.IsNotExist(err) {
+			t.Fatalf("legacy source %q survived: %v", slug, err)
+		}
+		r, err := remote.Get(context.Background(), "agent-a", "", "", "learner-skills/"+slug+"/SKILL.md")
+		if err != nil {
+			t.Fatalf("remote batch learner %q missing: %v", slug, err)
+		}
+		r.Close()
+	}
 }
 
 func TestMigrateLegacyLearnerSkillsLeavesAmbiguousSources(t *testing.T) {
@@ -131,4 +166,31 @@ func TestMigrateLegacyLearnerSkillsMirrorsExistingDedicatedLocalAsset(t *testing
 		t.Fatalf("existing dedicated local learner was not mirrored: %v", err)
 	}
 	r.Close()
+}
+
+func TestMigrateLegacyLearnerSkillsDoesNotResurrectInitializedRemoteDeletion(t *testing.T) {
+	agentDir := t.TempDir()
+	const content = "---\nname: Deleted\ndescription: stale legacy learner\n---\n\nDo the steps.\n"
+	writeLegacyMigrationSkill(t, agentDir, "deleted", content, false)
+	usage := &fakeLearnerMigrationUsage{rows: []store.SkillUsageRow{{
+		Slug: "deleted", Origin: "learner", ContentHash: store.HashSkillContent(content),
+	}}}
+	remote := workspace.NewLocalFS(t.TempDir())
+	target := skills.NewManager(skills.LearnerSkillsDir(agentDir), skills.DefaultManagerConfig())
+
+	// A marker with no skill objects is an authoritative remote tombstone: a
+	// newer Pod deleted the last learner skill. A stale Pod may still have the
+	// pre-isolation copy under <agent>/skills, but migration must not upload it.
+	if err := skills.DeleteLearnerSkillUp(context.Background(), remote, "agent-a", "deleted"); err != nil {
+		t.Fatal(err)
+	}
+
+	migrateLegacyLearnerSkills(context.Background(), usage, remote, "agent-a", agentDir, target)
+
+	if _, ok := target.Read("deleted"); ok {
+		t.Fatal("authoritative remote deletion was resurrected into the dedicated local layer")
+	}
+	if _, err := remote.Get(context.Background(), "agent-a", "", "", "learner-skills/deleted/SKILL.md"); !errors.Is(err, workspace.ErrNotFound) {
+		t.Fatalf("authoritative remote deletion was resurrected: %v", err)
+	}
 }

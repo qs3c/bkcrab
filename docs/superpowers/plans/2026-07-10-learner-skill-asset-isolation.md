@@ -1,5 +1,7 @@
 # learner 技能资产隔离实施计划
 
+> **已取代：** 本文记录历史实施过程，当前行为与不变量以 [Skill 自动提炼（自进化）Canonical 设计与实现](../../skill-self-evolution.md) 为准。
+
 **目标：** 将自动提炼产生的技能建模为 agent 资产：所有使用该 agent 的用户都能加载和使用；只有 agent owner 能看到 `skill_manage`、管理 learner 技能并触发自动提炼；learner 技能与安装/手工创建的技能在本地和对象存储中完全分层。
 
 **核心设计：** 不引入通用 `SkillService`。沿用现有 `skills.Manager`、`SkillsLoader` 和 `workspace.Store`，只增加 learner 专用目录、对象存储前缀与窄接线。`skill_manage` 仍是 learner 管理的唯一模型入口；`write_file("skills/...")`、skill-creator 和安装流程继续管理非 learner 技能，互不替代。

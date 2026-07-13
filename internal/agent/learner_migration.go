@@ -52,61 +52,116 @@ func migrateLegacyLearnerSkills(ctx context.Context, usage learnerMigrationUsage
 		slog.Warn("learner migration: list ledger failed", "agent", agentID, "error", err)
 		return
 	}
+	if len(rows) == 0 {
+		return
+	}
+	// Hold the agent-wide lease for the whole migration batch and decide remote
+	// authority exactly once under that lease. Syncing the first legacy skill
+	// initializes the namespace marker; re-reading that marker per row would
+	// incorrectly treat our own migration as a newer authoritative runtime and
+	// delete every remaining legacy source without copying it.
+	leaser, _ := usage.(skills.MutationLeaser)
+	lease, err := skills.WaitForLearnerAgentLeaseGuard(ctx, leaser, agentID)
+	if err != nil {
+		slog.Warn("learner migration: agent mutation lease unavailable", "agent", agentID, "error", err)
+		return
+	}
+	defer func() {
+		if err := lease.Release(); err != nil {
+			slog.Warn("learner migration: release agent mutation lease failed", "agent", agentID, "error", err)
+		}
+	}()
+	ctx = lease.Context()
+
+	remoteAuthoritative := false
+	if ws != nil {
+		initialized, err := skills.LearnerNamespaceInitialized(ctx, ws, agentID)
+		if err != nil {
+			// Failing closed is essential here: treating an unreadable namespace
+			// as unused can resurrect an intentionally deleted learner skill.
+			slog.Warn("learner migration: remote namespace state unavailable", "agent", agentID, "error", err)
+			return
+		}
+		remoteAuthoritative = initialized
+	}
+
 	legacyRoot := filepath.Join(agentDir, "skills")
 	legacy := skills.NewManager(legacyRoot, skills.DefaultManagerConfig())
 	for _, row := range rows {
 		if err := ctx.Err(); err != nil {
 			return
 		}
-		if row.Origin != "learner" || row.Slug == "" || row.ContentHash == "" {
-			continue
-		}
-		// Manager.Read performs canonical slug validation before any direct
-		// filepath work below. If the old source is already gone, reconcile a
-		// verified local learner copy upward (for local-only installations that
-		// later gained object storage), then continue idempotently.
-		if _, legacyExists := legacy.Read(row.Slug); !legacyExists {
-			if existing, targetExists := target.Read(row.Slug); targetExists && store.HashSkillContent(existing) == row.ContentHash {
-				if err := skills.SyncLearnerSkillUp(ctx, ws, agentID, row.Slug, target.RootDir()); err != nil {
-					slog.Warn("learner reconciliation: remote sync failed", "agent", agentID, "skill", row.Slug, "error", err)
+		func(row store.SkillUsageRow) {
+			if row.Origin != "learner" || row.Slug == "" || row.ContentHash == "" {
+				return
+			}
+			unlock, err := skills.LockLearnerSkillOperation(target.RootDir(), row.Slug)
+			if err != nil {
+				slog.Warn("learner migration: local mutation lock unavailable", "agent", agentID, "skill", row.Slug, "error", err)
+				return
+			}
+			defer unlock()
+
+			if remoteAuthoritative {
+				// The dedicated namespace has already been used by a newer runtime.
+				// Its current contents (including an initialized empty set) win over
+				// every pre-isolation Pod-local copy. Remove only a hash-verified
+				// legacy learner; ambiguous/manual content remains untouched.
+				if _, ok := verifiedLegacyLearnerSource(legacyRoot, row); !ok {
+					return
 				}
+				if err := legacy.Delete(row.Slug); err != nil {
+					slog.Warn("learner migration: stale source delete failed", "agent", agentID, "skill", row.Slug, "error", err)
+					return
+				}
+				slog.Info("removed stale legacy learner after remote initialization", "agent", agentID, "skill", row.Slug)
+				return
 			}
-			continue
-		}
-		content, ok := verifiedLegacyLearnerSource(legacyRoot, row)
-		if !ok {
-			slog.Warn("learner migration: legacy source is ambiguous; keeping it in place", "agent", agentID, "skill", row.Slug)
-			continue
-		}
+			// Manager.Read performs canonical slug validation before any direct
+			// filepath work below. If the old source is already gone, reconcile a
+			// verified local learner copy upward (for local-only installations that
+			// later gained object storage), then continue idempotently.
+			if _, legacyExists := legacy.Read(row.Slug); !legacyExists {
+				if existing, targetExists := target.Read(row.Slug); targetExists && store.HashSkillContent(existing) == row.ContentHash {
+					if err := skills.SyncLearnerSkillContent(ctx, ws, agentID, row.Slug, existing); err != nil {
+						slog.Warn("learner reconciliation: remote sync failed", "agent", agentID, "skill", row.Slug, "error", err)
+					}
+				}
+				return
+			}
+			content, ok := verifiedLegacyLearnerSource(legacyRoot, row)
+			if !ok {
+				slog.Warn("learner migration: legacy source is ambiguous; keeping it in place", "agent", agentID, "skill", row.Slug)
+				return
+			}
 
-		createdTarget := false
-		if existing, exists := target.Read(row.Slug); exists {
-			if store.HashSkillContent(existing) != row.ContentHash {
-				slog.Warn("learner migration conflict: target differs; keeping legacy source", "agent", agentID, "skill", row.Slug)
-				continue
+			createdTarget := false
+			if existing, exists := target.Read(row.Slug); exists {
+				if store.HashSkillContent(existing) != row.ContentHash {
+					slog.Warn("learner migration conflict: target differs; keeping legacy source", "agent", agentID, "skill", row.Slug)
+					return
+				}
+			} else if err := target.Create(row.Slug, content); err != nil {
+				slog.Warn("learner migration: create target failed", "agent", agentID, "skill", row.Slug, "error", err)
+				return
+			} else {
+				createdTarget = true
 			}
-		} else if err := target.Create(row.Slug, content); err != nil {
-			slog.Warn("learner migration: create target failed", "agent", agentID, "skill", row.Slug, "error", err)
-			continue
-		} else {
-			createdTarget = true
-		}
 
-		if err := skills.SyncLearnerSkillUp(ctx, ws, agentID, row.Slug, target.RootDir()); err != nil {
-			// If this invocation created the target, keeping it would split local
-			// and remote authority. Remove it and leave the verified source intact.
-			if createdTarget {
-				_ = target.Delete(row.Slug)
-				_ = skills.DeleteLearnerSkillUp(ctx, ws, agentID, row.Slug)
+			if err := skills.SyncLearnerSkillContent(ctx, ws, agentID, row.Slug, content); err != nil {
+				if createdTarget {
+					_ = target.Delete(row.Slug)
+					_ = skills.DeleteLearnerSkillUp(ctx, ws, agentID, row.Slug)
+				}
+				slog.Warn("learner migration: remote sync failed; keeping legacy source", "agent", agentID, "skill", row.Slug, "error", err)
+				return
 			}
-			slog.Warn("learner migration: remote sync failed; keeping legacy source", "agent", agentID, "skill", row.Slug, "error", err)
-			continue
-		}
-		if err := legacy.Delete(row.Slug); err != nil {
-			slog.Warn("learner migration: source delete failed; both copies retained", "agent", agentID, "skill", row.Slug, "error", err)
-			continue
-		}
-		slog.Info("migrated legacy learner skill", "agent", agentID, "skill", row.Slug)
+			if err := legacy.Delete(row.Slug); err != nil {
+				slog.Warn("learner migration: source delete failed; both copies retained", "agent", agentID, "skill", row.Slug, "error", err)
+				return
+			}
+			slog.Info("migrated legacy learner skill", "agent", agentID, "skill", row.Slug)
+		}(row)
 	}
 }
 

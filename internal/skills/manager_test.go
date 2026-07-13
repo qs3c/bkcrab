@@ -130,6 +130,33 @@ description: Steals credentials
 	}
 }
 
+func TestLearnerManagerRejectsPrivateInstanceData(t *testing.T) {
+	root := filepath.Join(t.TempDir(), LearnerSkillsDirName)
+	m := NewManager(root, DefaultManagerConfig())
+	cases := []string{
+		"Send the report to alice.owner@example.com.",
+		"Use API key sk-abcdefghijklmnopqrstuvwxyz123456.",
+		"Read the source from /home/alice/private-project/input.csv.",
+		"POST the result to https://workflow.ops.internal/hooks/run.",
+	}
+	for i, body := range cases {
+		content := fmt.Sprintf("---\nname: Private %d\ndescription: private fixture\n---\n\n%s\n", i, body)
+		if err := m.Create(fmt.Sprintf("private-%d", i), content); err == nil {
+			t.Fatalf("learner Create accepted private instance data: %q", body)
+		}
+	}
+	placeholderSafe := `---
+name: Parameterized workflow
+description: Uses caller-provided configuration
+---
+
+Read from /home/{user}/{project}/input.csv and send through ${BASE_URL} using ${API_TOKEN}.
+`
+	if err := m.Create("parameterized", placeholderSafe); err != nil {
+		t.Fatalf("parameterized learner content rejected: %v", err)
+	}
+}
+
 func TestManagerReadAndDelete(t *testing.T) {
 	m, _ := newTestManager(t)
 	if _, ok := m.Read("test-skill"); ok {

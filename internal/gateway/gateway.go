@@ -211,25 +211,11 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 
 	// 代理产生的工作成果的对象存储。对象存储配置位于 system_settings 中用于运行时编辑的字段，
 	// 以及 BKCRAB_OBJECT_STORE_* 环境变量用于运维管理的覆盖。
-	osCfg := readObjectStoreCfg(st)
-	wsInner, err := workspace.Factory{
-		Type:         osCfg.Type,
-		LocalDir:     osCfg.Local.Root,
-		AccountID:    osCfg.AccountID,
-		AliyunIntern: osCfg.AliyunIntern,
-		S3: workspace.S3Config{
-			Endpoint:  osCfg.S3.Endpoint,
-			Region:    osCfg.S3.Region,
-			Bucket:    osCfg.S3.Bucket,
-			Prefix:    osCfg.S3.Prefix,
-			AccessKey: osCfg.S3.AccessKey,
-			SecretKey: osCfg.S3.SecretKey,
-			UseSSL:    osCfg.S3.UseSSL,
-		},
-	}.New(filepath.Join(homeDir, "workspaces"))
+	wsInner, err := OpenWorkspaceStore(st)
 	if err != nil {
 		return nil, fmt.Errorf("open object store: %w", err)
 	}
+	osCfg := readObjectStoreCfg(st)
 	slog.Info("object store", "type", defaultStr(osCfg.Type, "local"))
 
 	// LLM 令牌计量：SQLMeter UPSERT 到 Store 打开的同一个数据库的 token_usage_daily 表中，
@@ -583,6 +569,33 @@ func readObjectStoreCfg(st store.Store) config.ObjectStoreCfg {
 	}
 	config.LoadEnv().ApplyToConfig(cfg)
 	return cfg.ObjectStore
+}
+
+// OpenWorkspaceStore constructs the same shared object store used by the
+// running gateway. Operator-side workflows such as `bkcrab agents rm` use it
+// so permanent deletion also removes learner assets from S3/OSS rather than
+// only deleting relational rows and one Pod-local cache.
+func OpenWorkspaceStore(st store.Store) (workspace.Store, error) {
+	osCfg := readObjectStoreCfg(st)
+	homeDir, err := config.HomeDir()
+	if err != nil {
+		return nil, err
+	}
+	return workspace.Factory{
+		Type:         osCfg.Type,
+		LocalDir:     osCfg.Local.Root,
+		AccountID:    osCfg.AccountID,
+		AliyunIntern: osCfg.AliyunIntern,
+		S3: workspace.S3Config{
+			Endpoint:  osCfg.S3.Endpoint,
+			Region:    osCfg.S3.Region,
+			Bucket:    osCfg.S3.Bucket,
+			Prefix:    osCfg.S3.Prefix,
+			AccessKey: osCfg.S3.AccessKey,
+			SecretKey: osCfg.S3.SecretKey,
+			UseSSL:    osCfg.S3.UseSSL,
+		},
+	}.New(filepath.Join(homeDir, "workspaces"))
 }
 
 func readSystemHooks(st store.Store) config.HooksCfg {

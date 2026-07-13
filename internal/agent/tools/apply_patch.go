@@ -523,6 +523,9 @@ func (r *Registry) readForPatch(ctx context.Context, path string) (string, error
 	if err != nil {
 		return "", err
 	}
+	if err := r.rejectResolvedLearnerPath(full); err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(full)
 	if err != nil {
 		if os.IsNotExist(err) && isSingleSegmentSystemFile(path) {
@@ -534,6 +537,9 @@ func (r *Registry) readForPatch(ctx context.Context, path string) (string, error
 }
 
 func (r *Registry) writeForPatch(ctx context.Context, path, content string) error {
+	if err := rejectLearnerManagedPath(path); err != nil {
+		return err
+	}
 	if r.managedMemoryFileBlocked(path) {
 		return fmt.Errorf("%s", ManagedMemoryFileRefusal)
 	}
@@ -561,6 +567,9 @@ func (r *Registry) writeForPatch(ctx context.Context, path, content string) erro
 	if err != nil {
 		return err
 	}
+	if err := r.rejectResolvedLearnerPath(full); err != nil {
+		return err
+	}
 	if isGlobalSkillsPath(full) {
 		return errGlobalSkillsDirWrite
 	}
@@ -571,6 +580,9 @@ func (r *Registry) writeForPatch(ctx context.Context, path, content string) erro
 }
 
 func (r *Registry) deleteForPatch(ctx context.Context, path string) error {
+	if err := rejectLearnerManagedPath(path); err != nil {
+		return err
+	}
 	if r.managedMemoryFileBlocked(path) {
 		return fmt.Errorf("%s", ManagedMemoryFileRefusal)
 	}
@@ -587,6 +599,9 @@ func (r *Registry) deleteForPatch(ctx context.Context, path string) error {
 	root := r.rootForPath(path)
 	full, err := resolvePathSandboxed(root, r.effectiveSandboxRoot(root), path)
 	if err != nil {
+		return err
+	}
+	if err := r.rejectResolvedLearnerPath(full); err != nil {
 		return err
 	}
 	if err := os.Remove(full); err != nil {
@@ -625,6 +640,9 @@ func (r *Registry) readForPatchSandbox(ctx context.Context, ex sandbox.Executor,
 }
 
 func (r *Registry) writeForPatchSandbox(ctx context.Context, ex sandbox.Executor, path, content string) error {
+	if err := rejectLearnerManagedPath(path); err != nil {
+		return err
+	}
 	if r.managedMemoryFileBlocked(path) {
 		return fmt.Errorf("%s", ManagedMemoryFileRefusal)
 	}
@@ -641,6 +659,9 @@ func (r *Registry) writeForPatchSandbox(ctx context.Context, ex sandbox.Executor
 }
 
 func (r *Registry) deleteForPatchSandbox(ctx context.Context, ex sandbox.Executor, path string) error {
+	if err := rejectLearnerManagedPath(path); err != nil {
+		return err
+	}
 	if r.managedMemoryFileBlocked(path) {
 		return fmt.Errorf("%s", ManagedMemoryFileRefusal)
 	}
@@ -722,6 +743,9 @@ func runApplyPatch(
 	)
 
 	for _, op := range p.Ops {
+		if isLearnerManagedPath(op.Path) || (op.MoveTo != "" && isLearnerManagedPath(op.MoveTo)) {
+			return "", fmt.Errorf("apply_patch: %s", LearnerSkillsFileRefusal)
+		}
 		switch op.Type {
 		case opAdd:
 			if op.Path == "" {

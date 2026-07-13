@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/qs3c/bkcrab/internal/agent/tools"
 	"github.com/qs3c/bkcrab/internal/bus"
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/provider"
@@ -14,13 +16,15 @@ import (
 type skillGateCaptureProvider struct {
 	mu             sync.Mutex
 	firstChatTools []provider.Tool
+	firstMessages  []provider.Message
 	learnerCall    chan struct{}
 }
 
-func (p *skillGateCaptureProvider) Chat(_ context.Context, _ []provider.Message, toolDefs []provider.Tool, _ string, _ int, _ float64) (*provider.Response, error) {
+func (p *skillGateCaptureProvider) Chat(_ context.Context, messages []provider.Message, toolDefs []provider.Tool, _ string, _ int, _ float64) (*provider.Response, error) {
 	p.mu.Lock()
 	if p.firstChatTools == nil {
 		p.firstChatTools = append([]provider.Tool(nil), toolDefs...)
+		p.firstMessages = append([]provider.Message(nil), messages...)
 	}
 	p.mu.Unlock()
 	if len(toolDefs) == 1 && toolDefs[0].Function.Name == "skill_manage" && p.learnerCall != nil {
@@ -32,10 +36,11 @@ func (p *skillGateCaptureProvider) Chat(_ context.Context, _ []provider.Message,
 	return &provider.Response{Content: "ok"}, nil
 }
 
-func (p *skillGateCaptureProvider) ChatStream(_ context.Context, _ []provider.Message, toolDefs []provider.Tool, _ string, _ int, _ float64) (*provider.StreamReader, error) {
+func (p *skillGateCaptureProvider) ChatStream(_ context.Context, messages []provider.Message, toolDefs []provider.Tool, _ string, _ int, _ float64) (*provider.StreamReader, error) {
 	p.mu.Lock()
 	if p.firstChatTools == nil {
 		p.firstChatTools = append([]provider.Tool(nil), toolDefs...)
+		p.firstMessages = append([]provider.Message(nil), messages...)
 	}
 	p.mu.Unlock()
 	ch := make(chan provider.StreamChunk, 1)
@@ -59,6 +64,17 @@ func (p *skillGateCaptureProvider) capturedTools() []provider.Tool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]provider.Tool(nil), p.firstChatTools...)
+}
+
+func (p *skillGateCaptureProvider) sawForegroundSkillDirective() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, message := range p.firstMessages {
+		if message.Role == "system" && strings.Contains(message.Content, "<learner_skill_maintenance>") {
+			return true
+		}
+	}
+	return false
 }
 
 func newSkillGateAgent(t *testing.T, p provider.Provider) *Agent {
@@ -107,7 +123,26 @@ func TestSkillManageVisibilityMatchesOwnerAcrossLoopVariants(t *testing.T) {
 			if got := p.sawSkillManage(); got != tt.want {
 				t.Fatalf("skill_manage visible = %v, want %v; tools=%+v owner=%q runtime=%q", got, tt.want, p.capturedTools(), a.agentOwnerUserID, a.ownerUserID)
 			}
+			if got := p.sawForegroundSkillDirective(); got != tt.want {
+				t.Fatalf("foreground learner directive visible = %v, want %v", got, tt.want)
+			}
 		})
+	}
+}
+
+func TestForegroundSkillDirectiveIsUpdateOnlyAndModeAware(t *testing.T) {
+	r := tools.NewRegistry(t.TempDir(), t.TempDir())
+	r.SetSkillManageActions(tools.SkillManageForeground)
+	directive := foregroundSkillMaintenanceDirective(r, config.PromptModeAgent)
+	for _, required := range []string{"list/read", "use update", "expected_hash", "read again", "never create or delete", "background cadence"} {
+		if !strings.Contains(directive, required) {
+			t.Fatalf("foreground directive missing %q: %s", required, directive)
+		}
+	}
+	for _, mode := range []string{config.PromptModeChatbot, config.PromptModeCustomize} {
+		if got := foregroundSkillMaintenanceDirective(r, mode); got != "" {
+			t.Fatalf("prompt mode %q received unavailable skill_manage directive", mode)
+		}
 	}
 }
 
@@ -138,13 +173,12 @@ func TestLearnerOwnerTurnFailsClosed(t *testing.T) {
 	}
 }
 
-func TestRunPostTurnStartsLearnerOnlyForOwner(t *testing.T) {
+func TestRunPostTurnDoesNotUseSingleTurnLearnerFallback(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		userID string
-		want   bool
 	}{
-		{name: "owner", userID: "owner-a", want: true},
+		{name: "owner", userID: "owner-a"},
 		{name: "guest", userID: "guest-a"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -153,17 +187,9 @@ func TestRunPostTurnStartsLearnerOnlyForOwner(t *testing.T) {
 			a.skillsLearner.minToolCalls = 1
 			msg := bus.InboundMessage{Channel: "web", ChatID: tt.name, UserID: tt.userID, PeerKind: "dm"}
 			a.runPostTurn(context.Background(), msg, []provider.Message{{Role: "user", Content: "material"}}, 1, a.memory.WithUserID(tt.userID), nil)
-			if tt.want {
-				select {
-				case <-p.learnerCall:
-				case <-time.After(time.Second):
-					t.Fatal("owner turn did not start learner")
-				}
-				return
-			}
 			select {
 			case <-p.learnerCall:
-				t.Fatal("guest turn started learner")
+				t.Fatal("single-turn fallback started learner without persistent anchor")
 			case <-time.After(100 * time.Millisecond):
 			}
 		})

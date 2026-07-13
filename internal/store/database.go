@@ -155,6 +155,9 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 	if err := d.migrateSessionMessagesAddTurnColumns(ctx); err != nil {
 		return fmt.Errorf("migrate session_messages turn columns: %w", err)
 	}
+	if err := d.migrateSkillExtractionJobsRetryAvailability(ctx); err != nil {
+		return fmt.Errorf("migrate skill_extraction_jobs retry availability: %w", err)
+	}
 	if err := d.migrateAgentGoalsAddRouting(ctx); err != nil {
 		return fmt.Errorf("migrate agent_goals routing: %w", err)
 	}
@@ -163,6 +166,84 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 	}
 	if err := d.migrateSessionsAddChatterUserID(ctx); err != nil {
 		return fmt.Errorf("migrate sessions chatter_user_id: %w", err)
+	}
+	if err := d.backfillSkillExtractionCheckpoints(ctx); err != nil {
+		return fmt.Errorf("backfill skill extraction checkpoints: %w", err)
+	}
+	return nil
+}
+
+// backfillSkillExtractionCheckpoints converts legacy per-turn markers into a
+// consumed boundary. Legacy claims had no durable job row; treating their
+// newest marker as completed preserves the old no-replay behavior. The upsert
+// is monotonic and therefore safe on every Migrate invocation.
+func (d *DBStore) backfillSkillExtractionCheckpoints(ctx context.Context) error {
+	now := time.Now().UTC()
+	switch d.dialect {
+	case mysqlDialect:
+		_, err := d.db.ExecContext(ctx, `INSERT INTO skill_extraction_checkpoints
+			(owner_user_id, agent_id, session_key, chatter_user_id, consumed_through_seq, created_at, updated_at)
+			SELECT user_id, agent_id, session_key,
+			       COALESCE(NULLIF(chatter_user_id,''), user_id), MAX(seq), ?, ?
+			FROM session_messages sm WHERE skill_extraction_id IS NOT NULL
+			  AND NOT EXISTS (SELECT 1 FROM skill_extraction_jobs j WHERE j.id=sm.skill_extraction_id)
+			GROUP BY user_id, agent_id, session_key, COALESCE(NULLIF(chatter_user_id,''), user_id)
+			ON DUPLICATE KEY UPDATE
+			  consumed_through_seq=GREATEST(consumed_through_seq, VALUES(consumed_through_seq)),
+			  updated_at=VALUES(updated_at)`, now, now)
+		return err
+	case "postgres":
+		_, err := d.db.ExecContext(ctx, `INSERT INTO skill_extraction_checkpoints
+			(owner_user_id, agent_id, session_key, chatter_user_id, consumed_through_seq, created_at, updated_at)
+			SELECT user_id, agent_id, session_key,
+			       COALESCE(NULLIF(chatter_user_id,''), user_id), MAX(seq), $1, $1
+			FROM session_messages sm WHERE skill_extraction_id IS NOT NULL
+			  AND NOT EXISTS (SELECT 1 FROM skill_extraction_jobs j WHERE j.id=sm.skill_extraction_id)
+			GROUP BY user_id, agent_id, session_key, COALESCE(NULLIF(chatter_user_id,''), user_id)
+			ON CONFLICT (owner_user_id, agent_id, session_key, chatter_user_id) DO UPDATE SET
+			  consumed_through_seq=GREATEST(skill_extraction_checkpoints.consumed_through_seq, EXCLUDED.consumed_through_seq),
+			  updated_at=EXCLUDED.updated_at`, now)
+		return err
+	default:
+		_, err := d.db.ExecContext(ctx, `INSERT INTO skill_extraction_checkpoints
+			(owner_user_id, agent_id, session_key, chatter_user_id, consumed_through_seq, created_at, updated_at)
+			SELECT user_id, agent_id, session_key,
+			       COALESCE(NULLIF(chatter_user_id,''), user_id), MAX(seq), ?, ?
+			FROM session_messages sm WHERE skill_extraction_id IS NOT NULL
+			  AND NOT EXISTS (SELECT 1 FROM skill_extraction_jobs j WHERE j.id=sm.skill_extraction_id)
+			GROUP BY user_id, agent_id, session_key, COALESCE(NULLIF(chatter_user_id,''), user_id)
+			ON CONFLICT (owner_user_id, agent_id, session_key, chatter_user_id) DO UPDATE SET
+			  consumed_through_seq=MAX(skill_extraction_checkpoints.consumed_through_seq, excluded.consumed_through_seq),
+			  updated_at=excluded.updated_at`, now, now)
+		return err
+	}
+}
+
+// migrateSkillExtractionJobsRetryAvailability adds the durable not-before
+// timestamp used by retry backoff. NULL deliberately means immediately
+// available, so jobs created before this migration retain their old behavior.
+func (d *DBStore) migrateSkillExtractionJobsRetryAvailability(ctx context.Context) error {
+	exists, err := d.tableExists(ctx, "skill_extraction_jobs")
+	if err != nil || !exists {
+		return err
+	}
+	has, err := d.tableHasColumn(ctx, "skill_extraction_jobs", "next_attempt_at")
+	if err != nil {
+		return err
+	}
+	if !has {
+		columnType := "TIMESTAMP NULL"
+		if d.dialect == mysqlDialect {
+			columnType = "DATETIME(6) NULL"
+		}
+		if _, err := d.db.ExecContext(ctx,
+			fmt.Sprintf(`ALTER TABLE skill_extraction_jobs ADD COLUMN next_attempt_at %s`, columnType)); err != nil {
+			return fmt.Errorf("add next_attempt_at: %w", err)
+		}
+	}
+	if err := d.execDDL(ctx, `CREATE INDEX IF NOT EXISTS idx_skill_extraction_jobs_available
+		ON skill_extraction_jobs (agent_id, status, next_attempt_at, lease_expires_at, created_at)`); err != nil {
+		return fmt.Errorf("create retry availability index: %w", err)
 	}
 	return nil
 }
@@ -334,7 +415,7 @@ func (d *DBStore) migrateSessionMessagesAddTurnColumns(ctx context.Context) erro
 // migrateTokenUsageAddProvider 将 `provider` 列改装到旧的 token_usage_daily
 // 表上，该表在按提供商细分功能发布之前创建。预发布模式在主键中只有
 // (day, user, agent, session, model)，这使得按 provider 进行 GROUP BY 不可行
-//（并允许不同提供商的同名模型冲突）。由于该表只保存仪表板每次刷新时重新读取的
+// （并允许不同提供商的同名模型冲突）。由于该表只保存仪表板每次刷新时重新读取的
 // 累计计数器，在罕见的升级路径上删除它比使用 SQLite 的"创建新表+复制+交换"
 // 方式重建主键更便宜。幂等：如果列已存在则提前返回，如果表本身尚不存在
 // 则无操作（新安装运行 migrationSQL 中的新 CREATE TABLE）。
@@ -793,7 +874,7 @@ func (d *DBStore) migrateAgentsAddIsPublic(ctx context.Context) error {
 
 // migrateDropAgentGrants 删除旧的按用户共享表。
 // 共享现在位于 agents.is_public 上；现有的按用户授权不会向前迁移
-//（先前的模型没有发布给普通用户）。DROP TABLE IF EXISTS 是幂等的，
+// （先前的模型没有发布给普通用户）。DROP TABLE IF EXISTS 是幂等的，
 // 在从未创建该表的新安装上是无操作。
 func (d *DBStore) migrateDropAgentGrants(ctx context.Context) error {
 	if _, err := d.db.ExecContext(ctx, `DROP TABLE IF EXISTS agent_grants`); err != nil {
@@ -1332,6 +1413,13 @@ func (d *DBStore) migrationSQL() []string {
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_agents_user ON agents (user_id)`,
+		// SaveAgent and permanent deletion serialize on this durable row. Locking
+		// the tombstone table itself cannot protect an ID that has no tombstone
+		// yet under PostgreSQL/MySQL READ COMMITTED semantics.
+		`CREATE TABLE IF NOT EXISTS agent_mutation_locks (
+			agent_id TEXT PRIMARY KEY,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
 		// channel / account_id / chat_id 一起标识会话所属的 (频道类型, 频道实例, 对话)。
 		// 多个 session_key 可以共享该三元组——IM 路由的活动行是具有最新 updated_at 的行，
 		// 这正是 `idx_sessions_chat_active` 加速查找的。
@@ -1401,6 +1489,70 @@ func (d *DBStore) migrationSQL() []string {
 			skill_extraction_id TEXT,
 			PRIMARY KEY (user_id, agent_id, session_key, seq)
 		)`,
+		// A checkpoint is the single serialization point for one learner cadence
+		// stream. Only the newest turn that crosses the threshold is marked in
+		// session_messages; the durable consumed boundary lives here.
+		`CREATE TABLE IF NOT EXISTS skill_extraction_checkpoints (
+			owner_user_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			session_key TEXT NOT NULL,
+			chatter_user_id TEXT NOT NULL,
+			consumed_through_seq INTEGER NOT NULL DEFAULT -1,
+			inflight_job_id TEXT,
+			inflight_through_seq INTEGER,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (owner_user_id, agent_id, session_key, chatter_user_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_skill_extraction_checkpoints_agent
+			ON skill_extraction_checkpoints (agent_id, updated_at)`,
+		`CREATE TABLE IF NOT EXISTS skill_extraction_jobs (
+			id TEXT PRIMARY KEY,
+			owner_user_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			session_key TEXT NOT NULL,
+			chatter_user_id TEXT NOT NULL,
+			after_seq INTEGER NOT NULL,
+			through_seq INTEGER NOT NULL,
+			tool_call_count INTEGER NOT NULL,
+			snapshot_json TEXT NOT NULL,
+			snapshot_sha256 TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			outcome TEXT NOT NULL DEFAULT '',
+			mutation_count INTEGER NOT NULL DEFAULT 0,
+			slugs_json TEXT NOT NULL DEFAULT '[]',
+			attempt_count INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT NOT NULL DEFAULT '',
+			lease_owner TEXT NOT NULL DEFAULT '',
+			lease_expires_at TIMESTAMP,
+			next_attempt_at TIMESTAMP,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			completed_at TIMESTAMP,
+			UNIQUE (owner_user_id, agent_id, session_key, chatter_user_id, through_seq)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_skill_extraction_jobs_recovery
+			ON skill_extraction_jobs (agent_id, status, lease_expires_at, created_at)`,
+		// One durable mutation intent per cadence job. This is an outbox/receipt
+		// rather than a child of skill_usage because object storage cannot join the
+		// database transaction. desired_content is kept only while prepared and is
+		// scrubbed on every terminal transition.
+		`CREATE TABLE IF NOT EXISTS skill_extraction_mutations (
+			job_id TEXT PRIMARY KEY,
+			agent_id TEXT NOT NULL,
+			action TEXT NOT NULL,
+			slug TEXT NOT NULL,
+			before_hash TEXT NOT NULL DEFAULT '',
+			after_hash TEXT NOT NULL,
+			desired_content TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'prepared',
+			last_error TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			resolved_at TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_skill_extraction_mutations_recovery
+			ON skill_extraction_mutations (agent_id, status, updated_at)`,
 		// session_events 是 agent 在一轮中发出的实时事件流
 		//（内容块、tool_call、error、done）。持久化以便在轮次中
 		// 刷新/重连的客户端可以从其最后看到的 seq 恢复，而不是丢失
@@ -1592,6 +1744,17 @@ func (d *DBStore) migrationSQL() []string {
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (agent_id, slug)
 		)`,
+		`CREATE TABLE IF NOT EXISTS agent_skill_lifecycle (
+			agent_id TEXT PRIMARY KEY,
+			clock_seq BIGINT NOT NULL DEFAULT 1,
+			last_cleanup_seq BIGINT NOT NULL DEFAULT 0,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS agent_deletions (
+			agent_id TEXT PRIMARY KEY,
+			deleted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
 		// channel_leases 将轮询/持久连接频道适配器（微信、Telegram、Discord、
 		// Slack、飞书长连接）限制为一次一个进程。没有它，共享同一 bot 令牌的
 		// 两个云副本都将长轮询上游服务器，用户将收到每个回复两次。
@@ -1746,7 +1909,10 @@ func (d *DBStore) DeleteUser(ctx context.Context, id string) error {
 	}
 	rows.Close()
 	for _, aid := range ownedAgents {
-		for _, t := range []string{"agent_files", "sessions", "session_messages", "session_events", "context_archives", "cron_jobs"} {
+		if err := d.markAgentDeleting(ctx, tx, aid); err != nil {
+			return err
+		}
+		for _, t := range []string{"skill_extraction_mutations", "skill_extraction_jobs", "skill_extraction_checkpoints", "agent_files", "sessions", "session_messages", "session_events", "context_archives", "cron_jobs", "agent_skill_lifecycle", "skill_usage"} {
 			if _, err := tx.ExecContext(ctx,
 				fmt.Sprintf("DELETE FROM %s WHERE agent_id = %s", t, d.ph(1)), aid); err != nil {
 				return err
@@ -2001,43 +2167,74 @@ func (d *DBStore) SaveAgent(ctx context.Context, agent *AgentRecord) error {
 		agent.CreatedAt = now
 	}
 	agent.UpdatedAt = now
+	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := d.lockAgentMutation(ctx, tx, agent.ID); err != nil {
+		return err
+	}
+	checkDeleting := func() (bool, error) {
+		var count int
+		err := tx.QueryRowContext(ctx,
+			fmt.Sprintf(`SELECT COUNT(*) FROM agent_deletions WHERE agent_id=%s`, d.ph(1)),
+			agent.ID).Scan(&count)
+		return count > 0, err
+	}
+	if deleting, err := checkDeleting(); err != nil {
+		return err
+	} else if deleting {
+		return fmt.Errorf("store: agent %q has been permanently deleted and cannot be reused", agent.ID)
+	}
 	if d.dialect == mysqlDialect {
-		_, err := d.db.ExecContext(ctx,
+		_, err = tx.ExecContext(ctx,
 			`INSERT INTO agents (id, user_id, name, config, is_public, created_at, updated_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)
 				ON DUPLICATE KEY UPDATE
 				  user_id=VALUES(user_id), name=VALUES(name), config=VALUES(config),
 				  is_public=VALUES(is_public), updated_at=VALUES(updated_at)`,
 			agent.ID, agent.UserID, agent.Name, string(cfgData), agent.IsPublic, agent.CreatedAt, agent.UpdatedAt)
-		return err
-	}
-	if d.dialect == "postgres" {
-		_, err := d.db.ExecContext(ctx,
+	} else if d.dialect == "postgres" {
+		_, err = tx.ExecContext(ctx,
 			`INSERT INTO agents (id, user_id, name, config, is_public, created_at, updated_at)
 				VALUES ($1, $2, $3, $4, $5, $6, $7)
 				ON CONFLICT (id) DO UPDATE
 				SET user_id=$2, name=$3, config=$4, is_public=$5, updated_at=$7`,
 			agent.ID, agent.UserID, agent.Name, string(cfgData), agent.IsPublic, agent.CreatedAt, agent.UpdatedAt)
-		return err
-	}
-	_, err := d.db.ExecContext(ctx,
-		`INSERT INTO agents (id, user_id, name, config, is_public, created_at, updated_at)
+	} else {
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO agents (id, user_id, name, config, is_public, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (id) DO UPDATE SET
 			  user_id=excluded.user_id, name=excluded.name,
 			  config=excluded.config, is_public=excluded.is_public,
 			  updated_at=excluded.updated_at`,
-		agent.ID, agent.UserID, agent.Name, string(cfgData), agent.IsPublic, agent.CreatedAt, agent.UpdatedAt)
-	return err
+			agent.ID, agent.UserID, agent.Name, string(cfgData), agent.IsPublic, agent.CreatedAt, agent.UpdatedAt)
+	}
+	if err != nil {
+		return err
+	}
+	// Keep a defensive recheck, although MarkAgentDeleting is serialized on the
+	// same agent_mutation_locks row and cannot enter this transaction boundary.
+	if deleting, err := checkDeleting(); err != nil {
+		return err
+	} else if deleting {
+		return fmt.Errorf("store: agent %q was deleted while being saved", agent.ID)
+	}
+	return tx.Commit()
 }
 
 func (d *DBStore) DeleteAgent(ctx context.Context, agentID string) error {
+	if err := d.MarkAgentDeleting(ctx, agentID); err != nil {
+		return err
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	for _, t := range []string{"agent_files", "sessions", "session_messages", "session_events", "context_archives", "cron_jobs"} {
+	for _, t := range []string{"skill_extraction_mutations", "skill_extraction_jobs", "skill_extraction_checkpoints", "agent_files", "sessions", "session_messages", "session_events", "context_archives", "cron_jobs", "agent_skill_lifecycle", "skill_usage"} {
 		if _, err := tx.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE agent_id = %s`, t, d.ph(1)), agentID); err != nil {
 			return err
@@ -2183,7 +2380,7 @@ func (d *DBStore) ListSessions(ctx context.Context, userID, agentID string) ([]S
 
 // ListSessionOwnerPairs 枚举 sessions 表中每个不同的 (user_id, agent_id)
 // 元组。管理员 Chats 页面调用此函数来查找所有 agent 上的所有对话拥有者
-//（聊天者/绑定者）——按 (拥有者, agent) 的 ListSessions 会遗漏非拥有者用户
+// （聊天者/绑定者）——按 (拥有者, agent) 的 ListSessions 会遗漏非拥有者用户
 // 与公共 agent 聊天或绑定 IM bot 的会话，因为这些行位于聊天者的 user_id 下，
 // 而不是 agent 拥有者的 user_id 下。
 func (d *DBStore) ListSessionOwnerPairs(ctx context.Context) ([]SessionOwnerPair, error) {
@@ -2378,7 +2575,7 @@ func (d *DBStore) GetContextArchive(ctx context.Context, agentID, sessionKey, id
 // seq 通过 `COALESCE(MAX(seq), -1) + 1` 在 INSERT 内原子性地计算，
 // 因此两个在同一个会话上竞争的并发追加者不会在唯一键上冲突——
 // 第二个插入在第一个提交后读取 MAX。多 pod 安全性依赖于引擎的写入序列化
-//（sqlite 全局锁，postgres MVCC + 提交时的复合主键唯一性检查）。
+// （sqlite 全局锁，postgres MVCC + 提交时的复合主键唯一性检查）。
 func (d *DBStore) AppendSessionMessage(ctx context.Context, userID, agentID, sessionKey string, msg SessionMessage) error {
 	if userID == "" {
 		return errors.New("store: AppendSessionMessage requires user_id")
@@ -2437,6 +2634,23 @@ func (d *DBStore) AppendTurnAnchor(ctx context.Context, userID, agentID, session
 		return 0, err
 	}
 	defer tx.Rollback()
+	// Under the web single-user session model, a newly accepted turn is an
+	// explicit successor to any running anchor left by a crashed request. Clear
+	// those stale cadence/sidebar markers in the same transaction before
+	// publishing the new running anchor; the archived messages themselves are
+	// retained. Scope by effective chatter so this does not cross IM identities.
+	effectiveChatterID := chatterID
+	if effectiveChatterID == "" {
+		effectiveChatterID = userID
+	}
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`UPDATE session_messages SET turn_status='', tool_call_count=0
+			WHERE user_id=%s AND agent_id=%s AND session_key=%s
+			  AND COALESCE(NULLIF(chatter_user_id,''), user_id)=%s
+			  AND turn_status='running'`, d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
+		userID, agentID, sessionKey, effectiveChatterID); err != nil {
+		return 0, err
+	}
 	var seq int64
 	if err := tx.QueryRowContext(ctx,
 		fmt.Sprintf(`SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages
@@ -2458,6 +2672,19 @@ func (d *DBStore) AppendTurnAnchor(ctx context.Context, userID, agentID, session
 		return 0, err
 	}
 	return seq, nil
+}
+
+// CancelTurnAnchor compensates a successfully archived running anchor whose
+// full sessions.messages publication failed. The row remains in the immutable
+// archive as an ordinary message, while cadence and sidebar running-state
+// queries stop treating it as an active turn. The operation is idempotent.
+func (d *DBStore) CancelTurnAnchor(ctx context.Context, userID, agentID, sessionKey string, seq int64) error {
+	_, err := d.db.ExecContext(ctx,
+		fmt.Sprintf(`UPDATE session_messages SET turn_status='', tool_call_count=0
+			WHERE user_id=%s AND agent_id=%s AND session_key=%s AND seq=%s
+			  AND turn_status='running'`, d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
+		userID, agentID, sessionKey, seq)
+	return err
 }
 
 // FinishTurn 见接口文档。
@@ -2636,8 +2863,8 @@ func (d *DBStore) RenameSession(ctx context.Context, userID, agentID, sessionKey
 }
 
 // MoveSession 翻转会话的 project_id。空字符串将会话从其当前项目中分离
-//（拖出到"Chats"）。调用方必须已经迁移了工作区文件并验证了 projectID
-//（当非空时）是用户在此 agent 下拥有的真实项目——此方法仅影响 sessions 行。
+// （拖出到"Chats"）。调用方必须已经迁移了工作区文件并验证了 projectID
+// （当非空时）是用户在此 agent 下拥有的真实项目——此方法仅影响 sessions 行。
 func (d *DBStore) MoveSession(ctx context.Context, userID, agentID, sessionKey, projectID string) error {
 	_, err := d.db.ExecContext(ctx,
 		fmt.Sprintf(`UPDATE sessions SET project_id = %s WHERE user_id = %s AND agent_id = %s AND session_key = %s`,
@@ -2689,7 +2916,7 @@ func (d *DBStore) GetAgentFile(ctx context.Context, agentID, userID, filename st
 
 // GetAgentFileExact 绕过拥有者回退覆盖层，仅返回 (agent_id, user_id, filename)
 // 行，或 ErrNotFound。当调用方明确需要知道*他们自己的*覆盖行是否存在时使用
-//（例如 Customize 页面区分"你已创建覆盖"与"你正在查看拥有者的内容"）。
+// （例如 Customize 页面区分"你已创建覆盖"与"你正在查看拥有者的内容"）。
 func (d *DBStore) GetAgentFileExact(ctx context.Context, agentID, userID, filename string) ([]byte, error) {
 	if agentID == "" {
 		return nil, errors.New("store: GetAgentFileExact requires agent_id")
@@ -3325,16 +3552,14 @@ func (d *DBStore) GetNextDueTime(ctx context.Context) (time.Time, error) {
 // 仅当行不存在、已由 holderID 持有（续约）或已过期（抢占）时返回 true。
 // 在竞争中失败的并发获取者得到 (false, nil)——不是错误。
 func (d *DBStore) AcquireChannelLease(ctx context.Context, channel, accountID, holderID string, ttl time.Duration) (bool, error) {
-	now := time.Now()
-	expires := now.Add(ttl)
 	if d.dialect == mysqlDialect {
 		res, err := d.db.ExecContext(ctx,
 			`INSERT INTO channel_leases (channel, account_id, holder_id, expires_at)
-				VALUES (?, ?, ?, ?)
+				VALUES (?, ?, ?, TIMESTAMPADD(MICROSECOND, ?, UTC_TIMESTAMP(6)))
 				ON DUPLICATE KEY UPDATE
-				  holder_id=IF(channel_leases.expires_at < ?, VALUES(holder_id), channel_leases.holder_id),
+				  holder_id=IF(channel_leases.expires_at < UTC_TIMESTAMP(6), VALUES(holder_id), channel_leases.holder_id),
 				  expires_at=IF(channel_leases.holder_id = VALUES(holder_id), VALUES(expires_at), channel_leases.expires_at)`,
-			channel, accountID, holderID, expires, now)
+			channel, accountID, holderID, ttl.Microseconds())
 		if err != nil {
 			return false, err
 		}
@@ -3346,11 +3571,11 @@ func (d *DBStore) AcquireChannelLease(ctx context.Context, channel, accountID, h
 		// WHERE 子句至关重要——没有它，第二个实例会在其 INSERT 冲突的瞬间窃取租约。
 		res, err := d.db.ExecContext(ctx,
 			`INSERT INTO channel_leases (channel, account_id, holder_id, expires_at)
-				VALUES ($1, $2, $3, $4)
+				VALUES ($1, $2, $3, CURRENT_TIMESTAMP + ($4::bigint * INTERVAL '1 microsecond'))
 				ON CONFLICT (channel, account_id) DO UPDATE
 				SET holder_id = EXCLUDED.holder_id, expires_at = EXCLUDED.expires_at
-				WHERE channel_leases.expires_at < $5 OR channel_leases.holder_id = $3`,
-			channel, accountID, holderID, expires, now)
+				WHERE channel_leases.expires_at < CURRENT_TIMESTAMP OR channel_leases.holder_id = $3`,
+			channel, accountID, holderID, ttl.Microseconds())
 		if err != nil {
 			return false, err
 		}
@@ -3359,6 +3584,8 @@ func (d *DBStore) AcquireChannelLease(ctx context.Context, channel, accountID, h
 	}
 	// SQLite 路径：ON CONFLICT DO UPDATE ... WHERE 在 modernc.org/sqlite
 	//（SQLite 3.24+）中支持。语义与上面的 PG 分支相同；占位符语法不同。
+	now := time.Now()
+	expires := now.Add(ttl)
 	res, err := d.db.ExecContext(ctx,
 		`INSERT INTO channel_leases (channel, account_id, holder_id, expires_at)
 			VALUES (?, ?, ?, ?)
@@ -3374,19 +3601,26 @@ func (d *DBStore) AcquireChannelLease(ctx context.Context, channel, accountID, h
 }
 
 // RenewChannelLease 扩展已持有的租约。当行的 holder_id 不再匹配时返回 false
-//（不是错误）——意味着前持有者的 TTL 已过，并且在对等方在我们离线时接管了。
+// （不是错误）——意味着前持有者的 TTL 已过，并且在对等方在我们离线时接管了。
 // 调用方必须将 false 视为"立即停止轮询"：对等方现在正在驱动此 (channel, account_id)
 // 对的入站流量。
 func (d *DBStore) RenewChannelLease(ctx context.Context, channel, accountID, holderID string, ttl time.Duration) (bool, error) {
-	expires := time.Now().Add(ttl)
 	var res sql.Result
 	var err error
 	if d.dialect == "postgres" {
 		res, err = d.db.ExecContext(ctx,
-			`UPDATE channel_leases SET expires_at = $1
+			`UPDATE channel_leases
+				SET expires_at = CURRENT_TIMESTAMP + ($1::bigint * INTERVAL '1 microsecond')
 				WHERE channel = $2 AND account_id = $3 AND holder_id = $4`,
-			expires, channel, accountID, holderID)
+			ttl.Microseconds(), channel, accountID, holderID)
+	} else if d.dialect == mysqlDialect {
+		res, err = d.db.ExecContext(ctx,
+			`UPDATE channel_leases
+				SET expires_at = TIMESTAMPADD(MICROSECOND, ?, UTC_TIMESTAMP(6))
+				WHERE channel = ? AND account_id = ? AND holder_id = ?`,
+			ttl.Microseconds(), channel, accountID, holderID)
 	} else {
+		expires := time.Now().Add(ttl)
 		res, err = d.db.ExecContext(ctx,
 			`UPDATE channel_leases SET expires_at = ?
 				WHERE channel = ? AND account_id = ? AND holder_id = ?`,
@@ -3510,7 +3744,7 @@ func (d *DBStore) CountProjectSessions(ctx context.Context, userID, agentID, pro
 }
 
 // parseTimeString 尝试 modernc.org/sqlite 可能为 TIMESTAMP 列生成的常见时间格式
-//（RFC3339, RFC3339Nano 以及旧代码路径写入的 Go 默认格式）。
+// （RFC3339, RFC3339Nano 以及旧代码路径写入的 Go 默认格式）。
 func parseTimeString(s string) time.Time {
 	for _, layout := range []string{
 		time.RFC3339Nano,
@@ -3644,7 +3878,7 @@ func scanGoal(row *sql.Row) (*GoalRecord, error) {
 }
 
 // isUniqueViolation 报告 err 是否是 Postgres（SQLSTATE 23505）或 SQLite
-//（子串 "UNIQUE constraint failed"）中的 UNIQUE 约束违规。两个驱动程序在错误文本中
+// （子串 "UNIQUE constraint failed"）中的 UNIQUE 约束违规。两个驱动程序在错误文本中
 // 暴露了足够的细节来识别这一点，而无需导入驱动程序包。
 func isUniqueViolation(err error) bool {
 	if err == nil {
@@ -3732,7 +3966,10 @@ func (d *DBStore) ResetExtraction(ctx context.Context, extractionID string) erro
 	return err
 }
 
-// ClaimSkillBatch 见接口文档。
+// ClaimSkillBatch is retained only for migration/regression tests of the
+// pre-checkpoint cadence implementation.
+//
+// Deprecated: production skill extraction uses EnqueueSkillExtractionJob.
 func (d *DBStore) ClaimSkillBatch(ctx context.Context, agentID, sessionKey, chatterUserID string, minTotal, batchCap int) (string, []TurnRef, error) {
 	if sessionKey == "" || chatterUserID == "" || minTotal <= 0 || batchCap <= 0 {
 		return "", nil, nil
@@ -3795,7 +4032,9 @@ func (d *DBStore) ClaimSkillBatch(ctx context.Context, agentID, sessionKey, chat
 	return id, refs, nil
 }
 
-// ResetSkillExtraction 见接口文档。
+// ResetSkillExtraction compensates claims made by the deprecated batch API.
+//
+// Deprecated: production skill extraction uses durable job retry state.
 func (d *DBStore) ResetSkillExtraction(ctx context.Context, skillExtractionID string) error {
 	if skillExtractionID == "" {
 		return nil

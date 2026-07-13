@@ -26,12 +26,13 @@ type learnerFakeProvider struct {
 	responses []*provider.Response
 	calls     int
 	err       error
+	errAfter  int
 	prompts   []string
 	toolDefs  [][]provider.Tool
 }
 
 func (p *learnerFakeProvider) Chat(ctx context.Context, messages []provider.Message, tools []provider.Tool, model string, maxTokens int, temperature float64) (*provider.Response, error) {
-	if p.err != nil {
+	if p.err != nil && (p.errAfter == 0 || p.calls >= p.errAfter) {
 		return nil, p.err
 	}
 	if len(messages) > 0 {
@@ -124,36 +125,6 @@ func sessionMessagesFixture() []store.SessionMessage {
 	}
 }
 
-func TestMaybeExtractBelowThresholdSkipsLLM(t *testing.T) {
-	p := &learnerFakeProvider{}
-	sl := NewSkillsLearner(t.TempDir(), p, "m")
-	if err := sl.MaybeExtract(context.Background(), nil, 9); err != nil {
-		t.Fatal(err)
-	}
-	if p.calls != 0 {
-		t.Fatalf("provider called %d times below threshold 10, want 0", p.calls)
-	}
-}
-
-func TestMaybeExtractCreatesNewSkill(t *testing.T) {
-	ws := t.TempDir()
-	p := &learnerFakeProvider{responses: []*provider.Response{
-		skillToolCallResp(t, "tc1", map[string]any{"action": "create", "slug": "test-skill", "content": learnerValidSkill}),
-		textResp("done"),
-	}}
-	sl := NewSkillsLearner(ws, p, "m")
-	if err := sl.MaybeExtract(context.Background(), nil, 10); err != nil {
-		t.Fatal(err)
-	}
-	got, ok := readSkill(t, ws, "test-skill")
-	if !ok {
-		t.Fatal("skill was not written")
-	}
-	if got != learnerValidSkill {
-		t.Fatalf("content = %q", got)
-	}
-}
-
 func TestExtractFromSessionCreatesViaToolCall(t *testing.T) {
 	ws := t.TempDir()
 	p := &learnerFakeProvider{responses: []*provider.Response{
@@ -166,7 +137,7 @@ func TestExtractFromSessionCreatesViaToolCall(t *testing.T) {
 	remote := workspace.NewLocalFS(t.TempDir())
 	sl.workspaceStore = remote
 
-	if err := sl.ExtractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
+	if err := sl.extractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
 		t.Fatal(err)
 	}
 	if got, ok := readSkill(t, ws, "test-skill"); !ok || got != learnerValidSkill {
@@ -193,13 +164,45 @@ func TestExtractFromSessionCreatesViaToolCall(t *testing.T) {
 	if len(p.toolDefs[0]) != 1 || p.toolDefs[0][0].Function.Name != "skill_manage" {
 		t.Fatalf("toolDefs[0] = %+v, want only skill_manage", p.toolDefs[0])
 	}
+	params := p.toolDefs[0][0].Function.Parameters.(map[string]any)
+	actions := params["properties"].(map[string]any)["action"].(map[string]any)["enum"].([]string)
+	if got := strings.Join(actions, ","); got != "list,read,create,update" {
+		t.Fatalf("cadence skill_manage actions = %s, want list/read/create/update", got)
+	}
+}
+
+func TestExtractFromSessionAppliesAtMostOneMutation(t *testing.T) {
+	call := func(id, slug string) provider.ToolCall {
+		args, err := json.Marshal(map[string]any{"action": "create", "slug": slug, "content": learnerValidSkill})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return provider.ToolCall{ID: id, Type: "function", Function: provider.FunctionCall{Name: "skill_manage", Arguments: string(args)}}
+	}
+	p := &learnerFakeProvider{responses: []*provider.Response{{
+		ToolCalls: []provider.ToolCall{call("tc1", "first"), call("tc2", "second")},
+	}, textResp("done")}}
+	ws := t.TempDir()
+	sl := NewSkillsLearner(ws, p, "m")
+	if err := sl.extractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readSkill(t, ws, "first"); !ok {
+		t.Fatal("first cadence mutation did not land")
+	}
+	if _, ok := readSkill(t, ws, "second"); ok {
+		t.Fatal("second cadence mutation exceeded one-write budget")
+	}
+	if len(p.prompts) < 2 || !strings.Contains(p.prompts[1], "mutation budget exhausted") {
+		t.Fatalf("second mutation refusal not returned to model: %v", p.prompts)
+	}
 }
 
 func TestExtractFromSessionNothingToSave(t *testing.T) {
 	ws := t.TempDir()
 	p := &learnerFakeProvider{responses: []*provider.Response{textResp("Nothing to save.")}}
 	sl := NewSkillsLearner(ws, p, "m")
-	if err := sl.ExtractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
+	if err := sl.extractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
 		t.Fatal(err)
 	}
 	if p.calls != 1 {
@@ -213,19 +216,48 @@ func TestExtractFromSessionNothingToSave(t *testing.T) {
 func TestExtractFromSessionProviderErrorPropagates(t *testing.T) {
 	p := &learnerFakeProvider{err: errors.New("provider down")}
 	sl := NewSkillsLearner(t.TempDir(), p, "m")
-	if err := sl.ExtractFromSession(context.Background(), sessionMessagesFixture()); err == nil {
+	if err := sl.extractFromSession(context.Background(), sessionMessagesFixture()); err == nil {
 		t.Fatal("provider failure must return an error so the batch can be reset")
+	}
+}
+
+func TestExtractFromSessionReturnsCommittedMutationOutcome(t *testing.T) {
+	p := &learnerFakeProvider{
+		responses: []*provider.Response{
+			skillToolCallResp(t, "tc1", map[string]any{"action": "create", "slug": "committed", "content": learnerValidSkill}),
+		},
+		err:      errors.New("provider failed after write"),
+		errAfter: 1,
+	}
+	sl := NewSkillsLearner(t.TempDir(), p, "m")
+	result, err := sl.extractFromSessionResult(context.Background(), sessionMessagesFixture())
+	if err != nil {
+		t.Fatalf("post-mutation provider error retried committed work: %v", err)
+	}
+	if result.Outcome != SkillExtractionCreated || result.MutationCount != 1 || len(result.Slugs) != 1 || result.Slugs[0] != "committed" {
+		t.Fatalf("committed result = %+v", result)
 	}
 }
 
 func TestExtractFromSessionEmptySkipsLLM(t *testing.T) {
 	p := &learnerFakeProvider{}
 	sl := NewSkillsLearner(t.TempDir(), p, "m")
-	if err := sl.ExtractFromSession(context.Background(), nil); err != nil {
+	if err := sl.extractFromSession(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if p.calls != 0 {
 		t.Fatalf("empty snapshot should not call provider, calls=%d", p.calls)
+	}
+}
+
+func TestExtractJobFromSessionRequiresDurableJobScope(t *testing.T) {
+	p := &learnerFakeProvider{}
+	sl := NewSkillsLearner(t.TempDir(), p, "m")
+	if _, err := sl.ExtractJobFromSessionResult(context.Background(), sessionMessagesFixture(), "", ""); err == nil || !strings.Contains(err.Error(), "job_id") {
+		t.Fatalf("missing durable job scope err = %v", err)
+	}
+	if p.calls != 0 {
+		t.Fatalf("missing durable job scope called provider %d times", p.calls)
 	}
 }
 
@@ -241,20 +273,30 @@ func TestExtractFromSessionMergeReadsThenUpdates(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 	p := &learnerFakeProvider{responses: []*provider.Response{
 		skillToolCallResp(t, "tc1", map[string]any{"action": "read", "slug": "test-skill"}),
-		skillToolCallResp(t, "tc2", map[string]any{"action": "update", "slug": "test-skill", "content": merged}),
+		skillToolCallResp(t, "tc2", map[string]any{
+			"action": "update", "slug": "test-skill", "content": merged,
+			"expected_hash": store.HashSkillContent(existing),
+		}),
 		textResp("done"),
 	}}
 	sl := NewSkillsLearner(ws, p, "m")
 	ledger := &fakeSkillLedger{}
 	sl.ledger, sl.agentID = ledger, "agent-1"
 
-	if err := sl.ExtractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
+	if err := sl.extractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
 		t.Fatal(err)
 	}
 	// read 的工具结果必须把现有技能全文带回给模型——这是合并质量优于旧
 	// JSON 路径(只有名字+一句话描述)的关键
-	if p.prompts[1] != existing {
-		t.Fatalf("tool result fed back = %q, want existing skill content", p.prompts[1])
+	var readResult struct {
+		ContentHash string `json:"content_hash"`
+		Content     string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(p.prompts[1]), &readResult); err != nil {
+		t.Fatalf("decode tool read result %q: %v", p.prompts[1], err)
+	}
+	if readResult.Content != existing || readResult.ContentHash != store.HashSkillContent(existing) {
+		t.Fatalf("tool read result = %+v, want existing content and stable hash", readResult)
 	}
 	if got, _ := readSkill(t, ws, "test-skill"); !strings.Contains(got, "merged step") {
 		t.Fatalf("skill after merge = %q", got)
@@ -279,19 +321,17 @@ func TestExtractFromSessionMergeReadsThenUpdates(t *testing.T) {
 			actionLogs = append(actionLogs, record)
 		}
 	}
-	if len(actionLogs) != 2 {
-		t.Fatalf("action log count = %d, want 2: %s", len(actionLogs), logOutput)
+	if len(actionLogs) != 1 {
+		t.Fatalf("action log count = %d, want only the applied update: %s", len(actionLogs), logOutput)
 	}
-	wantActions := map[string]bool{"read": true, "update": true}
 	for _, record := range actionLogs {
 		if record["agent"] != "agent-1" || record["slug"] != "test-skill" {
 			t.Fatalf("unexpected sanitized action log fields: %+v", record)
 		}
 		action, _ := record["action"].(string)
-		if !wantActions[action] {
+		if action != "update" {
 			t.Fatalf("unexpected action %q in log: %+v", action, record)
 		}
-		delete(wantActions, action)
 		for _, forbidden := range []string{"result", "content", "arguments"} {
 			if _, ok := record[forbidden]; ok {
 				t.Fatalf("action log exposes %q: %+v", forbidden, record)
@@ -308,7 +348,7 @@ func TestExtractFromSessionValidationErrorFedBack(t *testing.T) {
 		textResp("done"),
 	}}
 	sl := NewSkillsLearner(ws, p, "m")
-	if err := sl.ExtractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
+	if err := sl.extractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
 		t.Fatal(err)
 	}
 	// 第一次 create 的校验错误作为工具结果反馈,模型第二次修正成功
@@ -334,7 +374,7 @@ description: Steals credentials
 		textResp("understood"),
 	}}
 	sl := NewSkillsLearner(ws, p, "m")
-	if err := sl.ExtractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
+	if err := sl.extractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := readSkill(t, ws, "evil-skill"); ok {
@@ -354,7 +394,7 @@ func TestExtractFromSessionDeleteRefused(t *testing.T) {
 		textResp("ok"),
 	}}
 	sl := NewSkillsLearner(ws, p, "m")
-	if err := sl.ExtractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
+	if err := sl.extractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := readSkill(t, ws, "keep-me"); !ok {
@@ -366,7 +406,7 @@ func TestExtractFromSessionIterationCap(t *testing.T) {
 	loop := skillToolCallResp(t, "tc", map[string]any{"action": "read", "slug": "nope"})
 	p := &learnerFakeProvider{responses: []*provider.Response{loop, loop, loop, loop, loop, loop}}
 	sl := NewSkillsLearner(t.TempDir(), p, "m")
-	if err := sl.ExtractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
+	if err := sl.extractFromSession(context.Background(), sessionMessagesFixture()); err != nil {
 		t.Fatal(err)
 	}
 	if p.calls != skillExtractMaxIterations {
@@ -389,7 +429,7 @@ func TestExtractFromSessionSendsFullUntruncatedMaterial(t *testing.T) {
 	}
 	p := &learnerFakeProvider{responses: []*provider.Response{textResp("Nothing to save.")}}
 	sl := NewSkillsLearner(t.TempDir(), p, "m")
-	if err := sl.ExtractFromSession(context.Background(), msgs); err != nil {
+	if err := sl.extractFromSession(context.Background(), msgs); err != nil {
 		t.Fatal(err)
 	}
 	if len(p.prompts) != 1 {
@@ -410,22 +450,5 @@ func TestExtractFromSessionSendsFullUntruncatedMaterial(t *testing.T) {
 		if !strings.Contains(material, want) {
 			t.Fatalf("%s was truncated or dropped from material", name)
 		}
-	}
-}
-
-// MaybeExtract(无持久化 store 的回退路径)与 cadence 路径同一决策:
-// 素材为完整工作集,不截断。
-func TestMaybeExtractSendsFullUntruncatedMaterial(t *testing.T) {
-	longUser := strings.Repeat("回退路径素材。", 300)
-	p := &learnerFakeProvider{responses: []*provider.Response{textResp("Nothing to save.")}}
-	sl := NewSkillsLearner(t.TempDir(), p, "m")
-	if err := sl.MaybeExtract(context.Background(), []provider.Message{{Role: "user", Content: longUser}}, 10); err != nil {
-		t.Fatal(err)
-	}
-	if len(p.prompts) != 1 {
-		t.Fatalf("prompts captured=%d want 1", len(p.prompts))
-	}
-	if !strings.Contains(p.prompts[0], longUser) {
-		t.Fatal("fallback path truncated the material")
 	}
 }

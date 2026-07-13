@@ -1,15 +1,20 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 type loadRecord struct {
@@ -22,12 +27,41 @@ type loadRecord struct {
 }
 
 type fakeLoadRecorder struct {
-	ch chan loadRecord
+	ch  chan loadRecord
+	err error
 }
 
 func (f *fakeLoadRecorder) RecordSkillLoad(ctx context.Context, agentID, slug, diskHash string, invokedByUser bool, halfLifeLoads, explicitGain int) (*store.SkillUsageRow, error) {
 	f.ch <- loadRecord{agentID: agentID, slug: slug, diskHash: diskHash, invokedByUser: invokedByUser, halfLifeLoads: halfLifeLoads, explicitGain: explicitGain}
+	return nil, f.err
+}
+
+type blockingLoadRecorder struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+type deletingLoadRecorder struct {
+	records int
+}
+
+func (f *deletingLoadRecorder) RecordSkillLoad(context.Context, string, string, string, bool, int, int) (*store.SkillUsageRow, error) {
+	f.records++
 	return nil, nil
+}
+
+func (f *deletingLoadRecorder) IsAgentDeleting(context.Context, string) (bool, error) {
+	return true, nil
+}
+
+func (f *blockingLoadRecorder) RecordSkillLoad(ctx context.Context, agentID, slug, diskHash string, invokedByUser bool, halfLifeLoads, explicitGain int) (*store.SkillUsageRow, error) {
+	close(f.entered)
+	select {
+	case <-f.release:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func TestLoadSkillRegisteredByDefaultAndLoadsFullContent(t *testing.T) {
@@ -135,6 +169,168 @@ func TestLoadSkillWithLedgerRecordsSuccessfulLoad(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for ledger record")
+	}
+}
+
+func TestLoadSkillWaitsForLedgerBeforeReturning(t *testing.T) {
+	learnerSkills := filepath.Join(t.TempDir(), "learner-skills")
+	skillDir := filepath.Join(learnerSkills, "shared")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("learner version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := &blockingLoadRecorder{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	RegisterLoadSkillWithLedger(r, []string{learnerSkills}, learnerSkills, recorder, "agentA", 32, 3)
+	rawArgs, err := json.Marshal(map[string]string{"name": "shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		content string
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		content, callErr := r.GetFunc("load_skill")(context.Background(), rawArgs)
+		done <- result{content: content, err: callErr}
+	}()
+
+	select {
+	case <-recorder.entered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ledger call")
+	}
+	select {
+	case got := <-done:
+		t.Fatalf("load_skill returned before ledger call completed: %+v", got)
+	default:
+	}
+	close(recorder.release)
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if !strings.Contains(got.content, "learner version") {
+			t.Fatalf("unexpected skill content: %s", got.content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("load_skill did not return after ledger call completed")
+	}
+}
+
+func TestLoadSkillLedgerFailureStillReturnsContent(t *testing.T) {
+	learnerSkills := filepath.Join(t.TempDir(), "learner-skills")
+	skillDir := filepath.Join(learnerSkills, "shared")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("learner version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := &fakeLoadRecorder{ch: make(chan loadRecord, 1), err: errors.New("ledger unavailable")}
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	RegisterLoadSkillWithLedger(r, []string{learnerSkills}, learnerSkills, recorder, "agentA", 32, 3)
+	rawArgs, err := json.Marshal(map[string]string{"name": "shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := r.GetFunc("load_skill")(context.Background(), rawArgs)
+	if err != nil {
+		t.Fatalf("ledger failure blocked skill content: %v", err)
+	}
+	if !strings.Contains(content, "learner version") {
+		t.Fatalf("unexpected skill content: %s", content)
+	}
+	select {
+	case <-recorder.ch:
+	default:
+		t.Fatal("ledger call had not completed when load_skill returned")
+	}
+	if !strings.Contains(logs.String(), "skill load ledger record failed") || !strings.Contains(logs.String(), "ledger unavailable") {
+		t.Fatalf("ledger failure warning missing from logs: %s", logs.String())
+	}
+}
+
+func TestLoadSkillRefusesStaleLearnerAssetAfterAgentDeletionMarker(t *testing.T) {
+	learnerSkills := filepath.Join(t.TempDir(), skills.LearnerSkillsDirName)
+	skillDir := filepath.Join(learnerSkills, "stale")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("stale learner content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recorder := &deletingLoadRecorder{}
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	RegisterLoadSkillWithLedger(r, []string{learnerSkills}, learnerSkills, recorder, "deleted-agent", 32, 3)
+	rawArgs, _ := json.Marshal(map[string]string{"name": "stale"})
+	if _, err := r.GetFunc("load_skill")(context.Background(), rawArgs); err == nil || !strings.Contains(err.Error(), "being deleted") {
+		t.Fatalf("stale learner load err=%v", err)
+	}
+	if recorder.records != 0 {
+		t.Fatalf("deleted agent learner load was recorded %d times", recorder.records)
+	}
+}
+
+func TestLoadSkillRefreshesRemoteDeletionBeforeReadingStalePodCache(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.NewDBStore("sqlite", "file:load-skill-stale-pod?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		agentID = "shared-agent"
+		slug    = "deleted-workflow"
+		content = "---\nname: Deleted\ndescription: deleted workflow\n---\nstale steps"
+	)
+	learnerRoot := filepath.Join(t.TempDir(), skills.LearnerSkillsDirName)
+	skillDir := filepath.Join(learnerRoot, slug)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	remote := workspace.NewLocalFS(t.TempDir())
+	if err := skills.SyncLearnerSkillContent(ctx, remote, agentID, slug, content); err != nil {
+		t.Fatal(err)
+	}
+	if err := skills.DeleteLearnerSkillUp(ctx, remote, agentID, slug); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	RegisterLoadSkillWithPolicyAndWorkspace(r, []string{learnerRoot}, learnerRoot, db, agentID, remote, 32, 3, true)
+	rawArgs, _ := json.Marshal(map[string]string{"name": slug})
+	if _, err := r.GetFunc("load_skill")(ctx, rawArgs); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("stale learner load err=%v", err)
+	}
+	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
+		t.Fatalf("remote deletion was not pruned before load: %v", err)
+	}
+	rows, err := db.ListSkillUsage(ctx, agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("stale load recreated deleted lifecycle ledger: %+v", rows)
 	}
 }
 

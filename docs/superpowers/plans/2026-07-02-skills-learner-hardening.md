@@ -1,5 +1,7 @@
 # SkillsLearner 加固实施计划
 
+> **已取代：** 本文记录历史实施过程，当前行为与不变量以 [Skill 自动提炼（自进化）Canonical 设计与实现](../../skill-self-evolution.md) 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让技能自动提炼默认开启、门槛提到 10 次工具调用,并为其补上 frontmatter/大小校验、安全扫描与「撞名更新」能力。第二阶段(Task 7-11,规格第 5-6 节):触发改为同 session 跨 turn 累计(cadence-claim,状态入库,多实例安全)。

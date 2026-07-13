@@ -5,6 +5,7 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,6 +52,14 @@ type Session struct {
 	// 因此 Manager.Get 重新加载（会覆盖 Messages）不会破坏待处理的转向。
 	turnDepth int
 	steerBuf  []provider.Message
+
+	// snapshotVersion advances whenever Messages changes. A successful
+	// SaveSession copies it to persistedSnapshotVersion; failures retain the
+	// gap and error so turn finalization can retry the complete current view
+	// before its anchor is allowed to become done.
+	snapshotVersion          uint64
+	persistedSnapshotVersion uint64
+	snapshotPublishErr       error
 }
 
 // SessionKey 返回此 Session 绑定的不透明 session_key。
@@ -62,7 +71,7 @@ func (s *Session) SessionKey() string { return s.sessionKey }
 // 当未设置用户时回退到 context.Background()；存储层随后默认为 config.DefaultUserID。
 //
 // 同时嵌入每轮对话的 chatter（如果已设置），使 DBStore 会话写入
-//（sessions.chatter_user_id / session_messages.chatter_user_id /
+// （sessions.chatter_user_id / session_messages.chatter_user_id /
 // session_events.chatter_user_id）可以记录实际的对话参与者。
 // user_id 保持 = UserSpace 拥有者；chatter 是附加维度。
 // 两个标签是独立的 —— 空的 chatter 只是将列留为 ""。
@@ -105,6 +114,7 @@ type SessionStore interface {
 	SaveSession(ctx context.Context, agentID, sessionKey, channel, accountID, chatID, projectID string, messages []provider.Message) error
 	AppendMessage(ctx context.Context, agentID, sessionKey string, msg provider.Message) error
 	AppendTurnAnchor(ctx context.Context, agentID, sessionKey string, msg provider.Message) (int64, error)
+	CancelTurnAnchor(ctx context.Context, agentID, sessionKey string, seq int64) error
 	ListMessages(ctx context.Context, agentID, sessionKey string) ([]provider.Message, error)
 	ListWebSessions(ctx context.Context, agentID string) ([]WebSession, error)
 	DeleteSession(ctx context.Context, agentID, sessionKey string) error
@@ -192,8 +202,8 @@ func generateSessionKey() string {
 //
 // 新行生成策略：
 //   - web：session_key == chatID。Web 的 chatID *就是*每个对话的标识符
-//    （前端每次 "+New chat" 生成一个），因此使其等于 session_key 可保持
-//    URL `?session=` 令牌在刷新间稳定 —— 不会出现"第一条消息后 URL 变化"的意外。
+//     （前端每次 "+New chat" 生成一个），因此使其等于 session_key 可保持
+//     URL `?session=` 令牌在刷新间稳定 —— 不会出现"第一条消息后 URL 变化"的意外。
 //   - 其他所有地方：生成不透明的 `s-<unix_ms>-<rand>`。IM 通道在多个会话中
 //     重复使用同一个 chatID（用户的 openid / chat_id），因此 session_key 必须独立，
 //     以便 `/new` 可以生成并列行。
@@ -229,7 +239,7 @@ func (m *Manager) Get(channel, accountID, chatID, projectID string) *Session {
 }
 
 // GetByKey 通过 session_key 加载特定会话。当调用方已经持有键时使用
-//（例如从 URL `?session=…` 获取 Web 历史记录），希望绕过活跃会话查找。
+// （例如从 URL `?session=…` 获取 Web 历史记录），希望绕过活跃会话查找。
 func (m *Manager) GetByKey(sessionKey string) *Session {
 	return m.getByKey(sessionKey, "", "", "", "")
 }
@@ -329,7 +339,15 @@ func (m *Manager) getByKey(key, channel, accountID, chatID, projectID string) *S
 		if m.store != nil {
 			if msgs, err := m.store.GetSession(m.ctx(), m.agentID, key); err == nil {
 				s.mu.Lock()
-				s.Messages = msgs
+				// Never replace a newer in-memory version whose SaveSession failed
+				// with the older durable blob. Finalization owns retrying that exact
+				// version before its turn anchor can become done.
+				if !s.snapshotNeedsPersistenceLocked() {
+					s.Messages = msgs
+					s.snapshotVersion++
+					s.persistedSnapshotVersion = s.snapshotVersion
+					s.snapshotPublishErr = nil
+				}
 				s.mu.Unlock()
 			}
 		}
@@ -402,6 +420,53 @@ func (s *Session) AppendTurnAnchor(msg provider.Message) (int64, error) {
 	return s.appendLocked(msg, true)
 }
 
+// EnsureSnapshotPersisted retries a previously failed sessions.messages
+// publication while holding the same lock used by Append. A nil result means
+// the exact current Messages version is durable and safe to pair with a done
+// turn anchor.
+func (s *Session) EnsureSnapshotPersisted() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.store == nil {
+		return nil
+	}
+	if !s.snapshotNeedsPersistenceLocked() {
+		return nil
+	}
+	return s.persistSnapshotLocked()
+}
+
+// FinalizePersistedSnapshot holds the Session mutation lock across the final
+// snapshot retry and the caller's turn-status transition. This prevents an
+// Append from publishing a newer Messages version in the narrow interval
+// between a successful retry and FinishTurn marking the anchor done.
+func (s *Session) FinalizePersistedSnapshot(finalize func() error) error {
+	if finalize == nil {
+		return errors.New("session: snapshot finalizer is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.store != nil && s.snapshotNeedsPersistenceLocked() {
+		if err := s.persistSnapshotLocked(); err != nil {
+			return err
+		}
+	}
+	return finalize()
+}
+
+func (s *Session) snapshotNeedsPersistenceLocked() bool {
+	return s.persistedSnapshotVersion != s.snapshotVersion || s.snapshotPublishErr != nil
+}
+
+func (s *Session) persistSnapshotLocked() error {
+	err := s.store.SaveSession(s.ctx(), s.agentID, s.sessionKey, s.channel, s.accountID, s.chatID, s.projectID, s.Messages)
+	s.snapshotPublishErr = err
+	if err == nil {
+		s.persistedSnapshotVersion = s.snapshotVersion
+	}
+	return err
+}
+
 // appendLocked 是 Append / AppendTurnAnchor 的唯一内存写路径:加锁、补时间戳、
 // 追加到工作集,再持久化。anchor=true 时归档行写 turn_status='running' 并返回其
 // seq;anchor=false 走普通归档(turn_status 默认 '')。无持久化 store 时只落盘文件、
@@ -416,15 +481,35 @@ func (s *Session) appendLocked(msg provider.Message, anchor bool) (int64, error)
 	}
 
 	s.Messages = append(s.Messages, msg)
+	s.snapshotVersion++
 
 	if s.store == nil {
 		s.appendToFile(msg)
 		return -1, nil
 	}
-	s.store.SaveSession(s.ctx(), s.agentID, s.sessionKey, s.channel, s.accountID, s.chatID, s.projectID, s.Messages)
 	if anchor {
-		return s.store.AppendTurnAnchor(s.ctx(), s.agentID, s.sessionKey, msg)
+		// Publish the running anchor before the full-session blob. Enqueue locks
+		// the sessions row and then checks for running anchors, so either it sees
+		// this barrier and defers, or it freezes the preceding stable snapshot.
+		seq, anchorErr := s.store.AppendTurnAnchor(s.ctx(), s.agentID, s.sessionKey, msg)
+		if anchorErr != nil {
+			// Keep the working session durable even when the cadence-only anchor
+			// fails; this preserves the pre-existing AppendTurnAnchor behavior.
+			saveErr := s.persistSnapshotLocked()
+			return -1, errors.Join(anchorErr, saveErr)
+		}
+		if err := s.persistSnapshotLocked(); err != nil {
+			cancelErr := s.store.CancelTurnAnchor(s.ctx(), s.agentID, s.sessionKey, seq)
+			if cancelErr == nil {
+				return -1, fmt.Errorf("save anchored session: %w", err)
+			}
+			// Preserve seq so the caller can still finish the anchor if the
+			// compensation write also failed; never silently strand a running row.
+			return seq, errors.Join(fmt.Errorf("save anchored session: %w", err), fmt.Errorf("cancel turn anchor: %w", cancelErr))
+		}
+		return seq, nil
 	}
+	_ = s.persistSnapshotLocked()
 	if err := s.store.AppendMessage(s.ctx(), s.agentID, s.sessionKey, msg); err != nil {
 		fmt.Fprintf(os.Stderr, "session archive append error: %v\n", err)
 	}
@@ -433,7 +518,7 @@ func (s *Session) appendLocked(msg provider.Message, anchor bool) (int64, error)
 
 // ArchivedMessages 返回此会话的完整仅追加历史。
 // 当未配置存储或归档为空时回退到内存中的工作集
-//（例如基于文件的模式，或归档表存在之前创建的会话）。
+// （例如基于文件的模式，或归档表存在之前创建的会话）。
 func (s *Session) ArchivedMessages() []provider.Message {
 	s.mu.Lock()
 	store := s.store
@@ -535,9 +620,10 @@ func (s *Session) ReplaceMessages(msgs []provider.Message) {
 	s.Messages = make([]provider.Message, len(msgs))
 	copy(s.Messages, msgs)
 	s.LastConsolidated = 0
+	s.snapshotVersion++
 
 	if s.store != nil {
-		s.store.SaveSession(s.ctx(), s.agentID, s.sessionKey, s.channel, s.accountID, s.chatID, s.projectID, s.Messages)
+		_ = s.persistSnapshotLocked()
 	} else {
 		s.rewriteFile()
 	}

@@ -24,6 +24,11 @@ func normalizeMySQLDSN(dsn string) (string, error) {
 	}
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
+	// Lease acquisition relies on RowsAffected distinguishing a real insert/
+	// takeover from a conflicting no-op. clientFoundRows=true reports matched
+	// rows for that no-op and can make two Pods both believe they hold a lease.
+	// Force changed-row semantics regardless of a caller-supplied DSN option.
+	cfg.ClientFoundRows = false
 	if cfg.Collation == "" {
 		cfg.Collation = "utf8mb4_unicode_ci"
 	}
@@ -135,6 +140,10 @@ func mysqlMigrationSQL() []string {
 			updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
 			KEY idx_agents_user (user_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS agent_mutation_locks (
+			agent_id VARCHAR(120) PRIMARY KEY,
+			updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			user_id VARCHAR(120) NOT NULL,
 			agent_id VARCHAR(120) NOT NULL,
@@ -172,6 +181,65 @@ func mysqlMigrationSQL() []string {
 			tool_call_count INT NOT NULL DEFAULT 0,
 			skill_extraction_id VARCHAR(64) NULL,
 			PRIMARY KEY (user_id, agent_id, session_key, seq)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS skill_extraction_checkpoints (
+			owner_user_id VARCHAR(120) NOT NULL,
+			agent_id VARCHAR(120) NOT NULL,
+			session_key VARCHAR(191) NOT NULL,
+			chatter_user_id VARCHAR(120) NOT NULL,
+			consumed_through_seq BIGINT NOT NULL DEFAULT -1,
+			inflight_job_id VARCHAR(64) NULL,
+			inflight_through_seq BIGINT NULL,
+			created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+			updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+			PRIMARY KEY (owner_user_id, agent_id, session_key, chatter_user_id),
+			KEY idx_skill_extraction_checkpoints_agent (agent_id, updated_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS skill_extraction_jobs (
+			id VARCHAR(64) PRIMARY KEY,
+			owner_user_id VARCHAR(120) NOT NULL,
+			agent_id VARCHAR(120) NOT NULL,
+			session_key VARCHAR(191) NOT NULL,
+			chatter_user_id VARCHAR(120) NOT NULL,
+			after_seq BIGINT NOT NULL,
+			through_seq BIGINT NOT NULL,
+			tool_call_count INT NOT NULL,
+			snapshot_json LONGTEXT NOT NULL,
+			snapshot_sha256 VARCHAR(64) NOT NULL,
+			status VARCHAR(16) NOT NULL DEFAULT 'pending',
+			outcome VARCHAR(32) NOT NULL DEFAULT '',
+			mutation_count INT NOT NULL DEFAULT 0,
+			slugs_json LONGTEXT NOT NULL,
+			attempt_count INT NOT NULL DEFAULT 0,
+			last_error LONGTEXT NOT NULL,
+			lease_owner VARCHAR(191) NOT NULL DEFAULT '',
+			lease_expires_at DATETIME(6) NULL,
+			next_attempt_at DATETIME(6) NULL,
+			created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+			updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+			completed_at DATETIME(6) NULL,
+			UNIQUE KEY skill_extraction_jobs_boundary
+				(owner_user_id, agent_id, session_key, chatter_user_id, through_seq),
+			KEY idx_skill_extraction_jobs_recovery
+				(agent_id, status, lease_expires_at, created_at),
+			KEY idx_skill_extraction_jobs_available
+				(agent_id, status, next_attempt_at, lease_expires_at, created_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS skill_extraction_mutations (
+			job_id VARCHAR(64) PRIMARY KEY,
+			agent_id VARCHAR(120) NOT NULL,
+			action VARCHAR(16) NOT NULL,
+			slug VARCHAR(64) NOT NULL,
+			before_hash CHAR(64) NOT NULL DEFAULT '',
+			after_hash CHAR(64) NOT NULL,
+			desired_content LONGTEXT NOT NULL,
+			status VARCHAR(16) NOT NULL DEFAULT 'prepared',
+			last_error LONGTEXT NOT NULL,
+			created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+			updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+			resolved_at DATETIME(6) NULL,
+			KEY idx_skill_extraction_mutations_recovery
+				(agent_id, status, updated_at)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS session_events (
 			user_id VARCHAR(120) NOT NULL,
@@ -286,6 +354,17 @@ func mysqlMigrationSQL() []string {
 			created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
 			updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
 			PRIMARY KEY (agent_id, slug)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS agent_skill_lifecycle (
+			agent_id VARCHAR(120) PRIMARY KEY,
+			clock_seq BIGINT NOT NULL DEFAULT 1,
+			last_cleanup_seq BIGINT NOT NULL DEFAULT 0,
+			created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+			updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS agent_deletions (
+			agent_id VARCHAR(120) PRIMARY KEY,
+			deleted_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS channel_leases (
 			channel VARCHAR(64) NOT NULL,

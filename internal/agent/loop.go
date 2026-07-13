@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/codeany-ai/open-agent-sdk-go/costtracker"
+	"github.com/google/uuid"
 
 	"github.com/qs3c/bkcrab/internal/agent/goal"
 	"github.com/qs3c/bkcrab/internal/agent/tools"
@@ -129,6 +132,12 @@ type Agent struct {
 	// 和hook根本就没有注册，所以默默的失踪了一个store
 	// 降级为“功能关闭”而不是崩溃。
 	goalStore goal.Store
+
+	skillJobsMu     sync.Mutex
+	skillJobsWG     sync.WaitGroup
+	skillJobs       map[uint64]context.CancelFunc
+	skillJobsNextID uint64
+	skillJobsClosed bool
 }
 
 // SetSandboxPool 连接每个（代理、会话）执行器池。呼叫者
@@ -232,9 +241,17 @@ func lifecycleExplicitGain(c config.SkillLifecycleCfg) int {
 	return skillspkg.DefaultLifecycleExplicitGain
 }
 
+func lifecycleCleanupEvery(c config.SkillLifecycleCfg) int64 {
+	if c.CleanupEveryTurns > 0 {
+		return int64(c.CleanupEveryTurns)
+	}
+	return int64(skillspkg.DefaultLifecycleCleanupEveryTurns)
+}
+
 func lifecycleRankConfig(c config.SkillLifecycleCfg) skillspkg.LifecycleConfig {
 	return skillspkg.LifecycleConfig{
 		ActiveMax:        c.ActiveMax,
+		AssetMax:         c.AssetMax,
 		HalfLifeLoads:    c.HalfLifeLoads,
 		ProtectLoads:     c.ProtectLoads,
 		EditProtectLoads: c.EditProtectLoads,
@@ -244,6 +261,14 @@ func lifecycleRankConfig(c config.SkillLifecycleCfg) skillspkg.LifecycleConfig {
 
 func (a *Agent) skillLifecycleEnabled() bool {
 	return a != nil && a.skillsLearner != nil && a.dataStore != nil && a.lifecycleCfg.IsEnabled()
+}
+
+func (a *Agent) ownsLearnerAssets() bool {
+	return a != nil && a.ownerUserID != "" && a.ownerUserID == a.agentOwnerUserID
+}
+
+func (a *Agent) exposesSkillCatalog() bool {
+	return a != nil && a.promptMode != config.PromptModeChatbot && a.promptMode != config.PromptModeCustomize
 }
 
 // configureSkillsLearner 在启用时为 agent 构造技能学习者。由 NewAgentWithFullCfg
@@ -263,6 +288,11 @@ func configureSkillsLearner(ag *Agent, rc config.ResolvedAgent, prov provider.Pr
 	learnerLoader.agentID = rc.ID
 	ag.skillsLearner = NewSkillsLearner(rc.Home, prov, model, learnerLoader.AllSkillDirs()...)
 	ag.skillsLearner.agentID = rc.ID
+	if !cfg.Lifecycle.IsEnabled() {
+		ag.skillsLearner.assetMax = 0
+	} else if cfg.Lifecycle.AssetMax > 0 {
+		ag.skillsLearner.assetMax = cfg.Lifecycle.AssetMax
+	}
 	if cfg.MinToolCalls > 0 {
 		ag.skillsLearner.minToolCalls = cfg.MinToolCalls
 	}
@@ -274,7 +304,13 @@ func configureSkillsLearner(ag *Agent, rc config.ResolvedAgent, prov provider.Pr
 }
 
 func (a *Agent) configureSkillsLoaderLifecycle(loader *SkillsLoader) {
-	if loader == nil || !a.skillLifecycleEnabled() {
+	if loader == nil {
+		return
+	}
+	if guard, ok := a.dataStore.(learnerAgentDeletionReader); ok {
+		loader.WithLearnerDeletionGuard(guard, a.name)
+	}
+	if !a.skillLifecycleEnabled() {
 		return
 	}
 	loader.lifecycleOn = true
@@ -286,8 +322,14 @@ func (a *Agent) registerLoadSkillTool(reg *tools.Registry, skillDirs []string) {
 	if reg == nil {
 		return
 	}
-	if a.skillLifecycleEnabled() {
-		tools.RegisterLoadSkillWithLedger(reg, skillDirs, skillspkg.LearnerSkillsDir(a.homePath), a.dataStore, a.name, lifecycleHalfLife(a.lifecycleCfg), lifecycleExplicitGain(a.lifecycleCfg))
+	if a.dataStore != nil {
+		// Coordination and deletion guards are independent of whether automatic
+		// extraction is currently enabled: an older learner directory can still
+		// be visible after the feature is disabled. Only the authoritative owner
+		// may write lifecycle usage, otherwise a visitor's lifecycle policy could
+		// manipulate the owner's eviction ranking.
+		recordLoads := a.skillsLearner != nil && a.ownsLearnerAssets()
+		tools.RegisterLoadSkillWithPolicyAndWorkspace(reg, skillDirs, skillspkg.LearnerSkillsDir(a.homePath), a.dataStore, a.name, a.workspaceStore, lifecycleHalfLife(a.lifecycleCfg), lifecycleExplicitGain(a.lifecycleCfg), recordLoads)
 		return
 	}
 	tools.RegisterLoadSkill(reg, skillDirs)
@@ -2084,7 +2126,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 追查“IM 看不到代理技能”的报告。
 	slog.Info("turn: refreshing skills",
 		"agent", a.name, "channel", msg.Channel, "chat_id", msg.ChatID, "user", chatterUID)
-	skillDirs, skillsSummary := a.refreshSkillsFromStore(chatterUID)
+	skillDirs, skillsSummary := a.refreshSkillsFromStore(ctx, chatterUID)
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
 	// 将chatter 绑定到sess 上。 Session.ctx() 构建自己的
 	// context.Background-rooted ctx 用于存储调用，因此
@@ -2151,6 +2193,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 
 	chatterMem := a.memory.WithUserID(chatterUID)
 	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, skillsSummary)
+	systemPrompt += foregroundSkillMaintenanceDirective(reg, a.promptMode)
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 
 	// 挂钩：AfterSystemPrompt
@@ -2773,6 +2816,67 @@ func padOrphanToolResults(sess *session.Session) {
 type turnAnchor struct {
 	sessionKey string
 	seq        int64
+	sess       *session.Session
+}
+
+func (a *Agent) launchSkillJob(parent context.Context, run func(context.Context)) bool {
+	if a == nil || run == nil {
+		return false
+	}
+	jobCtx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	a.skillJobsMu.Lock()
+	if a.skillJobsClosed {
+		a.skillJobsMu.Unlock()
+		cancel()
+		return false
+	}
+	if a.skillJobs == nil {
+		a.skillJobs = make(map[uint64]context.CancelFunc)
+	}
+	a.skillJobsNextID++
+	id := a.skillJobsNextID
+	a.skillJobs[id] = cancel
+	a.skillJobsWG.Add(1)
+	a.skillJobsMu.Unlock()
+
+	go func() {
+		defer func() {
+			cancel()
+			a.skillJobsMu.Lock()
+			delete(a.skillJobs, id)
+			a.skillJobsMu.Unlock()
+			a.skillJobsWG.Done()
+		}()
+		run(jobCtx)
+	}()
+	return true
+}
+
+func (a *Agent) stopSkillJobs(ctx context.Context) error {
+	if a == nil {
+		return nil
+	}
+	a.skillJobsMu.Lock()
+	a.skillJobsClosed = true
+	cancels := make([]context.CancelFunc, 0, len(a.skillJobs))
+	for _, cancel := range a.skillJobs {
+		cancels = append(cancels, cancel)
+	}
+	a.skillJobsMu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+	done := make(chan struct{})
+	go func() {
+		a.skillJobsWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // beginTurnAnchor 在 turn 起点把用户消息作为锚点写入(turn_status='running')并返回
@@ -2782,12 +2886,17 @@ func (a *Agent) beginTurnAnchor(sess *session.Session, userMsg provider.Message)
 	seq, err := sess.AppendTurnAnchor(userMsg)
 	if err != nil {
 		slog.Warn("turn anchor append failed", "agent", a.name, "error", err)
-		return nil
+		// A non-negative seq means the running anchor was persisted but the
+		// subsequent sessions snapshot and its compensation both failed. Keep
+		// the anchor handle so post-turn can still clear the running state.
+		if seq < 0 {
+			return nil
+		}
 	}
 	if seq < 0 {
 		return nil
 	}
-	return &turnAnchor{sessionKey: sess.SessionKey(), seq: seq}
+	return &turnAnchor{sessionKey: sess.SessionKey(), seq: seq, sess: sess}
 }
 
 // 流式（HandleMessageStream）和非流式（HandleMessage）两者
@@ -2833,22 +2942,14 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 	})
 
 	// turn 结束:把锚点翻成 done,并按"已完成且未提取 >= N"的节拍认领一批 turn 异步提取。
-	a.finishTurnAndMaybeExtract(ctx, chatterMem, anchor, toolCallCount)
+	finished := a.finishTurnAndMaybeExtract(ctx, chatterMem, anchor, toolCallCount)
 
-	// 技能学习者:有持久化锚点走 cadence 累计路径;计划模式/无持久化 store 回退单 turn 判定。
+	// Skill cadence requires the persistent session checkpoint/job store. There
+	// is deliberately no single-turn fallback: creation belongs exclusively to
+	// the cross-turn >=N cadence route.
 	chatterUID := a.chatterUserID(msg)
-	if a.skillsLearner != nil && a.isLearnerOwnerTurn(msg, chatterUID) {
-		if a.dataStore != nil && anchor != nil {
-			a.maybeExtractSkillsCadence(ctx, anchor, chatterUID)
-		} else {
-			go func() {
-				extractCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
-				defer cancel()
-				if err := a.skillsLearner.MaybeExtract(extractCtx, messages, toolCallCount); err != nil {
-					slog.Debug("skills learner error", "error", err)
-				}
-			}()
-		}
+	if finished && a.skillsLearner != nil && a.dataStore != nil && anchor != nil && a.isLearnerOwnerTurn(msg, chatterUID) {
+		a.maybeExtractSkillsCadence(ctx, anchor, chatterUID)
 	}
 }
 
@@ -2856,9 +2957,9 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 // 的节拍在单个写事务内认领一批 turn,异步从归档回放它们的原文做记忆提取。
 // 提取失败则补偿重置 extraction_id,让这批 turn 回到待提取池。
 // 无持久化存储或本次无锚点(计划模式)时直接跳过。
-func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memory, anchor *turnAnchor, toolCallCount int) {
+func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memory, anchor *turnAnchor, toolCallCount int) bool {
 	if a.dataStore == nil || anchor == nil {
-		return
+		return false
 	}
 	// 本函数在 post-turn goroutine 里跑,而流式路径下它在 SSE 响应送达之后才执行——
 	// 那时 HTTP 请求 ctx 往往已被取消(handler 读完流即返回)。turn 起点的锚点
@@ -2868,25 +2969,36 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 	// 静默认领不到批次。脱离取消(保留 ctx 上的 chatter 等值),给独立超时防收尾写挂死。
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	if err := a.dataStore.FinishTurn(finishCtx, a.ownerUserID, a.name, anchor.sessionKey, anchor.seq, toolCallCount); err != nil {
+	if anchor.sess != nil {
+		if err := anchor.sess.FinalizePersistedSnapshot(func() error {
+			return a.dataStore.FinishTurn(finishCtx, a.ownerUserID, a.name, anchor.sessionKey, anchor.seq, toolCallCount)
+		}); err != nil {
+			slog.Warn("finish turn blocked by snapshot/finalization failure", "agent", a.name, "session", anchor.sessionKey, "error", err)
+			if cancelErr := a.dataStore.CancelTurnAnchor(finishCtx, a.ownerUserID, a.name, anchor.sessionKey, anchor.seq); cancelErr != nil {
+				slog.Warn("cancel turn anchor after snapshot failure failed", "agent", a.name, "session", anchor.sessionKey, "error", cancelErr)
+			}
+			return false
+		}
+	} else if err := a.dataStore.FinishTurn(finishCtx, a.ownerUserID, a.name, anchor.sessionKey, anchor.seq, toolCallCount); err != nil {
 		slog.Warn("finish turn failed", "agent", a.name, "error", err)
 		// 锚点没翻成 done 只是本 turn 不计入提取,不阻塞主流程。
+		return false
 	}
 	var chatterUID string
 	if chatterMem != nil {
 		chatterUID = chatterMem.UserID()
 	}
 	if !a.memoryCfg.AutoPersist.Enabled || a.memoryCfg.AutoPersist.EveryNTurns <= 0 || chatterUID == "" {
-		return
+		return true
 	}
 	n := a.memoryCfg.AutoPersist.EveryNTurns
 	extractionID, refs, err := a.dataStore.ClaimCadenceBatch(finishCtx, a.name, chatterUID, n, 3*n)
 	if err != nil {
 		slog.Warn("auto-persist: claim failed", "agent", a.name, "chatter", chatterUID, "error", err)
-		return
+		return true
 	}
 	if extractionID == "" {
-		return // 不足 N,不触发
+		return true // 不足 N,不触发
 	}
 	model := a.memoryCfg.AutoPersist.Model
 	if model == "" {
@@ -2924,13 +3036,21 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 			resetBatch()
 		}
 	}()
+	return true
 }
-
-const skillClaimBatchCap = 32
 
 type skillCleanupStore interface {
 	ListSkillUsage(ctx context.Context, agentID string) ([]store.SkillUsageRow, error)
 	DeleteSkillUsage(ctx context.Context, agentID, slug string) error
+}
+
+type skillCleanupUpserter interface {
+	UpsertSkillUsage(ctx context.Context, agentID, slug, contentHash string, firstCreate bool) error
+}
+
+type skillLifecycleClockStore interface {
+	AdvanceSkillLifecycle(ctx context.Context, agentID string, cleanupEvery int64) (seq int64, cleanupDue bool, err error)
+	CurrentSkillLifecycleSeq(ctx context.Context, agentID string) (int64, error)
 }
 
 func cleanupDeadSkills(ctx context.Context, st skillCleanupStore, ws workspace.Store, mgr *skillspkg.Manager, agentID string, nowSeq int64, cfg skillspkg.LifecycleConfig) {
@@ -2942,96 +3062,353 @@ func cleanupDeadSkills(ctx context.Context, st skillCleanupStore, ws workspace.S
 		slog.Warn("skill cleanup: list failed", "agent", agentID, "error", err)
 		return
 	}
+	items := mgr.List()
+	catalog := make([]string, 0, len(items))
+	tracked := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if row.Origin == "learner" && row.Slug != "" {
+			tracked[row.Slug] = true
+		}
+	}
+	repaired := false
+	if upserter, ok := st.(skillCleanupUpserter); ok {
+		for _, item := range items {
+			catalog = append(catalog, item.Slug)
+			if tracked[item.Slug] {
+				continue
+			}
+			content, exists := mgr.Read(item.Slug)
+			if !exists {
+				continue
+			}
+			if err := upserter.UpsertSkillUsage(ctx, agentID, item.Slug, store.HashSkillContent(content), true); err != nil {
+				slog.Warn("skill cleanup: repair missing ledger failed", "agent", agentID, "skill", item.Slug, "error", err)
+				continue
+			}
+			repaired = true
+		}
+	} else {
+		for _, item := range items {
+			catalog = append(catalog, item.Slug)
+		}
+	}
+	if repaired {
+		rows, err = st.ListSkillUsage(ctx, agentID)
+		if err != nil {
+			slog.Warn("skill cleanup: reload repaired ledger failed", "agent", agentID, "error", err)
+			return
+		}
+	}
 	if nowSeq < 0 {
 		nowSeq = skillspkg.NowSeq(rows)
 	}
-	_, deletable := skillspkg.Rank(rows, nowSeq, cfg)
-	for _, slug := range deletable {
-		// Remote is authoritative when configured. Delete it first; otherwise a
-		// sibling Pod (or this Pod's next hydrate) would resurrect the local dir.
-		// On failure retain both local state and ledger so cleanup can retry.
-		if err := skillspkg.DeleteLearnerSkillUp(ctx, ws, agentID, slug); err != nil {
-			slog.Warn("skill cleanup: remote delete failed", "agent", agentID, "skill", slug, "error", err)
-			continue
-		}
-		if err := mgr.Delete(slug); err != nil {
-			// 目录已不存在(带外 rm / 兄弟副本竞争 / 上次部分清理)→ 仍需回收孤儿
-			// 账本行,否则它每轮重新符合删除条件、反复告警、永不回收。仅当目录仍在
-			// (真实删除失败,如权限)才保留行、下轮重试——避免误删行后盘上死技能
-			// 因"无账本行=永久 active"复活。
-			if _, exists := mgr.Read(slug); exists {
-				slog.Warn("skill cleanup: dir delete failed", "agent", agentID, "skill", slug, "error", err)
-				continue
+	_, deletable := skillspkg.RankCatalog(rows, catalog, nowSeq, cfg)
+	deleteExec := tools.SkillManageExec(tools.SkillManageDeps{
+		Manager: mgr, Deleter: st, AgentID: agentID, Workspace: ws, AllowMissingLocalDelete: true,
+		BeforeDelete: func(deleteCtx context.Context, slug string) error {
+			latestRows, err := st.ListSkillUsage(deleteCtx, agentID)
+			if err != nil {
+				return fmt.Errorf("reload lifecycle ledger: %w", err)
 			}
-			slog.Warn("skill cleanup: dir already absent, reaping orphan ledger row", "agent", agentID, "skill", slug)
-		}
-		if err := st.DeleteSkillUsage(ctx, agentID, slug); err != nil {
-			slog.Warn("skill cleanup: ledger delete failed", "agent", agentID, "skill", slug, "error", err)
+			for _, row := range latestRows {
+				if row.Slug == slug && row.TotalLoads > 0 && row.LastLoadSeq >= nowSeq {
+					return fmt.Errorf("skill was loaded during this lifecycle step")
+				}
+			}
+			latestItems := mgr.List()
+			latestCatalog := make([]string, 0, len(latestItems))
+			for _, item := range latestItems {
+				latestCatalog = append(latestCatalog, item.Slug)
+			}
+			_, latestDeletable := skillspkg.RankCatalog(latestRows, latestCatalog, nowSeq, cfg)
+			for _, candidate := range latestDeletable {
+				if candidate == slug {
+					return nil
+				}
+			}
+			return fmt.Errorf("skill is no longer a lifecycle deletion candidate")
+		},
+	}, tools.SkillManageLifecycle)
+	for _, slug := range deletable {
+		raw, _ := json.Marshal(map[string]string{"action": "delete", "slug": slug})
+		if _, err := deleteExec(ctx, raw); err != nil {
+			slog.Warn("skill cleanup: coordinated delete failed", "agent", agentID, "skill", slug, "error", err)
 		}
 	}
 }
 
 func (a *Agent) runSkillCleanup(base context.Context) {
-	if !a.skillLifecycleEnabled() || a.skillsLearner.Manager() == nil {
+	if !a.skillLifecycleEnabled() || !a.ownsLearnerAssets() || a.skillsLearner.Manager() == nil {
+		return
+	}
+	nowSeq := int64(-1)
+	if clockStore, ok := a.dataStore.(skillLifecycleClockStore); ok {
+		clockCtx, clockCancel := context.WithTimeout(context.WithoutCancel(base), 30*time.Second)
+		seq, err := clockStore.CurrentSkillLifecycleSeq(clockCtx, a.name)
+		clockCancel()
+		if err != nil {
+			slog.Warn("skill cleanup: read lifecycle clock failed", "agent", a.name, "error", err)
+		} else {
+			nowSeq = seq
+		}
+	}
+	a.runSkillCleanupAt(base, nowSeq)
+}
+
+func (a *Agent) runSkillCleanupAt(base context.Context, nowSeq int64) {
+	if !a.skillLifecycleEnabled() || !a.ownsLearnerAssets() || a.skillsLearner.Manager() == nil {
 		return
 	}
 	cleanupCtx, cancel := context.WithTimeout(base, 30*time.Second)
 	defer cancel()
-	cleanupDeadSkills(cleanupCtx, a.dataStore, a.workspaceStore, a.skillsLearner.Manager(), a.name, -1, lifecycleRankConfig(a.lifecycleCfg))
+	cleanupDeadSkills(cleanupCtx, a.dataStore, a.workspaceStore, a.skillsLearner.Manager(), a.name, nowSeq, lifecycleRankConfig(a.lifecycleCfg))
 }
 
 func (a *Agent) maybeExtractSkillsCadence(ctx context.Context, anchor *turnAnchor, chatterUserID string) {
-	claimCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	batchID, refs, err := a.dataStore.ClaimSkillBatch(claimCtx, a.name, anchor.sessionKey, chatterUserID, a.skillsLearner.minToolCalls, skillClaimBatchCap)
+	job, err := a.dataStore.EnqueueSkillExtractionJob(
+		enqueueCtx,
+		a.agentOwnerUserID,
+		a.name,
+		anchor.sessionKey,
+		chatterUserID,
+		a.skillsLearner.minToolCalls,
+	)
 	if err != nil {
-		slog.Warn("skills cadence: claim failed", "agent", a.name, "session", anchor.sessionKey, "error", err)
+		slog.Warn("skills cadence: enqueue failed", "agent", a.name, "session", anchor.sessionKey, "error", err)
 		return
 	}
-	if batchID == "" {
-		// 未认领批次(常见路径):不做清理。清理只搭 runSkillBatchExtraction 的
-		// defer 顺风车,避免每 turn 一次 ListSkillUsage+Rank 的热路径扫描——删除
-		// 极罕见(需 D 次加载机会零使用),没必要每 turn 空扫。
+	if job == nil {
 		return
 	}
-	slog.Info("skills cadence firing", "agent", a.name, "session", anchor.sessionKey, "turns", len(refs), "batch_id", batchID)
-	go a.runSkillBatchExtraction(context.WithoutCancel(ctx), batchID, refs)
+	slog.Info("skills cadence job ready",
+		"agent", a.name,
+		"session", job.SessionKey,
+		"job_id", job.ID,
+		"through_seq", job.ThroughSeq,
+		"tool_calls", job.ToolCallCount,
+		"snapshot_sha256", job.SnapshotSHA256,
+	)
+	a.launchSkillExtractionJob(ctx, job.ID)
 }
 
-// runSkillBatchExtraction 只回放本次认领的 owner turn。ClaimSkillBatch 已按
-// chatter 过滤 refs，沿用同一批 refs 回放可避免共享 session 中访客的历史内容
-// 被 owner 后续回合间接送入 learner 模型。
-func (a *Agent) runSkillBatchExtraction(base context.Context, batchID string, refs []store.TurnRef) {
-	defer a.runSkillCleanup(base)
-	extractCtx, cancel := context.WithTimeout(base, 5*time.Minute)
-	defer cancel()
-	resetBatch := func() {
-		rctx, rcancel := context.WithTimeout(base, 30*time.Second)
-		defer rcancel()
-		_ = a.dataStore.ResetSkillExtraction(rctx, batchID)
+const (
+	skillExtractionLeaseDuration = 6 * time.Minute
+	skillExtractionRunTimeout    = 5 * time.Minute
+)
+
+func (a *Agent) launchSkillExtractionJob(parent context.Context, jobID string) bool {
+	if jobID == "" {
+		return false
 	}
-	sessionKey := ""
-	if len(refs) > 0 {
-		sessionKey = refs[0].SessionKey
-	}
-	groups, err := a.dataStore.LoadTurnMessages(extractCtx, a.ownerUserID, a.name, refs)
+	return a.launchSkillJob(parent, func(base context.Context) {
+		a.runSkillExtractionJob(base, jobID)
+	})
+}
+
+// runSkillExtractionJob acquires one durable lease and always analyzes the
+// snapshot frozen in that job. A provider failure releases the lease back to
+// pending without moving the checkpoint; completion advances the checkpoint
+// and immediately checks whether another >=N window accumulated meanwhile.
+func (a *Agent) runSkillExtractionJob(base context.Context, jobID string) {
+	workerID := a.name + ":" + uuid.NewString()
+	acquireCtx, acquireCancel := context.WithTimeout(context.WithoutCancel(base), 30*time.Second)
+	job, acquired, err := a.dataStore.AcquireSkillExtractionJob(acquireCtx, jobID, workerID, skillExtractionLeaseDuration)
+	acquireCancel()
 	if err != nil {
-		slog.Warn("skills cadence: replay owner turns failed", "agent", a.name, "session", sessionKey, "batch_id", batchID, "error", err)
-		resetBatch()
+		slog.Warn("skills cadence: acquire job failed", "agent", a.name, "job_id", jobID, "error", err)
 		return
 	}
-	var messages []store.SessionMessage
-	for _, group := range groups {
-		messages = append(messages, group.Messages...)
-	}
-	if len(messages) == 0 {
-		// 认领后归档行已删除：素材无法恢复，重置只会无限重试。
-		slog.Warn("skills cadence: claimed turns gone, consuming batch", "agent", a.name, "session", sessionKey, "batch_id", batchID)
+	if job == nil {
 		return
 	}
-	if err := a.skillsLearner.ExtractFromSession(extractCtx, messages); err != nil {
-		slog.Warn("skills cadence: extract failed", "agent", a.name, "batch_id", batchID, "error", err)
-		resetBatch()
+	if !acquired {
+		// Acquire itself terminalizes an expired final-attempt lease. No worker
+		// owns that job afterward, so this observer is responsible for waking a
+		// window that accumulated behind the newly released checkpoint.
+		if job.Status == "failed" && job.Outcome == "retry_exhausted" {
+			a.enqueueNextSkillExtractionJob(base, job)
+		}
+		return
+	}
+
+	extractCtx, cancel := context.WithTimeout(base, skillExtractionRunTimeout)
+	defer cancel()
+	var result SkillExtractionResult
+	receipt, receiptErr := a.dataStore.GetSkillExtractionMutation(extractCtx, job.ID)
+	switch {
+	case receiptErr == nil && receipt.Status == store.SkillExtractionMutationApplied:
+		// Crash after applied receipt but before job completion: the receipt is
+		// authoritative, so never invoke the model for the frozen snapshot again.
+		result = SkillExtractionResult{Outcome: receipt.Action, MutationCount: 1, Slugs: []string{receipt.Slug}}
+	case receiptErr == nil && receipt.Status == store.SkillExtractionMutationPrepared:
+		mutation, reconcileErr := tools.ReconcileSkillExtractionMutation(extractCtx, tools.SkillManageDeps{
+			Manager:      a.skillsLearner.Manager(),
+			Upserter:     a.dataStore,
+			Deleter:      a.dataStore,
+			AgentID:      job.AgentID,
+			Workspace:    a.workspaceStore,
+			JobID:        job.ID,
+			WorkerID:     workerID,
+			ReceiptStore: a.dataStore,
+		}, receipt)
+		if reconcileErr != nil {
+			if errors.Is(reconcileErr, tools.ErrSkillMutationConflict) {
+				slog.Error("skills cadence: prepared mutation conflicts with authoritative asset",
+					"agent", a.name, "session", job.SessionKey, "job_id", job.ID, "error", reconcileErr)
+				a.failSkillExtractionJob(base, job, workerID, reconcileErr)
+				return
+			}
+			a.retrySkillExtractionJob(base, job, workerID, reconcileErr)
+			return
+		}
+		result = SkillExtractionResult{Outcome: mutation.Action, MutationCount: 1, Slugs: []string{mutation.Slug}}
+	case receiptErr == nil && receipt.Status == store.SkillExtractionMutationConflict:
+		a.failSkillExtractionJob(base, job, workerID, fmt.Errorf("%w: %s", tools.ErrSkillMutationConflict, receipt.LastError))
+		return
+	case receiptErr != nil && !errors.Is(receiptErr, store.ErrNotFound):
+		a.retrySkillExtractionJob(base, job, workerID, fmt.Errorf("read skill mutation receipt: %w", receiptErr))
+		return
+	case errors.Is(receiptErr, store.ErrNotFound):
+		// Only a job that has not crossed the prepared boundary may inspect and
+		// send the frozen conversation snapshot to the learner model.
+		snapshotSum := sha256.Sum256(job.SnapshotJSON)
+		if !strings.EqualFold(fmt.Sprintf("%x", snapshotSum), job.SnapshotSHA256) {
+			err := errors.New("frozen snapshot sha256 mismatch")
+			slog.Error("skills cadence: frozen snapshot hash mismatch",
+				"agent", a.name, "session", job.SessionKey, "job_id", job.ID)
+			a.failSkillExtractionJob(base, job, workerID, err)
+			return
+		}
+		var messages []store.SessionMessage
+		if err := json.Unmarshal(job.SnapshotJSON, &messages); err != nil {
+			slog.Error("skills cadence: frozen snapshot is invalid",
+				"agent", a.name, "session", job.SessionKey, "job_id", job.ID, "error", err)
+			a.failSkillExtractionJob(base, job, workerID, err)
+			return
+		}
+		var err error
+		result, err = a.skillsLearner.ExtractJobFromSessionResult(extractCtx, messages, job.ID, workerID)
+		if err != nil {
+			if errors.Is(err, tools.ErrSkillMutationConflict) {
+				a.failSkillExtractionJob(base, job, workerID, err)
+				return
+			}
+			a.retrySkillExtractionJob(base, job, workerID, err)
+			return
+		}
+	default:
+		a.failSkillExtractionJob(base, job, workerID, fmt.Errorf("unknown skill mutation receipt status %q", receipt.Status))
+		return
+	}
+
+	finalizeCtx, finalizeCancel := context.WithTimeout(context.WithoutCancel(base), 30*time.Second)
+	if err := a.dataStore.CompleteSkillExtractionJob(finalizeCtx, job.ID, workerID, result.Outcome, result.MutationCount, result.Slugs); err != nil {
+		finalizeCancel()
+		slog.Warn("skills cadence: complete job failed", "agent", a.name, "job_id", job.ID, "error", err)
+		return
+	}
+	finalizeCancel()
+	slog.Info("skills cadence job completed",
+		"agent", a.name,
+		"session", job.SessionKey,
+		"job_id", job.ID,
+		"outcome", result.Outcome,
+		"mutations", result.MutationCount,
+		"skills", result.Slugs,
+	)
+
+	a.enqueueNextSkillExtractionJob(base, job)
+}
+
+func (a *Agent) retrySkillExtractionJob(base context.Context, job *store.SkillExtractionJob, workerID string, cause error) {
+	if job == nil || cause == nil {
+		return
+	}
+	slog.Warn("skills cadence: extraction or reconciliation failed; job remains pending",
+		"agent", a.name, "session", job.SessionKey, "job_id", job.ID, "error", cause)
+	finalizeCtx, finalizeCancel := context.WithTimeout(context.WithoutCancel(base), 30*time.Second)
+	defer finalizeCancel()
+	if retryErr := a.dataStore.RetrySkillExtractionJob(finalizeCtx, job.ID, workerID, cause.Error()); retryErr != nil {
+		slog.Warn("skills cadence: release job for retry failed", "agent", a.name, "job_id", job.ID, "error", retryErr)
+		return
+	}
+	// For an ordinary backed-off retry this observes the same inflight job. If
+	// Retry exhausted a receipt-free job and released the checkpoint, this also
+	// closes the follow-up-window wake-up gap.
+	a.enqueueNextSkillExtractionJob(base, job)
+}
+
+// enqueueNextSkillExtractionJob closes the wake-up gap after every terminal
+// job (successful, skipped, or permanently failed). Turns can finish while a
+// worker is active; the next >=N window must not wait for an unrelated turn.
+func (a *Agent) enqueueNextSkillExtractionJob(base context.Context, job *store.SkillExtractionJob) {
+	if job == nil {
+		return
+	}
+	nextCtx, nextCancel := context.WithTimeout(context.WithoutCancel(base), 30*time.Second)
+	next, err := a.dataStore.EnqueueSkillExtractionJob(nextCtx, job.OwnerUserID, job.AgentID, job.SessionKey, job.ChatterUserID, a.skillsLearner.minToolCalls)
+	nextCancel()
+	if err != nil {
+		slog.Warn("skills cadence: enqueue follow-up failed", "agent", a.name, "session", job.SessionKey, "error", err)
+		return
+	}
+	if next != nil && next.ID != job.ID {
+		a.launchSkillExtractionJob(base, next.ID)
+	}
+}
+
+func (a *Agent) failSkillExtractionJob(base context.Context, job *store.SkillExtractionJob, workerID string, cause error) {
+	if job == nil {
+		return
+	}
+	finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(base), 30*time.Second)
+	defer cancel()
+	if err := a.dataStore.FailSkillExtractionJob(finalizeCtx, job.ID, workerID, cause.Error()); err != nil {
+		slog.Warn("skills cadence: fail corrupt job failed", "agent", a.name, "job_id", job.ID, "error", err)
+		return
+	}
+	a.enqueueNextSkillExtractionJob(base, job)
+}
+
+const skillExtractionRecoveryInterval = time.Minute
+
+// startSkillExtractionRecovery keeps durable jobs live across process crashes.
+// The immediate sweep handles pending work; periodic sweeps pick up a running
+// job once the previous process's lease expires.
+func (a *Agent) startSkillExtractionRecovery() {
+	if a == nil || a.dataStore == nil || a.skillsLearner == nil {
+		return
+	}
+	a.launchSkillJob(context.Background(), func(ctx context.Context) {
+		a.recoverSkillExtractionJobs()
+		ticker := time.NewTicker(skillExtractionRecoveryInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.recoverSkillExtractionJobs()
+			}
+		}
+	})
+}
+
+func (a *Agent) recoverSkillExtractionJobs() {
+	if a == nil || a.dataStore == nil || a.skillsLearner == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	jobs, err := a.dataStore.ListRecoverableSkillExtractionJobs(ctx, a.name, 100)
+	cancel()
+	if err != nil {
+		slog.Warn("skills cadence: list recoverable jobs failed", "agent", a.name, "error", err)
+		return
+	}
+	for i := range jobs {
+		a.launchSkillExtractionJob(context.Background(), jobs[i].ID)
 	}
 }
 
@@ -3060,7 +3437,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	ctx = store.WithChatterUserID(ctx, chatterUID)
 	slog.Info("turn: refreshing skills",
 		"agent", a.name, "channel", msg.Channel, "chat_id", msg.ChatID, "user", chatterUID)
-	skillDirs, skillsSummary := a.refreshSkillsFromStore(chatterUID)
+	skillDirs, skillsSummary := a.refreshSkillsFromStore(ctx, chatterUID)
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
 	// 将chatter绑定到sess上，使其ctx()嵌入WithChatterUserID
 	// 对于 DBStore 会话写入 — Session.ctx() 从其重建 ctx
@@ -3095,6 +3472,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeSystemPrompt, UserID: a.ownerUserID})
 	chatterMem := a.memory.WithUserID(chatterUID)
 	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, skillsSummary)
+	systemPrompt += foregroundSkillMaintenanceDirective(reg, a.promptMode)
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterSystemPrompt, UserID: a.ownerUserID})
 
@@ -3567,6 +3945,32 @@ func builtinAllowForMode(mode string) []string {
 	}
 }
 
+const learnerSkillUpdateOnlyDirective = `
+
+<learner_skill_maintenance>
+You may improve an existing learner-generated skill only when using it reveals a concrete, reproducible error, omission, or inefficient step. Inspect with skill_manage list/read, preserve useful instructions, then use update to merge the correction and pass expected_hash exactly from that read result. If the hash conflicts, read again and merge against the newer content. The only foreground mutation is update: never create or delete a skill here. New skill creation is handled only by the background cadence learner. Learner skills are shared with every user of this agent: replace owner-specific paths, names, IDs, URLs, credentials, tokens, personal data, and other instance values with placeholders or configuration variables. Normal task completion, one-off preferences, or stylistic differences are not reasons to update a skill.
+</learner_skill_maintenance>`
+
+func foregroundSkillMaintenanceDirective(reg *tools.Registry, promptMode string) string {
+	if reg == nil || !reg.SkillManageActions().Allows("update") {
+		return ""
+	}
+	allow := builtinAllowForMode(promptMode)
+	if allow != nil {
+		visible := false
+		for _, name := range allow {
+			if name == "skill_manage" {
+				visible = true
+				break
+			}
+		}
+		if !visible {
+			return ""
+		}
+	}
+	return learnerSkillUpdateOnlyDirective
+}
+
 // WorkspacePath 返回面向用户的文件的代理工作目录。
 func (a *Agent) WorkspacePath() string {
 	return a.workspacePath
@@ -3642,7 +4046,11 @@ func (a *Agent) authorizeSkillManageForTurn(reg *tools.Registry, msg bus.Inbound
 	if reg == nil {
 		return
 	}
-	reg.SetSkillManageAllowed(a.skillsLearner != nil && a.isLearnerOwnerTurn(msg, chatterUID))
+	if a.skillsLearner != nil && a.isLearnerOwnerTurn(msg, chatterUID) {
+		reg.SetSkillManageActions(tools.SkillManageForeground)
+		return
+	}
+	reg.SetSkillManageActions(0)
 }
 
 // chatterUserID 选择每条消息的聊天身份，回退
@@ -3677,25 +4085,38 @@ func (a *Agent) chatterUserID(msg bus.InboundMessage) string {
 // （tools map 并发写是 Go 致命 panic；技能摘要串扰会让系统提示列错技能）。
 // 无 store 时返回零值，回合私有副本沿用模板继承的 load_skill、系统提示用构造期
 // 的默认摘要。
-func (a *Agent) refreshSkillsFromStore(userID string) (skillDirs []string, skillsSummary string) {
-	if a.workspaceStore == nil {
-		// IM-vs-web“缺少代理技能”诊断：何时触发
-		// 在 IM 轮次上，但不在相同的匹配网络轮次上
-		// 代理，聊天者的用户空间是在没有工作空间的情况下构建的
-		// 存储，因此代理范围的 OSS 技能永远不会水合。警告（不
-		// debug），因此它会出现在默认级别的生产日志中。
-		slog.Warn("refresh skills skipped: no workspace store",
-			"agent", a.name, "agentID", a.agentID, "user", userID)
-		return nil, ""
-	}
+func (a *Agent) refreshSkillsFromStore(ctx context.Context, userID string) (skillDirs []string, skillsSummary string) {
 	loader := NewSkillsLoaderWithGlobal(a.homeDir, a.homePath, "", a.skillsCfg, a.globalSkillsCfg).
-		WithObjectStore(a.workspaceStore, a.agentID).
 		WithUserID(userID)
+	if a.workspaceStore != nil {
+		loader.WithObjectStore(a.workspaceStore, a.agentID)
+	}
 	a.configureSkillsLoaderLifecycle(loader)
+	var cleanupDue bool
+	if a.skillLifecycleEnabled() && a.ownsLearnerAssets() && a.exposesSkillCatalog() {
+		if clockStore, ok := a.dataStore.(skillLifecycleClockStore); ok {
+			clockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			seq, due, err := clockStore.AdvanceSkillLifecycle(clockCtx, a.name, lifecycleCleanupEvery(a.lifecycleCfg))
+			cancel()
+			if err != nil {
+				slog.Warn("advance skill lifecycle clock failed", "agent", a.name, "error", err)
+			} else {
+				loader.lifecycleNowSeq = seq
+				loader.lifecycleNowSet = true
+				cleanupDue = due
+			}
+		}
+	}
 	skills := loader.LoadSkills()
 	skills = loader.FilterActive(context.Background(), skills)
 	summary := loader.BuildSkillsSummary(skills)
 	skillDirs = loader.AllSkillDirs()
+	if cleanupDue {
+		nowSeq := loader.lifecycleNowSeq
+		a.launchSkillJob(ctx, func(base context.Context) {
+			a.runSkillCleanupAt(base, nowSeq)
+		})
+	}
 	// 系统提示会显示技能组的每回合指纹
 	// 船。让我们比较 IM 与 Web 的相同点（座席、聊天）和
 	// 确认——或排除——座席范围的技能正在达到
@@ -3729,6 +4150,19 @@ func (a *Agent) ReloadWorkspaceFiles() {
 		loader.WithObjectStore(a.workspaceStore, a.agentID)
 	}
 	a.configureSkillsLoaderLifecycle(loader)
+	if a.skillLifecycleEnabled() {
+		if clockStore, ok := a.dataStore.(skillLifecycleClockStore); ok {
+			clockCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			seq, err := clockStore.CurrentSkillLifecycleSeq(clockCtx, a.name)
+			cancel()
+			if err != nil {
+				slog.Warn("read skill lifecycle clock during reload failed", "agent", a.name, "error", err)
+			} else {
+				loader.lifecycleNowSeq = seq
+				loader.lifecycleNowSet = true
+			}
+		}
+	}
 	skills := loader.LoadSkills()
 	skills = loader.FilterActive(context.Background(), skills)
 	skillsSummary := loader.BuildSkillsSummary(skills)

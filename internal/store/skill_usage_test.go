@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"math"
+	"sync"
 	"testing"
 )
 
@@ -88,7 +89,7 @@ func TestRecordSkillLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("explicit record: %v", err)
 	}
-	if row.TotalLoads != 2 || row.ExplicitUses != 1 || row.LastLoadSeq != 2 {
+	if row.TotalLoads != 2 || row.ExplicitUses != 1 || row.LastLoadSeq != 1 {
 		t.Fatalf("explicit counters wrong: %+v", row)
 	}
 	if row.Activity < 3.9 || row.Activity > 4.0 {
@@ -96,7 +97,7 @@ func TestRecordSkillLoad(t *testing.T) {
 	}
 }
 
-func TestRecordSkillLoadDetectsEditAndSkipsNoRow(t *testing.T) {
+func TestRecordSkillLoadDetectsEditAndRepairsMissingRow(t *testing.T) {
 	db := newTestSQLite(t)
 	ctx := context.Background()
 	if err := db.UpsertSkillUsage(ctx, "agentA", "foo", "orig", true); err != nil {
@@ -114,8 +115,67 @@ func TestRecordSkillLoadDetectsEditAndSkipsNoRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record missing row: %v", err)
 	}
-	if row != nil {
-		t.Fatalf("missing ledger row should not be created: %+v", row)
+	if row == nil {
+		t.Fatal("missing learner ledger row was not repaired")
+	}
+	if row.Slug != "manual" || row.Origin != "learner" || row.ContentHash != "hash" {
+		t.Fatalf("repaired row identity is wrong: %+v", row)
+	}
+	if row.TotalLoads != 1 || row.LastLoadSeq != 1 || row.CreatedSeq != 1 || row.ExplicitUses != 1 {
+		t.Fatalf("repair did not include the triggering load: %+v", row)
+	}
+	if math.Abs(row.Activity-3) > 1e-9 {
+		t.Fatalf("repaired row activity=%v want 3", row.Activity)
+	}
+
+	rows, err := db.ListSkillUsage(ctx, "agentA")
+	if err != nil {
+		t.Fatalf("list repaired rows: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("repaired row was not persisted: %+v", rows)
+	}
+}
+
+func TestRecordSkillLoadConcurrentRepairCountsEveryLoad(t *testing.T) {
+	db := newTestSQLite(t)
+	ctx := context.Background()
+
+	const loadCount = 8
+	start := make(chan struct{})
+	errs := make(chan error, loadCount)
+	var wg sync.WaitGroup
+	for i := 0; i < loadCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := db.RecordSkillLoad(ctx, "agentA", "repaired", "hash", false, 32, 3)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent record: %v", err)
+		}
+	}
+
+	rows, err := db.ListSkillUsage(ctx, "agentA")
+	if err != nil {
+		t.Fatalf("list repaired row: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("unexpected repaired rows: %+v", rows)
+	}
+	row := rows[0]
+	if row.Origin != "learner" || row.ContentHash != "hash" || row.CreatedSeq != 1 {
+		t.Fatalf("repaired row metadata is wrong: %+v", row)
+	}
+	if row.TotalLoads != loadCount || row.LastLoadSeq != 1 {
+		t.Fatalf("concurrent loads were lost: %+v", row)
 	}
 }
 

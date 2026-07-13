@@ -63,9 +63,22 @@ func (m *Manager) RootDir() string {
 	return m.root
 }
 
+// IsLearnerSkillsRoot reports whether root is the dedicated learner-managed
+// layer. Tool wiring uses this as a fail-closed guard against accidentally
+// attaching skill_manage to an installed/manual skills manager.
+func IsLearnerSkillsRoot(root string) bool {
+	return root != "" && filepath.Base(filepath.Clean(root)) == LearnerSkillsDirName
+}
+
 var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
 var skillPathLocks sync.Map
+
+var learnerPrivateInstancePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(?:/Users|/home)/[A-Za-z0-9._-]+(?:/|\b)`),
+	regexp.MustCompile(`(?i)[A-Z]:\\Users\\[A-Za-z0-9._-]+(?:\\|\b)`),
+	regexp.MustCompile(`(?i)https?://[^/\s]+\.(?:internal|local|corp)(?::\d+)?(?:/|\b)`),
+}
 
 func lockForPath(path string) *sync.Mutex {
 	key, err := filepath.Abs(path)
@@ -76,16 +89,42 @@ func lockForPath(path string) *sync.Mutex {
 	return lock.(*sync.Mutex)
 }
 
+// LockLearnerSkillOperation serializes the full local learner asset operation
+// (hydrate or local->remote mutation), not merely one atomic file rename.
+// The returned unlock function must always be called.
+func LockLearnerSkillOperation(root, slug string) (func(), error) {
+	if !IsLearnerSkillsRoot(root) {
+		return nil, fmt.Errorf("skill manager root %q is not the learner-skills layer", root)
+	}
+	if err := ValidateSlug(slug); err != nil {
+		return nil, err
+	}
+	lock := lockForPath(filepath.Join(root, slug, ".learner-operation"))
+	lock.Lock()
+	return lock.Unlock, nil
+}
+
 func (m *Manager) skillPath(slug string) string {
 	return filepath.Join(m.root, slug, "SKILL.md")
 }
 
 func (m *Manager) validateSlug(slug string) error {
+	return validateSlug(slug, m.config.MaxSlugChars)
+}
+
+// ValidateSlug applies the canonical skill directory-name policy used by the
+// manager and object-store layer. Keeping one validator prevents a valid
+// manager operation from being mirrored under a different/escaping key.
+func ValidateSlug(slug string) error {
+	return validateSlug(slug, DefaultManagerConfig().MaxSlugChars)
+}
+
+func validateSlug(slug string, maxChars int) error {
 	if slug == "" {
 		return errors.New("skill slug is required")
 	}
-	if utf8.RuneCountInString(slug) > m.config.MaxSlugChars {
-		return fmt.Errorf("skill slug exceeds %d chars", m.config.MaxSlugChars)
+	if utf8.RuneCountInString(slug) > maxChars {
+		return fmt.Errorf("skill slug exceeds %d chars", maxChars)
 	}
 	if !slugRe.MatchString(slug) {
 		return fmt.Errorf("invalid skill slug %q: use lowercase letters, digits, dots, hyphens, underscores; must start with a letter or digit", slug)
@@ -140,22 +179,32 @@ func (m *Manager) validateContent(content string) error {
 	return nil
 }
 
-func scanContent(content string) error {
+func (m *Manager) scanContent(content string) error {
 	threats := privacy.ScanSkillStrict(content)
-	if len(threats) == 0 {
-		return nil
-	}
-	seen := map[string]bool{}
-	var types []string
-	for _, th := range threats {
-		typ := string(th.Type)
-		if seen[typ] {
-			continue
+	if len(threats) > 0 {
+		seen := map[string]bool{}
+		var types []string
+		for _, th := range threats {
+			typ := string(th.Type)
+			if seen[typ] {
+				continue
+			}
+			seen[typ] = true
+			types = append(types, typ)
 		}
-		seen[typ] = true
-		types = append(types, typ)
+		return fmt.Errorf("unsafe skill content rejected: threat pattern(s): %s", strings.Join(types, ", "))
 	}
-	return fmt.Errorf("unsafe skill content rejected: threat pattern(s): %s", strings.Join(types, ", "))
+	if IsLearnerSkillsRoot(m.root) {
+		if privacy.ContainsSensitiveInstanceData(content) {
+			return errors.New("private instance data rejected from shared learner skill: replace PII, credentials, IP addresses, and account-specific values with descriptive placeholders or configuration variables")
+		}
+		for _, pattern := range learnerPrivateInstancePatterns {
+			if pattern.MatchString(content) {
+				return errors.New("private instance data rejected from shared learner skill: replace owner-specific home paths and internal hostnames with descriptive placeholders or configuration variables")
+			}
+		}
+	}
+	return nil
 }
 
 func (m *Manager) Create(slug, content string) error {
@@ -166,15 +215,32 @@ func (m *Manager) Update(slug, content string) error {
 	return m.write(slug, content, true)
 }
 
-func (m *Manager) write(slug, content string, mustExist bool) error {
+// ValidateWrite performs every deterministic validation used by Create and
+// Update without touching the filesystem. Cadence mutation receipts call this
+// before crossing their durable prepared boundary so recovery is never left
+// with an intent that cannot pass format or security validation. The returned
+// content is the canonical byte representation Manager.write will persist.
+func (m *Manager) ValidateWrite(slug, content string) (string, error) {
+	if m == nil {
+		return "", errors.New("skill manager is not configured")
+	}
 	if err := m.validateSlug(slug); err != nil {
-		return err
+		return "", err
 	}
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	if err := m.validateContent(content); err != nil {
-		return err
+		return "", err
 	}
-	if err := scanContent(content); err != nil {
+	if err := m.scanContent(content); err != nil {
+		return "", err
+	}
+	return content, nil
+}
+
+func (m *Manager) write(slug, content string, mustExist bool) error {
+	var err error
+	content, err = m.ValidateWrite(slug, content)
+	if err != nil {
 		return err
 	}
 
@@ -239,6 +305,9 @@ func (m *Manager) Delete(slug string) error {
 	if err := m.validateSlug(slug); err != nil {
 		return err
 	}
+	lock := lockForPath(m.skillPath(slug))
+	lock.Lock()
+	defer lock.Unlock()
 	dir := filepath.Join(m.root, slug)
 	if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err != nil {
 		return fmt.Errorf("skill %q does not exist", slug)

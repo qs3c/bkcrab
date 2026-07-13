@@ -263,8 +263,8 @@ type PIIScrubCfg struct {
 type SkillsLearnerCfg struct {
 	Enabled *bool `json:"enabled,omitempty"`
 	// MinToolCalls is the trigger threshold. With a persistent store it is
-	// cumulative across completed turns in the same session; without one it
-	// falls back to the single-turn check.
+	// cumulative across completed turns in the same session. Without a
+	// persistent store the creation cadence is disabled.
 	MinToolCalls int               `json:"minToolCalls,omitempty"`
 	Model        string            `json:"model,omitempty"`
 	Lifecycle    SkillLifecycleCfg `json:"lifecycle,omitempty"`
@@ -275,13 +275,15 @@ func (c SkillsLearnerCfg) IsEnabled() bool {
 }
 
 type SkillLifecycleCfg struct {
-	Enabled          *bool `json:"enabled,omitempty"`
-	ActiveMax        int   `json:"activeMax,omitempty"`
-	HalfLifeLoads    int   `json:"halfLifeLoads,omitempty"`
-	ProtectLoads     int   `json:"protectLoads,omitempty"`
-	EditProtectLoads int   `json:"editProtectLoads,omitempty"`
-	DeleteAfterLoads int   `json:"deleteAfterLoads,omitempty"`
-	ExplicitGain     int   `json:"explicitGain,omitempty"`
+	Enabled           *bool `json:"enabled,omitempty"`
+	ActiveMax         int   `json:"activeMax,omitempty"`
+	AssetMax          int   `json:"assetMax,omitempty"`
+	HalfLifeLoads     int   `json:"halfLifeLoads,omitempty"`
+	ProtectLoads      int   `json:"protectLoads,omitempty"`
+	EditProtectLoads  int   `json:"editProtectLoads,omitempty"`
+	DeleteAfterLoads  int   `json:"deleteAfterLoads,omitempty"`
+	ExplicitGain      int   `json:"explicitGain,omitempty"`
+	CleanupEveryTurns int   `json:"cleanupEveryTurns,omitempty"`
 }
 
 func (c SkillLifecycleCfg) IsEnabled() bool {

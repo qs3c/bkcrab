@@ -1,5 +1,7 @@
 # Learner 技能生命周期管理 Implementation Plan
 
+> **已取代：** 本文记录历史实施过程，当前行为与不变量以 [Skill 自动提炼（自进化）Canonical 设计与实现](../../skill-self-evolution.md) 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 给 review 自动生成的 learner 技能加生命周期——用指数衰减活跃度把进入系统提示 catalog 的 learner 技能稳定在小规模,基于真实加载信号做 active/cooling/deleted 三态派生淘汰。

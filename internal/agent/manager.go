@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -138,6 +139,14 @@ func NewManager(resolved []config.ResolvedAgent, prov provider.Provider, mb *bus
 		return nil, fmt.Errorf("agent.NewManager: WithUserID is required")
 	}
 	for _, rc := range resolved {
+		deleting, err := m.agentDeletionState(rc.ID)
+		if err != nil {
+			return nil, fmt.Errorf("verify deletion state for agent %q: %w", rc.ID, err)
+		}
+		if deleting {
+			slog.Warn("skip tombstoned agent during manager build", "agent", rc.ID)
+			continue
+		}
 		ag := m.buildAgent(rc, prov, mb)
 		m.agents[rc.ID] = ag
 
@@ -159,6 +168,16 @@ func NewManager(resolved []config.ResolvedAgent, prov provider.Provider, mb *bus
 	return m, nil
 }
 
+func (m *Manager) agentDeletionState(agentID string) (bool, error) {
+	guard, ok := m.opts.dataStore.(learnerAgentDeletionReader)
+	if !ok || agentID == "" {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return guard.IsAgentDeleting(ctx, agentID)
+}
+
 // buildAgent 构造一个 Agent 并连接 Manager 配置的每个存储。
 // 在 NewManager 的引导循环和 AddAgent 的热重载路径之间共享，
 // 使新入职的代理获得相同的基于数据库的身份/内存/工作空间管道。
@@ -175,6 +194,13 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 	// ledger、runPostTurn 的 cadence 提取与生命周期过滤/清理在生产真正生效。
 	ag.lifecycleCfg = m.opts.skillsLearnerCfg.Lifecycle
 	configureSkillsLearner(ag, rc, agProv, homeDir, m.opts.globalSkillsCfg, m.opts.skillsLearnerCfg)
+	// Asset isolation is always-on even when automatic extraction is disabled.
+	// Disabling the learner turns off create/update cadence and lifecycle jobs;
+	// it must not strand verified pre-isolation assets under <agent>/skills.
+	learnerAssetManager := skills.NewManager(skills.LearnerSkillsDir(rc.Home), skills.DefaultManagerConfig())
+	if ag.skillsLearner != nil {
+		learnerAssetManager = ag.skillsLearner.Manager()
+	}
 	ag.SetOwnerUserID(m.uid)
 	ag.agentID = rc.ID
 	// m.uid is the runtime UserSpace owner and may be a public-agent visitor.
@@ -227,17 +253,19 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		ag.workspaceStore = m.opts.workspaceStore
 		if ag.skillsLearner != nil {
 			ag.skillsLearner.workspaceStore = m.opts.workspaceStore
-			// Reconcile only the already-isolated learner namespace before local
-			// migration. This is safe for legacy <agent>/skills and prevents a
-			// stale Pod-local learner copy from overwriting a newer remote copy
-			// during the migration/reconciliation pass below.
-			hydrateCtx, cancelHydrate := context.WithTimeout(context.Background(), 30*time.Second)
-			if err := skills.HydrateLearnerSkillsDown(hydrateCtx, m.opts.workspaceStore, rc.ID, skills.LearnerSkillsDir(rc.Home)); err != nil {
-				slog.Warn("initial learner skill hydrate failed", "agent", rc.ID, "error", err)
-				learnerStorageReady = false
-			}
-			cancelHydrate()
 		}
+		// Reconcile only the already-isolated learner namespace before local
+		// migration. This remains necessary when extraction is disabled because
+		// existing owner assets are still shared with users of the agent.
+		hydrateCtx, cancelHydrate := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := skills.HydrateLearnerSkillsDown(hydrateCtx, m.opts.workspaceStore, rc.ID, learnerAssetManager.RootDir()); err != nil {
+			slog.Warn("initial learner skill hydrate failed", "agent", rc.ID, "error", err)
+			learnerStorageReady = false
+			if ag.skillsLearner != nil {
+				ag.skillsLearner.createDisabledReason = "initial learner object-store hydration failed"
+			}
+		}
+		cancelHydrate()
 		// Defer the first hydrate until after the dataStore block below has had a
 		// chance to migrate verified legacy learner directories. Hydrating the
 		// ordinary agent/skills namespace first could prune an old local learner
@@ -271,17 +299,17 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 			// skill_manage 与 learner 共用管理器与账本:主对话工具的
 			// create/update/delete 与提取路径同一份生命周期记账。
 			ag.registry.SetSkillManage(ag.skillsLearner.Manager(), m.opts.dataStore)
-			migrationStore := m.opts.workspaceStore
-			if !learnerStorageReady {
-				// Still move a hash-verified legacy source out of the ordinary
-				// skills directory before full hydration, but do not write to a
-				// remote store whose current state we could not read.
-				migrationStore = nil
-			}
-			migrationCtx, cancelMigration := context.WithTimeout(context.Background(), 30*time.Second)
-			migrateLegacyLearnerSkills(migrationCtx, m.opts.dataStore, migrationStore, rc.ID, rc.Home, ag.skillsLearner.Manager())
-			cancelMigration()
 		}
+		migrationStore := m.opts.workspaceStore
+		if !learnerStorageReady {
+			// Still move a hash-verified legacy source out of the ordinary
+			// skills directory before full hydration, but do not write to a
+			// remote store whose current state we could not read.
+			migrationStore = nil
+		}
+		migrationCtx, cancelMigration := context.WithTimeout(context.Background(), 30*time.Second)
+		migrateLegacyLearnerSkills(migrationCtx, m.opts.dataStore, migrationStore, rc.ID, rc.Home, learnerAssetManager)
+		cancelMigration()
 		// 聊天者所在时区的日期线 - 需要 dataStore
 		// 范围首选项查找，因此在此处连接并由
 		// 每次 ctxBuilder 重建后重新加载工作空间文件。
@@ -293,6 +321,12 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 	if m.opts.workspaceStore != nil || m.opts.dataStore != nil {
 		ag.ReloadWorkspaceFiles()
 	}
+	// Only the authoritative owner UserSpace may resume learner creation. A
+	// public-agent visitor still receives the owner's learner assets through the
+	// loader, but must never run or recover extraction jobs.
+	if ag.skillsLearner != nil && ag.dataStore != nil && rc.UserID != "" && m.uid == rc.UserID {
+		ag.startSkillExtractionRecovery()
+	}
 	if m.opts.meter != nil {
 		ag.SetMeter(m.opts.meter)
 	}
@@ -303,6 +337,11 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 func (m *Manager) AddAgent(rc config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBus) error {
 	if _, exists := m.agents[rc.ID]; exists {
 		return fmt.Errorf("agent %q already exists", rc.ID)
+	}
+	if deleting, err := m.agentDeletionState(rc.ID); err != nil {
+		return fmt.Errorf("verify deletion state for agent %q: %w", rc.ID, err)
+	} else if deleting {
+		return fmt.Errorf("agent %q is permanently deleted and cannot be loaded", rc.ID)
 	}
 	m.agents[rc.ID] = m.buildAgent(rc, prov, mb)
 	slog.Info("agent added dynamically", "id", rc.ID, "model", rc.Model)
@@ -322,27 +361,65 @@ func (m *Manager) AddAgent(rc config.ResolvedAgent, prov provider.Provider, mb *
 // 调用者自己的cfg。没有额外的锁——调用者（UserSpace.
 // EnsureAgent) 已通过 sp.mu 序列化。
 func (m *Manager) AddAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBus, cfg config.SkillsCfg) error {
+	return m.AddAgentWithOwnerPolicies(rc, prov, mb, cfg, m.opts.skillsLearnerCfg)
+}
+
+// AddAgentWithOwnerPolicies injects a foreign/public agent using the agent
+// owner's authoritative shared-asset policy. A visitor's skills learner
+// settings must not control lifecycle ranking or usage weights for assets that
+// belong to someone else's agent.
+func (m *Manager) AddAgentWithOwnerPolicies(rc config.ResolvedAgent, prov provider.Provider, mb *bus.MessageBus, cfg config.SkillsCfg, learnerCfg config.SkillsLearnerCfg) error {
 	if _, exists := m.agents[rc.ID]; exists {
 		return fmt.Errorf("agent %q already exists", rc.ID)
 	}
+	if deleting, err := m.agentDeletionState(rc.ID); err != nil {
+		return fmt.Errorf("verify deletion state for agent %q: %w", rc.ID, err)
+	} else if deleting {
+		return fmt.Errorf("agent %q is permanently deleted and cannot be loaded", rc.ID)
+	}
 	prev := m.opts.globalSkillsCfg
+	prevLearner := m.opts.skillsLearnerCfg
 	m.opts.globalSkillsCfg = cfg
+	m.opts.skillsLearnerCfg = learnerCfg
 	m.agents[rc.ID] = m.buildAgent(rc, prov, mb)
 	m.opts.globalSkillsCfg = prev
+	m.opts.skillsLearnerCfg = prevLearner
 	slog.Info("agent added dynamically with override skills cfg", "id", rc.ID, "model", rc.Model)
 	return nil
 }
 
 // RemoveAgent 通过 ID 取消注册代理。如果未加载代理，则无操作。
 func (m *Manager) RemoveAgent(id string) {
-	if _, ok := m.agents[id]; !ok {
+	ag, ok := m.agents[id]
+	if !ok {
 		return
 	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := ag.stopSkillJobs(closeCtx); err != nil {
+		slog.Warn("stop learner jobs while removing agent failed", "agent", id, "error", err)
+	}
+	cancel()
 	delete(m.agents, id)
 	if m.defaultAgent != nil && m.defaultAgent.Name() == id {
 		m.defaultAgent = nil
 	}
 	slog.Info("agent removed dynamically", "id", id)
+}
+
+// Close cancels and waits for learner background work owned by every Agent.
+// UserSpace invalidation calls this before dropping the last in-memory handle,
+// preventing a stale extraction from recreating assets after agent deletion.
+func (m *Manager) Close(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	var errs []error
+	for id, ag := range m.agents {
+		if err := ag.stopSkillJobs(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("stop learner jobs for %s: %w", id, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // AgentByID 按 ID 返回代理。

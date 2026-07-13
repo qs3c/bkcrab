@@ -46,40 +46,64 @@ func HashSkillContent(content string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-type queryer interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
-func (d *DBStore) currentSkillSeq(ctx context.Context, q queryer, agentID string) (int64, error) {
-	var seq sql.NullInt64
-	err := q.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT MAX(last_load_seq) FROM skill_usage WHERE agent_id=%s`, d.ph(1)),
-		agentID).Scan(&seq)
-	if err != nil {
-		return 0, err
-	}
-	if !seq.Valid {
-		return 0, nil
-	}
-	return seq.Int64, nil
-}
-
 // UpsertSkillUsage creates or refreshes the learner skill ledger row.
 func (d *DBStore) UpsertSkillUsage(ctx context.Context, agentID, slug, contentHash string, firstCreate bool) error {
 	if agentID == "" || slug == "" {
 		return nil
 	}
-	if !firstCreate {
-		_, err := d.db.ExecContext(ctx,
-			fmt.Sprintf(`UPDATE skill_usage SET content_hash=%s, updated_at=CURRENT_TIMESTAMP
-				WHERE agent_id=%s AND slug=%s`, d.ph(1), d.ph(2), d.ph(3)),
-			contentHash, agentID, slug)
-		return err
-	}
-
-	createdSeq, err := d.currentSkillSeq(ctx, d.db, agentID)
+	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
+	}
+	defer tx.Rollback()
+	if err := d.upsertSkillUsageTx(ctx, tx, agentID, slug, contentHash, firstCreate); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// upsertSkillUsageTx is the transactional core shared by ordinary
+// skill_manage writes and cadence mutation receipt finalization. The latter
+// must advance the lifecycle ledger and the prepared -> applied receipt in one
+// database commit, otherwise a crash leaves a second replay window inside the
+// database itself.
+func (d *DBStore) upsertSkillUsageTx(ctx context.Context, tx *sql.Tx, agentID, slug, contentHash string, firstCreate bool) error {
+	if agentID == "" || slug == "" {
+		return nil
+	}
+	seq, _, err := d.lockSkillLifecycle(ctx, tx, agentID)
+	if err != nil {
+		return err
+	}
+	if !firstCreate {
+		var upsertSQL string
+		switch d.dialect {
+		case mysqlDialect:
+			upsertSQL = fmt.Sprintf(`INSERT INTO skill_usage
+				(agent_id, slug, origin, created_seq, edited_seq, content_hash)
+				VALUES (%s, %s, 'learner', %s, %s, %s)
+				ON DUPLICATE KEY UPDATE content_hash=VALUES(content_hash),
+					edited_seq=VALUES(edited_seq), updated_at=CURRENT_TIMESTAMP`,
+				d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5))
+		case "postgres":
+			upsertSQL = fmt.Sprintf(`INSERT INTO skill_usage
+				(agent_id, slug, origin, created_seq, edited_seq, content_hash)
+				VALUES (%s, %s, 'learner', %s, %s, %s)
+				ON CONFLICT (agent_id, slug) DO UPDATE SET content_hash=EXCLUDED.content_hash,
+					edited_seq=EXCLUDED.edited_seq, updated_at=CURRENT_TIMESTAMP`,
+				d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5))
+		default:
+			upsertSQL = fmt.Sprintf(`INSERT INTO skill_usage
+				(agent_id, slug, origin, created_seq, edited_seq, content_hash)
+				VALUES (%s, %s, 'learner', %s, %s, %s)
+				ON CONFLICT(agent_id, slug) DO UPDATE SET content_hash=excluded.content_hash,
+					edited_seq=excluded.edited_seq, updated_at=CURRENT_TIMESTAMP`,
+				d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5))
+		}
+		if _, err := tx.ExecContext(ctx, upsertSQL, agentID, slug, seq, seq, contentHash); err != nil {
+			return err
+		}
+		return nil
 	}
 	// 单条 upsert:新行插入(created_seq=当前时钟);撞已存在行(learner 重新提取
 	// 同 slug)只刷 content_hash,保留原 created_seq——避免旧实现的 INSERT+UPDATE
@@ -102,8 +126,10 @@ func (d *DBStore) UpsertSkillUsage(ctx context.Context, agentID, slug, contentHa
 			ON CONFLICT(agent_id, slug) DO UPDATE SET content_hash=excluded.content_hash, updated_at=CURRENT_TIMESTAMP`,
 			d.ph(1), d.ph(2), d.ph(3), d.ph(4))
 	}
-	_, err = d.db.ExecContext(ctx, upsertSQL, agentID, slug, createdSeq, contentHash)
-	return err
+	if _, err = tx.ExecContext(ctx, upsertSQL, agentID, slug, seq, contentHash); err != nil {
+		return err
+	}
+	return nil
 }
 
 // RecordSkillLoad records one successful load_skill hit for a learner skill.
@@ -116,6 +142,35 @@ func (d *DBStore) RecordSkillLoad(ctx context.Context, agentID, slug, diskHash s
 		return nil, err
 	}
 	defer tx.Rollback()
+	seq, _, err := d.lockSkillLifecycle(ctx, tx, agentID)
+	if err != nil {
+		return nil, err
+	}
+
+	// A successful learner-skill read is authoritative evidence that the asset
+	// exists. Repair a missing lifecycle row in this transaction so a transient
+	// ledger loss cannot make the skill invisible to lifecycle accounting.
+	var ensureSQL string
+	switch d.dialect {
+	case mysqlDialect:
+		ensureSQL = fmt.Sprintf(`INSERT INTO skill_usage (agent_id, slug, origin, created_seq, content_hash)
+			VALUES (%s, %s, 'learner', %s, %s)
+			ON DUPLICATE KEY UPDATE slug=VALUES(slug)`,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4))
+	case "postgres":
+		ensureSQL = fmt.Sprintf(`INSERT INTO skill_usage (agent_id, slug, origin, created_seq, content_hash)
+			VALUES (%s, %s, 'learner', %s, %s)
+			ON CONFLICT (agent_id, slug) DO NOTHING`,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4))
+	default:
+		ensureSQL = fmt.Sprintf(`INSERT INTO skill_usage (agent_id, slug, origin, created_seq, content_hash)
+			VALUES (%s, %s, 'learner', %s, %s)
+			ON CONFLICT(agent_id, slug) DO NOTHING`,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4))
+	}
+	if _, err := tx.ExecContext(ctx, ensureSQL, agentID, slug, seq, diskHash); err != nil {
+		return nil, err
+	}
 
 	lock := ""
 	if d.dialect == "postgres" || d.dialect == mysqlDialect {
@@ -128,18 +183,13 @@ func (d *DBStore) RecordSkillLoad(ctx context.Context, agentID, slug, diskHash s
 			WHERE agent_id=%s AND slug=%s`+lock, d.ph(1), d.ph(2)), agentID, slug).
 		Scan(&r.Slug, &r.Origin, &r.Activity, &r.LastLoadSeq, &r.TotalLoads, &r.ExplicitUses,
 			&r.CreatedSeq, &r.EditedSeq, &r.ContentHash)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
 	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("skill usage row missing after repair for agent %q skill %q", agentID, slug)
+		}
 		return nil, err
 	}
 
-	curSeq, err := d.currentSkillSeq(ctx, tx, agentID)
-	if err != nil {
-		return nil, err
-	}
-	seq := curSeq + 1
 	gain := 1
 	if invokedByUser {
 		gain = explicitGain
@@ -166,10 +216,10 @@ func (d *DBStore) RecordSkillLoad(ctx context.Context, agentID, slug, diskHash s
 
 	_, err = tx.ExecContext(ctx,
 		fmt.Sprintf(`UPDATE skill_usage SET activity=%s, last_load_seq=%s, total_loads=%s,
-			explicit_uses=%s, edited_seq=%s, content_hash=%s, updated_at=CURRENT_TIMESTAMP
+			explicit_uses=%s, created_seq=%s, edited_seq=%s, content_hash=%s, updated_at=CURRENT_TIMESTAMP
 			WHERE agent_id=%s AND slug=%s`,
-			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8)),
-		r.Activity, r.LastLoadSeq, r.TotalLoads, r.ExplicitUses, r.EditedSeq, r.ContentHash, agentID, slug)
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9)),
+		r.Activity, r.LastLoadSeq, r.TotalLoads, r.ExplicitUses, r.CreatedSeq, r.EditedSeq, r.ContentHash, agentID, slug)
 	if err != nil {
 		return nil, err
 	}

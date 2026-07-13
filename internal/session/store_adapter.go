@@ -134,6 +134,10 @@ func (a *StoreAdapter) AppendTurnAnchor(ctx context.Context, agentID, sessionKey
 	return a.st.AppendTurnAnchor(ctx, a.userID, agentID, sessionKey, sessionMessageFromProvider(m))
 }
 
+func (a *StoreAdapter) CancelTurnAnchor(ctx context.Context, agentID, sessionKey string, seq int64) error {
+	return a.st.CancelTurnAnchor(ctx, a.userID, agentID, sessionKey, seq)
+}
+
 // ListMessages 按对话顺序读取单个会话的完整归档。
 // 由聊天历史 UI 使用，以便用户在压缩缩小了 LLM 工作集后仍能看到原始对话。
 func (a *StoreAdapter) ListMessages(ctx context.Context, agentID, sessionKey string) ([]provider.Message, error) {

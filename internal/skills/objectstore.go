@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -83,10 +84,37 @@ func SyncSkillUp(ctx context.Context, ws workspace.Store, owner, skillName, root
 // <owner>/learner-skills/<skillName>/ namespace. It never writes keys under
 // the existing installed-skill namespace.
 func SyncLearnerSkillUp(ctx context.Context, ws workspace.Store, owner, skillName, rootDir string) error {
-	if err := syncSkillUp(ctx, ws, owner, learnerSkillsKeyPrefix, skillName, rootDir); err != nil {
+	// Establish the authoritative learner namespace before writing asset
+	// objects. If the marker write fails, a create must not leave an orphaned
+	// object that sibling Pods can hydrate without a durable namespace state.
+	if err := markLearnerNamespace(ctx, ws, owner); err != nil {
 		return err
 	}
-	return markLearnerNamespace(ctx, ws, owner)
+	return syncSkillUp(ctx, ws, owner, learnerSkillsKeyPrefix, skillName, rootDir)
+}
+
+// SyncLearnerSkillContent writes the already-validated SKILL.md bytes directly
+// to the learner namespace. The mutation path must not reopen mutable local
+// disk after Manager.Update: a concurrent hydrate could otherwise make the
+// remote object and lifecycle hash disagree with the requested content.
+func SyncLearnerSkillContent(ctx context.Context, ws workspace.Store, owner, skillName, content string) error {
+	if ws == nil {
+		return nil
+	}
+	if owner == "" {
+		return errors.New("learner skill owner is required")
+	}
+	if err := ValidateSlug(skillName); err != nil {
+		return err
+	}
+	if err := markLearnerNamespace(ctx, ws, owner); err != nil {
+		return err
+	}
+	key := buildKey(learnerSkillsKeyPrefix, skillName, "SKILL.md")
+	if err := ws.Put(ctx, owner, "", "", key, strings.NewReader(content), int64(len(content)), "text/markdown"); err != nil {
+		return fmt.Errorf("put %s: %w", key, err)
+	}
+	return nil
 }
 
 // MirrorLearnerSkillsUp initializes a previously unused learner namespace from
@@ -98,15 +126,12 @@ func MirrorLearnerSkillsUp(ctx context.Context, ws workspace.Store, owner, rootD
 	if ws == nil || owner == "" {
 		return nil
 	}
-	objects, err := ws.List(ctx, owner, "", "")
+	initialized, err := LearnerNamespaceInitialized(ctx, ws, owner)
 	if err != nil {
 		return fmt.Errorf("list learner namespace for %s: %w", owner, err)
 	}
-	prefix := learnerSkillsKeyPrefix + "/"
-	for _, object := range objects {
-		if object.Path == learnerNamespaceMarker || strings.HasPrefix(object.Path, prefix) {
-			return nil
-		}
+	if initialized {
+		return nil
 	}
 	entries, err := os.ReadDir(rootDir)
 	if err != nil {
@@ -134,6 +159,27 @@ func MirrorLearnerSkillsUp(ctx context.Context, ws workspace.Store, owner, rootD
 	return nil
 }
 
+// LearnerNamespaceInitialized reports whether the remote learner namespace
+// has ever been initialized. The marker deliberately survives deletion of the
+// last skill, so true also means an empty remote set is authoritative and stale
+// local/migration copies must not be uploaded again.
+func LearnerNamespaceInitialized(ctx context.Context, ws workspace.Store, owner string) (bool, error) {
+	if ws == nil || owner == "" {
+		return false, nil
+	}
+	objects, err := ws.List(ctx, owner, "", "")
+	if err != nil {
+		return false, err
+	}
+	prefix := learnerSkillsKeyPrefix + "/"
+	for _, object := range objects {
+		if object.Path == learnerNamespaceMarker || strings.HasPrefix(object.Path, prefix) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func markLearnerNamespace(ctx context.Context, ws workspace.Store, owner string) error {
 	if ws == nil {
 		return nil
@@ -148,6 +194,9 @@ func markLearnerNamespace(ctx context.Context, ws workspace.Store, owner string)
 func syncSkillUp(ctx context.Context, ws workspace.Store, owner, keyPrefix, skillName, rootDir string) error {
 	if ws == nil {
 		return nil // 未配置对象存储 — 无需镜像
+	}
+	if err := ValidateSlug(skillName); err != nil {
+		return err
 	}
 	skillDir := filepath.Join(rootDir, skillName)
 	info, err := os.Stat(skillDir)
@@ -266,15 +315,46 @@ func DeleteLearnerSkillUp(ctx context.Context, ws workspace.Store, owner, skillN
 	// Keep a namespace marker after the last skill is removed. Without it an
 	// empty authoritative remote set is indistinguishable from an older/local
 	// installation that has never mirrored learner skills and must be migrated.
-	if err := markLearnerNamespace(ctx, ws, owner); err != nil {
-		return err
+	// A marker failure must never suppress the actual delete. In particular,
+	// this function is also the compensation path for a failed create.
+	markErr := markLearnerNamespace(ctx, ws, owner)
+	deleteErr := deleteSkillUp(ctx, ws, owner, learnerSkillsKeyPrefix, skillName)
+	return errors.Join(markErr, deleteErr)
+}
+
+// DeleteLearnerNamespace removes every learner asset while leaving an empty,
+// initialized namespace marker. The marker is a durable remote tombstone: a
+// stale sibling Pod must treat the empty set as authoritative and prune its
+// local learner cache instead of continuing to expose deleted agent assets.
+func DeleteLearnerNamespace(ctx context.Context, ws workspace.Store, owner string) error {
+	if ws == nil || owner == "" {
+		return nil
 	}
-	return deleteSkillUp(ctx, ws, owner, learnerSkillsKeyPrefix, skillName)
+	objects, err := ws.List(ctx, owner, "", "")
+	if err != nil {
+		return fmt.Errorf("list learner namespace for deletion: %w", err)
+	}
+	prefix := learnerSkillsKeyPrefix + "/"
+	for _, object := range objects {
+		if object.Path == learnerNamespaceMarker {
+			continue
+		}
+		if !strings.HasPrefix(object.Path, prefix) {
+			continue
+		}
+		if err := ws.Delete(ctx, owner, "", "", object.Path); err != nil && !errors.Is(err, workspace.ErrNotFound) {
+			return fmt.Errorf("delete learner object %s: %w", object.Path, err)
+		}
+	}
+	return markLearnerNamespace(ctx, ws, owner)
 }
 
 func deleteSkillUp(ctx context.Context, ws workspace.Store, owner, keyPrefix, skillName string) error {
 	if ws == nil {
 		return nil
+	}
+	if err := ValidateSlug(skillName); err != nil {
+		return err
 	}
 	objs, err := ws.List(ctx, owner, "", "")
 	if err != nil {
@@ -350,39 +430,23 @@ func hydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, keyPrefix
 			namespaceInitialized = true
 			continue
 		}
-		rest := strings.TrimPrefix(o.Path, prefix)
-		slash := strings.IndexByte(rest, '/')
-		if slash > 0 {
-			remoteSkills[rest[:slash]] = true
-		}
-
-		target := filepath.Join(rootDir, filepath.FromSlash(rest))
-		if existing, statErr := os.Stat(target); statErr == nil && !existing.IsDir() && !fetchSameSize {
-			// 相同大小 → 已水合。我们在每次安装时覆盖远程键，
-			// 因此内容变化时大小也会变化；真正的校验和匹配需要额外的 HEAD/ETag，
-			// 对于静态技能包来说很少值得这样做。
-			if o.Size >= 0 && existing.Size() == o.Size {
-				continue
-			}
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return fmt.Errorf("mkdir %s: %w", filepath.Dir(target), err)
-		}
-		rc, err := ws.Get(ctx, owner, "", "", o.Path)
+		slug, rest, err := parseSkillObjectPath(keyPrefix, o.Path)
 		if err != nil {
-			if errors.Is(err, workspace.ErrNotFound) {
-				continue
-			}
-			return fmt.Errorf("get %s: %w", o.Path, err)
+			return fmt.Errorf("unsafe remote skill object %q: %w", o.Path, err)
 		}
-		if err := replaceHydratedFile(target, rc); err != nil {
-			rc.Close()
+		remoteSkills[slug] = true
+
+		target, err := safeHydrateTarget(rootDir, rest)
+		if err != nil {
+			return fmt.Errorf("unsafe remote skill object %q: %w", o.Path, err)
+		}
+		didFetch, err := hydrateSkillObject(ctx, ws, owner, o, rootDir, target, slug, fetchSameSize, keyPrefix == learnerSkillsKeyPrefix)
+		if err != nil {
 			return err
 		}
-		if err := rc.Close(); err != nil {
-			return fmt.Errorf("close remote %s: %w", o.Path, err)
+		if didFetch {
+			fetched++
 		}
-		fetched++
 	}
 
 	// 协调删除：本地存在但远程列表中不存在的任何顶级技能目录
@@ -410,9 +474,21 @@ func hydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, keyPrefix
 			if remoteSkills[e.Name()] || keep[e.Name()] {
 				continue
 			}
-			if err := os.RemoveAll(filepath.Join(rootDir, e.Name())); err != nil {
+			var unlock func()
+			if keyPrefix == learnerSkillsKeyPrefix {
+				unlock, err = LockLearnerSkillOperation(rootDir, e.Name())
+				if err != nil {
+					slog.Warn("failed to lock stale local learner skill", "owner", owner, "skill", e.Name(), "error", err)
+					continue
+				}
+			}
+			removeErr := os.RemoveAll(filepath.Join(rootDir, e.Name()))
+			if unlock != nil {
+				unlock()
+			}
+			if removeErr != nil {
 				slog.Warn("failed to prune stale local skill",
-					"owner", owner, "skill", e.Name(), "error", err)
+					"owner", owner, "skill", e.Name(), "error", removeErr)
 				continue
 			}
 			removed++
@@ -422,6 +498,131 @@ func hydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, keyPrefix
 	if fetched > 0 || removed > 0 {
 		slog.Info("skills reconciled with object store",
 			"owner", owner, "namespace", keyPrefix, "dir", rootDir, "fetched", fetched, "pruned", removed)
+	}
+	return nil
+}
+
+func hydrateSkillObject(ctx context.Context, ws workspace.Store, owner string, object workspace.ObjectInfo, rootDir, target, slug string, fetchSameSize, serializeLearner bool) (bool, error) {
+	var unlock func()
+	if serializeLearner {
+		var err error
+		unlock, err = LockLearnerSkillOperation(rootDir, slug)
+		if err != nil {
+			return false, err
+		}
+		defer unlock()
+	}
+	if existing, statErr := os.Stat(target); statErr == nil && !existing.IsDir() && !fetchSameSize {
+		if object.Size >= 0 && existing.Size() == object.Size {
+			return false, nil
+		}
+	}
+	parent := filepath.Dir(target)
+	if err := rejectSymlinkedHydratePath(rootDir, parent); err != nil {
+		return false, fmt.Errorf("unsafe hydrate target %s: %w", target, err)
+	}
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return false, fmt.Errorf("mkdir %s: %w", parent, err)
+	}
+	if err := rejectSymlinkedHydratePath(rootDir, parent); err != nil {
+		return false, fmt.Errorf("unsafe hydrate target %s: %w", target, err)
+	}
+	rc, err := ws.Get(ctx, owner, "", "", object.Path)
+	if err != nil {
+		if errors.Is(err, workspace.ErrNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("get %s: %w", object.Path, err)
+	}
+	if err := replaceHydratedFile(target, rc); err != nil {
+		rc.Close()
+		return false, err
+	}
+	if err := rc.Close(); err != nil {
+		return false, fmt.Errorf("close remote %s: %w", object.Path, err)
+	}
+	return true, nil
+}
+
+func parseSkillObjectPath(keyPrefix, objectPath string) (string, string, error) {
+	prefix := keyPrefix + "/"
+	if !strings.HasPrefix(objectPath, prefix) {
+		return "", "", errors.New("object is outside the requested namespace")
+	}
+	rest := strings.TrimPrefix(objectPath, prefix)
+	if rest == "" || strings.Contains(rest, `\`) || path.IsAbs(rest) || path.Clean(rest) != rest {
+		return "", "", errors.New("object path is not a normalized relative path")
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) < 2 {
+		return "", "", errors.New("object path must contain a skill slug and file")
+	}
+	if err := ValidateSlug(parts[0]); err != nil {
+		return "", "", err
+	}
+	for _, segment := range parts[1:] {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", "", errors.New("object path contains an invalid segment")
+		}
+	}
+	return parts[0], rest, nil
+}
+
+func safeHydrateTarget(rootDir, relative string) (string, error) {
+	absRoot, err := filepath.Abs(rootDir)
+	if err != nil {
+		return "", err
+	}
+	target := filepath.Join(absRoot, filepath.FromSlash(relative))
+	rel, err := filepath.Rel(absRoot, target)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", errors.New("object path escapes hydration root")
+	}
+	return target, nil
+}
+
+func rejectSymlinkedHydratePath(rootDir, targetDir string) error {
+	absRoot, err := filepath.Abs(rootDir)
+	if err != nil {
+		return err
+	}
+	absTarget, err := filepath.Abs(targetDir)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(absRoot, absTarget)
+	if err != nil {
+		return err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return errors.New("target directory escapes hydration root")
+	}
+
+	current := absRoot
+	parts := []string{}
+	if rel != "." {
+		parts = strings.Split(rel, string(filepath.Separator))
+	}
+	for i := -1; i < len(parts); i++ {
+		if i >= 0 {
+			current = filepath.Join(current, parts[i])
+		}
+		info, statErr := os.Lstat(current)
+		if errors.Is(statErr, os.ErrNotExist) {
+			return nil
+		}
+		if statErr != nil {
+			return statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path component %s is a symbolic link", current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("path component %s is not a directory", current)
+		}
 	}
 	return nil
 }

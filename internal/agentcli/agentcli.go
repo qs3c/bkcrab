@@ -17,8 +17,10 @@ import (
 
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/scope"
+	"github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/users"
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 // validateName 与仪表盘的唯一校验保持一致：去除空格后不为空。
@@ -364,17 +366,60 @@ func List(ctx context.Context, st store.Store) ([]store.AgentRecord, error) {
 // Remove 删除代理记录及其拥有的所有系统文件。
 // 系统范围内的 Provider 配置保持不变；它们在代理与仪表盘之间共享。
 func Remove(ctx context.Context, st store.Store, name string) (*store.AgentRecord, error) {
+	return RemoveWithWorkspace(ctx, st, nil, name)
+}
+
+type agentDeletionMarker interface {
+	MarkAgentDeleting(ctx context.Context, agentID string) error
+}
+
+// RemoveWithWorkspace performs permanent agent deletion under the same
+// durable tombstone and renewable agent-wide learner lease as the web admin
+// path. ws may be nil for local-only callers; the CLI passes the configured
+// gateway object store so remote learner assets are removed as well.
+func RemoveWithWorkspace(ctx context.Context, st store.Store, ws workspace.Store, name string) (*store.AgentRecord, error) {
 	rec, err := Resolve(ctx, st, name)
 	if err != nil {
 		return nil, err
 	}
+	if rec == nil {
+		return nil, fmt.Errorf("agent %q not found", name)
+	}
+	marker, ok := st.(agentDeletionMarker)
+	if !ok {
+		return nil, errors.New("store does not support durable agent deletion markers")
+	}
+	if err := marker.MarkAgentDeleting(ctx, rec.ID); err != nil {
+		return nil, fmt.Errorf("mark agent %q deleting: %w", rec.ID, err)
+	}
+	lease, err := skills.WaitForLearnerAgentLeaseGuard(ctx, st, rec.ID)
+	if err != nil {
+		return nil, fmt.Errorf("quiesce learner mutations for %q: %w", rec.ID, err)
+	}
+	leaseCtx := lease.Context()
+	releaseWith := func(cause error) (*store.AgentRecord, error) {
+		return nil, errors.Join(cause, lease.Release())
+	}
+	if ws != nil {
+		if err := skills.DeleteLearnerNamespace(leaseCtx, ws, rec.ID); err != nil {
+			return releaseWith(fmt.Errorf("delete remote learner assets for %q: %w", rec.ID, err))
+		}
+	}
 	files, err := st.ListAgentFiles(ctx, rec.ID, rec.UserID)
 	if err == nil {
 		for _, f := range files {
-			_ = st.DeleteAgentFile(ctx, rec.ID, rec.UserID, f)
+			_ = st.DeleteAgentFile(leaseCtx, rec.ID, rec.UserID, f)
 		}
 	}
-	if err := st.DeleteAgent(ctx, rec.ID); err != nil {
+	if home, err := config.AgentHomeDir(rec.ID); err == nil {
+		if err := os.RemoveAll(skills.LearnerSkillsDir(home)); err != nil {
+			return releaseWith(fmt.Errorf("delete local learner assets for %q: %w", rec.ID, err))
+		}
+	}
+	if err := st.DeleteAgent(leaseCtx, rec.ID); err != nil {
+		return releaseWith(err)
+	}
+	if err := lease.Release(); err != nil {
 		return nil, err
 	}
 	return rec, nil

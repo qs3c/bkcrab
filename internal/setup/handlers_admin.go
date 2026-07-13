@@ -426,6 +426,27 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	agents, err := s.dataStore.ListAgents(r.Context(), id)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	for _, rec := range agents {
+		deleteCtx, release, err := s.beginLearnerAgentDeletion(r.Context(), rec.ID)
+		if err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		if err := s.deleteLearnerAgentAssets(deleteCtx, rec.ID); err != nil {
+			_ = release()
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		if err := release(); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+	}
 	if err := s.accounts.Delete(r.Context(), id); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return

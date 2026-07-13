@@ -250,10 +250,10 @@ type Registry struct {
 	// manager 装配 dataStore 时补齐。agent 级共享依赖,ForTurn 按值复制。
 	skillManager *skills.Manager
 	skillLedger  SkillManageLedger
-	// skillManageAllowed is a fail-closed, per-turn authorization bit. The
-	// agent loop sets it only after it has matched the authenticated chatter
-	// against agents.user_id. It is intentionally not inherited by ForTurn.
-	skillManageAllowed bool
+	// skillManageActions is a fail-closed, per-turn capability mask. It is not
+	// inherited by ForTurn; the agent loop grants only foreground list/read/update
+	// after matching the authenticated chatter against agents.user_id.
+	skillManageActions SkillManageActions
 
 	// perTurnRebind 收集那些捕获了每回合状态、但 *不* 由 registerBuiltins
 	// 重新注册的非内置工具的重绑钩子（目前是 goal 的 update_goal 与 cron 的
@@ -423,11 +423,14 @@ func (r *Registry) SetSkillManage(mgr *skills.Manager, ledger SkillManageLedger)
 	r.skillLedger = ledger
 }
 
-// SetSkillManageAllowed controls whether this turn may discover and execute
-// skill_manage. Callers must set it from an authenticated, agent-owner check;
-// the zero value denies access.
-func (r *Registry) SetSkillManageAllowed(allowed bool) {
-	r.skillManageAllowed = allowed
+// SetSkillManageActions controls both the schema projection and executor
+// capabilities for this turn. The zero value hides and rejects the tool.
+func (r *Registry) SetSkillManageActions(actions SkillManageActions) {
+	r.skillManageActions = actions
+}
+
+func (r *Registry) SkillManageActions() SkillManageActions {
+	return r.skillManageActions
 }
 
 // SetUserSkillsRoot 点聊天时 `skills/...` 写入
@@ -664,6 +667,9 @@ func (r *Registry) Register(name, description string, parameters interface{}, fn
 // RegisterFrom 将一个具有显式来源的工具添加到注册表中。
 // 插件源工具可以覆盖同名的内置工具。
 func (r *Registry) RegisterFrom(name, description string, parameters interface{}, fn ToolFunc, source ToolSource) {
+	if name == "skill_manage" && source != SourceBuiltin {
+		return // reserved security-sensitive builtin; plugins/MCP may not replace it
+	}
 	r.tools[name] = registeredTool{
 		def: provider.Tool{
 			Type: "function",
@@ -726,7 +732,14 @@ func (r *Registry) GetFunc(name string) ToolFunc {
 // 定义返回 LLM 的所有工具定义。
 func (r *Registry) Definitions() []provider.Tool {
 	defs := make([]provider.Tool, 0, len(r.tools))
-	for _, t := range r.tools {
+	for name, t := range r.tools {
+		if name == "skill_manage" {
+			if r.skillManageActions == 0 || r.skillManager == nil {
+				continue
+			}
+			defs = append(defs, SkillManageToolDef(r.skillManageActions))
+			continue
+		}
 		defs = append(defs, t.def)
 	}
 	return defs
@@ -823,8 +836,11 @@ func (r *Registry) DefinitionsForMode(builtinAllow []string) []provider.Tool {
 		// skill_manage is an owner-only learner maintenance surface. Hiding the
 		// definition prevents non-owners from being invited to call it; the
 		// executor repeats the same check in case a model fabricates a call.
-		if name == "skill_manage" && (!r.skillManageAllowed || r.skillManager == nil) {
-			continue
+		if name == "skill_manage" {
+			if r.skillManageActions == 0 || r.skillManager == nil {
+				continue
+			}
+			t.def = SkillManageToolDef(r.skillManageActions)
 		}
 		if t.source != SourceBuiltin {
 			// 插件/MCP/未来来源——始终通过。

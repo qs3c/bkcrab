@@ -125,12 +125,27 @@ type SkillsLoader struct {
 	usageStore   skillUsageLister
 	lifecycleCfg skills.LifecycleConfig
 	lifecycleOn  bool
+	// lifecycleNowSeq is the agent-wide catalog-exposure clock captured for
+	// this load. A separate flag distinguishes the valid initial value 0 from
+	// callers that do not provide the V2 clock and need the legacy fallback.
+	lifecycleNowSeq int64
+	lifecycleNowSet bool
+	deletionGuard   learnerAgentDeletionReader
+	// learnerUnavailable is set fail-closed for this loader when the owning
+	// agent is tombstoned or the durable deletion state cannot be verified.
+	// AllSkillDirs observes it as well, preventing load_skill from routing to a
+	// stale Pod-local learner directory that was excluded from the summary.
+	learnerUnavailable bool
 }
 
 // skillUsageLister 是 catalog 过滤读取生命周期账本所需的最小接口(store.Store 满足)。
 // 用接口而非闭包,避免 loader 捕获整个 Agent、也免去与 sl.agentID 冗余的参数。
 type skillUsageLister interface {
 	ListSkillUsage(ctx context.Context, agentID string) ([]store.SkillUsageRow, error)
+}
+
+type learnerAgentDeletionReader interface {
+	IsAgentDeleting(ctx context.Context, agentID string) (bool, error)
 }
 
 // NewSkillsLoader 创建一个新的技能加载器。
@@ -166,9 +181,30 @@ func (sl *SkillsLoader) WithUserID(userID string) *SkillsLoader {
 	return sl
 }
 
+func (sl *SkillsLoader) WithLearnerDeletionGuard(guard learnerAgentDeletionReader, agentID string) *SkillsLoader {
+	sl.deletionGuard = guard
+	if agentID != "" {
+		sl.agentID = agentID
+	}
+	return sl
+}
+
 // LoadSkills 从所有层发现技能并返回合并后的结果。
 // 优先级：代理工作空间 > 个人 > 团队 > 用户安装 > 托管 > 额外目录 > learner。
 func (sl *SkillsLoader) LoadSkills() []Skill {
+	sl.learnerUnavailable = false
+	if sl.deletionGuard != nil && sl.agentID != "" {
+		deleting, err := sl.deletionGuard.IsAgentDeleting(context.Background(), sl.agentID)
+		if err != nil {
+			// Fail closed. A transient database failure must not leak a stale
+			// learner catalog from a partially deleted agent.
+			sl.learnerUnavailable = true
+			slog.Warn("learner deletion state unavailable; hiding learner assets", "agent", sl.agentID, "error", err)
+		} else if deleting {
+			sl.learnerUnavailable = true
+			clearTombstonedLearnerCache(skills.LearnerSkillsDir(sl.agentDir))
+		}
+	}
 	// 将对象存储中的技能镜像到本地文件系统，使上传到 OSS（或在另一个
 	// 副本上安装）的技能在此轮次可见——而不是在下次 Pod 重启后。廉价的
 	// 幂等水合；存储按对象执行"大小匹配则跳过"。
@@ -186,12 +222,14 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 			if err := skills.HydrateSkillsDown(ctx, sl.workspaceStore, sl.agentID, agentSkills); err != nil {
 				slog.Warn("agent skill hydrate failed", "error", err)
 			}
-			learnerSkills := skills.LearnerSkillsDir(sl.agentDir)
-			if err := skills.HydrateLearnerSkillsDown(ctx, sl.workspaceStore, sl.agentID, learnerSkills); err != nil {
-				slog.Warn("learner skill hydrate failed", "agent", sl.agentID, "error", err)
-			}
-			if err := skills.MirrorLearnerSkillsUp(ctx, sl.workspaceStore, sl.agentID, learnerSkills); err != nil {
-				slog.Warn("learner skill initial mirror failed", "agent", sl.agentID, "error", err)
+			if !sl.learnerUnavailable {
+				learnerSkills := skills.LearnerSkillsDir(sl.agentDir)
+				if err := skills.HydrateLearnerSkillsDown(ctx, sl.workspaceStore, sl.agentID, learnerSkills); err != nil {
+					slog.Warn("learner skill hydrate failed", "agent", sl.agentID, "error", err)
+				}
+				if err := skills.MirrorLearnerSkillsUp(ctx, sl.workspaceStore, sl.agentID, learnerSkills); err != nil {
+					slog.Warn("learner skill initial mirror failed", "agent", sl.agentID, "error", err)
+				}
 			}
 		}
 		// 每个用户的技能桶：在聊天者使用的每个代理之间共享，与其他聊天者隔离。
@@ -227,10 +265,12 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 	// learner 层优先级最低。它是 agent 共享资产，但由后台自动生成；任何
 	// 显式安装、手工维护、团队或个人同名技能都应覆盖它，避免自动内容改变
 	// 既有技能解析语义。
-	learnerDir := skills.LearnerSkillsDir(sl.agentDir)
-	for name, skill := range discoverSkillsEnhanced(learnerDir, "learner") {
-		if !disabled[name] {
-			skillsMap[name] = skill
+	if !sl.learnerUnavailable {
+		learnerDir := skills.LearnerSkillsDir(sl.agentDir)
+		for name, skill := range discoverSkillsEnhanced(learnerDir, "learner") {
+			if !disabled[name] {
+				skillsMap[name] = skill
+			}
 		}
 	}
 
@@ -319,29 +359,33 @@ func (sl *SkillsLoader) FilterActive(ctx context.Context, list []Skill) []Skill 
 	}
 	rows, err := sl.usageStore.ListSkillUsage(ctx, sl.agentID)
 	if err != nil {
-		slog.Warn("skill usage list failed; keeping all skills", "agent", sl.agentID, "error", err)
-		return list
+		slog.Warn("skill usage list failed; applying deterministic untracked hard cap", "agent", sl.agentID, "error", err)
+		return filterActiveSkillsAt(list, nil, sl.lifecycleNowSeq, sl.lifecycleCfg)
 	}
-	return filterActiveSkills(list, rows, sl.lifecycleCfg)
+	nowSeq := skills.NowSeq(rows)
+	if sl.lifecycleNowSet {
+		nowSeq = sl.lifecycleNowSeq
+	}
+	return filterActiveSkillsAt(list, rows, nowSeq, sl.lifecycleCfg)
 }
 
 func filterActiveSkills(all []Skill, rows []store.SkillUsageRow, cfg skills.LifecycleConfig) []Skill {
-	if len(rows) == 0 {
-		return all
-	}
-	ledger := make(map[string]bool, len(rows))
-	for _, r := range rows {
-		// 只认 learner-origin 账本行(当前所有行都是,显式判定为未来防错)。
-		if r.Slug != "" && r.Origin == "learner" {
-			ledger[r.Slug] = true
+	return filterActiveSkillsAt(all, rows, skills.NowSeq(rows), cfg)
+}
+
+func filterActiveSkillsAt(all []Skill, rows []store.SkillUsageRow, nowSeq int64, cfg skills.LifecycleConfig) []Skill {
+	learnerCatalog := make([]string, 0, len(all))
+	for _, skill := range all {
+		if skill.Layer == "learner" && skill.Name != "" {
+			learnerCatalog = append(learnerCatalog, skill.Name)
 		}
 	}
-	active, _ := skills.Rank(rows, skills.NowSeq(rows), cfg)
+	active, _ := skills.RankCatalog(rows, learnerCatalog, nowSeq, cfg)
 	out := make([]Skill, 0, len(all))
 	for _, s := range all {
 		// 仅过滤 learner 专属层。即使其他来源存在同 slug 的技能，生命周期
 		// 账本也不能把安装/手工/个人技能误藏。
-		if s.Layer == "learner" && ledger[s.Name] && !active[s.Name] {
+		if s.Layer == "learner" && !active[s.Name] {
 			continue
 		}
 		out = append(out, s)
@@ -527,8 +571,33 @@ func (sl *SkillsLoader) allSkillDirs() []string {
 	dirs = append(dirs, sl.globalCfg.Load.ExtraDirs...)
 	// load_skill 按第一个命中目录解析。learner 放在最后，与 LoadSkills 中
 	// 的最低合并优先级保持一致，确保它不覆盖任何显式技能来源。
-	dirs = append(dirs, sl.LearnerSkillsDir())
+	if !sl.learnerUnavailable {
+		dirs = append(dirs, sl.LearnerSkillsDir())
+	}
 	return dirs
+}
+
+func clearTombstonedLearnerCache(root string) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			_ = os.Remove(filepath.Join(root, entry.Name()))
+			continue
+		}
+		unlock, lockErr := skills.LockLearnerSkillOperation(root, entry.Name())
+		if lockErr != nil {
+			slog.Warn("lock tombstoned learner cache for removal failed", "skill", entry.Name(), "error", lockErr)
+			continue
+		}
+		removeErr := os.RemoveAll(filepath.Join(root, entry.Name()))
+		unlock()
+		if removeErr != nil {
+			slog.Warn("remove tombstoned learner cache failed", "skill", entry.Name(), "error", removeErr)
+		}
+	}
 }
 
 // userSkillsDir 返回 ~/.bkcrab/users/<uid>/skills（支持 BKCRAB_HOME）。

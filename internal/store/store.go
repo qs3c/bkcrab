@@ -120,6 +120,10 @@ type Store interface {
 	// 并返回分配的 seq。仅由 turn 起点调用——普通 AppendSessionMessage 的
 	// turn_status 默认 ''(非锚点)。seq 在事务内分配,模式同 AppendSessionEvent。
 	AppendTurnAnchor(ctx context.Context, userID, agentID, sessionKey string, msg SessionMessage) (int64, error)
+	// CancelTurnAnchor is the compensation path when publishing the matching
+	// sessions.messages snapshot fails after the running anchor was inserted.
+	// It preserves the archived user message but removes its cadence status.
+	CancelTurnAnchor(ctx context.Context, userID, agentID, sessionKey string, seq int64) error
 	// FinishTurn 把锚点行翻成 turn_status='done'(按主键精确定位,避免认错
 	// 上次崩溃残留的僵尸 running 行),并写入本 turn 的工具调用数(供技能提取
 	// 按 session 累计判定)。turn 结束时由 runPostTurn 调用。
@@ -132,18 +136,43 @@ type Store interface {
 	// ResetExtraction 把某次提取认领的所有行 extraction_id 重置回 NULL,
 	// 使它们回到待提取状态(异步提取失败时的补偿回滚)。
 	ResetExtraction(ctx context.Context, extractionID string) error
-	// ClaimSkillBatch 在单个写事务内:选出该 (agent, session, chatter) 下
-	// turn_status='done' 且 skill_extraction_id IS NULL 的锚点(按 created_at,seq
-	// 至多 batchCap 条,
-	// MySQL/PG 加 FOR UPDATE),若 SUM(tool_call_count) >= minTotal 则生成 uuid、
-	// 整批置位 skill_extraction_id 并返回 (uuid, TurnRef 列表);不足返回 ("", nil, nil)。
-	// 事务保证并发收尾(同实例异步 post-turn / 直连入口 / 跨实例)不会重复认领。
-	// chatterUserID 必须非空；技能提炼调用方传入真实 agent owner，避免共享
-	// session 中访客回合被 owner 的后续回合间接认领。
-	ClaimSkillBatch(ctx context.Context, agentID, sessionKey, chatterUserID string, minTotal, batchCap int) (string, []TurnRef, error)
-	// ResetSkillExtraction 把某次技能认领的所有行 skill_extraction_id 重置回 NULL。
-	// 仅基础设施错误(回放失败/LLM 故障)时补偿调用;"判定不提取"视为已消费,不重置。
-	ResetSkillExtraction(ctx context.Context, skillExtractionID string) error
+	// EnqueueSkillExtractionJob atomically evaluates one durable cadence stream.
+	// When the tool-call threshold is reached it freezes sessions.messages and
+	// leaves exactly one inflight job attached to the stream checkpoint.
+	EnqueueSkillExtractionJob(ctx context.Context, ownerUserID, agentID, sessionKey, chatterUserID string, minTotal int) (*SkillExtractionJob, error)
+	// AcquireSkillExtractionJob leases one exact job. Expired leases are
+	// recoverable; acquired=false also covers a pending job whose durable retry
+	// availability has not arrived and a terminal job.
+	AcquireSkillExtractionJob(ctx context.Context, jobID, workerID string, leaseDuration time.Duration) (job *SkillExtractionJob, acquired bool, err error)
+	// CompleteSkillExtractionJob atomically records the result, advances the
+	// checkpoint, and clears its inflight pointer. A skip is a completed result.
+	CompleteSkillExtractionJob(ctx context.Context, jobID, workerID, outcome string, mutationCount int, slugs []string) error
+	// Retry retains the inflight pointer, clears the lease, and assigns durable
+	// exponential backoff. Exhausting the finite attempt budget is terminal.
+	// Fail is immediately terminal. Both terminal paths consume/release the
+	// checkpoint boundary and scrub the frozen snapshot.
+	RetrySkillExtractionJob(ctx context.Context, jobID, workerID, lastError string) error
+	FailSkillExtractionJob(ctx context.Context, jobID, workerID, lastError string) error
+	// ListRecoverableSkillExtractionJobs is agent-scoped so one agent cannot
+	// accidentally acquire another agent's learner work.
+	ListRecoverableSkillExtractionJobs(ctx context.Context, agentID string, limit int) ([]SkillExtractionJob, error)
+	// PrepareSkillExtractionMutation durably records the one mutation intent
+	// selected by a cadence job before any local or object-store write. The
+	// job lease owner is checked in the same transaction. Repeating the exact
+	// same intent is idempotent; a second, different intent for the same job is
+	// rejected.
+	PrepareSkillExtractionMutation(ctx context.Context, jobID, workerID string, intent SkillExtractionMutationIntent) (*SkillExtractionMutationReceipt, error)
+	// GetSkillExtractionMutation returns the durable receipt/outbox row for one
+	// job. ErrNotFound means the job has not crossed the prepared boundary.
+	GetSkillExtractionMutation(ctx context.Context, jobID string) (*SkillExtractionMutationReceipt, error)
+	// CommitSkillExtractionMutation atomically updates skill_usage and advances
+	// a prepared receipt to applied after the caller has reconciled the asset to
+	// AfterHash. DesiredContent is scrubbed in that terminal transition.
+	CommitSkillExtractionMutation(ctx context.Context, jobID, workerID string) (*SkillExtractionMutationReceipt, error)
+	// ConflictSkillExtractionMutation terminalizes an intent that cannot be
+	// reconciled without overwriting a divergent asset. It does not touch
+	// skill_usage and scrubs DesiredContent.
+	ConflictSkillExtractionMutation(ctx context.Context, jobID, workerID, reason string) (*SkillExtractionMutationReceipt, error)
 	UpsertSkillUsage(ctx context.Context, agentID, slug, contentHash string, firstCreate bool) error
 	RecordSkillLoad(ctx context.Context, agentID, slug, diskHash string, invokedByUser bool, halfLifeLoads, explicitGain int) (*SkillUsageRow, error)
 	ListSkillUsage(ctx context.Context, agentID string) ([]SkillUsageRow, error)
@@ -355,7 +384,7 @@ type AgentRecord struct {
 // SessionRecord 持有一个对话会话。
 //
 // Channel / AccountID / ChatID 标识此会话所属的上游对话
-//（例如 ("wechat", "<bot account id>", "<openid>") 或
+// （例如 ("wechat", "<bot account id>", "<openid>") 或
 // ("web", "", "<frontend session id>")）。这些在 INSERT 时持久化一次，
 // 永远不会被 UPDATE 覆盖——会话的归属地在创建后不会移动。
 // 多个会话行可以共享相同的三元组；IM 路由的活动会话通过 max(updated_at) 解析。
@@ -382,6 +411,71 @@ type TurnRef struct {
 type TurnGroup struct {
 	SessionKey string
 	Messages   []SessionMessage
+}
+
+// SkillExtractionJob is the durable hand-off between post-turn cadence and the
+// learner loop. SnapshotJSON is immutable while work is pending/running and is
+// scrubbed after a terminal completion/failure; SnapshotSHA256 is retained.
+type SkillExtractionJob struct {
+	ID             string          `json:"id"`
+	OwnerUserID    string          `json:"ownerUserId"`
+	AgentID        string          `json:"agentId"`
+	SessionKey     string          `json:"sessionKey"`
+	ChatterUserID  string          `json:"chatterUserId"`
+	AfterSeq       int64           `json:"afterSeq"`
+	ThroughSeq     int64           `json:"throughSeq"`
+	ToolCallCount  int             `json:"toolCallCount"`
+	SnapshotJSON   json.RawMessage `json:"snapshotJson"`
+	SnapshotSHA256 string          `json:"snapshotSha256"`
+	Status         string          `json:"status"`
+	Outcome        string          `json:"outcome,omitempty"`
+	MutationCount  int             `json:"mutationCount"`
+	Slugs          []string        `json:"slugs,omitempty"`
+	AttemptCount   int             `json:"attemptCount"`
+	LastError      string          `json:"lastError,omitempty"`
+	LeaseOwner     string          `json:"leaseOwner,omitempty"`
+	LeaseExpiresAt *time.Time      `json:"leaseExpiresAt,omitempty"`
+	NextAttemptAt  *time.Time      `json:"nextAttemptAt,omitempty"`
+	CreatedAt      time.Time       `json:"createdAt"`
+	UpdatedAt      time.Time       `json:"updatedAt"`
+	CompletedAt    *time.Time      `json:"completedAt,omitempty"`
+}
+
+const (
+	SkillExtractionMutationPrepared = "prepared"
+	SkillExtractionMutationApplied  = "applied"
+	SkillExtractionMutationConflict = "conflict"
+)
+
+// SkillExtractionMutationIntent is the immutable write selected by the
+// learner model for one cadence job. BeforeHash is empty for create and is the
+// expected current hash for update. DesiredContent is retained only while the
+// receipt is prepared so recovery can replay the exact bytes without invoking
+// the model again.
+type SkillExtractionMutationIntent struct {
+	Action         string `json:"action"`
+	Slug           string `json:"slug"`
+	BeforeHash     string `json:"beforeHash,omitempty"`
+	AfterHash      string `json:"afterHash"`
+	DesiredContent string `json:"-"`
+}
+
+// SkillExtractionMutationReceipt is the durable idempotency boundary between
+// the relational job/ledger state and non-transactional learner assets. One
+// row exists at most per job_id.
+type SkillExtractionMutationReceipt struct {
+	JobID          string     `json:"jobId"`
+	AgentID        string     `json:"agentId"`
+	Action         string     `json:"action"`
+	Slug           string     `json:"slug"`
+	BeforeHash     string     `json:"beforeHash,omitempty"`
+	AfterHash      string     `json:"afterHash"`
+	DesiredContent string     `json:"-"`
+	Status         string     `json:"status"`
+	LastError      string     `json:"lastError,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
+	ResolvedAt     *time.Time `json:"resolvedAt,omitempty"`
 }
 
 // SessionMessage 是会话中的单条消息。
@@ -420,7 +514,7 @@ type ContextArchiveRecord struct {
 
 // SessionEventRecord 是 session_events 表中的一行——agent 在一轮中发出的
 // 单个增量。Data 是不透明的 JSON，其形状取决于 Type
-//（"content", "tool_call", "error", "done", ...）。
+// （"content", "tool_call", "error", "done", ...）。
 type SessionEventRecord struct {
 	UserID     string    `json:"userId,omitempty"`
 	AgentID    string    `json:"agentId,omitempty"`
@@ -434,7 +528,7 @@ type SessionEventRecord struct {
 // SessionOwnerPair 是由 ListSessionOwnerPairs 返回的一个 (user_id, agent_id)
 // 元组——表示"该用户与此 agent 至少有一个会话。"管理员聊天视图按对展开，
 // 拉取每个聊天者的会话列表，以便公共 agent 上的非拥有者对话
-//（其中 session.user_id ≠ agent.user_id）被展示出来。
+// （其中 session.user_id ≠ agent.user_id）被展示出来。
 type SessionOwnerPair struct {
 	UserID  string `json:"userId"`
 	AgentID string `json:"agentId"`
@@ -515,7 +609,7 @@ type ConfigRecord struct {
 // computeConfigScope 从 (userID, agentID) 所有权对派生范围标签。
 // Scope 列的单一真相来源——SaveConfig 在每次写入前调用它，
 // 因此列与标签之间的任何差异都意味着绕过了 SaveConfig 的代码路径
-//（除了测试专用的临时 INSERT 外不应存在）。
+// （除了测试专用的临时 INSERT 外不应存在）。
 func computeConfigScope(userID, agentID string) string {
 	switch {
 	case userID != "" && agentID != "":

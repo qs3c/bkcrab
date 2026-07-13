@@ -11,6 +11,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/agentcli"
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/daemon"
+	"github.com/qs3c/bkcrab/internal/gateway"
 )
 
 // agentsCmd 是与仪表盘通过 HTTP 执行的相同代理 CRUD 的轻量 CLI 前端。
@@ -178,7 +179,11 @@ func agentsRemoveCmd() *cobra.Command {
 				return err
 			}
 			defer st.Close()
-			rec, err := agentcli.Remove(context.Background(), st, args[0])
+			ws, err := gateway.OpenWorkspaceStore(st)
+			if err != nil {
+				return fmt.Errorf("open object store for agent deletion: %w", err)
+			}
+			rec, err := agentcli.RemoveWithWorkspace(context.Background(), st, ws, args[0])
 			if err != nil {
 				return err
 			}
