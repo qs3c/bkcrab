@@ -21,6 +21,7 @@ var readOnlyTools = map[string]bool{
 	"list_dir":                       true,
 	"web_fetch":                      true,
 	"web_search":                     true,
+	"rag_search":                     true,
 	"memory_search":                  true,
 	"load_skill":                     true,
 	"retrieve_compacted_tool_result": true,

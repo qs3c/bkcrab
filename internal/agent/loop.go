@@ -3515,6 +3515,7 @@ var chatbotBuiltinAllowlist = []string{
 	"image_gen",
 	"tts",
 	"memory",
+	"rag_search",
 	"retrieve_compacted_tool_result",
 	// set_timezone 保持“他们的当地时间”适合聊天（问候语，
 	// "晚安" timing) — chatbots need it as much as full agents do.

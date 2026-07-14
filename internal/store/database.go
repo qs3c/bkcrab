@@ -175,7 +175,7 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 // 它与会话的 user_id 不同。
 //
 // 空默认值 + 部分索引保留了在此列存在之前写入的行的现有查询计划。
-// 想要获取聊天者的读取者应使用 COALESCE(NULLIF(chatter_user_id,''), user_id)
+// 想要获取聊天者的读取者应使用 COALESCE(NULLIF(chatter_user_id,”), user_id)
 // ——回退值对于 web 频道完全正确（user_id 在那里已经是聊天者），
 // 并且匹配修复前在 IM 上的行为（无论如何每个聊天者都被错误地归属于频道拥有者）。
 func (d *DBStore) migrateSessionsAddChatterUserID(ctx context.Context) error {
@@ -224,7 +224,7 @@ func (d *DBStore) migrateSessionsAddChatterUserID(ctx context.Context) error {
 }
 
 // migrateAgentGoalsAddRouting 将 channel/account_id/chat_id/project_id
-// 改装到旧的 agent_goals 表上。所有四个列默认值为 ''——预先存在的行
+// 改装到旧的 agent_goals 表上。所有四个列默认值为 ”——预先存在的行
 // 无论如何都没有附加延续基础设施，因此空值仅表示"未记录路由；无法自动
 // 继续此目标"，TryFireContinuation 安全退出。幂等。
 func (d *DBStore) migrateAgentGoalsAddRouting(ctx context.Context) error {
@@ -277,7 +277,7 @@ func (d *DBStore) migrateSessionMessagesAddOrigin(ctx context.Context) error {
 }
 
 // migrateSessionMessagesAddTurnColumns 将 turn_status / extraction_id 列改装到
-// 旧的 session_messages 表上,并建立"待提取"部分索引。turn_status 默认 ''
+// 旧的 session_messages 表上,并建立"待提取"部分索引。turn_status 默认 ”
 // (非锚点),extraction_id 默认 NULL(未提取),历史存量行无需回填。幂等。
 func (d *DBStore) migrateSessionMessagesAddTurnColumns(ctx context.Context) error {
 	statusType, idType := "TEXT", "TEXT"
@@ -334,7 +334,7 @@ func (d *DBStore) migrateSessionMessagesAddTurnColumns(ctx context.Context) erro
 // migrateTokenUsageAddProvider 将 `provider` 列改装到旧的 token_usage_daily
 // 表上，该表在按提供商细分功能发布之前创建。预发布模式在主键中只有
 // (day, user, agent, session, model)，这使得按 provider 进行 GROUP BY 不可行
-//（并允许不同提供商的同名模型冲突）。由于该表只保存仪表板每次刷新时重新读取的
+// （并允许不同提供商的同名模型冲突）。由于该表只保存仪表板每次刷新时重新读取的
 // 累计计数器，在罕见的升级路径上删除它比使用 SQLite 的"创建新表+复制+交换"
 // 方式重建主键更便宜。幂等：如果列已存在则提前返回，如果表本身尚不存在
 // 则无操作（新安装运行 migrationSQL 中的新 CREATE TABLE）。
@@ -700,7 +700,7 @@ func (d *DBStore) migrateCronJobsAddUserID(ctx context.Context) error {
 // 改装到功能之前的 sessions 行上。现有的 session_keys 遵循
 // `<channel>_<chatID>` 约定（web_<sid>、wechat_<openid>、…），
 // 因此回填在第一个下划线处分割。account_id 没有历史来源——功能之前的安装
-// 每个频道只运行一个 bot，因此为这些行保留 '' 是正确的。
+// 每个频道只运行一个 bot，因此为这些行保留 ” 是正确的。
 // 此迁移之后写入的新会话始终显式填充完整的三元组。
 func (d *DBStore) migrateSessionsAddChannelTriple(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "sessions", "channel")
@@ -793,7 +793,7 @@ func (d *DBStore) migrateAgentsAddIsPublic(ctx context.Context) error {
 
 // migrateDropAgentGrants 删除旧的按用户共享表。
 // 共享现在位于 agents.is_public 上；现有的按用户授权不会向前迁移
-//（先前的模型没有发布给普通用户）。DROP TABLE IF EXISTS 是幂等的，
+// （先前的模型没有发布给普通用户）。DROP TABLE IF EXISTS 是幂等的，
 // 在从未创建该表的新安装上是无操作。
 func (d *DBStore) migrateDropAgentGrants(ctx context.Context) error {
 	if _, err := d.db.ExecContext(ctx, `DROP TABLE IF EXISTS agent_grants`); err != nil {
@@ -909,13 +909,13 @@ func (d *DBStore) migrateUsersAppUserCols(ctx context.Context) error {
 	return nil
 }
 
-// migrateAgentFilesDropTemplate 清除 agent_files 中旧的 user_id='' 模板行。
+// migrateAgentFilesDropTemplate 清除 agent_files 中旧的 user_id=” 模板行。
 // 每行在 (agent_id, filename) 没有已存在的按用户行时，被重新分配给 agent 的
 // 拥有者——保留现有内容作为拥有者的个人副本。在此次传递之后，表仅持有
 // (agent_id, real_user_id, filename) 元组；
 // 任何"跨所有用户共享 SOUL.md"的用例应位于本地文件系统中
 // <agent_home>/<name> 的文件中，运行时会回退到该文件。
-// 幂等：重新运行时找不到 user_id='' 的行并干净退出。
+// 幂等：重新运行时找不到 user_id=” 的行并干净退出。
 func (d *DBStore) migrateAgentFilesDropTemplate(ctx context.Context) error {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT agent_files.agent_id, agent_files.filename, agent_files.content, agents.user_id
@@ -1592,6 +1592,39 @@ func (d *DBStore) migrationSQL() []string {
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (agent_id, slug)
 		)`,
+		`CREATE TABLE IF NOT EXISTS rag_kbs (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			embed_provider TEXT NOT NULL DEFAULT 'system',
+			embed_model TEXT NOT NULL,
+			embed_dims INTEGER NOT NULL,
+			chunk_size INTEGER NOT NULL DEFAULT 512,
+			chunk_overlap INTEGER NOT NULL DEFAULT 64,
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_kbs_user ON rag_kbs (user_id)`,
+		`CREATE TABLE IF NOT EXISTS rag_documents (
+			id TEXT PRIMARY KEY,
+			kb_id TEXT NOT NULL,
+			file_name TEXT NOT NULL,
+			file_type TEXT NOT NULL,
+			file_size BIGINT NOT NULL DEFAULT 0,
+			object_key TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'PENDING',
+			error_msg TEXT NOT NULL DEFAULT '',
+			chunk_count INTEGER NOT NULL DEFAULT 0,
+			token_count INTEGER NOT NULL DEFAULT 0,
+			version INTEGER NOT NULL DEFAULT 1,
+			uploaded_at TIMESTAMP NOT NULL,
+			indexed_at TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_documents_kb ON rag_documents (kb_id)`,
+		d.ragIndexTasksTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_tasks_status ON rag_index_tasks (status, created_at)`,
 		// channel_leases 将轮询/持久连接频道适配器（微信、Telegram、Discord、
 		// Slack、飞书长连接）限制为一次一个进程。没有它，共享同一 bot 令牌的
 		// 两个云副本都将长轮询上游服务器，用户将收到每个回复两次。
@@ -1605,6 +1638,24 @@ func (d *DBStore) migrationSQL() []string {
 			PRIMARY KEY (channel, account_id)
 		)`,
 	}
+}
+
+func (d *DBStore) ragIndexTasksTableSQL() string {
+	idColumn := "INTEGER PRIMARY KEY AUTOINCREMENT"
+	if d.dialect == "postgres" {
+		idColumn = "BIGSERIAL PRIMARY KEY"
+	}
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_index_tasks (
+		id %s,
+		doc_id TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'PENDING',
+		retry_count INTEGER NOT NULL DEFAULT 0,
+		max_retry INTEGER NOT NULL DEFAULT 3,
+		error_msg TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMP NOT NULL,
+		started_at TIMESTAMP,
+		finished_at TIMESTAMP
+	)`, idColumn)
 }
 
 func (d *DBStore) Close() error {
@@ -2183,7 +2234,7 @@ func (d *DBStore) ListSessions(ctx context.Context, userID, agentID string) ([]S
 
 // ListSessionOwnerPairs 枚举 sessions 表中每个不同的 (user_id, agent_id)
 // 元组。管理员 Chats 页面调用此函数来查找所有 agent 上的所有对话拥有者
-//（聊天者/绑定者）——按 (拥有者, agent) 的 ListSessions 会遗漏非拥有者用户
+// （聊天者/绑定者）——按 (拥有者, agent) 的 ListSessions 会遗漏非拥有者用户
 // 与公共 agent 聊天或绑定 IM bot 的会话，因为这些行位于聊天者的 user_id 下，
 // 而不是 agent 拥有者的 user_id 下。
 func (d *DBStore) ListSessionOwnerPairs(ctx context.Context) ([]SessionOwnerPair, error) {
@@ -2378,7 +2429,7 @@ func (d *DBStore) GetContextArchive(ctx context.Context, agentID, sessionKey, id
 // seq 通过 `COALESCE(MAX(seq), -1) + 1` 在 INSERT 内原子性地计算，
 // 因此两个在同一个会话上竞争的并发追加者不会在唯一键上冲突——
 // 第二个插入在第一个提交后读取 MAX。多 pod 安全性依赖于引擎的写入序列化
-//（sqlite 全局锁，postgres MVCC + 提交时的复合主键唯一性检查）。
+// （sqlite 全局锁，postgres MVCC + 提交时的复合主键唯一性检查）。
 func (d *DBStore) AppendSessionMessage(ctx context.Context, userID, agentID, sessionKey string, msg SessionMessage) error {
 	if userID == "" {
 		return errors.New("store: AppendSessionMessage requires user_id")
@@ -2636,8 +2687,8 @@ func (d *DBStore) RenameSession(ctx context.Context, userID, agentID, sessionKey
 }
 
 // MoveSession 翻转会话的 project_id。空字符串将会话从其当前项目中分离
-//（拖出到"Chats"）。调用方必须已经迁移了工作区文件并验证了 projectID
-//（当非空时）是用户在此 agent 下拥有的真实项目——此方法仅影响 sessions 行。
+// （拖出到"Chats"）。调用方必须已经迁移了工作区文件并验证了 projectID
+// （当非空时）是用户在此 agent 下拥有的真实项目——此方法仅影响 sessions 行。
 func (d *DBStore) MoveSession(ctx context.Context, userID, agentID, sessionKey, projectID string) error {
 	_, err := d.db.ExecContext(ctx,
 		fmt.Sprintf(`UPDATE sessions SET project_id = %s WHERE user_id = %s AND agent_id = %s AND session_key = %s`,
@@ -2689,7 +2740,7 @@ func (d *DBStore) GetAgentFile(ctx context.Context, agentID, userID, filename st
 
 // GetAgentFileExact 绕过拥有者回退覆盖层，仅返回 (agent_id, user_id, filename)
 // 行，或 ErrNotFound。当调用方明确需要知道*他们自己的*覆盖行是否存在时使用
-//（例如 Customize 页面区分"你已创建覆盖"与"你正在查看拥有者的内容"）。
+// （例如 Customize 页面区分"你已创建覆盖"与"你正在查看拥有者的内容"）。
 func (d *DBStore) GetAgentFileExact(ctx context.Context, agentID, userID, filename string) ([]byte, error) {
 	if agentID == "" {
 		return nil, errors.New("store: GetAgentFileExact requires agent_id")
@@ -3374,7 +3425,7 @@ func (d *DBStore) AcquireChannelLease(ctx context.Context, channel, accountID, h
 }
 
 // RenewChannelLease 扩展已持有的租约。当行的 holder_id 不再匹配时返回 false
-//（不是错误）——意味着前持有者的 TTL 已过，并且在对等方在我们离线时接管了。
+// （不是错误）——意味着前持有者的 TTL 已过，并且在对等方在我们离线时接管了。
 // 调用方必须将 false 视为"立即停止轮询"：对等方现在正在驱动此 (channel, account_id)
 // 对的入站流量。
 func (d *DBStore) RenewChannelLease(ctx context.Context, channel, accountID, holderID string, ttl time.Duration) (bool, error) {
@@ -3510,7 +3561,7 @@ func (d *DBStore) CountProjectSessions(ctx context.Context, userID, agentID, pro
 }
 
 // parseTimeString 尝试 modernc.org/sqlite 可能为 TIMESTAMP 列生成的常见时间格式
-//（RFC3339, RFC3339Nano 以及旧代码路径写入的 Go 默认格式）。
+// （RFC3339, RFC3339Nano 以及旧代码路径写入的 Go 默认格式）。
 func parseTimeString(s string) time.Time {
 	for _, layout := range []string{
 		time.RFC3339Nano,
@@ -3644,7 +3695,7 @@ func scanGoal(row *sql.Row) (*GoalRecord, error) {
 }
 
 // isUniqueViolation 报告 err 是否是 Postgres（SQLSTATE 23505）或 SQLite
-//（子串 "UNIQUE constraint failed"）中的 UNIQUE 约束违规。两个驱动程序在错误文本中
+// （子串 "UNIQUE constraint failed"）中的 UNIQUE 约束违规。两个驱动程序在错误文本中
 // 暴露了足够的细节来识别这一点，而无需导入驱动程序包。
 func isUniqueViolation(err error) bool {
 	if err == nil {

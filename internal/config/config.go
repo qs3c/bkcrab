@@ -310,6 +310,7 @@ type Config struct {
 	Gateway       GatewayCfg                 `json:"gateway,omitempty"`
 	TaskQueue     TaskQueueCfg               `json:"taskQueue,omitempty"`
 	Skills        SkillsCfg                  `json:"skills,omitempty"`
+	RAG           RAGCfg                     `json:"rag,omitempty"`
 	Memory        MemoryCfg                  `json:"memory,omitempty"`
 	Privacy       PrivacyCfg                 `json:"privacy,omitempty"`
 	SkillsLearner SkillsLearnerCfg           `json:"skillsLearner,omitempty"`
@@ -668,6 +669,7 @@ type AgentFileConfig struct {
 	MaxParallelToolCalls int                        `json:"maxParallelToolCalls,omitempty"`
 	Workspace            string                     `json:"workspace,omitempty"`
 	Skills               SkillsConfig               `json:"skills,omitempty"`
+	RAG                  *RAGAgentCfg               `json:"rag,omitempty"`
 	MCPServers           map[string]MCPServerConfig `json:"mcpServers,omitempty"`
 	ToolProviders        map[string]ToolProviderCfg `json:"toolProviders,omitempty"`
 	Tools                map[string]ToolCategoryCfg `json:"tools,omitempty"`
@@ -704,6 +706,83 @@ type SkillsCfg struct {
 	AlwaysLoad   []string                            `json:"alwaysLoad,omitempty"`
 }
 
+// RAGCfg is the system-level RAG configuration from the top-level "rag"
+// object. A user-scoped embedding configuration may override Embedding when
+// a knowledge base is created; the effective model and dimensions are then
+// snapshotted on that knowledge base.
+type RAGCfg struct {
+	Milvus    MilvusCfg       `json:"milvus,omitempty"`
+	Embedding RAGEmbeddingCfg `json:"embedding,omitempty"`
+	Limits    RAGLimitsCfg    `json:"limits,omitempty"`
+}
+
+type MilvusCfg struct {
+	Address  string `json:"address,omitempty"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+}
+
+// UnmarshalJSON accepts both the implementation-plan key "username" and the
+// design-spec key "user". New serialized configuration uses "username".
+func (c *MilvusCfg) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Address  string `json:"address"`
+		Username string `json:"username"`
+		User     string `json:"user"`
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	c.Address = raw.Address
+	c.Username = raw.Username
+	if c.Username == "" {
+		c.Username = raw.User
+	}
+	c.Password = raw.Password
+	return nil
+}
+
+// RAGEmbeddingCfg describes an OpenAI-compatible embeddings endpoint.
+// Endpoint is the base URL; the client appends /embeddings.
+type RAGEmbeddingCfg struct {
+	Endpoint string `json:"endpoint,omitempty"`
+	APIKey   string `json:"apiKey,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Dims     int    `json:"dims,omitempty"`
+}
+
+type RAGLimitsCfg struct {
+	MaxFileMB     int `json:"maxFileMB,omitempty"`
+	MaxDocsPerKB  int `json:"maxDocsPerKB,omitempty"`
+	MaxKBsPerUser int `json:"maxKBsPerUser,omitempty"`
+}
+
+func (c *RAGCfg) ApplyDefaults() {
+	if c.Limits.MaxFileMB == 0 {
+		c.Limits.MaxFileMB = 20
+	}
+	if c.Limits.MaxDocsPerKB == 0 {
+		c.Limits.MaxDocsPerKB = 200
+	}
+	if c.Limits.MaxKBsPerUser == 0 {
+		c.Limits.MaxKBsPerUser = 20
+	}
+}
+
+// Available reports whether the system-level dependencies required to create
+// and search a knowledge base are configured.
+func (c RAGCfg) Available() bool {
+	return c.Milvus.Address != "" && c.Embedding.Endpoint != "" &&
+		c.Embedding.Model != "" && c.Embedding.Dims > 0
+}
+
+// RAGAgentCfg is the per-agent allow-list stored in agents.config.
+type RAGAgentCfg struct {
+	KBs  []string `json:"kbs,omitempty"`
+	TopN int      `json:"topN,omitempty"`
+}
+
 type SkillsInstallCfg struct {
 	NodeManager string `json:"nodeManager,omitempty"`
 }
@@ -736,6 +815,7 @@ type ResolvedAgent struct {
 	MaxParallelToolCalls int
 	Thinking             string
 	Skills               SkillsConfig
+	RAG                  RAGAgentCfg
 	MCPServers           map[string]MCPServerConfig
 	Sandbox              SandboxCfg
 	PolicyPreset         string
@@ -841,6 +921,7 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Agents.Defaults.MaxToolIterations == 0 {
 		cfg.Agents.Defaults.MaxToolIterations = 200
 	}
+	cfg.RAG.ApplyDefaults()
 }
 
 // MergedAgentConfig 合并默认值与 agent 条目以生成完全解析的 agent 配置。
@@ -942,6 +1023,10 @@ func (cfg *Config) MergedAgentConfig(entry AgentEntry) ResolvedAgent {
 			resolved.MaxParallelToolCalls = fileCfg.MaxParallelToolCalls
 		}
 		resolved.Skills = fileCfg.Skills
+		if fileCfg.RAG != nil {
+			resolved.RAG = *fileCfg.RAG
+			resolved.RAG.KBs = append([]string(nil), fileCfg.RAG.KBs...)
+		}
 		if len(fileCfg.Admins) > 0 {
 			resolved.Admins = make(map[string][]string, len(fileCfg.Admins))
 			for ch, ids := range fileCfg.Admins {

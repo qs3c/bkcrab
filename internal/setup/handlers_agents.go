@@ -454,10 +454,48 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		// 要清除此 agent 的所有覆盖，发送 pluginsReset:true。
 		Plugins      map[string]bool `json:"plugins,omitempty"`
 		PluginsReset bool            `json:"pluginsReset,omitempty"`
+		// RAG replaces the per-agent knowledge-base allow-list stored in
+		// agents.config. A nil pointer leaves the existing value untouched;
+		// an explicit empty kbs list revokes all knowledge-base access.
+		RAG *config.RAGAgentCfg `json:"rag,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
+	}
+	if req.RAG != nil {
+		if req.RAG.TopN < 0 || req.RAG.TopN > 20 {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "rag.topN must be between 0 and 20"})
+			return
+		}
+		normalizedKBs := make([]string, 0, len(req.RAG.KBs))
+		seen := make(map[string]struct{}, len(req.RAG.KBs))
+		for _, rawKBID := range req.RAG.KBs {
+			kbID := strings.TrimSpace(rawKBID)
+			if kbID == "" {
+				jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "rag.kbs must not contain empty IDs"})
+				return
+			}
+			if _, duplicate := seen[kbID]; duplicate {
+				continue
+			}
+			seen[kbID] = struct{}{}
+			normalizedKBs = append(normalizedKBs, kbID)
+		}
+		if len(normalizedKBs) > 0 && s.rag == nil {
+			jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "RAG 未配置，无法校验知识库授权"})
+			return
+		}
+		for _, kbID := range normalizedKBs {
+			// Authorization is always bounded by the agent's actual owner. A
+			// super-admin may edit another user's agent, but cannot grant that
+			// agent a KB owned by the administrator or a third party.
+			if _, err := s.rag.GetKB(r.Context(), rec.UserID, kbID); err != nil {
+				writeRAGError(w, err)
+				return
+			}
+		}
+		req.RAG.KBs = normalizedKBs
 	}
 	if req.Name != "" {
 		rec.Name = req.Name
@@ -489,6 +527,19 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 			delete(rec.Config, "shareModelConfig")
 		} else {
 			rec.Config["shareModelConfig"] = false
+		}
+	}
+	if req.RAG != nil {
+		if rec.Config == nil {
+			rec.Config = map[string]interface{}{}
+		}
+		if len(req.RAG.KBs) == 0 && req.RAG.TopN == 0 {
+			delete(rec.Config, "rag")
+		} else {
+			rec.Config["rag"] = map[string]interface{}{
+				"kbs":  append([]string(nil), req.RAG.KBs...),
+				"topN": req.RAG.TopN,
+			}
 		}
 	}
 	if err := s.dataStore.SaveAgent(r.Context(), rec); err != nil {

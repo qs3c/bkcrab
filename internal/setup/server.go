@@ -16,6 +16,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/auth"
 	"github.com/qs3c/bkcrab/internal/channels"
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/rag"
 	"github.com/qs3c/bkcrab/internal/session"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/taskqueue"
@@ -77,6 +78,7 @@ type Server struct {
 	// 首次使用时延迟初始化，以便没有显式连接它的旧调用者仍然可以工作。
 	chatEvents *agent.EventHub
 	usage      usage.Meter
+	rag        *rag.Service
 	startedAt  time.Time
 }
 
@@ -130,6 +132,12 @@ func (s *Server) SetUsageMeter(m usage.Meter) {
 	s.usage = m
 }
 
+// SetRAGService installs the optional process-wide knowledge-base service.
+// Leaving it nil keeps the routes present but makes them return 503.
+func (s *Server) SetRAGService(service *rag.Service) {
+	s.rag = service
+}
+
 // SetAuth 安装认证解析器。必需的。
 func (s *Server) SetAuth(resolver *auth.Resolver) {
 	s.authResolver = resolver
@@ -153,7 +161,7 @@ func (s *Server) chatEventHub() *agent.EventHub {
 }
 
 // ChatEventHub 暴露 hub，以便网关可以将流管道附加到总线触发的 web 轮次
-//（cron / 目标延续 / 心跳 / 子 agent），赋予它们与用户键入轮次相同的 SSE 流式体验。
+// （cron / 目标延续 / 心跳 / 子 agent），赋予它们与用户键入轮次相同的 SSE 流式体验。
 // 包裹了 chatEventHub 的延迟初始化。
 func (s *Server) ChatEventHub() *agent.EventHub { return s.chatEventHub() }
 
@@ -239,6 +247,19 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/agents/{id}/config", auth(s.handleGetAgentConfig))
 	mux.HandleFunc("GET /api/agents/{id}/tools/registered", auth(s.handleListAgentRegisteredTools))
 	mux.HandleFunc("DELETE /api/agents/{id}", auth(s.handleDeleteAgent))
+
+	// 用户级知识库。路由始终存在；未配置 Milvus/embedding 时 handler
+	// 返回结构化 503，便于控制台明确展示禁用原因。
+	mux.HandleFunc("GET /api/rag/kbs", auth(s.handleListRAGKBs))
+	mux.HandleFunc("POST /api/rag/kbs", auth(s.handleCreateRAGKB))
+	mux.HandleFunc("GET /api/rag/kbs/{id}", auth(s.handleGetRAGKB))
+	mux.HandleFunc("PATCH /api/rag/kbs/{id}", auth(s.handleUpdateRAGKB))
+	mux.HandleFunc("DELETE /api/rag/kbs/{id}", auth(s.handleDeleteRAGKB))
+	mux.HandleFunc("POST /api/rag/kbs/{id}/documents", auth(s.handleUploadRAGDocument))
+	mux.HandleFunc("GET /api/rag/kbs/{id}/documents", auth(s.handleListRAGDocuments))
+	mux.HandleFunc("DELETE /api/rag/kbs/{id}/documents/{docId}", auth(s.handleDeleteRAGDocument))
+	mux.HandleFunc("POST /api/rag/kbs/{id}/documents/{docId}/reindex", auth(s.handleReindexRAGDocument))
+	mux.HandleFunc("POST /api/rag/kbs/{id}/search", auth(s.handleRAGSearch))
 
 	mux.HandleFunc("GET /api/agents/{id}/files", auth(s.handleAgentFileList))
 	mux.HandleFunc("GET /api/agents/{id}/files.zip", auth(s.handleAgentFilesZip))
@@ -444,16 +465,16 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.ServeFileFS(w, r, h.fs, dirFallback)
 				return
 			}
-		// 嵌套动态段回退：像 agents/[id]/chat/[session] 和 agents/[id]/project/[pid] 这样的路由
-		// 在构建时发出单个占位符 ("_")。将任何紧跟在已知动态父级 (chat, project) 下的段替换为 "_"，
-		// 无论后面是什么。这涵盖了页面 HTML 和 Next 16 在客户端导航期间获取的每个路由的 RSC 负载：
-		//   /chat/<sid>/                            → /chat/_/index.html
-		//   /chat/<sid>/index.txt                   → /chat/_/index.txt
-		//   /chat/<sid>/__next.agents.$d$id.chat.$d$session.__PAGE__.txt
-		//   …
-		// 没有这个，App Router 在侧边栏点击时的 RSC 获取会得到 404（或根 index.html），
-		// 放弃软导航，回退到 window.location — 这会导致页面闪烁并中断正在进行的流。
-		// 随着新动态路由的引入，将它们添加到下面的 dynamicParents 中。
+			// 嵌套动态段回退：像 agents/[id]/chat/[session] 和 agents/[id]/project/[pid] 这样的路由
+			// 在构建时发出单个占位符 ("_")。将任何紧跟在已知动态父级 (chat, project) 下的段替换为 "_"，
+			// 无论后面是什么。这涵盖了页面 HTML 和 Next 16 在客户端导航期间获取的每个路由的 RSC 负载：
+			//   /chat/<sid>/                            → /chat/_/index.html
+			//   /chat/<sid>/index.txt                   → /chat/_/index.txt
+			//   /chat/<sid>/__next.agents.$d$id.chat.$d$session.__PAGE__.txt
+			//   …
+			// 没有这个，App Router 在侧边栏点击时的 RSC 获取会得到 404（或根 index.html），
+			// 放弃软导航，回退到 window.location — 这会导致页面闪烁并中断正在进行的流。
+			// 随着新动态路由的引入，将它们添加到下面的 dynamicParents 中。
 			dynamicParents := map[string]bool{"chat": true, "project": true}
 			sub := strings.Split(parts[2], "/")
 			substituted := false

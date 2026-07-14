@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -49,6 +50,7 @@ type managerOpts struct {
 	userID           string
 	globalSkillsCfg  config.SkillsCfg
 	skillsLearnerCfg config.SkillsLearnerCfg
+	ragService       RAGService
 }
 
 func WithSessionStore(st session.SessionStore) ManagerOption {
@@ -103,6 +105,19 @@ func WithGlobalSkillsCfg(cfg config.SkillsCfg) ManagerOption {
 // 该配置此前只在无人调用的 NewAgentWithFullCfg 里接线)。
 func WithSkillsLearner(cfg config.SkillsLearnerCfg) ManagerOption {
 	return func(o *managerOpts) { o.skillsLearnerCfg = cfg }
+}
+
+// RAGService is the subset of the platform RAG service needed while building
+// an agent. Keeping this interface here avoids coupling agent to rag.Service.
+type RAGService interface {
+	SearchForAgent(ctx context.Context, ownerID string, kbIDs []string, query string, topN int) (string, error)
+	ResolveAgentKBs(ctx context.Context, ownerID string, kbIDs []string) []tools.RAGKBRef
+}
+
+// WithRAGService enables conditional rag_search registration for agents that
+// have at least one authorized knowledge base.
+func WithRAGService(svc RAGService) ManagerOption {
+	return func(o *managerOpts) { o.ragService = svc }
 }
 
 // Manager 加载并管理所有代理实例。
@@ -258,6 +273,14 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		// 范围首选项查找，因此在此处连接并由
 		// 每次 ctxBuilder 重建后重新加载工作空间文件。
 		ag.ctxBuilder.SetTimezoneResolver(ag.chatterLocation)
+	}
+	if m.opts.ragService != nil && len(rc.RAG.KBs) > 0 {
+		ownerID := rc.UserID
+		if ownerID == "" {
+			ownerID = m.uid
+		}
+		refs := m.opts.ragService.ResolveAgentKBs(context.Background(), ownerID, rc.RAG.KBs)
+		tools.RegisterRAGSearch(ag.registry, m.opts.ragService, ownerID, refs, rc.RAG.TopN)
 	}
 	// 即使没有连接workspaceStore，也要标记agentID（单用户
 	// 本地模式），因此使用情况计量可以记录每个代理的汇总。

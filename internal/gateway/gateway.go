@@ -28,6 +28,9 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/cron"
 	"github.com/qs3c/bkcrab/internal/plugin"
+	"github.com/qs3c/bkcrab/internal/rag"
+	ragobjects "github.com/qs3c/bkcrab/internal/rag/objects"
+	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/sandbox"
 	"github.com/qs3c/bkcrab/internal/scope"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -156,6 +159,7 @@ type Gateway struct {
 	workspace   workspace.Store
 	sandboxPool sandbox.ExecutorPool
 	usage       usage.Meter
+	ragSvc      *rag.Service
 	envCfg      *config.EnvConfig
 	// chatEvents 设置后，允许总线触发的 web 轮次（cron/目标延续/心跳/子代理）
 	// 通过用户输入的 POST /api/chat 轮次使用的同一个 SSE hub 流式传输。
@@ -178,6 +182,10 @@ func (g *Gateway) Workspace() workspace.Store { return g.workspace }
 
 // Usage 返回每个租户的资源计量器。
 func (g *Gateway) Usage() usage.Meter { return g.usage }
+
+// RAG returns the optional process-wide knowledge-base service. It is nil when
+// Milvus or embedding configuration is incomplete or startup failed.
+func (g *Gateway) RAG() *rag.Service { return g.ragSvc }
 
 // Store 返回网关的存储后端。
 func (g *Gateway) Store() store.Store { return g.store }
@@ -240,6 +248,26 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		meter = usage.NewSQLMeter(dbs.DB(), dbs.Dialect())
 	}
 	ws := wsInner
+
+	var ragSvc *rag.Service
+	ragCfg := readSystemRAGCfg(st)
+	if ragCfg.Available() {
+		ragObjects, objectErr := newRAGObjectStore(osCfg, homeDir)
+		if objectErr != nil {
+			slog.Error("rag: original object store initialization failed; RAG disabled", "error", objectErr)
+		} else if vecStore, vecErr := vector.NewMilvus(context.Background(), ragCfg.Milvus.Address, ragCfg.Milvus.Username, ragCfg.Milvus.Password); vecErr != nil {
+			slog.Error("rag: Milvus connection failed; RAG disabled", "error", vecErr)
+		} else {
+			ragSvc = rag.New(rag.Deps{
+				Store:        st,
+				Vector:       vecStore,
+				Objects:      ragObjects,
+				Cfg:          ragCfg,
+				UserEmbedCfg: userEmbeddingCfgLookup(st),
+			})
+			slog.Info("rag service enabled", "milvus", ragCfg.Milvus.Address)
+		}
+	}
 
 	// holderID 是印记在 channel_leases.holder_id 中的每个进程标识符。
 	// 在此网关的生命周期内保持稳定，以便续租保持与行匹配；对等进程生成自己的 holderID，
@@ -317,12 +345,13 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		workspace:   ws,
 		usage:       meter,
 		sandboxPool: systemSandboxPool,
-		users:       newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, pluginMgr),
+		users:       newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, pluginMgr, ragSvc),
 		chanMgr:     chanMgr,
 		webChan:     webChan,
 		scheduler:   scheduler,
 		webhookSrv:  webhookSrv,
 		pluginMgr:   pluginMgr,
+		ragSvc:      ragSvc,
 		envCfg:      env,
 	}
 
@@ -463,6 +492,9 @@ func (g *Gateway) IsCloudMode() bool { return true }
 func (g *Gateway) Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	if g.ragSvc != nil {
+		g.ragSvc.Start(ctx)
+	}
 
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
@@ -536,6 +568,13 @@ func (g *Gateway) Run() error {
 	if g.sandboxPool != nil {
 		g.sandboxPool.CloseAll()
 	}
+	if g.ragSvc != nil {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := g.ragSvc.Close(closeCtx); err != nil {
+			slog.Warn("rag service close failed", "error", err)
+		}
+		closeCancel()
+	}
 	slog.Info("gateway stopped")
 	return nil
 }
@@ -583,6 +622,78 @@ func readObjectStoreCfg(st store.Store) config.ObjectStoreCfg {
 	}
 	config.LoadEnv().ApplyToConfig(cfg)
 	return cfg.ObjectStore
+}
+
+func readSystemRAGCfg(st store.Store) config.RAGCfg {
+	var out config.RAGCfg
+	if st != nil {
+		_ = scope.SettingInto(context.Background(), st, NSRAG, "", "", &out)
+	}
+	out.ApplyDefaults()
+	return out
+}
+
+func userEmbeddingCfgLookup(st store.Store) rag.UserEmbedCfgFn {
+	return func(ctx context.Context, userID string) (config.RAGEmbeddingCfg, bool) {
+		if st == nil || userID == "" {
+			return config.RAGEmbeddingCfg{}, false
+		}
+		rec, err := st.GetConfigByName(ctx, store.KindSetting, userID, "", NSRAG)
+		if err != nil || rec == nil || len(rec.Data) == 0 {
+			return config.RAGEmbeddingCfg{}, false
+		}
+		blob, err := json.Marshal(rec.Data)
+		if err != nil {
+			return config.RAGEmbeddingCfg{}, false
+		}
+		var wrapper struct {
+			Embedding config.RAGEmbeddingCfg `json:"embedding"`
+		}
+		_ = json.Unmarshal(blob, &wrapper)
+		cfg := wrapper.Embedding
+		// Accept a direct embedding object as well as the canonical
+		// {"embedding": {...}} shape for backwards-compatible API clients.
+		if cfg.Endpoint == "" && cfg.Model == "" && cfg.Dims == 0 {
+			_ = json.Unmarshal(blob, &cfg)
+		}
+		if cfg.Endpoint == "" || cfg.Model == "" || cfg.Dims <= 0 {
+			return config.RAGEmbeddingCfg{}, false
+		}
+		return cfg, true
+	}
+}
+
+func newRAGObjectStore(cfg config.ObjectStoreCfg, homeDir string) (ragobjects.Store, error) {
+	storeType := strings.ToLower(strings.TrimSpace(cfg.Type))
+	switch storeType {
+	case "", "local":
+		root := filepath.Join(homeDir, "rag-objects")
+		if cfg.Local.Root != "" {
+			root = filepath.Join(cfg.Local.Root, "rag-objects")
+		}
+		return ragobjects.NewLocalFS(root), nil
+	case "aws-s3", "cloudflare-r2", "backblaze-b2", "aliyun-oss", "s3", "minio":
+		resolved, err := (workspace.Factory{
+			Type: storeType,
+			S3: workspace.S3Config{
+				Endpoint:  cfg.S3.Endpoint,
+				Region:    cfg.S3.Region,
+				Bucket:    cfg.S3.Bucket,
+				Prefix:    cfg.S3.Prefix,
+				AccessKey: cfg.S3.AccessKey,
+				SecretKey: cfg.S3.SecretKey,
+				UseSSL:    cfg.S3.UseSSL,
+			},
+			AccountID:    cfg.AccountID,
+			AliyunIntern: cfg.AliyunIntern,
+		}).ResolveS3Config()
+		if err != nil {
+			return nil, err
+		}
+		return ragobjects.NewS3(resolved)
+	default:
+		return nil, fmt.Errorf("unsupported RAG object-store type %q", cfg.Type)
+	}
 }
 
 func readSystemHooks(st store.Store) config.HooksCfg {
@@ -634,6 +745,7 @@ const (
 	NSSkillsInstall  = "skills.install"
 	NSSkillsEntries  = "skills.entries"
 	NSMemory         = "memory"
+	NSRAG            = "rag"
 	NSPrivacy        = "privacy"
 	NSSkillsLearner  = "skillsLearner"
 	NSHeartbeat      = "heartbeat"

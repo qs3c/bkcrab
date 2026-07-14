@@ -218,6 +218,25 @@ type Store interface {
 	DeleteConfig(ctx context.Context, id string) error
 	LookupChannelByCredential(ctx context.Context, channelType, credKey string) (*ConfigRecord, error)
 
+	// --- RAG knowledge bases ---
+	CreateRAGKB(ctx context.Context, kb *RAGKBRecord) error
+	GetRAGKB(ctx context.Context, id string) (*RAGKBRecord, error)
+	ListRAGKBsByUser(ctx context.Context, userID string) ([]RAGKBRecord, error)
+	UpdateRAGKB(ctx context.Context, kb *RAGKBRecord) error
+	DeleteRAGKB(ctx context.Context, id string) error
+	CreateRAGDocument(ctx context.Context, doc *RAGDocumentRecord) error
+	CreateRAGDocumentWithIndexTask(ctx context.Context, doc *RAGDocumentRecord, maxRetry int) (int64, error)
+	GetRAGDocument(ctx context.Context, id string) (*RAGDocumentRecord, error)
+	ListRAGDocumentsByKB(ctx context.Context, kbID string) ([]RAGDocumentRecord, error)
+	UpdateRAGDocument(ctx context.Context, doc *RAGDocumentRecord) error
+	UpdateRAGDocumentIfVersion(ctx context.Context, doc *RAGDocumentRecord, expectedVersion int) (bool, error)
+	UpdateRAGDocumentWithIndexTask(ctx context.Context, doc *RAGDocumentRecord, maxRetry int) (int64, error)
+	DeleteRAGDocument(ctx context.Context, id string) error
+	CreateRAGIndexTask(ctx context.Context, docID string, maxRetry int) (int64, error)
+	GetRAGIndexTask(ctx context.Context, id int64) (*RAGIndexTaskRecord, error)
+	UpdateRAGIndexTask(ctx context.Context, id int64, status string, retryCount int, errMsg string) error
+	ListRunnableRAGIndexTasks(ctx context.Context) ([]RAGIndexTaskRecord, error)
+
 	// --- Cron 任务（每个 agent）---
 	//
 	// Cron 行由 agent 拥有；执行身份是 agent 的 user_id。
@@ -352,7 +371,7 @@ type AgentRecord struct {
 // SessionRecord 持有一个对话会话。
 //
 // Channel / AccountID / ChatID 标识此会话所属的上游对话
-//（例如 ("wechat", "<bot account id>", "<openid>") 或
+// （例如 ("wechat", "<bot account id>", "<openid>") 或
 // ("web", "", "<frontend session id>")）。这些在 INSERT 时持久化一次，
 // 永远不会被 UPDATE 覆盖——会话的归属地在创建后不会移动。
 // 多个会话行可以共享相同的三元组；IM 路由的活动会话通过 max(updated_at) 解析。
@@ -417,7 +436,7 @@ type ContextArchiveRecord struct {
 
 // SessionEventRecord 是 session_events 表中的一行——agent 在一轮中发出的
 // 单个增量。Data 是不透明的 JSON，其形状取决于 Type
-//（"content", "tool_call", "error", "done", ...）。
+// （"content", "tool_call", "error", "done", ...）。
 type SessionEventRecord struct {
 	UserID     string    `json:"userId,omitempty"`
 	AgentID    string    `json:"agentId,omitempty"`
@@ -431,7 +450,7 @@ type SessionEventRecord struct {
 // SessionOwnerPair 是由 ListSessionOwnerPairs 返回的一个 (user_id, agent_id)
 // 元组——表示"该用户与此 agent 至少有一个会话。"管理员聊天视图按对展开，
 // 拉取每个聊天者的会话列表，以便公共 agent 上的非拥有者对话
-//（其中 session.user_id ≠ agent.user_id）被展示出来。
+// （其中 session.user_id ≠ agent.user_id）被展示出来。
 type SessionOwnerPair struct {
 	UserID  string `json:"userId"`
 	AgentID string `json:"agentId"`
@@ -512,7 +531,7 @@ type ConfigRecord struct {
 // computeConfigScope 从 (userID, agentID) 所有权对派生范围标签。
 // Scope 列的单一真相来源——SaveConfig 在每次写入前调用它，
 // 因此列与标签之间的任何差异都意味着绕过了 SaveConfig 的代码路径
-//（除了测试专用的临时 INSERT 外不应存在）。
+// （除了测试专用的临时 INSERT 外不应存在）。
 func computeConfigScope(userID, agentID string) string {
 	switch {
 	case userID != "" && agentID != "":
