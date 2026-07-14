@@ -14,6 +14,7 @@ import (
 var sensitiveEnvPrefixes = []string{
 	"BKCRAB_STORAGE_",
 	"BKCRAB_OBJECT_STORE_",
+	"BKCRAB_RAG_",
 	"BKCRAB_SANDBOX_BOXLITE_",
 	"AWS_",
 	"GOOGLE_APPLICATION_CREDENTIALS",

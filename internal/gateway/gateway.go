@@ -250,7 +250,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	ws := wsInner
 
 	var ragSvc *rag.Service
-	ragCfg := readSystemRAGCfg(st)
+	ragCfg := readSystemRAGCfg(st, env)
 	if ragCfg.Available() {
 		ragObjects, objectErr := newRAGObjectStore(osCfg, homeDir)
 		if objectErr != nil {
@@ -624,10 +624,13 @@ func readObjectStoreCfg(st store.Store) config.ObjectStoreCfg {
 	return cfg.ObjectStore
 }
 
-func readSystemRAGCfg(st store.Store) config.RAGCfg {
+func readSystemRAGCfg(st store.Store, env *config.EnvConfig) config.RAGCfg {
 	var out config.RAGCfg
 	if st != nil {
 		_ = scope.SettingInto(context.Background(), st, NSRAG, "", "", &out)
+	}
+	if env != nil {
+		env.ApplySystemRAG(&out)
 	}
 	out.ApplyDefaults()
 	return out

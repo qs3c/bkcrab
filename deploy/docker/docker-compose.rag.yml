@@ -1,0 +1,69 @@
+# Optional RAG services for deploy/docker/docker-compose.yml.
+# Start with both files; this overlay intentionally reuses the base MinIO.
+services:
+  bkcrab:
+    environment:
+      BKCRAB_RAG_MILVUS_ADDRESS: milvus-standalone:19530
+      BKCRAB_RAG_MILVUS_USERNAME: "${MILVUS_USERNAME:-}"
+      BKCRAB_RAG_MILVUS_PASSWORD: "${MILVUS_PASSWORD:-}"
+      BKCRAB_RAG_EMBEDDING_ENDPOINT: "${RAG_EMBEDDING_ENDPOINT:?set RAG_EMBEDDING_ENDPOINT in deploy/docker/.env}"
+      BKCRAB_RAG_EMBEDDING_API_KEY: "${RAG_EMBEDDING_API_KEY:-}"
+      BKCRAB_RAG_EMBEDDING_MODEL: "${RAG_EMBEDDING_MODEL:?set RAG_EMBEDDING_MODEL in deploy/docker/.env}"
+      BKCRAB_RAG_EMBEDDING_DIMS: "${RAG_EMBEDDING_DIMS:?set RAG_EMBEDDING_DIMS in deploy/docker/.env}"
+    depends_on:
+      milvus-standalone:
+        condition: service_healthy
+
+  milvus-etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    restart: unless-stopped
+    environment:
+      ETCDCTL_API: "3"
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command:
+      - etcd
+      - --advertise-client-urls=http://milvus-etcd:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --data-dir=/etcd
+    volumes:
+      - milvus-etcd-data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  milvus-standalone:
+    image: milvusdb/milvus:v2.6.19
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    restart: unless-stopped
+    environment:
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: "${MINIO_ROOT_USER:?set MINIO_ROOT_USER in deploy/docker/.env}"
+      MINIO_SECRET_ACCESS_KEY: "${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in deploy/docker/.env}"
+    volumes:
+      - milvus-data:/var/lib/milvus
+    ports:
+      - "127.0.0.1:${MILVUS_PORT:-19530}:19530"
+      - "127.0.0.1:${MILVUS_WEB_PORT:-19091}:9091"
+    depends_on:
+      milvus-etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 5
+
+volumes:
+  milvus-etcd-data:
+  milvus-data:

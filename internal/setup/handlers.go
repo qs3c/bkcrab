@@ -126,6 +126,9 @@ func (s *Server) saveUserConfig(r *http.Request, cfg *config.Config) error {
 		uid = ident.UserID
 	}
 	for _, ns := range settingNamespaces {
+		if ns.loadOnly {
+			continue
+		}
 		data := ns.collect(cfg)
 		if err := scope.SaveSetting(r.Context(), s.dataStore, uid, "", ns.namespace, data); err != nil {
 			return err
@@ -174,6 +177,9 @@ var settingNamespaces = []settingNamespace{
 	{namespace: "memory",
 		dst:     func(c *config.Config) interface{} { return &c.Memory },
 		collect: func(c *config.Config) map[string]interface{} { return toMap(c.Memory) }},
+	{namespace: "rag",
+		dst:      func(c *config.Config) interface{} { return &c.RAG },
+		loadOnly: true},
 	{namespace: "privacy",
 		dst:     func(c *config.Config) interface{} { return &c.Privacy },
 		collect: func(c *config.Config) map[string]interface{} { return toMap(c.Privacy) }},
@@ -200,6 +206,7 @@ type settingNamespace struct {
 	namespace string
 	dst       func(*config.Config) interface{}
 	collect   func(*config.Config) map[string]interface{}
+	loadOnly  bool
 }
 
 func toMap(v interface{}) map[string]interface{} {
@@ -453,6 +460,9 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		v.APIKey = maskAPIKey(v.APIKey)
 		masked.Providers[k] = v
 	}
+	masked.RAG = cfg.RAG
+	masked.RAG.Milvus.Password = maskConfigSecret(cfg.RAG.Milvus.Password)
+	masked.RAG.Embedding.APIKey = maskConfigSecret(cfg.RAG.Embedding.APIKey)
 	if len(cfg.Skills.Entries) > 0 {
 		me := make(map[string]config.SkillEntryCfg, len(cfg.Skills.Entries))
 		for k, v := range cfg.Skills.Entries {
@@ -520,6 +530,17 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
+	var rawConfig map[string]json.RawMessage
+	if err := json.Unmarshal(buf, &rawConfig); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if ragPatch, ok := rawConfig["rag"]; ok {
+		if err := s.saveRAGConfigPatch(r, ragPatch); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+	}
 	// 每个 agent 的技能 env 覆盖（每个 agent 一行，scope=agent，name=skills.entries）。
 	// 从原始 body 中拉取 — 而不是从合并的 Config 中 — 这样我们只触及调用者实际修补的 agent，
 	// 不会将每个现有覆盖作为写入回显。
@@ -566,6 +587,115 @@ func (s *Server) scopeForSave(r *http.Request) (string, string) {
 		return scope.User, ident.UserID
 	}
 	return scope.User, ""
+}
+
+// saveRAGConfigPatch persists only fields explicitly supplied by the caller.
+// System scope owns Milvus, embedding, and limits. User scope may override only
+// embedding; it must never copy system credentials into a user-owned row.
+func (s *Server) saveRAGConfigPatch(r *http.Request, patch json.RawMessage) error {
+	sc, scopeID := s.scopeForSave(r)
+	current, err := s.loadRAGConfigAtScope(r.Context(), sc, scopeID)
+	if err != nil {
+		return err
+	}
+
+	trimmed := bytes.TrimSpace(patch)
+	if bytes.Equal(trimmed, []byte("null")) {
+		return scope.SaveSettingByScope(r.Context(), s.dataStore, sc, scopeID, "rag", nil)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
+		return fmt.Errorf("invalid rag config: %w", err)
+	}
+
+	if sc == scope.System {
+		next := current
+		if err := json.Unmarshal(trimmed, &next); err != nil {
+			return fmt.Errorf("invalid rag config: %w", err)
+		}
+		if value, ok := rawNestedString(raw, "milvus", "password"); ok && isMaskedSecret(value) {
+			next.Milvus.Password = current.Milvus.Password
+		}
+		if value, ok := rawNestedString(raw, "embedding", "apiKey"); ok && isMaskedSecret(value) {
+			next.Embedding.APIKey = current.Embedding.APIKey
+		}
+		return scope.SaveSettingByScope(r.Context(), s.dataStore, sc, scopeID, "rag", ragSystemData(next))
+	}
+
+	embeddingPatch, ok := raw["embedding"]
+	if !ok {
+		return nil
+	}
+	next := current.Embedding
+	if bytes.Equal(bytes.TrimSpace(embeddingPatch), []byte("null")) {
+		next = config.RAGEmbeddingCfg{}
+	} else if err := json.Unmarshal(embeddingPatch, &next); err != nil {
+		return fmt.Errorf("invalid rag embedding config: %w", err)
+	}
+	if value, ok := rawNestedString(raw, "embedding", "apiKey"); ok && isMaskedSecret(value) {
+		next.APIKey = current.Embedding.APIKey
+	}
+	return scope.SaveSettingByScope(r.Context(), s.dataStore, sc, scopeID, "rag", ragUserData(next))
+}
+
+func (s *Server) loadRAGConfigAtScope(ctx context.Context, sc, scopeID string) (config.RAGCfg, error) {
+	var out config.RAGCfg
+	userID, agentID := scope.OwnershipFromScope(sc, scopeID)
+	rec, err := s.dataStore.GetConfigByName(ctx, store.KindSetting, userID, agentID, "rag")
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return out, nil
+		}
+		return out, err
+	}
+	if rec == nil || len(rec.Data) == 0 {
+		return out, nil
+	}
+	blob, err := json.Marshal(rec.Data)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(blob, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func rawNestedString(raw map[string]json.RawMessage, section, key string) (string, bool) {
+	sectionRaw, ok := raw[section]
+	if !ok {
+		return "", false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(sectionRaw, &fields) != nil {
+		return "", false
+	}
+	valueRaw, ok := fields[key]
+	if !ok {
+		return "", false
+	}
+	var value string
+	if json.Unmarshal(valueRaw, &value) != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func ragSystemData(cfg config.RAGCfg) map[string]interface{} {
+	if cfg.Milvus == (config.MilvusCfg{}) &&
+		cfg.Embedding == (config.RAGEmbeddingCfg{}) &&
+		cfg.Limits == (config.RAGLimitsCfg{}) {
+		return nil
+	}
+	return toMap(cfg)
+}
+
+func ragUserData(embedding config.RAGEmbeddingCfg) map[string]interface{} {
+	if embedding == (config.RAGEmbeddingCfg{}) {
+		return nil
+	}
+	return map[string]interface{}{"embedding": toMap(embedding)}
 }
 
 // --- /api/test-provider ---
@@ -1660,6 +1790,13 @@ func maskAPIKey(key string) string {
 		return "****"
 	}
 	return key[:4] + "****" + key[len(key)-4:]
+}
+
+func maskConfigSecret(secret string) string {
+	if secret == "" {
+		return ""
+	}
+	return "****"
 }
 
 func formatDuration(d time.Duration) string {

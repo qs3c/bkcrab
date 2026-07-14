@@ -17,6 +17,7 @@ type EnvConfig struct {
 	Storage EnvStorage
 	Sandbox EnvSandbox
 	Log     EnvLog
+	RAG     RAGCfg
 }
 
 type EnvGateway struct {
@@ -104,7 +105,46 @@ func LoadEnv() *EnvConfig {
 	if v := os.Getenv("BKCRAB_LOG_LEVEL"); v != "" {
 		cfg.Log.Level = v
 	}
+
+	if v := os.Getenv("BKCRAB_RAG_MILVUS_ADDRESS"); v != "" {
+		cfg.RAG.Milvus.Address = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_MILVUS_USERNAME"); v != "" {
+		cfg.RAG.Milvus.Username = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_MILVUS_PASSWORD"); v != "" {
+		cfg.RAG.Milvus.Password = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_EMBEDDING_ENDPOINT"); v != "" {
+		cfg.RAG.Embedding.Endpoint = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_EMBEDDING_API_KEY"); v != "" {
+		cfg.RAG.Embedding.APIKey = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_EMBEDDING_MODEL"); v != "" {
+		cfg.RAG.Embedding.Model = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_EMBEDDING_DIMS"); v > 0 {
+		cfg.RAG.Embedding.Dims = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_LIMITS_MAX_FILE_MB"); v > 0 {
+		cfg.RAG.Limits.MaxFileMB = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_LIMITS_MAX_DOCS_PER_KB"); v > 0 {
+		cfg.RAG.Limits.MaxDocsPerKB = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_LIMITS_MAX_KBS_PER_USER"); v > 0 {
+		cfg.RAG.Limits.MaxKBsPerUser = v
+	}
 	return cfg
+}
+
+func positiveEnvInt(name string) int {
+	n, err := strconv.Atoi(os.Getenv(name))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 // applyObjectStoreEnv 将 BKCRAB_OBJECT_STORE_* 环境变量读入 cfg。
@@ -157,8 +197,7 @@ func applyObjectStoreEnv(cfg *Config) {
 // readSystemSandboxCfg）会重新调用 LoadEnv，并在清理后看到这些键的
 // 空值。这是故意的——环境变量被视为一次性引导覆盖，而非实时配置源。
 // 希望在运行时轮换凭据的操作员应通过管理 UI 编辑数据库存储的配置。
-func ScrubBootSecrets() {
-	keys := []string{
+var bootSecretEnvKeys = []string{
 		"BKCRAB_STORAGE_DSN",
 		"BKCRAB_OBJECT_STORE_TYPE",
 		"BKCRAB_OBJECT_STORE_LOCAL_ROOT",
@@ -173,9 +212,54 @@ func ScrubBootSecrets() {
 		"BKCRAB_OBJECT_STORE_ALIYUN_INTERNAL",
 		"BOXLITE_API_KEY",
 		"E2B_API_KEY",
+		"BKCRAB_RAG_MILVUS_PASSWORD",
+		"BKCRAB_RAG_EMBEDDING_API_KEY",
 	}
-	for _, k := range keys {
+
+func ScrubBootSecrets() {
+	for _, k := range bootSecretEnvKeys {
 		_ = os.Unsetenv(k)
+	}
+}
+
+// ApplySystemRAG overlays one-time BKCRAB_RAG_* bootstrap values onto the
+// system RAG configuration loaded from the database. Keep this separate from
+// ApplyToConfig: that method is also used after system -> user scope merging,
+// where applying system environment defaults last would incorrectly suppress
+// a user's embedding override.
+func (e *EnvConfig) ApplySystemRAG(dst *RAGCfg) {
+	if e == nil || dst == nil {
+		return
+	}
+	if e.RAG.Milvus.Address != "" {
+		dst.Milvus.Address = e.RAG.Milvus.Address
+	}
+	if e.RAG.Milvus.Username != "" {
+		dst.Milvus.Username = e.RAG.Milvus.Username
+	}
+	if e.RAG.Milvus.Password != "" {
+		dst.Milvus.Password = e.RAG.Milvus.Password
+	}
+	if e.RAG.Embedding.Endpoint != "" {
+		dst.Embedding.Endpoint = e.RAG.Embedding.Endpoint
+	}
+	if e.RAG.Embedding.APIKey != "" {
+		dst.Embedding.APIKey = e.RAG.Embedding.APIKey
+	}
+	if e.RAG.Embedding.Model != "" {
+		dst.Embedding.Model = e.RAG.Embedding.Model
+	}
+	if e.RAG.Embedding.Dims > 0 {
+		dst.Embedding.Dims = e.RAG.Embedding.Dims
+	}
+	if e.RAG.Limits.MaxFileMB > 0 {
+		dst.Limits.MaxFileMB = e.RAG.Limits.MaxFileMB
+	}
+	if e.RAG.Limits.MaxDocsPerKB > 0 {
+		dst.Limits.MaxDocsPerKB = e.RAG.Limits.MaxDocsPerKB
+	}
+	if e.RAG.Limits.MaxKBsPerUser > 0 {
+		dst.Limits.MaxKBsPerUser = e.RAG.Limits.MaxKBsPerUser
 	}
 }
 
