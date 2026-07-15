@@ -60,7 +60,8 @@ VOLUME /data/.bkcrab
 COPY skills/ /data/.bkcrab/skills/
 COPY plugins/ /usr/local/share/bkcrab/plugins/
 COPY scripts/docker-entrypoint.sh /usr/local/bin/bkcrab-entrypoint
-RUN chmod +x /usr/local/bin/bkcrab-entrypoint
+RUN sed -i 's/\r$//' /usr/local/bin/bkcrab-entrypoint \
+    && chmod +x /usr/local/bin/bkcrab-entrypoint
 
 EXPOSE 18953
 ENTRYPOINT ["bkcrab-entrypoint", "bkcrab"]
