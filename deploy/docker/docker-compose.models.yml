@@ -1,0 +1,85 @@
+# CPU-only local inference services for the RAG overlay.
+# Model files are bind-mounted from /home so Docker's root filesystem stays small.
+name: bkcrab
+
+services:
+  qwen3-embedding:
+    image: "${LLAMA_CPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9445}"
+    restart: unless-stopped
+    command:
+      - --model
+      - /models/Qwen3-Embedding-0.6B-Q8_0.gguf
+      - --embedding
+      - --pooling
+      - last
+      - --ctx-size
+      - "4096"
+      - --batch-size
+      - "512"
+      - --ubatch-size
+      - "512"
+      - --threads
+      - "2"
+      - --threads-batch
+      - "2"
+      - --parallel
+      - "1"
+      - --cache-ram
+      - "0"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --no-webui
+    volumes:
+      - "${RAG_MODEL_ROOT:-/home/csb/bkcrab-data/models}/embedding:/models:ro"
+    ports:
+      - "127.0.0.1:${RAG_EMBEDDING_PORT:-18080}:8080"
+    mem_limit: 1800m
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 10s
+      start_period: 90s
+      timeout: 5s
+      retries: 12
+
+  qwen3-reranker:
+    image: "${LLAMA_CPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9445}"
+    restart: unless-stopped
+    command:
+      - --model
+      - /models/Qwen3-Reranker-0.6B-Q4_K_M.gguf
+      - --reranking
+      - --embedding
+      - --pooling
+      - rank
+      - --ctx-size
+      - "4096"
+      - --batch-size
+      - "512"
+      - --ubatch-size
+      - "512"
+      - --threads
+      - "2"
+      - --threads-batch
+      - "2"
+      - --parallel
+      - "1"
+      - --cache-ram
+      - "0"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --no-webui
+    volumes:
+      - "${RAG_MODEL_ROOT:-/home/csb/bkcrab-data/models}/reranker:/models:ro"
+    ports:
+      - "127.0.0.1:${RAG_RERANKER_PORT:-18081}:8080"
+    mem_limit: 1600m
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 10s
+      start_period: 90s
+      timeout: 5s
+      retries: 12

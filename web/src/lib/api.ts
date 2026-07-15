@@ -1265,6 +1265,11 @@ export interface AgentSkillsConfig {
   alwaysLoad?: string[];
 }
 
+export interface AgentRAGConfig {
+  kbs: string[];
+  topN?: number;
+}
+
 // 后端接受 model / soul / skills / providers 进行更新。
 // AgentDetail.skills 是扁平 string[]（遗留），但按 agent 技能
 // 配置实际是 { disabled, alwaysLoad } — 使用明确的载荷类型
@@ -1306,6 +1311,8 @@ export interface AgentUpdatePayload {
   // 覆盖并回退到系统范围的启用状态。
   plugins?: Record<string, boolean>;
   pluginsReset?: boolean;
+  // 智能体可检索的用户知识库白名单。发送空 kbs 会撤销全部授权。
+  rag?: AgentRAGConfig;
 }
 
 export async function updateAgent(id: string, agent: AgentUpdatePayload) {
@@ -1345,13 +1352,195 @@ export interface AgentFileConfig {
   workspace?: string;
   skills?: AgentSkillsConfig;
   providers?: Record<string, ProviderData>;
+  rag?: AgentRAGConfig;
 }
 
 // 获取单个 agent 的原始 agent.json（仅按 agent 覆盖 —
 // 不是合并/解析后的配置）。用于按 agent 的模型和技能管理页面。
 export async function getAgentConfig(id: string): Promise<AgentFileConfig> {
   const res = await apiFetch(`/api/agents/${id}/config`);
-  return res.json();
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || `读取智能体配置失败 (${res.status})`);
+  return data;
+}
+
+// RAG 知识库 API。Go 的存储记录目前直接序列化为 PascalCase；这里统一
+// 转成前端惯用的 camelCase，后端以后补 JSON tag 时页面也无需改动。
+export interface KnowledgeBase {
+  id: string;
+  userId: string;
+  name: string;
+  description: string;
+  embedProvider: string;
+  embedModel: string;
+  embedDims: number;
+  chunkSize: number;
+  chunkOverlap: number;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeDocument {
+  id: string;
+  kbId: string;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  status: string;
+  errorMsg: string;
+  chunkCount: number;
+  tokenCount: number;
+  version: number;
+  uploadedAt: string;
+  indexedAt?: string;
+}
+
+export interface KnowledgeSearchHit {
+  kbId: string;
+  kbName: string;
+  docId: string;
+  docName: string;
+  chunkIndex: number;
+  sectionTitle?: string;
+  pageNum?: number;
+  content: string;
+  score: number;
+}
+
+type KnowledgeBaseWire = Record<string, unknown>;
+
+function wireValue<T>(row: KnowledgeBaseWire, camel: string, pascal: string, fallback: T): T {
+  const value = row[camel] ?? row[pascal];
+  return (value === undefined || value === null ? fallback : value) as T;
+}
+
+function normalizeKnowledgeBase(row: KnowledgeBaseWire): KnowledgeBase {
+  return {
+    id: wireValue(row, "id", "ID", ""),
+    userId: wireValue(row, "userId", "UserID", ""),
+    name: wireValue(row, "name", "Name", ""),
+    description: wireValue(row, "description", "Description", ""),
+    embedProvider: wireValue(row, "embedProvider", "EmbedProvider", ""),
+    embedModel: wireValue(row, "embedModel", "EmbedModel", ""),
+    embedDims: wireValue(row, "embedDims", "EmbedDims", 0),
+    chunkSize: wireValue(row, "chunkSize", "ChunkSize", 0),
+    chunkOverlap: wireValue(row, "chunkOverlap", "ChunkOverlap", 0),
+    status: wireValue(row, "status", "Status", ""),
+    createdAt: wireValue(row, "createdAt", "CreatedAt", ""),
+    updatedAt: wireValue(row, "updatedAt", "UpdatedAt", ""),
+  };
+}
+
+function normalizeKnowledgeDocument(row: KnowledgeBaseWire): KnowledgeDocument {
+  return {
+    id: wireValue(row, "id", "ID", ""),
+    kbId: wireValue(row, "kbId", "KBID", ""),
+    fileName: wireValue(row, "fileName", "FileName", ""),
+    fileType: wireValue(row, "fileType", "FileType", ""),
+    fileSize: wireValue(row, "fileSize", "FileSize", 0),
+    status: wireValue(row, "status", "Status", ""),
+    errorMsg: wireValue(row, "errorMsg", "ErrorMsg", ""),
+    chunkCount: wireValue(row, "chunkCount", "ChunkCount", 0),
+    tokenCount: wireValue(row, "tokenCount", "TokenCount", 0),
+    version: wireValue(row, "version", "Version", 0),
+    uploadedAt: wireValue(row, "uploadedAt", "UploadedAt", ""),
+    indexedAt: wireValue<string | undefined>(row, "indexedAt", "IndexedAt", undefined),
+  };
+}
+
+async function ragJSON<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await apiFetch(url, init);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || data?.message || `知识库请求失败 (${res.status})`);
+  }
+  return data as T;
+}
+
+export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
+  const rows = await ragJSON<KnowledgeBaseWire[]>("/api/rag/kbs");
+  return (Array.isArray(rows) ? rows : []).map(normalizeKnowledgeBase);
+}
+
+export async function createKnowledgeBase(input: {
+  name: string;
+  description?: string;
+  chunkSize?: number;
+  chunkOverlap?: number;
+}): Promise<KnowledgeBase> {
+  const row = await ragJSON<KnowledgeBaseWire>("/api/rag/kbs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return normalizeKnowledgeBase(row);
+}
+
+export async function updateKnowledgeBase(
+  id: string,
+  input: Partial<Pick<KnowledgeBase, "name" | "description" | "chunkSize" | "chunkOverlap">>,
+): Promise<KnowledgeBase> {
+  const row = await ragJSON<KnowledgeBaseWire>(`/api/rag/kbs/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return normalizeKnowledgeBase(row);
+}
+
+export async function deleteKnowledgeBase(id: string): Promise<void> {
+  await ragJSON(`/api/rag/kbs/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function listKnowledgeDocuments(kbId: string): Promise<KnowledgeDocument[]> {
+  const rows = await ragJSON<KnowledgeBaseWire[]>(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/documents`,
+  );
+  return (Array.isArray(rows) ? rows : []).map(normalizeKnowledgeDocument);
+}
+
+export async function uploadKnowledgeDocument(
+  kbId: string,
+  file: File,
+): Promise<KnowledgeDocument> {
+  const body = new FormData();
+  body.append("file", file, file.name);
+  const row = await ragJSON<KnowledgeBaseWire>(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/documents`,
+    { method: "POST", body },
+  );
+  return normalizeKnowledgeDocument(row);
+}
+
+export async function deleteKnowledgeDocument(kbId: string, docId: string): Promise<void> {
+  await ragJSON(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/documents/${encodeURIComponent(docId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function reindexKnowledgeDocument(kbId: string, docId: string): Promise<void> {
+  await ragJSON(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/documents/${encodeURIComponent(docId)}/reindex`,
+    { method: "POST" },
+  );
+}
+
+export async function searchKnowledgeBase(
+  kbId: string,
+  query: string,
+  topN: number,
+): Promise<KnowledgeSearchHit[]> {
+  const data = await ragJSON<{ hits?: KnowledgeSearchHit[] }>(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/search`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, topN }),
+    },
+  );
+  return Array.isArray(data.hits) ? data.hits : [];
 }
 
 export async function deleteAgent(id: string) {

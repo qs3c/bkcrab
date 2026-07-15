@@ -50,8 +50,8 @@ services:
     volumes:
       - milvus-data:/var/lib/milvus
     ports:
-      - "127.0.0.1:${MILVUS_PORT:-19530}:19530"
-      - "127.0.0.1:${MILVUS_WEB_PORT:-19091}:9091"
+      - "${MILVUS_BIND_ADDRESS:-127.0.0.1}:${MILVUS_PORT:-19530}:19530"
+      - "${MILVUS_BIND_ADDRESS:-127.0.0.1}:${MILVUS_WEB_PORT:-19091}:9091"
     depends_on:
       milvus-etcd:
         condition: service_healthy

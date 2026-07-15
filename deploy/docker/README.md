@@ -48,12 +48,23 @@ overlay 通过映射合并为现有 `bkcrab` 服务追加 RAG 环境变量和 Mi
 
 启动顺序为 MinIO/etcd 健康后启动 Milvus，Milvus 健康后才启动 BkCrab。Milvus 数据与元数据分别持久化在 `milvus-data`、`milvus-etcd-data` 命名卷。Milvus 复用现有 MinIO 凭据；RAG 上传的原始文档仍使用 BkCrab 的对象存储配置。
 
-Milvus gRPC 和 WebUI 仅绑定服务器回环地址：
+Milvus gRPC 和 WebUI 默认仅绑定服务器回环地址：
 
 - gRPC：`127.0.0.1:${MILVUS_PORT:-19530}`
 - WebUI：`http://127.0.0.1:${MILVUS_WEB_PORT:-19091}/webui/`
 
 容器间的 BkCrab 始终使用 `milvus-standalone:19530`，无需开放公网端口。
+
+如需从可信局域网中的 Attu 查看数据，在服务器的 `deploy/docker/.env` 中设置：
+
+```bash
+MILVUS_BIND_ADDRESS=192.168.1.72
+```
+
+然后使用上面的两个 Compose 文件重新执行 `up -d`。这会使 Attu 可连接
+`192.168.1.72:19530`，并仅在该局域网网卡上监听；不要为了方便改为
+`0.0.0.0`。Milvus WebUI 同时可通过 `http://192.168.1.72:19091/webui/` 访问。
+若服务器启用了防火墙，还需要仅对可信网段放行 TCP 19530 和 19091。
 
 ## 检查状态
 

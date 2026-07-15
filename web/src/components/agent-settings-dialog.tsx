@@ -5,6 +5,7 @@ import {
   BrainIcon,
   ClockIcon,
   CoinsIcon,
+  DatabaseIcon,
   IdCardIcon,
   InfoIcon,
   LayersIcon,
@@ -23,6 +24,7 @@ import AgentProfilePanel from "@/components/agent-profile-panel";
 import AgentCustomizePage from "@/app/agents/[id]/customize/page";
 import AgentModelsPage from "@/app/agents/[id]/models/page";
 import AgentContextPage from "@/app/agents/[id]/context/page";
+import AgentKnowledgePage from "@/app/agents/[id]/knowledge/page";
 import AgentSkillsPage from "@/app/agents/[id]/skills/page";
 import AgentPluginsPage from "@/app/agents/[id]/plugins/page";
 import AgentChannelsPage from "@/app/agents/[id]/channels/page";
@@ -38,6 +40,7 @@ export type AgentSettingsTab =
   | "customize"
   | "models"
   | "context"
+  | "knowledge"
   | "skills"
   | "plugins"
   | "channels"
@@ -54,6 +57,7 @@ const AGENT_TABS: Array<{ id: AgentSettingsTab; label: string; icon: TabIcon }> 
   { id: "customize", label: "自定义", icon: Wand2Icon },
   { id: "models", label: "模型", icon: BrainIcon },
   { id: "context", label: "上下文", icon: LayersIcon },
+  { id: "knowledge", label: "知识库", icon: DatabaseIcon },
   { id: "skills", label: "技能", icon: SparklesIcon },
   { id: "plugins", label: "插件", icon: Plug },
   { id: "channels", label: "渠道", icon: RadioIcon },
@@ -161,6 +165,7 @@ export function AgentSettingsDialog({
           {tab === "models" &&
             (role === "viewer" ? <UserModelsPage /> : <AgentModelsPage />)}
           {tab === "context" && <AgentContextPage />}
+          {tab === "knowledge" && <AgentKnowledgePage />}
           {tab === "skills" && <AgentSkillsPage />}
           {tab === "plugins" && <AgentPluginsPage />}
           {tab === "channels" && <AgentChannelsPage />}
