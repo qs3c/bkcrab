@@ -285,21 +285,28 @@ func TestGenerateRAGKBMetadataViaAPI(t *testing.T) {
 	ctx := context.Background()
 
 	var receivedPrompt string
+	var receivedSystemPrompt string
+	var receivedMaxTokens int
 	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Messages []struct {
 				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"messages"`
+			MaxTokens int `json:"max_tokens"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode LLM request: %v", err)
 		}
 		for _, message := range request.Messages {
-			if message.Role == "user" {
+			switch message.Role {
+			case "system":
+				receivedSystemPrompt = message.Content
+			case "user":
 				receivedPrompt = message.Content
 			}
 		}
+		receivedMaxTokens = request.MaxTokens
 		content := `{"name":"产品安装与故障处理","description":"包含产品安装步骤、权限要求和常见故障处理流程，主要用于支持部署实施与售后排障。"}`
 		payload, _ := json.Marshal(map[string]any{
 			"choices": []any{map[string]any{"delta": map[string]any{"content": content}}},
@@ -360,6 +367,13 @@ func TestGenerateRAGKBMetadataViaAPI(t *testing.T) {
 	if !strings.Contains(receivedPrompt, "guide.md") || !strings.Contains(receivedPrompt, "管理员权限") {
 		t.Fatalf("LLM prompt missing indexed source: %q", receivedPrompt)
 	}
+	if receivedMaxTokens != ragMetadataMaxOutputTokens {
+		t.Fatalf("metadata max_tokens = %d, want %d", receivedMaxTokens, ragMetadataMaxOutputTokens)
+	}
+	if !strings.Contains(receivedSystemPrompt, "只能包含 name 和 description 两个字段") ||
+		!strings.Contains(receivedSystemPrompt, `{"name":"知识库名称","description":"说明包含哪些内容，以及主要用途是什么"}`) {
+		t.Fatalf("metadata system prompt missing strict JSON contract: %q", receivedSystemPrompt)
+	}
 	persisted, err := service.GetKB(ctx, regular.ID, kb.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -395,6 +409,59 @@ func TestParseGeneratedKBMetadataAcceptsFenceAndBoundsOutput(t *testing.T) {
 	}
 	if got := len([]rune(description)); got != 300 {
 		t.Fatalf("description rune length = %d, want 300", got)
+	}
+}
+
+func TestParseGeneratedKBMetadataAcceptsCommonModelOutput(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		wantName    string
+		wantKeyword string
+	}{
+		{
+			name:        "reasoning before final object",
+			content:     `<think>可以使用 {"name":"示例","description":"示例"} 格式。</think>\n{"name":"部署运维指南","description":"包含安装、配置与故障排查说明，主要用于部署和运维支持。"}`,
+			wantName:    "部署运维指南",
+			wantKeyword: "故障排查",
+		},
+		{
+			name:        "trailing comma",
+			content:     `{"name":"接口参考","description":"包含接口参数与示例，主要用于开发集成。",}`,
+			wantName:    "接口参考",
+			wantKeyword: "开发集成",
+		},
+		{
+			name:        "nested Chinese keys",
+			content:     `{"result":{"知识库名称":"员工制度","知识库描述":"包含考勤和休假制度，主要用于员工查询公司规定。"}}`,
+			wantName:    "员工制度",
+			wantKeyword: "公司规定",
+		},
+		{
+			name:        "labeled text",
+			content:     "**名称**：产品手册\n**描述**：包含产品功能和操作步骤，主要用于用户使用指导。",
+			wantName:    "产品手册",
+			wantKeyword: "使用指导",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			name, description, err := parseGeneratedKBMetadata(test.content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name != test.wantName || !strings.Contains(description, test.wantKeyword) {
+				t.Fatalf("generated metadata = (%q, %q)", name, description)
+			}
+		})
+	}
+}
+
+func TestParseGeneratedKBMetadataRejectsMissingFields(t *testing.T) {
+	for _, content := range []string{"", `{"name":"只有名称"}`, "名称：只有名称"} {
+		if _, _, err := parseGeneratedKBMetadata(content); err == nil {
+			t.Fatalf("parseGeneratedKBMetadata(%q) unexpectedly succeeded", content)
+		}
 	}
 }
 

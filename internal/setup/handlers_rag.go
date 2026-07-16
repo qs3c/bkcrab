@@ -340,10 +340,15 @@ func (s *Server) handleGenerateRAGKBMetadata(w http.ResponseWriter, r *http.Requ
 - 描述使用 1 至 3 句话且不超过 300 个字符，必须同时说明“包含哪些内容”和“主要用途是什么”。
 - 使用文档的主要语言；中英文混合且无法判断时使用中文。
 - 不要虚构抽样内容中无法支持的主题或用途。
-- 只输出一个 JSON 对象，不要输出 Markdown、解释或其他文字：{"name":"...","description":"..."}`},
+- 只输出一个可被标准 JSON 解析器直接解析的 JSON 对象。
+- JSON 只能包含 name 和 description 两个字段；字段名和字符串值必须使用英文双引号。
+- 不要使用 Markdown 代码块、单引号、中文字段名或尾逗号，不要输出思考过程、解释或其他文字。
+
+输出格式（字段值仅为格式示意，请根据文档生成实际内容）：
+{"name":"知识库名称","description":"说明包含哪些内容，以及主要用途是什么"}`},
 		{Role: "user", Content: fmt.Sprintf("已完成处理的文档共 %d 篇，本次抽样 %d 篇。\n\n文档目录：\n%s\n\n代表性正文：\n%s",
 			source.DocumentCount, source.SampledDocumentCount, source.Catalog, source.Excerpts)},
-	}, nil, model, 600, 0.2)
+	}, nil, model, ragMetadataMaxOutputTokens, 0.2)
 	if err != nil {
 		jsonResponse(w, http.StatusBadGateway, map[string]any{"ok": false, "error": "AI 生成失败：" + err.Error()})
 		return
@@ -379,33 +384,235 @@ func metadataLLM(cfg *config.Config) (provider.Provider, string, error) {
 
 func parseGeneratedKBMetadata(content string) (string, string, error) {
 	cleaned := strings.TrimSpace(content)
-	if strings.HasPrefix(cleaned, "```") {
-		if newline := strings.IndexByte(cleaned, '\n'); newline >= 0 {
-			cleaned = cleaned[newline+1:]
-		} else {
-			cleaned = strings.TrimPrefix(cleaned, "```")
-		}
-		cleaned = strings.TrimSuffix(strings.TrimSpace(cleaned), "```")
+	if cleaned == "" {
+		return "", "", errors.New("AI 返回内容为空")
 	}
-	if start, end := strings.IndexByte(cleaned, '{'), strings.LastIndexByte(cleaned, '}'); start >= 0 && end >= start {
-		cleaned = cleaned[start : end+1]
+
+	name, description, ok := decodeGeneratedKBMetadata(cleaned)
+	if !ok {
+		name, description, ok = parseGeneratedKBMetadataLabels(cleaned)
 	}
-	var generated struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
+	if !ok {
+		return "", "", errors.New("未找到名称和描述")
 	}
-	if err := json.Unmarshal([]byte(cleaned), &generated); err != nil {
-		return "", "", err
-	}
-	name := collapseMetadataWhitespace(generated.Name)
+
+	name = collapseMetadataWhitespace(name)
 	name = strings.Trim(name, " \t\r\n\"'“”‘’《》")
-	description := collapseMetadataWhitespace(generated.Description)
+	description = collapseMetadataWhitespace(description)
 	if name == "" || description == "" {
 		return "", "", errors.New("名称或描述为空")
 	}
 	name = truncateGeneratedMetadata(name, 30)
 	description = truncateGeneratedMetadata(description, 300)
 	return name, description, nil
+}
+
+func decodeGeneratedKBMetadata(content string) (string, string, bool) {
+	cleaned := stripGeneratedMetadataFence(content)
+	if name, description, ok := decodeGeneratedKBMetadataJSON(cleaned); ok {
+		return name, description, true
+	}
+
+	// Reasoning models sometimes include JSON examples in their thinking before
+	// the actual answer. The final complete object is therefore the best
+	// candidate, and each object is decoded independently instead of slicing
+	// from the first opening brace to the last closing brace.
+	objects := generatedMetadataJSONObjects(cleaned)
+	for index := len(objects) - 1; index >= 0; index-- {
+		if name, description, ok := decodeGeneratedKBMetadataJSON(objects[index]); ok {
+			return name, description, true
+		}
+	}
+	return "", "", false
+}
+
+func decodeGeneratedKBMetadataJSON(candidate string) (string, string, bool) {
+	var value any
+	if err := json.Unmarshal([]byte(candidate), &value); err != nil {
+		repaired := removeGeneratedMetadataTrailingCommas(candidate)
+		if repaired == candidate || json.Unmarshal([]byte(repaired), &value) != nil {
+			return "", "", false
+		}
+	}
+	return findGeneratedKBMetadata(value, 0)
+}
+
+func findGeneratedKBMetadata(value any, depth int) (string, string, bool) {
+	if depth > 4 {
+		return "", "", false
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		var name, description string
+		for key, field := range typed {
+			text, isString := field.(string)
+			if !isString {
+				continue
+			}
+			switch normalizeGeneratedMetadataKey(key) {
+			case "name", "title", "kbname", "knowledgebasename", "名称", "知识库名称":
+				name = text
+			case "description", "desc", "summary", "kbdescription", "knowledgebasedescription", "描述", "知识库描述":
+				description = text
+			}
+		}
+		if strings.TrimSpace(name) != "" && strings.TrimSpace(description) != "" {
+			return name, description, true
+		}
+		for _, field := range typed {
+			if name, description, ok := findGeneratedKBMetadata(field, depth+1); ok {
+				return name, description, true
+			}
+		}
+	case []any:
+		for index := len(typed) - 1; index >= 0; index-- {
+			if name, description, ok := findGeneratedKBMetadata(typed[index], depth+1); ok {
+				return name, description, true
+			}
+		}
+	case string:
+		var nested any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(typed)), &nested); err != nil {
+			return "", "", false
+		}
+		return findGeneratedKBMetadata(nested, depth+1)
+	}
+	return "", "", false
+}
+
+func normalizeGeneratedMetadataKey(key string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || r == '_' || r == '-' {
+			return -1
+		}
+		return unicode.ToLower(r)
+	}, strings.Trim(key, " \t\r\n\"'“”‘’*`"))
+}
+
+func stripGeneratedMetadataFence(content string) string {
+	cleaned := strings.TrimSpace(content)
+	if !strings.HasPrefix(cleaned, "```") {
+		return cleaned
+	}
+	if newline := strings.IndexByte(cleaned, '\n'); newline >= 0 {
+		cleaned = cleaned[newline+1:]
+	} else {
+		cleaned = strings.TrimPrefix(cleaned, "```")
+	}
+	return strings.TrimSuffix(strings.TrimSpace(cleaned), "```")
+}
+
+func generatedMetadataJSONObjects(content string) []string {
+	objects := make([]string, 0, 2)
+	for start := 0; start < len(content); start++ {
+		if content[start] != '{' {
+			continue
+		}
+		depth := 0
+		inString := false
+		escaped := false
+		for end := start; end < len(content); end++ {
+			current := content[end]
+			if inString {
+				if escaped {
+					escaped = false
+					continue
+				}
+				if current == '\\' {
+					escaped = true
+				} else if current == '"' {
+					inString = false
+				}
+				continue
+			}
+			switch current {
+			case '"':
+				inString = true
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					objects = append(objects, content[start:end+1])
+					end = len(content)
+				}
+			}
+		}
+	}
+	return objects
+}
+
+func removeGeneratedMetadataTrailingCommas(content string) string {
+	var repaired strings.Builder
+	repaired.Grow(len(content))
+	inString := false
+	escaped := false
+	for index := 0; index < len(content); index++ {
+		current := content[index]
+		if inString {
+			repaired.WriteByte(current)
+			if escaped {
+				escaped = false
+			} else if current == '\\' {
+				escaped = true
+			} else if current == '"' {
+				inString = false
+			}
+			continue
+		}
+		if current == '"' {
+			inString = true
+			repaired.WriteByte(current)
+			continue
+		}
+		if current == ',' {
+			next := index + 1
+			for next < len(content) && unicode.IsSpace(rune(content[next])) {
+				next++
+			}
+			if next < len(content) && (content[next] == '}' || content[next] == ']') {
+				continue
+			}
+		}
+		repaired.WriteByte(current)
+	}
+	return repaired.String()
+}
+
+func parseGeneratedKBMetadataLabels(content string) (string, string, bool) {
+	var name, description string
+	readingDescription := false
+	for _, rawLine := range strings.Split(stripGeneratedMetadataFence(content), "\n") {
+		line := strings.TrimSpace(rawLine)
+		line = strings.TrimSpace(strings.TrimLeft(line, "#*- "))
+		if line == "" {
+			continue
+		}
+		separator := strings.IndexByte(line, ':')
+		separatorSize := 1
+		if fullWidth := strings.Index(line, "："); fullWidth >= 0 && (separator < 0 || fullWidth < separator) {
+			separator = fullWidth
+			separatorSize = len("：")
+		}
+		if separator >= 0 {
+			key := normalizeGeneratedMetadataKey(line[:separator])
+			value := strings.Trim(strings.TrimSpace(line[separator+separatorSize:]), " \t\r\n\"'“”‘’,，")
+			switch key {
+			case "name", "title", "kbname", "knowledgebasename", "名称", "知识库名称":
+				name = value
+				readingDescription = false
+				continue
+			case "description", "desc", "summary", "kbdescription", "knowledgebasedescription", "描述", "知识库描述":
+				description = value
+				readingDescription = true
+				continue
+			}
+		}
+		if readingDescription {
+			description = strings.TrimSpace(description + " " + line)
+		}
+	}
+	return name, description, strings.TrimSpace(name) != "" && strings.TrimSpace(description) != ""
 }
 
 func collapseMetadataWhitespace(value string) string {
