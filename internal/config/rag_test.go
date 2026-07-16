@@ -8,7 +8,7 @@ import (
 func TestRAGCfgDefaults(t *testing.T) {
 	var cfg Config
 	ApplyDefaults(&cfg)
-	if cfg.RAG.Limits.MaxFileMB != 20 || cfg.RAG.Limits.MaxDocsPerKB != 200 ||
+	if cfg.RAG.Limits.MaxFileMB != 50 || cfg.RAG.Limits.MaxDocsPerKB != 200 ||
 		cfg.RAG.Limits.MaxKBsPerUser != 20 {
 		t.Fatalf("RAG default limits = %+v", cfg.RAG.Limits)
 	}

@@ -144,6 +144,12 @@ func (m *Milvus) createIndex(ctx context.Context, collectionName, fieldName stri
 	return task.Await(ctx)
 }
 
+// milvusUpsertBatch bounds one Upsert RPC. A row carries the full chunk text
+// plus a dims*4-byte vector, so writing a large document in a single request
+// can exceed the server's gRPC message limit. Chunk primary keys make batches
+// idempotent; a mid-document failure is retried by the durable index task.
+const milvusUpsertBatch = 1000
+
 func (m *Milvus) UpsertChunks(ctx context.Context, kbID string, chunks []ChunkData) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -155,7 +161,21 @@ func (m *Milvus) UpsertChunks(ctx context.Context, kbID string, chunks []ChunkDa
 	if dims == 0 {
 		return fmt.Errorf("collection %s: chunk 向量不能为空", kbID)
 	}
+	for i, chunk := range chunks {
+		if len(chunk.Vector) != dims {
+			return fmt.Errorf("collection %s: chunk %d 的向量维度为 %d，期望 %d", kbID, i, len(chunk.Vector), dims)
+		}
+	}
+	for start := 0; start < len(chunks); start += milvusUpsertBatch {
+		end := min(start+milvusUpsertBatch, len(chunks))
+		if err := m.upsertBatch(ctx, kbID, chunks[start:end], dims); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
+func (m *Milvus) upsertBatch(ctx context.Context, kbID string, chunks []ChunkData, dims int) error {
 	ids := make([]string, 0, len(chunks))
 	docIDs := make([]string, 0, len(chunks))
 	chunkIndexes := make([]int64, 0, len(chunks))
@@ -165,10 +185,7 @@ func (m *Milvus) UpsertChunks(ctx context.Context, kbID string, chunks []ChunkDa
 	contents := make([]string, 0, len(chunks))
 	vectors := make([][]float32, 0, len(chunks))
 
-	for i, chunk := range chunks {
-		if len(chunk.Vector) != dims {
-			return fmt.Errorf("collection %s: chunk %d 的向量维度为 %d，期望 %d", kbID, i, len(chunk.Vector), dims)
-		}
+	for _, chunk := range chunks {
 		ids = append(ids, milvusChunkID(chunk))
 		docIDs = append(docIDs, chunk.DocID)
 		chunkIndexes = append(chunkIndexes, int64(chunk.Index))

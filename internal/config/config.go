@@ -760,7 +760,7 @@ type RAGLimitsCfg struct {
 
 func (c *RAGCfg) ApplyDefaults() {
 	if c.Limits.MaxFileMB == 0 {
-		c.Limits.MaxFileMB = 20
+		c.Limits.MaxFileMB = 50
 	}
 	if c.Limits.MaxDocsPerKB == 0 {
 		c.Limits.MaxDocsPerKB = 200
