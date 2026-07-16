@@ -1489,6 +1489,23 @@ export async function updateKnowledgeBase(
   return normalizeKnowledgeBase(row);
 }
 
+export interface GeneratedKnowledgeBaseMetadata {
+  name: string;
+  description: string;
+  documentCount: number;
+  sampledDocumentCount: number;
+}
+
+export async function generateKnowledgeBaseMetadata(
+  id: string,
+  signal?: AbortSignal,
+): Promise<GeneratedKnowledgeBaseMetadata> {
+  return ragJSON<GeneratedKnowledgeBaseMetadata>(
+    `/api/rag/kbs/${encodeURIComponent(id)}/generate-metadata`,
+    { method: "POST", signal },
+  );
+}
+
 export async function deleteKnowledgeBase(id: string): Promise<void> {
   await ragJSON(`/api/rag/kbs/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

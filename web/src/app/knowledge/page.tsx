@@ -13,6 +13,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Sparkles,
   Trash2,
   Upload,
   XCircle,
@@ -22,6 +23,7 @@ import {
   createKnowledgeBase,
   deleteKnowledgeBase,
   deleteKnowledgeDocument,
+  generateKnowledgeBaseMetadata,
   getMe,
   listKnowledgeBases,
   listKnowledgeDocuments,
@@ -155,6 +157,8 @@ export default function KnowledgePage() {
   const [form, setForm] = React.useState<KBForm>(EMPTY_FORM);
   const [formError, setFormError] = React.useState("");
   const [saving, setSaving] = React.useState(false);
+  const [generatingMetadata, setGeneratingMetadata] = React.useState(false);
+  const metadataRequestRef = React.useRef<AbortController | null>(null);
   const [deleteKBTarget, setDeleteKBTarget] = React.useState<KnowledgeBase | null>(null);
   const [deleteDocTarget, setDeleteDocTarget] = React.useState<KnowledgeDocument | null>(null);
 
@@ -220,6 +224,9 @@ export default function KnowledgePage() {
   const indexing = documents.some((doc) =>
     ["PENDING", "PROCESSING"].includes(doc.status.toUpperCase()),
   );
+  const readyDocumentCount = documents.filter((doc) =>
+    doc.status.toUpperCase() === "DONE",
+  ).length;
 
   React.useEffect(() => {
     if (!selectedId || !indexing) return;
@@ -228,6 +235,9 @@ export default function KnowledgePage() {
   }, [selectedId, indexing, loadDocuments]);
 
   const openCreate = () => {
+    metadataRequestRef.current?.abort();
+    metadataRequestRef.current = null;
+    setGeneratingMetadata(false);
     setEditing(null);
     setForm(EMPTY_FORM);
     setFormError("");
@@ -235,6 +245,9 @@ export default function KnowledgePage() {
   };
 
   const openEdit = (kb: KnowledgeBase) => {
+    metadataRequestRef.current?.abort();
+    metadataRequestRef.current = null;
+    setGeneratingMetadata(false);
     setEditing(kb);
     setForm({
       name: kb.name,
@@ -244,6 +257,40 @@ export default function KnowledgePage() {
     });
     setFormError("");
     setFormOpen(true);
+  };
+
+  const generateMetadata = async (kb: KnowledgeBase) => {
+    openEdit(kb);
+    const controller = new AbortController();
+    metadataRequestRef.current = controller;
+    setGeneratingMetadata(true);
+    setFormError("");
+    try {
+      const generated = await generateKnowledgeBaseMetadata(kb.id, controller.signal);
+      if (metadataRequestRef.current !== controller || controller.signal.aborted) return;
+      setForm((current) => ({
+        ...current,
+        name: generated.name,
+        description: generated.description,
+      }));
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      setFormError(errorMessage(err, "AI 生成名称和描述失败"));
+    } finally {
+      if (metadataRequestRef.current === controller) {
+        metadataRequestRef.current = null;
+        setGeneratingMetadata(false);
+      }
+    }
+  };
+
+  const setKnowledgeFormOpen = (open: boolean) => {
+    if (!open) {
+      metadataRequestRef.current?.abort();
+      metadataRequestRef.current = null;
+      setGeneratingMetadata(false);
+    }
+    setFormOpen(open);
   };
 
   const saveKnowledgeBase = async (event: React.FormEvent) => {
@@ -468,6 +515,16 @@ export default function KnowledgePage() {
                     {selected.description || "未填写描述"}
                   </CardDescription>
                   <CardAction className="flex gap-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void generateMetadata(selected)}
+                      disabled={readOnly || documentsLoading || generatingMetadata || readyDocumentCount === 0}
+                      title={readyDocumentCount === 0 ? "请先上传并等待文档处理完成" : "根据已完成处理的文档生成名称和描述"}
+                    >
+                      {generatingMetadata ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+                      {generatingMetadata ? "生成中" : "AI 生成"}
+                    </Button>
                     <Button variant="ghost" size="icon" onClick={() => openEdit(selected)} disabled={readOnly} aria-label="编辑知识库">
                       <Pencil className="size-4" />
                     </Button>
@@ -641,24 +698,32 @@ export default function KnowledgePage() {
         </div>
       )}
 
-      <Dialog open={formOpen} onOpenChange={setFormOpen}>
+      <Dialog open={formOpen} onOpenChange={setKnowledgeFormOpen}>
         <DialogContent className="sm:max-w-lg">
           <form onSubmit={saveKnowledgeBase}>
             <DialogHeader>
               <DialogTitle>{editing ? "编辑知识库" : "新建知识库"}</DialogTitle>
               <DialogDescription>
-                分片单位是 token。创建后会绑定当前 embedding 模型与向量维度。
+                {editing
+                  ? "分片单位是 token。修改分片参数后，已有文档需要重新索引才会生效。"
+                  : "可以先填写临时名称和描述。上传并等待文档处理完成后，可在知识库详情页使用 AI 自动生成名称和描述。创建后会绑定当前 embedding 模型与向量维度。"}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-5">
               {formError && <Message tone="error">{formError}</Message>}
+              {generatingMetadata && (
+                <div className="flex items-center gap-2 rounded-lg bg-primary/5 p-3 text-sm text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin text-primary" />
+                  正在根据已完成处理的文档生成名称和描述…
+                </div>
+              )}
               <div className="space-y-2">
                 <Label htmlFor="kb-name">名称</Label>
-                <Input id="kb-name" autoFocus value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="例如：产品与售后资料" maxLength={120} />
+                <Input id="kb-name" autoFocus value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="例如：产品与售后资料" maxLength={120} disabled={generatingMetadata} />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="kb-description">描述</Label>
-                <Textarea id="kb-description" value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} placeholder="说明这个知识库包含哪些内容" rows={3} />
+                <Textarea id="kb-description" value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} placeholder="说明这个知识库包含哪些内容，主要用途是什么（重要！！知识库的名称和描述将影响 Agent 使用知识库）" rows={3} disabled={generatingMetadata} />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">
@@ -677,8 +742,8 @@ export default function KnowledgePage() {
               )}
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
-              <Button type="submit" disabled={saving}>
+              <Button type="button" variant="outline" onClick={() => setKnowledgeFormOpen(false)}>取消</Button>
+              <Button type="submit" disabled={saving || generatingMetadata}>
                 {saving && <Loader2 className="size-4 animate-spin" />}
                 {saving ? "保存中" : "保存"}
               </Button>

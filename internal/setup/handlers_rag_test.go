@@ -18,6 +18,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/rag"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
+	"github.com/qs3c/bkcrab/internal/scope"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/users"
 )
@@ -276,6 +277,124 @@ func TestRAGDocumentUploadListAndSearch(t *testing.T) {
 		map[string]string{"id": kb.ID})
 	if search.Code != http.StatusOK || !strings.Contains(search.Body.String(), "guide.md") {
 		t.Fatalf("search status=%d body=%s", search.Code, search.Body.String())
+	}
+}
+
+func TestGenerateRAGKBMetadataViaAPI(t *testing.T) {
+	server, resolver, _, regular, service := newRAGAPITestServer(t)
+	ctx := context.Background()
+
+	var receivedPrompt string
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode LLM request: %v", err)
+		}
+		for _, message := range request.Messages {
+			if message.Role == "user" {
+				receivedPrompt = message.Content
+			}
+		}
+		content := `{"name":"产品安装与故障处理","description":"包含产品安装步骤、权限要求和常见故障处理流程，主要用于支持部署实施与售后排障。"}`
+		payload, _ := json.Marshal(map[string]any{
+			"choices": []any{map[string]any{"delta": map[string]any{"content": content}}},
+		})
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", payload)
+	}))
+	t.Cleanup(llmServer.Close)
+	if err := scope.SaveSetting(ctx, server.dataStore, regular.ID, "", "agents.defaults", map[string]any{
+		"model": "test/metadata-model",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scope.SaveProvider(ctx, server.dataStore, regular.ID, "", "test", config.ProviderConfig{
+		APIKey: "test-key", APIBase: llmServer.URL, APIType: "openai-chat",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	kb, err := service.CreateKB(ctx, regular.ID, "临时名称", "临时描述", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := "# 安装与排障\n\n安装需要管理员权限。遇到启动失败时检查配置与服务日志。"
+	document, err := service.UploadDocument(ctx, regular.ID, kb.ID, "guide.md", strings.NewReader(content), int64(len([]byte(content))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		indexed, getErr := service.GetDocument(ctx, regular.ID, kb.ID, document.ID)
+		if getErr == nil && indexed.Status == "DONE" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	request := authTestRequest(t, ctx, resolver, http.MethodPost, "/api/rag/kbs/"+kb.ID+"/generate-metadata", regular.ID)
+	response := callRAGHandler(t, server, server.handleGenerateRAGKBMetadata, request, map[string]string{"id": kb.ID})
+	if response.Code != http.StatusOK {
+		t.Fatalf("generate status=%d body=%s", response.Code, response.Body.String())
+	}
+	var generated struct {
+		Name                 string `json:"name"`
+		Description          string `json:"description"`
+		DocumentCount        int    `json:"documentCount"`
+		SampledDocumentCount int    `json:"sampledDocumentCount"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&generated); err != nil {
+		t.Fatal(err)
+	}
+	if generated.Name != "产品安装与故障处理" || !strings.Contains(generated.Description, "售后排障") {
+		t.Fatalf("generated metadata = %+v", generated)
+	}
+	if generated.DocumentCount != 1 || generated.SampledDocumentCount != 1 {
+		t.Fatalf("generated document counts = %+v", generated)
+	}
+	if !strings.Contains(receivedPrompt, "guide.md") || !strings.Contains(receivedPrompt, "管理员权限") {
+		t.Fatalf("LLM prompt missing indexed source: %q", receivedPrompt)
+	}
+	persisted, err := service.GetKB(ctx, regular.ID, kb.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Name != "临时名称" || persisted.Description != "临时描述" {
+		t.Fatalf("generation unexpectedly saved metadata: %+v", persisted)
+	}
+}
+
+func TestGenerateRAGKBMetadataRequiresDoneDocument(t *testing.T) {
+	server, resolver, _, regular, service := newRAGAPITestServer(t)
+	kb, err := service.CreateKB(context.Background(), regular.ID, "empty", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := authTestRequest(t, context.Background(), resolver, http.MethodPost, "/api/rag/kbs/"+kb.ID+"/generate-metadata", regular.ID)
+	response := callRAGHandler(t, server, server.handleGenerateRAGKBMetadata, request, map[string]string{"id": kb.ID})
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), rag.ErrNoReadyDocuments.Error()) {
+		t.Fatalf("generate without documents status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestParseGeneratedKBMetadataAcceptsFenceAndBoundsOutput(t *testing.T) {
+	longName := strings.Repeat("名", 40)
+	longDescription := strings.Repeat("描述", 180)
+	content, _ := json.Marshal(map[string]string{"name": "《" + longName + "》", "description": longDescription})
+	name, description, err := parseGeneratedKBMetadata("```json\n" + string(content) + "\n```")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len([]rune(name)); got != 30 {
+		t.Fatalf("name rune length = %d, want 30", got)
+	}
+	if got := len([]rune(description)); got != 300 {
+		t.Fatalf("description rune length = %d, want 300", got)
 	}
 }
 
