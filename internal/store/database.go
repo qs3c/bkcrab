@@ -1607,6 +1607,19 @@ func (d *DBStore) migrationSQL() []string {
 			updated_at TIMESTAMP NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_rag_kbs_user ON rag_kbs (user_id)`,
+		`CREATE TABLE IF NOT EXISTS rag_chat_turns (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			kb_id TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			title TEXT NOT NULL DEFAULT '',
+			question TEXT NOT NULL,
+			answer TEXT NOT NULL,
+			sources TEXT NOT NULL DEFAULT '[]',
+			created_at TIMESTAMP NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_chat_sessions ON rag_chat_turns (user_id, kb_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_chat_turns_session ON rag_chat_turns (user_id, kb_id, session_id, created_at)`,
 		`CREATE TABLE IF NOT EXISTS rag_documents (
 			id TEXT PRIMARY KEY,
 			kb_id TEXT NOT NULL,
@@ -1817,7 +1830,7 @@ func (d *DBStore) DeleteUser(ctx context.Context, id string) error {
 		return err
 	}
 	// 非 agent 范围的每用户状态（agent_files 现在仅为 agent 所有）。
-	for _, t := range []string{"web_sessions", "apikeys", "sessions", "session_messages", "session_events", "context_archives"} {
+	for _, t := range []string{"web_sessions", "apikeys", "sessions", "session_messages", "session_events", "context_archives", "rag_chat_turns"} {
 		if _, err := tx.ExecContext(ctx,
 			fmt.Sprintf("DELETE FROM %s WHERE user_id = %s", t, d.ph(1)), id); err != nil {
 			return err

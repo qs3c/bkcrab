@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/qs3c/bkcrab/internal/auth"
 	"github.com/qs3c/bkcrab/internal/config"
@@ -380,6 +381,164 @@ func TestGenerateRAGKBMetadataViaAPI(t *testing.T) {
 	}
 	if persisted.Name != "临时名称" || persisted.Description != "临时描述" {
 		t.Fatalf("generation unexpectedly saved metadata: %+v", persisted)
+	}
+}
+
+func TestRAGChatUsesQuestionOnlyHistoryAndReturnsSources(t *testing.T) {
+	server, resolver, _, regular, service := newRAGAPITestServer(t)
+	ctx := context.Background()
+
+	var callCount int
+	var receivedUserPrompt string
+	var receivedTools bool
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var raw map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Errorf("decode LLM request: %v", err)
+		}
+		_, receivedTools = raw["tools"]
+		var messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(raw["messages"], &messages); err != nil {
+			t.Errorf("decode LLM messages: %v", err)
+		}
+		for _, message := range messages {
+			if message.Role == "user" {
+				receivedUserPrompt = message.Content
+			}
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"choices": []any{map[string]any{"delta": map[string]any{"content": "默认端口是 8080。[1]"}}},
+			"usage":   map[string]any{"prompt_tokens": 120, "completion_tokens": 18},
+		})
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", payload)
+	}))
+	t.Cleanup(llmServer.Close)
+	if err := scope.SaveSetting(ctx, server.dataStore, regular.ID, "", "agents.defaults", map[string]any{
+		"model": "test/qa-model",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scope.SaveProvider(ctx, server.dataStore, regular.ID, "", "test", config.ProviderConfig{
+		APIKey: "test-key", APIBase: llmServer.URL, APIType: "openai-chat",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	kb, err := service.CreateKB(ctx, regular.ID, "部署手册", "产品部署与端口说明", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := "# 默认端口\n\n服务默认监听 8080 端口。"
+	document, err := service.UploadDocument(ctx, regular.ID, kb.ID, "deploy.md", strings.NewReader(content), int64(len([]byte(content))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		indexed, getErr := service.GetDocument(ctx, regular.ID, kb.ID, document.ID)
+		if getErr == nil && indexed.Status == "DONE" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	history := make([]string, 22)
+	sessionID := "kbc_test_history"
+	historyStart := time.Now().UTC().Add(-time.Hour)
+	for index := range history {
+		history[index] = fmt.Sprintf("history-%02d", index)
+		if err := server.dataStore.AppendRAGChatTurn(ctx, &store.RAGChatTurnRecord{
+			ID: fmt.Sprintf("history-turn-%02d", index), UserID: regular.ID, KBID: kb.ID,
+			SessionID: sessionID, Title: "历史问题", Question: history[index],
+			Answer: "这条历史回答不应进入下一轮上下文", Sources: json.RawMessage("[]"),
+			CreatedAt: historyStart.Add(time.Duration(index) * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body, _ := json.Marshal(map[string]any{
+		"question":  "它默认使用哪个端口？",
+		"sessionId": sessionID,
+	})
+	request := ragJSONRequest(t, resolver, http.MethodPost, "/api/rag/kbs/"+kb.ID+"/chat", regular.ID, string(body))
+	response := callRAGHandler(t, server, server.handleRAGChat, request, map[string]string{"id": kb.ID})
+	if response.Code != http.StatusOK {
+		t.Fatalf("chat status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result struct {
+		ID        string    `json:"id"`
+		SessionID string    `json:"sessionId"`
+		Answer    string    `json:"answer"`
+		Hits      []rag.Hit `json:"hits"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if callCount != 1 {
+		t.Fatalf("answer LLM calls = %d, want 1", callCount)
+	}
+	if receivedTools {
+		t.Fatal("knowledge-base answer request unexpectedly included tools")
+	}
+	if strings.Contains(receivedUserPrompt, "history-00") || strings.Contains(receivedUserPrompt, "history-01") {
+		t.Fatalf("prompt retained history older than 20 questions: %q", receivedUserPrompt)
+	}
+	if !strings.Contains(receivedUserPrompt, "history-02") || !strings.Contains(receivedUserPrompt, "history-21") {
+		t.Fatalf("prompt missing recent question history: %q", receivedUserPrompt)
+	}
+	if strings.Contains(receivedUserPrompt, "这条历史回答不应进入下一轮上下文") {
+		t.Fatalf("prompt unexpectedly included historical answers: %q", receivedUserPrompt)
+	}
+	if !strings.Contains(receivedUserPrompt, "它默认使用哪个端口？") ||
+		!strings.Contains(receivedUserPrompt, "deploy.md") ||
+		!strings.Contains(receivedUserPrompt, "默认监听 8080") {
+		t.Fatalf("prompt missing current question or retrieved source: %q", receivedUserPrompt)
+	}
+	if result.ID == "" || result.SessionID != sessionID || result.Answer != "默认端口是 8080。[1]" || len(result.Hits) == 0 || result.Hits[0].DocName != "deploy.md" {
+		t.Fatalf("chat response = %+v", result)
+	}
+	persisted, err := server.dataStore.ListRAGChatTurns(ctx, regular.ID, kb.ID, sessionID)
+	if err != nil || len(persisted) != 23 || persisted[len(persisted)-1].Answer != result.Answer {
+		t.Fatalf("persisted turns = %d, last=%+v, err=%v", len(persisted), persisted[len(persisted)-1], err)
+	}
+
+	sessionsResponse := callRAGHandler(t, server, server.handleListRAGChatSessions,
+		authTestRequest(t, ctx, resolver, http.MethodGet, "/api/rag/kbs/"+kb.ID+"/chat/sessions", regular.ID),
+		map[string]string{"id": kb.ID})
+	if sessionsResponse.Code != http.StatusOK || !strings.Contains(sessionsResponse.Body.String(), sessionID) {
+		t.Fatalf("list chat sessions status=%d body=%s", sessionsResponse.Code, sessionsResponse.Body.String())
+	}
+	turnsResponse := callRAGHandler(t, server, server.handleListRAGChatTurns,
+		authTestRequest(t, ctx, resolver, http.MethodGet, "/api/rag/kbs/"+kb.ID+"/chat/sessions/"+sessionID, regular.ID),
+		map[string]string{"id": kb.ID, "sessionId": sessionID})
+	if turnsResponse.Code != http.StatusOK || !strings.Contains(turnsResponse.Body.String(), result.Answer) || !strings.Contains(turnsResponse.Body.String(), "deploy.md") {
+		t.Fatalf("list chat turns status=%d body=%s", turnsResponse.Code, turnsResponse.Body.String())
+	}
+}
+
+func TestNormalizeRAGChatHistoryUsesRecentQuestionAndRuneBudgets(t *testing.T) {
+	history := make([]string, 25)
+	for index := range history {
+		history[index] = fmt.Sprintf("question-%02d", index)
+	}
+	got := normalizeRAGChatHistory(history)
+	if len(got) != ragChatMaxHistoryQuestions || got[0] != "question-05" || got[len(got)-1] != "question-24" {
+		t.Fatalf("normalized count window = %#v", got)
+	}
+
+	longHistory := []string{strings.Repeat("旧", ragChatMaxHistoryRunes), strings.Repeat("新", 100)}
+	got = normalizeRAGChatHistory(longHistory)
+	var runes int
+	for _, question := range got {
+		runes += utf8.RuneCountInString(question)
+	}
+	if runes > ragChatMaxHistoryRunes || got[len(got)-1] != strings.Repeat("新", 100) {
+		t.Fatalf("normalized rune window = %d, history lengths=%v", runes, []int{utf8.RuneCountInString(got[0]), utf8.RuneCountInString(got[len(got)-1])})
 	}
 }
 

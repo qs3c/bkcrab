@@ -302,6 +302,19 @@ func mysqlMigrationSQL() []string {
 			updated_at DATETIME(6) NOT NULL,
 			KEY idx_rag_kbs_user (user_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS rag_chat_turns (
+			id VARCHAR(120) PRIMARY KEY,
+			user_id VARCHAR(120) NOT NULL,
+			kb_id VARCHAR(120) NOT NULL,
+			session_id VARCHAR(120) NOT NULL,
+			title VARCHAR(255) NOT NULL DEFAULT '',
+			question LONGTEXT NOT NULL,
+			answer LONGTEXT NOT NULL,
+			sources LONGTEXT NOT NULL,
+			created_at DATETIME(6) NOT NULL,
+			KEY idx_rag_chat_sessions (user_id, kb_id, created_at),
+			KEY idx_rag_chat_turns_session (user_id, kb_id, session_id, created_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS rag_documents (
 			id VARCHAR(120) PRIMARY KEY,
 			kb_id VARCHAR(120) NOT NULL,

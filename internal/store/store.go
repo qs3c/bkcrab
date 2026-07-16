@@ -224,6 +224,9 @@ type Store interface {
 	ListRAGKBsByUser(ctx context.Context, userID string) ([]RAGKBRecord, error)
 	UpdateRAGKB(ctx context.Context, kb *RAGKBRecord) error
 	DeleteRAGKB(ctx context.Context, id string) error
+	AppendRAGChatTurn(ctx context.Context, turn *RAGChatTurnRecord) error
+	ListRAGChatTurns(ctx context.Context, userID, kbID, sessionID string) ([]RAGChatTurnRecord, error)
+	ListRAGChatSessions(ctx context.Context, userID, kbID string, limit int) ([]RAGChatSessionRecord, error)
 	CreateRAGDocument(ctx context.Context, doc *RAGDocumentRecord) error
 	CreateRAGDocumentWithIndexTask(ctx context.Context, doc *RAGDocumentRecord, maxRetry int) (int64, error)
 	GetRAGDocument(ctx context.Context, id string) (*RAGDocumentRecord, error)

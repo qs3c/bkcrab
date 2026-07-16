@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -57,6 +58,31 @@ type RAGIndexTaskRecord struct {
 	FinishedAt *time.Time
 }
 
+// RAGChatTurnRecord is one persisted question/answer exchange in the simple
+// knowledge-base chat UI. Sources is the JSON snapshot of retrieval hits used
+// for that answer so historical citations remain inspectable even after a
+// document is reindexed.
+type RAGChatTurnRecord struct {
+	ID        string          `json:"id"`
+	UserID    string          `json:"-"`
+	KBID      string          `json:"-"`
+	SessionID string          `json:"sessionId"`
+	Title     string          `json:"title"`
+	Question  string          `json:"question"`
+	Answer    string          `json:"answer"`
+	Sources   json.RawMessage `json:"-"`
+	CreatedAt time.Time       `json:"createdAt"`
+}
+
+// RAGChatSessionRecord is derived from rag_chat_turns for the history picker;
+// it deliberately has no separate table or mutable session state.
+type RAGChatSessionRecord struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	TurnCount int       `json:"turnCount"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
 const ragKBColumns = `id, user_id, name, description, embed_provider, embed_model,
 	embed_dims, chunk_size, chunk_overlap, status, created_at, updated_at`
 
@@ -65,6 +91,9 @@ const ragDocumentColumns = `id, kb_id, file_name, file_type, file_size, object_k
 
 const ragIndexTaskColumns = `id, doc_id, status, retry_count, max_retry, error_msg,
 	created_at, started_at, finished_at`
+
+const ragChatTurnColumns = `id, user_id, kb_id, session_id, title, question,
+	answer, sources, created_at`
 
 type ragScanner interface {
 	Scan(dest ...any) error
@@ -185,6 +214,10 @@ func (d *DBStore) DeleteRAGKB(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`DELETE FROM rag_chat_turns WHERE kb_id = %s`, d.ph(1)), id); err != nil {
+		return err
+	}
 
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(
 		`DELETE FROM rag_index_tasks WHERE doc_id IN (SELECT id FROM rag_documents WHERE kb_id = %s)`,
@@ -204,6 +237,89 @@ func (d *DBStore) DeleteRAGKB(ctx context.Context, id string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (d *DBStore) AppendRAGChatTurn(ctx context.Context, turn *RAGChatTurnRecord) error {
+	if turn.CreatedAt.IsZero() {
+		turn.CreatedAt = time.Now().UTC()
+	}
+	sources := turn.Sources
+	if len(sources) == 0 {
+		sources = json.RawMessage("[]")
+	}
+	_, err := d.db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_chat_turns
+		(id, user_id, kb_id, session_id, title, question, answer, sources, created_at)
+		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)`,
+		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9)),
+		turn.ID, turn.UserID, turn.KBID, turn.SessionID, turn.Title,
+		turn.Question, turn.Answer, string(sources), turn.CreatedAt)
+	return err
+}
+
+func scanRAGChatTurn(scanner ragScanner) (*RAGChatTurnRecord, error) {
+	var turn RAGChatTurnRecord
+	var sources string
+	if err := scanner.Scan(
+		&turn.ID, &turn.UserID, &turn.KBID, &turn.SessionID, &turn.Title,
+		&turn.Question, &turn.Answer, &sources, &turn.CreatedAt,
+	); err != nil {
+		return nil, err
+	}
+	turn.Sources = json.RawMessage(sources)
+	return &turn, nil
+}
+
+func (d *DBStore) ListRAGChatTurns(ctx context.Context, userID, kbID, sessionID string) ([]RAGChatTurnRecord, error) {
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(
+		`SELECT `+ragChatTurnColumns+` FROM rag_chat_turns
+		 WHERE user_id = %s AND kb_id = %s AND session_id = %s
+		 ORDER BY created_at, id`, d.ph(1), d.ph(2), d.ph(3)),
+		userID, kbID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]RAGChatTurnRecord, 0)
+	for rows.Next() {
+		turn, err := scanRAGChatTurn(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *turn)
+	}
+	return out, rows.Err()
+}
+
+func (d *DBStore) ListRAGChatSessions(ctx context.Context, userID, kbID string, limit int) ([]RAGChatSessionRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(
+		`SELECT session_id, MIN(title), COUNT(*), MAX(created_at)
+		 FROM rag_chat_turns WHERE user_id = %s AND kb_id = %s
+		 GROUP BY session_id
+		 ORDER BY MAX(created_at) DESC, session_id DESC LIMIT %s`,
+		d.ph(1), d.ph(2), d.ph(3)), userID, kbID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]RAGChatSessionRecord, 0)
+	for rows.Next() {
+		var session RAGChatSessionRecord
+		var updatedAt string
+		if err := rows.Scan(&session.ID, &session.Title, &session.TurnCount, &updatedAt); err != nil {
+			return nil, err
+		}
+		session.UpdatedAt = parseTimeString(updatedAt)
+		out = append(out, session)
+	}
+	return out, rows.Err()
 }
 
 func (d *DBStore) CreateRAGDocument(ctx context.Context, doc *RAGDocumentRecord) error {

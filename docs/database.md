@@ -35,6 +35,7 @@ in the primary relational database:
 | Table | Purpose |
 |---|---|
 | `rag_kbs` | User-owned knowledge bases and their immutable embedding snapshot |
+| `rag_chat_turns` | Persisted simple knowledge-base question/answer turns and citation snapshots |
 | `rag_documents` | Uploaded source files and the current version of their index |
 | `rag_index_tasks` | Durable asynchronous indexing and restart-recovery state |
 
@@ -73,6 +74,29 @@ Index:
 
 - `idx_rag_kbs_user (user_id)` supports per-user knowledge-base listing and
   quota checks.
+
+### `rag_chat_turns`
+
+Each row is one completed turn in the simple knowledge-base chat. Sessions are
+derived by grouping rows by `(user_id, kb_id, session_id)`, so no separate
+session table is required.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `id` | `TEXT` / `VARCHAR(120)` | Turn ID and primary key |
+| `user_id` | `TEXT` / `VARCHAR(120)` | User who owns this private chat history |
+| `kb_id` | `TEXT` / `VARCHAR(120)` | Knowledge base used for retrieval |
+| `session_id` | `TEXT` / `VARCHAR(120)` | Logical chat thread ID |
+| `title` | `TEXT` / `VARCHAR(255)` | Stable title derived from the first question |
+| `question` | `TEXT` / `LONGTEXT` | User question |
+| `answer` | `TEXT` / `LONGTEXT` | LLM answer |
+| `sources` | `TEXT` / `LONGTEXT` | JSON snapshot of the retrieval hits cited by the answer |
+| `created_at` | timestamp | Turn completion time |
+
+Indexes:
+
+- `idx_rag_chat_sessions (user_id, kb_id, created_at)` supports recent-session listing.
+- `idx_rag_chat_turns_session (user_id, kb_id, session_id, created_at)` supports ordered turn loading.
 
 ### `rag_documents`
 

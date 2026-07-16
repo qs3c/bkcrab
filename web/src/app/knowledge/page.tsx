@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import {
   AlertCircle,
   CheckCircle2,
@@ -9,6 +10,7 @@ import {
   FileText,
   Files,
   Loader2,
+  MessageSquareText,
   Pencil,
   Plus,
   RefreshCw,
@@ -37,7 +39,7 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Card,
   CardAction,
@@ -655,6 +657,15 @@ export default function KnowledgePage() {
                 <CardHeader className="border-b">
                   <CardTitle>检索测试</CardTitle>
                   <CardDescription>直接查询当前知识库，确认切片内容与召回效果。</CardDescription>
+                  <CardAction>
+                    <Link
+                      href={`/knowledge/chat/?id=${encodeURIComponent(selected.id)}`}
+                      className={buttonVariants({ size: "sm" })}
+                    >
+                      <MessageSquareText className="size-3.5" />
+                      开始问答
+                    </Link>
+                  </CardAction>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <form onSubmit={runSearch} className="flex flex-col gap-2 sm:flex-row">

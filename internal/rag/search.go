@@ -22,9 +22,28 @@ type Hit struct {
 	Score        float64 `json:"score"`
 }
 
+// SearchContext keeps the user's current question separate from the earlier
+// questions that may be used by the retrieval pipeline's query-rewrite stage.
+// Callers must not flatten History into Query themselves: doing so makes topic
+// changes noisy and prevents the rewriter from deciding which clues matter.
+type SearchContext struct {
+	Query   string
+	History []string
+}
+
 // Search performs hybrid retrieval across authorized KBs and merges their
 // results by score. Every target is ownership-checked before any query runs.
 func (s *Service) Search(ctx context.Context, ownerID string, kbIDs []string, query string, topN int) ([]Hit, error) {
+	return s.SearchWithContext(ctx, ownerID, kbIDs, SearchContext{Query: query}, topN)
+}
+
+// SearchWithContext is the context-aware retrieval entry point used by
+// knowledge-base chat. History stays structured here so an internal query
+// rewriter can consume it without forcing the chat handler to flatten or
+// pre-rewrite the query. Until that stage is configured, retrieval remains
+// equivalent to Search and uses the current query verbatim.
+func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs []string, input SearchContext, topN int) ([]Hit, error) {
+	query := input.Query
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("query 不能为空")

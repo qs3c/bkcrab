@@ -261,6 +261,9 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("DELETE /api/rag/kbs/{id}/documents/{docId}", auth(s.handleDeleteRAGDocument))
 	mux.HandleFunc("POST /api/rag/kbs/{id}/documents/{docId}/reindex", auth(s.handleReindexRAGDocument))
 	mux.HandleFunc("POST /api/rag/kbs/{id}/search", auth(s.handleRAGSearch))
+	mux.HandleFunc("POST /api/rag/kbs/{id}/chat", auth(s.handleRAGChat))
+	mux.HandleFunc("GET /api/rag/kbs/{id}/chat/sessions", auth(s.handleListRAGChatSessions))
+	mux.HandleFunc("GET /api/rag/kbs/{id}/chat/sessions/{sessionId}", auth(s.handleListRAGChatTurns))
 
 	mux.HandleFunc("GET /api/agents/{id}/files", auth(s.handleAgentFileList))
 	mux.HandleFunc("GET /api/agents/{id}/files.zip", auth(s.handleAgentFilesZip))

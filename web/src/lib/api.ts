@@ -1408,6 +1408,29 @@ export interface KnowledgeSearchHit {
   score: number;
 }
 
+export interface KnowledgeChatResponse {
+  id: string;
+  sessionId: string;
+  answer: string;
+  hits: KnowledgeSearchHit[];
+  createdAt: string;
+}
+
+export interface KnowledgeChatSession {
+  id: string;
+  title: string;
+  turnCount: number;
+  updatedAt: string;
+}
+
+export interface KnowledgeChatTurn {
+  id: string;
+  question: string;
+  answer: string;
+  hits: KnowledgeSearchHit[];
+  createdAt: string;
+}
+
 type KnowledgeBaseWire = Record<string, unknown>;
 
 function wireValue<T>(row: KnowledgeBaseWire, camel: string, pascal: string, fallback: T): T {
@@ -1461,6 +1484,11 @@ async function ragJSON<T>(url: string, init?: RequestInit): Promise<T> {
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
   const rows = await ragJSON<KnowledgeBaseWire[]>("/api/rag/kbs");
   return (Array.isArray(rows) ? rows : []).map(normalizeKnowledgeBase);
+}
+
+export async function getKnowledgeBase(id: string): Promise<KnowledgeBase> {
+  const row = await ragJSON<KnowledgeBaseWire>(`/api/rag/kbs/${encodeURIComponent(id)}`);
+  return normalizeKnowledgeBase(row);
 }
 
 export async function createKnowledgeBase(input: {
@@ -1558,6 +1586,49 @@ export async function searchKnowledgeBase(
     },
   );
   return Array.isArray(data.hits) ? data.hits : [];
+}
+
+export async function askKnowledgeBase(
+  kbId: string,
+  question: string,
+  sessionId?: string,
+  signal?: AbortSignal,
+): Promise<KnowledgeChatResponse> {
+  const data = await ragJSON<Partial<KnowledgeChatResponse>>(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/chat`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, sessionId }),
+      signal,
+    },
+  );
+  return {
+    id: typeof data.id === "string" ? data.id : "",
+    sessionId: typeof data.sessionId === "string" ? data.sessionId : "",
+    answer: typeof data.answer === "string" ? data.answer : "",
+    hits: Array.isArray(data.hits) ? data.hits : [],
+    createdAt: typeof data.createdAt === "string" ? data.createdAt : "",
+  };
+}
+
+export async function listKnowledgeChatSessions(kbId: string): Promise<KnowledgeChatSession[]> {
+  const data = await ragJSON<{ sessions?: KnowledgeChatSession[] }>(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/chat/sessions`,
+  );
+  return Array.isArray(data.sessions) ? data.sessions : [];
+}
+
+export async function listKnowledgeChatTurns(
+  kbId: string,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<KnowledgeChatTurn[]> {
+  const data = await ragJSON<{ turns?: KnowledgeChatTurn[] }>(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/chat/sessions/${encodeURIComponent(sessionId)}`,
+    { signal },
+  );
+  return Array.isArray(data.turns) ? data.turns : [];
 }
 
 export async function deleteAgent(id: string) {
