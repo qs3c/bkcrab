@@ -29,12 +29,18 @@ var (
 // means the system embedding configuration should be used.
 type UserEmbedCfgFn func(ctx context.Context, userID string) (config.RAGEmbeddingCfg, bool)
 
+// QueryLLMFn is the narrow LLM boundary used by retrieval query planning.
+// The gateway resolves the effective user model and provider; the RAG package
+// owns the prompt, output validation, and fallback behavior.
+type QueryLLMFn func(ctx context.Context, userID, systemPrompt, userPrompt string) (string, error)
+
 type Deps struct {
 	Store        store.Store
 	Vector       vector.Store
 	Objects      objects.Store
 	Cfg          config.RAGCfg
 	UserEmbedCfg UserEmbedCfgFn
+	QueryLLM     QueryLLMFn
 	Workers      int
 }
 
@@ -44,6 +50,7 @@ type Service struct {
 	obj         objects.Store
 	cfg         config.RAGCfg
 	userCfg     UserEmbedCfgFn
+	queryLLM    QueryLLMFn
 	tasks       chan int64
 	workerCount int
 	startOnce   sync.Once
@@ -62,6 +69,7 @@ func New(d Deps) *Service {
 		obj:         d.Objects,
 		cfg:         d.Cfg,
 		userCfg:     d.UserEmbedCfg,
+		queryLLM:    d.QueryLLM,
 		tasks:       make(chan int64, 256),
 		workerCount: d.Workers,
 	}

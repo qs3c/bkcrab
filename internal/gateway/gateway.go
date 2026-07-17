@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -28,6 +29,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/cron"
 	"github.com/qs3c/bkcrab/internal/plugin"
+	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/rag"
 	ragobjects "github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
@@ -264,6 +266,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 				Objects:      ragObjects,
 				Cfg:          ragCfg,
 				UserEmbedCfg: userEmbeddingCfgLookup(st),
+				QueryLLM:     userRAGQueryLLM(st, meter),
 			})
 			slog.Info("rag service enabled", "milvus", ragCfg.Milvus.Address)
 		}
@@ -663,6 +666,57 @@ func userEmbeddingCfgLookup(st store.Store) rag.UserEmbedCfgFn {
 			return config.RAGEmbeddingCfg{}, false
 		}
 		return cfg, true
+	}
+}
+
+// userRAGQueryLLM resolves the same effective user default model used by
+// knowledge-base chat, while keeping provider/config concerns out of the RAG
+// package. Query planning is best-effort: errors are returned to the service,
+// which falls back to the original query for both retrieval routes.
+func userRAGQueryLLM(st store.Store, meter usage.Meter) rag.QueryLLMFn {
+	return func(ctx context.Context, userID, systemPrompt, userPrompt string) (string, error) {
+		if st == nil || strings.TrimSpace(userID) == "" {
+			return "", errors.New("query planner user is unavailable")
+		}
+		cfg, err := assembleConfig(ctx, st, userID, "")
+		if err != nil {
+			return "", fmt.Errorf("assemble query planner config: %w", err)
+		}
+		config.LoadEnv().ApplyToConfig(cfg)
+		config.ApplyDefaults(cfg)
+
+		model := strings.TrimSpace(cfg.Agents.Defaults.Model)
+		providerName, modelName := provider.SplitProviderModel(model)
+		if model == "" || providerName == "" || strings.TrimSpace(modelName) == "" {
+			return "", errors.New("default LLM is not configured")
+		}
+		providerCfg, ok := cfg.Providers[providerName]
+		if !ok || strings.TrimSpace(providerCfg.APIBase) == "" || strings.TrimSpace(providerCfg.APIKey) == "" {
+			return "", fmt.Errorf("default LLM provider %q is incomplete", providerName)
+		}
+
+		llm := provider.NewProvider(providerCfg.APIKey, providerCfg.APIBase, providerCfg.APIType)
+		response, err := llm.Chat(ctx, []provider.Message{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userPrompt},
+		}, nil, model, 512, 0.1)
+		if err != nil {
+			return "", err
+		}
+		if response == nil {
+			return "", errors.New("query planner returned no response")
+		}
+		if meter != nil {
+			if err := meter.RecordTokens(ctx, userID, "", "rag:retrieval", providerName, modelName, usage.Tokens{
+				Input:         response.Usage.InputTokens,
+				Output:        response.Usage.OutputTokens,
+				CacheRead:     response.Usage.CacheReadTokens,
+				CacheCreation: response.Usage.CacheCreationTokens,
+			}); err != nil {
+				slog.Warn("record RAG query planner usage", "user", userID, "error", err)
+			}
+		}
+		return strings.TrimSpace(response.Content), nil
 	}
 }
 

@@ -37,14 +37,13 @@ func (s *Service) Search(ctx context.Context, ownerID string, kbIDs []string, qu
 	return s.SearchWithContext(ctx, ownerID, kbIDs, SearchContext{Query: query}, topN)
 }
 
-// SearchWithContext is the context-aware retrieval entry point used by
-// knowledge-base chat. History stays structured here so an internal query
-// rewriter can consume it without forcing the chat handler to flatten or
-// pre-rewrite the query. Until that stage is configured, retrieval remains
-// equivalent to Search and uses the current query verbatim.
+// SearchWithContext is the shared retrieval entry point for knowledge-base
+// search, knowledge-base chat, and rag_search. A single LLM call rewrites the
+// current query and creates a hypothetical document: BM25 receives the rewrite
+// while dense retrieval embeds the HyDE text. If planning fails, both routes
+// use the original query.
 func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs []string, input SearchContext, topN int) ([]Hit, error) {
-	query := input.Query
-	query = strings.TrimSpace(query)
+	query := strings.TrimSpace(input.Query)
 	if query == "" {
 		return nil, fmt.Errorf("query 不能为空")
 	}
@@ -59,8 +58,7 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 		kb    *store.RAGKBRecord
 		query []float32
 	}
-	targets := make([]target, 0, len(kbIDs))
-	vectorCache := make(map[string][]float32)
+	kbs := make([]*store.RAGKBRecord, 0, len(kbIDs))
 	seenKB := make(map[string]struct{}, len(kbIDs))
 	for _, kbID := range kbIDs {
 		if _, exists := seenKB[kbID]; exists {
@@ -74,10 +72,20 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 		if kb.Status != "active" {
 			continue
 		}
+		kbs = append(kbs, kb)
+	}
+	if len(kbs) == 0 {
+		return []Hit{}, nil
+	}
+
+	plan := s.planQuery(ctx, kbs[0].UserID, SearchContext{Query: query, History: input.History})
+	targets := make([]target, 0, len(kbs))
+	vectorCache := make(map[string][]float32)
+	for _, kb := range kbs {
 		cacheKey := fmt.Sprintf("%s/%d", kb.EmbedModel, kb.EmbedDims)
 		queryVector, ok := vectorCache[cacheKey]
 		if !ok {
-			vectors, err := s.embedderForKB(ctx, kb).Embed(ctx, []string{query})
+			vectors, err := s.embedderForKB(ctx, kb).Embed(ctx, []string{plan.HypotheticalDocument})
 			if err != nil {
 				return nil, fmt.Errorf("查询向量化(%s): %w", kb.EmbedModel, err)
 			}
@@ -95,7 +103,7 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 		if err := s.vec.EnsureCollection(ctx, target.kb.ID, target.kb.EmbedDims); err != nil {
 			return nil, fmt.Errorf("准备检索 %s: %w", target.kb.Name, err)
 		}
-		vectorHits, err := s.vec.HybridSearch(ctx, target.kb.ID, target.query, query, topN)
+		vectorHits, err := s.vec.HybridSearch(ctx, target.kb.ID, target.query, plan.RewrittenQuery, topN)
 		if err != nil {
 			return nil, fmt.Errorf("检索 %s: %w", target.kb.Name, err)
 		}
