@@ -37,6 +37,15 @@ type SearchHit struct {
 	Score        float64
 }
 
+// SearchQuery describes the independent routes participating in one hybrid
+// retrieval. Dense contains one vector for each semantic route (normally the
+// rewritten question and the HyDE document); Text drives the BM25 route.
+// Every non-empty route contributes equally to RRF fusion.
+type SearchQuery struct {
+	Dense [][]float32
+	Text  string
+}
+
 // Store is the vector database surface needed by the RAG service.
 type Store interface {
 	EnsureCollection(ctx context.Context, kbID string, dims int) error
@@ -47,9 +56,9 @@ type Store interface {
 	// DeleteDoc removes every indexed version of docID.
 	DeleteDoc(ctx context.Context, kbID, docID string) error
 	DropCollection(ctx context.Context, kbID string) error
-	// HybridSearch combines dense-vector and full-text result lists with RRF.
-	// An empty queryText disables the full-text route.
-	HybridSearch(ctx context.Context, kbID string, queryVec []float32, queryText string, topK int) ([]SearchHit, error)
+	// HybridSearch combines one or more dense-vector routes and an optional
+	// full-text route with RRF. At least one dense route is required.
+	HybridSearch(ctx context.Context, kbID string, query SearchQuery, topK int) ([]SearchHit, error)
 	// GetChunks returns the exact indexed chunks named by refs. Missing refs are
 	// omitted, allowing callers to tolerate a concurrent reindex without ever
 	// reading an older document version.

@@ -12,6 +12,10 @@ func TestRAGCfgDefaults(t *testing.T) {
 		cfg.RAG.Limits.MaxKBsPerUser != 20 {
 		t.Fatalf("RAG default limits = %+v", cfg.RAG.Limits)
 	}
+	if cfg.RAG.Reranker.TimeoutMS != 5000 || cfg.RAG.Reranker.CandidateTopK != 20 ||
+		cfg.RAG.Reranker.MinScore != 0.5 {
+		t.Fatalf("RAG reranker defaults = %+v", cfg.RAG.Reranker)
+	}
 
 	cfg.RAG.Limits.MaxFileMB = 7
 	ApplyDefaults(&cfg)
@@ -22,7 +26,7 @@ func TestRAGCfgDefaults(t *testing.T) {
 
 func TestRAGCfgJSONAndAvailable(t *testing.T) {
 	var cfg Config
-	err := json.Unmarshal([]byte(`{"rag":{"milvus":{"address":"127.0.0.1:19530","username":"u","password":"p"},"embedding":{"endpoint":"http://embed/v1","apiKey":"secret","model":"embed-v3","dims":1024},"limits":{"maxFileMB":12}}}`), &cfg)
+	err := json.Unmarshal([]byte(`{"rag":{"milvus":{"address":"127.0.0.1:19530","username":"u","password":"p"},"embedding":{"endpoint":"http://embed/v1","apiKey":"secret","model":"embed-v3","dims":1024},"reranker":{"enabled":true,"endpoint":"http://rerank/v1","apiKey":"rank-secret","model":"qwen3-reranker","timeoutMs":3000,"candidateTopK":30,"minScore":0.6},"limits":{"maxFileMB":12}}}`), &cfg)
 	if err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -30,7 +34,8 @@ func TestRAGCfgJSONAndAvailable(t *testing.T) {
 		t.Fatalf("complete RAG config reported unavailable: %+v", cfg.RAG)
 	}
 	if cfg.RAG.Milvus.Username != "u" || cfg.RAG.Embedding.APIKey != "secret" ||
-		cfg.RAG.Limits.MaxFileMB != 12 {
+		cfg.RAG.Reranker.APIKey != "rank-secret" || cfg.RAG.Reranker.MinScore != 0.6 ||
+		!cfg.RAG.Reranker.Available() || cfg.RAG.Limits.MaxFileMB != 12 {
 		t.Fatalf("RAG JSON fields not decoded: %+v", cfg.RAG)
 	}
 	var designKey MilvusCfg
@@ -44,6 +49,26 @@ func TestRAGCfgJSONAndAvailable(t *testing.T) {
 	cfg.RAG.Embedding.Dims = 0
 	if cfg.RAG.Available() {
 		t.Fatal("RAG config without embedding dimensions reported available")
+	}
+}
+
+func TestRAGRerankerEnvironmentOverlay(t *testing.T) {
+	t.Setenv("BKCRAB_RAG_RERANKER_ENABLED", "false")
+	t.Setenv("BKCRAB_RAG_RERANKER_ENDPOINT", "http://ranker:8080/v1")
+	t.Setenv("BKCRAB_RAG_RERANKER_API_KEY", "rank-key")
+	t.Setenv("BKCRAB_RAG_RERANKER_MODEL", "qwen3-reranker")
+	t.Setenv("BKCRAB_RAG_RERANKER_TIMEOUT_MS", "7000")
+	t.Setenv("BKCRAB_RAG_RERANKER_CANDIDATE_TOP_K", "25")
+	t.Setenv("BKCRAB_RAG_RERANKER_MIN_SCORE", "0.55")
+
+	env := LoadEnv()
+	dst := RAGCfg{Reranker: RAGRerankerCfg{Enabled: true}}
+	env.ApplySystemRAG(&dst)
+	if dst.Reranker.Enabled || dst.Reranker.Endpoint != "http://ranker:8080/v1" ||
+		dst.Reranker.APIKey != "rank-key" || dst.Reranker.Model != "qwen3-reranker" ||
+		dst.Reranker.TimeoutMS != 7000 || dst.Reranker.CandidateTopK != 25 ||
+		dst.Reranker.MinScore != 0.55 {
+		t.Fatalf("reranker env overlay = %+v", dst.Reranker)
 	}
 }
 

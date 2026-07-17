@@ -258,36 +258,61 @@ func (m *Milvus) DropCollection(ctx context.Context, kbID string) error {
 	return nil
 }
 
-func (m *Milvus) HybridSearch(ctx context.Context, kbID string, queryVec []float32, queryText string, topK int) ([]SearchHit, error) {
+func (m *Milvus) HybridSearch(ctx context.Context, kbID string, query SearchQuery, topK int) ([]SearchHit, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if topK <= 0 {
 		return []SearchHit{}, nil
 	}
-	if len(queryVec) == 0 {
+	if len(query.Dense) == 0 {
 		return nil, fmt.Errorf("collection %s: 查询向量不能为空", kbID)
+	}
+	if len(query.Dense) > 2 {
+		return nil, fmt.Errorf("collection %s: dense 查询路线不能超过 2 条", kbID)
+	}
+	for index, queryVec := range query.Dense {
+		if len(queryVec) == 0 {
+			return nil, fmt.Errorf("collection %s: 查询向量 %d 不能为空", kbID, index)
+		}
 	}
 
 	name := ragCollectionName(kbID)
-	dense := milvusclient.NewAnnRequest(milvusFieldEmbedding, topK, entity.FloatVector(queryVec))
+	dense := milvusclient.NewAnnRequest(milvusFieldEmbedding, topK, entity.FloatVector(query.Dense[0]))
 	var (
 		resultSets []milvusclient.ResultSet
 		err        error
 	)
-	if strings.TrimSpace(queryText) == "" {
+	queryText := strings.TrimSpace(query.Text)
+	if len(query.Dense) == 1 && queryText == "" {
 		resultSets, err = m.client.Search(ctx,
-			milvusclient.NewSearchOption(name, topK, []entity.Vector{entity.FloatVector(queryVec)}).
+			milvusclient.NewSearchOption(name, topK, []entity.Vector{entity.FloatVector(query.Dense[0])}).
 				WithANNSField(milvusFieldEmbedding).
 				WithOutputFields(milvusOutputFields...).
 				WithConsistencyLevel(entity.ClStrong))
-	} else {
+	} else if len(query.Dense) == 1 {
 		text := milvusclient.NewAnnRequest(milvusFieldSparse, topK, entity.Text(queryText))
 		resultSets, err = m.client.HybridSearch(ctx,
 			milvusclient.NewHybridSearchOption(name, topK, dense, text).
 				WithReranker(milvusclient.NewRRFReranker().WithK(60)).
 				WithOutputFields(milvusOutputFields...).
 				WithConsistencyLevel(entity.ClStrong))
+	} else {
+		hyde := milvusclient.NewAnnRequest(milvusFieldEmbedding, topK, entity.FloatVector(query.Dense[1]))
+		if queryText == "" {
+			resultSets, err = m.client.HybridSearch(ctx,
+				milvusclient.NewHybridSearchOption(name, topK, dense, hyde).
+					WithReranker(milvusclient.NewRRFReranker().WithK(60)).
+					WithOutputFields(milvusOutputFields...).
+					WithConsistencyLevel(entity.ClStrong))
+		} else {
+			text := milvusclient.NewAnnRequest(milvusFieldSparse, topK, entity.Text(queryText))
+			resultSets, err = m.client.HybridSearch(ctx,
+				milvusclient.NewHybridSearchOption(name, topK, dense, hyde, text).
+					WithReranker(milvusclient.NewRRFReranker().WithK(60)).
+					WithOutputFields(milvusOutputFields...).
+					WithConsistencyLevel(entity.ClStrong))
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("search milvus collection %s: %w", name, err)

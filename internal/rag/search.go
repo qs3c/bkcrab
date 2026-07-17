@@ -3,23 +3,28 @@ package rag
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"math"
 	"sort"
 	"strings"
 
+	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // Hit is one cross-knowledge-base retrieval result.
 type Hit struct {
-	KBID         string  `json:"kbId"`
-	KBName       string  `json:"kbName"`
-	DocID        string  `json:"docId"`
-	DocName      string  `json:"docName"`
-	ChunkIndex   int     `json:"chunkIndex"`
-	SectionTitle string  `json:"sectionTitle,omitempty"`
-	PageNum      int     `json:"pageNum,omitempty"`
-	Content      string  `json:"content"`
-	Score        float64 `json:"score"`
+	KBID         string   `json:"kbId"`
+	KBName       string   `json:"kbName"`
+	DocID        string   `json:"docId"`
+	DocName      string   `json:"docName"`
+	ChunkIndex   int      `json:"chunkIndex"`
+	SectionTitle string   `json:"sectionTitle,omitempty"`
+	PageNum      int      `json:"pageNum,omitempty"`
+	Content      string   `json:"content"`
+	Score        float64  `json:"score"`
+	RecallScore  float64  `json:"recallScore"`
+	RerankScore  *float64 `json:"rerankScore,omitempty"`
 }
 
 // SearchContext keeps the user's current question separate from the earlier
@@ -39,9 +44,9 @@ func (s *Service) Search(ctx context.Context, ownerID string, kbIDs []string, qu
 
 // SearchWithContext is the shared retrieval entry point for knowledge-base
 // search, knowledge-base chat, and rag_search. A single LLM call rewrites the
-// current query and creates a hypothetical document: BM25 receives the rewrite
-// while dense retrieval embeds the HyDE text. If planning fails, both routes
-// use the original query.
+// current query and creates a hypothetical document. The rewrite drives both
+// BM25 and one dense route; HyDE drives a second dense route. If planning fails
+// or omits HyDE, the identical dense inputs are deduplicated.
 func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs []string, input SearchContext, topN int) ([]Hit, error) {
 	query := strings.TrimSpace(input.Query)
 	if query == "" {
@@ -56,7 +61,7 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 
 	type target struct {
 		kb    *store.RAGKBRecord
-		query []float32
+		dense [][]float32
 	}
 	kbs := make([]*store.RAGKBRecord, 0, len(kbIDs))
 	seenKB := make(map[string]struct{}, len(kbIDs))
@@ -80,30 +85,41 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 
 	plan := s.planQuery(ctx, kbs[0].UserID, SearchContext{Query: query, History: input.History})
 	targets := make([]target, 0, len(kbs))
-	vectorCache := make(map[string][]float32)
+	vectorCache := make(map[string][][]float32)
 	for _, kb := range kbs {
 		cacheKey := fmt.Sprintf("%s/%d", kb.EmbedModel, kb.EmbedDims)
-		queryVector, ok := vectorCache[cacheKey]
+		queryVectors, ok := vectorCache[cacheKey]
 		if !ok {
-			vectors, err := s.embedderForKB(ctx, kb).Embed(ctx, []string{plan.HypotheticalDocument})
+			denseTexts := []string{plan.RewrittenQuery}
+			if plan.HypotheticalDocument != plan.RewrittenQuery {
+				denseTexts = append(denseTexts, plan.HypotheticalDocument)
+			}
+			vectors, err := s.embedderForKB(ctx, kb).Embed(ctx, denseTexts)
 			if err != nil {
 				return nil, fmt.Errorf("查询向量化(%s): %w", kb.EmbedModel, err)
 			}
-			if len(vectors) != 1 {
+			if len(vectors) != len(denseTexts) {
 				return nil, fmt.Errorf("查询向量化(%s): 返回向量数异常", kb.EmbedModel)
 			}
-			queryVector = vectors[0]
-			vectorCache[cacheKey] = queryVector
+			queryVectors = vectors
+			vectorCache[cacheKey] = queryVectors
 		}
-		targets = append(targets, target{kb: kb, query: queryVector})
+		targets = append(targets, target{kb: kb, dense: queryVectors})
 	}
 
-	results := make([]Hit, 0, len(targets)*topN)
+	candidateTopK := s.cfg.Reranker.CandidateTopK
+	if candidateTopK < topN {
+		candidateTopK = topN
+	}
+	results := make([]Hit, 0, len(targets)*candidateTopK)
 	for _, target := range targets {
 		if err := s.vec.EnsureCollection(ctx, target.kb.ID, target.kb.EmbedDims); err != nil {
 			return nil, fmt.Errorf("准备检索 %s: %w", target.kb.Name, err)
 		}
-		vectorHits, err := s.vec.HybridSearch(ctx, target.kb.ID, target.query, plan.RewrittenQuery, topN)
+		vectorHits, err := s.vec.HybridSearch(ctx, target.kb.ID, vector.SearchQuery{
+			Dense: target.dense,
+			Text:  plan.RewrittenQuery,
+		}, candidateTopK)
 		if err != nil {
 			return nil, fmt.Errorf("检索 %s: %w", target.kb.Name, err)
 		}
@@ -133,6 +149,7 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 				PageNum:      hit.PageNum,
 				Content:      hit.Content,
 				Score:        hit.Score,
+				RecallScore:  hit.Score,
 			})
 		}
 	}
@@ -148,10 +165,77 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 		}
 		return results[i].ChunkIndex < results[j].ChunkIndex
 	})
+	if len(results) > candidateTopK {
+		results = results[:candidateTopK]
+	}
+	if s.reranker != nil && len(results) > 0 {
+		reranked, err := s.rerankHits(ctx, plan.RewrittenQuery, results, topN)
+		if err == nil {
+			return reranked, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		slog.Warn("rag: reranker failed; using RRF candidates", "error", err, "candidates", len(results))
+	}
 	if len(results) > topN {
 		results = results[:topN]
 	}
 	return results, nil
+}
+
+// rerankHits replaces the public score with the normalized semantic score and
+// applies the confidence threshold only after a successful reranker call. Any
+// service or response error is returned to SearchWithContext, which falls back
+// to the untouched RRF ordering without applying this threshold.
+func (s *Service) rerankHits(ctx context.Context, query string, candidates []Hit, topN int) ([]Hit, error) {
+	documents := make([]string, len(candidates))
+	for index := range candidates {
+		documents[index] = candidates[index].Content
+	}
+	ranked, err := s.reranker.Rerank(ctx, query, documents, topN)
+	if err != nil {
+		return nil, err
+	}
+	if len(ranked) == 0 {
+		return nil, fmt.Errorf("reranker 返回空结果")
+	}
+
+	seen := make(map[int]struct{}, len(ranked))
+	for _, item := range ranked {
+		if item.Index < 0 || item.Index >= len(candidates) {
+			return nil, fmt.Errorf("reranker 返回非法 index %d", item.Index)
+		}
+		if _, exists := seen[item.Index]; exists {
+			return nil, fmt.Errorf("reranker 返回重复 index %d", item.Index)
+		}
+		if math.IsNaN(item.Score) || math.IsInf(item.Score, 0) || item.Score < 0 || item.Score > 1 {
+			return nil, fmt.Errorf("reranker 返回非法分数 %v", item.Score)
+		}
+		seen[item.Index] = struct{}{}
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].Score != ranked[j].Score {
+			return ranked[i].Score > ranked[j].Score
+		}
+		return ranked[i].Index < ranked[j].Index
+	})
+	if len(ranked) > topN {
+		ranked = ranked[:topN]
+	}
+
+	filtered := make([]Hit, 0, len(ranked))
+	for _, item := range ranked {
+		if item.Score < s.cfg.Reranker.MinScore {
+			continue
+		}
+		hit := candidates[item.Index]
+		score := item.Score
+		hit.Score = score
+		hit.RerankScore = &score
+		filtered = append(filtered, hit)
+	}
+	return filtered, nil
 }
 
 // FormatHits renders search results for the rag_search tool with an explicit

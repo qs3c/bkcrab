@@ -2,6 +2,7 @@ package vector
 
 import (
 	"context"
+	"math"
 	"reflect"
 	"testing"
 )
@@ -26,7 +27,7 @@ func TestFakeUpsertSearchAndVersionDelete(t *testing.T) {
 
 	// Dense similarity and a keyword match should jointly rank the weather
 	// chunk first.
-	hits, err := f.HybridSearch(ctx, "kb1", []float32{0.9, 0.1}, "天气", 2)
+	hits, err := f.HybridSearch(ctx, "kb1", SearchQuery{Dense: [][]float32{{0.9, 0.1}}, Text: "天气"}, 2)
 	if err != nil || len(hits) == 0 {
 		t.Fatalf("search: %v err=%v", hits, err)
 	}
@@ -42,7 +43,7 @@ func TestFakeUpsertSearchAndVersionDelete(t *testing.T) {
 	if err := f.DeleteOldVersions(ctx, "kb1", "d1", 2); err != nil {
 		t.Fatal(err)
 	}
-	hits, err = f.HybridSearch(ctx, "kb1", []float32{0, 1}, "", 10)
+	hits, err = f.HybridSearch(ctx, "kb1", SearchQuery{Dense: [][]float32{{0, 1}}}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +54,7 @@ func TestFakeUpsertSearchAndVersionDelete(t *testing.T) {
 	if err := f.DropCollection(ctx, "kb1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.HybridSearch(ctx, "kb1", []float32{1, 0}, "x", 1); err == nil {
+	if _, err := f.HybridSearch(ctx, "kb1", SearchQuery{Dense: [][]float32{{1, 0}}, Text: "x"}, 1); err == nil {
 		t.Fatal("collection 已删应报错")
 	}
 }
@@ -122,7 +123,35 @@ func TestFakeRejectsWrongVectorDimensionsWithoutPartialWrite(t *testing.T) {
 	if got := f.Count("kb1"); got != 0 {
 		t.Fatalf("失败批次不应部分写入, Count = %d", got)
 	}
-	if _, err := f.HybridSearch(ctx, "kb1", []float32{1}, "", 1); err == nil {
+	if _, err := f.HybridSearch(ctx, "kb1", SearchQuery{Dense: [][]float32{{1}}}, 1); err == nil {
 		t.Fatal("查询向量维度不匹配应报错")
+	}
+}
+
+func TestFakeThreeRouteRRF(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake()
+	if err := f.EnsureCollection(ctx, "kb1", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.UpsertChunks(ctx, "kb1", []ChunkData{
+		{DocID: "dense-a", Index: 0, DocVersion: 1, Content: "beta", Vector: []float32{1, 0}},
+		{DocID: "dense-b", Index: 0, DocVersion: 1, Content: "alpha", Vector: []float32{0, 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := f.HybridSearch(ctx, "kb1", SearchQuery{
+		Dense: [][]float32{{1, 0}, {0, 1}},
+		Text:  "alpha",
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 2 || hits[0].DocID != "dense-b" {
+		t.Fatalf("three-route RRF did not combine both dense routes and BM25: %+v", hits)
+	}
+	want := 1.0/62.0 + 1.0/61.0 + 1.0/61.0
+	if math.Abs(hits[0].Score-want) > 1e-12 {
+		t.Fatalf("three-route score = %.12f, want %.12f", hits[0].Score, want)
 	}
 }

@@ -18,6 +18,8 @@ type EnvConfig struct {
 	Sandbox EnvSandbox
 	Log     EnvLog
 	RAG     RAGCfg
+
+	ragRerankerEnabledSet bool
 }
 
 type EnvGateway struct {
@@ -127,6 +129,30 @@ func LoadEnv() *EnvConfig {
 	if v := positiveEnvInt("BKCRAB_RAG_EMBEDDING_DIMS"); v > 0 {
 		cfg.RAG.Embedding.Dims = v
 	}
+	if v := os.Getenv("BKCRAB_RAG_RERANKER_ENABLED"); v != "" {
+		cfg.RAG.Reranker.Enabled = v == "true" || v == "1"
+		cfg.ragRerankerEnabledSet = true
+	}
+	if v := os.Getenv("BKCRAB_RAG_RERANKER_ENDPOINT"); v != "" {
+		cfg.RAG.Reranker.Endpoint = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_RERANKER_API_KEY"); v != "" {
+		cfg.RAG.Reranker.APIKey = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_RERANKER_MODEL"); v != "" {
+		cfg.RAG.Reranker.Model = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_RERANKER_TIMEOUT_MS"); v > 0 {
+		cfg.RAG.Reranker.TimeoutMS = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_RERANKER_CANDIDATE_TOP_K"); v > 0 {
+		cfg.RAG.Reranker.CandidateTopK = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_RERANKER_MIN_SCORE"); v != "" {
+		if score, err := strconv.ParseFloat(v, 64); err == nil && score > 0 && score <= 1 {
+			cfg.RAG.Reranker.MinScore = score
+		}
+	}
 	if v := positiveEnvInt("BKCRAB_RAG_LIMITS_MAX_FILE_MB"); v > 0 {
 		cfg.RAG.Limits.MaxFileMB = v
 	}
@@ -198,23 +224,24 @@ func applyObjectStoreEnv(cfg *Config) {
 // 空值。这是故意的——环境变量被视为一次性引导覆盖，而非实时配置源。
 // 希望在运行时轮换凭据的操作员应通过管理 UI 编辑数据库存储的配置。
 var bootSecretEnvKeys = []string{
-		"BKCRAB_STORAGE_DSN",
-		"BKCRAB_OBJECT_STORE_TYPE",
-		"BKCRAB_OBJECT_STORE_LOCAL_ROOT",
-		"BKCRAB_OBJECT_STORE_REGION",
-		"BKCRAB_OBJECT_STORE_BUCKET",
-		"BKCRAB_OBJECT_STORE_PREFIX",
-		"BKCRAB_OBJECT_STORE_ACCESSKEY",
-		"BKCRAB_OBJECT_STORE_SECRETKEY",
-		"BKCRAB_OBJECT_STORE_ACCOUNTID",
-		"BKCRAB_OBJECT_STORE_ENDPOINT",
-		"BKCRAB_OBJECT_STORE_USESSL",
-		"BKCRAB_OBJECT_STORE_ALIYUN_INTERNAL",
-		"BOXLITE_API_KEY",
-		"E2B_API_KEY",
-		"BKCRAB_RAG_MILVUS_PASSWORD",
-		"BKCRAB_RAG_EMBEDDING_API_KEY",
-	}
+	"BKCRAB_STORAGE_DSN",
+	"BKCRAB_OBJECT_STORE_TYPE",
+	"BKCRAB_OBJECT_STORE_LOCAL_ROOT",
+	"BKCRAB_OBJECT_STORE_REGION",
+	"BKCRAB_OBJECT_STORE_BUCKET",
+	"BKCRAB_OBJECT_STORE_PREFIX",
+	"BKCRAB_OBJECT_STORE_ACCESSKEY",
+	"BKCRAB_OBJECT_STORE_SECRETKEY",
+	"BKCRAB_OBJECT_STORE_ACCOUNTID",
+	"BKCRAB_OBJECT_STORE_ENDPOINT",
+	"BKCRAB_OBJECT_STORE_USESSL",
+	"BKCRAB_OBJECT_STORE_ALIYUN_INTERNAL",
+	"BOXLITE_API_KEY",
+	"E2B_API_KEY",
+	"BKCRAB_RAG_MILVUS_PASSWORD",
+	"BKCRAB_RAG_EMBEDDING_API_KEY",
+	"BKCRAB_RAG_RERANKER_API_KEY",
+}
 
 func ScrubBootSecrets() {
 	for _, k := range bootSecretEnvKeys {
@@ -251,6 +278,27 @@ func (e *EnvConfig) ApplySystemRAG(dst *RAGCfg) {
 	}
 	if e.RAG.Embedding.Dims > 0 {
 		dst.Embedding.Dims = e.RAG.Embedding.Dims
+	}
+	if e.ragRerankerEnabledSet {
+		dst.Reranker.Enabled = e.RAG.Reranker.Enabled
+	}
+	if e.RAG.Reranker.Endpoint != "" {
+		dst.Reranker.Endpoint = e.RAG.Reranker.Endpoint
+	}
+	if e.RAG.Reranker.APIKey != "" {
+		dst.Reranker.APIKey = e.RAG.Reranker.APIKey
+	}
+	if e.RAG.Reranker.Model != "" {
+		dst.Reranker.Model = e.RAG.Reranker.Model
+	}
+	if e.RAG.Reranker.TimeoutMS > 0 {
+		dst.Reranker.TimeoutMS = e.RAG.Reranker.TimeoutMS
+	}
+	if e.RAG.Reranker.CandidateTopK > 0 {
+		dst.Reranker.CandidateTopK = e.RAG.Reranker.CandidateTopK
+	}
+	if e.RAG.Reranker.MinScore > 0 {
+		dst.Reranker.MinScore = e.RAG.Reranker.MinScore
 	}
 	if e.RAG.Limits.MaxFileMB > 0 {
 		dst.Limits.MaxFileMB = e.RAG.Limits.MaxFileMB

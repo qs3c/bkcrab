@@ -713,6 +713,7 @@ type SkillsCfg struct {
 type RAGCfg struct {
 	Milvus    MilvusCfg       `json:"milvus,omitempty"`
 	Embedding RAGEmbeddingCfg `json:"embedding,omitempty"`
+	Reranker  RAGRerankerCfg  `json:"reranker,omitempty"`
 	Limits    RAGLimitsCfg    `json:"limits,omitempty"`
 }
 
@@ -752,6 +753,24 @@ type RAGEmbeddingCfg struct {
 	Dims     int    `json:"dims,omitempty"`
 }
 
+// RAGRerankerCfg configures the optional second-stage semantic ranker. Endpoint
+// is either a base URL (the client appends /rerank) or a complete /rerank or
+// /reranking URL. The first implementation supports the Jina-compatible shape
+// exposed by llama.cpp's Qwen reranker service.
+type RAGRerankerCfg struct {
+	Enabled       bool    `json:"enabled,omitempty"`
+	Endpoint      string  `json:"endpoint,omitempty"`
+	APIKey        string  `json:"apiKey,omitempty"`
+	Model         string  `json:"model,omitempty"`
+	TimeoutMS     int     `json:"timeoutMs,omitempty"`
+	CandidateTopK int     `json:"candidateTopK,omitempty"`
+	MinScore      float64 `json:"minScore,omitempty"`
+}
+
+func (c RAGRerankerCfg) Available() bool {
+	return c.Enabled && strings.TrimSpace(c.Endpoint) != ""
+}
+
 type RAGLimitsCfg struct {
 	MaxFileMB     int `json:"maxFileMB,omitempty"`
 	MaxDocsPerKB  int `json:"maxDocsPerKB,omitempty"`
@@ -759,6 +778,17 @@ type RAGLimitsCfg struct {
 }
 
 func (c *RAGCfg) ApplyDefaults() {
+	if c.Reranker.TimeoutMS <= 0 {
+		c.Reranker.TimeoutMS = 5000
+	}
+	if c.Reranker.CandidateTopK <= 0 {
+		c.Reranker.CandidateTopK = 20
+	} else if c.Reranker.CandidateTopK > 100 {
+		c.Reranker.CandidateTopK = 100
+	}
+	if c.Reranker.MinScore <= 0 || c.Reranker.MinScore > 1 {
+		c.Reranker.MinScore = 0.5
+	}
 	if c.Limits.MaxFileMB == 0 {
 		c.Limits.MaxFileMB = 50
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag/embed"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
+	"github.com/qs3c/bkcrab/internal/rag/rerank"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/store"
 )
@@ -41,6 +42,7 @@ type Deps struct {
 	Cfg          config.RAGCfg
 	UserEmbedCfg UserEmbedCfgFn
 	QueryLLM     QueryLLMFn
+	Reranker     rerank.Reranker
 	Workers      int
 }
 
@@ -51,6 +53,7 @@ type Service struct {
 	cfg         config.RAGCfg
 	userCfg     UserEmbedCfgFn
 	queryLLM    QueryLLMFn
+	reranker    rerank.Reranker
 	tasks       chan int64
 	workerCount int
 	startOnce   sync.Once
@@ -70,6 +73,7 @@ func New(d Deps) *Service {
 		cfg:         d.Cfg,
 		userCfg:     d.UserEmbedCfg,
 		queryLLM:    d.QueryLLM,
+		reranker:    d.Reranker,
 		tasks:       make(chan int64, 256),
 		workerCount: d.Workers,
 	}

@@ -9,6 +9,8 @@ services:
     command:
       - --model
       - /models/Qwen3-Embedding-0.6B-Q8_0.gguf
+      - --alias
+      - qwen3-embedding
       - --embedding
       - --pooling
       - last
@@ -49,6 +51,8 @@ services:
     command:
       - --model
       - /models/Qwen3-Reranker-0.6B-Q4_K_M.gguf
+      - --alias
+      - qwen3-reranker
       - --reranking
       - --embedding
       - --pooling

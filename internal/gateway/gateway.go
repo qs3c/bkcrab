@@ -32,6 +32,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/rag"
 	ragobjects "github.com/qs3c/bkcrab/internal/rag/objects"
+	ragrerank "github.com/qs3c/bkcrab/internal/rag/rerank"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/sandbox"
 	"github.com/qs3c/bkcrab/internal/scope"
@@ -260,6 +261,20 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		} else if vecStore, vecErr := vector.NewMilvus(context.Background(), ragCfg.Milvus.Address, ragCfg.Milvus.Username, ragCfg.Milvus.Password); vecErr != nil {
 			slog.Error("rag: Milvus connection failed; RAG disabled", "error", vecErr)
 		} else {
+			var ranker ragrerank.Reranker
+			if ragCfg.Reranker.Available() {
+				client, rerankErr := ragrerank.NewHTTP(
+					ragCfg.Reranker.Endpoint,
+					ragCfg.Reranker.APIKey,
+					ragCfg.Reranker.Model,
+					time.Duration(ragCfg.Reranker.TimeoutMS)*time.Millisecond,
+				)
+				if rerankErr != nil {
+					slog.Error("rag: reranker configuration invalid; continuing with RRF", "error", rerankErr)
+				} else {
+					ranker = client
+				}
+			}
 			ragSvc = rag.New(rag.Deps{
 				Store:        st,
 				Vector:       vecStore,
@@ -267,6 +282,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 				Cfg:          ragCfg,
 				UserEmbedCfg: userEmbeddingCfgLookup(st),
 				QueryLLM:     userRAGQueryLLM(st, meter),
+				Reranker:     ranker,
 			})
 			slog.Info("rag service enabled", "milvus", ragCfg.Milvus.Address)
 		}

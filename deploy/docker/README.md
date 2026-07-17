@@ -28,6 +28,28 @@ docker compose \
 - `RAG_EMBEDDING_API_KEY`：仅在 embedding 服务要求鉴权时填写。
 - `MILVUS_USERNAME`、`MILVUS_PASSWORD`：默认内部 standalone 未启用鉴权，可留空；若启用 Milvus 鉴权，两项必须与服务端一致。
 
+Reranker 是可选增强。启用后，混合检索先保留全局候选 20 条，再精排到调用方要求的 TopN（默认 5）；只有精排成功时才应用 `RAG_RERANKER_MIN_SCORE`。服务超时、连接失败或响应非法时会自动退回 RRF 排序，不会用精排阈值过滤 RRF 分数。相关配置：
+
+- `RAG_RERANKER_ENABLED`：是否启用；
+- `RAG_RERANKER_ENDPOINT`：llama.cpp/Jina 兼容基础 URL，例如 `http://qwen3-reranker:8080/v1`；
+- `RAG_RERANKER_API_KEY`、`RAG_RERANKER_MODEL`；
+- `RAG_RERANKER_TIMEOUT_MS`：默认 5000；
+- `RAG_RERANKER_CANDIDATE_TOP_K`：默认 20；
+- `RAG_RERANKER_MIN_SCORE`：默认 0.5，取值范围 `(0,1]`。
+
+仓库还提供 CPU-only 的 Qwen3 embedding/reranker 服务。模型分别放到 `${RAG_MODEL_ROOT}/embedding` 和 `${RAG_MODEL_ROOT}/reranker` 后，将模型文件名与 `docker-compose.models.yml` 中的路径保持一致，并把该文件加入同一次 Compose 启动：
+
+```bash
+docker compose \
+  --env-file deploy/docker/.env \
+  -f deploy/docker/docker-compose.yml \
+  -f deploy/docker/docker-compose.rag.yml \
+  -f deploy/docker/docker-compose.models.yml \
+  up -d --build
+```
+
+此时推荐配置 `RAG_EMBEDDING_ENDPOINT=http://qwen3-embedding:8080/v1`、`RAG_EMBEDDING_MODEL=qwen3-embedding`，以及 `RAG_RERANKER_ENDPOINT=http://qwen3-reranker:8080/v1`、`RAG_RERANKER_MODEL=qwen3-reranker`。
+
 随后同时传入基础文件和 RAG overlay：
 
 ```bash

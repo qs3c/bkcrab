@@ -463,6 +463,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	masked.RAG = cfg.RAG
 	masked.RAG.Milvus.Password = maskConfigSecret(cfg.RAG.Milvus.Password)
 	masked.RAG.Embedding.APIKey = maskConfigSecret(cfg.RAG.Embedding.APIKey)
+	masked.RAG.Reranker.APIKey = maskConfigSecret(cfg.RAG.Reranker.APIKey)
 	if len(cfg.Skills.Entries) > 0 {
 		me := make(map[string]config.SkillEntryCfg, len(cfg.Skills.Entries))
 		for k, v := range cfg.Skills.Entries {
@@ -590,8 +591,9 @@ func (s *Server) scopeForSave(r *http.Request) (string, string) {
 }
 
 // saveRAGConfigPatch persists only fields explicitly supplied by the caller.
-// System scope owns Milvus, embedding, and limits. User scope may override only
-// embedding; it must never copy system credentials into a user-owned row.
+// System scope owns Milvus, embedding, reranker, and limits. User scope may
+// override only embedding; it must never copy system credentials into a
+// user-owned row.
 func (s *Server) saveRAGConfigPatch(r *http.Request, patch json.RawMessage) error {
 	sc, scopeID := s.scopeForSave(r)
 	current, err := s.loadRAGConfigAtScope(r.Context(), sc, scopeID)
@@ -619,6 +621,9 @@ func (s *Server) saveRAGConfigPatch(r *http.Request, patch json.RawMessage) erro
 		}
 		if value, ok := rawNestedString(raw, "embedding", "apiKey"); ok && isMaskedSecret(value) {
 			next.Embedding.APIKey = current.Embedding.APIKey
+		}
+		if value, ok := rawNestedString(raw, "reranker", "apiKey"); ok && isMaskedSecret(value) {
+			next.Reranker.APIKey = current.Reranker.APIKey
 		}
 		return scope.SaveSettingByScope(r.Context(), s.dataStore, sc, scopeID, "rag", ragSystemData(next))
 	}
@@ -685,6 +690,7 @@ func rawNestedString(raw map[string]json.RawMessage, section, key string) (strin
 func ragSystemData(cfg config.RAGCfg) map[string]interface{} {
 	if cfg.Milvus == (config.MilvusCfg{}) &&
 		cfg.Embedding == (config.RAGEmbeddingCfg{}) &&
+		cfg.Reranker == (config.RAGRerankerCfg{}) &&
 		cfg.Limits == (config.RAGLimitsCfg{}) {
 		return nil
 	}

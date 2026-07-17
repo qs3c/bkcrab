@@ -110,13 +110,17 @@ type queryCaptureVector struct {
 	*vector.Fake
 	mu        sync.Mutex
 	queryText []string
+	dense     []int
+	topK      []int
 }
 
-func (v *queryCaptureVector) HybridSearch(ctx context.Context, kbID string, queryVec []float32, queryText string, topK int) ([]vector.SearchHit, error) {
+func (v *queryCaptureVector) HybridSearch(ctx context.Context, kbID string, query vector.SearchQuery, topK int) ([]vector.SearchHit, error) {
 	v.mu.Lock()
-	v.queryText = append(v.queryText, queryText)
+	v.queryText = append(v.queryText, query.Text)
+	v.dense = append(v.dense, len(query.Dense))
+	v.topK = append(v.topK, topK)
 	v.mu.Unlock()
-	return v.Fake.HybridSearch(ctx, kbID, queryVec, queryText, topK)
+	return v.Fake.HybridSearch(ctx, kbID, query, topK)
 }
 
 func (v *queryCaptureVector) texts() []string {
@@ -125,7 +129,13 @@ func (v *queryCaptureVector) texts() []string {
 	return append([]string(nil), v.queryText...)
 }
 
-func TestSearchRoutesRewriteToBM25AndHyDEToDense(t *testing.T) {
+func (v *queryCaptureVector) routes() ([]int, []int) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return append([]int(nil), v.dense...), append([]int(nil), v.topK...)
+}
+
+func TestSearchRoutesRewriteToBM25AndDenseAndHyDEToDense(t *testing.T) {
 	var embedMu sync.Mutex
 	var embedInputs [][]string
 	embedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -184,11 +194,48 @@ func TestSearchRoutesRewriteToBM25AndHyDEToDense(t *testing.T) {
 	embedMu.Lock()
 	gotEmbedInputs := append([][]string(nil), embedInputs...)
 	embedMu.Unlock()
-	if len(gotEmbedInputs) != 1 || len(gotEmbedInputs[0]) != 1 || gotEmbedInputs[0][0] != "Windows 部署 bkcrab 的安装说明" {
-		t.Fatalf("embedding inputs = %#v, want only HyDE", gotEmbedInputs)
+	if len(gotEmbedInputs) != 1 || len(gotEmbedInputs[0]) != 2 ||
+		gotEmbedInputs[0][0] != "Windows 安装 bkcrab" ||
+		gotEmbedInputs[0][1] != "Windows 部署 bkcrab 的安装说明" {
+		t.Fatalf("embedding inputs = %#v, want rewritten query and HyDE in one batch", gotEmbedInputs)
 	}
 	texts := vec.texts()
 	if len(texts) != 2 || texts[0] != "Windows 安装 bkcrab" || texts[1] != "Windows 安装 bkcrab" {
 		t.Fatalf("BM25 query texts = %#v, want rewritten query for both KBs", texts)
+	}
+	denseRoutes, topKs := vec.routes()
+	if len(denseRoutes) != 2 || denseRoutes[0] != 2 || denseRoutes[1] != 2 {
+		t.Fatalf("dense routes = %#v, want rewritten + HyDE for each KB", denseRoutes)
+	}
+	if len(topKs) != 2 || topKs[0] != 20 || topKs[1] != 20 {
+		t.Fatalf("candidate topKs = %#v, want 20", topKs)
+	}
+}
+
+func TestSearchDeduplicatesDenseRouteWhenHyDEFallsBackToRewrite(t *testing.T) {
+	embedServer := newEmbeddingServer(t)
+	vec := &queryCaptureVector{Fake: vector.NewFake()}
+	service := New(Deps{
+		Store:   newRAGTestStore(t),
+		Vector:  vec,
+		Objects: objects.NewLocalFS(t.TempDir()),
+		Cfg: config.RAGCfg{
+			Milvus:    config.MilvusCfg{Address: "fake"},
+			Embedding: config.RAGEmbeddingCfg{Endpoint: embedServer.URL, Model: "test", Dims: 4},
+		},
+		QueryLLM: func(context.Context, string, string, string) (string, error) {
+			return `{"rewritten_query":"安装 bkcrab","hypothetical_document":""}`, nil
+		},
+	})
+	kb, err := service.CreateKB(context.Background(), "u1", "手册", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Search(context.Background(), "u1", []string{kb.ID}, "怎么安装？", 5); err != nil {
+		t.Fatal(err)
+	}
+	denseRoutes, _ := vec.routes()
+	if len(denseRoutes) != 1 || denseRoutes[0] != 1 {
+		t.Fatalf("duplicate dense route was not removed: %#v", denseRoutes)
 	}
 }

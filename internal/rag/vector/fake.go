@@ -162,7 +162,7 @@ func (f *Fake) DropCollection(ctx context.Context, kbID string) error {
 	return nil
 }
 
-func (f *Fake) HybridSearch(ctx context.Context, kbID string, queryVec []float32, queryText string, topK int) ([]SearchHit, error) {
+func (f *Fake) HybridSearch(ctx context.Context, kbID string, query SearchQuery, topK int) ([]SearchHit, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -176,9 +176,16 @@ func (f *Fake) HybridSearch(ctx context.Context, kbID string, queryVec []float32
 		f.mu.RUnlock()
 		return nil, err
 	}
-	if len(queryVec) != c.dims {
+	if len(query.Dense) == 0 {
 		f.mu.RUnlock()
-		return nil, fmt.Errorf("collection %s: 查询向量维度为 %d，期望 %d", kbID, len(queryVec), c.dims)
+		return nil, fmt.Errorf("collection %s: 查询向量不能为空", kbID)
+	}
+	for index, queryVec := range query.Dense {
+		if len(queryVec) == c.dims {
+			continue
+		}
+		f.mu.RUnlock()
+		return nil, fmt.Errorf("collection %s: 查询向量 %d 的维度为 %d，期望 %d", kbID, index, len(queryVec), c.dims)
 	}
 	entries := make([]fakeRankedChunk, 0, len(c.entries))
 	for key, chunk := range c.entries {
@@ -186,9 +193,11 @@ func (f *Fake) HybridSearch(ctx context.Context, kbID string, queryVec []float32
 	}
 	f.mu.RUnlock()
 
-	dense := rankDense(entries, queryVec, topK)
-	routes := [][]fakeRankedChunk{dense}
-	if terms := queryTerms(queryText); len(terms) > 0 {
+	routes := make([][]fakeRankedChunk, 0, len(query.Dense)+1)
+	for _, queryVec := range query.Dense {
+		routes = append(routes, rankDense(entries, queryVec, topK))
+	}
+	if terms := queryTerms(query.Text); len(terms) > 0 {
 		routes = append(routes, rankText(entries, terms, topK))
 	}
 

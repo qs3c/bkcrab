@@ -122,7 +122,10 @@ func TestMilvusRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hits, err := m.HybridSearch(ctx, kbID, []float32{0.9, 0.1, 0, 0}, "天气", 2)
+	hits, err := m.HybridSearch(ctx, kbID, SearchQuery{
+		Dense: [][]float32{{0.9, 0.1, 0, 0}, {0.8, 0.2, 0, 0}},
+		Text:  "天气",
+	}, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +144,7 @@ func TestMilvusRoundTrip(t *testing.T) {
 	if err := m.DeleteOldVersions(ctx, kbID, "d1", 2); err != nil {
 		t.Fatal(err)
 	}
-	hits, err = m.HybridSearch(ctx, kbID, []float32{1, 0, 0, 0}, "", 10)
+	hits, err = m.HybridSearch(ctx, kbID, SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +155,7 @@ func TestMilvusRoundTrip(t *testing.T) {
 	if err := m.DeleteDoc(ctx, kbID, "d1"); err != nil {
 		t.Fatal(err)
 	}
-	hits, err = m.HybridSearch(ctx, kbID, []float32{1, 0, 0, 0}, "", 10)
+	hits, err = m.HybridSearch(ctx, kbID, SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}}, 10)
 	if err != nil || len(hits) != 0 {
 		t.Fatalf("DeleteDoc 后仍有结果: %+v err=%v", hits, err)
 	}
