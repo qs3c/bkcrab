@@ -28,7 +28,7 @@ func TestPlanQueryUsesQuestionHistoryAndSingleLLMCall(t *testing.T) {
 		return `{"rewritten_query":"Windows 系统如何安装 bkcrab？","hypothetical_document":"在 Windows 系统中安装 bkcrab 时，需要准备 Docker 环境。"}`, nil
 	}}
 
-	plan := service.planQuery(context.Background(), "u1", SearchContext{
+	plan := service.planQuery(context.Background(), "retrieval-test", "u1", SearchContext{
 		Query:   "那 Windows 呢？",
 		History: []string{"如何安装 bkcrab？"},
 	})
@@ -98,7 +98,7 @@ func TestPlanQueryFallsBackAndSupportsRewriteOnly(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			service := &Service{queryLLM: tt.llm}
-			got := service.planQuery(context.Background(), "u1", input)
+			got := service.planQuery(context.Background(), "retrieval-test", "u1", input)
 			if got != tt.want {
 				t.Fatalf("plan = %+v, want %+v", got, tt.want)
 			}

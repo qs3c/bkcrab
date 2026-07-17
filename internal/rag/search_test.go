@@ -41,7 +41,7 @@ func TestRerankHitsSortsFiltersAndPreservesRecallScore(t *testing.T) {
 		{DocID: "c", Content: "C", Score: 0.01, RecallScore: 0.01},
 	}
 
-	hits, err := service.rerankHits(context.Background(), "改写后的问题", candidates, 3)
+	hits, err := service.rerankHits(context.Background(), "retrieval-test", "改写后的问题", candidates, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestRerankHitsReturnsEmptyWhenAllScoresAreLow(t *testing.T) {
 			{Index: 1, Score: 0.1},
 		}},
 	}
-	hits, err := service.rerankHits(context.Background(), "q", []Hit{
+	hits, err := service.rerankHits(context.Background(), "retrieval-test", "q", []Hit{
 		{Content: "a"}, {Content: "b"},
 	}, 2)
 	if err != nil {

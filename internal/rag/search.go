@@ -7,7 +7,9 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/store"
 )
@@ -48,6 +50,8 @@ func (s *Service) Search(ctx context.Context, ownerID string, kbIDs []string, qu
 // BM25 and one dense route; HyDE drives a second dense route. If planning fails
 // or omits HyDE, the identical dense inputs are deduplicated.
 func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs []string, input SearchContext, topN int) ([]Hit, error) {
+	retrievalID := uuid.NewString()
+	started := time.Now()
 	query := strings.TrimSpace(input.Query)
 	if query == "" {
 		return nil, fmt.Errorf("query 不能为空")
@@ -83,7 +87,7 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 		return []Hit{}, nil
 	}
 
-	plan := s.planQuery(ctx, kbs[0].UserID, SearchContext{Query: query, History: input.History})
+	plan := s.planQuery(ctx, retrievalID, kbs[0].UserID, SearchContext{Query: query, History: input.History})
 	targets := make([]target, 0, len(kbs))
 	vectorCache := make(map[string][][]float32)
 	for _, kb := range kbs {
@@ -168,19 +172,45 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 	if len(results) > candidateTopK {
 		results = results[:candidateTopK]
 	}
+	candidateCount := len(results)
 	if s.reranker != nil && len(results) > 0 {
-		reranked, err := s.rerankHits(ctx, plan.RewrittenQuery, results, topN)
+		reranked, err := s.rerankHits(ctx, retrievalID, plan.RewrittenQuery, results, topN)
 		if err == nil {
+			slog.Info("rag: retrieval completed",
+				"retrieval_id", retrievalID,
+				"owner", ownerID,
+				"knowledge_bases", len(kbs),
+				"dense_routes", len(targets[0].dense),
+				"candidates", candidateCount,
+				"returned", len(reranked),
+				"reranked", true,
+				"duration_ms", time.Since(started).Milliseconds(),
+			)
 			return reranked, nil
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		slog.Warn("rag: reranker failed; using RRF candidates", "error", err, "candidates", len(results))
+		slog.Warn("rag: reranker failed; using RRF candidates",
+			"retrieval_id", retrievalID,
+			"error", err,
+			"candidates", len(results),
+		)
 	}
 	if len(results) > topN {
 		results = results[:topN]
 	}
+	slog.Info("rag: retrieval completed",
+		"retrieval_id", retrievalID,
+		"owner", ownerID,
+		"knowledge_bases", len(kbs),
+		"dense_routes", len(targets[0].dense),
+		"candidates", candidateCount,
+		"returned", len(results),
+		"reranked", false,
+		"reranker_configured", s.reranker != nil,
+		"duration_ms", time.Since(started).Milliseconds(),
+	)
 	return results, nil
 }
 
@@ -188,7 +218,8 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 // applies the confidence threshold only after a successful reranker call. Any
 // service or response error is returned to SearchWithContext, which falls back
 // to the untouched RRF ordering without applying this threshold.
-func (s *Service) rerankHits(ctx context.Context, query string, candidates []Hit, topN int) ([]Hit, error) {
+func (s *Service) rerankHits(ctx context.Context, retrievalID, query string, candidates []Hit, topN int) ([]Hit, error) {
+	started := time.Now()
 	documents := make([]string, len(candidates))
 	for index := range candidates {
 		documents[index] = candidates[index].Content
@@ -235,6 +266,24 @@ func (s *Service) rerankHits(ctx context.Context, query string, candidates []Hit
 		hit.RerankScore = &score
 		filtered = append(filtered, hit)
 	}
+	topScore := ranked[0].Score
+	lowestReturnedScore := float64(0)
+	if len(filtered) > 0 && filtered[len(filtered)-1].RerankScore != nil {
+		lowestReturnedScore = *filtered[len(filtered)-1].RerankScore
+	}
+	slog.Info("rag: reranker applied",
+		"retrieval_id", retrievalID,
+		"query_hash", retrievalFingerprint(query),
+		"candidates", len(candidates),
+		"requested_top_n", topN,
+		"ranked", len(ranked),
+		"returned", len(filtered),
+		"filtered", len(ranked)-len(filtered),
+		"min_score", s.cfg.Reranker.MinScore,
+		"top_score", topScore,
+		"lowest_returned_score", lowestReturnedScore,
+		"duration_ms", time.Since(started).Milliseconds(),
+	)
 	return filtered, nil
 }
 

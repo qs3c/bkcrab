@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,12 +50,20 @@ type QueryPlan struct {
 // planQuery returns the original query for both routes whenever query
 // enhancement is unavailable or invalid. Retrieval therefore remains usable
 // even when the configured default LLM is missing, slow, or temporarily down.
-func (s *Service) planQuery(ctx context.Context, userID string, input SearchContext) QueryPlan {
+func (s *Service) planQuery(ctx context.Context, retrievalID, userID string, input SearchContext) QueryPlan {
+	started := time.Now()
 	fallback := QueryPlan{
 		RewrittenQuery:       strings.TrimSpace(input.Query),
 		HypotheticalDocument: strings.TrimSpace(input.Query),
 	}
+	history := plannerHistory(input.History)
 	if s.queryLLM == nil {
+		slog.Info("rag: query planner unavailable; using original query",
+			"retrieval_id", retrievalID,
+			"user", userID,
+			"history_questions", len(history),
+			"query_hash", retrievalFingerprint(fallback.RewrittenQuery),
+		)
 		return fallback
 	}
 
@@ -62,10 +71,15 @@ func (s *Service) planQuery(ctx context.Context, userID string, input SearchCont
 		HistoryQuestions []string `json:"history_questions"`
 		CurrentQuery     string   `json:"current_query"`
 	}{
-		HistoryQuestions: plannerHistory(input.History),
+		HistoryQuestions: history,
 		CurrentQuery:     fallback.RewrittenQuery,
 	})
 	if err != nil {
+		slog.Warn("rag: query planner input encoding failed; using original query",
+			"retrieval_id", retrievalID,
+			"user", userID,
+			"error", err,
+		)
 		return fallback
 	}
 
@@ -74,15 +88,49 @@ func (s *Service) planQuery(ctx context.Context, userID string, input SearchCont
 	raw, err := s.queryLLM(plannerCtx, userID, queryPlannerSystemPrompt,
 		"请处理下面的 JSON 数据：\n"+string(payload))
 	if err != nil {
-		slog.Warn("rag: query planner failed; using original query", "user", userID, "error", err)
+		slog.Warn("rag: query planner failed; using original query",
+			"retrieval_id", retrievalID,
+			"user", userID,
+			"history_questions", len(history),
+			"query_hash", retrievalFingerprint(fallback.RewrittenQuery),
+			"duration_ms", time.Since(started).Milliseconds(),
+			"error", err,
+		)
 		return fallback
 	}
 	plan, err := parseQueryPlan(raw)
 	if err != nil {
-		slog.Warn("rag: invalid query planner output; using original query", "user", userID, "error", err)
+		slog.Warn("rag: invalid query planner output; using original query",
+			"retrieval_id", retrievalID,
+			"user", userID,
+			"history_questions", len(history),
+			"query_hash", retrievalFingerprint(fallback.RewrittenQuery),
+			"duration_ms", time.Since(started).Milliseconds(),
+			"error", err,
+		)
 		return fallback
 	}
+	slog.Info("rag: query planner applied",
+		"retrieval_id", retrievalID,
+		"user", userID,
+		"history_questions", len(history),
+		"query_changed", plan.RewrittenQuery != fallback.RewrittenQuery,
+		"hyde_distinct", plan.HypotheticalDocument != plan.RewrittenQuery,
+		"query_hash", retrievalFingerprint(fallback.RewrittenQuery),
+		"rewrite_hash", retrievalFingerprint(plan.RewrittenQuery),
+		"hyde_hash", retrievalFingerprint(plan.HypotheticalDocument),
+		"rewrite_runes", utf8.RuneCountInString(plan.RewrittenQuery),
+		"hyde_runes", utf8.RuneCountInString(plan.HypotheticalDocument),
+		"duration_ms", time.Since(started).Milliseconds(),
+	)
 	return plan
+}
+
+// retrievalFingerprint makes query-planning and reranking logs correlatable
+// without writing user questions, generated HyDE text, or document contents.
+func retrievalFingerprint(value string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(value)))
+	return fmt.Sprintf("%x", sum[:8])
 }
 
 func parseQueryPlan(raw string) (QueryPlan, error) {
