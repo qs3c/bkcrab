@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/qs3c/bkcrab/internal/rag/chunktext"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/store"
 )
@@ -222,7 +223,9 @@ func (s *Service) rerankHits(ctx context.Context, retrievalID, query string, can
 	started := time.Now()
 	documents := make([]string, len(candidates))
 	for index := range candidates {
-		documents[index] = candidates[index].Content
+		documents[index] = chunktext.Search(
+			candidates[index].SectionTitle, candidates[index].Content,
+		)
 	}
 	ranked, err := s.reranker.Rerank(ctx, query, documents, topN)
 	if err != nil {

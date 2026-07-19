@@ -112,6 +112,60 @@ func TestMarkdownSkippedHeadingLevelHasCleanBreadcrumb(t *testing.T) {
 	}
 }
 
+func TestMarkdownIgnoresHeadingsInsideFencedCode(t *testing.T) {
+	t.Parallel()
+	markdown := "# Root\nintro\n```shell\n# shell comment\n## not a section\n````\nafter code\n~~~text\n# tilde content\n~~~\n## Real\nbody"
+	chunks := Markdown(markdown, Config{ChunkSize: 200, ChunkOverlap: 20})
+	if len(chunks) != 2 {
+		t.Fatalf("got %d chunks, want root and real sections: %+v", len(chunks), chunks)
+	}
+	if chunks[0].SectionTitle != "Root" ||
+		!strings.Contains(chunks[0].Content, "# shell comment") ||
+		!strings.Contains(chunks[0].Content, "## not a section") ||
+		!strings.Contains(chunks[0].Content, "# tilde content") {
+		t.Fatalf("fenced code changed document structure: %+v", chunks[0])
+	}
+	if chunks[1].SectionTitle != "Root > Real" || chunks[1].Content != "body" {
+		t.Fatalf("heading after fences was not recognized: %+v", chunks[1])
+	}
+}
+
+func TestMarkdownSearchContentIncludesTitleWithinChunkBudget(t *testing.T) {
+	t.Parallel()
+	markdown := "# Installation\n" + strings.Repeat("body sentence. ", 80)
+	chunks := Markdown(markdown, Config{ChunkSize: 50, ChunkOverlap: 10})
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(chunks))
+	}
+	for _, chunk := range chunks {
+		if !strings.HasPrefix(chunk.SearchContent, "章节：Installation\n\n") {
+			t.Fatalf("search content has no section title: %q", chunk.SearchContent)
+		}
+		if strings.Contains(chunk.Content, "Installation") {
+			t.Fatalf("display content should remain the original body: %q", chunk.Content)
+		}
+		if chunk.Tokens != EstimateTokens(chunk.SearchContent) || chunk.Tokens > 50 {
+			t.Fatalf("search content tokens = %d, content=%q", chunk.Tokens, chunk.SearchContent)
+		}
+	}
+}
+
+func TestMarkdownTinyChunkStillRespectsBudget(t *testing.T) {
+	t.Parallel()
+	chunks := Markdown("# Long heading\nabcdef", Config{ChunkSize: 1, ChunkOverlap: 0})
+	if len(chunks) == 0 {
+		t.Fatal("expected body chunks")
+	}
+	for _, chunk := range chunks {
+		if chunk.Tokens > 1 || EstimateTokens(chunk.SearchContent) > 1 {
+			t.Fatalf("tiny chunk exceeded budget: %+v", chunk)
+		}
+		if chunk.SectionTitle != "Long heading" {
+			t.Fatalf("section metadata was lost: %+v", chunk)
+		}
+	}
+}
+
 func TestPagesPreservesPageNumbersAndContinuousIndexes(t *testing.T) {
 	t.Parallel()
 	chunks := Pages([]string{"first page", "", "third page"}, Config{})

@@ -4,6 +4,8 @@ package split
 import (
 	"strings"
 	"unicode"
+
+	"github.com/qs3c/bkcrab/internal/rag/chunktext"
 )
 
 // Config controls the approximate size of generated chunks.
@@ -23,11 +25,12 @@ func (c *Config) normalize() {
 
 // Chunk is a searchable piece of a document.
 type Chunk struct {
-	Index        int
-	Content      string
-	SectionTitle string
-	PageNum      int
-	Tokens       int
+	Index         int
+	Content       string
+	SearchContent string
+	SectionTitle  string
+	PageNum       int
+	Tokens        int
 }
 
 // EstimateTokens counts each CJK rune as one token and every four other runes
@@ -145,8 +148,9 @@ func SlidingWindow(text string, cfg Config, sectionTitle string, pageNum int) []
 			return
 		}
 		chunks = append(chunks, Chunk{
-			Index: len(chunks), Content: content, SectionTitle: sectionTitle,
-			PageNum: pageNum, Tokens: EstimateTokens(content),
+			Index: len(chunks), Content: content, SearchContent: content,
+			SectionTitle: sectionTitle,
+			PageNum:      pageNum, Tokens: EstimateTokens(content),
 		})
 	}
 	for _, piece := range pieces {
@@ -172,14 +176,104 @@ type section struct {
 	body  strings.Builder
 }
 
+type markdownFence struct {
+	marker byte
+	length int
+}
+
+// fenceOpening recognizes CommonMark-style backtick and tilde fences with up
+// to three leading spaces. The caller tracks the opening marker so headings in
+// fenced code are never interpreted as document structure.
+func fenceOpening(line string) (markdownFence, bool) {
+	leading := len(line) - len(strings.TrimLeft(line, " "))
+	if leading > 3 {
+		return markdownFence{}, false
+	}
+	trimmed := line[leading:]
+	if len(trimmed) < 3 || (trimmed[0] != '`' && trimmed[0] != '~') {
+		return markdownFence{}, false
+	}
+	marker := trimmed[0]
+	length := 0
+	for length < len(trimmed) && trimmed[length] == marker {
+		length++
+	}
+	if length < 3 {
+		return markdownFence{}, false
+	}
+	// A backtick fence's info string cannot itself contain a backtick.
+	if marker == '`' && strings.Contains(trimmed[length:], "`") {
+		return markdownFence{}, false
+	}
+	return markdownFence{marker: marker, length: length}, true
+}
+
+func (f markdownFence) closes(line string) bool {
+	leading := len(line) - len(strings.TrimLeft(line, " "))
+	if leading > 3 {
+		return false
+	}
+	trimmed := line[leading:]
+	length := 0
+	for length < len(trimmed) && trimmed[length] == f.marker {
+		length++
+	}
+	return length >= f.length && strings.TrimSpace(trimmed[length:]) == ""
+}
+
+// sectionTitleForSearch bounds repeated heading context to one quarter of the
+// configured chunk size. When truncation is necessary, retain the breadcrumb's
+// most specific suffix; SectionTitle itself always keeps the complete value.
+func sectionTitleForSearch(title string, chunkSize int) string {
+	if title == "" {
+		return ""
+	}
+	for budget := max(1, chunkSize/4); budget > 0; budget-- {
+		candidate := title
+		if EstimateTokens(candidate) > budget {
+			ellipsis := "…"
+			remaining := budget - EstimateTokens(ellipsis)
+			candidate = ellipsis
+			if remaining > 0 {
+				candidate += suffixForTokens(title, remaining)
+			}
+		}
+		// Always leave room for at least one body token. Extremely small chunk
+		// sizes may therefore omit the repeated title while preserving it in
+		// SectionTitle metadata.
+		if EstimateTokens(chunktext.Search(candidate, "")) < chunkSize {
+			return candidate
+		}
+	}
+	return ""
+}
+
 // Markdown splits ATX-heading sections, then applies a window within each one.
 func Markdown(markdown string, cfg Config) []Chunk {
+	cfg.normalize()
 	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
 	markdown = strings.ReplaceAll(markdown, "\r", "\n")
 	sections := []*section{{}}
 	current := sections[0]
 	var titles [6]string
+	var fence markdownFence
+	inFence := false
 	for _, line := range strings.Split(markdown, "\n") {
+		if inFence {
+			current.body.WriteString(line)
+			current.body.WriteByte('\n')
+			if fence.closes(line) {
+				inFence = false
+			}
+			continue
+		}
+		if opening, ok := fenceOpening(line); ok {
+			fence = opening
+			inFence = true
+			current.body.WriteString(line)
+			current.body.WriteByte('\n')
+			continue
+		}
 		if level, title, ok := atxHeading(line); ok {
 			titles[level-1] = title
 			for i := level; i < len(titles); i++ {
@@ -204,7 +298,18 @@ func Markdown(markdown string, cfg Config) []Chunk {
 		if body == "" {
 			continue
 		}
-		for _, chunk := range SlidingWindow(body, cfg, sec.title, 0) {
+		searchTitle := sectionTitleForSearch(sec.title, cfg.ChunkSize)
+		bodyCfg := cfg
+		if searchTitle != "" {
+			prefixTokens := EstimateTokens(chunktext.Search(searchTitle, ""))
+			bodyCfg.ChunkSize = max(1, cfg.ChunkSize-prefixTokens)
+			if bodyCfg.ChunkOverlap >= bodyCfg.ChunkSize {
+				bodyCfg.ChunkOverlap = min(cfg.ChunkOverlap, bodyCfg.ChunkSize/8)
+			}
+		}
+		for _, chunk := range SlidingWindow(body, bodyCfg, sec.title, 0) {
+			chunk.SearchContent = chunktext.Search(searchTitle, chunk.Content)
+			chunk.Tokens = EstimateTokens(chunk.SearchContent)
 			chunk.Index = len(chunks)
 			chunks = append(chunks, chunk)
 		}

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+
+	"github.com/qs3c/bkcrab/internal/rag/chunktext"
 )
 
 const fakeRRFK = 60
@@ -299,7 +301,9 @@ func rankDense(entries []fakeRankedChunk, query []float32, limit int) []fakeRank
 func rankText(entries []fakeRankedChunk, terms []string, limit int) []fakeRankedChunk {
 	ranked := make([]fakeRankedChunk, 0, len(entries))
 	for _, item := range entries {
-		content := strings.ToLower(item.chunk.Content)
+		content := strings.ToLower(chunktext.ForIndex(
+			item.chunk.SearchContent, item.chunk.SectionTitle, item.chunk.Content,
+		))
 		score := 0
 		for _, term := range terms {
 			score += strings.Count(content, term)

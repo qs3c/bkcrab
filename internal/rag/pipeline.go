@@ -343,7 +343,10 @@ func (s *Service) doIndex(ctx context.Context, docID string, expectedVersion int
 	texts := make([]string, len(chunks))
 	totalTokens := 0
 	for i, chunk := range chunks {
-		texts[i] = chunk.Content
+		texts[i] = chunk.SearchContent
+		if texts[i] == "" {
+			texts[i] = chunk.Content
+		}
 		totalTokens += chunk.Tokens
 	}
 	vectors, err := s.embedderForKB(ctx, kb).Embed(ctx, texts)
@@ -353,13 +356,14 @@ func (s *Service) doIndex(ctx context.Context, docID string, expectedVersion int
 	data := make([]vector.ChunkData, len(chunks))
 	for i, chunk := range chunks {
 		data[i] = vector.ChunkData{
-			DocID:        doc.ID,
-			Index:        chunk.Index,
-			Content:      chunk.Content,
-			SectionTitle: chunk.SectionTitle,
-			PageNum:      chunk.PageNum,
-			DocVersion:   doc.Version,
-			Vector:       vectors[i],
+			DocID:         doc.ID,
+			Index:         chunk.Index,
+			Content:       chunk.Content,
+			SearchContent: texts[i],
+			SectionTitle:  chunk.SectionTitle,
+			PageNum:       chunk.PageNum,
+			DocVersion:    doc.Version,
+			Vector:        vectors[i],
 		}
 	}
 	currentDoc, err := s.st.GetRAGDocument(ctx, doc.ID)

@@ -8,6 +8,7 @@ import (
 	"github.com/milvus-io/milvus/client/v2/column"
 	"github.com/milvus-io/milvus/client/v2/entity"
 	"github.com/milvus-io/milvus/client/v2/milvusclient"
+	"github.com/qs3c/bkcrab/internal/rag/chunktext"
 )
 
 // GetChunks returns exact current-version chunks from the in-memory test
@@ -101,12 +102,13 @@ func (m *Milvus) GetChunks(ctx context.Context, kbID string, refs []ChunkRef) ([
 			return nil, err
 		}
 		chunks = append(chunks, ChunkData{
-			DocID:        docID,
-			Index:        int(chunkIndex),
-			Content:      content,
-			SectionTitle: sectionTitle,
-			PageNum:      int(pageNum),
-			DocVersion:   int(docVersion),
+			DocID:         docID,
+			Index:         int(chunkIndex),
+			Content:       chunktext.Body(content, sectionTitle),
+			SearchContent: content,
+			SectionTitle:  sectionTitle,
+			PageNum:       int(pageNum),
+			DocVersion:    int(docVersion),
 		})
 	}
 	sortChunkData(chunks)

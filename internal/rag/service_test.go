@@ -333,6 +333,16 @@ func TestUploadReindexSearchAndDelete(t *testing.T) {
 	if fake.Count(manual.ID) != indexed.ChunkCount {
 		t.Fatalf("vector count = %d, document chunks = %d", fake.Count(manual.ID), indexed.ChunkCount)
 	}
+	storedChunks, err := fake.GetChunks(ctx, manual.ID, []vector.ChunkRef{{
+		DocID: manualDoc.ID, Index: 0, DocVersion: manualDoc.Version,
+	}})
+	if err != nil || len(storedChunks) != 1 {
+		t.Fatalf("read indexed chunk: chunks=%+v err=%v", storedChunks, err)
+	}
+	if !strings.HasPrefix(storedChunks[0].SearchContent, "章节：安装\n\n") ||
+		strings.HasPrefix(storedChunks[0].Content, "章节：") {
+		t.Fatalf("indexed and display content were not separated: %+v", storedChunks[0])
+	}
 
 	hits, err := service.Search(ctx, "u1", []string{manual.ID, ops.ID}, "安装权限", 5)
 	if err != nil || len(hits) == 0 {

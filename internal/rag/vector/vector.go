@@ -9,13 +9,14 @@ import "context"
 
 // ChunkData is one indexed document chunk.
 type ChunkData struct {
-	DocID        string
-	Index        int
-	Content      string
-	SectionTitle string
-	PageNum      int
-	DocVersion   int
-	Vector       []float32
+	DocID         string
+	Index         int
+	Content       string // original body returned to retrieval callers
+	SearchContent string // heading-prefixed text used by embedding and BM25
+	SectionTitle  string
+	PageNum       int
+	DocVersion    int
+	Vector        []float32
 }
 
 // ChunkRef identifies one exact indexed chunk version. Metadata generation

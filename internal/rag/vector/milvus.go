@@ -9,6 +9,7 @@ import (
 	"github.com/milvus-io/milvus/client/v2/entity"
 	"github.com/milvus-io/milvus/client/v2/index"
 	"github.com/milvus-io/milvus/client/v2/milvusclient"
+	"github.com/qs3c/bkcrab/internal/rag/chunktext"
 )
 
 const (
@@ -192,7 +193,9 @@ func (m *Milvus) upsertBatch(ctx context.Context, kbID string, chunks []ChunkDat
 		sectionTitles = append(sectionTitles, chunk.SectionTitle)
 		pageNums = append(pageNums, int64(chunk.PageNum))
 		docVersions = append(docVersions, int64(chunk.DocVersion))
-		contents = append(contents, chunk.Content)
+		contents = append(contents, chunktext.ForIndex(
+			chunk.SearchContent, chunk.SectionTitle, chunk.Content,
+		))
 		vectors = append(vectors, append([]float32(nil), chunk.Vector...))
 	}
 
@@ -354,6 +357,7 @@ func milvusResultHits(resultSets []milvusclient.ResultSet) ([]SearchHit, error) 
 			if err != nil {
 				return nil, err
 			}
+			content = chunktext.Body(content, sectionTitle)
 			hits = append(hits, SearchHit{
 				DocID:        docID,
 				ChunkIndex:   int(chunkIndex),

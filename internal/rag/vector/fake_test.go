@@ -155,3 +155,37 @@ func TestFakeThreeRouteRRF(t *testing.T) {
 		t.Fatalf("three-route score = %.12f, want %.12f", hits[0].Score, want)
 	}
 }
+
+func TestFakeBM25IndexesSectionTitleButReturnsOriginalBody(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := NewFake()
+	if err := f.EnsureCollection(ctx, "kb1", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.UpsertChunks(ctx, "kb1", []ChunkData{
+		{
+			DocID: "title-hit", Index: 0, DocVersion: 1,
+			Content: "正文没有查询词", SectionTitle: "罕见安装标题", Vector: []float32{0, 1},
+		},
+		{
+			DocID: "dense-hit", Index: 0, DocVersion: 1,
+			Content: "另一段正文", SectionTitle: "其他章节", Vector: []float32{1, 0},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := f.HybridSearch(ctx, "kb1", SearchQuery{
+		Dense: [][]float32{{1, 0}},
+		Text:  "罕见安装标题",
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 2 || hits[0].DocID != "title-hit" {
+		t.Fatalf("section-title BM25 route did not affect ranking: %+v", hits)
+	}
+	if hits[0].Content != "正文没有查询词" {
+		t.Fatalf("retrieval exposed indexed title envelope: %q", hits[0].Content)
+	}
+}
