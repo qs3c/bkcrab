@@ -32,6 +32,8 @@ import (
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/rag"
 	ragobjects "github.com/qs3c/bkcrab/internal/rag/objects"
+	ragparse "github.com/qs3c/bkcrab/internal/rag/parse"
+	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
 	ragrerank "github.com/qs3c/bkcrab/internal/rag/rerank"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/sandbox"
@@ -164,6 +166,7 @@ type Gateway struct {
 	usage       usage.Meter
 	ragSvc      *rag.Service
 	ragCfg      config.RAGCfg
+	ragParser   *sidecar.Client
 	envCfg      *config.EnvConfig
 	// chatEvents 设置后，允许总线触发的 web 轮次（cron/目标延续/心跳/子代理）
 	// 通过用户输入的 POST /api/chat 轮次使用的同一个 SSE hub 流式传输。
@@ -195,6 +198,15 @@ func (g *Gateway) RAG() *rag.Service { return g.ragSvc }
 // RAG service could not be initialized, allowing capability discovery to
 // explain unavailable advanced routes without probing dependencies.
 func (g *Gateway) RAGConfig() config.RAGCfg { return g.ragCfg }
+
+// RAGParserHealthSnapshot returns only the last background-probed snapshot.
+// It never performs network I/O and is safe to call from HTTP handlers.
+func (g *Gateway) RAGParserHealthSnapshot() config.RAGParserHealthSnapshot {
+	if g == nil || g.ragParser == nil {
+		return config.RAGParserHealthSnapshot{}
+	}
+	return g.ragParser.HealthSnapshot()
+}
 
 // Store 返回网关的存储后端。
 func (g *Gateway) Store() store.Store { return g.store }
@@ -264,6 +276,20 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	if err := ragCfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid RAG configuration: %w", err)
 	}
+	ragParserClient, parserErr := newRAGParserClient(ragCfg)
+	if parserErr != nil {
+		// The parser is optional infrastructure. A malformed or unavailable
+		// endpoint disables only sidecar-backed routes; base RAG still starts.
+		slog.Error("rag: parser sidecar configuration invalid; sidecar routes disabled", "error", parserErr)
+		ragParserClient = nil
+	}
+	var primitives ragparse.PrimitiveExtractor
+	if ragParserClient != nil {
+		primitives = ragParserClient
+	}
+	documentParser := ragparse.NewLocalParser(
+		primitives, ragCfg.Limits.MaxPagesPerDocument, ragCfg.Limits.MaxExtractedBytes,
+	)
 	allowLegacyTaskMigration := env.RAGLegacyTaskMigrationMode == config.RAGLegacyTaskMigrationModeOfflineV1
 	if env.RAGLegacyTaskMigrationMode != "" && !allowLegacyTaskMigration {
 		return nil, fmt.Errorf(
@@ -281,8 +307,12 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 			// Milvus so a temporary vector outage cannot turn runnable legacy work
 			// into permanent FAILED rows.
 			snapshotSvc := rag.New(rag.Deps{
-				Store: st, Objects: ragObjects, Cfg: ragCfg,
+				Store:        st,
+				Objects:      ragObjects,
+				Cfg:          ragCfg,
 				UserEmbedCfg: userEmbeddingCfgLookup(st),
+				Parser:       documentParser,
+				Primitives:   primitives,
 			})
 			legacySnapshotBuilder = func(
 				ctx context.Context,
@@ -323,6 +353,8 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					UserEmbedCfg: userEmbeddingCfgLookup(st),
 					QueryLLM:     userRAGQueryLLM(st, meter),
 					Reranker:     ranker,
+					Parser:       documentParser,
+					Primitives:   primitives,
 				})
 				slog.Info("rag service enabled", "milvus", ragCfg.Milvus.Address)
 			}
@@ -422,6 +454,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		pluginMgr:   pluginMgr,
 		ragSvc:      ragSvc,
 		ragCfg:      ragCfg,
+		ragParser:   ragParserClient,
 		envCfg:      env,
 	}
 
@@ -562,6 +595,9 @@ func (g *Gateway) IsCloudMode() bool { return true }
 func (g *Gateway) Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	if g.ragParser != nil {
+		g.ragParser.StartHealthProbe(ctx)
+	}
 	if g.ragSvc != nil {
 		g.ragSvc.Start(ctx)
 	}
@@ -704,6 +740,35 @@ func readSystemRAGCfg(st store.Store, env *config.EnvConfig) config.RAGCfg {
 	}
 	out.ApplyDefaults()
 	return out
+}
+
+func newRAGParserClient(cfg config.RAGCfg) (*sidecar.Client, error) {
+	cfg.ApplyDefaults()
+	if strings.TrimSpace(cfg.ParserSidecar.Endpoint) == "" {
+		return nil, nil
+	}
+	maxInputBytes := int64(cfg.Limits.MaxFileMB) * 1024 * 1024
+	maxEntryBytes := maxInputBytes
+	if cfg.Limits.MaxAssetBytes > maxEntryBytes {
+		maxEntryBytes = cfg.Limits.MaxAssetBytes
+	}
+	return sidecar.NewClient(sidecar.ClientConfig{
+		Endpoint: cfg.ParserSidecar.Endpoint,
+		Timeout:  time.Duration(cfg.ParserSidecar.TimeoutMS) * time.Millisecond,
+		Limits: sidecar.ClientLimits{
+			MaxInputBytes:     maxInputBytes,
+			MaxOutputBytes:    cfg.Limits.MaxExtractedBytes,
+			MaxExtractedBytes: cfg.Limits.MaxExtractedBytes,
+			MaxEntryBytes:     maxEntryBytes,
+			MaxAssetBytes:     cfg.Limits.MaxAssetBytes,
+			MaxRenderBytes:    cfg.Limits.MaxVisionInputBytes,
+			MaxPages:          cfg.Limits.MaxPagesPerDocument,
+			MaxAssets:         cfg.Limits.MaxAssetsPerDocument,
+			MaxImagePixels:    cfg.Limits.MaxImagePixels,
+		},
+		// Task 5B's dependency ADR is the only authority that may turn this on.
+		PDFLicenseApproved: false,
+	})
 }
 
 func userEmbeddingCfgLookup(st store.Store) rag.UserEmbedCfgFn {

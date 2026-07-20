@@ -77,13 +77,21 @@ type Server struct {
 	webChan        *channels.WebChannel
 	// chatEvents 将实时的 agent 聊天事件分发到跨浏览器标签页的已订阅 SSE 客户端。
 	// 首次使用时延迟初始化，以便没有显式连接它的旧调用者仍然可以工作。
-	chatEvents  *agent.EventHub
-	usage       usage.Meter
-	rag         *rag.Service
-	ragCfg      config.RAGCfg
-	ragHealthMu sync.RWMutex
-	ragHealth   config.RAGParserHealthSnapshot
-	startedAt   time.Time
+	chatEvents        *agent.EventHub
+	usage             usage.Meter
+	rag               *rag.Service
+	ragCfg            config.RAGCfg
+	ragHealthMu       sync.RWMutex
+	ragHealth         config.RAGParserHealthSnapshot
+	ragHealthProvider RAGParserHealthProvider
+	startedAt         time.Time
+}
+
+// RAGParserHealthProvider exposes an in-memory snapshot populated by a
+// background probe. Implementations must not perform network I/O in this
+// method because capability handlers call it on the request path.
+type RAGParserHealthProvider interface {
+	RAGParserHealthSnapshot() config.RAGParserHealthSnapshot
 }
 
 // NewServer 在指定端口上创建一个设置向导服务器。
@@ -165,11 +173,23 @@ func (s *Server) SetRAGParserHealthSnapshot(snapshot config.RAGParserHealthSnaps
 	s.ragHealthMu.Unlock()
 }
 
+// SetRAGParserHealthProvider installs the live cached-snapshot source used in
+// production. Tests may continue to use SetRAGParserHealthSnapshot directly.
+func (s *Server) SetRAGParserHealthProvider(provider RAGParserHealthProvider) {
+	s.ragHealthMu.Lock()
+	s.ragHealthProvider = provider
+	s.ragHealthMu.Unlock()
+}
+
 func (s *Server) ragParserHealthSnapshot() config.RAGParserHealthSnapshot {
 	s.ragHealthMu.RLock()
 	snapshot := s.ragHealth
-	snapshot.Office.Formats = append([]string(nil), snapshot.Office.Formats...)
+	provider := s.ragHealthProvider
 	s.ragHealthMu.RUnlock()
+	if provider != nil {
+		snapshot = provider.RAGParserHealthSnapshot()
+	}
+	snapshot.Office.Formats = append([]string(nil), snapshot.Office.Formats...)
 	return snapshot
 }
 

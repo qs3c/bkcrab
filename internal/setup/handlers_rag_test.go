@@ -866,6 +866,74 @@ func TestRAGDocumentUploadRejectsUnsupportedExtension(t *testing.T) {
 	}
 }
 
+func TestRAGDocumentUploadKeepsOfficeClosedUntilConverterGoldensPass(t *testing.T) {
+	server, resolver, _, regular, service := newRAGAPITestServer(t)
+	kb, err := service.CreateKB(context.Background(), regular.ID, "Office gate", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := service.Config()
+	cfg.Features.OfficeParsingEnabled = true
+	cfg.ParserSidecar.Endpoint = "http://rag-parser:8080"
+	server.SetRAGConfig(cfg)
+	server.SetRAGParserHealthSnapshot(config.RAGParserHealthSnapshot{
+		ProtocolVersion: "rag-parser/v1",
+		Healthy:         true,
+		CheckedAt:       time.Now().UTC(),
+		ExpiresAt:       time.Now().Add(time.Minute),
+		MaxInputBytes:   1024,
+		Office: config.RAGParserOfficeSnapshot{
+			Enabled: true, Formats: []string{"docx", "pptx", "xlsx"},
+			// Task 16 has not promoted these release gates.
+			DOCXGolden: false, PPTXGolden: false, XLSXGolden: false,
+		},
+	})
+
+	request := ragMultipartUploadRequest(t, resolver, kb.ID, regular.ID, "draft.docx", []byte("office"))
+	response := callRAGHandler(t, server, server.handleUploadRAGDocument, request, map[string]string{"id": kb.ID})
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "office_golden_checks_failed") {
+		t.Fatalf("Office gate status=%d body=%s", response.Code, response.Body.String())
+	}
+	docs, err := service.ListDocuments(context.Background(), regular.ID, kb.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 0 {
+		t.Fatalf("gated Office upload persisted documents: %+v", docs)
+	}
+}
+
+func TestRAGDocumentUploadUsesCachedSidecarInputLimit(t *testing.T) {
+	server, resolver, _, regular, service := newRAGAPITestServerWithMaxFileMB(t, 1)
+	kb, err := service.CreateKB(context.Background(), regular.ID, "Parser limit", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := service.Config()
+	cfg.ParserSidecar.Endpoint = "http://rag-parser:8080"
+	server.SetRAGConfig(cfg)
+	server.SetRAGParserHealthSnapshot(config.RAGParserHealthSnapshot{
+		ProtocolVersion: "rag-parser/v1",
+		Healthy:         true,
+		CheckedAt:       time.Now().UTC(),
+		ExpiresAt:       time.Now().Add(time.Minute),
+		MaxInputBytes:   4,
+	})
+
+	request := ragMultipartUploadRequest(t, resolver, kb.ID, regular.ID, "five-bytes.pdf", []byte("12345"))
+	response := callRAGHandler(t, server, server.handleUploadRAGDocument, request, map[string]string{"id": kb.ID})
+	if response.Code != http.StatusRequestEntityTooLarge || !strings.Contains(response.Body.String(), "4 bytes") {
+		t.Fatalf("effective sidecar limit status=%d body=%s", response.Code, response.Body.String())
+	}
+	docs, err := service.ListDocuments(context.Background(), regular.ID, kb.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 0 {
+		t.Fatalf("over-limit PDF upload persisted documents: %+v", docs)
+	}
+}
+
 func TestRAGDocumentUploadRejectsOversizeAtBothLimits(t *testing.T) {
 	server, resolver, _, regular, service := newRAGAPITestServerWithMaxFileMB(t, 1)
 	kb, err := service.CreateKB(context.Background(), regular.ID, "Upload limits", "", 0, 0)

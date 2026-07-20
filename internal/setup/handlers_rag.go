@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -266,14 +267,7 @@ func (s *Server) handleRAGCapabilities(w http.ResponseWriter, _ *http.Request) {
 	maxFileBytes := int64(s.ragCfg.Limits.MaxFileMB) * 1024 * 1024
 	byExtension := make(map[string]int64, len(ragSupportedExtensions))
 	for _, extension := range ragSupportedExtensions {
-		byExtension[extension] = maxFileBytes
-	}
-	// PDF/Office are sidecar formats. Expose the smaller cached sidecar limit so
-	// clients never accept a file the configured parser cannot receive.
-	if state.Office.Healthy && snapshot.MaxInputBytes > 0 && snapshot.MaxInputBytes < maxFileBytes {
-		for _, extension := range []string{".pdf", ".docx", ".pptx", ".xlsx"} {
-			byExtension[extension] = snapshot.MaxInputBytes
-		}
+		byExtension[extension] = ragEffectiveFileLimit(s.ragCfg, snapshot, extension)
 	}
 	response := ragCapabilitiesDTO{
 		SupportedExtensions:     append([]string(nil), ragSupportedExtensions...),
@@ -303,6 +297,19 @@ func (s *Server) handleRAGCapabilities(w http.ResponseWriter, _ *http.Request) {
 		},
 	}
 	jsonResponse(w, http.StatusOK, response)
+}
+
+func ragEffectiveFileLimit(cfg config.RAGCfg, snapshot config.RAGParserHealthSnapshot, extension string) int64 {
+	limit := int64(cfg.Limits.MaxFileMB) * 1024 * 1024
+	switch strings.ToLower(extension) {
+	case ".pdf", ".docx", ".pptx", ".xlsx":
+		// Only a fresh, protocol-compatible cached health value may narrow the
+		// main limit. Missing/stale health never triggers request-path probing.
+		if cfg.RuntimeCapabilities(snapshot).Office.Healthy && snapshot.MaxInputBytes > 0 && snapshot.MaxInputBytes < limit {
+			return snapshot.MaxInputBytes
+		}
+	}
+	return limit
 }
 
 func (s *Server) requireRAG(w http.ResponseWriter) bool {
@@ -558,6 +565,25 @@ func (s *Server) handleUploadRAGDocument(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer file.Close()
+	extension := strings.ToLower(filepath.Ext(header.Filename))
+	snapshot := s.ragParserHealthSnapshot()
+	state := s.ragCfg.RuntimeCapabilities(snapshot)
+	switch extension {
+	case ".docx", ".pptx", ".xlsx":
+		if !state.Office.Available {
+			jsonResponse(w, http.StatusServiceUnavailable, map[string]any{
+				"ok": false, "error": "Office 解析当前不可用: " + state.Office.Reason,
+			})
+			return
+		}
+	}
+	configuredLimit := int64(s.ragCfg.Limits.MaxFileMB) * 1024 * 1024
+	if effectiveLimit := ragEffectiveFileLimit(s.ragCfg, snapshot, extension); effectiveLimit < configuredLimit && header.Size > effectiveLimit {
+		jsonResponse(w, http.StatusRequestEntityTooLarge, map[string]any{
+			"ok": false, "error": fmt.Sprintf("上传文件超过当前格式大小限制（%d bytes）", effectiveLimit),
+		})
+		return
+	}
 	doc, err := s.rag.UploadDocument(r.Context(), ragOwnerID(identity), r.PathValue("id"), header.Filename, file, header.Size)
 	if err != nil {
 		writeRAGError(w, err)

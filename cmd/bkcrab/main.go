@@ -171,6 +171,7 @@ func runGateway(port int) error {
 	webSrv.SetUsageMeter(gw.Usage())
 	webSrv.SetRAGConfig(gw.RAGConfig())
 	webSrv.SetRAGService(gw.RAG())
+	webSrv.SetRAGParserHealthProvider(gw)
 	webSrv.SetAuth(authResolver)
 	webSrv.SetWebChannel(gw.WebChannel())
 	// 共享聊天事件集线器，使得总线触发的 web 轮次（cron / 目标
