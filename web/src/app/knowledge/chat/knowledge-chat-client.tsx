@@ -28,6 +28,12 @@ import {
   type KnowledgeSearchHit,
 } from "@/lib/api";
 import { ExternalAnchor } from "@/components/markdown-link";
+import { RAGResourceGallery } from "@/components/rag-resource-gallery";
+import {
+  appendActAs,
+  collectRAGResources,
+  safeRAGMarkdownURL,
+} from "@/components/rag-resource-gallery-state";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -59,9 +65,23 @@ function newTurnID(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function IgnoredMarkdownImage({ alt }: React.ImgHTMLAttributes<HTMLImageElement>) {
+  return (
+    <span className="text-muted-foreground">
+      [已忽略回答中的外部图片{alt ? `：${alt}` : ""}]
+    </span>
+  );
+}
+
+const KNOWLEDGE_MARKDOWN_COMPONENTS = {
+  a: ExternalAnchor,
+  img: IgnoredMarkdownImage,
+};
+
 export default function KnowledgeChatClient() {
   const searchParams = useSearchParams();
   const kbId = searchParams.get("id")?.trim() || "";
+  const actAs = searchParams.get("actAs")?.trim() || "";
   const [knowledgeBase, setKnowledgeBase] = React.useState<KnowledgeBase | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState("");
@@ -111,7 +131,7 @@ export default function KnowledgeChatClient() {
       cancelled = true;
       controller.abort();
     };
-  }, [kbId]);
+  }, [actAs, kbId]);
 
   React.useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -199,7 +219,7 @@ export default function KnowledgeChatClient() {
     <div className="flex min-h-[calc(100svh-2rem)] flex-col p-4 md:p-6">
       <header className="mx-auto flex w-full max-w-5xl items-center gap-3 border-b pb-4">
         <Link
-          href="/knowledge/"
+          href={appendActAs("/knowledge/", actAs)}
           aria-label="返回知识库"
           className={buttonVariants({ variant: "ghost", size: "icon" })}
         >
@@ -310,11 +330,22 @@ export default function KnowledgeChatClient() {
                     ) : (
                       <>
                         <div className="prose prose-sm max-w-none text-[15px] leading-relaxed dark:prose-invert prose-p:my-1 prose-pre:my-2 prose-ul:my-1 prose-ol:my-1">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ExternalAnchor }}>
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={KNOWLEDGE_MARKDOWN_COMPONENTS}
+                            urlTransform={safeRAGMarkdownURL}
+                            skipHtml
+                          >
                             {turn.answer}
                           </ReactMarkdown>
                         </div>
-                        {turn.hits.length > 0 && <KnowledgeSources hits={turn.hits} />}
+                        <RAGResourceGallery
+                          resources={collectRAGResources(turn.hits)}
+                          actAs={actAs}
+                          showDisclosure
+                          className="mt-4"
+                        />
+                        {turn.hits.length > 0 && <KnowledgeSources hits={turn.hits} actAs={actAs} />}
                       </>
                     )}
                   </div>
@@ -355,7 +386,7 @@ export default function KnowledgeChatClient() {
   );
 }
 
-function KnowledgeSources({ hits }: { hits: KnowledgeSearchHit[] }) {
+function KnowledgeSources({ hits, actAs }: { hits: KnowledgeSearchHit[]; actAs?: string }) {
   return (
     <details className="group mt-3 border-t pt-3">
       <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground">
@@ -374,6 +405,13 @@ function KnowledgeSources({ hits }: { hits: KnowledgeSearchHit[] }) {
               <span>· 分片 {hit.chunkIndex + 1}</span>
             </div>
             <p className="whitespace-pre-wrap leading-5 text-muted-foreground">{hit.content}</p>
+            <RAGResourceGallery
+              resources={collectRAGResources([hit])}
+              actAs={actAs}
+              title="引用图片"
+              compact
+              className="mt-2"
+            />
           </div>
         ))}
       </div>

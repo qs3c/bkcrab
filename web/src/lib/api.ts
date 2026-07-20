@@ -1406,6 +1406,23 @@ export interface RAGCapabilities {
   };
 }
 
+export interface RAGSourceLocation {
+  kind: "document" | "page" | "slide" | "sheet" | string;
+  index: number;
+  label: string;
+}
+
+export interface RAGAssetRef {
+  id: string;
+  kind: string;
+  caption?: string;
+  pageNum?: number;
+  location?: RAGSourceLocation;
+  width?: number;
+  height?: number;
+  mimeType?: string;
+}
+
 export interface KnowledgeBase {
   id: string;
   userId: string;
@@ -1445,6 +1462,7 @@ export interface KnowledgeDocument {
     current: number;
     total: number;
     unit: string;
+    message?: string;
   };
   degraded: boolean;
   warningCount: number;
@@ -1460,7 +1478,10 @@ export interface KnowledgeSearchHit {
   chunkIndex: number;
   sectionTitle?: string;
   pageNum?: number;
+  sourceLocation?: RAGSourceLocation;
   content: string;
+  enhancement?: string;
+  assets?: RAGAssetRef[];
   score: number;
 }
 
@@ -1537,6 +1558,7 @@ function normalizeKnowledgeDocument(row: KnowledgeBaseWire): KnowledgeDocument {
       current: wireValue(progress, "current", "Current", 0),
       total: wireValue(progress, "total", "Total", 0),
       unit: wireValue(progress, "unit", "Unit", ""),
+      message: wireValue<string | undefined>(progress, "message", "Message", undefined),
     },
     degraded: wireValue(row, "degraded", "Degraded", false),
     warningCount: wireValue(row, "warningCount", "WarningCount", 0),
@@ -1617,9 +1639,13 @@ export async function deleteKnowledgeBase(id: string): Promise<void> {
   await ragJSON(`/api/rag/kbs/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-export async function listKnowledgeDocuments(kbId: string): Promise<KnowledgeDocument[]> {
+export async function listKnowledgeDocuments(
+  kbId: string,
+  signal?: AbortSignal,
+): Promise<KnowledgeDocument[]> {
   const rows = await ragJSON<KnowledgeBaseWire[]>(
     `/api/rag/kbs/${encodeURIComponent(kbId)}/documents`,
+    { signal },
   );
   return (Array.isArray(rows) ? rows : []).map(normalizeKnowledgeDocument);
 }
