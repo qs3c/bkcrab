@@ -144,6 +144,227 @@ func TestRAGDisabledReturnsServiceUnavailable(t *testing.T) {
 	}
 }
 
+func TestRAGCapabilitiesUseCachedSnapshotAndKeepIndependentGates(t *testing.T) {
+	server, resolver, _, regular, _ := newRAGAPITestServer(t)
+	cfg := config.RAGCfg{
+		Features: config.RAGFeatureCfg{
+			AdvancedParsingEnabled: true,
+			OfficeParsingEnabled:   true,
+			TextEnrichmentEnabled:  true,
+		},
+		DocumentAI: config.RAGDocumentAICfg{
+			APIType:              "openai-compatible",
+			Endpoint:             "http://127.0.0.1:1/v1",
+			APIKey:               "must-not-leak",
+			VisionModel:          "vision-test",
+			TextModel:            "text-test",
+			AllowedEndpointHosts: []string{"127.0.0.1"},
+			AllowPrivateEndpoint: true,
+		},
+		ParserSidecar: config.RAGParserSidecarCfg{Endpoint: "http://127.0.0.1:1"},
+		Limits: config.RAGLimitsCfg{
+			MaxFileMB:                     50,
+			MaxDocumentAIRequests:         300,
+			MaxDocumentAITokens:           200_000,
+			MaxEstimatedDocumentAICostUSD: 1,
+		},
+	}
+	cfg.ApplyDefaults()
+	server.SetRAGConfig(cfg)
+	checkedAt := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+	server.SetRAGParserHealthSnapshot(config.RAGParserHealthSnapshot{
+		ProtocolVersion: "rag-parser/v1",
+		Healthy:         true,
+		CheckedAt:       checkedAt,
+		ExpiresAt:       time.Now().Add(time.Minute),
+		MaxInputBytes:   10 * 1024 * 1024,
+		Office: config.RAGParserOfficeSnapshot{
+			Enabled:    true,
+			Formats:    []string{"docx", "pptx", "xlsx"},
+			DOCXGolden: true,
+			PPTXGolden: true,
+			XLSXGolden: true,
+		},
+		PDF: config.RAGParserPDFSnapshot{Enabled: false, LicenseApproved: false},
+	})
+
+	request := authTestRequest(t, context.Background(), resolver, http.MethodGet, "/api/rag/capabilities", regular.ID)
+	recorder := callRAGHandler(t, server, server.handleRAGCapabilities, request, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("capabilities status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		SupportedExtensions     []string         `json:"supportedExtensions"`
+		MaxFileBytes            int64            `json:"maxFileBytes"`
+		MaxFileBytesByExtension map[string]int64 `json:"maxFileBytesByExtension"`
+		Advanced                struct {
+			Available bool      `json:"available"`
+			CheckedAt time.Time `json:"checkedAt"`
+		} `json:"advanced"`
+		Office struct {
+			Available bool `json:"available"`
+		} `json:"office"`
+		PDFAuto struct {
+			Available bool `json:"available"`
+		} `json:"pdfAuto"`
+		OfficeVision struct {
+			Available bool `json:"available"`
+		} `json:"officeVision"`
+		Enrichment struct {
+			Available bool `json:"available"`
+		} `json:"enrichment"`
+		DocumentAIBudget struct {
+			MaxRequestsPerDocument         int     `json:"maxRequestsPerDocument"`
+			MaxTokensPerDocument           int64   `json:"maxTokensPerDocument"`
+			MaxEstimatedCostUSDPerDocument float64 `json:"maxEstimatedCostUSDPerDocument"`
+		} `json:"documentAIBudget"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	wantExtensions := []string{".md", ".markdown", ".txt", ".pdf", ".docx", ".pptx", ".xlsx"}
+	if fmt.Sprint(response.SupportedExtensions) != fmt.Sprint(wantExtensions) {
+		t.Fatalf("supportedExtensions=%v want=%v", response.SupportedExtensions, wantExtensions)
+	}
+	if response.MaxFileBytes != 50*1024*1024 || response.MaxFileBytesByExtension[".md"] != 50*1024*1024 ||
+		response.MaxFileBytesByExtension[".pdf"] != 10*1024*1024 ||
+		response.MaxFileBytesByExtension[".docx"] != 10*1024*1024 {
+		t.Fatalf("file limits = max:%d byExt:%v", response.MaxFileBytes, response.MaxFileBytesByExtension)
+	}
+	if !response.Advanced.Available || !response.Office.Available || response.PDFAuto.Available ||
+		!response.OfficeVision.Available || !response.Enrichment.Available {
+		t.Fatalf("independent capability gates decoded from body=%s", recorder.Body.String())
+	}
+	if !response.Advanced.CheckedAt.Equal(checkedAt) || response.DocumentAIBudget.MaxRequestsPerDocument != 300 ||
+		response.DocumentAIBudget.MaxTokensPerDocument != 200_000 || response.DocumentAIBudget.MaxEstimatedCostUSDPerDocument != 1 {
+		t.Fatalf("snapshot/budget mismatch: %+v body=%s", response, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "must-not-leak") || strings.Contains(recorder.Body.String(), "127.0.0.1") {
+		t.Fatalf("capability DTO leaked credentials or internal endpoint: %s", recorder.Body.String())
+	}
+}
+
+func TestRAGCapabilitiesRouteRegisteredAndExpiredSnapshotIsUnavailable(t *testing.T) {
+	server := NewServer(0)
+	mux := http.NewServeMux()
+	server.registerRAGRoutes(mux, func(handler http.HandlerFunc) http.HandlerFunc { return handler })
+	request := httptest.NewRequest(http.MethodGet, "/api/rag/capabilities", nil)
+	_, pattern := mux.Handler(request)
+	if pattern != "GET /api/rag/capabilities" {
+		t.Fatalf("capability route pattern=%q", pattern)
+	}
+
+	cfg := config.RAGCfg{
+		Features:      config.RAGFeatureCfg{OfficeParsingEnabled: true},
+		ParserSidecar: config.RAGParserSidecarCfg{Endpoint: "http://rag-parser:8080"},
+	}
+	cfg.ApplyDefaults()
+	server.SetRAGConfig(cfg)
+	server.SetRAGParserHealthSnapshot(config.RAGParserHealthSnapshot{
+		ProtocolVersion: "rag-parser/v1",
+		Healthy:         true,
+		CheckedAt:       time.Now().Add(-2 * time.Minute),
+		ExpiresAt:       time.Now().Add(-time.Minute),
+		Office: config.RAGParserOfficeSnapshot{
+			Enabled: true, Formats: []string{"docx", "pptx", "xlsx"},
+			DOCXGolden: true, PPTXGolden: true, XLSXGolden: true,
+		},
+	})
+	recorder := httptest.NewRecorder()
+	server.handleRAGCapabilities(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "parser_health_stale") {
+		t.Fatalf("expired snapshot status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRAGCapabilitiesSnapshotWithoutTTLIsUnavailable(t *testing.T) {
+	server := NewServer(0)
+	cfg := config.RAGCfg{
+		Features:      config.RAGFeatureCfg{OfficeParsingEnabled: true},
+		ParserSidecar: config.RAGParserSidecarCfg{Endpoint: "http://rag-parser:8080"},
+	}
+	cfg.ApplyDefaults()
+	server.SetRAGConfig(cfg)
+	server.SetRAGParserHealthSnapshot(config.RAGParserHealthSnapshot{
+		ProtocolVersion: "rag-parser/v1",
+		Healthy:         true,
+		CheckedAt:       time.Now().UTC(),
+		MaxInputBytes:   1024,
+		Office: config.RAGParserOfficeSnapshot{
+			Enabled: true, Formats: []string{"docx", "pptx", "xlsx"},
+			DOCXGolden: true, PPTXGolden: true, XLSXGolden: true,
+		},
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/rag/capabilities", nil)
+	server.handleRAGCapabilities(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "parser_health_stale") {
+		t.Fatalf("TTL-less snapshot status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), `".docx":1024`) {
+		t.Fatalf("TTL-less sidecar limit leaked into response: %s", recorder.Body.String())
+	}
+}
+
+func TestRAGCapabilitiesOfficeGateFailureDoesNotDisableBaseRAG(t *testing.T) {
+	server, resolver, _, regular, _ := newRAGAPITestServer(t)
+	cfg := config.RAGCfg{
+		Features:      config.RAGFeatureCfg{OfficeParsingEnabled: true},
+		ParserSidecar: config.RAGParserSidecarCfg{Endpoint: "http://rag-parser:8080"},
+	}
+	cfg.ApplyDefaults()
+	server.SetRAGConfig(cfg)
+	server.SetRAGParserHealthSnapshot(config.RAGParserHealthSnapshot{
+		ProtocolVersion: "rag-parser/v1",
+		Healthy:         true,
+		CheckedAt:       time.Now().UTC(),
+		ExpiresAt:       time.Now().Add(time.Minute),
+		Office: config.RAGParserOfficeSnapshot{
+			Enabled: true,
+			Formats: []string{"docx", "pptx", "xlsx"},
+			// Golden checks intentionally remain false.
+		},
+	})
+
+	request := authTestRequest(t, context.Background(), resolver, http.MethodGet, "/api/rag/capabilities", regular.ID)
+	recorder := callRAGHandler(t, server, server.handleRAGCapabilities, request, nil)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"office"`) ||
+		!strings.Contains(recorder.Body.String(), `"available":false`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	// The ordinary RAG service remains installed and usable despite sidecar
+	// capability failure.
+	if !server.requireRAG(httptest.NewRecorder()) {
+		t.Fatal("Office capability failure disabled base RAG")
+	}
+}
+
+func TestRAGDTOUsesCamelCaseAndOmitsObjectStorageKeys(t *testing.T) {
+	server, resolver, _, regular, service := newRAGAPITestServer(t)
+	kb, err := service.CreateKB(context.Background(), regular.ID, "DTO", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := callRAGHandler(t, server, server.handleUploadRAGDocument,
+		ragMultipartUploadRequest(t, resolver, kb.ID, regular.ID, "dto.md", []byte("# DTO\n\nbody")),
+		map[string]string{"id": kb.ID})
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["id"] == nil || body["fileName"] != "dto.md" {
+		t.Fatalf("camelCase DTO missing expected fields: %v", body)
+	}
+	for _, forbidden := range []string{"ID", "FileName", "ObjectKey", "objectKey", "artifactKey"} {
+		if _, ok := body[forbidden]; ok {
+			t.Fatalf("DTO exposed forbidden/internal field %q: %v", forbidden, body)
+		}
+	}
+}
+
 func TestRAGKBCRUDViaAPI(t *testing.T) {
 	server, resolver, _, regular, _ := newRAGAPITestServer(t)
 	create := callRAGHandler(t, server, server.handleCreateRAGKB,

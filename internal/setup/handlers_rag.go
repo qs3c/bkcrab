@@ -30,6 +30,171 @@ const (
 	ragChatMaxTitleRunes       = 60
 )
 
+var ragSupportedExtensions = []string{".md", ".markdown", ".txt", ".pdf", ".docx", ".pptx", ".xlsx"}
+
+type ragCapabilityDetailDTO struct {
+	Enabled    bool       `json:"enabled"`
+	Configured bool       `json:"configured"`
+	Healthy    bool       `json:"healthy"`
+	Available  bool       `json:"available"`
+	Reason     string     `json:"reason"`
+	CheckedAt  *time.Time `json:"checkedAt,omitempty"`
+}
+
+type ragSimpleCapabilityDTO struct {
+	Available bool   `json:"available"`
+	Reason    string `json:"reason"`
+}
+
+type ragEnrichmentCapabilityDTO struct {
+	Enabled    bool   `json:"enabled"`
+	Configured bool   `json:"configured"`
+	Available  bool   `json:"available"`
+	Reason     string `json:"reason"`
+}
+
+type ragCapabilitiesDTO struct {
+	SupportedExtensions     []string                   `json:"supportedExtensions"`
+	MaxFileBytes            int64                      `json:"maxFileBytes"`
+	MaxFileBytesByExtension map[string]int64           `json:"maxFileBytesByExtension"`
+	ParseModes              []config.ParseMode         `json:"parseModes"`
+	Advanced                ragCapabilityDetailDTO     `json:"advanced"`
+	Office                  ragCapabilityDetailDTO     `json:"office"`
+	PDFAuto                 ragSimpleCapabilityDTO     `json:"pdfAuto"`
+	OfficeVision            ragSimpleCapabilityDTO     `json:"officeVision"`
+	Enrichment              ragEnrichmentCapabilityDTO `json:"enrichment"`
+	DocumentAIBudget        ragDocumentAIBudgetDTO     `json:"documentAIBudget"`
+}
+
+type ragDocumentAIBudgetDTO struct {
+	MaxRequestsPerDocument         int     `json:"maxRequestsPerDocument"`
+	MaxTokensPerDocument           int64   `json:"maxTokensPerDocument"`
+	MaxEstimatedCostUSDPerDocument float64 `json:"maxEstimatedCostUSDPerDocument"`
+}
+
+type ragKBResponseDTO struct {
+	ID            string    `json:"id"`
+	UserID        string    `json:"userId"`
+	Name          string    `json:"name"`
+	Description   string    `json:"description"`
+	EmbedProvider string    `json:"embedProvider"`
+	EmbedModel    string    `json:"embedModel"`
+	EmbedDims     int       `json:"embedDims"`
+	ChunkSize     int       `json:"chunkSize"`
+	ChunkOverlap  int       `json:"chunkOverlap"`
+	Status        string    `json:"status"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+type ragDocumentResponseDTO struct {
+	ID         string     `json:"id"`
+	KBID       string     `json:"kbId"`
+	FileName   string     `json:"fileName"`
+	FileType   string     `json:"fileType"`
+	FileSize   int64      `json:"fileSize"`
+	Status     string     `json:"status"`
+	ErrorMsg   string     `json:"errorMsg"`
+	ChunkCount int        `json:"chunkCount"`
+	TokenCount int        `json:"tokenCount"`
+	Version    int64      `json:"version"`
+	UploadedAt time.Time  `json:"uploadedAt"`
+	IndexedAt  *time.Time `json:"indexedAt,omitempty"`
+}
+
+func ragCheckedAt(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	copy := value
+	return &copy
+}
+
+func ragKBResponse(record *store.RAGKBRecord) ragKBResponseDTO {
+	if record == nil {
+		return ragKBResponseDTO{}
+	}
+	return ragKBResponseDTO{
+		ID: record.ID, UserID: record.UserID, Name: record.Name, Description: record.Description,
+		EmbedProvider: record.EmbedProvider, EmbedModel: record.EmbedModel, EmbedDims: record.EmbedDims,
+		ChunkSize: record.ChunkSize, ChunkOverlap: record.ChunkOverlap, Status: record.Status,
+		CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
+	}
+}
+
+func ragKBResponses(records []store.RAGKBRecord) []ragKBResponseDTO {
+	out := make([]ragKBResponseDTO, 0, len(records))
+	for index := range records {
+		out = append(out, ragKBResponse(&records[index]))
+	}
+	return out
+}
+
+func ragDocumentResponse(record *store.RAGDocumentRecord) ragDocumentResponseDTO {
+	if record == nil {
+		return ragDocumentResponseDTO{}
+	}
+	return ragDocumentResponseDTO{
+		ID: record.ID, KBID: record.KBID, FileName: record.FileName, FileType: record.FileType,
+		FileSize: record.FileSize, Status: record.Status, ErrorMsg: record.ErrorMsg,
+		ChunkCount: record.ChunkCount, TokenCount: record.TokenCount, Version: int64(record.Version),
+		UploadedAt: record.UploadedAt, IndexedAt: record.IndexedAt,
+	}
+}
+
+func ragDocumentResponses(records []store.RAGDocumentRecord) []ragDocumentResponseDTO {
+	out := make([]ragDocumentResponseDTO, 0, len(records))
+	for index := range records {
+		out = append(out, ragDocumentResponse(&records[index]))
+	}
+	return out
+}
+
+func (s *Server) handleRAGCapabilities(w http.ResponseWriter, _ *http.Request) {
+	snapshot := s.ragParserHealthSnapshot()
+	state := s.ragCfg.RuntimeCapabilities(snapshot)
+	maxFileBytes := int64(s.ragCfg.Limits.MaxFileMB) * 1024 * 1024
+	byExtension := make(map[string]int64, len(ragSupportedExtensions))
+	for _, extension := range ragSupportedExtensions {
+		byExtension[extension] = maxFileBytes
+	}
+	// PDF/Office are sidecar formats. Expose the smaller cached sidecar limit so
+	// clients never accept a file the configured parser cannot receive.
+	if state.Office.Healthy && snapshot.MaxInputBytes > 0 && snapshot.MaxInputBytes < maxFileBytes {
+		for _, extension := range []string{".pdf", ".docx", ".pptx", ".xlsx"} {
+			byExtension[extension] = snapshot.MaxInputBytes
+		}
+	}
+	response := ragCapabilitiesDTO{
+		SupportedExtensions:     append([]string(nil), ragSupportedExtensions...),
+		MaxFileBytes:            maxFileBytes,
+		MaxFileBytesByExtension: byExtension,
+		ParseModes:              []config.ParseMode{config.ParseModeStandard, config.ParseModeAuto},
+		Advanced: ragCapabilityDetailDTO{
+			Enabled: state.Advanced.Enabled, Configured: state.Advanced.Configured,
+			Healthy: state.Advanced.Healthy, Available: state.Advanced.Available,
+			Reason: state.Advanced.Reason, CheckedAt: ragCheckedAt(state.Advanced.CheckedAt),
+		},
+		Office: ragCapabilityDetailDTO{
+			Enabled: state.Office.Enabled, Configured: state.Office.Configured,
+			Healthy: state.Office.Healthy, Available: state.Office.Available,
+			Reason: state.Office.Reason, CheckedAt: ragCheckedAt(state.Office.CheckedAt),
+		},
+		PDFAuto:      ragSimpleCapabilityDTO{Available: state.PDFAuto.Available, Reason: state.PDFAuto.Reason},
+		OfficeVision: ragSimpleCapabilityDTO{Available: state.OfficeVision.Available, Reason: state.OfficeVision.Reason},
+		Enrichment: ragEnrichmentCapabilityDTO{
+			Enabled: state.Enrichment.Enabled, Configured: state.Enrichment.Configured,
+			Available: state.Enrichment.Available, Reason: state.Enrichment.Reason,
+		},
+		DocumentAIBudget: ragDocumentAIBudgetDTO{
+			MaxRequestsPerDocument:         s.ragCfg.Limits.MaxDocumentAIRequests,
+			MaxTokensPerDocument:           s.ragCfg.Limits.MaxDocumentAITokens,
+			MaxEstimatedCostUSDPerDocument: s.ragCfg.Limits.MaxEstimatedDocumentAICostUSD,
+		},
+	}
+	jsonResponse(w, http.StatusOK, response)
+}
+
 func (s *Server) requireRAG(w http.ResponseWriter) bool {
 	if s.rag != nil {
 		return true
@@ -92,7 +257,7 @@ func (s *Server) handleListRAGKBs(w http.ResponseWriter, r *http.Request) {
 	if kbs == nil {
 		kbs = []store.RAGKBRecord{}
 	}
-	jsonResponse(w, http.StatusOK, kbs)
+	jsonResponse(w, http.StatusOK, ragKBResponses(kbs))
 }
 
 func (s *Server) handleCreateRAGKB(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +284,7 @@ func (s *Server) handleCreateRAGKB(w http.ResponseWriter, r *http.Request) {
 		writeRAGError(w, err)
 		return
 	}
-	jsonResponse(w, http.StatusCreated, kb)
+	jsonResponse(w, http.StatusCreated, ragKBResponse(kb))
 }
 
 func (s *Server) handleGetRAGKB(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +301,7 @@ func (s *Server) handleGetRAGKB(w http.ResponseWriter, r *http.Request) {
 		writeRAGError(w, err)
 		return
 	}
-	jsonResponse(w, http.StatusOK, kb)
+	jsonResponse(w, http.StatusOK, ragKBResponse(kb))
 }
 
 func (s *Server) handleUpdateRAGKB(w http.ResponseWriter, r *http.Request) {
@@ -183,7 +348,7 @@ func (s *Server) handleUpdateRAGKB(w http.ResponseWriter, r *http.Request) {
 		writeRAGError(w, err)
 		return
 	}
-	jsonResponse(w, http.StatusOK, kb)
+	jsonResponse(w, http.StatusOK, ragKBResponse(kb))
 }
 
 func (s *Server) handleDeleteRAGKB(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +401,7 @@ func (s *Server) handleUploadRAGDocument(w http.ResponseWriter, r *http.Request)
 		writeRAGError(w, err)
 		return
 	}
-	jsonResponse(w, http.StatusAccepted, doc)
+	jsonResponse(w, http.StatusAccepted, ragDocumentResponse(doc))
 }
 
 func (s *Server) handleListRAGDocuments(w http.ResponseWriter, r *http.Request) {
@@ -256,7 +421,7 @@ func (s *Server) handleListRAGDocuments(w http.ResponseWriter, r *http.Request) 
 	if docs == nil {
 		docs = []store.RAGDocumentRecord{}
 	}
-	jsonResponse(w, http.StatusOK, docs)
+	jsonResponse(w, http.StatusOK, ragDocumentResponses(docs))
 }
 
 func (s *Server) handleDeleteRAGDocument(w http.ResponseWriter, r *http.Request) {

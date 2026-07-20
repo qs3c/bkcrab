@@ -1364,8 +1364,48 @@ export async function getAgentConfig(id: string): Promise<AgentFileConfig> {
   return data;
 }
 
-// RAG 知识库 API。Go 的存储记录目前直接序列化为 PascalCase；这里统一
-// 转成前端惯用的 camelCase，后端以后补 JSON tag 时页面也无需改动。
+// RAG 知识库 API。后端以显式 camelCase DTO 返回；PascalCase fallback
+// 暂时保留，支持滚动升级期间仍在运行的旧实例。
+export type RAGParseMode = "standard" | "auto";
+
+export interface RAGCapabilityDetail {
+  enabled: boolean;
+  configured: boolean;
+  healthy: boolean;
+  available: boolean;
+  reason: string;
+  checkedAt?: string;
+}
+
+export interface RAGSimpleCapability {
+  available: boolean;
+  reason: string;
+}
+
+export interface RAGEnrichmentCapability {
+  enabled: boolean;
+  configured: boolean;
+  available: boolean;
+  reason: string;
+}
+
+export interface RAGCapabilities {
+  supportedExtensions: string[];
+  maxFileBytes: number;
+  maxFileBytesByExtension: Record<string, number>;
+  parseModes: RAGParseMode[];
+  advanced: RAGCapabilityDetail;
+  office: RAGCapabilityDetail;
+  pdfAuto: RAGSimpleCapability;
+  officeVision: RAGSimpleCapability;
+  enrichment: RAGEnrichmentCapability;
+  documentAIBudget: {
+    maxRequestsPerDocument: number;
+    maxTokensPerDocument: number;
+    maxEstimatedCostUSDPerDocument: number;
+  };
+}
+
 export interface KnowledgeBase {
   id: string;
   userId: string;
@@ -1479,6 +1519,10 @@ async function ragJSON<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(data?.error || data?.message || `知识库请求失败 (${res.status})`);
   }
   return data as T;
+}
+
+export async function getRAGCapabilities(): Promise<RAGCapabilities> {
+  return ragJSON<RAGCapabilities>("/api/rag/capabilities");
 }
 
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {

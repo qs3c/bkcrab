@@ -163,6 +163,7 @@ type Gateway struct {
 	sandboxPool sandbox.ExecutorPool
 	usage       usage.Meter
 	ragSvc      *rag.Service
+	ragCfg      config.RAGCfg
 	envCfg      *config.EnvConfig
 	// chatEvents 设置后，允许总线触发的 web 轮次（cron/目标延续/心跳/子代理）
 	// 通过用户输入的 POST /api/chat 轮次使用的同一个 SSE hub 流式传输。
@@ -189,6 +190,11 @@ func (g *Gateway) Usage() usage.Meter { return g.usage }
 // RAG returns the optional process-wide knowledge-base service. It is nil when
 // Milvus or embedding configuration is incomplete or startup failed.
 func (g *Gateway) RAG() *rag.Service { return g.ragSvc }
+
+// RAGConfig returns the validated system snapshot even when the optional base
+// RAG service could not be initialized, allowing capability discovery to
+// explain unavailable advanced routes without probing dependencies.
+func (g *Gateway) RAGConfig() config.RAGCfg { return g.ragCfg }
 
 // Store 返回网关的存储后端。
 func (g *Gateway) Store() store.Store { return g.store }
@@ -254,6 +260,9 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 
 	var ragSvc *rag.Service
 	ragCfg := readSystemRAGCfg(st, env)
+	if err := ragCfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid RAG configuration: %w", err)
+	}
 	if ragCfg.Available() {
 		ragObjects, objectErr := newRAGObjectStore(osCfg, homeDir)
 		if objectErr != nil {
@@ -371,6 +380,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		webhookSrv:  webhookSrv,
 		pluginMgr:   pluginMgr,
 		ragSvc:      ragSvc,
+		ragCfg:      ragCfg,
 		envCfg:      env,
 	}
 

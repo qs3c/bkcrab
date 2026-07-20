@@ -1,7 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -21,6 +25,131 @@ func TestRAGCfgDefaults(t *testing.T) {
 	ApplyDefaults(&cfg)
 	if cfg.RAG.Limits.MaxFileMB != 7 {
 		t.Fatalf("explicit maxFileMB overwritten: %d", cfg.RAG.Limits.MaxFileMB)
+	}
+}
+
+func TestRAGAdvancedDefaultsAndSearchContentValidation(t *testing.T) {
+	var cfg RAGCfg
+	cfg.ApplyDefaults()
+
+	if cfg.Features.AdvancedParsingEnabled || cfg.Features.OfficeParsingEnabled || cfg.Features.TextEnrichmentEnabled {
+		t.Fatalf("RAG feature flags must default off: %+v", cfg.Features)
+	}
+	if cfg.DocumentAI.APIType != "openai-compatible" || cfg.DocumentAI.TimeoutMS <= 0 ||
+		cfg.DocumentAI.VisionConcurrency <= 0 || cfg.DocumentAI.EnrichmentConcurrency <= 0 {
+		t.Fatalf("DocumentAI defaults = %+v", cfg.DocumentAI)
+	}
+	if cfg.ParserSidecar.TimeoutMS != 600_000 {
+		t.Fatalf("parser sidecar timeout = %d, want 600000", cfg.ParserSidecar.TimeoutMS)
+	}
+	if cfg.Limits.MaxPagesPerDocument != 300 || cfg.Limits.MaxVisionPagesPerDocument != 100 ||
+		cfg.Limits.MaxVisionAssetsPerDocument != 100 || cfg.Limits.MaxAssetsPerDocument != 500 ||
+		cfg.Limits.MaxImagePixels != 40_000_000 || cfg.Limits.PDFRenderDPI != 180 ||
+		cfg.Limits.ThumbnailMaxEdge != 480 || cfg.Limits.DisplayMaxEdge != 2400 {
+		t.Fatalf("document parsing defaults = %+v", cfg.Limits)
+	}
+	if cfg.Limits.MaxDocumentAIRequests != 300 || cfg.Limits.MaxDocumentAITokens != 200_000 ||
+		cfg.Limits.MaxEstimatedDocumentAICostUSD != 1 || cfg.Limits.MaxSearchContentBytes != 60*1024 {
+		t.Fatalf("DocumentAI/search defaults = %+v", cfg.Limits)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default config rejected: %v", err)
+	}
+	if !cfg.Limits.SearchContentWithinLimit(strings.Repeat("界", 20*1024)) {
+		t.Fatal("exactly 60 KiB of UTF-8 content should fit")
+	}
+	if cfg.Limits.SearchContentWithinLimit(strings.Repeat("界", 20*1024+1)) {
+		t.Fatal("UTF-8 byte limit was treated as a rune limit")
+	}
+	cfg.Limits.MaxSearchContentBytes = RAGMilvusContentMaxLength + 1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("maxSearchContentBytes above Milvus VarChar maxLength should fail validation")
+	}
+}
+
+func TestRAGParseModeValidation(t *testing.T) {
+	for _, value := range []string{`"standard"`, `"auto"`} {
+		var mode ParseMode
+		if err := json.Unmarshal([]byte(value), &mode); err != nil {
+			t.Fatalf("unmarshal %s: %v", value, err)
+		}
+		if !mode.Valid() {
+			t.Fatalf("mode %q reported invalid", mode)
+		}
+	}
+	for _, value := range []string{`""`, `"advanced"`, `null`} {
+		var mode ParseMode
+		if err := json.Unmarshal([]byte(value), &mode); err == nil {
+			t.Fatalf("invalid parse mode %s accepted as %q", value, mode)
+		}
+	}
+}
+
+func TestRAGAdvancedEnvironmentOverlay(t *testing.T) {
+	t.Setenv("BKCRAB_RAG_ADVANCED_ENABLED", "false")
+	t.Setenv("BKCRAB_RAG_OFFICE_ENABLED", "true")
+	t.Setenv("BKCRAB_RAG_ENRICHMENT_ENABLED", "true")
+	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_API_TYPE", "openai-compatible")
+	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_ENDPOINT", "http://document-ai.internal/v1")
+	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_API_KEY", "document-ai-secret")
+	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_VISION_MODEL", "vision-test")
+	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_TEXT_MODEL", "text-test")
+	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_TIMEOUT_MS", "90000")
+	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_VISION_CONCURRENCY", "3")
+	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_ENRICHMENT_CONCURRENCY", "5")
+	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_ALLOWED_ENDPOINT_HOSTS", "document-ai.internal, backup.internal ")
+	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_ALLOW_PRIVATE_ENDPOINT", "true")
+	t.Setenv("BKCRAB_RAG_PARSER_ENDPOINT", "http://rag-parser:8080")
+	t.Setenv("BKCRAB_RAG_PARSER_TIMEOUT_MS", "500000")
+	t.Setenv("BKCRAB_RAG_LIMITS_MAX_PAGES_PER_DOCUMENT", "123")
+	t.Setenv("BKCRAB_RAG_LIMITS_MAX_SEARCH_CONTENT_BYTES", "60000")
+
+	env := LoadEnv()
+	dst := RAGCfg{
+		Features:   RAGFeatureCfg{AdvancedParsingEnabled: true},
+		DocumentAI: RAGDocumentAICfg{AllowPrivateEndpoint: false},
+	}
+	env.ApplySystemRAG(&dst)
+
+	if dst.Features.AdvancedParsingEnabled || !dst.Features.OfficeParsingEnabled || !dst.Features.TextEnrichmentEnabled {
+		t.Fatalf("feature flag overlay = %+v", dst.Features)
+	}
+	if dst.DocumentAI.Endpoint != "http://document-ai.internal/v1" ||
+		dst.DocumentAI.APIKey != "document-ai-secret" || dst.DocumentAI.VisionModel != "vision-test" ||
+		dst.DocumentAI.TextModel != "text-test" || dst.DocumentAI.TimeoutMS != 90000 ||
+		dst.DocumentAI.VisionConcurrency != 3 || dst.DocumentAI.EnrichmentConcurrency != 5 ||
+		!dst.DocumentAI.AllowPrivateEndpoint || len(dst.DocumentAI.AllowedEndpointHosts) != 2 {
+		t.Fatalf("DocumentAI env overlay mismatch: endpoint=%q visionModel=%q textModel=%q timeout=%d visionConcurrency=%d enrichmentConcurrency=%d allowPrivate=%v hosts=%v",
+			dst.DocumentAI.Endpoint, dst.DocumentAI.VisionModel, dst.DocumentAI.TextModel,
+			dst.DocumentAI.TimeoutMS, dst.DocumentAI.VisionConcurrency,
+			dst.DocumentAI.EnrichmentConcurrency, dst.DocumentAI.AllowPrivateEndpoint,
+			dst.DocumentAI.AllowedEndpointHosts)
+	}
+	if dst.ParserSidecar.Endpoint != "http://rag-parser:8080" || dst.ParserSidecar.TimeoutMS != 500000 {
+		t.Fatalf("parser sidecar env overlay = %+v", dst.ParserSidecar)
+	}
+	if dst.Limits.MaxPagesPerDocument != 123 || dst.Limits.MaxSearchContentBytes != 60000 {
+		t.Fatalf("limit env overlay = %+v", dst.Limits)
+	}
+
+}
+
+func TestRAGDocumentAISecretScrubAndLogging(t *testing.T) {
+	const secret = "document-ai-secret-that-must-not-leak"
+	var output bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&output, nil))
+	logger.Info("RAG config", "documentAI", RAGDocumentAICfg{
+		Endpoint: "https://document-ai.example/v1",
+		APIKey:   secret,
+	})
+	if strings.Contains(output.String(), secret) {
+		t.Fatalf("DocumentAI secret leaked through slog: %s", output.String())
+	}
+
+	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_API_KEY", secret)
+	ScrubBootSecrets()
+	if value := os.Getenv("BKCRAB_RAG_DOCUMENT_AI_API_KEY"); value != "" {
+		t.Fatalf("DocumentAI bootstrap secret was not scrubbed: %q", value)
 	}
 }
 

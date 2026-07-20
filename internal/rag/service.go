@@ -81,6 +81,10 @@ func New(d Deps) *Service {
 
 func (s *Service) MaxFileMB() int { return s.cfg.Limits.MaxFileMB }
 
+// Config returns the immutable system RAG configuration snapshot captured at
+// service construction. Callers must not mutate slice fields on the result.
+func (s *Service) Config() config.RAGCfg { return s.cfg }
+
 // Close releases optional backend resources. Worker shutdown is controlled by
 // the context passed to Start; vector backends such as Milvus additionally own
 // a client connection that should be closed during gateway shutdown.
