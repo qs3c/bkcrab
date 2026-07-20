@@ -1169,21 +1169,61 @@ export interface UploadedFile {
   size: number;
 }
 
+export interface UploadProgress {
+  loaded: number;
+  total: number;
+}
+
 export async function uploadAgentFiles(
   agentId: string,
   sessionId: string,
   files: File[],
+  onProgress?: (progress: UploadProgress) => void,
 ): Promise<UploadedFile[]> {
   const fd = new FormData();
   for (const f of files) fd.append("file", f, f.name);
-  const qs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
-  const res = await apiFetch(`/api/agents/${encodeURIComponent(agentId)}/files${qs}`, {
-    method: "POST",
-    body: fd,
+
+  // fetch 目前不提供请求体上传进度。聊天附件可能很大，改用 XHR 才能让
+  // 输入框准确显示“正在上传”以及已传输的百分比。
+  const params = new URLSearchParams();
+  if (sessionId) params.set("sessionId", sessionId);
+  if (typeof window !== "undefined") {
+    const actAs = new URLSearchParams(window.location.search).get("actAs");
+    if (actAs) params.set("actAs", actAs);
+  }
+  const qs = params.size > 0 ? `?${params.toString()}` : "";
+  const url = `/api/agents/${encodeURIComponent(agentId)}/files${qs}`;
+  const totalBytes = files.reduce((total, file) => total + file.size, 0);
+
+  return await new Promise<UploadedFile[]>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.withCredentials = true;
+    const token = getAuthToken();
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+
+    xhr.upload.onprogress = (event) => {
+      onProgress?.({
+        loaded: event.loaded,
+        total: event.lengthComputable ? event.total : totalBytes,
+      });
+    };
+    xhr.onerror = () => reject(new Error("upload failed: network error"));
+    xhr.onabort = () => reject(new Error("upload aborted"));
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`upload failed: ${xhr.status}`));
+        return;
+      }
+      try {
+        const data = JSON.parse(xhr.responseText) as { files?: UploadedFile[] };
+        resolve(data.files || []);
+      } catch {
+        reject(new Error("upload failed: invalid response"));
+      }
+    };
+    xhr.send(fd);
   });
-  if (!res.ok) throw new Error(`upload failed: ${res.status}`);
-  const data = await res.json();
-  return (data.files || []) as UploadedFile[];
 }
 
 // Agent 列表

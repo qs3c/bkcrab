@@ -138,6 +138,14 @@ interface UserAttachment {
   previewUrl?: string;
 }
 
+interface AttachmentUploadState {
+  files: Array<{ name: string; size: number }>;
+  loaded: number;
+  total: number;
+  phase: "uploading" | "complete" | "failed";
+  error?: string;
+}
+
 // 内置斜杠命令，在输入框的 `/` 菜单中与技能一起展示。
 // 与 internal/agent/slash.go 中的调度表镜像——在该文件中添加/
 // 删除/重命名命令时需保持同步。
@@ -575,6 +583,11 @@ export function ChatScreen() {
   const [filesSheetOpen, setFilesSheetOpen] = useState(false);
   const [sessionTitle, setSessionTitle] = useState<string>("");
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachmentUpload, setAttachmentUpload] = useState<AttachmentUploadState | null>(null);
+  const isUploadingAttachments = attachmentUpload?.phase === "uploading";
+  const attachmentUploadPercent = attachmentUpload && attachmentUpload.total > 0
+    ? Math.min(100, Math.round((attachmentUpload.loaded / attachmentUpload.total) * 100))
+    : 0;
   // 灯箱：用于点击附件缩略图（输入框）或已发送消息气泡中的内联图片。
   // `null` = 关闭。
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -1233,7 +1246,12 @@ export function ChatScreen() {
     // （用户中途切走）的流回调据此停止写入前台视图。
     const sid = sessionId;
     // 允许仅发送附件（无文本），但至少需要一个。
-    if ((!text && attachments.length === 0) || !selectedAgent || (activeSessionsRef.current.has(sid) && !force)) return;
+    if (
+      (!text && attachments.length === 0) ||
+      !selectedAgent ||
+      isUploadingAttachments ||
+      (activeSessionsRef.current.has(sid) && !force)
+    ) return;
 
     // `/project/<pid>` 是侧边栏放置我们的懒创建标记。在此捕获以便
     // 搭载到首次聊天请求体；会话行存在后，project_id 在行上，
@@ -1265,6 +1283,13 @@ export function ChatScreen() {
     let imageDataUrls: string[] = [];
 
     if (filesToUpload.length > 0) {
+      const total = filesToUpload.reduce((sum, file) => sum + file.size, 0);
+      setAttachmentUpload({
+        files: filesToUpload.map((file) => ({ name: file.name, size: file.size })),
+        loaded: 0,
+        total,
+        phase: "uploading",
+      });
       userBubbleAttachments = filesToUpload.map((f) => ({
         name: f.name,
         isImage: f.type.startsWith("image/"),
@@ -1272,11 +1297,29 @@ export function ChatScreen() {
       }));
 
       try {
-        await uploadAgentFiles(selectedAgent, sessionId, filesToUpload);
+        await uploadAgentFiles(selectedAgent, sessionId, filesToUpload, (progress) => {
+          setAttachmentUpload((current) =>
+            current?.phase === "uploading"
+              ? { ...current, loaded: progress.loaded, total: progress.total || current.total }
+              : current,
+          );
+        });
+        setAttachmentUpload((current) =>
+          current?.phase === "uploading"
+            ? { ...current, loaded: current.total, phase: "complete" }
+            : current,
+        );
+        window.setTimeout(() => {
+          setAttachmentUpload((current) => (current?.phase === "complete" ? null : current));
+        }, 1800);
       } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : "未知错误";
+        setAttachmentUpload((current) =>
+          current ? { ...current, phase: "failed", error: errorMessage } : current,
+        );
         setMessages((prev) => [
           ...prev,
-          { id: `e-${Date.now()}`, role: "agent", content: `文件上传失败：${err instanceof Error ? err.message : "未知错误"}`, timestamp: Date.now() },
+          { id: `e-${Date.now()}`, role: "agent", content: `文件上传失败：${errorMessage}`, timestamp: Date.now() },
         ]);
         return;
       }
@@ -1753,7 +1796,7 @@ export function ChatScreen() {
         textareaRef.current?.focus();
       }
     }
-  }, [input, attachments, selectedAgent, sessionId, loadSessions, pathname, router, urlProjectId, planMode, markActive]);
+  }, [input, attachments, selectedAgent, sessionId, loadSessions, pathname, router, urlProjectId, planMode, markActive, isUploadingAttachments]);
 
   const handleStop = useCallback(() => {
     // 停止当前显示会话的进行中轮次（后台会话的轮次保持运行）。
@@ -1800,6 +1843,7 @@ export function ChatScreen() {
     // 了文件。
     const newFiles = Array.from(picked);
     e.target.value = "";
+    setAttachmentUpload(null);
     setAttachments((prev) => [...prev, ...newFiles]);
   }, []);
 
@@ -2502,6 +2546,54 @@ export function ChatScreen() {
                   })}
                 </div>
               )}
+              {attachmentUpload && (
+                <div
+                  className={`mb-2 rounded-md border px-2.5 py-2 text-xs ${
+                    attachmentUpload.phase === "failed"
+                      ? "border-destructive/40 bg-destructive/10 text-destructive"
+                      : "border-primary/25 bg-primary/5 text-muted-foreground"
+                  }`}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <div className="flex items-center gap-2">
+                    {attachmentUpload.phase === "uploading" ? (
+                      <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" aria-hidden="true" />
+                    ) : attachmentUpload.phase === "complete" ? (
+                      <Check className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
+                    ) : (
+                      <X className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">
+                      {attachmentUpload.phase === "uploading"
+                        ? `正在上传 ${attachmentUpload.files.length} 个附件… ${attachmentUploadPercent}%`
+                        : attachmentUpload.phase === "complete"
+                          ? "附件已上传，正在发送给智能体…"
+                          : `附件上传失败：${attachmentUpload.error || "未知错误"}`}
+                    </span>
+                    {attachmentUpload.phase === "uploading" && (
+                      <span className="shrink-0 tabular-nums text-muted-foreground">
+                        {formatBytes(Math.min(attachmentUpload.loaded, attachmentUpload.total))} / {formatBytes(attachmentUpload.total)}
+                      </span>
+                    )}
+                  </div>
+                  {attachmentUpload.phase === "uploading" && (
+                    <div
+                      className="mt-1.5 h-1 overflow-hidden rounded-full bg-primary/15"
+                      role="progressbar"
+                      aria-label="附件上传进度"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={attachmentUploadPercent}
+                    >
+                      <div
+                        className="h-full rounded-full bg-primary transition-[width] duration-150"
+                        style={{ width: `${attachmentUploadPercent}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
 {/* 空状态输入框：Manus 风格——输入框填充顶部，操作行在下方。有消息后
                    切回紧凑单行布局，使输入框不会占据聊天主体。 */}
               {isEmpty ? (
@@ -2521,7 +2613,7 @@ export function ChatScreen() {
                             ? `消息 ${agentName || selectedAgent}... ("/" to pick a skill)`
                             : "请先选择智能体"
                     }
-                    disabled={!selectedAgent || isReadOnlyView}
+                    disabled={!selectedAgent || isReadOnlyView || isUploadingAttachments}
                     rows={3}
                     className="block w-full resize-none bg-transparent text-[15px] placeholder:text-muted-foreground/50 outline-none disabled:opacity-50"
                     style={{ maxHeight: 240, minHeight: 72 }}
@@ -2530,7 +2622,7 @@ export function ChatScreen() {
                     <div className="flex items-center gap-2 min-w-0">
                       <label
                         className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors ${
-                          !selectedAgent || sending || isReadOnlyView
+                          !selectedAgent || sending || isReadOnlyView || isUploadingAttachments
                             ? "opacity-50 cursor-not-allowed"
                             : "hover:bg-muted hover:text-foreground cursor-pointer"
                         }`}
@@ -2543,13 +2635,13 @@ export function ChatScreen() {
                           multiple
                           className="sr-only"
                           onChange={handleFilePick}
-                          disabled={!selectedAgent || sending || isReadOnlyView}
+                          disabled={!selectedAgent || sending || isReadOnlyView || isUploadingAttachments}
                         />
                       </label>
                       <button
                         type="button"
                         onClick={() => setPlanMode((enabled) => !enabled)}
-                        disabled={!selectedAgent || sending || isReadOnlyView}
+                        disabled={!selectedAgent || sending || isReadOnlyView || isUploadingAttachments}
                         title={
                           planMode
                             ? "下一条消息将使用计划模式。点击可关闭。"
@@ -2602,7 +2694,7 @@ export function ChatScreen() {
                     ) : (
                       <Button
                         onClick={() => handleSend()}
-                        disabled={(!input.trim() && attachments.length === 0) || !selectedAgent || isReadOnlyView}
+                        disabled={(!input.trim() && attachments.length === 0) || !selectedAgent || isReadOnlyView || isUploadingAttachments}
                         size="icon"
                         className="h-9 w-9 shrink-0 rounded-full"
                         aria-label="发送消息"
@@ -2616,7 +2708,7 @@ export function ChatScreen() {
                 <div className="flex items-center gap-2">
                   <label
                     className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors ${
-                      !selectedAgent || sending || isReadOnlyView
+                      !selectedAgent || sending || isReadOnlyView || isUploadingAttachments
                         ? "opacity-50 cursor-not-allowed"
                         : "hover:bg-muted hover:text-foreground cursor-pointer"
                     }`}
@@ -2629,13 +2721,13 @@ export function ChatScreen() {
                       multiple
                       className="sr-only"
                       onChange={handleFilePick}
-                      disabled={!selectedAgent || sending || isReadOnlyView}
+                      disabled={!selectedAgent || sending || isReadOnlyView || isUploadingAttachments}
                     />
                   </label>
                   <button
                     type="button"
                     onClick={() => setPlanMode((enabled) => !enabled)}
-                    disabled={!selectedAgent || sending || isReadOnlyView}
+                    disabled={!selectedAgent || sending || isReadOnlyView || isUploadingAttachments}
                     title={
                       planMode
                         ? "下一条消息将使用计划模式。点击可关闭。"
@@ -2666,7 +2758,7 @@ export function ChatScreen() {
                             ? `消息 ${agentName || selectedAgent}... ("/" to pick a skill)`
                             : "请先选择智能体"
                     }
-                    disabled={!selectedAgent || isReadOnlyView}
+                    disabled={!selectedAgent || isReadOnlyView || isUploadingAttachments}
                     rows={1}
                     className="flex-1 resize-none bg-transparent text-[15px] leading-8 placeholder:text-muted-foreground/50 outline-none disabled:opacity-50"
                     style={{ maxHeight: 200, minHeight: 32 }}
@@ -2696,7 +2788,7 @@ export function ChatScreen() {
                   ) : (
                     <Button
                       onClick={() => handleSend()}
-                      disabled={(!input.trim() && attachments.length === 0) || !selectedAgent || isReadOnlyView}
+                      disabled={(!input.trim() && attachments.length === 0) || !selectedAgent || isReadOnlyView || isUploadingAttachments}
                       size="icon"
                       className="h-8 w-8 shrink-0 rounded-lg"
                       aria-label="发送消息"
