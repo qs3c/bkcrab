@@ -44,9 +44,20 @@ var (
 	ErrRAGDocumentVersionConflict     = errors.New("store: RAG document version changed")
 	ErrRAGDocumentVersionIncomplete   = errors.New("store: incomplete immutable RAG document version snapshot")
 	ErrRAGDocumentSourceConflict      = errors.New("store: RAG document source SHA-256 conflicts with version snapshot")
+	ErrRAGAdvancedPendingLimit        = errors.New("store: RAG advanced pending task limit exceeded")
+	ErrRAGAdvancedReindexRateLimit    = errors.New("store: RAG advanced reindex interval has not elapsed")
 	ErrRAGLegacyTaskMigrationRequired = errors.New("store: legacy RAG task migration requires explicit offline-v1 acknowledgement")
 	ErrRAGLegacySnapshotBuilder       = errors.New("store: legacy RAG runnable task requires a snapshot builder")
 )
+
+// RAGAdvancedEnqueuePolicy is enforced in the same transaction that creates
+// an advanced index task. Zero values mean the caller intentionally bypasses
+// the policy (used only by migrations and low-level compatibility helpers).
+type RAGAdvancedEnqueuePolicy struct {
+	UserID             string
+	MaxPendingTasks    int
+	MinReindexInterval time.Duration
+}
 
 func ragCanonicalSHA256(value string) bool {
 	if value == "" || value != strings.TrimSpace(value) || value != strings.ToLower(value) || len(value) != sha256.Size*2 {
@@ -308,6 +319,7 @@ type RAGAssetRecord struct {
 	ThumbnailObjectKey string
 	DisplayStatus      string
 	DisplaySHA256      string
+	ThumbnailSHA256    string
 	ByteSize           int64
 	Width              int
 	Height             int
@@ -443,7 +455,7 @@ const ragChunkColumns = `kb_id, doc_id, doc_version, chunk_index, section_title,
 
 const ragAssetColumns = `id, doc_id, content_sha256, source_kind, source_mime, display_mime,
 	source_object_key, display_object_key, thumbnail_object_key, display_status, display_sha256,
-	byte_size, width, height, first_seen_version, last_seen_version, created_at, updated_at`
+	thumbnail_sha256, byte_size, width, height, first_seen_version, last_seen_version, created_at, updated_at`
 
 const ragChunkAssetColumns = `doc_id, doc_version, chunk_index, asset_id, ordinal,
 	location_json, caption, ocr_text`
@@ -593,7 +605,7 @@ func scanRAGAsset(scanner ragScanner) (*RAGAssetRecord, error) {
 		&asset.ID, &asset.DocID, &asset.ContentSHA256, &asset.SourceKind,
 		&asset.SourceMIME, &asset.DisplayMIME, &asset.SourceObjectKey,
 		&asset.DisplayObjectKey, &asset.ThumbnailObjectKey, &asset.DisplayStatus,
-		&asset.DisplaySHA256, &asset.ByteSize, &asset.Width, &asset.Height,
+		&asset.DisplaySHA256, &asset.ThumbnailSHA256, &asset.ByteSize, &asset.Width, &asset.Height,
 		&asset.FirstSeenVersion, &asset.LastSeenVersion, &asset.CreatedAt, &asset.UpdatedAt,
 	); err != nil {
 		return nil, err
@@ -920,14 +932,116 @@ func (d *DBStore) createRAGDocument(ctx context.Context, exec ragExecutor, doc *
 	return err
 }
 
+func ragAdvancedVersion(version *RAGDocumentVersionRecord) bool {
+	return version != nil && (version.ParseMode == RAGParseModeAuto || version.EnrichmentEnabled)
+}
+
+func (d *DBStore) lockRAGAdvancedEnqueueUserTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	policy *RAGAdvancedEnqueuePolicy,
+) error {
+	if policy == nil || policy.UserID == "" || policy.UserID != strings.TrimSpace(policy.UserID) ||
+		policy.MaxPendingTasks <= 0 || policy.MinReindexInterval < 0 {
+		return errors.New("store: invalid RAG advanced enqueue policy")
+	}
+	_, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kbs
+		SET updated_at=updated_at WHERE user_id=%s`, d.ph(1)), policy.UserID)
+	return err
+}
+
+func (d *DBStore) enforceRAGAdvancedEnqueuePolicyTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	kbID, docID string,
+	version *RAGDocumentVersionRecord,
+	policy *RAGAdvancedEnqueuePolicy,
+	reindex bool,
+) error {
+	if policy == nil || !ragAdvancedVersion(version) {
+		return nil
+	}
+	// Every compliant enqueue for this user writes the same set of KB rows
+	// before reading the outstanding count. This is a database-backed per-user
+	// mutex on SQLite and row locks on PostgreSQL/MySQL, so two processes cannot
+	// both admit the last slot after a racy count.
+	if err := d.lockRAGAdvancedEnqueueUserTx(ctx, tx, policy); err != nil {
+		return err
+	}
+	var ownerID string
+	if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT user_id FROM rag_kbs WHERE id=%s`, d.ph(1)), kbID).Scan(&ownerID); err != nil {
+		return scanErr(err)
+	}
+	if ownerID != policy.UserID {
+		return ErrRAGDocumentVersionMismatch
+	}
+
+	var pending int
+	err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM rag_index_tasks t
+		JOIN rag_document_versions v ON v.doc_id=t.doc_id AND v.doc_version=t.doc_version
+		JOIN rag_documents d ON d.id=t.doc_id
+		JOIN rag_kbs k ON k.id=d.kb_id
+		WHERE k.user_id=%s AND t.status IN ('PENDING','RUNNING')
+		AND (v.parse_mode='auto' OR v.enrichment_enabled=TRUE)`, d.ph(1)), policy.UserID).Scan(&pending)
+	if err != nil {
+		return err
+	}
+	if pending >= policy.MaxPendingTasks {
+		return ErrRAGAdvancedPendingLimit
+	}
+
+	if !reindex || policy.MinReindexInterval == 0 {
+		return nil
+	}
+	var latest time.Time
+	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT t.created_at FROM rag_index_tasks t
+		JOIN rag_document_versions v ON v.doc_id=t.doc_id AND v.doc_version=t.doc_version
+		WHERE t.doc_id=%s AND (v.parse_mode='auto' OR v.enrichment_enabled=TRUE)
+		ORDER BY t.created_at DESC LIMIT 1`, d.ph(1)), docID).Scan(&latest)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	dbNow, err := d.ragDBNow(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if latest.Add(policy.MinReindexInterval).After(dbNow) {
+		return ErrRAGAdvancedReindexRateLimit
+	}
+	return nil
+}
+
 // CreateRAGDocumentWithVersionAndIndexTask atomically creates the document,
-// its immutable version snapshot, and the durable index task. Task claiming and
-// fence-protected state transitions are implemented separately.
+// its immutable version snapshot, and the durable index task. This low-level
+// compatibility helper does not apply the optional advanced enqueue policy.
 func (d *DBStore) CreateRAGDocumentWithVersionAndIndexTask(
 	ctx context.Context,
 	doc *RAGDocumentRecord,
 	version *RAGDocumentVersionRecord,
 	maxRetry int,
+) (int64, error) {
+	return d.createRAGDocumentWithVersionAndIndexTask(ctx, doc, version, maxRetry, nil)
+}
+
+func (d *DBStore) CreateRAGDocumentWithVersionAndIndexTaskPolicy(
+	ctx context.Context,
+	doc *RAGDocumentRecord,
+	version *RAGDocumentVersionRecord,
+	maxRetry int,
+	policy RAGAdvancedEnqueuePolicy,
+) (int64, error) {
+	return d.createRAGDocumentWithVersionAndIndexTask(ctx, doc, version, maxRetry, &policy)
+}
+
+func (d *DBStore) createRAGDocumentWithVersionAndIndexTask(
+	ctx context.Context,
+	doc *RAGDocumentRecord,
+	version *RAGDocumentVersionRecord,
+	maxRetry int,
+	policy *RAGAdvancedEnqueuePolicy,
 ) (int64, error) {
 	if doc == nil || version == nil || version.DocID != doc.ID || version.DocVersion != doc.Version {
 		return 0, ErrRAGDocumentVersionMismatch
@@ -948,6 +1062,9 @@ func (d *DBStore) CreateRAGDocumentWithVersionAndIndexTask(
 		return 0, err
 	}
 	defer tx.Rollback()
+	if err := d.enforceRAGAdvancedEnqueuePolicyTx(ctx, tx, doc.KBID, doc.ID, version, policy, false); err != nil {
+		return 0, err
+	}
 	if err := d.createRAGDocument(ctx, tx, doc); err != nil {
 		return 0, err
 	}
@@ -1425,12 +1542,12 @@ func (d *DBStore) UpsertRAGAsset(ctx context.Context, asset *RAGAssetRecord) err
 	query := fmt.Sprintf(`INSERT INTO rag_assets (
 		id, doc_id, content_sha256, source_kind, source_mime, display_mime,
 		source_object_key, display_object_key, thumbnail_object_key, display_status,
-		display_sha256, byte_size, width, height, first_seen_version,
+		display_sha256, thumbnail_sha256, byte_size, width, height, first_seen_version,
 		last_seen_version, created_at, updated_at)
 		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-		%s, %s, %s, %s, %s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5),
+		%s, %s, %s, %s, %s, %s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5),
 		d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12),
-		d.ph(13), d.ph(14), d.ph(15), d.ph(16), d.ph(17), d.ph(18))
+		d.ph(13), d.ph(14), d.ph(15), d.ph(16), d.ph(17), d.ph(18), d.ph(19))
 	if d.dialect == "mysql" {
 		query += ` ON DUPLICATE KEY UPDATE id=id`
 	} else {
@@ -1439,7 +1556,7 @@ func (d *DBStore) UpsertRAGAsset(ctx context.Context, asset *RAGAssetRecord) err
 	if _, err := tx.ExecContext(ctx, query, asset.ID, asset.DocID,
 		asset.ContentSHA256, asset.SourceKind, asset.SourceMIME, asset.DisplayMIME,
 		asset.SourceObjectKey, asset.DisplayObjectKey, asset.ThumbnailObjectKey,
-		asset.DisplayStatus, asset.DisplaySHA256, asset.ByteSize, asset.Width,
+		asset.DisplayStatus, asset.DisplaySHA256, asset.ThumbnailSHA256, asset.ByteSize, asset.Width,
 		asset.Height, asset.FirstSeenVersion, asset.LastSeenVersion,
 		asset.CreatedAt, asset.UpdatedAt); err != nil {
 		return err
@@ -1452,6 +1569,25 @@ func (d *DBStore) UpsertRAGAsset(ctx context.Context, asset *RAGAssetRecord) err
 	}
 	if err != nil {
 		return err
+	}
+	// Phase C added the exact thumbnail-byte hash needed by conditional asset
+	// responses. Phase B rows have an empty value after the additive migration;
+	// allow exactly one canonical, compare-and-set backfill. Concurrent rebuilds
+	// must agree or the immutable comparison below rejects the loser.
+	if existing.ThumbnailSHA256 == "" && asset.ThumbnailSHA256 != "" {
+		if !ragCanonicalSHA256(asset.ThumbnailSHA256) {
+			return ErrRAGAssetConflict
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_assets
+			SET thumbnail_sha256=%s WHERE id=%s AND thumbnail_sha256=''`, d.ph(1), d.ph(2)),
+			asset.ThumbnailSHA256, existing.ID); err != nil {
+			return err
+		}
+		existing, err = scanRAGAsset(tx.QueryRowContext(ctx, fmt.Sprintf(
+			`SELECT `+ragAssetColumns+` FROM rag_assets WHERE id=%s`, d.ph(1)), existing.ID))
+		if err != nil {
+			return err
+		}
 	}
 	if !sameImmutableRAGAsset(existing, asset) {
 		return ErrRAGAssetConflict
@@ -1479,7 +1615,7 @@ func sameImmutableRAGAsset(a, b *RAGAssetRecord) bool {
 		a.SourceMIME == b.SourceMIME && a.DisplayMIME == b.DisplayMIME &&
 		a.SourceObjectKey == b.SourceObjectKey && a.DisplayObjectKey == b.DisplayObjectKey &&
 		a.ThumbnailObjectKey == b.ThumbnailObjectKey && a.DisplayStatus == b.DisplayStatus &&
-		a.DisplaySHA256 == b.DisplaySHA256 && a.ByteSize == b.ByteSize &&
+		a.DisplaySHA256 == b.DisplaySHA256 && a.ThumbnailSHA256 == b.ThumbnailSHA256 && a.ByteSize == b.ByteSize &&
 		a.Width == b.Width && a.Height == b.Height
 }
 
@@ -1701,6 +1837,11 @@ func (d *DBStore) DeleteRAGIndexGCTask(ctx context.Context, id int64) error {
 }
 
 func (d *DBStore) CreateRAGDocumentAITaskBudget(ctx context.Context, budget *RAGDocumentAITaskBudgetRecord) error {
+	if budget == nil || budget.TaskID <= 0 || strings.TrimSpace(budget.UserID) == "" ||
+		budget.MaxRequests < 0 || budget.MaxTokens < 0 || budget.MaxCostMicroUSD < 0 ||
+		budget.ChargedRequests < 0 || budget.ChargedTokens < 0 || budget.ChargedCostMicroUSD < 0 {
+		return errors.New("store: invalid RAG DocumentAI task budget")
+	}
 	if budget.UpdatedAt.IsZero() {
 		budget.UpdatedAt = time.Now().UTC()
 	}
@@ -1718,7 +1859,21 @@ func (d *DBStore) CreateRAGDocumentAITaskBudget(ctx context.Context, budget *RAG
 		budget.MaxRequests, budget.MaxTokens, budget.MaxCostMicroUSD,
 		budget.ChargedRequests, budget.ChargedTokens,
 		budget.ChargedCostMicroUSD, budget.UpdatedAt)
-	return err
+	if err != nil {
+		return err
+	}
+	// INSERT .. DO NOTHING is the crash/reclaim idempotency path, not
+	// permission to silently reuse a task ID with another immutable snapshot.
+	// Verify the existing row after the insert race has settled.
+	existing, err := d.GetRAGDocumentAITaskBudget(ctx, budget.TaskID)
+	if err != nil {
+		return err
+	}
+	if existing.UserID != budget.UserID || existing.MaxRequests != budget.MaxRequests ||
+		existing.MaxTokens != budget.MaxTokens || existing.MaxCostMicroUSD != budget.MaxCostMicroUSD {
+		return ErrRAGDocumentAIUsageConflict
+	}
+	return nil
 }
 
 func (d *DBStore) GetRAGDocumentAITaskBudget(ctx context.Context, taskID int64) (*RAGDocumentAITaskBudgetRecord, error) {

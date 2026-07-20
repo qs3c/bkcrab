@@ -266,7 +266,7 @@ def _settings(temp_root: Path, *, max_input: int = 1024) -> Settings:
 
 
 def test_healthz_uses_runtime_limits_and_has_no_pdf_engine(tmp_path: Path) -> None:
-    with TestClient(create_app(_settings(tmp_path))) as client:
+    with TestClient(create_app(_settings(tmp_path), pdf_engine=None)) as client:
         response = client.get("/healthz")
     assert response.status_code == 200
     assert response.json() == make_health_document(

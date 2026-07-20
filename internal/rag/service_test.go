@@ -35,6 +35,47 @@ func newRAGTestStore(t *testing.T) *store.DBStore {
 	return db
 }
 
+type reconcileRecordingStore struct {
+	store.Store
+	called chan struct{}
+	once   sync.Once
+}
+
+func (s *reconcileRecordingStore) ReconcileRAGDocumentAIUsage(
+	context.Context,
+	time.Time,
+	time.Time,
+	int,
+) (int, error) {
+	s.once.Do(func() { close(s.called) })
+	return 0, nil
+}
+
+func TestRAGDocumentAIReconcileLoopRunsWithoutProviders(t *testing.T) {
+	recordingStore := &reconcileRecordingStore{called: make(chan struct{})}
+	service := New(Deps{Store: recordingStore})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		service.documentAIReconcileLoop(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-recordingStore.called:
+	case <-done:
+		t.Fatal("DocumentAI reconciler returned when providers were not configured")
+	case <-time.After(time.Second):
+		t.Fatal("DocumentAI reconciler did not call the durable store")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("DocumentAI reconciler did not stop after cancellation")
+	}
+}
+
 func newEmbeddingServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -191,6 +191,9 @@ func (f *Fake) HybridSearch(ctx context.Context, kbID string, query SearchQuery,
 	}
 	entries := make([]fakeRankedChunk, 0, len(c.entries))
 	for key, chunk := range c.entries {
+		if version, active := query.ActiveVersions[key.docID]; !active || version != key.version {
+			continue
+		}
 		entries = append(entries, fakeRankedChunk{key: key, chunk: cloneChunk(chunk)})
 	}
 	f.mu.RUnlock()
@@ -228,13 +231,14 @@ func (f *Fake) HybridSearch(ctx context.Context, kbID string, query SearchQuery,
 	hits := make([]SearchHit, 0, len(merged))
 	for _, item := range merged {
 		hits = append(hits, SearchHit{
-			DocID:        item.chunk.DocID,
-			ChunkIndex:   item.chunk.Index,
-			Content:      item.chunk.Content,
-			SectionTitle: item.chunk.SectionTitle,
-			PageNum:      item.chunk.PageNum,
-			DocVersion:   item.chunk.DocVersion,
-			Score:        item.score,
+			DocID:         item.chunk.DocID,
+			ChunkIndex:    item.chunk.Index,
+			Content:       item.chunk.Content,
+			SearchContent: chunktext.ForIndex(item.chunk.SearchContent, item.chunk.SectionTitle, item.chunk.Content),
+			SectionTitle:  item.chunk.SectionTitle,
+			PageNum:       item.chunk.PageNum,
+			DocVersion:    item.chunk.DocVersion,
+			Score:         item.score,
 		})
 	}
 	return hits, nil

@@ -27,6 +27,8 @@ import (
 const (
 	expectedMarkItDownVersion = "0.1.6"
 	expectedOfficeWrapper     = "office-wrapper-v1"
+	expectedPDFEngine         = "pypdfium2"
+	expectedPDFEngineVersion  = "5.12.1"
 )
 
 type ClientLimits struct {
@@ -234,6 +236,9 @@ func (c *Client) ProbeHealth(ctx context.Context) (config.RAGParserHealthSnapsho
 	officeCompatible := health.Capabilities.Office.Enabled &&
 		health.Capabilities.Office.MarkItDownVersion == expectedMarkItDownVersion &&
 		health.Capabilities.Office.WrapperVersion == expectedOfficeWrapper
+	pdfCompatible := health.Capabilities.PDF.Enabled &&
+		health.Capabilities.PDF.Engine == expectedPDFEngine &&
+		health.Capabilities.PDF.EngineVersion == expectedPDFEngineVersion
 	snapshot := config.RAGParserHealthSnapshot{
 		ProtocolVersion: health.ProtocolVersion,
 		Healthy:         true,
@@ -253,7 +258,10 @@ func (c *Client) ProbeHealth(ctx context.Context) (config.RAGParserHealthSnapsho
 			XLSXGolden: false,
 		},
 		PDF: config.RAGParserPDFSnapshot{
-			Enabled:         health.Capabilities.PDF.Enabled,
+			// The approved ADR is scoped to one exact pypdfium2/PDFium
+			// distribution. A schema-valid health response for another
+			// engine or version must not publish PDF auto as available.
+			Enabled:         pdfCompatible,
 			LicenseApproved: c.pdfLicenseApproved,
 		},
 	}
@@ -325,8 +333,8 @@ func (c *Client) officeAvailable(format string) bool {
 }
 
 func (c *Client) pdfAvailable() bool {
-	health, snapshot, fresh := c.currentHealth()
-	return fresh && health.Capabilities.PDF.Enabled && snapshot.PDF.LicenseApproved
+	_, snapshot, fresh := c.currentHealth()
+	return fresh && snapshot.PDF.Enabled && snapshot.PDF.LicenseApproved
 }
 
 func minPositive(left, right int64) int64 {

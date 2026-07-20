@@ -229,6 +229,7 @@ type Store interface {
 	ListRAGChatSessions(ctx context.Context, userID, kbID string, limit int) ([]RAGChatSessionRecord, error)
 	CreateRAGDocument(ctx context.Context, doc *RAGDocumentRecord) error
 	CreateRAGDocumentWithVersionAndIndexTask(ctx context.Context, doc *RAGDocumentRecord, version *RAGDocumentVersionRecord, maxRetry int) (int64, error)
+	CreateRAGDocumentWithVersionAndIndexTaskPolicy(ctx context.Context, doc *RAGDocumentRecord, version *RAGDocumentVersionRecord, maxRetry int, policy RAGAdvancedEnqueuePolicy) (int64, error)
 	GetRAGDocument(ctx context.Context, id string) (*RAGDocumentRecord, error)
 	ListRAGDocumentsByKB(ctx context.Context, kbID string) ([]RAGDocumentRecord, error)
 	DeleteRAGDocument(ctx context.Context, id string) error
@@ -251,6 +252,7 @@ type Store interface {
 	GetRAGIndexTask(ctx context.Context, id int64) (*RAGIndexTaskRecord, error)
 	ListRunnableRAGIndexTasks(ctx context.Context) ([]RAGIndexTaskRecord, error)
 	AdvanceDocumentVersionAndCreateTask(ctx context.Context, expectedVersion int64, snapshot *RAGDocumentVersionRecord) (*RAGIndexTaskRecord, error)
+	AdvanceDocumentVersionAndCreateTaskPolicy(ctx context.Context, expectedVersion int64, snapshot *RAGDocumentVersionRecord, policy RAGAdvancedEnqueuePolicy) (*RAGIndexTaskRecord, error)
 	ClaimRAGIndexTask(ctx context.Context, workerID string, leaseDuration time.Duration) (*RAGIndexClaim, error)
 	CheckRAGIndexFence(ctx context.Context, fence IndexFence) (bool, error)
 	HeartbeatRAGIndexTask(ctx context.Context, fence IndexFence, leaseDuration time.Duration) (bool, error)

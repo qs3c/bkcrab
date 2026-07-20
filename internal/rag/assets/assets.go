@@ -3,6 +3,7 @@
 package assets
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -34,6 +35,8 @@ type Limits struct {
 	MaxExtractedBytes int64
 	MaxImagePixels    int64
 	MaxArtifactBytes  int64
+	DisplayMaxEdge    int
+	ThumbnailMaxEdge  int
 }
 
 func (l Limits) validate() error {
@@ -42,6 +45,12 @@ func (l Limits) validate() error {
 	}
 	if l.MaxAssetBytes > l.MaxExtractedBytes {
 		return errors.New("single asset byte limit cannot exceed total extracted byte limit")
+	}
+	if _, err := (SafeImageLimits{
+		MaxSourceBytes: l.MaxAssetBytes, MaxPixels: l.MaxImagePixels,
+		DisplayMaxEdge: l.DisplayMaxEdge, ThumbnailMaxEdge: l.ThumbnailMaxEdge,
+	}).normalized(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -66,7 +75,9 @@ type CacheRequest struct {
 	UserID           string
 	KBID             string
 	DocID            string
+	DocVersion       int64
 	ParseFingerprint string
+	ExpectedSource   *document.ParsedSource
 }
 
 // PersistParsedDocument validates every asset by streaming from its bundle
@@ -161,15 +172,20 @@ func (p *Persister) PersistParsedDocument(ctx context.Context, request PersistRe
 			FirstSeenVersion: request.DocVersion, LastSeenVersion: request.DocVersion,
 			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 		}
-		if prior, ok := existingByID[canonical.ID]; ok {
+		prior, existed := existingByID[canonical.ID]
+		if existed {
 			if err := validateExistingAsset(prior, record, keys); err != nil {
 				return nil, err
 			}
+			record.FirstSeenVersion = min(prior.FirstSeenVersion, request.DocVersion)
+			record.LastSeenVersion = max(prior.LastSeenVersion, request.DocVersion)
+			record.CreatedAt = prior.CreatedAt
 			record.DisplayMIME = prior.DisplayMIME
 			record.DisplayObjectKey = prior.DisplayObjectKey
 			record.ThumbnailObjectKey = prior.ThumbnailObjectKey
 			record.DisplayStatus = prior.DisplayStatus
 			record.DisplaySHA256 = prior.DisplaySHA256
+			record.ThumbnailSHA256 = prior.ThumbnailSHA256
 			canonical.DisplayStatus = prior.DisplayStatus
 		}
 		exists, err := p.objectExists(ctx, keys.AssetSource)
@@ -188,6 +204,39 @@ func (p *Persister) PersistParsedDocument(ctx context.Context, request PersistRe
 			}
 			if closeErr != nil {
 				return nil, fmt.Errorf("close asset %q after store: %w", transient.LocalID, closeErr)
+			}
+		}
+		if existed && prior.DisplayStatus == document.DisplayUnavailable {
+			appendDisplayWarning(artifact, transient, request.Document, "asset safe display remains unavailable")
+		} else {
+			variants, variantErr := p.makeDisplayVariants(ctx, request.Document, transient)
+			if variantErr != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
+				if existed && prior.DisplayStatus == document.DisplayReady {
+					return nil, fmt.Errorf("rebuild ready asset %q display variants: %w", canonical.ID, variantErr)
+				}
+				appendDisplayWarning(artifact, transient, request.Document, "safe display/thumbnail generation failed")
+			} else {
+				if existed && (prior.DisplayMIME != variants.Display.MIMEType ||
+					prior.DisplaySHA256 != variants.Display.SHA256 ||
+					(prior.ThumbnailSHA256 != "" && prior.ThumbnailSHA256 != variants.Thumbnail.SHA256)) {
+					return nil, fmt.Errorf("existing ready asset %q conflicts with safe renderer output", canonical.ID)
+				}
+				if err := p.storeDisplayVariant(ctx, keys.AssetDisplay, variants.Display, transient.LocalID, "display"); err != nil {
+					return nil, err
+				}
+				if err := p.storeDisplayVariant(ctx, keys.AssetThumbnail, variants.Thumbnail, transient.LocalID, "thumbnail"); err != nil {
+					return nil, err
+				}
+				record.DisplayMIME = variants.Display.MIMEType
+				record.DisplayObjectKey = keys.AssetDisplay
+				record.ThumbnailObjectKey = keys.AssetThumbnail
+				record.DisplayStatus = document.DisplayReady
+				record.DisplaySHA256 = variants.Display.SHA256
+				record.ThumbnailSHA256 = variants.Thumbnail.SHA256
+				canonical.DisplayStatus = document.DisplayReady
 			}
 		}
 		if err := p.Catalog.UpsertRAGAsset(ctx, &record); err != nil {
@@ -235,6 +284,76 @@ func (p *Persister) validateBundleAsset(ctx context.Context, parsed *document.Pa
 	return nil
 }
 
+func (p *Persister) makeDisplayVariants(
+	ctx context.Context,
+	parsed *document.ParsedDocument,
+	asset document.ExtractedAsset,
+) (DisplayVariants, error) {
+	if !SafeRasterSupported(asset.SourceMIME) {
+		return DisplayVariants{}, fmt.Errorf("%w: %s", ErrUnsupportedRaster, asset.SourceMIME)
+	}
+	reader, err := parsed.OpenBundleEntry(ctx, asset.BundleEntry)
+	if err != nil {
+		return DisplayVariants{}, fmt.Errorf("open asset %q for safe display: %w", asset.LocalID, err)
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(&contextReader{ctx: ctx, reader: reader}, p.Limits.MaxAssetBytes+1))
+	closeErr := reader.Close()
+	if readErr != nil {
+		return DisplayVariants{}, fmt.Errorf("read asset %q for safe display: %w", asset.LocalID, readErr)
+	}
+	if closeErr != nil {
+		return DisplayVariants{}, fmt.Errorf("close asset %q after safe display read: %w", asset.LocalID, closeErr)
+	}
+	if int64(len(raw)) != asset.ByteSize {
+		return DisplayVariants{}, fmt.Errorf("asset %q changed while generating safe display", asset.LocalID)
+	}
+	return MakeDisplayVariants(ctx, raw, asset.SourceMIME, SafeImageLimits{
+		MaxSourceBytes:   p.Limits.MaxAssetBytes,
+		MaxPixels:        p.Limits.MaxImagePixels,
+		DisplayMaxEdge:   p.Limits.DisplayMaxEdge,
+		ThumbnailMaxEdge: p.Limits.ThumbnailMaxEdge,
+	})
+}
+
+func (p *Persister) storeDisplayVariant(
+	ctx context.Context,
+	key string,
+	variant EncodedRaster,
+	localID, variantName string,
+) error {
+	exists, err := p.objectExists(ctx, key)
+	if err != nil {
+		return fmt.Errorf("check asset %q %s object: %w", localID, variantName, err)
+	}
+	if exists {
+		return nil
+	}
+	if err := p.Objects.Put(ctx, key, bytes.NewReader(variant.Bytes), int64(len(variant.Bytes)), variant.MIMEType); err != nil {
+		return fmt.Errorf("store asset %q %s: %w", localID, variantName, err)
+	}
+	return nil
+}
+
+func appendDisplayWarning(
+	artifact *document.ParsedArtifact,
+	asset document.ExtractedAsset,
+	parsed *document.ParsedDocument,
+	message string,
+) {
+	var location *document.SourceLocation
+	for _, occurrence := range parsed.Occurrences {
+		if occurrence.AssetLocalID != asset.LocalID {
+			continue
+		}
+		value := occurrence.Location
+		location = &value
+		break
+	}
+	artifact.Warnings = append(artifact.Warnings, document.ParseWarning{
+		Code: "asset_display_unavailable", Message: message, Location: location, Degraded: true,
+	})
+}
+
 // LoadParsedArtifact treats a missing/corrupt artifact or any missing binary
 // dependency as a cache miss. Catalog query failures remain observable errors.
 func (p *Persister) LoadParsedArtifact(ctx context.Context, request CacheRequest) (*document.ParsedArtifact, bool, error) {
@@ -257,7 +376,11 @@ func (p *Persister) LoadParsedArtifact(ctx context.Context, request CacheRequest
 	if decodeErr != nil || closeErr != nil || artifact.Source.DocID != request.DocID {
 		return nil, false, nil
 	}
+	if request.ExpectedSource != nil && artifact.Source != *request.ExpectedSource {
+		return nil, false, nil
+	}
 	ids := make([]string, 0, len(artifact.Assets))
+	recordsToTouch := make([]store.RAGAssetRecord, 0, len(artifact.Assets))
 	for _, asset := range artifact.Assets {
 		ids = append(ids, asset.ID)
 	}
@@ -293,13 +416,38 @@ func (p *Persister) LoadParsedArtifact(ctx context.Context, request CacheRequest
 			if record.DisplayMIME != "image/webp" && record.DisplayMIME != "image/png" {
 				return nil, false, nil
 			}
-			exists, err := p.objectExists(ctx, record.DisplayObjectKey)
-			if err != nil {
-				return nil, false, fmt.Errorf("check display asset %q: %w", record.ID, err)
+			for _, dependency := range []struct{ name, key string }{
+				{name: "display", key: record.DisplayObjectKey},
+				{name: "thumbnail", key: record.ThumbnailObjectKey},
+			} {
+				exists, err := p.objectExists(ctx, dependency.key)
+				if err != nil {
+					return nil, false, fmt.Errorf("check %s asset %q: %w", dependency.name, record.ID, err)
+				}
+				if !exists {
+					return nil, false, nil
+				}
 			}
-			if !exists {
-				return nil, false, nil
+		}
+		if request.DocVersion > 0 &&
+			(request.DocVersion < record.FirstSeenVersion || request.DocVersion > record.LastSeenVersion) {
+			if request.DocVersion < record.FirstSeenVersion {
+				record.FirstSeenVersion = request.DocVersion
 			}
+			if request.DocVersion > record.LastSeenVersion {
+				record.LastSeenVersion = request.DocVersion
+			}
+			recordsToTouch = append(recordsToTouch, record)
+		}
+	}
+	// Version visibility is advanced only after the artifact and every binary
+	// dependency have passed validation. A corrupt cache must never make an
+	// otherwise inactive asset visible to a newly targeted version.
+	for i := range recordsToTouch {
+		record := &recordsToTouch[i]
+		if err := p.Catalog.UpsertRAGAsset(ctx, record); err != nil {
+			return nil, false, fmt.Errorf("mark cached asset %q seen in version %d: %w",
+				record.ID, request.DocVersion, err)
 		}
 	}
 	return artifact, true, nil
@@ -355,7 +503,7 @@ func recordMatchesArtifact(record store.RAGAssetRecord, asset document.ArtifactA
 	}
 	if record.DisplayStatus == document.DisplayReady {
 		return record.DisplayObjectKey == keys.AssetDisplay && record.ThumbnailObjectKey == keys.AssetThumbnail &&
-			document.CanonicalSHA256(record.DisplaySHA256)
+			document.CanonicalSHA256(record.DisplaySHA256) && document.CanonicalSHA256(record.ThumbnailSHA256)
 	}
 	return true
 }

@@ -68,7 +68,7 @@ func TestFakeUpsertSearchAndVersionDelete(t *testing.T) {
 
 	// Dense similarity and a keyword match should jointly rank the weather
 	// chunk first.
-	hits, err := f.HybridSearch(ctx, "kb1", SearchQuery{Dense: [][]float32{{0.9, 0.1}}, Text: "天气"}, 2)
+	hits, err := f.HybridSearch(ctx, "kb1", SearchQuery{Dense: [][]float32{{0.9, 0.1}}, Text: "天气", ActiveVersions: map[string]int64{"d1": 1}}, 2)
 	if err != nil || len(hits) == 0 {
 		t.Fatalf("search: %v err=%v", hits, err)
 	}
@@ -87,7 +87,7 @@ func TestFakeUpsertSearchAndVersionDelete(t *testing.T) {
 	if err := f.DeleteDocVersion(ctx, "kb1", "d1", 1); err != nil {
 		t.Fatal(err)
 	}
-	hits, err = f.HybridSearch(ctx, "kb1", SearchQuery{Dense: [][]float32{{0, 1}}}, 10)
+	hits, err = f.HybridSearch(ctx, "kb1", SearchQuery{Dense: [][]float32{{0, 1}}, ActiveVersions: map[string]int64{"d1": 2}}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestFakeUpsertSearchAndVersionDelete(t *testing.T) {
 	if err := f.DropCollection(ctx, "kb1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.HybridSearch(ctx, "kb1", SearchQuery{Dense: [][]float32{{1, 0}}, Text: "x"}, 1); err == nil {
+	if _, err := f.HybridSearch(ctx, "kb1", SearchQuery{Dense: [][]float32{{1, 0}}, Text: "x", ActiveVersions: map[string]int64{"d1": 1}}, 1); err == nil {
 		t.Fatal("collection 已删应报错")
 	}
 }
@@ -167,7 +167,7 @@ func TestFakeRejectsWrongVectorDimensionsWithoutPartialWrite(t *testing.T) {
 	if got := f.Count("kb1"); got != 0 {
 		t.Fatalf("失败批次不应部分写入, Count = %d", got)
 	}
-	if _, err := f.HybridSearch(ctx, "kb1", SearchQuery{Dense: [][]float32{{1}}}, 1); err == nil {
+	if _, err := f.HybridSearch(ctx, "kb1", SearchQuery{Dense: [][]float32{{1}}, ActiveVersions: map[string]int64{"d1": 1}}, 1); err == nil {
 		t.Fatal("查询向量维度不匹配应报错")
 	}
 }
@@ -185,8 +185,9 @@ func TestFakeThreeRouteRRF(t *testing.T) {
 		t.Fatal(err)
 	}
 	hits, err := f.HybridSearch(ctx, "kb1", SearchQuery{
-		Dense: [][]float32{{1, 0}, {0, 1}},
-		Text:  "alpha",
+		Dense:          [][]float32{{1, 0}, {0, 1}},
+		Text:           "alpha",
+		ActiveVersions: map[string]int64{"dense-a": 1, "dense-b": 1},
 	}, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -220,8 +221,9 @@ func TestFakeBM25IndexesSectionTitleButReturnsOriginalBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	hits, err := f.HybridSearch(ctx, "kb1", SearchQuery{
-		Dense: [][]float32{{1, 0}},
-		Text:  "罕见安装标题",
+		Dense:          [][]float32{{1, 0}},
+		Text:           "罕见安装标题",
+		ActiveVersions: map[string]int64{"title-hit": 1, "dense-hit": 1},
 	}, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -231,5 +233,29 @@ func TestFakeBM25IndexesSectionTitleButReturnsOriginalBody(t *testing.T) {
 	}
 	if hits[0].Content != "正文没有查询词" {
 		t.Fatalf("retrieval exposed indexed title envelope: %q", hits[0].Content)
+	}
+}
+
+func TestFakeSearchFiltersInactiveVersionsBeforeTopK(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := NewFake()
+	if err := f.EnsureCollection(ctx, "kb1", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.UpsertChunks(ctx, "kb1", []ChunkData{
+		mkChunk("d1", 0, 1, "active", []float32{0, 1}),
+		mkChunk("d1", 0, 2, "staging-high-score", []float32{1, 0}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := f.HybridSearch(ctx, "kb1", SearchQuery{
+		Dense: [][]float32{{1, 0}}, ActiveVersions: map[string]int64{"d1": 1},
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].DocVersion != 1 || hits[0].Content != "active" {
+		t.Fatalf("inactive staging vector displaced active result: %+v", hits)
 	}
 }

@@ -9,18 +9,39 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"sort"
 	"strings"
 
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/rag/document"
+	"github.com/qs3c/bkcrab/internal/rag/enrich"
 	"github.com/qs3c/bkcrab/internal/rag/parse"
+	"github.com/qs3c/bkcrab/internal/rag/vision"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
 const (
-	parsedArtifactSchemaVersion = "parsed-artifact-v1"
-	splitterSchemaVersion       = "search-content-v1"
+	splitterSchemaVersion = "search-content-v2"
 )
+
+// indexFingerprintInput is the complete persisted search/index contract. Keep
+// it named so schema-version changes are testable and cannot disappear inside
+// an anonymous struct refactor.
+type indexFingerprintInput struct {
+	ParseFingerprint        string `json:"parseFingerprint"`
+	ChunkSize               int    `json:"chunkSize"`
+	ChunkOverlap            int    `json:"chunkOverlap"`
+	SplitterSchemaVersion   string `json:"splitterSchemaVersion"`
+	EmbeddingModel          string `json:"embeddingModel"`
+	EmbeddingDimensions     int    `json:"embeddingDimensions"`
+	EmbeddingContract       string `json:"embeddingContract"`
+	EnrichmentEnabled       bool   `json:"enrichmentEnabled"`
+	TextProviderFingerprint string `json:"textProviderFingerprint,omitempty"`
+	TextModel               string `json:"textModel,omitempty"`
+	EnrichmentPromptVersion string `json:"enrichmentPromptVersion,omitempty"`
+	EnrichmentSchemaVersion string `json:"enrichmentSchemaVersion,omitempty"`
+}
+
+func buildIndexFingerprint(input indexFingerprintInput) string { return fingerprint(input) }
 
 // BuildVersionSnapshot derives the immutable, secret-free execution contract
 // for a document from the current KB and runtime configuration. It is also the
@@ -66,63 +87,36 @@ func (s *Service) buildVersionSnapshotAndBinding(
 		return nil, config.RAGEmbeddingCfg{}, err
 	}
 
-	documentAIProviderFingerprint := fingerprint(struct {
-		APIType              string   `json:"apiType"`
-		Endpoint             string   `json:"endpoint"`
-		AllowedEndpointHosts []string `json:"allowedEndpointHosts"`
-		AllowPrivateEndpoint bool     `json:"allowPrivateEndpoint"`
-	}{
-		APIType:              strings.TrimSpace(s.cfg.DocumentAI.APIType),
-		Endpoint:             canonicalEndpoint(s.cfg.DocumentAI.Endpoint),
-		AllowedEndpointHosts: canonicalStrings(s.cfg.DocumentAI.AllowedEndpointHosts),
-		AllowPrivateEndpoint: s.cfg.DocumentAI.AllowPrivateEndpoint,
-	})
-	embeddingContractFingerprint := fingerprint(struct {
-		Provider string `json:"provider"`
-		Endpoint string `json:"endpoint"`
-		Model    string `json:"model"`
-		Dims     int    `json:"dims"`
-	}{
-		Provider: kb.EmbedProvider,
-		Endpoint: canonicalEndpoint(embeddingCfg.Endpoint),
-		Model:    kb.EmbedModel,
-		Dims:     kb.EmbedDims,
-	})
+	documentAIProviderFingerprint := vision.ProviderFingerprint(s.cfg.DocumentAI)
+	embeddingContractFingerprint := embeddingContractFingerprintForKB(kb, embeddingCfg)
 
-	parseFingerprint := fingerprint(struct {
-		SourceSHA256              string `json:"sourceSha256"`
-		ParseMode                 string `json:"parseMode"`
-		ArtifactSchemaVersion     string `json:"artifactSchemaVersion"`
-		ParserVersion             string `json:"parserVersion"`
-		MarkItDownVersion         string `json:"markItDownVersion"`
-		PDFRenderDPI              int    `json:"pdfRenderDpi"`
-		VisionProviderFingerprint string `json:"visionProviderFingerprint"`
-		VisionModel               string `json:"visionModel"`
-		VisionPromptVersion       string `json:"visionPromptVersion"`
-	}{
+	parseFingerprint, err := document.ParseFingerprint(document.ParseFingerprintInput{
 		SourceSHA256:              sourceSHA256,
 		ParseMode:                 string(parseMode),
-		ArtifactSchemaVersion:     parsedArtifactSchemaVersion,
 		ParserVersion:             parse.LocalParserVersion,
 		MarkItDownVersion:         "none",
 		PDFRenderDPI:              s.cfg.Limits.PDFRenderDPI,
+		PDFRoutingVersion:         parse.PDFAutoRoutingVersion,
+		MaxPages:                  s.cfg.Limits.MaxPagesPerDocument,
+		MaxVisionPages:            s.cfg.Limits.MaxVisionPagesPerDocument,
+		MaxVisionAssets:           s.cfg.Limits.MaxVisionAssetsPerDocument,
+		MaxAssets:                 s.cfg.Limits.MaxAssetsPerDocument,
+		MaxAssetBytes:             s.cfg.Limits.MaxAssetBytes,
+		MaxExtractedBytes:         s.cfg.Limits.MaxExtractedBytes,
+		MaxVisionInputBytes:       s.cfg.Limits.MaxVisionInputBytes,
+		MaxImagePixels:            s.cfg.Limits.MaxImagePixels,
+		DisplayMaxEdge:            s.cfg.Limits.DisplayMaxEdge,
+		ThumbnailMaxEdge:          s.cfg.Limits.ThumbnailMaxEdge,
 		VisionProviderFingerprint: documentAIProviderFingerprint,
 		VisionModel:               strings.TrimSpace(s.cfg.DocumentAI.VisionModel),
 		VisionPromptVersion:       strings.TrimSpace(s.cfg.DocumentAI.VisionPromptVersion),
+		PageSchemaVersion:         vision.PageSchemaVersion,
+		ImageSchemaVersion:        vision.ImageDescriptionSchemaVersion,
 	})
-	indexFingerprint := fingerprint(struct {
-		ParseFingerprint        string `json:"parseFingerprint"`
-		ChunkSize               int    `json:"chunkSize"`
-		ChunkOverlap            int    `json:"chunkOverlap"`
-		SplitterSchemaVersion   string `json:"splitterSchemaVersion"`
-		EmbeddingModel          string `json:"embeddingModel"`
-		EmbeddingDimensions     int    `json:"embeddingDimensions"`
-		EmbeddingContract       string `json:"embeddingContract"`
-		EnrichmentEnabled       bool   `json:"enrichmentEnabled"`
-		TextProviderFingerprint string `json:"textProviderFingerprint,omitempty"`
-		TextModel               string `json:"textModel,omitempty"`
-		EnrichmentPromptVersion string `json:"enrichmentPromptVersion,omitempty"`
-	}{
+	if err != nil {
+		return nil, config.RAGEmbeddingCfg{}, fmt.Errorf("build parse fingerprint: %w", err)
+	}
+	indexFingerprint := buildIndexFingerprint(indexFingerprintInput{
 		ParseFingerprint:      parseFingerprint,
 		ChunkSize:             kb.ChunkSize,
 		ChunkOverlap:          kb.ChunkOverlap,
@@ -146,6 +140,12 @@ func (s *Service) buildVersionSnapshotAndBinding(
 		EnrichmentPromptVersion: func() string {
 			if kb.EnrichmentEnabled {
 				return strings.TrimSpace(s.cfg.DocumentAI.EnrichmentPromptVersion)
+			}
+			return ""
+		}(),
+		EnrichmentSchemaVersion: func() string {
+			if kb.EnrichmentEnabled {
+				return enrich.EnrichmentSchemaVersion
 			}
 			return ""
 		}(),
@@ -178,6 +178,24 @@ func (s *Service) buildVersionSnapshotAndBinding(
 		EmbeddingDimensions:          kb.EmbedDims,
 		EmbeddingContractFingerprint: embeddingContractFingerprint,
 	}, embeddingCfg, nil
+}
+
+// embeddingContractFingerprintForKB identifies the secret-free embedding
+// contract that determines vector compatibility. Search uses the same key so
+// vectors are shared only when provider routing, endpoint, model, and
+// dimensions are all identical.
+func embeddingContractFingerprintForKB(kb *store.RAGKBRecord, cfg config.RAGEmbeddingCfg) string {
+	return fingerprint(struct {
+		Provider string `json:"provider"`
+		Endpoint string `json:"endpoint"`
+		Model    string `json:"model"`
+		Dims     int    `json:"dims"`
+	}{
+		Provider: kb.EmbedProvider,
+		Endpoint: canonicalEndpoint(cfg.Endpoint),
+		Model:    kb.EmbedModel,
+		Dims:     kb.EmbedDims,
+	})
 }
 
 func validSHA256Hex(value string) bool {
@@ -221,17 +239,6 @@ func canonicalEndpoint(value string) string {
 	return strings.TrimRight(strings.TrimSpace(value), "/")
 }
 
-func canonicalStrings(values []string) []string {
-	canonical := make([]string, 0, len(values))
-	for _, value := range values {
-		if value = strings.ToLower(strings.TrimSpace(value)); value != "" {
-			canonical = append(canonical, value)
-		}
-	}
-	sort.Strings(canonical)
-	return canonical
-}
-
 func microUSD(value float64) int64 {
 	if value <= 0 {
 		return 0
@@ -240,12 +247,14 @@ func microUSD(value float64) int64 {
 }
 
 // sameRuntimeProviderContracts is deliberately narrower than the full index
-// fingerprint. A queued version keeps immutable KB choices, but it must be
-// superseded if the running binary cannot execute its parser implementation
-// version or if an outbound provider contract drifted.
+// fingerprint. A queued version keeps immutable KB chunk choices, but it must
+// be superseded if the running binary cannot execute its parse/search schema
+// versions or if an outbound provider contract drifted.
 func sameRuntimeProviderContracts(left, right *store.RAGDocumentVersionRecord) bool {
 	if left == nil || right == nil ||
 		left.ParserVersion != right.ParserVersion ||
+		left.ParseFingerprint != right.ParseFingerprint ||
+		left.SplitterVersion != right.SplitterVersion ||
 		left.EmbeddingContractFingerprint != right.EmbeddingContractFingerprint ||
 		left.EmbeddingProvider != right.EmbeddingProvider ||
 		left.EmbeddingModel != right.EmbeddingModel ||

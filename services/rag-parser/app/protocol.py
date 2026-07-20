@@ -975,8 +975,15 @@ def sha256_file(path: Path) -> tuple[str, int]:
 
 
 def make_health_document(
-    *, service_version: str, max_input_bytes: int, max_output_bytes: int
+    *,
+    service_version: str,
+    max_input_bytes: int,
+    max_output_bytes: int,
+    pdf_engine: str = "",
+    pdf_engine_version: str = "",
 ) -> dict[str, Any]:
+    if bool(pdf_engine) != bool(pdf_engine_version):
+        raise RuntimeError("PDF engine name and version must be configured together")
     value = {
         "protocolVersion": PROTOCOL_VERSION,
         "serviceVersion": service_version,
@@ -991,7 +998,11 @@ def make_health_document(
                 "markitdownVersion": "0.1.6",
                 "wrapperVersion": "office-wrapper-v1",
             },
-            "pdf": {"enabled": False, "engine": "", "engineVersion": ""},
+            "pdf": {
+                "enabled": bool(pdf_engine),
+                "engine": pdf_engine,
+                "engineVersion": pdf_engine_version,
+            },
         },
     }
     validate_health_document(value)

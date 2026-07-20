@@ -28,3 +28,16 @@ func TestBodySupportsOldRowsAndTruncatedBreadcrumbs(t *testing.T) {
 		t.Fatalf("unrelated content envelope was stripped: %q", got)
 	}
 }
+
+func TestAnswerKeepsEnhancementSubordinate(t *testing.T) {
+	t.Parallel()
+	if got := Answer("原始表格", "这是表格摘要"); got != "原始表格\n\n语义辅助（可能有误，原文优先）：\n这是表格摘要" {
+		t.Fatalf("answer = %q", got)
+	}
+	if got := Answer("  原文  ", ""); got != "原文" {
+		t.Fatalf("raw-only answer = %q", got)
+	}
+	if got := AppendEnhancement("章节：标题\n\n原文", "摘要"); got != "章节：标题\n\n原文\n\n语义辅助（可能有误，原文优先）：\n摘要" {
+		t.Fatalf("enhanced search = %q", got)
+	}
+}

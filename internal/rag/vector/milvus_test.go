@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,6 +78,32 @@ func TestMilvusHelpers(t *testing.T) {
 	}
 }
 
+func TestMilvusActiveVersionFilterIsStableAndBounded(t *testing.T) {
+	t.Parallel()
+	active := map[string]int64{"doc_b": 2, "doc_a": 1, "doc_c": 2}
+	got, err := buildActiveVersionFilter(active, 32*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `((doc_version == 1 && doc_id in ["doc_a"]) || (doc_version == 2 && doc_id in ["doc_b","doc_c"]))`
+	if got != want {
+		t.Fatalf("filter = %q, want %q", got, want)
+	}
+	if _, err := buildActiveVersionFilter(map[string]int64{`doc_"unsafe`: 1}, 32*1024); err == nil {
+		t.Fatal("unsafe document ID was accepted")
+	}
+	if _, err := buildActiveVersionFilter(active, len(got)-1); err == nil {
+		t.Fatal("oversized filter was accepted")
+	}
+}
+
+func TestMilvusActiveVersionFilterRejectsDocumentIDBeyondDBContract(t *testing.T) {
+	tooLong := "d" + strings.Repeat("x", 64)
+	if _, err := buildActiveVersionFilter(map[string]int64{tooLong: 1}, 32*1024); err == nil {
+		t.Fatal("active-version filter accepted a document ID longer than VARCHAR(64)")
+	}
+}
+
 func TestMilvusRoundTrip(t *testing.T) {
 	addr := os.Getenv("RAG_TEST_MILVUS_ADDR")
 	if addr == "" {
@@ -127,8 +154,9 @@ func TestMilvusRoundTrip(t *testing.T) {
 	}
 
 	hits, err := m.HybridSearch(ctx, kbID, SearchQuery{
-		Dense: [][]float32{{0.9, 0.1, 0, 0}, {0.8, 0.2, 0, 0}},
-		Text:  "天气",
+		Dense:          [][]float32{{0.9, 0.1, 0, 0}, {0.8, 0.2, 0, 0}},
+		Text:           "天气",
+		ActiveVersions: map[string]int64{"d1": 1},
 	}, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +179,7 @@ func TestMilvusRoundTrip(t *testing.T) {
 	if err := m.DeleteDocVersion(ctx, kbID, "d1", 1); err != nil {
 		t.Fatal(err)
 	}
-	hits, err = m.HybridSearch(ctx, kbID, SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}}, 10)
+	hits, err = m.HybridSearch(ctx, kbID, SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}, ActiveVersions: map[string]int64{"d1": 2}}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +190,7 @@ func TestMilvusRoundTrip(t *testing.T) {
 	if err := m.DeleteDoc(ctx, kbID, "d1"); err != nil {
 		t.Fatal(err)
 	}
-	hits, err = m.HybridSearch(ctx, kbID, SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}}, 10)
+	hits, err = m.HybridSearch(ctx, kbID, SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}, ActiveVersions: map[string]int64{"d1": 2}}, 10)
 	if err != nil || len(hits) != 0 {
 		t.Fatalf("DeleteDoc 后仍有结果: %+v err=%v", hits, err)
 	}

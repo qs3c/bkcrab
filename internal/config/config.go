@@ -1090,7 +1090,31 @@ func (c RAGCfg) Validate() error {
 		return fmt.Errorf("rag.limits.maxSearchContentBytes=%d exceeds Milvus content maxLength=%d",
 			c.Limits.MaxSearchContentBytes, RAGMilvusContentMaxLength)
 	}
+	if c.Limits.MaxDocsPerKB > 0 && c.Limits.MaxMilvusFilterBytes > 0 {
+		required := worstCaseMilvusActiveFilterBytes(c.Limits.MaxDocsPerKB)
+		if c.Limits.MaxMilvusFilterBytes < required {
+			return fmt.Errorf("rag.limits.maxMilvusFilterBytes=%d cannot hold the maxDocsPerKB=%d active-version filter (requires at least %d bytes)",
+				c.Limits.MaxMilvusFilterBytes, c.Limits.MaxDocsPerKB, required)
+		}
+	}
 	return nil
+}
+
+// worstCaseMilvusActiveFilterBytes mirrors the byte-stable predicate emitted
+// by internal/rag/vector for the DB contract's VARCHAR(64) document IDs and
+// positive int64 versions. The worst case gives every document its own version
+// group, which maximizes repeated field/operator syntax.
+func worstCaseMilvusActiveFilterBytes(maxDocs int) int {
+	if maxDocs <= 0 {
+		return 0
+	}
+	const (
+		maxDocIDBytes  = 64
+		maxVersionText = 19 // MaxInt64
+		groupSyntax    = len("(doc_version == ") + maxVersionText + len(" && doc_id in [\"") + maxDocIDBytes + len("\"])")
+		orSyntax       = len(" || ")
+	)
+	return len("(") + maxDocs*groupSyntax + (maxDocs-1)*orSyntax + len(")")
 }
 
 func (c RAGLimitsCfg) SearchContentWithinLimit(value string) bool {

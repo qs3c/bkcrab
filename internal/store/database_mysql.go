@@ -414,6 +414,7 @@ func mysqlMigrationSQL() []string {
 			thumbnail_object_key LONGTEXT NOT NULL,
 			display_status VARCHAR(16) NOT NULL,
 			display_sha256 CHAR(64) NOT NULL,
+			thumbnail_sha256 CHAR(64) NOT NULL,
 			byte_size BIGINT NOT NULL,
 			width INTEGER NOT NULL,
 			height INTEGER NOT NULL,

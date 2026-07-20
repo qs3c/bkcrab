@@ -122,6 +122,7 @@ func TestRAGDocumentVersionAndCatalogCRUD(t *testing.T) {
 		ThumbnailObjectKey: "rag/u/kb/doc/assets/thumbnail.webp",
 		DisplayStatus:      "ready",
 		DisplaySHA256:      "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		ThumbnailSHA256:    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 		ByteSize:           100,
 		Width:              20,
 		Height:             10,
@@ -132,6 +133,16 @@ func TestRAGDocumentVersionAndCatalogCRUD(t *testing.T) {
 	}
 	if err := st.UpsertRAGAsset(ctx, asset); err != nil {
 		t.Fatalf("upsert asset: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE rag_assets SET thumbnail_sha256='' WHERE id=?`, asset.ID); err != nil {
+		t.Fatalf("simulate Phase B asset row: %v", err)
+	}
+	if err := st.UpsertRAGAsset(ctx, asset); err != nil {
+		t.Fatalf("backfill thumbnail hash: %v", err)
+	}
+	backfilled, err := st.GetRAGAsset(ctx, asset.ID)
+	if err != nil || backfilled.ThumbnailSHA256 != asset.ThumbnailSHA256 {
+		t.Fatalf("thumbnail hash backfill = %+v err=%v", backfilled, err)
 	}
 	seenAgain := *asset
 	seenAgain.FirstSeenVersion = 3

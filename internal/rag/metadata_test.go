@@ -64,7 +64,7 @@ func TestMetadataChunkIndexes(t *testing.T) {
 	}
 }
 
-func TestBuildMetadataSourceUsesOnlyDoneDocumentChunks(t *testing.T) {
+func TestBuildMetadataSourceUsesOnlyActiveDocumentVersion(t *testing.T) {
 	service, fake := newTestService(t, false)
 	ctx := context.Background()
 	kb, err := service.CreateKB(ctx, "u1", "temporary", "", 512, 64)
@@ -72,14 +72,14 @@ func TestBuildMetadataSourceUsesOnlyDoneDocumentChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 	ready := &store.RAGDocumentRecord{
-		ID: "ready", KBID: kb.ID, FileName: "manual.md", Status: "DONE",
-		ChunkCount: 5, TokenCount: 500, Version: 2, UploadedAt: time.Now().UTC(),
+		ID: "ready", KBID: kb.ID, FileName: "manual.md", Status: "FAILED",
+		ChunkCount: 5, TokenCount: 500, Version: 3, ActiveVersion: 2, UploadedAt: time.Now().UTC(),
 	}
 	if err := service.st.CreateRAGDocument(ctx, ready); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.st.CreateRAGDocument(ctx, &store.RAGDocumentRecord{
-		ID: "pending", KBID: kb.ID, FileName: "pending.md", Status: "PROCESSING",
+		ID: "pending", KBID: kb.ID, FileName: "pending.md", Status: "DONE",
 		ChunkCount: 1, TokenCount: 10, Version: 1, UploadedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
@@ -88,6 +88,7 @@ func TestBuildMetadataSourceUsesOnlyDoneDocumentChunks(t *testing.T) {
 		{DocID: ready.ID, Index: 0, DocVersion: 2, Content: "BEGIN installation guide", Vector: []float32{1, 0, 0, 0}},
 		{DocID: ready.ID, Index: 2, DocVersion: 2, Content: "MIDDLE troubleshooting", Vector: []float32{1, 0, 0, 0}},
 		{DocID: ready.ID, Index: 4, DocVersion: 2, Content: "END support workflow", Vector: []float32{1, 0, 0, 0}},
+		{DocID: ready.ID, Index: 0, DocVersion: 3, Content: "FAILED TARGET content", Vector: []float32{1, 0, 0, 0}},
 		{DocID: ready.ID, Index: 0, DocVersion: 1, Content: "STALE content", Vector: []float32{1, 0, 0, 0}},
 	}); err != nil {
 		t.Fatal(err)
@@ -108,7 +109,7 @@ func TestBuildMetadataSourceUsesOnlyDoneDocumentChunks(t *testing.T) {
 			t.Fatalf("excerpts missing %s: %q", content, source.Excerpts)
 		}
 	}
-	if strings.Contains(source.Excerpts, "STALE") {
+	if strings.Contains(source.Excerpts, "STALE") || strings.Contains(source.Excerpts, "FAILED TARGET") {
 		t.Fatalf("excerpts included stale document version: %q", source.Excerpts)
 	}
 	if _, err := service.BuildMetadataSource(ctx, "u2", kb.ID); !errors.Is(err, ErrForbidden) {
@@ -116,7 +117,7 @@ func TestBuildMetadataSourceUsesOnlyDoneDocumentChunks(t *testing.T) {
 	}
 }
 
-func TestBuildMetadataSourceRejectsKnowledgeBaseWithoutDoneDocuments(t *testing.T) {
+func TestBuildMetadataSourceRejectsKnowledgeBaseWithoutActiveDocuments(t *testing.T) {
 	service, _ := newTestService(t, false)
 	kb, err := service.CreateKB(context.Background(), "u1", "empty", "", 0, 0)
 	if err != nil {

@@ -39,7 +39,10 @@ func newRAGDocumentAIBudgetFixture(
 	}
 	return &ragDocumentAIBudgetFixture{
 		store: st, claim: claim,
-		period:     time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC),
+		period: func() time.Time {
+			now := time.Now().UTC()
+			return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		}(),
 		userLimits: userLimits,
 	}
 }
@@ -297,11 +300,51 @@ func TestRAGDocumentAIBudgetReconcilesExpiredReservedAndAbandonedSent(t *testing
 		t.Fatalf("abandoned sent usage = %+v, %v", sentUsage, err)
 	}
 	assertRAGDocumentAIBudgetCharges(t, fixture, 1, 10, 120)
-	cacheHit := ragDocumentAITestUsage(current.Fence, "attempt-logical-cache-hit", abandoned.LogicalRequestKey, fixture.period, 1, 1, 10)
-	if ok, err := fixture.store.ReserveRAGDocumentAIUsage(ctx, current.Fence, cacheHit, limits); err != nil || ok {
-		t.Fatalf("committed logical cache hit = %v, %v", ok, err)
+	retryWithoutCache := ragDocumentAITestUsage(current.Fence, "attempt-logical-cache-miss", abandoned.LogicalRequestKey, fixture.period, 1, 1, 10)
+	if ok, err := fixture.store.ReserveRAGDocumentAIUsage(ctx, current.Fence, retryWithoutCache, limits); err != nil || !ok {
+		t.Fatalf("settled usage without a durable cache suppressed retry = %v, %v", ok, err)
 	}
 	if count, err := fixture.store.ReconcileRAGDocumentAIUsage(ctx, future, future, 10); err != nil || count != 0 {
 		t.Fatalf("idempotent reconcile = %d, %v", count, err)
+	}
+}
+
+func TestRAGDocumentAITaskBudgetCreateRejectsConflictingSnapshot(t *testing.T) {
+	limits := RAGDocumentAILimits{MaxRequests: 4, MaxTokens: 100, MaxCostMicroUSD: 1_000}
+	fixture := newRAGDocumentAIBudgetFixture(t, "doc_budget_snapshot_conflict", limits, limits)
+	ctx := context.Background()
+	if err := fixture.store.CreateRAGDocumentAITaskBudget(ctx, nil); err == nil {
+		t.Fatal("nil task budget must be rejected")
+	}
+	existing, err := fixture.store.GetRAGDocumentAITaskBudget(ctx, fixture.claim.Fence.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.CreateRAGDocumentAITaskBudget(ctx, &RAGDocumentAITaskBudgetRecord{
+		TaskID: existing.TaskID, UserID: existing.UserID,
+		MaxRequests: existing.MaxRequests, MaxTokens: existing.MaxTokens,
+		MaxCostMicroUSD: existing.MaxCostMicroUSD,
+	}); err != nil {
+		t.Fatalf("idempotent task budget create: %v", err)
+	}
+	if err := fixture.store.CreateRAGDocumentAITaskBudget(ctx, &RAGDocumentAITaskBudgetRecord{
+		TaskID: existing.TaskID, UserID: "different_user",
+		MaxRequests: existing.MaxRequests + 1, MaxTokens: existing.MaxTokens,
+		MaxCostMicroUSD: existing.MaxCostMicroUSD,
+	}); !errors.Is(err, ErrRAGDocumentAIUsageConflict) {
+		t.Fatalf("conflicting task budget error = %v", err)
+	}
+}
+
+func TestRAGDocumentAIBudgetRejectsNonCurrentUTCPeriod(t *testing.T) {
+	limits := RAGDocumentAILimits{MaxRequests: 4, MaxTokens: 100, MaxCostMicroUSD: 1_000}
+	fixture := newRAGDocumentAIBudgetFixture(t, "doc_budget_period", limits, limits)
+	wrongPeriod := time.Now().UTC().AddDate(0, 0, -1)
+	attempt := ragDocumentAITestUsage(fixture.claim.Fence, "attempt-wrong-period", "logical-wrong-period", wrongPeriod, 1, 1, 0)
+	if ok, err := fixture.store.ReserveRAGDocumentAIUsage(context.Background(), fixture.claim.Fence, attempt, limits); ok || err == nil {
+		t.Fatalf("wrong UTC period reserve = %v, %v; want rejection", ok, err)
+	}
+	if _, err := fixture.store.GetRAGDocumentAIUserBudget(context.Background(), "u_claim", wrongPeriod); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("wrong-period aggregate should not be created, err=%v", err)
 	}
 }

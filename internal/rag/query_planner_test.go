@@ -14,6 +14,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 func TestPlanQueryUsesQuestionHistoryAndSingleLLMCall(t *testing.T) {
@@ -114,6 +115,16 @@ type queryCaptureVector struct {
 	topK      []int
 }
 
+func addActiveSearchDocument(t *testing.T, service *Service, kbID, docID string) {
+	t.Helper()
+	if err := service.st.CreateRAGDocument(context.Background(), &store.RAGDocumentRecord{
+		ID: docID, KBID: kbID, FileName: docID + ".md", FileType: "md",
+		Status: "DONE", Version: 1, ActiveVersion: 1, IndexFormatVersion: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (v *queryCaptureVector) HybridSearch(ctx context.Context, kbID string, query vector.SearchQuery, topK int) ([]vector.SearchHit, error) {
 	v.mu.Lock()
 	v.queryText = append(v.queryText, query.Text)
@@ -181,6 +192,8 @@ func TestSearchRoutesRewriteToBM25AndDenseAndHyDEToDense(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	addActiveSearchDocument(t, service, first.ID, "doc_query_one")
+	addActiveSearchDocument(t, service, second.ID, "doc_query_two")
 
 	if _, err := service.SearchWithContext(ctx, "u1", []string{first.ID, second.ID}, SearchContext{
 		Query:   "那 Windows 呢？",
@@ -231,11 +244,73 @@ func TestSearchDeduplicatesDenseRouteWhenHyDEFallsBackToRewrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	addActiveSearchDocument(t, service, kb.ID, "doc_query_single")
 	if _, err := service.Search(context.Background(), "u1", []string{kb.ID}, "怎么安装？", 5); err != nil {
 		t.Fatal(err)
 	}
 	denseRoutes, _ := vec.routes()
 	if len(denseRoutes) != 1 || denseRoutes[0] != 1 {
 		t.Fatalf("duplicate dense route was not removed: %#v", denseRoutes)
+	}
+}
+
+func TestSearchVectorCacheSeparatesResolvedEmbeddingContracts(t *testing.T) {
+	newEndpoint := func(embedding []float32) (*httptest.Server, *atomic.Int32) {
+		calls := &atomic.Int32{}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			var request struct {
+				Input []string `json:"input"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			data := make([]map[string]any, len(request.Input))
+			for index := range request.Input {
+				data[index] = map[string]any{"index": index, "embedding": embedding}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+		}))
+		t.Cleanup(server.Close)
+		return server, calls
+	}
+	firstEndpoint, firstCalls := newEndpoint([]float32{1, 0, 0, 0})
+	secondEndpoint, secondCalls := newEndpoint([]float32{0, 1, 0, 0})
+
+	configs := map[string]config.RAGEmbeddingCfg{
+		"u1": {Endpoint: firstEndpoint.URL, Model: "shared-model", Dims: 4},
+		"u2": {Endpoint: secondEndpoint.URL, Model: "shared-model", Dims: 4},
+	}
+	vec := &queryCaptureVector{Fake: vector.NewFake()}
+	service := New(Deps{
+		Store:   newRAGTestStore(t),
+		Vector:  vec,
+		Objects: objects.NewLocalFS(t.TempDir()),
+		Cfg: config.RAGCfg{
+			Milvus:    config.MilvusCfg{Address: "fake"},
+			Embedding: config.RAGEmbeddingCfg{Endpoint: firstEndpoint.URL, Model: "shared-model", Dims: 4},
+		},
+		UserEmbedCfg: func(_ context.Context, userID string) (config.RAGEmbeddingCfg, bool) {
+			cfg, ok := configs[userID]
+			return cfg, ok
+		},
+	})
+	first, err := service.CreateKB(context.Background(), "u1", "first", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CreateKB(context.Background(), "u2", "second", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addActiveSearchDocument(t, service, first.ID, "doc_contract_one")
+	addActiveSearchDocument(t, service, second.ID, "doc_contract_two")
+
+	if _, err := service.Search(context.Background(), "", []string{first.ID, second.ID}, "query", 5); err != nil {
+		t.Fatal(err)
+	}
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
+		t.Fatalf("embedding endpoint calls = (%d, %d), want one per distinct contract", firstCalls.Load(), secondCalls.Load())
 	}
 }

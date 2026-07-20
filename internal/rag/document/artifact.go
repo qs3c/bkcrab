@@ -467,9 +467,21 @@ type ParseFingerprintInput struct {
 	MarkItDownVersion         string `json:"markItDownVersion"`
 	PDFRenderDPI              int    `json:"pdfRenderDpi"`
 	PDFRoutingVersion         string `json:"pdfRoutingVersion"`
+	MaxPages                  int    `json:"maxPages"`
+	MaxVisionPages            int    `json:"maxVisionPages"`
+	MaxVisionAssets           int    `json:"maxVisionAssets"`
+	MaxAssets                 int    `json:"maxAssets"`
+	MaxAssetBytes             int64  `json:"maxAssetBytes"`
+	MaxExtractedBytes         int64  `json:"maxExtractedBytes"`
+	MaxVisionInputBytes       int64  `json:"maxVisionInputBytes"`
+	MaxImagePixels            int64  `json:"maxImagePixels"`
+	DisplayMaxEdge            int    `json:"displayMaxEdge"`
+	ThumbnailMaxEdge          int    `json:"thumbnailMaxEdge"`
 	VisionProviderFingerprint string `json:"visionProviderFingerprint"`
 	VisionModel               string `json:"visionModel"`
 	VisionPromptVersion       string `json:"visionPromptVersion"`
+	PageSchemaVersion         string `json:"pageSchemaVersion"`
+	ImageSchemaVersion        string `json:"imageSchemaVersion"`
 }
 
 func ParseFingerprint(input ParseFingerprintInput) (string, error) {
@@ -479,8 +491,15 @@ func ParseFingerprint(input ParseFingerprintInput) (string, error) {
 	if input.ParseMode != "standard" && input.ParseMode != "auto" {
 		return "", fmt.Errorf("invalid parse mode %q", input.ParseMode)
 	}
-	if !validContractString(input.ParserVersion, 128) || input.PDFRenderDPI < 1 {
-		return "", errors.New("parser version and positive PDF render DPI are required")
+	if !validContractString(input.ParserVersion, 128) ||
+		!validContractString(input.PDFRoutingVersion, 128) ||
+		!validContractString(input.PageSchemaVersion, 128) ||
+		!validContractString(input.ImageSchemaVersion, 128) ||
+		input.PDFRenderDPI < 1 || input.MaxPages < 1 || input.MaxVisionPages < 1 ||
+		input.MaxVisionAssets < 1 || input.MaxAssets < 1 || input.MaxAssetBytes < 1 ||
+		input.MaxExtractedBytes < 1 || input.MaxVisionInputBytes < 1 || input.MaxImagePixels < 1 ||
+		input.DisplayMaxEdge < 1 || input.ThumbnailMaxEdge < 1 {
+		return "", errors.New("complete parser versions and positive parse/render limits are required")
 	}
 	if input.VisionProviderFingerprint != "" && !CanonicalSHA256(input.VisionProviderFingerprint) {
 		return "", errors.New("vision provider fingerprint must be canonical")

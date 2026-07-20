@@ -15,10 +15,15 @@ import (
 // parser facade. Office conversion and PDF visual routing remain capability
 // gated; a missing PDF sidecar always degrades to bounded native extraction.
 type LocalParser struct {
-	Primitives        PrimitiveExtractor
-	MaxPages          int
-	MaxExtractedBytes int64
-	TempDir           string
+	Primitives            PrimitiveExtractor
+	MaxPages              int
+	MaxVisionPages        int
+	MaxExtractedBytes     int64
+	MaxVisionInputBytes   int64
+	MaxImagePixels        int64
+	VisionImageMaxEdge    int
+	MinVisualAreaPermille int
+	TempDir               string
 }
 
 func NewLocalParser(primitives PrimitiveExtractor, maxPages int, maxExtractedBytes ...int64) *LocalParser {
@@ -52,6 +57,9 @@ func (p *LocalParser) Parse(
 	case "txt":
 		return parseText(ctx, source, options)
 	case "pdf":
+		if options.Mode == config.ParseModeAuto && p.Primitives != nil {
+			return p.parseAutoPDF(ctx, source, options)
+		}
 		parsed, err := parseNativePDFWithLimit(
 			ctx, source, options, p.MaxPages, p.MaxExtractedBytes, p.TempDir,
 		)

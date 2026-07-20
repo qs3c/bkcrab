@@ -31,11 +31,13 @@ import (
 	"github.com/qs3c/bkcrab/internal/plugin"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/rag"
+	ragenrich "github.com/qs3c/bkcrab/internal/rag/enrich"
 	ragobjects "github.com/qs3c/bkcrab/internal/rag/objects"
 	ragparse "github.com/qs3c/bkcrab/internal/rag/parse"
 	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
 	ragrerank "github.com/qs3c/bkcrab/internal/rag/rerank"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
+	ragvision "github.com/qs3c/bkcrab/internal/rag/vision"
 	"github.com/qs3c/bkcrab/internal/sandbox"
 	"github.com/qs3c/bkcrab/internal/scope"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -302,6 +304,34 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		if objectErr != nil {
 			slog.Error("rag: original object store initialization failed; RAG disabled", "error", objectErr)
 		} else {
+			var pageVision ragvision.PageTranscriber
+			var imageVision ragvision.ImageTranscriber
+			var textEnricher ragenrich.Enricher
+			if ragCfg.Features.AdvancedParsingEnabled && strings.TrimSpace(ragCfg.DocumentAI.VisionModel) != "" {
+				visionClient, visionErr := ragvision.NewOpenAICompatible(
+					ragCfg.DocumentAI,
+					ragCfg.Limits,
+					ragvision.NewObjectCache(ragObjects, ragvision.DefaultSchemaLimits()),
+				)
+				if visionErr != nil {
+					slog.Error("rag: DocumentAI vision configuration invalid; visual routes disabled", "error", visionErr)
+				} else {
+					pageVision = visionClient
+					imageVision = visionClient
+				}
+			}
+			if ragCfg.Features.TextEnrichmentEnabled && strings.TrimSpace(ragCfg.DocumentAI.TextModel) != "" {
+				enrichmentClient, enrichmentErr := ragenrich.NewOpenAICompatible(
+					ragCfg.DocumentAI,
+					ragCfg.Limits,
+					ragenrich.NewObjectCache(ragObjects, ragenrich.DefaultSchemaLimits()),
+				)
+				if enrichmentErr != nil {
+					slog.Error("rag: DocumentAI enrichment configuration invalid; enrichment disabled", "error", enrichmentErr)
+				} else {
+					textEnricher = enrichmentClient
+				}
+			}
 			// Legacy snapshot construction only needs SQL, the original object
 			// store and provider configuration. Assemble it before connecting to
 			// Milvus so a temporary vector outage cannot turn runnable legacy work
@@ -355,6 +385,9 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					Reranker:     ranker,
 					Parser:       documentParser,
 					Primitives:   primitives,
+					PageVision:   pageVision,
+					ImageVision:  imageVision,
+					Enricher:     textEnricher,
 				})
 				slog.Info("rag service enabled", "milvus", ragCfg.Milvus.Address)
 			}
@@ -766,8 +799,9 @@ func newRAGParserClient(cfg config.RAGCfg) (*sidecar.Client, error) {
 			MaxAssets:         cfg.Limits.MaxAssetsPerDocument,
 			MaxImagePixels:    cfg.Limits.MaxImagePixels,
 		},
-		// Task 5B's dependency ADR is the only authority that may turn this on.
-		PDFLicenseApproved: false,
+		// services/rag-parser/docs/pdf-engine-adr.md approves the exact
+		// pypdfium2/PDFium distribution enforced by the sidecar client.
+		PDFLicenseApproved: true,
 	})
 }
 

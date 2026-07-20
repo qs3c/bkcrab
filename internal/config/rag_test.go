@@ -67,6 +67,26 @@ func TestRAGAdvancedDefaultsAndSearchContentValidation(t *testing.T) {
 	}
 }
 
+func TestRAGMilvusFilterLimitCoversMaximumDocumentCardinality(t *testing.T) {
+	var cfg RAGCfg
+	cfg.ApplyDefaults()
+	required := worstCaseMilvusActiveFilterBytes(cfg.Limits.MaxDocsPerKB)
+	if required <= 0 || required > cfg.Limits.MaxMilvusFilterBytes {
+		t.Fatalf("default active filter requires %d bytes, configured %d", required, cfg.Limits.MaxMilvusFilterBytes)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default config rejected: %v", err)
+	}
+	cfg.Limits.MaxMilvusFilterBytes = required - 1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "active-version filter") {
+		t.Fatalf("undersized active filter limit validation error = %v", err)
+	}
+	cfg.Limits.MaxMilvusFilterBytes = required
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("exact worst-case active filter limit rejected: %v", err)
+	}
+}
+
 func TestRAGParseModeValidation(t *testing.T) {
 	for _, value := range []string{`"standard"`, `"auto"`} {
 		var mode ParseMode

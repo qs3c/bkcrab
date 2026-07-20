@@ -215,6 +215,74 @@ func TestPDFCapabilityUnavailableDoesNotDisableOffice(t *testing.T) {
 	}
 }
 
+func TestPDFCapabilityRequiresApprovedLicenseAndExactEngine(t *testing.T) {
+	var health Health
+	if err := json.Unmarshal(healthyResponse(t), &health); err != nil {
+		t.Fatal(err)
+	}
+	health.Capabilities.PDF = PDFCapability{Enabled: true, Engine: expectedPDFEngine, EngineVersion: expectedPDFEngineVersion}
+	approvedHealth, err := json.Marshal(health)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/healthz" {
+			http.NotFound(response, request)
+			return
+		}
+		_, _ = response.Write(approvedHealth)
+	}))
+	defer server.Close()
+
+	newClient := func(endpoint string, licenseApproved bool) *Client {
+		client, err := NewClient(ClientConfig{
+			Endpoint: endpoint, HealthTTL: time.Minute, PDFLicenseApproved: licenseApproved,
+			Limits: ClientLimits{MaxInputBytes: 1024, MaxOutputBytes: 1 << 20, MaxEntryBytes: 1 << 20, MaxEntries: 32},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return client
+	}
+
+	approved := newClient(server.URL, true)
+	snapshot, err := approved.ProbeHealth(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.PDF.Enabled || !snapshot.PDF.LicenseApproved || !approved.pdfAvailable() {
+		t.Fatalf("approved PDF capability=%+v available=%v", snapshot.PDF, approved.pdfAvailable())
+	}
+
+	unapproved := newClient(server.URL, false)
+	snapshot, err = unapproved.ProbeHealth(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.PDF.Enabled || snapshot.PDF.LicenseApproved || unapproved.pdfAvailable() {
+		t.Fatalf("unapproved PDF capability=%+v available=%v", snapshot.PDF, unapproved.pdfAvailable())
+	}
+
+	health.Capabilities.PDF.EngineVersion = "5.12.2"
+	incompatibleHealth, err := json.Marshal(health)
+	if err != nil {
+		t.Fatal(err)
+	}
+	incompatibleServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		_, _ = response.Write(incompatibleHealth)
+	}))
+	defer incompatibleServer.Close()
+	incompatible := newClient(incompatibleServer.URL, true)
+	snapshot, err = incompatible.ProbeHealth(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.PDF.Enabled || incompatible.pdfAvailable() {
+		t.Fatalf("incompatible PDF engine was published: %+v", snapshot.PDF)
+	}
+}
+
 func TestIncompatibleOfficeHealthCannotPublishAnAvailableConverter(t *testing.T) {
 	health := bytes.Replace(healthyResponse(t), []byte(`"markitdownVersion": "0.1.6"`), []byte(`"markitdownVersion": "9.9.9"`), 1)
 	var convertCalls atomic.Int32

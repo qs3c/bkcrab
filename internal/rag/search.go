@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -11,23 +12,68 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/qs3c/bkcrab/internal/rag/chunktext"
+	"github.com/qs3c/bkcrab/internal/rag/document"
+	"github.com/qs3c/bkcrab/internal/rag/embed"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
 // Hit is one cross-knowledge-base retrieval result.
 type Hit struct {
-	KBID         string   `json:"kbId"`
-	KBName       string   `json:"kbName"`
-	DocID        string   `json:"docId"`
-	DocName      string   `json:"docName"`
-	ChunkIndex   int      `json:"chunkIndex"`
-	SectionTitle string   `json:"sectionTitle,omitempty"`
-	PageNum      int      `json:"pageNum,omitempty"`
-	Content      string   `json:"content"`
-	Score        float64  `json:"score"`
-	RecallScore  float64  `json:"recallScore"`
-	RerankScore  *float64 `json:"rerankScore,omitempty"`
+	KBID           string                  `json:"kbId"`
+	KBName         string                  `json:"kbName"`
+	DocID          string                  `json:"docId"`
+	DocName        string                  `json:"docName"`
+	ChunkIndex     int                     `json:"chunkIndex"`
+	SectionTitle   string                  `json:"sectionTitle,omitempty"`
+	PageNum        int                     `json:"pageNum,omitempty"`
+	SourceLocation document.SourceLocation `json:"sourceLocation"`
+	Content        string                  `json:"content"`
+	Enhancement    string                  `json:"enhancement,omitempty"`
+	Assets         []document.AssetRef     `json:"assets,omitempty"`
+	Score          float64                 `json:"score"`
+	RecallScore    float64                 `json:"recallScore"`
+	RerankScore    *float64                `json:"rerankScore,omitempty"`
+
+	DocVersion         int64  `json:"-"`
+	SearchContent      string `json:"-"`
+	IndexFormatVersion int    `json:"-"`
+}
+
+func (h Hit) AnswerText() string { return chunktext.Answer(h.Content, h.Enhancement) }
+
+type RAGResourceRef struct {
+	Asset          document.AssetRef       `json:"asset"`
+	KBID           string                  `json:"kbId"`
+	KBName         string                  `json:"kbName"`
+	DocID          string                  `json:"docId"`
+	DocName        string                  `json:"docName"`
+	ChunkIndex     int                     `json:"chunkIndex"`
+	SectionTitle   string                  `json:"sectionTitle,omitempty"`
+	SourceLocation document.SourceLocation `json:"sourceLocation"`
+}
+
+func BuildRAGResourceRefs(hits []Hit) []RAGResourceRef {
+	seen := make(map[string]struct{})
+	refs := make([]RAGResourceRef, 0)
+	for _, hit := range hits {
+		for _, asset := range hit.Assets {
+			if _, exists := seen[asset.ID]; exists {
+				continue
+			}
+			seen[asset.ID] = struct{}{}
+			location := asset.Location
+			if location.Kind == "" {
+				location = hit.SourceLocation
+			}
+			refs = append(refs, RAGResourceRef{
+				Asset: asset, KBID: hit.KBID, KBName: hit.KBName,
+				DocID: hit.DocID, DocName: hit.DocName, ChunkIndex: hit.ChunkIndex,
+				SectionTitle: hit.SectionTitle, SourceLocation: location,
+			})
+		}
+	}
+	return refs
 }
 
 // SearchContext keeps the user's current question separate from the earlier
@@ -51,6 +97,10 @@ func (s *Service) Search(ctx context.Context, ownerID string, kbIDs []string, qu
 // BM25 and one dense route; HyDE drives a second dense route. If planning fails
 // or omits HyDE, the identical dense inputs are deduplicated.
 func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs []string, input SearchContext, topN int) ([]Hit, error) {
+	return s.searchWithContext(ctx, ownerID, kbIDs, input, topN, false)
+}
+
+func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs []string, input SearchContext, topN int, retried bool) ([]Hit, error) {
 	retrievalID := uuid.NewString()
 	started := time.Now()
 	query := strings.TrimSpace(input.Query)
@@ -92,17 +142,18 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 	targets := make([]target, 0, len(kbs))
 	vectorCache := make(map[string][][]float32)
 	for _, kb := range kbs {
-		cacheKey := fmt.Sprintf("%s/%d", kb.EmbedModel, kb.EmbedDims)
+		embeddingCfg, err := s.embeddingConfigForKB(ctx, kb)
+		if err != nil {
+			return nil, err
+		}
+		cacheKey := embeddingContractFingerprintForKB(kb, embeddingCfg)
 		queryVectors, ok := vectorCache[cacheKey]
 		if !ok {
 			denseTexts := []string{plan.RewrittenQuery}
 			if plan.HypotheticalDocument != plan.RewrittenQuery {
 				denseTexts = append(denseTexts, plan.HypotheticalDocument)
 			}
-			embedder, err := s.embedderForKB(ctx, kb)
-			if err != nil {
-				return nil, err
-			}
+			embedder := embed.New(embeddingCfg.Endpoint, embeddingCfg.APIKey, kb.EmbedModel, kb.EmbedDims)
 			vectors, err := embedder.Embed(ctx, denseTexts)
 			if err != nil {
 				return nil, fmt.Errorf("查询向量化(%s): %w", kb.EmbedModel, err)
@@ -122,44 +173,97 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 	}
 	results := make([]Hit, 0, len(targets)*candidateTopK)
 	for _, target := range targets {
-		if err := s.vec.EnsureCollection(ctx, target.kb.ID, target.kb.EmbedDims); err != nil {
-			return nil, fmt.Errorf("准备检索 %s: %w", target.kb.Name, err)
-		}
-		vectorHits, err := s.vec.HybridSearch(ctx, target.kb.ID, vector.SearchQuery{
-			Dense: target.dense,
-			Text:  plan.RewrittenQuery,
-		}, candidateTopK)
-		if err != nil {
-			return nil, fmt.Errorf("检索 %s: %w", target.kb.Name, err)
-		}
 		docs, err := s.st.ListRAGDocumentsByKB(ctx, target.kb.ID)
 		if err != nil {
 			return nil, err
 		}
-		docNames := make(map[string]string, len(docs))
+		docByID := make(map[string]store.RAGDocumentRecord, len(docs))
+		activeVersions := make(map[string]int64, len(docs))
 		for _, doc := range docs {
-			docNames[doc.ID] = doc.FileName
-		}
-		for _, hit := range vectorHits {
-			docName, exists := docNames[hit.DocID]
-			if !exists {
-				// Vector deletion and relational deletion cannot be atomic across
-				// stores. Never surface an orphaned chunk after its document row has
-				// gone away; cleanup can then be retried without a data leak.
+			if doc.ActiveVersion <= 0 {
 				continue
 			}
+			docByID[doc.ID] = doc
+			activeVersions[doc.ID] = doc.ActiveVersion
+		}
+		if len(activeVersions) == 0 {
+			continue
+		}
+		if err := s.vec.EnsureCollection(ctx, target.kb.ID, target.kb.EmbedDims); err != nil {
+			return nil, fmt.Errorf("准备检索 %s: %w", target.kb.Name, err)
+		}
+		vectorHits, err := s.vec.HybridSearch(ctx, target.kb.ID, vector.SearchQuery{
+			Dense: target.dense, Text: plan.RewrittenQuery,
+			ActiveVersions: activeVersions, MaxFilterBytes: s.cfg.Limits.MaxMilvusFilterBytes,
+		}, candidateTopK)
+		if err != nil {
+			return nil, fmt.Errorf("检索 %s: %w", target.kb.Name, err)
+		}
+		refs := make([]store.RAGChunkRef, 0, len(vectorHits))
+		filteredVectorHits := make([]vector.SearchHit, 0, len(vectorHits))
+		for _, hit := range vectorHits {
+			doc, exists := docByID[hit.DocID]
+			if !exists || doc.ActiveVersion != hit.DocVersion {
+				continue
+			}
+			filteredVectorHits = append(filteredVectorHits, hit)
+			refs = append(refs, store.RAGChunkRef{DocID: hit.DocID, DocVersion: hit.DocVersion, ChunkIndex: hit.ChunkIndex})
+		}
+		catalog, err := s.st.ListRAGChunksByRefs(ctx, refs)
+		if err != nil {
+			return nil, err
+		}
+		catalogByRef := make(map[string]store.RAGChunkRecord, len(catalog))
+		for _, chunk := range catalog {
+			catalogByRef[ragChunkKey(chunk.DocID, chunk.DocVersion, chunk.ChunkIndex)] = chunk
+		}
+		activeChanged := false
+		for _, hit := range filteredVectorHits {
+			doc := docByID[hit.DocID]
+			chunk, exists := catalogByRef[ragChunkKey(hit.DocID, hit.DocVersion, hit.ChunkIndex)]
+			if !exists && doc.IndexFormatVersion != 0 {
+				current, lookupErr := s.st.GetRAGDocument(ctx, hit.DocID)
+				if lookupErr == nil && current.ActiveVersion != doc.ActiveVersion {
+					activeChanged = true
+				}
+				continue
+			}
+			content := hit.Content
+			searchContent := hit.SearchContent
+			sectionTitle := hit.SectionTitle
+			pageNum := hit.PageNum
+			location := sourceLocationFromPage(pageNum)
+			enhancement := ""
+			if exists {
+				content = chunk.RawContent
+				enhancement = chunk.Enhancement
+				searchContent = chunk.SearchContent
+				sectionTitle = chunk.SectionTitle
+				location = decodeSourceLocation(chunk.LocationJSON, pageNum)
+				if location.Kind == document.LocationPage {
+					pageNum = location.Index
+				}
+			}
 			results = append(results, Hit{
-				KBID:         target.kb.ID,
-				KBName:       target.kb.Name,
-				DocID:        hit.DocID,
-				DocName:      docName,
-				ChunkIndex:   hit.ChunkIndex,
-				SectionTitle: hit.SectionTitle,
-				PageNum:      hit.PageNum,
-				Content:      hit.Content,
-				Score:        hit.Score,
-				RecallScore:  hit.Score,
+				KBID:               target.kb.ID,
+				KBName:             target.kb.Name,
+				DocID:              hit.DocID,
+				DocName:            doc.FileName,
+				ChunkIndex:         hit.ChunkIndex,
+				SectionTitle:       sectionTitle,
+				PageNum:            pageNum,
+				SourceLocation:     location,
+				Content:            content,
+				Enhancement:        enhancement,
+				Score:              hit.Score,
+				RecallScore:        hit.Score,
+				DocVersion:         hit.DocVersion,
+				SearchContent:      searchContent,
+				IndexFormatVersion: doc.IndexFormatVersion,
 			})
+		}
+		if activeChanged && !retried {
+			return s.searchWithContext(ctx, ownerID, kbIDs, input, topN, true)
 		}
 	}
 	sort.SliceStable(results, func(i, j int) bool {
@@ -191,7 +295,7 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 				"reranked", true,
 				"duration_ms", time.Since(started).Milliseconds(),
 			)
-			return reranked, nil
+			return s.hydrateHitAssets(ctx, reranked)
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -216,7 +320,7 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 		"reranker_configured", s.reranker != nil,
 		"duration_ms", time.Since(started).Milliseconds(),
 	)
-	return results, nil
+	return s.hydrateHitAssets(ctx, results)
 }
 
 // rerankHits replaces the public score with the normalized semantic score and
@@ -227,9 +331,10 @@ func (s *Service) rerankHits(ctx context.Context, retrievalID, query string, can
 	started := time.Now()
 	documents := make([]string, len(candidates))
 	for index := range candidates {
-		documents[index] = chunktext.Search(
-			candidates[index].SectionTitle, candidates[index].Content,
-		)
+		documents[index] = candidates[index].SearchContent
+		if documents[index] == "" {
+			documents[index] = chunktext.Search(candidates[index].SectionTitle, candidates[index].AnswerText())
+		}
 	}
 	ranked, err := s.reranker.Rerank(ctx, query, documents, topN)
 	if err != nil {
@@ -316,10 +421,104 @@ func FormatHits(hits []Hit) string {
 			fmt.Fprintf(&out, " · 第%d页", hit.PageNum)
 		}
 		fmt.Fprintf(&out, " · chunk#%d · 知识库:%s]\n", hit.ChunkIndex, hit.KBName)
-		out.WriteString(strings.TrimSpace(hit.Content))
+		out.WriteString(strings.TrimSpace(hit.AnswerText()))
 		if i < len(hits)-1 {
 			out.WriteString("\n\n---\n\n")
 		}
 	}
 	return out.String()
+}
+
+func ragChunkKey(docID string, version int64, chunkIndex int) string {
+	return fmt.Sprintf("%s\x00%d\x00%d", docID, version, chunkIndex)
+}
+
+func sourceLocationFromPage(page int) document.SourceLocation {
+	if page > 0 {
+		return document.SourceLocation{Kind: document.LocationPage, Index: page, Label: fmt.Sprintf("第 %d 页", page)}
+	}
+	return document.SourceLocation{Kind: document.LocationDocument}
+}
+
+func decodeSourceLocation(raw string, fallbackPage int) document.SourceLocation {
+	var location document.SourceLocation
+	if json.Unmarshal([]byte(raw), &location) == nil && location.Kind != "" && location.Validate() == nil {
+		return location
+	}
+	var legacy struct {
+		PageNum int `json:"pageNum"`
+	}
+	if json.Unmarshal([]byte(raw), &legacy) == nil && legacy.PageNum > 0 {
+		return sourceLocationFromPage(legacy.PageNum)
+	}
+	return sourceLocationFromPage(fallbackPage)
+}
+
+func (s *Service) hydrateHitAssets(ctx context.Context, hits []Hit) ([]Hit, error) {
+	if len(hits) == 0 {
+		return hits, nil
+	}
+	refs := make([]store.RAGChunkRef, 0, len(hits))
+	for _, hit := range hits {
+		if hit.IndexFormatVersion == 0 {
+			continue
+		}
+		refs = append(refs, store.RAGChunkRef{DocID: hit.DocID, DocVersion: hit.DocVersion, ChunkIndex: hit.ChunkIndex})
+	}
+	if len(refs) == 0 {
+		return hits, nil
+	}
+	mappings, err := s.st.ListRAGChunkAssetsByRefs(ctx, refs)
+	if err != nil {
+		return nil, err
+	}
+	assetIDs := make([]string, 0, len(mappings))
+	seen := make(map[string]struct{}, len(mappings))
+	for _, mapping := range mappings {
+		if _, exists := seen[mapping.AssetID]; exists {
+			continue
+		}
+		seen[mapping.AssetID] = struct{}{}
+		assetIDs = append(assetIDs, mapping.AssetID)
+	}
+	assets := make([]store.RAGAssetRecord, 0, len(assetIDs))
+	for start := 0; start < len(assetIDs); start += pipelineStageBatchSize {
+		end := min(start+pipelineStageBatchSize, len(assetIDs))
+		batch, err := s.st.ListRAGAssetsByIDs(ctx, assetIDs[start:end])
+		if err != nil {
+			return nil, err
+		}
+		assets = append(assets, batch...)
+	}
+	assetByID := make(map[string]store.RAGAssetRecord, len(assets))
+	for _, asset := range assets {
+		if asset.DisplayStatus == document.DisplayReady && safeDisplayMIME(asset.DisplayMIME) &&
+			canonicalSHA256(asset.DisplaySHA256) && canonicalSHA256(asset.ThumbnailSHA256) &&
+			strings.TrimSpace(asset.DisplayObjectKey) != "" && strings.TrimSpace(asset.ThumbnailObjectKey) != "" {
+			assetByID[asset.ID] = asset
+		}
+	}
+	hitByRef := make(map[string]int, len(hits))
+	for i, hit := range hits {
+		hitByRef[ragChunkKey(hit.DocID, hit.DocVersion, hit.ChunkIndex)] = i
+	}
+	for _, mapping := range mappings {
+		asset, ready := assetByID[mapping.AssetID]
+		index, exists := hitByRef[ragChunkKey(mapping.DocID, mapping.DocVersion, mapping.ChunkIndex)]
+		if !ready || !exists || asset.DocID != mapping.DocID ||
+			mapping.DocVersion < asset.FirstSeenVersion || mapping.DocVersion > asset.LastSeenVersion {
+			continue
+		}
+		location := decodeSourceLocation(mapping.LocationJSON, hits[index].PageNum)
+		pageNum := 0
+		if location.Kind == document.LocationPage {
+			pageNum = location.Index
+		}
+		hits[index].Assets = append(hits[index].Assets, document.AssetRef{
+			ID: asset.ID, Kind: document.AssetKindImage, Caption: mapping.Caption,
+			PageNum: pageNum, Location: location, Width: asset.Width, Height: asset.Height,
+			MIMEType: asset.DisplayMIME,
+		})
+	}
+	return hits, nil
 }

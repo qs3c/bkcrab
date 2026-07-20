@@ -353,26 +353,6 @@ func (d *DBStore) insertRAGDocumentAIUsageTx(
 	return err
 }
 
-func (d *DBStore) hasCommittedRAGDocumentAILogicalRequestTx(
-	ctx context.Context,
-	tx ragExecutor,
-	taskID int64,
-	logicalRequestKey string,
-) (bool, error) {
-	if logicalRequestKey == "" {
-		return false, nil
-	}
-	var key string
-	err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT idempotency_key FROM rag_document_ai_usage
-		WHERE task_id=%s AND logical_request_key=%s AND state IN ('COMMITTED','OVERRUN')
-		ORDER BY created_at LIMIT 1%s`, d.ph(1), d.ph(2), d.ragLockSuffix()),
-		taskID, logicalRequestKey).Scan(&key)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
-}
-
 func (d *DBStore) hasRAGDocumentAIOverrunTx(
 	ctx context.Context,
 	tx ragExecutor,
@@ -392,8 +372,11 @@ func (d *DBStore) hasRAGDocumentAIOverrunTx(
 
 // ReserveRAGDocumentAIUsage atomically reserves one request and its
 // conservative token/cost maxima. true means this call inserted a new
-// reservation. An exact duplicate or committed logical cache hit returns
-// false,nil without charging; conflicting reuse of the idempotency key fails.
+// reservation. An exact duplicate returns false,nil without charging;
+// conflicting reuse of the idempotency key fails. Durable result-cache
+// existence is intentionally owned by the object cache, not inferred from a
+// settled usage row: a provider response may be charged even when persisting
+// its cache object failed or the worker crashed before doing so.
 func (d *DBStore) ReserveRAGDocumentAIUsage(
 	ctx context.Context,
 	fence IndexFence,
@@ -420,6 +403,14 @@ func (d *DBStore) ReserveRAGDocumentAIUsage(
 		return false, err
 	}
 	defer tx.Rollback()
+	dbNow, err := d.ragDBNow(ctx, tx.exec)
+	if err != nil {
+		return false, err
+	}
+	currentPeriod := time.Date(dbNow.UTC().Year(), dbNow.UTC().Month(), dbNow.UTC().Day(), 0, 0, 0, 0, time.UTC)
+	if ragPeriodDate(usage.PeriodStartUTC) != ragPeriodDate(currentPeriod) {
+		return false, errors.New("store: RAG DocumentAI period must be the current database UTC day")
+	}
 	if err := d.upsertRAGDocumentAIUserBudgetTx(ctx, tx.exec, usage.UserID, usage.PeriodStartUTC); err != nil {
 		return false, err
 	}
@@ -461,14 +452,6 @@ func (d *DBStore) ReserveRAGDocumentAIUsage(
 	if overrun {
 		return false, ErrRAGDocumentAIBudgetExceeded
 	}
-	cacheHit, err := d.hasCommittedRAGDocumentAILogicalRequestTx(ctx, tx.exec, usage.TaskID, usage.LogicalRequestKey)
-	if err != nil {
-		return false, err
-	}
-	if cacheHit {
-		return false, nil
-	}
-
 	userRequests, ok := ragDocumentAIAdd(userBudget.ChargedRequests, 1)
 	if !ok {
 		return false, ErrRAGDocumentAIBudgetExceeded

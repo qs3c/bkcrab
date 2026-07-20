@@ -827,6 +827,24 @@ func (d *DBStore) AdvanceDocumentVersionAndCreateTask(
 	expectedVersion int64,
 	snapshot *RAGDocumentVersionRecord,
 ) (*RAGIndexTaskRecord, error) {
+	return d.advanceDocumentVersionAndCreateTask(ctx, expectedVersion, snapshot, nil)
+}
+
+func (d *DBStore) AdvanceDocumentVersionAndCreateTaskPolicy(
+	ctx context.Context,
+	expectedVersion int64,
+	snapshot *RAGDocumentVersionRecord,
+	policy RAGAdvancedEnqueuePolicy,
+) (*RAGIndexTaskRecord, error) {
+	return d.advanceDocumentVersionAndCreateTask(ctx, expectedVersion, snapshot, &policy)
+}
+
+func (d *DBStore) advanceDocumentVersionAndCreateTask(
+	ctx context.Context,
+	expectedVersion int64,
+	snapshot *RAGDocumentVersionRecord,
+	policy *RAGAdvancedEnqueuePolicy,
+) (*RAGIndexTaskRecord, error) {
 	if snapshot == nil || snapshot.DocID == "" {
 		return nil, ErrRAGDocumentVersionMismatch
 	}
@@ -835,6 +853,13 @@ func (d *DBStore) AdvanceDocumentVersionAndCreateTask(
 		return nil, err
 	}
 	defer tx.Rollback()
+	if policy != nil && ragAdvancedVersion(snapshot) {
+		// Acquire the per-user write/row lock before the first document read so
+		// SQLite never has to upgrade a stale read transaction.
+		if err := d.lockRAGAdvancedEnqueueUserTx(ctx, tx, policy); err != nil {
+			return nil, err
+		}
+	}
 	doc, err := d.ragDocumentInTx(ctx, tx, snapshot.DocID)
 	if ragIsNoRows(err) {
 		return nil, ErrNotFound
@@ -846,6 +871,9 @@ func (d *DBStore) AdvanceDocumentVersionAndCreateTask(
 		return nil, ErrRAGDocumentVersionConflict
 	}
 	if err := d.reconcileRAGDocumentSourceHash(ctx, tx, doc, snapshot.SourceSHA256); err != nil {
+		return nil, err
+	}
+	if err := d.enforceRAGAdvancedEnqueuePolicyTx(ctx, tx, doc.KBID, doc.ID, snapshot, policy, true); err != nil {
 		return nil, err
 	}
 	newVersion, err := d.nextRAGDocumentVersionInTx(ctx, tx, doc)

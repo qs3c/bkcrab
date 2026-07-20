@@ -1316,6 +1316,13 @@ func (d *DBStore) migrateRAGMultimodalSchema(ctx context.Context) error {
 			return err
 		}
 	}
+	assetHashDDL := "TEXT NOT NULL DEFAULT ''"
+	if d.dialect == mysqlDialect {
+		assetHashDDL = "CHAR(64) NOT NULL DEFAULT ''"
+	}
+	if err := d.addRAGColumnIfMissing(ctx, "rag_assets", "thumbnail_sha256", assetHashDDL); err != nil {
+		return err
+	}
 	if err := d.migrateRAGDocumentVersionToBigInt(ctx); err != nil {
 		return err
 	}
@@ -2305,6 +2312,7 @@ func (d *DBStore) ragAssetsTableSQL() string {
 		thumbnail_object_key TEXT NOT NULL,
 		display_status TEXT NOT NULL,
 		display_sha256 TEXT NOT NULL,
+		thumbnail_sha256 TEXT NOT NULL,
 		byte_size BIGINT NOT NULL,
 		width INTEGER NOT NULL,
 		height INTEGER NOT NULL,

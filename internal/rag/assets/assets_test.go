@@ -247,6 +247,11 @@ func TestPersistParsedDocumentReindexReusesStableAssetObject(t *testing.T) {
 	if sourcePuts != 1 {
 		t.Fatalf("canonical source object rewritten %d times", sourcePuts)
 	}
+	record := catalog.records[first.Assets[0].ID]
+	if record.FirstSeenVersion != 7 || record.LastSeenVersion != 8 {
+		t.Fatalf("stable asset version visibility = %d..%d, want 7..8",
+			record.FirstSeenVersion, record.LastSeenVersion)
+	}
 }
 
 func TestPersistFailureOrCancelCleansHandleButKeepsCanonicalStaging(t *testing.T) {
@@ -346,6 +351,27 @@ func TestLoadParsedArtifactRehydratesAndInvalidatesMissingDependencies(t *testin
 	if err != nil || !hit || loaded.Assets[0].ID != artifact.Assets[0].ID {
 		t.Fatalf("cache load hit=%v artifact=%+v err=%v", hit, loaded, err)
 	}
+	wrongSource := artifact.Source
+	wrongSource.SHA256 = strings.Repeat("b", 64)
+	if _, hit, err := persister.LoadParsedArtifact(context.Background(), CacheRequest{
+		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", DocVersion: 8,
+		ParseFingerprint: assetSourceHash, ExpectedSource: &wrongSource,
+	}); err != nil || hit {
+		t.Fatalf("source-mismatched artifact hit=%v err=%v", hit, err)
+	}
+	if record := catalog.records[artifact.Assets[0].ID]; record.LastSeenVersion != 7 {
+		t.Fatalf("source-mismatched cache advanced asset visibility: %+v", record)
+	}
+	expectedSource := artifact.Source
+	if _, hit, err := persister.LoadParsedArtifact(context.Background(), CacheRequest{
+		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", DocVersion: 8,
+		ParseFingerprint: assetSourceHash, ExpectedSource: &expectedSource,
+	}); err != nil || !hit {
+		t.Fatalf("valid version-8 cache hit=%v err=%v", hit, err)
+	}
+	if record := catalog.records[artifact.Assets[0].ID]; record.FirstSeenVersion != 7 || record.LastSeenVersion != 8 {
+		t.Fatalf("cache-hit asset version visibility = %+v", record)
+	}
 
 	record := catalog.records[artifact.Assets[0].ID]
 	delete(catalog.records, artifact.Assets[0].ID)
@@ -366,6 +392,7 @@ func TestLoadParsedArtifactRehydratesAndInvalidatesMissingDependencies(t *testin
 	record.DisplayStatus = document.DisplayReady
 	record.DisplayMIME = "image/webp"
 	record.DisplaySHA256 = strings.Repeat("d", 64)
+	record.ThumbnailSHA256 = strings.Repeat("e", 64)
 	record.DisplayObjectKey = strings.TrimSuffix(record.SourceObjectKey, "/source.png") + "/display.webp"
 	record.ThumbnailObjectKey = strings.TrimSuffix(record.SourceObjectKey, "/source.png") + "/thumbnail.webp"
 	catalog.records[record.ID] = record

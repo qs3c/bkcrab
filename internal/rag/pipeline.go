@@ -22,13 +22,16 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/qs3c/bkcrab/internal/config"
+	ragassets "github.com/qs3c/bkcrab/internal/rag/assets"
 	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/embed"
+	"github.com/qs3c/bkcrab/internal/rag/enrich"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/parse"
 	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
 	"github.com/qs3c/bkcrab/internal/rag/split"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
+	"github.com/qs3c/bkcrab/internal/rag/vision"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
@@ -43,6 +46,7 @@ func (s *Service) Start(ctx context.Context) {
 			go s.worker(ctx)
 		}
 		go s.taskPump(ctx)
+		go s.documentAIReconcileLoop(ctx)
 		s.wakeWorkers()
 	})
 }
@@ -169,7 +173,11 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName st
 		return nil, err
 	}
 	snapshot.DocVersion = doc.Version
-	taskID, err := s.st.CreateRAGDocumentWithVersionAndIndexTask(ctx, doc, snapshot, 3)
+	taskID, err := s.st.CreateRAGDocumentWithVersionAndIndexTaskPolicy(ctx, doc, snapshot, 3, store.RAGAdvancedEnqueuePolicy{
+		UserID:             kb.UserID,
+		MaxPendingTasks:    s.cfg.Limits.MaxPendingAdvancedTasksPerUser,
+		MinReindexInterval: time.Duration(s.cfg.Limits.MinAdvancedReindexInterval) * time.Second,
+	})
 	if err != nil {
 		_ = s.obj.DeletePrefix(ctx, fmt.Sprintf("rag/%s/%s/%s/", kb.UserID, kbID, docID))
 		return nil, err
@@ -202,7 +210,11 @@ func (s *Service) ReindexDocument(ctx context.Context, ownerID, kbID, docID stri
 		return err
 	}
 	snapshot.DocVersion = 0 // assigned atomically by the store
-	task, err := s.st.AdvanceDocumentVersionAndCreateTask(ctx, doc.Version, snapshot)
+	task, err := s.st.AdvanceDocumentVersionAndCreateTaskPolicy(ctx, doc.Version, snapshot, store.RAGAdvancedEnqueuePolicy{
+		UserID:             kb.UserID,
+		MaxPendingTasks:    s.cfg.Limits.MaxPendingAdvancedTasksPerUser,
+		MinReindexInterval: time.Duration(s.cfg.Limits.MinAdvancedReindexInterval) * time.Second,
+	})
 	if err != nil {
 		return err
 	}
@@ -523,19 +535,141 @@ func (s *Service) indexClaim(
 	if !parseMode.Valid() {
 		return activation, fmt.Errorf("unsupported parse mode %q", version.ParseMode)
 	}
-	if version.EnrichmentEnabled {
-		return activation, errors.New("unsupported: enrichment pipeline is not installed")
-	}
 	if version.ChunkSize <= 0 || version.ChunkOverlap < 0 || version.ChunkOverlap >= version.ChunkSize {
 		return activation, errors.New("invalid immutable chunk contract")
 	}
 	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{Stage: "loading"}); err != nil {
 		return activation, err
 	}
-	if err := s.vec.EnsureCollection(ctx, kb.ID, version.EmbeddingDimensions); err != nil {
-		return activation, fmt.Errorf("准备向量 collection: %w", err)
+	budget, err := s.newTaskDocumentAIBudget(claim, kb.UserID)
+	if err != nil {
+		return activation, err
 	}
-	parsed, parseErr := s.parser.Parse(ctx, document.Source{
+	artifact, _, err := s.loadOrParseArtifact(ctx, claim, kb, doc, parseMode, budget)
+	if err != nil {
+		return activation, err
+	}
+	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{Stage: "chunking"}); err != nil {
+		return activation, err
+	}
+	chunks := split.SplitArtifact(artifact, split.Config{
+		ChunkSize: version.ChunkSize, ChunkOverlap: version.ChunkOverlap,
+		EnhancementReserveTokens: func() int {
+			if version.EnrichmentEnabled {
+				return version.ChunkSize / 5
+			}
+			return 0
+		}(),
+	})
+	if len(chunks) == 0 {
+		return activation, errors.New("分块结果为空")
+	}
+
+	finalizeConfig := enrich.FinalizeConfig{
+		ChunkSize: version.ChunkSize, MaxSearchContentBytes: s.cfg.Limits.MaxSearchContentBytes,
+		CollectionMaxLength: config.RAGMilvusContentMaxLength, ProviderTokenizer: s.tokenizer,
+	}
+	chunks, enrichmentWarnings, err := s.splitAndEnrich(
+		ctx, fence, version, kb, doc, chunks, finalizeConfig, budget,
+	)
+	if err != nil {
+		return activation, err
+	}
+	chunks, err = enrich.FinalizeChunks(ctx, chunks, finalizeConfig)
+	if err != nil {
+		return activation, fmt.Errorf("finalize searchable chunks: %w", err)
+	}
+	if len(chunks) == 0 {
+		return activation, errors.New("分块结果为空")
+	}
+
+	warningCount := len(artifact.Warnings) + len(enrichmentWarnings)
+	degraded := len(enrichmentWarnings) > 0
+	for _, warning := range artifact.Warnings {
+		degraded = degraded || warning.Degraded
+	}
+	if err := s.fencedWarnings(ctx, fence, degraded, warningCount); err != nil {
+		return activation, err
+	}
+
+	vectors, totalTokens, err := s.embedChunks(ctx, fence, kb.ID, version, embeddingBinding, chunks)
+	if err != nil {
+		return activation, err
+	}
+	vectorChunks, err := s.stageIndexVersion(ctx, fence, kb.ID, doc.ID, chunks, vectors)
+	if err != nil {
+		return activation, err
+	}
+	if err := s.upsertIndexVersion(ctx, fence, kb.ID, vectorChunks); err != nil {
+		return activation, err
+	}
+	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{
+		Stage: "finalizing", Current: len(chunks), Total: len(chunks), Unit: "chunks",
+	}); err != nil {
+		return activation, err
+	}
+	artifactKey, err := document.ArtifactJSONKey(kb.UserID, kb.ID, doc.ID, version.ParseFingerprint)
+	if err != nil {
+		return activation, err
+	}
+	activation = store.RAGIndexActivation{
+		VersionResult: store.RAGDocumentVersionResult{
+			Status: store.RAGDocumentVersionDone, ParseArtifactKey: artifactKey,
+			PageCount: parsedArtifactPageCount(artifact), AssetCount: len(artifact.Assets),
+			Degraded: degraded, WarningCount: warningCount,
+		},
+		ChunkCount: len(chunks), TokenCount: totalTokens,
+	}
+	return activation, nil
+}
+
+const pipelineStageBatchSize = 200
+
+func (s *Service) parsedArtifactPersister() *ragassets.Persister {
+	maxArtifactBytes := s.cfg.Limits.MaxExtractedBytes
+	if maxArtifactBytes <= 0 {
+		maxArtifactBytes = 200 << 20
+	}
+	return &ragassets.Persister{
+		Objects: s.obj, Catalog: s.st,
+		Limits: ragassets.Limits{
+			MaxAssets: s.cfg.Limits.MaxAssetsPerDocument, MaxAssetBytes: s.cfg.Limits.MaxAssetBytes,
+			MaxExtractedBytes: s.cfg.Limits.MaxExtractedBytes, MaxImagePixels: s.cfg.Limits.MaxImagePixels,
+			MaxArtifactBytes: maxArtifactBytes, DisplayMaxEdge: s.cfg.Limits.DisplayMaxEdge,
+			ThumbnailMaxEdge: s.cfg.Limits.ThumbnailMaxEdge,
+		},
+	}
+}
+
+func (s *Service) loadOrParseArtifact(
+	ctx context.Context,
+	claim *store.RAGIndexClaim,
+	kb *store.RAGKBRecord,
+	doc *store.RAGDocumentRecord,
+	parseMode config.ParseMode,
+	budget *vision.TaskDocumentAIBudget,
+) (*document.ParsedArtifact, bool, error) {
+	version, fence := &claim.Version, claim.Fence
+	persister := s.parsedArtifactPersister()
+	expectedSource := document.ParsedSource{
+		DocID: doc.ID, FileName: doc.FileName, Format: doc.FileType,
+		ByteSize: doc.FileSize, SHA256: version.SourceSHA256,
+	}
+	cacheRequest := ragassets.CacheRequest{
+		UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID, DocVersion: fence.DocVersion,
+		ParseFingerprint: version.ParseFingerprint, ExpectedSource: &expectedSource,
+	}
+	artifact, hit, err := persister.LoadParsedArtifact(ctx, cacheRequest)
+	if err != nil {
+		return nil, false, fmt.Errorf("load parsed artifact cache: %w", err)
+	}
+	if hit && parsedArtifactMatchesSource(artifact, doc, version) {
+		return artifact, true, nil
+	}
+	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{Stage: "parsing"}); err != nil {
+		return nil, false, err
+	}
+	source := document.Source{
 		DocID: doc.ID, FileName: doc.FileName, Format: doc.FileType,
 		Size: doc.FileSize, SHA256: version.SourceSHA256,
 		Open: func(openCtx context.Context) (io.ReadCloser, error) {
@@ -545,176 +679,277 @@ func (s *Service) indexClaim(
 			}
 			return reader, nil
 		},
-	}, parse.ParseOptions{Mode: parseMode, ParserVersion: version.ParserVersion})
+	}
+	parsed, parseErr := s.parser.Parse(ctx, source, parse.ParseOptions{
+		Mode: parseMode, ParserVersion: version.ParserVersion,
+		PageTranscriber: s.pageVision, DocumentAIBudget: budget,
+		VisionScope: vision.CacheScope{UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID},
+		Progress: func(progressCtx context.Context, progress parse.ParseProgress) error {
+			stage := strings.TrimSpace(progress.Stage)
+			if stage == "" {
+				stage = "parsing"
+			}
+			return s.fencedProgress(progressCtx, fence, store.RAGIndexProgress{
+				Stage: stage, Current: progress.Current, Total: progress.Total, Unit: progress.Unit,
+			})
+		},
+	})
 	if parseErr != nil {
 		if parsed != nil {
-			if closeErr := parsed.Close(); closeErr != nil {
-				parseErr = errors.Join(parseErr, fmt.Errorf("close failed parsed document: %w", closeErr))
-			}
+			parseErr = errors.Join(parseErr, parsed.Close())
 		}
-		return activation, parseErr
+		return nil, false, parseErr
 	}
 	if parsed == nil {
-		return activation, errors.New("parser returned a nil document")
+		return nil, false, errors.New("parser returned a nil document")
 	}
-	parsedClosed := false
-	defer func() {
-		if parsedClosed {
-			return
-		}
-		if closeErr := parsed.Close(); closeErr != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("close parsed document: %w", closeErr))
-		}
-	}()
+	if err := normalizeParsedDocument(parsed); err != nil {
+		return nil, false, errors.Join(err, parsed.Close())
+	}
+	artifact, err = persister.PersistParsedDocument(ctx, ragassets.PersistRequest{
+		UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID, DocVersion: fence.DocVersion,
+		ParseFingerprint: version.ParseFingerprint, NeutralCaption: "图片（未进行视觉识别）",
+		Document: parsed,
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("persist parsed assets and artifact: %w", err)
+	}
+	return artifact, false, nil
+}
 
-	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{Stage: "chunking"}); err != nil {
-		return activation, err
+func parsedArtifactMatchesSource(
+	artifact *document.ParsedArtifact,
+	doc *store.RAGDocumentRecord,
+	version *store.RAGDocumentVersionRecord,
+) bool {
+	if artifact == nil || doc == nil || version == nil {
+		return false
 	}
-	cfg := split.Config{ChunkSize: version.ChunkSize, ChunkOverlap: version.ChunkOverlap}
-	chunks := splitParsedDocument(parsed, doc.FileType, cfg)
-	pageCount := parsedDocumentPageCount(parsed)
-	warningCount := len(parsed.Warnings)
-	degraded := false
-	for _, warning := range parsed.Warnings {
-		degraded = degraded || warning.Degraded
-	}
-	if closeErr := parsed.Close(); closeErr != nil {
-		parsedClosed = true
-		return activation, fmt.Errorf("关闭解析文档: %w", closeErr)
-	}
-	parsedClosed = true
-	if len(chunks) == 0 {
-		return activation, errors.New("分块结果为空")
-	}
+	return artifact.Source.DocID == doc.ID && artifact.Source.FileName == doc.FileName &&
+		strings.EqualFold(strings.TrimPrefix(artifact.Source.Format, "."), strings.TrimPrefix(doc.FileType, ".")) &&
+		artifact.Source.ByteSize == doc.FileSize && artifact.Source.SHA256 == version.SourceSHA256
+}
 
+func normalizeParsedDocument(parsed *document.ParsedDocument) error {
+	if parsed == nil {
+		return errors.New("parsed document is nil")
+	}
+	occurrences := make(map[string]document.AssetOccurrence, len(parsed.Occurrences))
+	for _, occurrence := range parsed.Occurrences {
+		if _, duplicate := occurrences[occurrence.ID]; duplicate {
+			return fmt.Errorf("duplicate parser occurrence %q", occurrence.ID)
+		}
+		occurrences[occurrence.ID] = occurrence
+	}
+	units, warnings, err := parse.NormalizeMarkdown(parsed.Units, occurrences, true)
+	if err != nil {
+		return fmt.Errorf("normalize parsed Markdown: %w", err)
+	}
+	parsed.Units = units
+	parsed.Warnings = append(parsed.Warnings, warnings...)
+	if err := parsed.Validate(); err != nil {
+		return fmt.Errorf("validate normalized parsed document: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) splitAndEnrich(
+	ctx context.Context,
+	fence store.IndexFence,
+	version *store.RAGDocumentVersionRecord,
+	kb *store.RAGKBRecord,
+	doc *store.RAGDocumentRecord,
+	chunks []split.Chunk,
+	finalizeConfig enrich.FinalizeConfig,
+	budget *vision.TaskDocumentAIBudget,
+) ([]split.Chunk, []enrich.Warning, error) {
+	if !version.EnrichmentEnabled {
+		return chunks, nil, nil
+	}
+	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{
+		Stage: "enriching", Current: 0, Total: len(chunks), Unit: "chunks",
+	}); err != nil {
+		return nil, nil, err
+	}
+	if s.enricher == nil || !s.cfg.Features.TextEnrichmentEnabled || strings.TrimSpace(version.TextModel) == "" {
+		return chunks, []enrich.Warning{{ChunkIndex: -1, Code: "enrichment_unavailable",
+			Message: "text enrichment was unavailable; source text retained"}}, nil
+	}
+	processor := enrich.NewProcessor(s.enricher)
+	enriched, warnings := processor.EnrichChunks(ctx, chunks, enrich.ProcessConfig{
+		SystemEnabled: true, TextModel: version.TextModel, KBEnabled: true,
+		MaxBlocks: s.cfg.Limits.MaxEnrichmentBlocksPerDocument, Finalize: finalizeConfig,
+		Scope: enrich.CacheScope{UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID},
+	}, budget)
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	return enriched, warnings, nil
+}
+
+func (s *Service) embedChunks(
+	ctx context.Context,
+	fence store.IndexFence,
+	kbID string,
+	version *store.RAGDocumentVersionRecord,
+	binding config.RAGEmbeddingCfg,
+	chunks []split.Chunk,
+) ([][]float32, int, error) {
 	texts := make([]string, len(chunks))
 	totalTokens := 0
-	for i, chunk := range chunks {
-		texts[i] = chunk.SearchContent
-		if texts[i] == "" {
-			texts[i] = chunk.Content
+	for i := range chunks {
+		texts[i] = chunks[i].SearchContent
+		if strings.TrimSpace(texts[i]) == "" {
+			return nil, 0, fmt.Errorf("empty SearchContent at chunk %d", chunks[i].Index)
 		}
-		if !s.cfg.Limits.SearchContentWithinLimit(texts[i]) {
-			return activation, fmt.Errorf("SearchContent exceeds byte limit at chunk %d", chunk.Index)
+		if !s.cfg.Limits.SearchContentWithinLimit(texts[i]) ||
+			split.EstimateTokens(texts[i]) > version.ChunkSize {
+			return nil, 0, fmt.Errorf("SearchContent exceeds final boundary at chunk %d", chunks[i].Index)
 		}
-		totalTokens += chunk.Tokens
+		totalTokens += chunks[i].Tokens
 	}
 	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{
 		Stage: "embedding", Current: 0, Total: len(chunks), Unit: "chunks",
 	}); err != nil {
-		return activation, err
+		return nil, 0, err
 	}
-	embedder := embed.New(embeddingBinding.Endpoint, embeddingBinding.APIKey,
+	if err := s.vec.EnsureCollection(ctx, kbID, version.EmbeddingDimensions); err != nil {
+		return nil, 0, fmt.Errorf("准备向量 collection: %w", err)
+	}
+	embedder := embed.New(binding.Endpoint, binding.APIKey,
 		version.EmbeddingModel, version.EmbeddingDimensions)
 	vectors, err := embedder.Embed(ctx, texts)
 	if err != nil {
-		return activation, err
+		return nil, 0, err
 	}
+	if len(vectors) != len(chunks) {
+		return nil, 0, fmt.Errorf("embedding vector count %d does not match chunk count %d", len(vectors), len(chunks))
+	}
+	return vectors, totalTokens, nil
+}
 
+func (s *Service) stageIndexVersion(
+	ctx context.Context,
+	fence store.IndexFence,
+	kbID, docID string,
+	chunks []split.Chunk,
+	vectors [][]float32,
+) ([]vector.ChunkData, error) {
+	if len(chunks) != len(vectors) {
+		return nil, errors.New("cannot stage mismatched chunks and vectors")
+	}
+	now := time.Now().UTC()
 	vectorChunks := make([]vector.ChunkData, len(chunks))
 	sqlChunks := make([]store.RAGChunkRecord, len(chunks))
-	now := time.Now().UTC()
+	mappings := make([]store.RAGChunkAssetRecord, 0)
 	for i, chunk := range chunks {
+		location := chunk.Location
+		if location.Kind == "" {
+			location = document.SourceLocation{Kind: document.LocationDocument}
+		}
+		locationJSON, err := json.Marshal(location)
+		if err != nil {
+			return nil, fmt.Errorf("encode chunk %d location: %w", chunk.Index, err)
+		}
+		pageNum := 0
+		if location.Kind == document.LocationPage {
+			pageNum = location.Index
+		}
 		vectorChunks[i] = vector.ChunkData{
-			DocID:         doc.ID,
-			Index:         chunk.Index,
-			Content:       chunk.Content,
-			SearchContent: texts[i],
-			SectionTitle:  chunk.SectionTitle,
-			PageNum:       chunk.PageNum,
-			DocVersion:    fence.DocVersion,
-			Vector:        vectors[i],
+			DocID: docID, Index: chunk.Index, Content: chunk.RawContent,
+			SearchContent: chunk.SearchContent, SectionTitle: chunk.SectionTitle,
+			PageNum: pageNum, DocVersion: fence.DocVersion, Vector: vectors[i],
 		}
-		location, _ := json.Marshal(struct {
-			PageNum int `json:"pageNum,omitempty"`
-		}{PageNum: chunk.PageNum})
 		sqlChunks[i] = store.RAGChunkRecord{
-			KBID: kb.ID, DocID: doc.ID, DocVersion: fence.DocVersion, ChunkIndex: chunk.Index,
-			SectionTitle: chunk.SectionTitle, LocationJSON: string(location), RawContent: chunk.Content,
-			SearchContent: texts[i], TokenCount: chunk.Tokens, CreatedAt: now,
+			KBID: kbID, DocID: docID, DocVersion: fence.DocVersion, ChunkIndex: chunk.Index,
+			SectionTitle: chunk.SectionTitle, LocationJSON: string(locationJSON), RawContent: chunk.RawContent,
+			Enhancement: chunk.Enhancement, SearchContent: chunk.SearchContent,
+			TokenCount: chunk.Tokens, CreatedAt: now,
 		}
-	}
-	for start := 0; start < len(sqlChunks); start += 200 {
-		end := min(start+200, len(sqlChunks))
-		if err := s.st.PutRAGChunks(ctx, sqlChunks[start:end]); err != nil {
-			return activation, fmt.Errorf("写入 chunk catalog: %w", err)
-		}
-	}
-	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{
-		Stage: "indexing", Current: len(chunks), Total: len(chunks), Unit: "chunks",
-	}); err != nil {
-		return activation, err
-	}
-	valid, err := s.st.CheckRAGIndexFence(ctx, fence)
-	if err != nil {
-		return activation, err
-	}
-	if !valid {
-		return activation, errIndexFenceLost
-	}
-	if err := s.vec.UpsertChunks(ctx, kb.ID, vectorChunks); err != nil {
-		return activation, fmt.Errorf("写入向量库: %w", err)
-	}
-	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{
-		Stage: "finalizing", Current: len(chunks), Total: len(chunks), Unit: "chunks",
-	}); err != nil {
-		return activation, err
-	}
-	activation = store.RAGIndexActivation{
-		VersionResult: store.RAGDocumentVersionResult{
-			Status: store.RAGDocumentVersionDone, PageCount: pageCount,
-			AssetCount: len(parsed.Assets), Degraded: degraded, WarningCount: warningCount,
-		},
-		ChunkCount: len(chunks), TokenCount: totalTokens,
-	}
-	return activation, nil
-}
-
-func splitParsedDocument(parsed *document.ParsedDocument, format string, cfg split.Config) []split.Chunk {
-	if parsed == nil {
-		return nil
-	}
-	format = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(format)), ".")
-	var chunks []split.Chunk
-	for _, unit := range parsed.Units {
-		var unitChunks []split.Chunk
-		switch format {
-		case "md", "markdown", "docx", "pptx", "xlsx":
-			unitChunks = split.Markdown(unit.Markdown, cfg)
-		default:
-			pageNumber := 0
-			if unit.Location.Kind == document.LocationPage {
-				pageNumber = unit.Location.Index
+		for ordinal, binding := range chunk.AssetBindings {
+			assetLocationJSON, err := json.Marshal(binding.Asset.Location)
+			if err != nil {
+				return nil, fmt.Errorf("encode chunk %d asset location: %w", chunk.Index, err)
 			}
-			unitChunks = split.SlidingWindow(unit.Markdown, cfg, "", pageNumber)
-		}
-		for _, chunk := range unitChunks {
-			chunk.Index = len(chunks)
-			chunks = append(chunks, chunk)
+			mappings = append(mappings, store.RAGChunkAssetRecord{
+				DocID: docID, DocVersion: fence.DocVersion, ChunkIndex: chunk.Index,
+				AssetID: binding.Asset.ID, Ordinal: ordinal, LocationJSON: string(assetLocationJSON),
+				Caption: binding.Asset.Caption, OCRText: binding.OCRText,
+			})
 		}
 	}
-	return chunks
+	for start := 0; start < len(sqlChunks); start += pipelineStageBatchSize {
+		end := min(start+pipelineStageBatchSize, len(sqlChunks))
+		if err := s.st.PutRAGChunks(ctx, sqlChunks[start:end]); err != nil {
+			return nil, fmt.Errorf("stage chunk catalog: %w", err)
+		}
+	}
+	for start := 0; start < len(mappings); start += pipelineStageBatchSize {
+		end := min(start+pipelineStageBatchSize, len(mappings))
+		if err := s.st.PutRAGChunkAssets(ctx, mappings[start:end]); err != nil {
+			return nil, fmt.Errorf("stage chunk assets: %w", err)
+		}
+	}
+	return vectorChunks, nil
 }
 
-func parsedDocumentPageCount(parsed *document.ParsedDocument) int {
-	if parsed == nil {
+func (s *Service) upsertIndexVersion(
+	ctx context.Context,
+	fence store.IndexFence,
+	kbID string,
+	chunks []vector.ChunkData,
+) error {
+	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{
+		Stage: "indexing", Current: 0, Total: len(chunks), Unit: "chunks",
+	}); err != nil {
+		return err
+	}
+	for start := 0; start < len(chunks); start += pipelineStageBatchSize {
+		valid, err := s.st.CheckRAGIndexFence(ctx, fence)
+		if err != nil {
+			return err
+		}
+		if !valid {
+			return errIndexFenceLost
+		}
+		end := min(start+pipelineStageBatchSize, len(chunks))
+		if err := s.vec.UpsertChunks(ctx, kbID, chunks[start:end]); err != nil {
+			return fmt.Errorf("写入向量库: %w", err)
+		}
+	}
+	return nil
+}
+
+func parsedArtifactPageCount(artifact *document.ParsedArtifact) int {
+	if artifact == nil {
 		return 0
 	}
 	pageCount := 0
-	for _, unit := range parsed.Units {
+	for _, unit := range artifact.Units {
 		if unit.Location.Kind == document.LocationDocument && pageCount == 0 {
 			pageCount = 1
 		}
-		if unit.Location.Kind == document.LocationPage && unit.Location.Index > pageCount {
+		if unit.Location.Kind != document.LocationDocument && unit.Location.Index > pageCount {
 			pageCount = unit.Location.Index
 		}
 	}
-	for _, warning := range parsed.Warnings {
-		if warning.Location != nil && warning.Location.Kind == document.LocationPage && warning.Location.Index > pageCount {
+	for _, warning := range artifact.Warnings {
+		if warning.Location != nil && warning.Location.Kind != document.LocationDocument && warning.Location.Index > pageCount {
 			pageCount = warning.Location.Index
 		}
 	}
 	return pageCount
+}
+
+func (s *Service) fencedWarnings(ctx context.Context, fence store.IndexFence, degraded bool, warningCount int) error {
+	ok, err := s.st.UpdateWarningRAGIndexTask(ctx, fence, degraded, warningCount)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errIndexFenceLost
+	}
+	return nil
 }
 
 func (s *Service) fencedProgress(ctx context.Context, fence store.IndexFence, progress store.RAGIndexProgress) error {

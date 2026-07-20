@@ -131,7 +131,8 @@ func TestRAGMigrationFromLegacySchemaIsIdempotent(t *testing.T) {
 	}
 
 	for table, columns := range map[string][]string{
-		"rag_kbs": {"parse_mode", "enrichment_enabled"},
+		"rag_kbs":    {"parse_mode", "enrichment_enabled"},
+		"rag_assets": {"thumbnail_sha256"},
 		"rag_documents": {
 			"source_sha256", "active_version", "index_format_version", "processing_stage",
 			"progress_current", "progress_total", "progress_unit", "degraded", "warning_count",
@@ -249,7 +250,7 @@ func TestRAGCanonicalDDLContainsAllPhaseATablesForBothFamilies(t *testing.T) {
 	}{{"sqlite/postgres", sqlitePostgres}, {"mysql", mysql}} {
 		for _, token := range []string{
 			"parse_mode", "active_version", "rag_document_versions", "rag_assets",
-			"rag_chunks", "rag_chunk_assets", "rag_index_gc_tasks",
+			"thumbnail_sha256", "rag_chunks", "rag_chunk_assets", "rag_index_gc_tasks",
 			"rag_document_ai_task_budgets", "rag_document_ai_user_budgets", "rag_document_ai_usage",
 		} {
 			if !strings.Contains(ddl.sql, token) {

@@ -3,6 +3,9 @@ package split
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/qs3c/bkcrab/internal/rag/document"
 )
 
 func TestEstimateTokens(t *testing.T) {
@@ -23,157 +26,194 @@ func TestEstimateTokens(t *testing.T) {
 	}
 }
 
-func TestSlidingWindowRespectsSizeAndOverlap(t *testing.T) {
+func TestMarkdownBreadcrumbAndSearchContentContract(t *testing.T) {
+	t.Parallel()
+	markdown := "# Installation\nintro\n### Deep\n" + strings.Repeat("body sentence. ", 80)
+	chunks := Markdown(markdown, Config{ChunkSize: 50, ChunkOverlap: 10})
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(chunks))
+	}
+	var sawDeep bool
+	for _, chunk := range chunks {
+		if chunk.SectionTitle == "Installation > Deep" {
+			sawDeep = true
+		}
+		if !strings.HasPrefix(chunk.SearchContent, "章节："+chunk.SectionTitle+"\n\n") {
+			t.Fatalf("search content lost breadcrumb: %+v", chunk)
+		}
+		if strings.Contains(chunk.RawContent, "Installation") || chunk.Content != chunk.RawContent {
+			t.Fatalf("raw/compat content contract regressed: %+v", chunk)
+		}
+		if chunk.Tokens != EstimateTokens(chunk.SearchContent) || chunk.Tokens > 50 {
+			t.Fatalf("invalid provisional token count: %+v", chunk)
+		}
+	}
+	if !sawDeep {
+		t.Fatal("skipped heading level was not represented in breadcrumb")
+	}
+}
+
+func TestMarkdownFencedCodeDoesNotCreateHeadingImageOrTableStructure(t *testing.T) {
+	t.Parallel()
+	markdown := "# Root\nintro\n```markdown\n# fake\n![fake](rag-asset://missing)\n| a | b |\n|---|---|\n```\n## Real\nbody"
+	chunks := Markdown(markdown, Config{ChunkSize: 200, ChunkOverlap: 20})
+	var code, body *Chunk
+	for i := range chunks {
+		switch chunks[i].Kind {
+		case BlockCode:
+			code = &chunks[i]
+		case BlockText:
+			if chunks[i].RawContent == "body" {
+				body = &chunks[i]
+			}
+		}
+	}
+	if code == nil || code.SectionTitle != "Root" ||
+		!strings.Contains(code.RawContent, "# fake") ||
+		!strings.Contains(code.RawContent, "rag-asset://missing") || len(code.AssetRefs) != 0 {
+		t.Fatalf("fenced literals were interpreted as structure: %+v", code)
+	}
+	if body == nil || body.SectionTitle != "Root > Real" {
+		t.Fatalf("real heading after fence was not recognized: %+v", body)
+	}
+}
+
+func TestParagraphListAndBlockquoteGreedyPacking(t *testing.T) {
+	t.Parallel()
+	markdown := "# Topic\n\nfirst paragraph.\n\n- list one\n- list two\n\n> quoted text\n> continues"
+	chunks := Markdown(markdown, Config{ChunkSize: 80, ChunkOverlap: 8})
+	if len(chunks) != 1 {
+		t.Fatalf("short ordinary blocks should greedily pack, got %+v", chunks)
+	}
+	for _, want := range []string{"first paragraph", "- list one", "> quoted text"} {
+		if !strings.Contains(chunks[0].RawContent, want) {
+			t.Fatalf("packed chunk missing %q: %q", want, chunks[0].RawContent)
+		}
+	}
+}
+
+func TestOrdinaryCandidateSplitsBeforeGreedyBox(t *testing.T) {
+	t.Parallel()
+	first := strings.Repeat("a", 176) + "."
+	second := strings.Repeat("b", 176) + "."
+	chunks := Markdown(first+"\n\n"+second, Config{ChunkSize: 50, ChunkOverlap: 4})
+	if len(chunks) < 2 {
+		t.Fatalf("expected a new chunk for the second individually-large candidate: %+v", chunks)
+	}
+	for _, chunk := range chunks {
+		if chunk.Tokens > 50 {
+			t.Fatalf("chunk approached the historical 2x limit: tokens=%d raw=%q", chunk.Tokens, chunk.RawContent)
+		}
+	}
+}
+
+func TestSlidingWindowOverlapIsBounded(t *testing.T) {
 	t.Parallel()
 	var text strings.Builder
 	for range 40 {
 		text.WriteString("这是一个用于测试的句子。")
 	}
-	chunks := SlidingWindow(text.String(), Config{ChunkSize: 100, ChunkOverlap: 20}, "", 0)
+	chunks := SlidingWindow(text.String(), Config{ChunkSize: 100, ChunkOverlap: 20}, "", 2)
 	if len(chunks) < 4 {
 		t.Fatalf("expected multiple chunks, got %d", len(chunks))
 	}
 	for i, chunk := range chunks {
-		if chunk.Tokens > 100 {
-			t.Errorf("chunk %d has %d tokens, want <= 100", i, chunk.Tokens)
-		}
-		if chunk.Index != i {
-			t.Errorf("chunk index = %d, want %d", chunk.Index, i)
+		if chunk.Tokens > 100 || chunk.Index != i || chunk.PageNum != 2 || chunk.Location.Index != 2 {
+			t.Fatalf("invalid sliding chunk %d: %+v", i, chunk)
 		}
 	}
-	if !strings.Contains(chunks[1].Content, "测试的句子") {
-		t.Errorf("second chunk does not contain overlap: %q", chunks[1].Content)
+	if !strings.Contains(chunks[1].RawContent, "测试的句子") {
+		t.Fatalf("second chunk has no ordinary text overlap: %q", chunks[1].RawContent)
 	}
 }
 
-func TestSlidingWindowSplitsLongUnpunctuatedText(t *testing.T) {
+func TestTableAndCodeReserveApplicationBudget(t *testing.T) {
 	t.Parallel()
-	chunks := SlidingWindow(strings.Repeat("长文本", 200), Config{
-		ChunkSize: 50, ChunkOverlap: 10,
-	}, "section", 2)
-	if len(chunks) < 2 {
-		t.Fatalf("expected long text to be split, got %d chunk", len(chunks))
+	markdown := "# Heading\n\n| key | value |\n| --- | --- |\n| a | b |\n\n```go\nfunc f() {}\n```\n\nplain"
+	chunks := Markdown(markdown, Config{
+		ChunkSize: 50, ChunkOverlap: 5, EnhancementReserveTokens: 20,
+	})
+	var sawTable, sawCode, sawText bool
+	for _, chunk := range chunks {
+		switch chunk.Kind {
+		case BlockTable:
+			sawTable = true
+		case BlockCode:
+			sawCode = true
+		case BlockText:
+			sawText = true
+		}
+		if chunk.Kind == BlockTable || chunk.Kind == BlockCode {
+			if chunk.ReservedTokens != 10 || chunk.Tokens+chunk.ReservedTokens > 50 {
+				t.Fatalf("table/code did not reserve min(config, size/5): %+v", chunk)
+			}
+		} else if chunk.ReservedTokens != 0 {
+			t.Fatalf("ordinary text unexpectedly reserved enhancement tokens: %+v", chunk)
+		}
 	}
-	for i, chunk := range chunks {
-		if chunk.Tokens > 50 {
-			t.Fatalf("chunk %d has %d tokens, want <= 50", i, chunk.Tokens)
-		}
-		if chunk.SectionTitle != "section" || chunk.PageNum != 2 {
-			t.Fatalf("metadata was not preserved: %+v", chunk)
-		}
+	if !sawTable || !sawCode || !sawText {
+		t.Fatalf("missing semantic chunk kinds: %+v", chunks)
 	}
 }
 
-func TestMarkdownStructureSplit(t *testing.T) {
+func TestTinyChunkConfigurationsNeverPanic(t *testing.T) {
 	t.Parallel()
-	markdown := `# 安装指南
-
-前置要求正文。
-
-## 下载
-
-下载步骤正文，很短。
-
-## 配置
-
-` + strings.Repeat("配置项说明。", 200) + "\n"
-	chunks := Markdown(markdown, Config{ChunkSize: 200, ChunkOverlap: 30})
-	if len(chunks) < 3 {
-		t.Fatalf("not enough structure-aware chunks: %d", len(chunks))
-	}
-	var sawDownload, sawConfig bool
-	for i, chunk := range chunks {
-		if chunk.SectionTitle == "安装指南 > 下载" {
-			sawDownload = true
+	for _, size := range []int{-1, 1, 2, 3} {
+		chunks := Markdown("# a very long heading\nabcdef中文", Config{
+			ChunkSize: size, ChunkOverlap: 999, EnhancementReserveTokens: 999,
+		})
+		if len(chunks) == 0 {
+			t.Fatalf("size %d unexpectedly dropped content", size)
 		}
-		if strings.HasPrefix(chunk.SectionTitle, "安装指南 > 配置") {
-			sawConfig = true
-			if chunk.Tokens > 200 {
-				t.Errorf("long section chunk has %d tokens", chunk.Tokens)
+		for _, chunk := range chunks {
+			if !utf8.ValidString(chunk.RawContent) || !utf8.ValidString(chunk.SearchContent) {
+				t.Fatalf("size %d produced invalid UTF-8: %+v", size, chunk)
+			}
+			if size > 0 && chunk.Tokens > size {
+				t.Fatalf("size %d exceeded requested budget: %+v", size, chunk)
 			}
 		}
-		if chunk.Index != i {
-			t.Fatalf("chunk index = %d, want %d", chunk.Index, i)
-		}
-	}
-	if !sawDownload || !sawConfig {
-		t.Fatalf("missing section title: download=%v config=%v", sawDownload, sawConfig)
 	}
 }
 
-func TestMarkdownSkippedHeadingLevelHasCleanBreadcrumb(t *testing.T) {
+func TestSplitCarriesHeadingAcrossUnitsWithoutCrossLocationPacking(t *testing.T) {
 	t.Parallel()
-	chunks := Markdown("# Root\nintro\n### Deep\nbody", Config{})
-	if len(chunks) != 2 {
-		t.Fatalf("got %d chunks, want 2", len(chunks))
-	}
-	if chunks[1].SectionTitle != "Root > Deep" {
-		t.Fatalf("breadcrumb = %q", chunks[1].SectionTitle)
+	artifact := document.ParsedArtifact{Units: []document.MarkdownUnit{
+		{ID: "u1", Location: document.SourceLocation{Kind: document.LocationPage, Index: 1}, Markdown: "# Root\npage one"},
+		{ID: "u2", Location: document.SourceLocation{Kind: document.LocationPage, Index: 2}, Markdown: "page two"},
+	}}
+	chunks := Split(artifact, Config{ChunkSize: 100})
+	if len(chunks) != 2 || chunks[0].PageNum != 1 || chunks[1].PageNum != 2 ||
+		chunks[1].SectionTitle != "Root" {
+		t.Fatalf("unit order/location/breadcrumb contract failed: %+v", chunks)
 	}
 }
 
-func TestMarkdownIgnoresHeadingsInsideFencedCode(t *testing.T) {
-	t.Parallel()
-	markdown := "# Root\nintro\n```shell\n# shell comment\n## not a section\n````\nafter code\n~~~text\n# tilde content\n~~~\n## Real\nbody"
-	chunks := Markdown(markdown, Config{ChunkSize: 200, ChunkOverlap: 20})
-	if len(chunks) != 2 {
-		t.Fatalf("got %d chunks, want root and real sections: %+v", len(chunks), chunks)
-	}
-	if chunks[0].SectionTitle != "Root" ||
-		!strings.Contains(chunks[0].Content, "# shell comment") ||
-		!strings.Contains(chunks[0].Content, "## not a section") ||
-		!strings.Contains(chunks[0].Content, "# tilde content") {
-		t.Fatalf("fenced code changed document structure: %+v", chunks[0])
-	}
-	if chunks[1].SectionTitle != "Root > Real" || chunks[1].Content != "body" {
-		t.Fatalf("heading after fences was not recognized: %+v", chunks[1])
-	}
-}
-
-func TestMarkdownSearchContentIncludesTitleWithinChunkBudget(t *testing.T) {
-	t.Parallel()
-	markdown := "# Installation\n" + strings.Repeat("body sentence. ", 80)
-	chunks := Markdown(markdown, Config{ChunkSize: 50, ChunkOverlap: 10})
-	if len(chunks) < 2 {
-		t.Fatalf("expected multiple chunks, got %d", len(chunks))
-	}
-	for _, chunk := range chunks {
-		if !strings.HasPrefix(chunk.SearchContent, "章节：Installation\n\n") {
-			t.Fatalf("search content has no section title: %q", chunk.SearchContent)
+func FuzzMarkdownSplit(f *testing.F) {
+	f.Add("# Root\nparagraph\n\n- item", 64, 8)
+	f.Add("```md\n# not heading\n```", 16, 2)
+	f.Add("中文\x00mixed", 1, 0)
+	f.Fuzz(func(t *testing.T, markdown string, size, overlap int) {
+		// Structural Markdown has irreducible syntax overhead (a legal GFM
+		// delimiter row or two code fences). Tiny 1..15 behavior is covered by
+		// the deterministic no-panic test; fuzz budgets start at that overhead.
+		if size < 16 || size > 1024 {
+			size = 64
 		}
-		if strings.Contains(chunk.Content, "Installation") {
-			t.Fatalf("display content should remain the original body: %q", chunk.Content)
+		if overlap < 0 || overlap >= size {
+			overlap = size / 8
 		}
-		if chunk.Tokens != EstimateTokens(chunk.SearchContent) || chunk.Tokens > 50 {
-			t.Fatalf("search content tokens = %d, content=%q", chunk.Tokens, chunk.SearchContent)
+		chunks := Markdown(markdown, Config{ChunkSize: size, ChunkOverlap: overlap})
+		for i, chunk := range chunks {
+			if chunk.Index != i {
+				t.Fatalf("index=%d want=%d", chunk.Index, i)
+			}
+			if !utf8.ValidString(chunk.RawContent) || !utf8.ValidString(chunk.SearchContent) {
+				t.Fatal("invalid UTF-8")
+			}
+			if chunk.Tokens > size {
+				t.Fatalf("tokens=%d size=%d", chunk.Tokens, size)
+			}
 		}
-	}
-}
-
-func TestMarkdownTinyChunkStillRespectsBudget(t *testing.T) {
-	t.Parallel()
-	chunks := Markdown("# Long heading\nabcdef", Config{ChunkSize: 1, ChunkOverlap: 0})
-	if len(chunks) == 0 {
-		t.Fatal("expected body chunks")
-	}
-	for _, chunk := range chunks {
-		if chunk.Tokens > 1 || EstimateTokens(chunk.SearchContent) > 1 {
-			t.Fatalf("tiny chunk exceeded budget: %+v", chunk)
-		}
-		if chunk.SectionTitle != "Long heading" {
-			t.Fatalf("section metadata was lost: %+v", chunk)
-		}
-	}
-}
-
-func TestPagesPreservesPageNumbersAndContinuousIndexes(t *testing.T) {
-	t.Parallel()
-	chunks := Pages([]string{"first page", "", "third page"}, Config{})
-	if len(chunks) != 2 {
-		t.Fatalf("got %d chunks, want 2", len(chunks))
-	}
-	if chunks[0].Index != 0 || chunks[0].PageNum != 1 ||
-		chunks[1].Index != 1 || chunks[1].PageNum != 3 {
-		t.Fatalf("unexpected page metadata: %+v", chunks)
-	}
+	})
 }

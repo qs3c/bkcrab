@@ -222,6 +222,8 @@ func (s *Server) ChatEventHub() *agent.EventHub { return s.chatEventHub() }
 
 func (s *Server) registerRAGRoutes(mux *http.ServeMux, auth func(http.HandlerFunc) http.HandlerFunc) {
 	mux.HandleFunc("GET /api/rag/capabilities", auth(s.handleRAGCapabilities))
+	mux.HandleFunc("GET /api/rag/assets/{assetId}", auth(s.handleRAGAsset))
+	mux.HandleFunc("GET /api/rag/assets/{assetId}/thumbnail", auth(s.handleRAGAssetThumbnail))
 	mux.HandleFunc("GET /api/rag/kbs", auth(s.handleListRAGKBs))
 	mux.HandleFunc("POST /api/rag/kbs", auth(s.handleCreateRAGKB))
 	mux.HandleFunc("GET /api/rag/kbs/{id}", auth(s.handleGetRAGKB))

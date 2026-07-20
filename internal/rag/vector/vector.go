@@ -30,13 +30,14 @@ type ChunkRef struct {
 
 // SearchHit is one result returned by a hybrid search.
 type SearchHit struct {
-	DocID        string
-	ChunkIndex   int
-	Content      string
-	SectionTitle string
-	PageNum      int
-	DocVersion   int64
-	Score        float64
+	DocID         string
+	ChunkIndex    int
+	Content       string
+	SearchContent string
+	SectionTitle  string
+	PageNum       int
+	DocVersion    int64
+	Score         float64
 }
 
 // SearchQuery describes the independent routes participating in one hybrid
@@ -46,6 +47,11 @@ type SearchHit struct {
 type SearchQuery struct {
 	Dense [][]float32
 	Text  string
+	// ActiveVersions is the SQL snapshot captured at retrieval start. Every
+	// ANN route must apply the predicate derived from this exact map; result
+	// hydration repeats the same check defensively.
+	ActiveVersions map[string]int64
+	MaxFilterBytes int
 }
 
 // Store is the vector database surface needed by the RAG service.

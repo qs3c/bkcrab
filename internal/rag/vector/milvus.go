@@ -3,6 +3,8 @@ package vector
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -11,6 +13,10 @@ import (
 	"github.com/milvus-io/milvus/client/v2/milvusclient"
 	"github.com/qs3c/bkcrab/internal/rag/chunktext"
 )
+
+const defaultMaxMilvusFilterBytes = 32 * 1024
+
+var canonicalMilvusDocID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 const (
 	milvusFieldID           = "id"
@@ -283,46 +289,54 @@ func (m *Milvus) HybridSearch(ctx context.Context, kbID string, query SearchQuer
 			return nil, fmt.Errorf("collection %s: 查询向量 %d 不能为空", kbID, index)
 		}
 	}
+	filter, err := buildActiveVersionFilter(query.ActiveVersions, query.MaxFilterBytes)
+	if err != nil {
+		return nil, err
+	}
+	if filter == "" {
+		return []SearchHit{}, nil
+	}
 
 	name := ragCollectionName(kbID)
-	dense := milvusclient.NewAnnRequest(milvusFieldEmbedding, topK, entity.FloatVector(query.Dense[0]))
+	dense := milvusclient.NewAnnRequest(milvusFieldEmbedding, topK, entity.FloatVector(query.Dense[0])).WithFilter(filter)
 	var (
 		resultSets []milvusclient.ResultSet
-		err        error
+		searchErr  error
 	)
 	queryText := strings.TrimSpace(query.Text)
 	if len(query.Dense) == 1 && queryText == "" {
-		resultSets, err = m.client.Search(ctx,
+		resultSets, searchErr = m.client.Search(ctx,
 			milvusclient.NewSearchOption(name, topK, []entity.Vector{entity.FloatVector(query.Dense[0])}).
 				WithANNSField(milvusFieldEmbedding).
+				WithFilter(filter).
 				WithOutputFields(milvusOutputFields...).
 				WithConsistencyLevel(entity.ClStrong))
 	} else if len(query.Dense) == 1 {
-		text := milvusclient.NewAnnRequest(milvusFieldSparse, topK, entity.Text(queryText))
-		resultSets, err = m.client.HybridSearch(ctx,
+		text := milvusclient.NewAnnRequest(milvusFieldSparse, topK, entity.Text(queryText)).WithFilter(filter)
+		resultSets, searchErr = m.client.HybridSearch(ctx,
 			milvusclient.NewHybridSearchOption(name, topK, dense, text).
 				WithReranker(milvusclient.NewRRFReranker().WithK(60)).
 				WithOutputFields(milvusOutputFields...).
 				WithConsistencyLevel(entity.ClStrong))
 	} else {
-		hyde := milvusclient.NewAnnRequest(milvusFieldEmbedding, topK, entity.FloatVector(query.Dense[1]))
+		hyde := milvusclient.NewAnnRequest(milvusFieldEmbedding, topK, entity.FloatVector(query.Dense[1])).WithFilter(filter)
 		if queryText == "" {
-			resultSets, err = m.client.HybridSearch(ctx,
+			resultSets, searchErr = m.client.HybridSearch(ctx,
 				milvusclient.NewHybridSearchOption(name, topK, dense, hyde).
 					WithReranker(milvusclient.NewRRFReranker().WithK(60)).
 					WithOutputFields(milvusOutputFields...).
 					WithConsistencyLevel(entity.ClStrong))
 		} else {
-			text := milvusclient.NewAnnRequest(milvusFieldSparse, topK, entity.Text(queryText))
-			resultSets, err = m.client.HybridSearch(ctx,
+			text := milvusclient.NewAnnRequest(milvusFieldSparse, topK, entity.Text(queryText)).WithFilter(filter)
+			resultSets, searchErr = m.client.HybridSearch(ctx,
 				milvusclient.NewHybridSearchOption(name, topK, dense, hyde, text).
 					WithReranker(milvusclient.NewRRFReranker().WithK(60)).
 					WithOutputFields(milvusOutputFields...).
 					WithConsistencyLevel(entity.ClStrong))
 		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("search milvus collection %s: %w", name, err)
+	if searchErr != nil {
+		return nil, fmt.Errorf("search milvus collection %s: %w", name, searchErr)
 	}
 	return milvusResultHits(resultSets)
 }
@@ -365,19 +379,64 @@ func milvusResultHits(resultSets []milvusclient.ResultSet) ([]SearchHit, error) 
 			if err != nil {
 				return nil, err
 			}
-			content = chunktext.Body(content, sectionTitle)
+			searchContent := content
+			content = chunktext.Body(searchContent, sectionTitle)
 			hits = append(hits, SearchHit{
-				DocID:        docID,
-				ChunkIndex:   int(chunkIndex),
-				Content:      content,
-				SectionTitle: sectionTitle,
-				PageNum:      int(pageNum),
-				DocVersion:   docVersion,
-				Score:        float64(result.Scores[row]),
+				DocID:         docID,
+				ChunkIndex:    int(chunkIndex),
+				Content:       content,
+				SearchContent: searchContent,
+				SectionTitle:  sectionTitle,
+				PageNum:       int(pageNum),
+				DocVersion:    docVersion,
+				Score:         float64(result.Scores[row]),
 			})
 		}
 	}
 	return hits, nil
+}
+
+// buildActiveVersionFilter produces one byte-stable scalar predicate shared
+// by dense, HyDE and sparse ANN routes. Values only come from canonical SQL
+// document IDs and int64 versions; query text is never interpolated.
+func buildActiveVersionFilter(active map[string]int64, maxBytes int) (string, error) {
+	if len(active) == 0 {
+		return "", nil
+	}
+	if maxBytes <= 0 {
+		maxBytes = defaultMaxMilvusFilterBytes
+	}
+	byVersion := make(map[int64][]string)
+	versions := make([]int64, 0)
+	for docID, version := range active {
+		if !canonicalMilvusDocID.MatchString(docID) {
+			return "", fmt.Errorf("invalid canonical RAG document ID %q", docID)
+		}
+		if version <= 0 {
+			return "", fmt.Errorf("invalid active version %d for %s", version, docID)
+		}
+		if _, exists := byVersion[version]; !exists {
+			versions = append(versions, version)
+		}
+		byVersion[version] = append(byVersion[version], docID)
+	}
+	sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
+	groups := make([]string, 0, len(versions))
+	for _, version := range versions {
+		docIDs := byVersion[version]
+		sort.Strings(docIDs)
+		quoted := make([]string, len(docIDs))
+		for i, docID := range docIDs {
+			quoted[i] = `"` + escapeMilvusExprString(docID) + `"`
+		}
+		groups = append(groups, fmt.Sprintf("(%s == %d && %s in [%s])",
+			milvusFieldDocVersion, version, milvusFieldDocID, strings.Join(quoted, ",")))
+	}
+	expr := "(" + strings.Join(groups, " || ") + ")"
+	if len([]byte(expr)) > maxBytes {
+		return "", fmt.Errorf("active-version Milvus filter is %d bytes, limit is %d", len([]byte(expr)), maxBytes)
+	}
+	return expr, nil
 }
 
 func milvusStringField(result *milvusclient.ResultSet, field string, row int) (string, error) {

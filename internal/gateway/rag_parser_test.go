@@ -26,7 +26,7 @@ func TestRAGParserClientConstructionDoesNotProbeAndBackgroundSnapshotKeepsGolden
   "limits":{"maxInputBytes":1024,"maxOutputBytes":4096},
   "capabilities":{
     "office":{"enabled":true,"formats":["docx","pptx","xlsx"],"markitdownVersion":"0.1.6","wrapperVersion":"office-wrapper-v1"},
-    "pdf":{"enabled":false,"engine":"","engineVersion":""}
+    "pdf":{"enabled":true,"engine":"pypdfium2","engineVersion":"5.12.1"}
   }
 }`))
 	}))
@@ -56,6 +56,9 @@ func TestRAGParserClientConstructionDoesNotProbeAndBackgroundSnapshotKeepsGolden
 		time.Sleep(time.Millisecond)
 	}
 	snapshot := client.HealthSnapshot()
+	if !snapshot.PDF.Enabled || !snapshot.PDF.LicenseApproved {
+		t.Fatalf("approved PDF engine was not published: %+v", snapshot.PDF)
+	}
 	if snapshot.Office.DOCXGolden || snapshot.Office.PPTXGolden || snapshot.Office.XLSXGolden {
 		t.Fatalf("health incorrectly promoted converter release gates: %+v", snapshot.Office)
 	}

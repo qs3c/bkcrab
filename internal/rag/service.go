@@ -15,10 +15,12 @@ import (
 
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag/embed"
+	"github.com/qs3c/bkcrab/internal/rag/enrich"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/parse"
 	"github.com/qs3c/bkcrab/internal/rag/rerank"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
+	"github.com/qs3c/bkcrab/internal/rag/vision"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
@@ -47,6 +49,10 @@ type Deps struct {
 	Reranker     rerank.Reranker
 	Parser       parse.Parser
 	Primitives   parse.PrimitiveExtractor
+	PageVision   vision.PageTranscriber
+	ImageVision  vision.ImageTranscriber
+	Enricher     enrich.Enricher
+	Tokenizer    enrich.Tokenizer
 	Workers      int
 }
 
@@ -60,6 +66,10 @@ type Service struct {
 	reranker    rerank.Reranker
 	parser      parse.Parser
 	primitives  parse.PrimitiveExtractor
+	pageVision  vision.PageTranscriber
+	imageVision vision.ImageTranscriber
+	enricher    enrich.Enricher
+	tokenizer   enrich.Tokenizer
 	tasks       chan int64
 	workerCount int
 	workerID    string
@@ -85,6 +95,29 @@ func New(d Deps) *Service {
 			d.Primitives, d.Cfg.Limits.MaxPagesPerDocument, d.Cfg.Limits.MaxExtractedBytes,
 		)
 	}
+	if local, ok := d.Parser.(*parse.LocalParser); ok {
+		// Parser routing limits are system policy, not mutable document input.
+		// Fill zero values even for a caller-supplied LocalParser so gateway and
+		// tests cannot accidentally bypass the configured document ceilings.
+		if local.MaxPages <= 0 {
+			local.MaxPages = d.Cfg.Limits.MaxPagesPerDocument
+		}
+		if local.MaxVisionPages <= 0 {
+			local.MaxVisionPages = d.Cfg.Limits.MaxVisionPagesPerDocument
+		}
+		if local.MaxExtractedBytes <= 0 {
+			local.MaxExtractedBytes = d.Cfg.Limits.MaxExtractedBytes
+		}
+		if local.MaxVisionInputBytes <= 0 {
+			local.MaxVisionInputBytes = d.Cfg.Limits.MaxVisionInputBytes
+		}
+		if local.MaxImagePixels <= 0 {
+			local.MaxImagePixels = d.Cfg.Limits.MaxImagePixels
+		}
+		if local.VisionImageMaxEdge <= 0 {
+			local.VisionImageMaxEdge = d.Cfg.Limits.DisplayMaxEdge
+		}
+	}
 	return &Service{
 		st:                d.Store,
 		vec:               d.Vector,
@@ -95,6 +128,10 @@ func New(d Deps) *Service {
 		reranker:          d.Reranker,
 		parser:            d.Parser,
 		primitives:        d.Primitives,
+		pageVision:        d.PageVision,
+		imageVision:       d.ImageVision,
+		enricher:          d.Enricher,
+		tokenizer:         d.Tokenizer,
 		tasks:             make(chan int64, 256),
 		workerCount:       d.Workers,
 		workerID:          "rag-" + uuid.NewString(),
@@ -102,6 +139,65 @@ func New(d Deps) *Service {
 		leaseDuration:     time.Minute,
 		heartbeatInterval: 20 * time.Second,
 		gcGracePeriod:     time.Duration(d.Cfg.Limits.IndexGCGracePeriod) * time.Second,
+	}
+}
+
+// newTaskDocumentAIBudget binds one immutable version snapshot and claim fence
+// to the durable façade shared by page vision, Office image vision, repairs and
+// text enrichment. It owns no process-local spend counters.
+func (s *Service) newTaskDocumentAIBudget(
+	claim *store.RAGIndexClaim,
+	userID string,
+) (*vision.TaskDocumentAIBudget, error) {
+	if s == nil || s.st == nil || claim == nil || strings.TrimSpace(userID) == "" {
+		return nil, errors.New("RAG DocumentAI budget requires store, claim, and user")
+	}
+	version := claim.Version
+	return vision.NewTaskDocumentAIBudget(s.st, vision.TaskBudgetConfig{
+		Fence: claim.Fence, UserID: userID,
+		TaskLimits: store.RAGDocumentAILimits{
+			MaxRequests:     int64(version.MaxDocumentAIRequests),
+			MaxTokens:       version.MaxDocumentAITokens,
+			MaxCostMicroUSD: version.MaxDocumentAICostMicroUSD,
+		},
+		UserLimits: store.RAGDocumentAILimits{
+			MaxRequests:     int64(s.cfg.Limits.MaxDocumentAIRequestsPerUserPerDay),
+			MaxTokens:       s.cfg.Limits.MaxDocumentAITokensPerUserPerDay,
+			MaxCostMicroUSD: microUSD(s.cfg.Limits.MaxEstimatedDocumentAICostPerUserPerDayUSD),
+		},
+		ReservationTTL: time.Duration(s.cfg.DocumentAI.TimeoutMS)*time.Millisecond + time.Minute,
+	}), nil
+}
+
+func (s *Service) documentAIReconcileLoop(ctx context.Context) {
+	if s == nil || s.st == nil {
+		return
+	}
+	timeout := time.Duration(s.cfg.DocumentAI.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	interval := timeout / 2
+	if interval < 30*time.Second {
+		interval = 30 * time.Second
+	}
+	if interval > 5*time.Minute {
+		interval = 5 * time.Minute
+	}
+	reconcile := func() {
+		now := time.Now().UTC()
+		_, _ = s.st.ReconcileRAGDocumentAIUsage(ctx, now, now.Add(-timeout-time.Minute), 100)
+	}
+	reconcile()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			reconcile()
+		}
 	}
 }
 

@@ -6,6 +6,8 @@ import "strings"
 
 const sectionPrefix = "章节："
 
+const enhancementLabel = "语义辅助（可能有误，原文优先）："
+
 // Search joins a section title and body into the text used by embedding and
 // full-text indexing. Chunks without a section title remain unchanged.
 func Search(sectionTitle, content string) string {
@@ -24,6 +26,36 @@ func ForIndex(searchContent, sectionTitle, content string) string {
 		return searchContent
 	}
 	return Search(sectionTitle, content)
+}
+
+// Answer derives the only text view supplied to answer models and tools.
+// Enhancement remains visibly subordinate to the immutable source text.
+func Answer(rawContent, enhancement string) string {
+	raw := strings.TrimSpace(rawContent)
+	extra := strings.TrimSpace(enhancement)
+	if extra == "" {
+		return raw
+	}
+	if raw == "" {
+		return enhancementLabel + "\n" + extra
+	}
+	return raw + "\n\n" + enhancementLabel + "\n" + extra
+}
+
+// AppendEnhancement adds the same subordinate envelope used by Answer to an
+// already prepared breadcrumb+raw search string. This preserves a splitter's
+// deterministically shortened breadcrumb instead of rebuilding it from the
+// full SectionTitle during finalization.
+func AppendEnhancement(baseSearchContent, enhancement string) string {
+	base := strings.TrimSpace(baseSearchContent)
+	extra := strings.TrimSpace(enhancement)
+	if extra == "" {
+		return base
+	}
+	if base == "" {
+		return Answer("", extra)
+	}
+	return base + "\n\n" + enhancementLabel + "\n" + extra
 }
 
 // Body removes the section prefix written by Search. Existing Milvus rows that

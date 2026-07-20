@@ -98,21 +98,33 @@ func TestArtifactObjectKeysAndFingerprintsUseSafeSegments(t *testing.T) {
 		t.Fatal("unsafe fingerprint segment must be rejected")
 	}
 
-	parseA, err := ParseFingerprint(ParseFingerprintInput{
+	parseInput := ParseFingerprintInput{
 		SourceSHA256: testSourceHash, ParseMode: "auto", ParserVersion: "parser-v1",
 		MarkItDownVersion: "0.1.6", PDFRenderDPI: 180, PDFRoutingVersion: "route-v1",
+		MaxPages: 500, MaxVisionPages: 100, MaxVisionAssets: 100, MaxAssets: 100,
+		MaxAssetBytes: 32 << 20, MaxExtractedBytes: 200 << 20, MaxVisionInputBytes: 8 << 20,
+		MaxImagePixels: 40_000_000, DisplayMaxEdge: 2400, ThumbnailMaxEdge: 480,
 		VisionProviderFingerprint: testAssetHash, VisionModel: "vision", VisionPromptVersion: "prompt-v1",
-	})
+		PageSchemaVersion: "page-v1", ImageSchemaVersion: "image-v1",
+	}
+	parseA, err := ParseFingerprint(parseInput)
 	if err != nil {
 		t.Fatal(err)
 	}
-	parseB, _ := ParseFingerprint(ParseFingerprintInput{
-		SourceSHA256: testSourceHash, ParseMode: "auto", ParserVersion: "parser-v1",
-		MarkItDownVersion: "0.1.6", PDFRenderDPI: 181, PDFRoutingVersion: "route-v1",
-		VisionProviderFingerprint: testAssetHash, VisionModel: "vision", VisionPromptVersion: "prompt-v1",
-	})
+	parseInput.PDFRenderDPI = 181
+	parseB, _ := ParseFingerprint(parseInput)
 	if parseA == parseB || len(parseA) != 64 {
 		t.Fatalf("parse fingerprints did not separate settings: %q %q", parseA, parseB)
+	}
+	parseInput.PDFRenderDPI = 180
+	parseInput.PDFRoutingVersion = "route-v2"
+	parseRouting, _ := ParseFingerprint(parseInput)
+	parseInput.PDFRoutingVersion = "route-v1"
+	parseInput.PageSchemaVersion = "page-v2"
+	parseSchema, _ := ParseFingerprint(parseInput)
+	if parseRouting == parseA || parseSchema == parseA {
+		t.Fatalf("parse fingerprint omitted routing/schema versions: base=%q routing=%q schema=%q",
+			parseA, parseRouting, parseSchema)
 	}
 	pageA := PageCacheKey([]byte("render"), testAssetHash, "vision", "prompt-v1", "page-v1")
 	pageB := PageCacheKey([]byte("render2"), testAssetHash, "vision", "prompt-v1", "page-v1")

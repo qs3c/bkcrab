@@ -20,6 +20,7 @@ RUN groupadd --gid 65532 rag-parser \
 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-editable
+RUN python -c "from importlib.metadata import distribution; from pathlib import PurePosixPath; dist = distribution('pypdfium2'); files = dist.files or (); assert any('BUILD_LICENSES' in PurePosixPath(str(item)).parts and dist.locate_file(item).is_file() for item in files), 'pypdfium2 wheel BUILD_LICENSES missing'"
 
 COPY app ./app
 RUN uv sync --frozen --no-editable
