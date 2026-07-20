@@ -1179,6 +1179,7 @@ export async function uploadAgentFiles(
   sessionId: string,
   files: File[],
   onProgress?: (progress: UploadProgress) => void,
+  projectId?: string,
 ): Promise<UploadedFile[]> {
   const fd = new FormData();
   for (const f of files) fd.append("file", f, f.name);
@@ -1187,6 +1188,10 @@ export async function uploadAgentFiles(
   // 输入框准确显示“正在上传”以及已传输的百分比。
   const params = new URLSearchParams();
   if (sessionId) params.set("sessionId", sessionId);
+  // A project's first chat turn is lazy-created, so the session row does not
+  // exist yet while attachments are uploading. Carry the same project hint as
+  // the subsequent chat request so both operations select one workspace scope.
+  if (projectId) params.set("projectId", projectId);
   if (typeof window !== "undefined") {
     const actAs = new URLSearchParams(window.location.search).get("actAs");
     if (actAs) params.set("actAs", actAs);

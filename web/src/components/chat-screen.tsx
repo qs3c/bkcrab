@@ -1297,13 +1297,19 @@ export function ChatScreen() {
       }));
 
       try {
-        await uploadAgentFiles(selectedAgent, sessionId, filesToUpload, (progress) => {
-          setAttachmentUpload((current) =>
-            current?.phase === "uploading"
-              ? { ...current, loaded: progress.loaded, total: progress.total || current.total }
-              : current,
-          );
-        });
+        await uploadAgentFiles(
+          selectedAgent,
+          sessionId,
+          filesToUpload,
+          (progress) => {
+            setAttachmentUpload((current) =>
+              current?.phase === "uploading"
+                ? { ...current, loaded: progress.loaded, total: progress.total || current.total }
+                : current,
+            );
+          },
+          projectIdHint,
+        );
         setAttachmentUpload((current) =>
           current?.phase === "uploading"
             ? { ...current, loaded: current.total, phase: "complete" }
