@@ -6,7 +6,7 @@ import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getAgent, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, listAgentFiles, listProjects, renameChatSession, revealAgentWorkspace, sendChatStream, steerChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type ContextUsage, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile } from "@/lib/api";
-import { findProducedFileAttachmentIndex, getChatHistoryRenderState, isInternalWorkspaceFile, splitToolTurnForRender } from "@/components/chat-screen-state";
+import { buildAgentFileUrl as fileUrl, findProducedFileAttachmentIndex, getChatHistoryRenderState, isInternalWorkspaceFile, splitToolTurnForRender, workspaceMarkdownFilePath } from "@/components/chat-screen-state";
 import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, History } from "lucide-react";
 import Link from "next/link";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
@@ -29,16 +29,15 @@ function urlTransform(url: string, key: string): string {
 // ~/.bkcrab/workspaces/<agent>/sessions/<sid>/ ↔ container:/workspace），
 // 因此 workspace.Store 在 sessions/<sid>/<name> 处找到文件。我们必须
 // 预置该前缀，否则文件 API 会从智能体根目录解析并返回 404。
-function makeUrlTransform(agentId: string, sessionId: string) {
+function makeUrlTransform(agentId: string, sessionId: string, projectId = "") {
   return (url: string, key: string): string => {
     if (key === "src" && url.startsWith("data:image/")) return url;
     // 将沙箱 `/workspace/<name>` 重映射，同时适用于图片嵌入（`src`）和
     // 超链接（`href`）。如果不处理 href，模型的"点击预览"链接会指向
     // 应用源而非文件 API 并返回 404。
     if ((key === "src" || key === "href") && url.startsWith("/workspace/")) {
-      const rel = url.slice("/workspace/".length);
-      const scoped = sessionId ? `sessions/${sessionId}/${rel}` : rel;
-      return fileUrl(agentId, scoped, false);
+      const scoped = workspaceMarkdownFilePath(url, sessionId, projectId);
+      if (scoped !== null) return fileUrl(agentId, scoped, false);
     }
     return defaultUrlTransform(url);
   };
@@ -262,6 +261,7 @@ interface ChatSession {
   channel?: string;
   accountId?: string;
   chatId?: string;
+  projectId?: string;
 }
 
 function generateSessionId() {
@@ -533,6 +533,8 @@ export function ChatScreen() {
     () => urlSessionId || generateSessionId(),
   );
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const activeProjectId =
+    urlProjectId || sessions.find((s) => s.id === sessionId)?.projectId || "";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   // 活跃会话集合：每个有进行中轮次的 sessionId 一个条目。此前是单个
@@ -2080,6 +2082,7 @@ export function ChatScreen() {
                           surfacedSrcs={surfacedSrcs}
                           agentId={selectedAgent}
                           sessionId={sessionId}
+                          projectId={activeProjectId}
                           subagentProgress={subagentProgress}
                         />
                         {filePanels}
@@ -2093,6 +2096,7 @@ export function ChatScreen() {
                           surfacedSrcs={surfacedSrcs}
                           agentId={selectedAgent}
                           sessionId={sessionId}
+                          projectId={activeProjectId}
                           subagentProgress={subagentProgress}
                         />
                         {filePanels}
@@ -2288,9 +2292,9 @@ export function ChatScreen() {
                             msg.content,
                             surfacedSrcs,
                             (attachedImages.get(msg.id)?.length ?? 0) > 0,
-                            makeUrlTransform(selectedAgent, sessionId),
+                            makeUrlTransform(selectedAgent, sessionId, activeProjectId),
                           ) ?? (
-                            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={makeUrlTransform(selectedAgent, sessionId)} components={MD_COMPONENTS}>
+                            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={makeUrlTransform(selectedAgent, sessionId, activeProjectId)} components={MD_COMPONENTS}>
                               {msg.content}
                             </ReactMarkdown>
                           )}
@@ -2979,7 +2983,7 @@ function ChatHeaderTitle({ title, fallback, onSave }: ChatHeaderTitleProps) {
 /** 将一组工具调用渲染为可折叠摘要。当 `nested` 为 true 时，
  *  去掉外层 flex/max-width 包装，使父容器（ToolRoundsBundle）
  *  可以堆叠回合而每个回合不重新施加自己的气泡对齐。 */
-function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, roundIndex, subagentProgress }: { msg: ChatMessage; surfacedSrcs?: ReadonlySet<string>; agentId: string; sessionId: string; nested?: boolean; roundIndex?: number; subagentProgress?: { iteration?: number; max?: number; phase?: "thinking" | "running" | "final-delivery" | "done"; tools?: string[] } | null }) {
+function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, projectId, nested = false, roundIndex, subagentProgress }: { msg: ChatMessage; surfacedSrcs?: ReadonlySet<string>; agentId: string; sessionId: string; projectId?: string; nested?: boolean; roundIndex?: number; subagentProgress?: { iteration?: number; max?: number; phase?: "thinking" | "running" | "final-delivery" | "done"; tools?: string[] } | null }) {
   const [groupOpen, setGroupOpen] = useState(false);
   const [expandedTool, setExpandedTool] = useState<Record<string, boolean>>({});
 
@@ -3008,8 +3012,8 @@ function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, 
       {msg.content && (
         <div className="bg-muted rounded-2xl rounded-bl-md px-4 py-2.5">
           <div className={CHAT_PROSE_CLASS}>
-            {renderContentWithDataImages(msg.content, surfacedSrcs, false, makeUrlTransform(agentId, sessionId)) ?? (
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={makeUrlTransform(agentId, sessionId)} components={MD_COMPONENTS}>
+            {renderContentWithDataImages(msg.content, surfacedSrcs, false, makeUrlTransform(agentId, sessionId, projectId)) ?? (
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={makeUrlTransform(agentId, sessionId, projectId)} components={MD_COMPONENTS}>
                 {msg.content}
               </ReactMarkdown>
             )}
@@ -3166,12 +3170,14 @@ function ToolRoundsBundle({
   surfacedSrcs,
   agentId,
   sessionId,
+  projectId,
   subagentProgress,
 }: {
   rounds: ChatMessage[];
   surfacedSrcs?: ReadonlySet<string>;
   agentId: string;
   sessionId: string;
+  projectId?: string;
   subagentProgress?: { iteration?: number; max?: number; phase?: "thinking" | "running" | "final-delivery" | "done"; tools?: string[] } | null;
 }) {
   const [open, setOpen] = useState(false);
@@ -3213,6 +3219,7 @@ function ToolRoundsBundle({
                   surfacedSrcs={surfacedSrcs}
                   agentId={agentId}
                   sessionId={sessionId}
+                  projectId={projectId}
                   nested
                   roundIndex={idx + 1}
                   subagentProgress={subagentProgress}
@@ -3300,14 +3307,6 @@ function formatBytes(n?: number): string {
 // （当工作区 HTML 文件链接到第三方站点时）、浏览器历史和反向代理访问
 // 日志泄露。服务端仍接受 `?token=` 以向后兼容自建 URL 的 CLI 脚本；
 // 前端仅停止提供它。
-function fileUrl(agentId: string, path: string, download: boolean): string {
-  const encoded = path.split("/").map(encodeURIComponent).join("/");
-  const params = new URLSearchParams();
-  if (download) params.set("download", "1");
-  const qs = params.toString();
-  return `/api/agents/${agentId}/files/${encoded}${qs ? "?" + qs : ""}`;
-}
-
 function zipUrl(agentId: string, sessionId: string, projectId?: string): string {
   const params = new URLSearchParams();
   // projectId 优先于 sessionId——与后端的 fileScopeForRequest 优先级一致，
