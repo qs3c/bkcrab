@@ -67,6 +67,28 @@ def test_shared_page_primitive_golden_has_exact_v1_shape() -> None:
     assert validate_page_primitive_document(value) == value
 
 
+def test_page_primitive_rejects_empty_text_blocks() -> None:
+    value = _read_json("page-primitive.json")
+    value["textBlocks"][0]["text"] = ""
+    with pytest.raises(ProtocolError, match="must be a string"):
+        validate_page_primitive_document(value)
+
+
+def test_page_primitive_dimensions_match_go_positive_float64_boundary() -> None:
+    value = _read_json("page-primitive.json")
+    value["width"] = 5e-324
+    value["height"] = 1e200
+    assert validate_page_primitive_document(value) == value
+
+
+@pytest.mark.parametrize("dimension", [0, -1, float("inf"), float("nan")])
+def test_page_primitive_rejects_nonpositive_or_nonfinite_dimensions(dimension: float) -> None:
+    value = _read_json("page-primitive.json")
+    value["width"] = dimension
+    with pytest.raises(ProtocolError):
+        validate_page_primitive_document(value)
+
+
 def test_manifest_rejects_unknown_fields_and_unknown_version() -> None:
     value = _read_json("manifest-office.json")
     unknown = copy.deepcopy(value)
@@ -77,6 +99,57 @@ def test_manifest_rejects_unknown_fields_and_unknown_version() -> None:
     wrong_version["protocolVersion"] = "rag-parser/v2"
     with pytest.raises(ProtocolError, match="unsupported protocolVersion"):
         Manifest.from_dict(wrong_version)
+
+
+def _duplicate_office_occurrence_order(value: dict[str, object]) -> None:
+    occurrences = value["occurrences"]
+    assert isinstance(occurrences, list)
+    duplicate = copy.deepcopy(occurrences[0])
+    duplicate["id"] = "occ_slide_0001_0002"
+    occurrences.append(duplicate)
+
+
+@pytest.mark.parametrize(
+    ("name", "mutation"),
+    [
+        ("manifest-office.json", lambda value: value["source"].update({"format": "pdf"})),
+        (
+            "manifest-pdf-analyze.json",
+            lambda value: value["source"].update({"format": "docx"}),
+        ),
+        (
+            "manifest-office.json",
+            lambda value: value["entries"][0].update({"mimeType": "image/jpeg"}),
+        ),
+        (
+            "manifest-office.json",
+            lambda value: value["units"][0].update({"id": "unit_slide_9999"}),
+        ),
+        (
+            "manifest-office.json",
+            lambda value: value["assets"][0].update({"sourceKind": "arbitrary"}),
+        ),
+        (
+            "manifest-office.json",
+            lambda value: value["parser"].update({"name": "   "}),
+        ),
+        ("manifest-office.json", _duplicate_office_occurrence_order),
+    ],
+)
+def test_manifest_producer_validation_matches_go_invariants(name: str, mutation) -> None:
+    value = _read_json(name)
+    mutation(value)
+    with pytest.raises(ProtocolError):
+        Manifest.from_dict(value)
+
+
+@pytest.mark.parametrize("name", ["manifest-pdf-analyze.json", "manifest-pdf-render.json"])
+def test_pdf_protocol_layer_allows_an_empty_sorted_page_catalog_like_go(name: str) -> None:
+    value = _read_json(name)
+    for field in ("entries", "assets", "occurrences", "pages"):
+        value[field] = []
+    manifest = Manifest.from_dict(value)
+    assert manifest.pages == ()
 
 
 @pytest.mark.parametrize(
@@ -209,5 +282,22 @@ def test_health_rejects_an_unapproved_half_enabled_pdf_shape() -> None:
         service_version="test", max_input_bytes=1, max_output_bytes=1
     )
     value["capabilities"]["pdf"]["enabled"] = True
+    with pytest.raises(ProtocolError, match="exactly when PDF is enabled"):
+        validate_health_document(value)
+
+
+@pytest.mark.parametrize(
+    ("engine", "engine_version"),
+    [("approved-engine", ""), ("", "1.0.0"), ("approved-engine", "1.0.0")],
+)
+def test_disabled_pdf_health_rejects_any_engine_metadata(
+    engine: str, engine_version: str
+) -> None:
+    value = make_health_document(
+        service_version="test", max_input_bytes=1, max_output_bytes=1
+    )
+    value["capabilities"]["pdf"].update(
+        {"engine": engine, "engineVersion": engine_version}
+    )
     with pytest.raises(ProtocolError, match="exactly when PDF is enabled"):
         validate_health_document(value)

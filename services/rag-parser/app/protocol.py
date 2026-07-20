@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import tarfile
@@ -23,14 +24,23 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 PDF_PAGE_ERROR_CODES = frozenset(
     {
-    "engine_error",
-    "invalid_page",
-    "page_analyze_failed",
-    "page_limit_exceeded",
-    "page_render_failed",
-    "timeout",
+        "engine_error",
+        "invalid_page",
+        "page_analyze_failed",
+        "page_limit_exceeded",
+        "page_render_failed",
+        "timeout",
     }
 )
+_ENTRY_MIME_BY_EXTENSION = {
+    ".md": "text/markdown; charset=utf-8",
+    ".json": "application/json",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+_ASSET_SOURCE_KINDS = frozenset({"embedded_original", "page_crop", "scanned_page"})
 
 
 class ProtocolError(ValueError):
@@ -74,18 +84,34 @@ def _string(value: Any, where: str, *, allow_empty: bool = False) -> str:
     return value
 
 
+def _non_blank_string(value: Any, where: str) -> str:
+    result = _string(value, where)
+    if not result.strip():
+        _fail("invalid_json_value", f"{where} must contain a non-whitespace character")
+    return result
+
+
 def _integer(value: Any, where: str, *, minimum: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         _fail("invalid_json_value", f"{where} must be an integer >= {minimum}")
     return value
 
 
-def _number(value: Any, where: str, *, minimum: float, maximum: float) -> float:
+def _number(
+    value: Any,
+    where: str,
+    *,
+    minimum: float,
+    maximum: float | None = None,
+) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         _fail("invalid_json_value", f"{where} must be a number")
     result = float(value)
-    if not minimum <= result <= maximum:
-        _fail("invalid_json_value", f"{where} must be between {minimum} and {maximum}")
+    if not math.isfinite(result) or result < minimum or (
+        maximum is not None and result > maximum
+    ):
+        boundary = f"between {minimum} and {maximum}" if maximum is not None else f">= {minimum}"
+        _fail("invalid_json_value", f"{where} must be finite and {boundary}")
     return result
 
 
@@ -176,9 +202,9 @@ class ParserDescriptor:
         obj = _mapping(value, "parser")
         _exact_keys(obj, {"name", "version", "wrapperVersion"}, "parser")
         return cls(
-            name=_string(obj["name"], "parser.name"),
-            version=_string(obj["version"], "parser.version"),
-            wrapper_version=_string(obj["wrapperVersion"], "parser.wrapperVersion"),
+            name=_non_blank_string(obj["name"], "parser.name"),
+            version=_non_blank_string(obj["version"], "parser.version"),
+            wrapper_version=_non_blank_string(obj["wrapperVersion"], "parser.wrapperVersion"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -533,7 +559,25 @@ class Manifest:
         }:
             _fail("invalid_bundle_kind", "unsupported bundleKind")
 
+        _string(self.source.format, "source.format")
+        _integer(self.source.byte_size, "source.byteSize", minimum=1)
+        _sha256(self.source.sha256, "source.sha256")
+        _non_blank_string(self.parser.name, "parser.name")
+        _non_blank_string(self.parser.version, "parser.version")
+        _non_blank_string(self.parser.wrapper_version, "parser.wrapperVersion")
+
         entry_paths = [entry.path for entry in self.entries]
+        for index, entry in enumerate(self.entries):
+            where = f"entries[{index}]"
+            validate_bundle_path(entry.path, f"{where}.path")
+            _sha256(entry.sha256, f"{where}.sha256")
+            _integer(entry.byte_size, f"{where}.byteSize")
+            expected_mime = _ENTRY_MIME_BY_EXTENSION.get(PurePosixPath(entry.path).suffix.lower())
+            if expected_mime is None or entry.mime_type != expected_mime:
+                _fail(
+                    "invalid_entry_mime",
+                    f"{where}.mimeType does not match its allowlisted path extension",
+                )
         if entry_paths != sorted(entry_paths) or len(entry_paths) != len(set(entry_paths)):
             _fail("invalid_entry_directory", "entries must be unique and sorted by path")
         _unique((unit.id for unit in self.units), "unit id")
@@ -541,6 +585,7 @@ class Manifest:
         _unique((occurrence.id for occurrence in self.occurrences), "occurrence id")
 
         entry_set = set(entry_paths)
+        entry_by_path = {entry.path: entry for entry in self.entries}
         refs: list[str] = [unit.markdown_entry for unit in self.units]
         refs.extend(asset.entry for asset in self.assets)
         refs.extend(
@@ -559,10 +604,46 @@ class Manifest:
                 "every declared payload entry must be referenced exactly once",
             )
 
+        for unit in self.units:
+            if entry_by_path[unit.markdown_entry].mime_type != "text/markdown; charset=utf-8":
+                _fail("invalid_entry_references", "unit markdownEntry must reference Markdown")
+        for asset in self.assets:
+            if not entry_by_path[asset.entry].mime_type.startswith("image/"):
+                _fail("invalid_entry_references", "asset entry must reference an image")
+        for page in self.pages:
+            if (
+                page.native_markdown_entry
+                and entry_by_path[page.native_markdown_entry].mime_type
+                != "text/markdown; charset=utf-8"
+            ):
+                _fail("invalid_entry_references", "nativeMarkdownEntry must reference Markdown")
+            if (
+                page.primitive_entry
+                and entry_by_path[page.primitive_entry].mime_type != "application/json"
+            ):
+                _fail("invalid_entry_references", "primitiveEntry must reference JSON")
+            if (
+                page.render_entry
+                and not entry_by_path[page.render_entry].mime_type.startswith("image/")
+            ):
+                _fail("invalid_entry_references", "renderEntry must reference an image")
+
+        for index, asset in enumerate(self.assets):
+            if asset.source_kind not in _ASSET_SOURCE_KINDS:
+                _fail("invalid_asset", f"assets[{index}].sourceKind is unsupported")
+
         asset_ids = {asset.local_id for asset in self.assets}
         occurrence_asset_ids = {occurrence.asset_local_id for occurrence in self.occurrences}
         if occurrence_asset_ids - asset_ids or asset_ids - occurrence_asset_ids:
             _fail("invalid_occurrence", "every asset must have an occurrence and no occurrence may dangle")
+
+        occurrence_orders: set[tuple[str, int]] = set()
+        for index, occurrence in enumerate(self.occurrences):
+            _integer(occurrence.order, f"occurrences[{index}].order")
+            order_key = (occurrence.unit_id, occurrence.order)
+            if order_key in occurrence_orders:
+                _fail("invalid_occurrence", "occurrence order must be unique within its unit")
+            occurrence_orders.add(order_key)
 
         if self.bundle_kind == OFFICE_BUNDLE_KIND:
             self._validate_office()
@@ -570,25 +651,45 @@ class Manifest:
             self._validate_pdf()
 
     def _validate_office(self) -> None:
+        if self.source.format not in {"docx", "pptx", "xlsx"}:
+            _fail("invalid_office_manifest", "office-convert source format is unsupported")
         if self.pages:
             _fail("invalid_office_manifest", "office-convert pages must be empty")
         if not self.units:
             _fail("invalid_office_manifest", "office-convert requires at least one unit")
         unit_by_id = {unit.id: unit for unit in self.units}
+        for unit in self.units:
+            location = unit.location
+            if location.kind == "document" and location.index == 0:
+                expected_id = "unit_document_0000"
+            elif location.kind in {"slide", "sheet"} and location.index > 0:
+                expected_id = f"unit_{location.kind}_{location.index:04d}"
+            else:
+                _fail(
+                    "invalid_office_manifest",
+                    "Office unit location must be document, slide, or sheet",
+                )
+            if unit.id != expected_id:
+                _fail(
+                    "invalid_office_manifest",
+                    "Office unit id must be deterministic for its location",
+                )
         for occurrence in self.occurrences:
             unit = unit_by_id.get(occurrence.unit_id)
             if unit is None or unit.location != occurrence.location:
                 _fail("invalid_occurrence", "Office occurrence must reference a matching unit")
 
     def _validate_pdf(self) -> None:
+        if self.source.format != "pdf":
+            _fail("invalid_pdf_manifest", "PDF source format must be pdf")
         if self.units:
             _fail("invalid_pdf_manifest", "PDF top-level units must be empty")
-        if not self.pages:
-            _fail("invalid_pdf_manifest", "PDF manifest requires page records")
         page_numbers = [page.page for page in self.pages]
         unit_ids = [page.unit_id for page in self.pages]
         if len(page_numbers) != len(set(page_numbers)) or len(unit_ids) != len(set(unit_ids)):
             _fail("invalid_pdf_manifest", "PDF page numbers and unitId values must be unique")
+        if page_numbers != sorted(page_numbers):
+            _fail("invalid_pdf_manifest", "PDF page records must be sorted")
         if self.bundle_kind == PDF_ANALYZE_BUNDLE_KIND:
             if page_numbers != list(range(1, len(page_numbers) + 1)):
                 _fail("invalid_pdf_manifest", "pdf-analyze pages must be ordered, complete, and gap-free")
@@ -650,7 +751,7 @@ def validate_health_document(value: Any) -> dict[str, Any]:
     _exact_keys(obj, {"protocolVersion", "serviceVersion", "limits", "capabilities"}, "health")
     if _string(obj["protocolVersion"], "health.protocolVersion") != PROTOCOL_VERSION:
         _fail("protocol_version_mismatch", "unsupported health protocolVersion")
-    _string(obj["serviceVersion"], "health.serviceVersion")
+    _non_blank_string(obj["serviceVersion"], "health.serviceVersion")
     limits = _mapping(obj["limits"], "health.limits")
     _exact_keys(limits, {"maxInputBytes", "maxOutputBytes"}, "health.limits")
     _integer(limits["maxInputBytes"], "health.limits.maxInputBytes", minimum=1)
@@ -676,7 +777,10 @@ def validate_health_document(value: Any) -> dict[str, Any]:
     engine_version = _string(
         pdf["engineVersion"], "health.capabilities.pdf.engineVersion", allow_empty=True
     )
-    if pdf_enabled != bool(engine and engine_version):
+    if pdf_enabled:
+        if not engine or not engine_version:
+            _fail("invalid_health", "PDF engine metadata must be present exactly when PDF is enabled")
+    elif engine or engine_version:
         _fail("invalid_health", "PDF engine metadata must be present exactly when PDF is enabled")
     return dict(obj)
 
@@ -701,8 +805,10 @@ def validate_page_primitive_document(value: Any) -> dict[str, Any]:
         "pagePrimitive",
     )
     _integer(obj["page"], "pagePrimitive.page", minimum=1)
-    _number(obj["width"], "pagePrimitive.width", minimum=0.000001, maximum=1_000_000)
-    _number(obj["height"], "pagePrimitive.height", minimum=0.000001, maximum=1_000_000)
+    width = _number(obj["width"], "pagePrimitive.width", minimum=0)
+    height = _number(obj["height"], "pagePrimitive.height", minimum=0)
+    if width <= 0 or height <= 0:
+        _fail("invalid_page_primitive", "page dimensions must be finite and greater than zero")
     _integer(obj["textChars"], "pagePrimitive.textChars")
     block_count = _integer(obj["blockCount"], "pagePrimitive.blockCount")
     _number(obj["textCoverage"], "pagePrimitive.textCoverage", minimum=0, maximum=1)
@@ -713,7 +819,7 @@ def validate_page_primitive_document(value: Any) -> dict[str, Any]:
         where = f"pagePrimitive.textBlocks[{index}]"
         block_obj = _mapping(block, where)
         _exact_keys(block_obj, {"text", "bbox"}, where)
-        _string(block_obj["text"], f"{where}.text", allow_empty=True)
+        _string(block_obj["text"], f"{where}.text")
         if _bbox(block_obj["bbox"], f"{where}.bbox") is None:
             _fail("invalid_page_primitive", f"{where}.bbox cannot be null")
     for index, image in enumerate(
