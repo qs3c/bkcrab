@@ -2,17 +2,27 @@ package rag
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"mime"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/rag/embed"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/parse"
 	"github.com/qs3c/bkcrab/internal/rag/split"
@@ -20,46 +30,77 @@ import (
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
-// Start launches the bounded indexing workers and requeues durable PENDING or
-// RUNNING tasks left by an earlier process. Calling Start more than once is
-// harmless.
+var errIndexFenceLost = errors.New("RAG index fence lost")
+
+// Start launches bounded durable workers. The in-process channel only reduces
+// latency; every wake makes a SQL claim, and the periodic pump makes a dropped
+// wake (including a full channel) recover without a process restart.
 func (s *Service) Start(ctx context.Context) {
 	s.startOnce.Do(func() {
 		for i := 0; i < s.workerCount; i++ {
 			go s.worker(ctx)
 		}
-		go s.recoverTasks(ctx)
+		go s.taskPump(ctx)
+		s.wakeWorkers()
 	})
 }
 
-func (s *Service) recoverTasks(ctx context.Context) {
-	tasks, err := s.st.ListRunnableRAGIndexTasks(ctx)
-	if err != nil {
-		slog.Error("rag: recover index tasks failed", "error", err)
-		return
+func (s *Service) taskPump(ctx context.Context) {
+	interval := s.pollInterval
+	if interval <= 0 {
+		interval = time.Second
 	}
-	for _, task := range tasks {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
 		select {
-		case s.tasks <- task.ID:
 		case <-ctx.Done():
 			return
+		case <-ticker.C:
+			s.wakeWorkers()
 		}
 	}
 }
+
+func (s *Service) wakeWorkers() {
+	for i := 0; i < s.workerCount; i++ {
+		s.scheduleTask(0)
+	}
+}
+
+// recoverTasks is retained as a compatibility shim for callers/tests from the
+// pre-lease worker. Recovery is now a durable SQL claim, not a one-time list.
+func (s *Service) recoverTasks(context.Context) { s.wakeWorkers() }
 
 func (s *Service) worker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case id := <-s.tasks:
-			s.runTask(ctx, id)
+		case <-s.tasks:
+			s.claimAvailable(ctx)
 		}
 	}
 }
 
-// UploadDocument validates and persists an original document, creates its
-// durable indexing task, then schedules asynchronous processing.
+func (s *Service) claimAvailable(ctx context.Context) {
+	for ctx.Err() == nil {
+		claim, err := s.st.ClaimRAGIndexTask(ctx, s.workerID, s.leaseDuration)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Error("rag: durable index claim failed", "worker", s.workerID, "error", err)
+			}
+			return
+		}
+		if claim == nil {
+			return
+		}
+		s.runClaim(ctx, claim)
+	}
+}
+
+// UploadDocument validates and persists an original document, its immutable
+// version snapshot, and its durable task in one relational transaction.
 func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName string, r io.Reader, size int64) (*store.RAGDocumentRecord, error) {
 	kbLock := s.kbMutex(kbID)
 	kbLock.RLock()
@@ -94,7 +135,8 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName st
 	docID := "doc_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
 	key := objects.Key(kb.UserID, kbID, docID, fileName)
 	contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(fileName)))
-	if err := s.obj.Put(ctx, key, r, size, contentType); err != nil {
+	hasher := sha256.New()
+	if err := s.obj.Put(ctx, key, io.TeeReader(r, hasher), size, contentType); err != nil {
 		return nil, fmt.Errorf("保存原件: %w", err)
 	}
 	fileType := strings.TrimPrefix(strings.ToLower(filepath.Ext(fileName)), ".")
@@ -102,17 +144,27 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName st
 		fileType = "md"
 	}
 	doc := &store.RAGDocumentRecord{
-		ID:         docID,
-		KBID:       kbID,
-		FileName:   filepath.Base(fileName),
-		FileType:   fileType,
-		FileSize:   size,
-		ObjectKey:  key,
-		Status:     "PENDING",
-		Version:    1,
-		UploadedAt: time.Now().UTC(),
+		ID:                 docID,
+		KBID:               kbID,
+		FileName:           filepath.Base(fileName),
+		FileType:           fileType,
+		FileSize:           size,
+		ObjectKey:          key,
+		Status:             "PENDING",
+		Version:            1,
+		SourceSHA256:       hex.EncodeToString(hasher.Sum(nil)),
+		ActiveVersion:      0,
+		IndexFormatVersion: 1,
+		ProcessingStage:    "queued",
+		UploadedAt:         time.Now().UTC(),
 	}
-	taskID, err := s.st.CreateRAGDocumentWithIndexTask(ctx, doc, 3)
+	snapshot, err := s.BuildVersionSnapshot(ctx, doc)
+	if err != nil {
+		_ = s.obj.DeletePrefix(ctx, fmt.Sprintf("rag/%s/%s/%s/", kb.UserID, kbID, docID))
+		return nil, err
+	}
+	snapshot.DocVersion = doc.Version
+	taskID, err := s.st.CreateRAGDocumentWithVersionAndIndexTask(ctx, doc, snapshot, 3)
 	if err != nil {
 		_ = s.obj.DeletePrefix(ctx, fmt.Sprintf("rag/%s/%s/%s/", kb.UserID, kbID, docID))
 		return nil, err
@@ -140,15 +192,16 @@ func (s *Service) ReindexDocument(ctx context.Context, ownerID, kbID, docID stri
 	if err != nil {
 		return err
 	}
-	doc.Version++
-	doc.Status = "PENDING"
-	doc.ErrorMsg = ""
-	doc.IndexedAt = nil
-	taskID, err := s.st.UpdateRAGDocumentWithIndexTask(ctx, doc, 3)
+	snapshot, err := s.BuildVersionSnapshot(ctx, doc)
 	if err != nil {
 		return err
 	}
-	s.scheduleTask(taskID)
+	snapshot.DocVersion = 0 // assigned atomically by the store
+	task, err := s.st.AdvanceDocumentVersionAndCreateTask(ctx, doc.Version, snapshot)
+	if err != nil {
+		return err
+	}
+	s.scheduleTask(task.ID)
 	return nil
 }
 
@@ -176,152 +229,293 @@ func (s *Service) DeleteDocument(ctx context.Context, ownerID, kbID, docID strin
 	return s.st.DeleteRAGDocument(ctx, docID)
 }
 
-func (s *Service) enqueue(ctx context.Context, docID string) error {
-	taskID, err := s.st.CreateRAGIndexTask(ctx, docID, 3)
-	if err != nil {
-		return err
-	}
-	s.scheduleTask(taskID)
-	return nil
-}
-
 func (s *Service) scheduleTask(taskID int64) {
 	select {
 	case s.tasks <- taskID:
 	default:
-		// The durable row remains PENDING and will be recovered after restart.
-		slog.Warn("rag: index task queue full; task persisted for recovery", "task", taskID)
+		// The durable row is authoritative. A later poll will create another
+		// wake after capacity becomes available.
+		if taskID != 0 {
+			slog.Warn("rag: index wake queue full; durable poller will recover", "task", taskID)
+		}
 	}
 }
 
-func (s *Service) runTask(ctx context.Context, taskID int64) {
-	task, err := s.st.GetRAGIndexTask(ctx, taskID)
+// runTask remains for package-level compatibility tests. The id is only a
+// hint: correctness requires claiming the next due row from SQL.
+func (s *Service) runTask(ctx context.Context, _ int64) {
+	claim, err := s.st.ClaimRAGIndexTask(ctx, s.workerID, s.leaseDuration)
 	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
-			slog.Error("rag: read index task failed", "task", taskID, "error", err)
-		}
+		slog.Error("rag: durable index claim failed", "worker", s.workerID, "error", err)
 		return
 	}
-	if err := s.st.UpdateRAGIndexTask(ctx, taskID, "RUNNING", task.RetryCount, ""); err != nil {
-		slog.Error("rag: persist RUNNING task state failed", "task", taskID, "error", err)
+	if claim != nil {
+		s.runClaim(ctx, claim)
+	}
+}
+
+func (s *Service) runClaim(parent context.Context, claim *store.RAGIndexClaim) {
+	if claim == nil {
 		return
 	}
-	attemptVersion := 0
-	if doc, getErr := s.st.GetRAGDocument(ctx, task.DocID); getErr == nil {
-		attemptVersion = doc.Version
+	workCtx, cancelWork := context.WithCancel(parent)
+	defer cancelWork()
+	heartbeatCtx, stopHeartbeat := context.WithCancel(parent)
+	var leaseLost atomic.Bool
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		s.heartbeatLoop(heartbeatCtx, claim.Fence, &leaseLost, cancelWork)
+	}()
+	stopAndWaitHeartbeat := func() {
+		stopHeartbeat()
+		<-heartbeatDone
 	}
-	err = s.doIndex(ctx, task.DocID, attemptVersion)
+
+	doc, err := s.st.GetRAGDocument(workCtx, claim.Fence.DocID)
+	var embeddingBinding config.RAGEmbeddingCfg
 	if err == nil {
-		if updateErr := s.st.UpdateRAGIndexTask(ctx, taskID, "DONE", task.RetryCount, ""); updateErr != nil && !errors.Is(updateErr, store.ErrNotFound) {
-			slog.Error("rag: persist DONE task state failed", "task", taskID, "error", updateErr)
-		}
-		return
-	}
-	if ctx.Err() != nil {
-		return
-	}
-	slog.Error("rag: document indexing failed", "doc", task.DocID, "retry", task.RetryCount, "error", err)
-	if task.RetryCount < task.MaxRetry {
-		nextRetry := task.RetryCount + 1
-		if updateErr := s.st.UpdateRAGIndexTask(ctx, taskID, "PENDING", nextRetry, err.Error()); updateErr != nil {
-			if !errors.Is(updateErr, store.ErrNotFound) {
-				slog.Error("rag: persist retry task state failed", "task", taskID, "error", updateErr)
+		var current *store.RAGDocumentVersionRecord
+		current, embeddingBinding, err = s.buildVersionSnapshotAndBinding(workCtx, doc)
+		if err == nil && !sameRuntimeProviderContracts(&claim.Version, current) {
+			current.DocVersion = 0
+			created, ok, supersedeErr := s.st.SupersedeRAGIndexTaskAndCreateVersion(workCtx, claim.Fence, current)
+			stopAndWaitHeartbeat()
+			if supersedeErr != nil {
+				slog.Error("rag: supersede provider-mismatched index task", "task", claim.Fence.TaskID, "error", supersedeErr)
+				return
+			}
+			if ok && created != nil {
+				s.scheduleTask(created.ID)
 			}
 			return
 		}
-		go func(retry int) {
-			delay := time.Duration(1<<(retry-1)) * time.Second
-			timer := time.NewTimer(delay)
-			defer timer.Stop()
-			select {
-			case <-timer.C:
-				select {
-				case s.tasks <- taskID:
-				case <-ctx.Done():
-				}
-			case <-ctx.Done():
-			}
-		}(nextRetry)
+	}
+	if err != nil {
+		stopAndWaitHeartbeat()
+		s.finishClaimFailure(parent, claim, err, leaseLost.Load())
 		return
 	}
 
-	if updateErr := s.st.UpdateRAGIndexTask(ctx, taskID, "FAILED", task.RetryCount, err.Error()); updateErr != nil {
-		if !errors.Is(updateErr, store.ErrNotFound) {
-			slog.Error("rag: persist FAILED task state failed", "task", taskID, "error", updateErr)
-		}
+	activation, err := s.indexClaim(workCtx, claim, embeddingBinding)
+	if errors.Is(err, errIndexFenceLost) {
+		cancelWork()
+	}
+	stopAndWaitHeartbeat()
+	if err != nil {
+		s.finishClaimFailure(parent, claim, err, leaseLost.Load())
 		return
 	}
-	if doc, getErr := s.st.GetRAGDocument(ctx, task.DocID); getErr == nil && attemptVersion > 0 && doc.Version == attemptVersion {
-		doc.Status = "FAILED"
-		doc.ErrorMsg = err.Error()
-		updated, updateErr := s.st.UpdateRAGDocumentIfVersion(ctx, doc, attemptVersion)
-		if updateErr != nil {
-			slog.Error("rag: persist FAILED document state failed", "doc", task.DocID, "error", updateErr)
-		} else if !updated {
-			slog.Info("rag: skipped stale FAILED document state", "doc", task.DocID, "version", attemptVersion)
+	if leaseLost.Load() || parent.Err() != nil {
+		return
+	}
+	ok, err := s.st.ActivateAndFinishRAGIndexTask(parent, claim.Fence, activation, s.gcGracePeriod)
+	if err != nil {
+		slog.Error("rag: atomic index activation failed", "task", claim.Fence.TaskID, "error", err)
+		return
+	}
+	if !ok {
+		slog.Info("rag: skipped activation after index fence was lost", "task", claim.Fence.TaskID,
+			"doc_version", claim.Fence.DocVersion, "generation", claim.Fence.ClaimGeneration)
+	}
+}
+
+func (s *Service) heartbeatLoop(
+	ctx context.Context,
+	fence store.IndexFence,
+	leaseLost *atomic.Bool,
+	cancelWork context.CancelFunc,
+) {
+	interval := s.heartbeatInterval
+	if interval <= 0 || interval >= s.leaseDuration {
+		interval = s.leaseDuration / 3
+	}
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ok, err := s.st.HeartbeatRAGIndexTask(ctx, fence, s.leaseDuration)
+			if ctx.Err() != nil {
+				return
+			}
+			if err != nil || !ok {
+				leaseLost.Store(true)
+				cancelWork()
+				if err != nil && ctx.Err() == nil {
+					slog.Error("rag: index heartbeat failed; canceling work", "task", fence.TaskID, "error", err)
+				}
+				return
+			}
 		}
 	}
 }
 
-// doIndex implements parse -> split -> embed -> upsert-new -> delete-old.
-// Old searchable chunks remain intact until the complete new version has been
-// embedded and written successfully.
-func (s *Service) doIndex(ctx context.Context, docID string, expectedVersion int) error {
-	initial, err := s.st.GetRAGDocument(ctx, docID)
+func (s *Service) finishClaimFailure(parent context.Context, claim *store.RAGIndexClaim, err error, leaseLost bool) {
+	if err == nil || claim == nil || leaseLost || parent.Err() != nil || errors.Is(err, errIndexFenceLost) {
+		return
+	}
+	message := err.Error()
+	if isTransientIndexError(err) && claim.Task.RetryCount < claim.Task.MaxRetry {
+		delay := indexRetryDelay(claim.Task.RetryCount + 1)
+		ok, retryErr := s.st.RetryRAGIndexTask(parent, claim.Fence, message, delay)
+		if retryErr != nil {
+			slog.Error("rag: persist transient index retry", "task", claim.Fence.TaskID, "error", retryErr)
+		} else if ok {
+			slog.Warn("rag: transient index failure scheduled for retry", "task", claim.Fence.TaskID,
+				"retry", claim.Task.RetryCount+1, "delay", delay, "error", err)
+		}
+		return
+	}
+	ok, failErr := s.st.FailRAGIndexTask(parent, claim.Fence, message)
+	if failErr != nil {
+		slog.Error("rag: persist permanent index failure", "task", claim.Fence.TaskID, "error", failErr)
+	} else if ok {
+		slog.Error("rag: document indexing failed permanently", "task", claim.Fence.TaskID, "error", err)
+	}
+}
+
+func indexRetryDelay(retry int) time.Duration {
+	if retry < 1 {
+		retry = 1
+	}
+	if retry > 8 {
+		retry = 8
+	}
+	return time.Duration(1<<(retry-1)) * time.Second
+}
+
+func isTransientIndexError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, parse.ErrEmptyContent) || errors.Is(err, os.ErrNotExist) ||
+		errors.Is(err, store.ErrRAGDocumentAIBudgetExceeded) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return true
+	}
+	var statusErr interface{ HTTPStatus() int }
+	if errors.As(err, &statusErr) {
+		status := statusErr.HTTPStatus()
+		switch {
+		case status == http.StatusRequestTimeout,
+			status == http.StatusTooEarly,
+			status == http.StatusTooManyRequests,
+			status >= 500 && status <= 599:
+			return true
+		case status >= 400 && status <= 499:
+			return false
+		}
+	}
+	message := strings.ToLower(err.Error())
+	for _, permanent := range []string{
+		"不支持的文件类型", "分块结果为空", "维度不符", "非法 index", "重复 index",
+		"schema", "validation", "unsupported", "exceeds", "上限", "不能为空",
+		"配置不可用", "endpoint 不可用", "knowledge base is not active",
+	} {
+		if strings.Contains(message, permanent) {
+			return false
+		}
+	}
+	if strings.Contains(message, "返回 429") {
+		return true
+	}
+	for status := 400; status <= 499; status++ {
+		if status == http.StatusRequestTimeout || status == http.StatusTooEarly || status == http.StatusTooManyRequests {
+			continue
+		}
+		if strings.Contains(message, fmt.Sprintf("返回 %d", status)) {
+			return false
+		}
+	}
+	for status := 500; status <= 599; status++ {
+		if strings.Contains(message, fmt.Sprintf("返回 %d", status)) {
+			return true
+		}
+	}
+	// SQL, object-store and vector-store failures are retryable unless they
+	// matched a deterministic validation/corruption condition above.
+	return true
+}
+
+func (s *Service) indexClaim(
+	ctx context.Context,
+	claim *store.RAGIndexClaim,
+	embeddingBinding config.RAGEmbeddingCfg,
+) (store.RAGIndexActivation, error) {
+	var activation store.RAGIndexActivation
+	fence := claim.Fence
+	version := &claim.Version
+
+	initial, err := s.st.GetRAGDocument(ctx, fence.DocID)
 	if err != nil {
-		return err
+		return activation, err
 	}
 	kbLock := s.kbMutex(initial.KBID)
 	kbLock.RLock()
 	defer kbLock.RUnlock()
-	docLock := s.docMutex(docID)
+	docLock := s.docMutex(fence.DocID)
 	docLock.Lock()
 	defer docLock.Unlock()
 
-	// Re-read after acquiring both locks: a delete may have completed between
-	// the initial lookup and lock acquisition.
-	doc, err := s.st.GetRAGDocument(ctx, docID)
+	doc, err := s.st.GetRAGDocument(ctx, fence.DocID)
 	if err != nil {
-		return err
+		return activation, err
 	}
-	if expectedVersion > 0 && doc.Version != expectedVersion {
-		return nil
+	if doc.Version != fence.DocVersion || version.DocVersion != fence.DocVersion {
+		return activation, errIndexFenceLost
 	}
-	expectedVersion = doc.Version
 	kb, err := s.st.GetRAGKB(ctx, doc.KBID)
 	if err != nil {
-		return err
+		return activation, err
 	}
 	if kb.Status != "active" {
-		return nil
+		return activation, errors.New("knowledge base is not active")
 	}
-	if err := s.vec.EnsureCollection(ctx, kb.ID, kb.EmbedDims); err != nil {
-		return fmt.Errorf("准备向量 collection: %w", err)
+	if version.ParseMode != store.RAGParseModeStandard {
+		return activation, errors.New("unsupported: advanced parser pipeline is not installed")
 	}
-	doc.Status = "PROCESSING"
-	doc.ErrorMsg = ""
-	updated, err := s.st.UpdateRAGDocumentIfVersion(ctx, doc, expectedVersion)
-	if err != nil {
-		return err
+	if version.EnrichmentEnabled {
+		return activation, errors.New("unsupported: enrichment pipeline is not installed")
 	}
-	if !updated {
-		return nil
+	if version.ChunkSize <= 0 || version.ChunkOverlap < 0 || version.ChunkOverlap >= version.ChunkSize {
+		return activation, errors.New("invalid immutable chunk contract")
 	}
-
+	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{Stage: "loading"}); err != nil {
+		return activation, err
+	}
+	if err := s.vec.EnsureCollection(ctx, kb.ID, version.EmbeddingDimensions); err != nil {
+		return activation, fmt.Errorf("准备向量 collection: %w", err)
+	}
 	rc, err := s.obj.Get(ctx, doc.ObjectKey)
 	if err != nil {
-		return fmt.Errorf("读原件: %w", err)
+		return activation, fmt.Errorf("读原件: %w", err)
 	}
 	parsed, parseErr := parse.Parse(rc, doc.FileName)
 	closeErr := rc.Close()
 	if parseErr != nil {
-		return parseErr
+		return activation, parseErr
 	}
 	if closeErr != nil {
-		return fmt.Errorf("关闭原件: %w", closeErr)
+		return activation, fmt.Errorf("关闭原件: %w", closeErr)
 	}
 
-	cfg := split.Config{ChunkSize: kb.ChunkSize, ChunkOverlap: kb.ChunkOverlap}
+	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{Stage: "chunking"}); err != nil {
+		return activation, err
+	}
+	cfg := split.Config{ChunkSize: version.ChunkSize, ChunkOverlap: version.ChunkOverlap}
 	var chunks []split.Chunk
 	switch parsed.Format {
 	case "md", "docx":
@@ -337,7 +531,7 @@ func (s *Service) doIndex(ctx context.Context, docID string, expectedVersion int
 		chunks = split.SlidingWindow(parsed.Pages[0].Text, cfg, "", 0)
 	}
 	if len(chunks) == 0 {
-		return errors.New("分块结果为空")
+		return activation, errors.New("分块结果为空")
 	}
 
 	texts := make([]string, len(chunks))
@@ -347,86 +541,88 @@ func (s *Service) doIndex(ctx context.Context, docID string, expectedVersion int
 		if texts[i] == "" {
 			texts[i] = chunk.Content
 		}
+		if !s.cfg.Limits.SearchContentWithinLimit(texts[i]) {
+			return activation, fmt.Errorf("SearchContent exceeds byte limit at chunk %d", chunk.Index)
+		}
 		totalTokens += chunk.Tokens
 	}
-	vectors, err := s.embedderForKB(ctx, kb).Embed(ctx, texts)
-	if err != nil {
-		return err
+	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{
+		Stage: "embedding", Current: 0, Total: len(chunks), Unit: "chunks",
+	}); err != nil {
+		return activation, err
 	}
-	data := make([]vector.ChunkData, len(chunks))
+	embedder := embed.New(embeddingBinding.Endpoint, embeddingBinding.APIKey,
+		version.EmbeddingModel, version.EmbeddingDimensions)
+	vectors, err := embedder.Embed(ctx, texts)
+	if err != nil {
+		return activation, err
+	}
+
+	vectorChunks := make([]vector.ChunkData, len(chunks))
+	sqlChunks := make([]store.RAGChunkRecord, len(chunks))
+	now := time.Now().UTC()
 	for i, chunk := range chunks {
-		data[i] = vector.ChunkData{
+		vectorChunks[i] = vector.ChunkData{
 			DocID:         doc.ID,
 			Index:         chunk.Index,
 			Content:       chunk.Content,
 			SearchContent: texts[i],
 			SectionTitle:  chunk.SectionTitle,
 			PageNum:       chunk.PageNum,
-			DocVersion:    doc.Version,
+			DocVersion:    fence.DocVersion,
 			Vector:        vectors[i],
 		}
-	}
-	currentDoc, err := s.st.GetRAGDocument(ctx, doc.ID)
-	if errors.Is(err, store.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if currentDoc.Version != expectedVersion {
-		return nil
-	}
-	currentKB, err := s.st.GetRAGKB(ctx, kb.ID)
-	if errors.Is(err, store.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if currentKB.Status != "active" {
-		return nil
-	}
-	if err := s.vec.UpsertChunks(ctx, kb.ID, data); err != nil {
-		return fmt.Errorf("写入向量库: %w", err)
-	}
-	if err := s.vec.DeleteOldVersions(ctx, kb.ID, doc.ID, doc.Version); err != nil {
-		// The new-version upsert is idempotent, so retry the durable task until
-		// stale chunks are actually removed instead of marking a mixed-version
-		// index as complete.
-		return fmt.Errorf("清理旧向量版本: %w", err)
-	}
-
-	doc.Status = "DONE"
-	doc.ErrorMsg = ""
-	doc.ChunkCount = len(chunks)
-	doc.TokenCount = totalTokens
-	now := time.Now().UTC()
-	doc.IndexedAt = &now
-	updated, err = s.st.UpdateRAGDocumentIfVersion(ctx, doc, expectedVersion)
-	if err != nil {
-		return err
-	}
-	if updated {
-		return nil
-	}
-
-	// A delete or newer reindex won the race after the vector upsert. Never
-	// roll its relational state back. If the row was deleted, remove the
-	// just-written orphaned vectors; if it advanced, clean only older versions.
-	currentDoc, err = s.st.GetRAGDocument(ctx, doc.ID)
-	if errors.Is(err, store.ErrNotFound) {
-		if cleanupErr := s.vec.DeleteDoc(ctx, kb.ID, doc.ID); cleanupErr != nil {
-			return fmt.Errorf("清理已删除文档的孤儿向量: %w", cleanupErr)
+		location, _ := json.Marshal(struct {
+			PageNum int `json:"pageNum,omitempty"`
+		}{PageNum: chunk.PageNum})
+		sqlChunks[i] = store.RAGChunkRecord{
+			KBID: kb.ID, DocID: doc.ID, DocVersion: fence.DocVersion, ChunkIndex: chunk.Index,
+			SectionTitle: chunk.SectionTitle, LocationJSON: string(location), RawContent: chunk.Content,
+			SearchContent: texts[i], TokenCount: chunk.Tokens, CreatedAt: now,
 		}
-		return nil
 	}
+	for start := 0; start < len(sqlChunks); start += 200 {
+		end := min(start+200, len(sqlChunks))
+		if err := s.st.PutRAGChunks(ctx, sqlChunks[start:end]); err != nil {
+			return activation, fmt.Errorf("写入 chunk catalog: %w", err)
+		}
+	}
+	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{
+		Stage: "indexing", Current: len(chunks), Total: len(chunks), Unit: "chunks",
+	}); err != nil {
+		return activation, err
+	}
+	valid, err := s.st.CheckRAGIndexFence(ctx, fence)
+	if err != nil {
+		return activation, err
+	}
+	if !valid {
+		return activation, errIndexFenceLost
+	}
+	if err := s.vec.UpsertChunks(ctx, kb.ID, vectorChunks); err != nil {
+		return activation, fmt.Errorf("写入向量库: %w", err)
+	}
+	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{
+		Stage: "finalizing", Current: len(chunks), Total: len(chunks), Unit: "chunks",
+	}); err != nil {
+		return activation, err
+	}
+	activation = store.RAGIndexActivation{
+		VersionResult: store.RAGDocumentVersionResult{
+			Status: store.RAGDocumentVersionDone, PageCount: len(parsed.Pages),
+		},
+		ChunkCount: len(chunks), TokenCount: totalTokens,
+	}
+	return activation, nil
+}
+
+func (s *Service) fencedProgress(ctx context.Context, fence store.IndexFence, progress store.RAGIndexProgress) error {
+	ok, err := s.st.UpdateProgressRAGIndexTask(ctx, fence, progress)
 	if err != nil {
 		return err
 	}
-	if currentDoc.Version > expectedVersion {
-		if cleanupErr := s.vec.DeleteOldVersions(ctx, kb.ID, doc.ID, currentDoc.Version); cleanupErr != nil {
-			return fmt.Errorf("清理过期索引任务向量: %w", cleanupErr)
-		}
+	if !ok {
+		return errIndexFenceLost
 	}
 	return nil
 }

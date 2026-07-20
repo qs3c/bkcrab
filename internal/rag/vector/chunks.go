@@ -108,7 +108,7 @@ func (m *Milvus) GetChunks(ctx context.Context, kbID string, refs []ChunkRef) ([
 			SearchContent: content,
 			SectionTitle:  sectionTitle,
 			PageNum:       int(pageNum),
-			DocVersion:    int(docVersion),
+			DocVersion:    docVersion,
 		})
 	}
 	sortChunkData(chunks)

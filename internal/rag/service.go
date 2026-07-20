@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -56,9 +57,17 @@ type Service struct {
 	reranker    rerank.Reranker
 	tasks       chan int64
 	workerCount int
-	startOnce   sync.Once
-	kbLocks     sync.Map // map[string]*sync.RWMutex; deletion waits for in-flight KB work
-	docLocks    sync.Map // map[string]*sync.Mutex; one index mutation per document
+	workerID    string
+
+	// The in-memory channel is only a latency hint. SQL claim/lease state is
+	// authoritative and pollInterval guarantees recovery after a dropped hint.
+	pollInterval      time.Duration
+	leaseDuration     time.Duration
+	heartbeatInterval time.Duration
+	gcGracePeriod     time.Duration
+	startOnce         sync.Once
+	kbLocks           sync.Map // map[string]*sync.RWMutex; deletion waits for in-flight KB work
+	docLocks          sync.Map // map[string]*sync.Mutex; one index mutation per document
 }
 
 func New(d Deps) *Service {
@@ -67,15 +76,20 @@ func New(d Deps) *Service {
 		d.Workers = 2
 	}
 	return &Service{
-		st:          d.Store,
-		vec:         d.Vector,
-		obj:         d.Objects,
-		cfg:         d.Cfg,
-		userCfg:     d.UserEmbedCfg,
-		queryLLM:    d.QueryLLM,
-		reranker:    d.Reranker,
-		tasks:       make(chan int64, 256),
-		workerCount: d.Workers,
+		st:                d.Store,
+		vec:               d.Vector,
+		obj:               d.Objects,
+		cfg:               d.Cfg,
+		userCfg:           d.UserEmbedCfg,
+		queryLLM:          d.QueryLLM,
+		reranker:          d.Reranker,
+		tasks:             make(chan int64, 256),
+		workerCount:       d.Workers,
+		workerID:          "rag-" + uuid.NewString(),
+		pollInterval:      time.Second,
+		leaseDuration:     time.Minute,
+		heartbeatInterval: 20 * time.Second,
+		gcGracePeriod:     time.Duration(d.Cfg.Limits.IndexGCGracePeriod) * time.Second,
 	}
 }
 
@@ -115,9 +129,36 @@ func (s *Service) resolveEmbedding(ctx context.Context, userID string) (config.R
 	return s.cfg.Embedding, "system"
 }
 
-func (s *Service) embedderForKB(ctx context.Context, kb *store.RAGKBRecord) *embed.Client {
-	cfg, _ := s.resolveEmbedding(ctx, kb.UserID)
-	return embed.New(cfg.Endpoint, cfg.APIKey, kb.EmbedModel, kb.EmbedDims)
+func (s *Service) embeddingConfigForKB(ctx context.Context, kb *store.RAGKBRecord) (config.RAGEmbeddingCfg, error) {
+	if kb == nil {
+		return config.RAGEmbeddingCfg{}, errors.New("embedding KB is nil")
+	}
+	var cfg config.RAGEmbeddingCfg
+	switch kb.EmbedProvider {
+	case "user":
+		if s.userCfg == nil {
+			return cfg, errors.New("KB 绑定的用户 embedding 配置不可用")
+		}
+		var ok bool
+		cfg, ok = s.userCfg(ctx, kb.UserID)
+		if !ok {
+			return cfg, errors.New("KB 绑定的用户 embedding 配置不可用")
+		}
+	default:
+		cfg = s.cfg.Embedding
+	}
+	if strings.TrimSpace(cfg.Endpoint) == "" {
+		return cfg, errors.New("KB 绑定的 embedding endpoint 不可用")
+	}
+	return cfg, nil
+}
+
+func (s *Service) embedderForKB(ctx context.Context, kb *store.RAGKBRecord) (*embed.Client, error) {
+	cfg, err := s.embeddingConfigForKB(ctx, kb)
+	if err != nil {
+		return nil, err
+	}
+	return embed.New(cfg.Endpoint, cfg.APIKey, kb.EmbedModel, kb.EmbedDims), nil
 }
 
 type KBParsingOptions struct {

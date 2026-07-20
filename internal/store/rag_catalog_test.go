@@ -42,6 +42,14 @@ func TestRAGDocumentVersionAndCatalogCRUD(t *testing.T) {
 	defer st.Close()
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := st.CreateRAGKB(ctx, &RAGKBRecord{
+		ID: "kb_catalog", UserID: "u_catalog", Name: "catalog",
+		EmbedProvider: "system", EmbedModel: "embed-v1", EmbedDims: 8,
+		ChunkSize: 512, ChunkOverlap: 64, ParseMode: RAGParseModeStandard,
+		Status: "active", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("create KB: %v", err)
+	}
 
 	doc := &RAGDocumentRecord{
 		ID: "doc_catalog", KBID: "kb_catalog", FileName: "catalog.md", FileType: "md",
@@ -76,20 +84,13 @@ func TestRAGDocumentVersionAndCatalogCRUD(t *testing.T) {
 		t.Fatalf("version = %+v err=%v", gotVersion, err)
 	}
 
-	changed, err := st.UpdateResultRAGDocumentVersion(ctx, doc.ID, 5, RAGDocumentVersionPending, RAGDocumentVersionResult{
-		Status:           RAGDocumentVersionDone,
-		ParseArtifactKey: "artifact/parsed.json",
-		PageCount:        2,
-		AssetCount:       1,
-		Degraded:         true,
-		WarningCount:     2,
-	})
-	if err != nil || !changed {
-		t.Fatalf("update version result changed=%v err=%v", changed, err)
-	}
-	changed, err = st.UpdateResultRAGDocumentVersion(ctx, doc.ID, 5, RAGDocumentVersionPending, RAGDocumentVersionResult{Status: RAGDocumentVersionFailed})
-	if err != nil || changed {
-		t.Fatalf("stale version result CAS changed=%v err=%v", changed, err)
+	// Result-state writes are fence-only in production. Seed a terminal catalog
+	// fixture directly so this CRUD test cannot reintroduce an unfenced API.
+	if _, err := st.db.ExecContext(ctx, `UPDATE rag_document_versions SET
+		status='DONE',parse_artifact_key='artifact/parsed.json',page_count=2,
+		asset_count=1,degraded=TRUE,warning_count=2 WHERE doc_id=? AND doc_version=?`,
+		doc.ID, int64(5)); err != nil {
+		t.Fatalf("seed version result: %v", err)
 	}
 	gotVersion, err = st.GetRAGDocumentVersion(ctx, doc.ID, 5)
 	if err != nil || gotVersion.Status != RAGDocumentVersionDone || gotVersion.PageCount != 2 ||
@@ -228,31 +229,4 @@ func TestRAGIndexGCAndDocumentAIBasicCRUD(t *testing.T) {
 		t.Fatalf("get user budget: %v", err)
 	}
 
-	usage := &RAGDocumentAIUsageRecord{
-		IdempotencyKey:    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		LogicalRequestKey: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		UserID:            "u_budget", DocID: "doc_budget", TaskID: 77, DocVersion: 9,
-		ClaimGeneration: 1, LeaseOwner: "worker", Operation: "vision",
-		ProviderFingerprint: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-		PeriodStartUTC:      period, ReservedInputTokens: 20, ReservedOutputTokens: 10,
-		EstimatedCostMicroUSD: 123, State: RAGDocumentAIUsageReserved,
-		CreatedAt: now, UpdatedAt: now,
-	}
-	inserted, err := st.CreateRAGDocumentAIUsage(ctx, usage)
-	if err != nil || !inserted {
-		t.Fatalf("create usage inserted=%v err=%v", inserted, err)
-	}
-	inserted, err = st.CreateRAGDocumentAIUsage(ctx, usage)
-	if err != nil || inserted {
-		t.Fatalf("idempotent usage inserted=%v err=%v", inserted, err)
-	}
-	changed, err := st.UpdateRAGDocumentAIUsageState(ctx, usage.IdempotencyKey,
-		RAGDocumentAIUsageReserved, RAGDocumentAIUsageSent, RAGDocumentAIUsageSettlement{SentAt: &now})
-	if err != nil || !changed {
-		t.Fatalf("usage state changed=%v err=%v", changed, err)
-	}
-	gotUsage, err := st.GetRAGDocumentAIUsage(ctx, usage.IdempotencyKey)
-	if err != nil || gotUsage.State != RAGDocumentAIUsageSent || gotUsage.SentAt == nil {
-		t.Fatalf("usage = %+v err=%v", gotUsage, err)
-	}
 }

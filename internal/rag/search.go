@@ -99,7 +99,11 @@ func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs [
 			if plan.HypotheticalDocument != plan.RewrittenQuery {
 				denseTexts = append(denseTexts, plan.HypotheticalDocument)
 			}
-			vectors, err := s.embedderForKB(ctx, kb).Embed(ctx, denseTexts)
+			embedder, err := s.embedderForKB(ctx, kb)
+			if err != nil {
+				return nil, err
+			}
+			vectors, err := embedder.Embed(ctx, denseTexts)
 			if err != nil {
 				return nil, fmt.Errorf("查询向量化(%s): %w", kb.EmbedModel, err)
 			}

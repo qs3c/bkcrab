@@ -1090,9 +1090,14 @@ func TestRAGDocumentDTODerivesAppliedAndTargetSnapshots(t *testing.T) {
 		ParseMode: string(config.ParseModeAuto), ChunkSize: 512, ChunkOverlap: 64,
 		ParserVersion: "parser-v1", SplitterVersion: "split-v1",
 		ParseFingerprint: strings.Repeat("b", 64), IndexFingerprint: strings.Repeat("c", 64),
+		VisionModel: "vision-v1", VisionProviderFingerprint: strings.Repeat("e", 64),
+		VisionPromptVersion: "vision-prompt-v1", TextModel: "text-v1",
+		TextProviderFingerprint: strings.Repeat("f", 64), EnrichmentPromptVersion: "enrich-v1",
 		EnrichmentEnabled: true, EmbeddingProvider: kb.EmbedProvider,
 		EmbeddingModel: kb.EmbedModel, EmbeddingDimensions: kb.EmbedDims,
 		EmbeddingContractFingerprint: strings.Repeat("d", 64),
+		MaxDocumentAIRequests:        300, MaxDocumentAITokens: 200_000,
+		MaxDocumentAICostMicroUSD: 1_000_000,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1114,5 +1119,67 @@ func TestRAGDocumentDTODerivesAppliedAndTargetSnapshots(t *testing.T) {
 		documents[0].TargetParseMode != config.ParseModeStandard ||
 		!documents[0].NeedsReparse || !documents[0].NeedsReindex {
 		t.Fatalf("snapshot-derived document DTO=%+v", documents)
+	}
+}
+
+func TestRAGDocumentDTOIgnoresFailedTargetAttemptWhenDerivingCurrentContract(t *testing.T) {
+	server, resolver, _, regular, service := newRAGAPITestServer(t)
+	ctx := context.Background()
+	kb, err := service.CreateKB(ctx, regular.ID, "failed target DTO", "", 512, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := &store.RAGDocumentRecord{
+		ID: "doc_failed_target_dto", KBID: kb.ID, FileName: "source.md", FileType: "md",
+		ObjectKey: "rag/private/source.md", Status: "FAILED", Version: 8, ActiveVersion: 7,
+		SourceSHA256: strings.Repeat("a", 64), IndexFormatVersion: 1,
+		ProcessingStage: "failed", UploadedAt: time.Now().UTC(),
+	}
+	current, err := service.BuildVersionSnapshot(ctx, doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.DocVersion = 7
+	if err := server.dataStore.CreateRAGDocument(ctx, doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.dataStore.CreateRAGDocumentVersion(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	dbStore, ok := server.dataStore.(*store.DBStore)
+	if !ok {
+		t.Fatalf("fixture store type %T", server.dataStore)
+	}
+	if _, err := dbStore.DB().ExecContext(ctx, `UPDATE rag_document_versions SET status='DONE'
+		WHERE doc_id=? AND doc_version=? AND status='PENDING'`, doc.ID, int64(7)); err != nil {
+		t.Fatalf("activate fixture snapshot: %v", err)
+	}
+	failedAttempt := *current
+	failedAttempt.DocVersion = 8
+	failedAttempt.ParseMode = store.RAGParseModeAuto
+	failedAttempt.VisionModel = "vision-v1"
+	failedAttempt.VisionProviderFingerprint = strings.Repeat("e", 64)
+	failedAttempt.VisionPromptVersion = "vision-prompt-v1"
+	if err := server.dataStore.CreateRAGDocumentVersion(ctx, &failedAttempt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbStore.DB().ExecContext(ctx, `UPDATE rag_document_versions SET status='FAILED'
+		WHERE doc_id=? AND doc_version=? AND status='PENDING'`, doc.ID, int64(8)); err != nil {
+		t.Fatalf("fail target fixture snapshot: %v", err)
+	}
+
+	response := callRAGHandler(t, server, server.handleListRAGDocuments,
+		authTestRequest(t, ctx, resolver, http.MethodGet, "/api/rag/kbs/"+kb.ID+"/documents", regular.ID),
+		map[string]string{"id": kb.ID})
+	if response.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", response.Code, response.Body.String())
+	}
+	var documents []ragDocumentResponseDTO
+	if err := json.NewDecoder(response.Body).Decode(&documents); err != nil {
+		t.Fatal(err)
+	}
+	if len(documents) != 1 || documents[0].TargetParseMode != config.ParseModeStandard ||
+		documents[0].NeedsReparse || documents[0].NeedsReindex {
+		t.Fatalf("failed attempt polluted current target contract: %+v", documents)
 	}
 }

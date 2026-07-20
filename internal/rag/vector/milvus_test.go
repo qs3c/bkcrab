@@ -61,12 +61,16 @@ func TestMilvusHelpers(t *testing.T) {
 	if got, want := ragCollectionName("kb-a/中文"), "rag_kb_a___"; got != want {
 		t.Fatalf("ragCollectionName = %q, want %q", got, want)
 	}
-	chunk := ChunkData{DocID: "doc_1", DocVersion: 2, Index: 7}
-	if got, want := milvusChunkID(chunk), "doc_1_2_7"; got != want {
+	chunk := ChunkData{DocID: "doc_1", DocVersion: 1 << 40, Index: 7}
+	if got, want := milvusChunkID(chunk), "doc_1_1099511627776_7"; got != want {
 		t.Fatalf("milvusChunkID = %q, want %q", got, want)
 	}
 	if got, want := escapeMilvusExprString("a\\b\"c"), "a\\\\b\\\"c"; got != want {
 		t.Fatalf("escapeMilvusExprString = %q, want %q", got, want)
+	}
+	if got, want := milvusDocVersionExpr("a\\b\"c", 1<<40),
+		`doc_id == "a\\b\"c" && doc_version == 1099511627776`; got != want {
+		t.Fatalf("milvusDocVersionExpr = %q, want %q", got, want)
 	}
 	if _, err := NewMilvus(context.Background(), "", "", ""); err == nil {
 		t.Fatal("空地址应在连接前被拒绝")
@@ -135,13 +139,16 @@ func TestMilvusRoundTrip(t *testing.T) {
 	if hits[0].SectionTitle != "天气" || hits[0].PageNum != 1 {
 		t.Fatalf("结果元数据未完整返回: %+v", hits[0])
 	}
+	if hits[0].DocVersion != 1 {
+		t.Fatalf("结果 doc_version = %d, want 1", hits[0].DocVersion)
+	}
 
 	if err := m.UpsertChunks(ctx, kbID, []ChunkData{{
 		DocID: "d1", Index: 0, Content: "新版本", DocVersion: 2, Vector: []float32{1, 0, 0, 0},
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.DeleteOldVersions(ctx, kbID, "d1", 2); err != nil {
+	if err := m.DeleteDocVersion(ctx, kbID, "d1", 1); err != nil {
 		t.Fatal(err)
 	}
 	hits, err = m.HybridSearch(ctx, kbID, SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}}, 10)

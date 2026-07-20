@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+const RAGLegacyTaskMigrationModeOfflineV1 = "offline-v1"
+
 // EnvConfig 是引导配置：存储 DSN、网关端口、沙箱后端。在进程启动时
 // 从 BKCRAB_* 环境变量读取——没有配置文件。所有用户可见的配置
 // （提供者、渠道、agent 等）都存储在数据库中。
@@ -19,6 +21,13 @@ type EnvConfig struct {
 	Sandbox EnvSandbox
 	Log     EnvLog
 	RAG     RAGCfg
+
+	// RAGLegacyTaskMigrationMode is a deployment-only acknowledgement for the
+	// offline legacy index-task backfill. It is intentionally separate from
+	// Storage.AutoMigrate: schema expansion is safe during normal startup, while
+	// legacy task backfill requires the maintenance window documented in
+	// docs/database.md.
+	RAGLegacyTaskMigrationMode string
 
 	ragRerankerEnabledSet                bool
 	ragAdvancedEnabledSet                bool
@@ -80,6 +89,9 @@ func LoadEnv() *EnvConfig {
 	}
 	if v := os.Getenv("BKCRAB_STORAGE_AUTO_MIGRATE"); v != "" {
 		cfg.Storage.AutoMigrate = v == "true" || v == "1"
+	}
+	if v := os.Getenv("BKCRAB_RAG_LEGACY_TASK_MIGRATION_MODE"); v != "" {
+		cfg.RAGLegacyTaskMigrationMode = strings.TrimSpace(v)
 	}
 
 	if v := os.Getenv("BKCRAB_SANDBOX_ENABLED"); v != "" {

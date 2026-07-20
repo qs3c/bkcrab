@@ -30,6 +30,7 @@ var milvusOutputFields = []string{
 	milvusFieldContent,
 	milvusFieldSectionTitle,
 	milvusFieldPageNum,
+	milvusFieldDocVersion,
 }
 
 // Milvus is the production Store implementation. The v2 SDK client is safe
@@ -192,7 +193,7 @@ func (m *Milvus) upsertBatch(ctx context.Context, kbID string, chunks []ChunkDat
 		chunkIndexes = append(chunkIndexes, int64(chunk.Index))
 		sectionTitles = append(sectionTitles, chunk.SectionTitle)
 		pageNums = append(pageNums, int64(chunk.PageNum))
-		docVersions = append(docVersions, int64(chunk.DocVersion))
+		docVersions = append(docVersions, chunk.DocVersion)
 		contents = append(contents, chunktext.ForIndex(
 			chunk.SearchContent, chunk.SectionTitle, chunk.Content,
 		))
@@ -214,10 +215,13 @@ func (m *Milvus) upsertBatch(ctx context.Context, kbID string, chunks []ChunkDat
 	return nil
 }
 
-func (m *Milvus) DeleteOldVersions(ctx context.Context, kbID, docID string, keepVersion int) error {
-	expr := fmt.Sprintf(`%s == "%s" && %s < %d`,
-		milvusFieldDocID, escapeMilvusExprString(docID), milvusFieldDocVersion, keepVersion)
-	return m.deleteByExpr(ctx, kbID, expr)
+func (m *Milvus) DeleteDocVersion(ctx context.Context, kbID, docID string, version int64) error {
+	return m.deleteByExpr(ctx, kbID, milvusDocVersionExpr(docID, version))
+}
+
+func milvusDocVersionExpr(docID string, version int64) string {
+	return fmt.Sprintf(`%s == "%s" && %s == %d`,
+		milvusFieldDocID, escapeMilvusExprString(docID), milvusFieldDocVersion, version)
 }
 
 func (m *Milvus) DeleteDoc(ctx context.Context, kbID, docID string) error {
@@ -357,6 +361,10 @@ func milvusResultHits(resultSets []milvusclient.ResultSet) ([]SearchHit, error) 
 			if err != nil {
 				return nil, err
 			}
+			docVersion, err := milvusInt64Field(result, milvusFieldDocVersion, row)
+			if err != nil {
+				return nil, err
+			}
 			content = chunktext.Body(content, sectionTitle)
 			hits = append(hits, SearchHit{
 				DocID:        docID,
@@ -364,6 +372,7 @@ func milvusResultHits(resultSets []milvusclient.ResultSet) ([]SearchHit, error) 
 				Content:      content,
 				SectionTitle: sectionTitle,
 				PageNum:      int(pageNum),
+				DocVersion:   docVersion,
 				Score:        float64(result.Scores[row]),
 			})
 		}

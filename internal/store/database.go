@@ -94,6 +94,13 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 		migrationSQL = mysqlMigrationSQL()
 	}
 	for _, stmt := range migrationSQL {
+		// Existing installations do not have the lease columns until the expand
+		// phase below. Keep the statement in the canonical DDL list for schema
+		// inspection, but create it from migrateRAGIndexTaskSchema after ALTERs.
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(stmt)),
+			"create index if not exists idx_rag_index_tasks_runnable") {
+			continue
+		}
 		if err := d.execDDL(ctx, stmt); err != nil {
 			return fmt.Errorf("migrate: %w\nSQL: %s", err, stmt)
 		}
@@ -1312,6 +1319,9 @@ func (d *DBStore) migrateRAGMultimodalSchema(ctx context.Context) error {
 	if err := d.migrateRAGDocumentVersionToBigInt(ctx); err != nil {
 		return err
 	}
+	if err := d.migrateRAGIndexTaskSchema(ctx); err != nil {
+		return err
+	}
 	if _, err := d.db.ExecContext(ctx,
 		`UPDATE rag_kbs SET parse_mode='standard' WHERE parse_mode IS NULL OR parse_mode=''`); err != nil {
 		return fmt.Errorf("backfill rag_kbs.parse_mode: %w", err)
@@ -1333,6 +1343,307 @@ func (d *DBStore) addRAGColumnIfMissing(ctx context.Context, table, column, ddl 
 	if _, err := d.db.ExecContext(ctx,
 		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, ddl)); err != nil {
 		return fmt.Errorf("add %s.%s: %w", table, column, err)
+	}
+	return nil
+}
+
+func (d *DBStore) migrateRAGIndexTaskSchema(ctx context.Context) error {
+	hadDocVersion, err := d.tableHasColumn(ctx, "rag_index_tasks", "doc_version")
+	if err != nil {
+		return fmt.Errorf("inspect rag_index_tasks.doc_version: %w", err)
+	}
+	columns := []struct {
+		name string
+		ddl  string
+	}{
+		{"doc_version", "BIGINT"},
+		{"claim_generation", "BIGINT NOT NULL DEFAULT 0"},
+		{"lease_owner", "TEXT NOT NULL DEFAULT ''"},
+		{"lease_until", "TIMESTAMP"},
+		{"heartbeat_at", "TIMESTAMP"},
+		{"next_run_at", "TIMESTAMP"},
+	}
+	if d.dialect == mysqlDialect {
+		columns[2].ddl = "VARCHAR(96) NOT NULL DEFAULT ''"
+		columns[3].ddl = "DATETIME(6)"
+		columns[4].ddl = "DATETIME(6)"
+		columns[5].ddl = "DATETIME(6)"
+	}
+	for _, column := range columns {
+		if err := d.addRAGColumnIfMissing(ctx, "rag_index_tasks", column.name, column.ddl); err != nil {
+			return err
+		}
+	}
+	// Contract/backfill is deliberately deferred until the runtime
+	// SnapshotBuilder is available. At this point legacy doc_version values may
+	// remain NULL and legacy tasks are never claimed by the new query path.
+	_ = hadDocVersion
+	return d.ensureRAGIndexTaskIndex(ctx, ragIndexContract{
+		name:    "idx_rag_index_tasks_runnable",
+		columns: []string{"status", "next_run_at", "lease_until", "created_at"},
+	})
+}
+
+func (d *DBStore) rebuildRAGIndexTasksSQLite(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	newDDL := strings.Replace(d.ragIndexTasksTableSQL(), "rag_index_tasks", "rag_index_tasks_phase_a_new", 1)
+	statements := []string{
+		`DROP TABLE IF EXISTS rag_index_tasks_phase_a_new`,
+		newDDL,
+		`INSERT INTO rag_index_tasks_phase_a_new
+			(id,doc_id,doc_version,status,retry_count,max_retry,claim_generation,
+			 lease_owner,lease_until,heartbeat_at,next_run_at,error_msg,created_at,started_at,finished_at)
+		 SELECT id,doc_id,doc_version,status,retry_count,max_retry,claim_generation,
+			 lease_owner,lease_until,heartbeat_at,next_run_at,error_msg,created_at,started_at,finished_at
+		 FROM rag_index_tasks`,
+		`DROP TABLE rag_index_tasks`,
+		`ALTER TABLE rag_index_tasks_phase_a_new RENAME TO rag_index_tasks`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_tasks_status ON rag_index_tasks (status, created_at)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("rebuild rag_index_tasks: %w\nSQL: %s", err, statement)
+		}
+	}
+	return tx.Commit()
+}
+
+type ragIndexContract struct {
+	name    string
+	unique  bool
+	columns []string
+}
+
+type ragIndexDefinition struct {
+	unique  bool
+	exact   bool
+	columns []string
+}
+
+func ragIndexDefinitionMatches(contract ragIndexContract, definition *ragIndexDefinition) bool {
+	if definition == nil || !definition.exact || definition.unique != contract.unique ||
+		len(definition.columns) != len(contract.columns) {
+		return false
+	}
+	for index := range contract.columns {
+		if !strings.EqualFold(definition.columns[index], contract.columns[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func ragIndexContractError(contract ragIndexContract, definition *ragIndexDefinition) error {
+	if definition == nil {
+		return fmt.Errorf("store: RAG index %s was not created", contract.name)
+	}
+	return fmt.Errorf("store: RAG index %s has incompatible definition: unique=%t exact=%t columns=%v; want unique=%t columns=%v",
+		contract.name, definition.unique, definition.exact, definition.columns,
+		contract.unique, contract.columns)
+}
+
+func (d *DBStore) inspectRAGIndexTaskIndex(
+	ctx context.Context,
+	indexName string,
+) (*ragIndexDefinition, error) {
+	switch d.dialect {
+	case mysqlDialect:
+		rows, err := d.db.QueryContext(ctx, `SELECT non_unique,column_name,sub_part,index_type
+			FROM information_schema.statistics
+			WHERE table_schema=DATABASE() AND table_name='rag_index_tasks' AND index_name=?
+			ORDER BY seq_in_index`, indexName)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		definition := &ragIndexDefinition{exact: true}
+		found := false
+		for rows.Next() {
+			var nonUnique int
+			var columnName sql.NullString
+			var subPart sql.NullInt64
+			var indexType string
+			if err := rows.Scan(&nonUnique, &columnName, &subPart, &indexType); err != nil {
+				return nil, err
+			}
+			if !found {
+				definition.unique = nonUnique == 0
+				found = true
+			} else if definition.unique != (nonUnique == 0) {
+				definition.exact = false
+			}
+			if !columnName.Valid {
+				definition.exact = false
+				definition.columns = append(definition.columns, "")
+			} else {
+				definition.columns = append(definition.columns, columnName.String)
+			}
+			if subPart.Valid || !strings.EqualFold(indexType, "BTREE") {
+				definition.exact = false
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, nil
+		}
+		return definition, nil
+
+	case "postgres":
+		rows, err := d.db.QueryContext(ctx, `SELECT i.indisunique,i.indisvalid,i.indisready,
+			(i.indpred IS NULL),am.amname,a.attname
+			FROM pg_catalog.pg_class t
+			JOIN pg_catalog.pg_namespace n ON n.oid=t.relnamespace
+			JOIN pg_catalog.pg_index i ON i.indrelid=t.oid
+			JOIN pg_catalog.pg_class idx ON idx.oid=i.indexrelid
+			JOIN pg_catalog.pg_am am ON am.oid=idx.relam
+			JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum,ord) ON TRUE
+			LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid=t.oid AND a.attnum=k.attnum
+			WHERE n.nspname=current_schema() AND t.relname='rag_index_tasks' AND idx.relname=$1
+			ORDER BY k.ord`, indexName)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		definition := &ragIndexDefinition{exact: true}
+		found := false
+		for rows.Next() {
+			var unique, valid, ready, unfiltered bool
+			var indexType string
+			var columnName sql.NullString
+			if err := rows.Scan(&unique, &valid, &ready, &unfiltered, &indexType, &columnName); err != nil {
+				return nil, err
+			}
+			if !found {
+				definition.unique = unique
+				found = true
+			} else if definition.unique != unique {
+				definition.exact = false
+			}
+			if !valid || !ready || !unfiltered || !strings.EqualFold(indexType, "btree") || !columnName.Valid {
+				definition.exact = false
+			}
+			definition.columns = append(definition.columns, columnName.String)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, nil
+		}
+		return definition, nil
+
+	default:
+		rows, err := d.db.QueryContext(ctx, `PRAGMA index_list(rag_index_tasks)`)
+		if err != nil {
+			return nil, err
+		}
+		definition := &ragIndexDefinition{exact: true}
+		found := false
+		for rows.Next() {
+			var sequence, unique, partial int
+			var name, origin string
+			if err := rows.Scan(&sequence, &name, &unique, &origin, &partial); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if name == indexName {
+				found = true
+				definition.unique = unique != 0
+				definition.exact = partial == 0
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, nil
+		}
+
+		quotedName := strings.ReplaceAll(indexName, "'", "''")
+		columnRows, err := d.db.QueryContext(ctx, fmt.Sprintf(`PRAGMA index_xinfo('%s')`, quotedName))
+		if err != nil {
+			return nil, err
+		}
+		defer columnRows.Close()
+		for columnRows.Next() {
+			var sequence, columnID, descending, keyColumn int
+			var columnName sql.NullString
+			var collation sql.NullString
+			if err := columnRows.Scan(&sequence, &columnID, &columnName, &descending, &collation, &keyColumn); err != nil {
+				return nil, err
+			}
+			if keyColumn == 0 {
+				continue
+			}
+			if !columnName.Valid {
+				definition.exact = false
+				definition.columns = append(definition.columns, "")
+			} else {
+				definition.columns = append(definition.columns, columnName.String)
+			}
+		}
+		if err := columnRows.Err(); err != nil {
+			return nil, err
+		}
+		return definition, nil
+	}
+}
+
+func (d *DBStore) ensureRAGIndexTaskIndex(ctx context.Context, contract ragIndexContract) error {
+	definition, err := d.inspectRAGIndexTaskIndex(ctx, contract.name)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", contract.name, err)
+	}
+	if definition != nil {
+		if !ragIndexDefinitionMatches(contract, definition) {
+			return ragIndexContractError(contract, definition)
+		}
+		return nil
+	}
+
+	unique := ""
+	if contract.unique {
+		unique = "UNIQUE "
+	}
+	ifNotExists := "IF NOT EXISTS "
+	if d.dialect == mysqlDialect {
+		ifNotExists = ""
+	}
+	_, createErr := d.db.ExecContext(ctx, fmt.Sprintf(`CREATE %sINDEX %s%s ON rag_index_tasks (%s)`,
+		unique, ifNotExists, contract.name, strings.Join(contract.columns, ", ")))
+	if createErr != nil && !(d.dialect == mysqlDialect && isMySQLDuplicateIndex(createErr)) {
+		return fmt.Errorf("create %s: %w", contract.name, createErr)
+	}
+
+	definition, err = d.inspectRAGIndexTaskIndex(ctx, contract.name)
+	if err != nil {
+		return fmt.Errorf("verify %s: %w", contract.name, err)
+	}
+	if !ragIndexDefinitionMatches(contract, definition) {
+		return ragIndexContractError(contract, definition)
+	}
+	return nil
+}
+
+func (d *DBStore) ensureRAGIndexTaskIndexes(ctx context.Context) error {
+	indexes := []ragIndexContract{
+		{name: "idx_rag_index_tasks_runnable", columns: []string{"status", "next_run_at", "lease_until", "created_at"}},
+		{name: "uq_rag_index_tasks_doc_version", unique: true, columns: []string{"doc_id", "doc_version"}},
+	}
+	for _, index := range indexes {
+		if err := d.ensureRAGIndexTaskIndex(ctx, index); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1888,6 +2199,7 @@ func (d *DBStore) migrationSQL() []string {
 		`CREATE INDEX IF NOT EXISTS idx_rag_documents_kb ON rag_documents (kb_id)`,
 		d.ragIndexTasksTableSQL(),
 		`CREATE INDEX IF NOT EXISTS idx_rag_tasks_status ON rag_index_tasks (status, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_index_tasks_runnable ON rag_index_tasks (status, next_run_at, lease_until, created_at)`,
 		d.ragDocumentVersionsTableSQL(),
 		d.ragAssetsTableSQL(),
 		`CREATE INDEX IF NOT EXISTS idx_rag_assets_doc ON rag_assets (doc_id)`,
@@ -1925,13 +2237,20 @@ func (d *DBStore) ragIndexTasksTableSQL() string {
 	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_index_tasks (
 		id %s,
 		doc_id TEXT NOT NULL,
+		doc_version BIGINT NOT NULL,
 		status TEXT NOT NULL DEFAULT 'PENDING',
 		retry_count INTEGER NOT NULL DEFAULT 0,
 		max_retry INTEGER NOT NULL DEFAULT 3,
+		claim_generation BIGINT NOT NULL DEFAULT 0,
+		lease_owner TEXT NOT NULL DEFAULT '',
+		lease_until TIMESTAMP,
+		heartbeat_at TIMESTAMP,
+		next_run_at TIMESTAMP,
 		error_msg TEXT NOT NULL DEFAULT '',
 		created_at TIMESTAMP NOT NULL,
 		started_at TIMESTAMP,
-		finished_at TIMESTAMP
+		finished_at TIMESTAMP,
+		UNIQUE (doc_id, doc_version)
 	)`, idColumn)
 }
 

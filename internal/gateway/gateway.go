@@ -259,42 +259,83 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	ws := wsInner
 
 	var ragSvc *rag.Service
+	var legacySnapshotBuilder store.RAGLegacyTaskSnapshotBuilder
 	ragCfg := readSystemRAGCfg(st, env)
 	if err := ragCfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid RAG configuration: %w", err)
+	}
+	allowLegacyTaskMigration := env.RAGLegacyTaskMigrationMode == config.RAGLegacyTaskMigrationModeOfflineV1
+	if env.RAGLegacyTaskMigrationMode != "" && !allowLegacyTaskMigration {
+		return nil, fmt.Errorf(
+			"invalid BKCRAB_RAG_LEGACY_TASK_MIGRATION_MODE %q; expected %q",
+			env.RAGLegacyTaskMigrationMode, config.RAGLegacyTaskMigrationModeOfflineV1,
+		)
 	}
 	if ragCfg.Available() {
 		ragObjects, objectErr := newRAGObjectStore(osCfg, homeDir)
 		if objectErr != nil {
 			slog.Error("rag: original object store initialization failed; RAG disabled", "error", objectErr)
-		} else if vecStore, vecErr := vector.NewMilvus(context.Background(), ragCfg.Milvus.Address, ragCfg.Milvus.Username, ragCfg.Milvus.Password); vecErr != nil {
-			slog.Error("rag: Milvus connection failed; RAG disabled", "error", vecErr)
 		} else {
-			var ranker ragrerank.Reranker
-			if ragCfg.Reranker.Available() {
-				client, rerankErr := ragrerank.NewHTTP(
-					ragCfg.Reranker.Endpoint,
-					ragCfg.Reranker.APIKey,
-					ragCfg.Reranker.Model,
-					time.Duration(ragCfg.Reranker.TimeoutMS)*time.Millisecond,
-				)
-				if rerankErr != nil {
-					slog.Error("rag: reranker configuration invalid; continuing with RRF", "error", rerankErr)
-				} else {
-					ranker = client
-				}
-			}
-			ragSvc = rag.New(rag.Deps{
-				Store:        st,
-				Vector:       vecStore,
-				Objects:      ragObjects,
-				Cfg:          ragCfg,
+			// Legacy snapshot construction only needs SQL, the original object
+			// store and provider configuration. Assemble it before connecting to
+			// Milvus so a temporary vector outage cannot turn runnable legacy work
+			// into permanent FAILED rows.
+			snapshotSvc := rag.New(rag.Deps{
+				Store: st, Objects: ragObjects, Cfg: ragCfg,
 				UserEmbedCfg: userEmbeddingCfgLookup(st),
-				QueryLLM:     userRAGQueryLLM(st, meter),
-				Reranker:     ranker,
 			})
-			slog.Info("rag service enabled", "milvus", ragCfg.Milvus.Address)
+			legacySnapshotBuilder = func(
+				ctx context.Context,
+				doc *store.RAGDocumentRecord,
+				docVersion int64,
+			) (*store.RAGDocumentVersionRecord, error) {
+				snapshot, err := snapshotSvc.BuildVersionSnapshot(ctx, doc)
+				if err != nil {
+					return nil, err
+				}
+				snapshot.DocVersion = docVersion
+				return snapshot, nil
+			}
+
+			vecStore, vecErr := vector.NewMilvus(context.Background(), ragCfg.Milvus.Address, ragCfg.Milvus.Username, ragCfg.Milvus.Password)
+			if vecErr != nil {
+				slog.Error("rag: Milvus connection failed; RAG disabled", "error", vecErr)
+			} else {
+				var ranker ragrerank.Reranker
+				if ragCfg.Reranker.Available() {
+					client, rerankErr := ragrerank.NewHTTP(
+						ragCfg.Reranker.Endpoint,
+						ragCfg.Reranker.APIKey,
+						ragCfg.Reranker.Model,
+						time.Duration(ragCfg.Reranker.TimeoutMS)*time.Millisecond,
+					)
+					if rerankErr != nil {
+						slog.Error("rag: reranker configuration invalid; continuing with RRF", "error", rerankErr)
+					} else {
+						ranker = client
+					}
+				}
+				ragSvc = rag.New(rag.Deps{
+					Store:        st,
+					Vector:       vecStore,
+					Objects:      ragObjects,
+					Cfg:          ragCfg,
+					UserEmbedCfg: userEmbeddingCfgLookup(st),
+					QueryLLM:     userRAGQueryLLM(st, meter),
+					Reranker:     ranker,
+				})
+				slog.Info("rag service enabled", "milvus", ragCfg.Milvus.Address)
+			}
 		}
+	}
+	// Legacy runnable rows are contracted only after the runtime can build the
+	// same immutable, secret-free snapshot used by new uploads. If those
+	// dependencies are unavailable, the store returns an error without mutating
+	// a legacy survivor; canonical/no-legacy databases still start normally.
+	if err := st.MigrateLegacyRAGIndexTasks(
+		context.Background(), legacySnapshotBuilder, allowLegacyTaskMigration,
+	); err != nil {
+		return nil, fmt.Errorf("migrate legacy RAG index tasks: %w", err)
 	}
 
 	// holderID 是印记在 channel_leases.holder_id 中的每个进程标识符。

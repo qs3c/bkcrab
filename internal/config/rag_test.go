@@ -134,6 +134,14 @@ func TestRAGAdvancedEnvironmentOverlay(t *testing.T) {
 
 }
 
+func TestRAGLegacyTaskMigrationModeRequiresExactOfflineAcknowledgement(t *testing.T) {
+	t.Setenv("BKCRAB_RAG_LEGACY_TASK_MIGRATION_MODE", "  offline-v1  ")
+	env := LoadEnv()
+	if env.RAGLegacyTaskMigrationMode != RAGLegacyTaskMigrationModeOfflineV1 {
+		t.Fatalf("legacy task migration mode = %q", env.RAGLegacyTaskMigrationMode)
+	}
+}
+
 func TestRAGDocumentAISecretScrubAndLogging(t *testing.T) {
 	const secret = "document-ai-secret-that-must-not-leak"
 	var output bytes.Buffer

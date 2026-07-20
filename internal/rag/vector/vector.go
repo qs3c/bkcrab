@@ -1,6 +1,6 @@
 // Package vector defines the narrow vector-store contract used by RAG.
 //
-// UpsertChunks and DeleteOldVersions deliberately remain separate operations.
+// UpsertChunks and version deletion deliberately remain separate operations.
 // Callers can therefore finish computing and writing a new document version
 // before removing the old one, so searchable data is never deleted early.
 package vector
@@ -15,7 +15,7 @@ type ChunkData struct {
 	SearchContent string // heading-prefixed text used by embedding and BM25
 	SectionTitle  string
 	PageNum       int
-	DocVersion    int
+	DocVersion    int64
 	Vector        []float32
 }
 
@@ -25,7 +25,7 @@ type ChunkData struct {
 type ChunkRef struct {
 	DocID      string
 	Index      int
-	DocVersion int
+	DocVersion int64
 }
 
 // SearchHit is one result returned by a hybrid search.
@@ -35,6 +35,7 @@ type SearchHit struct {
 	Content      string
 	SectionTitle string
 	PageNum      int
+	DocVersion   int64
 	Score        float64
 }
 
@@ -51,9 +52,10 @@ type SearchQuery struct {
 type Store interface {
 	EnsureCollection(ctx context.Context, kbID string, dims int) error
 	UpsertChunks(ctx context.Context, kbID string, chunks []ChunkData) error
-	// DeleteOldVersions removes entities for docID whose doc_version is less
-	// than keepVersion.
-	DeleteOldVersions(ctx context.Context, kbID, docID string, keepVersion int) error
+	// DeleteDocVersion removes only the entities for the exact physical
+	// doc_version. Delayed cleanup must use this method so one retired version
+	// cannot delete a newer version whose grace period has not elapsed.
+	DeleteDocVersion(ctx context.Context, kbID, docID string, version int64) error
 	// DeleteDoc removes every indexed version of docID.
 	DeleteDoc(ctx context.Context, kbID, docID string) error
 	DropCollection(ctx context.Context, kbID string) error

@@ -153,22 +153,55 @@ Index:
 |---|---|---|
 | `id` | SQLite `INTEGER AUTOINCREMENT`; PostgreSQL `BIGSERIAL`; MySQL `BIGINT AUTO_INCREMENT` | Task ID and primary key |
 | `doc_id` | `TEXT` / `VARCHAR(120)` | Logical reference to `rag_documents.id` |
-| `status` | `TEXT` / `VARCHAR(32)` | Task state: `PENDING`, `RUNNING`, `DONE`, or `FAILED` |
-| `retry_count` | `INTEGER` | Retries already attempted; defaults to 0 |
+| `doc_version` | `BIGINT` | Physical fencing epoch owned by this attempt |
+| `status` | `TEXT` / `VARCHAR(32)` | Task state: `PENDING`, `RUNNING`, `DONE`, `FAILED`, or `SUPERSEDED` |
+| `retry_count` | `INTEGER` | Transient failures or lease expiries that caused another execution; defaults to 0 |
 | `max_retry` | `INTEGER` | Retry limit; defaults to 3 |
+| `claim_generation` | `BIGINT` | Fencing nonce incremented on every successful claim/reclaim; not a retry counter |
+| `lease_owner` | `TEXT` / `VARCHAR(96)` | Stable worker ID holding the current lease |
+| `lease_until` | nullable timestamp | Database-time lease deadline |
+| `heartbeat_at` | nullable timestamp | Latest successful fenced heartbeat |
+| `next_run_at` | nullable timestamp | Database-time retry eligibility deadline |
 | `error_msg` | `TEXT` / `LONGTEXT` | Most recent task error; empty when no error is present |
 | `created_at` | timestamp | Enqueue time |
 | `started_at` | nullable timestamp | Most recent transition to `RUNNING` |
-| `finished_at` | nullable timestamp | Terminal transition time for `DONE` or `FAILED` |
+| `finished_at` | nullable timestamp | Terminal transition time for `DONE`, `FAILED`, or `SUPERSEDED` |
 
-At process startup, both `PENDING` and `RUNNING` rows are selected for
-re-enqueueing. Treating a leftover `RUNNING` row as runnable is the
-crash-recovery mechanism for work interrupted after it was claimed.
+Workers claim with a database compare-and-set. `PENDING` rows whose
+`next_run_at` is due and `RUNNING` rows whose lease expired are continuously
+polled; an in-memory channel is only a wake hint. Claim, heartbeat, retry,
+activation, and finish use database time. Every worker mutation must match
+`task_id + doc_version + claim_generation + lease_owner`, a `RUNNING` state,
+and an unexpired lease. Reclaim allocates a never-used `doc_version` and
+terminalizes the old physical version, so late writes cannot activate or
+overwrite the replacement. The index task intentionally has no
+`attempt_count`; retries use `retry_count`, while `claim_generation` is only a
+fencing nonce.
 
-Index:
+A fenced transient failure atomically marks the current physical version
+`FAILED`, returns the task to `PENDING`, increments `retry_count`, and sets a
+database-time `next_run_at`; the next claim copies the immutable snapshot into
+a newly allocated physical version. A provider-fingerprint mismatch is not a
+retry: one fenced transaction supersedes the old task/version and creates a new
+task with a newly supplied complete snapshot, so an endpoint/model change can
+never continue writing the old version.
+
+Successful publication has exactly one commit point. `ActivateAndFinishRAGIndexTask`
+checks the complete unexpired fence and `rag_documents.version`, then in one SQL
+transaction sets the new version and task `DONE`, switches `active_version`,
+sets `index_format_version=1`, retires the previous active version, and inserts
+that exact version's delayed GC task. A failed replacement therefore leaves the
+old `active_version` searchable, while GC failure can only retry cleanup and
+cannot rerun parsing, DocumentAI, or embedding.
+
+Indexes:
 
 - `idx_rag_tasks_status (status, created_at)` supports ordered recovery of
-  runnable tasks.
+  old installations.
+- `idx_rag_index_tasks_runnable (status, next_run_at, lease_until, created_at)`
+  supports durable claim polling.
+- unique `(doc_id, doc_version)` prevents two logical tasks from owning the
+  same physical fencing epoch.
 
 ### `rag_document_versions`
 
@@ -268,9 +301,13 @@ UTC date. Costs are integer micro-USD (`BIGINT`), never floating point.
 
 Indexes `(user_id, period_start_utc, provider_fingerprint)` and
 `(task_id, logical_request_key)` support quota accounting and idempotency
-inspection. Reservation transactions lock the user-period aggregate first,
-then the task aggregate, then insert usage; an unlocked `SUM + INSERT` quota
-check is not safe.
+inspection. Reservation and send-gate transactions lock the user-period
+aggregate, task aggregate, current index task, and usage row in that fixed
+order. PostgreSQL/MySQL use `SELECT FOR UPDATE`; SQLite uses `BEGIN IMMEDIATE`.
+An unlocked `SUM + INSERT` quota check is not safe. Only
+`RESERVED -> SENT -> COMMITTED/OVERRUN` and `RESERVED -> RELEASED` are legal.
+An expired fence cannot reserve or enter `SENT`; a late response may settle its
+own already-`SENT` idempotency key without changing task/version state.
 
 ### Migration compatibility
 
@@ -279,3 +316,53 @@ for an existing installation rather than relying only on `CREATE TABLE IF NOT
 EXISTS`; SQLite rebuilds `rag_documents` to make `version` a true `BIGINT`,
 while PostgreSQL and MySQL alter it in place. Existing chat `sources` JSON is
 left byte-for-byte unchanged.
+
+### Index-task migration maintenance window
+
+The legacy index-task backfill is an offline expand/backfill/validate/contract
+migration. Old and new indexing workers must never run together; this is not a
+rolling-worker migration.
+
+1. Disable upload and reindex entry points. Stop or scale every old indexing
+   worker to zero, while leaving read-only retrieval available.
+2. Wait longer than the maximum lease used by the old release. Confirm that
+   task heartbeat values no longer change, then take the normal database
+   backup/snapshot.
+3. Start the new release with upload/reindex and indexing workers still
+   disabled. Its base migration performs only the nullable expand step. After
+   object storage and secret-free parser/provider configuration are available,
+   run exactly one gateway instance with
+   `BKCRAB_RAG_LEGACY_TASK_MIGRATION_MODE=offline-v1` to execute the runtime
+   `SnapshotBuilder` backfill and contract step. The exact acknowledgement is
+   intentionally separate from `BKCRAB_STORAGE_AUTO_MIGRATE`; without it, a
+   database containing legacy task rows fails startup before changing those
+   rows. Unset the acknowledgement immediately after the contract succeeds.
+4. The backfill removes historical terminal task rows, keeps only the newest
+   `(created_at,id)` non-terminal task per document, rejects orphans, allocates
+   each survivor a fresh version greater than every known/active version, and
+   writes a complete immutable `PENDING` version snapshot. A snapshot build
+   failure leaves no runnable row and marks the document as needing reindex.
+5. Before restoring traffic, verify that the following queries return no rows:
+
+   ```sql
+   SELECT doc_id, COUNT(*)
+   FROM rag_index_tasks
+   WHERE status IN ('PENDING','RUNNING')
+   GROUP BY doc_id HAVING COUNT(*) > 1;
+
+   SELECT t.id
+   FROM rag_index_tasks t
+   LEFT JOIN rag_document_versions v
+     ON v.doc_id=t.doc_id AND v.doc_version=t.doc_version
+   WHERE t.status IN ('PENDING','RUNNING') AND v.doc_id IS NULL;
+
+   SELECT id FROM rag_index_tasks WHERE doc_version IS NULL;
+   ```
+
+   Also verify the runnable and unique task indexes described above. The
+   runtime migration is idempotent and may be rerun after a partial failure.
+6. Stop the one-off migration instance or restart it without the migration
+   acknowledgement. Start only new-release workers, observe claims/heartbeats, and then restore
+   upload/reindex entry points. Do not roll back by restarting an old worker
+   after contract; restore the database backup or deploy a compatible forward
+   fix instead.

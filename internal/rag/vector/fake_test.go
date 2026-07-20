@@ -7,8 +7,49 @@ import (
 	"testing"
 )
 
-func mkChunk(docID string, idx, version int, content string, vec []float32) ChunkData {
+func mkChunk(docID string, idx int, version int64, content string, vec []float32) ChunkData {
 	return ChunkData{DocID: docID, Index: idx, Content: content, DocVersion: version, Vector: vec}
+}
+
+func TestFakeDeleteDocVersionIsExact(t *testing.T) {
+	f := NewFake()
+	ctx := context.Background()
+	if err := f.EnsureCollection(ctx, "kb1", 2); err != nil {
+		t.Fatal(err)
+	}
+	const largeVersion int64 = 1 << 40
+	if err := f.UpsertChunks(ctx, "kb1", []ChunkData{
+		mkChunk("d1", 0, largeVersion-1, "older", []float32{1, 0}),
+		mkChunk("d1", 0, largeVersion, "retired", []float32{1, 0}),
+		mkChunk("d1", 0, largeVersion+1, "newer", []float32{1, 0}),
+		mkChunk("d2", 0, largeVersion, "other document", []float32{1, 0}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.DeleteDocVersion(ctx, "kb1", "d1", largeVersion); err != nil {
+		t.Fatal(err)
+	}
+
+	chunks, err := f.GetChunks(ctx, "kb1", []ChunkRef{
+		{DocID: "d1", Index: 0, DocVersion: largeVersion - 1},
+		{DocID: "d1", Index: 0, DocVersion: largeVersion},
+		{DocID: "d1", Index: 0, DocVersion: largeVersion + 1},
+		{DocID: "d2", Index: 0, DocVersion: largeVersion},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 3 {
+		t.Fatalf("exact delete left chunks = %+v, want three unaffected versions", chunks)
+	}
+	for _, chunk := range chunks {
+		if chunk.DocID == "d1" && chunk.DocVersion == largeVersion {
+			t.Fatalf("exact delete retained target chunk: %+v", chunk)
+		}
+	}
+	if got := f.Ops("kb1"); got[len(got)-1] != "delete_v1099511627776" {
+		t.Fatalf("exact delete operation log = %v", got)
+	}
 }
 
 func TestFakeUpsertSearchAndVersionDelete(t *testing.T) {
@@ -34,13 +75,16 @@ func TestFakeUpsertSearchAndVersionDelete(t *testing.T) {
 	if hits[0].DocID != "d1" || hits[0].ChunkIndex != 0 {
 		t.Fatalf("top1 应是天气 chunk: %+v", hits[0])
 	}
+	if hits[0].DocVersion != 1 {
+		t.Fatalf("top1 doc version = %d, want 1", hits[0].DocVersion)
+	}
 
-	// Version replacement is two explicit operations: write v2, then remove
-	// entities older than v2.
+	// Delayed cleanup removes one exact retired version; it must not range-delete
+	// another version whose independent grace period has not elapsed.
 	if err := f.UpsertChunks(ctx, "kb1", []ChunkData{mkChunk("d1", 0, 2, "只剩这一条", []float32{1, 0})}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.DeleteOldVersions(ctx, "kb1", "d1", 2); err != nil {
+	if err := f.DeleteDocVersion(ctx, "kb1", "d1", 1); err != nil {
 		t.Fatal(err)
 	}
 	hits, err = f.HybridSearch(ctx, "kb1", SearchQuery{Dense: [][]float32{{0, 1}}}, 10)
@@ -85,10 +129,10 @@ func TestFakeCollectionContractAndHelpers(t *testing.T) {
 	if got := f.Count("kb1"); got != 2 {
 		t.Fatalf("Count = %d, want 2", got)
 	}
-	if err := f.DeleteOldVersions(ctx, "kb1", "d1", 2); err != nil {
+	if err := f.DeleteDocVersion(ctx, "kb1", "d1", 1); err != nil {
 		t.Fatal(err)
 	}
-	wantOps := []string{"upsert_v1", "upsert_v2", "delete_old_v2"}
+	wantOps := []string{"upsert_v1", "upsert_v2", "delete_v1"}
 	if got := f.Ops("kb1"); !reflect.DeepEqual(got, wantOps) {
 		t.Fatalf("Ops = %v, want %v", got, wantOps)
 	}

@@ -2,12 +2,15 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -35,10 +38,129 @@ const (
 )
 
 var (
-	ErrRAGBatchTooLarge           = errors.New("store: RAG batch too large")
-	ErrRAGAssetConflict           = errors.New("store: immutable RAG asset conflict")
-	ErrRAGDocumentVersionMismatch = errors.New("store: RAG document/version identity mismatch")
+	ErrRAGBatchTooLarge               = errors.New("store: RAG batch too large")
+	ErrRAGAssetConflict               = errors.New("store: immutable RAG asset conflict")
+	ErrRAGDocumentVersionMismatch     = errors.New("store: RAG document/version identity mismatch")
+	ErrRAGDocumentVersionConflict     = errors.New("store: RAG document version changed")
+	ErrRAGDocumentVersionIncomplete   = errors.New("store: incomplete immutable RAG document version snapshot")
+	ErrRAGDocumentSourceConflict      = errors.New("store: RAG document source SHA-256 conflicts with version snapshot")
+	ErrRAGLegacyTaskMigrationRequired = errors.New("store: legacy RAG task migration requires explicit offline-v1 acknowledgement")
+	ErrRAGLegacySnapshotBuilder       = errors.New("store: legacy RAG runnable task requires a snapshot builder")
 )
+
+func ragCanonicalSHA256(value string) bool {
+	if value == "" || value != strings.TrimSpace(value) || value != strings.ToLower(value) || len(value) != sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size
+}
+
+func ragSnapshotString(name, value string, maxRunes int, required bool) error {
+	if value != strings.TrimSpace(value) {
+		return fmt.Errorf("%w: %s is not trimmed", ErrRAGDocumentVersionIncomplete, name)
+	}
+	if required && value == "" {
+		return fmt.Errorf("%w: %s is empty", ErrRAGDocumentVersionIncomplete, name)
+	}
+	if maxRunes > 0 && utf8.RuneCountInString(value) > maxRunes {
+		return fmt.Errorf("%w: %s exceeds %d characters", ErrRAGDocumentVersionIncomplete, name, maxRunes)
+	}
+	return nil
+}
+
+// validateRunnableRAGVersionSnapshot validates the complete, secret-free
+// immutable input contract. It deliberately does not recompute fingerprints:
+// the store lacks parser/provider inputs such as endpoints, DPI and schema
+// versions, so the trusted SnapshotBuilder remains responsible for their
+// values while the store enforces canonical shape and conditional presence.
+func validateRunnableRAGVersionSnapshot(version *RAGDocumentVersionRecord) error {
+	if version == nil {
+		return fmt.Errorf("%w: snapshot is nil", ErrRAGDocumentVersionIncomplete)
+	}
+	if err := ragSnapshotString("doc_id", version.DocID, 120, true); err != nil {
+		return err
+	}
+	if version.DocVersion <= 0 {
+		return fmt.Errorf("%w: doc_version must be positive", ErrRAGDocumentVersionIncomplete)
+	}
+	if !ragCanonicalSHA256(version.SourceSHA256) {
+		return fmt.Errorf("%w: source_sha256 is not canonical SHA-256", ErrRAGDocumentVersionIncomplete)
+	}
+	if version.ParseMode != RAGParseModeStandard && version.ParseMode != RAGParseModeAuto {
+		return fmt.Errorf("%w: invalid parse_mode %q", ErrRAGDocumentVersionIncomplete, version.ParseMode)
+	}
+	if version.ChunkSize <= 0 || version.ChunkOverlap < 0 || version.ChunkOverlap >= version.ChunkSize {
+		return fmt.Errorf("%w: invalid chunk contract", ErrRAGDocumentVersionIncomplete)
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+		max   int
+	}{
+		{"parser_version", version.ParserVersion, 64},
+		{"splitter_version", version.SplitterVersion, 64},
+		{"embedding_model", version.EmbeddingModel, 128},
+	} {
+		if err := ragSnapshotString(field.name, field.value, field.max, true); err != nil {
+			return err
+		}
+	}
+	for _, fingerprint := range []struct {
+		name  string
+		value string
+	}{
+		{"parse_fingerprint", version.ParseFingerprint},
+		{"index_fingerprint", version.IndexFingerprint},
+		{"embedding_contract_fingerprint", version.EmbeddingContractFingerprint},
+	} {
+		if !ragCanonicalSHA256(fingerprint.value) {
+			return fmt.Errorf("%w: %s is not canonical SHA-256", ErrRAGDocumentVersionIncomplete, fingerprint.name)
+		}
+	}
+	if version.EmbeddingProvider != "system" && version.EmbeddingProvider != "user" {
+		return fmt.Errorf("%w: invalid embedding_provider %q", ErrRAGDocumentVersionIncomplete, version.EmbeddingProvider)
+	}
+	if version.EmbeddingDimensions <= 0 {
+		return fmt.Errorf("%w: embedding_dimensions must be positive", ErrRAGDocumentVersionIncomplete)
+	}
+	if version.MaxDocumentAIRequests <= 0 || version.MaxDocumentAITokens <= 0 || version.MaxDocumentAICostMicroUSD <= 0 {
+		return fmt.Errorf("%w: DocumentAI budget caps must be positive", ErrRAGDocumentVersionIncomplete)
+	}
+
+	conditionalStrings := []struct {
+		name     string
+		value    string
+		max      int
+		required bool
+	}{
+		{"vision_model", version.VisionModel, 128, version.ParseMode == RAGParseModeAuto},
+		{"vision_prompt_version", version.VisionPromptVersion, 64, version.ParseMode == RAGParseModeAuto},
+		{"text_model", version.TextModel, 128, version.EnrichmentEnabled},
+		{"enrichment_prompt_version", version.EnrichmentPromptVersion, 64, version.EnrichmentEnabled},
+	}
+	for _, field := range conditionalStrings {
+		if err := ragSnapshotString(field.name, field.value, field.max, field.required); err != nil {
+			return err
+		}
+	}
+	for _, fingerprint := range []struct {
+		name     string
+		value    string
+		required bool
+	}{
+		{"vision_provider_fingerprint", version.VisionProviderFingerprint, version.ParseMode == RAGParseModeAuto},
+		{"text_provider_fingerprint", version.TextProviderFingerprint, version.EnrichmentEnabled},
+	} {
+		if fingerprint.value == "" && !fingerprint.required {
+			continue
+		}
+		if !ragCanonicalSHA256(fingerprint.value) {
+			return fmt.Errorf("%w: %s is not canonical SHA-256", ErrRAGDocumentVersionIncomplete, fingerprint.name)
+		}
+	}
+	return nil
+}
 
 // RAGKBRecord is one user-owned knowledge base. The embedding provider,
 // model, and dimensions are snapshotted when the KB is created and are not
@@ -90,15 +212,21 @@ type RAGDocumentRecord struct {
 // RAGIndexTaskRecord is the durable recovery record for asynchronous document
 // indexing. PENDING and RUNNING rows are both recoverable after a restart.
 type RAGIndexTaskRecord struct {
-	ID         int64
-	DocID      string
-	Status     string
-	RetryCount int
-	MaxRetry   int
-	ErrorMsg   string
-	CreatedAt  time.Time
-	StartedAt  *time.Time
-	FinishedAt *time.Time
+	ID              int64
+	DocID           string
+	DocVersion      int64
+	Status          string
+	RetryCount      int
+	MaxRetry        int
+	ClaimGeneration int64
+	LeaseOwner      string
+	LeaseUntil      *time.Time
+	HeartbeatAt     *time.Time
+	NextRunAt       *time.Time
+	ErrorMsg        string
+	CreatedAt       time.Time
+	StartedAt       *time.Time
+	FinishedAt      *time.Time
 }
 
 // RAGDocumentVersionRecord stores the immutable configuration snapshot and
@@ -262,13 +390,6 @@ type RAGDocumentAIUsageRecord struct {
 	UpdatedAt             time.Time
 }
 
-type RAGDocumentAIUsageSettlement struct {
-	ActualInputTokens  int64
-	ActualOutputTokens int64
-	UsageEstimated     bool
-	SentAt             *time.Time
-}
-
 // RAGChatTurnRecord is one persisted question/answer exchange in the simple
 // knowledge-base chat UI. Sources is the JSON snapshot of retrieval hits used
 // for that answer so historical citations remain inspectable even after a
@@ -302,7 +423,8 @@ const ragDocumentColumns = `id, kb_id, file_name, file_type, file_size, object_k
 	index_format_version, processing_stage, progress_current, progress_total, progress_unit,
 	degraded, warning_count, uploaded_at, indexed_at`
 
-const ragIndexTaskColumns = `id, doc_id, status, retry_count, max_retry, error_msg,
+const ragIndexTaskColumns = `id, doc_id, doc_version, status, retry_count, max_retry,
+	claim_generation, lease_owner, lease_until, heartbeat_at, next_run_at, error_msg,
 	created_at, started_at, finished_at`
 
 const ragChatTurnColumns = `id, user_id, kb_id, session_id, title, question,
@@ -344,6 +466,34 @@ type ragExecutor interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+func (d *DBStore) validateRAGVersionSnapshotForDocument(
+	ctx context.Context,
+	exec ragExecutor,
+	doc *RAGDocumentRecord,
+	version *RAGDocumentVersionRecord,
+) error {
+	if doc == nil || version == nil || version.DocID != doc.ID {
+		return ErrRAGDocumentVersionMismatch
+	}
+	if err := validateRunnableRAGVersionSnapshot(version); err != nil {
+		return err
+	}
+	if doc.SourceSHA256 != "" && strings.ToLower(strings.TrimSpace(doc.SourceSHA256)) != version.SourceSHA256 {
+		return ErrRAGDocumentSourceConflict
+	}
+	kb, err := scanRAGKB(exec.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT `+ragKBColumns+` FROM rag_kbs WHERE id=%s`, d.ph(1)), doc.KBID))
+	if err != nil {
+		return scanErr(err)
+	}
+	if version.EmbeddingProvider != kb.EmbedProvider ||
+		version.EmbeddingModel != kb.EmbedModel ||
+		version.EmbeddingDimensions != kb.EmbedDims {
+		return fmt.Errorf("%w: embedding contract differs from knowledge base", ErrRAGDocumentVersionIncomplete)
+	}
+	return nil
+}
+
 func scanRAGKB(scanner ragScanner) (*RAGKBRecord, error) {
 	var kb RAGKBRecord
 	if err := scanner.Scan(
@@ -377,12 +527,23 @@ func scanRAGDocument(scanner ragScanner) (*RAGDocumentRecord, error) {
 
 func scanRAGIndexTask(scanner ragScanner) (*RAGIndexTaskRecord, error) {
 	var task RAGIndexTaskRecord
-	var startedAt, finishedAt sql.NullTime
+	var leaseUntil, heartbeatAt, nextRunAt, startedAt, finishedAt sql.NullTime
 	if err := scanner.Scan(
-		&task.ID, &task.DocID, &task.Status, &task.RetryCount, &task.MaxRetry,
-		&task.ErrorMsg, &task.CreatedAt, &startedAt, &finishedAt,
+		&task.ID, &task.DocID, &task.DocVersion, &task.Status, &task.RetryCount,
+		&task.MaxRetry, &task.ClaimGeneration, &task.LeaseOwner, &leaseUntil,
+		&heartbeatAt, &nextRunAt, &task.ErrorMsg, &task.CreatedAt, &startedAt,
+		&finishedAt,
 	); err != nil {
 		return nil, err
+	}
+	if leaseUntil.Valid {
+		task.LeaseUntil = &leaseUntil.Time
+	}
+	if heartbeatAt.Valid {
+		task.HeartbeatAt = &heartbeatAt.Time
+	}
+	if nextRunAt.Valid {
+		task.NextRunAt = &nextRunAt.Time
 	}
 	if startedAt.Valid {
 		task.StartedAt = &startedAt.Time
@@ -759,28 +920,6 @@ func (d *DBStore) createRAGDocument(ctx context.Context, exec ragExecutor, doc *
 	return err
 }
 
-// CreateRAGDocumentWithIndexTask atomically persists the uploaded document and
-// its durable recovery task. A process crash can therefore never leave a
-// PENDING document without a task row.
-func (d *DBStore) CreateRAGDocumentWithIndexTask(ctx context.Context, doc *RAGDocumentRecord, maxRetry int) (int64, error) {
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-	if err := d.createRAGDocument(ctx, tx, doc); err != nil {
-		return 0, err
-	}
-	taskID, err := d.createRAGIndexTask(ctx, tx, doc.ID, maxRetry)
-	if err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return taskID, nil
-}
-
 // CreateRAGDocumentWithVersionAndIndexTask atomically creates the document,
 // its immutable version snapshot, and the durable index task. Task claiming and
 // fence-protected state transitions are implemented separately.
@@ -793,6 +932,17 @@ func (d *DBStore) CreateRAGDocumentWithVersionAndIndexTask(
 	if doc == nil || version == nil || version.DocID != doc.ID || version.DocVersion != doc.Version {
 		return 0, ErrRAGDocumentVersionMismatch
 	}
+	prepareNewRAGDocumentVersion(version)
+	normalizedSource, fillSource, err := ragDocumentSourceHash(doc.SourceSHA256, version.SourceSHA256)
+	if err != nil {
+		return 0, err
+	}
+	if fillSource {
+		doc.SourceSHA256 = normalizedSource
+	}
+	if err := d.validateRAGVersionSnapshotForDocument(ctx, d.db, doc, version); err != nil {
+		return 0, err
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -801,7 +951,6 @@ func (d *DBStore) CreateRAGDocumentWithVersionAndIndexTask(
 	if err := d.createRAGDocument(ctx, tx, doc); err != nil {
 		return 0, err
 	}
-	prepareNewRAGDocumentVersion(version)
 	if err := d.createRAGDocumentVersion(ctx, tx, version); err != nil {
 		return 0, err
 	}
@@ -816,8 +965,29 @@ func (d *DBStore) CreateRAGDocumentWithVersionAndIndexTask(
 }
 
 func (d *DBStore) CreateRAGDocumentVersion(ctx context.Context, version *RAGDocumentVersionRecord) error {
+	if version == nil || version.DocID == "" {
+		return ErrRAGDocumentVersionMismatch
+	}
 	prepareNewRAGDocumentVersion(version)
-	return d.createRAGDocumentVersion(ctx, d.db, version)
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	doc, err := d.ragDocumentInTx(ctx, tx, version.DocID)
+	if err != nil {
+		return scanErr(err)
+	}
+	if err := d.reconcileRAGDocumentSourceHash(ctx, tx, doc, version.SourceSHA256); err != nil {
+		return err
+	}
+	if err := d.validateRAGVersionSnapshotForDocument(ctx, tx, doc, version); err != nil {
+		return err
+	}
+	if err := d.createRAGDocumentVersion(ctx, tx, version); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func prepareNewRAGDocumentVersion(version *RAGDocumentVersionRecord) {
@@ -841,9 +1011,6 @@ func (d *DBStore) createRAGDocumentVersion(
 	version.UpdatedAt = now
 	if version.Status == "" {
 		version.Status = RAGDocumentVersionPending
-	}
-	if version.ParseMode == "" {
-		version.ParseMode = RAGParseModeStandard
 	}
 	_, err := exec.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_document_versions (
 		doc_id, doc_version, status, source_sha256, parse_mode, chunk_size,
@@ -908,32 +1075,6 @@ func (d *DBStore) ListRAGDocumentVersions(ctx context.Context, docID string) ([]
 	return versions, rows.Err()
 }
 
-// UpdateResultRAGDocumentVersion is a low-level status compare-and-set. It
-// deliberately updates result fields only; worker paths must wrap result
-// transitions in the IndexFence checks introduced by the task-claim layer.
-func (d *DBStore) UpdateResultRAGDocumentVersion(
-	ctx context.Context,
-	docID string,
-	docVersion int64,
-	expectedStatus string,
-	result RAGDocumentVersionResult,
-) (bool, error) {
-	updatedAt := time.Now().UTC()
-	res, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
-		status=%s, parse_artifact_key=%s, page_count=%s, asset_count=%s,
-		degraded=%s, warning_count=%s, updated_at=%s
-		WHERE doc_id=%s AND doc_version=%s AND status=%s`,
-		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7),
-		d.ph(8), d.ph(9), d.ph(10)), result.Status, result.ParseArtifactKey,
-		result.PageCount, result.AssetCount, result.Degraded, result.WarningCount,
-		updatedAt, docID, docVersion, expectedStatus)
-	if err != nil {
-		return false, err
-	}
-	rows, err := res.RowsAffected()
-	return rows > 0, err
-}
-
 func (d *DBStore) GetRAGDocument(ctx context.Context, id string) (*RAGDocumentRecord, error) {
 	doc, err := scanRAGDocument(d.db.QueryRowContext(ctx,
 		fmt.Sprintf(`SELECT `+ragDocumentColumns+` FROM rag_documents WHERE id = %s`, d.ph(1)), id))
@@ -961,80 +1102,6 @@ func (d *DBStore) ListRAGDocumentsByKB(ctx context.Context, kbID string) ([]RAGD
 		out = append(out, *doc)
 	}
 	return out, rows.Err()
-}
-
-func (d *DBStore) UpdateRAGDocument(ctx context.Context, doc *RAGDocumentRecord) error {
-	return d.updateRAGDocument(ctx, d.db, doc)
-}
-
-func (d *DBStore) updateRAGDocument(ctx context.Context, exec ragExecutor, doc *RAGDocumentRecord) error {
-	result, err := exec.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
-		file_name=%s, file_type=%s, file_size=%s, object_key=%s, status=%s,
-		error_msg=%s, chunk_count=%s, token_count=%s, version=%s, source_sha256=%s,
-		active_version=%s, index_format_version=%s, processing_stage=%s,
-		progress_current=%s, progress_total=%s, progress_unit=%s, degraded=%s,
-		warning_count=%s, uploaded_at=%s, indexed_at=%s WHERE id=%s`,
-		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6),
-		d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12),
-		d.ph(13), d.ph(14), d.ph(15), d.ph(16), d.ph(17), d.ph(18),
-		d.ph(19), d.ph(20), d.ph(21)),
-		doc.FileName, doc.FileType, doc.FileSize, doc.ObjectKey, doc.Status,
-		doc.ErrorMsg, doc.ChunkCount, doc.TokenCount, doc.Version, doc.SourceSHA256,
-		doc.ActiveVersion, doc.IndexFormatVersion, doc.ProcessingStage,
-		doc.ProgressCurrent, doc.ProgressTotal, doc.ProgressUnit, doc.Degraded,
-		doc.WarningCount, doc.UploadedAt, doc.IndexedAt, doc.ID)
-	return ragMutationResult(result, err)
-}
-
-// UpdateRAGDocumentIfVersion applies worker state only while the document is
-// still on the version that worker loaded. It prevents an older task running in
-// another process from rolling a newer reindex version back.
-func (d *DBStore) UpdateRAGDocumentIfVersion(ctx context.Context, doc *RAGDocumentRecord, expectedVersion int64) (bool, error) {
-	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
-		file_name=%s, file_type=%s, file_size=%s, object_key=%s, status=%s,
-		error_msg=%s, chunk_count=%s, token_count=%s, version=%s, source_sha256=%s,
-		active_version=%s, index_format_version=%s, processing_stage=%s,
-		progress_current=%s, progress_total=%s, progress_unit=%s, degraded=%s,
-		warning_count=%s, uploaded_at=%s, indexed_at=%s WHERE id=%s AND version=%s`,
-		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6),
-		d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12),
-		d.ph(13), d.ph(14), d.ph(15), d.ph(16), d.ph(17), d.ph(18),
-		d.ph(19), d.ph(20), d.ph(21), d.ph(22)),
-		doc.FileName, doc.FileType, doc.FileSize, doc.ObjectKey, doc.Status,
-		doc.ErrorMsg, doc.ChunkCount, doc.TokenCount, doc.Version, doc.SourceSHA256,
-		doc.ActiveVersion, doc.IndexFormatVersion, doc.ProcessingStage,
-		doc.ProgressCurrent, doc.ProgressTotal, doc.ProgressUnit, doc.Degraded,
-		doc.WarningCount, doc.UploadedAt, doc.IndexedAt, doc.ID, expectedVersion)
-	if err != nil {
-		return false, err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return rows > 0, nil
-}
-
-// UpdateRAGDocumentWithIndexTask atomically advances a document version and
-// creates the corresponding durable task. This closes the crash window between
-// the two writes during reindex.
-func (d *DBStore) UpdateRAGDocumentWithIndexTask(ctx context.Context, doc *RAGDocumentRecord, maxRetry int) (int64, error) {
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-	if err := d.updateRAGDocument(ctx, tx, doc); err != nil {
-		return 0, err
-	}
-	taskID, err := d.createRAGIndexTask(ctx, tx, doc.ID, maxRetry)
-	if err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return taskID, nil
 }
 
 func (d *DBStore) DeleteRAGDocument(ctx context.Context, id string) error {
@@ -1066,27 +1133,40 @@ func (d *DBStore) DeleteRAGDocument(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
-func (d *DBStore) CreateRAGIndexTask(ctx context.Context, docID string, maxRetry int) (int64, error) {
-	return d.createRAGIndexTask(ctx, d.db, docID, maxRetry)
+func (d *DBStore) createRAGIndexTask(ctx context.Context, exec ragExecutor, docID string, maxRetry int) (int64, error) {
+	var docVersion int64
+	if err := exec.QueryRowContext(ctx, fmt.Sprintf(
+		`SELECT version FROM rag_documents WHERE id=%s`, d.ph(1)), docID).Scan(&docVersion); err != nil {
+		return 0, scanErr(err)
+	}
+	return d.createRAGIndexTaskForVersion(ctx, exec, docID, docVersion, maxRetry)
 }
 
-func (d *DBStore) createRAGIndexTask(ctx context.Context, exec ragExecutor, docID string, maxRetry int) (int64, error) {
+func (d *DBStore) createRAGIndexTaskForVersion(
+	ctx context.Context,
+	exec ragExecutor,
+	docID string,
+	docVersion int64,
+	maxRetry int,
+) (int64, error) {
 	if maxRetry <= 0 {
 		maxRetry = 3
 	}
-	now := time.Now().UTC()
 	if d.dialect == "postgres" {
 		var id int64
 		err := exec.QueryRowContext(ctx, fmt.Sprintf(`INSERT INTO rag_index_tasks
-			(doc_id, status, retry_count, max_retry, error_msg, created_at)
-			VALUES (%s, 'PENDING', 0, %s, '', %s) RETURNING id`,
-			d.ph(1), d.ph(2), d.ph(3)), docID, maxRetry, now).Scan(&id)
+			(doc_id, doc_version, status, retry_count, max_retry, claim_generation,
+			 lease_owner, error_msg, created_at)
+			VALUES (%s, %s, 'PENDING', 0, %s, 0, '', '', CURRENT_TIMESTAMP) RETURNING id`,
+			d.ph(1), d.ph(2), d.ph(3)), docID, docVersion, maxRetry).Scan(&id)
 		return id, err
 	}
 
 	result, err := exec.ExecContext(ctx, `INSERT INTO rag_index_tasks
-		(doc_id, status, retry_count, max_retry, error_msg, created_at)
-		VALUES (?, 'PENDING', 0, ?, '', ?)`, docID, maxRetry, now)
+		(doc_id, doc_version, status, retry_count, max_retry, claim_generation,
+		 lease_owner, error_msg, created_at)
+		VALUES (?, ?, 'PENDING', 0, ?, 0, '', '', CURRENT_TIMESTAMP)`,
+		docID, docVersion, maxRetry)
 	if err != nil {
 		return 0, err
 	}
@@ -1100,31 +1180,6 @@ func (d *DBStore) GetRAGIndexTask(ctx context.Context, id int64) (*RAGIndexTaskR
 		return nil, scanErr(err)
 	}
 	return task, nil
-}
-
-func (d *DBStore) UpdateRAGIndexTask(ctx context.Context, id int64, status string, retryCount int, errMsg string) error {
-	now := time.Now().UTC()
-	var query string
-	var args []any
-	switch status {
-	case "RUNNING":
-		query = fmt.Sprintf(`UPDATE rag_index_tasks SET status=%s, retry_count=%s,
-			error_msg=%s, started_at=%s, finished_at=NULL WHERE id=%s`,
-			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5))
-		args = []any{status, retryCount, errMsg, now, id}
-	case "DONE", "FAILED":
-		query = fmt.Sprintf(`UPDATE rag_index_tasks SET status=%s, retry_count=%s,
-			error_msg=%s, finished_at=%s WHERE id=%s`,
-			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5))
-		args = []any{status, retryCount, errMsg, now, id}
-	default:
-		query = fmt.Sprintf(`UPDATE rag_index_tasks SET status=%s, retry_count=%s,
-			error_msg=%s, finished_at=NULL WHERE id=%s`,
-			d.ph(1), d.ph(2), d.ph(3), d.ph(4))
-		args = []any{status, retryCount, errMsg, id}
-	}
-	result, err := d.db.ExecContext(ctx, query, args...)
-	return ragMutationResult(result, err)
 }
 
 func ragMutationResult(result sql.Result, err error) error {
@@ -1713,51 +1768,6 @@ func (d *DBStore) GetRAGDocumentAIUserBudget(
 	return budget, nil
 }
 
-// CreateRAGDocumentAIUsage inserts one durable idempotency record and reports
-// whether this call inserted it. Atomic budget reservation is intentionally a
-// higher-level transaction that locks user-period then task aggregates first.
-func (d *DBStore) CreateRAGDocumentAIUsage(ctx context.Context, usage *RAGDocumentAIUsageRecord) (bool, error) {
-	now := time.Now().UTC()
-	if usage.CreatedAt.IsZero() {
-		usage.CreatedAt = now
-	}
-	if usage.UpdatedAt.IsZero() {
-		usage.UpdatedAt = now
-	}
-	if usage.State == "" {
-		usage.State = RAGDocumentAIUsageReserved
-	}
-	query := fmt.Sprintf(`INSERT INTO rag_document_ai_usage (
-		idempotency_key, logical_request_key, user_id, doc_id, task_id, doc_version,
-		claim_generation, lease_owner, operation, provider_fingerprint,
-		period_start_utc, reserved_input_tokens, reserved_output_tokens,
-		actual_input_tokens, actual_output_tokens, estimated_cost_microusd, state,
-		reservation_expires_at, sent_at, usage_estimated, created_at, updated_at)
-		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-		%s, %s, %s, %s, %s, %s, %s, %s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4),
-		d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11),
-		d.ph(12), d.ph(13), d.ph(14), d.ph(15), d.ph(16), d.ph(17),
-		d.ph(18), d.ph(19), d.ph(20), d.ph(21), d.ph(22))
-	if d.dialect == "mysql" {
-		query = strings.Replace(query, "INSERT INTO rag_document_ai_usage", "INSERT IGNORE INTO rag_document_ai_usage", 1)
-	} else {
-		query += ` ON CONFLICT (idempotency_key) DO NOTHING`
-	}
-	result, err := d.db.ExecContext(ctx, query, usage.IdempotencyKey,
-		usage.LogicalRequestKey, usage.UserID, usage.DocID, usage.TaskID,
-		usage.DocVersion, usage.ClaimGeneration, usage.LeaseOwner, usage.Operation,
-		usage.ProviderFingerprint, ragPeriodDate(usage.PeriodStartUTC),
-		usage.ReservedInputTokens, usage.ReservedOutputTokens,
-		usage.ActualInputTokens, usage.ActualOutputTokens,
-		usage.EstimatedCostMicroUSD, usage.State, usage.ReservationExpiresAt,
-		usage.SentAt, usage.UsageEstimated, usage.CreatedAt, usage.UpdatedAt)
-	if err != nil {
-		return false, err
-	}
-	rows, err := result.RowsAffected()
-	return rows > 0, err
-}
-
 func (d *DBStore) GetRAGDocumentAIUsage(ctx context.Context, idempotencyKey string) (*RAGDocumentAIUsageRecord, error) {
 	usage, err := scanRAGDocumentAIUsage(d.db.QueryRowContext(ctx, fmt.Sprintf(
 		`SELECT `+ragDocumentAIUsageColumns+` FROM rag_document_ai_usage
@@ -1766,24 +1776,4 @@ func (d *DBStore) GetRAGDocumentAIUsage(ctx context.Context, idempotencyKey stri
 		return nil, scanErr(err)
 	}
 	return usage, nil
-}
-
-func (d *DBStore) UpdateRAGDocumentAIUsageState(
-	ctx context.Context,
-	idempotencyKey, expectedState, state string,
-	settlement RAGDocumentAIUsageSettlement,
-) (bool, error) {
-	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_ai_usage SET
-		state=%s, actual_input_tokens=%s, actual_output_tokens=%s,
-		usage_estimated=%s, sent_at=%s, updated_at=%s
-		WHERE idempotency_key=%s AND state=%s`, d.ph(1), d.ph(2), d.ph(3),
-		d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8)), state,
-		settlement.ActualInputTokens, settlement.ActualOutputTokens,
-		settlement.UsageEstimated, settlement.SentAt, time.Now().UTC(),
-		idempotencyKey, expectedState)
-	if err != nil {
-		return false, err
-	}
-	rows, err := result.RowsAffected()
-	return rows > 0, err
 }

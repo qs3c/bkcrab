@@ -157,13 +157,13 @@ func (g *blockingEmbeddingServer) releaseCall(t *testing.T) {
 type versionTrackingVector struct {
 	*vector.Fake
 	mu       sync.Mutex
-	versions map[string]map[string]map[int]int
+	versions map[string]map[string]map[int64]int
 }
 
 func newVersionTrackingVector() *versionTrackingVector {
 	return &versionTrackingVector{
 		Fake:     vector.NewFake(),
-		versions: make(map[string]map[string]map[int]int),
+		versions: make(map[string]map[string]map[int64]int),
 	}
 }
 
@@ -174,28 +174,24 @@ func (v *versionTrackingVector) UpsertChunks(ctx context.Context, kbID string, c
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.versions[kbID] == nil {
-		v.versions[kbID] = make(map[string]map[int]int)
+		v.versions[kbID] = make(map[string]map[int64]int)
 	}
 	for _, chunk := range chunks {
 		if v.versions[kbID][chunk.DocID] == nil {
-			v.versions[kbID][chunk.DocID] = make(map[int]int)
+			v.versions[kbID][chunk.DocID] = make(map[int64]int)
 		}
 		v.versions[kbID][chunk.DocID][chunk.DocVersion]++
 	}
 	return nil
 }
 
-func (v *versionTrackingVector) DeleteOldVersions(ctx context.Context, kbID, docID string, keepVersion int) error {
-	if err := v.Fake.DeleteOldVersions(ctx, kbID, docID, keepVersion); err != nil {
+func (v *versionTrackingVector) DeleteDocVersion(ctx context.Context, kbID, docID string, version int64) error {
+	if err := v.Fake.DeleteDocVersion(ctx, kbID, docID, version); err != nil {
 		return err
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	for version := range v.versions[kbID][docID] {
-		if version < keepVersion {
-			delete(v.versions[kbID][docID], version)
-		}
-	}
+	delete(v.versions[kbID][docID], version)
 	return nil
 }
 
@@ -209,14 +205,14 @@ func (v *versionTrackingVector) DeleteDoc(ctx context.Context, kbID, docID strin
 	return nil
 }
 
-func (v *versionTrackingVector) documentVersions(kbID, docID string) []int {
+func (v *versionTrackingVector) documentVersions(kbID, docID string) []int64 {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	versions := make([]int, 0, len(v.versions[kbID][docID]))
+	versions := make([]int64, 0, len(v.versions[kbID][docID]))
 	for version := range v.versions[kbID][docID] {
 		versions = append(versions, version)
 	}
-	sort.Ints(versions)
+	sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
 	return versions
 }
 
@@ -364,17 +360,17 @@ func TestUploadReindexSearchAndDelete(t *testing.T) {
 		t.Fatalf("reindex version = %d, want 2", reindexed.Version)
 	}
 	operations := fake.Ops(manual.ID)
-	upsert, cleanup := -1, -1
+	upsert := -1
 	for index, operation := range operations {
 		if operation == "upsert_v2" && upsert < 0 {
 			upsert = index
 		}
-		if operation == "delete_old_v2" && cleanup < 0 {
-			cleanup = index
+		if operation == "delete_v1" {
+			t.Fatalf("reindex deleted a retired version before delayed GC: %v", operations)
 		}
 	}
-	if upsert < 0 || cleanup < 0 || upsert > cleanup {
-		t.Fatalf("new version must be upserted before old cleanup: %v", operations)
+	if upsert < 0 {
+		t.Fatalf("new version was not upserted: %v", operations)
 	}
 
 	if err := service.DeleteDocument(ctx, "u1", manual.ID, manualDoc.ID); err != nil {
@@ -506,11 +502,11 @@ func TestReindexWaitsForInFlightIndexWithoutVersionRollback(t *testing.T) {
 		t.Fatalf("final document version = %d, want 2", indexed.Version)
 	}
 	versions := tracked.documentVersions(kb.ID, doc.ID)
-	if len(versions) != 1 || versions[0] != 2 {
-		t.Fatalf("vector versions after reindex = %v, want only version 2", versions)
+	if len(versions) != 2 || versions[0] != 1 || versions[1] != 2 {
+		t.Fatalf("vector versions after reindex = %v, want retired v1 retained until delayed GC", versions)
 	}
 	ops := tracked.Ops(kb.ID)
-	wantOps := []string{"upsert_v1", "delete_old_v1", "upsert_v2", "delete_old_v2"}
+	wantOps := []string{"upsert_v1", "upsert_v2"}
 	if len(ops) != len(wantOps) {
 		t.Fatalf("vector operations = %v, want %v", ops, wantOps)
 	}
@@ -536,10 +532,11 @@ func TestRecoverPendingIndexTask(t *testing.T) {
 	if err := service.obj.Put(ctx, doc.ObjectKey, strings.NewReader("恢复任务正文"), doc.FileSize, "text/plain"); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.st.CreateRAGDocument(ctx, doc); err != nil {
+	snapshot, err := service.BuildVersionSnapshot(ctx, doc)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.st.CreateRAGIndexTask(ctx, doc.ID, 3); err != nil {
+	if _, err := service.st.CreateRAGDocumentWithVersionAndIndexTask(ctx, doc, snapshot, 3); err != nil {
 		t.Fatal(err)
 	}
 	workerCtx, cancel := context.WithCancel(context.Background())
@@ -594,6 +591,13 @@ func TestIndexTaskFailsAfterMaxRetries(t *testing.T) {
 	// without waiting for the production 1/2/4-second backoff timers.
 	for attempt := 0; attempt <= tasks[0].MaxRetry; attempt++ {
 		service.runTask(ctx, tasks[0].ID)
+		if db, ok := service.st.(*store.DBStore); ok {
+			if _, err := db.DB().ExecContext(ctx,
+				`UPDATE rag_index_tasks SET next_run_at='2000-01-01 00:00:00' WHERE id=? AND status='PENDING'`,
+				tasks[0].ID); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 
 	task, err := service.st.GetRAGIndexTask(ctx, tasks[0].ID)

@@ -16,6 +16,20 @@ import (
 const batchSize = 16
 const maxEmbeddingResponseBytes = 32 << 20
 
+// endpointError preserves the HTTP status through error wrapping so callers
+// can distinguish deterministic request failures from retryable provider
+// failures without parsing a localized error message.
+type endpointError struct {
+	statusCode int
+	message    string
+}
+
+func (e *endpointError) Error() string {
+	return fmt.Sprintf("embeddings 端点返回 %d: %s", e.statusCode, e.message)
+}
+
+func (e *endpointError) HTTPStatus() int { return e.statusCode }
+
 // Client embeds text with the model and dimensions snapshotted by a knowledge
 // base when it is created.
 type Client struct {
@@ -82,9 +96,10 @@ func (c *Client) embedBatch(ctx context.Context, texts []string) ([][]float32, e
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 2048))
-		return nil, fmt.Errorf(
-			"embeddings 端点返回 %d: %s", response.StatusCode, strings.TrimSpace(string(message)),
-		)
+		return nil, &endpointError{
+			statusCode: response.StatusCode,
+			message:    strings.TrimSpace(string(message)),
+		}
 	}
 
 	var payload struct {

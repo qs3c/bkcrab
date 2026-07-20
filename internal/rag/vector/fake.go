@@ -32,7 +32,7 @@ type fakeCollection struct {
 type fakeEntryKey struct {
 	docID   string
 	index   int
-	version int
+	version int64
 }
 
 type fakeRankedChunk struct {
@@ -95,8 +95,8 @@ func (f *Fake) UpsertChunks(ctx context.Context, kbID string, chunks []ChunkData
 		}
 	}
 
-	versions := make([]int, 0, 1)
-	seenVersion := make(map[int]struct{})
+	versions := make([]int64, 0, 1)
+	seenVersion := make(map[int64]struct{})
 	for _, chunk := range chunks {
 		key := fakeEntryKey{docID: chunk.DocID, index: chunk.Index, version: chunk.DocVersion}
 		c.entries[key] = cloneChunk(chunk)
@@ -111,7 +111,7 @@ func (f *Fake) UpsertChunks(ctx context.Context, kbID string, chunks []ChunkData
 	return nil
 }
 
-func (f *Fake) DeleteOldVersions(ctx context.Context, kbID, docID string, keepVersion int) error {
+func (f *Fake) DeleteDocVersion(ctx context.Context, kbID, docID string, version int64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -123,11 +123,11 @@ func (f *Fake) DeleteOldVersions(ctx context.Context, kbID, docID string, keepVe
 		return err
 	}
 	for key := range c.entries {
-		if key.docID == docID && key.version < keepVersion {
+		if key.docID == docID && key.version == version {
 			delete(c.entries, key)
 		}
 	}
-	c.ops = append(c.ops, fmt.Sprintf("delete_old_v%d", keepVersion))
+	c.ops = append(c.ops, fmt.Sprintf("delete_v%d", version))
 	return nil
 }
 
@@ -233,6 +233,7 @@ func (f *Fake) HybridSearch(ctx context.Context, kbID string, query SearchQuery,
 			Content:      item.chunk.Content,
 			SectionTitle: item.chunk.SectionTitle,
 			PageNum:      item.chunk.PageNum,
+			DocVersion:   item.chunk.DocVersion,
 			Score:        item.score,
 		})
 	}
@@ -261,7 +262,7 @@ func (f *Fake) Count(kbID string) int {
 }
 
 // Ops returns a copy of the write-order log for kbID. Upserts are recorded as
-// "upsert_vN" and version cleanup as "delete_old_vN".
+// "upsert_vN" and exact cleanup as "delete_vN".
 func (f *Fake) Ops(kbID string) []string {
 	f.mu.RLock()
 	defer f.mu.RUnlock()

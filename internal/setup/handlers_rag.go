@@ -186,7 +186,7 @@ func (s *Server) ragDocumentResponseWithSnapshots(
 		dto.NeedsReindex = dto.NeedsReparse
 		return dto, nil
 	}
-	var active, target *store.RAGDocumentVersionRecord
+	var active *store.RAGDocumentVersionRecord
 	if record.ActiveVersion > 0 {
 		var err error
 		active, err = s.dataStore.GetRAGDocumentVersion(ctx, record.ID, record.ActiveVersion)
@@ -194,28 +194,47 @@ func (s *Server) ragDocumentResponseWithSnapshots(
 			return dto, err
 		}
 	}
-	if record.Version > 0 && record.Version != record.ActiveVersion {
-		var err error
-		target, err = s.dataStore.GetRAGDocumentVersion(ctx, record.ID, record.Version)
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			return dto, err
-		}
-	}
-	if target != nil && config.ParseMode(target.ParseMode).Valid() {
-		dto.TargetParseMode = config.ParseMode(target.ParseMode)
-	}
 	if active == nil {
 		dto.NeedsReparse = true
 		dto.NeedsReindex = true
 		return dto, nil
 	}
 	dto.AppliedParseMode = config.ParseMode(active.ParseMode)
-	if target != nil {
+	legacy := active.ParserVersion == "legacy-v0" || active.ParseFingerprint == "legacy-v0"
+	if legacy || record.SourceSHA256 == "" || active.SourceSHA256 == "" {
+		// Legacy/unhashed snapshots cannot be compared to a newly derived
+		// fingerprint without reading the source object. List endpoints must not
+		// turn a missing legacy object into a 500; conservatively request rebuild.
+		dto.NeedsReparse = true
+		dto.NeedsReindex = true
+		return dto, nil
+	}
+
+	// The target contract is always derived from the current KB plus the
+	// current secret-free runtime provider configuration. A failed/stale target
+	// attempt is historical execution state and must not redefine what the UI
+	// reports as the desired parse/index contract.
+	if s.rag != nil {
+		targetDoc := *record
+		target, err := s.rag.BuildVersionSnapshot(ctx, &targetDoc)
+		if err != nil {
+			// A removed provider binding or other unavailable runtime contract
+			// means this active snapshot cannot currently be reproduced. Keep
+			// list/read endpoints available and conservatively request rebuild.
+			dto.NeedsReparse = true
+			dto.NeedsReindex = true
+			return dto, nil
+		}
+		if config.ParseMode(target.ParseMode).Valid() {
+			dto.TargetParseMode = config.ParseMode(target.ParseMode)
+		}
 		dto.NeedsReparse = active.ParseFingerprint != target.ParseFingerprint
 		dto.NeedsReindex = active.IndexFingerprint != target.IndexFingerprint
 		return dto, nil
 	}
-	legacy := active.ParserVersion == "legacy-v0" || active.ParseFingerprint == "legacy-v0"
+
+	// Capability-only/test servers without a live RAG service cannot compute
+	// provider fingerprints, but still retain the conservative legacy fallback.
 	dto.NeedsReparse = legacy || active.ParseMode != string(dto.TargetParseMode)
 	dto.NeedsReindex = dto.NeedsReparse
 	if kb != nil {

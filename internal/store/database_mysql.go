@@ -24,6 +24,10 @@ func normalizeMySQLDSN(dsn string) (string, error) {
 	}
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
+	// Fenced idempotent updates (for example repeated progress values) must
+	// still report the matched row. Otherwise MySQL's changed-row semantics can
+	// be mistaken for a lost lease fence.
+	cfg.ClientFoundRows = true
 	if cfg.Collation == "" {
 		cfg.Collation = "utf8mb4_unicode_ci"
 	}
@@ -345,15 +349,23 @@ func mysqlMigrationSQL() []string {
 		`CREATE TABLE IF NOT EXISTS rag_index_tasks (
 			id BIGINT NOT NULL AUTO_INCREMENT,
 			doc_id VARCHAR(120) NOT NULL,
+			doc_version BIGINT NOT NULL,
 			status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
 			retry_count INTEGER NOT NULL DEFAULT 0,
 			max_retry INTEGER NOT NULL DEFAULT 3,
+			claim_generation BIGINT NOT NULL DEFAULT 0,
+			lease_owner VARCHAR(96) NOT NULL DEFAULT '',
+			lease_until DATETIME(6),
+			heartbeat_at DATETIME(6),
+			next_run_at DATETIME(6),
 			error_msg LONGTEXT NOT NULL,
 			created_at DATETIME(6) NOT NULL,
 			started_at DATETIME(6),
 			finished_at DATETIME(6),
 			PRIMARY KEY (id),
-			KEY idx_rag_tasks_status (status, created_at)
+			UNIQUE KEY uq_rag_index_tasks_doc_version (doc_id, doc_version),
+			KEY idx_rag_tasks_status (status, created_at),
+			KEY idx_rag_index_tasks_runnable (status, next_run_at, lease_until, created_at)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS rag_document_versions (
 			doc_id VARCHAR(120) NOT NULL,
