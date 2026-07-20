@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bkcrab-rag-parser"
+version = "0.1.0"
+description = "Network-isolated Office parser sidecar for bkcrab RAG"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "defusedxml>=0.7.1,<0.8",
+  "fastapi>=0.115,<1",
+  "markitdown[docx,pptx,xlsx]==0.1.6",
+  "pillow>=11,<12",
+  "python-multipart>=0.0.20,<1",
+  "uvicorn>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<1",
+  "pytest>=8.3,<9",
+  "ruff>=0.11,<1",
+]
+
+[project.scripts]
+rag-parser = "app.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]

@@ -1,0 +1,70 @@
+{
+  "protocolVersion": "rag-parser/v1",
+  "bundleKind": "pdf-render",
+  "source": {
+    "format": "pdf",
+    "byteSize": 4096,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "parser": {
+    "name": "golden-pdf-engine",
+    "version": "1.0.0",
+    "wrapperVersion": "pdf-wrapper-v1"
+  },
+  "entries": [
+    {
+      "path": "assets/asset_0001.png",
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "byteSize": 2048,
+      "mimeType": "image/png"
+    },
+    {
+      "path": "pages/page-0001.png",
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "byteSize": 8192,
+      "mimeType": "image/png"
+    }
+  ],
+  "units": [],
+  "assets": [
+    {
+      "localId": "asset_0001",
+      "entry": "assets/asset_0001.png",
+      "kind": "image",
+      "sourceKind": "embedded_original",
+      "width": 640,
+      "height": 480
+    }
+  ],
+  "occurrences": [
+    {
+      "id": "occ_page_0001_0001",
+      "assetLocalId": "asset_0001",
+      "unitId": "unit_page_aaaaaaaaaaaa_0001",
+      "order": 1,
+      "location": {
+        "kind": "page",
+        "index": 1,
+        "label": "第 1 页"
+      },
+      "bbox": [100, 100, 900, 800],
+      "altText": "",
+      "caption": "",
+      "ocrText": "",
+      "decorative": false,
+      "confidence": 1.0
+    }
+  ],
+  "pages": [
+    {
+      "page": 1,
+      "status": "ok",
+      "errorCode": "",
+      "unitId": "unit_page_aaaaaaaaaaaa_0001",
+      "nativeMarkdownEntry": "",
+      "renderEntry": "pages/page-0001.png",
+      "primitiveEntry": ""
+    }
+  ],
+  "warnings": []
+}

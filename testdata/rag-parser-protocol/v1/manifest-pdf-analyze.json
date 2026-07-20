@@ -1,0 +1,43 @@
+{
+  "protocolVersion": "rag-parser/v1",
+  "bundleKind": "pdf-analyze",
+  "source": {
+    "format": "pdf",
+    "byteSize": 4096,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "parser": {
+    "name": "golden-pdf-engine",
+    "version": "1.0.0",
+    "wrapperVersion": "pdf-wrapper-v1"
+  },
+  "entries": [
+    {
+      "path": "pages/page-0001.json",
+      "sha256": "16925d48e0903f2f03e4c079d6768171a418066d0b3bdf6eb60b9bc09702e1f1",
+      "byteSize": 311,
+      "mimeType": "application/json"
+    },
+    {
+      "path": "units/page-0001.md",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "byteSize": 128,
+      "mimeType": "text/markdown; charset=utf-8"
+    }
+  ],
+  "units": [],
+  "assets": [],
+  "occurrences": [],
+  "pages": [
+    {
+      "page": 1,
+      "status": "ok",
+      "errorCode": "",
+      "unitId": "unit_page_aaaaaaaaaaaa_0001",
+      "nativeMarkdownEntry": "units/page-0001.md",
+      "renderEntry": "",
+      "primitiveEntry": "pages/page-0001.json"
+    }
+  ],
+  "warnings": []
+}

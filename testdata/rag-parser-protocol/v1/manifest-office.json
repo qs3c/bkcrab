@@ -1,0 +1,81 @@
+{
+  "protocolVersion": "rag-parser/v1",
+  "bundleKind": "office-convert",
+  "source": {
+    "format": "pptx",
+    "byteSize": 123456,
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "parser": {
+    "name": "markitdown",
+    "version": "0.1.6",
+    "wrapperVersion": "office-wrapper-v1"
+  },
+  "entries": [
+    {
+      "path": "assets/asset_0001.png",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "byteSize": 34567,
+      "mimeType": "image/png"
+    },
+    {
+      "path": "units/0001.md",
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "byteSize": 4321,
+      "mimeType": "text/markdown; charset=utf-8"
+    }
+  ],
+  "units": [
+    {
+      "id": "unit_slide_0001",
+      "location": {
+        "kind": "slide",
+        "index": 1,
+        "label": "幻灯片 1"
+      },
+      "markdownEntry": "units/0001.md"
+    }
+  ],
+  "assets": [
+    {
+      "localId": "asset_0001",
+      "entry": "assets/asset_0001.png",
+      "kind": "image",
+      "sourceKind": "embedded_original",
+      "width": 1200,
+      "height": 800
+    }
+  ],
+  "occurrences": [
+    {
+      "id": "occ_slide_0001_0001",
+      "assetLocalId": "asset_0001",
+      "unitId": "unit_slide_0001",
+      "order": 3,
+      "location": {
+        "kind": "slide",
+        "index": 1,
+        "label": "幻灯片 1"
+      },
+      "bbox": [100, 200, 700, 800],
+      "altText": "系统架构图",
+      "caption": "",
+      "ocrText": "",
+      "decorative": false,
+      "confidence": 1.0
+    }
+  ],
+  "pages": [],
+  "warnings": [
+    {
+      "code": "office_image_coarse_location",
+      "message": "图片只能定位到 slide",
+      "location": {
+        "kind": "slide",
+        "index": 1,
+        "label": "幻灯片 1"
+      },
+      "degraded": true
+    }
+  ]
+}

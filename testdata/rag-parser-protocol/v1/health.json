@@ -1,0 +1,21 @@
+{
+  "protocolVersion": "rag-parser/v1",
+  "serviceVersion": "test-build",
+  "limits": {
+    "maxInputBytes": 52428800,
+    "maxOutputBytes": 209715200
+  },
+  "capabilities": {
+    "office": {
+      "enabled": true,
+      "formats": ["docx", "pptx", "xlsx"],
+      "markitdownVersion": "0.1.6",
+      "wrapperVersion": "office-wrapper-v1"
+    },
+    "pdf": {
+      "enabled": false,
+      "engine": "",
+      "engineVersion": ""
+    }
+  }
+}

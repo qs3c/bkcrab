@@ -1,0 +1,57 @@
+{
+  "protocolVersion": "rag-parser/v1",
+  "bundleKind": "pdf-render",
+  "source": {
+    "format": "pdf",
+    "byteSize": 4096,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "parser": {
+    "name": "golden-pdf-engine",
+    "version": "1.0.0",
+    "wrapperVersion": "pdf-wrapper-v1"
+  },
+  "entries": [
+    {
+      "path": "pages/page-0001.png",
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "byteSize": 8192,
+      "mimeType": "image/png"
+    }
+  ],
+  "units": [],
+  "assets": [],
+  "occurrences": [],
+  "pages": [
+    {
+      "page": 1,
+      "status": "ok",
+      "errorCode": "",
+      "unitId": "unit_page_aaaaaaaaaaaa_0001",
+      "nativeMarkdownEntry": "",
+      "renderEntry": "pages/page-0001.png",
+      "primitiveEntry": ""
+    },
+    {
+      "page": 2,
+      "status": "failed",
+      "errorCode": "page_render_failed",
+      "unitId": "unit_page_aaaaaaaaaaaa_0002",
+      "nativeMarkdownEntry": "",
+      "renderEntry": "",
+      "primitiveEntry": ""
+    }
+  ],
+  "warnings": [
+    {
+      "code": "pdf_page_failed",
+      "message": "第 2 页渲染失败",
+      "location": {
+        "kind": "page",
+        "index": 2,
+        "label": "第 2 页"
+      },
+      "degraded": true
+    }
+  ]
+}

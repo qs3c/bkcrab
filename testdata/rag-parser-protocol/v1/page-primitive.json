@@ -1,0 +1,26 @@
+{
+  "page": 1,
+  "width": 612.0,
+  "height": 792.0,
+  "textChars": 20,
+  "blockCount": 1,
+  "textCoverage": 0.12,
+  "textBlocks": [
+    {
+      "text": "Canonical page text.",
+      "bbox": [100, 80, 900, 180]
+    }
+  ],
+  "embeddedImages": [
+    {
+      "bbox": [120, 250, 880, 760]
+    }
+  ],
+  "signals": {
+    "table": false,
+    "code": false,
+    "scanned": false,
+    "multicolumn": false,
+    "readingOrderUncertain": false
+  }
+}
