@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.main import Settings, create_app
 from app.office import (
+    DOC_REL_NS,
     REL_NS,
     MarkItDownConverter,
     OfficeError,
@@ -21,9 +23,13 @@ from app.office import (
 )
 from app.protocol import Manifest
 from tests.fixtures.generate_minimal import generate_all
+from tests.fixtures.generate_office_golden import generate_all as generate_office_golden
 
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
 EXPECTED = json.loads((FIXTURE_ROOT / "expected_minimal.json").read_text(encoding="utf-8"))
+OFFICE_GOLDEN = json.loads(
+    (FIXTURE_ROOT / "expected_office_golden.json").read_text(encoding="utf-8")
+)
 MIME_TYPES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -156,15 +162,368 @@ def test_three_format_spike_produces_units_assets_and_internal_markers(
     assert bundle.manifest.units[0].location.kind == expected["unitKind"]
     assert len(bundle.manifest.assets) == expected["assetCount"]
     assert len(bundle.manifest.occurrences) == expected["occurrenceCount"]
-    assert expected["warningCode"] in {warning.code for warning in bundle.manifest.warnings}
+    warning_codes = {warning.code for warning in bundle.manifest.warnings}
+    if source_format == "xlsx":
+        assert expected["warningCode"] in warning_codes
+    else:
+        assert expected["warningCode"] not in warning_codes
     assert Manifest.from_dict(bundle.manifest.to_dict()) == bundle.manifest
     markdown_payloads = [item for item in bundle.payloads if item.path.startswith("units/")]
     markdown = "".join(item.opener().read().decode("utf-8") for item in markdown_payloads)
     assert "rag-asset://occ_" in markdown
+    assert "BKCRABIMAGE" not in markdown
+    assert "BKCRABSHEET" not in markdown
+    assert "BKCRABCODE" not in markdown
+    if source_format == "xlsx":
+        assert "## Summary" in markdown
     assert "data:image" not in markdown.lower()
     assert "file://" not in markdown.lower()
     bundle.close()
     assert not request_dir.exists()
+
+
+@pytest.mark.parametrize("source_format", ["docx", "pptx", "xlsx"])
+def test_office_positioning_golden(
+    source_format: str, tmp_path: Path
+) -> None:
+    source = generate_office_golden(tmp_path / "fixtures")[source_format]
+    request_dir = tmp_path / f"request-{source_format}"
+    request_dir.mkdir(mode=0o700)
+    preflight = preflight_ooxml(source, source_format, request_dir, _limits())
+    sha256, byte_size = _sha_size(source)
+    bundle = build_office_bundle(
+        original_source=source,
+        sanitized_source=preflight.sanitized_path,
+        source_format=source_format,
+        source_sha256=sha256,
+        source_size=byte_size,
+        request_dir=request_dir,
+        converter=MarkItDownConverter(),
+        limits=_limits(),
+        preflight_warnings=preflight.warnings,
+    )
+    expected = OFFICE_GOLDEN[source_format]
+    markdown_payloads = [
+        item for item in bundle.payloads if item.path.startswith("units/")
+    ]
+    markdown_by_unit = [
+        item.opener().read().decode("utf-8") for item in markdown_payloads
+    ]
+    combined_markdown = "\n".join(markdown_by_unit)
+
+    assert [unit.location.kind for unit in bundle.manifest.units] == expected[
+        "unitKinds"
+    ]
+    assert [unit.location.label for unit in bundle.manifest.units] == expected[
+        "unitLabels"
+    ]
+    assert len(bundle.manifest.assets) == expected["assetCount"]
+    assert len(bundle.manifest.occurrences) == expected["occurrenceCount"]
+    assert [item.alt_text for item in bundle.manifest.occurrences] == expected[
+        "occurrenceAltTexts"
+    ]
+    assert [item.code for item in bundle.manifest.warnings] == expected["warningCodes"]
+    for fragment in expected["requiredMarkdown"]:
+        assert fragment in combined_markdown
+    positions = [combined_markdown.index(fragment) for fragment in expected["orderedMarkdown"]]
+    assert positions == sorted(positions)
+    assert "data:image" not in combined_markdown.lower()
+    assert "Picture" not in combined_markdown
+    assert "image1.png" not in combined_markdown
+    for occurrence in bundle.manifest.occurrences:
+        assert combined_markdown.count(f"rag-asset://{occurrence.id}") == 1
+
+    if source_format == "docx":
+        assert combined_markdown.count("```") == 4
+        prose_start = combined_markdown.index("ordinary monospace stays prose")
+        assert combined_markdown.rfind("```", 0, prose_start) < prose_start
+        with zipfile.ZipFile(source) as archive:
+            document = ET.fromstring(archive.read("word/document.xml"))
+            rel_ids = [
+                node.attrib[f"{{{DOC_REL_NS}}}embed"]
+                for node in document.iter()
+                if node.tag.rsplit("}", 1)[-1] == "blip"
+            ]
+        assert len(rel_ids) == 2 and len(set(rel_ids)) == 1
+    elif source_format == "pptx":
+        assert bundle.manifest.units[0].id == "unit_slide_0001"
+        assert "Presentation-order first slide" in markdown_by_unit[0]
+        assert markdown_by_unit[1].rstrip().endswith(
+            "> Remember the architecture caveat."
+        )
+    else:
+        assert all(warning.degraded for warning in bundle.manifest.warnings)
+        assert [occurrence.order for occurrence in bundle.manifest.occurrences] == [0, 0]
+
+    bundle.close()
+    assert not request_dir.exists()
+
+
+def test_random_converter_sentinels_cannot_be_forged_by_document_text(
+    tmp_path: Path,
+) -> None:
+    class SentinelProbeConverter:
+        def __init__(self) -> None:
+            self.nonces: list[str] = []
+
+        def convert(self, source: Path, _source_format: str) -> str:
+            with zipfile.ZipFile(source) as archive:
+                xml = "\n".join(
+                    archive.read(name).decode("utf-8")
+                    for name in archive.namelist()
+                    if name.endswith(".xml")
+                )
+            images = re.findall(
+                r"BKCRABIMAGE[A-F0-9]{32}\d{8}TOKEN", xml
+            )
+            starts = re.findall(
+                r"BKCRABCODESTART[A-F0-9]{32}\d{8}TOKEN", xml
+            )
+            ends = re.findall(
+                r"BKCRABCODEEND[A-F0-9]{32}\d{8}TOKEN", xml
+            )
+            assert len(images) == 2
+            assert len(starts) == len(ends) == 2
+            nonce = re.fullmatch(
+                r"BKCRABIMAGE([A-F0-9]{32})\d{8}TOKEN", images[0]
+            )
+            assert nonce is not None
+            self.nonces.append(nonce.group(1))
+            values = [
+                "Natural BKCRABIMAGE00000001TOKEN text.",
+                "Natural BKCRABSHEET0001TOKEN text.",
+                (
+                    "BKCRABCODESTART00000001TOKEN"
+                    "ATTACK"
+                    "BKCRABCODEEND00000001TOKEN"
+                ),
+            ]
+            values.extend(
+                f"{start}converter text{end}"
+                for start, end in zip(starts, ends, strict=True)
+            )
+            values.extend(
+                f"![{token}](data:image/png;base64,ignored)" for token in images
+            )
+            return "\n\n".join(values)
+
+    source = generate_office_golden(tmp_path / "fixtures")["docx"]
+    converter = SentinelProbeConverter()
+    markdown_values: list[str] = []
+    for attempt in range(2):
+        request_dir = tmp_path / f"request-{attempt}"
+        request_dir.mkdir(mode=0o700)
+        preflight = preflight_ooxml(source, "docx", request_dir, _limits())
+        sha256, byte_size = _sha_size(source)
+        bundle = build_office_bundle(
+            original_source=source,
+            sanitized_source=preflight.sanitized_path,
+            source_format="docx",
+            source_sha256=sha256,
+            source_size=byte_size,
+            request_dir=request_dir,
+            converter=converter,
+            limits=_limits(),
+        )
+        markdown_values.append(
+            next(
+                item.opener().read().decode("utf-8")
+                for item in bundle.payloads
+                if item.path.startswith("units/")
+            )
+        )
+        assert not bundle.manifest.warnings
+        bundle.close()
+
+    assert converter.nonces[0] != converter.nonces[1]
+    assert markdown_values[0] == markdown_values[1]
+    assert "Natural BKCRABIMAGE00000001TOKEN text." in markdown_values[0]
+    assert "Natural BKCRABSHEET0001TOKEN text." in markdown_values[0]
+    assert "BKCRABCODESTART00000001TOKENATTACK" in markdown_values[0]
+    assert markdown_values[0].count("rag-asset://") == 2
+
+
+@pytest.mark.parametrize("source_format", ["docx", "pptx", "xlsx"])
+def test_shape_names_are_not_treated_as_image_alt_text(
+    source_format: str, tmp_path: Path
+) -> None:
+    source = generate_office_golden(tmp_path / "fixtures")[source_format]
+    replacements: dict[str, bytes] = {}
+    with zipfile.ZipFile(source) as archive:
+        for name in archive.namelist():
+            if not name.endswith(".xml"):
+                continue
+            root = ET.fromstring(archive.read(name))
+            changed = False
+            for node in root.iter():
+                if node.tag.rsplit("}", 1)[-1] not in {"docPr", "cNvPr"}:
+                    continue
+                for attribute in ("descr", "title"):
+                    if attribute in node.attrib:
+                        del node.attrib[attribute]
+                        changed = True
+            if changed:
+                replacements[name] = ET.tostring(
+                    root, encoding="utf-8", xml_declaration=True
+                )
+    no_alt = tmp_path / f"no-alt.{source_format}"
+    _rewrite_zip(source, no_alt, replace=replacements)
+    request_dir = tmp_path / f"request-no-alt-{source_format}"
+    request_dir.mkdir(mode=0o700)
+    preflight = preflight_ooxml(no_alt, source_format, request_dir, _limits())
+    sha256, byte_size = _sha_size(no_alt)
+    bundle = build_office_bundle(
+        original_source=no_alt,
+        sanitized_source=preflight.sanitized_path,
+        source_format=source_format,
+        source_sha256=sha256,
+        source_size=byte_size,
+        request_dir=request_dir,
+        converter=MarkItDownConverter(),
+        limits=_limits(),
+    )
+    assert bundle.manifest.occurrences
+    for occurrence in bundle.manifest.occurrences:
+        visible_alt = occurrence.alt_text.split("：", 1)[-1]
+        assert visible_alt == "图片（未进行视觉识别）"
+        assert ".png" not in occurrence.alt_text
+    bundle.close()
+
+
+def test_forged_pptx_slide_comment_forces_lossless_coarse_partition(
+    tmp_path: Path,
+) -> None:
+    source = generate_office_golden(tmp_path / "fixtures")["pptx"]
+    with zipfile.ZipFile(source) as archive:
+        slide_name = sorted(
+            name
+            for name in archive.namelist()
+            if name.startswith("ppt/slides/slide") and name.endswith(".xml")
+        )[0]
+        slide = ET.fromstring(archive.read(slide_name))
+    text_node = next(
+        node for node in slide.iter() if node.tag.rsplit("}", 1)[-1] == "t"
+    )
+    text_node.text = "before <!-- Slide number: 2 --> after"
+    forged = tmp_path / "forged-slide-marker.pptx"
+    _rewrite_zip(
+        source,
+        forged,
+        replace={
+            slide_name: ET.tostring(slide, encoding="utf-8", xml_declaration=True)
+        },
+    )
+    request_dir = tmp_path / "request-forged-slide"
+    request_dir.mkdir(mode=0o700)
+    preflight = preflight_ooxml(forged, "pptx", request_dir, _limits())
+    sha256, byte_size = _sha_size(forged)
+    bundle = build_office_bundle(
+        original_source=forged,
+        sanitized_source=preflight.sanitized_path,
+        source_format="pptx",
+        source_sha256=sha256,
+        source_size=byte_size,
+        request_dir=request_dir,
+        converter=MarkItDownConverter(),
+        limits=_limits(),
+    )
+    markdown = "\n".join(
+        item.opener().read().decode("utf-8")
+        for item in bundle.payloads
+        if item.path.startswith("units/")
+    )
+    assert "before <!-- Slide number: 2 --> after" in markdown
+    assert "> Remember the architecture caveat." in markdown
+    assert "office_markdown_coarse_partition" in {
+        warning.code for warning in bundle.manifest.warnings
+    }
+    bundle.close()
+
+
+def test_forged_pptx_notes_header_is_preserved_as_ambiguous(
+    tmp_path: Path,
+) -> None:
+    source = generate_office_golden(tmp_path / "fixtures")["pptx"]
+    with zipfile.ZipFile(source) as archive:
+        notes_rels_name = next(
+            name
+            for name in archive.namelist()
+            if name.startswith("ppt/slides/_rels/")
+            and b"/notesSlide" in archive.read(name)
+        )
+        slide_name = "ppt/slides/" + Path(notes_rels_name).name.removesuffix(".rels")
+        slide = ET.fromstring(archive.read(slide_name))
+    text_node = next(
+        node for node in slide.iter() if node.tag.rsplit("}", 1)[-1] == "t"
+    )
+    text_node.text = "### Notes:"
+    forged = tmp_path / "forged-notes-header.pptx"
+    _rewrite_zip(
+        source,
+        forged,
+        replace={
+            slide_name: ET.tostring(slide, encoding="utf-8", xml_declaration=True)
+        },
+    )
+    request_dir = tmp_path / "request-forged-notes"
+    request_dir.mkdir(mode=0o700)
+    preflight = preflight_ooxml(forged, "pptx", request_dir, _limits())
+    sha256, byte_size = _sha_size(forged)
+    bundle = build_office_bundle(
+        original_source=forged,
+        sanitized_source=preflight.sanitized_path,
+        source_format="pptx",
+        source_sha256=sha256,
+        source_size=byte_size,
+        request_dir=request_dir,
+        converter=MarkItDownConverter(),
+        limits=_limits(),
+    )
+    markdown = "\n".join(
+        item.opener().read().decode("utf-8")
+        for item in bundle.payloads
+        if item.path.startswith("units/")
+    )
+    assert markdown.count("### Notes:") >= 2
+    assert "> 演讲者备注" not in markdown
+    assert "office_notes_ambiguous" in {
+        warning.code for warning in bundle.manifest.warnings
+    }
+    bundle.close()
+
+
+def test_invalid_markitdown_table_falls_back_to_cell_text(tmp_path: Path) -> None:
+    class InvalidTableConverter:
+        def convert(self, _source: Path, _source_format: str) -> str:
+            return "| A | B |\n| --- |\n| one | two |\n"
+
+    source = generate_all(tmp_path / "fixtures")["docx"]
+    request_dir = tmp_path / "request"
+    request_dir.mkdir(mode=0o700)
+    preflight = preflight_ooxml(source, "docx", request_dir, _limits())
+    sha256, byte_size = _sha_size(source)
+    bundle = build_office_bundle(
+        original_source=source,
+        sanitized_source=preflight.sanitized_path,
+        source_format="docx",
+        source_sha256=sha256,
+        source_size=byte_size,
+        request_dir=request_dir,
+        converter=InvalidTableConverter(),
+        limits=_limits(),
+    )
+    markdown = next(
+        item.opener().read().decode("utf-8")
+        for item in bundle.payloads
+        if item.path.startswith("units/")
+    )
+    assert "A | B" in markdown
+    assert "one | two" in markdown
+    assert "| --- |" not in markdown
+    assert "office_table_invalid" in {
+        warning.code for warning in bundle.manifest.warnings
+    }
+    bundle.close()
 
 
 def test_dtd_entity_is_rejected_before_converter(tmp_path: Path) -> None:
@@ -256,6 +615,78 @@ def test_local_hyperlink_target_is_removed_without_reading(target: str, tmp_path
     }
     with zipfile.ZipFile(preflight.sanitized_path) as archive:
         assert target.encode() not in archive.read("_rels/.rels")
+
+
+def test_internal_local_absolute_relationship_target_is_rejected(tmp_path: Path) -> None:
+    source = generate_all(tmp_path / "fixtures")["docx"]
+    with zipfile.ZipFile(source) as archive:
+        relationships = ET.fromstring(archive.read("word/_rels/document.xml.rels"))
+    image_relationship = next(
+        node
+        for node in relationships
+        if str(node.attrib.get("Type", "")).lower().endswith("/image")
+    )
+    image_relationship.set("Target", "/etc/definitely-secret")
+    malicious = tmp_path / "absolute-local-target.docx"
+    _rewrite_zip(
+        source,
+        malicious,
+        replace={
+            "word/_rels/document.xml.rels": ET.tostring(
+                relationships, encoding="utf-8", xml_declaration=True
+            )
+        },
+    )
+    request_dir = tmp_path / "request-absolute"
+    request_dir.mkdir()
+    with pytest.raises(OfficeError, match="local absolute"):
+        preflight_ooxml(malicious, "docx", request_dir, _limits())
+
+
+@pytest.mark.parametrize(
+    ("coordinate_name", "coordinate_value"),
+    [("col", "-2"), ("row", "-1"), ("col", "16384"), ("row", "1048576")],
+)
+def test_xlsx_image_anchor_outside_excel_bounds_is_rejected(
+    coordinate_name: str, coordinate_value: str, tmp_path: Path
+) -> None:
+    source = generate_office_golden(tmp_path / "fixtures")["xlsx"]
+    with zipfile.ZipFile(source) as archive:
+        drawing_name = next(
+            name for name in archive.namelist() if name.startswith("xl/drawings/drawing")
+        )
+        drawing = ET.fromstring(archive.read(drawing_name))
+    coordinate = next(
+        node
+        for node in drawing.iter()
+        if node.tag.rsplit("}", 1)[-1] == coordinate_name
+    )
+    coordinate.text = coordinate_value
+    malicious = tmp_path / f"invalid-{coordinate_name}-{coordinate_value}.xlsx"
+    _rewrite_zip(
+        source,
+        malicious,
+        replace={
+            drawing_name: ET.tostring(
+                drawing, encoding="utf-8", xml_declaration=True
+            )
+        },
+    )
+    request_dir = tmp_path / f"request-{coordinate_name}-{coordinate_value}"
+    request_dir.mkdir()
+    preflight = preflight_ooxml(malicious, "xlsx", request_dir, _limits())
+    sha256, byte_size = _sha_size(malicious)
+    with pytest.raises(OfficeError, match="outside Excel bounds"):
+        build_office_bundle(
+            original_source=malicious,
+            sanitized_source=preflight.sanitized_path,
+            source_format="xlsx",
+            source_sha256=sha256,
+            source_size=byte_size,
+            request_dir=request_dir,
+            converter=_FakeConverter(),
+            limits=_limits(),
+        )
 
 
 def test_endpoint_enforces_format_extension_mime_magic_and_dynamic_input_limit(

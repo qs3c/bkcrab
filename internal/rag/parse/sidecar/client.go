@@ -25,10 +25,17 @@ import (
 )
 
 const (
-	expectedMarkItDownVersion = "0.1.6"
-	expectedOfficeWrapper     = "office-wrapper-v1"
+	ExpectedMarkItDownVersion = "0.1.6"
+	ExpectedOfficeWrapper     = "office-wrapper-v1"
 	expectedPDFEngine         = "pypdfium2"
 	expectedPDFEngineVersion  = "5.12.1"
+
+	// These build-time gates are promoted only together with the Task 16
+	// checked-in three-format positioning goldens. Health compatibility alone
+	// is intentionally insufficient.
+	officeDOCXGolden = true
+	officePPTXGolden = true
+	officeXLSXGolden = true
 )
 
 type ClientLimits struct {
@@ -234,8 +241,8 @@ func (c *Client) ProbeHealth(ctx context.Context) (config.RAGParserHealthSnapsho
 		return c.storeProbeFailure(now, err), err
 	}
 	officeCompatible := health.Capabilities.Office.Enabled &&
-		health.Capabilities.Office.MarkItDownVersion == expectedMarkItDownVersion &&
-		health.Capabilities.Office.WrapperVersion == expectedOfficeWrapper
+		health.Capabilities.Office.MarkItDownVersion == ExpectedMarkItDownVersion &&
+		health.Capabilities.Office.WrapperVersion == ExpectedOfficeWrapper
 	pdfCompatible := health.Capabilities.PDF.Enabled &&
 		health.Capabilities.PDF.Engine == expectedPDFEngine &&
 		health.Capabilities.PDF.EngineVersion == expectedPDFEngineVersion
@@ -249,13 +256,11 @@ func (c *Client) ProbeHealth(ctx context.Context) (config.RAGParserHealthSnapsho
 			// Keep capability publication and ConvertOffice on the same exact
 			// implementation contract. An otherwise valid health response may
 			// still advertise an incompatible Office wrapper.
-			Enabled: officeCompatible,
-			Formats: append([]string(nil), health.Capabilities.Office.Formats...),
-			// Converter/location goldens are a separate release gate owned by
-			// Task 16. A healthy protocol response cannot promote them.
-			DOCXGolden: false,
-			PPTXGolden: false,
-			XLSXGolden: false,
+			Enabled:    officeCompatible,
+			Formats:    append([]string(nil), health.Capabilities.Office.Formats...),
+			DOCXGolden: officeDOCXGolden,
+			PPTXGolden: officePPTXGolden,
+			XLSXGolden: officeXLSXGolden,
 		},
 		PDF: config.RAGParserPDFSnapshot{
 			// The approved ADR is scoped to one exact pypdfium2/PDFium
@@ -320,8 +325,8 @@ func (c *Client) officeAvailable(format string) bool {
 	if !fresh || !health.Capabilities.Office.Enabled {
 		return false
 	}
-	if health.Capabilities.Office.MarkItDownVersion != expectedMarkItDownVersion ||
-		health.Capabilities.Office.WrapperVersion != expectedOfficeWrapper {
+	if health.Capabilities.Office.MarkItDownVersion != ExpectedMarkItDownVersion ||
+		health.Capabilities.Office.WrapperVersion != ExpectedOfficeWrapper {
 		return false
 	}
 	for _, candidate := range health.Capabilities.Office.Formats {

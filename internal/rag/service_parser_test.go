@@ -40,4 +40,9 @@ func TestServiceInjectsPrimitiveExtractorIntoDefaultParserFacade(t *testing.T) {
 	if local.MaxPages != service.cfg.Limits.MaxPagesPerDocument {
 		t.Fatalf("parser max pages=%d, want %d", local.MaxPages, service.cfg.Limits.MaxPagesPerDocument)
 	}
+	if local.MaxAssets != service.cfg.Limits.MaxAssetsPerDocument ||
+		local.MaxVisionAssets != service.cfg.Limits.MaxVisionAssetsPerDocument ||
+		local.MaxAssetBytes != service.cfg.Limits.MaxAssetBytes {
+		t.Fatalf("Office parser limits=%d/%d/%d", local.MaxAssets, local.MaxVisionAssets, local.MaxAssetBytes)
+	}
 }

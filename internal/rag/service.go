@@ -53,26 +53,30 @@ type Deps struct {
 	ImageVision  vision.ImageTranscriber
 	Enricher     enrich.Enricher
 	Tokenizer    enrich.Tokenizer
-	Workers      int
+	// OfficeAvailable reads the background-probed, three-golden-gated
+	// capability snapshot. Upload paths must not synchronously probe sidecar.
+	OfficeAvailable func() bool
+	Workers         int
 }
 
 type Service struct {
-	st          store.Store
-	vec         vector.Store
-	obj         objects.Store
-	cfg         config.RAGCfg
-	userCfg     UserEmbedCfgFn
-	queryLLM    QueryLLMFn
-	reranker    rerank.Reranker
-	parser      parse.Parser
-	primitives  parse.PrimitiveExtractor
-	pageVision  vision.PageTranscriber
-	imageVision vision.ImageTranscriber
-	enricher    enrich.Enricher
-	tokenizer   enrich.Tokenizer
-	tasks       chan int64
-	workerCount int
-	workerID    string
+	st              store.Store
+	vec             vector.Store
+	obj             objects.Store
+	cfg             config.RAGCfg
+	userCfg         UserEmbedCfgFn
+	queryLLM        QueryLLMFn
+	reranker        rerank.Reranker
+	parser          parse.Parser
+	primitives      parse.PrimitiveExtractor
+	pageVision      vision.PageTranscriber
+	imageVision     vision.ImageTranscriber
+	enricher        enrich.Enricher
+	tokenizer       enrich.Tokenizer
+	officeAvailable func() bool
+	tasks           chan int64
+	workerCount     int
+	workerID        string
 
 	// The in-memory channel is only a latency hint. SQL claim/lease state is
 	// authoritative and pollInterval guarantees recovery after a dropped hint.
@@ -102,11 +106,20 @@ func New(d Deps) *Service {
 		if local.MaxPages <= 0 {
 			local.MaxPages = d.Cfg.Limits.MaxPagesPerDocument
 		}
+		if local.MaxAssets <= 0 {
+			local.MaxAssets = d.Cfg.Limits.MaxAssetsPerDocument
+		}
 		if local.MaxVisionPages <= 0 {
 			local.MaxVisionPages = d.Cfg.Limits.MaxVisionPagesPerDocument
 		}
+		if local.MaxVisionAssets <= 0 {
+			local.MaxVisionAssets = d.Cfg.Limits.MaxVisionAssetsPerDocument
+		}
 		if local.MaxExtractedBytes <= 0 {
 			local.MaxExtractedBytes = d.Cfg.Limits.MaxExtractedBytes
+		}
+		if local.MaxAssetBytes <= 0 {
+			local.MaxAssetBytes = d.Cfg.Limits.MaxAssetBytes
 		}
 		if local.MaxVisionInputBytes <= 0 {
 			local.MaxVisionInputBytes = d.Cfg.Limits.MaxVisionInputBytes
@@ -132,6 +145,7 @@ func New(d Deps) *Service {
 		imageVision:       d.ImageVision,
 		enricher:          d.Enricher,
 		tokenizer:         d.Tokenizer,
+		officeAvailable:   d.OfficeAvailable,
 		tasks:             make(chan int64, 256),
 		workerCount:       d.Workers,
 		workerID:          "rag-" + uuid.NewString(),

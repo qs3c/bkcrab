@@ -17,8 +17,11 @@ import (
 type LocalParser struct {
 	Primitives            PrimitiveExtractor
 	MaxPages              int
+	MaxAssets             int
 	MaxVisionPages        int
+	MaxVisionAssets       int
 	MaxExtractedBytes     int64
+	MaxAssetBytes         int64
 	MaxVisionInputBytes   int64
 	MaxImagePixels        int64
 	VisionImageMaxEdge    int
@@ -78,9 +81,9 @@ func (p *LocalParser) Parse(
 		if p.Primitives == nil {
 			return nil, sidecar.ErrCapabilityUnavailable
 		}
-		// Task 16 owns the format-specific occurrence placement and typed image
-		// description integration. Never fall back to the legacy DOCX XML parser.
-		return nil, sidecar.ErrCapabilityUnavailable
+		// Modern Office formats always use the sidecar. A conversion failure is
+		// explicit and must never fall back to the legacy DOCX XML parser.
+		return p.parseOffice(ctx, source, format, options)
 	default:
 		return nil, fmt.Errorf("unsupported document format %q", format)
 	}

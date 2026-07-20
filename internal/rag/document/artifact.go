@@ -492,6 +492,7 @@ func ParseFingerprint(input ParseFingerprintInput) (string, error) {
 		return "", fmt.Errorf("invalid parse mode %q", input.ParseMode)
 	}
 	if !validContractString(input.ParserVersion, 128) ||
+		!validContractString(input.MarkItDownVersion, 128) ||
 		!validContractString(input.PDFRoutingVersion, 128) ||
 		!validContractString(input.PageSchemaVersion, 128) ||
 		!validContractString(input.ImageSchemaVersion, 128) ||

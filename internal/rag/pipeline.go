@@ -128,7 +128,9 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName st
 		fileType = "md"
 	}
 	if fileType == "docx" || fileType == "pptx" || fileType == "xlsx" {
-		return nil, errors.New("Office 文档解析能力当前不可用")
+		if s.officeAvailable == nil || !s.officeAvailable() {
+			return nil, errors.New("Office 文档解析能力当前不可用")
+		}
 	}
 	if size < 0 {
 		return nil, errors.New("文件大小不能为负数")
@@ -682,8 +684,9 @@ func (s *Service) loadOrParseArtifact(
 	}
 	parsed, parseErr := s.parser.Parse(ctx, source, parse.ParseOptions{
 		Mode: parseMode, ParserVersion: version.ParserVersion,
-		PageTranscriber: s.pageVision, DocumentAIBudget: budget,
-		VisionScope: vision.CacheScope{UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID},
+		PageTranscriber: s.pageVision, ImageTranscriber: s.imageVision,
+		DocumentAIBudget: budget,
+		VisionScope:      vision.CacheScope{UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID},
 		Progress: func(progressCtx context.Context, progress parse.ParseProgress) error {
 			stage := strings.TrimSpace(progress.Stage)
 			if stage == "" {

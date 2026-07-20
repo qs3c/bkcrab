@@ -362,6 +362,17 @@ func TestUploadRecognizesButRejectsOfficeUntilConverterGate(t *testing.T) {
 	if len(documents) != 0 {
 		t.Fatalf("rejected Office uploads created records: %+v", documents)
 	}
+
+	service.officeAvailable = func() bool { return true }
+	accepted, err := service.UploadDocument(
+		ctx, "u1", kb.ID, "guide.docx", strings.NewReader("office bytes"), 12,
+	)
+	if err != nil {
+		t.Fatalf("golden-gated Office upload was rejected: %v", err)
+	}
+	if accepted.FileType != "docx" {
+		t.Fatalf("accepted Office type=%q", accepted.FileType)
+	}
 }
 
 func TestUploadReindexSearchAndDelete(t *testing.T) {

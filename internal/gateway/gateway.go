@@ -289,6 +289,12 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	if ragParserClient != nil {
 		primitives = ragParserClient
 	}
+	officeAvailable := func() bool {
+		if ragParserClient == nil {
+			return false
+		}
+		return ragCfg.RuntimeCapabilities(ragParserClient.HealthSnapshot()).Office.Available
+	}
 	documentParser := ragparse.NewLocalParser(
 		primitives, ragCfg.Limits.MaxPagesPerDocument, ragCfg.Limits.MaxExtractedBytes,
 	)
@@ -337,12 +343,13 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 			// Milvus so a temporary vector outage cannot turn runnable legacy work
 			// into permanent FAILED rows.
 			snapshotSvc := rag.New(rag.Deps{
-				Store:        st,
-				Objects:      ragObjects,
-				Cfg:          ragCfg,
-				UserEmbedCfg: userEmbeddingCfgLookup(st),
-				Parser:       documentParser,
-				Primitives:   primitives,
+				Store:           st,
+				Objects:         ragObjects,
+				Cfg:             ragCfg,
+				UserEmbedCfg:    userEmbeddingCfgLookup(st),
+				Parser:          documentParser,
+				Primitives:      primitives,
+				OfficeAvailable: officeAvailable,
 			})
 			legacySnapshotBuilder = func(
 				ctx context.Context,
@@ -376,18 +383,19 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					}
 				}
 				ragSvc = rag.New(rag.Deps{
-					Store:        st,
-					Vector:       vecStore,
-					Objects:      ragObjects,
-					Cfg:          ragCfg,
-					UserEmbedCfg: userEmbeddingCfgLookup(st),
-					QueryLLM:     userRAGQueryLLM(st, meter),
-					Reranker:     ranker,
-					Parser:       documentParser,
-					Primitives:   primitives,
-					PageVision:   pageVision,
-					ImageVision:  imageVision,
-					Enricher:     textEnricher,
+					Store:           st,
+					Vector:          vecStore,
+					Objects:         ragObjects,
+					Cfg:             ragCfg,
+					UserEmbedCfg:    userEmbeddingCfgLookup(st),
+					QueryLLM:        userRAGQueryLLM(st, meter),
+					Reranker:        ranker,
+					Parser:          documentParser,
+					Primitives:      primitives,
+					PageVision:      pageVision,
+					ImageVision:     imageVision,
+					Enricher:        textEnricher,
+					OfficeAvailable: officeAvailable,
 				})
 				slog.Info("rag service enabled", "milvus", ragCfg.Milvus.Address)
 			}

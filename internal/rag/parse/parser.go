@@ -20,6 +20,7 @@ type ParseOptions struct {
 	Mode             config.ParseMode
 	ParserVersion    string
 	PageTranscriber  vision.PageTranscriber
+	ImageTranscriber vision.ImageTranscriber
 	DocumentAIBudget *vision.TaskDocumentAIBudget
 	VisionScope      vision.CacheScope
 	Progress         ParseProgressFunc

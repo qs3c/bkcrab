@@ -304,6 +304,7 @@ type stagedPipelineParser struct {
 	calls    atomic.Int32
 	mu       sync.Mutex
 	budgets  []*vision.TaskDocumentAIBudget
+	images   []vision.ImageTranscriber
 }
 
 func (p *stagedPipelineParser) Parse(
@@ -317,6 +318,7 @@ func (p *stagedPipelineParser) Parse(
 	}
 	p.mu.Lock()
 	p.budgets = append(p.budgets, options.DocumentAIBudget)
+	p.images = append(p.images, options.ImageTranscriber)
 	p.mu.Unlock()
 	return document.NewParsedDocument(document.ParsedDocumentInput{
 		SchemaVersion: document.ParsedDocumentSchemaVersion,
@@ -327,6 +329,25 @@ func (p *stagedPipelineParser) Parse(
 			Markdown: p.markdown,
 		}},
 	}, nil, nil), nil
+}
+
+func (p *stagedPipelineParser) firstImageTranscriber() vision.ImageTranscriber {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.images) == 0 {
+		return nil
+	}
+	return p.images[0]
+}
+
+type stagedPipelineImageVision struct{}
+
+func (*stagedPipelineImageVision) DescribeImage(
+	context.Context,
+	vision.NormalizedImageInput,
+	*vision.TaskDocumentAIBudget,
+) (vision.ImageDescription, error) {
+	return vision.ImageDescription{Kind: "other", Caption: "unused", Confidence: 1}, nil
 }
 
 func (p *stagedPipelineParser) firstBudget() *vision.TaskDocumentAIBudget {
@@ -463,8 +484,10 @@ func TestPipelineStageOrderSharedBudgetAndExactSearchContent(t *testing.T) {
 | checkout | 42 ms |
 `) + "\n"}
 	enricher := &stagedPipelineEnricher{recorder: recorder}
+	imageVision := &stagedPipelineImageVision{}
 	tokenizer := &recordingPipelineTokenizer{}
 	h.service.parser = parserFacade
+	h.service.imageVision = imageVision
 	h.service.enricher = enricher
 	h.service.tokenizer = tokenizer
 	h.service.cfg.Features.TextEnrichmentEnabled = true
@@ -542,6 +565,10 @@ func TestPipelineStageOrderSharedBudgetAndExactSearchContent(t *testing.T) {
 	if parserFacade.firstBudget() == nil || parserFacade.firstBudget() != enricher.firstBudget() {
 		t.Fatalf("parser and enricher did not receive one shared task budget: parse=%p enrich=%p",
 			parserFacade.firstBudget(), enricher.firstBudget())
+	}
+	if parserFacade.firstImageTranscriber() != imageVision {
+		t.Fatalf("pipeline did not inject Office image transcriber: got=%T want=%T",
+			parserFacade.firstImageTranscriber(), imageVision)
 	}
 
 	catalog, err := h.store.ListRAGChunksByDocumentVersion(context.Background(), doc.ID, 1)
@@ -664,6 +691,42 @@ func TestIndexFingerprintIncludesEnrichmentSchemaVersion(t *testing.T) {
 	input.EnrichmentSchemaVersion = "text-enrichment-v2"
 	if changed := buildIndexFingerprint(input); changed == base {
 		t.Fatalf("enrichment schema version did not change index fingerprint: %q", base)
+	}
+}
+
+func TestOfficeParseFingerprintContractIsFormatScoped(t *testing.T) {
+	officeParser, markItDown := parseContractVersions(".DOCX")
+	if officeParser != parse.OfficeParserVersion || markItDown != parse.OfficeMarkItDownVersion ||
+		!strings.Contains(officeParser, parse.OfficeWrapperVersion) {
+		t.Fatalf("Office parse contract=%q/%q", officeParser, markItDown)
+	}
+	for _, format := range []string{"md", "txt", "pdf"} {
+		parserVersion, converterVersion := parseContractVersions(format)
+		if parserVersion != parse.LocalParserVersion || converterVersion != "none" {
+			t.Fatalf("non-Office %s contract=%q/%q", format, parserVersion, converterVersion)
+		}
+	}
+	input := document.ParseFingerprintInput{
+		SourceSHA256: strings.Repeat("a", 64), ParseMode: string(config.ParseModeStandard),
+		ParserVersion: officeParser, MarkItDownVersion: markItDown,
+		PDFRenderDPI: 180, PDFRoutingVersion: parse.PDFAutoRoutingVersion,
+		MaxPages: 300, MaxVisionPages: 100, MaxVisionAssets: 100, MaxAssets: 500,
+		MaxAssetBytes: 20 << 20, MaxExtractedBytes: 200 << 20,
+		MaxVisionInputBytes: 8 << 20, MaxImagePixels: 40_000_000,
+		DisplayMaxEdge: 2400, ThumbnailMaxEdge: 480,
+		PageSchemaVersion: vision.PageSchemaVersion, ImageSchemaVersion: vision.ImageDescriptionSchemaVersion,
+	}
+	base, err := document.ParseFingerprint(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.MarkItDownVersion = "0.1.7"
+	changed, err := document.ParseFingerprint(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed == base {
+		t.Fatal("MarkItDown contract change did not invalidate Office parse fingerprint")
 	}
 }
 

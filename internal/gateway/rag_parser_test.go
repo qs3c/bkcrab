@@ -11,7 +11,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 )
 
-func TestRAGParserClientConstructionDoesNotProbeAndBackgroundSnapshotKeepsGoldensClosed(t *testing.T) {
+func TestRAGParserClientConstructionDoesNotProbeAndBackgroundSnapshotPublishesOfficeGoldens(t *testing.T) {
 	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		calls.Add(1)
@@ -59,10 +59,10 @@ func TestRAGParserClientConstructionDoesNotProbeAndBackgroundSnapshotKeepsGolden
 	if !snapshot.PDF.Enabled || !snapshot.PDF.LicenseApproved {
 		t.Fatalf("approved PDF engine was not published: %+v", snapshot.PDF)
 	}
-	if snapshot.Office.DOCXGolden || snapshot.Office.PPTXGolden || snapshot.Office.XLSXGolden {
-		t.Fatalf("health incorrectly promoted converter release gates: %+v", snapshot.Office)
+	if !snapshot.Office.DOCXGolden || !snapshot.Office.PPTXGolden || !snapshot.Office.XLSXGolden {
+		t.Fatalf("checked-in converter goldens were not published: %+v", snapshot.Office)
 	}
-	if state := cfg.RuntimeCapabilities(snapshot); state.Office.Available || state.Office.Reason != "office_golden_checks_failed" {
+	if state := cfg.RuntimeCapabilities(snapshot); !state.Office.Available || state.Office.Reason != "" {
 		t.Fatalf("Office capability=%+v", state.Office)
 	}
 }

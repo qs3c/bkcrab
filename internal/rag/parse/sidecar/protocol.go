@@ -735,8 +735,8 @@ func ValidateManifest(manifest *Manifest, options DecodeOptions) error {
 		if manifest.Source.Format != "docx" && manifest.Source.Format != "pptx" && manifest.Source.Format != "xlsx" {
 			return invalidBundle("office source format %q is unsupported", manifest.Source.Format)
 		}
-		if manifest.Parser.Name != "markitdown" || manifest.Parser.Version != expectedMarkItDownVersion ||
-			manifest.Parser.WrapperVersion != expectedOfficeWrapper {
+		if manifest.Parser.Name != "markitdown" || manifest.Parser.Version != ExpectedMarkItDownVersion ||
+			manifest.Parser.WrapperVersion != ExpectedOfficeWrapper {
 			return invalidBundle("office parser identity/version is incompatible")
 		}
 		if len(manifest.Pages) != 0 || len(manifest.Units) == 0 {

@@ -89,12 +89,13 @@ func (s *Service) buildVersionSnapshotAndBinding(
 
 	documentAIProviderFingerprint := vision.ProviderFingerprint(s.cfg.DocumentAI)
 	embeddingContractFingerprint := embeddingContractFingerprintForKB(kb, embeddingCfg)
+	parserVersion, markItDownVersion := parseContractVersions(doc.FileType)
 
 	parseFingerprint, err := document.ParseFingerprint(document.ParseFingerprintInput{
 		SourceSHA256:              sourceSHA256,
 		ParseMode:                 string(parseMode),
-		ParserVersion:             parse.LocalParserVersion,
-		MarkItDownVersion:         "none",
+		ParserVersion:             parserVersion,
+		MarkItDownVersion:         markItDownVersion,
 		PDFRenderDPI:              s.cfg.Limits.PDFRenderDPI,
 		PDFRoutingVersion:         parse.PDFAutoRoutingVersion,
 		MaxPages:                  s.cfg.Limits.MaxPagesPerDocument,
@@ -159,7 +160,7 @@ func (s *Service) buildVersionSnapshotAndBinding(
 		ParseMode:                    string(parseMode),
 		ChunkSize:                    kb.ChunkSize,
 		ChunkOverlap:                 kb.ChunkOverlap,
-		ParserVersion:                parse.LocalParserVersion,
+		ParserVersion:                parserVersion,
 		SplitterVersion:              splitterSchemaVersion,
 		ParseFingerprint:             parseFingerprint,
 		IndexFingerprint:             indexFingerprint,
@@ -178,6 +179,15 @@ func (s *Service) buildVersionSnapshotAndBinding(
 		EmbeddingDimensions:          kb.EmbedDims,
 		EmbeddingContractFingerprint: embeddingContractFingerprint,
 	}, embeddingCfg, nil
+}
+
+func parseContractVersions(fileType string) (parserVersion, markItDownVersion string) {
+	switch strings.TrimPrefix(strings.ToLower(strings.TrimSpace(fileType)), ".") {
+	case "docx", "pptx", "xlsx":
+		return parse.OfficeParserVersion, parse.OfficeMarkItDownVersion
+	default:
+		return parse.LocalParserVersion, "none"
+	}
 }
 
 // embeddingContractFingerprintForKB identifies the secret-free embedding
