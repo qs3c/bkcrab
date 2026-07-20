@@ -300,6 +300,29 @@ func TestKnowledgeBaseLifecycleAndOwnership(t *testing.T) {
 	}
 }
 
+func TestUploadRecognizesButRejectsOfficeUntilConverterGate(t *testing.T) {
+	service, _ := newTestService(t, false)
+	ctx := context.Background()
+	kb, err := service.CreateKB(ctx, "u1", "Office gate", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fileName := range []string{"guide.docx", "slides.PPTX", "table.xlsx"} {
+		if _, err := service.UploadDocument(
+			ctx, "u1", kb.ID, fileName, strings.NewReader("not uploaded"), 12,
+		); err == nil || !strings.Contains(err.Error(), "能力当前不可用") {
+			t.Fatalf("UploadDocument(%q) error=%v", fileName, err)
+		}
+	}
+	documents, err := service.ListDocuments(ctx, "u1", kb.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(documents) != 0 {
+		t.Fatalf("rejected Office uploads created records: %+v", documents)
+	}
+}
+
 func TestUploadReindexSearchAndDelete(t *testing.T) {
 	service, fake := newTestService(t, true)
 	ctx := context.Background()
@@ -520,16 +543,17 @@ func TestReindexWaitsForInFlightIndexWithoutVersionRollback(t *testing.T) {
 func TestRecoverPendingIndexTask(t *testing.T) {
 	service, _ := newTestService(t, false)
 	ctx := context.Background()
+	body := "恢复任务正文"
 	kb, err := service.CreateKB(ctx, "u1", "恢复测试", "", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	doc := &store.RAGDocumentRecord{
 		ID: "doc_recover", KBID: kb.ID, FileName: "recover.txt", FileType: "txt",
-		FileSize: 12, ObjectKey: objects.Key("u1", kb.ID, "doc_recover", "recover.txt"),
+		FileSize: int64(len([]byte(body))), ObjectKey: objects.Key("u1", kb.ID, "doc_recover", "recover.txt"),
 		Status: "PENDING", Version: 1, UploadedAt: time.Now().UTC(),
 	}
-	if err := service.obj.Put(ctx, doc.ObjectKey, strings.NewReader("恢复任务正文"), doc.FileSize, "text/plain"); err != nil {
+	if err := service.obj.Put(ctx, doc.ObjectKey, strings.NewReader(body), doc.FileSize, "text/plain"); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := service.BuildVersionSnapshot(ctx, doc)

@@ -13,11 +13,11 @@ import (
 	"strings"
 
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/rag/parse"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
 const (
-	builtinParserVersion        = "builtin-parser-v1"
 	parsedArtifactSchemaVersion = "parsed-artifact-v1"
 	splitterSchemaVersion       = "search-content-v1"
 )
@@ -103,7 +103,7 @@ func (s *Service) buildVersionSnapshotAndBinding(
 		SourceSHA256:              sourceSHA256,
 		ParseMode:                 string(parseMode),
 		ArtifactSchemaVersion:     parsedArtifactSchemaVersion,
-		ParserVersion:             builtinParserVersion,
+		ParserVersion:             parse.LocalParserVersion,
 		MarkItDownVersion:         "none",
 		PDFRenderDPI:              s.cfg.Limits.PDFRenderDPI,
 		VisionProviderFingerprint: documentAIProviderFingerprint,
@@ -159,7 +159,7 @@ func (s *Service) buildVersionSnapshotAndBinding(
 		ParseMode:                    string(parseMode),
 		ChunkSize:                    kb.ChunkSize,
 		ChunkOverlap:                 kb.ChunkOverlap,
-		ParserVersion:                builtinParserVersion,
+		ParserVersion:                parse.LocalParserVersion,
 		SplitterVersion:              splitterSchemaVersion,
 		ParseFingerprint:             parseFingerprint,
 		IndexFingerprint:             indexFingerprint,
@@ -240,11 +240,12 @@ func microUSD(value float64) int64 {
 }
 
 // sameRuntimeProviderContracts is deliberately narrower than the full index
-// fingerprint. A queued version keeps its immutable chunk/parser choices even
-// if the KB is edited later; only a provider endpoint/model contract drift can
-// make continuing that physical version unsafe.
+// fingerprint. A queued version keeps immutable KB choices, but it must be
+// superseded if the running binary cannot execute its parser implementation
+// version or if an outbound provider contract drifted.
 func sameRuntimeProviderContracts(left, right *store.RAGDocumentVersionRecord) bool {
 	if left == nil || right == nil ||
+		left.ParserVersion != right.ParserVersion ||
 		left.EmbeddingContractFingerprint != right.EmbeddingContractFingerprint ||
 		left.EmbeddingProvider != right.EmbeddingProvider ||
 		left.EmbeddingModel != right.EmbeddingModel ||

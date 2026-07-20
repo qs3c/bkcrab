@@ -22,9 +22,11 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/embed"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/parse"
+	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
 	"github.com/qs3c/bkcrab/internal/rag/split"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -115,7 +117,14 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName st
 	}
 	fileName = strings.TrimSpace(fileName)
 	if !parse.SupportedExt(fileName) {
-		return nil, fmt.Errorf("不支持的文件类型（支持 md/txt/pdf/docx）")
+		return nil, fmt.Errorf("不支持的文件类型（支持 md/markdown/txt/pdf；Office 需能力可用）")
+	}
+	fileType := strings.TrimPrefix(strings.ToLower(filepath.Ext(fileName)), ".")
+	if fileType == "markdown" {
+		fileType = "md"
+	}
+	if fileType == "docx" || fileType == "pptx" || fileType == "xlsx" {
+		return nil, errors.New("Office 文档解析能力当前不可用")
 	}
 	if size < 0 {
 		return nil, errors.New("文件大小不能为负数")
@@ -138,10 +147,6 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName st
 	hasher := sha256.New()
 	if err := s.obj.Put(ctx, key, io.TeeReader(r, hasher), size, contentType); err != nil {
 		return nil, fmt.Errorf("保存原件: %w", err)
-	}
-	fileType := strings.TrimPrefix(strings.ToLower(filepath.Ext(fileName)), ".")
-	if fileType == "markdown" {
-		fileType = "md"
 	}
 	doc := &store.RAGDocumentRecord{
 		ID:                 docID,
@@ -360,15 +365,16 @@ func (s *Service) finishClaimFailure(parent context.Context, claim *store.RAGInd
 	if err == nil || claim == nil || leaseLost || parent.Err() != nil || errors.Is(err, errIndexFenceLost) {
 		return
 	}
-	message := err.Error()
-	if isTransientIndexError(err) && claim.Task.RetryCount < claim.Task.MaxRetry {
+	transient := isTransientIndexError(err)
+	message := safeIndexErrorMessage(err, transient)
+	if transient && claim.Task.RetryCount < claim.Task.MaxRetry {
 		delay := indexRetryDelay(claim.Task.RetryCount + 1)
 		ok, retryErr := s.st.RetryRAGIndexTask(parent, claim.Fence, message, delay)
 		if retryErr != nil {
 			slog.Error("rag: persist transient index retry", "task", claim.Fence.TaskID, "error", retryErr)
 		} else if ok {
 			slog.Warn("rag: transient index failure scheduled for retry", "task", claim.Fence.TaskID,
-				"retry", claim.Task.RetryCount+1, "delay", delay, "error", err)
+				"retry", claim.Task.RetryCount+1, "delay", delay, "error", message)
 		}
 		return
 	}
@@ -376,8 +382,34 @@ func (s *Service) finishClaimFailure(parent context.Context, claim *store.RAGInd
 	if failErr != nil {
 		slog.Error("rag: persist permanent index failure", "task", claim.Fence.TaskID, "error", failErr)
 	} else if ok {
-		slog.Error("rag: document indexing failed permanently", "task", claim.Fence.TaskID, "error", err)
+		slog.Error("rag: document indexing failed permanently", "task", claim.Fence.TaskID, "error", message)
 	}
+}
+
+func safeIndexErrorMessage(err error, transient bool) string {
+	switch {
+	case errors.Is(err, parse.ErrEmptyContent):
+		return parse.ErrEmptyContent.Error()
+	case errors.Is(err, parse.ErrDocumentLimitExceeded), errors.Is(err, sidecar.ErrBundleLimitExceeded),
+		errors.Is(err, sidecar.ErrSourceLimitExceeded):
+		return "文档超过解析硬限制"
+	case errors.Is(err, parse.ErrSourceIntegrity), errors.Is(err, sidecar.ErrSourceIntegrity):
+		return "文档原件与不可变快照不一致"
+	case errors.Is(err, parse.ErrInvalidDocument):
+		return "文档格式或内容无效"
+	case errors.Is(err, sidecar.ErrInvalidBundle):
+		return "文档解析服务返回不兼容结果"
+	case errors.Is(err, sidecar.ErrCapabilityUnavailable):
+		return "所需文档解析能力当前不可用"
+	}
+	var statusErr interface{ HTTPStatus() int }
+	if errors.As(err, &statusErr) {
+		return fmt.Sprintf("文档索引依赖返回 HTTP %d", statusErr.HTTPStatus())
+	}
+	if transient {
+		return "文档索引暂时失败，稍后重试"
+	}
+	return "文档索引失败"
 }
 
 func indexRetryDelay(retry int) time.Duration {
@@ -395,6 +427,10 @@ func isTransientIndexError(err error) bool {
 		return false
 	}
 	if errors.Is(err, parse.ErrEmptyContent) || errors.Is(err, os.ErrNotExist) ||
+		errors.Is(err, parse.ErrInvalidDocument) || errors.Is(err, parse.ErrDocumentLimitExceeded) ||
+		errors.Is(err, parse.ErrSourceIntegrity) || errors.Is(err, sidecar.ErrCapabilityUnavailable) ||
+		errors.Is(err, sidecar.ErrInvalidBundle) || errors.Is(err, sidecar.ErrBundleLimitExceeded) ||
+		errors.Is(err, sidecar.ErrSourceLimitExceeded) || errors.Is(err, sidecar.ErrSourceIntegrity) ||
 		errors.Is(err, store.ErrRAGDocumentAIBudgetExceeded) {
 		return false
 	}
@@ -454,8 +490,7 @@ func (s *Service) indexClaim(
 	ctx context.Context,
 	claim *store.RAGIndexClaim,
 	embeddingBinding config.RAGEmbeddingCfg,
-) (store.RAGIndexActivation, error) {
-	var activation store.RAGIndexActivation
+) (activation store.RAGIndexActivation, resultErr error) {
 	fence := claim.Fence
 	version := &claim.Version
 
@@ -484,8 +519,9 @@ func (s *Service) indexClaim(
 	if kb.Status != "active" {
 		return activation, errors.New("knowledge base is not active")
 	}
-	if version.ParseMode != store.RAGParseModeStandard {
-		return activation, errors.New("unsupported: advanced parser pipeline is not installed")
+	parseMode := config.ParseMode(version.ParseMode)
+	if !parseMode.Valid() {
+		return activation, fmt.Errorf("unsupported parse mode %q", version.ParseMode)
 	}
 	if version.EnrichmentEnabled {
 		return activation, errors.New("unsupported: enrichment pipeline is not installed")
@@ -499,37 +535,54 @@ func (s *Service) indexClaim(
 	if err := s.vec.EnsureCollection(ctx, kb.ID, version.EmbeddingDimensions); err != nil {
 		return activation, fmt.Errorf("准备向量 collection: %w", err)
 	}
-	rc, err := s.obj.Get(ctx, doc.ObjectKey)
-	if err != nil {
-		return activation, fmt.Errorf("读原件: %w", err)
-	}
-	parsed, parseErr := parse.Parse(rc, doc.FileName)
-	closeErr := rc.Close()
+	parsed, parseErr := s.parser.Parse(ctx, document.Source{
+		DocID: doc.ID, FileName: doc.FileName, Format: doc.FileType,
+		Size: doc.FileSize, SHA256: version.SourceSHA256,
+		Open: func(openCtx context.Context) (io.ReadCloser, error) {
+			reader, openErr := s.obj.Get(openCtx, doc.ObjectKey)
+			if openErr != nil {
+				return nil, fmt.Errorf("读原件: %w", openErr)
+			}
+			return reader, nil
+		},
+	}, parse.ParseOptions{Mode: parseMode, ParserVersion: version.ParserVersion})
 	if parseErr != nil {
+		if parsed != nil {
+			if closeErr := parsed.Close(); closeErr != nil {
+				parseErr = errors.Join(parseErr, fmt.Errorf("close failed parsed document: %w", closeErr))
+			}
+		}
 		return activation, parseErr
 	}
-	if closeErr != nil {
-		return activation, fmt.Errorf("关闭原件: %w", closeErr)
+	if parsed == nil {
+		return activation, errors.New("parser returned a nil document")
 	}
+	parsedClosed := false
+	defer func() {
+		if parsedClosed {
+			return
+		}
+		if closeErr := parsed.Close(); closeErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close parsed document: %w", closeErr))
+		}
+	}()
 
 	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{Stage: "chunking"}); err != nil {
 		return activation, err
 	}
 	cfg := split.Config{ChunkSize: version.ChunkSize, ChunkOverlap: version.ChunkOverlap}
-	var chunks []split.Chunk
-	switch parsed.Format {
-	case "md", "docx":
-		chunks = split.Markdown(parsed.Pages[0].Text, cfg)
-	case "pdf":
-		for _, page := range parsed.Pages {
-			for _, chunk := range split.SlidingWindow(page.Text, cfg, "", page.Num) {
-				chunk.Index = len(chunks)
-				chunks = append(chunks, chunk)
-			}
-		}
-	default:
-		chunks = split.SlidingWindow(parsed.Pages[0].Text, cfg, "", 0)
+	chunks := splitParsedDocument(parsed, doc.FileType, cfg)
+	pageCount := parsedDocumentPageCount(parsed)
+	warningCount := len(parsed.Warnings)
+	degraded := false
+	for _, warning := range parsed.Warnings {
+		degraded = degraded || warning.Degraded
 	}
+	if closeErr := parsed.Close(); closeErr != nil {
+		parsedClosed = true
+		return activation, fmt.Errorf("关闭解析文档: %w", closeErr)
+	}
+	parsedClosed = true
 	if len(chunks) == 0 {
 		return activation, errors.New("分块结果为空")
 	}
@@ -609,11 +662,59 @@ func (s *Service) indexClaim(
 	}
 	activation = store.RAGIndexActivation{
 		VersionResult: store.RAGDocumentVersionResult{
-			Status: store.RAGDocumentVersionDone, PageCount: len(parsed.Pages),
+			Status: store.RAGDocumentVersionDone, PageCount: pageCount,
+			AssetCount: len(parsed.Assets), Degraded: degraded, WarningCount: warningCount,
 		},
 		ChunkCount: len(chunks), TokenCount: totalTokens,
 	}
 	return activation, nil
+}
+
+func splitParsedDocument(parsed *document.ParsedDocument, format string, cfg split.Config) []split.Chunk {
+	if parsed == nil {
+		return nil
+	}
+	format = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(format)), ".")
+	var chunks []split.Chunk
+	for _, unit := range parsed.Units {
+		var unitChunks []split.Chunk
+		switch format {
+		case "md", "markdown", "docx", "pptx", "xlsx":
+			unitChunks = split.Markdown(unit.Markdown, cfg)
+		default:
+			pageNumber := 0
+			if unit.Location.Kind == document.LocationPage {
+				pageNumber = unit.Location.Index
+			}
+			unitChunks = split.SlidingWindow(unit.Markdown, cfg, "", pageNumber)
+		}
+		for _, chunk := range unitChunks {
+			chunk.Index = len(chunks)
+			chunks = append(chunks, chunk)
+		}
+	}
+	return chunks
+}
+
+func parsedDocumentPageCount(parsed *document.ParsedDocument) int {
+	if parsed == nil {
+		return 0
+	}
+	pageCount := 0
+	for _, unit := range parsed.Units {
+		if unit.Location.Kind == document.LocationDocument && pageCount == 0 {
+			pageCount = 1
+		}
+		if unit.Location.Kind == document.LocationPage && unit.Location.Index > pageCount {
+			pageCount = unit.Location.Index
+		}
+	}
+	for _, warning := range parsed.Warnings {
+		if warning.Location != nil && warning.Location.Kind == document.LocationPage && warning.Location.Index > pageCount {
+			pageCount = warning.Location.Index
+		}
+	}
+	return pageCount
 }
 
 func (s *Service) fencedProgress(ctx context.Context, fence store.IndexFence, progress store.RAGIndexProgress) error {

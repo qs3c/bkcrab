@@ -18,9 +18,11 @@ import (
 	"time"
 
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/embed"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/parse"
+	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/store"
 )
@@ -173,6 +175,37 @@ type pipelineHarness struct {
 	kb      *store.RAGKBRecord
 }
 
+type recordingPipelineParser struct {
+	calls   atomic.Int32
+	cleanup atomic.Int32
+}
+
+func (p *recordingPipelineParser) Parse(
+	_ context.Context,
+	source document.Source,
+	options parse.ParseOptions,
+) (*document.ParsedDocument, error) {
+	p.calls.Add(1)
+	if err := source.Validate(); err != nil {
+		return nil, err
+	}
+	return document.NewParsedDocument(document.ParsedDocumentInput{
+		SchemaVersion: document.ParsedDocumentSchemaVersion,
+		Source:        source.Parsed(),
+		Parser: document.ParserInfo{
+			Name: "pipeline-test", Version: options.ParserVersion,
+		},
+		Units: []document.MarkdownUnit{{
+			ID:       "unit_document_0000",
+			Location: document.SourceLocation{Kind: document.LocationDocument},
+			Markdown: "# Facade\n\nstreaming parser output\n",
+		}},
+	}, nil, func() error {
+		p.cleanup.Add(1)
+		return nil
+	}), nil
+}
+
 func newPipelineHarness(t *testing.T) *pipelineHarness {
 	t.Helper()
 	db := newRAGTestStore(t)
@@ -203,6 +236,32 @@ func newPipelineHarness(t *testing.T) *pipelineHarness {
 	return &pipelineHarness{service: service, store: st, objects: objectStore, vector: vec, embed: embedding, kb: kb}
 }
 
+func TestPipelineUsesInjectedStreamingParserAndClosesDocument(t *testing.T) {
+	h := newPipelineHarness(t)
+	parserFacade := &recordingPipelineParser{}
+	h.service.parser = parserFacade
+	doc, _ := h.seedDocument(t, "streaming_parser", "legacy parser input must not be indexed", 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.service.Start(ctx)
+	waitPipelineDocument(t, h.store, doc.ID, func(record *store.RAGDocumentRecord) bool {
+		return record.Status == "DONE"
+	})
+	if parserFacade.calls.Load() != 1 || parserFacade.cleanup.Load() != 1 {
+		t.Fatalf("parser calls=%d cleanup=%d, want 1/1", parserFacade.calls.Load(), parserFacade.cleanup.Load())
+	}
+	chunks := h.vector.chunks()
+	if len(chunks) == 0 || !strings.Contains(chunks[0].Content, "streaming parser output") {
+		t.Fatalf("pipeline did not index Parser facade output: %+v", chunks)
+	}
+	for _, chunk := range chunks {
+		if strings.Contains(chunk.Content, "legacy parser input") {
+			t.Fatalf("pipeline called legacy parser path: %+v", chunks)
+		}
+	}
+}
+
 func (h *pipelineHarness) seedDocument(t *testing.T, suffix, body string, version int64) (*store.RAGDocumentRecord, int64) {
 	t.Helper()
 	docID := "doc_" + suffix
@@ -219,6 +278,9 @@ func (h *pipelineHarness) seedDocument(t *testing.T, suffix, body string, versio
 	snapshot, err := h.service.BuildVersionSnapshot(context.Background(), doc)
 	if err != nil {
 		t.Fatalf("build snapshot: %v", err)
+	}
+	if snapshot.ParserVersion != parse.LocalParserVersion {
+		t.Fatalf("snapshot parser version=%q, want %q", snapshot.ParserVersion, parse.LocalParserVersion)
 	}
 	snapshot.DocVersion = version
 	taskID, err := h.store.CreateRAGDocumentWithVersionAndIndexTask(context.Background(), doc, snapshot, 3)
@@ -590,6 +652,7 @@ func TestPipelineVersionProviderContractIncludesModelsAndPrompts(t *testing.T) {
 		name   string
 		mutate func(*store.RAGDocumentVersionRecord)
 	}{
+		{"parser version", func(v *store.RAGDocumentVersionRecord) { v.ParserVersion = "local-parser-v2" }},
 		{"vision model", func(v *store.RAGDocumentVersionRecord) { v.VisionModel = "vision-v2" }},
 		{"vision prompt", func(v *store.RAGDocumentVersionRecord) { v.VisionPromptVersion = "vision-prompt-v2" }},
 		{"text model", func(v *store.RAGDocumentVersionRecord) { v.TextModel = "text-v2" }},
@@ -611,6 +674,14 @@ func TestPipelineVersionProviderContractIncludesModelsAndPrompts(t *testing.T) {
 func TestPipelineRetryClassifierAndBackoff(t *testing.T) {
 	permanent := []error{
 		parse.ErrEmptyContent,
+		fmt.Errorf("invalid PDF: %w", parse.ErrInvalidDocument),
+		fmt.Errorf("too many pages: %w", parse.ErrDocumentLimitExceeded),
+		fmt.Errorf("source changed: %w", parse.ErrSourceIntegrity),
+		fmt.Errorf("sidecar unavailable: %w", sidecar.ErrCapabilityUnavailable),
+		fmt.Errorf("sidecar schema: %w", sidecar.ErrInvalidBundle),
+		fmt.Errorf("sidecar bundle quota: %w", sidecar.ErrBundleLimitExceeded),
+		fmt.Errorf("sidecar source quota: %w", sidecar.ErrSourceLimitExceeded),
+		fmt.Errorf("sidecar source changed: %w", sidecar.ErrSourceIntegrity),
 		fmt.Errorf("reserve DocumentAI usage: %w", store.ErrRAGDocumentAIBudgetExceeded),
 		errors.New("embedding response 维度不符"),
 		errors.New("unsupported document container"),
@@ -674,6 +745,27 @@ func TestPipelineRetryClassifierAndBackoff(t *testing.T) {
 	for retry, want := range wants {
 		if got := indexRetryDelay(retry); got != want {
 			t.Errorf("retry %d delay = %s, want %s", retry, got, want)
+		}
+	}
+}
+
+func TestSafeIndexErrorMessageDoesNotExposeUntrustedDetails(t *testing.T) {
+	t.Parallel()
+	const canary = "CANARY-document-body-and-temp-path"
+	for _, test := range []struct {
+		err       error
+		transient bool
+	}{
+		{fmt.Errorf("%w: %s", parse.ErrInvalidDocument, canary), false},
+		{fmt.Errorf("%w: entry %q", sidecar.ErrInvalidBundle, canary), false},
+		{fmt.Errorf("temporary path %s unavailable", canary), true},
+	} {
+		message := safeIndexErrorMessage(test.err, test.transient)
+		if strings.Contains(message, canary) {
+			t.Fatalf("safe error message leaked canary: %q", message)
+		}
+		if strings.TrimSpace(message) == "" {
+			t.Fatal("safe error message is empty")
 		}
 	}
 }

@@ -22,21 +22,35 @@ type Result struct {
 	Pages  []Page // md, txt, and docx have one logical page
 }
 
-// ErrEmptyContent covers empty files and documents with no extractable text,
-// including scanned PDFs for which OCR is intentionally not performed.
-var ErrEmptyContent = errors.New("文档无有效文本内容(扫描件或空文件)")
+var (
+	// ErrEmptyContent covers empty files and documents with no extractable text,
+	// including scanned PDFs for which OCR is intentionally not performed.
+	ErrEmptyContent = errors.New("文档无有效文本内容(扫描件或空文件)")
+	// ErrInvalidDocument marks deterministic container/content failures that a
+	// task retry cannot repair.
+	ErrInvalidDocument = errors.New("invalid document content")
+	// ErrDocumentLimitExceeded marks a configured structural hard limit.
+	ErrDocumentLimitExceeded = errors.New("document hard limit exceeded")
+	// ErrSourceIntegrity marks a mismatch between an immutable source snapshot
+	// and the bytes returned by its reopen function.
+	ErrSourceIntegrity = errors.New("document source integrity mismatch")
+)
 
 // SupportedExt reports whether fileName has a supported extension.
 func SupportedExt(fileName string) bool {
 	switch strings.ToLower(filepath.Ext(fileName)) {
-	case ".md", ".markdown", ".txt", ".pdf", ".docx":
+	case ".md", ".markdown", ".txt", ".pdf", ".docx", ".pptx", ".xlsx":
 		return true
 	default:
 		return false
 	}
 }
 
-// Parse reads and extracts a supported document.
+// Parse reads and extracts documents supported by the original parser.
+//
+// Deprecated: this compatibility wrapper is retained for legacy tests. New
+// indexing code must use Parser so PDF sources remain streaming and Office
+// documents cannot silently fall back to the old DOCX XML extractor.
 func Parse(r io.Reader, fileName string) (*Result, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -62,7 +76,7 @@ func Parse(r io.Reader, fileName string) (*Result, error) {
 		}
 		result = &Result{Format: "pdf", Pages: pages}
 	default:
-		return nil, fmt.Errorf("不支持的文件类型 %q(支持 md/txt/pdf/docx)", ext)
+		return nil, fmt.Errorf("旧解析器不支持文件类型 %q(仅支持 md/txt/pdf/docx)", ext)
 	}
 
 	for _, page := range result.Pages {

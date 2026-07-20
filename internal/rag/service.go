@@ -16,6 +16,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag/embed"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
+	"github.com/qs3c/bkcrab/internal/rag/parse"
 	"github.com/qs3c/bkcrab/internal/rag/rerank"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -44,6 +45,8 @@ type Deps struct {
 	UserEmbedCfg UserEmbedCfgFn
 	QueryLLM     QueryLLMFn
 	Reranker     rerank.Reranker
+	Parser       parse.Parser
+	Primitives   parse.PrimitiveExtractor
 	Workers      int
 }
 
@@ -55,6 +58,8 @@ type Service struct {
 	userCfg     UserEmbedCfgFn
 	queryLLM    QueryLLMFn
 	reranker    rerank.Reranker
+	parser      parse.Parser
+	primitives  parse.PrimitiveExtractor
 	tasks       chan int64
 	workerCount int
 	workerID    string
@@ -75,6 +80,11 @@ func New(d Deps) *Service {
 	if d.Workers <= 0 {
 		d.Workers = 2
 	}
+	if d.Parser == nil {
+		d.Parser = parse.NewLocalParser(
+			d.Primitives, d.Cfg.Limits.MaxPagesPerDocument, d.Cfg.Limits.MaxExtractedBytes,
+		)
+	}
 	return &Service{
 		st:                d.Store,
 		vec:               d.Vector,
@@ -83,6 +93,8 @@ func New(d Deps) *Service {
 		userCfg:           d.UserEmbedCfg,
 		queryLLM:          d.QueryLLM,
 		reranker:          d.Reranker,
+		parser:            d.Parser,
+		primitives:        d.Primitives,
 		tasks:             make(chan int64, 256),
 		workerCount:       d.Workers,
 		workerID:          "rag-" + uuid.NewString(),
