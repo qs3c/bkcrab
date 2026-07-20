@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,33 +74,51 @@ type ragDocumentAIBudgetDTO struct {
 }
 
 type ragKBResponseDTO struct {
-	ID            string    `json:"id"`
-	UserID        string    `json:"userId"`
-	Name          string    `json:"name"`
-	Description   string    `json:"description"`
-	EmbedProvider string    `json:"embedProvider"`
-	EmbedModel    string    `json:"embedModel"`
-	EmbedDims     int       `json:"embedDims"`
-	ChunkSize     int       `json:"chunkSize"`
-	ChunkOverlap  int       `json:"chunkOverlap"`
-	Status        string    `json:"status"`
-	CreatedAt     time.Time `json:"createdAt"`
-	UpdatedAt     time.Time `json:"updatedAt"`
+	ID                string           `json:"id"`
+	UserID            string           `json:"userId"`
+	Name              string           `json:"name"`
+	Description       string           `json:"description"`
+	EmbedProvider     string           `json:"embedProvider"`
+	EmbedModel        string           `json:"embedModel"`
+	EmbedDims         int              `json:"embedDims"`
+	ChunkSize         int              `json:"chunkSize"`
+	ChunkOverlap      int              `json:"chunkOverlap"`
+	ParseMode         config.ParseMode `json:"parseMode"`
+	EnrichmentEnabled bool             `json:"enrichmentEnabled"`
+	Status            string           `json:"status"`
+	CreatedAt         time.Time        `json:"createdAt"`
+	UpdatedAt         time.Time        `json:"updatedAt"`
+}
+
+type ragDocumentProgressDTO struct {
+	Stage   string `json:"stage"`
+	Current int    `json:"current"`
+	Total   int    `json:"total"`
+	Unit    string `json:"unit"`
 }
 
 type ragDocumentResponseDTO struct {
-	ID         string     `json:"id"`
-	KBID       string     `json:"kbId"`
-	FileName   string     `json:"fileName"`
-	FileType   string     `json:"fileType"`
-	FileSize   int64      `json:"fileSize"`
-	Status     string     `json:"status"`
-	ErrorMsg   string     `json:"errorMsg"`
-	ChunkCount int        `json:"chunkCount"`
-	TokenCount int        `json:"tokenCount"`
-	Version    int64      `json:"version"`
-	UploadedAt time.Time  `json:"uploadedAt"`
-	IndexedAt  *time.Time `json:"indexedAt,omitempty"`
+	ID                 string                 `json:"id"`
+	KBID               string                 `json:"kbId"`
+	FileName           string                 `json:"fileName"`
+	FileType           string                 `json:"fileType"`
+	FileSize           int64                  `json:"fileSize"`
+	Status             string                 `json:"status"`
+	ErrorMsg           string                 `json:"errorMsg"`
+	ChunkCount         int                    `json:"chunkCount"`
+	TokenCount         int                    `json:"tokenCount"`
+	Version            int64                  `json:"version"`
+	ActiveVersion      int64                  `json:"activeVersion"`
+	IndexFormatVersion int                    `json:"indexFormatVersion"`
+	AppliedParseMode   config.ParseMode       `json:"appliedParseMode,omitempty"`
+	TargetParseMode    config.ParseMode       `json:"targetParseMode"`
+	NeedsReparse       bool                   `json:"needsReparse"`
+	NeedsReindex       bool                   `json:"needsReindex"`
+	Progress           ragDocumentProgressDTO `json:"progress"`
+	Degraded           bool                   `json:"degraded"`
+	WarningCount       int                    `json:"warningCount"`
+	UploadedAt         time.Time              `json:"uploadedAt"`
+	IndexedAt          *time.Time             `json:"indexedAt,omitempty"`
 }
 
 func ragCheckedAt(value time.Time) *time.Time {
@@ -117,7 +136,9 @@ func ragKBResponse(record *store.RAGKBRecord) ragKBResponseDTO {
 	return ragKBResponseDTO{
 		ID: record.ID, UserID: record.UserID, Name: record.Name, Description: record.Description,
 		EmbedProvider: record.EmbedProvider, EmbedModel: record.EmbedModel, EmbedDims: record.EmbedDims,
-		ChunkSize: record.ChunkSize, ChunkOverlap: record.ChunkOverlap, Status: record.Status,
+		ChunkSize: record.ChunkSize, ChunkOverlap: record.ChunkOverlap,
+		ParseMode: config.ParseMode(record.ParseMode), EnrichmentEnabled: record.EnrichmentEnabled,
+		Status:    record.Status,
 		CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
 	}
 }
@@ -137,17 +158,87 @@ func ragDocumentResponse(record *store.RAGDocumentRecord) ragDocumentResponseDTO
 	return ragDocumentResponseDTO{
 		ID: record.ID, KBID: record.KBID, FileName: record.FileName, FileType: record.FileType,
 		FileSize: record.FileSize, Status: record.Status, ErrorMsg: record.ErrorMsg,
-		ChunkCount: record.ChunkCount, TokenCount: record.TokenCount, Version: int64(record.Version),
+		ChunkCount: record.ChunkCount, TokenCount: record.TokenCount, Version: record.Version,
+		ActiveVersion: record.ActiveVersion, IndexFormatVersion: record.IndexFormatVersion,
+		Progress: ragDocumentProgressDTO{Stage: record.ProcessingStage, Current: record.ProgressCurrent,
+			Total: record.ProgressTotal, Unit: record.ProgressUnit},
+		Degraded: record.Degraded, WarningCount: record.WarningCount,
 		UploadedAt: record.UploadedAt, IndexedAt: record.IndexedAt,
 	}
 }
 
-func ragDocumentResponses(records []store.RAGDocumentRecord) []ragDocumentResponseDTO {
+func (s *Server) ragDocumentResponseWithSnapshots(
+	ctx context.Context,
+	record *store.RAGDocumentRecord,
+	kb *store.RAGKBRecord,
+) (ragDocumentResponseDTO, error) {
+	dto := ragDocumentResponse(record)
+	if record == nil {
+		return dto, nil
+	}
+	targetMode := config.ParseModeStandard
+	if kb != nil && config.ParseMode(kb.ParseMode).Valid() {
+		targetMode = config.ParseMode(kb.ParseMode)
+	}
+	dto.TargetParseMode = targetMode
+	if s.dataStore == nil {
+		dto.NeedsReparse = record.ActiveVersion == 0
+		dto.NeedsReindex = dto.NeedsReparse
+		return dto, nil
+	}
+	var active, target *store.RAGDocumentVersionRecord
+	if record.ActiveVersion > 0 {
+		var err error
+		active, err = s.dataStore.GetRAGDocumentVersion(ctx, record.ID, record.ActiveVersion)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return dto, err
+		}
+	}
+	if record.Version > 0 && record.Version != record.ActiveVersion {
+		var err error
+		target, err = s.dataStore.GetRAGDocumentVersion(ctx, record.ID, record.Version)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return dto, err
+		}
+	}
+	if target != nil && config.ParseMode(target.ParseMode).Valid() {
+		dto.TargetParseMode = config.ParseMode(target.ParseMode)
+	}
+	if active == nil {
+		dto.NeedsReparse = true
+		dto.NeedsReindex = true
+		return dto, nil
+	}
+	dto.AppliedParseMode = config.ParseMode(active.ParseMode)
+	if target != nil {
+		dto.NeedsReparse = active.ParseFingerprint != target.ParseFingerprint
+		dto.NeedsReindex = active.IndexFingerprint != target.IndexFingerprint
+		return dto, nil
+	}
+	legacy := active.ParserVersion == "legacy-v0" || active.ParseFingerprint == "legacy-v0"
+	dto.NeedsReparse = legacy || active.ParseMode != string(dto.TargetParseMode)
+	dto.NeedsReindex = dto.NeedsReparse
+	if kb != nil {
+		dto.NeedsReindex = dto.NeedsReindex || active.ChunkSize != kb.ChunkSize ||
+			active.ChunkOverlap != kb.ChunkOverlap || active.EnrichmentEnabled != kb.EnrichmentEnabled
+	}
+	return dto, nil
+}
+
+func (s *Server) ragDocumentResponsesWithSnapshots(
+	ctx context.Context,
+	records []store.RAGDocumentRecord,
+	kb *store.RAGKBRecord,
+) ([]ragDocumentResponseDTO, error) {
 	out := make([]ragDocumentResponseDTO, 0, len(records))
 	for index := range records {
-		out = append(out, ragDocumentResponse(&records[index]))
+		dto, err := s.ragDocumentResponseWithSnapshots(ctx, &records[index], kb)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, dto)
 	}
-	return out
+	return out, nil
 }
 
 func (s *Server) handleRAGCapabilities(w http.ResponseWriter, _ *http.Request) {
@@ -234,10 +325,30 @@ func writeRAGError(w http.ResponseWriter, err error) {
 	case strings.Contains(err.Error(), "不支持的文件类型"),
 		strings.Contains(err.Error(), "不能为空"),
 		strings.Contains(err.Error(), "必须小于"),
-		strings.Contains(err.Error(), "大小不能"):
+		strings.Contains(err.Error(), "大小不能"),
+		strings.Contains(err.Error(), "parseMode 必须"):
 		status = http.StatusBadRequest
+	case strings.Contains(err.Error(), "能力当前不可用"):
+		status = http.StatusConflict
 	}
 	jsonResponse(w, status, map[string]any{"ok": false, "error": err.Error()})
+}
+
+func (s *Server) validateRAGKBParsingTransition(
+	current *store.RAGKBRecord,
+	parseMode config.ParseMode,
+	enrichmentEnabled bool,
+) error {
+	state := s.ragCfg.RuntimeCapabilities(s.ragParserHealthSnapshot())
+	wasAuto := current != nil && current.ParseMode == string(config.ParseModeAuto)
+	if parseMode == config.ParseModeAuto && !wasAuto && !state.Advanced.Available {
+		return fmt.Errorf("auto 解析能力当前不可用: %s", state.Advanced.Reason)
+	}
+	wasEnriched := current != nil && current.EnrichmentEnabled
+	if enrichmentEnabled && !wasEnriched && !state.Enrichment.Available {
+		return fmt.Errorf("文本增强能力当前不可用: %s", state.Enrichment.Reason)
+	}
+	return nil
 }
 
 func (s *Server) handleListRAGKBs(w http.ResponseWriter, r *http.Request) {
@@ -270,16 +381,28 @@ func (s *Server) handleCreateRAGKB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Name         string `json:"name"`
-		Description  string `json:"description"`
-		ChunkSize    int    `json:"chunkSize"`
-		ChunkOverlap int    `json:"chunkOverlap"`
+		Name              string           `json:"name"`
+		Description       string           `json:"description"`
+		ChunkSize         int              `json:"chunkSize"`
+		ChunkOverlap      int              `json:"chunkOverlap"`
+		ParseMode         config.ParseMode `json:"parseMode"`
+		EnrichmentEnabled bool             `json:"enrichmentEnabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
 		return
 	}
-	kb, err := s.rag.CreateKB(r.Context(), identity.EffectiveUserID(), request.Name, request.Description, request.ChunkSize, request.ChunkOverlap)
+	if request.ParseMode == "" {
+		request.ParseMode = config.ParseModeStandard
+	}
+	if err := s.validateRAGKBParsingTransition(nil, request.ParseMode, request.EnrichmentEnabled); err != nil {
+		writeRAGError(w, err)
+		return
+	}
+	kb, err := s.rag.CreateKBWithOptions(r.Context(), identity.EffectiveUserID(), request.Name,
+		request.Description, request.ChunkSize, request.ChunkOverlap, rag.KBParsingOptions{
+			ParseMode: request.ParseMode, EnrichmentEnabled: request.EnrichmentEnabled,
+		})
 	if err != nil {
 		writeRAGError(w, err)
 		return
@@ -320,10 +443,12 @@ func (s *Server) handleUpdateRAGKB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Name         *string `json:"name"`
-		Description  *string `json:"description"`
-		ChunkSize    *int    `json:"chunkSize"`
-		ChunkOverlap *int    `json:"chunkOverlap"`
+		Name              *string           `json:"name"`
+		Description       *string           `json:"description"`
+		ChunkSize         *int              `json:"chunkSize"`
+		ChunkOverlap      *int              `json:"chunkOverlap"`
+		ParseMode         *config.ParseMode `json:"parseMode"`
+		EnrichmentEnabled *bool             `json:"enrichmentEnabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body"})
@@ -331,6 +456,11 @@ func (s *Server) handleUpdateRAGKB(w http.ResponseWriter, r *http.Request) {
 	}
 	name, description := current.Name, current.Description
 	chunkSize, chunkOverlap := current.ChunkSize, current.ChunkOverlap
+	parseMode := config.ParseMode(current.ParseMode)
+	if !parseMode.Valid() {
+		parseMode = config.ParseModeStandard
+	}
+	enrichmentEnabled := current.EnrichmentEnabled
 	if request.Name != nil {
 		name = *request.Name
 	}
@@ -343,7 +473,20 @@ func (s *Server) handleUpdateRAGKB(w http.ResponseWriter, r *http.Request) {
 	if request.ChunkOverlap != nil {
 		chunkOverlap = *request.ChunkOverlap
 	}
-	kb, err := s.rag.UpdateKB(r.Context(), ownerID, current.ID, name, description, chunkSize, chunkOverlap)
+	if request.ParseMode != nil {
+		parseMode = *request.ParseMode
+	}
+	if request.EnrichmentEnabled != nil {
+		enrichmentEnabled = *request.EnrichmentEnabled
+	}
+	if err := s.validateRAGKBParsingTransition(current, parseMode, enrichmentEnabled); err != nil {
+		writeRAGError(w, err)
+		return
+	}
+	kb, err := s.rag.UpdateKBWithOptions(r.Context(), ownerID, current.ID, name, description,
+		chunkSize, chunkOverlap, rag.KBParsingOptions{
+			ParseMode: parseMode, EnrichmentEnabled: enrichmentEnabled,
+		})
 	if err != nil {
 		writeRAGError(w, err)
 		return
@@ -401,7 +544,17 @@ func (s *Server) handleUploadRAGDocument(w http.ResponseWriter, r *http.Request)
 		writeRAGError(w, err)
 		return
 	}
-	jsonResponse(w, http.StatusAccepted, ragDocumentResponse(doc))
+	kb, err := s.rag.GetKB(r.Context(), ragOwnerID(identity), doc.KBID)
+	if err != nil {
+		writeRAGError(w, err)
+		return
+	}
+	response, err := s.ragDocumentResponseWithSnapshots(r.Context(), doc, kb)
+	if err != nil {
+		writeRAGError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusAccepted, response)
 }
 
 func (s *Server) handleListRAGDocuments(w http.ResponseWriter, r *http.Request) {
@@ -421,7 +574,17 @@ func (s *Server) handleListRAGDocuments(w http.ResponseWriter, r *http.Request) 
 	if docs == nil {
 		docs = []store.RAGDocumentRecord{}
 	}
-	jsonResponse(w, http.StatusOK, ragDocumentResponses(docs))
+	kb, err := s.rag.GetKB(r.Context(), ragOwnerID(identity), r.PathValue("id"))
+	if err != nil {
+		writeRAGError(w, err)
+		return
+	}
+	response, err := s.ragDocumentResponsesWithSnapshots(r.Context(), docs, kb)
+	if err != nil {
+		writeRAGError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, response)
 }
 
 func (s *Server) handleDeleteRAGDocument(w http.ResponseWriter, r *http.Request) {

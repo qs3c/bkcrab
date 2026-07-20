@@ -1025,3 +1025,94 @@ func TestAgentUpdateRAGWhenServiceDisabled(t *testing.T) {
 		t.Fatalf("disabled clear left authorization behind: %+v", cfg.RAG)
 	}
 }
+
+func TestRAGParseModePersistenceAndUnavailableTransition(t *testing.T) {
+	server, resolver, _, regular, service := newRAGAPITestServer(t)
+	ctx := context.Background()
+
+	created := callRAGHandler(t, server, server.handleCreateRAGKB,
+		ragJSONRequest(t, resolver, http.MethodPost, "/api/rag/kbs", regular.ID,
+			`{"name":"parse settings","parseMode":"standard","enrichmentEnabled":false}`), nil)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var dto ragKBResponseDTO
+	if err := json.NewDecoder(created.Body).Decode(&dto); err != nil {
+		t.Fatal(err)
+	}
+	if dto.ParseMode != config.ParseModeStandard || dto.EnrichmentEnabled {
+		t.Fatalf("create DTO did not persist settings: %+v", dto)
+	}
+
+	blocked := callRAGHandler(t, server, server.handleUpdateRAGKB,
+		ragJSONRequest(t, resolver, http.MethodPatch, "/api/rag/kbs/"+dto.ID, regular.ID,
+			`{"parseMode":"auto","enrichmentEnabled":true}`), map[string]string{"id": dto.ID})
+	if blocked.Code != http.StatusConflict {
+		t.Fatalf("unavailable enable status=%d body=%s", blocked.Code, blocked.Body.String())
+	}
+
+	if _, err := service.UpdateKBWithOptions(ctx, regular.ID, dto.ID, dto.Name, dto.Description,
+		dto.ChunkSize, dto.ChunkOverlap, rag.KBParsingOptions{
+			ParseMode: config.ParseModeAuto, EnrichmentEnabled: true,
+		}); err != nil {
+		t.Fatal(err)
+	}
+	downgraded := callRAGHandler(t, server, server.handleUpdateRAGKB,
+		ragJSONRequest(t, resolver, http.MethodPatch, "/api/rag/kbs/"+dto.ID, regular.ID,
+			`{"parseMode":"standard","enrichmentEnabled":false}`), map[string]string{"id": dto.ID})
+	if downgraded.Code != http.StatusOK {
+		t.Fatalf("disable unavailable settings status=%d body=%s", downgraded.Code, downgraded.Body.String())
+	}
+	stored, err := service.GetKB(ctx, regular.ID, dto.ID)
+	if err != nil || stored.ParseMode != string(config.ParseModeStandard) || stored.EnrichmentEnabled {
+		t.Fatalf("downgraded KB=%+v err=%v", stored, err)
+	}
+}
+
+func TestRAGDocumentDTODerivesAppliedAndTargetSnapshots(t *testing.T) {
+	server, resolver, _, regular, service := newRAGAPITestServer(t)
+	ctx := context.Background()
+	kb, err := service.CreateKB(ctx, regular.ID, "snapshot DTO", "", 512, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	doc := &store.RAGDocumentRecord{
+		ID: "doc_snapshot_dto", KBID: kb.ID, FileName: "secret.md", FileType: "md",
+		ObjectKey: "rag/private/must-not-leak.md", Status: "DONE", Version: 7,
+		ActiveVersion: 7, IndexFormatVersion: 1, ProcessingStage: "done", UploadedAt: now,
+	}
+	if err := server.dataStore.CreateRAGDocument(ctx, doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.dataStore.CreateRAGDocumentVersion(ctx, &store.RAGDocumentVersionRecord{
+		DocID: doc.ID, DocVersion: 7, SourceSHA256: strings.Repeat("a", 64),
+		ParseMode: string(config.ParseModeAuto), ChunkSize: 512, ChunkOverlap: 64,
+		ParserVersion: "parser-v1", SplitterVersion: "split-v1",
+		ParseFingerprint: strings.Repeat("b", 64), IndexFingerprint: strings.Repeat("c", 64),
+		EnrichmentEnabled: true, EmbeddingProvider: kb.EmbedProvider,
+		EmbeddingModel: kb.EmbedModel, EmbeddingDimensions: kb.EmbedDims,
+		EmbeddingContractFingerprint: strings.Repeat("d", 64),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := callRAGHandler(t, server, server.handleListRAGDocuments,
+		authTestRequest(t, ctx, resolver, http.MethodGet, "/api/rag/kbs/"+kb.ID+"/documents", regular.ID),
+		map[string]string{"id": kb.ID})
+	if response.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), doc.ObjectKey) || strings.Contains(response.Body.String(), "ObjectKey") {
+		t.Fatalf("document DTO leaked object key: %s", response.Body.String())
+	}
+	var documents []ragDocumentResponseDTO
+	if err := json.NewDecoder(response.Body).Decode(&documents); err != nil {
+		t.Fatal(err)
+	}
+	if len(documents) != 1 || documents[0].AppliedParseMode != config.ParseModeAuto ||
+		documents[0].TargetParseMode != config.ParseModeStandard ||
+		!documents[0].NeedsReparse || !documents[0].NeedsReindex {
+		t.Fatalf("snapshot-derived document DTO=%+v", documents)
+	}
+}

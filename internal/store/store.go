@@ -229,16 +229,46 @@ type Store interface {
 	ListRAGChatSessions(ctx context.Context, userID, kbID string, limit int) ([]RAGChatSessionRecord, error)
 	CreateRAGDocument(ctx context.Context, doc *RAGDocumentRecord) error
 	CreateRAGDocumentWithIndexTask(ctx context.Context, doc *RAGDocumentRecord, maxRetry int) (int64, error)
+	CreateRAGDocumentWithVersionAndIndexTask(ctx context.Context, doc *RAGDocumentRecord, version *RAGDocumentVersionRecord, maxRetry int) (int64, error)
 	GetRAGDocument(ctx context.Context, id string) (*RAGDocumentRecord, error)
 	ListRAGDocumentsByKB(ctx context.Context, kbID string) ([]RAGDocumentRecord, error)
 	UpdateRAGDocument(ctx context.Context, doc *RAGDocumentRecord) error
-	UpdateRAGDocumentIfVersion(ctx context.Context, doc *RAGDocumentRecord, expectedVersion int) (bool, error)
+	UpdateRAGDocumentIfVersion(ctx context.Context, doc *RAGDocumentRecord, expectedVersion int64) (bool, error)
 	UpdateRAGDocumentWithIndexTask(ctx context.Context, doc *RAGDocumentRecord, maxRetry int) (int64, error)
 	DeleteRAGDocument(ctx context.Context, id string) error
+	CreateRAGDocumentVersion(ctx context.Context, version *RAGDocumentVersionRecord) error
+	GetRAGDocumentVersion(ctx context.Context, docID string, docVersion int64) (*RAGDocumentVersionRecord, error)
+	ListRAGDocumentVersions(ctx context.Context, docID string) ([]RAGDocumentVersionRecord, error)
+	UpdateResultRAGDocumentVersion(ctx context.Context, docID string, docVersion int64, expectedStatus string, result RAGDocumentVersionResult) (bool, error)
+	PutRAGChunks(ctx context.Context, chunks []RAGChunkRecord) error
+	ListRAGChunksByRefs(ctx context.Context, refs []RAGChunkRef) ([]RAGChunkRecord, error)
+	ListRAGChunksByDocumentVersion(ctx context.Context, docID string, docVersion int64) ([]RAGChunkRecord, error)
+	DeleteRAGChunksByDocumentVersion(ctx context.Context, docID string, docVersion int64) error
+	UpsertRAGAsset(ctx context.Context, asset *RAGAssetRecord) error
+	GetRAGAsset(ctx context.Context, id string) (*RAGAssetRecord, error)
+	ListRAGAssetsByIDs(ctx context.Context, ids []string) ([]RAGAssetRecord, error)
+	ListRAGAssetsByChunkRefs(ctx context.Context, refs []RAGChunkRef) ([]RAGAssetRecord, error)
+	ListRAGAssetsByDocument(ctx context.Context, docID string) ([]RAGAssetRecord, error)
+	DeleteRAGAssetsByDocument(ctx context.Context, docID string) error
+	PutRAGChunkAssets(ctx context.Context, mappings []RAGChunkAssetRecord) error
+	ListRAGChunkAssetsByRefs(ctx context.Context, refs []RAGChunkRef) ([]RAGChunkAssetRecord, error)
+	DeleteRAGChunkAssetsByDocumentVersion(ctx context.Context, docID string, docVersion int64) error
 	CreateRAGIndexTask(ctx context.Context, docID string, maxRetry int) (int64, error)
 	GetRAGIndexTask(ctx context.Context, id int64) (*RAGIndexTaskRecord, error)
 	UpdateRAGIndexTask(ctx context.Context, id int64, status string, retryCount int, errMsg string) error
 	ListRunnableRAGIndexTasks(ctx context.Context) ([]RAGIndexTaskRecord, error)
+	CreateRAGIndexGCTask(ctx context.Context, task *RAGIndexGCTaskRecord) (int64, error)
+	GetRAGIndexGCTask(ctx context.Context, id int64) (*RAGIndexGCTaskRecord, error)
+	ListRAGIndexGCTasks(ctx context.Context, status string, limit int) ([]RAGIndexGCTaskRecord, error)
+	UpdateRAGIndexGCTaskState(ctx context.Context, id int64, expectedStatus, status string, nextRunAt *time.Time) (bool, error)
+	DeleteRAGIndexGCTask(ctx context.Context, id int64) error
+	CreateRAGDocumentAITaskBudget(ctx context.Context, budget *RAGDocumentAITaskBudgetRecord) error
+	GetRAGDocumentAITaskBudget(ctx context.Context, taskID int64) (*RAGDocumentAITaskBudgetRecord, error)
+	CreateRAGDocumentAIUserBudget(ctx context.Context, budget *RAGDocumentAIUserBudgetRecord) error
+	GetRAGDocumentAIUserBudget(ctx context.Context, userID string, periodStartUTC time.Time) (*RAGDocumentAIUserBudgetRecord, error)
+	CreateRAGDocumentAIUsage(ctx context.Context, usage *RAGDocumentAIUsageRecord) (bool, error)
+	GetRAGDocumentAIUsage(ctx context.Context, idempotencyKey string) (*RAGDocumentAIUsageRecord, error)
+	UpdateRAGDocumentAIUsageState(ctx context.Context, idempotencyKey, expectedState, state string, settlement RAGDocumentAIUsageSettlement) (bool, error)
 
 	// --- Cron 任务（每个 agent）---
 	//

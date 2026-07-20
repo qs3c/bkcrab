@@ -120,13 +120,32 @@ func (s *Service) embedderForKB(ctx context.Context, kb *store.RAGKBRecord) *emb
 	return embed.New(cfg.Endpoint, cfg.APIKey, kb.EmbedModel, kb.EmbedDims)
 }
 
+type KBParsingOptions struct {
+	ParseMode         config.ParseMode
+	EnrichmentEnabled bool
+}
+
 func (s *Service) CreateKB(ctx context.Context, userID, name, description string, chunkSize, chunkOverlap int) (*store.RAGKBRecord, error) {
+	return s.CreateKBWithOptions(ctx, userID, name, description, chunkSize, chunkOverlap, KBParsingOptions{
+		ParseMode: config.ParseModeStandard,
+	})
+}
+
+func (s *Service) CreateKBWithOptions(
+	ctx context.Context,
+	userID, name, description string,
+	chunkSize, chunkOverlap int,
+	options KBParsingOptions,
+) (*store.RAGKBRecord, error) {
 	name = strings.TrimSpace(name)
 	if userID == "" {
 		return nil, ErrForbidden
 	}
 	if name == "" {
 		return nil, errors.New("知识库名称不能为空")
+	}
+	if !options.ParseMode.Valid() {
+		return nil, errors.New("parseMode 必须是 standard 或 auto")
 	}
 	existing, err := s.st.ListRAGKBsByUser(ctx, userID)
 	if err != nil {
@@ -150,16 +169,18 @@ func (s *Service) CreateKB(ctx context.Context, userID, name, description string
 	}
 
 	kb := &store.RAGKBRecord{
-		ID:            "kb_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12],
-		UserID:        userID,
-		Name:          name,
-		Description:   strings.TrimSpace(description),
-		EmbedProvider: provider,
-		EmbedModel:    embedCfg.Model,
-		EmbedDims:     embedCfg.Dims,
-		ChunkSize:     chunkSize,
-		ChunkOverlap:  chunkOverlap,
-		Status:        "active",
+		ID:                "kb_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12],
+		UserID:            userID,
+		Name:              name,
+		Description:       strings.TrimSpace(description),
+		EmbedProvider:     provider,
+		EmbedModel:        embedCfg.Model,
+		EmbedDims:         embedCfg.Dims,
+		ChunkSize:         chunkSize,
+		ChunkOverlap:      chunkOverlap,
+		ParseMode:         string(options.ParseMode),
+		EnrichmentEnabled: options.EnrichmentEnabled,
+		Status:            "active",
 	}
 	if err := s.st.CreateRAGKB(ctx, kb); err != nil {
 		return nil, err
@@ -192,6 +213,27 @@ func (s *Service) ListKBs(ctx context.Context, userID string) ([]store.RAGKBReco
 }
 
 func (s *Service) UpdateKB(ctx context.Context, ownerID, kbID, name, description string, chunkSize, chunkOverlap int) (*store.RAGKBRecord, error) {
+	return s.updateKB(ctx, ownerID, kbID, name, description, chunkSize, chunkOverlap, nil)
+}
+
+func (s *Service) UpdateKBWithOptions(
+	ctx context.Context,
+	ownerID, kbID, name, description string,
+	chunkSize, chunkOverlap int,
+	options KBParsingOptions,
+) (*store.RAGKBRecord, error) {
+	if !options.ParseMode.Valid() {
+		return nil, errors.New("parseMode 必须是 standard 或 auto")
+	}
+	return s.updateKB(ctx, ownerID, kbID, name, description, chunkSize, chunkOverlap, &options)
+}
+
+func (s *Service) updateKB(
+	ctx context.Context,
+	ownerID, kbID, name, description string,
+	chunkSize, chunkOverlap int,
+	options *KBParsingOptions,
+) (*store.RAGKBRecord, error) {
 	kbLock := s.kbMutex(kbID)
 	kbLock.RLock()
 	defer kbLock.RUnlock()
@@ -212,6 +254,10 @@ func (s *Service) UpdateKB(ctx context.Context, ownerID, kbID, name, description
 	}
 	if kb.ChunkOverlap >= kb.ChunkSize {
 		return nil, errors.New("chunkOverlap 必须小于 chunkSize")
+	}
+	if options != nil {
+		kb.ParseMode = string(options.ParseMode)
+		kb.EnrichmentEnabled = options.EnrichmentEnabled
 	}
 	if err := s.st.UpdateRAGKB(ctx, kb); err != nil {
 		return nil, err

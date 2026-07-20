@@ -98,6 +98,9 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate: %w\nSQL: %s", err, stmt)
 		}
 	}
+	if err := d.migrateRAGMultimodalSchema(ctx); err != nil {
+		return fmt.Errorf("migrate RAG multimodal schema: %w", err)
+	}
 	if err := d.migrateAgentFilesUserID(ctx); err != nil {
 		return fmt.Errorf("migrate agent_files.user_id: %w", err)
 	}
@@ -1263,6 +1266,242 @@ func (d *DBStore) tableHasColumn(ctx context.Context, table, column string) (boo
 	return false, rows.Err()
 }
 
+// migrateRAGMultimodalSchema upgrades the four pre-multimodal RAG tables in
+// place after migrationSQL has ensured that all new catalog tables exist. The
+// project intentionally has no migration-version ledger, so every step must be
+// independently discoverable and safe to resume after a partially completed
+// MySQL/PostgreSQL DDL sequence.
+func (d *DBStore) migrateRAGMultimodalSchema(ctx context.Context) error {
+	kbColumns := []struct {
+		name string
+		ddl  string
+	}{
+		{"parse_mode", "TEXT NOT NULL DEFAULT 'standard'"},
+		{"enrichment_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"},
+	}
+	documentColumns := []struct {
+		name string
+		ddl  string
+	}{
+		{"source_sha256", "TEXT NOT NULL DEFAULT ''"},
+		{"active_version", "BIGINT NOT NULL DEFAULT 0"},
+		{"index_format_version", "SMALLINT NOT NULL DEFAULT 1"},
+		{"processing_stage", "TEXT NOT NULL DEFAULT 'queued'"},
+		{"progress_current", "INTEGER NOT NULL DEFAULT 0"},
+		{"progress_total", "INTEGER NOT NULL DEFAULT 0"},
+		{"progress_unit", "TEXT NOT NULL DEFAULT ''"},
+		{"degraded", "BOOLEAN NOT NULL DEFAULT FALSE"},
+		{"warning_count", "INTEGER NOT NULL DEFAULT 0"},
+	}
+	if d.dialect == mysqlDialect {
+		kbColumns[0].ddl = "VARCHAR(16) NOT NULL DEFAULT 'standard'"
+		documentColumns[0].ddl = "CHAR(64) NOT NULL DEFAULT ''"
+		documentColumns[3].ddl = "VARCHAR(24) NOT NULL DEFAULT 'queued'"
+		documentColumns[6].ddl = "VARCHAR(16) NOT NULL DEFAULT ''"
+	}
+	for _, column := range kbColumns {
+		if err := d.addRAGColumnIfMissing(ctx, "rag_kbs", column.name, column.ddl); err != nil {
+			return err
+		}
+	}
+	for _, column := range documentColumns {
+		if err := d.addRAGColumnIfMissing(ctx, "rag_documents", column.name, column.ddl); err != nil {
+			return err
+		}
+	}
+	if err := d.migrateRAGDocumentVersionToBigInt(ctx); err != nil {
+		return err
+	}
+	if _, err := d.db.ExecContext(ctx,
+		`UPDATE rag_kbs SET parse_mode='standard' WHERE parse_mode IS NULL OR parse_mode=''`); err != nil {
+		return fmt.Errorf("backfill rag_kbs.parse_mode: %w", err)
+	}
+	if err := d.backfillLegacyRAGDocumentVersions(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (d *DBStore) addRAGColumnIfMissing(ctx context.Context, table, column, ddl string) error {
+	has, err := d.tableHasColumn(ctx, table, column)
+	if err != nil {
+		return fmt.Errorf("inspect %s.%s: %w", table, column, err)
+	}
+	if has {
+		return nil
+	}
+	if _, err := d.db.ExecContext(ctx,
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, ddl)); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
+	}
+	return nil
+}
+
+func (d *DBStore) ragColumnType(ctx context.Context, table, column string) (string, error) {
+	if d.dialect == "postgres" {
+		var value string
+		err := d.db.QueryRowContext(ctx, `SELECT data_type FROM information_schema.columns
+			WHERE table_schema=current_schema() AND table_name=$1 AND column_name=$2`, table, column).Scan(&value)
+		return strings.ToLower(value), err
+	}
+	if d.dialect == mysqlDialect {
+		var value string
+		err := d.db.QueryRowContext(ctx, `SELECT data_type FROM information_schema.columns
+			WHERE table_schema=DATABASE() AND table_name=? AND column_name=?`, table, column).Scan(&value)
+		return strings.ToLower(value), err
+	}
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return "", err
+		}
+		if name == column {
+			return strings.ToLower(columnType), nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return "", sql.ErrNoRows
+}
+
+func (d *DBStore) migrateRAGDocumentVersionToBigInt(ctx context.Context) error {
+	columnType, err := d.ragColumnType(ctx, "rag_documents", "version")
+	if err != nil {
+		return fmt.Errorf("inspect rag_documents.version type: %w", err)
+	}
+	if columnType == "bigint" {
+		return nil
+	}
+	switch d.dialect {
+	case "postgres":
+		if _, err := d.db.ExecContext(ctx,
+			`ALTER TABLE rag_documents ALTER COLUMN version TYPE BIGINT USING version::BIGINT`); err != nil {
+			return fmt.Errorf("alter rag_documents.version to BIGINT: %w", err)
+		}
+		return nil
+	case mysqlDialect:
+		if _, err := d.db.ExecContext(ctx,
+			`ALTER TABLE rag_documents MODIFY COLUMN version BIGINT NOT NULL DEFAULT 1`); err != nil {
+			return fmt.Errorf("alter rag_documents.version to BIGINT: %w", err)
+		}
+		return nil
+	default:
+		return d.rebuildRAGDocumentsSQLiteWithBigInt(ctx)
+	}
+}
+
+func (d *DBStore) rebuildRAGDocumentsSQLiteWithBigInt(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`DROP TABLE IF EXISTS rag_documents_phase_a_new`,
+		`CREATE TABLE rag_documents_phase_a_new (
+			id TEXT PRIMARY KEY,
+			kb_id TEXT NOT NULL,
+			file_name TEXT NOT NULL,
+			file_type TEXT NOT NULL,
+			file_size BIGINT NOT NULL DEFAULT 0,
+			object_key TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'PENDING',
+			error_msg TEXT NOT NULL DEFAULT '',
+			chunk_count INTEGER NOT NULL DEFAULT 0,
+			token_count INTEGER NOT NULL DEFAULT 0,
+			version BIGINT NOT NULL DEFAULT 1,
+			source_sha256 TEXT NOT NULL DEFAULT '',
+			active_version BIGINT NOT NULL DEFAULT 0,
+			index_format_version SMALLINT NOT NULL DEFAULT 1,
+			processing_stage TEXT NOT NULL DEFAULT 'queued',
+			progress_current INTEGER NOT NULL DEFAULT 0,
+			progress_total INTEGER NOT NULL DEFAULT 0,
+			progress_unit TEXT NOT NULL DEFAULT '',
+			degraded BOOLEAN NOT NULL DEFAULT FALSE,
+			warning_count INTEGER NOT NULL DEFAULT 0,
+			uploaded_at TIMESTAMP NOT NULL,
+			indexed_at TIMESTAMP
+		)`,
+		`INSERT INTO rag_documents_phase_a_new
+			(id,kb_id,file_name,file_type,file_size,object_key,status,error_msg,chunk_count,token_count,
+			 version,source_sha256,active_version,index_format_version,processing_stage,progress_current,
+			 progress_total,progress_unit,degraded,warning_count,uploaded_at,indexed_at)
+		 SELECT id,kb_id,file_name,file_type,file_size,object_key,status,error_msg,chunk_count,token_count,
+			 version,source_sha256,active_version,index_format_version,processing_stage,progress_current,
+			 progress_total,progress_unit,degraded,warning_count,uploaded_at,indexed_at FROM rag_documents`,
+		`DROP TABLE rag_documents`,
+		`ALTER TABLE rag_documents_phase_a_new RENAME TO rag_documents`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("rebuild rag_documents: %w\nSQL: %s", err, statement)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if err := d.execDDL(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_rag_documents_kb ON rag_documents (kb_id)`); err != nil {
+		return fmt.Errorf("recreate idx_rag_documents_kb: %w", err)
+	}
+	return nil
+}
+
+func (d *DBStore) backfillLegacyRAGDocumentVersions(ctx context.Context) error {
+	// Mark only rows that still carry the pre-multimodal signature. This marker
+	// is written before the synthetic snapshot so a crash between DDL steps can
+	// resume without ever treating an arbitrary current-format DONE row as
+	// legacy merely because its snapshot is missing.
+	if _, err := d.db.ExecContext(ctx, `UPDATE rag_documents
+		SET index_format_version=0
+		WHERE status='DONE' AND version>0 AND source_sha256=''
+		AND active_version=0 AND index_format_version=1`); err != nil {
+		return fmt.Errorf("mark legacy RAG documents: %w", err)
+	}
+	columns := `(doc_id,doc_version,status,source_sha256,parse_mode,chunk_size,chunk_overlap,
+		parser_version,splitter_version,parse_fingerprint,index_fingerprint,
+		vision_model,vision_provider_fingerprint,vision_prompt_version,
+		text_model,text_provider_fingerprint,enrichment_prompt_version,enrichment_enabled,
+		max_document_ai_requests,max_document_ai_tokens,max_document_ai_cost_microusd,
+		embedding_provider,embedding_model,embedding_dimensions,embedding_contract_fingerprint,
+		parse_artifact_key,page_count,asset_count,degraded,warning_count,created_at,updated_at)`
+	selectSQL := `SELECT d.id,d.version,'DONE',d.source_sha256,'standard',k.chunk_size,k.chunk_overlap,
+		'legacy-v0','legacy-v0','legacy-v0','legacy-v0','','','','','','',FALSE,
+		300,200000,1000000,k.embed_provider,k.embed_model,k.embed_dims,'legacy-v0',
+		'',0,0,d.degraded,d.warning_count,COALESCE(d.indexed_at,d.uploaded_at),COALESCE(d.indexed_at,d.uploaded_at)
+		FROM rag_documents d JOIN rag_kbs k ON k.id=d.kb_id
+		WHERE d.status='DONE' AND d.version>0
+		AND d.source_sha256='' AND d.active_version=0 AND d.index_format_version=0
+		AND NOT EXISTS (SELECT 1 FROM rag_document_versions v
+			WHERE v.doc_id=d.id AND v.doc_version=d.version)`
+	insertSQL := `INSERT INTO rag_document_versions ` + columns + ` ` + selectSQL
+	if d.dialect == mysqlDialect {
+		insertSQL = `INSERT IGNORE INTO rag_document_versions ` + columns + ` ` + selectSQL
+	} else {
+		insertSQL += ` ON CONFLICT (doc_id,doc_version) DO NOTHING`
+	}
+	if _, err := d.db.ExecContext(ctx, insertSQL); err != nil {
+		return fmt.Errorf("backfill synthetic legacy RAG versions: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `UPDATE rag_documents
+		SET active_version=version,index_format_version=0
+		WHERE status='DONE' AND version>0 AND EXISTS (
+			SELECT 1 FROM rag_document_versions v
+			WHERE v.doc_id=rag_documents.id AND v.doc_version=rag_documents.version
+			AND v.parser_version='legacy-v0')`); err != nil {
+		return fmt.Errorf("pin legacy RAG active versions: %w", err)
+	}
+	return nil
+}
+
 func (d *DBStore) migrationSQL() []string {
 	return []string{
 		// users 表保存第一方人类（role=super_admin/user）和
@@ -1602,6 +1841,8 @@ func (d *DBStore) migrationSQL() []string {
 			embed_dims INTEGER NOT NULL,
 			chunk_size INTEGER NOT NULL DEFAULT 512,
 			chunk_overlap INTEGER NOT NULL DEFAULT 64,
+			parse_mode TEXT NOT NULL DEFAULT 'standard',
+			enrichment_enabled BOOLEAN NOT NULL DEFAULT FALSE,
 			status TEXT NOT NULL DEFAULT 'active',
 			created_at TIMESTAMP NOT NULL,
 			updated_at TIMESTAMP NOT NULL
@@ -1631,13 +1872,36 @@ func (d *DBStore) migrationSQL() []string {
 			error_msg TEXT NOT NULL DEFAULT '',
 			chunk_count INTEGER NOT NULL DEFAULT 0,
 			token_count INTEGER NOT NULL DEFAULT 0,
-			version INTEGER NOT NULL DEFAULT 1,
+			version BIGINT NOT NULL DEFAULT 1,
+			source_sha256 TEXT NOT NULL DEFAULT '',
+			active_version BIGINT NOT NULL DEFAULT 0,
+			index_format_version SMALLINT NOT NULL DEFAULT 1,
+			processing_stage TEXT NOT NULL DEFAULT 'queued',
+			progress_current INTEGER NOT NULL DEFAULT 0,
+			progress_total INTEGER NOT NULL DEFAULT 0,
+			progress_unit TEXT NOT NULL DEFAULT '',
+			degraded BOOLEAN NOT NULL DEFAULT FALSE,
+			warning_count INTEGER NOT NULL DEFAULT 0,
 			uploaded_at TIMESTAMP NOT NULL,
 			indexed_at TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_rag_documents_kb ON rag_documents (kb_id)`,
 		d.ragIndexTasksTableSQL(),
 		`CREATE INDEX IF NOT EXISTS idx_rag_tasks_status ON rag_index_tasks (status, created_at)`,
+		d.ragDocumentVersionsTableSQL(),
+		d.ragAssetsTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_assets_doc ON rag_assets (doc_id)`,
+		d.ragChunksTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_chunks_lookup ON rag_chunks (kb_id, doc_id, doc_version)`,
+		d.ragChunkAssetsTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_chunk_assets_lookup ON rag_chunk_assets (doc_id, doc_version, chunk_index, ordinal)`,
+		d.ragIndexGCTasksTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_index_gc_tasks_runnable ON rag_index_gc_tasks (status, next_run_at, lease_until, created_at)`,
+		d.ragDocumentAITaskBudgetsTableSQL(),
+		d.ragDocumentAIUserBudgetsTableSQL(),
+		d.ragDocumentAIUsageTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_document_ai_usage_user_period ON rag_document_ai_usage (user_id, period_start_utc, provider_fingerprint)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_document_ai_usage_task_logical ON rag_document_ai_usage (task_id, logical_request_key)`,
 		// channel_leases 将轮询/持久连接频道适配器（微信、Telegram、Discord、
 		// Slack、飞书长连接）限制为一次一个进程。没有它，共享同一 bot 令牌的
 		// 两个云副本都将长轮询上游服务器，用户将收到每个回复两次。
@@ -1669,6 +1933,175 @@ func (d *DBStore) ragIndexTasksTableSQL() string {
 		started_at TIMESTAMP,
 		finished_at TIMESTAMP
 	)`, idColumn)
+}
+
+func (d *DBStore) ragDocumentVersionsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_document_versions (
+		doc_id TEXT NOT NULL,
+		doc_version BIGINT NOT NULL,
+		status TEXT NOT NULL,
+		source_sha256 TEXT NOT NULL,
+		parse_mode TEXT NOT NULL,
+		chunk_size INTEGER NOT NULL,
+		chunk_overlap INTEGER NOT NULL,
+		parser_version TEXT NOT NULL,
+		splitter_version TEXT NOT NULL,
+		parse_fingerprint TEXT NOT NULL,
+		index_fingerprint TEXT NOT NULL,
+		vision_model TEXT NOT NULL,
+		vision_provider_fingerprint TEXT NOT NULL,
+		vision_prompt_version TEXT NOT NULL,
+		text_model TEXT NOT NULL,
+		text_provider_fingerprint TEXT NOT NULL,
+		enrichment_prompt_version TEXT NOT NULL,
+		enrichment_enabled BOOLEAN NOT NULL,
+		max_document_ai_requests INTEGER NOT NULL,
+		max_document_ai_tokens BIGINT NOT NULL,
+		max_document_ai_cost_microusd BIGINT NOT NULL,
+		embedding_provider TEXT NOT NULL,
+		embedding_model TEXT NOT NULL,
+		embedding_dimensions INTEGER NOT NULL,
+		embedding_contract_fingerprint TEXT NOT NULL,
+		parse_artifact_key TEXT NOT NULL DEFAULT '',
+		page_count INTEGER NOT NULL DEFAULT 0,
+		asset_count INTEGER NOT NULL DEFAULT 0,
+		degraded BOOLEAN NOT NULL DEFAULT FALSE,
+		warning_count INTEGER NOT NULL DEFAULT 0,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (doc_id, doc_version)
+	)`
+}
+
+func (d *DBStore) ragAssetsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_assets (
+		id TEXT PRIMARY KEY,
+		doc_id TEXT NOT NULL,
+		content_sha256 TEXT NOT NULL,
+		source_kind TEXT NOT NULL,
+		source_mime TEXT NOT NULL,
+		display_mime TEXT NOT NULL,
+		source_object_key TEXT NOT NULL,
+		display_object_key TEXT NOT NULL,
+		thumbnail_object_key TEXT NOT NULL,
+		display_status TEXT NOT NULL,
+		display_sha256 TEXT NOT NULL,
+		byte_size BIGINT NOT NULL,
+		width INTEGER NOT NULL,
+		height INTEGER NOT NULL,
+		first_seen_version BIGINT NOT NULL,
+		last_seen_version BIGINT NOT NULL,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		UNIQUE (doc_id, content_sha256)
+	)`
+}
+
+func (d *DBStore) ragChunksTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_chunks (
+		kb_id TEXT NOT NULL,
+		doc_id TEXT NOT NULL,
+		doc_version BIGINT NOT NULL,
+		chunk_index INTEGER NOT NULL,
+		section_title TEXT NOT NULL,
+		location_json TEXT NOT NULL,
+		raw_content TEXT NOT NULL,
+		enhancement TEXT NOT NULL,
+		search_content TEXT NOT NULL,
+		token_count INTEGER NOT NULL,
+		created_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (doc_id, doc_version, chunk_index)
+	)`
+}
+
+func (d *DBStore) ragChunkAssetsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_chunk_assets (
+		doc_id TEXT NOT NULL,
+		doc_version BIGINT NOT NULL,
+		chunk_index INTEGER NOT NULL,
+		asset_id TEXT NOT NULL,
+		ordinal INTEGER NOT NULL,
+		location_json TEXT NOT NULL,
+		caption TEXT NOT NULL,
+		ocr_text TEXT NOT NULL,
+		PRIMARY KEY (doc_id, doc_version, chunk_index, asset_id, ordinal)
+	)`
+}
+
+func (d *DBStore) ragIndexGCTasksTableSQL() string {
+	idColumn := "INTEGER PRIMARY KEY AUTOINCREMENT"
+	if d.dialect == "postgres" {
+		idColumn = "BIGSERIAL PRIMARY KEY"
+	}
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_index_gc_tasks (
+		id %s,
+		doc_id TEXT NOT NULL,
+		retired_version BIGINT NOT NULL,
+		retired_at TIMESTAMP NOT NULL,
+		not_before TIMESTAMP NOT NULL,
+		status TEXT NOT NULL,
+		claim_generation BIGINT NOT NULL DEFAULT 0,
+		lease_owner TEXT NOT NULL DEFAULT '',
+		lease_until TIMESTAMP,
+		heartbeat_at TIMESTAMP,
+		attempt_count INTEGER NOT NULL DEFAULT 0,
+		next_run_at TIMESTAMP,
+		created_at TIMESTAMP NOT NULL,
+		UNIQUE (doc_id, retired_version)
+	)`, idColumn)
+}
+
+func (d *DBStore) ragDocumentAITaskBudgetsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_document_ai_task_budgets (
+		task_id BIGINT PRIMARY KEY,
+		user_id TEXT NOT NULL,
+		max_requests BIGINT NOT NULL,
+		max_tokens BIGINT NOT NULL,
+		max_cost_microusd BIGINT NOT NULL,
+		charged_requests BIGINT NOT NULL DEFAULT 0,
+		charged_tokens BIGINT NOT NULL DEFAULT 0,
+		charged_cost_microusd BIGINT NOT NULL DEFAULT 0,
+		updated_at TIMESTAMP NOT NULL
+	)`
+}
+
+func (d *DBStore) ragDocumentAIUserBudgetsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_document_ai_user_budgets (
+		user_id TEXT NOT NULL,
+		period_start_utc DATE NOT NULL,
+		charged_requests BIGINT NOT NULL DEFAULT 0,
+		charged_tokens BIGINT NOT NULL DEFAULT 0,
+		charged_cost_microusd BIGINT NOT NULL DEFAULT 0,
+		updated_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (user_id, period_start_utc)
+	)`
+}
+
+func (d *DBStore) ragDocumentAIUsageTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_document_ai_usage (
+		idempotency_key TEXT PRIMARY KEY,
+		logical_request_key TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		doc_id TEXT NOT NULL,
+		task_id BIGINT NOT NULL,
+		doc_version BIGINT NOT NULL,
+		claim_generation BIGINT NOT NULL,
+		lease_owner TEXT NOT NULL,
+		operation TEXT NOT NULL,
+		provider_fingerprint TEXT NOT NULL,
+		period_start_utc DATE NOT NULL,
+		reserved_input_tokens BIGINT NOT NULL,
+		reserved_output_tokens BIGINT NOT NULL,
+		actual_input_tokens BIGINT NOT NULL DEFAULT 0,
+		actual_output_tokens BIGINT NOT NULL DEFAULT 0,
+		estimated_cost_microusd BIGINT NOT NULL,
+		state TEXT NOT NULL,
+		reservation_expires_at TIMESTAMP,
+		sent_at TIMESTAMP,
+		usage_estimated BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL
+	)`
 }
 
 func (d *DBStore) Close() error {

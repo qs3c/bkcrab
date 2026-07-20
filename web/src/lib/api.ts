@@ -1416,6 +1416,8 @@ export interface KnowledgeBase {
   embedDims: number;
   chunkSize: number;
   chunkOverlap: number;
+  parseMode: RAGParseMode;
+  enrichmentEnabled: boolean;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -1432,6 +1434,20 @@ export interface KnowledgeDocument {
   chunkCount: number;
   tokenCount: number;
   version: number;
+  activeVersion: number;
+  indexFormatVersion: number;
+  appliedParseMode?: RAGParseMode;
+  targetParseMode: RAGParseMode;
+  needsReparse: boolean;
+  needsReindex: boolean;
+  progress: {
+    stage: string;
+    current: number;
+    total: number;
+    unit: string;
+  };
+  degraded: boolean;
+  warningCount: number;
   uploadedAt: string;
   indexedAt?: string;
 }
@@ -1489,6 +1505,8 @@ function normalizeKnowledgeBase(row: KnowledgeBaseWire): KnowledgeBase {
     embedDims: wireValue(row, "embedDims", "EmbedDims", 0),
     chunkSize: wireValue(row, "chunkSize", "ChunkSize", 0),
     chunkOverlap: wireValue(row, "chunkOverlap", "ChunkOverlap", 0),
+    parseMode: wireValue(row, "parseMode", "ParseMode", "standard"),
+    enrichmentEnabled: wireValue(row, "enrichmentEnabled", "EnrichmentEnabled", false),
     status: wireValue(row, "status", "Status", ""),
     createdAt: wireValue(row, "createdAt", "CreatedAt", ""),
     updatedAt: wireValue(row, "updatedAt", "UpdatedAt", ""),
@@ -1496,6 +1514,7 @@ function normalizeKnowledgeBase(row: KnowledgeBaseWire): KnowledgeBase {
 }
 
 function normalizeKnowledgeDocument(row: KnowledgeBaseWire): KnowledgeDocument {
+  const progress = wireValue<Record<string, unknown>>(row, "progress", "Progress", {});
   return {
     id: wireValue(row, "id", "ID", ""),
     kbId: wireValue(row, "kbId", "KBID", ""),
@@ -1507,6 +1526,20 @@ function normalizeKnowledgeDocument(row: KnowledgeBaseWire): KnowledgeDocument {
     chunkCount: wireValue(row, "chunkCount", "ChunkCount", 0),
     tokenCount: wireValue(row, "tokenCount", "TokenCount", 0),
     version: wireValue(row, "version", "Version", 0),
+    activeVersion: wireValue(row, "activeVersion", "ActiveVersion", 0),
+    indexFormatVersion: wireValue(row, "indexFormatVersion", "IndexFormatVersion", 1),
+    appliedParseMode: wireValue<RAGParseMode | undefined>(row, "appliedParseMode", "AppliedParseMode", undefined),
+    targetParseMode: wireValue(row, "targetParseMode", "TargetParseMode", "standard"),
+    needsReparse: wireValue(row, "needsReparse", "NeedsReparse", false),
+    needsReindex: wireValue(row, "needsReindex", "NeedsReindex", false),
+    progress: {
+      stage: wireValue(progress, "stage", "Stage", "queued"),
+      current: wireValue(progress, "current", "Current", 0),
+      total: wireValue(progress, "total", "Total", 0),
+      unit: wireValue(progress, "unit", "Unit", ""),
+    },
+    degraded: wireValue(row, "degraded", "Degraded", false),
+    warningCount: wireValue(row, "warningCount", "WarningCount", 0),
     uploadedAt: wireValue(row, "uploadedAt", "UploadedAt", ""),
     indexedAt: wireValue<string | undefined>(row, "indexedAt", "IndexedAt", undefined),
   };
@@ -1540,6 +1573,8 @@ export async function createKnowledgeBase(input: {
   description?: string;
   chunkSize?: number;
   chunkOverlap?: number;
+  parseMode?: RAGParseMode;
+  enrichmentEnabled?: boolean;
 }): Promise<KnowledgeBase> {
   const row = await ragJSON<KnowledgeBaseWire>("/api/rag/kbs", {
     method: "POST",
@@ -1551,7 +1586,7 @@ export async function createKnowledgeBase(input: {
 
 export async function updateKnowledgeBase(
   id: string,
-  input: Partial<Pick<KnowledgeBase, "name" | "description" | "chunkSize" | "chunkOverlap">>,
+  input: Partial<Pick<KnowledgeBase, "name" | "description" | "chunkSize" | "chunkOverlap" | "parseMode" | "enrichmentEnabled">>,
 ): Promise<KnowledgeBase> {
   const row = await ragJSON<KnowledgeBaseWire>(`/api/rag/kbs/${encodeURIComponent(id)}`, {
     method: "PATCH",

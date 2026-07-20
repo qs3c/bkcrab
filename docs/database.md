@@ -36,12 +36,21 @@ in the primary relational database:
 |---|---|
 | `rag_kbs` | User-owned knowledge bases and their immutable embedding snapshot |
 | `rag_chat_turns` | Persisted simple knowledge-base question/answer turns and citation snapshots |
-| `rag_documents` | Uploaded source files and the current version of their index |
+| `rag_documents` | Uploaded source files, target version, and active retrieval version |
 | `rag_index_tasks` | Durable asynchronous indexing and restart-recovery state |
+| `rag_document_versions` | Immutable parse/index/config snapshots and version result state |
+| `rag_chunks` | Authoritative versioned chunk payload and location catalog |
+| `rag_assets` | Content-addressed, insert-only binary/display resource catalog |
+| `rag_chunk_assets` | Versioned chunk-to-asset occurrences, captions, and OCR text |
+| `rag_index_gc_tasks` | Delayed cleanup work for one exact retired document version |
+| `rag_document_ai_task_budgets` | Lockable per-index-task DocumentAI aggregate budget |
+| `rag_document_ai_user_budgets` | Lockable per-user UTC-period DocumentAI aggregate budget |
+| `rag_document_ai_usage` | Durable idempotency, reservation, and settlement ledger |
 
-Original file bytes are stored in the configured object store. Chunk text,
-vectors, and chunk-level metadata are stored in Milvus rather than duplicated
-in these tables.
+Original files, parse artifacts, and asset binaries are stored in the configured
+object store. The primary database is authoritative for chunk text and metadata;
+Milvus stores embeddings plus retrieval identifiers and is not the payload source
+for newly indexed documents.
 
 The types below are shown as SQLite/PostgreSQL and MySQL when they differ.
 MySQL uses `DATETIME(6)` for timestamps; SQLite/PostgreSQL use `TIMESTAMP`.
@@ -62,6 +71,8 @@ stores.
 | `embed_dims` | `INTEGER` | Embedding dimensions captured at creation |
 | `chunk_size` | `INTEGER` | Target chunk size; defaults to 512 estimated tokens |
 | `chunk_overlap` | `INTEGER` | Chunk overlap; defaults to 64 estimated tokens |
+| `parse_mode` | `TEXT` / `VARCHAR(16)` | Requested parse mode: `standard` or `auto`; defaults to `standard` |
+| `enrichment_enabled` | `BOOLEAN` | Whether text enrichment is requested; defaults to `false` |
 | `status` | `TEXT` / `VARCHAR(32)` | Lifecycle state: `active` or `deleting` |
 | `created_at` | timestamp | Creation time |
 | `updated_at` | timestamp | Last metadata update time |
@@ -112,13 +123,24 @@ Indexes:
 | `error_msg` | `TEXT` / `LONGTEXT` | Most recent indexing error; empty when no error is present |
 | `chunk_count` | `INTEGER` | Number of chunks in the completed current index; defaults to 0 |
 | `token_count` | `INTEGER` | Estimated token count in the completed current index; defaults to 0 |
-| `version` | `INTEGER` | Current document-index version; starts at 1 and increments on reindex |
+| `version` | `BIGINT` | Highest allocated physical index version/current target |
+| `source_sha256` | `TEXT` / `CHAR(64)` | SHA-256 of the uploaded source; empty only for migrated legacy rows |
+| `active_version` | `BIGINT` | Retrieval-visible version, or 0 when no complete version is available |
+| `index_format_version` | `SMALLINT` | 0 for pinned legacy payloads, 1 for the SQL catalog format |
+| `processing_stage` | `TEXT` / `VARCHAR(24)` | Latest target stage; defaults to `queued` |
+| `progress_current` | `INTEGER` | Completed units in the latest target stage |
+| `progress_total` | `INTEGER` | Total units in the latest target stage |
+| `progress_unit` | `TEXT` / `VARCHAR(24)` | Unit label for progress counters |
+| `degraded` | `BOOLEAN` | Whether the latest target completed with degraded output |
+| `warning_count` | `INTEGER` | Number of warnings for the latest target |
 | `uploaded_at` | timestamp | Upload time |
-| `indexed_at` | nullable timestamp | Time the current version completed indexing |
+| `indexed_at` | nullable timestamp | Time the latest target completed indexing |
 
-Chunks written to Milvus carry `doc_version`. The document `version`
-therefore identifies stale chunks that can be removed after a replacement
-index has been written successfully.
+`version` and `active_version` are deliberately separate: a failed replacement
+does not hide a previously active index. `active_version=0` never means
+"accept any legacy version". During migration, an old `DONE` row is pinned to
+its old version with `index_format_version=0` and a synthetic `legacy-v0`
+version snapshot; other legacy rows remain inactive until rebuilt.
 
 Index:
 
@@ -147,3 +169,113 @@ Index:
 
 - `idx_rag_tasks_status (status, created_at)` supports ordered recovery of
   runnable tasks.
+
+### `rag_document_versions`
+
+The primary key is `(doc_id, doc_version)`, where `doc_version` is `BIGINT` in
+every supported database. Snapshot fields are immutable after insert; only the
+status/result fields are changed, and worker changes must be protected by the
+index-task fence.
+
+| Column group | Columns | Meaning |
+|---|---|---|
+| Identity/result | `doc_id`, `doc_version`, `status`, `parse_artifact_key`, `page_count`, `asset_count`, `degraded`, `warning_count` | Physical version and its result |
+| Source/split | `source_sha256`, `parse_mode`, `chunk_size`, `chunk_overlap`, `parser_version`, `splitter_version`, `parse_fingerprint`, `index_fingerprint` | Reproducible source and parser snapshot |
+| Vision | `vision_model`, `vision_provider_fingerprint`, `vision_prompt_version` | Vision provider/model/prompt snapshot |
+| Enrichment | `text_model`, `text_provider_fingerprint`, `enrichment_prompt_version`, `enrichment_enabled` | Text enrichment snapshot |
+| DocumentAI limits | `max_document_ai_requests`, `max_document_ai_tokens`, `max_document_ai_cost_microusd` | Per-document request, token, and integer micro-USD caps |
+| Embedding | `embedding_provider`, `embedding_model`, `embedding_dimensions`, `embedding_contract_fingerprint` | KB creation-time embedding contract |
+| Timestamps | `created_at`, `updated_at` | Creation and latest result transition |
+
+Version states are `PENDING`, `RUNNING`, `DONE`, `RETIRED`, `GCED`, `FAILED`,
+and `SUPERSEDED`. A migrated active legacy version uses the `legacy-v0`
+sentinel in its parser/fingerprint fields and has enrichment disabled.
+
+### `rag_chunks`
+
+| Column | Type | Meaning |
+|---|---|---|
+| `kb_id`, `doc_id` | text ID | Owning knowledge base and document |
+| `doc_version` | `BIGINT` | Exact physical index version |
+| `chunk_index` | `INTEGER` | Stable chunk index within the version |
+| `section_title` | text | Section title |
+| `location_json` | text | Canonical source-location JSON |
+| `raw_content` | text | Authoritative unenhanced chunk text |
+| `enhancement` | text | Optional versioned enrichment |
+| `search_content` | text | Bounded text embedded and searched |
+| `token_count` | `INTEGER` | Estimated tokens |
+| `created_at` | timestamp | Catalog write time |
+
+The primary key is `(doc_id, doc_version, chunk_index)`. The
+`idx_rag_chunks_lookup (kb_id, doc_id, doc_version)` index supports retrieval
+hydration. Bulk APIs use bounded batches and bind every value.
+
+### `rag_assets`
+
+`rag_assets` is content-addressed per document and insert-only for binary and
+display fields. Repeated sightings only expand the `first_seen_version` /
+`last_seen_version` range; captions, OCR, occurrence, and model semantics do
+not belong here.
+
+| Column group | Columns | Meaning |
+|---|---|---|
+| Identity | `id`, `doc_id`, `content_sha256` | Stable asset ID and per-document content identity; `(doc_id, content_sha256)` is unique |
+| Source | `source_kind`, `source_mime`, `source_object_key`, `byte_size`, `width`, `height` | Original binary metadata and object key |
+| Safe display | `display_mime`, `display_object_key`, `thumbnail_object_key`, `display_status`, `display_sha256` | Sanitized display derivatives |
+| Version range | `first_seen_version`, `last_seen_version` (`BIGINT`) | Earliest/latest physical version referencing the content |
+| Timestamps | `created_at`, `updated_at` | Creation and range-update times |
+
+`idx_rag_assets_doc (doc_id)` supports document cleanup and artifact
+rehydration. Internal object keys are never exposed by API DTOs.
+
+### `rag_chunk_assets`
+
+Each row maps one asset occurrence into one exact chunk version. The primary
+key is `(doc_id, doc_version, chunk_index, asset_id, ordinal)`; fields
+`location_json`, `caption`, and `ocr_text` are versioned so an old worker cannot
+overwrite the active version's semantics. Index
+`idx_rag_chunk_assets_lookup (doc_id, doc_version, chunk_index, ordinal)`
+supports bounded hydration by retrieval refs.
+
+### `rag_index_gc_tasks`
+
+GC work is separate from index work and is uniquely identified by
+`(doc_id, retired_version)`. `retired_version` is `BIGINT`; `retired_at` and
+`not_before` enforce the grace period. `status`, `claim_generation`,
+`lease_owner`, `lease_until`, `heartbeat_at`, `attempt_count`, and `next_run_at`
+provide delayed retry/lease state. GC always deletes one exact version and
+must never advance `rag_documents.version`.
+
+Index `idx_rag_index_gc_tasks_runnable (status, next_run_at, lease_until,
+created_at)` supports delayed claims. A completed GC leaves the version row as
+a `GCED` tombstone until document-level deletion or a later orphan sweep.
+
+### DocumentAI budget and usage tables
+
+`rag_document_ai_task_budgets` has primary key `task_id` and stores `user_id`,
+the task caps (`max_requests`, `max_tokens`, `max_cost_microusd`), charged
+aggregates, and `updated_at`. `rag_document_ai_user_budgets` has primary key
+`(user_id, period_start_utc)` and stores the same charged aggregates for one
+UTC date. Costs are integer micro-USD (`BIGINT`), never floating point.
+
+`rag_document_ai_usage` has primary key `idempotency_key` and records:
+
+- logical request, user/document/task/version, claim generation, and lease owner;
+- operation and provider fingerprint;
+- UTC period, reserved/actual input and output tokens, and estimated micro-USD;
+- `RESERVED`, `SENT`, `COMMITTED`, `RELEASED`, or `OVERRUN` state;
+- reservation expiry, send time, estimated-usage marker, and timestamps.
+
+Indexes `(user_id, period_start_utc, provider_fingerprint)` and
+`(task_id, logical_request_key)` support quota accounting and idempotency
+inspection. Reservation transactions lock the user-period aggregate first,
+then the task aggregate, then insert usage; an unlocked `SUM + INSERT` quota
+check is not safe.
+
+### Migration compatibility
+
+RAG migrations are restart-safe and can run twice. They add missing columns
+for an existing installation rather than relying only on `CREATE TABLE IF NOT
+EXISTS`; SQLite rebuilds `rag_documents` to make `version` a true `BIGINT`,
+while PostgreSQL and MySQL alter it in place. Existing chat `sources` JSON is
+left byte-for-byte unchanged.
