@@ -42,6 +42,7 @@ func TestRAGDocumentVersionAndCatalogCRUD(t *testing.T) {
 	defer st.Close()
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
+	ensureRAGLifecycleUser(t, st, "u_catalog", "active")
 	if err := st.CreateRAGKB(ctx, &RAGKBRecord{
 		ID: "kb_catalog", UserID: "u_catalog", Name: "catalog",
 		EmbedProvider: "system", EmbedModel: "embed-v1", EmbedDims: 8,
@@ -133,6 +134,23 @@ func TestRAGDocumentVersionAndCatalogCRUD(t *testing.T) {
 	}
 	if err := st.UpsertRAGAsset(ctx, asset); err != nil {
 		t.Fatalf("upsert asset: %v", err)
+	}
+	if err := st.ReplaceRAGVersionAssets(ctx, doc.ID, 5, []string{asset.ID, asset.ID}); err != nil {
+		t.Fatalf("replace version assets: %v", err)
+	}
+	var versionAssetCount int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rag_version_assets
+		WHERE doc_id=? AND doc_version=? AND asset_id=?`, doc.ID, int64(5), asset.ID).Scan(&versionAssetCount); err != nil {
+		t.Fatal(err)
+	}
+	if versionAssetCount != 1 {
+		t.Fatalf("deduplicated version asset mappings = %d, want 1", versionAssetCount)
+	}
+	if err := st.ReplaceRAGVersionAssets(ctx, doc.ID, 5, nil); err != nil {
+		t.Fatalf("clear version assets: %v", err)
+	}
+	if err := st.ReplaceRAGVersionAssets(ctx, doc.ID, 5, []string{asset.ID}); err != nil {
+		t.Fatalf("restore version assets: %v", err)
 	}
 	if _, err := st.db.ExecContext(ctx, `UPDATE rag_assets SET thumbnail_sha256='' WHERE id=?`, asset.ID); err != nil {
 		t.Fatalf("simulate Phase B asset row: %v", err)

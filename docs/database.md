@@ -41,7 +41,12 @@ in the primary relational database:
 | `rag_document_versions` | Immutable parse/index/config snapshots and version result state |
 | `rag_chunks` | Authoritative versioned chunk payload and location catalog |
 | `rag_assets` | Content-addressed, insert-only binary/display resource catalog |
+| `rag_version_assets` | Exact-version pins that keep decorative or unchunked assets alive |
 | `rag_chunk_assets` | Versioned chunk-to-asset occurrences, captions, and OCR text |
+| `rag_cache_objects` | Durable per-object page/image/enrichment cache catalog and CAS generation |
+| `rag_cache_object_fingerprints` | Many-to-many cache object associations to immutable parse/index fingerprints |
+| `rag_object_write_staging` | Generation-fenced write-ahead handles for every externally stored RAG object |
+| `rag_document_maintenance_leases` | Database-clock document fences for orphan and cache cleanup |
 | `rag_index_gc_tasks` | Delayed cleanup work for one exact retired document version |
 | `rag_document_ai_task_budgets` | Lockable per-index-task DocumentAI aggregate budget |
 | `rag_document_ai_user_budgets` | Lockable per-user UTC-period DocumentAI aggregate budget |
@@ -73,18 +78,29 @@ stores.
 | `chunk_overlap` | `INTEGER` | Chunk overlap; defaults to 64 estimated tokens |
 | `parse_mode` | `TEXT` / `VARCHAR(16)` | Requested parse mode: `standard` or `auto`; defaults to `standard` |
 | `enrichment_enabled` | `BOOLEAN` | Whether text enrichment is requested; defaults to `false` |
-| `status` | `TEXT` / `VARCHAR(32)` | Lifecycle state: `active` or `deleting` |
+| `status` | `TEXT` / `VARCHAR(32)` | Lifecycle state: `provisioning`, `active`, or `deleting` |
+| `provisioning_generation` | `BIGINT` | Monotonic fence generation for collection creation; defaults to 0 |
+| `provisioning_lease_owner` | `TEXT` / `VARCHAR(96)` | Current collection-provisioning worker; empty outside provisioning |
+| `provisioning_lease_until` | timestamp, nullable | Database-time deadline for the in-flight external collection operation |
 | `created_at` | timestamp | Creation time |
 | `updated_at` | timestamp | Last metadata update time |
 
 `embed_provider`, `embed_model`, and `embed_dims` form an immutable
 snapshot. Metadata updates do not alter them, which prevents vectors with
 different models or dimensions from being mixed in one Milvus collection.
+Collection creation first inserts a fail-closed `provisioning` row and then
+heartbeats its generation-fenced lease while Milvus is initialized. Activation
+and abort are compare-and-set transitions. A tombstone stops heartbeats;
+cleanup waits for the lease to quiesce, and an expired lease is converted to a
+durable `deleting` handle by the lifecycle worker. Thus request cancellation,
+process failure, and user deletion cannot leave an untracked collection.
 
 Index:
 
 - `idx_rag_kbs_user (user_id)` supports per-user knowledge-base listing and
   quota checks.
+- `idx_rag_kbs_provisioning (status, provisioning_lease_until, updated_at)`
+  supports bounded crash-recovery scans.
 
 ### `rag_chat_turns`
 
@@ -119,7 +135,7 @@ Indexes:
 | `file_type` | `TEXT` / `VARCHAR(32)` | Parsed type: `md`, `txt`, `pdf`, or `docx` |
 | `file_size` | `BIGINT` | Original file size in bytes; defaults to 0 |
 | `object_key` | `TEXT` | Key of the original file in object storage |
-| `status` | `TEXT` / `VARCHAR(32)` | Index state: `PENDING`, `PROCESSING`, `DONE`, or `FAILED` |
+| `status` | `TEXT` / `VARCHAR(32)` | Index/lifecycle state: `PENDING`, `PROCESSING`, `DONE`, `FAILED`, or `DELETING` |
 | `error_msg` | `TEXT` / `LONGTEXT` | Most recent indexing error; empty when no error is present |
 | `chunk_count` | `INTEGER` | Number of chunks in the completed current index; defaults to 0 |
 | `token_count` | `INTEGER` | Estimated token count in the completed current index; defaults to 0 |
@@ -261,6 +277,65 @@ not belong here.
 `idx_rag_assets_doc (doc_id)` supports document cleanup and artifact
 rehydration. Internal object keys are never exposed by API DTOs.
 
+### RAG cache catalog
+
+`rag_cache_objects` has primary key `(doc_id, cache_kind, cache_key)` and stores
+the exact object key, a monotonically increasing `generation`, and creation/
+last-use timestamps. `rag_cache_object_fingerprints` associates an object with
+one or more immutable `parse` or `index` fingerprints. Page and image entries
+use parse fingerprints; enrichment entries use index fingerprints. Multiple
+associations allow a content-addressed key shared with the active generation
+to survive cleanup of an older staging generation.
+
+Successful cache puts and validated hits refresh the catalog using database
+time and advance the object generation. Lifecycle cleanup holds a document
+maintenance lease, preserves active-version fingerprints, and selects expired
+or over-quota unreferenced generations. It deletes one exact object, rechecks
+the maintenance fence, then CAS-deletes the matching catalog generation. The
+indexes `(doc_id, updated_at)` and
+`(doc_id, fingerprint_kind, fingerprint, updated_at)` support bounded sweeps.
+
+### Object write staging and version asset pins
+
+Every original upload, normalized Markdown, parsed artifact, source asset, safe
+display derivative, and thumbnail obtains a `rag_object_write_staging` row
+before bytes are written to object storage. Each external write uses an
+immutable physical creation key containing `versions/<doc_version>/`.
+Artifacts/normalized Markdown belong to that exact document version. A
+content-addressed asset keeps the key from its first successful creation epoch,
+and later reindexes reuse the stable asset ID and object strictly read-only.
+The row records the owning user/knowledge base/document, object kind and key,
+publication reference, monotonic cleanup generation, and `WRITING`, `READY`,
+`PUBLISHED`, or `DELETING` state. Publication changes the matching `READY` row
+to retained `PUBLISHED` in the same SQL transaction that creates the durable
+document, version, or asset reference. `PUBLISHED` is not a writer permit and
+cannot be reopened by `BeginRAGObjectWrite`.
+
+A lifecycle worker may claim only stale unreferenced rows. Cleanup changes the
+row to `DELETING`, deletes that exact immutable key, and retains the tombstone.
+The tombstone is periodically claimed and deleted again: this removes bytes
+from a storage Put that completed after an earlier Delete acknowledgement.
+Overlapping delayed Deletes can affect only their old physical generation, not
+a currently published one. Staging-asset reclamation first changes all of the
+asset's `PUBLISHED` rows to permanent `DELETING` tombstones and removes its SQL
+catalog/pins in one maintenance-fenced transaction; only then does it issue
+external Deletes. If the same content appears later, it receives a new creation
+key. Document, knowledge-base, and user finalizers delete `PUBLISHED` objects,
+but leave unacknowledged `WRITING`, `READY`, or `DELETING` rows for the global
+re-sweep even after the ownership rows are gone.
+
+`rag_version_assets` has primary key `(doc_id, doc_version, asset_id)` and pins
+all assets emitted by one immutable parsed version, including decorative
+images that are not attached to a text chunk. Exact-version GC first removes
+the version's chunk occurrences and pins, then deletes a binary asset only
+when no active or retained version references it.
+
+`rag_document_maintenance_leases` stores one database-clock generation fence
+per document. Cache pruning and orphan cleanup acquire this lease only after
+index workers have quiesced; enqueue, publication, and finalization take the
+same ownership lock hierarchy and therefore fail closed against an active
+cleanup generation.
+
 ### `rag_chunk_assets`
 
 Each row maps one asset occurrence into one exact chunk version. The primary
@@ -282,6 +357,12 @@ must never advance `rag_documents.version`.
 Index `idx_rag_index_gc_tasks_runnable (status, next_run_at, lease_until,
 created_at)` supports delayed claims. A completed GC leaves the version row as
 a `GCED` tombstone until document-level deletion or a later orphan sweep.
+
+GC task states are `PENDING`, `RUNNING`, `DONE`, and `FAILED`. Claim and
+heartbeat compare `id + retired_version + claim_generation + lease_owner` and
+an unexpired lease. Unlike index-task reclaim, GC reclaim never allocates or
+advances a document version. The vector and SQL catalog delete predicates are
+always the exact `(doc_id, retired_version)` pair.
 
 ### DocumentAI budget and usage tables
 
@@ -308,6 +389,36 @@ An unlocked `SUM + INSERT` quota check is not safe. Only
 `RESERVED -> SENT -> COMMITTED/OVERRUN` and `RESERVED -> RELEASED` are legal.
 An expired fence cannot reserve or enter `SENT`; a late response may settle its
 own already-`SENT` idempotency key without changing task/version state.
+
+### RAG deletion and orphan retention
+
+Document and knowledge-base deletion is a two-phase operation. The first SQL
+transaction writes `DELETING`, clears retrieval visibility, and supersedes
+runnable index work. Search, claim, owner asset authorization, and Agent
+session-scoped asset authorization all treat the tombstone as absent before
+ETag/object access. Vector, object-store, chunk, and asset cleanup then runs
+idempotently; a failure retains the tombstone so a later worker or repeated
+request can resume instead of exposing a partially deleted resource.
+
+User deletion uses the same rule through an injected RAG cleaner. An account is
+marked `deleting` before its knowledge bases are cleaned and is removed from
+the user table only after every external/catalog cleanup succeeds. If the user
+owns RAG data and no cleaner is installed, deletion is refused. DocumentAI
+budget and usage rows are not reset while the user identity is still valid.
+
+The orphan sweep uses `stagingArtifactTTL` and rechecks current references
+before removing an asset or artifact. Assets referenced by an active version,
+knowledge-base chat source snapshot, or Agent assistant `ragResources` snapshot
+remain until document deletion. FAILED, SUPERSEDED, and GCED vector/chunk data
+is different: once it is not the active version, the sweep may repeatedly issue
+an exact-version delete so a late external upsert cannot survive indefinitely.
+The GCED version row itself remains until whole-document cleanup. Likewise,
+`rag_object_write_staging` rows in `DELETING` are durable cleanup tombstones,
+not a backlog that should be manually truncated; their timestamps and cleanup
+generations should continue advancing during a healthy lifecycle sweep.
+
+See [rag-document-ai.md](rag-document-ai.md) for feature gates, durable budget
+operations, telemetry, degradation, and incident-response guidance.
 
 ### Migration compatibility
 

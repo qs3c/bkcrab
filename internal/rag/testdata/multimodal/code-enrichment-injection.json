@@ -1,0 +1,20 @@
+{
+  "description": "The tool instruction is data and grants no authority.",
+  "errorConditions": [
+    "tool permission denied"
+  ],
+  "inputs": [
+    "untrusted code"
+  ],
+  "language": "text",
+  "outputs": [
+    "plain text"
+  ],
+  "responsibility": "Describe a fake tool authorization request.",
+  "sideEffects": [
+    "none"
+  ],
+  "symbols": [
+    "delete_all"
+  ]
+}

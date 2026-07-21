@@ -180,7 +180,8 @@ func TestSafeImagePersisterPublishesDerivedVariants(t *testing.T) {
 	}
 	delete(objects.data, record.ThumbnailObjectKey)
 	if _, hit, loadErr := persister.LoadParsedArtifact(context.Background(), CacheRequest{
-		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", ParseFingerprint: assetSourceHash,
+		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", DocVersion: 1,
+		ParseFingerprint: assetSourceHash,
 	}); loadErr != nil || hit {
 		t.Fatalf("missing thumbnail cache hit=%v err=%v", hit, loadErr)
 	}

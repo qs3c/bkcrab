@@ -19,6 +19,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/parse"
 	"github.com/qs3c/bkcrab/internal/rag/rerank"
+	"github.com/qs3c/bkcrab/internal/rag/telemetry"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/rag/vision"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -53,6 +54,9 @@ type Deps struct {
 	ImageVision  vision.ImageTranscriber
 	Enricher     enrich.Enricher
 	Tokenizer    enrich.Tokenizer
+	// Telemetry receives privacy-safe, closed-schema operational events. When
+	// omitted, the service uses the default structured logger.
+	Telemetry telemetry.Recorder
 	// OfficeAvailable reads the background-probed, three-golden-gated
 	// capability snapshot. Upload paths must not synchronously probe sidecar.
 	OfficeAvailable func() bool
@@ -73,6 +77,7 @@ type Service struct {
 	imageVision     vision.ImageTranscriber
 	enricher        enrich.Enricher
 	tokenizer       enrich.Tokenizer
+	telemetry       telemetry.Recorder
 	officeAvailable func() bool
 	tasks           chan int64
 	workerCount     int
@@ -80,17 +85,27 @@ type Service struct {
 
 	// The in-memory channel is only a latency hint. SQL claim/lease state is
 	// authoritative and pollInterval guarantees recovery after a dropped hint.
-	pollInterval      time.Duration
-	leaseDuration     time.Duration
-	heartbeatInterval time.Duration
-	gcGracePeriod     time.Duration
-	startOnce         sync.Once
-	kbLocks           sync.Map // map[string]*sync.RWMutex; deletion waits for in-flight KB work
-	docLocks          sync.Map // map[string]*sync.Mutex; one index mutation per document
+	pollInterval                    time.Duration
+	leaseDuration                   time.Duration
+	heartbeatInterval               time.Duration
+	gcGracePeriod                   time.Duration
+	stagingArtifactTTL              time.Duration
+	maxCacheFingerprintsPerDocument int
+	cacheSweepCursorMu              sync.Mutex
+	cacheSweepCursor                string
+	deletingDocumentSweepCursor     string
+	deletingKBSweepCursor           string
+	startOnce                       sync.Once
+	kbLocks                         sync.Map // map[string]*sync.RWMutex; deletion waits for in-flight KB work
+	docLocks                        sync.Map // map[string]*sync.Mutex; one index mutation per document
 }
 
 func New(d Deps) *Service {
 	d.Cfg.ApplyDefaults()
+	recorder := d.Telemetry
+	if recorder == nil {
+		recorder = telemetry.NewSlogRecorder(nil)
+	}
 	if d.Workers <= 0 {
 		d.Workers = 2
 	}
@@ -131,28 +146,39 @@ func New(d Deps) *Service {
 			local.VisionImageMaxEdge = d.Cfg.Limits.DisplayMaxEdge
 		}
 	}
+	// Components that expose the narrow recorder hook share the same sink as
+	// the orchestrator. This keeps one correlation stream without widening any
+	// parser/provider interface to accept arbitrary log attributes.
+	for _, component := range []any{d.Parser, d.Primitives, d.PageVision, d.ImageVision, d.Enricher} {
+		if observable, ok := component.(interface{ SetRecorder(telemetry.Recorder) }); ok {
+			observable.SetRecorder(recorder)
+		}
+	}
 	return &Service{
-		st:                d.Store,
-		vec:               d.Vector,
-		obj:               d.Objects,
-		cfg:               d.Cfg,
-		userCfg:           d.UserEmbedCfg,
-		queryLLM:          d.QueryLLM,
-		reranker:          d.Reranker,
-		parser:            d.Parser,
-		primitives:        d.Primitives,
-		pageVision:        d.PageVision,
-		imageVision:       d.ImageVision,
-		enricher:          d.Enricher,
-		tokenizer:         d.Tokenizer,
-		officeAvailable:   d.OfficeAvailable,
-		tasks:             make(chan int64, 256),
-		workerCount:       d.Workers,
-		workerID:          "rag-" + uuid.NewString(),
-		pollInterval:      time.Second,
-		leaseDuration:     time.Minute,
-		heartbeatInterval: 20 * time.Second,
-		gcGracePeriod:     time.Duration(d.Cfg.Limits.IndexGCGracePeriod) * time.Second,
+		st:                              d.Store,
+		vec:                             d.Vector,
+		obj:                             d.Objects,
+		cfg:                             d.Cfg,
+		userCfg:                         d.UserEmbedCfg,
+		queryLLM:                        d.QueryLLM,
+		reranker:                        d.Reranker,
+		parser:                          d.Parser,
+		primitives:                      d.Primitives,
+		pageVision:                      d.PageVision,
+		imageVision:                     d.ImageVision,
+		enricher:                        d.Enricher,
+		tokenizer:                       d.Tokenizer,
+		telemetry:                       recorder,
+		officeAvailable:                 d.OfficeAvailable,
+		tasks:                           make(chan int64, 256),
+		workerCount:                     d.Workers,
+		workerID:                        "rag-" + uuid.NewString(),
+		pollInterval:                    time.Second,
+		leaseDuration:                   time.Minute,
+		heartbeatInterval:               20 * time.Second,
+		gcGracePeriod:                   time.Duration(d.Cfg.Limits.IndexGCGracePeriod) * time.Second,
+		stagingArtifactTTL:              time.Duration(d.Cfg.Limits.StagingArtifactTTL) * time.Second,
+		maxCacheFingerprintsPerDocument: d.Cfg.Limits.MaxCacheFingerprintsPerDocument,
 	}
 }
 
@@ -180,6 +206,7 @@ func (s *Service) newTaskDocumentAIBudget(
 			MaxCostMicroUSD: microUSD(s.cfg.Limits.MaxEstimatedDocumentAICostPerUserPerDayUSD),
 		},
 		ReservationTTL: time.Duration(s.cfg.DocumentAI.TimeoutMS)*time.Millisecond + time.Minute,
+		Recorder:       s.telemetry,
 	}), nil
 }
 
@@ -200,7 +227,22 @@ func (s *Service) documentAIReconcileLoop(ctx context.Context) {
 	}
 	reconcile := func() {
 		now := time.Now().UTC()
-		_, _ = s.st.ReconcileRAGDocumentAIUsage(ctx, now, now.Add(-timeout-time.Minute), 100)
+		count, err := s.st.ReconcileRAGDocumentAIUsage(ctx, now, now.Add(-timeout-time.Minute), 100)
+		fields := telemetry.Fields{
+			Operation: "usage_reconcile", Transition: "reconcile", Outcome: "ok", SuccessCount: count,
+		}
+		if err != nil {
+			fields.Outcome = "error"
+			switch {
+			case errors.Is(err, context.Canceled):
+				fields.ErrorCode = "canceled"
+			case errors.Is(err, context.DeadlineExceeded):
+				fields.ErrorCode = "timeout"
+			default:
+				fields.ErrorCode = "store_error"
+			}
+		}
+		telemetry.Emit(ctx, s.telemetry, telemetry.EventDocumentAIBudget, fields)
 	}
 	reconcile()
 	ticker := time.NewTicker(interval)
@@ -283,6 +325,20 @@ func (s *Service) embedderForKB(ctx context.Context, kb *store.RAGKBRecord) (*em
 	return embed.New(cfg.Endpoint, cfg.APIKey, kb.EmbedModel, kb.EmbedDims), nil
 }
 
+func (s *Service) requireActiveUser(ctx context.Context, userID string) error {
+	user, err := s.st.GetUser(ctx, userID)
+	if errors.Is(err, store.ErrNotFound) {
+		return ErrForbidden
+	}
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(user.Status, "active") {
+		return ErrForbidden
+	}
+	return nil
+}
+
 type KBParsingOptions struct {
 	ParseMode         config.ParseMode
 	EnrichmentEnabled bool
@@ -303,6 +359,9 @@ func (s *Service) CreateKBWithOptions(
 	name = strings.TrimSpace(name)
 	if userID == "" {
 		return nil, ErrForbidden
+	}
+	if err := s.requireActiveUser(ctx, userID); err != nil {
+		return nil, err
 	}
 	if name == "" {
 		return nil, errors.New("知识库名称不能为空")
@@ -343,16 +402,40 @@ func (s *Service) CreateKBWithOptions(
 		ChunkOverlap:      chunkOverlap,
 		ParseMode:         string(options.ParseMode),
 		EnrichmentEnabled: options.EnrichmentEnabled,
-		Status:            "active",
+		Status:            store.RAGKBStatusProvisioning,
 	}
-	if err := s.st.CreateRAGKB(ctx, kb); err != nil {
-		return nil, err
+	kbLock := s.kbMutex(kb.ID)
+	kbLock.Lock()
+	defer kbLock.Unlock()
+	fence, err := s.st.BeginRAGKBProvisioning(
+		ctx, kb, s.workerID+"-kb", s.leaseDuration, s.cfg.Limits.MaxKBsPerUser,
+	)
+	if err != nil {
+		return nil, mapKBProvisioningStoreError(err, s.cfg.Limits.MaxKBsPerUser)
 	}
-	if err := s.vec.EnsureCollection(ctx, kb.ID, kb.EmbedDims); err != nil {
-		_ = s.st.DeleteRAGKB(ctx, kb.ID)
+	if err := s.ensureProvisionedKBCollection(ctx, kb, *fence); err != nil {
+		if cleanupErr := s.abandonKBProvisioning(ctx, *fence); cleanupErr != nil {
+			logLifecycleFailure("abandon_kb_provision", kb.ID, cleanupErr)
+		}
 		return nil, fmt.Errorf("创建向量 collection: %w", err)
 	}
-	return kb, nil
+	if err := ctx.Err(); err != nil {
+		if cleanupErr := s.abandonKBProvisioning(ctx, *fence); cleanupErr != nil {
+			logLifecycleFailure("cancel_kb_provision", kb.ID, cleanupErr)
+		}
+		return nil, err
+	}
+	active, activated, err := s.st.ActivateRAGKBProvisioning(ctx, *fence)
+	if err != nil || !activated {
+		if cleanupErr := s.abandonKBProvisioning(ctx, *fence); cleanupErr != nil {
+			logLifecycleFailure("finalize_kb_provision", kb.ID, cleanupErr)
+		}
+		if err != nil {
+			return nil, mapKBProvisioningStoreError(err, s.cfg.Limits.MaxKBsPerUser)
+		}
+		return nil, errRAGKBProvisionFenceLost
+	}
+	return active, nil
 }
 
 // GetKB enforces ownership. An empty ownerID is reserved for explicitly
@@ -405,6 +488,12 @@ func (s *Service) updateKB(
 	if err != nil {
 		return nil, err
 	}
+	if err := s.requireActiveUser(ctx, kb.UserID); err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(kb.Status, "active") {
+		return nil, errors.New("知识库正在删除中")
+	}
 	if strings.TrimSpace(name) != "" {
 		kb.Name = strings.TrimSpace(name)
 	}
@@ -429,31 +518,11 @@ func (s *Service) updateKB(
 }
 
 func (s *Service) DeleteKB(ctx context.Context, ownerID, kbID string) error {
-	// Holding the exclusive KB lock makes deletion wait for local uploads,
-	// reindexes, document deletions, and indexing workers already in flight.
-	// Once status is set to deleting, subsequently queued workers abandon the
-	// document when they acquire the shared lock and re-read the KB row.
-	kbLock := s.kbMutex(kbID)
-	kbLock.Lock()
-	defer kbLock.Unlock()
-
 	kb, err := s.GetKB(ctx, ownerID, kbID)
 	if err != nil {
 		return err
 	}
-	kb.Status = "deleting"
-	if err := s.st.UpdateRAGKB(ctx, kb); err != nil {
-		return err
-	}
-	if err := s.vec.DropCollection(ctx, kbID); err != nil {
-		// Keep the deleting row as a durable retry handle. Removing the only DB
-		// record here would make leaked vectors impossible to clean up safely.
-		return fmt.Errorf("删除向量 collection: %w", err)
-	}
-	if err := s.obj.DeletePrefix(ctx, fmt.Sprintf("rag/%s/%s/", kb.UserID, kbID)); err != nil {
-		return fmt.Errorf("删除知识库原件: %w", err)
-	}
-	return s.st.DeleteRAGKB(ctx, kbID)
+	return s.deleteKBRecord(ctx, kb)
 }
 
 func (s *Service) GetDocument(ctx context.Context, ownerID, kbID, docID string) (*store.RAGDocumentRecord, error) {

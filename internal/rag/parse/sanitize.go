@@ -308,10 +308,7 @@ func (r *markdownRenderer) renderImage(image *ast.Image, output *strings.Builder
 	if strings.HasPrefix(strings.ToLower(destination), "rag-asset://") {
 		occurrenceID := strings.TrimPrefix(destination, "rag-asset://")
 		occurrence, exists := r.occurrences[occurrenceID]
-		if r.allowInternalAssets {
-			if !exists || occurrence.ID != occurrenceID || occurrence.UnitID != r.unit.ID {
-				return errors.New("unknown or cross-unit asset occurrence")
-			}
+		if r.allowInternalAssets && exists && occurrence.ID == occurrenceID && occurrence.UnitID == r.unit.ID {
 			output.WriteString("![")
 			output.WriteString(escapeImageAlt(alt, tableCell))
 			output.WriteString("](rag-asset://")

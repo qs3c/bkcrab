@@ -269,8 +269,7 @@ func TestRAGAssetRevokesDeletingKBAndInactiveOwnerBefore304(t *testing.T) {
 	t.Run("knowledge base deleting", func(t *testing.T) {
 		fixture := newRAGAssetFixture(t)
 		etag := fixture.request(t, fixture.owner.ID, "", false, nil).Header().Get("ETag")
-		fixture.kb.Status = "deleting"
-		if err := fixture.server.dataStore.UpdateRAGKB(context.Background(), fixture.kb); err != nil {
+		if _, err := fixture.server.dataStore.MarkRAGKBDeleting(context.Background(), fixture.kb.ID); err != nil {
 			t.Fatal(err)
 		}
 		fixture.objects.resetReads()

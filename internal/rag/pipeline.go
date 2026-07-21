@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -30,12 +31,19 @@ import (
 	"github.com/qs3c/bkcrab/internal/rag/parse"
 	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
 	"github.com/qs3c/bkcrab/internal/rag/split"
+	"github.com/qs3c/bkcrab/internal/rag/telemetry"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/rag/vision"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
 var errIndexFenceLost = errors.New("RAG index fence lost")
+
+const (
+	indexTaskPendingLimitCode       = "pending_limit"
+	indexTaskReindexRateLimitCode   = "reindex_rate_limit"
+	indexTaskRejectedTelemetryState = "rejected"
+)
 
 // Start launches bounded durable workers. The in-process channel only reduces
 // latency; every wake makes a SQL claim, and the periodic pump makes a dropped
@@ -47,6 +55,7 @@ func (s *Service) Start(ctx context.Context) {
 		}
 		go s.taskPump(ctx)
 		go s.documentAIReconcileLoop(ctx)
+		go s.lifecycleLoop(ctx)
 		s.wakeWorkers()
 	})
 }
@@ -93,6 +102,9 @@ func (s *Service) claimAvailable(ctx context.Context) {
 	for ctx.Err() == nil {
 		claim, err := s.st.ClaimRAGIndexTask(ctx, s.workerID, s.leaseDuration)
 		if err != nil {
+			telemetry.Emit(ctx, s.telemetry, telemetry.EventIndexTask, telemetry.Fields{
+				Transition: "claim", Outcome: "error", ErrorCode: "store_error",
+			})
 			if ctx.Err() == nil {
 				slog.Error("rag: durable index claim failed", "worker", s.workerID, "error", err)
 			}
@@ -114,6 +126,9 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName st
 
 	kb, err := s.GetKB(ctx, ownerID, kbID)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.requireActiveUser(ctx, kb.UserID); err != nil {
 		return nil, err
 	}
 	if kb.Status != "active" {
@@ -150,9 +165,21 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName st
 	docID := "doc_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
 	key := objects.Key(kb.UserID, kbID, docID, fileName)
 	contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(fileName)))
+	objectFence, err := s.st.BeginRAGObjectWrite(ctx, store.RAGObjectWriteRequest{
+		UserID: kb.UserID, KBID: kbID, DocID: docID,
+		ObjectKind: store.RAGObjectKindOriginal, ObjectKey: key, ReferenceKey: docID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("register original object write: %w", err)
+	}
 	hasher := sha256.New()
 	if err := s.obj.Put(ctx, key, io.TeeReader(r, hasher), size, contentType); err != nil {
 		return nil, fmt.Errorf("保存原件: %w", err)
+	}
+	if ready, err := s.st.MarkRAGObjectWriteReady(ctx, *objectFence); err != nil {
+		return nil, fmt.Errorf("mark original object ready: %w", err)
+	} else if !ready {
+		return nil, fmt.Errorf("mark original object ready: %w", store.ErrRAGLifecycleInactive)
 	}
 	doc := &store.RAGDocumentRecord{
 		ID:                 docID,
@@ -182,6 +209,7 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName st
 	})
 	if err != nil {
 		_ = s.obj.DeletePrefix(ctx, fmt.Sprintf("rag/%s/%s/%s/", kb.UserID, kbID, docID))
+		s.emitIndexTaskPolicyRejection(ctx, doc.ID, doc.Version, "enqueue", err)
 		return nil, err
 	}
 	s.scheduleTask(taskID)
@@ -198,6 +226,9 @@ func (s *Service) ReindexDocument(ctx context.Context, ownerID, kbID, docID stri
 
 	kb, err := s.GetKB(ctx, ownerID, kbID)
 	if err != nil {
+		return err
+	}
+	if err := s.requireActiveUser(ctx, kb.UserID); err != nil {
 		return err
 	}
 	if kb.Status != "active" {
@@ -218,34 +249,57 @@ func (s *Service) ReindexDocument(ctx context.Context, ownerID, kbID, docID stri
 		MinReindexInterval: time.Duration(s.cfg.Limits.MinAdvancedReindexInterval) * time.Second,
 	})
 	if err != nil {
+		s.emitIndexTaskPolicyRejection(ctx, doc.ID, doc.Version, "reindex", err)
 		return err
 	}
 	s.scheduleTask(task.ID)
 	return nil
 }
 
+func (s *Service) emitIndexTaskPolicyRejection(
+	ctx context.Context,
+	docID string,
+	docVersion int64,
+	transition string,
+	err error,
+) {
+	errorCode := ""
+	switch {
+	case errors.Is(err, store.ErrRAGAdvancedPendingLimit):
+		errorCode = indexTaskPendingLimitCode
+	case errors.Is(err, store.ErrRAGAdvancedReindexRateLimit):
+		errorCode = indexTaskReindexRateLimitCode
+	default:
+		return
+	}
+	telemetry.Emit(ctx, s.telemetry, telemetry.EventIndexTask, telemetry.Fields{
+		DocID: docID, DocVersion: docVersion, Transition: transition,
+		Outcome: indexTaskRejectedTelemetryState, ErrorCode: errorCode,
+	})
+}
+
 func (s *Service) DeleteDocument(ctx context.Context, ownerID, kbID, docID string) error {
 	kbLock := s.kbMutex(kbID)
 	kbLock.RLock()
 	defer kbLock.RUnlock()
-	docLock := s.docMutex(docID)
-	docLock.Lock()
-	defer docLock.Unlock()
 
-	kb, err := s.GetKB(ctx, ownerID, kbID)
-	if err != nil {
+	if _, err := s.GetKB(ctx, ownerID, kbID); err != nil {
 		return err
 	}
 	if _, err := s.GetDocument(ctx, ownerID, kbID, docID); err != nil {
 		return err
 	}
-	if err := s.vec.DeleteDoc(ctx, kbID, docID); err != nil {
-		return fmt.Errorf("删除文档向量: %w", err)
+	// Persist the tombstone before waiting for an in-process index worker. SQL
+	// search/claim snapshots and both asset authorization paths therefore fail
+	// closed immediately, while cleanup remains safely retryable.
+	doc, err := s.st.MarkRAGDocumentDeleting(ctx, docID)
+	if err != nil {
+		return err
 	}
-	if err := s.obj.DeletePrefix(ctx, fmt.Sprintf("rag/%s/%s/%s/", kb.UserID, kbID, docID)); err != nil {
-		return fmt.Errorf("删除文档原件: %w", err)
-	}
-	return s.st.DeleteRAGDocument(ctx, docID)
+	docLock := s.docMutex(docID)
+	docLock.Lock()
+	defer docLock.Unlock()
+	return s.cleanupDeletingDocument(ctx, doc)
 }
 
 func (s *Service) scheduleTask(taskID int64) {
@@ -265,6 +319,9 @@ func (s *Service) scheduleTask(taskID int64) {
 func (s *Service) runTask(ctx context.Context, _ int64) {
 	claim, err := s.st.ClaimRAGIndexTask(ctx, s.workerID, s.leaseDuration)
 	if err != nil {
+		telemetry.Emit(ctx, s.telemetry, telemetry.EventIndexTask, telemetry.Fields{
+			Transition: "claim", Outcome: "error", ErrorCode: "store_error",
+		})
 		slog.Error("rag: durable index claim failed", "worker", s.workerID, "error", err)
 		return
 	}
@@ -277,6 +334,16 @@ func (s *Service) runClaim(parent context.Context, claim *store.RAGIndexClaim) {
 	if claim == nil {
 		return
 	}
+	defer func() {
+		if _, err := s.st.AcknowledgeRAGIndexTaskQuiesced(parent, claim.Fence); err != nil && parent.Err() == nil {
+			slog.Warn("rag: failed to acknowledge superseded worker quiescence",
+				"task", claim.Fence.TaskID, "error", err)
+		}
+	}()
+	claimStarted := time.Now()
+	telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
+		claim, "claim", "ok", "",
+	))
 	workCtx, cancelWork := context.WithCancel(parent)
 	defer cancelWork()
 	heartbeatCtx, stopHeartbeat := context.WithCancel(parent)
@@ -292,6 +359,10 @@ func (s *Service) runClaim(parent context.Context, claim *store.RAGIndexClaim) {
 	}
 
 	doc, err := s.st.GetRAGDocument(workCtx, claim.Fence.DocID)
+	previousActive := int64(0)
+	if err == nil {
+		previousActive = doc.ActiveVersion
+	}
 	var embeddingBinding config.RAGEmbeddingCfg
 	if err == nil {
 		var current *store.RAGDocumentVersionRecord
@@ -301,11 +372,21 @@ func (s *Service) runClaim(parent context.Context, claim *store.RAGIndexClaim) {
 			created, ok, supersedeErr := s.st.SupersedeRAGIndexTaskAndCreateVersion(workCtx, claim.Fence, current)
 			stopAndWaitHeartbeat()
 			if supersedeErr != nil {
+				telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
+					claim, "supersede", "error", "store_error",
+				))
 				slog.Error("rag: supersede provider-mismatched index task", "task", claim.Fence.TaskID, "error", supersedeErr)
 				return
 			}
 			if ok && created != nil {
+				telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
+					claim, "supersede", "ok", "",
+				))
 				s.scheduleTask(created.ID)
+			} else {
+				telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
+					claim, "supersede", "rejected", "fence_lost",
+				))
 			}
 			return
 		}
@@ -330,13 +411,36 @@ func (s *Service) runClaim(parent context.Context, claim *store.RAGIndexClaim) {
 	}
 	ok, err := s.st.ActivateAndFinishRAGIndexTask(parent, claim.Fence, activation, s.gcGracePeriod)
 	if err != nil {
+		telemetry.Emit(parent, s.telemetry, telemetry.EventActiveVersionSwitch, telemetry.Fields{
+			DocID: claim.Fence.DocID, TaskID: claim.Fence.TaskID, DocVersion: claim.Fence.DocVersion,
+			PreviousVersion: previousActive, ClaimGeneration: claim.Fence.ClaimGeneration,
+			Transition: "activate", Outcome: "error", ErrorCode: "store_error",
+			Duration: time.Since(claimStarted),
+		})
 		slog.Error("rag: atomic index activation failed", "task", claim.Fence.TaskID, "error", err)
 		return
 	}
 	if !ok {
+		telemetry.Emit(parent, s.telemetry, telemetry.EventActiveVersionSwitch, telemetry.Fields{
+			DocID: claim.Fence.DocID, TaskID: claim.Fence.TaskID, DocVersion: claim.Fence.DocVersion,
+			PreviousVersion: previousActive, ClaimGeneration: claim.Fence.ClaimGeneration,
+			Transition: "activate", Outcome: "rejected", ErrorCode: "fence_lost",
+			Duration: time.Since(claimStarted),
+		})
 		slog.Info("rag: skipped activation after index fence was lost", "task", claim.Fence.TaskID,
 			"doc_version", claim.Fence.DocVersion, "generation", claim.Fence.ClaimGeneration)
+		return
 	}
+	retiredVersion := int64(0)
+	if previousActive > 0 && previousActive != claim.Fence.DocVersion {
+		retiredVersion = previousActive
+	}
+	telemetry.Emit(parent, s.telemetry, telemetry.EventActiveVersionSwitch, telemetry.Fields{
+		DocID: claim.Fence.DocID, TaskID: claim.Fence.TaskID, DocVersion: claim.Fence.DocVersion,
+		PreviousVersion: previousActive, RetiredVersion: retiredVersion,
+		ClaimGeneration: claim.Fence.ClaimGeneration, Transition: "activate", Outcome: "ok",
+		Duration: time.Since(claimStarted),
+	})
 }
 
 func (s *Service) heartbeatLoop(
@@ -364,6 +468,15 @@ func (s *Service) heartbeatLoop(
 				return
 			}
 			if err != nil || !ok {
+				errorCode := "fence_lost"
+				if err != nil {
+					errorCode = "store_error"
+				}
+				telemetry.Emit(ctx, s.telemetry, telemetry.EventIndexTask, telemetry.Fields{
+					DocID: fence.DocID, TaskID: fence.TaskID, DocVersion: fence.DocVersion,
+					ClaimGeneration: fence.ClaimGeneration, Transition: "heartbeat",
+					Outcome: "error", ErrorCode: errorCode,
+				})
 				leaseLost.Store(true)
 				cancelWork()
 				if err != nil && ctx.Err() == nil {
@@ -371,6 +484,10 @@ func (s *Service) heartbeatLoop(
 				}
 				return
 			}
+			telemetry.Emit(ctx, s.telemetry, telemetry.EventIndexTask, telemetry.Fields{
+				DocID: fence.DocID, TaskID: fence.TaskID, DocVersion: fence.DocVersion,
+				ClaimGeneration: fence.ClaimGeneration, Transition: "heartbeat", Outcome: "ok",
+			})
 		}
 	}
 }
@@ -385,18 +502,53 @@ func (s *Service) finishClaimFailure(parent context.Context, claim *store.RAGInd
 		delay := indexRetryDelay(claim.Task.RetryCount + 1)
 		ok, retryErr := s.st.RetryRAGIndexTask(parent, claim.Fence, message, delay)
 		if retryErr != nil {
+			telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
+				claim, "retry", "error", "store_error",
+			))
 			slog.Error("rag: persist transient index retry", "task", claim.Fence.TaskID, "error", retryErr)
 		} else if ok {
+			fields := indexTaskTelemetryFields(claim, "retry", "scheduled", "")
+			fields.RetryCount = claim.Task.RetryCount + 1
+			telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, fields)
 			slog.Warn("rag: transient index failure scheduled for retry", "task", claim.Fence.TaskID,
 				"retry", claim.Task.RetryCount+1, "delay", delay, "error", message)
+		} else {
+			telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
+				claim, "retry", "rejected", "fence_lost",
+			))
 		}
 		return
 	}
 	ok, failErr := s.st.FailRAGIndexTask(parent, claim.Fence, message)
 	if failErr != nil {
+		telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
+			claim, "finish", "error", "store_error",
+		))
 		slog.Error("rag: persist permanent index failure", "task", claim.Fence.TaskID, "error", failErr)
 	} else if ok {
+		telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
+			claim, "finish", "error", "permanent_failure",
+		))
 		slog.Error("rag: document indexing failed permanently", "task", claim.Fence.TaskID, "error", message)
+	} else {
+		telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
+			claim, "finish", "rejected", "fence_lost",
+		))
+	}
+}
+
+func indexTaskTelemetryFields(
+	claim *store.RAGIndexClaim,
+	transition, outcome, errorCode string,
+) telemetry.Fields {
+	if claim == nil {
+		return telemetry.Fields{Transition: transition, Outcome: outcome, ErrorCode: errorCode}
+	}
+	return telemetry.Fields{
+		DocID: claim.Fence.DocID, TaskID: claim.Fence.TaskID,
+		DocVersion: claim.Fence.DocVersion, ClaimGeneration: claim.Fence.ClaimGeneration,
+		RetryCount: claim.Task.RetryCount, Transition: transition, Outcome: outcome,
+		ErrorCode: errorCode,
 	}
 }
 
@@ -523,7 +675,8 @@ func (s *Service) indexClaim(
 	if err != nil {
 		return activation, err
 	}
-	if doc.Version != fence.DocVersion || version.DocVersion != fence.DocVersion {
+	if strings.EqualFold(doc.Status, "deleting") ||
+		doc.Version != fence.DocVersion || version.DocVersion != fence.DocVersion {
 		return activation, errIndexFenceLost
 	}
 	kb, err := s.st.GetRAGKB(ctx, doc.KBID)
@@ -547,7 +700,7 @@ func (s *Service) indexClaim(
 	if err != nil {
 		return activation, err
 	}
-	artifact, _, err := s.loadOrParseArtifact(ctx, claim, kb, doc, parseMode, budget)
+	artifact, _, artifactKey, err := s.loadOrParseArtifact(ctx, claim, kb, doc, parseMode, budget)
 	if err != nil {
 		return activation, err
 	}
@@ -610,10 +763,6 @@ func (s *Service) indexClaim(
 	}); err != nil {
 		return activation, err
 	}
-	artifactKey, err := document.ArtifactJSONKey(kb.UserID, kb.ID, doc.ID, version.ParseFingerprint)
-	if err != nil {
-		return activation, err
-	}
 	activation = store.RAGIndexActivation{
 		VersionResult: store.RAGDocumentVersionResult{
 			Status: store.RAGDocumentVersionDone, ParseArtifactKey: artifactKey,
@@ -650,9 +799,68 @@ func (s *Service) loadOrParseArtifact(
 	doc *store.RAGDocumentRecord,
 	parseMode config.ParseMode,
 	budget *vision.TaskDocumentAIBudget,
-) (*document.ParsedArtifact, bool, error) {
+) (*document.ParsedArtifact, bool, string, error) {
 	version, fence := &claim.Version, claim.Fence
 	persister := s.parsedArtifactPersister()
+	logicalArtifactKey, err := document.ArtifactJSONKey(
+		kb.UserID, kb.ID, doc.ID, version.ParseFingerprint,
+	)
+	if err != nil {
+		return nil, false, "", err
+	}
+	artifactKey := strings.TrimSpace(version.ParseArtifactKey)
+	if artifactKey == "" {
+		artifactKey, err = document.VersionedObjectKey(logicalArtifactKey, fence.DocVersion)
+		if err != nil {
+			return nil, false, "", err
+		}
+		// A chunk-only reindex reuses the active generation's immutable parse
+		// artifact. Validate it before pinning the new version so a missing or
+		// corrupt old object can fall back to this version's own physical key.
+		if doc.ActiveVersion > 0 && doc.ActiveVersion != fence.DocVersion {
+			active, activeErr := s.st.GetRAGDocumentVersion(ctx, doc.ID, doc.ActiveVersion)
+			if activeErr != nil && !errors.Is(activeErr, store.ErrNotFound) {
+				return nil, false, "", activeErr
+			}
+			if activeErr == nil && active.ParseFingerprint == version.ParseFingerprint &&
+				strings.TrimSpace(active.ParseArtifactKey) != "" {
+				reuseKey := strings.TrimSpace(active.ParseArtifactKey)
+				reuseRequest := ragassets.CacheRequest{
+					UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID, DocVersion: fence.DocVersion,
+					ParseFingerprint: version.ParseFingerprint, ArtifactObjectKey: reuseKey,
+					IndexFence: &fence,
+					ExpectedSource: &document.ParsedSource{
+						DocID: doc.ID, FileName: doc.FileName, Format: doc.FileType,
+						ByteSize: doc.FileSize, SHA256: version.SourceSHA256,
+					},
+				}
+				if reused, hit, loadErr := persister.LoadParsedArtifact(ctx, reuseRequest); loadErr != nil {
+					return nil, false, "", fmt.Errorf("load active parsed artifact cache: %w", loadErr)
+				} else if hit && parsedArtifactMatchesSource(reused, doc, version) {
+					recorded, recordErr := s.st.RecordRAGDocumentParseArtifact(ctx, fence, reuseKey)
+					if recordErr != nil {
+						return nil, false, "", fmt.Errorf("record reused parsed artifact: %w", recordErr)
+					}
+					if !recorded {
+						return nil, false, "", errIndexFenceLost
+					}
+					telemetry.Emit(ctx, s.telemetry, telemetry.EventResultCache, telemetry.Fields{
+						DocID: doc.ID, TaskID: fence.TaskID, DocVersion: fence.DocVersion,
+						ClaimGeneration: fence.ClaimGeneration, CacheKind: "parse_artifact",
+						CacheStatus: "hit", Outcome: "ok",
+					})
+					return reused, true, reuseKey, nil
+				}
+			}
+		}
+	}
+	recorded, err := s.st.RecordRAGDocumentParseArtifact(ctx, fence, artifactKey)
+	if err != nil {
+		return nil, false, "", fmt.Errorf("record parsed artifact cleanup handle: %w", err)
+	}
+	if !recorded {
+		return nil, false, "", errIndexFenceLost
+	}
 	expectedSource := document.ParsedSource{
 		DocID: doc.ID, FileName: doc.FileName, Format: doc.FileType,
 		ByteSize: doc.FileSize, SHA256: version.SourceSHA256,
@@ -660,16 +868,36 @@ func (s *Service) loadOrParseArtifact(
 	cacheRequest := ragassets.CacheRequest{
 		UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID, DocVersion: fence.DocVersion,
 		ParseFingerprint: version.ParseFingerprint, ExpectedSource: &expectedSource,
+		ArtifactObjectKey: artifactKey, IndexFence: &fence,
 	}
 	artifact, hit, err := persister.LoadParsedArtifact(ctx, cacheRequest)
 	if err != nil {
-		return nil, false, fmt.Errorf("load parsed artifact cache: %w", err)
+		telemetry.Emit(ctx, s.telemetry, telemetry.EventResultCache, telemetry.Fields{
+			DocID: doc.ID, TaskID: fence.TaskID, DocVersion: fence.DocVersion,
+			ClaimGeneration: fence.ClaimGeneration, CacheKind: "parse_artifact",
+			CacheStatus: "error", Outcome: "error", ErrorCode: "store_error",
+		})
+		return nil, false, "", fmt.Errorf("load parsed artifact cache: %w", err)
 	}
 	if hit && parsedArtifactMatchesSource(artifact, doc, version) {
-		return artifact, true, nil
+		telemetry.Emit(ctx, s.telemetry, telemetry.EventResultCache, telemetry.Fields{
+			DocID: doc.ID, TaskID: fence.TaskID, DocVersion: fence.DocVersion,
+			ClaimGeneration: fence.ClaimGeneration, CacheKind: "parse_artifact",
+			CacheStatus: "hit", Outcome: "ok",
+		})
+		return artifact, true, artifactKey, nil
 	}
+	cacheStatus := "miss"
+	if hit {
+		cacheStatus = "stale"
+	}
+	telemetry.Emit(ctx, s.telemetry, telemetry.EventResultCache, telemetry.Fields{
+		DocID: doc.ID, TaskID: fence.TaskID, DocVersion: fence.DocVersion,
+		ClaimGeneration: fence.ClaimGeneration, CacheKind: "parse_artifact",
+		CacheStatus: cacheStatus, Outcome: "ok",
+	})
 	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{Stage: "parsing"}); err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	source := document.Source{
 		DocID: doc.ID, FileName: doc.FileName, Format: doc.FileType,
@@ -686,7 +914,10 @@ func (s *Service) loadOrParseArtifact(
 		Mode: parseMode, ParserVersion: version.ParserVersion,
 		PageTranscriber: s.pageVision, ImageTranscriber: s.imageVision,
 		DocumentAIBudget: budget,
-		VisionScope:      vision.CacheScope{UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID},
+		VisionScope: vision.CacheScope{
+			UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID,
+			ParseFingerprint: version.ParseFingerprint,
+		},
 		Progress: func(progressCtx context.Context, progress parse.ParseProgress) error {
 			stage := strings.TrimSpace(progress.Stage)
 			if stage == "" {
@@ -701,23 +932,33 @@ func (s *Service) loadOrParseArtifact(
 		if parsed != nil {
 			parseErr = errors.Join(parseErr, parsed.Close())
 		}
-		return nil, false, parseErr
+		return nil, false, "", parseErr
 	}
 	if parsed == nil {
-		return nil, false, errors.New("parser returned a nil document")
+		return nil, false, "", errors.New("parser returned a nil document")
 	}
 	if err := normalizeParsedDocument(parsed); err != nil {
-		return nil, false, errors.Join(err, parsed.Close())
+		return nil, false, "", errors.Join(err, parsed.Close())
+	}
+	valid, err := s.st.CheckRAGIndexFence(ctx, fence)
+	if err != nil {
+		return nil, false, "", errors.Join(err, parsed.Close())
+	}
+	if !valid {
+		return nil, false, "", errors.Join(errIndexFenceLost, parsed.Close())
 	}
 	artifact, err = persister.PersistParsedDocument(ctx, ragassets.PersistRequest{
 		UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID, DocVersion: fence.DocVersion,
 		ParseFingerprint: version.ParseFingerprint, NeutralCaption: "图片（未进行视觉识别）",
-		Document: parsed,
+		ArtifactObjectKey:   artifactKey,
+		NormalizedObjectKey: path.Join(path.Dir(artifactKey), "normalized.md"),
+		IndexFence:          &fence,
+		Document:            parsed,
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("persist parsed assets and artifact: %w", err)
+		return nil, false, "", fmt.Errorf("persist parsed assets and artifact: %w", err)
 	}
-	return artifact, false, nil
+	return artifact, false, artifactKey, nil
 }
 
 func parsedArtifactMatchesSource(
@@ -779,10 +1020,14 @@ func (s *Service) splitAndEnrich(
 			Message: "text enrichment was unavailable; source text retained"}}, nil
 	}
 	processor := enrich.NewProcessor(s.enricher)
+	processor.SetRecorder(s.telemetry)
 	enriched, warnings := processor.EnrichChunks(ctx, chunks, enrich.ProcessConfig{
 		SystemEnabled: true, TextModel: version.TextModel, KBEnabled: true,
 		MaxBlocks: s.cfg.Limits.MaxEnrichmentBlocksPerDocument, Finalize: finalizeConfig,
-		Scope: enrich.CacheScope{UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID},
+		Scope: enrich.CacheScope{
+			UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID,
+			IndexFingerprint: version.IndexFingerprint,
+		},
 	}, budget)
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
@@ -882,12 +1127,26 @@ func (s *Service) stageIndexVersion(
 		}
 	}
 	for start := 0; start < len(sqlChunks); start += pipelineStageBatchSize {
+		valid, err := s.st.CheckRAGIndexFence(ctx, fence)
+		if err != nil {
+			return nil, err
+		}
+		if !valid {
+			return nil, errIndexFenceLost
+		}
 		end := min(start+pipelineStageBatchSize, len(sqlChunks))
 		if err := s.st.PutRAGChunks(ctx, sqlChunks[start:end]); err != nil {
 			return nil, fmt.Errorf("stage chunk catalog: %w", err)
 		}
 	}
 	for start := 0; start < len(mappings); start += pipelineStageBatchSize {
+		valid, err := s.st.CheckRAGIndexFence(ctx, fence)
+		if err != nil {
+			return nil, err
+		}
+		if !valid {
+			return nil, errIndexFenceLost
+		}
 		end := min(start+pipelineStageBatchSize, len(mappings))
 		if err := s.st.PutRAGChunkAssets(ctx, mappings[start:end]); err != nil {
 			return nil, fmt.Errorf("stage chunk assets: %w", err)

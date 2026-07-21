@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/qs3c/bkcrab/internal/rag/document"
+	"github.com/qs3c/bkcrab/internal/rag/telemetry"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
@@ -39,14 +40,16 @@ type TaskBudgetConfig struct {
 	UserLimits     store.RAGDocumentAILimits
 	ReservationTTL time.Duration
 	Now            func() time.Time
+	Recorder       telemetry.Recorder
 }
 
 // TaskDocumentAIBudget is a thin, concurrency-safe façade over the durable
 // SQL state machine. It owns no spend counters; process crashes and lease
 // reclaim therefore cannot reset either task or user-period usage.
 type TaskDocumentAIBudget struct {
-	ledger BudgetLedger
-	config TaskBudgetConfig
+	ledger   BudgetLedger
+	config   TaskBudgetConfig
+	recorder telemetry.Recorder
 
 	ensureMu sync.Mutex
 	ensured  bool
@@ -59,7 +62,10 @@ func NewTaskDocumentAIBudget(ledger BudgetLedger, config TaskBudgetConfig) *Task
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &TaskDocumentAIBudget{ledger: ledger, config: config}
+	if config.Recorder == nil {
+		config.Recorder = telemetry.NewSlogRecorder(nil)
+	}
+	return &TaskDocumentAIBudget{ledger: ledger, config: config, recorder: config.Recorder}
 }
 
 func (b *TaskDocumentAIBudget) Fence() store.IndexFence {
@@ -91,9 +97,11 @@ func (b *TaskDocumentAIBudget) Reserve(ctx context.Context, fence store.IndexFen
 		return nil, ErrBudgetRequired
 	}
 	if err := b.validate(fence, request); err != nil {
+		b.recordBudget(ctx, fence, request, "reserve", "rejected", budgetErrorCode(err))
 		return nil, err
 	}
 	if err := b.ensureTaskBudget(ctx); err != nil {
+		b.recordBudget(ctx, fence, request, "reserve", "error", "task_budget_init")
 		return nil, err
 	}
 	now := b.config.Now().UTC()
@@ -115,30 +123,73 @@ func (b *TaskDocumentAIBudget) Reserve(ctx context.Context, fence store.IndexFen
 	created, err := b.ledger.ReserveRAGDocumentAIUsage(ctx, fence, usage, b.config.UserLimits)
 	if err != nil {
 		if errors.Is(err, store.ErrRAGDocumentAIBudgetExceeded) {
+			b.recordBudget(ctx, fence, request, "reserve", "rejected", "quota_exceeded")
 			return nil, &Error{Kind: ErrorBudget, Err: err}
 		}
+		b.recordBudget(ctx, fence, request, "reserve", "error", budgetErrorCode(err))
 		return nil, err
 	}
 	if !created {
 		existing, lookupErr := b.ledger.GetRAGDocumentAIUsage(ctx, key)
 		if lookupErr != nil {
 			if errors.Is(lookupErr, store.ErrNotFound) {
+				b.recordBudget(ctx, fence, request, "reserve", "rejected", "committed_cache")
 				return nil, ErrCacheCommitted
 			}
+			b.recordBudget(ctx, fence, request, "reserve", "error", "usage_lookup")
 			return nil, lookupErr
 		}
 		if existing.State == store.RAGDocumentAIUsageCommitted || existing.State == store.RAGDocumentAIUsageOverrun {
+			b.recordBudget(ctx, fence, request, "reserve", "rejected", "committed_cache")
 			return nil, ErrCacheCommitted
 		}
 		if existing.State != store.RAGDocumentAIUsageReserved {
+			b.recordBudget(ctx, fence, request, "reserve", "rejected", "invalid_usage_state")
 			return nil, ErrAttemptNotSent
 		}
 	}
+	b.recordBudget(ctx, fence, request, "reserve", "ok", "")
 	return &Reservation{
 		ledger: b.ledger, key: key, fence: fence,
 		reservedInput: request.InputTokens, reservedOutput: request.OutputTokens,
 		reservedCost: request.EstimatedCostMicroUSD, state: reservationReserved,
+		recorder: b.recorder, operation: request.Operation, attempt: request.Attempt,
 	}, nil
+}
+
+func (b *TaskDocumentAIBudget) recordBudget(
+	ctx context.Context,
+	fence store.IndexFence,
+	request AttemptRequest,
+	transition, outcome, errorCode string,
+) {
+	if b == nil {
+		return
+	}
+	telemetry.Emit(ctx, b.recorder, telemetry.EventDocumentAIBudget, telemetry.Fields{
+		DocID: fence.DocID, TaskID: fence.TaskID, DocVersion: fence.DocVersion,
+		ClaimGeneration: fence.ClaimGeneration, Operation: request.Operation,
+		Transition: transition, Outcome: outcome, ErrorCode: errorCode, Attempt: request.Attempt,
+		InputTokens: request.InputTokens, OutputTokens: request.OutputTokens,
+		CostMicroUSD: request.EstimatedCostMicroUSD,
+	})
+}
+
+func budgetErrorCode(err error) string {
+	switch {
+	case errors.Is(err, store.ErrRAGDocumentAIBudgetExceeded):
+		return "quota_exceeded"
+	case errors.Is(err, store.ErrRAGDocumentAIInvalidFence):
+		return "invalid_fence"
+	case errors.Is(err, store.ErrRAGDocumentAIUsageConflict):
+		return "usage_conflict"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	default:
+		return "ledger_error"
+	}
 }
 
 func (b *TaskDocumentAIBudget) validate(fence store.IndexFence, request AttemptRequest) error {
@@ -236,6 +287,9 @@ type Reservation struct {
 	key                                         string
 	fence                                       store.IndexFence
 	reservedInput, reservedOutput, reservedCost int64
+	recorder                                    telemetry.Recorder
+	operation                                   string
+	attempt                                     int
 	mu                                          sync.Mutex
 	state                                       reservationState
 }
@@ -254,22 +308,27 @@ func (r *Reservation) MarkSent(ctx context.Context, fence store.IndexFence) erro
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if fence != r.fence {
+		r.record(ctx, "sent", "rejected", "invalid_fence", Usage{})
 		return store.ErrRAGDocumentAIInvalidFence
 	}
 	if r.state == reservationSent {
 		return nil
 	}
 	if r.state != reservationReserved {
+		r.record(ctx, "sent", "rejected", "invalid_usage_state", Usage{})
 		return ErrAttemptNotSent
 	}
 	ok, err := r.ledger.MarkSentRAGDocumentAIUsage(ctx, r.key, fence)
 	if err != nil {
+		r.record(ctx, "sent", "error", budgetErrorCode(err), Usage{})
 		return err
 	}
 	if !ok {
+		r.record(ctx, "sent", "rejected", "invalid_usage_state", Usage{})
 		return ErrAttemptNotSent
 	}
 	r.state = reservationSent
+	r.record(ctx, "sent", "ok", "", Usage{})
 	return nil
 }
 
@@ -283,11 +342,15 @@ func (r *Reservation) Release(ctx context.Context) error {
 		return nil
 	}
 	if r.state != reservationReserved {
+		r.record(ctx, "release", "rejected", "invalid_usage_state", Usage{})
 		return errors.New("vision: SENT DocumentAI usage cannot be released")
 	}
 	_, err := r.ledger.ReleaseRAGDocumentAIUsage(ctx, r.key)
 	if err == nil {
 		r.state = reservationDone
+		r.record(ctx, "release", "ok", "", Usage{})
+	} else {
+		r.record(ctx, "release", "error", budgetErrorCode(err), Usage{})
 	}
 	return err
 }
@@ -302,15 +365,24 @@ func (r *Reservation) Commit(ctx context.Context, usage Usage) error {
 		return nil
 	}
 	if r.state != reservationSent {
+		r.record(ctx, "commit", "rejected", "invalid_usage_state", usage)
 		return ErrAttemptNotSent
 	}
 	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CostMicroUSD < 0 {
+		r.record(ctx, "commit", "rejected", "invalid_usage", Usage{})
 		return errors.New("vision: invalid DocumentAI actual usage")
 	}
 	_, err := r.ledger.CommitRAGDocumentAIUsage(ctx, r.key, usage.InputTokens,
 		usage.OutputTokens, usage.CostMicroUSD, usage.Estimated)
 	if err == nil {
 		r.state = reservationDone
+		transition := "commit"
+		if usage.InputTokens+usage.OutputTokens > r.reservedInput+r.reservedOutput || usage.CostMicroUSD > r.reservedCost {
+			transition = "commit_overrun"
+		}
+		r.record(ctx, transition, "ok", "", usage)
+	} else {
+		r.record(ctx, "commit", "error", budgetErrorCode(err), usage)
 	}
 	return err
 }
@@ -318,4 +390,17 @@ func (r *Reservation) Commit(ctx context.Context, usage Usage) error {
 func (r *Reservation) CommitEstimated(ctx context.Context) error {
 	return r.Commit(ctx, Usage{InputTokens: r.reservedInput, OutputTokens: r.reservedOutput,
 		CostMicroUSD: r.reservedCost, Estimated: true})
+}
+
+func (r *Reservation) record(ctx context.Context, transition, outcome, errorCode string, usage Usage) {
+	if r == nil {
+		return
+	}
+	telemetry.Emit(ctx, r.recorder, telemetry.EventDocumentAIBudget, telemetry.Fields{
+		DocID: r.fence.DocID, TaskID: r.fence.TaskID, DocVersion: r.fence.DocVersion,
+		ClaimGeneration: r.fence.ClaimGeneration, Operation: r.operation,
+		Transition: transition, Outcome: outcome, ErrorCode: errorCode, Attempt: r.attempt,
+		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+		CostMicroUSD: usage.CostMicroUSD, Estimated: usage.Estimated,
+	})
 }

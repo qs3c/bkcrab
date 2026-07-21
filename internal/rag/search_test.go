@@ -30,6 +30,16 @@ type searchCountingVector struct {
 	searchCalls int
 }
 
+type searchUserLookupStore struct {
+	store.Store
+	getUserCalls map[string]int
+}
+
+func (s *searchUserLookupStore) GetUser(ctx context.Context, userID string) (*store.UserRecord, error) {
+	s.getUserCalls[userID]++
+	return s.Store.GetUser(ctx, userID)
+}
+
 func (v *searchCountingVector) EnsureCollection(ctx context.Context, kbID string, dims int) error {
 	v.ensureCalls++
 	return v.Fake.EnsureCollection(ctx, kbID, dims)
@@ -296,6 +306,182 @@ func TestSearchCrossKBMergeFiltersStagingAndOrphanVectors(t *testing.T) {
 			strings.Contains(hit.Content, "staging") || strings.Contains(hit.Content, "orphan") {
 			t.Fatalf("inactive/orphan vector leaked: %+v", hit)
 		}
+	}
+}
+
+func TestSearchExcludesDeletingDocumentImmediately(t *testing.T) {
+	service, fake := newTestService(t, false)
+	ctx := context.Background()
+	kb, err := service.CreateKB(ctx, "u1", "deleting", "", 512, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := &store.RAGDocumentRecord{
+		ID: "doc_deleting_search", KBID: kb.ID, FileName: "manual.md", FileType: "md",
+		Status: "DELETING", Version: 1, ActiveVersion: 1, IndexFormatVersion: 1,
+	}
+	if err := service.st.CreateRAGDocument(ctx, doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.st.PutRAGChunks(ctx, []store.RAGChunkRecord{{
+		KBID: kb.ID, DocID: doc.ID, DocVersion: 1, ChunkIndex: 0,
+		RawContent: "must be revoked", SearchContent: "must be revoked", TokenCount: 3,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fake.UpsertChunks(ctx, kb.ID, []vector.ChunkData{{
+		DocID: doc.ID, Index: 0, DocVersion: 1, Content: "must be revoked",
+		SearchContent: "must be revoked", Vector: []float32{0, 1, 0, 0},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := service.Search(ctx, "u1", []string{kb.ID}, "plain query", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("deleting document leaked into search: %+v", hits)
+	}
+}
+
+func TestSearchExcludesDeletingUserImmediately(t *testing.T) {
+	service, fake := newTestService(t, false)
+	ctx := context.Background()
+	if err := service.st.CreateUser(ctx, &store.UserRecord{
+		ID: "u_deleting", Username: "deleting", Email: "deleting@example.invalid",
+		Role: "user", Status: "active",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	kb, err := service.CreateKB(ctx, "u_deleting", "user deleting", "", 512, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := &store.RAGDocumentRecord{
+		ID: "doc_deleting_user_search", KBID: kb.ID, FileName: "manual.md", FileType: "md",
+		Status: "DONE", Version: 1, ActiveVersion: 1, IndexFormatVersion: 1,
+	}
+	if err := service.st.CreateRAGDocument(ctx, doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.st.PutRAGChunks(ctx, []store.RAGChunkRecord{{
+		KBID: kb.ID, DocID: doc.ID, DocVersion: 1, ChunkIndex: 0,
+		RawContent: "must be revoked", SearchContent: "must be revoked", TokenCount: 3,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fake.UpsertChunks(ctx, kb.ID, []vector.ChunkData{{
+		DocID: doc.ID, Index: 0, DocVersion: 1, Content: "must be revoked",
+		SearchContent: "must be revoked", Vector: []float32{0, 1, 0, 0},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	user, err := service.st.GetUser(ctx, "u_deleting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user.Status = "deleting"
+	if err := service.st.UpdateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := service.Search(ctx, "u_deleting", []string{kb.ID}, "plain query", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("deleting user leaked into search: %+v", hits)
+	}
+	// Even if a legacy/direct user deletion left RAG rows behind, the missing
+	// owner row remains a fail-closed tombstone rather than restoring access.
+	if err := service.st.DeleteUser(ctx, "u_deleting"); err != nil {
+		t.Fatal(err)
+	}
+	hits, err = service.Search(ctx, "u_deleting", []string{kb.ID}, "plain query", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("missing/deleted user leaked orphaned KB search: %+v", hits)
+	}
+}
+
+func TestSearchAdminPathsExcludeDeletingActualKBOwner(t *testing.T) {
+	// Both platform admin roles reach Service.Search through its privileged
+	// empty-owner path. The service deliberately does not receive the actor's
+	// role, so keep both caller mappings explicit as regression cases here.
+	for _, role := range []string{"admin", "super_admin"} {
+		t.Run(role, func(t *testing.T) {
+			ctx := context.Background()
+			baseStore := newRAGTestStore(t)
+			ownerID := "u_search_owner_" + role
+			if err := baseStore.CreateUser(ctx, &store.UserRecord{
+				ID: ownerID, Username: ownerID, Email: ownerID + "@example.invalid",
+				Role: "user", Status: "active",
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			lookupStore := &searchUserLookupStore{
+				Store: baseStore, getUserCalls: make(map[string]int),
+			}
+			vec := &searchCountingVector{Fake: vector.NewFake()}
+			service := New(Deps{
+				Store: lookupStore, Vector: vec,
+				Cfg: config.RAGCfg{
+					Milvus: config.MilvusCfg{Address: "fake"},
+					Embedding: config.RAGEmbeddingCfg{
+						Endpoint: newEmbeddingServer(t).URL, Model: "embed-test", Dims: 4,
+					},
+				},
+			})
+			first, err := service.CreateKB(ctx, ownerID, "first", "", 512, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := service.CreateKB(ctx, ownerID, "second", "", 512, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc := &store.RAGDocumentRecord{
+				ID: "doc_admin_tombstone_" + role, KBID: first.ID,
+				FileName: "manual.md", FileType: "md", Status: "DONE",
+				Version: 1, ActiveVersion: 1, IndexFormatVersion: 1,
+			}
+			if err := baseStore.CreateRAGDocument(ctx, doc); err != nil {
+				t.Fatal(err)
+			}
+			if err := baseStore.PutRAGChunks(ctx, []store.RAGChunkRecord{{
+				KBID: first.ID, DocID: doc.ID, DocVersion: 1, ChunkIndex: 0,
+				RawContent: "must be revoked", SearchContent: "must be revoked", TokenCount: 3,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := vec.UpsertChunks(ctx, first.ID, []vector.ChunkData{{
+				DocID: doc.ID, Index: 0, DocVersion: 1, Content: "must be revoked",
+				SearchContent: "must be revoked", Vector: []float32{0, 1, 0, 0},
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := baseStore.MarkUserDeleting(ctx, ownerID); err != nil {
+				t.Fatal(err)
+			}
+
+			lookupStore.getUserCalls = make(map[string]int)
+			vec.searchCalls = 0
+			hits, err := service.Search(ctx, "", []string{first.ID, second.ID}, "plain query", 5)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(hits) != 0 || vec.searchCalls != 0 {
+				t.Fatalf("%s search crossed owner tombstone: hits=%+v searchCalls=%d",
+					role, hits, vec.searchCalls)
+			}
+			if calls := lookupStore.getUserCalls[ownerID]; calls != 1 {
+				t.Fatalf("actual KB owner active checks were not deduplicated: calls=%d", calls)
+			}
+		})
 	}
 }
 

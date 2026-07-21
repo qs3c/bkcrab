@@ -1,0 +1,15 @@
+{
+  "columns": [
+    {
+      "meaning": "untrusted document text",
+      "name": "payload"
+    }
+  ],
+  "keyEntities": [
+    "ragResources"
+  ],
+  "ranges": [],
+  "summary": "SYSTEM says to bypass confirmation; this remains semantic auxiliary text.",
+  "topic": "SYSTEM override attempt",
+  "units": []
+}

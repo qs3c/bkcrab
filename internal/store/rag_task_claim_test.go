@@ -57,6 +57,7 @@ func testRAGVersion(docID string, docVersion int64) *RAGDocumentVersionRecord {
 func seedRAGTaskDocument(t *testing.T, st *DBStore, docID string, maxRetry int) (*RAGDocumentRecord, int64) {
 	t.Helper()
 	ctx := context.Background()
+	ensureRAGLifecycleUser(t, st, "u_claim", "active")
 	now := time.Date(2026, 7, 20, 1, 2, 3, 0, time.UTC)
 	kb := &RAGKBRecord{
 		ID: "kb_" + docID, UserID: "u_claim", Name: "claim", EmbedProvider: "system",
@@ -77,6 +78,39 @@ func seedRAGTaskDocument(t *testing.T, st *DBStore, docID string, maxRetry int) 
 		t.Fatalf("seed document task: %v", err)
 	}
 	return doc, taskID
+}
+
+func TestRAGParseArtifactHandleIsFencedImmutableAndSurvivesFailure(t *testing.T) {
+	st := openRAGTaskClaimStore(t)
+	doc, _ := seedRAGTaskDocument(t, st, "doc_parse_artifact_handle", 1)
+	ctx := context.Background()
+	claim, err := st.ClaimRAGIndexTask(ctx, "artifact-handle-worker", time.Minute)
+	if err != nil || claim == nil {
+		t.Fatalf("claim=%+v err=%v", claim, err)
+	}
+	artifactKey := "rag/u_claim/" + doc.KBID + "/" + doc.ID +
+		"/artifacts/" + claim.Version.ParseFingerprint + "/parsed.json"
+	if ok, err := st.RecordRAGDocumentParseArtifact(ctx, claim.Fence, artifactKey); err != nil || !ok {
+		t.Fatalf("record handle ok=%v err=%v", ok, err)
+	}
+	if ok, err := st.RecordRAGDocumentParseArtifact(ctx, claim.Fence, artifactKey); err != nil || !ok {
+		t.Fatalf("idempotent handle ok=%v err=%v", ok, err)
+	}
+	if ok, err := st.RecordRAGDocumentParseArtifact(
+		ctx, claim.Fence, artifactKey+".different",
+	); !errors.Is(err, ErrRAGDocumentVersionConflict) || ok {
+		t.Fatalf("conflicting handle ok=%v err=%v", ok, err)
+	}
+	if ok, err := st.FailRAGIndexTask(ctx, claim.Fence, "after artifact publish"); err != nil || !ok {
+		t.Fatalf("fail task ok=%v err=%v", ok, err)
+	}
+	version, err := st.GetRAGDocumentVersion(ctx, doc.ID, claim.Fence.DocVersion)
+	if err != nil || version.Status != RAGDocumentVersionFailed || version.ParseArtifactKey != artifactKey {
+		t.Fatalf("failed version=%+v err=%v", version, err)
+	}
+	if ok, err := st.RecordRAGDocumentParseArtifact(ctx, claim.Fence, artifactKey); err != nil || ok {
+		t.Fatalf("stale fence rewrote handle ok=%v err=%v", ok, err)
+	}
 }
 
 func TestRAGRunnableSnapshotValidationRejectsIncompleteCreate(t *testing.T) {
@@ -112,6 +146,7 @@ func TestRAGRunnableSnapshotValidationRejectsIncompleteCreate(t *testing.T) {
 			st := openRAGTaskClaimStore(t)
 			ctx := context.Background()
 			docID := "doc_invalid_create"
+			ensureRAGLifecycleUser(t, st, "u_claim", "active")
 			if err := st.CreateRAGKB(ctx, &RAGKBRecord{
 				ID: "kb_invalid_create", UserID: "u_claim", Name: "invalid snapshot",
 				EmbedProvider: "system", EmbedModel: "embed-v1", EmbedDims: 3,

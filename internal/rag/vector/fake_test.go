@@ -98,6 +98,9 @@ func TestFakeUpsertSearchAndVersionDelete(t *testing.T) {
 	if err := f.DropCollection(ctx, "kb1"); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.DropCollection(ctx, "kb1"); err != nil {
+		t.Fatalf("DropCollection retry should be idempotent: %v", err)
+	}
 	if _, err := f.HybridSearch(ctx, "kb1", SearchQuery{Dense: [][]float32{{1, 0}}, Text: "x", ActiveVersions: map[string]int64{"d1": 1}}, 1); err == nil {
 		t.Fatal("collection 已删应报错")
 	}

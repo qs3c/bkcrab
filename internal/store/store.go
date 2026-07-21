@@ -34,6 +34,7 @@ type Store interface {
 	GetUserByExternal(ctx context.Context, apikeyID, externalID string) (*UserRecord, error)
 	ListUsers(ctx context.Context) ([]UserRecord, error)
 	UpdateUser(ctx context.Context, u *UserRecord) error
+	MarkUserDeleting(ctx context.Context, id string) (*UserRecord, error)
 	DeleteUser(ctx context.Context, id string) error
 	CountUsers(ctx context.Context) (int, error)
 
@@ -220,6 +221,13 @@ type Store interface {
 
 	// --- RAG knowledge bases ---
 	CreateRAGKB(ctx context.Context, kb *RAGKBRecord) error
+	BeginRAGKBProvisioning(ctx context.Context, kb *RAGKBRecord, leaseOwner string, leaseDuration time.Duration, maxKBsPerUser int) (*RAGKBProvisionFence, error)
+	HeartbeatRAGKBProvisioning(ctx context.Context, fence RAGKBProvisionFence, leaseDuration time.Duration) (bool, error)
+	ActivateRAGKBProvisioning(ctx context.Context, fence RAGKBProvisionFence) (*RAGKBRecord, bool, error)
+	AbortRAGKBProvisioning(ctx context.Context, fence RAGKBProvisionFence) (*RAGKBRecord, bool, error)
+	ListExpiredRAGKBProvisions(ctx context.Context, limit int) ([]RAGKBProvisionCleanupCandidate, error)
+	ExpireRAGKBProvisioning(ctx context.Context, candidate RAGKBProvisionCleanupCandidate) (*RAGKBRecord, bool, error)
+	IsRAGKBCleanupReady(ctx context.Context, kbID string) (bool, error)
 	GetRAGKB(ctx context.Context, id string) (*RAGKBRecord, error)
 	ListRAGKBsByUser(ctx context.Context, userID string) ([]RAGKBRecord, error)
 	UpdateRAGKB(ctx context.Context, kb *RAGKBRecord) error
@@ -232,6 +240,11 @@ type Store interface {
 	CreateRAGDocumentWithVersionAndIndexTaskPolicy(ctx context.Context, doc *RAGDocumentRecord, version *RAGDocumentVersionRecord, maxRetry int, policy RAGAdvancedEnqueuePolicy) (int64, error)
 	GetRAGDocument(ctx context.Context, id string) (*RAGDocumentRecord, error)
 	ListRAGDocumentsByKB(ctx context.Context, kbID string) ([]RAGDocumentRecord, error)
+	MarkRAGDocumentDeleting(ctx context.Context, id string) (*RAGDocumentRecord, error)
+	MarkRAGKBDeleting(ctx context.Context, id string) (*RAGKBRecord, error)
+	ListDeletingRAGDocuments(ctx context.Context, afterID string, limit int) ([]RAGDocumentRecord, error)
+	ListDeletingRAGKBs(ctx context.Context, afterID string, limit int) ([]RAGKBRecord, error)
+	IsRAGDocumentCleanupReady(ctx context.Context, docID string) (bool, error)
 	DeleteRAGDocument(ctx context.Context, id string) error
 	CreateRAGDocumentVersion(ctx context.Context, version *RAGDocumentVersionRecord) error
 	GetRAGDocumentVersion(ctx context.Context, docID string, docVersion int64) (*RAGDocumentVersionRecord, error)
@@ -241,6 +254,8 @@ type Store interface {
 	ListRAGChunksByDocumentVersion(ctx context.Context, docID string, docVersion int64) ([]RAGChunkRecord, error)
 	DeleteRAGChunksByDocumentVersion(ctx context.Context, docID string, docVersion int64) error
 	UpsertRAGAsset(ctx context.Context, asset *RAGAssetRecord) error
+	ReplaceRAGVersionAssets(ctx context.Context, docID string, docVersion int64, assetIDs []string) error
+	PublishRAGAssetsForIndex(ctx context.Context, fence IndexFence, assets []RAGAssetRecord, assetIDs []string) (bool, error)
 	GetRAGAsset(ctx context.Context, id string) (*RAGAssetRecord, error)
 	ListRAGAssetsByIDs(ctx context.Context, ids []string) ([]RAGAssetRecord, error)
 	ListRAGAssetsByChunkRefs(ctx context.Context, refs []RAGChunkRef) ([]RAGAssetRecord, error)
@@ -256,8 +271,10 @@ type Store interface {
 	ClaimRAGIndexTask(ctx context.Context, workerID string, leaseDuration time.Duration) (*RAGIndexClaim, error)
 	CheckRAGIndexFence(ctx context.Context, fence IndexFence) (bool, error)
 	HeartbeatRAGIndexTask(ctx context.Context, fence IndexFence, leaseDuration time.Duration) (bool, error)
+	AcknowledgeRAGIndexTaskQuiesced(ctx context.Context, fence IndexFence) (bool, error)
 	UpdateProgressRAGIndexTask(ctx context.Context, fence IndexFence, progress RAGIndexProgress) (bool, error)
 	UpdateWarningRAGIndexTask(ctx context.Context, fence IndexFence, degraded bool, warningCount int) (bool, error)
+	RecordRAGDocumentParseArtifact(ctx context.Context, fence IndexFence, artifactKey string) (bool, error)
 	RetryRAGIndexTask(ctx context.Context, fence IndexFence, errMsg string, nextRunDelay time.Duration) (bool, error)
 	FailRAGIndexTask(ctx context.Context, fence IndexFence, errMsg string) (bool, error)
 	ActivateAndFinishRAGIndexTask(ctx context.Context, fence IndexFence, activation RAGIndexActivation, gcGracePeriod time.Duration) (bool, error)
@@ -268,6 +285,32 @@ type Store interface {
 	ListRAGIndexGCTasks(ctx context.Context, status string, limit int) ([]RAGIndexGCTaskRecord, error)
 	UpdateRAGIndexGCTaskState(ctx context.Context, id int64, expectedStatus, status string, nextRunAt *time.Time) (bool, error)
 	DeleteRAGIndexGCTask(ctx context.Context, id int64) error
+	ClaimRAGIndexGCTask(ctx context.Context, workerID string, leaseDuration time.Duration) (*RAGIndexGCClaim, error)
+	CheckRAGIndexGCFence(ctx context.Context, fence RAGIndexGCFence) (bool, error)
+	HeartbeatRAGIndexGCTask(ctx context.Context, fence RAGIndexGCFence, leaseDuration time.Duration) (bool, error)
+	RetryRAGIndexGCTask(ctx context.Context, fence RAGIndexGCFence, nextRunDelay time.Duration) (bool, error)
+	FinishRAGIndexGCTask(ctx context.Context, fence RAGIndexGCFence) (bool, error)
+	ListRAGVersionCleanupCandidates(ctx context.Context, staleFor time.Duration, limit int) ([]RAGVersionCleanupCandidate, error)
+	ClaimRAGDocumentMaintenance(ctx context.Context, docID, leaseOwner string, leaseDuration time.Duration) (*RAGDocumentMaintenanceFence, error)
+	CheckRAGDocumentMaintenance(ctx context.Context, fence RAGDocumentMaintenanceFence) (bool, error)
+	HeartbeatRAGDocumentMaintenance(ctx context.Context, fence RAGDocumentMaintenanceFence, leaseDuration time.Duration) (bool, error)
+	ReleaseRAGDocumentMaintenance(ctx context.Context, fence RAGDocumentMaintenanceFence) (bool, error)
+	MarkRAGDocumentVersionGCED(ctx context.Context, docID string, docVersion int64) (bool, error)
+	IsRAGParseArtifactReferenced(ctx context.Context, docID, artifactKey string) (bool, error)
+	ListRAGStagingAssetCleanupCandidates(ctx context.Context, staleFor time.Duration, limit int) ([]RAGAssetRecord, error)
+	IsRAGAssetReferenced(ctx context.Context, assetID string) (bool, error)
+	DeleteRAGAsset(ctx context.Context, assetID string) error
+	DeleteRAGAssetWithMaintenance(ctx context.Context, fence RAGDocumentMaintenanceFence, assetID string) (bool, error)
+	ClaimRAGStagingAssetCleanup(ctx context.Context, fence RAGDocumentMaintenanceFence, assetID string) (*RAGAssetCleanupClaim, bool, error)
+	BeginRAGObjectWrite(ctx context.Context, request RAGObjectWriteRequest) (*RAGObjectWriteFence, error)
+	MarkRAGObjectWriteReady(ctx context.Context, fence RAGObjectWriteFence) (bool, error)
+	ListRAGObjectWriteCleanupCandidates(ctx context.Context, staleFor time.Duration, limit int) ([]RAGObjectWriteFence, error)
+	ClaimRAGObjectWriteCleanup(ctx context.Context, candidate RAGObjectWriteFence) (*RAGObjectWriteFence, bool, error)
+	FinishRAGObjectWriteCleanup(ctx context.Context, fence RAGObjectWriteFence) (bool, error)
+	RegisterRAGCacheObject(ctx context.Context, record RAGCacheObjectRecord) error
+	ListRAGCacheCatalogDocuments(ctx context.Context, afterDocID string, limit int) ([]string, error)
+	PruneRAGCacheCatalogAndListCleanupCandidates(ctx context.Context, fence RAGDocumentMaintenanceFence, staleFor time.Duration, maxUnreferencedFingerprints, limit int) ([]RAGCacheObjectCleanupCandidate, error)
+	DeleteRAGCacheObjectWithMaintenance(ctx context.Context, fence RAGDocumentMaintenanceFence, candidate RAGCacheObjectCleanupCandidate) (bool, error)
 	CreateRAGDocumentAITaskBudget(ctx context.Context, budget *RAGDocumentAITaskBudgetRecord) error
 	GetRAGDocumentAITaskBudget(ctx context.Context, taskID int64) (*RAGDocumentAITaskBudgetRecord, error)
 	CreateRAGDocumentAIUserBudget(ctx context.Context, budget *RAGDocumentAIUserBudgetRecord) error

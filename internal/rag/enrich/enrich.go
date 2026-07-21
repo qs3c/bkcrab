@@ -14,6 +14,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag/chunktext"
 	"github.com/qs3c/bkcrab/internal/rag/split"
+	"github.com/qs3c/bkcrab/internal/rag/telemetry"
 	"github.com/qs3c/bkcrab/internal/rag/vision"
 )
 
@@ -36,9 +37,10 @@ const (
 // CacheScope confines cached results to one document prefix. Empty or partial
 // scopes disable caching instead of creating a cross-document cache.
 type CacheScope struct {
-	UserID string
-	KBID   string
-	DocID  string
+	UserID           string
+	KBID             string
+	DocID            string
+	IndexFingerprint string
 }
 
 func (s CacheScope) valid() bool {
@@ -269,16 +271,33 @@ type ProcessConfig struct {
 
 type Processor struct {
 	enricher Enricher
+	recorder telemetry.Recorder
 }
 
-func NewProcessor(enricher Enricher) *Processor { return &Processor{enricher: enricher} }
+func NewProcessor(enricher Enricher) *Processor {
+	return &Processor{enricher: enricher, recorder: telemetry.NewSlogRecorder(nil)}
+}
+
+func (p *Processor) SetRecorder(recorder telemetry.Recorder) {
+	if p == nil {
+		return
+	}
+	if recorder == nil {
+		recorder = telemetry.NopRecorder()
+	}
+	p.recorder = recorder
+}
 
 // EnrichChunks applies all three opt-in/configuration gates before scheduling
 // work. Parse mode is intentionally absent: standard and auto have identical
 // opt-in requirements.
 func (p *Processor) EnrichChunks(ctx context.Context, chunks []split.Chunk, cfg ProcessConfig, budget *vision.TaskDocumentAIBudget) ([]split.Chunk, []Warning) {
 	result := append([]split.Chunk(nil), chunks...)
+	totalEligible := countEnrichableChunks(result)
 	if p == nil || p.enricher == nil || !cfg.SystemEnabled || strings.TrimSpace(cfg.TextModel) == "" || !cfg.KBEnabled {
+		if p != nil {
+			p.recordBatch(ctx, cfg.Scope.DocID, budget, "skipped", 0, totalEligible, totalEligible, 0)
+		}
 		return result, nil
 	}
 	maxBlocks := cfg.MaxBlocks
@@ -344,7 +363,42 @@ func (p *Processor) EnrichChunks(ctx context.Context, chunks []split.Chunk, cfg 
 		}
 		return warnings[i].Code < warnings[j].Code
 	})
+	p.recordBatch(ctx, cfg.Scope.DocID, budget, "ok", eligible-len(warnings), eligible, len(warnings), len(warnings))
 	return result, warnings
+}
+
+func countEnrichableChunks(chunks []split.Chunk) int {
+	count := 0
+	for _, chunk := range chunks {
+		if _, ok := stableKind(chunk.Kind); ok {
+			count++
+		}
+	}
+	return count
+}
+
+func (p *Processor) recordBatch(
+	ctx context.Context,
+	docID string,
+	budget *vision.TaskDocumentAIBudget,
+	outcome string,
+	succeeded, eligible, skipped, warnings int,
+) {
+	if p == nil {
+		return
+	}
+	fields := telemetry.Fields{
+		DocID: docID, Operation: vision.OperationEnrichment, Outcome: outcome,
+		BlockCount: eligible, SuccessCount: succeeded, SkippedCount: skipped, WarningCount: warnings,
+	}
+	if budget != nil {
+		fence := budget.Fence()
+		fields.DocID = fence.DocID
+		fields.TaskID = fence.TaskID
+		fields.DocVersion = fence.DocVersion
+		fields.ClaimGeneration = fence.ClaimGeneration
+	}
+	telemetry.Emit(ctx, p.recorder, telemetry.EventEnrichmentBatch, fields)
 }
 
 func stableKind(kind split.BlockKind) (BlockKind, bool) {

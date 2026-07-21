@@ -86,17 +86,51 @@ func (m *memoryObjects) Delete(ctx context.Context, key string) error {
 }
 
 type memoryCatalog struct {
-	mu      sync.Mutex
-	records map[string]store.RAGAssetRecord
+	mu            sync.Mutex
+	records       map[string]store.RAGAssetRecord
+	versionAssets map[string]map[int64][]string
+	onReplace     func(string, int64, []string)
+	beginErr      error
+	upsertErr     error
+	readyResult   bool
+	staged        []store.RAGObjectWriteFence
 }
 
 func newMemoryCatalog() *memoryCatalog {
-	return &memoryCatalog{records: map[string]store.RAGAssetRecord{}}
+	return &memoryCatalog{
+		records:       map[string]store.RAGAssetRecord{},
+		versionAssets: map[string]map[int64][]string{},
+		readyResult:   true,
+	}
+}
+
+func (m *memoryCatalog) BeginRAGObjectWrite(_ context.Context, request store.RAGObjectWriteRequest) (*store.RAGObjectWriteFence, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.beginErr != nil {
+		return nil, m.beginErr
+	}
+	fence := store.RAGObjectWriteFence{
+		HandleID: request.ObjectKey, UserID: request.UserID, KBID: request.KBID,
+		DocID: request.DocID, ObjectKind: request.ObjectKind, ObjectKey: request.ObjectKey,
+		ReferenceKey: request.ReferenceKey, Generation: int64(len(m.staged) + 1), Status: "WRITING",
+	}
+	m.staged = append(m.staged, fence)
+	return &fence, nil
+}
+
+func (m *memoryCatalog) MarkRAGObjectWriteReady(_ context.Context, _ store.RAGObjectWriteFence) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.readyResult, nil
 }
 
 func (m *memoryCatalog) UpsertRAGAsset(_ context.Context, record *store.RAGAssetRecord) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.upsertErr != nil {
+		return m.upsertErr
+	}
 	if existing, ok := m.records[record.ID]; ok {
 		if existing.DocID != record.DocID || existing.ContentSHA256 != record.ContentSHA256 ||
 			existing.SourceObjectKey != record.SourceObjectKey || existing.ByteSize != record.ByteSize {
@@ -105,6 +139,33 @@ func (m *memoryCatalog) UpsertRAGAsset(_ context.Context, record *store.RAGAsset
 	}
 	m.records[record.ID] = *record
 	return nil
+}
+
+func TestPersistParsedDocumentLeavesDurableHandleWhenCatalogPublishFails(t *testing.T) {
+	objects := newMemoryObjects()
+	catalog := newMemoryCatalog()
+	catalog.upsertErr = errors.New("injected asset catalog failure")
+	persister := testPersister(objects, catalog)
+	var cleanup atomic.Int32
+	_, err := persister.PersistParsedDocument(context.Background(), PersistRequest{
+		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", DocVersion: 1,
+		ParseFingerprint: assetSourceHash, Document: parsedDocument(t, &cleanup),
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected asset catalog failure") {
+		t.Fatalf("persist error=%v", err)
+	}
+	catalog.mu.Lock()
+	staged := append([]store.RAGObjectWriteFence(nil), catalog.staged...)
+	catalog.mu.Unlock()
+	if len(staged) == 0 || staged[0].ObjectKind != store.RAGObjectKindAssetSource {
+		t.Fatalf("catalog failure lost source write-ahead handle: %+v", staged)
+	}
+	objects.mu.Lock()
+	_, objectSurvived := objects.data[staged[0].ObjectKey]
+	objects.mu.Unlock()
+	if !objectSurvived {
+		t.Fatalf("fixture did not reach external Put before catalog failure")
+	}
 }
 
 func (m *memoryCatalog) ListRAGAssetsByIDs(_ context.Context, ids []string) ([]store.RAGAssetRecord, error) {
@@ -118,6 +179,43 @@ func (m *memoryCatalog) ListRAGAssetsByIDs(_ context.Context, ids []string) ([]s
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+func (m *memoryCatalog) ReplaceRAGVersionAssets(
+	_ context.Context,
+	docID string,
+	docVersion int64,
+	assetIDs []string,
+) error {
+	ids := append([]string(nil), assetIDs...)
+	m.mu.Lock()
+	if m.versionAssets[docID] == nil {
+		m.versionAssets[docID] = map[int64][]string{}
+	}
+	m.versionAssets[docID][docVersion] = ids
+	hook := m.onReplace
+	m.mu.Unlock()
+	if hook != nil {
+		hook(docID, docVersion, append([]string(nil), ids...))
+	}
+	return nil
+}
+
+func (m *memoryCatalog) PublishRAGAssetsForIndex(
+	ctx context.Context,
+	fence store.IndexFence,
+	assets []store.RAGAssetRecord,
+	assetIDs []string,
+) (bool, error) {
+	for i := range assets {
+		if err := m.UpsertRAGAsset(ctx, &assets[i]); err != nil {
+			return false, err
+		}
+	}
+	if err := m.ReplaceRAGVersionAssets(ctx, fence.DocID, fence.DocVersion, assetIDs); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func parsedDocument(t *testing.T, cleanup *atomic.Int32) *document.ParsedDocument {
@@ -173,6 +271,12 @@ func testPersister(objects *memoryObjects, catalog *memoryCatalog) *Persister {
 func TestPersistParsedDocumentStreamsCanonicalizesAndPublishesArtifactLast(t *testing.T) {
 	objects := newMemoryObjects()
 	catalog := newMemoryCatalog()
+	mappingObjectPuts := -1
+	catalog.onReplace = func(_ string, _ int64, _ []string) {
+		objects.mu.Lock()
+		mappingObjectPuts = len(objects.putOrder)
+		objects.mu.Unlock()
+	}
 	persister := testPersister(objects, catalog)
 	var cleanup atomic.Int32
 	doc := parsedDocument(t, &cleanup)
@@ -203,6 +307,13 @@ func TestPersistParsedDocumentStreamsCanonicalizesAndPublishesArtifactLast(t *te
 		!strings.HasSuffix(objects.putOrder[2], "/parsed.json") {
 		t.Fatalf("artifact was not published last: %v", objects.putOrder)
 	}
+	if mappingObjectPuts != 1 {
+		t.Fatalf("version asset mapping recorded after %d object puts, want before normalized/artifact publication", mappingObjectPuts)
+	}
+	versionAssets := catalog.versionAssets["doc_1"][7]
+	if len(versionAssets) != 1 || versionAssets[0] != artifact.Assets[0].ID {
+		t.Fatalf("version asset mapping = %v", versionAssets)
+	}
 	record := catalog.records[artifact.Assets[0].ID]
 	if record.DocID != "doc_1" || record.FirstSeenVersion != 7 || record.LastSeenVersion != 7 ||
 		record.SourceObjectKey != objects.putOrder[0] || record.DisplayStatus != document.DisplayUnavailable {
@@ -227,6 +338,19 @@ func TestPersistParsedDocumentReindexReusesStableAssetObject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	countAssetWrites := func() int {
+		catalog.mu.Lock()
+		defer catalog.mu.Unlock()
+		count := 0
+		for _, fence := range catalog.staged {
+			switch fence.ObjectKind {
+			case store.RAGObjectKindAssetSource, store.RAGObjectKindAssetDisplay, store.RAGObjectKindAssetThumbnail:
+				count++
+			}
+		}
+		return count
+	}
+	firstAssetWrites := countAssetWrites()
 	secondFingerprint := strings.Repeat("e", 64)
 	second, err := persister.PersistParsedDocument(context.Background(), PersistRequest{
 		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", DocVersion: 8,
@@ -247,10 +371,51 @@ func TestPersistParsedDocumentReindexReusesStableAssetObject(t *testing.T) {
 	if sourcePuts != 1 {
 		t.Fatalf("canonical source object rewritten %d times", sourcePuts)
 	}
+	if got := countAssetWrites(); got != firstAssetWrites {
+		t.Fatalf("reindex opened %d additional writer handles for a published asset", got-firstAssetWrites)
+	}
 	record := catalog.records[first.Assets[0].ID]
+	if !strings.Contains(record.SourceObjectKey, "/versions/7/") || strings.Contains(record.SourceObjectKey, "/versions/8/") {
+		t.Fatalf("reindex did not retain the first immutable creation key: %q", record.SourceObjectKey)
+	}
 	if record.FirstSeenVersion != 7 || record.LastSeenVersion != 8 {
 		t.Fatalf("stable asset version visibility = %d..%d, want 7..8",
 			record.FirstSeenVersion, record.LastSeenVersion)
+	}
+}
+
+func TestPersistParsedDocumentDoesNotRepairPublishedAssetInPlace(t *testing.T) {
+	objects := newMemoryObjects()
+	catalog := newMemoryCatalog()
+	persister := testPersister(objects, catalog)
+	var cleanup1, cleanup2 atomic.Int32
+	first, err := persister.PersistParsedDocument(context.Background(), PersistRequest{
+		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", DocVersion: 7,
+		ParseFingerprint: assetSourceHash, Document: parsedDocument(t, &cleanup1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := catalog.records[first.Assets[0].ID]
+	objects.mu.Lock()
+	delete(objects.data, record.SourceObjectKey)
+	objects.mu.Unlock()
+
+	_, err = persister.PersistParsedDocument(context.Background(), PersistRequest{
+		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", DocVersion: 8,
+		ParseFingerprint: strings.Repeat("e", 64), Document: parsedDocument(t, &cleanup2),
+	})
+	if err == nil || !strings.Contains(err.Error(), "published source object is missing") {
+		t.Fatalf("missing published object repair err=%v", err)
+	}
+	var sourcePuts int
+	for _, key := range objects.putOrder {
+		if strings.HasSuffix(key, "/source.png") {
+			sourcePuts++
+		}
+	}
+	if sourcePuts != 1 {
+		t.Fatalf("published source object was repaired in place with %d writes", sourcePuts)
 	}
 }
 
@@ -277,6 +442,10 @@ func TestPersistFailureOrCancelCleansHandleButKeepsCanonicalStaging(t *testing.T
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
+			artifactKey, err = document.VersionedObjectKey(artifactKey, 7)
+			if err != nil {
+				t.Fatal(err)
+			}
 			tt.setup(objects, cancel, artifactKey)
 			_, err = persister.PersistParsedDocument(ctx, PersistRequest{
 				UserID: "user_1", KBID: "kb_1", DocID: "doc_1", DocVersion: 7,
@@ -344,9 +513,18 @@ func TestLoadParsedArtifactRehydratesAndInvalidatesMissingDependencies(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	logicalArtifactKey, err := document.ArtifactJSONKey("user_1", "kb_1", "doc_1", assetSourceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactKey, err := document.VersionedObjectKey(logicalArtifactKey, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	loaded, hit, err := persister.LoadParsedArtifact(context.Background(), CacheRequest{
 		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", ParseFingerprint: assetSourceHash,
+		ArtifactObjectKey: artifactKey,
 	})
 	if err != nil || !hit || loaded.Assets[0].ID != artifact.Assets[0].ID {
 		t.Fatalf("cache load hit=%v artifact=%+v err=%v", hit, loaded, err)
@@ -355,7 +533,7 @@ func TestLoadParsedArtifactRehydratesAndInvalidatesMissingDependencies(t *testin
 	wrongSource.SHA256 = strings.Repeat("b", 64)
 	if _, hit, err := persister.LoadParsedArtifact(context.Background(), CacheRequest{
 		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", DocVersion: 8,
-		ParseFingerprint: assetSourceHash, ExpectedSource: &wrongSource,
+		ParseFingerprint: assetSourceHash, ExpectedSource: &wrongSource, ArtifactObjectKey: artifactKey,
 	}); err != nil || hit {
 		t.Fatalf("source-mismatched artifact hit=%v err=%v", hit, err)
 	}
@@ -365,18 +543,22 @@ func TestLoadParsedArtifactRehydratesAndInvalidatesMissingDependencies(t *testin
 	expectedSource := artifact.Source
 	if _, hit, err := persister.LoadParsedArtifact(context.Background(), CacheRequest{
 		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", DocVersion: 8,
-		ParseFingerprint: assetSourceHash, ExpectedSource: &expectedSource,
+		ParseFingerprint: assetSourceHash, ExpectedSource: &expectedSource, ArtifactObjectKey: artifactKey,
 	}); err != nil || !hit {
 		t.Fatalf("valid version-8 cache hit=%v err=%v", hit, err)
 	}
 	if record := catalog.records[artifact.Assets[0].ID]; record.FirstSeenVersion != 7 || record.LastSeenVersion != 8 {
 		t.Fatalf("cache-hit asset version visibility = %+v", record)
 	}
+	if mapped := catalog.versionAssets["doc_1"][8]; len(mapped) != 1 || mapped[0] != artifact.Assets[0].ID {
+		t.Fatalf("cache-hit version asset mapping = %v", mapped)
+	}
 
 	record := catalog.records[artifact.Assets[0].ID]
 	delete(catalog.records, artifact.Assets[0].ID)
 	if _, hit, err := persister.LoadParsedArtifact(context.Background(), CacheRequest{
 		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", ParseFingerprint: assetSourceHash,
+		ArtifactObjectKey: artifactKey,
 	}); err != nil || hit {
 		t.Fatalf("missing catalog hit=%v err=%v", hit, err)
 	}
@@ -384,6 +566,7 @@ func TestLoadParsedArtifactRehydratesAndInvalidatesMissingDependencies(t *testin
 	delete(objects.data, record.SourceObjectKey)
 	if _, hit, err := persister.LoadParsedArtifact(context.Background(), CacheRequest{
 		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", ParseFingerprint: assetSourceHash,
+		ArtifactObjectKey: artifactKey,
 	}); err != nil || hit {
 		t.Fatalf("missing source hit=%v err=%v", hit, err)
 	}
@@ -402,10 +585,10 @@ func TestLoadParsedArtifactRehydratesAndInvalidatesMissingDependencies(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifactKey, _ := document.ArtifactJSONKey("user_1", "kb_1", "doc_1", assetSourceHash)
 	objects.data[artifactKey] = encoded
 	if _, hit, err := persister.LoadParsedArtifact(context.Background(), CacheRequest{
 		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", ParseFingerprint: assetSourceHash,
+		ArtifactObjectKey: artifactKey,
 	}); err != nil || hit {
 		t.Fatalf("ready asset without display object hit=%v err=%v", hit, err)
 	}
@@ -423,9 +606,11 @@ func TestLoadParsedArtifactDoesNotTurnStorageOutageIntoCacheMiss(t *testing.T) {
 		t.Fatal(err)
 	}
 	artifactKey, _ := document.ArtifactJSONKey("user_1", "kb_1", "doc_1", assetSourceHash)
+	artifactKey, _ = document.VersionedObjectKey(artifactKey, 7)
 	objects.getErr[artifactKey] = errors.New("object store unavailable")
 	if _, hit, err := persister.LoadParsedArtifact(context.Background(), CacheRequest{
 		UserID: "user_1", KBID: "kb_1", DocID: "doc_1", ParseFingerprint: assetSourceHash,
+		ArtifactObjectKey: artifactKey,
 	}); err == nil || hit {
 		t.Fatalf("storage outage was hidden as cache miss: hit=%v err=%v", hit, err)
 	}

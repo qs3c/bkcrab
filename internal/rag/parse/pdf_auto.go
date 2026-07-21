@@ -13,9 +13,11 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag/assets"
 	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
+	"github.com/qs3c/bkcrab/internal/rag/telemetry"
 	"github.com/qs3c/bkcrab/internal/rag/vision"
 )
 
@@ -89,6 +91,7 @@ type pdfPageResult struct {
 	unit        *document.MarkdownUnit
 	assets      []document.ExtractedAsset
 	occurrences []document.AssetOccurrence
+	usedVision  bool
 }
 
 func (p *LocalParser) parseAutoPDF(
@@ -290,6 +293,26 @@ func (p *LocalParser) parseAutoPDF(
 		_ = parsed.Close()
 		return nil, fmt.Errorf("validate PDF auto document: %w", err)
 	}
+	visionCount := 0
+	nativeCount := 0
+	skippedCount := 0
+	for _, page := range pages {
+		result := results[page.descriptor.Page]
+		if result.unit == nil || strings.TrimSpace(result.unit.Markdown) == "" {
+			skippedCount++
+			continue
+		}
+		if result.usedVision {
+			visionCount++
+		} else {
+			nativeCount++
+		}
+	}
+	telemetry.Emit(ctx, p.recorder, telemetry.EventParserPages, telemetry.Fields{
+		DocID: source.DocID, Format: "pdf", ParseMode: string(config.ParseModeAuto),
+		ParserVersion: version, Outcome: "ok", PageCount: len(pages), NativePages: nativeCount,
+		VLMPages: visionCount, DegradedPages: degradedPDFPageCount(warnings), SkippedCount: skippedCount,
+	})
 	return parsed, nil
 }
 
@@ -313,6 +336,12 @@ func (p *LocalParser) nativePDFWithAutoWarning(
 		_ = parsed.Close()
 		return nil, err
 	}
+	pageCount := parserPageCount(parsed.Units)
+	telemetry.Emit(ctx, p.recorder, telemetry.EventParserPages, telemetry.Fields{
+		DocID: source.DocID, Format: "pdf", ParseMode: string(config.ParseModeAuto),
+		ParserVersion: parsed.Parser.Version, Outcome: "ok", PageCount: pageCount,
+		NativePages: pageCount, DegradedPages: pageCount,
+	})
 	return parsed, nil
 }
 
@@ -588,7 +617,19 @@ func bindPDFVisuals(
 		markdown = appendInternalImage(markdown, "扫描页", occurrenceID, "")
 	}
 	result.unit = markdownUnitForPage(page.descriptor, markdown)
+	result.usedVision = true
 	return result, nil
+}
+
+func degradedPDFPageCount(warnings []document.ParseWarning) int {
+	pages := make(map[int]struct{})
+	for _, warning := range warnings {
+		if !warning.Degraded || warning.Location == nil || warning.Location.Kind != document.LocationPage || warning.Location.Index <= 0 {
+			continue
+		}
+		pages[warning.Location.Index] = struct{}{}
+	}
+	return len(pages)
 }
 
 func pdfVisionFallbackPage(page pdfAnalyzePage, render *sidecar.BundleHandle, pageNumber int, code, message string) (pdfPageResult, []document.ParseWarning) {

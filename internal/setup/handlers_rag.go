@@ -351,6 +351,8 @@ func writeRAGError(w http.ResponseWriter, err error) {
 		status = http.StatusRequestEntityTooLarge
 	case errors.Is(err, store.ErrRAGAdvancedPendingLimit), errors.Is(err, store.ErrRAGAdvancedReindexRateLimit):
 		status = http.StatusTooManyRequests
+	case errors.Is(err, rag.ErrLifecycleCleanupPending):
+		status = http.StatusServiceUnavailable
 	case errors.Is(err, rag.ErrNoReadyDocuments):
 		status = http.StatusConflict
 	case strings.Contains(err.Error(), "不支持的文件类型"),

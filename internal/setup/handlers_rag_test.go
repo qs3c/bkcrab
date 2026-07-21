@@ -18,6 +18,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
+	"github.com/qs3c/bkcrab/internal/rag/parse"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/scope"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -29,6 +30,10 @@ func newRAGAPITestServer(t *testing.T) (*Server, *auth.Resolver, *users.Account,
 }
 
 func newRAGAPITestServerWithMaxFileMB(t *testing.T, maxFileMB int) (*Server, *auth.Resolver, *users.Account, *users.Account, *rag.Service) {
+	return newRAGAPITestServerWithParser(t, maxFileMB, nil)
+}
+
+func newRAGAPITestServerWithParser(t *testing.T, maxFileMB int, parser parse.Parser) (*Server, *auth.Resolver, *users.Account, *users.Account, *rag.Service) {
 	t.Helper()
 	ctx := context.Background()
 	server, resolver, admin, regular := newAuthTestServer(t, ctx)
@@ -54,6 +59,7 @@ func newRAGAPITestServerWithMaxFileMB(t *testing.T, maxFileMB int) (*Server, *au
 		Vector:  vector.NewFake(),
 		Objects: objects.NewLocalFS(t.TempDir()),
 		Cfg:     cfg,
+		Parser:  parser,
 		Workers: 1,
 	})
 	workerCtx, cancel := context.WithCancel(context.Background())

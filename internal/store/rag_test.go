@@ -7,10 +7,31 @@ import (
 	"time"
 )
 
+func tombstoneAndDeleteRAGKBForTest(ctx context.Context, st *DBStore, id string) error {
+	if _, err := st.MarkRAGKBDeleting(ctx, id); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	return st.DeleteRAGKB(ctx, id)
+}
+
+func tombstoneAndDeleteRAGDocumentForTest(ctx context.Context, st *DBStore, id string) error {
+	if _, err := st.MarkRAGDocumentDeleting(ctx, id); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	return st.DeleteRAGDocument(ctx, id)
+}
+
 func TestRAGKBCRUD(t *testing.T) {
 	st := openTestDB(t)
 	defer st.Close()
 	ctx := context.Background()
+	ensureRAGLifecycleUser(t, st, "u_1", "active")
 
 	kb := &RAGKBRecord{
 		ID: "kb_test1", UserID: "u_1", Name: "产品手册",
@@ -39,14 +60,14 @@ func TestRAGKBCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after update: %v", err)
 	}
-	if got.Name != "新版产品手册" || got.Status != "deleting" {
+	if got.Name != "新版产品手册" || got.Status != "active" {
 		t.Fatalf("mutable fields not updated: %+v", got)
 	}
 	if got.EmbedModel != "text-embedding-v3" {
 		t.Fatalf("embedding snapshot changed through UpdateRAGKB: %q", got.EmbedModel)
 	}
 
-	if err := st.DeleteRAGKB(ctx, kb.ID); err != nil {
+	if err := tombstoneAndDeleteRAGKBForTest(ctx, st, kb.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, err := st.GetRAGKB(ctx, kb.ID); !errors.Is(err, ErrNotFound) {
@@ -89,7 +110,7 @@ func TestRAGDocumentAndTaskLifecycle(t *testing.T) {
 		t.Fatalf("list docs: %+v err=%v", docs, err)
 	}
 
-	if err := st.DeleteRAGDocument(ctx, doc.ID); err != nil {
+	if err := tombstoneAndDeleteRAGDocumentForTest(ctx, st, doc.ID); err != nil {
 		t.Fatalf("delete doc: %v", err)
 	}
 	if _, err := st.GetRAGDocument(ctx, doc.ID); !errors.Is(err, ErrNotFound) {
@@ -104,6 +125,7 @@ func TestRAGDocumentAndIndexTaskAtomicWrites(t *testing.T) {
 	st := openTestDB(t)
 	defer st.Close()
 	ctx := context.Background()
+	ensureRAGLifecycleUser(t, st, "u_atomic", "active")
 	if err := st.CreateRAGKB(ctx, &RAGKBRecord{
 		ID: "kb_atomic", UserID: "u_atomic", Name: "atomic", EmbedProvider: "system",
 		EmbedModel: "embed-v1", EmbedDims: 3, ChunkSize: 512, ChunkOverlap: 64,
@@ -188,6 +210,7 @@ func TestDeleteRAGKBCascadesRows(t *testing.T) {
 	st := openTestDB(t)
 	defer st.Close()
 	ctx := context.Background()
+	ensureRAGLifecycleUser(t, st, "u_1", "active")
 
 	kb := &RAGKBRecord{
 		ID: "kb_cascade", UserID: "u_1", Name: "cascade",
@@ -207,7 +230,7 @@ func TestDeleteRAGKBCascadesRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.DeleteRAGKB(ctx, kb.ID); err != nil {
+	if err := tombstoneAndDeleteRAGKBForTest(ctx, st, kb.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.GetRAGDocument(ctx, doc.ID); !errors.Is(err, ErrNotFound) {

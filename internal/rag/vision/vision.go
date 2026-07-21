@@ -66,9 +66,10 @@ func IsRetryable(err error) bool {
 }
 
 type CacheScope struct {
-	UserID string
-	KBID   string
-	DocID  string
+	UserID           string
+	KBID             string
+	DocID            string
+	ParseFingerprint string
 }
 
 func (s CacheScope) empty() bool { return s.UserID == "" && s.KBID == "" && s.DocID == "" }

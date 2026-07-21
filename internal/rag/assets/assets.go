@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"path"
 	"strings"
 	"time"
 
@@ -26,7 +27,11 @@ type ObjectStore interface {
 
 type Catalog interface {
 	UpsertRAGAsset(ctx context.Context, asset *store.RAGAssetRecord) error
+	ReplaceRAGVersionAssets(ctx context.Context, docID string, docVersion int64, assetIDs []string) error
+	PublishRAGAssetsForIndex(ctx context.Context, fence store.IndexFence, assets []store.RAGAssetRecord, assetIDs []string) (bool, error)
 	ListRAGAssetsByIDs(ctx context.Context, ids []string) ([]store.RAGAssetRecord, error)
+	BeginRAGObjectWrite(ctx context.Context, request store.RAGObjectWriteRequest) (*store.RAGObjectWriteFence, error)
+	MarkRAGObjectWriteReady(ctx context.Context, fence store.RAGObjectWriteFence) (bool, error)
 }
 
 type Limits struct {
@@ -62,22 +67,27 @@ type Persister struct {
 }
 
 type PersistRequest struct {
-	UserID           string
-	KBID             string
-	DocID            string
-	DocVersion       int64
-	ParseFingerprint string
-	NeutralCaption   string
-	Document         *document.ParsedDocument
+	UserID              string
+	KBID                string
+	DocID               string
+	DocVersion          int64
+	ParseFingerprint    string
+	NeutralCaption      string
+	ArtifactObjectKey   string
+	NormalizedObjectKey string
+	IndexFence          *store.IndexFence
+	Document            *document.ParsedDocument
 }
 
 type CacheRequest struct {
-	UserID           string
-	KBID             string
-	DocID            string
-	DocVersion       int64
-	ParseFingerprint string
-	ExpectedSource   *document.ParsedSource
+	UserID            string
+	KBID              string
+	DocID             string
+	DocVersion        int64
+	ParseFingerprint  string
+	ExpectedSource    *document.ParsedSource
+	ArtifactObjectKey string
+	IndexFence        *store.IndexFence
 }
 
 // PersistParsedDocument validates every asset by streaming from its bundle
@@ -107,13 +117,33 @@ func (p *Persister) PersistParsedDocument(ctx context.Context, request PersistRe
 	if request.Document.Source.DocID != request.DocID {
 		return nil, errors.New("persistence document ID does not match parsed source")
 	}
-	artifactKey, err := document.ArtifactJSONKey(request.UserID, request.KBID, request.DocID, request.ParseFingerprint)
+	logicalArtifactKey, err := document.ArtifactJSONKey(request.UserID, request.KBID, request.DocID, request.ParseFingerprint)
 	if err != nil {
 		return nil, err
 	}
-	normalizedKey, err := document.NormalizedMarkdownKey(request.UserID, request.KBID, request.DocID, request.ParseFingerprint)
+	logicalNormalizedKey, err := document.NormalizedMarkdownKey(request.UserID, request.KBID, request.DocID, request.ParseFingerprint)
 	if err != nil {
 		return nil, err
+	}
+	expectedArtifactKey, err := document.VersionedObjectKey(logicalArtifactKey, request.DocVersion)
+	if err != nil {
+		return nil, err
+	}
+	artifactKey := strings.TrimSpace(request.ArtifactObjectKey)
+	if artifactKey == "" {
+		artifactKey = expectedArtifactKey
+	} else if artifactKey != expectedArtifactKey {
+		return nil, errors.New("artifact object key does not belong to the document version")
+	}
+	expectedNormalizedKey, err := document.VersionedObjectKey(logicalNormalizedKey, request.DocVersion)
+	if err != nil {
+		return nil, err
+	}
+	normalizedKey := strings.TrimSpace(request.NormalizedObjectKey)
+	if normalizedKey == "" {
+		normalizedKey = expectedNormalizedKey
+	} else if normalizedKey != expectedNormalizedKey {
+		return nil, errors.New("normalized object key does not belong to the document version")
 	}
 	if err := request.Document.Validate(); err != nil {
 		return nil, fmt.Errorf("validate parsed document: %w", err)
@@ -154,6 +184,7 @@ func (p *Persister) PersistParsedDocument(ctx context.Context, request PersistRe
 		existingByID[record.ID] = record
 	}
 
+	recordsToPublish := make([]store.RAGAssetRecord, 0, len(request.Document.Assets))
 	for _, transient := range request.Document.Assets {
 		if err := p.validateBundleAsset(ctx, request.Document, transient); err != nil {
 			return nil, err
@@ -161,6 +192,19 @@ func (p *Persister) PersistParsedDocument(ctx context.Context, request PersistRe
 		canonical := assetByHash[transient.ContentSHA256]
 		keys, err := document.NewObjectKeys(request.UserID, request.KBID, request.DocID,
 			transient.ContentSHA256, transient.SourceMIME, request.ParseFingerprint)
+		if err != nil {
+			return nil, err
+		}
+		logicalKeys := keys
+		keys.AssetSource, err = document.VersionedObjectKey(keys.AssetSource, request.DocVersion)
+		if err != nil {
+			return nil, err
+		}
+		keys.AssetDisplay, err = document.VersionedObjectKey(keys.AssetDisplay, request.DocVersion)
+		if err != nil {
+			return nil, err
+		}
+		keys.AssetThumbnail, err = document.VersionedObjectKey(keys.AssetThumbnail, request.DocVersion)
 		if err != nil {
 			return nil, err
 		}
@@ -174,12 +218,13 @@ func (p *Persister) PersistParsedDocument(ctx context.Context, request PersistRe
 		}
 		prior, existed := existingByID[canonical.ID]
 		if existed {
-			if err := validateExistingAsset(prior, record, keys); err != nil {
+			if err := validateExistingAsset(prior, record, logicalKeys); err != nil {
 				return nil, err
 			}
 			record.FirstSeenVersion = min(prior.FirstSeenVersion, request.DocVersion)
 			record.LastSeenVersion = max(prior.LastSeenVersion, request.DocVersion)
 			record.CreatedAt = prior.CreatedAt
+			record.SourceObjectKey = prior.SourceObjectKey
 			record.DisplayMIME = prior.DisplayMIME
 			record.DisplayObjectKey = prior.DisplayObjectKey
 			record.ThumbnailObjectKey = prior.ThumbnailObjectKey
@@ -188,16 +233,39 @@ func (p *Persister) PersistParsedDocument(ctx context.Context, request PersistRe
 			record.ThumbnailSHA256 = prior.ThumbnailSHA256
 			canonical.DisplayStatus = prior.DisplayStatus
 		}
-		exists, err := p.objectExists(ctx, keys.AssetSource)
-		if err != nil {
-			return nil, fmt.Errorf("check asset %q object: %w", transient.LocalID, err)
-		}
-		if !exists {
+		if existed {
+			if err := p.requireExistingAssetObjects(ctx, prior); err != nil {
+				return nil, fmt.Errorf("reuse asset %q: %w", canonical.ID, err)
+			}
+			if prior.DisplayStatus == document.DisplayUnavailable {
+				appendDisplayWarning(artifact, transient, request.Document, "asset safe display remains unavailable")
+			} else if prior.ThumbnailSHA256 == "" {
+				// Phase B did not persist the thumbnail byte hash. Recompute the
+				// deterministic bytes for the one-time SQL backfill, but never
+				// reopen or rewrite the already-published object keys.
+				variants, err := p.makeDisplayVariants(ctx, request.Document, transient)
+				if err != nil {
+					return nil, fmt.Errorf("backfill asset %q thumbnail hash: %w", canonical.ID, err)
+				}
+				if prior.DisplayMIME != variants.Display.MIMEType || prior.DisplaySHA256 != variants.Display.SHA256 {
+					return nil, fmt.Errorf("existing ready asset %q conflicts with safe renderer output", canonical.ID)
+				}
+				record.ThumbnailSHA256 = variants.Thumbnail.SHA256
+			}
+		} else {
+			sourceFence, err := p.Catalog.BeginRAGObjectWrite(ctx, store.RAGObjectWriteRequest{
+				UserID: request.UserID, KBID: request.KBID, DocID: request.DocID,
+				ObjectKind: store.RAGObjectKindAssetSource, ObjectKey: record.SourceObjectKey,
+				ReferenceKey: canonical.ID,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("stage asset %q source object: %w", transient.LocalID, err)
+			}
 			reader, err := request.Document.OpenBundleEntry(ctx, transient.BundleEntry)
 			if err != nil {
 				return nil, fmt.Errorf("reopen asset %q: %w", transient.LocalID, err)
 			}
-			putErr := p.Objects.Put(ctx, keys.AssetSource, reader, transient.ByteSize, transient.SourceMIME)
+			putErr := p.Objects.Put(ctx, record.SourceObjectKey, reader, transient.ByteSize, transient.SourceMIME)
 			closeErr := reader.Close()
 			if putErr != nil {
 				return nil, fmt.Errorf("store asset %q: %w", transient.LocalID, putErr)
@@ -205,29 +273,24 @@ func (p *Persister) PersistParsedDocument(ctx context.Context, request PersistRe
 			if closeErr != nil {
 				return nil, fmt.Errorf("close asset %q after store: %w", transient.LocalID, closeErr)
 			}
-		}
-		if existed && prior.DisplayStatus == document.DisplayUnavailable {
-			appendDisplayWarning(artifact, transient, request.Document, "asset safe display remains unavailable")
-		} else {
+			if ready, err := p.Catalog.MarkRAGObjectWriteReady(ctx, *sourceFence); err != nil {
+				return nil, fmt.Errorf("mark asset %q source object ready: %w", transient.LocalID, err)
+			} else if !ready {
+				return nil, fmt.Errorf("mark asset %q source object ready: %w", transient.LocalID, store.ErrRAGLifecycleInactive)
+			}
 			variants, variantErr := p.makeDisplayVariants(ctx, request.Document, transient)
 			if variantErr != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return nil, ctxErr
 				}
-				if existed && prior.DisplayStatus == document.DisplayReady {
-					return nil, fmt.Errorf("rebuild ready asset %q display variants: %w", canonical.ID, variantErr)
-				}
 				appendDisplayWarning(artifact, transient, request.Document, "safe display/thumbnail generation failed")
 			} else {
-				if existed && (prior.DisplayMIME != variants.Display.MIMEType ||
-					prior.DisplaySHA256 != variants.Display.SHA256 ||
-					(prior.ThumbnailSHA256 != "" && prior.ThumbnailSHA256 != variants.Thumbnail.SHA256)) {
-					return nil, fmt.Errorf("existing ready asset %q conflicts with safe renderer output", canonical.ID)
-				}
-				if err := p.storeDisplayVariant(ctx, keys.AssetDisplay, variants.Display, transient.LocalID, "display"); err != nil {
+				if err := p.storeDisplayVariant(ctx, request, canonical.ID, store.RAGObjectKindAssetDisplay,
+					keys.AssetDisplay, variants.Display, transient.LocalID, "display"); err != nil {
 					return nil, err
 				}
-				if err := p.storeDisplayVariant(ctx, keys.AssetThumbnail, variants.Thumbnail, transient.LocalID, "thumbnail"); err != nil {
+				if err := p.storeDisplayVariant(ctx, request, canonical.ID, store.RAGObjectKindAssetThumbnail,
+					keys.AssetThumbnail, variants.Thumbnail, transient.LocalID, "thumbnail"); err != nil {
 					return nil, err
 				}
 				record.DisplayMIME = variants.Display.MIMEType
@@ -239,25 +302,66 @@ func (p *Persister) PersistParsedDocument(ctx context.Context, request PersistRe
 				canonical.DisplayStatus = document.DisplayReady
 			}
 		}
-		if err := p.Catalog.UpsertRAGAsset(ctx, &record); err != nil {
-			return nil, fmt.Errorf("upsert asset %q: %w", canonical.ID, err)
+		recordsToPublish = append(recordsToPublish, record)
+		if request.IndexFence == nil {
+			if err := p.Catalog.UpsertRAGAsset(ctx, &record); err != nil {
+				return nil, fmt.Errorf("upsert asset %q: %w", canonical.ID, err)
+			}
 		}
 	}
 	if err := artifact.Validate(); err != nil {
 		return nil, fmt.Errorf("validate canonical artifact: %w", err)
 	}
+	if request.IndexFence != nil {
+		published, err := p.Catalog.PublishRAGAssetsForIndex(ctx, *request.IndexFence, recordsToPublish, ids)
+		if err != nil {
+			return nil, fmt.Errorf("publish version %d asset set: %w", request.DocVersion, err)
+		}
+		if !published {
+			return nil, store.ErrRAGLifecycleInactive
+		}
+	} else if err := p.Catalog.ReplaceRAGVersionAssets(ctx, request.DocID, request.DocVersion, ids); err != nil {
+		return nil, fmt.Errorf("record version %d asset set: %w", request.DocVersion, err)
+	}
 	normalized := artifact.NormalizedMarkdown()
-	if err := p.Objects.Put(ctx, normalizedKey, strings.NewReader(normalized), int64(len(normalized)), "text/markdown; charset=utf-8"); err != nil {
+	if err := p.stageArtifactObject(ctx, request, store.RAGObjectKindNormalized,
+		normalizedKey, artifactKey, normalized, "text/markdown; charset=utf-8"); err != nil {
 		return nil, fmt.Errorf("store normalized Markdown: %w", err)
 	}
 	encoded, err := document.EncodeArtifact(artifact, p.Limits.MaxArtifactBytes)
 	if err != nil {
 		return nil, err
 	}
-	if err := p.Objects.Put(ctx, artifactKey, strings.NewReader(string(encoded)), int64(len(encoded)), "application/json"); err != nil {
+	if err := p.stageArtifactObject(ctx, request, store.RAGObjectKindParsedArtifact,
+		artifactKey, artifactKey, string(encoded), "application/json"); err != nil {
 		return nil, fmt.Errorf("publish parsed artifact: %w", err)
 	}
 	return artifact, nil
+}
+
+func (p *Persister) stageArtifactObject(
+	ctx context.Context,
+	request PersistRequest,
+	objectKind, objectKey, referenceKey, content, contentType string,
+) error {
+	fence, err := p.Catalog.BeginRAGObjectWrite(ctx, store.RAGObjectWriteRequest{
+		UserID: request.UserID, KBID: request.KBID, DocID: request.DocID,
+		ObjectKind: objectKind, ObjectKey: objectKey, ReferenceKey: referenceKey,
+	})
+	if err != nil {
+		return fmt.Errorf("stage object: %w", err)
+	}
+	if err := p.Objects.Put(ctx, objectKey, strings.NewReader(content), int64(len(content)), contentType); err != nil {
+		return err
+	}
+	ready, err := p.Catalog.MarkRAGObjectWriteReady(ctx, *fence)
+	if err != nil {
+		return fmt.Errorf("mark object ready: %w", err)
+	}
+	if !ready {
+		return store.ErrRAGLifecycleInactive
+	}
+	return nil
 }
 
 func (p *Persister) validateBundleAsset(ctx context.Context, parsed *document.ParsedDocument, asset document.ExtractedAsset) error {
@@ -317,19 +421,32 @@ func (p *Persister) makeDisplayVariants(
 
 func (p *Persister) storeDisplayVariant(
 	ctx context.Context,
+	request PersistRequest,
+	assetID, objectKind string,
 	key string,
 	variant EncodedRaster,
 	localID, variantName string,
 ) error {
+	fence, err := p.Catalog.BeginRAGObjectWrite(ctx, store.RAGObjectWriteRequest{
+		UserID: request.UserID, KBID: request.KBID, DocID: request.DocID,
+		ObjectKind: objectKind, ObjectKey: key, ReferenceKey: assetID,
+	})
+	if err != nil {
+		return fmt.Errorf("stage asset %q %s: %w", localID, variantName, err)
+	}
 	exists, err := p.objectExists(ctx, key)
 	if err != nil {
 		return fmt.Errorf("check asset %q %s object: %w", localID, variantName, err)
 	}
-	if exists {
-		return nil
+	if !exists {
+		if err := p.Objects.Put(ctx, key, bytes.NewReader(variant.Bytes), int64(len(variant.Bytes)), variant.MIMEType); err != nil {
+			return fmt.Errorf("store asset %q %s: %w", localID, variantName, err)
+		}
 	}
-	if err := p.Objects.Put(ctx, key, bytes.NewReader(variant.Bytes), int64(len(variant.Bytes)), variant.MIMEType); err != nil {
-		return fmt.Errorf("store asset %q %s: %w", localID, variantName, err)
+	if ready, err := p.Catalog.MarkRAGObjectWriteReady(ctx, *fence); err != nil {
+		return fmt.Errorf("mark asset %q %s ready: %w", localID, variantName, err)
+	} else if !ready {
+		return fmt.Errorf("mark asset %q %s ready: %w", localID, variantName, store.ErrRAGLifecycleInactive)
 	}
 	return nil
 }
@@ -360,9 +477,19 @@ func (p *Persister) LoadParsedArtifact(ctx context.Context, request CacheRequest
 	if err := p.validate(); err != nil {
 		return nil, false, err
 	}
-	artifactKey, err := document.ArtifactJSONKey(request.UserID, request.KBID, request.DocID, request.ParseFingerprint)
-	if err != nil {
-		return nil, false, err
+	artifactKey := strings.TrimSpace(request.ArtifactObjectKey)
+	if artifactKey == "" {
+		var err error
+		artifactKey, err = document.ArtifactJSONKey(request.UserID, request.KBID, request.DocID, request.ParseFingerprint)
+		if err != nil {
+			return nil, false, err
+		}
+		if request.DocVersion > 0 {
+			artifactKey, err = document.VersionedObjectKey(artifactKey, request.DocVersion)
+			if err != nil {
+				return nil, false, err
+			}
+		}
 	}
 	reader, err := p.Objects.Get(ctx, artifactKey)
 	if err != nil {
@@ -381,6 +508,7 @@ func (p *Persister) LoadParsedArtifact(ctx context.Context, request CacheRequest
 	}
 	ids := make([]string, 0, len(artifact.Assets))
 	recordsToTouch := make([]store.RAGAssetRecord, 0, len(artifact.Assets))
+	recordsToPublish := make([]store.RAGAssetRecord, 0, len(artifact.Assets))
 	for _, asset := range artifact.Assets {
 		ids = append(ids, asset.ID)
 	}
@@ -439,15 +567,31 @@ func (p *Persister) LoadParsedArtifact(ctx context.Context, request CacheRequest
 			}
 			recordsToTouch = append(recordsToTouch, record)
 		}
+		recordsToPublish = append(recordsToPublish, record)
 	}
 	// Version visibility is advanced only after the artifact and every binary
 	// dependency have passed validation. A corrupt cache must never make an
 	// otherwise inactive asset visible to a newly targeted version.
-	for i := range recordsToTouch {
-		record := &recordsToTouch[i]
-		if err := p.Catalog.UpsertRAGAsset(ctx, record); err != nil {
-			return nil, false, fmt.Errorf("mark cached asset %q seen in version %d: %w",
-				record.ID, request.DocVersion, err)
+	if request.IndexFence != nil {
+		published, err := p.Catalog.PublishRAGAssetsForIndex(ctx, *request.IndexFence, recordsToPublish, ids)
+		if err != nil {
+			return nil, false, fmt.Errorf("publish cached version %d asset set: %w", request.DocVersion, err)
+		}
+		if !published {
+			return nil, false, store.ErrRAGLifecycleInactive
+		}
+	} else {
+		for i := range recordsToTouch {
+			record := &recordsToTouch[i]
+			if err := p.Catalog.UpsertRAGAsset(ctx, record); err != nil {
+				return nil, false, fmt.Errorf("mark cached asset %q seen in version %d: %w",
+					record.ID, request.DocVersion, err)
+			}
+		}
+		if request.DocVersion > 0 {
+			if err := p.Catalog.ReplaceRAGVersionAssets(ctx, request.DocID, request.DocVersion, ids); err != nil {
+				return nil, false, fmt.Errorf("record cached version %d asset set: %w", request.DocVersion, err)
+			}
 		}
 	}
 	return artifact, true, nil
@@ -477,10 +621,39 @@ func (p *Persister) objectExists(ctx context.Context, key string) (bool, error) 
 	return true, nil
 }
 
-func validateExistingAsset(existing, expected store.RAGAssetRecord, keys document.ObjectKeys) error {
+func (p *Persister) requireExistingAssetObjects(ctx context.Context, asset store.RAGAssetRecord) error {
+	dependencies := []struct {
+		name string
+		key  string
+	}{{name: "source", key: asset.SourceObjectKey}}
+	if asset.DisplayStatus == document.DisplayReady {
+		dependencies = append(dependencies,
+			struct {
+				name string
+				key  string
+			}{name: "display", key: asset.DisplayObjectKey},
+			struct {
+				name string
+				key  string
+			}{name: "thumbnail", key: asset.ThumbnailObjectKey},
+		)
+	}
+	for _, dependency := range dependencies {
+		exists, err := p.objectExists(ctx, dependency.key)
+		if err != nil {
+			return fmt.Errorf("check %s object: %w", dependency.name, err)
+		}
+		if !exists {
+			return fmt.Errorf("published %s object is missing", dependency.name)
+		}
+	}
+	return nil
+}
+
+func validateExistingAsset(existing, expected store.RAGAssetRecord, logicalKeys document.ObjectKeys) error {
 	if existing.ID != expected.ID || existing.DocID != expected.DocID || existing.ContentSHA256 != expected.ContentSHA256 ||
 		existing.SourceKind != expected.SourceKind || existing.SourceMIME != expected.SourceMIME ||
-		existing.SourceObjectKey != keys.AssetSource || existing.ByteSize != expected.ByteSize ||
+		!matchesGenerationObjectKey(existing.SourceObjectKey, logicalKeys.AssetSource) || existing.ByteSize != expected.ByteSize ||
 		existing.Width != expected.Width || existing.Height != expected.Height {
 		return fmt.Errorf("existing asset %q conflicts with canonical source description", expected.ID)
 	}
@@ -488,7 +661,8 @@ func validateExistingAsset(existing, expected store.RAGAssetRecord, keys documen
 		return fmt.Errorf("existing asset %q has invalid display status %q", expected.ID, existing.DisplayStatus)
 	}
 	if existing.DisplayStatus == document.DisplayReady &&
-		(existing.DisplayObjectKey != keys.AssetDisplay || existing.ThumbnailObjectKey != keys.AssetThumbnail) {
+		(!matchesGenerationObjectKey(existing.DisplayObjectKey, logicalKeys.AssetDisplay) ||
+			!matchesGenerationObjectKey(existing.ThumbnailObjectKey, logicalKeys.AssetThumbnail)) {
 		return fmt.Errorf("existing ready asset %q has non-canonical display keys", expected.ID)
 	}
 	return nil
@@ -497,15 +671,27 @@ func validateExistingAsset(existing, expected store.RAGAssetRecord, keys documen
 func recordMatchesArtifact(record store.RAGAssetRecord, asset document.ArtifactAsset, docID string, keys document.ObjectKeys) bool {
 	if record.ID != asset.ID || record.DocID != docID || record.ContentSHA256 != asset.ContentSHA256 ||
 		record.SourceKind != asset.SourceKind || record.SourceMIME != asset.SourceMIME ||
-		record.SourceObjectKey != keys.AssetSource || record.ByteSize != asset.ByteSize ||
+		!matchesGenerationObjectKey(record.SourceObjectKey, keys.AssetSource) || record.ByteSize != asset.ByteSize ||
 		record.Width != asset.Width || record.Height != asset.Height || record.DisplayStatus != asset.DisplayStatus {
 		return false
 	}
 	if record.DisplayStatus == document.DisplayReady {
-		return record.DisplayObjectKey == keys.AssetDisplay && record.ThumbnailObjectKey == keys.AssetThumbnail &&
+		return matchesGenerationObjectKey(record.DisplayObjectKey, keys.AssetDisplay) &&
+			matchesGenerationObjectKey(record.ThumbnailObjectKey, keys.AssetThumbnail) &&
 			document.CanonicalSHA256(record.DisplaySHA256) && document.CanonicalSHA256(record.ThumbnailSHA256)
 	}
 	return true
+}
+
+func matchesGenerationObjectKey(objectKey, logicalKey string) bool {
+	if objectKey == logicalKey {
+		return true // legacy/canonical pre-generation object
+	}
+	logicalDir, logicalBase := path.Dir(logicalKey), path.Base(logicalKey)
+	objectDir := path.Dir(objectKey)
+	return path.Base(objectKey) == logicalBase &&
+		strings.HasPrefix(objectDir, logicalDir+"/versions/") &&
+		!strings.Contains(strings.TrimPrefix(objectDir, logicalDir+"/versions/"), "/")
 }
 
 type contextReader struct {

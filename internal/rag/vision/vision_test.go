@@ -8,7 +8,20 @@ import (
 
 	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
+	storepkg "github.com/qs3c/bkcrab/internal/store"
 )
+
+type recordingVisionCacheCatalog struct {
+	records []storepkg.RAGCacheObjectRecord
+}
+
+func (c *recordingVisionCacheCatalog) RegisterRAGCacheObject(
+	_ context.Context,
+	record storepkg.RAGCacheObjectRecord,
+) error {
+	c.records = append(c.records, record)
+	return nil
+}
 
 func TestDecodePageTranscriptionStrictSchemaAndMarkers(t *testing.T) {
 	valid := []byte(`{
@@ -111,6 +124,45 @@ func TestObjectCacheRoundTripAndCorruptionIsMiss(t *testing.T) {
 	}
 	if _, ok, err := cache.GetPage(ctx, scope, key); err != nil || ok {
 		t.Fatalf("corrupt cache should be a miss: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestVisionObjectCacheRegistersPutAndHitWithParseFingerprint(t *testing.T) {
+	ctx := context.Background()
+	catalog := &recordingVisionCacheCatalog{}
+	cache := NewObjectCache(objects.NewLocalFS(t.TempDir()), DefaultSchemaLimits(), catalog)
+	scope := CacheScope{
+		UserID: "u_1", KBID: "kb_1", DocID: "doc_1",
+		ParseFingerprint: strings.Repeat("f", 64),
+	}
+	pageKey := strings.Repeat("a", 64)
+	imageKey := strings.Repeat("b", 64)
+	if err := cache.PutPage(ctx, scope, pageKey, PageTranscription{Markdown: "page"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := cache.GetPage(ctx, scope, pageKey); err != nil || !ok {
+		t.Fatalf("page hit ok=%v err=%v", ok, err)
+	}
+	image := ImageDescription{Kind: "diagram", Caption: "caption", Confidence: 1}
+	if err := cache.PutImage(ctx, scope, imageKey, image); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := cache.GetImage(ctx, scope, imageKey); err != nil || !ok {
+		t.Fatalf("image hit ok=%v err=%v", ok, err)
+	}
+	if len(catalog.records) != 4 {
+		t.Fatalf("catalog registrations=%d, want put+hit for page+image", len(catalog.records))
+	}
+	for i, record := range catalog.records {
+		wantKind := storepkg.RAGCacheKindPage
+		if i >= 2 {
+			wantKind = storepkg.RAGCacheKindImage
+		}
+		if record.DocID != scope.DocID || record.CacheKind != wantKind ||
+			record.FingerprintKind != storepkg.RAGCacheFingerprintParse ||
+			record.Fingerprint != scope.ParseFingerprint {
+			t.Fatalf("catalog record[%d]=%+v", i, record)
+		}
 	}
 }
 

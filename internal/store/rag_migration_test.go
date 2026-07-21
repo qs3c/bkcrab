@@ -116,6 +116,7 @@ func TestRAGMigrationFromLegacySchemaIsIdempotent(t *testing.T) {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate pass 1: %v", err)
 	}
+	ensureRAGLifecycleUser(t, st, "u_legacy", "active")
 	// A current-format DONE row whose snapshot is missing is corrupt, not
 	// legacy. A later migration must not bless it as a visible legacy-v0 index.
 	currentWithoutSnapshot := &RAGDocumentRecord{
@@ -131,7 +132,10 @@ func TestRAGMigrationFromLegacySchemaIsIdempotent(t *testing.T) {
 	}
 
 	for table, columns := range map[string][]string{
-		"rag_kbs":    {"parse_mode", "enrichment_enabled"},
+		"rag_kbs": {
+			"parse_mode", "enrichment_enabled", "provisioning_generation",
+			"provisioning_lease_owner", "provisioning_lease_until",
+		},
 		"rag_assets": {"thumbnail_sha256"},
 		"rag_documents": {
 			"source_sha256", "active_version", "index_format_version", "processing_stage",
@@ -149,7 +153,9 @@ func TestRAGMigrationFromLegacySchemaIsIdempotent(t *testing.T) {
 		}
 	}
 	for _, table := range []string{
-		"rag_document_versions", "rag_assets", "rag_chunks", "rag_chunk_assets",
+		"rag_document_versions", "rag_assets", "rag_version_assets", "rag_document_maintenance_leases",
+		"rag_cache_objects", "rag_cache_object_fingerprints",
+		"rag_chunks", "rag_chunk_assets",
 		"rag_index_gc_tasks", "rag_document_ai_task_budgets",
 		"rag_document_ai_user_budgets", "rag_document_ai_usage",
 	} {
@@ -160,6 +166,18 @@ func TestRAGMigrationFromLegacySchemaIsIdempotent(t *testing.T) {
 		if !exists {
 			t.Errorf("migration did not create %s", table)
 		}
+	}
+	if found, unique, columns := ragTaskMigrationIndex(t, st, "rag_version_assets", "idx_rag_version_assets_asset"); !found || unique || strings.Join(columns, ",") != "asset_id,doc_id,doc_version" {
+		t.Fatalf("version asset lookup index found=%v unique=%v columns=%v", found, unique, columns)
+	}
+	if found, unique, columns := ragTaskMigrationIndex(t, st, "rag_document_maintenance_leases", "idx_rag_document_maintenance_lease_until"); !found || unique || strings.Join(columns, ",") != "lease_until" {
+		t.Fatalf("document maintenance lease index found=%v unique=%v columns=%v", found, unique, columns)
+	}
+	if found, unique, columns := ragTaskMigrationIndex(t, st, "rag_cache_objects", "idx_rag_cache_objects_doc_updated"); !found || unique || strings.Join(columns, ",") != "doc_id,updated_at" {
+		t.Fatalf("cache object cleanup index found=%v unique=%v columns=%v", found, unique, columns)
+	}
+	if found, unique, columns := ragTaskMigrationIndex(t, st, "rag_cache_object_fingerprints", "idx_rag_cache_fingerprints_generation"); !found || unique || strings.Join(columns, ",") != "doc_id,fingerprint_kind,fingerprint,updated_at" {
+		t.Fatalf("cache fingerprint generation index found=%v unique=%v columns=%v", found, unique, columns)
 	}
 
 	kb, err := st.GetRAGKB(ctx, "kb_legacy")
@@ -241,6 +259,189 @@ func TestRAGMigrationFromLegacySchemaIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRAGVersionAssetMigrationBackfillsActiveLegacyAssetOnce(t *testing.T) {
+	st := openUnmigratedRAGSQLite(t)
+	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ensureRAGLifecycleUser(t, st, "u_version_asset_migration", "active")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := st.CreateRAGKB(ctx, &RAGKBRecord{
+		ID: "kb_version_asset_migration", UserID: "u_version_asset_migration", Name: "migration",
+		EmbedProvider: "system", EmbedModel: "embed-v1", EmbedDims: 8,
+		ChunkSize: 512, ChunkOverlap: 64, ParseMode: RAGParseModeStandard, Status: "active",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	doc := &RAGDocumentRecord{
+		ID: "doc_version_asset_migration", KBID: "kb_version_asset_migration",
+		FileName: "migration.pdf", FileType: "pdf", ObjectKey: "source/migration.pdf",
+		Status: "PENDING", Version: 1, UploadedAt: now,
+	}
+	if _, err := st.CreateRAGDocumentWithVersionAndIndexTask(ctx, doc, testRAGDocumentVersion(doc.ID, 1), 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `UPDATE rag_document_versions SET status='DONE'
+		WHERE doc_id=? AND doc_version=1`, doc.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `UPDATE rag_documents SET status='DONE',active_version=1 WHERE id=?`, doc.ID); err != nil {
+		t.Fatal(err)
+	}
+	asset := &RAGAssetRecord{
+		ID: "ast_legacy_version_asset", DocID: doc.ID,
+		ContentSHA256: strings.Repeat("a", 64), SourceKind: "embedded_original", SourceMIME: "image/png",
+		SourceObjectKey: "source/asset.png", DisplayStatus: "unavailable", ByteSize: 1, Width: 1, Height: 1,
+		FirstSeenVersion: 1, LastSeenVersion: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.UpsertRAGAsset(ctx, asset); err != nil {
+		t.Fatal(err)
+	}
+	var markerCount int
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migration_markers
+		WHERE name=?`, ragVersionAssetsBackfillMigration).Scan(&markerCount); err != nil {
+		t.Fatal(err)
+	}
+	if markerCount != 1 {
+		t.Fatalf("initial RAG version asset backfill markers = %d, want 1", markerCount)
+	}
+	if _, err := st.DB().ExecContext(ctx, `DROP TABLE rag_version_assets`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate exact asset mapping: %v", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("idempotent migration: %v", err)
+	}
+	var count int
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM rag_version_assets
+		WHERE doc_id=? AND doc_version=1 AND asset_id=?`, doc.ID, asset.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("active legacy version asset mappings = %d, want 1", count)
+	}
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migration_markers
+		WHERE name=?`, ragVersionAssetsBackfillMigration).Scan(&markerCount); err != nil {
+		t.Fatal(err)
+	}
+	if markerCount != 1 {
+		t.Fatalf("recreated-table backfill markers = %d, want 1", markerCount)
+	}
+	if found, unique, columns := ragTaskMigrationIndex(t, st, "rag_version_assets", "idx_rag_version_assets_asset"); !found || unique || strings.Join(columns, ",") != "asset_id,doc_id,doc_version" {
+		t.Fatalf("version asset lookup index found=%v unique=%v columns=%v", found, unique, columns)
+	}
+}
+
+func TestRAGVersionAssetMigrationRetriesAfterBackfillFailure(t *testing.T) {
+	st := openUnmigratedRAGSQLite(t)
+	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ensureRAGLifecycleUser(t, st, "u_version_asset_retry", "active")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := st.CreateRAGKB(ctx, &RAGKBRecord{
+		ID: "kb_version_asset_retry", UserID: "u_version_asset_retry", Name: "retry",
+		EmbedProvider: "system", EmbedModel: "embed-v1", EmbedDims: 8,
+		ChunkSize: 512, ChunkOverlap: 64, ParseMode: RAGParseModeStandard, Status: "active",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	doc := &RAGDocumentRecord{
+		ID: "doc_version_asset_retry", KBID: "kb_version_asset_retry",
+		FileName: "retry.pdf", FileType: "pdf", ObjectKey: "source/retry.pdf",
+		Status: "PENDING", Version: 1, UploadedAt: now,
+	}
+	if _, err := st.CreateRAGDocumentWithVersionAndIndexTask(ctx, doc, testRAGDocumentVersion(doc.ID, 1), 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `UPDATE rag_document_versions SET status='DONE'
+		WHERE doc_id=? AND doc_version=1`, doc.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `UPDATE rag_documents SET status='DONE',active_version=1 WHERE id=?`, doc.ID); err != nil {
+		t.Fatal(err)
+	}
+	asset := &RAGAssetRecord{
+		ID: "ast_legacy_version_asset_retry", DocID: doc.ID,
+		ContentSHA256: strings.Repeat("b", 64), SourceKind: "embedded_original", SourceMIME: "image/png",
+		SourceObjectKey: "source/retry-asset.png", DisplayStatus: "unavailable", ByteSize: 1, Width: 1, Height: 1,
+		FirstSeenVersion: 1, LastSeenVersion: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.UpsertRAGAsset(ctx, asset); err != nil {
+		t.Fatal(err)
+	}
+
+	// Model the durable state left after canonical DDL succeeded but the
+	// transactional backfill failed: the target table exists and the completion
+	// marker does not.
+	if _, err := st.DB().ExecContext(ctx, `DROP TABLE rag_version_assets`); err != nil {
+		t.Fatalf("drop exact mapping table: %v", err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `DELETE FROM schema_migration_markers WHERE name=?`,
+		ragVersionAssetsBackfillMigration); err != nil {
+		t.Fatalf("clear completion marker: %v", err)
+	}
+	for _, statement := range []string{
+		st.ragVersionAssetsTableSQL(),
+		`CREATE INDEX idx_rag_version_assets_asset ON rag_version_assets (asset_id, doc_id, doc_version)`,
+		`CREATE TRIGGER reject_version_asset_backfill BEFORE INSERT ON rag_version_assets
+			BEGIN SELECT RAISE(ABORT, 'forced version asset backfill failure'); END`,
+	} {
+		if _, err := st.DB().ExecContext(ctx, statement); err != nil {
+			t.Fatalf("prepare failed backfill: %v\nSQL: %s", err, statement)
+		}
+	}
+
+	if err := st.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "forced version asset backfill failure") {
+		t.Fatalf("failed backfill error = %v, want forced trigger error", err)
+	}
+	var markerCount int
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migration_markers
+		WHERE name=?`, ragVersionAssetsBackfillMigration).Scan(&markerCount); err != nil {
+		t.Fatal(err)
+	}
+	if markerCount != 0 {
+		t.Fatalf("completion markers after failed backfill = %d, want 0", markerCount)
+	}
+	var mappingCount int
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM rag_version_assets
+		WHERE doc_id=? AND doc_version=1 AND asset_id=?`, doc.ID, asset.ID).Scan(&mappingCount); err != nil {
+		t.Fatal(err)
+	}
+	if mappingCount != 0 {
+		t.Fatalf("legacy version asset mappings after failed backfill = %d, want 0", mappingCount)
+	}
+	if _, err := st.DB().ExecContext(ctx, `DROP TRIGGER reject_version_asset_backfill`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("retry migration: %v", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("idempotent retry migration: %v", err)
+	}
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM rag_version_assets
+		WHERE doc_id=? AND doc_version=1 AND asset_id=?`, doc.ID, asset.ID).Scan(&mappingCount); err != nil {
+		t.Fatal(err)
+	}
+	if mappingCount != 1 {
+		t.Fatalf("retried legacy version asset mappings = %d, want 1", mappingCount)
+	}
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migration_markers
+		WHERE name=?`, ragVersionAssetsBackfillMigration).Scan(&markerCount); err != nil {
+		t.Fatal(err)
+	}
+	if markerCount != 1 {
+		t.Fatalf("completion markers after successful retry = %d, want 1", markerCount)
+	}
+}
+
 func TestRAGCanonicalDDLContainsAllPhaseATablesForBothFamilies(t *testing.T) {
 	sqlitePostgres := strings.Join((&DBStore{dialect: "sqlite"}).migrationSQL(), "\n")
 	mysql := strings.Join(mysqlMigrationSQL(), "\n")
@@ -249,8 +450,12 @@ func TestRAGCanonicalDDLContainsAllPhaseATablesForBothFamilies(t *testing.T) {
 		sql  string
 	}{{"sqlite/postgres", sqlitePostgres}, {"mysql", mysql}} {
 		for _, token := range []string{
-			"parse_mode", "active_version", "rag_document_versions", "rag_assets",
-			"thumbnail_sha256", "rag_chunks", "rag_chunk_assets", "rag_index_gc_tasks",
+			"schema_migration_markers", "parse_mode", "active_version", "rag_document_versions", "rag_assets",
+			"thumbnail_sha256", "rag_version_assets", "idx_rag_version_assets_asset",
+			"rag_document_maintenance_leases", "idx_rag_document_maintenance_lease_until",
+			"rag_cache_objects", "idx_rag_cache_objects_doc_updated",
+			"rag_cache_object_fingerprints", "idx_rag_cache_fingerprints_generation",
+			"rag_chunks", "rag_chunk_assets", "rag_index_gc_tasks",
 			"rag_document_ai_task_budgets", "rag_document_ai_user_budgets", "rag_document_ai_usage",
 		} {
 			if !strings.Contains(ddl.sql, token) {

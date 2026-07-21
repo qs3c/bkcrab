@@ -18,6 +18,7 @@ import (
 
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag/document"
+	"github.com/qs3c/bkcrab/internal/rag/telemetry"
 	"github.com/qs3c/bkcrab/internal/rag/vision"
 )
 
@@ -37,6 +38,7 @@ type Client struct {
 	maxOutputTokens     int
 	maxInputBytes       int
 	costEstimator       func(string, int64, int64) int64
+	recorder            telemetry.Recorder
 }
 
 const (
@@ -112,6 +114,7 @@ func NewOpenAICompatible(cfg config.RAGDocumentAICfg, limits config.RAGLimitsCfg
 		maxRequestBytes: maxRequestBytes,
 		maxOutputTokens: limits.MaxDocumentAIOutputTokens, maxInputBytes: limits.MaxSearchContentBytes,
 		costEstimator: func(string, int64, int64) int64 { return 0 },
+		recorder:      telemetry.NewSlogRecorder(nil),
 	}, nil
 }
 
@@ -127,6 +130,19 @@ func deriveMaxTextRequestBytes(maxInputBytes, maxResponseBytes int64) (int64, er
 }
 
 func (c *Client) ProviderFingerprint() string { return c.providerFingerprint }
+
+// SetRecorder replaces the privacy-safe observability sink. Raw blocks,
+// prompts, cache keys, endpoints, provider bodies and credentials are never
+// represented by the telemetry event schema.
+func (c *Client) SetRecorder(recorder telemetry.Recorder) {
+	if c == nil {
+		return
+	}
+	if recorder == nil {
+		recorder = telemetry.NopRecorder()
+	}
+	c.recorder = recorder
+}
 
 func (c *Client) CacheKey(block EnrichableBlock) string {
 	if c == nil {
@@ -152,10 +168,13 @@ func (c *Client) Enrich(ctx context.Context, block EnrichableBlock, budget *visi
 	key := c.CacheKey(block)
 	if c.cache != nil {
 		if cached, ok, err := c.cache.Get(ctx, block.Scope, key, block.Kind); err != nil {
+			c.recordCache(ctx, block.Scope.DocID, budget, "error")
 			return Enhancement{}, err
 		} else if ok {
+			c.recordCache(ctx, block.Scope.DocID, budget, "hit")
 			return boundedEnhancement(cached, block), nil
 		}
+		c.recordCache(ctx, block.Scope.DocID, budget, "miss")
 	}
 	if budget == nil {
 		return Enhancement{}, vision.ErrBudgetRequired
@@ -166,10 +185,11 @@ func (c *Client) Enrich(ctx context.Context, block EnrichableBlock, budget *visi
 		return Enhancement{}, err
 	}
 	outputLimit := min(c.maxOutputTokens, block.TokenBudget)
-	result, err := c.call(ctx, budget, vision.LogicalRequestKey(key, "initial"), request, outputLimit)
+	result, err := c.call(ctx, budget, vision.LogicalRequestKey(key, "initial"), 0, request, outputLimit)
 	if err != nil {
 		if errors.Is(err, vision.ErrCacheCommitted) && c.cache != nil {
 			if cached, ok, cacheErr := c.cache.Get(ctx, block.Scope, key, block.Kind); cacheErr == nil && ok {
+				c.recordCache(ctx, block.Scope.DocID, budget, "hit")
 				return boundedEnhancement(cached, block), nil
 			}
 		}
@@ -197,7 +217,7 @@ func (c *Client) Enrich(ctx context.Context, block EnrichableBlock, budget *visi
 	if err != nil {
 		return Enhancement{}, err
 	}
-	repaired, err := c.call(ctx, budget, vision.LogicalRequestKey(key, "repair"), repair, outputLimit)
+	repaired, err := c.call(ctx, budget, vision.LogicalRequestKey(key, "repair"), 1, repair, outputLimit)
 	if err != nil {
 		return Enhancement{}, err
 	}
@@ -367,7 +387,30 @@ type callResult struct {
 	reservation *vision.Reservation
 }
 
-func (c *Client) call(ctx context.Context, budget *vision.TaskDocumentAIBudget, logicalKey string, requestBody []byte, outputLimit int) (callResult, error) {
+func (c *Client) call(
+	ctx context.Context,
+	budget *vision.TaskDocumentAIBudget,
+	logicalKey string,
+	attempt int,
+	requestBody []byte,
+	outputLimit int,
+) (result callResult, resultErr error) {
+	started := time.Now()
+	defer func() {
+		fields := enrichCallFields(budget, attempt)
+		fields.Duration = time.Since(started)
+		fields.RequestCount = 1
+		fields.Outcome = "ok"
+		fields.InputTokens = result.usage.InputTokens
+		fields.OutputTokens = result.usage.OutputTokens
+		fields.CostMicroUSD = result.usage.CostMicroUSD
+		fields.Estimated = result.usage.Estimated
+		if resultErr != nil {
+			fields.Outcome = "error"
+			fields.ErrorCode = enrichErrorCode(resultErr)
+		}
+		telemetry.Emit(ctx, c.recorder, telemetry.EventDocumentAICall, fields)
+	}()
 	if budget == nil {
 		return callResult{}, vision.ErrBudgetRequired
 	}
@@ -383,7 +426,7 @@ func (c *Client) call(ctx context.Context, budget *vision.TaskDocumentAIBudget, 
 	cost := c.costEstimator(c.model, inputTokens, outputTokens)
 	reservation, err := budget.Reserve(ctx, budget.Fence(), vision.AttemptRequest{
 		LogicalRequestKey: logicalKey, Operation: vision.OperationEnrichment,
-		ProviderFingerprint: c.providerFingerprint, Attempt: 0,
+		ProviderFingerprint: c.providerFingerprint, Attempt: attempt,
 		InputTokens: inputTokens, OutputTokens: outputTokens, EstimatedCostMicroUSD: cost,
 	})
 	if err != nil {
@@ -458,6 +501,56 @@ func (c *Client) call(ctx context.Context, budget *vision.TaskDocumentAIBudget, 
 		usage.Estimated = true
 	}
 	return callResult{content: content, usage: usage, reservation: reservation}, nil
+}
+
+func (c *Client) recordCache(ctx context.Context, docID string, budget *vision.TaskDocumentAIBudget, status string) {
+	fields := enrichCallFields(budget, 0)
+	if fields.DocID == "" {
+		fields.DocID = docID
+	}
+	fields.Operation = ""
+	fields.CacheKind = "enrichment"
+	fields.CacheStatus = status
+	fields.Outcome = "ok"
+	if status == "error" {
+		fields.Outcome = "error"
+		fields.ErrorCode = "cache_io"
+	}
+	telemetry.Emit(ctx, c.recorder, telemetry.EventResultCache, fields)
+}
+
+func enrichCallFields(budget *vision.TaskDocumentAIBudget, attempt int) telemetry.Fields {
+	fields := telemetry.Fields{Operation: vision.OperationEnrichment, Attempt: attempt}
+	if budget == nil {
+		return fields
+	}
+	fence := budget.Fence()
+	fields.DocID = fence.DocID
+	fields.TaskID = fence.TaskID
+	fields.DocVersion = fence.DocVersion
+	fields.ClaimGeneration = fence.ClaimGeneration
+	return fields
+}
+
+func enrichErrorCode(err error) string {
+	var typed *vision.Error
+	if errors.As(err, &typed) {
+		return string(typed.Kind)
+	}
+	switch {
+	case errors.Is(err, vision.ErrBudgetRequired):
+		return "budget_required"
+	case errors.Is(err, vision.ErrAttemptNotSent):
+		return "attempt_not_sent"
+	case errors.Is(err, vision.ErrCacheCommitted):
+		return "committed_cache"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	default:
+		return "internal"
+	}
 }
 
 type reportedUsage struct{ InputTokens, OutputTokens int64 }

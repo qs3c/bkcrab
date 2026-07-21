@@ -126,8 +126,10 @@ func TestNormalizeMarkdownInternalAssetTrustBoundary(t *testing.T) {
 		t.Fatal("untrusted internal marker must produce warning")
 	}
 
-	if _, _, err := NormalizeMarkdown([]document.MarkdownUnit{unit}, nil, true); err == nil {
-		t.Fatal("unknown parser-authored occurrence must fail closed")
+	unknown, warnings, err := NormalizeMarkdown([]document.MarkdownUnit{unit}, nil, true)
+	if err != nil || strings.Contains(unknown[0].Markdown, "rag-asset://") || len(warnings) == 0 {
+		t.Fatalf("unknown occurrence must be treated as an untrusted image: unit=%q warnings=%+v err=%v",
+			unknown[0].Markdown, warnings, err)
 	}
 	visual := unit
 	visual.Markdown = "![unbound](rag-visual://v1)"

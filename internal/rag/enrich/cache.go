@@ -13,6 +13,7 @@ import (
 
 	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 type SchemaLimits struct {
@@ -55,13 +56,18 @@ type cacheEnvelope struct {
 
 type ObjectCache struct {
 	store    objects.Store
+	catalog  store.RAGCacheCatalog
 	limits   SchemaLimits
 	maxBytes int64
 }
 
-func NewObjectCache(store objects.Store, limits SchemaLimits) *ObjectCache {
+func NewObjectCache(objectStore objects.Store, limits SchemaLimits, catalogs ...store.RAGCacheCatalog) *ObjectCache {
 	limits = limits.normalized()
-	return &ObjectCache{store: store, limits: limits, maxBytes: cacheObjectByteLimit(limits)}
+	var catalog store.RAGCacheCatalog
+	if len(catalogs) != 0 {
+		catalog = catalogs[0]
+	}
+	return &ObjectCache{store: objectStore, catalog: catalog, limits: limits, maxBytes: cacheObjectByteLimit(limits)}
 }
 
 func (c *ObjectCache) Get(ctx context.Context, scope CacheScope, key string, kind BlockKind) (Enhancement, bool, error) {
@@ -97,6 +103,9 @@ func (c *ObjectCache) Get(ctx context.Context, scope CacheScope, key string, kin
 		envelope.Value.validate(c.limits) != nil {
 		return Enhancement{}, false, nil
 	}
+	if err := c.register(ctx, scope, key, objectKey); err != nil {
+		return Enhancement{}, false, err
+	}
 	return envelope.Value, true, nil
 }
 
@@ -118,7 +127,21 @@ func (c *ObjectCache) Put(ctx context.Context, scope CacheScope, key string, val
 	if int64(len(raw)) > c.maxBytes {
 		return fmt.Errorf("enrichment cache envelope exceeds %d bytes", c.maxBytes)
 	}
+	if err := c.register(ctx, scope, key, objectKey); err != nil {
+		return err
+	}
 	return c.store.Put(ctx, objectKey, bytes.NewReader(raw), int64(len(raw)), "application/json")
+}
+
+func (c *ObjectCache) register(ctx context.Context, scope CacheScope, cacheKey, objectKey string) error {
+	if c == nil || c.catalog == nil {
+		return nil
+	}
+	return c.catalog.RegisterRAGCacheObject(ctx, store.RAGCacheObjectRecord{
+		DocID: scope.DocID, CacheKind: store.RAGCacheKindEnrich, CacheKey: cacheKey,
+		ObjectKey: objectKey, FingerprintKind: store.RAGCacheFingerprintIndex,
+		Fingerprint: scope.IndexFingerprint,
+	})
 }
 
 func cacheObjectByteLimit(limits SchemaLimits) int64 {

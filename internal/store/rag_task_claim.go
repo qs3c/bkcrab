@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 )
@@ -93,7 +94,7 @@ func (d *DBStore) ragNowExpr() string {
 	case mysqlDialect:
 		return "UTC_TIMESTAMP(6)"
 	default:
-		return "CURRENT_TIMESTAMP"
+		return "STRFTIME('%Y-%m-%d %H:%M:%f','NOW')"
 	}
 }
 
@@ -234,19 +235,16 @@ func (d *DBStore) claimOneRAGIndexTask(
 	workerID string,
 	leaseDuration time.Duration,
 ) (*RAGIndexClaim, bool, error) {
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, false, err
-	}
-	defer tx.Rollback()
 	nowExpr := d.ragNowExpr()
 	var taskID int64
 	var docID string
-	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT id,doc_id FROM rag_index_tasks
+	err := d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT id,doc_id FROM rag_index_tasks t
 		WHERE doc_version IS NOT NULL AND doc_version > 0 AND (
 			(status='PENDING' AND (next_run_at IS NULL OR next_run_at <= %s)) OR
 			(status='RUNNING' AND (lease_until IS NULL OR lease_until <= %s)))
-		ORDER BY created_at,id LIMIT 1`, nowExpr, nowExpr)).Scan(&taskID, &docID)
+		AND NOT EXISTS (SELECT 1 FROM rag_document_maintenance_leases m
+			WHERE m.doc_id=t.doc_id AND m.lease_until IS NOT NULL AND m.lease_until>%s)
+		ORDER BY created_at,id LIMIT 1`, nowExpr, nowExpr, nowExpr)).Scan(&taskID, &docID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -254,8 +252,26 @@ func (d *DBStore) claimOneRAGIndexTask(
 		return nil, false, err
 	}
 
-	doc, err := d.ragDocumentInTx(ctx, tx, docID)
-	if errors.Is(err, sql.ErrNoRows) {
+	route, routeErr := d.ragOwnershipRoute(ctx, docID)
+	if routeErr != nil && !errors.Is(routeErr, ErrNotFound) {
+		return nil, false, routeErr
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	if errors.Is(routeErr, ErrNotFound) {
+		task, taskErr := d.ragTaskInTx(ctx, tx, taskID)
+		if ragIsNoRows(taskErr) {
+			return nil, true, nil
+		}
+		if taskErr != nil {
+			return nil, false, taskErr
+		}
+		if task.DocID != docID {
+			return nil, true, nil
+		}
 		if _, updateErr := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 			status='FAILED',error_msg='orphan index task',finished_at=%s,
 			lease_owner='',lease_until=NULL,heartbeat_at=NULL
@@ -264,7 +280,25 @@ func (d *DBStore) claimOneRAGIndexTask(
 		}
 		return nil, true, tx.Commit()
 	}
+
+	_, ownershipActive, err := d.lockRAGKBOwnerTx(ctx, tx, route.KBID, route.UserID)
 	if err != nil {
+		return nil, false, err
+	}
+	doc, err := d.ragDocumentInTx(ctx, tx, docID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, true, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if doc.KBID != route.KBID {
+		return nil, true, nil
+	}
+	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, doc.ID); err != nil {
+		if errors.Is(err, ErrRAGDocumentMaintenanceActive) {
+			return nil, true, nil
+		}
 		return nil, false, err
 	}
 	task, err := d.ragTaskInTx(ctx, tx, taskID)
@@ -280,6 +314,12 @@ func (d *DBStore) claimOneRAGIndexTask(
 	}
 	if task.DocID != doc.ID || !ragTaskDue(task, now) {
 		return nil, true, nil
+	}
+	if !ownershipActive {
+		if err := d.supersedeRunnableRAGTasksInTx(ctx, tx, doc.ID); err != nil {
+			return nil, false, err
+		}
+		return nil, true, tx.Commit()
 	}
 	if doc.Version != task.DocVersion {
 		if err := d.failInvalidRAGTaskInTx(ctx, tx, doc, task,
@@ -495,9 +535,12 @@ func (d *DBStore) failInvalidRAGTaskInTx(
 
 func (d *DBStore) CheckRAGIndexFence(ctx context.Context, fence IndexFence) (bool, error) {
 	var present int
-	err := d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT 1 FROM rag_index_tasks
-		WHERE id=%s AND doc_id=%s AND doc_version=%s AND claim_generation=%s
-		AND lease_owner=%s AND status='RUNNING' AND lease_until > %s`,
+	err := d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT 1 FROM rag_index_tasks t
+		JOIN rag_documents d ON d.id=t.doc_id JOIN rag_kbs kb ON kb.id=d.kb_id
+		JOIN users u ON u.id=kb.user_id
+		WHERE t.id=%s AND t.doc_id=%s AND t.doc_version=%s AND t.claim_generation=%s
+		AND t.lease_owner=%s AND t.status='RUNNING' AND t.lease_until > %s
+		AND UPPER(d.status)<>'DELETING' AND LOWER(kb.status)='active' AND LOWER(u.status)='active'`,
 		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ragNowExpr()),
 		fence.TaskID, fence.DocID, fence.DocVersion, fence.ClaimGeneration,
 		fence.LeaseOwner).Scan(&present)
@@ -522,10 +565,34 @@ func (d *DBStore) HeartbeatRAGIndexTask(
 	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 		lease_until=%s,heartbeat_at=%s WHERE id=%s AND doc_id=%s AND doc_version=%s
 		AND claim_generation=%s AND lease_owner=%s AND status='RUNNING'
-		AND lease_until > %s`, d.ph(1), d.ragNowExpr(), d.ph(2), d.ph(3),
-		d.ph(4), d.ph(5), d.ph(6), d.ragNowExpr()), now.Add(leaseDuration),
+		AND lease_until > %s AND EXISTS (SELECT 1 FROM rag_documents d
+			JOIN rag_kbs kb ON kb.id=d.kb_id JOIN users u ON u.id=kb.user_id
+			WHERE d.id=%s AND UPPER(d.status)<>'DELETING'
+			AND LOWER(kb.status)='active' AND LOWER(u.status)='active')`,
+		d.ph(1), d.ragNowExpr(), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6),
+		d.ragNowExpr(), d.ph(7)), now.Add(leaseDuration),
 		fence.TaskID, fence.DocID, fence.DocVersion, fence.ClaimGeneration,
-		fence.LeaseOwner)
+		fence.LeaseOwner, fence.DocID)
+	if err != nil {
+		return false, err
+	}
+	return ragRowsAffected(result)
+}
+
+// AcknowledgeRAGIndexTaskQuiesced lets a worker that observed a durable
+// supersession release the tombstone's fallback lease wait as soon as all of
+// its external writes have stopped. A crashed/uncooperative worker simply
+// leaves the original deadline in place for bounded cleanup recovery.
+func (d *DBStore) AcknowledgeRAGIndexTaskQuiesced(
+	ctx context.Context,
+	fence IndexFence,
+) (bool, error) {
+	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
+		lease_owner='',lease_until=NULL,heartbeat_at=NULL
+		WHERE id=%s AND doc_id=%s AND doc_version=%s AND claim_generation=%s
+		AND lease_owner=%s AND status='SUPERSEDED'`, d.ph(1), d.ph(2), d.ph(3),
+		d.ph(4), d.ph(5)), fence.TaskID, fence.DocID, fence.DocVersion,
+		fence.ClaimGeneration, fence.LeaseOwner)
 	if err != nil {
 		return false, err
 	}
@@ -543,13 +610,21 @@ func (d *DBStore) lockRAGIndexFence(
 	ctx context.Context,
 	tx *sql.Tx,
 	fence IndexFence,
+	route ragOwnershipRoute,
 ) (*ragLockedIndexFence, bool, error) {
+	_, ownershipActive, err := d.lockRAGKBOwnerTx(ctx, tx, route.KBID, route.UserID)
+	if err != nil || !ownershipActive {
+		return nil, false, err
+	}
 	doc, err := d.ragDocumentInTx(ctx, tx, fence.DocID)
 	if ragIsNoRows(err) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
+	}
+	if doc.KBID != route.KBID || strings.EqualFold(doc.Status, RAGDocumentStatusDeleting) {
+		return nil, false, nil
 	}
 	task, err := d.ragTaskInTx(ctx, tx, fence.TaskID)
 	if ragIsNoRows(err) {
@@ -579,6 +654,29 @@ func (d *DBStore) lockRAGIndexFence(
 	return &ragLockedIndexFence{doc: doc, task: task, version: version, now: now}, true, nil
 }
 
+func (d *DBStore) beginRAGIndexFenceTx(
+	ctx context.Context,
+	fence IndexFence,
+) (*sql.Tx, *ragLockedIndexFence, bool, error) {
+	route, err := d.ragOwnershipRoute(ctx, fence.DocID)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil, false, nil
+	}
+	if err != nil {
+		return nil, nil, false, err
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	locked, ok, err := d.lockRAGIndexFence(ctx, tx, fence, route)
+	if err != nil || !ok {
+		_ = tx.Rollback()
+		return nil, nil, false, err
+	}
+	return tx, locked, true, nil
+}
+
 func (d *DBStore) UpdateProgressRAGIndexTask(
 	ctx context.Context,
 	fence IndexFence,
@@ -586,10 +684,14 @@ func (d *DBStore) UpdateProgressRAGIndexTask(
 ) (bool, error) {
 	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
 		processing_stage=%s,progress_current=%s,progress_total=%s,progress_unit=%s
-		WHERE id=%s AND version=%s AND EXISTS (SELECT 1 FROM rag_index_tasks t
+		WHERE id=%s AND version=%s AND UPPER(status)<>'DELETING'
+		AND EXISTS (SELECT 1 FROM rag_index_tasks t
+			JOIN rag_documents d ON d.id=t.doc_id JOIN rag_kbs kb ON kb.id=d.kb_id
+			JOIN users u ON u.id=kb.user_id
 			WHERE t.id=%s AND t.doc_id=%s AND t.doc_version=%s
 			AND t.claim_generation=%s AND t.lease_owner=%s AND t.status='RUNNING'
-			AND t.lease_until > %s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4),
+			AND t.lease_until > %s AND LOWER(kb.status)='active' AND LOWER(u.status)='active')`,
+		d.ph(1), d.ph(2), d.ph(3), d.ph(4),
 		d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11),
 		d.ragNowExpr()), progress.Stage, progress.Current, progress.Total, progress.Unit,
 		fence.DocID, fence.DocVersion, fence.TaskID, fence.DocID, fence.DocVersion,
@@ -606,15 +708,11 @@ func (d *DBStore) UpdateWarningRAGIndexTask(
 	degraded bool,
 	warningCount int,
 ) (bool, error) {
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	locked, ok, err := d.lockRAGIndexFence(ctx, tx, fence)
+	tx, locked, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
 	if err != nil || !ok {
 		return false, err
 	}
+	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
 		degraded=%s,warning_count=%s,updated_at=%s WHERE doc_id=%s AND doc_version=%s
 		AND status='RUNNING'`, d.ph(1), d.ph(2), d.ragNowExpr(), d.ph(3), d.ph(4)),
@@ -628,6 +726,52 @@ func (d *DBStore) UpdateWarningRAGIndexTask(
 			fence.DocID, fence.DocVersion); err != nil {
 			return false, err
 		}
+	}
+	return true, tx.Commit()
+}
+
+// RecordRAGDocumentParseArtifact persists the deterministic object-store
+// cleanup handle before the parser is allowed to publish any artifact bytes.
+// The handle is immutable for a physical document version and remains on
+// FAILED/SUPERSEDED/GCED tombstones so orphan cleanup can always find it.
+func (d *DBStore) RecordRAGDocumentParseArtifact(
+	ctx context.Context,
+	fence IndexFence,
+	artifactKey string,
+) (bool, error) {
+	artifactKey = strings.TrimSpace(artifactKey)
+	if artifactKey == "" || strings.ContainsRune(artifactKey, '\x00') ||
+		artifactKey != strings.ReplaceAll(artifactKey, "\\", "/") {
+		return false, ErrRAGDocumentVersionMismatch
+	}
+	tx, locked, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
+	if err != nil || !ok {
+		return false, err
+	}
+	defer tx.Rollback()
+	if locked.version.ParseArtifactKey != "" && locked.version.ParseArtifactKey != artifactKey {
+		return false, ErrRAGDocumentVersionConflict
+	}
+	var deletingHandles int
+	if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*)
+		FROM rag_object_write_staging WHERE doc_id=%s AND reference_key=%s
+		AND status='DELETING'`, d.ph(1), d.ph(2)), fence.DocID, artifactKey).
+		Scan(&deletingHandles); err != nil {
+		return false, err
+	}
+	if deletingHandles != 0 {
+		return false, ErrRAGLifecycleInactive
+	}
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
+		parse_artifact_key=%s,updated_at=%s WHERE doc_id=%s AND doc_version=%s
+		AND status='RUNNING' AND (parse_artifact_key='' OR parse_artifact_key=%s)`,
+		d.ph(1), d.ragNowExpr(), d.ph(2), d.ph(3), d.ph(4)), artifactKey,
+		fence.DocID, fence.DocVersion, artifactKey)
+	if err != nil {
+		return false, err
+	}
+	if updated, err := ragRowsAffected(result); err != nil || !updated {
+		return false, err
 	}
 	return true, tx.Commit()
 }
@@ -659,15 +803,11 @@ func (d *DBStore) finishOrRetryRAGIndexTask(
 	transient bool,
 	nextRunDelay time.Duration,
 ) (bool, error) {
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	locked, ok, err := d.lockRAGIndexFence(ctx, tx, fence)
+	tx, locked, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
 	if err != nil || !ok {
 		return false, err
 	}
+	defer tx.Rollback()
 	retry := transient && locked.task.RetryCount < locked.task.MaxRetry
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
 		status='FAILED',updated_at=%s WHERE doc_id=%s AND doc_version=%s
@@ -731,20 +871,28 @@ func (d *DBStore) ActivateAndFinishRAGIndexTask(
 	if gcGracePeriod < 0 {
 		gcGracePeriod = 0
 	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	locked, ok, err := d.lockRAGIndexFence(ctx, tx, fence)
+	tx, locked, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
 	if err != nil || !ok {
 		return false, err
 	}
+	defer tx.Rollback()
 	if locked.doc.Version != fence.DocVersion {
 		return false, nil
 	}
 	if err := d.reconcileRAGDocumentSourceHash(ctx, tx, locked.doc, locked.version.SourceSHA256); err != nil {
 		return false, err
+	}
+	if locked.version.ParseArtifactKey != "" &&
+		locked.version.ParseArtifactKey != activation.VersionResult.ParseArtifactKey {
+		return false, ErrRAGDocumentVersionConflict
+	}
+	if artifactKey := strings.TrimSpace(activation.VersionResult.ParseArtifactKey); artifactKey != "" {
+		normalizedKey := path.Join(path.Dir(artifactKey), "normalized.md")
+		if err := d.consumeRAGObjectWritesInTx(
+			ctx, tx, fence.DocID, normalizedKey, artifactKey,
+		); err != nil {
+			return false, err
+		}
 	}
 	activation.VersionResult.Status = RAGDocumentVersionDone
 	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
@@ -848,17 +996,30 @@ func (d *DBStore) advanceDocumentVersionAndCreateTask(
 	if snapshot == nil || snapshot.DocID == "" {
 		return nil, ErrRAGDocumentVersionMismatch
 	}
+	// This read only discovers the lock-order routing key. Authorization and
+	// liveness are re-evaluated after the user and KB rows are locked below.
+	preflightDoc, err := d.GetRAGDocument(ctx, snapshot.DocID)
+	if err != nil {
+		return nil, err
+	}
+	preflightKB, err := d.GetRAGKB(ctx, preflightDoc.KBID)
+	if errors.Is(err, ErrNotFound) {
+		return nil, ErrRAGLifecycleInactive
+	}
+	if err != nil {
+		return nil, err
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	if policy != nil && ragAdvancedVersion(snapshot) {
-		// Acquire the per-user write/row lock before the first document read so
-		// SQLite never has to upgrade a stale read transaction.
-		if err := d.lockRAGAdvancedEnqueueUserTx(ctx, tx, policy); err != nil {
-			return nil, err
-		}
+	expectedOwner := preflightKB.UserID
+	if policy != nil {
+		expectedOwner = policy.UserID
+	}
+	if _, err := d.lockActiveRAGKBOwnerTx(ctx, tx, preflightDoc.KBID, expectedOwner); err != nil {
+		return nil, err
 	}
 	doc, err := d.ragDocumentInTx(ctx, tx, snapshot.DocID)
 	if ragIsNoRows(err) {
@@ -867,8 +1028,21 @@ func (d *DBStore) advanceDocumentVersionAndCreateTask(
 	if err != nil {
 		return nil, err
 	}
+	if doc.KBID != preflightDoc.KBID {
+		return nil, ErrRAGDocumentVersionMismatch
+	}
+	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, doc.ID); err != nil {
+		return nil, err
+	}
 	if doc.Version != expectedVersion {
 		return nil, ErrRAGDocumentVersionConflict
+	}
+	tombstoned, err := d.ragDeletionTombstonedInTx(ctx, tx, doc)
+	if err != nil {
+		return nil, err
+	}
+	if tombstoned {
+		return nil, ErrRAGLifecycleInactive
 	}
 	if err := d.reconcileRAGDocumentSourceHash(ctx, tx, doc, snapshot.SourceSHA256); err != nil {
 		return nil, err
@@ -955,10 +1129,11 @@ func (d *DBStore) supersedeRunnableRAGTasksInTx(ctx context.Context, tx *sql.Tx,
 		}
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 			status='SUPERSEDED',error_msg='superseded by newer document version',
-			finished_at=%s,lease_owner='',lease_until=NULL,heartbeat_at=NULL,next_run_at=NULL
+			finished_at=%s,lease_owner=%s,lease_until=%s,heartbeat_at=NULL,next_run_at=NULL
 			WHERE id=%s AND doc_version=%s AND claim_generation=%s
 			AND status IN ('PENDING','RUNNING')`, d.ragNowExpr(), d.ph(1), d.ph(2),
-			d.ph(3)), task.ID, task.DocVersion, task.ClaimGeneration); err != nil {
+			d.ph(3), d.ph(4), d.ph(5)), task.LeaseOwner, task.LeaseUntil, task.ID,
+			task.DocVersion, task.ClaimGeneration); err != nil {
 			return err
 		}
 	}
@@ -973,17 +1148,16 @@ func (d *DBStore) SupersedeRAGIndexTaskAndCreateVersion(
 	if snapshot == nil || snapshot.DocID != fence.DocID {
 		return nil, false, ErrRAGDocumentVersionMismatch
 	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, false, err
-	}
-	defer tx.Rollback()
-	locked, ok, err := d.lockRAGIndexFence(ctx, tx, fence)
+	tx, locked, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
 	if err != nil || !ok {
 		return nil, false, err
 	}
+	defer tx.Rollback()
 	if locked.doc.Version != fence.DocVersion {
 		return nil, false, nil
+	}
+	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, locked.doc.ID); err != nil {
+		return nil, false, err
 	}
 	if err := d.reconcileRAGDocumentSourceHash(ctx, tx, locked.doc, snapshot.SourceSHA256); err != nil {
 		return nil, false, err

@@ -201,3 +201,64 @@ func TestMilvusRoundTrip(t *testing.T) {
 		t.Fatalf("DropCollection 对不存在 collection 应幂等: %v", err)
 	}
 }
+
+func TestMilvusActiveVersionFilter(t *testing.T) {
+	addr := os.Getenv("RAG_TEST_MILVUS_ADDR")
+	if addr == "" {
+		t.Skip("RAG_TEST_MILVUS_ADDR is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	m, err := NewMilvus(ctx, addr, os.Getenv("RAG_TEST_MILVUS_USER"), os.Getenv("RAG_TEST_MILVUS_PASSWORD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer closeCancel()
+		if err := m.Close(closeCtx); err != nil {
+			t.Logf("close Milvus client: %v", err)
+		}
+	})
+	kbID := fmt.Sprintf("test_active_filter_%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		if err := m.DropCollection(cleanupCtx, kbID); err != nil {
+			t.Logf("cleanup collection: %v", err)
+		}
+	})
+	if err := m.EnsureCollection(ctx, kbID, 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.UpsertChunks(ctx, kbID, []ChunkData{
+		{DocID: "filter_doc", DocVersion: 1, Index: 0, Content: "alpha active version one", Vector: []float32{1, 0, 0, 0}},
+		{DocID: "filter_doc", DocVersion: 2, Index: 0, Content: "beta active version two", Vector: []float32{1, 0, 0, 0}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	queries := []struct {
+		name  string
+		query SearchQuery
+	}{
+		{name: "single dense", query: SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}}},
+		{name: "dense and sparse", query: SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}, Text: "alpha"}},
+		{name: "rewritten and hyde dense", query: SearchQuery{Dense: [][]float32{{1, 0, 0, 0}, {1, 0, 0, 0}}}},
+		{name: "all ann routes", query: SearchQuery{Dense: [][]float32{{1, 0, 0, 0}, {1, 0, 0, 0}}, Text: "alpha"}},
+	}
+	for _, version := range []int64{1, 2} {
+		for _, test := range queries {
+			t.Run(fmt.Sprintf("%s/version_%d", test.name, version), func(t *testing.T) {
+				query := test.query
+				query.ActiveVersions = map[string]int64{"filter_doc": version}
+				hits, err := m.HybridSearch(ctx, kbID, query, 10)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(hits) != 1 || hits[0].DocVersion != version {
+					t.Fatalf("active version %d hits=%+v", version, hits)
+				}
+			})
+		}
+	}
+}

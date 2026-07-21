@@ -17,6 +17,13 @@ const (
 	RAGParseModeStandard = "standard"
 	RAGParseModeAuto     = "auto"
 
+	// RAG knowledge-base and document tombstones intentionally use the
+	// casing already exposed by their respective APIs. Comparisons at trust
+	// boundaries remain case-insensitive, but writers use one canonical value.
+	RAGKBStatusProvisioning   = "provisioning"
+	RAGKBStatusDeleting       = "deleting"
+	RAGDocumentStatusDeleting = "DELETING"
+
 	RAGDocumentVersionPending    = "PENDING"
 	RAGDocumentVersionRunning    = "RUNNING"
 	RAGDocumentVersionDone       = "DONE"
@@ -46,9 +53,35 @@ var (
 	ErrRAGDocumentSourceConflict      = errors.New("store: RAG document source SHA-256 conflicts with version snapshot")
 	ErrRAGAdvancedPendingLimit        = errors.New("store: RAG advanced pending task limit exceeded")
 	ErrRAGAdvancedReindexRateLimit    = errors.New("store: RAG advanced reindex interval has not elapsed")
+	ErrRAGLifecycleInactive           = errors.New("store: RAG ownership chain is deleting or inactive")
+	ErrRAGDocumentMaintenanceActive   = errors.New("store: RAG document maintenance lease is active")
+	ErrRAGCleanupNotReady             = errors.New("store: RAG cleanup is waiting for active leases")
+	ErrRAGKBProvisioningActive        = errors.New("store: RAG knowledge-base provisioning lease is active")
+	ErrRAGKBQuotaExceeded             = errors.New("store: RAG knowledge-base quota exceeded")
 	ErrRAGLegacyTaskMigrationRequired = errors.New("store: legacy RAG task migration requires explicit offline-v1 acknowledgement")
 	ErrRAGLegacySnapshotBuilder       = errors.New("store: legacy RAG runnable task requires a snapshot builder")
 )
+
+// RAGKBProvisionFence is the durable capability held while the vector
+// collection for a new knowledge base is being created. The SQL row is
+// inserted before any external operation, so crashes and user-deletion races
+// always leave an enumerable cleanup handle.
+type RAGKBProvisionFence struct {
+	KBID       string
+	UserID     string
+	Generation int64
+	LeaseOwner string
+	LeaseUntil time.Time
+}
+
+// RAGKBProvisionCleanupCandidate identifies one expired provisioning lease.
+// Expiration is rechecked against database time in the tombstone transaction;
+// this value is only a bounded lifecycle-scan hint.
+type RAGKBProvisionCleanupCandidate struct {
+	KBID       string
+	UserID     string
+	Generation int64
+}
 
 // RAGAdvancedEnqueuePolicy is enforced in the same transaction that creates
 // an advanced index task. Zero values mean the caller intentionally bypasses
@@ -354,6 +387,17 @@ type RAGIndexGCTaskRecord struct {
 	AttemptCount    int
 	NextRunAt       *time.Time
 	CreatedAt       time.Time
+}
+
+// RAGVersionCleanupCandidate is a bounded, exact-version orphan-sweep input.
+// It deliberately contains no object-store credentials or owner-facing URL.
+type RAGVersionCleanupCandidate struct {
+	DocID            string
+	KBID             string
+	DocVersion       int64
+	Status           string
+	ParseArtifactKey string
+	UpdatedAt        time.Time
 }
 
 type RAGDocumentAITaskBudgetRecord struct {
@@ -720,6 +764,9 @@ func ragPeriodDate(value time.Time) string {
 }
 
 func (d *DBStore) CreateRAGKB(ctx context.Context, kb *RAGKBRecord) error {
+	if kb == nil || strings.TrimSpace(kb.ID) == "" || strings.TrimSpace(kb.UserID) == "" {
+		return ErrRAGLifecycleInactive
+	}
 	now := time.Now().UTC()
 	if kb.CreatedAt.IsZero() {
 		kb.CreatedAt = now
@@ -728,7 +775,15 @@ func (d *DBStore) CreateRAGKB(ctx context.Context, kb *RAGKBRecord) error {
 		kb.ParseMode = RAGParseModeStandard
 	}
 	kb.UpdatedAt = now
-	_, err := d.db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_kbs
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := d.lockActiveRAGUserTx(ctx, tx, kb.UserID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_kbs
 		(id, user_id, name, description, embed_provider, embed_model, embed_dims,
 		 chunk_size, chunk_overlap, parse_mode, enrichment_enabled, status, created_at, updated_at)
 		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)`,
@@ -736,8 +791,10 @@ func (d *DBStore) CreateRAGKB(ctx context.Context, kb *RAGKBRecord) error {
 		d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14)),
 		kb.ID, kb.UserID, kb.Name, kb.Description, kb.EmbedProvider,
 		kb.EmbedModel, kb.EmbedDims, kb.ChunkSize, kb.ChunkOverlap, kb.ParseMode,
-		kb.EnrichmentEnabled, kb.Status, kb.CreatedAt, kb.UpdatedAt)
-	return err
+		kb.EnrichmentEnabled, kb.Status, kb.CreatedAt, kb.UpdatedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (d *DBStore) GetRAGKB(ctx context.Context, id string) (*RAGKBRecord, error) {
@@ -770,29 +827,114 @@ func (d *DBStore) ListRAGKBsByUser(ctx context.Context, userID string) ([]RAGKBR
 }
 
 func (d *DBStore) UpdateRAGKB(ctx context.Context, kb *RAGKBRecord) error {
+	if kb == nil || strings.TrimSpace(kb.ID) == "" {
+		return ErrRAGLifecycleInactive
+	}
 	kb.UpdatedAt = time.Now().UTC()
-	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kbs SET
-		name=%s, description=%s, chunk_size=%s, chunk_overlap=%s, parse_mode=%s,
-		enrichment_enabled=%s, status=%s, updated_at=%s WHERE id=%s`,
-		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9)),
-		kb.Name, kb.Description, kb.ChunkSize, kb.ChunkOverlap, kb.ParseMode,
-		kb.EnrichmentEnabled, kb.Status, kb.UpdatedAt, kb.ID)
-	return ragMutationResult(result, err)
-}
-
-func (d *DBStore) DeleteRAGKB(ctx context.Context, id string) error {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	locked, err := d.lockActiveRAGKBOwnerTx(ctx, tx, kb.ID, kb.UserID)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kbs SET
+		name=%s, description=%s, chunk_size=%s, chunk_overlap=%s, parse_mode=%s,
+		enrichment_enabled=%s, updated_at=%s WHERE id=%s AND user_id=%s AND LOWER(status)='active'`,
+		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9)),
+		kb.Name, kb.Description, kb.ChunkSize, kb.ChunkOverlap, kb.ParseMode,
+		kb.EnrichmentEnabled, kb.UpdatedAt, kb.ID, locked.UserID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (d *DBStore) DeleteRAGKB(ctx context.Context, id string) error {
+	// Resolve the ownership route before opening the transaction. MySQL's
+	// REPEATABLE READ snapshot must not be established before the global
+	// user -> KB lock order starts.
+	var expectedUserID string
+	if err := d.db.QueryRowContext(ctx, fmt.Sprintf(
+		`SELECT user_id FROM rag_kbs WHERE id=%s`, d.ph(1)), id).Scan(&expectedUserID); err != nil {
+		return scanErr(err)
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	kb, _, err := d.lockRAGKBOwnerTx(ctx, tx, id, expectedUserID)
+	if err != nil {
+		return err
+	}
+	if kb == nil {
+		return ErrNotFound
+	}
+	if !strings.EqualFold(kb.Status, RAGKBStatusDeleting) {
+		return ErrRAGLifecycleInactive
+	}
+	now, err := d.ragDBNow(ctx, tx)
+	if err != nil {
+		return err
+	}
+	ready, err := d.ragKBCleanupReadyAt(ctx, tx, id, now)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return ErrRAGKBProvisioningActive
+	}
+
+	// Lock every child in deterministic order before deleting any child row.
+	// This matches document-scoped mutations' user -> KB -> document order and
+	// prevents a concurrent mutation from publishing children behind the
+	// finalizer after its cleanup statements have already run.
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT id,status FROM rag_documents
+		WHERE kb_id=%s ORDER BY id%s`, d.ph(1), d.ragLockSuffix()), id)
+	if err != nil {
+		return err
+	}
+	docIDs := make([]string, 0)
+	for rows.Next() {
+		var docID, status string
+		if err := rows.Scan(&docID, &status); err != nil {
+			rows.Close()
+			return err
+		}
+		if !strings.EqualFold(status, RAGDocumentStatusDeleting) {
+			rows.Close()
+			return ErrRAGLifecycleInactive
+		}
+		docIDs = append(docIDs, docID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, docID := range docIDs {
+		ready, err := d.ragDocumentCleanupReadyAt(ctx, tx, docID, now)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			return ErrRAGCleanupNotReady
+		}
+	}
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM rag_chat_turns WHERE kb_id = %s`, d.ph(1)), id); err != nil {
 		return err
 	}
 
 	for _, table := range []string{
-		"rag_chunk_assets", "rag_chunks", "rag_assets", "rag_index_gc_tasks",
+		"rag_chunk_assets", "rag_chunks", "rag_version_assets", "rag_assets", "rag_index_gc_tasks",
+		"rag_cache_object_fingerprints", "rag_cache_objects",
+		"rag_document_maintenance_leases",
 		"rag_document_versions", "rag_index_tasks",
 	} {
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(
@@ -800,6 +942,14 @@ func (d *DBStore) DeleteRAGKB(ctx context.Context, id string) error {
 			table, d.ph(1)), id); err != nil {
 			return err
 		}
+	}
+	// PUBLISHED means the writer acknowledged completion before SQL took the
+	// durable reference. Unacknowledged/DELETING generations survive the
+	// document row so the global sweep can remove a storage-side late Put.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_object_write_staging
+		WHERE doc_id IN (SELECT id FROM rag_documents WHERE kb_id = %s)
+		AND status='PUBLISHED'`, d.ph(1)), id); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM rag_documents WHERE kb_id = %s`, d.ph(1)), id); err != nil {
@@ -817,6 +967,9 @@ func (d *DBStore) DeleteRAGKB(ctx context.Context, id string) error {
 }
 
 func (d *DBStore) AppendRAGChatTurn(ctx context.Context, turn *RAGChatTurnRecord) error {
+	if turn == nil {
+		return ErrRAGLifecycleInactive
+	}
 	if turn.CreatedAt.IsZero() {
 		turn.CreatedAt = time.Now().UTC()
 	}
@@ -824,13 +977,24 @@ func (d *DBStore) AppendRAGChatTurn(ctx context.Context, turn *RAGChatTurnRecord
 	if len(sources) == 0 {
 		sources = json.RawMessage("[]")
 	}
-	_, err := d.db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_chat_turns
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	locked, err := d.lockActiveRAGKBOwnerTx(ctx, tx, turn.KBID, turn.UserID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_chat_turns
 		(id, user_id, kb_id, session_id, title, question, answer, sources, created_at)
 		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)`,
 		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9)),
-		turn.ID, turn.UserID, turn.KBID, turn.SessionID, turn.Title,
-		turn.Question, turn.Answer, string(sources), turn.CreatedAt)
-	return err
+		turn.ID, locked.UserID, turn.KBID, turn.SessionID, turn.Title,
+		turn.Question, turn.Answer, string(sources), turn.CreatedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func scanRAGChatTurn(scanner ragScanner) (*RAGChatTurnRecord, error) {
@@ -900,7 +1064,28 @@ func (d *DBStore) ListRAGChatSessions(ctx context.Context, userID, kbID string, 
 }
 
 func (d *DBStore) CreateRAGDocument(ctx context.Context, doc *RAGDocumentRecord) error {
-	return d.createRAGDocument(ctx, d.db, doc)
+	if doc == nil {
+		return ErrRAGLifecycleInactive
+	}
+	kb, err := d.GetRAGKB(ctx, doc.KBID)
+	if errors.Is(err, ErrNotFound) {
+		return ErrRAGLifecycleInactive
+	}
+	if err != nil {
+		return err
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := d.lockActiveRAGKBOwnerTx(ctx, tx, doc.KBID, kb.UserID); err != nil {
+		return err
+	}
+	if err := d.createRAGDocument(ctx, tx, doc); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (d *DBStore) createRAGDocument(ctx context.Context, exec ragExecutor, doc *RAGDocumentRecord) error {
@@ -945,9 +1130,7 @@ func (d *DBStore) lockRAGAdvancedEnqueueUserTx(
 		policy.MaxPendingTasks <= 0 || policy.MinReindexInterval < 0 {
 		return errors.New("store: invalid RAG advanced enqueue policy")
 	}
-	_, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kbs
-		SET updated_at=updated_at WHERE user_id=%s`, d.ph(1)), policy.UserID)
-	return err
+	return d.lockActiveRAGUserTx(ctx, tx, policy.UserID)
 }
 
 func (d *DBStore) enforceRAGAdvancedEnqueuePolicyTx(
@@ -1057,12 +1240,29 @@ func (d *DBStore) createRAGDocumentWithVersionAndIndexTask(
 	if err := d.validateRAGVersionSnapshotForDocument(ctx, d.db, doc, version); err != nil {
 		return 0, err
 	}
+	kb, err := d.GetRAGKB(ctx, doc.KBID)
+	if errors.Is(err, ErrNotFound) {
+		return 0, ErrRAGLifecycleInactive
+	}
+	if err != nil {
+		return 0, err
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
+	expectedOwner := kb.UserID
+	if policy != nil {
+		expectedOwner = policy.UserID
+	}
+	if _, err := d.lockActiveRAGKBOwnerTx(ctx, tx, doc.KBID, expectedOwner); err != nil {
+		return 0, err
+	}
 	if err := d.enforceRAGAdvancedEnqueuePolicyTx(ctx, tx, doc.KBID, doc.ID, version, policy, false); err != nil {
+		return 0, err
+	}
+	if err := d.consumeRAGObjectWritesInTx(ctx, tx, doc.ID, doc.ObjectKey); err != nil {
 		return 0, err
 	}
 	if err := d.createRAGDocument(ctx, tx, doc); err != nil {
@@ -1094,6 +1294,9 @@ func (d *DBStore) CreateRAGDocumentVersion(ctx context.Context, version *RAGDocu
 	doc, err := d.ragDocumentInTx(ctx, tx, version.DocID)
 	if err != nil {
 		return scanErr(err)
+	}
+	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, version.DocID); err != nil {
+		return err
 	}
 	if err := d.reconcileRAGDocumentSourceHash(ctx, tx, doc, version.SourceSHA256); err != nil {
 		return err
@@ -1222,22 +1425,53 @@ func (d *DBStore) ListRAGDocumentsByKB(ctx context.Context, kbID string) ([]RAGD
 }
 
 func (d *DBStore) DeleteRAGDocument(ctx context.Context, id string) error {
+	route, err := d.ragOwnershipRoute(ctx, id)
+	if err != nil {
+		return err
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	doc, _, err := d.lockRAGDocumentHierarchyTx(ctx, tx, id, route)
+	if err != nil {
+		return err
+	}
+	if doc == nil {
+		return ErrNotFound
+	}
+	if !strings.EqualFold(doc.Status, RAGDocumentStatusDeleting) {
+		return ErrRAGLifecycleInactive
+	}
+	now, err := d.ragDBNow(ctx, tx)
+	if err != nil {
+		return err
+	}
+	ready, err := d.ragDocumentCleanupReadyAt(ctx, tx, doc.ID, now)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return ErrRAGCleanupNotReady
+	}
 
 	// Usage and aggregate budget ledgers are intentionally retained for audit
 	// and period accounting even after the source document is deleted.
 	for _, table := range []string{
-		"rag_chunk_assets", "rag_chunks", "rag_assets", "rag_index_gc_tasks",
+		"rag_chunk_assets", "rag_chunks", "rag_version_assets", "rag_assets", "rag_index_gc_tasks",
+		"rag_cache_object_fingerprints", "rag_cache_objects",
+		"rag_document_maintenance_leases",
 		"rag_document_versions", "rag_index_tasks",
 	} {
 		if _, err := tx.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE doc_id = %s`, table, d.ph(1)), id); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_object_write_staging
+		WHERE doc_id=%s AND status='PUBLISHED'`, d.ph(1)), id); err != nil {
+		return err
 	}
 	result, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM rag_documents WHERE id = %s`, d.ph(1)), id)
@@ -1527,18 +1761,39 @@ func (d *DBStore) ragChunkRefPredicate(refs []RAGChunkRef) (string, []any, error
 }
 
 func (d *DBStore) UpsertRAGAsset(ctx context.Context, asset *RAGAssetRecord) error {
-	now := time.Now().UTC()
-	if asset.CreatedAt.IsZero() {
-		asset.CreatedAt = now
+	if asset == nil || strings.TrimSpace(asset.DocID) == "" {
+		return ErrRAGAssetConflict
 	}
-	if asset.UpdatedAt.IsZero() {
-		asset.UpdatedAt = now
+	route, err := d.ragOwnershipRoute(ctx, asset.DocID)
+	if errors.Is(err, ErrNotFound) {
+		return ErrRAGLifecycleInactive
+	}
+	if err != nil {
+		return err
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if _, active, err := d.lockRAGDocumentHierarchyTx(ctx, tx, asset.DocID, route); err != nil {
+		return err
+	} else if !active {
+		return ErrRAGLifecycleInactive
+	}
+	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, asset.DocID); err != nil {
+		return err
+	}
+	now, err := d.ragDBNow(ctx, tx)
+	if err != nil {
+		return err
+	}
+	asset.CreatedAt = now
+	asset.UpdatedAt = now
+	if err := d.consumeRAGObjectWritesInTx(ctx, tx, asset.DocID,
+		asset.SourceObjectKey, asset.DisplayObjectKey, asset.ThumbnailObjectKey); err != nil {
+		return err
+	}
 	query := fmt.Sprintf(`INSERT INTO rag_assets (
 		id, doc_id, content_sha256, source_kind, source_mime, display_mime,
 		source_object_key, display_object_key, thumbnail_object_key, display_status,
@@ -1592,7 +1847,10 @@ func (d *DBStore) UpsertRAGAsset(ctx context.Context, asset *RAGAssetRecord) err
 	if !sameImmutableRAGAsset(existing, asset) {
 		return ErrRAGAssetConflict
 	}
-	updatedAt := time.Now().UTC()
+	updatedAt, err := d.ragDBNow(ctx, tx)
+	if err != nil {
+		return err
+	}
 	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_assets SET
 		first_seen_version=CASE WHEN first_seen_version < %s THEN first_seen_version ELSE %s END,
 		last_seen_version=CASE WHEN last_seen_version > %s THEN last_seen_version ELSE %s END,
@@ -1607,6 +1865,169 @@ func (d *DBStore) UpsertRAGAsset(ctx context.Context, asset *RAGAssetRecord) err
 	asset.CreatedAt = existing.CreatedAt
 	asset.UpdatedAt = updatedAt
 	return tx.Commit()
+}
+
+// PublishRAGAssetsForIndex atomically publishes the immutable asset rows and
+// the complete decorative/non-decorative membership for one live index fence.
+// A worker whose lease was reclaimed cannot recreate an asset catalog entry
+// after lifecycle cleanup has tombstoned its physical object generation.
+func (d *DBStore) PublishRAGAssetsForIndex(
+	ctx context.Context,
+	fence IndexFence,
+	assets []RAGAssetRecord,
+	assetIDs []string,
+) (bool, error) {
+	if len(assets) > maxRAGBatchRecords || len(assetIDs) > maxRAGBatchRecords {
+		return false, ErrRAGBatchTooLarge
+	}
+	byID := make(map[string]struct{}, len(assets))
+	for i := range assets {
+		asset := &assets[i]
+		asset.ID = strings.TrimSpace(asset.ID)
+		asset.DocID = strings.TrimSpace(asset.DocID)
+		if asset.ID == "" || asset.DocID != fence.DocID || asset.FirstSeenVersion < 1 ||
+			asset.FirstSeenVersion > fence.DocVersion || asset.LastSeenVersion < fence.DocVersion {
+			return false, ErrRAGAssetConflict
+		}
+		if _, duplicate := byID[asset.ID]; duplicate {
+			return false, ErrRAGAssetConflict
+		}
+		byID[asset.ID] = struct{}{}
+	}
+	uniqueIDs := make([]string, 0, len(assetIDs))
+	seenIDs := make(map[string]struct{}, len(assetIDs))
+	for _, id := range assetIDs {
+		id = strings.TrimSpace(id)
+		if _, exists := byID[id]; !exists {
+			return false, ErrRAGAssetConflict
+		}
+		if _, duplicate := seenIDs[id]; duplicate {
+			continue
+		}
+		seenIDs[id] = struct{}{}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	if len(uniqueIDs) != len(byID) {
+		return false, ErrRAGAssetConflict
+	}
+
+	tx, _, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
+	if err != nil || !ok {
+		return false, err
+	}
+	defer tx.Rollback()
+	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, fence.DocID); err != nil {
+		return false, err
+	}
+	for i := range assets {
+		if err := d.publishRAGAssetInTx(ctx, tx, &assets[i]); err != nil {
+			return false, err
+		}
+	}
+	if err := d.touchRAGVersionAssetsBeforeRemoval(ctx, tx, fence.DocID, fence.DocVersion); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_version_assets
+		WHERE doc_id=%s AND doc_version=%s`, d.ph(1), d.ph(2)), fence.DocID, fence.DocVersion); err != nil {
+		return false, err
+	}
+	if len(uniqueIDs) != 0 {
+		stmt, err := tx.PrepareContext(ctx, fmt.Sprintf(`INSERT INTO rag_version_assets
+			(doc_id,doc_version,asset_id) VALUES (%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3)))
+		if err != nil {
+			return false, err
+		}
+		defer stmt.Close()
+		for _, id := range uniqueIDs {
+			if _, err := stmt.ExecContext(ctx, fence.DocID, fence.DocVersion, id); err != nil {
+				return false, err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (d *DBStore) publishRAGAssetInTx(ctx context.Context, tx *sql.Tx, asset *RAGAssetRecord) error {
+	now, err := d.ragDBNow(ctx, tx)
+	if err != nil {
+		return err
+	}
+	asset.CreatedAt = now
+	asset.UpdatedAt = now
+	if err := d.consumeRAGObjectWritesInTx(ctx, tx, asset.DocID,
+		asset.SourceObjectKey, asset.DisplayObjectKey, asset.ThumbnailObjectKey); err != nil {
+		return err
+	}
+	query := fmt.Sprintf(`INSERT INTO rag_assets (
+		id, doc_id, content_sha256, source_kind, source_mime, display_mime,
+		source_object_key, display_object_key, thumbnail_object_key, display_status,
+		display_sha256, thumbnail_sha256, byte_size, width, height, first_seen_version,
+		last_seen_version, created_at, updated_at)
+		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+		%s, %s, %s, %s, %s, %s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5),
+		d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12),
+		d.ph(13), d.ph(14), d.ph(15), d.ph(16), d.ph(17), d.ph(18), d.ph(19))
+	if d.dialect == "mysql" {
+		query += ` ON DUPLICATE KEY UPDATE id=id`
+	} else {
+		query += ` ON CONFLICT DO NOTHING`
+	}
+	if _, err := tx.ExecContext(ctx, query, asset.ID, asset.DocID,
+		asset.ContentSHA256, asset.SourceKind, asset.SourceMIME, asset.DisplayMIME,
+		asset.SourceObjectKey, asset.DisplayObjectKey, asset.ThumbnailObjectKey,
+		asset.DisplayStatus, asset.DisplaySHA256, asset.ThumbnailSHA256, asset.ByteSize, asset.Width,
+		asset.Height, asset.FirstSeenVersion, asset.LastSeenVersion,
+		asset.CreatedAt, asset.UpdatedAt); err != nil {
+		return err
+	}
+	existing, err := scanRAGAsset(tx.QueryRowContext(ctx, fmt.Sprintf(
+		`SELECT `+ragAssetColumns+` FROM rag_assets WHERE doc_id=%s AND content_sha256=%s`,
+		d.ph(1), d.ph(2)), asset.DocID, asset.ContentSHA256))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrRAGAssetConflict
+	}
+	if err != nil {
+		return err
+	}
+	if existing.ThumbnailSHA256 == "" && asset.ThumbnailSHA256 != "" {
+		if !ragCanonicalSHA256(asset.ThumbnailSHA256) {
+			return ErrRAGAssetConflict
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_assets
+			SET thumbnail_sha256=%s WHERE id=%s AND thumbnail_sha256=''`, d.ph(1), d.ph(2)),
+			asset.ThumbnailSHA256, existing.ID); err != nil {
+			return err
+		}
+		existing, err = scanRAGAsset(tx.QueryRowContext(ctx, fmt.Sprintf(
+			`SELECT `+ragAssetColumns+` FROM rag_assets WHERE id=%s`, d.ph(1)), existing.ID))
+		if err != nil {
+			return err
+		}
+	}
+	if !sameImmutableRAGAsset(existing, asset) {
+		return ErrRAGAssetConflict
+	}
+	updatedAt, err := d.ragDBNow(ctx, tx)
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_assets SET
+		first_seen_version=CASE WHEN first_seen_version < %s THEN first_seen_version ELSE %s END,
+		last_seen_version=CASE WHEN last_seen_version > %s THEN last_seen_version ELSE %s END,
+		updated_at=%s WHERE id=%s`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6)),
+		asset.FirstSeenVersion, asset.FirstSeenVersion, asset.LastSeenVersion,
+		asset.LastSeenVersion, updatedAt, existing.ID)
+	if err := ragMutationResult(result, err); err != nil {
+		return err
+	}
+	asset.FirstSeenVersion = minInt64(existing.FirstSeenVersion, asset.FirstSeenVersion)
+	asset.LastSeenVersion = maxInt64(existing.LastSeenVersion, asset.LastSeenVersion)
+	asset.CreatedAt = existing.CreatedAt
+	asset.UpdatedAt = updatedAt
+	return nil
 }
 
 func sameImmutableRAGAsset(a, b *RAGAssetRecord) bool {
@@ -1631,6 +2052,99 @@ func maxInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// touchRAGVersionAssetsBeforeRemoval starts the staging-asset grace period at
+// the moment a durable version pin is removed, rather than at the asset's
+// potentially much older creation time. The final reference query still
+// decides whether the asset is orphaned; touching assets that retain another
+// pin is therefore conservative and harmless.
+func (d *DBStore) touchRAGVersionAssetsBeforeRemoval(
+	ctx context.Context,
+	tx *sql.Tx,
+	docID string,
+	docVersion int64,
+) error {
+	_, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_assets SET updated_at=%s
+		WHERE doc_id=%s AND id IN (SELECT asset_id FROM rag_version_assets
+			WHERE doc_id=%s AND doc_version=%s)`, d.ragNowExpr(), d.ph(1), d.ph(2), d.ph(3)),
+		docID, docID, docVersion)
+	return err
+}
+
+// ReplaceRAGVersionAssets atomically records the complete canonical asset set
+// for one parsed artifact version. The mapping includes decorative assets that
+// intentionally never appear in rag_chunk_assets.
+func (d *DBStore) ReplaceRAGVersionAssets(
+	ctx context.Context,
+	docID string,
+	docVersion int64,
+	assetIDs []string,
+) error {
+	docID = strings.TrimSpace(docID)
+	if docID == "" || docVersion < 1 {
+		return ErrRAGDocumentVersionMismatch
+	}
+	if len(assetIDs) > maxRAGBatchRecords {
+		return ErrRAGBatchTooLarge
+	}
+	unique := make([]string, 0, len(assetIDs))
+	seen := make(map[string]struct{}, len(assetIDs))
+	for _, id := range assetIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return ErrRAGAssetConflict
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	route, err := d.ragOwnershipRoute(ctx, docID)
+	if errors.Is(err, ErrNotFound) {
+		return ErrRAGLifecycleInactive
+	}
+	if err != nil {
+		return err
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, active, err := d.lockRAGDocumentHierarchyTx(ctx, tx, docID, route); err != nil {
+		return err
+	} else if !active {
+		return ErrRAGLifecycleInactive
+	}
+	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, docID); err != nil {
+		return err
+	}
+	if err := d.touchRAGVersionAssetsBeforeRemoval(ctx, tx, docID, docVersion); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_version_assets
+		WHERE doc_id=%s AND doc_version=%s`, d.ph(1), d.ph(2)), docID, docVersion); err != nil {
+		return err
+	}
+	if len(unique) == 0 {
+		return tx.Commit()
+	}
+	query := fmt.Sprintf(`INSERT INTO rag_version_assets (doc_id,doc_version,asset_id)
+		VALUES (%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3))
+	stmt, err := tx.PrepareContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, id := range unique {
+		if _, err := stmt.ExecContext(ctx, docID, docVersion, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (d *DBStore) GetRAGAsset(ctx context.Context, id string) (*RAGAssetRecord, error) {
@@ -1717,8 +2231,18 @@ func (d *DBStore) ListRAGAssetsByDocument(ctx context.Context, docID string) ([]
 }
 
 func (d *DBStore) DeleteRAGAssetsByDocument(ctx context.Context, docID string) error {
-	_, err := d.db.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_assets WHERE doc_id=%s`, d.ph(1)), docID)
-	return err
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_version_assets WHERE doc_id=%s`, d.ph(1)), docID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_assets WHERE doc_id=%s`, d.ph(1)), docID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (d *DBStore) CreateRAGIndexGCTask(ctx context.Context, task *RAGIndexGCTaskRecord) (int64, error) {

@@ -22,6 +22,7 @@ import (
 
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag/document"
+	"github.com/qs3c/bkcrab/internal/rag/telemetry"
 )
 
 type Client struct {
@@ -40,6 +41,7 @@ type Client struct {
 	maxRequestBytes     int64
 	maxOutputTokens     int
 	costEstimator       func(string, int64, int64) int64
+	recorder            telemetry.Recorder
 }
 
 const (
@@ -131,6 +133,7 @@ func NewOpenAICompatible(cfg config.RAGDocumentAICfg, limits config.RAGLimitsCfg
 		// cost unknown at zero; request/token quotas remain active, and package
 		// tests can inject an estimator into the narrow boundary.
 		costEstimator: func(string, int64, int64) int64 { return 0 },
+		recorder:      telemetry.NewSlogRecorder(nil),
 	}, nil
 }
 
@@ -151,6 +154,19 @@ func deriveMaxRequestBytes(maxVisionInputBytes, maxResponseBytes int64) (int64, 
 
 func (c *Client) ImageLimits() ImageLimits    { return c.imageLimits }
 func (c *Client) ProviderFingerprint() string { return c.providerFingerprint }
+
+// SetRecorder replaces the observability sink. The recorder receives only the
+// typed, privacy-safe telemetry schema; request bodies, images, cache keys,
+// endpoints and credentials are never passed to it.
+func (c *Client) SetRecorder(recorder telemetry.Recorder) {
+	if c == nil {
+		return
+	}
+	if recorder == nil {
+		recorder = telemetry.NopRecorder()
+	}
+	c.recorder = recorder
+}
 
 func ProviderFingerprint(cfg config.RAGDocumentAICfg) string {
 	hosts := make([]string, 0, len(cfg.AllowedEndpointHosts))
@@ -276,10 +292,13 @@ func (c *Client) TranscribePage(ctx context.Context, input PageInput, budget *Ta
 	key := document.PageCacheKey(input.Image.Bytes, c.providerFingerprint, c.model, c.promptVersion, PageSchemaVersion)
 	if c.cache != nil {
 		if cached, ok, err := c.cache.GetPage(ctx, input.Image.Scope, key); err != nil {
+			c.recordCache(ctx, input.Image.Scope.DocID, budget, "vision_page", "error")
 			return PageTranscription{}, err
 		} else if ok {
+			c.recordCache(ctx, input.Image.Scope.DocID, budget, "vision_page", "hit")
 			return cached, nil
 		}
+		c.recordCache(ctx, input.Image.Scope.DocID, budget, "vision_page", "miss")
 	}
 	if budget == nil {
 		return PageTranscription{}, ErrBudgetRequired
@@ -292,6 +311,7 @@ func (c *Client) TranscribePage(ctx context.Context, input PageInput, budget *Ta
 	if err != nil {
 		if errors.Is(err, ErrCacheCommitted) && c.cache != nil {
 			if cached, ok, cacheErr := c.cache.GetPage(ctx, input.Image.Scope, key); cacheErr == nil && ok {
+				c.recordCache(ctx, input.Image.Scope.DocID, budget, "vision_page", "hit")
 				return cached, nil
 			}
 		}
@@ -337,10 +357,13 @@ func (c *Client) DescribeImage(ctx context.Context, input NormalizedImageInput, 
 	key := document.ImageDescriptionCacheKey(input.Bytes, c.providerFingerprint, c.model, c.promptVersion, ImageDescriptionSchemaVersion)
 	if c.cache != nil {
 		if cached, ok, err := c.cache.GetImage(ctx, input.Scope, key); err != nil {
+			c.recordCache(ctx, input.Scope.DocID, budget, "vision_image", "error")
 			return ImageDescription{}, err
 		} else if ok {
+			c.recordCache(ctx, input.Scope.DocID, budget, "vision_image", "hit")
 			return cached, nil
 		}
+		c.recordCache(ctx, input.Scope.DocID, budget, "vision_image", "miss")
 	}
 	if budget == nil {
 		return ImageDescription{}, ErrBudgetRequired
@@ -353,6 +376,7 @@ func (c *Client) DescribeImage(ctx context.Context, input NormalizedImageInput, 
 	if err != nil {
 		if errors.Is(err, ErrCacheCommitted) && c.cache != nil {
 			if cached, ok, cacheErr := c.cache.GetImage(ctx, input.Scope, key); cacheErr == nil && ok {
+				c.recordCache(ctx, input.Scope.DocID, budget, "vision_image", "hit")
 				return cached, nil
 			}
 		}
@@ -546,7 +570,30 @@ type callResult struct {
 	reservation *Reservation
 }
 
-func (c *Client) call(ctx context.Context, budget *TaskDocumentAIBudget, logicalKey, operation string, attempt int, requestBody []byte, image NormalizedImageInput) (callResult, error) {
+func (c *Client) call(
+	ctx context.Context,
+	budget *TaskDocumentAIBudget,
+	logicalKey, operation string,
+	attempt int,
+	requestBody []byte,
+	image NormalizedImageInput,
+) (result callResult, resultErr error) {
+	started := time.Now()
+	defer func() {
+		fields := documentAICallFields(budget, operation, attempt)
+		fields.Duration = time.Since(started)
+		fields.RequestCount = 1
+		fields.Outcome = "ok"
+		fields.InputTokens = result.usage.InputTokens
+		fields.OutputTokens = result.usage.OutputTokens
+		fields.CostMicroUSD = result.usage.CostMicroUSD
+		fields.Estimated = result.usage.Estimated
+		if resultErr != nil {
+			fields.Outcome = "error"
+			fields.ErrorCode = documentAIErrorCode(resultErr)
+		}
+		telemetry.Emit(ctx, c.recorder, telemetry.EventDocumentAICall, fields)
+	}()
 	if budget == nil {
 		return callResult{}, ErrBudgetRequired
 	}
@@ -625,6 +672,60 @@ func (c *Client) call(ctx context.Context, budget *TaskDocumentAIBudget, logical
 		actual.Estimated = true
 	}
 	return callResult{content: content, usage: actual, reservation: reservation}, nil
+}
+
+func (c *Client) recordCache(
+	ctx context.Context,
+	docID string,
+	budget *TaskDocumentAIBudget,
+	kind, status string,
+) {
+	fields := documentAICallFields(budget, "", 0)
+	if fields.DocID == "" {
+		fields.DocID = docID
+	}
+	fields.CacheKind = kind
+	fields.CacheStatus = status
+	fields.Outcome = "ok"
+	if status == "error" {
+		fields.Outcome = "error"
+		fields.ErrorCode = "cache_io"
+	}
+	telemetry.Emit(ctx, c.recorder, telemetry.EventResultCache, fields)
+}
+
+func documentAICallFields(budget *TaskDocumentAIBudget, operation string, attempt int) telemetry.Fields {
+	fields := telemetry.Fields{Operation: operation, Attempt: attempt}
+	if budget == nil {
+		return fields
+	}
+	fence := budget.Fence()
+	fields.DocID = fence.DocID
+	fields.TaskID = fence.TaskID
+	fields.DocVersion = fence.DocVersion
+	fields.ClaimGeneration = fence.ClaimGeneration
+	return fields
+}
+
+func documentAIErrorCode(err error) string {
+	var typed *Error
+	if errors.As(err, &typed) {
+		return string(typed.Kind)
+	}
+	switch {
+	case errors.Is(err, ErrBudgetRequired):
+		return "budget_required"
+	case errors.Is(err, ErrAttemptNotSent):
+		return "attempt_not_sent"
+	case errors.Is(err, ErrCacheCommitted):
+		return "committed_cache"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	default:
+		return "internal"
+	}
 }
 
 func estimateInputTokens(requestBody []byte, image NormalizedImageInput) int64 {

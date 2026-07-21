@@ -46,6 +46,7 @@ func newRAGBudgetDialectFixture(t *testing.T, primary, competitor *DBStore, suff
 	userID := "u_budget_" + suffix
 	docID := "doc_budget_" + suffix
 	kbID := "kb_budget_" + suffix
+	ensureRAGLifecycleUser(t, primary, userID, "active")
 	if err := primary.CreateRAGKB(ctx, &RAGKBRecord{
 		ID: kbID, UserID: userID, Name: "budget dialect", EmbedProvider: "system",
 		EmbedModel: "embed-v1", EmbedDims: 3, ChunkSize: 512, ChunkOverlap: 64,
@@ -141,92 +142,111 @@ func TestRAGDocumentAIBudgetDialectConcurrencyAndReconciliation(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if test.dsn == "" {
-				t.Skip("BKCRAB_TEST_" + strings.ToUpper(test.name) + "_DSN is not set")
-			}
-			primary, competitor := openRAGBudgetDialectStores(t, test.dialect, test.dsn)
-
-			t.Run("two connections compete for final quota", func(t *testing.T) {
-				limits := RAGDocumentAILimits{MaxRequests: 1, MaxTokens: 20, MaxCostMicroUSD: 100}
-				fixture := newRAGBudgetDialectFixture(t, primary, competitor, test.name+"_last_"+fmt.Sprint(time.Now().UnixNano()), limits)
-				requests := []*RAGDocumentAIUsageRecord{
-					fixture.usage("1", "a", 5, 5, 100), fixture.usage("2", "b", 5, 5, 100),
-				}
-				stores := []*DBStore{primary, competitor}
-				start := make(chan struct{})
-				results := make(chan error, 2)
-				var wg sync.WaitGroup
-				for index := range stores {
-					index := index
-					wg.Add(1)
-					go func() {
-						defer wg.Done()
-						<-start
-						ok, err := stores[index].ReserveRAGDocumentAIUsage(context.Background(), fixture.claim, requests[index], limits)
-						if err == nil && !ok {
-							err = errors.New("reservation unexpectedly returned false,nil")
-						}
-						results <- err
-					}()
-				}
-				close(start)
-				wg.Wait()
-				close(results)
-				success, limited := 0, 0
-				for err := range results {
-					switch {
-					case err == nil:
-						success++
-					case errors.Is(err, ErrRAGDocumentAIBudgetExceeded):
-						limited++
-					default:
-						t.Fatalf("unexpected reserve error: %v", err)
-					}
-				}
-				if success != 1 || limited != 1 {
-					t.Fatalf("reserve outcomes success=%d limited=%d", success, limited)
-				}
-			})
-
-			t.Run("reclaim and crash reconciliation", func(t *testing.T) {
-				limits := RAGDocumentAILimits{MaxRequests: 5, MaxTokens: 100, MaxCostMicroUSD: 1_000}
-				fixture := newRAGBudgetDialectFixture(t, primary, competitor, test.name+"_reconcile_"+fmt.Sprint(time.Now().UnixNano()), limits)
-				staleSend := fixture.usage("3", "c", 5, 5, 100)
-				abandonedReserved := fixture.usage("4", "d", 5, 5, 100)
-				expired := time.Now().UTC().Add(-time.Hour)
-				abandonedReserved.ReservationExpiresAt = &expired
-				sent := fixture.usage("5", "e", 6, 4, 120)
-				for _, usage := range []*RAGDocumentAIUsageRecord{staleSend, abandonedReserved, sent} {
-					if ok, err := primary.ReserveRAGDocumentAIUsage(context.Background(), fixture.claim, usage, limits); err != nil || !ok {
-						t.Fatalf("reserve %s: ok=%v err=%v", usage.IdempotencyKey[:1], ok, err)
-					}
-				}
-				if ok, err := primary.MarkSentRAGDocumentAIUsage(context.Background(), sent.IdempotencyKey, fixture.claim); err != nil || !ok {
-					t.Fatalf("mark sent: ok=%v err=%v", ok, err)
-				}
-				current := fixture.reclaim(t)
-				if ok, err := competitor.MarkSentRAGDocumentAIUsage(context.Background(), staleSend.IdempotencyKey, fixture.claim); err != nil || ok {
-					t.Fatalf("stale MarkSent: ok=%v err=%v", ok, err)
-				}
-				future := time.Now().UTC().Add(24 * time.Hour)
-				if count, err := competitor.ReconcileRAGDocumentAIUsage(context.Background(), future, future, 20); err != nil || count < 2 {
-					t.Fatalf("reconcile count=%d err=%v", count, err)
-				}
-				reservedResult, err := primary.GetRAGDocumentAIUsage(context.Background(), abandonedReserved.IdempotencyKey)
-				if err != nil || reservedResult.State != RAGDocumentAIUsageReleased {
-					t.Fatalf("reconciled RESERVED usage=%+v err=%v", reservedResult, err)
-				}
-				got, err := primary.GetRAGDocumentAIUsage(context.Background(), sent.IdempotencyKey)
-				if err != nil || got.State != RAGDocumentAIUsageCommitted || !got.UsageEstimated {
-					t.Fatalf("reconciled SENT usage=%+v err=%v", got, err)
-				}
-				currentUsage := fixture.usage("6", "f", 5, 5, 100)
-				currentUsage.ClaimGeneration = current.ClaimGeneration
-				currentUsage.LeaseOwner = current.LeaseOwner
-				if ok, err := competitor.ReserveRAGDocumentAIUsage(context.Background(), current, currentUsage, limits); err != nil || !ok {
-					t.Fatalf("current fence reserve after reconciliation: ok=%v err=%v", ok, err)
-				}
-			})
+			runRAGDocumentAIBudgetDialect(t, test.name, test.dialect, test.dsn)
 		})
 	}
+}
+
+// These top-level names intentionally match the Task 21 release-gate command:
+//
+//	go test ./internal/store -run 'TestDocumentAIBudget.*(Postgres|MySQL)' -v
+//
+// Keeping one entry per real dialect makes a missing DSN visible as an
+// individual SKIP and prevents a green command that silently matched no tests.
+func TestDocumentAIBudgetIntegrationPostgres(t *testing.T) {
+	runRAGDocumentAIBudgetDialect(t, "postgres", "postgres", os.Getenv("BKCRAB_TEST_POSTGRES_DSN"))
+}
+
+func TestDocumentAIBudgetIntegrationMySQL(t *testing.T) {
+	runRAGDocumentAIBudgetDialect(t, "mysql", "mysql", os.Getenv("BKCRAB_TEST_MYSQL_DSN"))
+}
+
+func runRAGDocumentAIBudgetDialect(t *testing.T, name, dialect, dsn string) {
+	t.Helper()
+	if dsn == "" {
+		t.Skip("BKCRAB_TEST_" + strings.ToUpper(name) + "_DSN is not set")
+	}
+	primary, competitor := openRAGBudgetDialectStores(t, dialect, dsn)
+
+	t.Run("two connections compete for final quota", func(t *testing.T) {
+		limits := RAGDocumentAILimits{MaxRequests: 1, MaxTokens: 20, MaxCostMicroUSD: 100}
+		fixture := newRAGBudgetDialectFixture(t, primary, competitor, name+"_last_"+fmt.Sprint(time.Now().UnixNano()), limits)
+		requests := []*RAGDocumentAIUsageRecord{
+			fixture.usage("1", "a", 5, 5, 100), fixture.usage("2", "b", 5, 5, 100),
+		}
+		stores := []*DBStore{primary, competitor}
+		start := make(chan struct{})
+		results := make(chan error, 2)
+		var wg sync.WaitGroup
+		for index := range stores {
+			index := index
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				ok, err := stores[index].ReserveRAGDocumentAIUsage(context.Background(), fixture.claim, requests[index], limits)
+				if err == nil && !ok {
+					err = errors.New("reservation unexpectedly returned false,nil")
+				}
+				results <- err
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(results)
+		success, limited := 0, 0
+		for err := range results {
+			switch {
+			case err == nil:
+				success++
+			case errors.Is(err, ErrRAGDocumentAIBudgetExceeded):
+				limited++
+			default:
+				t.Fatalf("unexpected reserve error: %v", err)
+			}
+		}
+		if success != 1 || limited != 1 {
+			t.Fatalf("reserve outcomes success=%d limited=%d", success, limited)
+		}
+	})
+
+	t.Run("reclaim and crash reconciliation", func(t *testing.T) {
+		limits := RAGDocumentAILimits{MaxRequests: 5, MaxTokens: 100, MaxCostMicroUSD: 1_000}
+		fixture := newRAGBudgetDialectFixture(t, primary, competitor, name+"_reconcile_"+fmt.Sprint(time.Now().UnixNano()), limits)
+		staleSend := fixture.usage("3", "c", 5, 5, 100)
+		abandonedReserved := fixture.usage("4", "d", 5, 5, 100)
+		expired := time.Now().UTC().Add(-time.Hour)
+		abandonedReserved.ReservationExpiresAt = &expired
+		sent := fixture.usage("5", "e", 6, 4, 120)
+		for _, usage := range []*RAGDocumentAIUsageRecord{staleSend, abandonedReserved, sent} {
+			if ok, err := primary.ReserveRAGDocumentAIUsage(context.Background(), fixture.claim, usage, limits); err != nil || !ok {
+				t.Fatalf("reserve %s: ok=%v err=%v", usage.IdempotencyKey[:1], ok, err)
+			}
+		}
+		if ok, err := primary.MarkSentRAGDocumentAIUsage(context.Background(), sent.IdempotencyKey, fixture.claim); err != nil || !ok {
+			t.Fatalf("mark sent: ok=%v err=%v", ok, err)
+		}
+		current := fixture.reclaim(t)
+		if ok, err := competitor.MarkSentRAGDocumentAIUsage(context.Background(), staleSend.IdempotencyKey, fixture.claim); err != nil || ok {
+			t.Fatalf("stale MarkSent: ok=%v err=%v", ok, err)
+		}
+		future := time.Now().UTC().Add(24 * time.Hour)
+		if count, err := competitor.ReconcileRAGDocumentAIUsage(context.Background(), future, future, 20); err != nil || count < 2 {
+			t.Fatalf("reconcile count=%d err=%v", count, err)
+		}
+		reservedResult, err := primary.GetRAGDocumentAIUsage(context.Background(), abandonedReserved.IdempotencyKey)
+		if err != nil || reservedResult.State != RAGDocumentAIUsageReleased {
+			t.Fatalf("reconciled RESERVED usage=%+v err=%v", reservedResult, err)
+		}
+		got, err := primary.GetRAGDocumentAIUsage(context.Background(), sent.IdempotencyKey)
+		if err != nil || got.State != RAGDocumentAIUsageCommitted || !got.UsageEstimated {
+			t.Fatalf("reconciled SENT usage=%+v err=%v", got, err)
+		}
+		currentUsage := fixture.usage("6", "f", 5, 5, 100)
+		currentUsage.ClaimGeneration = current.ClaimGeneration
+		currentUsage.LeaseOwner = current.LeaseOwner
+		if ok, err := competitor.ReserveRAGDocumentAIUsage(context.Background(), current, currentUsage, limits); err != nil || !ok {
+			t.Fatalf("current fence reserve after reconciliation: ok=%v err=%v", ok, err)
+		}
+	})
 }

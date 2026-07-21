@@ -27,6 +27,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/rag/parse"
 	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
 	"github.com/qs3c/bkcrab/internal/rag/split"
+	"github.com/qs3c/bkcrab/internal/rag/telemetry"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/rag/vision"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -248,6 +249,24 @@ type pipelineHarness struct {
 	vector  *pipelineVector
 	embed   *pipelineEmbeddingServer
 	kb      *store.RAGKBRecord
+	events  *pipelineTelemetryRecorder
+}
+
+type pipelineTelemetryRecorder struct {
+	mu     sync.Mutex
+	events []telemetry.Event
+}
+
+func (r *pipelineTelemetryRecorder) Record(_ context.Context, event telemetry.Event) {
+	r.mu.Lock()
+	r.events = append(r.events, event)
+	r.mu.Unlock()
+}
+
+func (r *pipelineTelemetryRecorder) snapshot() []telemetry.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]telemetry.Event(nil), r.events...)
 }
 
 type recordingPipelineParser struct {
@@ -424,17 +443,22 @@ func newPipelineHarness(t *testing.T) *pipelineHarness {
 	embedding := newPipelineEmbeddingServer(t)
 	objectStore := objects.NewLocalFS(t.TempDir())
 	vec := &pipelineVector{Fake: vector.NewFake()}
+	events := &pipelineTelemetryRecorder{}
 	service := New(Deps{
 		Store: st, Vector: vec, Objects: objectStore,
 		Cfg: config.RAGCfg{
 			Milvus:    config.MilvusCfg{Address: "fake"},
 			Embedding: config.RAGEmbeddingCfg{Endpoint: embedding.server.URL, Model: "embed-v1", Dims: 4},
 		},
-		Workers: 1,
+		Telemetry: events, Workers: 1,
 	})
-	service.pollInterval = 20 * time.Millisecond
-	service.leaseDuration = time.Second
-	service.heartbeatInterval = 10 * time.Millisecond
+	// Race instrumentation can make a single SQLite transaction take well over
+	// one second. Keep the lease comfortably above that bound and avoid a
+	// high-frequency lifecycle/heartbeat write storm that would turn these
+	// pipeline-contract tests into timing tests.
+	service.pollInterval = 50 * time.Millisecond
+	service.leaseDuration = 30 * time.Second
+	service.heartbeatInterval = 100 * time.Millisecond
 
 	kb := &store.RAGKBRecord{
 		ID: "kb_" + strings.ReplaceAll(t.Name(), "/", "_"), UserID: "u_pipeline", Name: "pipeline",
@@ -444,7 +468,10 @@ func newPipelineHarness(t *testing.T) *pipelineHarness {
 	if err := st.CreateRAGKB(context.Background(), kb); err != nil {
 		t.Fatalf("create pipeline KB: %v", err)
 	}
-	return &pipelineHarness{service: service, store: st, objects: objectStore, vector: vec, embed: embedding, kb: kb}
+	return &pipelineHarness{
+		service: service, store: st, objects: objectStore, vector: vec, embed: embedding,
+		kb: kb, events: events,
+	}
 }
 
 func TestPipelineUsesInjectedStreamingParserAndClosesDocument(t *testing.T) {
@@ -614,10 +641,10 @@ func TestPipelineCacheReuseAndParseFingerprintInvalidation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	h.service.Start(ctx)
-	waitPipelineDocument(t, h.store, doc.ID, func(record *store.RAGDocumentRecord) bool {
-		return record.Status == "DONE" && record.ActiveVersion == 1
+	first := waitPipelineDocument(t, h.store, doc.ID, func(record *store.RAGDocumentRecord) bool {
+		return record.Status == "DONE" && record.ActiveVersion > 0
 	})
-	v1, err := h.store.GetRAGDocumentVersion(context.Background(), doc.ID, 1)
+	v1, err := h.store.GetRAGDocumentVersion(context.Background(), doc.ID, first.ActiveVersion)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -633,10 +660,10 @@ func TestPipelineCacheReuseAndParseFingerprintInvalidation(t *testing.T) {
 	if err := h.service.ReindexDocument(context.Background(), "u_pipeline", h.kb.ID, doc.ID); err != nil {
 		t.Fatalf("queue chunk-only reindex: %v", err)
 	}
-	waitPipelineDocument(t, h.store, doc.ID, func(record *store.RAGDocumentRecord) bool {
-		return record.Status == "DONE" && record.ActiveVersion == 2
+	second := waitPipelineDocument(t, h.store, doc.ID, func(record *store.RAGDocumentRecord) bool {
+		return record.Status == "DONE" && record.ActiveVersion > first.ActiveVersion
 	})
-	v2, err := h.store.GetRAGDocumentVersion(context.Background(), doc.ID, 2)
+	v2, err := h.store.GetRAGDocumentVersion(context.Background(), doc.ID, second.ActiveVersion)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -650,10 +677,10 @@ func TestPipelineCacheReuseAndParseFingerprintInvalidation(t *testing.T) {
 	if err := h.service.ReindexDocument(context.Background(), "u_pipeline", h.kb.ID, doc.ID); err != nil {
 		t.Fatalf("queue parse-contract reindex: %v", err)
 	}
-	waitPipelineDocument(t, h.store, doc.ID, func(record *store.RAGDocumentRecord) bool {
-		return record.Status == "DONE" && record.ActiveVersion == 3
+	third := waitPipelineDocument(t, h.store, doc.ID, func(record *store.RAGDocumentRecord) bool {
+		return record.Status == "DONE" && record.ActiveVersion > second.ActiveVersion
 	})
-	v3, err := h.store.GetRAGDocumentVersion(context.Background(), doc.ID, 3)
+	v3, err := h.store.GetRAGDocumentVersion(context.Background(), doc.ID, third.ActiveVersion)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,16 +693,35 @@ func TestPipelineCacheReuseAndParseFingerprintInvalidation(t *testing.T) {
 	if err := h.service.ReindexDocument(context.Background(), "u_pipeline", h.kb.ID, doc.ID); err != nil {
 		t.Fatalf("queue parse-limit reindex: %v", err)
 	}
-	waitPipelineDocument(t, h.store, doc.ID, func(record *store.RAGDocumentRecord) bool {
-		return record.Status == "DONE" && record.ActiveVersion == 4
+	fourth := waitPipelineDocument(t, h.store, doc.ID, func(record *store.RAGDocumentRecord) bool {
+		return record.Status == "DONE" && record.ActiveVersion > third.ActiveVersion
 	})
-	v4, err := h.store.GetRAGDocumentVersion(context.Background(), doc.ID, 4)
+	v4, err := h.store.GetRAGDocumentVersion(context.Background(), doc.ID, fourth.ActiveVersion)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if parserFacade.calls.Load() != 3 || v4.ParseFingerprint == v3.ParseFingerprint {
 		t.Fatalf("parse-affecting limit did not invalidate artifact: calls=%d v3=%+v v4=%+v",
 			parserFacade.calls.Load(), v3, v4)
+	}
+
+	var cacheMiss, cacheHit, claimEvent, activeSwitch bool
+	for _, event := range h.events.snapshot() {
+		fields := event.Fields
+		switch event.Name {
+		case telemetry.EventResultCache:
+			cacheMiss = cacheMiss || fields.CacheKind == "parse_artifact" && fields.CacheStatus == "miss"
+			cacheHit = cacheHit || fields.CacheKind == "parse_artifact" && fields.CacheStatus == "hit"
+		case telemetry.EventIndexTask:
+			claimEvent = claimEvent || fields.Transition == "claim" && fields.Outcome == "ok" && fields.TaskID > 0
+		case telemetry.EventActiveVersionSwitch:
+			activeSwitch = activeSwitch || fields.Outcome == "ok" && fields.DocVersion == v2.DocVersion &&
+				fields.PreviousVersion == v1.DocVersion && fields.RetiredVersion == v1.DocVersion
+		}
+	}
+	if !cacheMiss || !cacheHit || !claimEvent || !activeSwitch {
+		t.Fatalf("missing orchestration telemetry miss=%v hit=%v claim=%v switch=%v events=%+v",
+			cacheMiss, cacheHit, claimEvent, activeSwitch, h.events.snapshot())
 	}
 }
 
@@ -820,8 +866,8 @@ func TestPipelineFailureAfterMilvusWritePreservesOldActiveVersion(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	h.service.Start(ctx)
-	waitPipelineDocument(t, h.store, doc.ID, func(record *store.RAGDocumentRecord) bool {
-		return record.Status == "DONE" && record.ActiveVersion == 1
+	initial := waitPipelineDocument(t, h.store, doc.ID, func(record *store.RAGDocumentRecord) bool {
+		return record.Status == "DONE" && record.ActiveVersion > 0
 	})
 
 	activationAttempted := make(chan struct{})
@@ -844,18 +890,19 @@ func TestPipelineFailureAfterMilvusWritePreservesOldActiveVersion(t *testing.T) 
 		t.Fatal("pipeline did not reach activation after Milvus write")
 	}
 	current, err := h.store.GetRAGDocument(context.Background(), doc.ID)
-	if err != nil || current.ActiveVersion != 1 || current.Version != 2 {
+	if err != nil || current.ActiveVersion != initial.ActiveVersion || current.Version <= initial.Version {
 		t.Fatalf("activation failure replaced old active version: doc=%+v err=%v", current, err)
 	}
-	stagedChunks, err := h.store.ListRAGChunksByDocumentVersion(context.Background(), doc.ID, 2)
+	failedVersion := current.Version
+	stagedChunks, err := h.store.ListRAGChunksByDocumentVersion(context.Background(), doc.ID, failedVersion)
 	if err != nil || len(stagedChunks) == 0 {
 		t.Fatalf("new SQL version was not staged before activation failure: chunks=%+v err=%v", stagedChunks, err)
 	}
-	wroteV2 := false
+	wroteFailedVersion := false
 	for _, chunk := range h.vector.chunks() {
-		wroteV2 = wroteV2 || chunk.DocVersion == 2
+		wroteFailedVersion = wroteFailedVersion || chunk.DocVersion == failedVersion
 	}
-	if !wroteV2 {
+	if !wroteFailedVersion {
 		t.Fatal("test did not reach the Milvus-write boundary")
 	}
 }
@@ -974,6 +1021,34 @@ func TestPipelineLeaseHeartbeatFailureCancelsWorkImmediately(t *testing.T) {
 	if current.ActiveVersion != 0 || current.Status == "DONE" {
 		t.Fatalf("lease-lost worker activated document: %+v", current)
 	}
+	for _, event := range h.events.snapshot() {
+		if event.Name == telemetry.EventIndexTask && event.Fields.Transition == "heartbeat" &&
+			event.Fields.Outcome == "error" && event.Fields.ErrorCode == "fence_lost" {
+			return
+		}
+	}
+	t.Fatalf("lease loss was not observable through the closed event schema: %+v", h.events.snapshot())
+}
+
+func TestPipelineTelemetryRecordsRetryWithoutProviderDetails(t *testing.T) {
+	h := newPipelineHarness(t)
+	_, _ = h.seedDocument(t, "telemetry_retry", "retryable source", 1)
+	claim, err := h.store.ClaimRAGIndexTask(context.Background(), h.service.workerID, time.Minute)
+	if err != nil || claim == nil {
+		t.Fatalf("claim=%+v err=%v", claim, err)
+	}
+	const canary = "CANARY-provider-endpoint-and-secret"
+	h.service.finishClaimFailure(context.Background(), claim, errors.New(canary), false)
+	for _, event := range h.events.snapshot() {
+		if fmt.Sprint(event) != "" && strings.Contains(fmt.Sprint(event), canary) {
+			t.Fatalf("telemetry leaked provider detail: %+v", event)
+		}
+		if event.Name == telemetry.EventIndexTask && event.Fields.Transition == "retry" &&
+			event.Fields.Outcome == "scheduled" && event.Fields.RetryCount == 1 {
+			return
+		}
+	}
+	t.Fatalf("retry transition was not observable: %+v", h.events.snapshot())
 }
 
 func TestPipelineVersionClaimUsesImmutableSnapshotAndInt64Fence(t *testing.T) {

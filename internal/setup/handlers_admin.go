@@ -427,7 +427,14 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.accounts.Delete(r.Context(), id); err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		status := http.StatusBadRequest
+		if errors.Is(err, users.ErrRAGUserCleanerRequired) || errors.Is(err, users.ErrRAGUserCleanupIncomplete) {
+			// This is a retryable lifecycle failure, not malformed user input.
+			// The durable deleting tombstone remains so an operator can restore
+			// the dependency and safely retry the same request.
+			status = http.StatusServiceUnavailable
+		}
+		jsonResponse(w, status, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
@@ -453,7 +460,7 @@ func (s *Server) handleResetUserPassword(w http.ResponseWriter, r *http.Request)
 
 // respondAllAgents 返回每个用户的所有 agent，附带拥有者的用户名/电子邮件。
 // 为平台范围的管理视图支持 GET /api/agents?all=true；认证门控在 handleListAgents 中
-//（仅在 CanAdminPlatform 通过后调用此函数）。
+// （仅在 CanAdminPlatform 通过后调用此函数）。
 func (s *Server) respondAllAgents(w http.ResponseWriter, r *http.Request) {
 	if s.dataStore == nil {
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "no data store"})

@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -113,13 +114,13 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 	if topN > 20 {
 		topN = 20
 	}
-
 	type target struct {
 		kb    *store.RAGKBRecord
 		dense [][]float32
 	}
 	kbs := make([]*store.RAGKBRecord, 0, len(kbIDs))
 	seenKB := make(map[string]struct{}, len(kbIDs))
+	activeOwners := make(map[string]bool, len(kbIDs))
 	for _, kbID := range kbIDs {
 		if _, exists := seenKB[kbID]; exists {
 			continue
@@ -128,6 +129,26 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		kb, err := s.GetKB(ctx, ownerID, kbID)
 		if err != nil {
 			return nil, err
+		}
+		// ownerID is only the caller's ownership fence. Platform admins use an
+		// empty ownerID, so retrieval availability must always be derived from
+		// the KB's actual owner. Cache the result for cross-KB searches while
+		// treating a missing/deleting owner as a durable fail-closed tombstone.
+		ownerActive, checked := activeOwners[kb.UserID]
+		if !checked {
+			user, userErr := s.st.GetUser(ctx, kb.UserID)
+			switch {
+			case userErr == nil:
+				ownerActive = strings.EqualFold(user.Status, "active")
+			case errors.Is(userErr, store.ErrNotFound):
+				ownerActive = false
+			default:
+				return nil, userErr
+			}
+			activeOwners[kb.UserID] = ownerActive
+		}
+		if !ownerActive {
+			continue
 		}
 		if kb.Status != "active" {
 			continue
@@ -180,7 +201,7 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		docByID := make(map[string]store.RAGDocumentRecord, len(docs))
 		activeVersions := make(map[string]int64, len(docs))
 		for _, doc := range docs {
-			if doc.ActiveVersion <= 0 {
+			if doc.ActiveVersion <= 0 || strings.EqualFold(doc.Status, "deleting") {
 				continue
 			}
 			docByID[doc.ID] = doc

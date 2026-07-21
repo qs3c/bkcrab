@@ -333,8 +333,7 @@ func TestAgentRAGAssetRevokesDeletedGrantAndCurrentTombstonesBefore304(t *testin
 		fixture := newAgentRAGAssetFixture(t)
 		fixture.saveGoodGrant(t)
 		etag := fixture.requestAgentAsset(t, fixture.other.ID, agentRAGAssetAgentID, agentRAGAssetSessionID, fixture.asset.ID, false, "", nil).Header().Get("ETag")
-		fixture.kb.Status = "deleting"
-		if err := fixture.server.dataStore.UpdateRAGKB(context.Background(), fixture.kb); err != nil {
+		if _, err := fixture.server.dataStore.MarkRAGKBDeleting(context.Background(), fixture.kb.ID); err != nil {
 			t.Fatal(err)
 		}
 		assertAgentRAGAssetRevoked(t, fixture, etag)

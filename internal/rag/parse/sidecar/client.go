@@ -22,6 +22,7 @@ import (
 
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag/document"
+	"github.com/qs3c/bkcrab/internal/rag/telemetry"
 )
 
 const (
@@ -62,6 +63,7 @@ type ClientConfig struct {
 	HTTPClient          *http.Client
 	Now                 func() time.Time
 	PDFLicenseApproved  bool
+	Recorder            telemetry.Recorder
 }
 
 type cachedHealth struct {
@@ -79,6 +81,7 @@ type Client struct {
 	tempDir             string
 	now                 func() time.Time
 	pdfLicenseApproved  bool
+	recorder            telemetry.Recorder
 
 	probeMu   sync.Mutex
 	healthMu  sync.RWMutex
@@ -146,6 +149,9 @@ func NewClient(clientConfig ClientConfig) (*Client, error) {
 	if now == nil {
 		now = time.Now
 	}
+	if clientConfig.Recorder == nil {
+		clientConfig.Recorder = telemetry.NewSlogRecorder(nil)
+	}
 	baseHTTPClient := http.Client{}
 	if clientConfig.HTTPClient != nil {
 		baseHTTPClient = *clientConfig.HTTPClient
@@ -157,7 +163,21 @@ func NewClient(clientConfig ClientConfig) (*Client, error) {
 		healthTTL: clientConfig.HealthTTL, healthProbeInterval: clientConfig.HealthProbeInterval,
 		limits: defaultClientLimits(clientConfig.Limits), tempDir: clientConfig.TempDir,
 		now: now, pdfLicenseApproved: clientConfig.PDFLicenseApproved,
+		recorder: clientConfig.Recorder,
 	}, nil
+}
+
+// SetRecorder replaces the privacy-safe sidecar observability sink. Source
+// bytes, bundle contents, temporary paths, endpoints and credentials are not
+// representable by the closed telemetry schema.
+func (c *Client) SetRecorder(recorder telemetry.Recorder) {
+	if c == nil {
+		return
+	}
+	if recorder == nil {
+		recorder = telemetry.NopRecorder()
+	}
+	c.recorder = recorder
 }
 
 func (c *Client) requestURL(endpointPath string, query url.Values) string {
@@ -481,7 +501,29 @@ func (c *Client) postBundle(
 	query url.Values,
 	source document.Source,
 	decodeOptions DecodeOptions,
-) (*BundleHandle, error) {
+) (bundle *BundleHandle, resultErr error) {
+	started := time.Now()
+	defer func() {
+		fields := telemetry.Fields{
+			DocID: source.DocID, Format: normalizeSourceFormat(source), Operation: operation,
+			Duration: time.Since(started), Outcome: "ok",
+		}
+		if bundle != nil {
+			fields.PageCount = len(bundle.Manifest.Pages)
+			fields.AssetCount = len(bundle.Manifest.Assets)
+			fields.WarningCount = len(bundle.Manifest.Warnings)
+			for _, occurrence := range bundle.Manifest.Occurrences {
+				if occurrence.Decorative {
+					fields.Decorative++
+				}
+			}
+		}
+		if resultErr != nil {
+			fields.Outcome = "error"
+			fields.ErrorCode = sidecarTelemetryErrorCode(resultErr)
+		}
+		telemetry.Emit(ctx, c.recorder, telemetry.EventParserSidecarCall, fields)
+	}()
 	pipeReader, pipeWriter := io.Pipe()
 	multipartWriter := multipart.NewWriter(pipeWriter)
 	writerDone := make(chan error, 1)
@@ -524,6 +566,32 @@ func (c *Client) postBundle(
 	decodeOptions.Limits = c.decodeLimits()
 	decodeOptions.TempDir = c.tempDir
 	return DecodeBundle(ctx, response.Body, decodeOptions)
+}
+
+func sidecarTelemetryErrorCode(err error) string {
+	var httpErr *HTTPError
+	switch {
+	case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusTooManyRequests:
+		return "rate_limit"
+	case errors.As(err, &httpErr) && httpErr.StatusCode >= 500:
+		return "upstream"
+	case errors.As(err, &httpErr):
+		return "http_rejected"
+	case errors.Is(err, ErrCapabilityUnavailable):
+		return "capability_unavailable"
+	case errors.Is(err, ErrInvalidBundle):
+		return "invalid_bundle"
+	case errors.Is(err, ErrBundleLimitExceeded), errors.Is(err, ErrSourceLimitExceeded):
+		return "limit_exceeded"
+	case errors.Is(err, ErrSourceIntegrity):
+		return "source_integrity"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	default:
+		return "sidecar_error"
+	}
 }
 
 func writeMultipartSource(

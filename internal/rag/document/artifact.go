@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"strconv"
 	"strings"
 )
 
@@ -312,6 +313,19 @@ type ObjectKeys struct {
 	AssetSource        string
 	AssetDisplay       string
 	AssetThumbnail     string
+}
+
+// VersionedObjectKey maps a canonical logical object key into the immutable
+// physical namespace owned by one document version. External Put/Delete
+// operations never reuse this physical key in another index generation, so a
+// delayed operation can affect only the generation that created it.
+func VersionedObjectKey(logicalKey string, docVersion int64) (string, error) {
+	logicalKey = strings.TrimSpace(strings.ReplaceAll(logicalKey, "\\", "/"))
+	if logicalKey == "" || docVersion < 1 || path.Clean(logicalKey) != logicalKey ||
+		strings.HasPrefix(logicalKey, "/") || strings.Contains(logicalKey, "\x00") {
+		return "", errors.New("invalid logical object key or document version")
+	}
+	return path.Join(path.Dir(logicalKey), "versions", strconv.FormatInt(docVersion, 10), path.Base(logicalKey)), nil
 }
 
 func ArtifactJSONKey(userID, kbID, docID, parseFingerprint string) (string, error) {

@@ -317,7 +317,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 				visionClient, visionErr := ragvision.NewOpenAICompatible(
 					ragCfg.DocumentAI,
 					ragCfg.Limits,
-					ragvision.NewObjectCache(ragObjects, ragvision.DefaultSchemaLimits()),
+					ragvision.NewObjectCache(ragObjects, ragvision.DefaultSchemaLimits(), st),
 				)
 				if visionErr != nil {
 					slog.Error("rag: DocumentAI vision configuration invalid; visual routes disabled", "error", visionErr)
@@ -330,7 +330,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 				enrichmentClient, enrichmentErr := ragenrich.NewOpenAICompatible(
 					ragCfg.DocumentAI,
 					ragCfg.Limits,
-					ragenrich.NewObjectCache(ragObjects, ragenrich.DefaultSchemaLimits()),
+					ragenrich.NewObjectCache(ragObjects, ragenrich.DefaultSchemaLimits(), st),
 				)
 				if enrichmentErr != nil {
 					slog.Error("rag: DocumentAI enrichment configuration invalid; enrichment disabled", "error", enrichmentErr)

@@ -80,6 +80,7 @@ type Server struct {
 	chatEvents        *agent.EventHub
 	usage             usage.Meter
 	rag               *rag.Service
+	ragUserCleaner    users.RAGUserCleaner
 	ragCfg            config.RAGCfg
 	ragHealthMu       sync.RWMutex
 	ragHealth         config.RAGParserHealthSnapshot
@@ -132,6 +133,7 @@ func (s *Server) SetStore(st store.Store) {
 	s.dataStore = st
 	if st != nil {
 		s.accounts, _ = users.NewAccounts(st)
+		s.accounts.SetRAGUserCleaner(s.ragUserCleaner)
 		s.apikeys, _ = users.NewAPIKeys(st)
 	}
 }
@@ -150,8 +152,22 @@ func (s *Server) SetUsageMeter(m usage.Meter) {
 // Leaving it nil keeps the routes present but makes them return 503.
 func (s *Server) SetRAGService(service *rag.Service) {
 	s.rag = service
+	var cleaner users.RAGUserCleaner
+	if service != nil {
+		cleaner = service
+	}
+	s.setRAGUserCleaner(cleaner)
 	if service != nil {
 		s.SetRAGConfig(service.Config())
+	}
+}
+
+// setRAGUserCleaner keeps Accounts wiring independent of construction order:
+// gateways may install the store before or after the optional RAG service.
+func (s *Server) setRAGUserCleaner(cleaner users.RAGUserCleaner) {
+	s.ragUserCleaner = cleaner
+	if s.accounts != nil {
+		s.accounts.SetRAGUserCleaner(cleaner)
 	}
 }
 

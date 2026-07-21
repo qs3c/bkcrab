@@ -12,6 +12,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/split"
 	"github.com/qs3c/bkcrab/internal/rag/vision"
+	storepkg "github.com/qs3c/bkcrab/internal/store"
 )
 
 type recordingEnricher struct {
@@ -19,6 +20,18 @@ type recordingEnricher struct {
 	blocks  []EnrichableBlock
 	budgets []*vision.TaskDocumentAIBudget
 	err     error
+}
+
+type recordingEnrichmentCacheCatalog struct {
+	records []storepkg.RAGCacheObjectRecord
+}
+
+func (c *recordingEnrichmentCacheCatalog) RegisterRAGCacheObject(
+	_ context.Context,
+	record storepkg.RAGCacheObjectRecord,
+) error {
+	c.records = append(c.records, record)
+	return nil
 }
 
 func (e *recordingEnricher) Enrich(_ context.Context, block EnrichableBlock, budget *vision.TaskDocumentAIBudget) (Enhancement, error) {
@@ -366,5 +379,33 @@ func TestObjectCacheRoundTripsWorstCaseEscapedEnvelope(t *testing.T) {
 	got, ok, err := cache.Get(context.Background(), scope, key, BlockCode)
 	if err != nil || !ok || got.Code == nil || got.Code.Description != control {
 		t.Fatalf("maximum escaped cache round-trip got=%+v ok=%v err=%v", got, ok, err)
+	}
+}
+
+func TestEnrichmentObjectCacheRegistersPutAndHitWithIndexFingerprint(t *testing.T) {
+	ctx := context.Background()
+	catalog := &recordingEnrichmentCacheCatalog{}
+	cache := NewObjectCache(objects.NewLocalFS(t.TempDir()), DefaultSchemaLimits(), catalog)
+	scope := CacheScope{
+		UserID: "user", KBID: "kb", DocID: "doc",
+		IndexFingerprint: strings.Repeat("f", 64),
+	}
+	key := strings.Repeat("a", 64)
+	value := Enhancement{Kind: BlockTable, Table: &TableEnhancement{Topic: "t", Summary: "summary"}}
+	if err := cache.Put(ctx, scope, key, value); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := cache.Get(ctx, scope, key, BlockTable); err != nil || !ok {
+		t.Fatalf("cache hit ok=%v err=%v", ok, err)
+	}
+	if len(catalog.records) != 2 {
+		t.Fatalf("catalog registrations=%d, want put+hit", len(catalog.records))
+	}
+	for i, record := range catalog.records {
+		if record.DocID != scope.DocID || record.CacheKind != storepkg.RAGCacheKindEnrich ||
+			record.FingerprintKind != storepkg.RAGCacheFingerprintIndex ||
+			record.Fingerprint != scope.IndexFingerprint {
+			t.Fatalf("catalog record[%d]=%+v", i, record)
+		}
 	}
 }

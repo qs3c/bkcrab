@@ -157,9 +157,9 @@ func (f *Fake) DropCollection(ctx context.Context, kbID string) error {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if _, err := f.collectionLocked(kbID); err != nil {
-		return err
-	}
+	// Collection cleanup is an idempotent lifecycle operation. A retry after a
+	// later object/catalog failure must not get stuck merely because the first
+	// attempt already removed the in-memory collection.
 	delete(f.collections, kbID)
 	return nil
 }

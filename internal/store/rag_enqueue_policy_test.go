@@ -11,6 +11,7 @@ import (
 
 func advancedEnqueueTestKB(t *testing.T, st *DBStore, kbID, userID string) {
 	t.Helper()
+	ensureRAGLifecycleUser(t, st, userID, "active")
 	if err := st.CreateRAGKB(context.Background(), &RAGKBRecord{
 		ID: kbID, UserID: userID, Name: "advanced gate", EmbedProvider: "system",
 		EmbedModel: "embed-v1", EmbedDims: 3, ChunkSize: 512, ChunkOverlap: 64,

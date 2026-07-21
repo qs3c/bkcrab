@@ -82,6 +82,11 @@ func mysqlTokenUsageTableSQL() string {
 // 复合键限制。
 func mysqlMigrationSQL() []string {
 	return []string{
+		`CREATE TABLE IF NOT EXISTS schema_migration_markers (
+			name VARCHAR(191) NOT NULL,
+			completed_at DATETIME(6) NOT NULL,
+			PRIMARY KEY (name)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS users (
 			id VARCHAR(120) PRIMARY KEY,
 			username VARCHAR(191) NOT NULL UNIQUE,
@@ -304,9 +309,13 @@ func mysqlMigrationSQL() []string {
 			parse_mode VARCHAR(16) NOT NULL DEFAULT 'standard',
 			enrichment_enabled BOOLEAN NOT NULL DEFAULT FALSE,
 			status VARCHAR(32) NOT NULL DEFAULT 'active',
+			provisioning_generation BIGINT NOT NULL DEFAULT 0,
+			provisioning_lease_owner VARCHAR(96) NOT NULL DEFAULT '',
+			provisioning_lease_until DATETIME(6),
 			created_at DATETIME(6) NOT NULL,
 			updated_at DATETIME(6) NOT NULL,
-			KEY idx_rag_kbs_user (user_id)
+			KEY idx_rag_kbs_user (user_id),
+			KEY idx_rag_kbs_provisioning (status, provisioning_lease_until, updated_at)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS rag_chat_turns (
 			id VARCHAR(120) PRIMARY KEY,
@@ -424,6 +433,57 @@ func mysqlMigrationSQL() []string {
 			updated_at DATETIME(6) NOT NULL,
 			UNIQUE KEY uq_rag_assets_doc_hash (doc_id, content_sha256),
 			KEY idx_rag_assets_doc (doc_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS rag_object_write_staging (
+			handle_id CHAR(64) NOT NULL,
+			user_id VARCHAR(120) NOT NULL,
+			kb_id VARCHAR(120) NOT NULL,
+			doc_id VARCHAR(120) NOT NULL,
+			object_kind VARCHAR(24) NOT NULL,
+			object_key LONGTEXT NOT NULL,
+			reference_key LONGTEXT NOT NULL,
+			generation BIGINT NOT NULL DEFAULT 0,
+			status VARCHAR(16) NOT NULL,
+			created_at DATETIME(6) NOT NULL,
+			updated_at DATETIME(6) NOT NULL,
+			PRIMARY KEY (handle_id),
+			KEY idx_rag_object_write_staging_cleanup (status, updated_at, handle_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS rag_version_assets (
+			doc_id VARCHAR(120) NOT NULL,
+			doc_version BIGINT NOT NULL,
+			asset_id VARCHAR(40) NOT NULL,
+			PRIMARY KEY (doc_id, doc_version, asset_id),
+			KEY idx_rag_version_assets_asset (asset_id, doc_id, doc_version)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS rag_document_maintenance_leases (
+			doc_id VARCHAR(120) NOT NULL,
+			generation BIGINT NOT NULL DEFAULT 0,
+			lease_owner VARCHAR(96) NOT NULL DEFAULT '',
+			lease_until DATETIME(6),
+			PRIMARY KEY (doc_id),
+			KEY idx_rag_document_maintenance_lease_until (lease_until)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS rag_cache_objects (
+			doc_id VARCHAR(120) NOT NULL,
+			cache_kind VARCHAR(16) NOT NULL,
+			cache_key CHAR(64) NOT NULL,
+			object_key LONGTEXT NOT NULL,
+			generation BIGINT NOT NULL DEFAULT 0,
+			created_at DATETIME(6) NOT NULL,
+			updated_at DATETIME(6) NOT NULL,
+			PRIMARY KEY (doc_id, cache_kind, cache_key),
+			KEY idx_rag_cache_objects_doc_updated (doc_id, updated_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS rag_cache_object_fingerprints (
+			doc_id VARCHAR(120) NOT NULL,
+			cache_kind VARCHAR(16) NOT NULL,
+			cache_key CHAR(64) NOT NULL,
+			fingerprint_kind VARCHAR(16) NOT NULL,
+			fingerprint CHAR(64) NOT NULL,
+			updated_at DATETIME(6) NOT NULL,
+			PRIMARY KEY (doc_id, cache_kind, cache_key, fingerprint_kind, fingerprint),
+			KEY idx_rag_cache_fingerprints_generation (doc_id, fingerprint_kind, fingerprint, updated_at)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS rag_chunks (
 			kb_id VARCHAR(120) NOT NULL,

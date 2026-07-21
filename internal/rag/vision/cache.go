@@ -13,6 +13,7 @@ import (
 
 	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 type ResultCache interface {
@@ -29,15 +30,21 @@ type cacheEnvelope struct {
 
 type ObjectCache struct {
 	store         objects.Store
+	catalog       store.RAGCacheCatalog
 	limits        SchemaLimits
 	maxPageBytes  int64
 	maxImageBytes int64
 }
 
-func NewObjectCache(store objects.Store, limits SchemaLimits) *ObjectCache {
+func NewObjectCache(objectStore objects.Store, limits SchemaLimits, catalogs ...store.RAGCacheCatalog) *ObjectCache {
 	limits = limits.normalized()
 	maxPageBytes, maxImageBytes := cacheObjectByteLimits(limits)
-	return &ObjectCache{store: store, limits: limits, maxPageBytes: maxPageBytes, maxImageBytes: maxImageBytes}
+	var catalog store.RAGCacheCatalog
+	if len(catalogs) != 0 {
+		catalog = catalogs[0]
+	}
+	return &ObjectCache{store: objectStore, catalog: catalog, limits: limits,
+		maxPageBytes: maxPageBytes, maxImageBytes: maxImageBytes}
 }
 
 func (c *ObjectCache) GetPage(ctx context.Context, scope CacheScope, key string) (PageTranscription, bool, error) {
@@ -60,6 +67,9 @@ func (c *ObjectCache) GetPage(ctx context.Context, scope CacheScope, key string)
 	if err != nil {
 		return PageTranscription{}, false, nil
 	}
+	if err := c.register(ctx, scope, key, objectKey, store.RAGCacheKindPage); err != nil {
+		return PageTranscription{}, false, err
+	}
 	return value, true, nil
 }
 
@@ -72,6 +82,9 @@ func (c *ObjectCache) PutPage(ctx context.Context, scope CacheScope, key string,
 	}
 	objectKey, err := document.PageCacheObjectKey(scope.UserID, scope.KBID, scope.DocID, key)
 	if err != nil {
+		return err
+	}
+	if err := c.register(ctx, scope, key, objectKey, store.RAGCacheKindPage); err != nil {
 		return err
 	}
 	return c.write(ctx, objectKey, PageSchemaVersion, value, c.maxPageBytes)
@@ -97,6 +110,9 @@ func (c *ObjectCache) GetImage(ctx context.Context, scope CacheScope, key string
 	if err != nil {
 		return ImageDescription{}, false, nil
 	}
+	if err := c.register(ctx, scope, key, objectKey, store.RAGCacheKindImage); err != nil {
+		return ImageDescription{}, false, err
+	}
 	return value, true, nil
 }
 
@@ -111,7 +127,20 @@ func (c *ObjectCache) PutImage(ctx context.Context, scope CacheScope, key string
 	if err != nil {
 		return err
 	}
+	if err := c.register(ctx, scope, key, objectKey, store.RAGCacheKindImage); err != nil {
+		return err
+	}
 	return c.write(ctx, objectKey, ImageDescriptionSchemaVersion, value, c.maxImageBytes)
+}
+
+func (c *ObjectCache) register(ctx context.Context, scope CacheScope, cacheKey, objectKey, cacheKind string) error {
+	if c == nil || c.catalog == nil {
+		return nil
+	}
+	return c.catalog.RegisterRAGCacheObject(ctx, store.RAGCacheObjectRecord{
+		DocID: scope.DocID, CacheKind: cacheKind, CacheKey: cacheKey, ObjectKey: objectKey,
+		FingerprintKind: store.RAGCacheFingerprintParse, Fingerprint: scope.ParseFingerprint,
+	})
 }
 
 func (c *ObjectCache) read(ctx context.Context, key string, maxBytes int64) ([]byte, bool, error) {
