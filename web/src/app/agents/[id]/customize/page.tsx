@@ -34,43 +34,59 @@ const CUSTOMIZE_FILES = [
 type FileSource = "db" | "owner" | "fs" | "default";
 type FileState = { content: string; source: FileSource; baseContent?: string };
 
+async function fetchCustomizeFiles(agentId: string): Promise<Record<string, FileState>> {
+  const entries = await Promise.all(
+    CUSTOMIZE_FILES.map(async (file) => {
+      try {
+        const res = await apiFetch(`/api/agents/${agentId}/system-files/${file.name}`);
+        if (res.ok) {
+          const data = await res.json();
+          return [
+            file.name,
+            {
+              content: data.content || "",
+              source: (data.source || "default") as FileSource,
+              baseContent: data.baseContent,
+            },
+          ] as [string, FileState];
+        }
+      } catch {}
+      return [
+        file.name,
+        { content: "", source: "default" as FileSource },
+      ] as [string, FileState];
+    }),
+  );
+  return Object.fromEntries(entries);
+}
+
 export default function AgentCustomizePage() {
   const agentId = useAgentIdFromURL();
   const agentName = useAgentName(agentId);
   const [activeTab, setActiveTab] = useState("SOUL.md");
   const [files, setFiles] = useState<Record<string, FileState>>({});
-  const [loading, setLoading] = useState(true);
+  const [loadedAgentId, setLoadedAgentId] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
   const loadAll = async () => {
-    const entries = await Promise.all(
-      CUSTOMIZE_FILES.map(async (f) => {
-        try {
-          const res = await apiFetch(`/api/agents/${agentId}/system-files/${f.name}`);
-          if (res.ok) {
-            const data = await res.json();
-            return [
-              f.name,
-              {
-                content: data.content || "",
-                source: (data.source || "default") as FileSource,
-                baseContent: data.baseContent,
-              },
-            ] as [string, FileState];
-          }
-        } catch {}
-        return [f.name, { content: "", source: "default" as FileSource }] as [string, FileState];
-      })
-    );
-    setFiles(Object.fromEntries(entries));
+    setFiles(await fetchCustomizeFiles(agentId));
+    setLoadedAgentId(agentId);
   };
 
   useEffect(() => {
-    setLoading(true);
-    loadAll().then(() => setLoading(false));
+    let cancelled = false;
+    fetchCustomizeFiles(agentId).then((nextFiles) => {
+      if (cancelled) return;
+      setFiles(nextFiles);
+      setLoadedAgentId(agentId);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [agentId]);
 
+  const loading = loadedAgentId !== agentId;
   const active = files[activeTab];
 
   const handleSave = async () => {

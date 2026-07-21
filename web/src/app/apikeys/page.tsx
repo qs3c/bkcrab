@@ -79,8 +79,8 @@ export default function ApikeysPage() {
   const [scopeAgents, setScopeAgents] = useState<string[]>([]);
 
   async function refresh() {
-    setError("");
     const r = await listApikeys();
+    setError("");
     if (r.apikeys) setKeys(r.apikeys);
     if (r.error) setError(r.error);
     const a = await apiFetch("/api/agents");
@@ -91,7 +91,30 @@ export default function ApikeysPage() {
     setIsSuperAdmin(mj?.user?.role === "super_admin");
   }
   useEffect(() => {
-    refresh();
+    let cancelled = false;
+    Promise.allSettled([
+      listApikeys(),
+      apiFetch("/api/agents").then((response) => response.json()),
+      apiFetch("/api/me").then((response) => response.json() as Promise<MeResponse>),
+    ]).then(([keyResult, agentResult, meResult]) => {
+      if (cancelled) return;
+      setError("");
+      if (keyResult.status === "fulfilled") {
+        if (keyResult.value.apikeys) setKeys(keyResult.value.apikeys);
+        if (keyResult.value.error) setError(keyResult.value.error);
+      } else {
+        setError("加载 API Key 失败");
+      }
+      if (agentResult.status === "fulfilled" && agentResult.value.agents) {
+        setAgents(agentResult.value.agents);
+      }
+      if (meResult.status === "fulfilled") {
+        setIsSuperAdmin(meResult.value?.user?.role === "super_admin");
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function handleCreate(e: React.FormEvent) {

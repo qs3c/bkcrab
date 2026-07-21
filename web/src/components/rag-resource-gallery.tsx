@@ -18,6 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { RAGPlainText } from "@/components/rag-safe-render";
 import { cn } from "@/lib/utils";
 
 export interface RAGResourceGalleryProps {
@@ -114,9 +115,11 @@ export function RAGResourceGallery({
                   {resource.docName || "检索资料"}
                 </span>
                 {(location || caption) && (
-                  <span className="block truncate text-[10px] text-muted-foreground" title={caption || location}>
-                    {caption || location}
-                  </span>
+                  <RAGPlainText
+                    value={caption || location}
+                    className="block truncate text-[10px] text-muted-foreground"
+                    title={caption || location}
+                  />
                 )}
               </span>
             </button>
@@ -169,9 +172,11 @@ export function RAGResourceGallery({
               )}
             </div>
             {selected.asset.caption && (
-              <p className="whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
-                {selected.asset.caption}
-              </p>
+              <RAGPlainText
+                as="p"
+                value={selected.asset.caption}
+                className="whitespace-pre-wrap text-sm leading-6 text-muted-foreground"
+              />
             )}
           </DialogContent>
         )}

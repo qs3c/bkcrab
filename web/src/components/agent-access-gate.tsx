@@ -39,29 +39,34 @@ export default function AgentAccessGate({
 }) {
   const pathname = usePathname();
   const agentId = agentIdFromPath(pathname);
-  const [state, setState] = useState<"checking" | "ok" | "denied">("checking");
+  const [probe, setProbe] = useState<{
+    agentId: string;
+    state: "ok" | "denied";
+  } | null>(null);
+  const bypassProbe = !agentId || agentId === "default";
+  const state = bypassProbe
+    ? "ok"
+    : probe?.agentId === agentId
+      ? probe.state
+      : "checking";
 
   useEffect(() => {
     // "default" ID 是预构建的静态导出占位符，不是真正的智能体 —
     // 跳过探测，直接渲染子组件。真正的 /agents/default/* 路由
     // 是 super_admin 的本地模式仪表板，已有自身的服务端门控。
-    if (!agentId || agentId === "default") {
-      setState("ok");
-      return;
-    }
+    if (!agentId || agentId === "default") return;
     let aborted = false;
-    setState("checking");
     getAgentStatus(agentId)
       .then(({ status, agent }) => {
         if (aborted) return;
         if (status === 200 && agent) {
-          setState("ok");
+          setProbe({ agentId, state: "ok" });
           return;
         }
-        setState("denied");
+        setProbe({ agentId, state: "denied" });
       })
       .catch(() => {
-        if (!aborted) setState("denied");
+        if (!aborted) setProbe({ agentId, state: "denied" });
       });
     return () => {
       aborted = true;

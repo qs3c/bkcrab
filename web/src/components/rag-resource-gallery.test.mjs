@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 const {
   appendActAs,
@@ -30,6 +34,12 @@ const {
   shouldPollDocuments,
   uploadLimitForFile,
 } = await import(new URL("./rag-resource-gallery-state.ts", import.meta.url));
+
+const {
+  AgentMarkdownImage,
+  RAGAnswerMarkdown,
+  RAGPlainText,
+} = await import(new URL("./rag-safe-render.ts", import.meta.url));
 
 const capabilities = {
   supportedExtensions: [".md", ".markdown", ".txt", ".pdf", ".docx", ".pptx", ".xlsx"],
@@ -383,22 +393,102 @@ test("formats source locations as text and rejects dangerous markdown URLs", () 
   assert.equal(safeRAGMarkdownURL("//evil.example/image"), "");
 });
 
-test("RAG renderers keep raw HTML disabled and captions out of markdown", async () => {
+test("RAG answer renderer drops raw HTML, dangerous links, and implicit image requests", () => {
+  const rendered = renderToStaticMarkup(React.createElement(
+    RAGAnswerMarkdown,
+    { urlTransform: safeRAGMarkdownURL },
+    [
+      '<img src="https://attacker.invalid/raw.png" onerror="alert(1)">',
+      '<script>alert("raw")</script>',
+      '[dangerous link](javascript:alert(1))',
+      '![tracking pixel](https://attacker.invalid/tracker.png)',
+      '[allowed external link](https://example.com/docs)',
+    ].join("\n\n"),
+  ));
+
+  assert.doesNotMatch(rendered, /<(?:img|script)\b/i);
+  assert.doesNotMatch(rendered, /onerror=/i);
+  assert.doesNotMatch(rendered, /src="https:\/\/attacker\.invalid/i);
+  assert.match(rendered, /href=""[^>]*>dangerous link<\/a>/);
+  assert.match(rendered, /已忽略回答中的外部图片：tracking pixel/);
+  assert.match(rendered, /href="https:\/\/example\.com\/docs"/);
+  assert.match(rendered, /target="_blank"/);
+  assert.match(rendered, /rel="noopener noreferrer"/);
+});
+
+test("agent Markdown renderer cannot initiate external image requests", () => {
+  const rendered = renderToStaticMarkup(React.createElement(
+    ReactMarkdown,
+    {
+      remarkPlugins: [remarkGfm],
+      components: { img: AgentMarkdownImage },
+    },
+    [
+      "![tracking pixel](https://attacker.invalid/tracker.png)",
+      "![protocol relative](//attacker.invalid/protocol.png)",
+      "![custom scheme](file:///etc/passwd)",
+      "![same origin](/api/agents/a/chat/s/rag-assets/ast_1/thumbnail)",
+      "[normal link](https://example.com/docs)",
+      "`const image = 'still code';`",
+    ].join("\n\n"),
+  ));
+
+  assert.doesNotMatch(rendered, /src="(?:https?:)?\/\/attacker\.invalid/i);
+  assert.doesNotMatch(rendered, /src="file:/i);
+  assert.match(rendered, /external image omitted: tracking pixel/);
+  assert.match(rendered, /external image omitted: protocol relative/);
+  assert.match(rendered, /external image omitted: custom scheme/);
+  assert.match(
+    rendered,
+    /<img[^>]+src="\/api\/agents\/a\/chat\/s\/rag-assets\/ast_1\/thumbnail"/,
+  );
+  assert.match(rendered, /href="https:\/\/example\.com\/docs"/);
+  assert.match(rendered, /<code>const image = &#x27;still code&#x27;;<\/code>/);
+});
+
+test("agent RAG metadata captions remain inert plain text", () => {
+  const caption = '<img src="https://attacker.invalid/a.png" onerror="alert(1)"> '
+    + '![tracker](https://attacker.invalid/b.png) [click](javascript:alert(1)) '
+    + '<script>alert("caption")</script>';
+  const resources = normalizeRAGResources([{
+    asset: {
+      id: "ast_adversarial",
+      kind: "image",
+      caption,
+      url: "https://attacker.invalid/untrusted-object-url.png",
+    },
+    kbId: "kb-1",
+    docId: "doc-1",
+    docName: "adversarial.md",
+    chunkIndex: 0,
+  }]);
+
+  assert.equal(resources.length, 1);
+  assert.equal(resources[0].asset.caption, caption);
+  assert.equal(Object.hasOwn(resources[0].asset, "url"), false);
+  const rendered = renderToStaticMarkup(React.createElement(RAGPlainText, {
+    as: "p",
+    value: resources[0].asset.caption,
+  }));
+  assert.doesNotMatch(rendered, /<(?:img|script)\b/i);
+  assert.match(rendered, /&lt;img src=&quot;https:\/\/attacker\.invalid\/a\.png&quot;/);
+  assert.match(rendered, /!\[tracker\]\(https:\/\/attacker\.invalid\/b\.png\)/);
+  assert.match(rendered, /&lt;script&gt;alert\(&quot;caption&quot;\)&lt;\/script&gt;/);
+});
+
+test("RAG UI surfaces stay wired to the executable safe renderers", async () => {
   const [chat, gallery, knowledgePage, agentChat] = await Promise.all([
     readFile(new URL("../app/knowledge/chat/knowledge-chat-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("./rag-resource-gallery.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/knowledge/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("./chat-screen.tsx", import.meta.url), "utf8"),
   ]);
-  for (const source of [chat, gallery]) {
-    assert.doesNotMatch(source, /dangerouslySetInnerHTML/);
-    assert.doesNotMatch(source, /rehypeRaw/);
-  }
-  assert.match(chat, /skipHtml/);
+  assert.match(chat, /RAGAnswerMarkdown/);
+  assert.match(gallery, /RAGPlainText/);
   assert.match(gallery, /assetURLBuilder/);
   assert.match(agentChat, /buildAgentSessionAssetURL/);
   assert.match(agentChat, /normalizeRAGResources/);
-  assert.doesNotMatch(gallery, /ReactMarkdown/);
+  assert.match(agentChat, /img: AgentMarkdownImage/);
   assert.match(knowledgePage, /const payload = buildKnowledgeBasePayload\(/);
   assert.match(knowledgePage, /getRAGCapabilityRows\(capabilities\)/);
   assert.match(knowledgePage, /getRAGOptInDisclosure\(pendingOptIn \|\| "enrichment"\)/);

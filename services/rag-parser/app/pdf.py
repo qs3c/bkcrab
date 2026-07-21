@@ -178,7 +178,11 @@ def _primitive(value: PDFPageAnalysis) -> dict[str, object]:
         "page": value.page,
         "width": float(value.width),
         "height": float(value.height),
-        "textChars": sum(not char.isspace() for char in value.native_markdown),
+        # The v1 primitive summary is derived from the exact textBlocks
+        # catalog. Go validates the same invariant (including whitespace), so
+        # routing-only whitespace heuristics must not leak into this protocol
+        # field.
+        "textChars": sum(len(block.text) for block in value.text_blocks),
         "blockCount": len(value.text_blocks),
         "textCoverage": text_coverage,
         "textBlocks": [

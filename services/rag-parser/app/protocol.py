@@ -848,6 +848,7 @@ class PayloadEntry:
     byte_size: int
     sha256: str
     opener: Callable[[], BinaryIO]
+    source_path: Path | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def from_bytes(cls, path: str, mime_type: str, value: bytes) -> PayloadEntry:
@@ -864,7 +865,14 @@ class PayloadEntry:
             while chunk := handle.read(64 * 1024):
                 size += len(chunk)
                 digest.update(chunk)
-        return cls(canonical, mime_type, size, digest.hexdigest(), lambda: source.open("rb"))
+        return cls(
+            canonical,
+            mime_type,
+            size,
+            digest.hexdigest(),
+            lambda: source.open("rb"),
+            source,
+        )
 
     def descriptor(self) -> EntryDescriptor:
         return EntryDescriptor(self.path, self.sha256, self.byte_size, self.mime_type)

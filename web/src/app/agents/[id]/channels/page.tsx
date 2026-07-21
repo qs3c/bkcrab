@@ -101,7 +101,9 @@ export default function AgentChannelsPage() {
 
   const [channels, setChannels] = useState<AgentChannel[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadedAgentId, setLoadedAgentId] = useState("");
   const [error, setError] = useState("");
+  const loadRequest = useRef(0);
 
   const [telegramOpen, setTelegramOpen] = useState(false);
   const [discordOpen, setDiscordOpen] = useState(false);
@@ -111,18 +113,55 @@ export default function AgentChannelsPage() {
   const [feishuOpen, setFeishuOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<AgentChannel | null>(null);
 
-  const refresh = useCallback(() => {
-    if (!agentId) return;
-    setLoading(true);
-    listAgentChannels(agentId)
-      .then((list) => setChannels(list))
-      .catch((e) => setError(e instanceof Error ? e.message : "加载渠道失败"))
-      .finally(() => setLoading(false));
+  const loadChannels = useCallback(async (requestedAgentId = agentId) => {
+    if (!requestedAgentId) return;
+    const request = ++loadRequest.current;
+    try {
+      const list = await listAgentChannels(requestedAgentId);
+      if (request !== loadRequest.current) return;
+      setChannels(list);
+      setLoadedAgentId(requestedAgentId);
+      setError("");
+    } catch (e) {
+      if (request !== loadRequest.current) return;
+      setChannels([]);
+      setLoadedAgentId(requestedAgentId);
+      setError(e instanceof Error ? e.message : "加载渠道失败");
+    } finally {
+      if (request === loadRequest.current) setLoading(false);
+    }
   }, [agentId]);
 
+  const refresh = useCallback(() => {
+    setLoading(true);
+    void loadChannels();
+  }, [loadChannels]);
+
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    if (!agentId) return;
+    let cancelled = false;
+    const request = ++loadRequest.current;
+    listAgentChannels(agentId)
+      .then((list) => {
+        if (cancelled || request !== loadRequest.current) return;
+        setChannels(list);
+        setLoadedAgentId(agentId);
+        setError("");
+        setLoading(false);
+      })
+      .catch((e) => {
+        if (cancelled || request !== loadRequest.current) return;
+        setChannels([]);
+        setLoadedAgentId(agentId);
+        setError(e instanceof Error ? e.message : "加载渠道失败");
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
+
+  const pageLoading = loading || loadedAgentId !== agentId;
 
   // 每种渠道类型的第一个绑定——UI 目前只支持单机器人，
   // 尽管后端允许绑定多个。如果存在多个（历史数据），
@@ -140,7 +179,10 @@ export default function AgentChannelsPage() {
     const target = deleteTarget;
     setDeleteTarget(null);
     const res = await disconnectAgentChannel(agentId, target.type, target.accountId);
-    if (res.error) setError(res.error);
+    if (res.error || !res.ok) {
+      setError(res.error || "断开渠道连接失败");
+      return;
+    }
     refresh();
   };
 
@@ -165,7 +207,7 @@ export default function AgentChannelsPage() {
         </div>
       )}
 
-      {loading ? (
+      {pageLoading ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           <Skeleton className="h-40" />
           <Skeleton className="h-40" />
@@ -419,15 +461,6 @@ function ConnectTelegramDialog({
   const [error, setError] = useState("");
   const [connected, setConnected] = useState<{ botUsername: string } | null>(null);
 
-  useEffect(() => {
-    if (!open) {
-      setToken("");
-      setError("");
-      setSubmitting(false);
-      setConnected(null);
-    }
-  }, [open]);
-
   const submit = async () => {
     if (!token.trim() || !agentId) return;
     setSubmitting(true);
@@ -443,7 +476,17 @@ function ConnectTelegramDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      onOpenChangeComplete={(isOpen) => {
+        if (isOpen) return;
+        setToken("");
+        setError("");
+        setSubmitting(false);
+        setConnected(null);
+      }}
+    >
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -543,15 +586,6 @@ function ConnectDiscordDialog({
   const [error, setError] = useState("");
   const [connected, setConnected] = useState<{ botUsername: string } | null>(null);
 
-  useEffect(() => {
-    if (!open) {
-      setToken("");
-      setError("");
-      setSubmitting(false);
-      setConnected(null);
-    }
-  }, [open]);
-
   const submit = async () => {
     if (!token.trim() || !agentId) return;
     setSubmitting(true);
@@ -567,7 +601,17 @@ function ConnectDiscordDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      onOpenChangeComplete={(isOpen) => {
+        if (isOpen) return;
+        setToken("");
+        setError("");
+        setSubmitting(false);
+        setConnected(null);
+      }}
+    >
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -657,16 +701,6 @@ function ConnectSlackDialog({
   const [error, setError] = useState("");
   const [connected, setConnected] = useState<{ teamName: string } | null>(null);
 
-  useEffect(() => {
-    if (!open) {
-      setBotToken("");
-      setAppToken("");
-      setError("");
-      setSubmitting(false);
-      setConnected(null);
-    }
-  }, [open]);
-
   const submit = async () => {
     if (!botToken.trim() || !appToken.trim() || !agentId) return;
     setSubmitting(true);
@@ -682,7 +716,18 @@ function ConnectSlackDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      onOpenChangeComplete={(isOpen) => {
+        if (isOpen) return;
+        setBotToken("");
+        setAppToken("");
+        setError("");
+        setSubmitting(false);
+        setConnected(null);
+      }}
+    >
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -796,16 +841,6 @@ function ConnectLINEDialog({
   const [error, setError] = useState("");
   const [connected, setConnected] = useState<{ botName: string; basicId: string; webhookUrl: string } | null>(null);
 
-  useEffect(() => {
-    if (!open) {
-      setChannelToken("");
-      setChannelSecret("");
-      setError("");
-      setSubmitting(false);
-      setConnected(null);
-    }
-  }, [open]);
-
   const submit = async () => {
     if (!channelToken.trim() || !agentId) return;
     setSubmitting(true);
@@ -829,7 +864,18 @@ function ConnectLINEDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      onOpenChangeComplete={(isOpen) => {
+        if (isOpen) return;
+        setChannelToken("");
+        setChannelSecret("");
+        setError("");
+        setSubmitting(false);
+        setConnected(null);
+      }}
+    >
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -962,7 +1008,6 @@ function ConnectWeChatDialog({
 }) {
   type WechatStatus = "wait" | "scaned" | "confirmed" | "expired" | "";
   const [qrPayload, setQrPayload] = useState("");
-  const [sessionId, setSessionId] = useState("");
   const [status, setStatus] = useState<WechatStatus>("");
   const [accountId, setAccountId] = useState("");
   const [error, setError] = useState("");
@@ -978,17 +1023,6 @@ function ConnectWeChatDialog({
 
   // 组件卸载和对话框关闭时清理轮询。
   useEffect(() => () => stopPolling(), [stopPolling]);
-  useEffect(() => {
-    if (!open) {
-      stopPolling();
-      setQrPayload("");
-      setSessionId("");
-      setStatus("");
-      setAccountId("");
-      setError("");
-      setLoading(false);
-    }
-  }, [open, stopPolling]);
 
   const startLogin = useCallback(async () => {
     if (!agentId) return;
@@ -1004,7 +1038,6 @@ function ConnectWeChatDialog({
       setError(res.error || "获取二维码失败");
       return;
     }
-    setSessionId(res.sessionId);
     setQrPayload(res.qrCodeImg);
     setStatus("wait");
     pollRef.current = setInterval(async () => {
@@ -1028,18 +1061,25 @@ function ConnectWeChatDialog({
     }, 3000);
   }, [agentId, onConnected, stopPolling]);
 
-  // 对话框打开时自动获取二维码（无需单独的"命名"步骤——
-  // bkcrab 不展示每账户名称，accountId 即 ilink_bot_id）。
-  useEffect(() => {
-    if (open && !qrPayload && !loading && !error) {
-      startLogin();
-    }
-  }, [open, qrPayload, loading, error, startLogin]);
-
   const connected = !!accountId;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      onOpenChangeComplete={(isOpen) => {
+        if (isOpen) {
+          if (!qrPayload && !loading && !error) void startLogin();
+          return;
+        }
+        stopPolling();
+        setQrPayload("");
+        setStatus("");
+        setAccountId("");
+        setError("");
+        setLoading(false);
+      }}
+    >
       <DialogContent className="sm:max-w-[420px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -1152,19 +1192,6 @@ function ConnectFeishuDialog({
     useLongConn: boolean;
   } | null>(null);
 
-  useEffect(() => {
-    if (!open) {
-      setAppId("");
-      setAppSecret("");
-      setVerificationToken("");
-      setEncryptKey("");
-      setUseLongConn(true);
-      setError("");
-      setSubmitting(false);
-      setConnected(null);
-    }
-  }, [open]);
-
   const submit = async () => {
     if (!appId.trim() || !appSecret.trim() || !agentId) return;
     setSubmitting(true);
@@ -1191,7 +1218,21 @@ function ConnectFeishuDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      onOpenChangeComplete={(isOpen) => {
+        if (isOpen) return;
+        setAppId("");
+        setAppSecret("");
+        setVerificationToken("");
+        setEncryptKey("");
+        setUseLongConn(true);
+        setError("");
+        setSubmitting(false);
+        setConnected(null);
+      }}
+    >
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">

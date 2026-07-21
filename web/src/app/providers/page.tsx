@@ -35,15 +35,25 @@ export default function ProvidersPage() {
   });
 
   const refresh = useCallback(async () => {
-    setError("");
     const r = await listProviders(scope, scopeId);
+    setError("");
     if (r.providers) setRows(r.providers);
     if (r.error) setError(r.error);
   }, [scope, scopeId]);
 
   useEffect(() => {
-    if (scope === "system" || scopeId) refresh();
-  }, [scope, scopeId, refresh]);
+    if (scope !== "system" && !scopeId) return;
+    let cancelled = false;
+    listProviders(scope, scopeId).then((r) => {
+      if (cancelled) return;
+      setError("");
+      if (r.providers) setRows(r.providers);
+      if (r.error) setError(r.error);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [scope, scopeId]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();

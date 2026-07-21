@@ -18,7 +18,6 @@ from app.office import OfficeLimits
 from app.pdf import PDFLimits
 from app.pdf_engine import (
     PDFEmbeddedImage,
-    PDFEngineCancelled,
     PDFPageAnalysis,
     PDFPageFailure,
     PDFPageRender,
@@ -117,9 +116,12 @@ class _FakePDFEngine:
     name = "fake-pdf-engine"
     version = "1.2.3"
 
-    def __init__(self) -> None:
+    def __init__(
+        self, expected_render_pages: tuple[int, ...] | None = None
+    ) -> None:
         self.analyze_calls = 0
         self.render_calls: list[tuple[int, ...]] = []
+        self.expected_render_pages = expected_render_pages
 
     def analyze(
         self,
@@ -166,6 +168,8 @@ class _FakePDFEngine:
         assert max_pages >= 2 and dpi == 144
         assert max_image_pixels > 0 and max_assets > 0 and max_asset_bytes > 0
         assert not cancelled()
+        if self.expected_render_pages is not None:
+            assert pages == self.expected_render_pages
         self.render_calls.append(pages)
         output_dir.mkdir(parents=True, exist_ok=True)
         values: list[PDFPageRender | PDFPageFailure] = []
@@ -246,21 +250,20 @@ def test_analyze_returns_native_and_primitive_without_page_renders(
     assert manifest.pages[1].error_code == "page_analyze_failed"
     primitive = json.loads(payloads[manifest.pages[0].primitive_entry])
     assert validate_page_primitive_document(primitive) == primitive
-    assert primitive["textChars"] == len("TOPSECRETnativetext")
+    assert primitive["textChars"] == len("TOP SECRET native text")
     assert b"TOP SECRET native text" in payloads[manifest.pages[0].native_markdown_entry]
     assert "TOP SECRET" not in caplog.text
     assert list(tmp_path.iterdir()) == []
 
 
 def test_render_uses_exact_allowlist_and_keeps_failed_page_explicit(tmp_path: Path) -> None:
-    engine = _FakePDFEngine()
+    engine = _FakePDFEngine(expected_render_pages=(1, 2))
     with TestClient(create_app(_settings(tmp_path), pdf_engine=engine)) as client:
         response = client.post(
             "/v1/pdf/render?pages=2,1",
             files={"file": ("source.pdf", _pdf_bytes(), "application/pdf")},
         )
     names, manifest, payloads = _bundle(response)
-    assert engine.render_calls == [(1, 2)]
     assert [page.page for page in manifest.pages] == [1, 2]
     assert [page.status for page in manifest.pages] == ["ok", "failed"]
     assert manifest.pages[0].render_entry in payloads
@@ -387,27 +390,44 @@ def test_real_engine_finds_and_safely_extracts_an_embedded_image(tmp_path: Path)
         assert extracted.width > 0 and extracted.height > 0
 
 
-class _CancellableEngine(_FakePDFEngine):
-    def analyze(self, *args, cancelled: Callable[[], bool], **kwargs):
-        while not cancelled():
+class _BlockingPDFEngine(_FakePDFEngine):
+    def __init__(self, heartbeat: Path) -> None:
+        super().__init__()
+        self.heartbeat = heartbeat
+
+    def analyze(self, *args, **kwargs):
+        while True:
+            with self.heartbeat.open("ab") as handle:
+                handle.write(b"x")
+                handle.flush()
             time.sleep(0.01)
-        raise PDFEngineCancelled
 
 
-def test_timeout_signals_engine_and_cleans_the_request_directory(tmp_path: Path) -> None:
+def test_timeout_terminates_engine_and_cleans_the_request_directory(tmp_path: Path) -> None:
+    runtime_temp = tmp_path / "runtime-temp"
+    runtime_temp.mkdir()
+    heartbeat = tmp_path / "pdf-worker-heartbeat"
+    started = time.monotonic()
     with TestClient(
         create_app(
-            _settings(tmp_path, parse_timeout_seconds=1),
-            pdf_engine=_CancellableEngine(),
+            _settings(runtime_temp, parse_timeout_seconds=5),
+            pdf_engine=_BlockingPDFEngine(heartbeat),
         )
     ) as client:
         response = client.post(
             "/v1/pdf/analyze",
             files={"file": ("source.pdf", _pdf_bytes(), "application/pdf")},
         )
+    elapsed = time.monotonic() - started
+
     assert response.status_code == 504
     assert response.json()["error"]["code"] == "parse_timeout"
-    assert list(tmp_path.iterdir()) == []
+    assert elapsed < 9
+    assert heartbeat.is_file()
+    heartbeat_size = heartbeat.stat().st_size
+    time.sleep(0.15)
+    assert heartbeat.stat().st_size == heartbeat_size
+    assert list(runtime_temp.iterdir()) == []
 
 
 def test_output_quota_is_checked_before_streaming_headers(tmp_path: Path) -> None:

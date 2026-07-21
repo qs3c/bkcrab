@@ -9,6 +9,7 @@ import { getAgent, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe
 import { findProducedFileAttachmentIndex, getChatHistoryRenderState, isInternalWorkspaceFile, splitToolTurnForRender } from "@/components/chat-screen-state";
 import { RAGResourceGallery } from "@/components/rag-resource-gallery";
 import { buildAgentSessionAssetURL, normalizeRAGResources } from "@/components/rag-resource-gallery-state";
+import { AgentMarkdownImage } from "@/components/rag-safe-render";
 import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, History } from "lucide-react";
 import Link from "next/link";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
@@ -224,8 +225,8 @@ function MarkdownTable(props: ComponentProps<"table"> & { node?: unknown }) {
 }
 
 // 所有聊天 ReactMarkdown 渲染点共用的组件覆盖：外链走 ExternalAnchor，
-// 表格走可横向滚动的 MarkdownTable。
-const MD_COMPONENTS = { a: ExternalAnchor, table: MarkdownTable };
+// 图片经过同源/内联安全边界，表格走可横向滚动的 MarkdownTable。
+const MD_COMPONENTS = { a: ExternalAnchor, img: AgentMarkdownImage, table: MarkdownTable };
 
 // 智能体发出的分词标记，用于请求多气泡回复——必须与
 // internal/channels/base.go 中的 channels.SplitMessageMarker 匹配。
@@ -2836,10 +2837,6 @@ function ChatHeaderTitle({ title, fallback, onSave }: ChatHeaderTitleProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!editing) setDraft(title);
-  }, [title, editing]);
 
   useEffect(() => {
     if (editing) inputRef.current?.select();

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
 import re
+import shutil
+import time
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -11,7 +14,7 @@ from xml.etree import ElementTree as ET
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import Settings, create_app
+from app.main import Settings, _ParserWork, _run_parser_operation, create_app
 from app.office import (
     DOC_REL_NS,
     REL_NS,
@@ -51,14 +54,18 @@ def _limits(**overrides: int) -> OfficeLimits:
     return OfficeLimits(**values)
 
 
-def _settings(temp_root: Path, max_input_bytes: int = 8 * 1024 * 1024) -> Settings:
+def _settings(
+    temp_root: Path,
+    max_input_bytes: int = 8 * 1024 * 1024,
+    parse_timeout_seconds: int = 30,
+) -> Settings:
     return Settings(
         service_version="office-test",
         max_input_bytes=max_input_bytes,
         max_output_bytes=64 * 1024 * 1024,
         max_entry_bytes=8 * 1024 * 1024,
         max_bundle_entries=1000,
-        parse_timeout_seconds=30,
+        parse_timeout_seconds=parse_timeout_seconds,
         temp_root=temp_root,
         office_limits=_limits(),
     )
@@ -83,6 +90,26 @@ class _StreamOnlyEngine:
 class _FakeConverter:
     def convert(self, _source: Path, source_format: str) -> str:
         return f"# Converted {source_format}\n"
+
+
+class _BlockingConverter:
+    def __init__(self, heartbeat: Path) -> None:
+        self.heartbeat = heartbeat
+
+    def convert(self, _source: Path, _source_format: str) -> str:
+        while True:
+            with self.heartbeat.open("ab") as handle:
+                handle.write(b"x")
+                handle.flush()
+            time.sleep(0.01)
+
+
+class _DisconnectWhenWorkerStarts:
+    def __init__(self, heartbeat: Path) -> None:
+        self.heartbeat = heartbeat
+
+    async def is_disconnected(self) -> bool:
+        return self.heartbeat.is_file()
 
 
 def _sha_size(path: Path) -> tuple[str, int]:
@@ -743,3 +770,72 @@ def test_endpoint_streams_manifest_first_and_cleans_request_directory(tmp_path: 
         manifest = Manifest.from_dict(json.load(archive.extractfile("manifest.json")))
         assert manifest.source.format == "docx"
     assert list(runtime_temp.iterdir()) == []
+
+
+def test_office_timeout_terminates_worker_and_cleans_request_directory(
+    tmp_path: Path,
+) -> None:
+    source = generate_all(tmp_path / "fixture-source")["docx"]
+    runtime_temp = tmp_path / "runtime-temp"
+    runtime_temp.mkdir()
+    heartbeat = tmp_path / "office-worker-heartbeat"
+    started = time.monotonic()
+    with TestClient(
+        create_app(
+            _settings(runtime_temp, parse_timeout_seconds=5),
+            _BlockingConverter(heartbeat),
+        )
+    ) as client:
+        response = client.post(
+            "/v1/office/convert?format=docx",
+            files={"file": ("input.docx", source.read_bytes(), MIME_TYPES["docx"])},
+        )
+    elapsed = time.monotonic() - started
+
+    assert response.status_code == 504
+    assert response.json()["error"]["code"] == "parse_timeout"
+    assert elapsed < 9
+    assert heartbeat.is_file()
+    heartbeat_size = heartbeat.stat().st_size
+    time.sleep(0.15)
+    assert heartbeat.stat().st_size == heartbeat_size
+    assert list(runtime_temp.iterdir()) == []
+
+
+def test_disconnect_terminates_parser_worker_with_bounded_cleanup(tmp_path: Path) -> None:
+    fixture = generate_all(tmp_path / "fixture-source")["docx"]
+    request_dir = tmp_path / "request-disconnect"
+    request_dir.mkdir()
+    source = request_dir / "source.docx"
+    source.write_bytes(fixture.read_bytes())
+    source_sha256, source_size = _sha_size(source)
+    heartbeat = tmp_path / "disconnect-worker-heartbeat"
+    work = _ParserWork(
+        operation="office",
+        source=source,
+        source_sha256=source_sha256,
+        source_size=source_size,
+        request_dir=request_dir,
+        source_format="docx",
+        office_limits=_limits(),
+        converter=_BlockingConverter(heartbeat),
+    )
+
+    started = time.monotonic()
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            _run_parser_operation(
+                _DisconnectWhenWorkerStarts(heartbeat),
+                30,
+                work,
+                OfficeError("parse_timeout", "Office conversion timed out", 504),
+            )
+        )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 9
+    heartbeat_size = heartbeat.stat().st_size
+    time.sleep(0.15)
+    assert heartbeat.stat().st_size == heartbeat_size
+    shutil.rmtree(request_dir)
+    assert not request_dir.exists()

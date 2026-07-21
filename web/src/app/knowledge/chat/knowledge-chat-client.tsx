@@ -15,9 +15,6 @@ import {
   Plus,
   Send,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-
 import {
   askKnowledgeBase,
   getKnowledgeBase,
@@ -27,8 +24,8 @@ import {
   type KnowledgeChatSession,
   type KnowledgeSearchHit,
 } from "@/lib/api";
-import { ExternalAnchor } from "@/components/markdown-link";
 import { RAGResourceGallery } from "@/components/rag-resource-gallery";
+import { RAGAnswerMarkdown } from "@/components/rag-safe-render";
 import {
   appendActAs,
   collectRAGResources,
@@ -64,19 +61,6 @@ function errorMessage(error: unknown, fallback: string): string {
 function newTurnID(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
-
-function IgnoredMarkdownImage({ alt }: React.ImgHTMLAttributes<HTMLImageElement>) {
-  return (
-    <span className="text-muted-foreground">
-      [已忽略回答中的外部图片{alt ? `：${alt}` : ""}]
-    </span>
-  );
-}
-
-const KNOWLEDGE_MARKDOWN_COMPONENTS = {
-  a: ExternalAnchor,
-  img: IgnoredMarkdownImage,
-};
 
 export default function KnowledgeChatClient() {
   const searchParams = useSearchParams();
@@ -330,14 +314,9 @@ export default function KnowledgeChatClient() {
                     ) : (
                       <>
                         <div className="prose prose-sm max-w-none text-[15px] leading-relaxed dark:prose-invert prose-p:my-1 prose-pre:my-2 prose-ul:my-1 prose-ol:my-1">
-                          <ReactMarkdown
-                            remarkPlugins={[remarkGfm]}
-                            components={KNOWLEDGE_MARKDOWN_COMPONENTS}
-                            urlTransform={safeRAGMarkdownURL}
-                            skipHtml
-                          >
+                          <RAGAnswerMarkdown urlTransform={safeRAGMarkdownURL}>
                             {turn.answer}
-                          </ReactMarkdown>
+                          </RAGAnswerMarkdown>
                         </div>
                         <RAGResourceGallery
                           resources={collectRAGResources(turn.hits)}

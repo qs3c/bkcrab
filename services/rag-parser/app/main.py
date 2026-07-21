@@ -3,18 +3,19 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import multiprocessing
 import os
 import re
 import shutil
 import tempfile
-import threading
 import time
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
+from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import uvicorn
 from fastapi import FastAPI, File, Query, Request, UploadFile
@@ -41,7 +42,10 @@ from .pdf_engine import (
     Pypdfium2PDFEngine,
 )
 from .protocol import (
+    Bundle,
     BundleLimits,
+    Manifest,
+    PayloadEntry,
     ProtocolError,
     env_positive_int,
     make_health_document,
@@ -57,11 +61,50 @@ OOXML_MAGIC = b"PK\x03\x04"
 PDF_MAGIC = b"%PDF-"
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 _DEFAULT_PDF_ENGINE = object()
+_PROCESS_POLL_SECONDS = 0.025
+_PROCESS_EXIT_GRACE_SECONDS = 0.25
+_PROCESS_KILL_GRACE_SECONDS = 0.25
 _OFFICE_MIME_TYPES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
+
+
+def _limit_from_canonical(
+    alias_name: str,
+    canonical_name: str,
+    default: int,
+    convert: Callable[[int], int],
+) -> int:
+    """Resolve one parser limit from the main service's canonical setting.
+
+    The legacy parser-specific variable remains accepted for standalone users.
+    Deployments may temporarily provide both names during an upgrade, but a
+    mismatch is a startup error instead of a silently divergent safety limit.
+    """
+    canonical_raw = os.getenv(canonical_name, "").strip()
+    alias_raw = os.getenv(alias_name, "").strip()
+    if not canonical_raw:
+        return env_positive_int(alias_name, default)
+
+    canonical_value = env_positive_int(canonical_name, 1)
+    expected = convert(canonical_value)
+    if expected <= 0:
+        raise RuntimeError(f"{canonical_name} produces a non-positive parser limit")
+    if alias_raw and env_positive_int(alias_name, default) != expected:
+        raise RuntimeError(
+            f"{alias_name} must match the limit derived from {canonical_name}"
+        )
+    return expected
+
+
+def _timeout_seconds_from_milliseconds(milliseconds: int) -> int:
+    # The gateway owns the millisecond-precision request deadline. The parser's
+    # internal watchdog is whole-second, so round up: it must never abort a
+    # request earlier merely because the canonical value is not divisible by
+    # one second.
+    return (milliseconds + 999) // 1000
 
 
 @dataclass(frozen=True)
@@ -78,9 +121,25 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
-        max_input = env_positive_int("RAG_PARSER_MAX_INPUT_BYTES", 50 * MIB)
-        max_output = env_positive_int("RAG_PARSER_MAX_OUTPUT_BYTES", 200 * MIB)
+        max_input = _limit_from_canonical(
+            "RAG_PARSER_MAX_INPUT_BYTES",
+            "BKCRAB_RAG_LIMITS_MAX_FILE_MB",
+            50 * MIB,
+            lambda megabytes: megabytes * MIB,
+        )
+        max_output = _limit_from_canonical(
+            "RAG_PARSER_MAX_OUTPUT_BYTES",
+            "BKCRAB_RAG_LIMITS_MAX_EXTRACTED_BYTES",
+            200 * MIB,
+            lambda value: value,
+        )
         max_entry = env_positive_int("RAG_PARSER_MAX_ENTRY_BYTES", 20 * MIB)
+        parse_timeout_seconds = _limit_from_canonical(
+            "RAG_PARSER_PARSE_TIMEOUT_SECONDS",
+            "BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS",
+            600,
+            _timeout_seconds_from_milliseconds,
+        )
         temp_root_value = os.getenv("RAG_PARSER_TEMP_ROOT", "").strip()
         temp_root = Path(temp_root_value).resolve() if temp_root_value else None
         return cls(
@@ -89,7 +148,7 @@ class Settings:
             max_output_bytes=max_output,
             max_entry_bytes=min(max_entry, max_output),
             max_bundle_entries=env_positive_int("RAG_PARSER_MAX_BUNDLE_ENTRIES", 1000),
-            parse_timeout_seconds=env_positive_int("RAG_PARSER_PARSE_TIMEOUT_SECONDS", 600),
+            parse_timeout_seconds=parse_timeout_seconds,
             temp_root=temp_root,
             office_limits=OfficeLimits(
                 max_archive_entries=env_positive_int(
@@ -122,6 +181,21 @@ class Settings:
                 ),
             ),
         )
+
+
+@dataclass(frozen=True)
+class _ParserWork:
+    operation: str
+    source: Path
+    source_sha256: str
+    source_size: int
+    request_dir: Path
+    source_format: str = ""
+    office_limits: OfficeLimits | None = None
+    pdf_limits: PDFLimits | None = None
+    converter: object | None = None
+    pdf_engine: object | None = None
+    requested_pages: tuple[int, ...] = ()
 
 
 def _request_id(request: Request) -> str:
@@ -212,31 +286,285 @@ def _validate_pdf_upload_metadata(upload: UploadFile) -> None:
         raise PDFError("mime_mismatch", "multipart Content-Type must be application/pdf", 400)
 
 
-async def _run_pdf_operation(
+def _build_parser_bundle(work: _ParserWork) -> Bundle:
+    if work.operation == "office":
+        if work.office_limits is None:
+            raise RuntimeError("Office parser work is missing limits")
+        preflight = preflight_ooxml(
+            work.source,
+            work.source_format,
+            work.request_dir,
+            work.office_limits,
+        )
+        active_converter = work.converter
+        if active_converter is None:
+            active_converter = MarkItDownConverter()
+        return build_office_bundle(
+            original_source=work.source,
+            sanitized_source=preflight.sanitized_path,
+            source_format=work.source_format,
+            source_sha256=work.source_sha256,
+            source_size=work.source_size,
+            request_dir=work.request_dir,
+            converter=active_converter,
+            limits=work.office_limits,
+            preflight_warnings=preflight.warnings,
+        )
+
+    if work.pdf_limits is None or not isinstance(work.pdf_engine, PDFEngine):
+        raise RuntimeError("PDF parser work is missing its engine or limits")
+    if work.operation == "pdf-analyze":
+        return build_pdf_analyze_bundle(
+            source=work.source,
+            source_sha256=work.source_sha256,
+            source_size=work.source_size,
+            request_dir=work.request_dir,
+            engine=work.pdf_engine,
+            limits=work.pdf_limits,
+            cancelled=lambda: False,
+        )
+    if work.operation == "pdf-render":
+        return build_pdf_render_bundle(
+            source=work.source,
+            source_sha256=work.source_sha256,
+            source_size=work.source_size,
+            request_dir=work.request_dir,
+            requested_pages=work.requested_pages,
+            engine=work.pdf_engine,
+            limits=work.pdf_limits,
+            cancelled=lambda: False,
+        )
+    raise RuntimeError("unsupported parser worker operation")
+
+
+def _payload_source_in_request(source: Path, request_dir: Path) -> Path:
+    try:
+        root = request_dir.resolve(strict=True)
+        resolved = source.resolve(strict=True)
+    except OSError as exc:
+        raise ProtocolError(
+            "invalid_worker_payload", "parser worker payload is missing"
+        ) from exc
+    if (
+        not resolved.is_relative_to(root)
+        or source.is_symlink()
+        or not resolved.is_file()
+    ):
+        raise ProtocolError(
+            "invalid_worker_payload", "parser worker payload escaped its request directory"
+        )
+    return resolved
+
+
+def _worker_bundle_result(bundle: Bundle, request_dir: Path) -> dict[str, Any]:
+    materialized_root = request_dir / "worker-payloads"
+    payloads: list[dict[str, str]] = []
+    for index, payload in enumerate(bundle.payloads):
+        source = payload.source_path
+        if source is None:
+            materialized_root.mkdir(mode=0o700, exist_ok=True)
+            source = materialized_root / f"{index:06d}.payload"
+            with payload.opener() as input_handle, source.open("xb") as output_handle:
+                shutil.copyfileobj(input_handle, output_handle, length=UPLOAD_CHUNK_SIZE)
+            source.chmod(0o600)
+            materialized = PayloadEntry.from_file(payload.path, payload.mime_type, source)
+            if materialized.descriptor() != payload.descriptor():
+                raise ProtocolError(
+                    "invalid_worker_payload",
+                    "materialized parser worker payload changed content",
+                )
+        resolved = _payload_source_in_request(source, request_dir)
+        payloads.append(
+            {
+                "path": payload.path,
+                "mimeType": payload.mime_type,
+                "source": str(resolved),
+            }
+        )
+    return {"ok": True, "manifest": bundle.manifest.to_dict(), "payloads": payloads}
+
+
+def _worker_error_result(exc: BaseException) -> dict[str, Any]:
+    if isinstance(exc, OfficeError):
+        kind = "office"
+        status_code = exc.status_code
+        code = exc.code
+        message = str(exc)
+    elif isinstance(exc, PDFError):
+        kind = "pdf"
+        status_code = exc.status_code
+        code = exc.code
+        message = str(exc)
+    elif isinstance(exc, PDFEngineError):
+        kind = "pdf-engine"
+        status_code = exc.status_code
+        code = exc.code
+        message = str(exc)
+    elif isinstance(exc, ProtocolError):
+        kind = "protocol"
+        status_code = 422
+        code = exc.code
+        message = str(exc)
+    else:
+        kind = "internal"
+        status_code = 500
+        code = "parser_worker_failed"
+        message = "parser worker failed"
+    return {
+        "ok": False,
+        "errorKind": kind,
+        "statusCode": status_code,
+        "code": code,
+        "message": message,
+    }
+
+
+def _parser_worker(connection: Connection, work: _ParserWork) -> None:
+    try:
+        result = _worker_bundle_result(_build_parser_bundle(work), work.request_dir)
+    except BaseException as exc:
+        result = _worker_error_result(exc)
+    try:
+        connection.send(result)
+    except (BrokenPipeError, EOFError, OSError):
+        pass
+    finally:
+        connection.close()
+
+
+def _worker_failure(operation: str) -> OfficeError | PDFError:
+    if operation == "office":
+        return OfficeError("parser_worker_failed", "Office parser worker failed", 500)
+    return PDFError("parser_worker_failed", "PDF parser worker failed", 500)
+
+
+def _raise_worker_error(result: dict[str, Any], operation: str) -> None:
+    kind = result.get("errorKind")
+    code = result.get("code")
+    message = result.get("message")
+    status_code = result.get("statusCode")
+    if (
+        not isinstance(kind, str)
+        or not isinstance(code, str)
+        or not isinstance(message, str)
+        or not isinstance(status_code, int)
+    ):
+        raise _worker_failure(operation)
+    if kind == "office":
+        raise OfficeError(code, message, status_code)
+    if kind == "pdf":
+        raise PDFError(code, message, status_code)
+    if kind == "pdf-engine":
+        raise PDFEngineError(code, message, status_code)
+    if kind == "protocol":
+        raise ProtocolError(code, message)
+    raise _worker_failure(operation)
+
+
+def _restore_worker_bundle(result: object, work: _ParserWork) -> Bundle:
+    if not isinstance(result, dict):
+        raise _worker_failure(work.operation)
+    if result.get("ok") is not True:
+        _raise_worker_error(result, work.operation)
+
+    manifest = Manifest.from_dict(result.get("manifest"))
+    raw_payloads = result.get("payloads")
+    if not isinstance(raw_payloads, list):
+        raise _worker_failure(work.operation)
+    payloads: list[PayloadEntry] = []
+    for raw_payload in raw_payloads:
+        if not isinstance(raw_payload, dict):
+            raise _worker_failure(work.operation)
+        path = raw_payload.get("path")
+        mime_type = raw_payload.get("mimeType")
+        source_value = raw_payload.get("source")
+        if not all(isinstance(value, str) for value in (path, mime_type, source_value)):
+            raise _worker_failure(work.operation)
+        source = _payload_source_in_request(Path(source_value), work.request_dir)
+        payloads.append(PayloadEntry.from_file(path, mime_type, source))
+    bundle = Bundle(
+        manifest=manifest,
+        payloads=tuple(payloads),
+        cleanup=lambda: shutil.rmtree(work.request_dir, ignore_errors=True),
+    )
+    if tuple(payload.descriptor() for payload in bundle.payloads) != manifest.entries:
+        bundle.close()
+        raise ProtocolError(
+            "entry_mismatch", "parser worker payload metadata does not match manifest entries"
+        )
+    return bundle
+
+
+def _reap_parser_worker(
+    process: multiprocessing.Process, *, terminate_first: bool
+) -> None:
+    if terminate_first and process.is_alive():
+        with suppress(OSError):
+            process.terminate()
+    process.join(_PROCESS_EXIT_GRACE_SECONDS)
+    if process.is_alive():
+        with suppress(OSError):
+            process.terminate()
+        process.join(_PROCESS_EXIT_GRACE_SECONDS)
+    if process.is_alive():
+        with suppress(OSError):
+            process.kill()
+        process.join(_PROCESS_KILL_GRACE_SECONDS)
+    if process.is_alive():
+        LOGGER.critical("parser worker could not be reaped name=%s", process.name)
+        return
+    process.close()
+
+
+async def _run_parser_operation(
     request: Request,
     timeout_seconds: int,
-    operation: Callable[[Callable[[], bool]], object],
-):
-    """Run PDFium with cooperative cancel checks at page/object boundaries."""
+    work: _ParserWork,
+    timeout_error: OfficeError | PDFError,
+) -> Bundle:
+    """Run blocking document parsing in a force-terminable spawned process."""
 
-    cancelled = threading.Event()
-    task = asyncio.create_task(asyncio.to_thread(operation, cancelled.is_set))
+    context = multiprocessing.get_context("spawn")
+    receive_connection, send_connection = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_parser_worker,
+        args=(send_connection, work),
+        name=f"rag-parser-{work.operation}",
+        daemon=True,
+    )
+    started = False
+    result_received = False
     deadline = asyncio.get_running_loop().time() + timeout_seconds
-    while True:
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            cancelled.set()
-            with suppress(Exception):
-                await task
-            raise PDFError("parse_timeout", "PDF operation timed out", 504)
-        done, _ = await asyncio.wait({task}, timeout=min(0.05, remaining))
-        if done:
-            return task.result()
-        if await request.is_disconnected():
-            cancelled.set()
-            with suppress(Exception):
-                await task
-            raise asyncio.CancelledError
+    try:
+        try:
+            process.start()
+            started = True
+        except BaseException as exc:
+            LOGGER.exception("could not start parser worker operation=%s", work.operation)
+            raise _worker_failure(work.operation) from exc
+        finally:
+            send_connection.close()
+
+        while True:
+            if receive_connection.poll():
+                try:
+                    result = receive_connection.recv()
+                except EOFError as exc:
+                    raise _worker_failure(work.operation) from exc
+                result_received = True
+                return _restore_worker_bundle(result, work)
+            if not process.is_alive():
+                raise _worker_failure(work.operation)
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise timeout_error
+            if await request.is_disconnected():
+                raise asyncio.CancelledError
+            await asyncio.sleep(min(_PROCESS_POLL_SECONDS, remaining))
+    finally:
+        receive_connection.close()
+        if started:
+            _reap_parser_worker(process, terminate_first=not result_received)
 
 
 def _approved_pdf_engine_or_none() -> PDFEngine | None:
@@ -332,34 +660,21 @@ def create_app(
                 request, file, original, runtime.max_input_bytes
             )
             await file.close()
-
-            def prepare_bundle():
-                preflight = preflight_ooxml(
-                    original,
-                    source_format,
-                    request_dir,
-                    runtime.office_limits,
-                )
-                active_converter = converter or MarkItDownConverter()
-                return build_office_bundle(
-                    original_source=original,
-                    sanitized_source=preflight.sanitized_path,
-                    source_format=source_format,
+            bundle = await _run_parser_operation(
+                request,
+                runtime.parse_timeout_seconds,
+                _ParserWork(
+                    operation="office",
+                    source=original,
                     source_sha256=source_sha256,
                     source_size=source_size,
                     request_dir=request_dir,
-                    converter=active_converter,
-                    limits=runtime.office_limits,
-                    preflight_warnings=preflight.warnings,
-                )
-
-            bundle = await asyncio.wait_for(
-                asyncio.to_thread(prepare_bundle),
-                timeout=runtime.parse_timeout_seconds,
+                    source_format=source_format,
+                    office_limits=runtime.office_limits,
+                    converter=converter,
+                ),
+                OfficeError("parse_timeout", "Office conversion timed out", 504),
             )
-        except TimeoutError as exc:
-            shutil.rmtree(request_dir, ignore_errors=True)
-            raise OfficeError("parse_timeout", "Office conversion timed out", 504) from exc
         except BaseException:
             shutil.rmtree(request_dir, ignore_errors=True)
             await file.close()
@@ -449,20 +764,19 @@ def create_app(
             original, source_sha256, source_size = await prepare_pdf_source(
                 request, file, request_dir
             )
-
-            def prepare(cancelled: Callable[[], bool]):
-                return build_pdf_analyze_bundle(
+            bundle = await _run_parser_operation(
+                request,
+                runtime.parse_timeout_seconds,
+                _ParserWork(
+                    operation="pdf-analyze",
                     source=original,
                     source_sha256=source_sha256,
                     source_size=source_size,
                     request_dir=request_dir,
-                    engine=active_pdf_engine,
-                    limits=runtime.pdf_limits,
-                    cancelled=cancelled,
-                )
-
-            bundle = await _run_pdf_operation(
-                request, runtime.parse_timeout_seconds, prepare
+                    pdf_limits=runtime.pdf_limits,
+                    pdf_engine=active_pdf_engine,
+                ),
+                PDFError("parse_timeout", "PDF operation timed out", 504),
             )
         except BaseException:
             shutil.rmtree(request_dir, ignore_errors=True)
@@ -494,21 +808,20 @@ def create_app(
             original, source_sha256, source_size = await prepare_pdf_source(
                 request, file, request_dir
             )
-
-            def prepare(cancelled: Callable[[], bool]):
-                return build_pdf_render_bundle(
+            bundle = await _run_parser_operation(
+                request,
+                runtime.parse_timeout_seconds,
+                _ParserWork(
+                    operation="pdf-render",
                     source=original,
                     source_sha256=source_sha256,
                     source_size=source_size,
                     request_dir=request_dir,
+                    pdf_limits=runtime.pdf_limits,
+                    pdf_engine=active_pdf_engine,
                     requested_pages=requested_pages,
-                    engine=active_pdf_engine,
-                    limits=runtime.pdf_limits,
-                    cancelled=cancelled,
-                )
-
-            bundle = await _run_pdf_operation(
-                request, runtime.parse_timeout_seconds, prepare
+                ),
+                PDFError("parse_timeout", "PDF operation timed out", 504),
             )
         except BaseException:
             shutil.rmtree(request_dir, ignore_errors=True)
