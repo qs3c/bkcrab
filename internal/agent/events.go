@@ -32,6 +32,26 @@ func ContextWithChatEvents(ctx context.Context, ch chan<- ChatEvent) context.Con
 	return context.WithValue(ctx, chatEventsKey{}, ch)
 }
 
+// assistantContentEvent builds the canonical final-content event shape used by
+// both regular and fallback delivery paths.
+func assistantContentEvent(content string, metadata map[string]any) ChatEvent {
+	data := map[string]any{"content": content}
+	if len(metadata) > 0 {
+		data["metadata"] = metadata
+	}
+	return ChatEvent{Type: "content", Data: data}
+}
+
+// emitAssistantMetadataEvent publishes metadata after a true provider stream
+// has already delivered the answer bytes. The empty content prevents clients
+// from duplicating the answer while making live SSE and history reload agree.
+func emitAssistantMetadataEvent(ctx context.Context, metadata map[string]any) {
+	if len(metadata) == 0 {
+		return
+	}
+	emitEvent(ctx, assistantContentEvent("", metadata))
+}
+
 // emitEvent 将一个事件分发给在 ctx 上注册的每个消费者：
 // - 持久接收器（session_events 表）- 分配一个使用的 seq
 // 重新连接客户端以删除重播事件

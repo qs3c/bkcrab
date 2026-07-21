@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	agenttools "github.com/qs3c/bkcrab/internal/agent/tools"
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -730,7 +732,48 @@ func TestSearchForAgentReturnsExplicitEmptyResult(t *testing.T) {
 		t.Fatalf("SearchForAgent returned error for empty results: %v", err)
 	}
 	const want = "未在授权的知识库中检索到相关内容。"
-	if got != want {
-		t.Fatalf("empty agent result = %q, want %q", got, want)
+	if got.Text != want {
+		t.Fatalf("empty agent result = %q, want %q", got.Text, want)
+	}
+	if len(got.Metadata) != 0 {
+		t.Fatalf("empty agent result unexpectedly has metadata: %#v", got.Metadata)
+	}
+}
+
+func TestAgentToolResultCarriesStableURLFreeResources(t *testing.T) {
+	location := document.SourceLocation{Kind: document.LocationPage, Index: 1, Label: "Page 1"}
+	hits := make([]Hit, 0, 8)
+	assetIDs := make([]string, 0, 8)
+	for i := 0; i < 8; i++ {
+		assetID := fmt.Sprintf("ast_%032x", i+1)
+		assetIDs = append(assetIDs, assetID)
+		hit := Hit{
+			KBID: "kb_manual", KBName: "Manual", DocID: "doc_manual", DocName: "manual.pdf",
+			ChunkIndex: i, SectionTitle: "Install", SourceLocation: location, Content: fmt.Sprintf("passage %d", i),
+			Assets: []document.AssetRef{{ID: assetID, Kind: document.AssetKindImage, Caption: fmt.Sprintf("figure %d", i), Location: location}},
+		}
+		if i == 1 {
+			// A repeated resource in a later final hit must not change the first
+			// occurrence's source or consume the display budget.
+			hit.Assets = append([]document.AssetRef{hits[0].Assets[0]}, hit.Assets...)
+		}
+		hits = append(hits, hit)
+	}
+
+	got := agentToolResult(hits)
+	if strings.Contains(got.Text, "ast_") || strings.Contains(got.Text, "://") {
+		t.Fatalf("model-visible RAG text leaked an asset identifier or URL: %q", got.Text)
+	}
+	var refs []RAGResourceRef
+	if err := json.Unmarshal(got.Metadata[agenttools.RAGResourcesMetadataKey], &refs); err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != maxAgentRAGResources {
+		t.Fatalf("resource count = %d, want %d", len(refs), maxAgentRAGResources)
+	}
+	for i, ref := range refs {
+		if ref.Asset.ID != assetIDs[i] || ref.KBID != "kb_manual" || ref.DocID != "doc_manual" || ref.ChunkIndex != i {
+			t.Fatalf("resource %d = %+v, want first-hit order and stable provenance", i, ref)
+		}
 	}
 }

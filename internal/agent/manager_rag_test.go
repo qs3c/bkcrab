@@ -14,8 +14,8 @@ type managerRAGStub struct {
 	calls int
 }
 
-func (*managerRAGStub) SearchForAgent(context.Context, string, []string, string, int) (string, error) {
-	return "", nil
+func (*managerRAGStub) SearchForAgent(context.Context, string, []string, string, int) (agenttools.ToolResult, error) {
+	return agenttools.ToolResult{}, nil
 }
 
 func (s *managerRAGStub) ResolveAgentKBs(context.Context, string, []string) []agenttools.RAGKBRef {

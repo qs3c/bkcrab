@@ -73,6 +73,11 @@ export interface RAGGalleryResource {
   sourceLocation?: RAGSourceLocationLike;
 }
 
+export type RAGAssetURLBuilder = (
+  assetID: string,
+  variant: RAGAssetVariant,
+) => string;
+
 export interface DocumentPollingLike {
   status?: string;
   progress?: { stage?: string };
@@ -402,6 +407,57 @@ export function collectRAGResources(
   return resources;
 }
 
+// Agent assistant metadata is persisted JSON and may come from an older
+// server or a partially migrated session. Normalize it at the rendering
+// boundary so malformed entries cannot break the chat screen, while keeping
+// the backend's stable first-reference ordering and six-resource cap.
+export function normalizeRAGResources(value: unknown): RAGGalleryResource[] {
+  if (!Array.isArray(value)) return [];
+
+  const resources: RAGGalleryResource[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") continue;
+    const candidate = raw as Record<string, unknown>;
+    const rawAsset = candidate.asset;
+    if (!rawAsset || typeof rawAsset !== "object") continue;
+    const asset = rawAsset as Record<string, unknown>;
+    const assetID = typeof asset.id === "string" ? asset.id.trim() : "";
+    const kbID = typeof candidate.kbId === "string" ? candidate.kbId.trim() : "";
+    const docID = typeof candidate.docId === "string" ? candidate.docId.trim() : "";
+    if (!assetID || !kbID || !docID || seen.has(assetID)) continue;
+    seen.add(assetID);
+
+    const pageNum = Number.isFinite(asset.pageNum) && Number(asset.pageNum) > 0
+      ? Number(asset.pageNum)
+      : undefined;
+    const assetLocation = usableLocation(asset.location as RAGSourceLocationLike | undefined);
+    const sourceLocation = usableLocation(candidate.sourceLocation as RAGSourceLocationLike | undefined)
+      || assetLocation;
+    resources.push({
+      asset: {
+        id: assetID,
+        kind: typeof asset.kind === "string" ? asset.kind : "image",
+        caption: typeof asset.caption === "string" ? asset.caption : "",
+        pageNum,
+        location: assetLocation,
+        width: Number.isFinite(asset.width) ? Number(asset.width) : undefined,
+        height: Number.isFinite(asset.height) ? Number(asset.height) : undefined,
+        mimeType: typeof asset.mimeType === "string" ? asset.mimeType : undefined,
+      },
+      kbId: kbID,
+      kbName: typeof candidate.kbName === "string" ? candidate.kbName : "",
+      docId: docID,
+      docName: typeof candidate.docName === "string" ? candidate.docName : "",
+      chunkIndex: Number.isFinite(candidate.chunkIndex) ? Number(candidate.chunkIndex) : 0,
+      sectionTitle: typeof candidate.sectionTitle === "string" ? candidate.sectionTitle : "",
+      sourceLocation,
+    });
+    if (resources.length >= MAX_RAG_GALLERY_RESOURCES) break;
+  }
+  return resources;
+}
+
 export function appendActAs(url: string, actAs: string | null | undefined): string {
   const userID = String(actAs || "").trim();
   if (!userID || /[?&]actAs=/.test(url)) return url;
@@ -420,6 +476,22 @@ export function buildOwnerAssetURL(
   if (!id) return "";
   const suffix = variant === "thumbnail" ? "/thumbnail" : "";
   return appendActAs(`/api/rag/assets/${encodeURIComponent(id)}${suffix}`, actAs);
+}
+
+export function buildAgentSessionAssetURL(
+  agentID: string,
+  sessionID: string,
+  assetID: string,
+  variant: RAGAssetVariant,
+  actAs?: string | null,
+): string {
+  const agent = String(agentID || "").trim();
+  const session = String(sessionID || "").trim();
+  const asset = String(assetID || "").trim();
+  if (!agent || !session || !asset) return "";
+  const suffix = variant === "thumbnail" ? "/thumbnail" : "";
+  const url = `/api/agents/${encodeURIComponent(agent)}/chat/${encodeURIComponent(session)}/rag-assets/${encodeURIComponent(asset)}${suffix}`;
+  return appendActAs(url, actAs);
 }
 
 export function markAssetUnavailable(

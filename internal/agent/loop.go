@@ -22,6 +22,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/memory"
 	"github.com/qs3c/bkcrab/internal/privacy"
 	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/rag"
 	"github.com/qs3c/bkcrab/internal/sandbox"
 	"github.com/qs3c/bkcrab/internal/scope"
 	"github.com/qs3c/bkcrab/internal/session"
@@ -829,6 +830,46 @@ func (a *Agent) emitContextUsage(ctx context.Context, usage provider.Usage, requ
 	}})
 }
 
+// providerRequestMessages removes application-only message metadata at the
+// provider boundary while retaining the original content parts, tool calls,
+// thinking data, and raw assistant bytes. In particular, RAG resource grants
+// are for the Web UI and must never become model history.
+func providerRequestMessages(messages []provider.Message) []provider.Message {
+	var detached []provider.Message
+	for index := range messages {
+		if len(messages[index].Metadata) == 0 {
+			continue
+		}
+		if detached == nil {
+			detached = append([]provider.Message(nil), messages...)
+		}
+		detached[index].Metadata = nil
+	}
+	if detached != nil {
+		return detached
+	}
+	return messages
+}
+
+type metadataStrippingProvider struct {
+	delegate provider.Provider
+}
+
+func (p metadataStrippingProvider) Chat(ctx context.Context, messages []provider.Message, toolDefs []provider.Tool, model string, maxTokens int, temperature float64) (*provider.Response, error) {
+	return p.delegate.Chat(ctx, providerRequestMessages(messages), toolDefs, model, maxTokens, temperature)
+}
+
+func (p metadataStrippingProvider) ChatStream(ctx context.Context, messages []provider.Message, toolDefs []provider.Tool, model string, maxTokens int, temperature float64) (*provider.StreamReader, error) {
+	return p.delegate.ChatStream(ctx, providerRequestMessages(messages), toolDefs, model, maxTokens, temperature)
+}
+
+func providerWithoutMessageMetadata(delegate provider.Provider) provider.Provider {
+	if delegate == nil {
+		return nil
+	}
+	return metadataStrippingProvider{delegate: delegate}
+}
+
 // StreamChatToResponse 是provider.Chat 的直接替代品
 // 通过管道将文本块实时传输到聊天事件通道
 // content_delta 事件。 Web UI 订阅者将每个增量附加到
@@ -846,7 +887,7 @@ func (a *Agent) emitContextUsage(ctx context.Context, usage provider.Usage, requ
 // 句柄消息路径。实际上不进行流式传输的提供商仍然可以工作
 // ——他们只是在完成时交付了一大块。
 func (a *Agent) streamChatToResponse(ctx context.Context, messages []provider.Message, tools []provider.Tool) (*provider.Response, error) {
-	sr, err := a.provider.ChatStream(ctx, messages, tools, a.model, a.maxTokens, a.temperature)
+	sr, err := a.provider.ChatStream(ctx, providerRequestMessages(messages), tools, a.model, a.maxTokens, a.temperature)
 	if err != nil {
 		return nil, err
 	}
@@ -944,7 +985,7 @@ func (a *Agent) compactionOptions(mode CompactMode, overhead []provider.Message,
 	return CompactOptions{
 		Mode:              mode,
 		Workspace:         a.homePath,
-		Provider:          a.provider,
+		Provider:          providerWithoutMessageMetadata(a.provider),
 		Model:             a.model,
 		ContextWindow:     a.contextWindow,
 		MaxOutputTokens:   a.maxTokens,
@@ -1016,7 +1057,7 @@ func (a *Agent) callLLMWithEmergencyRetry(
 	alreadyRetried bool,
 	call func([]provider.Message, []provider.Tool) (*provider.Response, error),
 ) (*provider.Response, []provider.Message, bool, error) {
-	resp, err := call(messages, callTools)
+	resp, err := call(providerRequestMessages(messages), callTools)
 	if err == nil || alreadyRetried || !isContextLimitError(err) {
 		return resp, messages, false, err
 	}
@@ -1026,7 +1067,7 @@ func (a *Agent) callLLMWithEmergencyRetry(
 		return resp, messages, false, err
 	}
 
-	resp, err = call(rebuilt, callTools)
+	resp, err = call(providerRequestMessages(rebuilt), callTools)
 	return resp, rebuilt, true, err
 }
 
@@ -2198,6 +2239,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 返回时的channels.SplitMessageMarker； manager.dispatchOutb​​ound
 	// 对其进行拆分 (AllowSplit=true) 或折叠为换行符。
 	var replyParts []string
+	ragResources := newTurnRAGResources(msg.Channel)
 
 	// lastUsage 保存本轮最近一次 LLM 调用报告的 token 用量，
 	// 用于在 "done" 事件上向前端汇报上下文占用百分比。仅在
@@ -2288,12 +2330,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			if toolsDisabledByLoop {
 				asst.Metadata = loopGuardMetadata(loopGuardTool)
 			}
+			asst.Metadata = ragResources.merge(asst.Metadata)
 			sess.Append(asst)
-			contentEvent := map[string]any{"content": resp.Content}
-			if asst.Metadata != nil {
-				contentEvent["metadata"] = asst.Metadata
-			}
-			emitEvent(ctx, ChatEvent{Type: "content", Data: contentEvent})
+			emitEvent(ctx, assistantContentEvent(resp.Content, asst.Metadata))
 			if resp.Content != "" {
 				replyParts = append(replyParts, resp.Content)
 			}
@@ -2461,7 +2500,8 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		for idx, r := range results {
 			totalToolCalls++
 			tc := resp.ToolCalls[idx]
-			resultContent, meta := extractToolMeta(r.result)
+			ragResources.add(r.toolName, r.err, r.metadata)
+			resultContent, meta := extractToolMeta(reg, r.toolName, r.result)
 
 			// 挂钩：AfterToolCall
 			a.hooks.Run(ctx, &HookContext{
@@ -2577,17 +2617,15 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		// 附有徽章。
 		finalContent = fmt.Sprintf("I've reached the maximum number of tool iterations (%d) and couldn't synthesize a final response. The work above represents what I gathered before hitting the limit.", a.maxToolIterations)
 	}
-	capMeta := iterationCapMetadata(a.maxToolIterations)
-	sess.Append(provider.Message{
+	capMeta := ragResources.merge(iterationCapMetadata(a.maxToolIterations))
+	finalMsg := provider.Message{
 		Role:      "assistant",
 		Content:   finalContent,
 		Metadata:  capMeta,
 		Timestamp: time.Now().UnixMilli(),
-	})
-	emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{
-		"content":  finalContent,
-		"metadata": capMeta,
-	}})
+	}
+	sess.Append(finalMsg)
+	emitEvent(ctx, assistantContentEvent(finalContent, capMeta))
 	if finalContent != "" {
 		replyParts = append(replyParts, finalContent)
 	}
@@ -2669,6 +2707,71 @@ func loopGuardMetadata(toolName string) map[string]any {
 		"loopGuardReached": true,
 		"loopGuardTool":    toolName,
 	}
+}
+
+const maxAssistantRAGResources = 6
+
+// turnRAGResources is deliberately turn-local. It accepts only registry-
+// validated metadata returned by successful rag_search calls and never scans
+// tool text. The executor restores concurrent results to model call order, so
+// insertion order here is also call order and each result's final-hit order.
+type turnRAGResources struct {
+	enabled bool
+	seen    map[string]struct{}
+	refs    []rag.RAGResourceRef
+}
+
+func newTurnRAGResources(channel string) *turnRAGResources {
+	return &turnRAGResources{enabled: channel == "web"}
+}
+
+func (resources *turnRAGResources) add(toolName string, resultErr error, metadata tools.ResultMetadata) {
+	if resources == nil || !resources.enabled || resultErr != nil || toolName != "rag_search" ||
+		len(resources.refs) >= maxAssistantRAGResources || len(metadata) == 0 {
+		return
+	}
+	raw, ok := metadata[tools.RAGResourcesMetadataKey]
+	if !ok || len(raw) == 0 {
+		return
+	}
+	var refs []rag.RAGResourceRef
+	if err := json.Unmarshal(raw, &refs); err != nil {
+		// The registry validator should make this unreachable. Fail closed if a
+		// future bridge violates that contract instead of surfacing partial data.
+		slog.Warn("rag_search metadata decode failed", "error", err)
+		return
+	}
+	if resources.seen == nil {
+		resources.seen = make(map[string]struct{}, len(refs))
+	}
+	for _, ref := range refs {
+		assetID := strings.TrimSpace(ref.Asset.ID)
+		if assetID == "" {
+			continue
+		}
+		if _, exists := resources.seen[assetID]; exists {
+			continue
+		}
+		resources.seen[assetID] = struct{}{}
+		resources.refs = append(resources.refs, ref)
+		if len(resources.refs) == maxAssistantRAGResources {
+			break
+		}
+	}
+}
+
+// merge returns a detached metadata map and never mutates an existing loop-
+// guard/iteration-cap map. RAGResourceRef values remain URL-free snapshots.
+func (resources *turnRAGResources) merge(metadata map[string]any) map[string]any {
+	if resources == nil || !resources.enabled || len(resources.refs) == 0 {
+		return metadata
+	}
+	merged := make(map[string]any, len(metadata)+1)
+	for key, value := range metadata {
+		merged[key] = value
+	}
+	merged[tools.RAGResourcesMetadataKey] = append([]rag.RAGResourceRef(nil), resources.refs...)
+	return merged
 }
 
 func appendToolLoopGuardMessages(ctx context.Context, sess *session.Session, messages []provider.Message, calls []provider.ToolCall, emitEvents bool) []provider.Message {
@@ -3096,6 +3199,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	totalToolCalls := 0
 	toolsDisabledByLoop := false
 	loopGuardTool := ""
+	ragResources := newTurnRAGResources(msg.Channel)
 
 	// ReAct 循环 - 使用 Chat 进行工具迭代
 	for i := 0; i < a.maxToolIterations; i++ {
@@ -3131,11 +3235,18 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			if toolsDisabledByLoop {
 				finalTools = nil
 			}
-			sr, err := a.provider.ChatStream(ctx, messages, finalTools, a.model, a.maxTokens, a.temperature)
+			var finalMetadata map[string]any
+			if toolsDisabledByLoop {
+				finalMetadata = loopGuardMetadata(loopGuardTool)
+			}
+			finalMetadata = ragResources.merge(finalMetadata)
+			sr, err := a.provider.ChatStream(ctx, providerRequestMessages(messages), finalTools, a.model, a.maxTokens, a.temperature)
 			if err != nil {
 				slog.Error("LLM stream failed, falling back", "agent", a.name, "error", err)
-				sess.Append(provider.Message{Role: "assistant", Content: resp.Content})
-				a.runPostTurn(ctx, msg, append(messages, provider.Message{Role: "assistant", Content: resp.Content}), totalToolCalls, chatterMem, anchor)
+				fallbackMsg := provider.Message{Role: "assistant", Content: resp.Content, Metadata: finalMetadata, Timestamp: time.Now().UnixMilli()}
+				sess.Append(fallbackMsg)
+				emitAssistantMetadataEvent(ctx, finalMetadata)
+				a.runPostTurn(ctx, msg, append(messages, fallbackMsg), totalToolCalls, chatterMem, anchor)
 				return a.stringStream(resp.Content)
 			}
 
@@ -3147,8 +3258,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			messagesAtTurnStart := messages
 			capturedToolCalls := totalToolCalls
 			capturedChatterMem := chatterMem
-			capturedLoopGuard := toolsDisabledByLoop
-			capturedLoopGuardTool := loopGuardTool
+			capturedFinalMetadata := finalMetadata
 			outCh := make(chan provider.StreamChunk, 64)
 			outReader := provider.NewStreamReader(outCh)
 			go func() {
@@ -3185,10 +3295,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 					}
 				}
 				a.meterTokens(ctx, sess.Key(), streamUsage)
-				msg := provider.Message{Role: "assistant", Content: full.String(), Thinking: thinking}
-				if capturedLoopGuard {
-					msg.Metadata = loopGuardMetadata(capturedLoopGuardTool)
-				}
+				msg := provider.Message{Role: "assistant", Content: full.String(), Thinking: thinking, Metadata: capturedFinalMetadata}
 				switch {
 				case len(rawAssistant) > 0:
 					// 提供者已经序列化了助手消息
@@ -3209,12 +3316,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 					}
 				}
 				sess.Append(msg)
-				if msg.Metadata != nil {
-					emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{
-						"content":  "",
-						"metadata": msg.Metadata,
-					}})
-				}
+				emitAssistantMetadataEvent(ctx, msg.Metadata)
 				// 现在助理消息是 Fire PostTurn
 				// 坚持下来了。自动持久 (memory.go) 落后
 				// 转弯后运行；没有这个调用流路径
@@ -3273,7 +3375,8 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 		for idx, r := range results {
 			tc := resp.ToolCalls[idx]
-			resultContent, meta := extractToolMeta(r.result)
+			ragResources.add(r.toolName, r.err, r.metadata)
+			resultContent, meta := extractToolMeta(reg, r.toolName, r.result)
 			a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterToolCall, ToolName: r.toolName, ToolResult: resultContent, Error: r.err, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID, GoalSessionKey: reg.GoalSessionKey(), IsPlanMode: isPlanMode(msg.Params), Source: msg.Source})
 
 			if r.err != nil {
@@ -3291,7 +3394,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	}
 
 	slog.Warn("max tool iterations reached — streaming forced final delivery", "agent", a.name, "max", a.maxToolIterations)
-	return a.streamFinalDeliveryAfterCap(ctx, msg, messages, sess, totalToolCalls, chatterMem, anchor)
+	return a.streamFinalDeliveryAfterCap(ctx, msg, messages, sess, totalToolCalls, chatterMem, anchor, ragResources)
 }
 
 // StreamFinalDeliveryAfterCap 使用工具运行一个额外的 ChatStream
@@ -3299,17 +3402,17 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 // 使用迭代上限元数据，以便聊天 UI 可以标记气泡。
 // 返回的 StreamReader 与正常的”最终
 // 上面的响应”分支，因此调用者不需要特殊情况。
-func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.InboundMessage, messages []provider.Message, sess *session.Session, toolCallCount int, chatterMem *Memory, anchor *turnAnchor) *provider.StreamReader {
-	capMeta := iterationCapMetadata(a.maxToolIterations)
+func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.InboundMessage, messages []provider.Message, sess *session.Session, toolCallCount int, chatterMem *Memory, anchor *turnAnchor, ragResources *turnRAGResources) *provider.StreamReader {
+	capMeta := ragResources.merge(iterationCapMetadata(a.maxToolIterations))
 	finalMessages := append(messages, capReachedNudge(a.maxToolIterations))
-	sr, err := a.provider.ChatStream(ctx, finalMessages, nil, a.model, a.maxTokens, a.temperature)
+	sr, err := a.provider.ChatStream(ctx, providerRequestMessages(finalMessages), nil, a.model, a.maxTokens, a.temperature)
 	if err != nil {
 		// 流端点失败 - 持久+发出后备线
 		// 带有徽章，以便用户仍然收到信号。
 		fallback := fmt.Sprintf("I've reached the maximum number of tool iterations (%d) and couldn't synthesize a final response. The work above represents what I gathered before hitting the limit.", a.maxToolIterations)
 		fallbackMsg := provider.Message{Role: "assistant", Content: fallback, Metadata: capMeta, Timestamp: time.Now().UnixMilli()}
 		sess.Append(fallbackMsg)
-		emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{"content": fallback, "metadata": capMeta}})
+		emitEvent(ctx, assistantContentEvent(fallback, capMeta))
 		a.runPostTurn(ctx, inboundMsg, append(messages, fallbackMsg), toolCallCount, chatterMem, anchor)
 		return a.stringStream(fallback)
 	}
@@ -3377,10 +3480,7 @@ func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.
 		// 带外内容事件，因此 SSE 订阅者 + chat_events
 		// 存档带有已达到上限的标志 - 块本身没有
 		// 有一个元数据字段，所以我们在这里发布一次。
-		emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{
-			"content":  "",
-			"metadata": capMeta,
-		}})
+		emitAssistantMetadataEvent(ctx, capMeta)
 		// Fire PostTurn so AutoPersist（以及任何未来的 PostTurn 挂钩）
 		// 也在流路径上运行 - 请参阅 no-tool-calls
 		// HandleMessageStream 中的分支以了解其基本原理。
@@ -3389,12 +3489,21 @@ func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.
 	return outReader
 }
 
-// extractToolMeta 从工具结果中去除 FC_META 前缀（如果存在），并
-// 返回剩余内容加上解析的元数据。今天唯一
-// signal 是 exec 是否在沙箱中运行。让助手保持共享
-// 工具-结果切换路径向前端发出相同的形状。
-func extractToolMeta(result string) (string, map[string]any) {
-	if strings.HasPrefix(result, tools.MetaSandboxPrefix) {
+var sandboxMetadataBuiltins = map[string]struct{}{
+	"exec":        {},
+	"read_file":   {},
+	"write_file":  {},
+	"list_dir":    {},
+	"edit_file":   {},
+	"apply_patch": {},
+}
+
+// extractToolMeta preserves the legacy sandbox marker only for the exact
+// trusted builtins that produce it. Arbitrary builtin, MCP, plugin, and
+// rag_search text is data even when it begins with the same bytes.
+func extractToolMeta(reg *tools.Registry, toolName, result string) (string, map[string]any) {
+	_, allowed := sandboxMetadataBuiltins[toolName]
+	if allowed && reg != nil && reg.HasBuiltin(toolName) && strings.HasPrefix(result, tools.MetaSandboxPrefix) {
 		return strings.TrimPrefix(result, tools.MetaSandboxPrefix), map[string]any{"sandbox": true}
 	}
 	return result, nil

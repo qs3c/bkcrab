@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 
 const {
   appendActAs,
+  buildAgentSessionAssetURL,
   availableUploadExtensions,
   buildOwnerAssetURL,
   buildKnowledgeBasePayload,
@@ -22,6 +23,7 @@ const {
   getRAGOptInDisclosure,
   isAutoAvailable,
   markAssetUnavailable,
+  normalizeRAGResources,
   pdfAutoBehavior,
   safeRAGMarkdownURL,
   shouldApplyDocumentLoad,
@@ -305,6 +307,59 @@ test("builds encoded same-origin owner URLs and preserves encoded admin actAs", 
   );
 });
 
+test("normalizes persisted agent resources and builds session-scoped asset URLs", () => {
+  const resources = normalizeRAGResources([
+    {
+      asset: { id: "ast_1", kind: "diagram", caption: "first" },
+      kbId: "kb-1",
+      kbName: "Knowledge",
+      docId: "doc-1",
+      docName: "one.pdf",
+      chunkIndex: 2,
+      sectionTitle: "Architecture",
+      sourceLocation: { kind: "page", index: 3, label: "第 3 页" },
+    },
+    {
+      asset: { id: "ast_1", kind: "diagram", caption: "duplicate" },
+      kbId: "kb-1",
+      docId: "doc-1",
+      docName: "one.pdf",
+      chunkIndex: 4,
+    },
+    ...Array.from({ length: 7 }, (_, index) => ({
+      asset: { id: `ast_${index + 2}`, kind: "image" },
+      kbId: "kb-1",
+      docId: `doc-${index + 2}`,
+      docName: `${index + 2}.pdf`,
+      chunkIndex: index,
+    })),
+    { asset: { id: "" }, kbId: "kb-1", docId: "doc-bad" },
+    { asset: { id: "ast_bad" }, kbId: "", docId: "doc-bad" },
+  ]);
+
+  assert.deepEqual(resources.map((resource) => resource.asset.id), [
+    "ast_1",
+    "ast_2",
+    "ast_3",
+    "ast_4",
+    "ast_5",
+    "ast_6",
+  ]);
+  assert.equal(resources[0].asset.caption, "first");
+  assert.equal(resources[0].sourceLocation.label, "第 3 页");
+  assert.deepEqual(normalizeRAGResources("not-an-array"), []);
+
+  assert.equal(
+    buildAgentSessionAssetURL("agent/a?#", "session +/一", "asset/a?#", "thumbnail", "user +/一"),
+    "/api/agents/agent%2Fa%3F%23/chat/session%20%2B%2F%E4%B8%80/rag-assets/asset%2Fa%3F%23/thumbnail?actAs=user%20%2B%2F%E4%B8%80",
+  );
+  assert.equal(
+    buildAgentSessionAssetURL("agent-1", "session-1", "asset-1", "display"),
+    "/api/agents/agent-1/chat/session-1/rag-assets/asset-1",
+  );
+  assert.equal(buildAgentSessionAssetURL("", "session-1", "asset-1", "display"), "");
+});
+
 test("tracks unavailable images without mutating other gallery state", () => {
   const first = markAssetUnavailable([], "asset-2");
   const second = markAssetUnavailable(first, "asset-2");
@@ -329,16 +384,20 @@ test("formats source locations as text and rejects dangerous markdown URLs", () 
 });
 
 test("RAG renderers keep raw HTML disabled and captions out of markdown", async () => {
-  const [chat, gallery, knowledgePage] = await Promise.all([
+  const [chat, gallery, knowledgePage, agentChat] = await Promise.all([
     readFile(new URL("../app/knowledge/chat/knowledge-chat-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("./rag-resource-gallery.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/knowledge/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("./chat-screen.tsx", import.meta.url), "utf8"),
   ]);
   for (const source of [chat, gallery]) {
     assert.doesNotMatch(source, /dangerouslySetInnerHTML/);
     assert.doesNotMatch(source, /rehypeRaw/);
   }
   assert.match(chat, /skipHtml/);
+  assert.match(gallery, /assetURLBuilder/);
+  assert.match(agentChat, /buildAgentSessionAssetURL/);
+  assert.match(agentChat, /normalizeRAGResources/);
   assert.doesNotMatch(gallery, /ReactMarkdown/);
   assert.match(knowledgePage, /const payload = buildKnowledgeBasePayload\(/);
   assert.match(knowledgePage, /getRAGCapabilityRows\(capabilities\)/);

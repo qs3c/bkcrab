@@ -224,6 +224,8 @@ func (s *Server) registerRAGRoutes(mux *http.ServeMux, auth func(http.HandlerFun
 	mux.HandleFunc("GET /api/rag/capabilities", auth(s.handleRAGCapabilities))
 	mux.HandleFunc("GET /api/rag/assets/{assetId}", auth(s.handleRAGAsset))
 	mux.HandleFunc("GET /api/rag/assets/{assetId}/thumbnail", auth(s.handleRAGAssetThumbnail))
+	mux.HandleFunc("GET /api/agents/{agentId}/chat/{sessionId}/rag-assets/{assetId}", auth(s.handleAgentRAGAsset))
+	mux.HandleFunc("GET /api/agents/{agentId}/chat/{sessionId}/rag-assets/{assetId}/thumbnail", auth(s.handleAgentRAGAssetThumbnail))
 	mux.HandleFunc("GET /api/rag/kbs", auth(s.handleListRAGKBs))
 	mux.HandleFunc("POST /api/rag/kbs", auth(s.handleCreateRAGKB))
 	mux.HandleFunc("GET /api/rag/kbs/{id}", auth(s.handleGetRAGKB))

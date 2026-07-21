@@ -8,6 +8,7 @@ import {
   buildOwnerAssetURL,
   formatSourceLocation,
   markAssetUnavailable,
+  type RAGAssetURLBuilder,
   type RAGGalleryResource,
 } from "@/components/rag-resource-gallery-state";
 import {
@@ -22,6 +23,7 @@ import { cn } from "@/lib/utils";
 export interface RAGResourceGalleryProps {
   resources: readonly RAGGalleryResource[];
   actAs?: string;
+  assetURLBuilder?: RAGAssetURLBuilder;
   title?: string;
   compact?: boolean;
   showDisclosure?: boolean;
@@ -31,6 +33,7 @@ export interface RAGResourceGalleryProps {
 export function RAGResourceGallery({
   resources,
   actAs = "",
+  assetURLBuilder,
   title = "相关图片（来自检索资料）",
   compact = false,
   showDisclosure = false,
@@ -39,6 +42,8 @@ export function RAGResourceGallery({
   const [selectedAssetID, setSelectedAssetID] = React.useState("");
   const [unavailableAssetIDs, setUnavailableAssetIDs] = React.useState<string[]>([]);
   const selected = resources.find((resource) => resource.asset.id === selectedAssetID);
+  const assetURL = assetURLBuilder
+    || ((assetID: string, variant: "display" | "thumbnail") => buildOwnerAssetURL(assetID, variant, actAs));
 
   if (resources.length === 0) return null;
 
@@ -90,7 +95,7 @@ export function RAGResourceGallery({
                 ) : (
                   <>
                     <Image
-                      src={buildOwnerAssetURL(resource.asset.id, "thumbnail", actAs)}
+                      src={assetURL(resource.asset.id, "thumbnail")}
                       alt={caption || `${resource.docName || "文档"}中的相关图片`}
                       fill
                       unoptimized
@@ -152,7 +157,7 @@ export function RAGResourceGallery({
                 </div>
               ) : (
                 <Image
-                  src={buildOwnerAssetURL(selected.asset.id, "display", actAs)}
+                  src={assetURL(selected.asset.id, "display")}
                   alt={selected.asset.caption || `${selected.docName || "文档"}中的相关图片`}
                   fill
                   unoptimized

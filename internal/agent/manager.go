@@ -110,7 +110,7 @@ func WithSkillsLearner(cfg config.SkillsLearnerCfg) ManagerOption {
 // RAGService is the subset of the platform RAG service needed while building
 // an agent. Keeping this interface here avoids coupling agent to rag.Service.
 type RAGService interface {
-	SearchForAgent(ctx context.Context, ownerID string, kbIDs []string, query string, topN int) (string, error)
+	SearchForAgent(ctx context.Context, ownerID string, kbIDs []string, query string, topN int) (tools.ToolResult, error)
 	ResolveAgentKBs(ctx context.Context, ownerID string, kbIDs []string) []tools.RAGKBRef
 }
 

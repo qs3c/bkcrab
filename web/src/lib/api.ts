@@ -1021,6 +1021,10 @@ export async function steerChat(
 
 export interface ToolResultMetadata {
   sandbox?: boolean;
+  // Out-of-band resources selected by trusted rag_search results. The
+  // metadata stores stable references only; each UI surface constructs its
+  // own authenticated URL at render time.
+  ragResources?: RAGResourceRef[];
   // 标记在按轮工具迭代上限触发时后端发出的强制最终交付助手消息上。
   // 让 UI 显示一个小标记，以便用户知道答案是在预算限制下生成的，
   // 可能不完整。
@@ -1421,6 +1425,17 @@ export interface RAGAssetRef {
   width?: number;
   height?: number;
   mimeType?: string;
+}
+
+export interface RAGResourceRef {
+  asset: RAGAssetRef;
+  kbId: string;
+  kbName: string;
+  docId: string;
+  docName: string;
+  chunkIndex: number;
+  sectionTitle?: string;
+  sourceLocation?: RAGSourceLocation;
 }
 
 export interface KnowledgeBase {
