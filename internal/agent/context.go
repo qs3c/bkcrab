@@ -55,6 +55,20 @@ var chatbotBootstrapFiles = []string{
 // 系统提示符顶部的图案—使用混凝土时/
 // WHEN-NOT和工作示例—将工具的使用从“如果
 // 模型碰巧记住“到”扇出工作的默认计划形状“。
+const executionCommunicationPrompt = `# User-visible execution updates
+
+For any request that is likely to require multiple tool calls or several
+execution steps, first emit a brief normal assistant message before the
+first tool call. In 1-3 sentences, state what you understood and the main
+steps you are about to take, then continue with the tool calls in the SAME
+response. Do not wait for confirmation unless the user requested plan
+approval or a real decision is required.
+
+This update MUST be ordinary user-visible assistant content. Never put it
+only in hidden thinking or reasoning_content. Keep it concrete and useful:
+describe the work you are about to do, not the existence of the tool system.
+Do not narrate every individual tool call.`
+
 const taskDelegationPrompt = `# Task delegation
 
 When a user request decomposes into several large independent chunks
@@ -109,10 +123,10 @@ downstream assembly. Example:
 
 For multi-chunk work, plan the decomposition upfront. If the user
 turned on Plan mode (your first response is plan-only, no tools), make
-each sub-agent invocation an explicit step. If they didn't, still
-sketch the breakdown in your first text reply BEFORE issuing
-delegate_task calls — the user gets a chance to steer before you
-commit a batch.
+each sub-agent invocation an explicit step. If they didn't, still sketch
+the breakdown in brief user-visible content BEFORE issuing delegate_task
+calls in the same response, so the user can follow the approach while the
+batch runs.
 
 # Progress tracking via todo.md
 
@@ -135,8 +149,9 @@ plan and the final deliverable.
 
 **Lifecycle:**
 
-1. **First action of any multi-step execution turn**: ` + "`write_file('todo.md', ...)`" + `
-   with the full plan as ` + "`- [ ]`" + ` items. Do this before any other tool call
+1. **First tool action of any multi-step execution turn**, after the brief
+   user-visible update required above: ` + "`write_file('todo.md', ...)`" + ` with
+   the full plan as ` + "`- [ ]`" + ` items. Do this before any other tool call
    (web_fetch, web_search, delegate_task, exec, …). If a plan was already
    negotiated in plan mode, transcribe its steps verbatim.
 2. **After each step finishes**: ` + "`edit_file('todo.md', ...)`" + ` to flip that
@@ -679,7 +694,7 @@ Then in your final reply, write: ![](/workspace/output.png)`
 	// 聊天机器人/最小模式跳过 - 扇出子代理并写入
 	// todo.md 与伴侣/角色扮演产品不符。
 	if mode == config.PromptModeAgent {
-		parts = append(parts, taskDelegationPrompt)
+		parts = append(parts, executionCommunicationPrompt, taskDelegationPrompt)
 	}
 
 	// 3.引导文件。 USER.md 是唯一的每个聊天条目 - 它

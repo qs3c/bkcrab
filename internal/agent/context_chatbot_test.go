@@ -107,6 +107,7 @@ func TestChatbotPrompt_EmptyChatter(t *testing.T) {
 	mustNotContain(t, prompt, "you MUST call write_file")
 	mustNotContain(t, prompt, "write_file('USER.md")
 	mustNotContain(t, prompt, "edit_file('USER.md")
+	mustNotContain(t, prompt, "# User-visible execution updates")
 
 	// SOUL.md owner-fallback overlay should bring the owner's row to the
 	// chatter view.
@@ -186,6 +187,10 @@ func TestAgentMode_NoChatbotPersistenceInstructions(t *testing.T) {
 
 	mustNotContain(t, prompt, "Remembering things across conversations")
 	mustNotContain(t, prompt, "You CAN remember chatters across sessions")
+	mustContain(t, prompt, "# User-visible execution updates")
+	mustContain(t, prompt, "ordinary user-visible assistant content")
+	mustContain(t, prompt, "first tool call")
+	mustContain(t, prompt, "in the SAME")
 }
 
 func TestChatbotPrompt_MemoryRenderedThroughManager(t *testing.T) {
