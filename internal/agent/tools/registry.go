@@ -555,7 +555,7 @@ func (r *Registry) GoalSessionKey() string { return r.goalSessionKey }
 
 type registeredTool struct {
 	def    provider.Tool
-	fn     ToolFunc
+	fn     ResultHandler
 	source ToolSource
 }
 
@@ -665,6 +665,18 @@ func (r *Registry) Register(name, description string, parameters interface{}, fn
 // RegisterFrom 将一个具有显式来源的工具添加到注册表中。
 // 插件源工具可以覆盖同名的内置工具。
 func (r *Registry) RegisterFrom(name, description string, parameters interface{}, fn ToolFunc, source ToolSource) {
+	r.RegisterResultFrom(name, description, parameters, resultHandlerFromToolFunc(fn), source)
+}
+
+// RegisterResult adds a typed-result tool as a builtin. Metadata returned by
+// the raw handler is still subject to the registry's producer-specific
+// validator before any accessor can observe it.
+func (r *Registry) RegisterResult(name, description string, parameters interface{}, fn ResultHandler) {
+	r.RegisterResultFrom(name, description, parameters, fn, SourceBuiltin)
+}
+
+// RegisterResultFrom is RegisterResult with an explicit producer source.
+func (r *Registry) RegisterResultFrom(name, description string, parameters interface{}, fn ResultHandler, source ToolSource) {
 	r.tools[name] = registeredTool{
 		def: provider.Tool{
 			Type: "function",
@@ -717,11 +729,37 @@ func (r *Registry) HasBuiltin(name string) bool {
 
 // GetFunc 按名称返回工具的 ToolFunc，如果未找到则返回 nil。
 func (r *Registry) GetFunc(name string) ToolFunc {
-	t, ok := r.tools[name]
-	if !ok {
+	fn := r.GetResultFunc(name)
+	if fn == nil {
 		return nil
 	}
-	return t.fn
+	return func(ctx context.Context, args json.RawMessage) (string, error) {
+		result, err := fn(ctx, args)
+		return result.Text, err
+	}
+}
+
+// GetResultFunc returns a validator-wrapped typed handler. The raw registered
+// handler never escapes the registry, so this accessor and ExecuteResult have
+// identical trust-boundary semantics.
+func (r *Registry) GetResultFunc(name string) ResultHandler {
+	t, ok := r.tools[name]
+	if !ok || t.fn == nil {
+		return nil
+	}
+	raw := t.fn
+	source := t.source
+	return func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+		result, err := raw(ctx, args)
+		if err != nil {
+			// Error results are never metadata-bearing, even if a buggy producer
+			// populated the field alongside a partial text result.
+			result.Metadata = nil
+			return result, err
+		}
+		result.Metadata = validateResultMetadata(name, source, result.Metadata)
+		return result, nil
+	}
 }
 
 // 定义返回 LLM 的所有工具定义。
@@ -839,16 +877,28 @@ func (r *Registry) DefinitionsForMode(builtinAllow []string) []provider.Tool {
 
 // 执行按名称和给定参数运行工具。
 func (r *Registry) Execute(ctx context.Context, name string, args string) (string, error) {
-	tool, ok := r.tools[name]
-	if !ok {
+	fn := r.GetResultFunc(name)
+	if fn == nil {
+		// Preserve the legacy unknown-tool behavior: the retry suffix belongs
+		// only to an error returned by a registered handler.
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
-
-	result, err := tool.fn(ctx, json.RawMessage(args))
+	result, err := fn(ctx, json.RawMessage(args))
 	if err != nil {
-		return result + "\n[Analyze the error above and try a different approach.]", err
+		return result.Text + "\n[Analyze the error above and try a different approach.]", err
 	}
-	return result, nil
+	return result.Text, nil
+}
+
+// ExecuteResult executes a tool through the same validator-wrapped path as
+// GetResultFunc. It intentionally does not add Execute's legacy error suffix;
+// callers that need the typed result decide how to render errors.
+func (r *Registry) ExecuteResult(ctx context.Context, name string, args string) (ToolResult, error) {
+	fn := r.GetResultFunc(name)
+	if fn == nil {
+		return ToolResult{}, fmt.Errorf("unknown tool: %s", name)
+	}
+	return fn(ctx, json.RawMessage(args))
 }
 
 // SetSandboxConfig 更新了 exec 工具以使用沙箱模式。
