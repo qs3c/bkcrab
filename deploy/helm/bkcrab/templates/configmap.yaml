@@ -9,6 +9,45 @@ data:
   BKCRAB_BIND: "all"
   BKCRAB_STORAGE_TYPE: {{ include "bkcrab.storageType" . | quote }}
   BKCRAB_STORAGE_AUTO_MIGRATE: "true"
+  {{- if .Values.rag.enabled }}
+
+  ## RAG 基础服务与独立 feature gates
+  BKCRAB_RAG_MILVUS_ADDRESS: {{ .Values.rag.milvus.address | quote }}
+  BKCRAB_RAG_EMBEDDING_ENDPOINT: {{ .Values.rag.embedding.endpoint | quote }}
+  BKCRAB_RAG_EMBEDDING_MODEL: {{ .Values.rag.embedding.model | quote }}
+  BKCRAB_RAG_EMBEDDING_DIMS: {{ .Values.rag.embedding.dims | quote }}
+  BKCRAB_RAG_RERANKER_ENABLED: {{ .Values.rag.reranker.enabled | quote }}
+  BKCRAB_RAG_RERANKER_ENDPOINT: {{ .Values.rag.reranker.endpoint | quote }}
+  BKCRAB_RAG_RERANKER_MODEL: {{ .Values.rag.reranker.model | quote }}
+  BKCRAB_RAG_RERANKER_TIMEOUT_MS: {{ .Values.rag.reranker.timeoutMS | quote }}
+  BKCRAB_RAG_RERANKER_CANDIDATE_TOP_K: {{ .Values.rag.reranker.candidateTopK | quote }}
+  BKCRAB_RAG_RERANKER_MIN_SCORE: {{ .Values.rag.reranker.minScore | quote }}
+  BKCRAB_RAG_ADVANCED_ENABLED: {{ .Values.rag.advancedEnabled | quote }}
+  BKCRAB_RAG_OFFICE_ENABLED: {{ .Values.rag.officeEnabled | quote }}
+  BKCRAB_RAG_ENRICHMENT_ENABLED: {{ .Values.rag.enrichmentEnabled | quote }}
+  {{- if .Values.rag.parser.enabled }}
+  BKCRAB_RAG_PARSER_ENDPOINT: {{ printf "http://%s-rag-parser:%v" (include "bkcrab.fullname" .) .Values.rag.parser.port | quote }}
+  BKCRAB_RAG_PARSER_TIMEOUT_MS: {{ .Values.rag.limits.parseTimeoutMS | quote }}
+  {{- end }}
+
+  ## DocumentAI 非 secret 配置；API key 只通过 Secret 注入 gateway。
+  BKCRAB_RAG_DOCUMENT_AI_API_TYPE: {{ .Values.rag.documentAI.apiType | quote }}
+  BKCRAB_RAG_DOCUMENT_AI_ENDPOINT: {{ .Values.rag.documentAI.endpoint | quote }}
+  BKCRAB_RAG_DOCUMENT_AI_VISION_MODEL: {{ .Values.rag.documentAI.visionModel | quote }}
+  BKCRAB_RAG_DOCUMENT_AI_TEXT_MODEL: {{ .Values.rag.documentAI.textModel | quote }}
+  BKCRAB_RAG_DOCUMENT_AI_ALLOWED_ENDPOINT_HOSTS: {{ .Values.rag.documentAI.allowedEndpointHosts | quote }}
+  BKCRAB_RAG_DOCUMENT_AI_ALLOW_PRIVATE_ENDPOINT: {{ .Values.rag.documentAI.allowPrivateEndpoint | quote }}
+
+  ## Gateway 与 parser 共用的运行时限制来源。
+  BKCRAB_RAG_LIMITS_MAX_FILE_MB: {{ .Values.rag.limits.maxFileMB | quote }}
+  BKCRAB_RAG_LIMITS_MAX_PAGES_PER_DOCUMENT: {{ .Values.rag.limits.maxPagesPerDocument | quote }}
+  BKCRAB_RAG_LIMITS_MAX_ASSETS_PER_DOCUMENT: {{ .Values.rag.limits.maxAssetsPerDocument | quote }}
+  BKCRAB_RAG_LIMITS_MAX_ASSET_BYTES: {{ .Values.rag.limits.maxAssetBytes | quote }}
+  BKCRAB_RAG_LIMITS_MAX_EXTRACTED_BYTES: {{ .Values.rag.limits.maxExtractedBytes | quote }}
+  BKCRAB_RAG_LIMITS_MAX_IMAGE_PIXELS: {{ .Values.rag.limits.maxImagePixels | quote }}
+  BKCRAB_RAG_LIMITS_PDF_RENDER_DPI: {{ .Values.rag.limits.pdfRenderDPI | quote }}
+  BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS: {{ .Values.rag.limits.parseTimeoutMS | quote }}
+  {{- end }}
   {{- with .Values.timezone }}
   ## 服务器默认时区 — 聊天/agent/系统偏好之后的最后回退。
   TZ: {{ . | quote }}

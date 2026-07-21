@@ -33,6 +33,77 @@ gateway:
   preStopSleepSeconds: 15
   terminationGracePeriodSeconds: 30
 
+## 多模态文档 RAG。三个高成本能力是独立发布开关，默认关闭。
+## 即使 parser 健康，也只有显式打开对应 gate 后才允许新任务使用。
+rag:
+  enabled: false
+  advancedEnabled: false
+  officeEnabled: false
+  enrichmentEnabled: false
+
+  milvus:
+    address: ""
+    username: ""
+    password: ""
+  embedding:
+    endpoint: ""
+    apiKey: ""
+    model: ""
+    dims: 0
+  reranker:
+    enabled: false
+    endpoint: ""
+    apiKey: ""
+    model: ""
+    timeoutMS: 5000
+    candidateTopK: 20
+    minScore: 0.5
+
+  documentAI:
+    apiType: openai-compatible
+    endpoint: ""
+    apiKey: ""                 # Secret；仅注入 gateway，绝不注入 parser
+    visionModel: ""
+    textModel: ""
+    allowedEndpointHosts: ""  # 逗号分隔的精确 host allow-list
+    allowPrivateEndpoint: false
+
+  parser:
+    enabled: true
+    replicas: 2
+    port: 8080
+    image:
+      repository: ghcr.io/qs3c/bkcrab-rag-parser
+      # 固定 release tag 或 digest；禁止 latest/dev。
+      tag: "0.1.0"
+      pullPolicy: IfNotPresent
+    serviceVersion: "0.1.0"
+    tempSizeLimit: 512Mi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    networkPolicy:
+      enabled: true
+      # 仅当命名空间已有选择 gateway 的 egress 限制时打开；策略是
+      # additive allow，不替代 DB/object-store/provider 的现有 allows。
+      allowGatewayEgress: false
+
+  # 这些值以相同 BKCRAB_RAG_LIMITS_* 环境变量同时注入 gateway 和
+  # parser；parser 在进程内完成 byte/second 换算，不存在第二套部署值。
+  limits:
+    maxFileMB: 50
+    maxPagesPerDocument: 300
+    maxAssetsPerDocument: 500
+    maxAssetBytes: 20971520
+    maxExtractedBytes: 209715200
+    maxImagePixels: 40000000
+    pdfRenderDPI: 180
+    parseTimeoutMS: 600000
+
 ## HPA
 autoscaling:
   enabled: true

@@ -1,8 +1,8 @@
 # BkCrab — 单文件 K8s 部署。
 #
 # ┌─ 一次性部署 ──────────────────────────────────────────────────────────┐
-# │  1. 编辑 `bkcrab-secrets` 中的 3（或 4）个值                          │
-# │     （DSN + 对象存储 AK/SK，可选 E2B 密钥）。                           │
+# │  1. 编辑 `bkcrab-secrets` 中的必需值                                  │
+# │     （DSN + 对象存储 AK/SK；RAG/DocumentAI/E2B 凭据按需填写）。         │
 # │  2. 在 `bkcrab-config` 中，选择一个对象存储提供者块；                   │
 # │     将其余的注释掉。                                                   │
 # │  3. 编辑 Ingress 主机名（如果不需要公共访问，则删除整个 Ingress 部分）。│
@@ -50,6 +50,14 @@ stringData:
   OBJECT_STORE_ACCESSKEY: "REPLACE_WITH_ACCESS_KEY"
   OBJECT_STORE_SECRETKEY: "REPLACE_WITH_SECRET_KEY"
 
+  # 仅注入 bkcrab 主服务。rag-parser Deployment 不引用本 Secret。
+  # 高级能力关闭时可保持为空；启用前请使用外部 Secret 管理器替换。
+  DOCUMENT_AI_API_KEY: ""
+  RAG_MILVUS_USERNAME: ""
+  RAG_MILVUS_PASSWORD: ""
+  RAG_EMBEDDING_API_KEY: ""
+  RAG_RERANKER_API_KEY: ""
+
   # 启用沙箱时设置，然后在下方 Deployment 中取消对应环境变量条目的注释。
   # E2B_API_KEY: "REPLACE_WITH_E2B_KEY"
 
@@ -75,6 +83,44 @@ data:
   BKCRAB_BIND: "all"
   BKCRAB_STORAGE_TYPE: "mysql"
   BKCRAB_STORAGE_AUTO_MIGRATE: "true"
+
+  # ─── 多模态文档 RAG（默认关闭发布开关）───
+  # parser 只在集群内部暴露；主服务异步探测 /healthz。
+  BKCRAB_RAG_ADVANCED_ENABLED: "false"
+  BKCRAB_RAG_OFFICE_ENABLED: "false"
+  BKCRAB_RAG_ENRICHMENT_ENABLED: "false"
+  # 填写外部/集群内 Milvus 与 OpenAI-compatible embedding 后，基础 RAG
+  # 才会启用；凭据位于 Secret，不能写入本 ConfigMap。
+  BKCRAB_RAG_MILVUS_ADDRESS: ""
+  BKCRAB_RAG_EMBEDDING_ENDPOINT: ""
+  BKCRAB_RAG_EMBEDDING_MODEL: ""
+  BKCRAB_RAG_EMBEDDING_DIMS: ""
+  BKCRAB_RAG_RERANKER_ENABLED: "false"
+  BKCRAB_RAG_RERANKER_ENDPOINT: ""
+  BKCRAB_RAG_RERANKER_MODEL: ""
+  BKCRAB_RAG_RERANKER_TIMEOUT_MS: "5000"
+  BKCRAB_RAG_RERANKER_CANDIDATE_TOP_K: "20"
+  BKCRAB_RAG_RERANKER_MIN_SCORE: "0.5"
+  BKCRAB_RAG_PARSER_ENDPOINT: "http://rag-parser:8080"
+  BKCRAB_RAG_PARSER_TIMEOUT_MS: "600000"
+  BKCRAB_RAG_DOCUMENT_AI_API_TYPE: "openai-compatible"
+  BKCRAB_RAG_DOCUMENT_AI_ENDPOINT: ""
+  BKCRAB_RAG_DOCUMENT_AI_VISION_MODEL: ""
+  BKCRAB_RAG_DOCUMENT_AI_TEXT_MODEL: ""
+  BKCRAB_RAG_DOCUMENT_AI_ALLOWED_ENDPOINT_HOSTS: ""
+  BKCRAB_RAG_DOCUMENT_AI_ALLOW_PRIVATE_ENDPOINT: "false"
+
+  # 主服务与 rag-parser 共同读取的唯一规范限制。parser 在进程内把
+  # maxFileMB/timeoutMS 换算为 maxInputBytes/timeoutSeconds。
+  BKCRAB_RAG_LIMITS_MAX_FILE_MB: "50"
+  BKCRAB_RAG_LIMITS_MAX_PAGES_PER_DOCUMENT: "300"
+  BKCRAB_RAG_LIMITS_MAX_ASSETS_PER_DOCUMENT: "500"
+  BKCRAB_RAG_LIMITS_MAX_ASSET_BYTES: "20971520"
+  BKCRAB_RAG_LIMITS_MAX_EXTRACTED_BYTES: "209715200"
+  BKCRAB_RAG_LIMITS_MAX_IMAGE_PIXELS: "40000000"
+  BKCRAB_RAG_LIMITS_PDF_RENDER_DPI: "180"
+  BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS: "600000"
+  RAG_PARSER_MAX_ENTRY_BYTES: "20971520"
 
   # 服务器默认时区（IANA 名称）— 链中最后的回退
   # 聊天偏好 → agent 默认 → 系统默认 → TZ。没有它，Pod 将
@@ -155,6 +201,11 @@ spec:
             - { name: BKCRAB_STORAGE_DSN,             valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: STORAGE_DSN } } }
             - { name: BKCRAB_OBJECT_STORE_ACCESSKEY,  valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: OBJECT_STORE_ACCESSKEY } } }
             - { name: BKCRAB_OBJECT_STORE_SECRETKEY,  valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: OBJECT_STORE_SECRETKEY } } }
+            - { name: BKCRAB_RAG_DOCUMENT_AI_API_KEY, valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: DOCUMENT_AI_API_KEY } } }
+            - { name: BKCRAB_RAG_MILVUS_USERNAME,      valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: RAG_MILVUS_USERNAME } } }
+            - { name: BKCRAB_RAG_MILVUS_PASSWORD,      valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: RAG_MILVUS_PASSWORD } } }
+            - { name: BKCRAB_RAG_EMBEDDING_API_KEY,    valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: RAG_EMBEDDING_API_KEY } } }
+            - { name: BKCRAB_RAG_RERANKER_API_KEY,     valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: RAG_RERANKER_API_KEY } } }
             # - { name: E2B_API_KEY, valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: E2B_API_KEY } } }
           volumeMounts:
             - { name: data, mountPath: /data/.bkcrab }

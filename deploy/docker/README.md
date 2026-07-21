@@ -28,6 +28,43 @@ docker compose \
 - `RAG_EMBEDDING_API_KEY`：仅在 embedding 服务要求鉴权时填写。
 - `MILVUS_USERNAME`、`MILVUS_PASSWORD`：默认内部 standalone 未启用鉴权，可留空；若启用 Milvus 鉴权，两项必须与服务端一致。
 
+RAG overlay 同时部署固定版本的 `rag-parser`。它只连接专用的
+`rag-parser-internal` 内部网络；BkCrab 同时连接默认网络和该内部网络。
+parser 没有宿主机端口、没有外网出口，也不会收到 embedding、DocumentAI、
+MinIO 或对象存储凭据。容器以 UID/GID 65532 运行，根文件系统只读，丢弃
+全部 Linux capabilities，并只获得有大小上限的 `/tmp/rag-parser` tmpfs。
+
+`.env.example` 中的 parser 限制与主服务 RAG 限制使用同一组规范值。parser
+直接接收 `BKCRAB_RAG_LIMITS_MAX_FILE_MB`、
+`BKCRAB_RAG_LIMITS_MAX_EXTRACTED_BYTES` 和
+`BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS`，并在启动时换算 byte/second：
+
+```text
+maxInputBytes = RAG_MAX_FILE_MB * 1048576
+parseTimeoutSeconds = RAG_PARSE_TIMEOUT_MS / 1000
+```
+
+因此 Compose 不再暴露可独立漂移的 `RAG_MAX_INPUT_BYTES` 或
+`RAG_PARSE_TIMEOUT_SECONDS`。旧 parser-specific 环境变量仍可用于独立运行
+sidecar；若同时设置规范值且两者不一致，parser 会启动失败。
+
+`RAG_MAX_EXTRACTED_BYTES`、`RAG_MAX_ASSET_BYTES`、页数、图片数、像素和
+PDF DPI 则原样同时注入两端。`/healthz` 回显 parser 实际使用的
+`maxInputBytes/maxOutputBytes`；主服务对 Office/PDF 上传采用自身与 health
+快照的较小值，不能通过只调高一端绕过限制。
+
+高级解析、Office 与表格/代码增强是三个独立发布开关，默认均为 false：
+
+- `RAG_ADVANCED_ENABLED`
+- `RAG_OFFICE_ENABLED`
+- `RAG_ENRICHMENT_ENABLED`
+
+DocumentAI 配置只进入 BkCrab。填写 `RAG_DOCUMENT_AI_ENDPOINT`、模型和
+`RAG_DOCUMENT_AI_API_KEY` 前，先配置精确的
+`RAG_DOCUMENT_AI_ALLOWED_ENDPOINT_HOSTS`；HTTP/私网地址还必须显式设置
+`RAG_DOCUMENT_AI_ALLOW_PRIVATE_ENDPOINT=true`。不要把真实 key 写进 Compose
+文件、README 或日志。
+
 Reranker 是可选增强。启用后，混合检索先保留全局候选 20 条，再精排到调用方要求的 TopN（默认 5）；只有精排成功时才应用 `RAG_RERANKER_MIN_SCORE`。服务超时、连接失败或响应非法时会自动退回 RRF 排序，不会用精排阈值过滤 RRF 分数。相关配置：
 
 - `RAG_RERANKER_ENABLED`：是否启用；
@@ -68,7 +105,10 @@ docker compose \
 
 overlay 通过映射合并为现有 `bkcrab` 服务追加 RAG 环境变量和 Milvus 健康依赖，不会替换基础服务的构建、端口或原有依赖。不要单独启动 overlay。
 
-启动顺序为 MinIO/etcd 健康后启动 Milvus，Milvus 健康后才启动 BkCrab。Milvus 数据与元数据分别持久化在 `milvus-data`、`milvus-etcd-data` 命名卷。Milvus 复用现有 MinIO 凭据；RAG 上传的原始文档仍使用 BkCrab 的对象存储配置。
+启动顺序为 MinIO/etcd 健康后启动 Milvus；BkCrab 等待 Milvus 与
+`rag-parser` 都健康后启动。Milvus 数据与元数据分别持久化在
+`milvus-data`、`milvus-etcd-data` 命名卷。Milvus 复用现有 MinIO 凭据；
+RAG 上传的原始文档仍使用 BkCrab 的对象存储配置。
 
 Milvus gRPC 和 WebUI 默认仅绑定服务器回环地址：
 
@@ -101,10 +141,46 @@ docker compose \
   --env-file deploy/docker/.env \
   -f deploy/docker/docker-compose.yml \
   -f deploy/docker/docker-compose.rag.yml \
-  logs --tail=200 milvus-etcd milvus-standalone bkcrab
+  logs --tail=200 milvus-etcd milvus-standalone rag-parser bkcrab
 ```
 
-除容器均为 healthy 外，还应在 BkCrab 日志中确认出现 `rag service enabled`。`/readyz` 只表示主网关可用，不能单独证明 RAG 已启用；使用登录态请求 `/api/rag/kbs`，不应返回 503。
+除容器均为 healthy 外，还应确认 `rag-parser` 的 health 输出包含
+`protocolVersion=rag-parser/v1`、固定 `serviceVersion` 和预期 limits，并在
+BkCrab 日志中确认出现 `rag service enabled`。`/readyz` 只表示主网关可用，
+不能单独证明 RAG 已启用；使用登录态请求 `/api/rag/capabilities` 和
+`/api/rag/kbs`，后者不应返回 503。不要为了检查 health 给 parser 增加公网
+端口；可在内部网络中用一次性诊断容器或 `docker compose exec bkcrab`
+访问 `http://rag-parser:8080/healthz`。
+
+## Kubernetes / Helm parser 隔离
+
+静态清单先应用主服务，再应用 parser 与网络策略：
+
+```bash
+kubectl apply -f deploy/k8s/bkcrab.yaml
+kubectl apply -f deploy/k8s/rag-parser.yaml
+kubectl apply -f deploy/k8s/rag-parser-networkpolicy.yaml
+```
+
+`rag-parser-networkpolicy.yaml` 对 parser ingress/egress 默认拒绝，仅允许带
+`app=bkcrab` 标签的 Pod 访问 TCP/8080，parser egress 始终为空。如果集群
+已经用其它 NetworkPolicy 限制 BkCrab egress，还需额外增加一条
+BkCrab→parser 的 additive allow；不要单独安装一条只允许 parser 的 gateway
+egress 策略，否则会意外阻断数据库、对象存储和 provider。
+
+Helm 中通过 `rag.enabled=true` 部署 RAG 接线，parser 默认随之启用；三个
+高级 feature gate 仍保持 false。parser 的 input byte limit 由
+`rag.limits.maxFileMB` 自动换算，其它 limit 也直接复用 `rag.limits`：
+
+```bash
+helm lint deploy/helm/bkcrab --set rag.enabled=true
+helm template bkcrab deploy/helm/bkcrab --set rag.enabled=true >/tmp/bkcrab.yaml
+```
+
+生产环境应通过 Secret 管理器提供 `rag.documentAI.apiKey` 等凭据，并把
+`rag.parser.image.tag` 固定为已验证的 release tag 或镜像 digest；禁止使用
+`latest`/`dev`。只有命名空间已经限制 gateway egress 时才设置
+`rag.parser.networkPolicy.allowGatewayEgress=true`。
 
 如需运行真实 Milvus 集成测试，overlay 已把 gRPC 端口限制在本机：
 

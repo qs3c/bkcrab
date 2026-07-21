@@ -1,0 +1,121 @@
+{{- if and .Values.rag.enabled .Values.rag.parser.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-rag-parser
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+    app: {{ include "bkcrab.fullname" . }}-rag-parser
+spec:
+  replicas: {{ .Values.rag.parser.replicas }}
+  selector:
+    matchLabels:
+      app: {{ include "bkcrab.fullname" . }}-rag-parser
+  template:
+    metadata:
+      labels:
+        app: {{ include "bkcrab.fullname" . }}-rag-parser
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: rag-parser
+        image: "{{ .Values.rag.parser.image.repository }}:{{ .Values.rag.parser.image.tag }}"
+        imagePullPolicy: {{ .Values.rag.parser.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.rag.parser.port }}
+          protocol: TCP
+        env:
+        - name: RAG_PARSER_SERVICE_VERSION
+          value: {{ .Values.rag.parser.serviceVersion | quote }}
+        - name: RAG_PARSER_PORT
+          value: {{ .Values.rag.parser.port | quote }}
+        - name: RAG_PARSER_TEMP_ROOT
+          value: /tmp/rag-parser
+        - name: HOME
+          value: /tmp/rag-parser
+        - name: TMPDIR
+          value: /tmp/rag-parser
+        - name: XDG_CACHE_HOME
+          value: /tmp/rag-parser/cache
+        - name: BKCRAB_RAG_LIMITS_MAX_FILE_MB
+          value: {{ .Values.rag.limits.maxFileMB | quote }}
+        - name: BKCRAB_RAG_LIMITS_MAX_EXTRACTED_BYTES
+          value: {{ .Values.rag.limits.maxExtractedBytes | quote }}
+        - name: BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS
+          value: {{ .Values.rag.limits.parseTimeoutMS | quote }}
+        - name: RAG_PARSER_MAX_ENTRY_BYTES
+          value: {{ .Values.rag.limits.maxAssetBytes | quote }}
+        - name: RAG_PARSER_MAX_EXTRACTED_BYTES
+          value: {{ .Values.rag.limits.maxExtractedBytes | quote }}
+        - name: RAG_PARSER_MAX_ASSET_BYTES
+          value: {{ .Values.rag.limits.maxAssetBytes | quote }}
+        - name: RAG_PARSER_MAX_ASSETS
+          value: {{ .Values.rag.limits.maxAssetsPerDocument | quote }}
+        - name: RAG_PARSER_MAX_IMAGE_PIXELS
+          value: {{ .Values.rag.limits.maxImagePixels | quote }}
+        - name: RAG_PARSER_MAX_PAGES
+          value: {{ .Values.rag.limits.maxPagesPerDocument | quote }}
+        - name: RAG_PARSER_PDF_RENDER_DPI
+          value: {{ .Values.rag.limits.pdfRenderDPI | quote }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: parser-tmp
+          mountPath: /tmp/rag-parser
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 3
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 3
+          failureThreshold: 3
+        resources:
+          {{- toYaml .Values.rag.parser.resources | nindent 10 }}
+      volumes:
+      - name: parser-tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: {{ .Values.rag.parser.tempSizeLimit }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-rag-parser
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+    app: {{ include "bkcrab.fullname" . }}-rag-parser
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ include "bkcrab.fullname" . }}-rag-parser
+  ports:
+  - name: http
+    port: {{ .Values.rag.parser.port }}
+    targetPort: http
+    protocol: TCP
+{{- end }}

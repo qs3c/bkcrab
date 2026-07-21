@@ -58,6 +58,39 @@ spec:
               name: {{ include "bkcrab.fullname" . }}-secrets
               key: E2B_API_KEY
         {{- end }}
+        {{- if and .Values.rag.enabled .Values.rag.milvus.username }}
+        - name: BKCRAB_RAG_MILVUS_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "bkcrab.fullname" . }}-secrets
+              key: RAG_MILVUS_USERNAME
+        - name: BKCRAB_RAG_MILVUS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "bkcrab.fullname" . }}-secrets
+              key: RAG_MILVUS_PASSWORD
+        {{- end }}
+        {{- if and .Values.rag.enabled .Values.rag.embedding.apiKey }}
+        - name: BKCRAB_RAG_EMBEDDING_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "bkcrab.fullname" . }}-secrets
+              key: RAG_EMBEDDING_API_KEY
+        {{- end }}
+        {{- if and .Values.rag.enabled .Values.rag.reranker.apiKey }}
+        - name: BKCRAB_RAG_RERANKER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "bkcrab.fullname" . }}-secrets
+              key: RAG_RERANKER_API_KEY
+        {{- end }}
+        {{- if and .Values.rag.enabled .Values.rag.documentAI.apiKey }}
+        - name: BKCRAB_RAG_DOCUMENT_AI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "bkcrab.fullname" . }}-secrets
+              key: DOCUMENT_AI_API_KEY
+        {{- end }}
         volumeMounts:
         - name: data
           mountPath: /data/.bkcrab
