@@ -158,7 +158,7 @@ func TestOpenAIEnrichmentPromptRepairBudgetAndCache(t *testing.T) {
 		}
 		responseFormat, _ := request["response_format"].(map[string]any)
 		if responseFormat["type"] != config.RAGDocumentAIResponseFormatJSONObject ||
-			responseFormat["json_schema"] != nil || request["max_tokens"].(float64) != 512 {
+			responseFormat["json_schema"] != nil || request["max_tokens"].(float64) != 1024 {
 			t.Errorf("typed/limited request missing: %#v", request)
 		}
 		if call == 1 {
@@ -172,7 +172,9 @@ func TestOpenAIEnrichmentPromptRepairBudgetAndCache(t *testing.T) {
 	cache := NewMemoryCache(DefaultSchemaLimits())
 	cfg := documentAIConfigForServer(t, server.URL)
 	cfg.ResponseFormat = config.RAGDocumentAIResponseFormatJSONObject
-	client, err := NewOpenAICompatible(cfg, documentAILimits(), cache)
+	limits := documentAILimits()
+	limits.MaxDocumentAIOutputTokens = 2048
+	client, err := NewOpenAICompatible(cfg, limits, cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +376,7 @@ func TestOpenAIRepairRequestBodyLimitAndRedirectArePolicyErrors(t *testing.T) {
 		client.maxRequestBytes = 128
 		_, err = client.repairRequest(
 			BlockTable, []byte(strings.Repeat("\x01", 128)), ErrInvalidResponse,
-			EnrichableBlock{Kind: BlockTable, TokenBudget: 128, ByteBudget: 1024}, 1, 512,
+			EnrichableBlock{Kind: BlockTable, TokenBudget: 128, ByteBudget: 1024}, 1, 1024,
 		)
 		var typed *vision.Error
 		if !errors.As(err, &typed) || typed.Kind != vision.ErrorPolicy || vision.IsRetryable(err) {

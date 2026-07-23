@@ -54,7 +54,7 @@ const (
 	// in the final chunk. The provider needs additional room for the typed JSON
 	// envelope itself; using a tiny remaining chunk budget as max_tokens can
 	// truncate otherwise valid JSON before it closes.
-	documentAITextMinProtocolOutputTokens = 512
+	documentAITextMinProtocolOutputTokens = 1024
 )
 
 var errDocumentAIRedirect = errors.New("DocumentAI redirect disabled")
