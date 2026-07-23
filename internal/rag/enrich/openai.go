@@ -50,6 +50,11 @@ const (
 	// bound safely covers valid UTF-8 control-character expansion twice.
 	documentAITextJSONExpansion     int64 = 16
 	documentAITextMaxRepairAttempts       = 3
+	// TokenBudget is the amount of rendered enhancement that can be persisted
+	// in the final chunk. The provider needs additional room for the typed JSON
+	// envelope itself; using a tiny remaining chunk budget as max_tokens can
+	// truncate otherwise valid JSON before it closes.
+	documentAITextMinProtocolOutputTokens = 512
 )
 
 var errDocumentAIRedirect = errors.New("DocumentAI redirect disabled")
@@ -192,11 +197,11 @@ func (c *Client) Enrich(ctx context.Context, block EnrichableBlock, budget *visi
 		return Enhancement{}, vision.ErrBudgetRequired
 	}
 
-	request, err := c.enrichmentRequest(block)
+	outputLimit := c.enrichmentOutputLimit(block)
+	request, err := c.enrichmentRequest(block, outputLimit)
 	if err != nil {
 		return Enhancement{}, err
 	}
-	outputLimit := min(c.maxOutputTokens, block.TokenBudget)
 	result, err := c.call(ctx, budget, vision.LogicalRequestKey(key, "initial"), 0, request, outputLimit)
 	if err != nil {
 		if errors.Is(err, vision.ErrCacheCommitted) && c.cache != nil {
@@ -218,7 +223,9 @@ func (c *Client) Enrich(ctx context.Context, block EnrichableBlock, budget *visi
 
 	invalid, validationErr := result.content, schemaErr
 	for attempt := 1; attempt <= documentAITextMaxRepairAttempts; attempt++ {
-		repair, requestErr := c.repairRequest(block.Kind, invalid, validationErr, block, attempt)
+		repair, requestErr := c.repairRequest(
+			block.Kind, invalid, validationErr, block, attempt, outputLimit,
+		)
 		if requestErr != nil {
 			return Enhancement{}, requestErr
 		}
@@ -280,7 +287,11 @@ type chatRequest struct {
 	ResponseFormat any              `json:"response_format"`
 }
 
-func (c *Client) enrichmentRequest(block EnrichableBlock) ([]byte, error) {
+func (c *Client) enrichmentOutputLimit(block EnrichableBlock) int {
+	return min(c.maxOutputTokens, max(block.TokenBudget, documentAITextMinProtocolOutputTokens))
+}
+
+func (c *Client) enrichmentRequest(block EnrichableBlock, outputLimit int) ([]byte, error) {
 	data, err := json.Marshal(struct {
 		Kind        BlockKind `json:"kind"`
 		RawContent  string    `json:"rawContent"`
@@ -299,7 +310,7 @@ func (c *Client) enrichmentRequest(block EnrichableBlock) ([]byte, error) {
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: string(data)},
 		},
-		MaxTokens: min(c.maxOutputTokens, block.TokenBudget), Temperature: 0, Stream: false,
+		MaxTokens: outputLimit, Temperature: 0, Stream: false,
 		ResponseFormat: c.structuredResponseFormat(block.Kind, c.schemaLimits),
 	})
 }
@@ -310,6 +321,7 @@ func (c *Client) repairRequest(
 	validationErr error,
 	block EnrichableBlock,
 	attempt int,
+	outputLimit int,
 ) ([]byte, error) {
 	if int64(len(invalid)) > c.maxResponseBytes {
 		return nil, &vision.Error{Kind: vision.ErrorPolicy,
@@ -338,7 +350,7 @@ func (c *Client) repairRequest(
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: string(data)},
 		},
-		MaxTokens: min(c.maxOutputTokens, block.TokenBudget), Temperature: 0, Stream: false,
+		MaxTokens: outputLimit, Temperature: 0, Stream: false,
 		ResponseFormat: c.structuredResponseFormat(kind, c.schemaLimits),
 	})
 }
@@ -350,6 +362,8 @@ func enrichmentRepairInstruction(err error, attempt int) string {
 	)
 	message := strings.ToLower(enrichmentValidationFeedback(err))
 	switch {
+	case strings.Contains(message, "incomplete json"):
+		instruction += " Return one complete, concise JSON object and close every string, array, and object."
 	case strings.Contains(message, "trailing json"):
 		instruction += " Return exactly one JSON object with no prose, code fence, or second JSON value before or after it."
 	case strings.Contains(message, "unknown field"):

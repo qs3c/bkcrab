@@ -3,6 +3,7 @@ package embed
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -88,6 +89,47 @@ func TestEmbedEmptyInputDoesNotCallEndpoint(t *testing.T) {
 	vectors, err := New(server.URL, "", "m", 3).Embed(context.Background(), nil)
 	if err != nil || len(vectors) != 0 || called {
 		t.Fatalf("vectors=%v err=%v called=%v", vectors, err, called)
+	}
+}
+
+func TestEmbedBatchesByAggregateInputBytes(t *testing.T) {
+	t.Parallel()
+	var batchSizes []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Input []string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		batchSizes = append(batchSizes, len(request.Input))
+		type item struct {
+			Embedding []float32 `json:"embedding"`
+			Index     int       `json:"index"`
+		}
+		response := struct {
+			Data []item `json:"data"`
+		}{}
+		for i := range request.Input {
+			response.Data = append(response.Data, item{Embedding: []float32{1}, Index: i})
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	texts := make([]string, 5)
+	for i := range texts {
+		texts[i] = strings.Repeat("x", maxEmbeddingBatchInputBytes/2)
+	}
+	vectors, err := New(server.URL, "", "m", 1).Embed(context.Background(), texts)
+	if err != nil || len(vectors) != len(texts) {
+		t.Fatalf("Embed returned %d vectors: %v", len(vectors), err)
+	}
+	if got := fmt.Sprint(batchSizes); got != "[2 2 1]" {
+		t.Fatalf("byte-bounded batch sizes = %s, want [2 2 1]", got)
 	}
 }
 

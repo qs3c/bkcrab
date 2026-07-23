@@ -13,11 +13,17 @@ import (
 	"time"
 )
 
-// The bundled llama.cpp embedding service runs with one parallel slot. Keep
-// each request small enough that sequential prompt processing remains below
-// the client timeout even for near-limit chunks.
-const batchSize = 8
-const maxEmbeddingResponseBytes = 32 << 20
+const (
+	// The bundled llama.cpp embedding service runs with one parallel slot.
+	// Bound both item count and aggregate UTF-8 bytes so punctuation- and
+	// number-heavy tables cannot turn a nominal 512-token estimator batch into
+	// several thousand provider tokens processed sequentially under one
+	// 60-second HTTP deadline. UTF-8 bytes are a conservative upper bound for
+	// byte-level tokenizer pieces; a single oversized item is still sent alone.
+	batchSize                   = 8
+	maxEmbeddingBatchInputBytes = 2 << 10
+	maxEmbeddingResponseBytes   = 32 << 20
+)
 
 // endpointError preserves the HTTP status through error wrapping so callers
 // can distinguish deterministic request failures from retryable provider
@@ -60,18 +66,33 @@ func (c *Client) Model() string { return c.model }
 // Dims returns the required output vector dimensions.
 func (c *Client) Dims() int { return c.dims }
 
-// Embed embeds texts in batches of at most 16 and preserves input order.
+// Embed embeds texts in count- and byte-bounded batches and preserves input
+// order.
 func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	vectors := make([][]float32, 0, len(texts))
-	for start := 0; start < len(texts); start += batchSize {
-		end := min(start+batchSize, len(texts))
+	for start := 0; start < len(texts); {
+		end := embeddingBatchEnd(texts, start)
 		batch, err := c.embedBatch(ctx, texts[start:end])
 		if err != nil {
 			return nil, fmt.Errorf("embedding 批次 %d-%d: %w", start, end, err)
 		}
 		vectors = append(vectors, batch...)
+		start = end
 	}
 	return vectors, nil
+}
+
+func embeddingBatchEnd(texts []string, start int) int {
+	end, inputBytes := start, 0
+	for end < len(texts) && end-start < batchSize {
+		nextBytes := len([]byte(texts[end]))
+		if end > start && inputBytes+nextBytes > maxEmbeddingBatchInputBytes {
+			break
+		}
+		inputBytes += nextBytes
+		end++
+	}
+	return end
 }
 
 func (c *Client) embedBatch(ctx context.Context, texts []string) ([][]float32, error) {
