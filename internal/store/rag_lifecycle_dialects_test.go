@@ -91,6 +91,34 @@ func TestRAGLifecycleDialectConcurrency(t *testing.T) {
 			}
 			primary, competitor := openRAGBudgetDialectStores(t, test.dialect, test.dsn)
 
+			t.Run("progress update uses a portable fenced transaction", func(t *testing.T) {
+				fixture := newRAGLifecycleDialectFixture(t, primary, competitor, test.dialect, "progress")
+				doc, version := fixture.advancedDocument(t, "progress")
+				ctx := context.Background()
+				if _, err := primary.CreateRAGDocumentWithVersionAndIndexTask(ctx, doc, version, 3); err != nil {
+					t.Fatalf("create progress fixture: %v", err)
+				}
+				claim, err := primary.ClaimRAGIndexTask(ctx, "lifecycle-progress-worker", time.Minute)
+				if err != nil || claim == nil || claim.Fence.DocID != doc.ID {
+					t.Fatalf("progress claim=%+v err=%v", claim, err)
+				}
+				progress := RAGIndexProgress{Stage: "parsing", Current: 1, Total: 2, Unit: "pages"}
+				for attempt := 0; attempt < 2; attempt++ {
+					if ok, err := primary.UpdateProgressRAGIndexTask(ctx, claim.Fence, progress); err != nil || !ok {
+						t.Fatalf("progress update %d ok=%v err=%v", attempt+1, ok, err)
+					}
+				}
+				current, err := primary.GetRAGDocument(ctx, doc.ID)
+				if err != nil || current.ProcessingStage != progress.Stage ||
+					current.ProgressCurrent != progress.Current || current.ProgressTotal != progress.Total ||
+					current.ProgressUnit != progress.Unit {
+					t.Fatalf("persisted progress=%+v err=%v", current, err)
+				}
+				if ok, err := primary.FailRAGIndexTask(ctx, claim.Fence, "progress regression completed"); err != nil || !ok {
+					t.Fatalf("finish progress fixture ok=%v err=%v", ok, err)
+				}
+			})
+
 			t.Run("uncommitted user tombstone blocks KB provisioning", func(t *testing.T) {
 				suffix := fmt.Sprintf("%s_provision_%x", test.dialect, ragLifecycleDialectSequence.Add(1))
 				userID := "u_" + suffix

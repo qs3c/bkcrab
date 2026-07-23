@@ -682,24 +682,23 @@ func (d *DBStore) UpdateProgressRAGIndexTask(
 	fence IndexFence,
 	progress RAGIndexProgress,
 ) (bool, error) {
-	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
-		processing_stage=%s,progress_current=%s,progress_total=%s,progress_unit=%s
-		WHERE id=%s AND version=%s AND UPPER(status)<>'DELETING'
-		AND EXISTS (SELECT 1 FROM rag_index_tasks t
-			JOIN rag_documents d ON d.id=t.doc_id JOIN rag_kbs kb ON kb.id=d.kb_id
-			JOIN users u ON u.id=kb.user_id
-			WHERE t.id=%s AND t.doc_id=%s AND t.doc_version=%s
-			AND t.claim_generation=%s AND t.lease_owner=%s AND t.status='RUNNING'
-			AND t.lease_until > %s AND LOWER(kb.status)='active' AND LOWER(u.status)='active')`,
-		d.ph(1), d.ph(2), d.ph(3), d.ph(4),
-		d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11),
-		d.ragNowExpr()), progress.Stage, progress.Current, progress.Total, progress.Unit,
-		fence.DocID, fence.DocVersion, fence.TaskID, fence.DocID, fence.DocVersion,
-		fence.ClaimGeneration, fence.LeaseOwner)
-	if err != nil {
+	tx, locked, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
+	if err != nil || !ok {
 		return false, err
 	}
-	return ragRowsAffected(result)
+	defer tx.Rollback()
+	if locked.doc.Version != fence.DocVersion {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
+		processing_stage=%s,progress_current=%s,progress_total=%s,progress_unit=%s
+		WHERE id=%s AND version=%s AND UPPER(status)<>'DELETING'`,
+		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6)),
+		progress.Stage, progress.Current, progress.Total, progress.Unit,
+		fence.DocID, fence.DocVersion); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 func (d *DBStore) UpdateWarningRAGIndexTask(
