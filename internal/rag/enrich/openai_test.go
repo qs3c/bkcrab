@@ -143,6 +143,10 @@ func TestOpenAIEnrichmentPromptRepairBudgetAndCache(t *testing.T) {
 			if strings.Contains(system, malicious) || !strings.Contains(system, "untrusted") {
 				t.Errorf("unsafe system prompt: %q", system)
 			}
+			if !strings.Contains(system, "Required output JSON Schema") ||
+				!strings.Contains(system, `"required":["topic","columns","keyEntities","units","ranges","summary"]`) {
+				t.Errorf("schema missing from system prompt: %q", system)
+			}
 			userData, _ := messages[1].(map[string]any)["content"].(string)
 			var decoded map[string]any
 			if err := json.Unmarshal([]byte(userData), &decoded); err != nil {

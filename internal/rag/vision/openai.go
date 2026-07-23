@@ -491,6 +491,10 @@ func (c *Client) visionRequest(systemPrompt, metadata string, image NormalizedIm
 	if int64(len(dataURL)) > c.imageLimits.MaxBase64Bytes+64 {
 		return nil, errors.New("vision: data URL exceeds base64 input limit")
 	}
+	systemPrompt, err := systemPromptWithSchema(systemPrompt, schema)
+	if err != nil {
+		return nil, err
+	}
 	content := []any{
 		map[string]any{"type": "text", "text": metadata},
 		map[string]any{"type": "image_url", "image_url": map[string]any{"url": dataURL, "detail": "high"}},
@@ -509,8 +513,20 @@ func (c *Client) repairRequest(kind string, invalid []byte, schema any) ([]byte,
 	if err != nil {
 		return nil, err
 	}
-	return c.marshalRequest(chatRequest{Model: c.model, Messages: []requestMessage{{Role: "system", Content: repairSystemPrompt}, {Role: "user", Content: string(data)}},
+	systemPrompt, err := systemPromptWithSchema(repairSystemPrompt, schema)
+	if err != nil {
+		return nil, err
+	}
+	return c.marshalRequest(chatRequest{Model: c.model, Messages: []requestMessage{{Role: "system", Content: systemPrompt}, {Role: "user", Content: string(data)}},
 		MaxTokens: c.maxOutputTokens, Temperature: 0, Stream: false, ResponseFormat: responseFormat(schema)})
+}
+
+func systemPromptWithSchema(prompt string, schema any) (string, error) {
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return "", &Error{Kind: ErrorPolicy, Err: fmt.Errorf("encode DocumentAI response schema: %w", err)}
+	}
+	return prompt + "\nRequired output JSON Schema (follow it exactly even when provider-side structured output is unavailable):\n" + string(raw), nil
 }
 
 func (c *Client) marshalRequest(request chatRequest) ([]byte, error) {

@@ -267,9 +267,13 @@ func (c *Client) enrichmentRequest(block EnrichableBlock) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	systemPrompt, err := systemPromptWithSchema(enrichmentSystemPrompt, enhancementJSONSchema(block.Kind, c.schemaLimits))
+	if err != nil {
+		return nil, err
+	}
 	return c.marshalRequest(chatRequest{
 		Model: c.model, Messages: []requestMessage{
-			{Role: "system", Content: enrichmentSystemPrompt},
+			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: string(data)},
 		},
 		MaxTokens: min(c.maxOutputTokens, block.TokenBudget), Temperature: 0, Stream: false,
@@ -295,14 +299,26 @@ func (c *Client) repairRequest(kind BlockKind, invalid []byte, block EnrichableB
 	if err != nil {
 		return nil, err
 	}
+	systemPrompt, err := systemPromptWithSchema(enrichmentRepairSystemPrompt, enhancementJSONSchema(kind, c.schemaLimits))
+	if err != nil {
+		return nil, err
+	}
 	return c.marshalRequest(chatRequest{
 		Model: c.model, Messages: []requestMessage{
-			{Role: "system", Content: enrichmentRepairSystemPrompt},
+			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: string(data)},
 		},
 		MaxTokens: min(c.maxOutputTokens, block.TokenBudget), Temperature: 0, Stream: false,
 		ResponseFormat: responseFormat(kind, c.schemaLimits),
 	})
+}
+
+func systemPromptWithSchema(prompt string, schema any) (string, error) {
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return "", &vision.Error{Kind: vision.ErrorPolicy, Err: fmt.Errorf("encode DocumentAI response schema: %w", err)}
+	}
+	return prompt + "\nRequired output JSON Schema (follow it exactly even when provider-side structured output is unavailable):\n" + string(raw), nil
 }
 
 func (c *Client) marshalRequest(request chatRequest) ([]byte, error) {

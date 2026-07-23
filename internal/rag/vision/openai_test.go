@@ -90,6 +90,12 @@ func TestOpenAIPageRepairBudgetAndCache(t *testing.T) {
 			http.Error(w, "unsafe messages", http.StatusBadRequest)
 			return
 		}
+		system, _ := messages[0].(map[string]any)["content"].(string)
+		if !strings.Contains(system, "Required output JSON Schema") ||
+			!strings.Contains(system, `"required":["markdown","visuals"]`) {
+			http.Error(w, "schema missing from system prompt", http.StatusBadRequest)
+			return
+		}
 		if call == 1 {
 			writeOpenAIResponse(t, w, `{"markdown":"![x](rag-visual://missing)","visuals":[]}`)
 			return
