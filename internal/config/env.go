@@ -198,6 +198,9 @@ func LoadEnv() *EnvConfig {
 	if v := os.Getenv("BKCRAB_RAG_DOCUMENT_AI_TEXT_MODEL"); v != "" {
 		cfg.RAG.DocumentAI.TextModel = v
 	}
+	if v := os.Getenv("BKCRAB_RAG_DOCUMENT_AI_RESPONSE_FORMAT"); v != "" {
+		cfg.RAG.DocumentAI.ResponseFormat = v
+	}
 	if v := positiveEnvInt("BKCRAB_RAG_DOCUMENT_AI_TIMEOUT_MS"); v > 0 {
 		cfg.RAG.DocumentAI.TimeoutMS = v
 	}
@@ -536,6 +539,9 @@ func (e *EnvConfig) ApplySystemRAG(dst *RAGCfg) {
 	}
 	if e.RAG.DocumentAI.TextModel != "" {
 		dst.DocumentAI.TextModel = e.RAG.DocumentAI.TextModel
+	}
+	if e.RAG.DocumentAI.ResponseFormat != "" {
+		dst.DocumentAI.ResponseFormat = e.RAG.DocumentAI.ResponseFormat
 	}
 	if e.RAG.DocumentAI.TimeoutMS > 0 {
 		dst.DocumentAI.TimeoutMS = e.RAG.DocumentAI.TimeoutMS

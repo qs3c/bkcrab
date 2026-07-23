@@ -270,8 +270,9 @@ func (r *pipelineTelemetryRecorder) snapshot() []telemetry.Event {
 }
 
 type recordingPipelineParser struct {
-	calls   atomic.Int32
-	cleanup atomic.Int32
+	calls    atomic.Int32
+	cleanup  atomic.Int32
+	warnings []document.ParseWarning
 }
 
 func (p *recordingPipelineParser) Parse(
@@ -294,6 +295,7 @@ func (p *recordingPipelineParser) Parse(
 			Location: document.SourceLocation{Kind: document.LocationDocument},
 			Markdown: "# Facade\n\nstreaming parser output\n",
 		}},
+		Warnings: append([]document.ParseWarning(nil), p.warnings...),
 	}, nil, func() error {
 		p.cleanup.Add(1)
 		return nil
@@ -673,7 +675,7 @@ func TestPipelineCacheReuseAndParseFingerprintInvalidation(t *testing.T) {
 			parserFacade.calls.Load(), v1, v2)
 	}
 
-	h.service.cfg.DocumentAI.VisionPromptVersion = "vision-v2"
+	h.service.cfg.DocumentAI.VisionPromptVersion = "vision-v4"
 	if err := h.service.ReindexDocument(context.Background(), "u_pipeline", h.kb.ID, doc.ID); err != nil {
 		t.Fatalf("queue parse-contract reindex: %v", err)
 	}
@@ -722,6 +724,36 @@ func TestPipelineCacheReuseAndParseFingerprintInvalidation(t *testing.T) {
 	if !cacheMiss || !cacheHit || !claimEvent || !activeSwitch {
 		t.Fatalf("missing orchestration telemetry miss=%v hit=%v claim=%v switch=%v events=%+v",
 			cacheMiss, cacheHit, claimEvent, activeSwitch, h.events.snapshot())
+	}
+}
+
+func TestPipelineDegradedParseArtifactIsNotReused(t *testing.T) {
+	h := newPipelineHarness(t)
+	parserFacade := &recordingPipelineParser{
+		warnings: []document.ParseWarning{{
+			Code: "pdf_vision_page_failed", Message: "vision fallback", Degraded: true,
+		}},
+	}
+	h.service.parser = parserFacade
+	doc, _ := h.seedDocument(t, "degraded_cache_retry", "stable source body for retry", 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.service.Start(ctx)
+
+	first := waitPipelineDocument(t, h.store, doc.ID, func(record *store.RAGDocumentRecord) bool {
+		return record.Status == "DONE" && record.ActiveVersion > 0
+	})
+	if !first.Degraded || parserFacade.calls.Load() != 1 {
+		t.Fatalf("initial degraded parse = %+v calls=%d", first, parserFacade.calls.Load())
+	}
+	if err := h.service.ReindexDocument(context.Background(), "u_pipeline", h.kb.ID, doc.ID); err != nil {
+		t.Fatalf("queue degraded reindex: %v", err)
+	}
+	second := waitPipelineDocument(t, h.store, doc.ID, func(record *store.RAGDocumentRecord) bool {
+		return record.Status == "DONE" && record.ActiveVersion > first.ActiveVersion
+	})
+	if !second.Degraded || parserFacade.calls.Load() != 2 {
+		t.Fatalf("degraded artifact was reused: result=%+v calls=%d", second, parserFacade.calls.Load())
 	}
 }
 

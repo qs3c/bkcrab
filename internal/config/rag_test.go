@@ -36,7 +36,8 @@ func TestRAGAdvancedDefaultsAndSearchContentValidation(t *testing.T) {
 		t.Fatalf("RAG feature flags must default off: %+v", cfg.Features)
 	}
 	if cfg.DocumentAI.APIType != "openai-compatible" || cfg.DocumentAI.TimeoutMS <= 0 ||
-		cfg.DocumentAI.VisionConcurrency <= 0 || cfg.DocumentAI.EnrichmentConcurrency <= 0 {
+		cfg.DocumentAI.VisionConcurrency <= 0 || cfg.DocumentAI.EnrichmentConcurrency <= 0 ||
+		cfg.DocumentAI.ResponseFormat != RAGDocumentAIResponseFormatJSONSchema {
 		t.Fatalf("DocumentAI defaults = %+v", cfg.DocumentAI)
 	}
 	if cfg.ParserSidecar.TimeoutMS != 600_000 {
@@ -64,6 +65,11 @@ func TestRAGAdvancedDefaultsAndSearchContentValidation(t *testing.T) {
 	cfg.Limits.MaxSearchContentBytes = RAGMilvusContentMaxLength + 1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("maxSearchContentBytes above Milvus VarChar maxLength should fail validation")
+	}
+	cfg.Limits.MaxSearchContentBytes = RAGMilvusContentMaxLength
+	cfg.DocumentAI.ResponseFormat = "unsupported"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "responseFormat") {
+		t.Fatalf("unsupported DocumentAI response format validation error = %v", err)
 	}
 }
 
@@ -114,6 +120,7 @@ func TestRAGAdvancedEnvironmentOverlay(t *testing.T) {
 	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_API_KEY", "document-ai-secret")
 	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_VISION_MODEL", "vision-test")
 	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_TEXT_MODEL", "text-test")
+	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_RESPONSE_FORMAT", "json_object")
 	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_TIMEOUT_MS", "90000")
 	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_VISION_CONCURRENCY", "3")
 	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_ENRICHMENT_CONCURRENCY", "5")
@@ -136,7 +143,9 @@ func TestRAGAdvancedEnvironmentOverlay(t *testing.T) {
 	}
 	if dst.DocumentAI.Endpoint != "http://document-ai.internal/v1" ||
 		dst.DocumentAI.APIKey != "document-ai-secret" || dst.DocumentAI.VisionModel != "vision-test" ||
-		dst.DocumentAI.TextModel != "text-test" || dst.DocumentAI.TimeoutMS != 90000 ||
+		dst.DocumentAI.TextModel != "text-test" ||
+		dst.DocumentAI.ResponseFormat != RAGDocumentAIResponseFormatJSONObject ||
+		dst.DocumentAI.TimeoutMS != 90000 ||
 		dst.DocumentAI.VisionConcurrency != 3 || dst.DocumentAI.EnrichmentConcurrency != 5 ||
 		!dst.DocumentAI.AllowPrivateEndpoint || len(dst.DocumentAI.AllowedEndpointHosts) != 2 {
 		t.Fatalf("DocumentAI env overlay mismatch: endpoint=%q visionModel=%q textModel=%q timeout=%d visionConcurrency=%d enrichmentConcurrency=%d allowPrivate=%v hosts=%v",

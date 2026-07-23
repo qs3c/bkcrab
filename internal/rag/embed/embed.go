@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-const batchSize = 16
+// The bundled llama.cpp embedding service runs with one parallel slot. Keep
+// each request small enough that sequential prompt processing remains below
+// the client timeout even for near-limit chunks.
+const batchSize = 8
 const maxEmbeddingResponseBytes = 32 << 20
 
 // endpointError preserves the HTTP status through error wrapping so callers

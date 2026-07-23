@@ -772,6 +772,7 @@ type RAGDocumentAICfg struct {
 	APIKey                  string   `json:"apiKey,omitempty"`
 	VisionModel             string   `json:"visionModel,omitempty"`
 	TextModel               string   `json:"textModel,omitempty"`
+	ResponseFormat          string   `json:"responseFormat,omitempty"`
 	TimeoutMS               int      `json:"timeoutMs,omitempty"`
 	VisionConcurrency       int      `json:"visionConcurrency,omitempty"`
 	EnrichmentConcurrency   int      `json:"enrichmentConcurrency,omitempty"`
@@ -790,6 +791,7 @@ func (c RAGDocumentAICfg) LogValue() slog.Value {
 		slog.String("endpoint", c.Endpoint),
 		slog.String("visionModel", c.VisionModel),
 		slog.String("textModel", c.TextModel),
+		slog.String("responseFormat", c.ResponseFormat),
 		slog.Int("timeoutMs", c.TimeoutMS),
 		slog.Int("visionConcurrency", c.VisionConcurrency),
 		slog.Int("enrichmentConcurrency", c.EnrichmentConcurrency),
@@ -797,6 +799,11 @@ func (c RAGDocumentAICfg) LogValue() slog.Value {
 		slog.Bool("allowPrivateEndpoint", c.AllowPrivateEndpoint),
 	)
 }
+
+const (
+	RAGDocumentAIResponseFormatJSONSchema = "json_schema"
+	RAGDocumentAIResponseFormatJSONObject = "json_object"
+)
 
 type RAGParserSidecarCfg struct {
 	Endpoint  string `json:"endpoint,omitempty"`
@@ -964,6 +971,9 @@ func (c *RAGCfg) ApplyDefaults() {
 	if c.DocumentAI.APIType == "" {
 		c.DocumentAI.APIType = "openai-compatible"
 	}
+	if c.DocumentAI.ResponseFormat == "" {
+		c.DocumentAI.ResponseFormat = RAGDocumentAIResponseFormatJSONSchema
+	}
 	if c.DocumentAI.TimeoutMS <= 0 {
 		c.DocumentAI.TimeoutMS = 120_000
 	}
@@ -974,7 +984,7 @@ func (c *RAGCfg) ApplyDefaults() {
 		c.DocumentAI.EnrichmentConcurrency = 4
 	}
 	if c.DocumentAI.VisionPromptVersion == "" {
-		c.DocumentAI.VisionPromptVersion = "vision-v1"
+		c.DocumentAI.VisionPromptVersion = "vision-v3"
 	}
 	if c.DocumentAI.EnrichmentPromptVersion == "" {
 		c.DocumentAI.EnrichmentPromptVersion = "enrichment-v1"
@@ -1085,6 +1095,11 @@ func (c *RAGCfg) ApplyDefaults() {
 func (c RAGCfg) Validate() error {
 	if c.DocumentAI.APIType != "" && c.DocumentAI.APIType != "openai-compatible" {
 		return fmt.Errorf("rag.documentAI.apiType %q is unsupported", c.DocumentAI.APIType)
+	}
+	if c.DocumentAI.ResponseFormat != "" &&
+		c.DocumentAI.ResponseFormat != RAGDocumentAIResponseFormatJSONSchema &&
+		c.DocumentAI.ResponseFormat != RAGDocumentAIResponseFormatJSONObject {
+		return fmt.Errorf("rag.documentAI.responseFormat %q is unsupported", c.DocumentAI.ResponseFormat)
 	}
 	if c.Limits.MaxSearchContentBytes > RAGMilvusContentMaxLength {
 		return fmt.Errorf("rag.limits.maxSearchContentBytes=%d exceeds Milvus content maxLength=%d",

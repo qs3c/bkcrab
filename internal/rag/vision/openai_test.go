@@ -81,7 +81,9 @@ func TestOpenAIPageRepairBudgetAndCache(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if request["response_format"] == nil || request["max_tokens"].(float64) != 512 {
+		responseFormat, _ := request["response_format"].(map[string]any)
+		if responseFormat["type"] != config.RAGDocumentAIResponseFormatJSONObject ||
+			responseFormat["json_schema"] != nil || request["max_tokens"].(float64) != 512 {
 			http.Error(w, "missing structured-output bounds", http.StatusBadRequest)
 			return
 		}
@@ -96,6 +98,20 @@ func TestOpenAIPageRepairBudgetAndCache(t *testing.T) {
 			http.Error(w, "schema missing from system prompt", http.StatusBadRequest)
 			return
 		}
+		if call == 2 && (!strings.Contains(system, "Every visuals[].key") ||
+			!strings.Contains(system, "exactly one matching visuals entry")) {
+			http.Error(w, "page repair semantic contract missing", http.StatusBadRequest)
+			return
+		}
+		if call == 2 {
+			user, _ := messages[1].(map[string]any)["content"].(string)
+			var repair map[string]any
+			if err := json.Unmarshal([]byte(user), &repair); err != nil ||
+				!strings.Contains(fmt.Sprint(repair["validationError"]), `visual marker "missing"`) {
+				http.Error(w, "validator feedback missing from repair request", http.StatusBadRequest)
+				return
+			}
+		}
 		if call == 1 {
 			writeOpenAIResponse(t, w, `{"markdown":"![x](rag-visual://missing)","visuals":[]}`)
 			return
@@ -105,7 +121,9 @@ func TestOpenAIPageRepairBudgetAndCache(t *testing.T) {
 	defer server.Close()
 
 	cache := NewMemoryCache(DefaultSchemaLimits())
-	client, err := NewOpenAICompatible(documentAIConfigForServer(t, server.URL), documentAILimits(), cache)
+	cfg := documentAIConfigForServer(t, server.URL)
+	cfg.ResponseFormat = config.RAGDocumentAIResponseFormatJSONObject
+	client, err := NewOpenAICompatible(cfg, documentAILimits(), cache)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
@@ -137,6 +155,88 @@ func TestOpenAIPageRepairBudgetAndCache(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("cache hit called provider, calls=%d", calls.Load())
+	}
+}
+
+func TestOpenAIPageRepairUsesLatestValidationFailure(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := calls.Add(1)
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if call > 1 {
+			messages := request["messages"].([]any)
+			user, _ := messages[1].(map[string]any)["content"].(string)
+			var repair map[string]any
+			if err := json.Unmarshal([]byte(user), &repair); err != nil {
+				http.Error(w, "invalid repair message", http.StatusBadRequest)
+				return
+			}
+			task := fmt.Sprint(repair["task"])
+			validationError := fmt.Sprint(repair["validationError"])
+			if call == 2 && (!strings.Contains(validationError, "trailing JSON") ||
+				!strings.Contains(task, "exactly one JSON object")) {
+				http.Error(w, "missing structural repair guidance", http.StatusBadRequest)
+				return
+			}
+			if call == 3 && (!strings.Contains(validationError, "forbidden URI") ||
+				!strings.Contains(task, "[redacted-url]")) {
+				http.Error(w, "missing URL-redaction repair guidance", http.StatusBadRequest)
+				return
+			}
+		}
+		switch call {
+		case 1:
+			writeOpenAIResponse(t, w, `{"markdown":"page","visuals":[]} trailing`)
+		case 2:
+			writeOpenAIResponse(t, w, `{"markdown":"https://example.invalid","visuals":[]}`)
+		default:
+			writeOpenAIResponse(t, w, `{"markdown":"[redacted-url]","visuals":[]}`)
+		}
+	}))
+	defer server.Close()
+
+	cfg := documentAIConfigForServer(t, server.URL)
+	cfg.ResponseFormat = config.RAGDocumentAIResponseFormatJSONObject
+	client, err := NewOpenAICompatible(cfg, documentAILimits(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := NormalizeImage(context.Background(), testPNG(t, 12, 12), "image/png", client.ImageLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Scope = CacheScope{UserID: "u_1", KBID: "kb_1", DocID: "doc_1"}
+	input.Format = "pdf"
+	input.Location = document.SourceLocation{Kind: document.LocationPage, Index: 1, Label: "page 1"}
+	ledger := &fakeBudgetLedger{}
+	if _, err := client.TranscribePage(context.Background(), PageInput{Image: input}, newFakeTaskBudget(ledger)); err != nil {
+		t.Fatalf("transcribe after iterative repairs: %v", err)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("provider calls=%d, want initial plus two repairs", calls.Load())
+	}
+	ledger.mu.Lock()
+	commits := ledger.commits
+	ledger.mu.Unlock()
+	if commits != 3 {
+		t.Fatalf("all provider calls must be charged, commits=%d", commits)
+	}
+}
+
+func TestOpenAIResponseFormatChangesProviderFingerprint(t *testing.T) {
+	cfg := documentAIConfigForServer(t, "https://document-ai.example")
+	cfg.AllowPrivateEndpoint = false
+	cfg.AllowedEndpointHosts = []string{"document-ai.example"}
+	cfg.ResponseFormat = config.RAGDocumentAIResponseFormatJSONSchema
+	schemaFingerprint := ProviderFingerprint(cfg)
+	cfg.ResponseFormat = config.RAGDocumentAIResponseFormatJSONObject
+	objectFingerprint := ProviderFingerprint(cfg)
+	if schemaFingerprint == objectFingerprint {
+		t.Fatal("DocumentAI response format must participate in the provider fingerprint")
 	}
 }
 
@@ -262,7 +362,9 @@ func callTestImage(t *testing.T, client *Client) (ImageDescription, error) {
 func TestProviderErrorClassification(t *testing.T) {
 	for _, status := range []int{http.StatusTooManyRequests, http.StatusBadGateway} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			var calls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
 				http.Error(w, "provider unavailable", status)
 			}))
 			defer server.Close()
@@ -273,7 +375,67 @@ func TestProviderErrorClassification(t *testing.T) {
 			if _, err := callTestImage(t, client); err == nil || !IsRetryable(err) {
 				t.Fatalf("status %d error = %v, want retryable", status, err)
 			}
+			if calls.Load() != documentAIMaxTransientAttempts {
+				t.Fatalf("status %d calls=%d, want %d bounded attempts", status, calls.Load(), documentAIMaxTransientAttempts)
+			}
 		})
+	}
+}
+
+func TestOpenAITransientFailureRetriesThenSucceeds(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) < documentAIMaxTransientAttempts {
+			http.Error(w, "provider unavailable", http.StatusInternalServerError)
+			return
+		}
+		writeOpenAIResponse(t, w, `{"caption":"figure","ocrText":"","kind":"diagram","decorative":false,"confidence":0.8}`)
+	}))
+	defer server.Close()
+
+	client, err := NewOpenAICompatible(documentAIConfigForServer(t, server.URL), documentAILimits(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := &fakeBudgetLedger{}
+	input, err := NormalizeImage(context.Background(), testPNG(t, 4, 4), "image/png", client.ImageLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Format = "docx"
+	input.Location = document.SourceLocation{Kind: document.LocationDocument, Label: "document"}
+	got, err := client.DescribeImage(context.Background(), input, newFakeTaskBudget(ledger))
+	if err != nil {
+		t.Fatalf("retrying transient provider failure: %v", err)
+	}
+	if got.Caption != "figure" || calls.Load() != documentAIMaxTransientAttempts {
+		t.Fatalf("result=%+v calls=%d", got, calls.Load())
+	}
+	ledger.mu.Lock()
+	commits := ledger.commits
+	ledger.mu.Unlock()
+	if commits != documentAIMaxTransientAttempts {
+		t.Fatalf("all transient attempts must be charged, commits=%d", commits)
+	}
+}
+
+func TestOpenAINonRetryableFailureIsNotRetried(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		http.Error(w, "invalid request", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client, err := NewOpenAICompatible(documentAIConfigForServer(t, server.URL), documentAILimits(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callTestImage(t, client); err == nil || IsRetryable(err) {
+		t.Fatalf("non-retryable provider error=%v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("non-retryable provider calls=%d, want 1", calls.Load())
 	}
 }
 

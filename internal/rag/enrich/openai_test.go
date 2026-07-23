@@ -156,7 +156,9 @@ func TestOpenAIEnrichmentPromptRepairBudgetAndCache(t *testing.T) {
 				t.Errorf("raw data changed or escaped outside JSON: %#v", decoded)
 			}
 		}
-		if request["response_format"] == nil || request["max_tokens"].(float64) != 256 {
+		responseFormat, _ := request["response_format"].(map[string]any)
+		if responseFormat["type"] != config.RAGDocumentAIResponseFormatJSONObject ||
+			responseFormat["json_schema"] != nil || request["max_tokens"].(float64) != 256 {
 			t.Errorf("typed/limited request missing: %#v", request)
 		}
 		if call == 1 {
@@ -168,7 +170,9 @@ func TestOpenAIEnrichmentPromptRepairBudgetAndCache(t *testing.T) {
 	defer server.Close()
 
 	cache := NewMemoryCache(DefaultSchemaLimits())
-	client, err := NewOpenAICompatible(documentAIConfigForServer(t, server.URL), documentAILimits(), cache)
+	cfg := documentAIConfigForServer(t, server.URL)
+	cfg.ResponseFormat = config.RAGDocumentAIResponseFormatJSONObject
+	client, err := NewOpenAICompatible(cfg, documentAILimits(), cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,6 +195,71 @@ func TestOpenAIEnrichmentPromptRepairBudgetAndCache(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("cache hit called provider, calls=%d", calls.Load())
+	}
+}
+
+func TestOpenAIEnrichmentRepairUsesLatestValidationFailure(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := calls.Add(1)
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if call > 1 {
+			messages := request["messages"].([]any)
+			user, _ := messages[1].(map[string]any)["content"].(string)
+			var repair map[string]any
+			if err := json.Unmarshal([]byte(user), &repair); err != nil {
+				http.Error(w, "invalid repair payload", http.StatusBadRequest)
+				return
+			}
+			task, validationError := fmt.Sprint(repair["task"]), fmt.Sprint(repair["validationError"])
+			if call == 2 && (!strings.Contains(validationError, "trailing JSON") ||
+				!strings.Contains(task, "exactly one JSON object")) {
+				http.Error(w, "missing trailing JSON repair feedback", http.StatusBadRequest)
+				return
+			}
+			if call == 3 && (!strings.Contains(validationError, "unknown field") ||
+				!strings.Contains(task, "Delete every property")) {
+				http.Error(w, "missing unknown-field repair feedback", http.StatusBadRequest)
+				return
+			}
+		}
+		switch call {
+		case 1:
+			writeOpenAIResponse(t, w, validTableOutput()+` trailing`)
+		case 2:
+			writeOpenAIResponse(t, w, strings.TrimSuffix(validTableOutput(), "}")+`,"extra":"remove me"}`)
+		default:
+			writeOpenAIResponse(t, w, validTableOutput())
+		}
+	}))
+	defer server.Close()
+
+	cfg := documentAIConfigForServer(t, server.URL)
+	cfg.ResponseFormat = config.RAGDocumentAIResponseFormatJSONObject
+	client, err := NewOpenAICompatible(cfg, documentAILimits(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := &testBudgetLedger{}
+	block := EnrichableBlock{
+		Kind: BlockTable, RawContent: "| region | capacity |\n|---|---|\n| east | 9 GiB |",
+		TokenBudget: 256, ByteBudget: 4096,
+		Scope: CacheScope{UserID: "user", KBID: "kb", DocID: "doc"},
+	}
+	value, err := client.Enrich(context.Background(), block, testTaskBudget(ledger))
+	if err != nil {
+		t.Fatalf("enrich after iterative repairs: %v", err)
+	}
+	if value.Table == nil || calls.Load() != 3 {
+		t.Fatalf("result=%+v calls=%d, want initial plus two repairs", value, calls.Load())
+	}
+	reserved, sent, commits, _ := ledger.counts()
+	if reserved != 3 || sent != 3 || commits != 3 {
+		t.Fatalf("all iterative attempts must be charged: reserve=%d sent=%d commit=%d", reserved, sent, commits)
 	}
 }
 
@@ -289,8 +358,8 @@ func TestOpenAIInvalidJSONRepairsOnlyOnce(t *testing.T) {
 	if !errors.Is(err, ErrInvalidResponse) {
 		t.Fatalf("invalid JSON should be a typed soft failure: %v", err)
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("repair attempts=%d, want initial+one repair", calls.Load())
+	if calls.Load() != 1+documentAITextMaxRepairAttempts {
+		t.Fatalf("repair attempts=%d, want initial+%d repairs", calls.Load(), documentAITextMaxRepairAttempts)
 	}
 }
 
@@ -303,9 +372,10 @@ func TestOpenAIRepairRequestBodyLimitAndRedirectArePolicyErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 		client.maxRequestBytes = 128
-		_, err = client.repairRequest(BlockTable, []byte(strings.Repeat("\x01", 128)), EnrichableBlock{
-			Kind: BlockTable, TokenBudget: 128, ByteBudget: 1024,
-		})
+		_, err = client.repairRequest(
+			BlockTable, []byte(strings.Repeat("\x01", 128)), ErrInvalidResponse,
+			EnrichableBlock{Kind: BlockTable, TokenBudget: 128, ByteBudget: 1024}, 1,
+		)
 		var typed *vision.Error
 		if !errors.As(err, &typed) || typed.Kind != vision.ErrorPolicy || vision.IsRetryable(err) {
 			t.Fatalf("repair body error=%v typed=%+v retryable=%v", err, typed, vision.IsRetryable(err))

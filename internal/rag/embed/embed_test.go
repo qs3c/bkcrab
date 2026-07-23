@@ -69,11 +69,12 @@ func TestEmbedBatchesAndDims(t *testing.T) {
 	if err != nil || len(vectors) != len(texts) {
 		t.Fatalf("Embed returned %d vectors: %v", len(vectors), err)
 	}
-	if len(batches) != 2 || len(batches[0]) != 16 || len(batches[1]) != 4 {
+	if len(batches) != 3 || len(batches[0]) != 8 || len(batches[1]) != 8 || len(batches[2]) != 4 {
 		t.Fatalf("unexpected batches: %v", batches)
 	}
-	if vectors[0][0] != 0 || vectors[15][0] != 15 || vectors[16][0] != 0 {
-		t.Fatalf("vectors are not in input order: first values %v/%v/%v", vectors[0][0], vectors[15][0], vectors[16][0])
+	if vectors[0][0] != 0 || vectors[7][0] != 7 || vectors[8][0] != 0 || vectors[16][0] != 0 {
+		t.Fatalf("vectors are not in input order: first values %v/%v/%v/%v",
+			vectors[0][0], vectors[7][0], vectors[8][0], vectors[16][0])
 	}
 }
 

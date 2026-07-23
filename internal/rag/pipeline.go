@@ -836,7 +836,8 @@ func (s *Service) loadOrParseArtifact(
 				}
 				if reused, hit, loadErr := persister.LoadParsedArtifact(ctx, reuseRequest); loadErr != nil {
 					return nil, false, "", fmt.Errorf("load active parsed artifact cache: %w", loadErr)
-				} else if hit && parsedArtifactMatchesSource(reused, doc, version) {
+				} else if hit && parsedArtifactMatchesSource(reused, doc, version) &&
+					!parsedArtifactHasDegradedWarnings(reused) {
 					recorded, recordErr := s.st.RecordRAGDocumentParseArtifact(ctx, fence, reuseKey)
 					if recordErr != nil {
 						return nil, false, "", fmt.Errorf("record reused parsed artifact: %w", recordErr)
@@ -879,7 +880,8 @@ func (s *Service) loadOrParseArtifact(
 		})
 		return nil, false, "", fmt.Errorf("load parsed artifact cache: %w", err)
 	}
-	if hit && parsedArtifactMatchesSource(artifact, doc, version) {
+	if hit && parsedArtifactMatchesSource(artifact, doc, version) &&
+		!parsedArtifactHasDegradedWarnings(artifact) {
 		telemetry.Emit(ctx, s.telemetry, telemetry.EventResultCache, telemetry.Fields{
 			DocID: doc.ID, TaskID: fence.TaskID, DocVersion: fence.DocVersion,
 			ClaimGeneration: fence.ClaimGeneration, CacheKind: "parse_artifact",
@@ -972,6 +974,18 @@ func parsedArtifactMatchesSource(
 	return artifact.Source.DocID == doc.ID && artifact.Source.FileName == doc.FileName &&
 		strings.EqualFold(strings.TrimPrefix(artifact.Source.Format, "."), strings.TrimPrefix(doc.FileType, ".")) &&
 		artifact.Source.ByteSize == doc.FileSize && artifact.Source.SHA256 == version.SourceSHA256
+}
+
+func parsedArtifactHasDegradedWarnings(artifact *document.ParsedArtifact) bool {
+	if artifact == nil {
+		return false
+	}
+	for _, warning := range artifact.Warnings {
+		if warning.Degraded {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeParsedDocument(parsed *document.ParsedDocument) error {
