@@ -9,7 +9,7 @@
   "parser": {
     "name": "markitdown",
     "version": "0.1.6",
-    "wrapperVersion": "office-wrapper-v2"
+    "wrapperVersion": "office-wrapper-v3"
   },
   "entries": [
     {

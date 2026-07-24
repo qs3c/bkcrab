@@ -10,7 +10,7 @@
       "enabled": true,
       "formats": ["docx", "pptx", "xlsx"],
       "markitdownVersion": "0.1.6",
-      "wrapperVersion": "office-wrapper-v2"
+      "wrapperVersion": "office-wrapper-v3"
     },
     "pdf": {
       "enabled": false,

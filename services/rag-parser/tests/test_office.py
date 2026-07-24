@@ -109,7 +109,9 @@ class _VisioProbeConverter:
             document = archive.read("word/document.xml").decode("utf-8")
         token = re.search(r"BKCRABIMAGE[A-F0-9]{32}\d{8}TOKEN", document)
         assert token is not None
-        return f"# Visio\n\n![{token.group(0)}](ignored)\n"
+        # Real MarkItDown output for an embedded Visio OLE object is a plain
+        # sentinel, not Markdown image syntax.
+        return f"# Visio\n\n{token.group(0)}\n"
 
 
 class _BlockingConverter:
@@ -228,6 +230,7 @@ def test_docx_visio_ole_emits_safe_preview_and_downloadable_vsdx(
     )
     assert "rag-asset://occ_document_0000_0001" in markdown
     assert "BKCRABIMAGE" not in markdown
+    assert not bundle.manifest.warnings
     bundle.close()
     assert not request_dir.exists()
 
@@ -670,9 +673,8 @@ def test_random_converter_sentinels_cannot_be_forged_by_document_text(
                 f"{start}converter text{end}"
                 for start, end in zip(starts, ends, strict=True)
             )
-            values.extend(
-                f"![{token}](data:image/png;base64,ignored)" for token in images
-            )
+            values.append(images[0])
+            values.append(f"![{images[1]}](data:image/png;base64,ignored)")
             return "\n\n".join(values)
 
     source = generate_office_golden(tmp_path / "fixtures")["docx"]

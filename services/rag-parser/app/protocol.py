@@ -1083,7 +1083,7 @@ def make_health_document(
                 "enabled": True,
                 "formats": ["docx", "pptx", "xlsx"],
                 "markitdownVersion": "0.1.6",
-                "wrapperVersion": "office-wrapper-v2",
+                "wrapperVersion": "office-wrapper-v3",
             },
             "pdf": {
                 "enabled": bool(pdf_engine),

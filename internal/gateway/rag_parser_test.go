@@ -25,7 +25,7 @@ func TestRAGParserClientConstructionDoesNotProbeAndBackgroundSnapshotPublishesOf
   "serviceVersion":"test-build",
   "limits":{"maxInputBytes":1024,"maxOutputBytes":4096},
   "capabilities":{
-    "office":{"enabled":true,"formats":["docx","pptx","xlsx"],"markitdownVersion":"0.1.6","wrapperVersion":"office-wrapper-v2"},
+    "office":{"enabled":true,"formats":["docx","pptx","xlsx"],"markitdownVersion":"0.1.6","wrapperVersion":"office-wrapper-v3"},
     "pdf":{"enabled":true,"engine":"pypdfium2","engineVersion":"5.12.1"}
   }
 }`))

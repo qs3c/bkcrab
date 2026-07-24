@@ -195,7 +195,7 @@ def _minimal_bundle(payload: bytes, cleanup) -> Bundle:
         protocol_version=PROTOCOL_VERSION,
         bundle_kind="office-convert",
         source=SourceDescriptor("docx", 1, "1" * 64),
-        parser=ParserDescriptor("markitdown", "0.1.6", "office-wrapper-v2"),
+        parser=ParserDescriptor("markitdown", "0.1.6", "office-wrapper-v3"),
         entries=(entry.descriptor(),),
         units=(
             MarkdownUnit(

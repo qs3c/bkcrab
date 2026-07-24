@@ -42,7 +42,7 @@ from .protocol import (
 
 LOGGER = logging.getLogger("rag-parser.office")
 
-WRAPPER_VERSION = "office-wrapper-v2"
+WRAPPER_VERSION = "office-wrapper-v3"
 MARKITDOWN_VERSION = "0.1.6"
 OFFICE_FORMATS = ("docx", "pptx", "xlsx")
 _PACKAGE_ABSOLUTE_ROOTS = {"_rels", "customXml", "docProps", "ppt", "word", "xl"}
@@ -1715,6 +1715,15 @@ def _rewrite_converter_images(
         return f"[图片：{alt}]" if alt else "[图片]"
 
     value = _HTML_RESOURCE_TAG.sub("", _MARKDOWN_IMAGE.sub(replacement, text))
+    # MarkItDown emits sentinels for some embedded objects (notably Visio OLE
+    # previews) as plain text instead of Markdown image alt text. Replace only
+    # the request-scoped, unforgeable tokens that we generated while
+    # instrumenting the document. Natural text that merely resembles a
+    # sentinel remains untouched.
+    for token, marker in token_markers.items():
+        if token in value:
+            value = value.replace(token, marker)
+            seen.add(token)
     return _normalize_markdown(value), seen
 
 
