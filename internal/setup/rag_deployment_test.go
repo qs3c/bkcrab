@@ -16,6 +16,7 @@ func TestRAGDeploymentComposeConstrainsParser(t *testing.T) {
 	raw := deploymentRead(t, filepath.Join(root, "deploy", "docker", "docker-compose.rag.yml"))
 	envExample := deploymentRead(t, filepath.Join(root, "deploy", "docker", ".env.example"))
 	parserRuntime := deploymentRead(t, filepath.Join(root, "services", "rag-parser", "app", "main.py"))
+	parserDockerfile := deploymentRead(t, filepath.Join(root, "services", "rag-parser", "Dockerfile"))
 
 	var document map[string]any
 	if err := yaml.Unmarshal(raw, &document); err != nil {
@@ -40,7 +41,7 @@ func TestRAGDeploymentComposeConstrainsParser(t *testing.T) {
 		"BKCRAB_RAG_LIMITS_MAX_EXTRACTED_BYTES",
 		"BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS",
 		"RAG_PARSER_TEMP_ROOT",
-		"/tmp/rag-parser:size=",
+		"/tmp:size=",
 		"no-new-privileges:true",
 		"cap_drop:",
 		"cpus:",
@@ -49,6 +50,21 @@ func TestRAGDeploymentComposeConstrainsParser(t *testing.T) {
 	)
 
 	parserEnv := deploymentMap(t, parser["environment"], "services.rag-parser.environment")
+	for key, want := range map[string]string{
+		"RAG_PARSER_TEMP_ROOT": "/tmp",
+		"HOME":                 "/tmp",
+		"TMPDIR":               "/tmp",
+		"XDG_CACHE_HOME":       "/tmp/cache",
+	} {
+		if got := deploymentString(t, parserEnv[key], "services.rag-parser.environment."+key); got != want {
+			t.Fatalf("rag-parser %s = %q, want %q", key, got, want)
+		}
+	}
+	// LibreOffice creates its local IPC pipe directly below /tmp. Mounting only
+	// the parser's child directory leaves /tmp on the read-only root filesystem.
+	if strings.Contains(string(raw), "/tmp/rag-parser:size=") {
+		t.Fatal("rag-parser tmpfs must cover /tmp for LibreOffice IPC")
+	}
 	for _, forbidden := range []string{
 		"API_KEY", "SECRET", "PASSWORD", "OBJECT_STORE", "MINIO", "EMBEDDING", "DOCUMENT_AI", "VISION_MODEL",
 	} {
@@ -91,6 +107,15 @@ func TestRAGDeploymentComposeConstrainsParser(t *testing.T) {
 		`"BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS"`,
 		"must match the limit derived from",
 	)
+	deploymentRequireContains(t, parserDockerfile,
+		"RAG_PARSER_TEMP_ROOT=/tmp",
+		"HOME=/tmp",
+		"TMPDIR=/tmp",
+		"XDG_CACHE_HOME=/tmp/cache",
+	)
+	if strings.Contains(string(parserDockerfile), "RAG_PARSER_TEMP_ROOT=/tmp/rag-parser") {
+		t.Fatal("rag-parser image default temp root must keep /tmp writable for LibreOffice IPC")
+	}
 
 	dependsOn := deploymentMap(t, gateway["depends_on"], "services.bkcrab.depends_on")
 	parserDependency := deploymentMap(t, dependsOn["rag-parser"], "bkcrab depends_on rag-parser")
@@ -134,7 +159,12 @@ func TestRAGDeploymentKubernetesConstrainsParser(t *testing.T) {
 		"BKCRAB_RAG_LIMITS_MAX_FILE_MB",
 		"BKCRAB_RAG_LIMITS_MAX_EXTRACTED_BYTES",
 		"BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS",
+		`{ name: RAG_PARSER_TEMP_ROOT, value: "/tmp" }`,
+		"{ name: parser-tmp, mountPath: /tmp }",
 	)
+	if strings.Contains(string(parserManifest), "/tmp/rag-parser") {
+		t.Fatal("Kubernetes parser must mount the whole /tmp directory for LibreOffice IPC")
+	}
 	for _, deprecated := range []string{
 		"name: RAG_PARSER_MAX_INPUT_BYTES",
 		"name: RAG_PARSER_MAX_OUTPUT_BYTES",
@@ -230,7 +260,11 @@ func TestRAGDeploymentHelmConstrainsParser(t *testing.T) {
 		".Values.rag.limits.maxExtractedBytes",
 		"BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS",
 		".Values.rag.limits.parseTimeoutMS",
+		"mountPath: /tmp",
 	)
+	if strings.Contains(string(parser), "/tmp/rag-parser") {
+		t.Fatal("Helm parser must mount the whole /tmp directory for LibreOffice IPC")
+	}
 	for _, deprecated := range []string{
 		"name: RAG_PARSER_MAX_INPUT_BYTES",
 		"name: RAG_PARSER_MAX_OUTPUT_BYTES",

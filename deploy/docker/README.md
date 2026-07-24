@@ -32,7 +32,8 @@ RAG overlay 同时部署固定版本的 `rag-parser`。它只连接专用的
 `rag-parser-internal` 内部网络；BkCrab 同时连接默认网络和该内部网络。
 parser 没有宿主机端口、没有外网出口，也不会收到 embedding、DocumentAI、
 MinIO 或对象存储凭据。容器以 UID/GID 65532 运行，根文件系统只读，丢弃
-全部 Linux capabilities，并只获得有大小上限的 `/tmp/rag-parser` tmpfs。
+全部 Linux capabilities，并只获得有大小上限的 `/tmp` tmpfs。挂载整个临时目录可让
+LibreOffice 在只读根文件系统下创建 EMF 转换所需的本地 IPC 管道。
 
 `.env.example` 中的 parser 限制与主服务 RAG 限制使用同一组规范值。parser
 直接接收 `BKCRAB_RAG_LIMITS_MAX_FILE_MB`、

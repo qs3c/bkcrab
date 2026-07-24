@@ -32,10 +32,10 @@ spec:
           env:
             - { name: RAG_PARSER_SERVICE_VERSION, value: "0.1.0" }
             - { name: RAG_PARSER_PORT, value: "8080" }
-            - { name: RAG_PARSER_TEMP_ROOT, value: "/tmp/rag-parser" }
-            - { name: HOME, value: "/tmp/rag-parser" }
-            - { name: TMPDIR, value: "/tmp/rag-parser" }
-            - { name: XDG_CACHE_HOME, value: "/tmp/rag-parser/cache" }
+            - { name: RAG_PARSER_TEMP_ROOT, value: "/tmp" }
+            - { name: HOME, value: "/tmp" }
+            - { name: TMPDIR, value: "/tmp" }
+            - { name: XDG_CACHE_HOME, value: "/tmp/cache" }
             - name: BKCRAB_RAG_LIMITS_MAX_FILE_MB
               valueFrom: { configMapKeyRef: { name: bkcrab-config, key: BKCRAB_RAG_LIMITS_MAX_FILE_MB } }
             - name: BKCRAB_RAG_LIMITS_MAX_EXTRACTED_BYTES
@@ -62,7 +62,7 @@ spec:
             capabilities:
               drop: ["ALL"]
           volumeMounts:
-            - { name: parser-tmp, mountPath: /tmp/rag-parser }
+            - { name: parser-tmp, mountPath: /tmp }
           readinessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 3

@@ -60,10 +60,10 @@ services:
     environment:
       RAG_PARSER_SERVICE_VERSION: "${RAG_PARSER_SERVICE_VERSION:-0.1.0}"
       RAG_PARSER_PORT: "8080"
-      RAG_PARSER_TEMP_ROOT: /tmp/rag-parser
-      HOME: /tmp/rag-parser
-      TMPDIR: /tmp/rag-parser
-      XDG_CACHE_HOME: /tmp/rag-parser/cache
+      RAG_PARSER_TEMP_ROOT: /tmp
+      HOME: /tmp
+      TMPDIR: /tmp
+      XDG_CACHE_HOME: /tmp/cache
       # The parser derives its byte/second limits from the exact canonical
       # values injected into bkcrab. Legacy RAG_PARSER_* aliases remain
       # supported by the image, but a mismatch is a startup error.
@@ -78,7 +78,7 @@ services:
       RAG_PARSER_MAX_PAGES: "${RAG_MAX_PAGES_PER_DOCUMENT:-300}"
       RAG_PARSER_PDF_RENDER_DPI: "${RAG_PDF_RENDER_DPI:-180}"
     tmpfs:
-      - "/tmp/rag-parser:size=${RAG_PARSER_TMPFS_SIZE_BYTES:-536870912},mode=0700,uid=65532,gid=65532"
+      - "/tmp:size=${RAG_PARSER_TMPFS_SIZE_BYTES:-536870912},mode=0700,uid=65532,gid=65532"
     cap_drop:
       - ALL
     security_opt:

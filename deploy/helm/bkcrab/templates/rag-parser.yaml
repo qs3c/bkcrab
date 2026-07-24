@@ -43,13 +43,13 @@ spec:
         - name: RAG_PARSER_PORT
           value: {{ .Values.rag.parser.port | quote }}
         - name: RAG_PARSER_TEMP_ROOT
-          value: /tmp/rag-parser
+          value: /tmp
         - name: HOME
-          value: /tmp/rag-parser
+          value: /tmp
         - name: TMPDIR
-          value: /tmp/rag-parser
+          value: /tmp
         - name: XDG_CACHE_HOME
-          value: /tmp/rag-parser/cache
+          value: /tmp/cache
         - name: BKCRAB_RAG_LIMITS_MAX_FILE_MB
           value: {{ .Values.rag.limits.maxFileMB | quote }}
         - name: BKCRAB_RAG_LIMITS_MAX_EXTRACTED_BYTES
@@ -77,7 +77,7 @@ spec:
             drop: ["ALL"]
         volumeMounts:
         - name: parser-tmp
-          mountPath: /tmp/rag-parser
+          mountPath: /tmp
         readinessProbe:
           httpGet:
             path: /healthz

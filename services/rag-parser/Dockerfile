@@ -8,7 +8,10 @@ ENV PATH="/opt/rag-parser/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     RAG_PARSER_PORT=8080 \
-    RAG_PARSER_TEMP_ROOT=/tmp/rag-parser \
+    RAG_PARSER_TEMP_ROOT=/tmp \
+    HOME=/tmp \
+    TMPDIR=/tmp \
+    XDG_CACHE_HOME=/tmp/cache \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
@@ -19,8 +22,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --gid 65532 rag-parser \
-    && useradd --uid 65532 --gid 65532 --no-create-home --shell /usr/sbin/nologin rag-parser \
-    && install -d -m 0700 -o rag-parser -g rag-parser /tmp/rag-parser
+    && useradd --uid 65532 --gid 65532 --no-create-home --shell /usr/sbin/nologin rag-parser
 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-editable
