@@ -125,7 +125,7 @@ var (
 	// Stable IDs and parser/model contract versions are not small enums, but
 	// they are still limited to one bounded token. A plus is required by the
 	// checked Office parser contract (for example
-	// office-parser-v1+office-wrapper-v1).
+	// office-parser-v1+office-wrapper-v2).
 	safeToken   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$`)
 	secretToken = regexp.MustCompile(`(?i)(^|[._:+-])(secret|api[_-]?key|object[_-]?key|private[_-]?key|access[_-]?token|authorization|bearer)([._:+-]|$)`)
 )

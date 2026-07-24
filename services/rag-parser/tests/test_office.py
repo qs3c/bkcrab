@@ -11,8 +11,10 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+import olefile
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app.main import Settings, _ParserWork, _run_parser_operation, create_app
 from app.office import (
@@ -92,6 +94,24 @@ class _FakeConverter:
         return f"# Converted {source_format}\n"
 
 
+class _FakeEMFConverter:
+    def convert(self, _source: Path, destination: Path, _request_dir: Path) -> None:
+        Image.new("RGB", (32, 24), (255, 255, 255)).save(destination, format="PNG")
+
+
+class _VisioProbeConverter:
+    def convert(self, source: Path, source_format: str) -> str:
+        assert source_format == "docx"
+        with zipfile.ZipFile(source) as archive:
+            assert "word/embeddings/oleObject1.bin" not in archive.namelist()
+            relationships = archive.read("word/_rels/document.xml.rels")
+            assert b"/oleObject" not in relationships
+            document = archive.read("word/document.xml").decode("utf-8")
+        token = re.search(r"BKCRABIMAGE[A-F0-9]{32}\d{8}TOKEN", document)
+        assert token is not None
+        return f"# Visio\n\n![{token.group(0)}](ignored)\n"
+
+
 class _BlockingConverter:
     def __init__(self, heartbeat: Path) -> None:
         self.heartbeat = heartbeat
@@ -161,6 +181,327 @@ def test_markitdown_wrapper_exposes_only_convert_stream(tmp_path: Path) -> None:
     converter = MarkItDownConverter(engine)
     assert converter.convert(source, "docx").startswith("# Converted")
     assert engine.calls == [(b"PK\x03\x04", ".docx")]
+
+
+def test_docx_visio_ole_emits_safe_preview_and_downloadable_vsdx(
+    tmp_path: Path,
+) -> None:
+    source = FIXTURE_ROOT / "visio-embedded.docx"
+    request_dir = tmp_path / "request-visio"
+    request_dir.mkdir(mode=0o700)
+    preflight = preflight_ooxml(source, "docx", request_dir, _limits())
+    sha256, byte_size = _sha_size(source)
+    bundle = build_office_bundle(
+        original_source=source,
+        sanitized_source=preflight.sanitized_path,
+        source_format="docx",
+        source_sha256=sha256,
+        source_size=byte_size,
+        request_dir=request_dir,
+        converter=_VisioProbeConverter(),
+        emf_converter=_FakeEMFConverter(),
+        limits=_limits(),
+        preflight_warnings=preflight.warnings,
+    )
+    assert len(bundle.manifest.assets) == 1
+    assert bundle.manifest.assets[0].source_kind == "embedded_preview"
+    assert bundle.manifest.assets[0].entry.endswith(".png")
+    assert len(bundle.manifest.attachments) == 1
+    attachment = bundle.manifest.attachments[0]
+    assert attachment.kind == "visio_source"
+    assert attachment.entry.endswith(".vsdx")
+    assert attachment.file_name.endswith(".vsdx")
+    assert bundle.manifest.occurrences[0].attachment_local_id == attachment.local_id
+    payloads = {payload.path: payload for payload in bundle.payloads}
+    vsdx = payloads[attachment.entry].opener().read()
+    assert vsdx.startswith(b"PK\x03\x04")
+    with zipfile.ZipFile(source) as office_archive:
+        embedded = office_archive.read("word/embeddings/oleObject1.bin")
+    with olefile.OleFileIO(io.BytesIO(embedded)) as ole:
+        assert vsdx == ole.openstream("Package").read()
+    with zipfile.ZipFile(io.BytesIO(vsdx)) as archive:
+        assert "visio/document.xml" in archive.namelist()
+    markdown = next(
+        payload.opener().read().decode("utf-8")
+        for payload in bundle.payloads
+        if payload.path.startswith("units/")
+    )
+    assert "rag-asset://occ_document_0000_0001" in markdown
+    assert "BKCRABIMAGE" not in markdown
+    bundle.close()
+    assert not request_dir.exists()
+
+
+def test_unknown_internal_ole_is_not_allowlisted_as_visio(tmp_path: Path) -> None:
+    source = FIXTURE_ROOT / "visio-embedded.docx"
+    with zipfile.ZipFile(source) as archive:
+        document = ET.fromstring(archive.read("word/document.xml"))
+    ole = next(
+        node for node in document.iter() if node.tag.rsplit("}", 1)[-1] == "OLEObject"
+    )
+    ole.set("ProgID", "Excel.Sheet.12")
+    changed = tmp_path / "unknown-ole.docx"
+    _rewrite_zip(
+        source,
+        changed,
+        replace={
+            "word/document.xml": ET.tostring(
+                document, encoding="utf-8", xml_declaration=True
+            )
+        },
+    )
+    request_dir = tmp_path / "request"
+    request_dir.mkdir(mode=0o700)
+    preflight = preflight_ooxml(changed, "docx", request_dir, _limits())
+    sha256, byte_size = _sha_size(changed)
+    with pytest.raises(OfficeError, match="only embedded Visio"):
+        build_office_bundle(
+            original_source=changed,
+            sanitized_source=preflight.sanitized_path,
+            source_format="docx",
+            source_sha256=sha256,
+            source_size=byte_size,
+            request_dir=request_dir,
+            converter=_FakeConverter(),
+            emf_converter=_FakeEMFConverter(),
+            limits=_limits(),
+        )
+
+
+def test_corrupt_visio_ole_does_not_reach_markitdown(tmp_path: Path) -> None:
+    source = FIXTURE_ROOT / "visio-embedded.docx"
+    changed = tmp_path / "corrupt-visio.docx"
+    _rewrite_zip(
+        source,
+        changed,
+        replace={"word/embeddings/oleObject1.bin": b"not-an-ole-package"},
+    )
+    request_dir = tmp_path / "request"
+    request_dir.mkdir(mode=0o700)
+    preflight = preflight_ooxml(changed, "docx", request_dir, _limits())
+    sha256, byte_size = _sha_size(changed)
+
+    class _MustNotRun:
+        def convert(self, _source: Path, _source_format: str) -> str:
+            raise AssertionError("corrupt OLE must fail before MarkItDown")
+
+    with pytest.raises(OfficeError, match="no valid VSDX"):
+        build_office_bundle(
+            original_source=changed,
+            sanitized_source=preflight.sanitized_path,
+            source_format="docx",
+            source_sha256=sha256,
+            source_size=byte_size,
+            request_dir=request_dir,
+            converter=_MustNotRun(),
+            emf_converter=_FakeEMFConverter(),
+            limits=_limits(),
+        )
+
+
+def _visio_fixture_parts() -> tuple[bytes, bytes]:
+    with zipfile.ZipFile(FIXTURE_ROOT / "visio-embedded.docx") as archive:
+        return (
+            archive.read("word/embeddings/oleObject1.bin"),
+            archive.read("word/media/image1.emf"),
+        )
+
+
+def test_pptx_visio_object_uses_its_nested_preview_and_attachment(
+    tmp_path: Path,
+) -> None:
+    source = generate_all(tmp_path / "fixtures")["pptx"]
+    ole_payload, emf_payload = _visio_fixture_parts()
+    with zipfile.ZipFile(source) as archive:
+        slide_name = next(
+            name
+            for name in archive.namelist()
+            if name.startswith("ppt/slides/slide") and name.endswith(".xml")
+        )
+        rels_name = (
+            f"{Path(slide_name).parent.as_posix()}/_rels/"
+            f"{Path(slide_name).name}.rels"
+        )
+        slide = ET.fromstring(archive.read(slide_name))
+        relationships = ET.fromstring(archive.read(rels_name))
+    ole = ET.SubElement(
+        slide,
+        "oleObj",
+        {f"{{{DOC_REL_NS}}}id": "rIdVisioOLE", "progId": "Visio.Drawing.15"},
+    )
+    ET.SubElement(ole, "embed")
+    picture = ET.SubElement(ole, "pic")
+    ET.SubElement(
+        picture,
+        "blip",
+        {f"{{{DOC_REL_NS}}}embed": "rIdVisioPreview"},
+    )
+    ET.SubElement(
+        relationships,
+        f"{{{REL_NS}}}Relationship",
+        {
+            "Id": "rIdVisioOLE",
+            "Type": f"{DOC_REL_NS}/oleObject",
+            "Target": "../embeddings/oleObject-visio.bin",
+        },
+    )
+    ET.SubElement(
+        relationships,
+        f"{{{REL_NS}}}Relationship",
+        {
+            "Id": "rIdVisioPreview",
+            "Type": f"{DOC_REL_NS}/image",
+            "Target": "../media/visio-preview.emf",
+        },
+    )
+    changed = tmp_path / "visio.pptx"
+    _rewrite_zip(
+        source,
+        changed,
+        replace={
+            slide_name: ET.tostring(slide, encoding="utf-8", xml_declaration=True),
+            rels_name: ET.tostring(
+                relationships, encoding="utf-8", xml_declaration=True
+            ),
+        },
+        additions={
+            "ppt/embeddings/oleObject-visio.bin": ole_payload,
+            "ppt/media/visio-preview.emf": emf_payload,
+        },
+    )
+    request_dir = tmp_path / "request-pptx"
+    request_dir.mkdir(mode=0o700)
+    preflight = preflight_ooxml(changed, "pptx", request_dir, _limits())
+    sha256, byte_size = _sha_size(changed)
+    bundle = build_office_bundle(
+        original_source=changed,
+        sanitized_source=preflight.sanitized_path,
+        source_format="pptx",
+        source_sha256=sha256,
+        source_size=byte_size,
+        request_dir=request_dir,
+        converter=_FakeConverter(),
+        emf_converter=_FakeEMFConverter(),
+        limits=_limits(),
+    )
+    assert len(bundle.manifest.attachments) == 1
+    assert any(
+        occurrence.attachment_local_id == bundle.manifest.attachments[0].local_id
+        for occurrence in bundle.manifest.occurrences
+    )
+    bundle.close()
+
+
+def test_xlsx_visio_object_resolves_vml_preview_by_shape_id(tmp_path: Path) -> None:
+    source = generate_all(tmp_path / "fixtures")["xlsx"]
+    ole_payload, emf_payload = _visio_fixture_parts()
+    with zipfile.ZipFile(source) as archive:
+        sheet_name = next(
+            name
+            for name in archive.namelist()
+            if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")
+        )
+        rels_name = (
+            f"{Path(sheet_name).parent.as_posix()}/_rels/"
+            f"{Path(sheet_name).name}.rels"
+        )
+        sheet = ET.fromstring(archive.read(sheet_name))
+        relationships = ET.fromstring(archive.read(rels_name))
+    ET.SubElement(
+        sheet,
+        "oleObject",
+        {
+            f"{{{DOC_REL_NS}}}id": "rIdVisioOLE",
+            "progId": "Visio.Drawing.15",
+            "shapeId": "1025",
+        },
+    )
+    ET.SubElement(
+        sheet,
+        "legacyDrawing",
+        {f"{{{DOC_REL_NS}}}id": "rIdVisioVML"},
+    )
+    ET.SubElement(
+        relationships,
+        f"{{{REL_NS}}}Relationship",
+        {
+            "Id": "rIdVisioOLE",
+            "Type": f"{DOC_REL_NS}/oleObject",
+            "Target": "../embeddings/oleObject-visio.bin",
+        },
+    )
+    ET.SubElement(
+        relationships,
+        f"{{{REL_NS}}}Relationship",
+        {
+            "Id": "rIdVisioVML",
+            "Type": f"{DOC_REL_NS}/vmlDrawing",
+            "Target": "../drawings/vmlDrawing-visio.vml",
+        },
+    )
+    vml = ET.Element("xml")
+    shape = ET.SubElement(vml, "shape", {"id": "_x0000_s1025"})
+    ET.SubElement(
+        shape,
+        "imagedata",
+        {f"{{{DOC_REL_NS}}}id": "rIdVisioPreview"},
+    )
+    client_data = ET.SubElement(shape, "ClientData")
+    ET.SubElement(client_data, "Anchor").text = "1, 0, 2, 0, 3, 0, 8, 0"
+    vml_relationships = ET.Element(f"{{{REL_NS}}}Relationships")
+    ET.SubElement(
+        vml_relationships,
+        f"{{{REL_NS}}}Relationship",
+        {
+            "Id": "rIdVisioPreview",
+            "Type": f"{DOC_REL_NS}/image",
+            "Target": "../media/visio-preview.emf",
+        },
+    )
+    changed = tmp_path / "visio.xlsx"
+    _rewrite_zip(
+        source,
+        changed,
+        replace={
+            sheet_name: ET.tostring(sheet, encoding="utf-8", xml_declaration=True),
+            rels_name: ET.tostring(
+                relationships, encoding="utf-8", xml_declaration=True
+            ),
+        },
+        additions={
+            "xl/embeddings/oleObject-visio.bin": ole_payload,
+            "xl/drawings/vmlDrawing-visio.vml": ET.tostring(
+                vml, encoding="utf-8", xml_declaration=True
+            ),
+            "xl/drawings/_rels/vmlDrawing-visio.vml.rels": ET.tostring(
+                vml_relationships, encoding="utf-8", xml_declaration=True
+            ),
+            "xl/media/visio-preview.emf": emf_payload,
+        },
+    )
+    request_dir = tmp_path / "request-xlsx"
+    request_dir.mkdir(mode=0o700)
+    preflight = preflight_ooxml(changed, "xlsx", request_dir, _limits())
+    sha256, byte_size = _sha_size(changed)
+    bundle = build_office_bundle(
+        original_source=changed,
+        sanitized_source=preflight.sanitized_path,
+        source_format="xlsx",
+        source_sha256=sha256,
+        source_size=byte_size,
+        request_dir=request_dir,
+        converter=_FakeConverter(),
+        emf_converter=_FakeEMFConverter(),
+        limits=_limits(),
+    )
+    visio_occurrences = [
+        occurrence
+        for occurrence in bundle.manifest.occurrences
+        if occurrence.attachment_local_id
+    ]
+    assert len(bundle.manifest.attachments) == len(visio_occurrences) == 1
+    assert visio_occurrences[0].alt_text.startswith("单元格 B3：")
+    bundle.close()
 
 
 @pytest.mark.parametrize("source_format", ["docx", "pptx", "xlsx"])

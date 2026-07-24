@@ -29,6 +29,37 @@ func (s *Server) handleAgentRAGAssetThumbnail(w http.ResponseWriter, r *http.Req
 	s.serveAgentRAGAsset(w, r, rag.AssetThumbnail)
 }
 
+func (s *Server) handleAgentRAGAttachmentDownload(w http.ResponseWriter, r *http.Request) {
+	if !s.requireRAG(w) {
+		return
+	}
+	descriptor, err := s.authorizeAgentSessionRAGAttachment(r)
+	if err != nil {
+		writeRAGAssetError(w, err)
+		return
+	}
+	setRAGAttachmentHeaders(w.Header(), descriptor)
+	if requestETagMatches(r.Header.Get("If-None-Match"), descriptor.ETag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	reader, err := s.rag.OpenAuthorizedAttachment(r.Context(), descriptor)
+	if err != nil {
+		clearRAGAssetHeaders(w.Header())
+		writeRAGAssetError(w, err)
+		return
+	}
+	defer reader.Close()
+	if _, err := io.Copy(w, reader); err != nil {
+		slog.Warn("stream agent RAG attachment",
+			"agent", r.PathValue("agentId"),
+			"session", r.PathValue("sessionId"),
+			"attachment", r.PathValue("attachmentId"),
+			"error", err,
+		)
+	}
+}
+
 func (s *Server) serveAgentRAGAsset(w http.ResponseWriter, r *http.Request, variant rag.AssetVariant) {
 	if !s.requireRAG(w) {
 		return
@@ -145,6 +176,76 @@ func (s *Server) authorizeAgentSessionRAGAsset(r *http.Request, variant rag.Asse
 	return s.rag.AuthorizeAsset(r.Context(), "", assetID, variant)
 }
 
+func (s *Server) authorizeAgentSessionRAGAttachment(r *http.Request) (*rag.AuthorizedAttachment, error) {
+	if s.dataStore == nil {
+		return nil, rag.ErrNotFound
+	}
+	agentID := strings.TrimSpace(r.PathValue("agentId"))
+	sessionID := strings.TrimSpace(r.PathValue("sessionId"))
+	attachmentID := strings.TrimSpace(r.PathValue("attachmentId"))
+	if agentID == "" || sessionID == "" || attachmentID == "" {
+		return nil, rag.ErrNotFound
+	}
+	if s.resolveAgent(r, agentID) == nil {
+		return nil, rag.ErrNotFound
+	}
+	agentRecord, err := s.dataStore.GetAgent(r.Context(), agentID)
+	if err != nil {
+		return nil, agentRAGAssetLookupError(err)
+	}
+	if !currentAgentReadableForRAGAsset(r, agentRecord) {
+		return nil, rag.ErrNotFound
+	}
+	userID := s.effectiveUserID(r)
+	if userID == "" {
+		return nil, rag.ErrNotFound
+	}
+	if _, err := s.dataStore.GetSession(r.Context(), userID, agentID, sessionID); err != nil {
+		return nil, agentRAGAssetLookupError(err)
+	}
+	messages, err := s.dataStore.ListSessionMessages(r.Context(), userID, agentID, sessionID)
+	if err != nil {
+		return nil, agentRAGAssetLookupError(err)
+	}
+	references := persistedAssistantRAGAttachmentRefs(messages, attachmentID)
+	if len(references) == 0 {
+		return nil, rag.ErrNotFound
+	}
+
+	attachment, err := s.dataStore.GetRAGAttachment(r.Context(), attachmentID)
+	if err != nil {
+		return nil, agentRAGAssetLookupError(err)
+	}
+	doc, err := s.dataStore.GetRAGDocument(r.Context(), attachment.DocID)
+	if err != nil {
+		return nil, agentRAGAssetLookupError(err)
+	}
+	kb, err := s.dataStore.GetRAGKB(r.Context(), doc.KBID)
+	if err != nil {
+		return nil, agentRAGAssetLookupError(err)
+	}
+	matched := false
+	for _, ref := range references {
+		if ref.Asset.Attachment == nil ||
+			ref.Asset.Attachment.ID != attachment.ID ||
+			ref.DocID != doc.ID || ref.KBID != kb.ID {
+			continue
+		}
+		asset, lookupErr := s.dataStore.GetRAGAsset(r.Context(), ref.Asset.ID)
+		if lookupErr != nil {
+			continue
+		}
+		if asset.DocID == attachment.DocID {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return nil, rag.ErrNotFound
+	}
+	return s.rag.AuthorizeAttachment(r.Context(), "", attachmentID)
+}
+
 func currentAgentReadableForRAGAsset(r *http.Request, record *store.AgentRecord) bool {
 	if record == nil {
 		return false
@@ -209,6 +310,54 @@ func persistedAssistantRAGAssetRefs(messages []store.SessionMessage, assetID str
 	return matches
 }
 
+func persistedAssistantRAGAttachmentRefs(
+	messages []store.SessionMessage,
+	attachmentID string,
+) []rag.RAGResourceRef {
+	var matches []rag.RAGResourceRef
+	for _, message := range messages {
+		if message.Role != "assistant" || len(message.Metadata) == 0 {
+			continue
+		}
+		value, ok := message.Metadata["ragResources"]
+		if !ok {
+			continue
+		}
+		raw, err := json.Marshal(value)
+		if err != nil || len(raw) == 0 || len(raw) > maxAssistantRAGAssetGrantBytes {
+			continue
+		}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		var refs []rag.RAGResourceRef
+		if err := decoder.Decode(&refs); err != nil ||
+			len(refs) == 0 || len(refs) > maxAssistantRAGAssetGrants {
+			continue
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			continue
+		}
+		valid := true
+		for _, ref := range refs {
+			if !validPersistedRAGResourceRef(ref) {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			continue
+		}
+		for _, ref := range refs {
+			if ref.Asset.Attachment != nil &&
+				ref.Asset.Attachment.ID == attachmentID {
+				matches = append(matches, ref)
+			}
+		}
+	}
+	return matches
+}
+
 func validPersistedRAGResourceRef(ref rag.RAGResourceRef) bool {
 	if strings.TrimSpace(ref.Asset.ID) == "" || ref.Asset.Kind != document.AssetKindImage ||
 		strings.TrimSpace(ref.KBID) == "" || strings.TrimSpace(ref.DocID) == "" || ref.ChunkIndex < 0 ||
@@ -217,6 +366,17 @@ func validPersistedRAGResourceRef(ref rag.RAGResourceRef) bool {
 	}
 	if ref.Asset.MIMEType != "" && !strings.HasPrefix(strings.ToLower(ref.Asset.MIMEType), "image/") {
 		return false
+	}
+	if ref.Asset.Attachment != nil {
+		attachment := ref.Asset.Attachment
+		if strings.TrimSpace(attachment.ID) == "" ||
+			attachment.Kind != document.AttachmentKindVisioSource ||
+			strings.TrimSpace(attachment.FileName) == "" ||
+			!strings.HasSuffix(strings.ToLower(attachment.FileName), ".vsdx") ||
+			attachment.MIMEType != document.MIMETypeVSDX ||
+			attachment.SizeBytes < 1 {
+			return false
+		}
 	}
 	if ref.Asset.Location.Kind != "" {
 		if err := ref.Asset.Location.Validate(); err != nil {

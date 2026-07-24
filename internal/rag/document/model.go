@@ -31,8 +31,12 @@ const (
 	AssetKindImage = "image"
 
 	SourceKindEmbeddedOriginal = "embedded_original"
+	SourceKindEmbeddedPreview  = "embedded_preview"
 	SourceKindPageCrop         = "page_crop"
 	SourceKindScannedPage      = "scanned_page"
+
+	AttachmentKindVisioSource = "visio_source"
+	MIMETypeVSDX              = "application/vnd.ms-visio.drawing"
 
 	DisplayReady       = "ready"
 	DisplayUnavailable = "unavailable"
@@ -169,18 +173,29 @@ type ExtractedAsset struct {
 	BundleEntry   string `json:"-"`
 }
 
+type ExtractedAttachment struct {
+	LocalID       string `json:"localId"`
+	ContentSHA256 string `json:"contentSha256"`
+	Kind          string `json:"kind"`
+	FileName      string `json:"fileName"`
+	MIMEType      string `json:"mimeType"`
+	ByteSize      int64  `json:"byteSize"`
+	BundleEntry   string `json:"-"`
+}
+
 type AssetOccurrence struct {
-	ID           string          `json:"id"`
-	AssetLocalID string          `json:"assetLocalId"`
-	UnitID       string          `json:"unitId"`
-	Order        int             `json:"order"`
-	Location     SourceLocation  `json:"location"`
-	BBox         *NormalizedBBox `json:"bbox,omitempty"`
-	AltText      string          `json:"altText,omitempty"`
-	Caption      string          `json:"caption,omitempty"`
-	OCRText      string          `json:"ocrText,omitempty"`
-	Decorative   bool            `json:"decorative"`
-	Confidence   float64         `json:"confidence"`
+	ID                string          `json:"id"`
+	AssetLocalID      string          `json:"assetLocalId"`
+	AttachmentLocalID string          `json:"attachmentLocalId,omitempty"`
+	UnitID            string          `json:"unitId"`
+	Order             int             `json:"order"`
+	Location          SourceLocation  `json:"location"`
+	BBox              *NormalizedBBox `json:"bbox,omitempty"`
+	AltText           string          `json:"altText,omitempty"`
+	Caption           string          `json:"caption,omitempty"`
+	OCRText           string          `json:"ocrText,omitempty"`
+	Decorative        bool            `json:"decorative"`
+	Confidence        float64         `json:"confidence"`
 }
 
 type ParseWarning struct {
@@ -198,6 +213,7 @@ type ParsedDocumentInput struct {
 	Parser        ParserInfo
 	Units         []MarkdownUnit
 	Assets        []ExtractedAsset
+	Attachments   []ExtractedAttachment
 	Occurrences   []AssetOccurrence
 	Warnings      []ParseWarning
 }
@@ -210,6 +226,7 @@ type ParsedDocument struct {
 	Parser        ParserInfo
 	Units         []MarkdownUnit
 	Assets        []ExtractedAsset
+	Attachments   []ExtractedAttachment
 	Occurrences   []AssetOccurrence
 	Warnings      []ParseWarning
 
@@ -227,6 +244,7 @@ func NewParsedDocument(input ParsedDocumentInput, opener BundleEntryOpener, clea
 		Parser:        input.Parser,
 		Units:         input.Units,
 		Assets:        input.Assets,
+		Attachments:   input.Attachments,
 		Occurrences:   input.Occurrences,
 		Warnings:      input.Warnings,
 		openEntry:     opener,
@@ -300,10 +318,30 @@ func (d *ParsedDocument) Validate() error {
 		hashes[asset.ContentSHA256] = asset.LocalID
 		entries[asset.BundleEntry] = asset.LocalID
 	}
+	attachments := make(map[string]ExtractedAttachment, len(d.Attachments))
+	attachmentHashes := make(map[string]string, len(d.Attachments))
+	for i, attachment := range d.Attachments {
+		if err := validateExtractedAttachment(attachment); err != nil {
+			return fmt.Errorf("attachment %d: %w", i, err)
+		}
+		if _, exists := attachments[attachment.LocalID]; exists {
+			return fmt.Errorf("duplicate attachment local ID %q", attachment.LocalID)
+		}
+		if prior, exists := attachmentHashes[attachment.ContentSHA256]; exists {
+			return fmt.Errorf("duplicate attachment content hash %q in %q and %q", attachment.ContentSHA256, prior, attachment.LocalID)
+		}
+		if prior, exists := entries[attachment.BundleEntry]; exists {
+			return fmt.Errorf("duplicate bundle entry %q in %q and %q", attachment.BundleEntry, prior, attachment.LocalID)
+		}
+		attachments[attachment.LocalID] = attachment
+		attachmentHashes[attachment.ContentSHA256] = attachment.LocalID
+		entries[attachment.BundleEntry] = attachment.LocalID
+	}
 	occurrences := make(map[string]struct{}, len(d.Occurrences))
 	referencedAssets := make(map[string]struct{}, len(d.Assets))
+	referencedAttachments := make(map[string]struct{}, len(d.Attachments))
 	for i, occurrence := range d.Occurrences {
-		if err := validateTransientOccurrence(occurrence, units, assets); err != nil {
+		if err := validateTransientOccurrence(occurrence, units, assets, attachments); err != nil {
 			return fmt.Errorf("occurrence %d: %w", i, err)
 		}
 		if _, exists := occurrences[occurrence.ID]; exists {
@@ -311,10 +349,18 @@ func (d *ParsedDocument) Validate() error {
 		}
 		occurrences[occurrence.ID] = struct{}{}
 		referencedAssets[occurrence.AssetLocalID] = struct{}{}
+		if occurrence.AttachmentLocalID != "" {
+			referencedAttachments[occurrence.AttachmentLocalID] = struct{}{}
+		}
 	}
 	for localID := range assets {
 		if _, ok := referencedAssets[localID]; !ok {
 			return fmt.Errorf("asset %q has no occurrence", localID)
+		}
+	}
+	for localID := range attachments {
+		if _, ok := referencedAttachments[localID]; !ok {
+			return fmt.Errorf("attachment %q has no occurrence", localID)
 		}
 	}
 	for _, unit := range d.Units {
@@ -374,7 +420,7 @@ func validateExtractedAsset(asset ExtractedAsset) error {
 		return fmt.Errorf("unsupported asset kind %q", asset.Kind)
 	}
 	switch asset.SourceKind {
-	case SourceKindEmbeddedOriginal, SourceKindPageCrop, SourceKindScannedPage:
+	case SourceKindEmbeddedOriginal, SourceKindEmbeddedPreview, SourceKindPageCrop, SourceKindScannedPage:
 	default:
 		return fmt.Errorf("unsupported source kind %q", asset.SourceKind)
 	}
@@ -387,12 +433,41 @@ func validateExtractedAsset(asset ExtractedAsset) error {
 	return ValidateBundleEntry(asset.BundleEntry)
 }
 
-func validateTransientOccurrence(occurrence AssetOccurrence, units map[string]MarkdownUnit, assets map[string]ExtractedAsset) error {
+func validateExtractedAttachment(attachment ExtractedAttachment) error {
+	if !safeID(attachment.LocalID) {
+		return fmt.Errorf("invalid local ID %q", attachment.LocalID)
+	}
+	if !CanonicalSHA256(attachment.ContentSHA256) {
+		return errors.New("content SHA-256 must be canonical lowercase hexadecimal")
+	}
+	if attachment.Kind != AttachmentKindVisioSource {
+		return fmt.Errorf("unsupported attachment kind %q", attachment.Kind)
+	}
+	if !validAttachmentFileName(attachment.FileName) {
+		return fmt.Errorf("invalid attachment file name %q", attachment.FileName)
+	}
+	if attachment.MIMEType != MIMETypeVSDX || attachment.ByteSize < 1 {
+		return errors.New("invalid attachment MIME type or byte size")
+	}
+	return ValidateBundleEntry(attachment.BundleEntry)
+}
+
+func validateTransientOccurrence(
+	occurrence AssetOccurrence,
+	units map[string]MarkdownUnit,
+	assets map[string]ExtractedAsset,
+	attachments map[string]ExtractedAttachment,
+) error {
 	if !safeID(occurrence.ID) {
 		return fmt.Errorf("invalid ID %q", occurrence.ID)
 	}
 	if _, ok := assets[occurrence.AssetLocalID]; !ok {
 		return fmt.Errorf("references unknown asset %q", occurrence.AssetLocalID)
+	}
+	if occurrence.AttachmentLocalID != "" {
+		if _, ok := attachments[occurrence.AttachmentLocalID]; !ok {
+			return fmt.Errorf("references unknown attachment %q", occurrence.AttachmentLocalID)
+		}
 	}
 	unit, ok := units[occurrence.UnitID]
 	if !ok {
@@ -424,6 +499,14 @@ func validateTransientOccurrence(occurrence AssetOccurrence, units map[string]Ma
 }
 
 func AssetID(docID, contentSHA256 string) (string, error) {
+	return contentID("ast_", docID, contentSHA256)
+}
+
+func AttachmentID(docID, contentSHA256 string) (string, error) {
+	return contentID("att_", docID, contentSHA256)
+}
+
+func contentID(prefix, docID, contentSHA256 string) (string, error) {
 	if !safeID(docID) {
 		return "", fmt.Errorf("invalid document ID %q", docID)
 	}
@@ -431,7 +514,7 @@ func AssetID(docID, contentSHA256 string) (string, error) {
 		return "", errors.New("content SHA-256 must be canonical lowercase hexadecimal")
 	}
 	sum := sha256.Sum256([]byte(docID + "\x00" + contentSHA256))
-	return "ast_" + hex.EncodeToString(sum[:16]), nil
+	return prefix + hex.EncodeToString(sum[:16]), nil
 }
 
 func CanonicalSHA256(value string) bool {
@@ -470,6 +553,12 @@ func validContractString(value string, max int) bool {
 
 func validMIME(value string) bool {
 	return value != "" && len(value) <= 96 && validText(value) && !strings.ContainsAny(value, "\r\n") && strings.Contains(value, "/")
+}
+
+func validAttachmentFileName(value string) bool {
+	return value != "" && len(value) <= 255 && validText(value) &&
+		!strings.ContainsAny(value, "\r\n/\\") && filepath.Base(value) == value &&
+		path.Base(value) == value && strings.EqualFold(path.Ext(value), ".vsdx")
 }
 
 var _ json.Marshaler = (*ParsedDocument)(nil)

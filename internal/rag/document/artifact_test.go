@@ -97,6 +97,14 @@ func TestArtifactObjectKeysAndFingerprintsUseSafeSegments(t *testing.T) {
 	if _, err := ArtifactJSONKey("user", "kb", "doc", "../fingerprint"); err == nil {
 		t.Fatal("unsafe fingerprint segment must be rejected")
 	}
+	attachmentKey, err := AttachmentSourceKey("user_1", "kb_1", "doc_1", testAttachmentHash)
+	if err != nil || attachmentKey !=
+		"rag/user_1/kb_1/doc_1/attachments/"+testAttachmentHash+"/source.vsdx" {
+		t.Fatalf("attachment object key=%q, err=%v", attachmentKey, err)
+	}
+	if _, err := AttachmentSourceKey("user_1", "kb_1", "doc_1", "../hash"); err == nil {
+		t.Fatal("unsafe attachment content hash must be rejected")
+	}
 
 	parseInput := ParseFingerprintInput{
 		SourceSHA256: testSourceHash, ParseMode: "auto", ParserVersion: "parser-v1",
@@ -134,6 +142,36 @@ func TestArtifactObjectKeysAndFingerprintsUseSafeSegments(t *testing.T) {
 	if EnrichmentCacheKey("raw", "table", testAssetHash, "text", "prompt", "schema") ==
 		EnrichmentCacheKey("raw", "code", testAssetHash, "text", "prompt", "schema") {
 		t.Fatal("enrichment cache key must include block kind")
+	}
+}
+
+func TestCanonicalizeRetainsOccurrenceBoundVisioAttachment(t *testing.T) {
+	input := validParsedInput()
+	input.Attachments = []ExtractedAttachment{{
+		LocalID: "attachment_1", ContentSHA256: testAttachmentHash,
+		Kind: AttachmentKindVisioSource, FileName: "architecture.vsdx",
+		MIMEType: MIMETypeVSDX, ByteSize: 128, BundleEntry: "attachments/attachment_1.vsdx",
+	}}
+	input.Occurrences[0].AttachmentLocalID = "attachment_1"
+	artifact, err := Canonicalize(NewParsedDocument(input, nil, nil), "neutral")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantID, _ := AttachmentID("doc_1", testAttachmentHash)
+	if len(artifact.Attachments) != 1 || artifact.Attachments[0].ID != wantID ||
+		artifact.Occurrences[0].AttachmentID != wantID {
+		t.Fatalf("attachment mapping drifted: attachments=%+v occurrences=%+v", artifact.Attachments, artifact.Occurrences)
+	}
+	encoded, err := EncodeArtifact(artifact, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("bundleEntry")) || !bytes.Contains(encoded, []byte(`"fileName":"architecture.vsdx"`)) {
+		t.Fatalf("canonical attachment leaked transient data or lost filename: %s", encoded)
+	}
+	decoded, err := DecodeArtifact(bytes.NewReader(encoded), int64(len(encoded)))
+	if err != nil || len(decoded.Attachments) != 1 || decoded.Occurrences[0].AttachmentID != wantID {
+		t.Fatalf("attachment round trip failed: decoded=%+v err=%v", decoded, err)
 	}
 }
 

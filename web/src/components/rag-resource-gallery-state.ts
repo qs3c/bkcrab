@@ -30,6 +30,14 @@ export interface RAGSourceLocationLike {
   label?: string;
 }
 
+export interface RAGAttachmentLike {
+  id?: string;
+  kind?: string;
+  fileName?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+}
+
 export interface RAGAssetLike {
   id?: string;
   kind?: string;
@@ -39,6 +47,7 @@ export interface RAGAssetLike {
   width?: number;
   height?: number;
   mimeType?: string;
+  attachment?: RAGAttachmentLike;
 }
 
 export interface RAGHitLike {
@@ -63,6 +72,13 @@ export interface RAGGalleryResource {
     width?: number;
     height?: number;
     mimeType?: string;
+    attachment?: {
+      id: string;
+      kind: string;
+      fileName: string;
+      mimeType: string;
+      sizeBytes?: number;
+    };
   };
   kbId: string;
   kbName: string;
@@ -77,6 +93,8 @@ export type RAGAssetURLBuilder = (
   assetID: string,
   variant: RAGAssetVariant,
 ) => string;
+
+export type RAGAttachmentURLBuilder = (attachmentID: string) => string;
 
 export interface DocumentPollingLike {
   status?: string;
@@ -352,6 +370,28 @@ function usableLocation(value: RAGSourceLocationLike | null | undefined) {
   return { kind, index, label };
 }
 
+function usableAttachment(value: RAGAttachmentLike | null | undefined) {
+  if (!value || typeof value !== "object") return undefined;
+  const id = typeof value.id === "string" ? value.id.trim() : "";
+  if (!id) return undefined;
+  return {
+    id,
+    kind: typeof value.kind === "string" ? value.kind.trim() : "",
+    fileName: typeof value.fileName === "string" ? value.fileName.trim() : "",
+    mimeType: typeof value.mimeType === "string" ? value.mimeType.trim() : "",
+    sizeBytes: Number.isFinite(value.sizeBytes) && Number(value.sizeBytes) >= 0
+      ? Number(value.sizeBytes)
+      : undefined,
+  };
+}
+
+export function getRAGResourceKey(asset: RAGAssetLike): string {
+  const assetID = typeof asset?.id === "string" ? asset.id.trim() : "";
+  if (!assetID) return "";
+  const attachmentID = usableAttachment(asset.attachment)?.id;
+  return attachmentID ? `${assetID}\u0000${attachmentID}` : assetID;
+}
+
 export function collectRAGResources(
   hits: readonly RAGHitLike[] | null | undefined,
   requestedLimit = MAX_RAG_GALLERY_RESOURCES,
@@ -369,8 +409,10 @@ export function collectRAGResources(
     if (!Array.isArray(hit?.assets)) continue;
     for (const candidate of hit.assets) {
       const assetID = typeof candidate?.id === "string" ? candidate.id.trim() : "";
-      if (!assetID || seen.has(assetID)) continue;
-      seen.add(assetID);
+      const attachment = usableAttachment(candidate?.attachment);
+      const resourceKey = getRAGResourceKey({ id: assetID, attachment });
+      if (!resourceKey || seen.has(resourceKey)) continue;
+      seen.add(resourceKey);
 
       const pageNum = Number.isFinite(candidate.pageNum) && Number(candidate.pageNum) > 0
         ? Number(candidate.pageNum)
@@ -392,6 +434,7 @@ export function collectRAGResources(
           width: Number.isFinite(candidate.width) ? Number(candidate.width) : undefined,
           height: Number.isFinite(candidate.height) ? Number(candidate.height) : undefined,
           mimeType: typeof candidate.mimeType === "string" ? candidate.mimeType : undefined,
+          attachment,
         },
         kbId: typeof hit.kbId === "string" ? hit.kbId : "",
         kbName: typeof hit.kbName === "string" ? hit.kbName : "",
@@ -425,8 +468,10 @@ export function normalizeRAGResources(value: unknown): RAGGalleryResource[] {
     const assetID = typeof asset.id === "string" ? asset.id.trim() : "";
     const kbID = typeof candidate.kbId === "string" ? candidate.kbId.trim() : "";
     const docID = typeof candidate.docId === "string" ? candidate.docId.trim() : "";
-    if (!assetID || !kbID || !docID || seen.has(assetID)) continue;
-    seen.add(assetID);
+    const attachment = usableAttachment(asset.attachment as RAGAttachmentLike | undefined);
+    const resourceKey = getRAGResourceKey({ id: assetID, attachment });
+    if (!resourceKey || !kbID || !docID || seen.has(resourceKey)) continue;
+    seen.add(resourceKey);
 
     const pageNum = Number.isFinite(asset.pageNum) && Number(asset.pageNum) > 0
       ? Number(asset.pageNum)
@@ -444,6 +489,7 @@ export function normalizeRAGResources(value: unknown): RAGGalleryResource[] {
         width: Number.isFinite(asset.width) ? Number(asset.width) : undefined,
         height: Number.isFinite(asset.height) ? Number(asset.height) : undefined,
         mimeType: typeof asset.mimeType === "string" ? asset.mimeType : undefined,
+        attachment,
       },
       kbId: kbID,
       kbName: typeof candidate.kbName === "string" ? candidate.kbName : "",
@@ -478,6 +524,15 @@ export function buildOwnerAssetURL(
   return appendActAs(`/api/rag/assets/${encodeURIComponent(id)}${suffix}`, actAs);
 }
 
+export function buildOwnerAttachmentURL(
+  attachmentID: string,
+  actAs?: string | null,
+): string {
+  const id = String(attachmentID || "").trim();
+  if (!id) return "";
+  return appendActAs(`/api/rag/attachments/${encodeURIComponent(id)}/download`, actAs);
+}
+
 export function buildAgentSessionAssetURL(
   agentID: string,
   sessionID: string,
@@ -491,6 +546,20 @@ export function buildAgentSessionAssetURL(
   if (!agent || !session || !asset) return "";
   const suffix = variant === "thumbnail" ? "/thumbnail" : "";
   const url = `/api/agents/${encodeURIComponent(agent)}/chat/${encodeURIComponent(session)}/rag-assets/${encodeURIComponent(asset)}${suffix}`;
+  return appendActAs(url, actAs);
+}
+
+export function buildAgentSessionAttachmentURL(
+  agentID: string,
+  sessionID: string,
+  attachmentID: string,
+  actAs?: string | null,
+): string {
+  const agent = String(agentID || "").trim();
+  const session = String(sessionID || "").trim();
+  const attachment = String(attachmentID || "").trim();
+  if (!agent || !session || !attachment) return "";
+  const url = `/api/agents/${encodeURIComponent(agent)}/chat/${encodeURIComponent(session)}/rag-attachments/${encodeURIComponent(attachment)}/download`;
   return appendActAs(url, actAs);
 }
 

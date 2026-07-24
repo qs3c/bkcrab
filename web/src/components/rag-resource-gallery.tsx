@@ -2,12 +2,15 @@
 
 import * as React from "react";
 import Image from "next/image";
-import { FileImage, ImageOff, ZoomIn } from "lucide-react";
+import { Download, FileImage, ImageOff, ZoomIn } from "lucide-react";
 
 import {
+  buildOwnerAttachmentURL,
   buildOwnerAssetURL,
   formatSourceLocation,
+  getRAGResourceKey,
   markAssetUnavailable,
+  type RAGAttachmentURLBuilder,
   type RAGAssetURLBuilder,
   type RAGGalleryResource,
 } from "@/components/rag-resource-gallery-state";
@@ -18,6 +21,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { buttonVariants } from "@/components/ui/button";
 import { RAGPlainText } from "@/components/rag-safe-render";
 import { cn } from "@/lib/utils";
 
@@ -25,6 +29,7 @@ export interface RAGResourceGalleryProps {
   resources: readonly RAGGalleryResource[];
   actAs?: string;
   assetURLBuilder?: RAGAssetURLBuilder;
+  attachmentURLBuilder?: RAGAttachmentURLBuilder;
   title?: string;
   compact?: boolean;
   showDisclosure?: boolean;
@@ -35,16 +40,27 @@ export function RAGResourceGallery({
   resources,
   actAs = "",
   assetURLBuilder,
+  attachmentURLBuilder,
   title = "相关图片（来自检索资料）",
   compact = false,
   showDisclosure = false,
   className,
 }: RAGResourceGalleryProps) {
-  const [selectedAssetID, setSelectedAssetID] = React.useState("");
+  const [selectedResourceKey, setSelectedResourceKey] = React.useState("");
   const [unavailableAssetIDs, setUnavailableAssetIDs] = React.useState<string[]>([]);
-  const selected = resources.find((resource) => resource.asset.id === selectedAssetID);
+  const selected = resources.find(
+    (resource) => getRAGResourceKey(resource.asset) === selectedResourceKey,
+  );
   const assetURL = assetURLBuilder
     || ((assetID: string, variant: "display" | "thumbnail") => buildOwnerAssetURL(assetID, variant, actAs));
+  const attachmentURL = attachmentURLBuilder
+    || ((attachmentID: string) => buildOwnerAttachmentURL(attachmentID, actAs));
+  const selectedAttachment = selected?.asset.attachment?.kind === "visio_source"
+    ? selected.asset.attachment
+    : undefined;
+  const selectedAttachmentURL = selectedAttachment
+    ? attachmentURL(selectedAttachment.id)
+    : "";
 
   if (resources.length === 0) return null;
 
@@ -65,6 +81,7 @@ export function RAGResourceGallery({
         compact ? "grid-cols-2 sm:grid-cols-3" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-6",
       )}>
         {resources.map((resource) => {
+          const resourceKey = getRAGResourceKey(resource.asset);
           const unavailable = unavailableAssetIDs.includes(resource.asset.id);
           const location = formatSourceLocation(
             resource.sourceLocation || resource.asset.location,
@@ -73,13 +90,13 @@ export function RAGResourceGallery({
           const caption = resource.asset.caption.trim();
           return (
             <button
-              key={resource.asset.id}
+              key={resourceKey}
               type="button"
               className={cn(
                 "group overflow-hidden rounded-lg border bg-muted/30 text-left transition-colors",
                 unavailable ? "cursor-default" : "hover:border-primary/40 hover:bg-muted/60",
               )}
-              onClick={() => !unavailable && setSelectedAssetID(resource.asset.id)}
+              onClick={() => !unavailable && setSelectedResourceKey(resourceKey)}
               aria-label={unavailable
                 ? `${resource.docName || "检索资料"}的图片暂不可用`
                 : `预览${resource.docName || "检索资料"}中的图片`}
@@ -135,7 +152,7 @@ export function RAGResourceGallery({
       <Dialog
         open={!!selected}
         onOpenChange={(open) => {
-          if (!open) setSelectedAssetID("");
+          if (!open) setSelectedResourceKey("");
         }}
       >
         {selected && (
@@ -177,6 +194,23 @@ export function RAGResourceGallery({
                 value={selected.asset.caption}
                 className="whitespace-pre-wrap text-sm leading-6 text-muted-foreground"
               />
+            )}
+            {selectedAttachment && selectedAttachmentURL && (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="truncate text-xs text-muted-foreground">
+                  {selectedAttachment.fileName || "Visio 工程文件 (.vsdx)"}
+                </span>
+                <a
+                  href={selectedAttachmentURL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  download
+                  className={buttonVariants({ variant: "outline" })}
+                >
+                  <Download aria-hidden="true" />
+                  下载 Visio 工程文件
+                </a>
+              </div>
             )}
           </DialogContent>
         )}

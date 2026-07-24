@@ -145,7 +145,7 @@ docker compose \
 ```
 
 除容器均为 healthy 外，还应确认 `rag-parser` 的 health 输出包含
-`protocolVersion=rag-parser/v1`、固定 `serviceVersion` 和预期 limits，并在
+`protocolVersion=rag-parser/v2`、固定 `serviceVersion` 和预期 limits，并在
 BkCrab 日志中确认出现 `rag service enabled`。`/readyz` 只表示主网关可用，
 不能单独证明 RAG 已启用；使用登录态请求 `/api/rag/capabilities` 和
 `/api/rag/kbs`，后者不应返回 503。不要为了检查 health 给 parser 增加公网

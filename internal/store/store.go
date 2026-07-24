@@ -261,6 +261,14 @@ type Store interface {
 	ListRAGAssetsByChunkRefs(ctx context.Context, refs []RAGChunkRef) ([]RAGAssetRecord, error)
 	ListRAGAssetsByDocument(ctx context.Context, docID string) ([]RAGAssetRecord, error)
 	DeleteRAGAssetsByDocument(ctx context.Context, docID string) error
+	UpsertRAGAttachment(ctx context.Context, attachment *RAGAttachmentRecord) error
+	ReplaceRAGVersionAttachments(ctx context.Context, docID string, docVersion int64, attachmentIDs []string) error
+	PublishRAGAssetsAndAttachmentsForIndex(ctx context.Context, fence IndexFence, assets []RAGAssetRecord, assetIDs []string, attachments []RAGAttachmentRecord, attachmentIDs []string) (bool, error)
+	GetRAGAttachment(ctx context.Context, id string) (*RAGAttachmentRecord, error)
+	ListRAGAttachmentsByIDs(ctx context.Context, ids []string) ([]RAGAttachmentRecord, error)
+	ListRAGAttachmentsByDocument(ctx context.Context, docID string) ([]RAGAttachmentRecord, error)
+	DeleteRAGAttachmentsByDocument(ctx context.Context, docID string) error
+	IsRAGAttachmentInVersion(ctx context.Context, docID string, docVersion int64, attachmentID string) (bool, error)
 	PutRAGChunkAssets(ctx context.Context, mappings []RAGChunkAssetRecord) error
 	ListRAGChunkAssetsByRefs(ctx context.Context, refs []RAGChunkRef) ([]RAGChunkAssetRecord, error)
 	DeleteRAGChunkAssetsByDocumentVersion(ctx context.Context, docID string, docVersion int64) error
@@ -302,6 +310,8 @@ type Store interface {
 	DeleteRAGAsset(ctx context.Context, assetID string) error
 	DeleteRAGAssetWithMaintenance(ctx context.Context, fence RAGDocumentMaintenanceFence, assetID string) (bool, error)
 	ClaimRAGStagingAssetCleanup(ctx context.Context, fence RAGDocumentMaintenanceFence, assetID string) (*RAGAssetCleanupClaim, bool, error)
+	ListRAGStagingAttachmentCleanupCandidates(ctx context.Context, staleFor time.Duration, limit int) ([]RAGAttachmentRecord, error)
+	ClaimRAGStagingAttachmentCleanup(ctx context.Context, fence RAGDocumentMaintenanceFence, attachmentID string) (*RAGAttachmentCleanupClaim, bool, error)
 	BeginRAGObjectWrite(ctx context.Context, request RAGObjectWriteRequest) (*RAGObjectWriteFence, error)
 	MarkRAGObjectWriteReady(ctx context.Context, fence RAGObjectWriteFence) (bool, error)
 	ListRAGObjectWriteCleanupCandidates(ctx context.Context, staleFor time.Duration, limit int) ([]RAGObjectWriteFence, error)

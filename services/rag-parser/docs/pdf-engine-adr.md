@@ -8,7 +8,7 @@
 
 ## 背景
 
-多模态文档 RAG 的 PDF sidecar 需要逐页文字/对象/bbox 分析、指定页渲染和内嵌栅格图提取。设计中提到的 PyMuPDF 是 AGPL/商业双许可证，在组织没有接受相应义务或购买商业许可前不能进入分发镜像。因此选择许可证兼容的替代 engine，并通过同一 `rag-parser/v1` golden contract 验证，不让协议依赖 engine-specific 类型。
+多模态文档 RAG 的 PDF sidecar 需要逐页文字/对象/bbox 分析、指定页渲染和内嵌栅格图提取。设计中提到的 PyMuPDF 是 AGPL/商业双许可证，在组织没有接受相应义务或购买商业许可前不能进入分发镜像。因此选择许可证兼容的替代 engine，并通过同一 `rag-parser/v2` golden contract 验证，不让协议依赖 engine-specific 类型。
 
 ## 许可证结论与分发义务
 

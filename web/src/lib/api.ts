@@ -1416,6 +1416,14 @@ export interface RAGSourceLocation {
   label: string;
 }
 
+export interface RAGAttachmentRef {
+  id: string;
+  kind: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes?: number;
+}
+
 export interface RAGAssetRef {
   id: string;
   kind: string;
@@ -1425,6 +1433,7 @@ export interface RAGAssetRef {
   width?: number;
   height?: number;
   mimeType?: string;
+  attachment?: RAGAttachmentRef;
 }
 
 export interface RAGResourceRef {

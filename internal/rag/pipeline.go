@@ -1135,7 +1135,8 @@ func (s *Service) stageIndexVersion(
 			}
 			mappings = append(mappings, store.RAGChunkAssetRecord{
 				DocID: docID, DocVersion: fence.DocVersion, ChunkIndex: chunk.Index,
-				AssetID: binding.Asset.ID, Ordinal: ordinal, LocationJSON: string(assetLocationJSON),
+				AssetID: binding.Asset.ID, AttachmentID: attachmentRefID(binding.Asset.Attachment),
+				Ordinal: ordinal, LocationJSON: string(assetLocationJSON),
 				Caption: binding.Asset.Caption, OCRText: binding.OCRText,
 			})
 		}
@@ -1167,6 +1168,13 @@ func (s *Service) stageIndexVersion(
 		}
 	}
 	return vectorChunks, nil
+}
+
+func attachmentRefID(attachment *document.AttachmentRef) string {
+	if attachment == nil {
+		return ""
+	}
+	return attachment.ID
 }
 
 func (s *Service) upsertIndexVersion(

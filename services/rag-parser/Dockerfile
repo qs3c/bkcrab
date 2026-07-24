@@ -14,6 +14,10 @@ ENV PATH="/opt/rag-parser/.venv/bin:$PATH" \
 
 WORKDIR /opt/rag-parser
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libreoffice-draw-nogui \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --gid 65532 rag-parser \
     && useradd --uid 65532 --gid 65532 --no-create-home --shell /usr/sbin/nologin rag-parser \
     && install -d -m 0700 -o rag-parser -g rag-parser /tmp/rag-parser

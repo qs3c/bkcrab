@@ -65,7 +65,7 @@ The parser receives only source bytes and an allowlisted format. It has no
 DocumentAI, embedding, object-store, or database credential. Deployment must
 run it as non-root with a read-only root filesystem, bounded tmpfs/resources,
 no privilege escalation, and no egress. `/healthz` reports the
-`rag-parser/v1` protocol, effective input/output limits, Office golden gates,
+`rag-parser/v2` protocol, effective input/output limits, Office golden gates,
 and the approved PDF engine. The current PDF adapter is
 `pypdfium2==5.12.1`; its license and image-distribution obligations are recorded
 in `services/rag-parser/docs/pdf-engine-adr.md`.
@@ -119,6 +119,12 @@ SQL/vector staging, and one fenced active-version switch. Progress stages are
   one failed or over-budget image keeps the source asset and degrades only that
   occurrence. A sidecar/converter failure is explicit and does not invoke the
   legacy DOCX parser.
+- Embedded Visio objects are accepted only as internal, allowlisted OLE
+  embeddings paired with an EMF snapshot. The isolated sidecar converts that
+  snapshot to a safe PNG, validates and preserves the non-macro VSDX package as
+  an occurrence-scoped attachment, and removes OLE parts before MarkItDown.
+  VSDX downloads use separate owner/session authorization endpoints; object
+  keys and source bytes never enter model prompts.
 - Table/code enrichment requires both gates and KB opt-in. Failure or exhausted
   budget preserves the exact raw table/code and records a warning.
 - Markdown/TXT never fetch document-authored images. External, relative,

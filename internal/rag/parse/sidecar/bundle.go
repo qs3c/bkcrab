@@ -344,6 +344,9 @@ func verifyEntryFile(localPath string, descriptor EntryDescriptor) error {
 	}
 	prefix = prefix[:read]
 	detected := http.DetectContentType(prefix)
+	if descriptor.MIMEType == MIMETypeVSDX && detected == "application/zip" {
+		return nil
+	}
 	if detected != descriptor.MIMEType {
 		return invalidBundle("entry %q MIME is %q, declared %q", descriptor.Path, detected, descriptor.MIMEType)
 	}

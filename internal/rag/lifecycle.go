@@ -170,6 +170,7 @@ func (s *Service) runLifecyclePass(ctx context.Context) {
 	s.sweepObjectWriteStaging(ctx)
 	s.sweepOrphanVersions(ctx)
 	s.sweepStagingAssets(ctx)
+	s.sweepStagingAttachments(ctx)
 	s.sweepCacheObjects(ctx)
 }
 
@@ -609,6 +610,59 @@ func (s *Service) sweepStagingAssets(ctx context.Context) {
 		}()
 		if err != nil {
 			logLifecycleFailure(operation, asset.ID, err)
+		}
+	}
+}
+
+func (s *Service) sweepStagingAttachments(ctx context.Context) {
+	ttl := s.stagingArtifactTTL
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+	attachments, err := s.st.ListRAGStagingAttachmentCleanupCandidates(
+		ctx, ttl, lifecycleBatchSize)
+	if err != nil {
+		logLifecycleFailure("list_staging_attachments", "", err)
+		return
+	}
+	for i := range attachments {
+		attachment := &attachments[i]
+		operation, err := func() (string, error) {
+			docLock := s.docMutex(attachment.DocID)
+			docLock.Lock()
+			defer docLock.Unlock()
+			maintenance, err := s.claimDocumentMaintenance(
+				ctx, attachment.DocID, "attachment")
+			if err != nil {
+				return "claim_staging_attachment_maintenance", err
+			}
+			if maintenance == nil {
+				return "", nil
+			}
+			defer s.releaseDocumentMaintenance(ctx, *maintenance)
+			workCtx, stopHeartbeat := s.startDocumentMaintenanceHeartbeat(ctx, *maintenance)
+			defer stopHeartbeat()
+			claim, claimed, err := s.st.ClaimRAGStagingAttachmentCleanup(
+				workCtx, *maintenance, attachment.ID)
+			if err != nil {
+				return "claim_staging_attachment_cleanup", err
+			}
+			if !claimed || claim == nil {
+				return "", nil
+			}
+			for _, objectWrite := range claim.ObjectWrites {
+				if err := s.obj.Delete(workCtx, objectWrite.ObjectKey); err != nil {
+					return "delete_staging_attachment_object", err
+				}
+				if _, err := s.st.FinishRAGObjectWriteCleanup(
+					workCtx, objectWrite); err != nil {
+					return "finish_staging_attachment_object", err
+				}
+			}
+			return "", nil
+		}()
+		if err != nil {
+			logLifecycleFailure(operation, attachment.ID, err)
 		}
 	}
 }

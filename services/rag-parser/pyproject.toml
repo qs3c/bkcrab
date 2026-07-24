@@ -11,6 +11,7 @@ dependencies = [
   "defusedxml>=0.7.1,<0.8",
   "fastapi>=0.115,<1",
   "markitdown[docx,pptx,xlsx]==0.1.6",
+  "olefile>=0.47,<0.48",
   "pillow>=11,<12",
   "pypdfium2==5.12.1",
   "python-multipart>=0.0.20,<1",

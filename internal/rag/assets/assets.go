@@ -27,9 +27,13 @@ type ObjectStore interface {
 
 type Catalog interface {
 	UpsertRAGAsset(ctx context.Context, asset *store.RAGAssetRecord) error
+	UpsertRAGAttachment(ctx context.Context, attachment *store.RAGAttachmentRecord) error
 	ReplaceRAGVersionAssets(ctx context.Context, docID string, docVersion int64, assetIDs []string) error
+	ReplaceRAGVersionAttachments(ctx context.Context, docID string, docVersion int64, attachmentIDs []string) error
 	PublishRAGAssetsForIndex(ctx context.Context, fence store.IndexFence, assets []store.RAGAssetRecord, assetIDs []string) (bool, error)
+	PublishRAGAssetsAndAttachmentsForIndex(ctx context.Context, fence store.IndexFence, assets []store.RAGAssetRecord, assetIDs []string, attachments []store.RAGAttachmentRecord, attachmentIDs []string) (bool, error)
 	ListRAGAssetsByIDs(ctx context.Context, ids []string) ([]store.RAGAssetRecord, error)
+	ListRAGAttachmentsByIDs(ctx context.Context, ids []string) ([]store.RAGAttachmentRecord, error)
 	BeginRAGObjectWrite(ctx context.Context, request store.RAGObjectWriteRequest) (*store.RAGObjectWriteFence, error)
 	MarkRAGObjectWriteReady(ctx context.Context, fence store.RAGObjectWriteFence) (bool, error)
 }
@@ -148,8 +152,9 @@ func (p *Persister) PersistParsedDocument(ctx context.Context, request PersistRe
 	if err := request.Document.Validate(); err != nil {
 		return nil, fmt.Errorf("validate parsed document: %w", err)
 	}
-	if len(request.Document.Assets) > p.Limits.MaxAssets {
-		return nil, fmt.Errorf("parsed document has %d assets, limit is %d", len(request.Document.Assets), p.Limits.MaxAssets)
+	if len(request.Document.Assets)+len(request.Document.Attachments) > p.Limits.MaxAssets {
+		return nil, fmt.Errorf("parsed document has %d assets/attachments, limit is %d",
+			len(request.Document.Assets)+len(request.Document.Attachments), p.Limits.MaxAssets)
 	}
 	var totalBytes int64
 	for _, asset := range request.Document.Assets {
@@ -163,6 +168,16 @@ func (p *Persister) PersistParsedDocument(ctx context.Context, request PersistRe
 			return nil, fmt.Errorf("asset %q exceeds %d pixel limit", asset.LocalID, p.Limits.MaxImagePixels)
 		}
 		totalBytes += asset.ByteSize
+	}
+	for _, attachment := range request.Document.Attachments {
+		if attachment.ByteSize > p.Limits.MaxAssetBytes {
+			return nil, fmt.Errorf("attachment %q is %d bytes, per-asset limit is %d",
+				attachment.LocalID, attachment.ByteSize, p.Limits.MaxAssetBytes)
+		}
+		if attachment.ByteSize > p.Limits.MaxExtractedBytes-totalBytes {
+			return nil, fmt.Errorf("extracted assets/attachments exceed %d byte limit", p.Limits.MaxExtractedBytes)
+		}
+		totalBytes += attachment.ByteSize
 	}
 
 	artifact, err := document.Canonicalize(request.Document, request.NeutralCaption)
@@ -182,6 +197,20 @@ func (p *Persister) PersistParsedDocument(ctx context.Context, request PersistRe
 	existingByID := make(map[string]store.RAGAssetRecord, len(existing))
 	for _, record := range existing {
 		existingByID[record.ID] = record
+	}
+	attachmentByHash := make(map[string]*document.ArtifactAttachment, len(artifact.Attachments))
+	attachmentIDs := make([]string, 0, len(artifact.Attachments))
+	for i := range artifact.Attachments {
+		attachmentByHash[artifact.Attachments[i].ContentSHA256] = &artifact.Attachments[i]
+		attachmentIDs = append(attachmentIDs, artifact.Attachments[i].ID)
+	}
+	existingAttachments, err := p.Catalog.ListRAGAttachmentsByIDs(ctx, attachmentIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load existing attachment catalog: %w", err)
+	}
+	existingAttachmentByID := make(map[string]store.RAGAttachmentRecord, len(existingAttachments))
+	for _, record := range existingAttachments {
+		existingAttachmentByID[record.ID] = record
 	}
 
 	recordsToPublish := make([]store.RAGAssetRecord, 0, len(request.Document.Assets))
@@ -309,19 +338,97 @@ func (p *Persister) PersistParsedDocument(ctx context.Context, request PersistRe
 			}
 		}
 	}
+	attachmentRecordsToPublish := make([]store.RAGAttachmentRecord, 0, len(request.Document.Attachments))
+	for _, transient := range request.Document.Attachments {
+		if err := p.validateBundleAttachment(ctx, request.Document, transient); err != nil {
+			return nil, err
+		}
+		canonical := attachmentByHash[transient.ContentSHA256]
+		logicalKey, err := document.AttachmentSourceKey(
+			request.UserID, request.KBID, request.DocID, transient.ContentSHA256)
+		if err != nil {
+			return nil, err
+		}
+		objectKey, err := document.VersionedObjectKey(logicalKey, request.DocVersion)
+		if err != nil {
+			return nil, err
+		}
+		record := store.RAGAttachmentRecord{
+			ID: canonical.ID, DocID: request.DocID, ContentSHA256: transient.ContentSHA256,
+			Kind: transient.Kind, FileName: transient.FileName, MIMEType: transient.MIMEType,
+			ObjectKey: objectKey, ByteSize: transient.ByteSize,
+			FirstSeenVersion: request.DocVersion, LastSeenVersion: request.DocVersion,
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		}
+		if prior, existed := existingAttachmentByID[canonical.ID]; existed {
+			if err := validateExistingAttachment(prior, record, logicalKey); err != nil {
+				return nil, err
+			}
+			if exists, err := p.objectExists(ctx, prior.ObjectKey); err != nil {
+				return nil, fmt.Errorf("check attachment %q object: %w", canonical.ID, err)
+			} else if !exists {
+				return nil, fmt.Errorf("reuse attachment %q: published object is missing", canonical.ID)
+			}
+			record.FirstSeenVersion = min(prior.FirstSeenVersion, request.DocVersion)
+			record.LastSeenVersion = max(prior.LastSeenVersion, request.DocVersion)
+			record.CreatedAt = prior.CreatedAt
+			record.ObjectKey = prior.ObjectKey
+		} else {
+			fence, err := p.Catalog.BeginRAGObjectWrite(ctx, store.RAGObjectWriteRequest{
+				UserID: request.UserID, KBID: request.KBID, DocID: request.DocID,
+				ObjectKind: store.RAGObjectKindAssetAttachment, ObjectKey: objectKey,
+				ReferenceKey: canonical.ID,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("stage attachment %q object: %w", transient.LocalID, err)
+			}
+			reader, err := request.Document.OpenBundleEntry(ctx, transient.BundleEntry)
+			if err != nil {
+				return nil, fmt.Errorf("reopen attachment %q: %w", transient.LocalID, err)
+			}
+			putErr := p.Objects.Put(ctx, objectKey, reader, transient.ByteSize, transient.MIMEType)
+			closeErr := reader.Close()
+			if putErr != nil {
+				return nil, fmt.Errorf("store attachment %q: %w", transient.LocalID, putErr)
+			}
+			if closeErr != nil {
+				return nil, fmt.Errorf("close attachment %q after store: %w", transient.LocalID, closeErr)
+			}
+			if ready, err := p.Catalog.MarkRAGObjectWriteReady(ctx, *fence); err != nil {
+				return nil, fmt.Errorf("mark attachment %q ready: %w", transient.LocalID, err)
+			} else if !ready {
+				return nil, fmt.Errorf("mark attachment %q ready: %w",
+					transient.LocalID, store.ErrRAGLifecycleInactive)
+			}
+		}
+		attachmentRecordsToPublish = append(attachmentRecordsToPublish, record)
+		if request.IndexFence == nil {
+			if err := p.Catalog.UpsertRAGAttachment(ctx, &record); err != nil {
+				return nil, fmt.Errorf("upsert attachment %q: %w", canonical.ID, err)
+			}
+		}
+	}
 	if err := artifact.Validate(); err != nil {
 		return nil, fmt.Errorf("validate canonical artifact: %w", err)
 	}
 	if request.IndexFence != nil {
-		published, err := p.Catalog.PublishRAGAssetsForIndex(ctx, *request.IndexFence, recordsToPublish, ids)
+		published, err := p.Catalog.PublishRAGAssetsAndAttachmentsForIndex(
+			ctx, *request.IndexFence, recordsToPublish, ids,
+			attachmentRecordsToPublish, attachmentIDs)
 		if err != nil {
 			return nil, fmt.Errorf("publish version %d asset set: %w", request.DocVersion, err)
 		}
 		if !published {
 			return nil, store.ErrRAGLifecycleInactive
 		}
-	} else if err := p.Catalog.ReplaceRAGVersionAssets(ctx, request.DocID, request.DocVersion, ids); err != nil {
-		return nil, fmt.Errorf("record version %d asset set: %w", request.DocVersion, err)
+	} else {
+		if err := p.Catalog.ReplaceRAGVersionAssets(ctx, request.DocID, request.DocVersion, ids); err != nil {
+			return nil, fmt.Errorf("record version %d asset set: %w", request.DocVersion, err)
+		}
+		if err := p.Catalog.ReplaceRAGVersionAttachments(
+			ctx, request.DocID, request.DocVersion, attachmentIDs); err != nil {
+			return nil, fmt.Errorf("record version %d attachment set: %w", request.DocVersion, err)
+		}
 	}
 	normalized := artifact.NormalizedMarkdown()
 	if err := p.stageArtifactObject(ctx, request, store.RAGObjectKindNormalized,
@@ -384,6 +491,37 @@ func (p *Persister) validateBundleAsset(ctx context.Context, parsed *document.Pa
 	actualHash := hex.EncodeToString(hash.Sum(nil))
 	if actualHash != asset.ContentSHA256 {
 		return fmt.Errorf("asset %q SHA-256 mismatch: declared %s, actual %s", asset.LocalID, asset.ContentSHA256, actualHash)
+	}
+	return nil
+}
+
+func (p *Persister) validateBundleAttachment(
+	ctx context.Context,
+	parsed *document.ParsedDocument,
+	attachment document.ExtractedAttachment,
+) error {
+	reader, err := parsed.OpenBundleEntry(ctx, attachment.BundleEntry)
+	if err != nil {
+		return fmt.Errorf("open attachment %q: %w", attachment.LocalID, err)
+	}
+	hash := sha256.New()
+	written, copyErr := io.Copy(hash, io.LimitReader(
+		&contextReader{ctx: ctx, reader: reader}, p.Limits.MaxAssetBytes+1))
+	closeErr := reader.Close()
+	if copyErr != nil {
+		return fmt.Errorf("read attachment %q: %w", attachment.LocalID, copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close attachment %q: %w", attachment.LocalID, closeErr)
+	}
+	if written != attachment.ByteSize {
+		return fmt.Errorf("attachment %q declared %d bytes but bundle contained %d",
+			attachment.LocalID, attachment.ByteSize, written)
+	}
+	actualHash := hex.EncodeToString(hash.Sum(nil))
+	if actualHash != attachment.ContentSHA256 {
+		return fmt.Errorf("attachment %q SHA-256 mismatch: declared %s, actual %s",
+			attachment.LocalID, attachment.ContentSHA256, actualHash)
 	}
 	return nil
 }
@@ -507,10 +645,16 @@ func (p *Persister) LoadParsedArtifact(ctx context.Context, request CacheRequest
 		return nil, false, nil
 	}
 	ids := make([]string, 0, len(artifact.Assets))
+	attachmentIDs := make([]string, 0, len(artifact.Attachments))
 	recordsToTouch := make([]store.RAGAssetRecord, 0, len(artifact.Assets))
 	recordsToPublish := make([]store.RAGAssetRecord, 0, len(artifact.Assets))
+	attachmentRecordsToTouch := make([]store.RAGAttachmentRecord, 0, len(artifact.Attachments))
+	attachmentRecordsToPublish := make([]store.RAGAttachmentRecord, 0, len(artifact.Attachments))
 	for _, asset := range artifact.Assets {
 		ids = append(ids, asset.ID)
+	}
+	for _, attachment := range artifact.Attachments {
+		attachmentIDs = append(attachmentIDs, attachment.ID)
 	}
 	records, err := p.Catalog.ListRAGAssetsByIDs(ctx, ids)
 	if err != nil {
@@ -569,11 +713,55 @@ func (p *Persister) LoadParsedArtifact(ctx context.Context, request CacheRequest
 		}
 		recordsToPublish = append(recordsToPublish, record)
 	}
+	attachmentRecords, err := p.Catalog.ListRAGAttachmentsByIDs(ctx, attachmentIDs)
+	if err != nil {
+		return nil, false, fmt.Errorf("rehydrate attachment catalog: %w", err)
+	}
+	if len(attachmentRecords) != len(attachmentIDs) {
+		return nil, false, nil
+	}
+	attachmentByID := make(map[string]store.RAGAttachmentRecord, len(attachmentRecords))
+	for _, record := range attachmentRecords {
+		attachmentByID[record.ID] = record
+	}
+	for _, attachment := range artifact.Attachments {
+		record, ok := attachmentByID[attachment.ID]
+		if !ok {
+			return nil, false, nil
+		}
+		logicalKey, err := document.AttachmentSourceKey(
+			request.UserID, request.KBID, request.DocID, attachment.ContentSHA256)
+		if err != nil || !recordMatchesArtifactAttachment(
+			record, attachment, request.DocID, logicalKey) {
+			return nil, false, nil
+		}
+		exists, err := p.objectExists(ctx, record.ObjectKey)
+		if err != nil {
+			return nil, false, fmt.Errorf("check attachment %q: %w", record.ID, err)
+		}
+		if !exists {
+			return nil, false, nil
+		}
+		if request.DocVersion > 0 &&
+			(request.DocVersion < record.FirstSeenVersion ||
+				request.DocVersion > record.LastSeenVersion) {
+			if request.DocVersion < record.FirstSeenVersion {
+				record.FirstSeenVersion = request.DocVersion
+			}
+			if request.DocVersion > record.LastSeenVersion {
+				record.LastSeenVersion = request.DocVersion
+			}
+			attachmentRecordsToTouch = append(attachmentRecordsToTouch, record)
+		}
+		attachmentRecordsToPublish = append(attachmentRecordsToPublish, record)
+	}
 	// Version visibility is advanced only after the artifact and every binary
 	// dependency have passed validation. A corrupt cache must never make an
 	// otherwise inactive asset visible to a newly targeted version.
 	if request.IndexFence != nil {
-		published, err := p.Catalog.PublishRAGAssetsForIndex(ctx, *request.IndexFence, recordsToPublish, ids)
+		published, err := p.Catalog.PublishRAGAssetsAndAttachmentsForIndex(
+			ctx, *request.IndexFence, recordsToPublish, ids,
+			attachmentRecordsToPublish, attachmentIDs)
 		if err != nil {
 			return nil, false, fmt.Errorf("publish cached version %d asset set: %w", request.DocVersion, err)
 		}
@@ -588,9 +776,22 @@ func (p *Persister) LoadParsedArtifact(ctx context.Context, request CacheRequest
 					record.ID, request.DocVersion, err)
 			}
 		}
+		for i := range attachmentRecordsToTouch {
+			record := &attachmentRecordsToTouch[i]
+			if err := p.Catalog.UpsertRAGAttachment(ctx, record); err != nil {
+				return nil, false, fmt.Errorf(
+					"mark cached attachment %q seen in version %d: %w",
+					record.ID, request.DocVersion, err)
+			}
+		}
 		if request.DocVersion > 0 {
 			if err := p.Catalog.ReplaceRAGVersionAssets(ctx, request.DocID, request.DocVersion, ids); err != nil {
 				return nil, false, fmt.Errorf("record cached version %d asset set: %w", request.DocVersion, err)
+			}
+			if err := p.Catalog.ReplaceRAGVersionAttachments(
+				ctx, request.DocID, request.DocVersion, attachmentIDs); err != nil {
+				return nil, false, fmt.Errorf(
+					"record cached version %d attachment set: %w", request.DocVersion, err)
 			}
 		}
 	}
@@ -668,6 +869,21 @@ func validateExistingAsset(existing, expected store.RAGAssetRecord, logicalKeys 
 	return nil
 }
 
+func validateExistingAttachment(
+	existing, expected store.RAGAttachmentRecord,
+	logicalKey string,
+) error {
+	if existing.ID != expected.ID || existing.DocID != expected.DocID ||
+		existing.ContentSHA256 != expected.ContentSHA256 ||
+		existing.Kind != expected.Kind || existing.FileName != expected.FileName ||
+		existing.MIMEType != expected.MIMEType ||
+		!matchesGenerationObjectKey(existing.ObjectKey, logicalKey) ||
+		existing.ByteSize != expected.ByteSize {
+		return fmt.Errorf("existing attachment %q conflicts with canonical source description", expected.ID)
+	}
+	return nil
+}
+
 func recordMatchesArtifact(record store.RAGAssetRecord, asset document.ArtifactAsset, docID string, keys document.ObjectKeys) bool {
 	if record.ID != asset.ID || record.DocID != docID || record.ContentSHA256 != asset.ContentSHA256 ||
 		record.SourceKind != asset.SourceKind || record.SourceMIME != asset.SourceMIME ||
@@ -681,6 +897,19 @@ func recordMatchesArtifact(record store.RAGAssetRecord, asset document.ArtifactA
 			document.CanonicalSHA256(record.DisplaySHA256) && document.CanonicalSHA256(record.ThumbnailSHA256)
 	}
 	return true
+}
+
+func recordMatchesArtifactAttachment(
+	record store.RAGAttachmentRecord,
+	attachment document.ArtifactAttachment,
+	docID, logicalKey string,
+) bool {
+	return record.ID == attachment.ID && record.DocID == docID &&
+		record.ContentSHA256 == attachment.ContentSHA256 &&
+		record.Kind == attachment.Kind && record.FileName == attachment.FileName &&
+		record.MIMEType == attachment.MIMEType &&
+		matchesGenerationObjectKey(record.ObjectKey, logicalKey) &&
+		record.ByteSize == attachment.ByteSize
 }
 
 func matchesGenerationObjectKey(objectKey, logicalKey string) bool {

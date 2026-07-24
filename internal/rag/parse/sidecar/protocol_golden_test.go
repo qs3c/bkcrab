@@ -10,7 +10,7 @@ import (
 )
 
 func sharedGoldenPath(name string) string {
-	return filepath.Join("..", "..", "..", "..", "testdata", "rag-parser-protocol", "v1", name)
+	return filepath.Join("..", "..", "..", "..", "testdata", "rag-parser-protocol", "v2", name)
 }
 
 func readSharedGolden(t *testing.T, name string) []byte {

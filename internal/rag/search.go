@@ -59,10 +59,14 @@ func BuildRAGResourceRefs(hits []Hit) []RAGResourceRef {
 	refs := make([]RAGResourceRef, 0)
 	for _, hit := range hits {
 		for _, asset := range hit.Assets {
-			if _, exists := seen[asset.ID]; exists {
+			resourceKey := asset.ID
+			if asset.Attachment != nil {
+				resourceKey += "\x00" + asset.Attachment.ID
+			}
+			if _, exists := seen[resourceKey]; exists {
 				continue
 			}
-			seen[asset.ID] = struct{}{}
+			seen[resourceKey] = struct{}{}
 			location := asset.Location
 			if location.Kind == "" {
 				location = hit.SourceLocation
@@ -494,8 +498,16 @@ func (s *Service) hydrateHitAssets(ctx context.Context, hits []Hit) ([]Hit, erro
 		return nil, err
 	}
 	assetIDs := make([]string, 0, len(mappings))
+	attachmentIDs := make([]string, 0, len(mappings))
 	seen := make(map[string]struct{}, len(mappings))
+	seenAttachments := make(map[string]struct{}, len(mappings))
 	for _, mapping := range mappings {
+		if mapping.AttachmentID != "" {
+			if _, exists := seenAttachments[mapping.AttachmentID]; !exists {
+				seenAttachments[mapping.AttachmentID] = struct{}{}
+				attachmentIDs = append(attachmentIDs, mapping.AttachmentID)
+			}
+		}
 		if _, exists := seen[mapping.AssetID]; exists {
 			continue
 		}
@@ -519,6 +531,25 @@ func (s *Service) hydrateHitAssets(ctx context.Context, hits []Hit) ([]Hit, erro
 			assetByID[asset.ID] = asset
 		}
 	}
+	attachments := make([]store.RAGAttachmentRecord, 0, len(attachmentIDs))
+	for start := 0; start < len(attachmentIDs); start += pipelineStageBatchSize {
+		end := min(start+pipelineStageBatchSize, len(attachmentIDs))
+		batch, err := s.st.ListRAGAttachmentsByIDs(ctx, attachmentIDs[start:end])
+		if err != nil {
+			return nil, err
+		}
+		attachments = append(attachments, batch...)
+	}
+	attachmentByID := make(map[string]store.RAGAttachmentRecord, len(attachments))
+	for _, attachment := range attachments {
+		if attachment.Kind == document.AttachmentKindVisioSource &&
+			attachment.MIMEType == document.MIMETypeVSDX &&
+			canonicalSHA256(attachment.ContentSHA256) &&
+			strings.TrimSpace(attachment.ObjectKey) != "" &&
+			attachment.ByteSize > 0 {
+			attachmentByID[attachment.ID] = attachment
+		}
+	}
 	hitByRef := make(map[string]int, len(hits))
 	for i, hit := range hits {
 		hitByRef[ragChunkKey(hit.DocID, hit.DocVersion, hit.ChunkIndex)] = i
@@ -535,11 +566,24 @@ func (s *Service) hydrateHitAssets(ctx context.Context, hits []Hit) ([]Hit, erro
 		if location.Kind == document.LocationPage {
 			pageNum = location.Index
 		}
-		hits[index].Assets = append(hits[index].Assets, document.AssetRef{
+		ref := document.AssetRef{
 			ID: asset.ID, Kind: document.AssetKindImage, Caption: mapping.Caption,
 			PageNum: pageNum, Location: location, Width: asset.Width, Height: asset.Height,
 			MIMEType: asset.DisplayMIME,
-		})
+		}
+		if mapping.AttachmentID != "" {
+			attachment, ready := attachmentByID[mapping.AttachmentID]
+			if !ready || attachment.DocID != mapping.DocID ||
+				mapping.DocVersion < attachment.FirstSeenVersion ||
+				mapping.DocVersion > attachment.LastSeenVersion {
+				continue
+			}
+			ref.Attachment = &document.AttachmentRef{
+				ID: attachment.ID, Kind: attachment.Kind, FileName: attachment.FileName,
+				MIMEType: attachment.MIMEType, SizeBytes: attachment.ByteSize,
+			}
+		}
+		hits[index].Assets = append(hits[index].Assets, ref)
 	}
 	return hits, nil
 }

@@ -179,7 +179,7 @@ func TestRAGCapabilitiesUseCachedSnapshotAndKeepIndependentGates(t *testing.T) {
 	server.SetRAGConfig(cfg)
 	checkedAt := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
 	server.SetRAGParserHealthSnapshot(config.RAGParserHealthSnapshot{
-		ProtocolVersion: "rag-parser/v1",
+		ProtocolVersion: "rag-parser/v2",
 		Healthy:         true,
 		CheckedAt:       checkedAt,
 		ExpiresAt:       time.Now().Add(time.Minute),
@@ -267,7 +267,7 @@ func TestRAGCapabilitiesRouteRegisteredAndExpiredSnapshotIsUnavailable(t *testin
 	cfg.ApplyDefaults()
 	server.SetRAGConfig(cfg)
 	server.SetRAGParserHealthSnapshot(config.RAGParserHealthSnapshot{
-		ProtocolVersion: "rag-parser/v1",
+		ProtocolVersion: "rag-parser/v2",
 		Healthy:         true,
 		CheckedAt:       time.Now().Add(-2 * time.Minute),
 		ExpiresAt:       time.Now().Add(-time.Minute),
@@ -292,7 +292,7 @@ func TestRAGCapabilitiesSnapshotWithoutTTLIsUnavailable(t *testing.T) {
 	cfg.ApplyDefaults()
 	server.SetRAGConfig(cfg)
 	server.SetRAGParserHealthSnapshot(config.RAGParserHealthSnapshot{
-		ProtocolVersion: "rag-parser/v1",
+		ProtocolVersion: "rag-parser/v2",
 		Healthy:         true,
 		CheckedAt:       time.Now().UTC(),
 		MaxInputBytes:   1024,
@@ -321,7 +321,7 @@ func TestRAGCapabilitiesOfficeGateFailureDoesNotDisableBaseRAG(t *testing.T) {
 	cfg.ApplyDefaults()
 	server.SetRAGConfig(cfg)
 	server.SetRAGParserHealthSnapshot(config.RAGParserHealthSnapshot{
-		ProtocolVersion: "rag-parser/v1",
+		ProtocolVersion: "rag-parser/v2",
 		Healthy:         true,
 		CheckedAt:       time.Now().UTC(),
 		ExpiresAt:       time.Now().Add(time.Minute),
@@ -883,7 +883,7 @@ func TestRAGDocumentUploadKeepsOfficeClosedUntilConverterGoldensPass(t *testing.
 	cfg.ParserSidecar.Endpoint = "http://rag-parser:8080"
 	server.SetRAGConfig(cfg)
 	server.SetRAGParserHealthSnapshot(config.RAGParserHealthSnapshot{
-		ProtocolVersion: "rag-parser/v1",
+		ProtocolVersion: "rag-parser/v2",
 		Healthy:         true,
 		CheckedAt:       time.Now().UTC(),
 		ExpiresAt:       time.Now().Add(time.Minute),
@@ -919,7 +919,7 @@ func TestRAGDocumentUploadUsesCachedSidecarInputLimit(t *testing.T) {
 	cfg.ParserSidecar.Endpoint = "http://rag-parser:8080"
 	server.SetRAGConfig(cfg)
 	server.SetRAGParserHealthSnapshot(config.RAGParserHealthSnapshot{
-		ProtocolVersion: "rag-parser/v1",
+		ProtocolVersion: "rag-parser/v2",
 		Healthy:         true,
 		CheckedAt:       time.Now().UTC(),
 		ExpiresAt:       time.Now().Add(time.Minute),

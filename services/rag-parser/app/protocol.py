@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, BinaryIO
 
-PROTOCOL_VERSION = "rag-parser/v1"
+PROTOCOL_VERSION = "rag-parser/v2"
 OFFICE_BUNDLE_KIND = "office-convert"
 PDF_ANALYZE_BUNDLE_KIND = "pdf-analyze"
 PDF_RENDER_BUNDLE_KIND = "pdf-render"
@@ -39,12 +39,15 @@ _ENTRY_MIME_BY_EXTENSION = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
+    ".vsdx": "application/vnd.ms-visio.drawing",
 }
-_ASSET_SOURCE_KINDS = frozenset({"embedded_original", "page_crop", "scanned_page"})
+_ASSET_SOURCE_KINDS = frozenset(
+    {"embedded_original", "embedded_preview", "page_crop", "scanned_page"}
+)
 
 
 class ProtocolError(ValueError):
-    """Raised when a manifest, health document, or bundle violates v1."""
+    """Raised when a manifest, health document, or bundle violates v2."""
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -305,6 +308,43 @@ class ManifestAsset:
         }
 
 
+@dataclass(frozen=True)
+class ManifestAttachment:
+    local_id: str
+    entry: str
+    kind: str
+    file_name: str
+
+    @classmethod
+    def from_dict(cls, value: Any, where: str) -> ManifestAttachment:
+        obj = _mapping(value, where)
+        _exact_keys(obj, {"localId", "entry", "kind", "fileName"}, where)
+        kind = _string(obj["kind"], f"{where}.kind")
+        if kind != "visio_source":
+            _fail("invalid_attachment", f"{where}.kind must be visio_source")
+        file_name = _string(obj["fileName"], f"{where}.fileName")
+        if (
+            PurePosixPath(file_name).name != file_name
+            or PureWindowsPath(file_name).name != file_name
+            or not file_name.lower().endswith(".vsdx")
+        ):
+            _fail("invalid_attachment", f"{where}.fileName must be a plain .vsdx name")
+        return cls(
+            local_id=_identifier(obj["localId"], f"{where}.localId"),
+            entry=validate_bundle_path(_string(obj["entry"], f"{where}.entry"), f"{where}.entry"),
+            kind=kind,
+            file_name=file_name,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "localId": self.local_id,
+            "entry": self.entry,
+            "kind": self.kind,
+            "fileName": self.file_name,
+        }
+
+
 def _bbox(value: Any, where: str) -> tuple[int, int, int, int] | None:
     if value is None:
         return None
@@ -331,6 +371,7 @@ class ManifestOccurrence:
     ocr_text: str
     decorative: bool
     confidence: float
+    attachment_local_id: str
 
     @classmethod
     def from_dict(cls, value: Any, where: str) -> ManifestOccurrence:
@@ -349,6 +390,7 @@ class ManifestOccurrence:
                 "ocrText",
                 "decorative",
                 "confidence",
+                "attachmentLocalId",
             },
             where,
         )
@@ -364,6 +406,11 @@ class ManifestOccurrence:
             ocr_text=_string(obj["ocrText"], f"{where}.ocrText", allow_empty=True),
             decorative=_boolean(obj["decorative"], f"{where}.decorative"),
             confidence=_number(obj["confidence"], f"{where}.confidence", minimum=0, maximum=1),
+            attachment_local_id=_string(
+                obj["attachmentLocalId"],
+                f"{where}.attachmentLocalId",
+                allow_empty=True,
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -379,6 +426,7 @@ class ManifestOccurrence:
             "ocrText": self.ocr_text,
             "decorative": self.decorative,
             "confidence": self.confidence,
+            "attachmentLocalId": self.attachment_local_id,
         }
 
 
@@ -479,6 +527,7 @@ class Manifest:
     entries: tuple[EntryDescriptor, ...]
     units: tuple[MarkdownUnit, ...]
     assets: tuple[ManifestAsset, ...]
+    attachments: tuple[ManifestAttachment, ...]
     occurrences: tuple[ManifestOccurrence, ...]
     pages: tuple[PDFPage, ...]
     warnings: tuple[ManifestWarning, ...]
@@ -496,6 +545,7 @@ class Manifest:
                 "entries",
                 "units",
                 "assets",
+                "attachments",
                 "occurrences",
                 "pages",
                 "warnings",
@@ -518,6 +568,10 @@ class Manifest:
             assets=tuple(
                 ManifestAsset.from_dict(item, f"assets[{index}]")
                 for index, item in enumerate(_list(obj["assets"], "assets"))
+            ),
+            attachments=tuple(
+                ManifestAttachment.from_dict(item, f"attachments[{index}]")
+                for index, item in enumerate(_list(obj["attachments"], "attachments"))
             ),
             occurrences=tuple(
                 ManifestOccurrence.from_dict(item, f"occurrences[{index}]")
@@ -544,6 +598,7 @@ class Manifest:
             "entries": [entry.to_dict() for entry in self.entries],
             "units": [unit.to_dict() for unit in self.units],
             "assets": [asset.to_dict() for asset in self.assets],
+            "attachments": [attachment.to_dict() for attachment in self.attachments],
             "occurrences": [occurrence.to_dict() for occurrence in self.occurrences],
             "pages": [page.to_dict() for page in self.pages],
             "warnings": [warning.to_dict() for warning in self.warnings],
@@ -582,12 +637,14 @@ class Manifest:
             _fail("invalid_entry_directory", "entries must be unique and sorted by path")
         _unique((unit.id for unit in self.units), "unit id")
         _unique((asset.local_id for asset in self.assets), "asset localId")
+        _unique((attachment.local_id for attachment in self.attachments), "attachment localId")
         _unique((occurrence.id for occurrence in self.occurrences), "occurrence id")
 
         entry_set = set(entry_paths)
         entry_by_path = {entry.path: entry for entry in self.entries}
         refs: list[str] = [unit.markdown_entry for unit in self.units]
         refs.extend(asset.entry for asset in self.assets)
+        refs.extend(attachment.entry for attachment in self.attachments)
         refs.extend(
             entry
             for page in self.pages
@@ -610,6 +667,9 @@ class Manifest:
         for asset in self.assets:
             if not entry_by_path[asset.entry].mime_type.startswith("image/"):
                 _fail("invalid_entry_references", "asset entry must reference an image")
+        for attachment in self.attachments:
+            if entry_by_path[attachment.entry].mime_type != "application/vnd.ms-visio.drawing":
+                _fail("invalid_entry_references", "Visio attachment entry must reference a VSDX")
         for page in self.pages:
             if (
                 page.native_markdown_entry
@@ -633,9 +693,23 @@ class Manifest:
                 _fail("invalid_asset", f"assets[{index}].sourceKind is unsupported")
 
         asset_ids = {asset.local_id for asset in self.assets}
+        attachment_ids = {attachment.local_id for attachment in self.attachments}
         occurrence_asset_ids = {occurrence.asset_local_id for occurrence in self.occurrences}
         if occurrence_asset_ids - asset_ids or asset_ids - occurrence_asset_ids:
             _fail("invalid_occurrence", "every asset must have an occurrence and no occurrence may dangle")
+        occurrence_attachment_ids = {
+            occurrence.attachment_local_id
+            for occurrence in self.occurrences
+            if occurrence.attachment_local_id
+        }
+        if (
+            occurrence_attachment_ids - attachment_ids
+            or attachment_ids - occurrence_attachment_ids
+        ):
+            _fail(
+                "invalid_occurrence",
+                "every attachment must have an occurrence and no attachment may dangle",
+            )
 
         occurrence_orders: set[tuple[str, int]] = set()
         for index, occurrence in enumerate(self.occurrences):
@@ -693,8 +767,13 @@ class Manifest:
         if self.bundle_kind == PDF_ANALYZE_BUNDLE_KIND:
             if page_numbers != list(range(1, len(page_numbers) + 1)):
                 _fail("invalid_pdf_manifest", "pdf-analyze pages must be ordered, complete, and gap-free")
-            if self.assets or self.occurrences:
-                _fail("invalid_pdf_manifest", "pdf-analyze cannot contain assets or occurrences")
+            if self.assets or self.attachments or self.occurrences:
+                _fail(
+                    "invalid_pdf_manifest",
+                    "pdf-analyze cannot contain assets, attachments, or occurrences",
+                )
+        elif self.attachments:
+            _fail("invalid_pdf_manifest", "PDF bundles cannot contain attachments")
 
         page_by_unit = {page.unit_id: page for page in self.pages}
         for page in self.pages:
@@ -1004,7 +1083,7 @@ def make_health_document(
                 "enabled": True,
                 "formats": ["docx", "pptx", "xlsx"],
                 "markitdownVersion": "0.1.6",
-                "wrapperVersion": "office-wrapper-v1",
+                "wrapperVersion": "office-wrapper-v2",
             },
             "pdf": {
                 "enabled": bool(pdf_engine),

@@ -263,6 +263,7 @@ def build_pdf_analyze_bundle(
         entries=tuple(payload.descriptor() for payload in payloads),
         units=(),
         assets=(),
+        attachments=(),
         occurrences=(),
         pages=tuple(pages),
         warnings=tuple(warnings),
@@ -405,6 +406,7 @@ def build_pdf_render_bundle(
                     ocr_text="",
                     decorative=False,
                     confidence=1.0,
+                    attachment_local_id="",
                 )
             )
 
@@ -417,6 +419,7 @@ def build_pdf_render_bundle(
         entries=tuple(payload.descriptor() for payload in payloads),
         units=(),
         assets=tuple(assets),
+        attachments=(),
         occurrences=tuple(occurrences),
         pages=tuple(pages),
         warnings=tuple(warnings),

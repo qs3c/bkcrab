@@ -80,9 +80,11 @@ type activeMapRetryVector struct {
 
 type assetBatchStore struct {
 	store.Store
-	mappings  []store.RAGChunkAssetRecord
-	assets    map[string]store.RAGAssetRecord
-	batchSize []int
+	mappings       []store.RAGChunkAssetRecord
+	assets         map[string]store.RAGAssetRecord
+	attachments    map[string]store.RAGAttachmentRecord
+	batchSize      []int
+	attachmentBatch []int
 }
 
 func (s *assetBatchStore) ListRAGChunkAssetsByRefs(context.Context, []store.RAGChunkRef) ([]store.RAGChunkAssetRecord, error) {
@@ -94,6 +96,15 @@ func (s *assetBatchStore) ListRAGAssetsByIDs(_ context.Context, ids []string) ([
 	records := make([]store.RAGAssetRecord, 0, len(ids))
 	for _, id := range ids {
 		records = append(records, s.assets[id])
+	}
+	return records, nil
+}
+
+func (s *assetBatchStore) ListRAGAttachmentsByIDs(_ context.Context, ids []string) ([]store.RAGAttachmentRecord, error) {
+	s.attachmentBatch = append(s.attachmentBatch, len(ids))
+	records := make([]store.RAGAttachmentRecord, 0, len(ids))
+	for _, id := range ids {
+		records = append(records, s.attachments[id])
 	}
 	return records, nil
 }
@@ -642,5 +653,69 @@ func TestHydrateHitAssetsBatchesLargeAssetSets(t *testing.T) {
 		hits[0].Assets[0].ID != "ast_0000" || hits[0].Assets[assetCount-1].ID != "ast_0400" {
 		t.Fatalf("batches=%v first/last=%q/%q", batchStore.batchSize,
 			hits[0].Assets[0].ID, hits[0].Assets[len(hits[0].Assets)-1].ID)
+	}
+}
+
+func TestHydrateHitAssetsPreservesDistinctAttachmentsForSharedPreview(t *testing.T) {
+	const (
+		docID   = "doc_shared_preview"
+		assetID = "ast_shared_preview"
+	)
+	batchStore := &assetBatchStore{
+		mappings: []store.RAGChunkAssetRecord{
+			{
+				DocID: docID, DocVersion: 1, ChunkIndex: 0, AssetID: assetID,
+				AttachmentID: "att_first", Ordinal: 0,
+			},
+			{
+				DocID: docID, DocVersion: 1, ChunkIndex: 0, AssetID: assetID,
+				AttachmentID: "att_second", Ordinal: 1,
+			},
+		},
+		assets: map[string]store.RAGAssetRecord{
+			assetID: {
+				ID: assetID, DocID: docID, DisplayMIME: "image/png",
+				DisplayStatus: document.DisplayReady,
+				DisplaySHA256: strings.Repeat("a", 64), ThumbnailSHA256: strings.Repeat("b", 64),
+				DisplayObjectKey: "display/shared", ThumbnailObjectKey: "thumbnail/shared",
+				FirstSeenVersion: 1, LastSeenVersion: 1,
+			},
+		},
+		attachments: map[string]store.RAGAttachmentRecord{
+			"att_first": {
+				ID: "att_first", DocID: docID, ContentSHA256: strings.Repeat("c", 64),
+				Kind: document.AttachmentKindVisioSource, FileName: "first.vsdx",
+				MIMEType: document.MIMETypeVSDX, ObjectKey: "attachments/first",
+				ByteSize: 101, FirstSeenVersion: 1, LastSeenVersion: 1,
+			},
+			"att_second": {
+				ID: "att_second", DocID: docID, ContentSHA256: strings.Repeat("d", 64),
+				Kind: document.AttachmentKindVisioSource, FileName: "second.vsdx",
+				MIMEType: document.MIMETypeVSDX, ObjectKey: "attachments/second",
+				ByteSize: 202, FirstSeenVersion: 1, LastSeenVersion: 1,
+			},
+		},
+	}
+	service := &Service{st: batchStore}
+	hits, err := service.hydrateHitAssets(context.Background(), []Hit{{
+		DocID: docID, DocVersion: 1, ChunkIndex: 0, IndexFormatVersion: 1,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || len(hits[0].Assets) != 2 {
+		t.Fatalf("shared preview occurrences were collapsed: %+v", hits)
+	}
+	if hits[0].Assets[0].Attachment == nil || hits[0].Assets[0].Attachment.ID != "att_first" ||
+		hits[0].Assets[1].Attachment == nil || hits[0].Assets[1].Attachment.ID != "att_second" {
+		t.Fatalf("attachment links were not preserved: %+v", hits[0].Assets)
+	}
+	if fmt.Sprint(batchStore.batchSize) != "[1]" || fmt.Sprint(batchStore.attachmentBatch) != "[2]" {
+		t.Fatalf("unexpected hydration batches: assets=%v attachments=%v",
+			batchStore.batchSize, batchStore.attachmentBatch)
+	}
+	resources := BuildRAGResourceRefs(hits)
+	if len(resources) != 2 {
+		t.Fatalf("resource refs collapsed distinct Visio sources: %+v", resources)
 	}
 }

@@ -42,12 +42,14 @@ func (h *headingState) breadcrumb() string {
 
 type artifactLookup struct {
 	assets      map[string]document.ArtifactAsset
+	attachments map[string]document.ArtifactAttachment
 	occurrences map[string]document.ArtifactOccurrence
 }
 
 func newArtifactLookup(artifact *document.ParsedArtifact) artifactLookup {
 	lookup := artifactLookup{
 		assets:      make(map[string]document.ArtifactAsset),
+		attachments: make(map[string]document.ArtifactAttachment),
 		occurrences: make(map[string]document.ArtifactOccurrence),
 	}
 	if artifact == nil {
@@ -55,6 +57,9 @@ func newArtifactLookup(artifact *document.ParsedArtifact) artifactLookup {
 	}
 	for _, asset := range artifact.Assets {
 		lookup.assets[asset.ID] = asset
+	}
+	for _, attachment := range artifact.Attachments {
+		lookup.attachments[attachment.ID] = attachment
 	}
 	for _, occurrence := range artifact.Occurrences {
 		lookup.occurrences[occurrence.ID] = occurrence
@@ -94,7 +99,8 @@ func Markdown(markdown string, cfg Config) []Chunk {
 		Markdown: normalizeNewlines(markdown),
 	}
 	return splitBlocks(parseUnitBlocks(unit, artifactLookup{
-		assets: map[string]document.ArtifactAsset{}, occurrences: map[string]document.ArtifactOccurrence{},
+		assets: map[string]document.ArtifactAsset{}, attachments: map[string]document.ArtifactAttachment{},
+		occurrences: map[string]document.ArtifactOccurrence{},
 	}, &headingState{}), cfg)
 }
 
@@ -470,6 +476,16 @@ func renderInternalImage(image *ast.Image, source []byte, unitID string, lookup 
 		ID: occurrence.AssetID, Kind: asset.Kind, Caption: occurrence.Caption,
 		PageNum: page, Location: occurrence.Location, Width: asset.Width,
 		Height: asset.Height, MIMEType: asset.SourceMIME,
+	}
+	if occurrence.AttachmentID != "" {
+		attachment, ok := lookup.attachments[occurrence.AttachmentID]
+		if !ok {
+			return renderedMarkdown{}
+		}
+		ref.Attachment = &document.AttachmentRef{
+			ID: attachment.ID, Kind: attachment.Kind, FileName: attachment.FileName,
+			MIMEType: attachment.MIMEType, SizeBytes: attachment.ByteSize,
+		}
 	}
 	binding := AssetBinding{
 		OccurrenceID: occurrence.ID, Asset: ref, OCRText: occurrence.OCRText, Order: occurrence.Order,

@@ -1,5 +1,5 @@
 {
-  "protocolVersion": "rag-parser/v1",
+  "protocolVersion": "rag-parser/v2",
   "bundleKind": "pdf-render",
   "source": {
     "format": "pdf",
@@ -36,6 +36,7 @@
       "height": 480
     }
   ],
+  "attachments": [],
   "occurrences": [
     {
       "id": "occ_page_0001_0001",
@@ -52,7 +53,8 @@
       "caption": "",
       "ocrText": "",
       "decorative": false,
-      "confidence": 1.0
+      "confidence": 1.0,
+      "attachmentLocalId": ""
     }
   ],
   "pages": [

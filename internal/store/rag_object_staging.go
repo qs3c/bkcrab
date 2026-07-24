@@ -16,6 +16,7 @@ const (
 	RAGObjectKindAssetSource    = "asset_source"
 	RAGObjectKindAssetDisplay   = "asset_display"
 	RAGObjectKindAssetThumbnail = "asset_thumbnail"
+	RAGObjectKindAssetAttachment = "asset_attachment"
 	RAGObjectKindNormalized     = "normalized"
 	RAGObjectKindParsedArtifact = "parsed_artifact"
 
@@ -62,7 +63,8 @@ func ragObjectWriteHandleID(objectKey string) string {
 func validRAGObjectKind(kind string) bool {
 	switch kind {
 	case RAGObjectKindOriginal, RAGObjectKindAssetSource, RAGObjectKindAssetDisplay,
-		RAGObjectKindAssetThumbnail, RAGObjectKindNormalized, RAGObjectKindParsedArtifact:
+		RAGObjectKindAssetThumbnail, RAGObjectKindAssetAttachment,
+		RAGObjectKindNormalized, RAGObjectKindParsedArtifact:
 		return true
 	default:
 		return false
@@ -390,6 +392,10 @@ func (d *DBStore) ragObjectWriteReferencedInTx(
 	case RAGObjectKindAssetThumbnail:
 		query = fmt.Sprintf(`SELECT COUNT(*) FROM rag_assets
 			WHERE doc_id=%s AND thumbnail_object_key=%s`, d.ph(1), d.ph(2))
+		args = []any{record.DocID, record.ObjectKey}
+	case RAGObjectKindAssetAttachment:
+		query = fmt.Sprintf(`SELECT COUNT(*) FROM rag_attachments
+			WHERE doc_id=%s AND object_key=%s`, d.ph(1), d.ph(2))
 		args = []any{record.DocID, record.ObjectKey}
 	case RAGObjectKindNormalized, RAGObjectKindParsedArtifact:
 		query = fmt.Sprintf(`SELECT COUNT(*) FROM rag_document_versions v

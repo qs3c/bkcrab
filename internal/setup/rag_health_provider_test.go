@@ -22,7 +22,7 @@ func (p *cachedHealthProvider) RAGParserHealthSnapshot() config.RAGParserHealthS
 func TestRAGParserHealthProviderIsConcurrentAndReturnsDefensiveSnapshots(t *testing.T) {
 	server := NewServer(0)
 	provider := &cachedHealthProvider{snapshot: config.RAGParserHealthSnapshot{
-		ProtocolVersion: "rag-parser/v1",
+		ProtocolVersion: "rag-parser/v2",
 		Healthy:         true,
 		CheckedAt:       time.Now().UTC(),
 		ExpiresAt:       time.Now().Add(time.Minute),

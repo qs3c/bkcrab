@@ -28,7 +28,7 @@ func testOfficeManifest(markdown []byte) Manifest {
 			Format: "docx", ByteSize: 4, SHA256: strings.Repeat("a", 64),
 		},
 		Parser: ParserDescriptor{
-			Name: "markitdown", Version: "0.1.6", WrapperVersion: "office-wrapper-v1",
+			Name: "markitdown", Version: "0.1.6", WrapperVersion: ExpectedOfficeWrapper,
 		},
 		Entries: []EntryDescriptor{{
 			Path: "units/0001.md", SHA256: testSHA(markdown), ByteSize: int64(len(markdown)),
@@ -40,6 +40,7 @@ func testOfficeManifest(markdown []byte) Manifest {
 			MarkdownEntry: "units/0001.md",
 		}},
 		Assets:      []AssetDescriptor{},
+		Attachments: []AttachmentDescriptor{},
 		Occurrences: []OccurrenceDescriptor{},
 		Pages:       []PageDescriptor{},
 		Warnings:    []WarningDescriptor{},
@@ -186,8 +187,65 @@ func TestValidateManifestRejectsOfficeParserVersionDrift(t *testing.T) {
 	}
 }
 
+func TestValidateManifestAcceptsOccurrenceBoundVisioAttachment(t *testing.T) {
+	manifest := testOfficeManifest([]byte("![Visio](rag-asset://occ_visio)"))
+	manifest.Entries = append([]EntryDescriptor{
+		{Path: "assets/asset_visio.png", SHA256: strings.Repeat("b", 64), ByteSize: 64, MIMEType: "image/png"},
+		{Path: "attachments/attachment_visio.vsdx", SHA256: strings.Repeat("c", 64), ByteSize: 128, MIMEType: MIMETypeVSDX},
+	}, manifest.Entries...)
+	manifest.Assets = []AssetDescriptor{{
+		LocalID: "asset_visio", Entry: "assets/asset_visio.png", Kind: "image",
+		SourceKind: "embedded_preview", Width: 100, Height: 80,
+	}}
+	manifest.Attachments = []AttachmentDescriptor{{
+		LocalID: "attachment_visio", Entry: "attachments/attachment_visio.vsdx",
+		Kind: "visio_source", FileName: "architecture.vsdx",
+	}}
+	manifest.Occurrences = []OccurrenceDescriptor{{
+		ID: "occ_visio", AssetLocalID: "asset_visio", UnitID: "unit_document_0000",
+		Order: 1, Location: manifest.Units[0].Location, AltText: "Visio",
+		Confidence: 1, AttachmentLocalID: "attachment_visio",
+	}}
+	if err := ValidateManifest(&manifest, defaultDecodeOptions(manifest)); err != nil {
+		t.Fatalf("valid Visio manifest rejected: %v", err)
+	}
+
+	dangling := manifest
+	dangling.Occurrences = append([]OccurrenceDescriptor(nil), manifest.Occurrences...)
+	dangling.Occurrences[0].AttachmentLocalID = ""
+	if err := ValidateManifest(&dangling, defaultDecodeOptions(dangling)); !errors.Is(err, ErrInvalidBundle) {
+		t.Fatalf("dangling attachment error=%v", err)
+	}
+
+	unsafeName := manifest
+	unsafeName.Attachments = append([]AttachmentDescriptor(nil), manifest.Attachments...)
+	unsafeName.Attachments[0].FileName = "../architecture.vsdx"
+	if err := ValidateManifest(&unsafeName, defaultDecodeOptions(unsafeName)); !errors.Is(err, ErrInvalidBundle) {
+		t.Fatalf("unsafe attachment filename error=%v", err)
+	}
+}
+
+func TestVerifyEntryFileAcceptsOnlyZIPSniffForDeclaredVSDX(t *testing.T) {
+	validPath := filepath.Join(t.TempDir(), "architecture.vsdx")
+	if err := os.WriteFile(validPath, []byte("PK\x03\x04test-vsdx"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := EntryDescriptor{Path: "attachments/architecture.vsdx", MIMEType: MIMETypeVSDX}
+	if err := verifyEntryFile(validPath, descriptor); err != nil {
+		t.Fatalf("ZIP-sniffed VSDX rejected: %v", err)
+	}
+
+	invalidPath := filepath.Join(t.TempDir(), "architecture.vsdx")
+	if err := os.WriteFile(invalidPath, []byte("not-a-zip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyEntryFile(invalidPath, descriptor); !errors.Is(err, ErrInvalidBundle) {
+		t.Fatalf("non-ZIP VSDX error=%v", err)
+	}
+}
+
 func TestStrictJSONRejectsInvalidUTF8(t *testing.T) {
-	data := []byte(`{"protocolVersion":"rag-parser/v1"}`)
+	data := []byte(`{"protocolVersion":"rag-parser/v2"}`)
 	data[len(data)-3] = 0xff
 	var manifest Manifest
 	if err := decodeStrict(data, &manifest); err == nil {
@@ -345,6 +403,7 @@ func TestValidateManifestEnforcesDocumentPageQuota(t *testing.T) {
 		Entries:         []EntryDescriptor{},
 		Units:           []UnitDescriptor{},
 		Assets:          []AssetDescriptor{},
+		Attachments:     []AttachmentDescriptor{},
 		Occurrences:     []OccurrenceDescriptor{},
 		Pages: []PageDescriptor{
 			{Page: 1, Status: PageStatusFailed, ErrorCode: "engine_error", UnitID: "unit_page_cccccccccccc_0001"},
@@ -409,6 +468,7 @@ func TestValidateManifestEnforcesRenderByteQuota(t *testing.T) {
 		}},
 		Units:       []UnitDescriptor{},
 		Assets:      []AssetDescriptor{},
+		Attachments: []AttachmentDescriptor{},
 		Occurrences: []OccurrenceDescriptor{},
 		Pages: []PageDescriptor{{
 			Page: 1, Status: PageStatusOK, UnitID: "unit_page_cccccccccccc_0001", RenderEntry: "pages/page-0001.png",
@@ -435,6 +495,7 @@ func TestValidateManifestPDFRequiredForbiddenMatrix(t *testing.T) {
 		},
 		Units:       []UnitDescriptor{},
 		Assets:      []AssetDescriptor{},
+		Attachments: []AttachmentDescriptor{},
 		Occurrences: []OccurrenceDescriptor{},
 		Pages: []PageDescriptor{{
 			Page: 1, Status: PageStatusOK, ErrorCode: "", UnitID: "unit_page_cccccccccccc_0001",

@@ -27,7 +27,7 @@ import (
 
 const (
 	ExpectedMarkItDownVersion = "0.1.6"
-	ExpectedOfficeWrapper     = "office-wrapper-v1"
+	ExpectedOfficeWrapper     = "office-wrapper-v2"
 	expectedPDFEngine         = "pypdfium2"
 	expectedPDFEngineVersion  = "5.12.1"
 

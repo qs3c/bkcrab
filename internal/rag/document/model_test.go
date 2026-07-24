@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	testSourceHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	testAssetHash  = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	testSourceHash     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	testAssetHash      = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	testAttachmentHash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 )
 
 func validParsedInput() ParsedDocumentInput {
@@ -142,6 +143,15 @@ func TestAssetIDAndInternalMarkerTrustBoundary(t *testing.T) {
 	if _, err := AssetID("doc_1", strings.ToUpper(testAssetHash)); err == nil {
 		t.Fatal("non-canonical hash must be rejected")
 	}
+	attachmentID, err := AttachmentID("doc_1", testAttachmentHash)
+	if err != nil || !strings.HasPrefix(attachmentID, "att_") || len(attachmentID) != 36 {
+		t.Fatalf("unexpected attachment ID %q: %v", attachmentID, err)
+	}
+	attachmentIDAgain, _ := AttachmentID("doc_1", testAttachmentHash)
+	attachmentIDOther, _ := AttachmentID("doc_2", testAttachmentHash)
+	if attachmentID != attachmentIDAgain || attachmentID == attachmentIDOther {
+		t.Fatalf("attachment IDs are not stable/document-scoped: %q %q %q", attachmentID, attachmentIDAgain, attachmentIDOther)
+	}
 
 	url, err := InternalAssetURL("occ_1")
 	if err != nil || url != "rag-asset://occ_1" {
@@ -156,5 +166,47 @@ func TestAssetIDAndInternalMarkerTrustBoundary(t *testing.T) {
 	}
 	if _, ok := ParseInternalAssetURL("rag-asset://other", true, allowed); ok {
 		t.Fatal("marker outside the current occurrence map must be rejected")
+	}
+}
+
+func TestParsedDocumentValidatesOccurrenceBoundVisioAttachment(t *testing.T) {
+	input := validParsedInput()
+	input.Attachments = []ExtractedAttachment{{
+		LocalID: "attachment_1", ContentSHA256: testAttachmentHash,
+		Kind: AttachmentKindVisioSource, FileName: "architecture.vsdx",
+		MIMEType: MIMETypeVSDX, ByteSize: 128, BundleEntry: "attachments/attachment_1.vsdx",
+	}}
+	input.Occurrences[0].AttachmentLocalID = "attachment_1"
+	if err := NewParsedDocument(input, nil, nil).Validate(); err != nil {
+		t.Fatalf("valid attachment rejected: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		edit func(*ParsedDocument)
+	}{
+		{"dangling occurrence attachment", func(d *ParsedDocument) {
+			d.Occurrences[0].AttachmentLocalID = "attachment_missing"
+		}},
+		{"unreferenced attachment", func(d *ParsedDocument) {
+			d.Occurrences[0].AttachmentLocalID = ""
+		}},
+		{"unsafe attachment file name", func(d *ParsedDocument) {
+			d.Attachments[0].FileName = "../architecture.vsdx"
+		}},
+		{"wrong attachment MIME", func(d *ParsedDocument) {
+			d.Attachments[0].MIMEType = "application/zip"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := NewParsedDocument(input, nil, nil)
+			candidate.Attachments = append([]ExtractedAttachment(nil), input.Attachments...)
+			candidate.Occurrences = append([]AssetOccurrence(nil), input.Occurrences...)
+			test.edit(candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("Validate unexpectedly succeeded")
+			}
+		})
 	}
 }

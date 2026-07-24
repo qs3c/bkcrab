@@ -21,11 +21,11 @@ func TestRAGParserClientConstructionDoesNotProbeAndBackgroundSnapshotPublishesOf
 		}
 		response.Header().Set("Content-Type", "application/json")
 		_, _ = response.Write([]byte(`{
-  "protocolVersion":"rag-parser/v1",
+  "protocolVersion":"rag-parser/v2",
   "serviceVersion":"test-build",
   "limits":{"maxInputBytes":1024,"maxOutputBytes":4096},
   "capabilities":{
-    "office":{"enabled":true,"formats":["docx","pptx","xlsx"],"markitdownVersion":"0.1.6","wrapperVersion":"office-wrapper-v1"},
+    "office":{"enabled":true,"formats":["docx","pptx","xlsx"],"markitdownVersion":"0.1.6","wrapperVersion":"office-wrapper-v2"},
     "pdf":{"enabled":true,"engine":"pypdfium2","engineVersion":"5.12.1"}
   }
 }`))

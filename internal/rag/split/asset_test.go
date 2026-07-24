@@ -198,6 +198,45 @@ func TestResplitChunkKeepsBindingOnOneLocalFragment(t *testing.T) {
 	}
 }
 
+func TestSplitPropagatesOccurrenceBoundVisioAttachment(t *testing.T) {
+	t.Parallel()
+	location := document.SourceLocation{Kind: document.LocationDocument}
+	artifact := document.ParsedArtifact{
+		Units: []document.MarkdownUnit{{
+			ID: "unit_1", Location: location,
+			Markdown: "![Visio architecture](rag-asset://occ_visio)",
+		}},
+		Assets: []document.ArtifactAsset{{
+			ID: "ast_visio", Kind: document.AssetKindImage,
+			SourceKind: document.SourceKindEmbeddedPreview, SourceMIME: "image/png",
+			Width: 800, Height: 600, DisplayStatus: document.DisplayReady,
+		}},
+		Attachments: []document.ArtifactAttachment{{
+			ID: "att_visio", Kind: document.AttachmentKindVisioSource,
+			FileName: "architecture.vsdx", MIMEType: document.MIMETypeVSDX, ByteSize: 128,
+		}},
+		Occurrences: []document.ArtifactOccurrence{{
+			ID: "occ_visio", AssetID: "ast_visio", AttachmentID: "att_visio",
+			UnitID: "unit_1", Order: 1, Location: location, Caption: "Visio architecture",
+		}},
+	}
+	chunks := Split(artifact, Config{ChunkSize: 64})
+	if len(chunks) != 1 || len(chunks[0].AssetRefs) != 1 || len(chunks[0].AssetBindings) != 1 {
+		t.Fatalf("unexpected chunks: %+v", chunks)
+	}
+	ref := chunks[0].AssetRefs[0]
+	if ref.Attachment == nil || ref.Attachment.ID != "att_visio" ||
+		ref.Attachment.Kind != document.AttachmentKindVisioSource ||
+		ref.Attachment.FileName != "architecture.vsdx" ||
+		ref.Attachment.MIMEType != document.MIMETypeVSDX || ref.Attachment.SizeBytes != 128 {
+		t.Fatalf("attachment projection drifted: %+v", ref.Attachment)
+	}
+	if chunks[0].AssetBindings[0].Asset.Attachment == nil ||
+		chunks[0].AssetBindings[0].Asset.Attachment.ID != "att_visio" {
+		t.Fatalf("binding lost attachment: %+v", chunks[0].AssetBindings)
+	}
+}
+
 func imageArtifact(location document.SourceLocation, markdown string, occurrences []document.ArtifactOccurrence) document.ParsedArtifact {
 	return document.ParsedArtifact{
 		Units: []document.MarkdownUnit{{ID: "unit_1", Location: location, Markdown: markdown}},

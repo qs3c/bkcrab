@@ -1,5 +1,5 @@
 {
-  "protocolVersion": "rag-parser/v1",
+  "protocolVersion": "rag-parser/v2",
   "bundleKind": "office-convert",
   "source": {
     "format": "pptx",
@@ -9,7 +9,7 @@
   "parser": {
     "name": "markitdown",
     "version": "0.1.6",
-    "wrapperVersion": "office-wrapper-v1"
+    "wrapperVersion": "office-wrapper-v2"
   },
   "entries": [
     {
@@ -46,6 +46,7 @@
       "height": 800
     }
   ],
+  "attachments": [],
   "occurrences": [
     {
       "id": "occ_slide_0001_0001",
@@ -62,7 +63,8 @@
       "caption": "",
       "ocrText": "",
       "decorative": false,
-      "confidence": 1.0
+      "confidence": 1.0,
+      "attachmentLocalId": ""
     }
   ],
   "pages": [],

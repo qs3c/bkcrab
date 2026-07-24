@@ -4,7 +4,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/qs3c/bkcrab/internal/rag"
@@ -17,6 +19,39 @@ func (s *Server) handleRAGAsset(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRAGAssetThumbnail(w http.ResponseWriter, r *http.Request) {
 	s.serveRAGAsset(w, r, rag.AssetThumbnail)
+}
+
+func (s *Server) handleRAGAttachmentDownload(w http.ResponseWriter, r *http.Request) {
+	if !s.requireRAG(w) {
+		return
+	}
+	identity, ok := ragIdentity(r)
+	if !ok {
+		jsonResponse(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "unauthorized"})
+		return
+	}
+	descriptor, err := s.rag.AuthorizeAttachment(
+		r.Context(), ragOwnerID(identity), r.PathValue("attachmentId"))
+	if err != nil {
+		writeRAGAssetError(w, err)
+		return
+	}
+	setRAGAttachmentHeaders(w.Header(), descriptor)
+	if requestETagMatches(r.Header.Get("If-None-Match"), descriptor.ETag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	reader, err := s.rag.OpenAuthorizedAttachment(r.Context(), descriptor)
+	if err != nil {
+		clearRAGAssetHeaders(w.Header())
+		writeRAGAssetError(w, err)
+		return
+	}
+	defer reader.Close()
+	if _, err := io.Copy(w, reader); err != nil {
+		slog.Warn("stream RAG attachment",
+			"attachment", r.PathValue("attachmentId"), "error", err)
+	}
 }
 
 func (s *Server) serveRAGAsset(w http.ResponseWriter, r *http.Request, variant rag.AssetVariant) {
@@ -61,9 +96,23 @@ func setRAGAssetHeaders(header http.Header, descriptor *rag.AuthorizedAsset) {
 	header.Set("Cross-Origin-Resource-Policy", "same-origin")
 }
 
+func setRAGAttachmentHeaders(header http.Header, descriptor *rag.AuthorizedAttachment) {
+	header.Set("Content-Type", descriptor.MIMEType)
+	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": descriptor.FileName})
+	if disposition == "" {
+		disposition = "attachment"
+	}
+	header.Set("Content-Disposition", disposition)
+	header.Set("Content-Length", strconv.FormatInt(descriptor.ByteSize, 10))
+	header.Set("Cache-Control", "private, no-cache")
+	header.Set("ETag", descriptor.ETag)
+	header.Set("X-Content-Type-Options", "nosniff")
+	header.Set("Cross-Origin-Resource-Policy", "same-origin")
+}
+
 func clearRAGAssetHeaders(header http.Header) {
 	for _, name := range []string{
-		"Content-Type", "Content-Disposition", "Cache-Control", "ETag",
+		"Content-Type", "Content-Disposition", "Content-Length", "Cache-Control", "ETag",
 		"X-Content-Type-Options", "Cross-Origin-Resource-Policy",
 	} {
 		header.Del(name)

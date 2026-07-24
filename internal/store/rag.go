@@ -47,6 +47,7 @@ const (
 var (
 	ErrRAGBatchTooLarge               = errors.New("store: RAG batch too large")
 	ErrRAGAssetConflict               = errors.New("store: immutable RAG asset conflict")
+	ErrRAGAttachmentConflict          = errors.New("store: immutable RAG attachment conflict")
 	ErrRAGDocumentVersionMismatch     = errors.New("store: RAG document/version identity mismatch")
 	ErrRAGDocumentVersionConflict     = errors.New("store: RAG document version changed")
 	ErrRAGDocumentVersionIncomplete   = errors.New("store: incomplete immutable RAG document version snapshot")
@@ -362,11 +363,31 @@ type RAGAssetRecord struct {
 	UpdatedAt          time.Time
 }
 
+// RAGAttachmentRecord is an immutable downloadable source file associated
+// with one or more asset occurrences. Attachments are catalogued separately
+// from image assets because visually identical previews can belong to
+// different editable source files.
+type RAGAttachmentRecord struct {
+	ID               string
+	DocID            string
+	ContentSHA256    string
+	Kind             string
+	FileName         string
+	MIMEType         string
+	ObjectKey        string
+	ByteSize         int64
+	FirstSeenVersion int64
+	LastSeenVersion  int64
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 type RAGChunkAssetRecord struct {
 	DocID        string
 	DocVersion   int64
 	ChunkIndex   int
 	AssetID      string
+	AttachmentID string
 	Ordinal      int
 	LocationJSON string
 	Caption      string
@@ -501,7 +522,11 @@ const ragAssetColumns = `id, doc_id, content_sha256, source_kind, source_mime, d
 	source_object_key, display_object_key, thumbnail_object_key, display_status, display_sha256,
 	thumbnail_sha256, byte_size, width, height, first_seen_version, last_seen_version, created_at, updated_at`
 
-const ragChunkAssetColumns = `doc_id, doc_version, chunk_index, asset_id, ordinal,
+const ragAttachmentColumns = `id, doc_id, content_sha256, kind, file_name, mime_type,
+	object_key, byte_size, first_seen_version, last_seen_version, created_at, updated_at`
+
+const ragChunkAssetColumns = `doc_id, doc_version, chunk_index, asset_id,
+	COALESCE(attachment_id, ''), ordinal,
 	location_json, caption, ocr_text`
 
 const ragIndexGCTaskColumns = `id, doc_id, retired_version, retired_at, not_before, status,
@@ -657,11 +682,25 @@ func scanRAGAsset(scanner ragScanner) (*RAGAssetRecord, error) {
 	return &asset, nil
 }
 
+func scanRAGAttachment(scanner ragScanner) (*RAGAttachmentRecord, error) {
+	var attachment RAGAttachmentRecord
+	if err := scanner.Scan(
+		&attachment.ID, &attachment.DocID, &attachment.ContentSHA256,
+		&attachment.Kind, &attachment.FileName, &attachment.MIMEType,
+		&attachment.ObjectKey, &attachment.ByteSize, &attachment.FirstSeenVersion,
+		&attachment.LastSeenVersion, &attachment.CreatedAt, &attachment.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	return &attachment, nil
+}
+
 func scanRAGChunkAsset(scanner ragScanner) (*RAGChunkAssetRecord, error) {
 	var mapping RAGChunkAssetRecord
 	if err := scanner.Scan(
 		&mapping.DocID, &mapping.DocVersion, &mapping.ChunkIndex, &mapping.AssetID,
-		&mapping.Ordinal, &mapping.LocationJSON, &mapping.Caption, &mapping.OCRText,
+		&mapping.AttachmentID, &mapping.Ordinal, &mapping.LocationJSON,
+		&mapping.Caption, &mapping.OCRText,
 	); err != nil {
 		return nil, err
 	}
@@ -932,7 +971,8 @@ func (d *DBStore) DeleteRAGKB(ctx context.Context, id string) error {
 	}
 
 	for _, table := range []string{
-		"rag_chunk_assets", "rag_chunks", "rag_version_assets", "rag_assets", "rag_index_gc_tasks",
+		"rag_chunk_assets", "rag_chunks", "rag_version_assets", "rag_assets",
+		"rag_version_attachments", "rag_attachments", "rag_index_gc_tasks",
 		"rag_cache_object_fingerprints", "rag_cache_objects",
 		"rag_document_maintenance_leases",
 		"rag_document_versions", "rag_index_tasks",
@@ -1459,7 +1499,8 @@ func (d *DBStore) DeleteRAGDocument(ctx context.Context, id string) error {
 	// Usage and aggregate budget ledgers are intentionally retained for audit
 	// and period accounting even after the source document is deleted.
 	for _, table := range []string{
-		"rag_chunk_assets", "rag_chunks", "rag_version_assets", "rag_assets", "rag_index_gc_tasks",
+		"rag_chunk_assets", "rag_chunks", "rag_version_assets", "rag_assets",
+		"rag_version_attachments", "rag_attachments", "rag_index_gc_tasks",
 		"rag_cache_object_fingerprints", "rag_cache_objects",
 		"rag_document_maintenance_leases",
 		"rag_document_versions", "rag_index_tasks",
@@ -1677,15 +1718,18 @@ func (d *DBStore) PutRAGChunkAssets(ctx context.Context, mappings []RAGChunkAsse
 		return ErrRAGBatchTooLarge
 	}
 	query := fmt.Sprintf(`INSERT INTO rag_chunk_assets (
-		doc_id, doc_version, chunk_index, asset_id, ordinal, location_json, caption, ocr_text)
-		VALUES (%s, %s, %s, %s, %s, %s, %s, %s)`, d.ph(1), d.ph(2), d.ph(3),
-		d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8))
+		doc_id, doc_version, chunk_index, asset_id, attachment_id, ordinal,
+		location_json, caption, ocr_text)
+		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)`, d.ph(1), d.ph(2), d.ph(3),
+		d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9))
 	if d.dialect == "mysql" {
-		query += ` ON DUPLICATE KEY UPDATE location_json=VALUES(location_json),
+		query += ` ON DUPLICATE KEY UPDATE attachment_id=VALUES(attachment_id),
+			location_json=VALUES(location_json),
 			caption=VALUES(caption), ocr_text=VALUES(ocr_text)`
 	} else {
 		query += ` ON CONFLICT (doc_id, doc_version, chunk_index, asset_id, ordinal)
-			DO UPDATE SET location_json=excluded.location_json,
+			DO UPDATE SET attachment_id=excluded.attachment_id,
+			location_json=excluded.location_json,
 			caption=excluded.caption, ocr_text=excluded.ocr_text`
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
@@ -1701,12 +1745,19 @@ func (d *DBStore) PutRAGChunkAssets(ctx context.Context, mappings []RAGChunkAsse
 	for i := range mappings {
 		mapping := &mappings[i]
 		if _, err := stmt.ExecContext(ctx, mapping.DocID, mapping.DocVersion,
-			mapping.ChunkIndex, mapping.AssetID, mapping.Ordinal,
+			mapping.ChunkIndex, mapping.AssetID, nullableRAGString(mapping.AttachmentID), mapping.Ordinal,
 			mapping.LocationJSON, mapping.Caption, mapping.OCRText); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+func nullableRAGString(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return strings.TrimSpace(value)
 }
 
 func (d *DBStore) ListRAGChunkAssetsByRefs(ctx context.Context, refs []RAGChunkRef) ([]RAGChunkAssetRecord, error) {

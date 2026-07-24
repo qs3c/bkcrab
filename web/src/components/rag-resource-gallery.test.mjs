@@ -8,8 +8,10 @@ import remarkGfm from "remark-gfm";
 
 const {
   appendActAs,
+  buildAgentSessionAttachmentURL,
   buildAgentSessionAssetURL,
   availableUploadExtensions,
+  buildOwnerAttachmentURL,
   buildOwnerAssetURL,
   buildKnowledgeBasePayload,
   canChangeFeature,
@@ -23,6 +25,7 @@ const {
   getDocumentProgressLabel,
   getDocumentStageLabel,
   getDocumentStatusState,
+  getRAGResourceKey,
   getRAGCapabilityRows,
   getRAGOptInDisclosure,
   isAutoAvailable,
@@ -302,6 +305,57 @@ test("deduplicates assets in final hit order, supports old hits, and caps the ga
   assert.deepEqual(collectRAGResources([{ docId: "old", assets: undefined }]), []);
 });
 
+test("keeps distinct Visio attachments that share a preview asset", () => {
+  const hits = [{
+    kbId: "kb-1",
+    docId: "doc-1",
+    docName: "visio.docx",
+    assets: [
+      {
+        id: "shared-preview",
+        kind: "image",
+        attachment: {
+          id: "attachment-1",
+          kind: "visio_source",
+          fileName: "first.vsdx",
+          mimeType: "application/vnd.ms-visio.drawing",
+          sizeBytes: 1024,
+        },
+      },
+      {
+        id: "shared-preview",
+        kind: "image",
+        attachment: {
+          id: "attachment-2",
+          kind: "visio_source",
+          fileName: "second.vsdx",
+          mimeType: "application/vnd.ms-visio.drawing",
+          sizeBytes: 2048,
+        },
+      },
+      {
+        id: "shared-preview",
+        kind: "image",
+        attachment: {
+          id: "attachment-1",
+          kind: "visio_source",
+          fileName: "duplicate.vsdx",
+          mimeType: "application/vnd.ms-visio.drawing",
+        },
+      },
+    ],
+  }];
+
+  const resources = collectRAGResources(hits);
+  assert.deepEqual(
+    resources.map((resource) => getRAGResourceKey(resource.asset)),
+    ["shared-preview\u0000attachment-1", "shared-preview\u0000attachment-2"],
+  );
+  assert.equal(resources[0].asset.attachment.fileName, "first.vsdx");
+  assert.equal(resources[1].asset.attachment.sizeBytes, 2048);
+  assert.equal(getRAGResourceKey({ id: "ordinary-image" }), "ordinary-image");
+});
+
 test("builds encoded same-origin owner URLs and preserves encoded admin actAs", () => {
   assert.equal(
     buildOwnerAssetURL("asset/a?#", "thumbnail", "user +/一"),
@@ -311,6 +365,11 @@ test("builds encoded same-origin owner URLs and preserves encoded admin actAs", 
     buildOwnerAssetURL("asset/a?#", "display"),
     "/api/rag/assets/asset%2Fa%3F%23",
   );
+  assert.equal(
+    buildOwnerAttachmentURL("attachment/a?#", "user +/一"),
+    "/api/rag/attachments/attachment%2Fa%3F%23/download?actAs=user%20%2B%2F%E4%B8%80",
+  );
+  assert.equal(buildOwnerAttachmentURL("  "), "");
   assert.equal(
     appendActAs("/knowledge/chat/?id=kb%2F1", "user/1"),
     "/knowledge/chat/?id=kb%2F1&actAs=user%2F1",
@@ -368,6 +427,61 @@ test("normalizes persisted agent resources and builds session-scoped asset URLs"
     "/api/agents/agent-1/chat/session-1/rag-assets/asset-1",
   );
   assert.equal(buildAgentSessionAssetURL("", "session-1", "asset-1", "display"), "");
+  assert.equal(
+    buildAgentSessionAttachmentURL(
+      "agent/a?#",
+      "session +/一",
+      "attachment/a?#",
+      "user +/一",
+    ),
+    "/api/agents/agent%2Fa%3F%23/chat/session%20%2B%2F%E4%B8%80/rag-attachments/attachment%2Fa%3F%23/download?actAs=user%20%2B%2F%E4%B8%80",
+  );
+  assert.equal(buildAgentSessionAttachmentURL("", "session-1", "attachment-1"), "");
+});
+
+test("normalizes persisted Visio attachment metadata without collapsing shared previews", () => {
+  const resources = normalizeRAGResources([
+    {
+      asset: {
+        id: "ast_shared",
+        kind: "image",
+        attachment: {
+          id: "att_1",
+          kind: "visio_source",
+          fileName: "one.vsdx",
+          mimeType: "application/vnd.ms-visio.drawing",
+          sizeBytes: 10,
+        },
+      },
+      kbId: "kb-1",
+      docId: "doc-1",
+      docName: "one.docx",
+      chunkIndex: 0,
+    },
+    {
+      asset: {
+        id: "ast_shared",
+        kind: "image",
+        attachment: {
+          id: "att_2",
+          kind: "visio_source",
+          fileName: "two.vsdx",
+          mimeType: "application/vnd.ms-visio.drawing",
+          sizeBytes: -1,
+        },
+      },
+      kbId: "kb-1",
+      docId: "doc-1",
+      docName: "one.docx",
+      chunkIndex: 1,
+    },
+  ]);
+
+  assert.equal(resources.length, 2);
+  assert.equal(resources[0].asset.attachment.id, "att_1");
+  assert.equal(resources[0].asset.attachment.sizeBytes, 10);
+  assert.equal(resources[1].asset.attachment.id, "att_2");
+  assert.equal(resources[1].asset.attachment.sizeBytes, undefined);
 });
 
 test("tracks unavailable images without mutating other gallery state", () => {
@@ -486,7 +600,14 @@ test("RAG UI surfaces stay wired to the executable safe renderers", async () => 
   assert.match(chat, /RAGAnswerMarkdown/);
   assert.match(gallery, /RAGPlainText/);
   assert.match(gallery, /assetURLBuilder/);
+  assert.match(gallery, /attachmentURLBuilder/);
+  assert.match(gallery, /selected\?\.asset\.attachment\?\.kind === "visio_source"/);
+  assert.match(gallery, /下载 Visio 工程文件/);
+  assert.match(gallery, /target="_blank"/);
+  assert.match(gallery, /rel="noopener noreferrer"/);
+  assert.match(gallery, /\bdownload\b/);
   assert.match(agentChat, /buildAgentSessionAssetURL/);
+  assert.match(agentChat, /buildAgentSessionAttachmentURL/);
   assert.match(agentChat, /normalizeRAGResources/);
   assert.match(agentChat, /img: AgentMarkdownImage/);
   assert.match(knowledgePage, /const payload = buildKnowledgeBasePayload\(/);

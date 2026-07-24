@@ -18,11 +18,19 @@ import (
 )
 
 type officeFixture struct {
-	markdown    string
-	images      [][]byte
-	assetIDs    []string
-	occurrences []sidecar.OccurrenceDescriptor
-	warnings    []sidecar.WarningDescriptor
+	markdown         string
+	images           [][]byte
+	assetIDs         []string
+	assetSourceKinds []string
+	attachments      []officeAttachmentFixture
+	occurrences      []sidecar.OccurrenceDescriptor
+	warnings         []sidecar.WarningDescriptor
+}
+
+type officeAttachmentFixture struct {
+	localID  string
+	fileName string
+	data     []byte
 }
 
 type officeFixtureExtractor struct {
@@ -118,18 +126,40 @@ func buildOfficeHandle(
 		}
 		entry := fmt.Sprintf("assets/%s.png", localID)
 		payloads[entry] = bundlePayload{data: image, mime: "image/png"}
+		sourceKind := document.SourceKindEmbeddedOriginal
+		if index < len(fixture.assetSourceKinds) && fixture.assetSourceKinds[index] != "" {
+			sourceKind = fixture.assetSourceKinds[index]
+		}
 		assets[index] = sidecar.AssetDescriptor{
 			LocalID: localID, Entry: entry, Kind: document.AssetKindImage,
-			SourceKind: document.SourceKindEmbeddedOriginal, Width: 12, Height: 8,
+			SourceKind: sourceKind, Width: 12, Height: 8,
+		}
+	}
+	attachments := make([]sidecar.AttachmentDescriptor, len(fixture.attachments))
+	for index, attachment := range fixture.attachments {
+		localID := attachment.localID
+		if localID == "" {
+			localID = fmt.Sprintf("attachment_%04d", index+1)
+		}
+		fileName := attachment.fileName
+		if fileName == "" {
+			fileName = fmt.Sprintf("visio-%04d.vsdx", index+1)
+		}
+		entry := fmt.Sprintf("attachments/%s.vsdx", localID)
+		payloads[entry] = bundlePayload{data: attachment.data, mime: sidecar.MIMETypeVSDX}
+		attachments[index] = sidecar.AttachmentDescriptor{
+			LocalID: localID, Entry: entry, Kind: document.AttachmentKindVisioSource,
+			FileName: fileName,
 		}
 	}
 	manifest := sidecar.Manifest{
 		ProtocolVersion: sidecar.ProtocolVersion, BundleKind: sidecar.BundleKindOfficeConvert,
 		Source: sidecar.SourceDescriptor{Format: source.Format, ByteSize: source.Size, SHA256: source.SHA256},
-		Parser: sidecar.ParserDescriptor{Name: "markitdown", Version: "0.1.6", WrapperVersion: "office-wrapper-v1"},
+		Parser: sidecar.ParserDescriptor{Name: "markitdown", Version: "0.1.6", WrapperVersion: sidecar.ExpectedOfficeWrapper},
 		Units:  []sidecar.UnitDescriptor{{ID: unitID, Location: location, MarkdownEntry: markdownPath}},
-		Assets: assets, Occurrences: append([]sidecar.OccurrenceDescriptor{}, fixture.occurrences...),
-		Pages: []sidecar.PageDescriptor{}, Warnings: append([]sidecar.WarningDescriptor{}, fixture.warnings...),
+		Assets: assets, Attachments: attachments,
+		Occurrences: append([]sidecar.OccurrenceDescriptor{}, fixture.occurrences...),
+		Pages:       []sidecar.PageDescriptor{}, Warnings: append([]sidecar.WarningDescriptor{}, fixture.warnings...),
 		Entries: []sidecar.EntryDescriptor{},
 	}
 	return decodeFixtureBundle(t, ctx, manifest, payloads, sidecar.DecodeOptions{
@@ -195,6 +225,52 @@ func TestOfficeStandardMapsStableAssetsOccurrencesWithoutVision(t *testing.T) {
 				t.Fatalf("unit markdown=%q", parsed.Units[0].Markdown)
 			}
 		})
+	}
+}
+
+func TestOfficeMapsVisioPreviewAndStableAttachment(t *testing.T) {
+	format := "docx"
+	location := officeLocation(format)
+	unitID := officeUnitID(location)
+	vsdx := []byte("PK\x03\x04fake-vsdx-package")
+	fixture := officeFixture{
+		markdown:         "![Visio architecture](rag-asset://occ_visio)\n",
+		images:           [][]byte{solidPNG(t, 12, 8, imageBlue)},
+		assetSourceKinds: []string{document.SourceKindEmbeddedPreview},
+		attachments: []officeAttachmentFixture{{
+			localID: "attachment_0001", fileName: "architecture.vsdx", data: vsdx,
+		}},
+		occurrences: []sidecar.OccurrenceDescriptor{{
+			ID: "occ_visio", AssetLocalID: "asset_0001", AttachmentLocalID: "attachment_0001",
+			UnitID: unitID, Order: 1, Location: location, AltText: "Visio architecture", Confidence: 1,
+		}},
+	}
+	parser := NewLocalParser(&officeFixtureExtractor{t: t, fixture: fixture}, 300)
+	parsed, err := parser.Parse(context.Background(), fakeOfficeSource(format), ParseOptions{
+		Mode: config.ParseModeStandard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parsed.Close()
+	wantHash := shaHex(vsdx)
+	if len(parsed.Attachments) != 1 || parsed.Attachments[0].ContentSHA256 != wantHash ||
+		parsed.Attachments[0].LocalID != "attachment_office_"+wantHash[:24] ||
+		parsed.Attachments[0].FileName != "architecture.vsdx" ||
+		parsed.Occurrences[0].AttachmentLocalID != parsed.Attachments[0].LocalID {
+		t.Fatalf("Visio attachment mapping drifted: attachments=%+v occurrences=%+v", parsed.Attachments, parsed.Occurrences)
+	}
+	if parsed.Assets[0].SourceKind != document.SourceKindEmbeddedPreview {
+		t.Fatalf("preview source kind=%q", parsed.Assets[0].SourceKind)
+	}
+	artifact, err := document.Canonicalize(parsed, "neutral")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAttachmentID, _ := document.AttachmentID("doc_office", wantHash)
+	if artifact.Occurrences[0].AttachmentID != wantAttachmentID ||
+		artifact.Attachments[0].ID != wantAttachmentID {
+		t.Fatalf("canonical attachment mapping drifted: %+v / %+v", artifact.Attachments, artifact.Occurrences)
 	}
 }
 

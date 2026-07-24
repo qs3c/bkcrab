@@ -22,6 +22,7 @@ type ParsedArtifact struct {
 	Parser        ParserInfo           `json:"parser"`
 	Units         []MarkdownUnit       `json:"units"`
 	Assets        []ArtifactAsset      `json:"assets"`
+	Attachments   []ArtifactAttachment `json:"attachments,omitempty"`
 	Occurrences   []ArtifactOccurrence `json:"occurrences"`
 	Warnings      []ParseWarning       `json:"warnings"`
 }
@@ -38,30 +39,49 @@ type ArtifactAsset struct {
 	DisplayStatus string `json:"displayStatus"`
 }
 
+type ArtifactAttachment struct {
+	ID            string `json:"id"`
+	ContentSHA256 string `json:"contentSha256"`
+	Kind          string `json:"kind"`
+	FileName      string `json:"fileName"`
+	MIMEType      string `json:"mimeType"`
+	ByteSize      int64  `json:"byteSize"`
+}
+
 type ArtifactOccurrence struct {
-	ID         string          `json:"id"`
-	AssetID    string          `json:"assetId"`
-	UnitID     string          `json:"unitId"`
-	Order      int             `json:"order"`
-	Location   SourceLocation  `json:"location"`
-	BBox       *NormalizedBBox `json:"bbox,omitempty"`
-	Caption    string          `json:"caption"`
-	OCRText    string          `json:"ocrText,omitempty"`
-	Decorative bool            `json:"decorative"`
-	Confidence float64         `json:"confidence"`
+	ID           string          `json:"id"`
+	AssetID      string          `json:"assetId"`
+	AttachmentID string          `json:"attachmentId,omitempty"`
+	UnitID       string          `json:"unitId"`
+	Order        int             `json:"order"`
+	Location     SourceLocation  `json:"location"`
+	BBox         *NormalizedBBox `json:"bbox,omitempty"`
+	Caption      string          `json:"caption"`
+	OCRText      string          `json:"ocrText,omitempty"`
+	Decorative   bool            `json:"decorative"`
+	Confidence   float64         `json:"confidence"`
+}
+
+type AttachmentRef struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	FileName  string `json:"fileName"`
+	MIMEType  string `json:"mimeType"`
+	SizeBytes int64  `json:"sizeBytes"`
 }
 
 // AssetRef is the public, URL-free resource descriptor consumed by later
 // splitter/search stages. Object keys remain in the SQL catalog only.
 type AssetRef struct {
-	ID       string         `json:"id"`
-	Kind     string         `json:"kind"`
-	Caption  string         `json:"caption,omitempty"`
-	PageNum  int            `json:"pageNum,omitempty"`
-	Location SourceLocation `json:"location"`
-	Width    int            `json:"width,omitempty"`
-	Height   int            `json:"height,omitempty"`
-	MIMEType string         `json:"mimeType,omitempty"`
+	ID         string         `json:"id"`
+	Kind       string         `json:"kind"`
+	Caption    string         `json:"caption,omitempty"`
+	PageNum    int            `json:"pageNum,omitempty"`
+	Location   SourceLocation `json:"location"`
+	Width      int            `json:"width,omitempty"`
+	Height     int            `json:"height,omitempty"`
+	MIMEType   string         `json:"mimeType,omitempty"`
+	Attachment *AttachmentRef `json:"attachment,omitempty"`
 }
 
 func (a *ParsedArtifact) Validate() error {
@@ -96,10 +116,26 @@ func (a *ParsedArtifact) Validate() error {
 		assets[asset.ID] = asset
 		hashes[asset.ContentSHA256] = asset.ID
 	}
+	attachments := make(map[string]ArtifactAttachment, len(a.Attachments))
+	attachmentHashes := make(map[string]string, len(a.Attachments))
+	for i, attachment := range a.Attachments {
+		if err := validateArtifactAttachment(a.Source.DocID, attachment); err != nil {
+			return fmt.Errorf("attachment %d: %w", i, err)
+		}
+		if _, exists := attachments[attachment.ID]; exists {
+			return fmt.Errorf("duplicate canonical attachment ID %q", attachment.ID)
+		}
+		if prior, exists := attachmentHashes[attachment.ContentSHA256]; exists {
+			return fmt.Errorf("duplicate attachment content hash %q in %q and %q", attachment.ContentSHA256, prior, attachment.ID)
+		}
+		attachments[attachment.ID] = attachment
+		attachmentHashes[attachment.ContentSHA256] = attachment.ID
+	}
 	occurrenceIDs := make(map[string]struct{}, len(a.Occurrences))
 	referencedAssets := make(map[string]struct{}, len(a.Assets))
+	referencedAttachments := make(map[string]struct{}, len(a.Attachments))
 	for i, occurrence := range a.Occurrences {
-		if err := validateArtifactOccurrence(occurrence, units, assets); err != nil {
+		if err := validateArtifactOccurrence(occurrence, units, assets, attachments); err != nil {
 			return fmt.Errorf("occurrence %d: %w", i, err)
 		}
 		if _, exists := occurrenceIDs[occurrence.ID]; exists {
@@ -107,10 +143,18 @@ func (a *ParsedArtifact) Validate() error {
 		}
 		occurrenceIDs[occurrence.ID] = struct{}{}
 		referencedAssets[occurrence.AssetID] = struct{}{}
+		if occurrence.AttachmentID != "" {
+			referencedAttachments[occurrence.AttachmentID] = struct{}{}
+		}
 	}
 	for assetID := range assets {
 		if _, ok := referencedAssets[assetID]; !ok {
 			return fmt.Errorf("asset %q has no occurrence", assetID)
+		}
+	}
+	for attachmentID := range attachments {
+		if _, ok := referencedAttachments[attachmentID]; !ok {
+			return fmt.Errorf("attachment %q has no occurrence", attachmentID)
 		}
 	}
 	for _, unit := range a.Units {
@@ -143,7 +187,7 @@ func validateArtifactAsset(docID string, asset ArtifactAsset) error {
 		return fmt.Errorf("unsupported asset kind %q", asset.Kind)
 	}
 	switch asset.SourceKind {
-	case SourceKindEmbeddedOriginal, SourceKindPageCrop, SourceKindScannedPage:
+	case SourceKindEmbeddedOriginal, SourceKindEmbeddedPreview, SourceKindPageCrop, SourceKindScannedPage:
 	default:
 		return fmt.Errorf("unsupported source kind %q", asset.SourceKind)
 	}
@@ -156,12 +200,42 @@ func validateArtifactAsset(docID string, asset ArtifactAsset) error {
 	return nil
 }
 
-func validateArtifactOccurrence(occurrence ArtifactOccurrence, units map[string]MarkdownUnit, assets map[string]ArtifactAsset) error {
+func validateArtifactAttachment(docID string, attachment ArtifactAttachment) error {
+	expected, err := AttachmentID(docID, attachment.ContentSHA256)
+	if err != nil {
+		return err
+	}
+	if attachment.ID != expected {
+		return fmt.Errorf("attachment ID %q is not canonical for document and content hash", attachment.ID)
+	}
+	if attachment.Kind != AttachmentKindVisioSource {
+		return fmt.Errorf("unsupported attachment kind %q", attachment.Kind)
+	}
+	if !validAttachmentFileName(attachment.FileName) {
+		return fmt.Errorf("invalid attachment file name %q", attachment.FileName)
+	}
+	if attachment.MIMEType != MIMETypeVSDX || attachment.ByteSize < 1 {
+		return errors.New("invalid attachment source description")
+	}
+	return nil
+}
+
+func validateArtifactOccurrence(
+	occurrence ArtifactOccurrence,
+	units map[string]MarkdownUnit,
+	assets map[string]ArtifactAsset,
+	attachments map[string]ArtifactAttachment,
+) error {
 	if !safeID(occurrence.ID) {
 		return fmt.Errorf("invalid ID %q", occurrence.ID)
 	}
 	if _, ok := assets[occurrence.AssetID]; !ok {
 		return fmt.Errorf("references unknown asset %q", occurrence.AssetID)
+	}
+	if occurrence.AttachmentID != "" {
+		if _, ok := attachments[occurrence.AttachmentID]; !ok {
+			return fmt.Errorf("references unknown attachment %q", occurrence.AttachmentID)
+		}
 	}
 	unit, ok := units[occurrence.UnitID]
 	if !ok {
@@ -211,6 +285,19 @@ func Canonicalize(parsed *ParsedDocument, neutralCaption string) (*ParsedArtifac
 			DisplayStatus: DisplayUnavailable,
 		})
 	}
+	attachmentLocalToCanonical := make(map[string]string, len(parsed.Attachments))
+	attachments := make([]ArtifactAttachment, 0, len(parsed.Attachments))
+	for _, transient := range parsed.Attachments {
+		id, err := AttachmentID(parsed.Source.DocID, transient.ContentSHA256)
+		if err != nil {
+			return nil, err
+		}
+		attachmentLocalToCanonical[transient.LocalID] = id
+		attachments = append(attachments, ArtifactAttachment{
+			ID: id, ContentSHA256: transient.ContentSHA256, Kind: transient.Kind,
+			FileName: transient.FileName, MIMEType: transient.MIMEType, ByteSize: transient.ByteSize,
+		})
+	}
 	occurrences := make([]ArtifactOccurrence, 0, len(parsed.Occurrences))
 	for _, transient := range parsed.Occurrences {
 		var bbox *NormalizedBBox
@@ -220,7 +307,8 @@ func Canonicalize(parsed *ParsedDocument, neutralCaption string) (*ParsedArtifac
 		}
 		occurrences = append(occurrences, ArtifactOccurrence{
 			ID: transient.ID, AssetID: localToCanonical[transient.AssetLocalID],
-			UnitID: transient.UnitID, Order: transient.Order, Location: transient.Location,
+			AttachmentID: attachmentLocalToCanonical[transient.AttachmentLocalID],
+			UnitID:       transient.UnitID, Order: transient.Order, Location: transient.Location,
 			BBox: bbox, Caption: FinalCaption(transient.Caption, transient.AltText, neutralCaption),
 			OCRText: cleanPlainText(transient.OCRText, 16*1024), Decorative: transient.Decorative,
 			Confidence: transient.Confidence,
@@ -238,7 +326,7 @@ func Canonicalize(parsed *ParsedDocument, neutralCaption string) (*ParsedArtifac
 	artifact := &ParsedArtifact{
 		SchemaVersion: ParsedArtifactSchemaVersion,
 		Source:        parsed.Source, Parser: parsed.Parser, Units: units,
-		Assets: assets, Occurrences: occurrences, Warnings: warnings,
+		Assets: assets, Attachments: attachments, Occurrences: occurrences, Warnings: warnings,
 	}
 	if err := artifact.Validate(); err != nil {
 		return nil, err
@@ -365,6 +453,17 @@ func AssetSourceKey(userID, kbID, docID, contentSHA256, sourceMIME string) (stri
 	return path.Join(prefix, "assets", contentSHA256, "source."+extension), nil
 }
 
+func AttachmentSourceKey(userID, kbID, docID, contentSHA256 string) (string, error) {
+	prefix, err := documentPrefix(userID, kbID, docID)
+	if err != nil {
+		return "", err
+	}
+	if !CanonicalSHA256(contentSHA256) {
+		return "", errors.New("attachment content hash must be a canonical SHA-256")
+	}
+	return path.Join(prefix, "attachments", contentSHA256, "source.vsdx"), nil
+}
+
 func AssetDisplayKey(userID, kbID, docID, contentSHA256 string) (string, error) {
 	prefix, err := assetPrefix(userID, kbID, docID, contentSHA256)
 	if err != nil {
@@ -468,6 +567,8 @@ func sourceExtension(mimeType string) (string, error) {
 		return "emf", nil
 	case "image/wmf", "image/x-wmf":
 		return "wmf", nil
+	case MIMETypeVSDX:
+		return "vsdx", nil
 	default:
 		return "", fmt.Errorf("unsupported asset source MIME %q", mimeType)
 	}

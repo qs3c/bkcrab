@@ -17,11 +17,12 @@ import (
 )
 
 const (
-	ProtocolVersion   = "rag-parser/v1"
+	ProtocolVersion   = "rag-parser/v2"
 	ManifestEntryName = "manifest.json"
 
 	MIMETypeMarkdown = "text/markdown; charset=utf-8"
 	MIMETypeJSON     = "application/json"
+	MIMETypeVSDX     = "application/vnd.ms-visio.drawing"
 )
 
 type BundleKind string
@@ -79,18 +80,26 @@ type AssetDescriptor struct {
 	Height     int    `json:"height"`
 }
 
+type AttachmentDescriptor struct {
+	LocalID  string `json:"localId"`
+	Entry    string `json:"entry"`
+	Kind     string `json:"kind"`
+	FileName string `json:"fileName"`
+}
+
 type OccurrenceDescriptor struct {
-	ID           string   `json:"id"`
-	AssetLocalID string   `json:"assetLocalId"`
-	UnitID       string   `json:"unitId"`
-	Order        int      `json:"order"`
-	Location     Location `json:"location"`
-	BBox         []int    `json:"bbox"`
-	AltText      string   `json:"altText"`
-	Caption      string   `json:"caption"`
-	OCRText      string   `json:"ocrText"`
-	Decorative   bool     `json:"decorative"`
-	Confidence   float64  `json:"confidence"`
+	ID                string   `json:"id"`
+	AssetLocalID      string   `json:"assetLocalId"`
+	UnitID            string   `json:"unitId"`
+	Order             int      `json:"order"`
+	Location          Location `json:"location"`
+	BBox              []int    `json:"bbox"`
+	AltText           string   `json:"altText"`
+	Caption           string   `json:"caption"`
+	OCRText           string   `json:"ocrText"`
+	Decorative        bool     `json:"decorative"`
+	Confidence        float64  `json:"confidence"`
+	AttachmentLocalID string   `json:"attachmentLocalId"`
 }
 
 type PageDescriptor struct {
@@ -110,7 +119,7 @@ type WarningDescriptor struct {
 	Degraded bool      `json:"degraded"`
 }
 
-// Manifest is the complete rag-parser/v1 manifest. Slice fields are required
+// Manifest is the complete rag-parser/v2 manifest. Slice fields are required
 // in canonical JSON even when empty; nil is rejected so missing/null fields do
 // not silently acquire a new meaning.
 type Manifest struct {
@@ -121,6 +130,7 @@ type Manifest struct {
 	Entries         []EntryDescriptor      `json:"entries"`
 	Units           []UnitDescriptor       `json:"units"`
 	Assets          []AssetDescriptor      `json:"assets"`
+	Attachments     []AttachmentDescriptor `json:"attachments"`
 	Occurrences     []OccurrenceDescriptor `json:"occurrences"`
 	Pages           []PageDescriptor       `json:"pages"`
 	Warnings        []WarningDescriptor    `json:"warnings"`
@@ -305,9 +315,14 @@ func (value *AssetDescriptor) UnmarshalJSON(data []byte) error {
 	return unmarshalExact(data, (*wire)(value), "localId", "entry", "kind", "sourceKind", "width", "height")
 }
 
+func (value *AttachmentDescriptor) UnmarshalJSON(data []byte) error {
+	type wire AttachmentDescriptor
+	return unmarshalExact(data, (*wire)(value), "localId", "entry", "kind", "fileName")
+}
+
 func (value *OccurrenceDescriptor) UnmarshalJSON(data []byte) error {
 	type wire OccurrenceDescriptor
-	return unmarshalExact(data, (*wire)(value), "id", "assetLocalId", "unitId", "order", "location", "bbox", "altText", "caption", "ocrText", "decorative", "confidence")
+	return unmarshalExact(data, (*wire)(value), "id", "assetLocalId", "unitId", "order", "location", "bbox", "altText", "caption", "ocrText", "decorative", "confidence", "attachmentLocalId")
 }
 
 func (value *PageDescriptor) UnmarshalJSON(data []byte) error {
@@ -322,7 +337,7 @@ func (value *WarningDescriptor) UnmarshalJSON(data []byte) error {
 
 func (value *Manifest) UnmarshalJSON(data []byte) error {
 	type wire Manifest
-	return unmarshalExact(data, (*wire)(value), "protocolVersion", "bundleKind", "source", "parser", "entries", "units", "assets", "occurrences", "pages", "warnings")
+	return unmarshalExact(data, (*wire)(value), "protocolVersion", "bundleKind", "source", "parser", "entries", "units", "assets", "attachments", "occurrences", "pages", "warnings")
 }
 
 func (value *HealthLimits) UnmarshalJSON(data []byte) error {
@@ -447,6 +462,13 @@ func validBundlePath(value string) bool {
 	return cleaned == value && cleaned != ManifestEntryName
 }
 
+func validAttachmentFileName(value string) bool {
+	return value != "" && len(value) <= 255 && utf8.ValidString(value) &&
+		!strings.ContainsAny(value, "\x00\r\n/\\") &&
+		path.Base(value) == value && filepath.Base(value) == value &&
+		strings.EqualFold(path.Ext(value), ".vsdx")
+}
+
 func validLocation(location Location) bool {
 	switch location.Kind {
 	case "document":
@@ -502,6 +524,8 @@ func expectedMIMEForPath(entryPath string) (string, bool) {
 		return "image/jpeg", true
 	case ".webp":
 		return "image/webp", true
+	case ".vsdx":
+		return MIMETypeVSDX, true
 	default:
 		return "", false
 	}
@@ -547,7 +571,7 @@ func ValidateManifest(manifest *Manifest, options DecodeOptions) error {
 	if options.ExpectedKind != "" && manifest.BundleKind != options.ExpectedKind {
 		return invalidBundle("bundleKind=%q, expected %q", manifest.BundleKind, options.ExpectedKind)
 	}
-	if manifest.Entries == nil || manifest.Units == nil || manifest.Assets == nil ||
+	if manifest.Entries == nil || manifest.Units == nil || manifest.Assets == nil || manifest.Attachments == nil ||
 		manifest.Occurrences == nil || manifest.Pages == nil || manifest.Warnings == nil {
 		return invalidBundle("canonical array field is missing or null")
 	}
@@ -557,8 +581,8 @@ func ValidateManifest(manifest *Manifest, options DecodeOptions) error {
 	if options.Limits.MaxPages > 0 && (len(manifest.Pages) > options.Limits.MaxPages || len(manifest.Units) > options.Limits.MaxPages) {
 		return limitExceeded("document unit/page count exceeds %d", options.Limits.MaxPages)
 	}
-	if options.Limits.MaxAssets > 0 && len(manifest.Assets) > options.Limits.MaxAssets {
-		return limitExceeded("asset count %d exceeds %d", len(manifest.Assets), options.Limits.MaxAssets)
+	if options.Limits.MaxAssets > 0 && len(manifest.Assets)+len(manifest.Attachments) > options.Limits.MaxAssets {
+		return limitExceeded("asset/attachment count %d exceeds %d", len(manifest.Assets)+len(manifest.Attachments), options.Limits.MaxAssets)
 	}
 	if manifest.Source.ByteSize <= 0 || !validSHA256(manifest.Source.SHA256) {
 		return invalidBundle("invalid source descriptor")
@@ -637,7 +661,7 @@ func ValidateManifest(manifest *Manifest, options DecodeOptions) error {
 			return limitExceeded("asset %q exceeds pixel quota", asset.LocalID)
 		}
 		switch asset.SourceKind {
-		case "embedded_original", "page_crop", "scanned_page":
+		case "embedded_original", "embedded_preview", "page_crop", "scanned_page":
 		default:
 			return invalidBundle("invalid asset sourceKind %q", asset.SourceKind)
 		}
@@ -654,6 +678,29 @@ func ValidateManifest(manifest *Manifest, options DecodeOptions) error {
 			return invalidBundle("asset %q does not reference an image", asset.LocalID)
 		}
 		assetByID[asset.LocalID] = asset
+	}
+
+	attachmentByID := make(map[string]AttachmentDescriptor, len(manifest.Attachments))
+	attachmentUses := make(map[string]int, len(manifest.Attachments))
+	for index, attachment := range manifest.Attachments {
+		if !validIdentifier(attachment.LocalID) || attachment.Entry == "" ||
+			attachment.Kind != "visio_source" || !validAttachmentFileName(attachment.FileName) {
+			return invalidBundle("invalid attachments[%d]", index)
+		}
+		if _, duplicate := attachmentByID[attachment.LocalID]; duplicate {
+			return invalidBundle("duplicate attachment localId %q", attachment.LocalID)
+		}
+		if err := addReference(attachment.Entry); err != nil {
+			return err
+		}
+		entry := entryByPath[attachment.Entry]
+		if entry.MIMEType != MIMETypeVSDX {
+			return invalidBundle("attachment %q does not reference a VSDX", attachment.LocalID)
+		}
+		if options.Limits.MaxAssetBytes > 0 && entry.ByteSize > options.Limits.MaxAssetBytes {
+			return limitExceeded("attachment %q exceeds byte quota", attachment.LocalID)
+		}
+		attachmentByID[attachment.LocalID] = attachment
 	}
 
 	pageByNumber := make(map[int]PageDescriptor, len(manifest.Pages))
@@ -743,7 +790,8 @@ func ValidateManifest(manifest *Manifest, options DecodeOptions) error {
 			return invalidBundle("office bundle requires units and forbids pages")
 		}
 	case BundleKindPDFAnalyze:
-		if manifest.Source.Format != "pdf" || len(manifest.Units) != 0 || len(manifest.Assets) != 0 || len(manifest.Occurrences) != 0 {
+		if manifest.Source.Format != "pdf" || len(manifest.Units) != 0 || len(manifest.Assets) != 0 ||
+			len(manifest.Attachments) != 0 || len(manifest.Occurrences) != 0 {
 			return invalidBundle("pdf-analyze top-level contract is invalid")
 		}
 		if len(manifest.Pages) == 0 {
@@ -755,7 +803,7 @@ func ValidateManifest(manifest *Manifest, options DecodeOptions) error {
 			}
 		}
 	case BundleKindPDFRender:
-		if manifest.Source.Format != "pdf" || len(manifest.Units) != 0 {
+		if manifest.Source.Format != "pdf" || len(manifest.Units) != 0 || len(manifest.Attachments) != 0 {
 			return invalidBundle("pdf-render top-level contract is invalid")
 		}
 		if len(manifest.Pages) == 0 {
@@ -780,7 +828,8 @@ func ValidateManifest(manifest *Manifest, options DecodeOptions) error {
 	for index, occurrence := range manifest.Occurrences {
 		if !validIdentifier(occurrence.ID) || !validIdentifier(occurrence.AssetLocalID) || !validIdentifier(occurrence.UnitID) ||
 			occurrence.Order < 0 || !validLocation(occurrence.Location) || !validBBox(occurrence.BBox) ||
-			occurrence.Confidence < 0 || occurrence.Confidence > 1 {
+			occurrence.Confidence < 0 || occurrence.Confidence > 1 ||
+			(occurrence.AttachmentLocalID != "" && !validIdentifier(occurrence.AttachmentLocalID)) {
 			return invalidBundle("invalid occurrences[%d]", index)
 		}
 		if _, duplicate := occurrenceIDs[occurrence.ID]; duplicate {
@@ -817,10 +866,21 @@ func ValidateManifest(manifest *Manifest, options DecodeOptions) error {
 		orders[occurrence.UnitID][occurrence.Order] = struct{}{}
 		occurrenceIDs[occurrence.ID] = struct{}{}
 		assetUses[occurrence.AssetLocalID]++
+		if occurrence.AttachmentLocalID != "" {
+			if _, ok := attachmentByID[occurrence.AttachmentLocalID]; !ok {
+				return invalidBundle("occurrence %q references unknown attachment", occurrence.ID)
+			}
+			attachmentUses[occurrence.AttachmentLocalID]++
+		}
 	}
 	for assetID := range assetByID {
 		if assetUses[assetID] == 0 {
 			return invalidBundle("asset %q has no occurrence", assetID)
+		}
+	}
+	for attachmentID := range attachmentByID {
+		if attachmentUses[attachmentID] == 0 {
+			return invalidBundle("attachment %q has no occurrence", attachmentID)
 		}
 	}
 	for index, warning := range manifest.Warnings {

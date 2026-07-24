@@ -30,7 +30,7 @@ from app.protocol import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-GOLDEN_ROOT = REPO_ROOT / "testdata" / "rag-parser-protocol" / "v1"
+GOLDEN_ROOT = REPO_ROOT / "testdata" / "rag-parser-protocol" / "v2"
 
 
 def _read_json(name: str) -> dict[str, object]:
@@ -96,7 +96,7 @@ def test_manifest_rejects_unknown_fields_and_unknown_version() -> None:
     with pytest.raises(ProtocolError, match="unknown fields"):
         Manifest.from_dict(unknown)
     wrong_version = copy.deepcopy(value)
-    wrong_version["protocolVersion"] = "rag-parser/v2"
+    wrong_version["protocolVersion"] = "rag-parser/v1"
     with pytest.raises(ProtocolError, match="unsupported protocolVersion"):
         Manifest.from_dict(wrong_version)
 
@@ -195,7 +195,7 @@ def _minimal_bundle(payload: bytes, cleanup) -> Bundle:
         protocol_version=PROTOCOL_VERSION,
         bundle_kind="office-convert",
         source=SourceDescriptor("docx", 1, "1" * 64),
-        parser=ParserDescriptor("markitdown", "0.1.6", "office-wrapper-v1"),
+        parser=ParserDescriptor("markitdown", "0.1.6", "office-wrapper-v2"),
         entries=(entry.descriptor(),),
         units=(
             MarkdownUnit(
@@ -205,6 +205,7 @@ def _minimal_bundle(payload: bytes, cleanup) -> Bundle:
             ),
         ),
         assets=(),
+        attachments=(),
         occurrences=(),
         pages=(),
         warnings=(),

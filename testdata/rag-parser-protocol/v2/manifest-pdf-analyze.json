@@ -1,5 +1,5 @@
 {
-  "protocolVersion": "rag-parser/v1",
+  "protocolVersion": "rag-parser/v2",
   "bundleKind": "pdf-analyze",
   "source": {
     "format": "pdf",
@@ -27,6 +27,7 @@
   ],
   "units": [],
   "assets": [],
+  "attachments": [],
   "occurrences": [],
   "pages": [
     {

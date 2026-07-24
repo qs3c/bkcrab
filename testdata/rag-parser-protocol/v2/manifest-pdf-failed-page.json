@@ -1,5 +1,5 @@
 {
-  "protocolVersion": "rag-parser/v1",
+  "protocolVersion": "rag-parser/v2",
   "bundleKind": "pdf-render",
   "source": {
     "format": "pdf",
@@ -21,6 +21,7 @@
   ],
   "units": [],
   "assets": [],
+  "attachments": [],
   "occurrences": [],
   "pages": [
     {

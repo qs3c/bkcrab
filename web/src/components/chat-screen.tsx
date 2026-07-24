@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { getAgent, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, listAgentFiles, listProjects, renameChatSession, revealAgentWorkspace, sendChatStream, steerChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type ContextUsage, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile } from "@/lib/api";
 import { findProducedFileAttachmentIndex, getChatHistoryRenderState, isInternalWorkspaceFile, splitToolTurnForRender } from "@/components/chat-screen-state";
 import { RAGResourceGallery } from "@/components/rag-resource-gallery";
-import { buildAgentSessionAssetURL, normalizeRAGResources } from "@/components/rag-resource-gallery-state";
+import { buildAgentSessionAssetURL, buildAgentSessionAttachmentURL, normalizeRAGResources } from "@/components/rag-resource-gallery-state";
 import { AgentMarkdownImage } from "@/components/rag-safe-render";
 import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, History } from "lucide-react";
 import Link from "next/link";
@@ -2260,6 +2260,12 @@ export function ChatScreen() {
                             sessionId,
                             assetID,
                             variant,
+                            actAsUserId,
+                          )}
+                          attachmentURLBuilder={(attachmentID) => buildAgentSessionAttachmentURL(
+                            selectedAgent,
+                            sessionId,
+                            attachmentID,
                             actAsUserId,
                           )}
                           compact

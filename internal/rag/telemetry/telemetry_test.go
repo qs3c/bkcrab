@@ -51,7 +51,7 @@ func TestSlogRecorderCannotLogBodiesKeysBase64OrSecrets(t *testing.T) {
 	}
 	Emit(context.Background(), recorder, EventParserDocument, Fields{
 		DocID: "doc_e2e", Format: "pdf", ParseMode: "auto",
-		ParserVersion: "office-parser-v1+office-wrapper-v1",
+		ParserVersion: "office-parser-v1+office-wrapper-v2",
 		Outcome:       "ok", PageCount: 2, AssetCount: 1, WarningCount: 1,
 	})
 	text := output.String()
@@ -65,7 +65,7 @@ func TestSlogRecorderCannotLogBodiesKeysBase64OrSecrets(t *testing.T) {
 	}
 	for _, required := range []string{
 		`"event":"rag.parser.document"`, `"doc_id":"doc_e2e"`, `"asset_count":1`,
-		`"parser_version":"office-parser-v1+office-wrapper-v1"`,
+		`"parser_version":"office-parser-v1+office-wrapper-v2"`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("missing %s in %s", required, text)

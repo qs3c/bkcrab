@@ -1363,6 +1363,13 @@ func (d *DBStore) migrateRAGMultimodalSchema(ctx context.Context) error {
 	if err := d.addRAGColumnIfMissing(ctx, "rag_assets", "thumbnail_sha256", assetHashDDL); err != nil {
 		return err
 	}
+	attachmentIDDDL := "TEXT"
+	if d.dialect == mysqlDialect {
+		attachmentIDDDL = "VARCHAR(40)"
+	}
+	if err := d.addRAGColumnIfMissing(ctx, "rag_chunk_assets", "attachment_id", attachmentIDDDL); err != nil {
+		return err
+	}
 	if err := d.migrateRAGDocumentVersionToBigInt(ctx); err != nil {
 		return err
 	}
@@ -2325,10 +2332,14 @@ func (d *DBStore) migrationSQL() []string {
 		d.ragDocumentVersionsTableSQL(),
 		d.ragAssetsTableSQL(),
 		`CREATE INDEX IF NOT EXISTS idx_rag_assets_doc ON rag_assets (doc_id)`,
+		d.ragAttachmentsTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_attachments_doc ON rag_attachments (doc_id)`,
 		d.ragObjectWriteStagingTableSQL(),
 		`CREATE INDEX IF NOT EXISTS idx_rag_object_write_staging_cleanup ON rag_object_write_staging (status, updated_at, handle_id)`,
 		d.ragVersionAssetsTableSQL(),
 		`CREATE INDEX IF NOT EXISTS idx_rag_version_assets_asset ON rag_version_assets (asset_id, doc_id, doc_version)`,
+		d.ragVersionAttachmentsTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_version_attachments_attachment ON rag_version_attachments (attachment_id, doc_id, doc_version)`,
 		d.ragDocumentMaintenanceLeasesTableSQL(),
 		`CREATE INDEX IF NOT EXISTS idx_rag_document_maintenance_lease_until ON rag_document_maintenance_leases (lease_until)`,
 		d.ragCacheObjectsTableSQL(),
@@ -2458,6 +2469,33 @@ func (d *DBStore) ragVersionAssetsTableSQL() string {
 	)`
 }
 
+func (d *DBStore) ragAttachmentsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_attachments (
+		id TEXT PRIMARY KEY,
+		doc_id TEXT NOT NULL,
+		content_sha256 TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		file_name TEXT NOT NULL,
+		mime_type TEXT NOT NULL,
+		object_key TEXT NOT NULL,
+		byte_size BIGINT NOT NULL,
+		first_seen_version BIGINT NOT NULL,
+		last_seen_version BIGINT NOT NULL,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		UNIQUE (doc_id, content_sha256)
+	)`
+}
+
+func (d *DBStore) ragVersionAttachmentsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_version_attachments (
+		doc_id TEXT NOT NULL,
+		doc_version BIGINT NOT NULL,
+		attachment_id TEXT NOT NULL,
+		PRIMARY KEY (doc_id, doc_version, attachment_id)
+	)`
+}
+
 func (d *DBStore) ragDocumentMaintenanceLeasesTableSQL() string {
 	return `CREATE TABLE IF NOT EXISTS rag_document_maintenance_leases (
 		doc_id TEXT PRIMARY KEY,
@@ -2515,6 +2553,7 @@ func (d *DBStore) ragChunkAssetsTableSQL() string {
 		doc_version BIGINT NOT NULL,
 		chunk_index INTEGER NOT NULL,
 		asset_id TEXT NOT NULL,
+		attachment_id TEXT,
 		ordinal INTEGER NOT NULL,
 		location_json TEXT NOT NULL,
 		caption TEXT NOT NULL,

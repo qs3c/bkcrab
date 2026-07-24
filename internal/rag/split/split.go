@@ -653,7 +653,8 @@ func ResplitChunk(input Chunk, cfg Config) []Chunk {
 	}
 	unit := document.MarkdownUnit{ID: "unit_resplit", Location: location, Markdown: input.RawContent}
 	blocks := parseUnitBlocks(unit, artifactLookup{
-		assets: map[string]document.ArtifactAsset{}, occurrences: map[string]document.ArtifactOccurrence{},
+		assets: map[string]document.ArtifactAsset{}, attachments: map[string]document.ArtifactAttachment{},
+		occurrences: map[string]document.ArtifactOccurrence{},
 	}, &headingState{})
 	for i := range blocks {
 		if blocks[i].boundary {

@@ -1236,7 +1236,7 @@ func parserSnapshotReason(c RAGCfg, snapshot RAGParserHealthSnapshot) string {
 	if snapshot.ExpiresAt.IsZero() || !time.Now().Before(snapshot.ExpiresAt) {
 		return "parser_health_stale"
 	}
-	if snapshot.ProtocolVersion != "rag-parser/v1" {
+	if snapshot.ProtocolVersion != "rag-parser/v2" {
 		return "parser_protocol_mismatch"
 	}
 	return ""

@@ -116,7 +116,11 @@ func (p *LocalParser) parseOffice(
 	if err != nil {
 		return nil, err
 	}
-	occurrences, err := loadOfficeOccurrences(bundle.Manifest.Occurrences, localIDs)
+	attachments, attachmentLocalIDs, err := loadOfficeAttachments(bundle.Manifest, entries)
+	if err != nil {
+		return nil, err
+	}
+	occurrences, err := loadOfficeOccurrences(bundle.Manifest.Occurrences, localIDs, attachmentLocalIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +168,8 @@ func (p *LocalParser) parseOffice(
 			Name: "markitdown-office", Version: version,
 			WrapperVersion: bundle.Manifest.Parser.WrapperVersion,
 		},
-		Units: units, Assets: assets, Occurrences: occurrences, Warnings: warnings,
+		Units: units, Assets: assets, Attachments: attachments,
+		Occurrences: occurrences, Warnings: warnings,
 	}, bundle.OpenEntry, bundle.Close)
 	if err := parsed.Validate(); err != nil {
 		_ = parsed.Close()
@@ -185,8 +190,8 @@ func validateOfficeBundleLimits(
 	if len(manifest.Units) > limits.maxPages {
 		return fmt.Errorf("%w: Office unit count exceeds %d", ErrDocumentLimitExceeded, limits.maxPages)
 	}
-	if len(manifest.Assets) > limits.maxAssets {
-		return fmt.Errorf("%w: Office asset count exceeds %d", ErrDocumentLimitExceeded, limits.maxAssets)
+	if len(manifest.Assets)+len(manifest.Attachments) > limits.maxAssets {
+		return fmt.Errorf("%w: Office asset/attachment count exceeds %d", ErrDocumentLimitExceeded, limits.maxAssets)
 	}
 	var total int64
 	for _, entry := range manifest.Entries {
@@ -202,6 +207,15 @@ func validateOfficeBundleLimits(
 		}
 		if entry.ByteSize > limits.maxAssetBytes {
 			return fmt.Errorf("%w: Office asset %q exceeds %d bytes", ErrDocumentLimitExceeded, asset.LocalID, limits.maxAssetBytes)
+		}
+	}
+	for _, attachment := range manifest.Attachments {
+		entry, ok := entries[attachment.Entry]
+		if !ok {
+			return fmt.Errorf("%w: Office attachment entry %q is missing", ErrInvalidDocument, attachment.Entry)
+		}
+		if entry.ByteSize > limits.maxAssetBytes {
+			return fmt.Errorf("%w: Office attachment %q exceeds %d bytes", ErrDocumentLimitExceeded, attachment.LocalID, limits.maxAssetBytes)
 		}
 	}
 	return nil
@@ -261,9 +275,37 @@ func loadOfficeAssets(
 	return assets, localIDs, nil
 }
 
+func loadOfficeAttachments(
+	manifest sidecar.Manifest,
+	entries map[string]sidecar.EntryDescriptor,
+) ([]document.ExtractedAttachment, map[string]string, error) {
+	attachments := make([]document.ExtractedAttachment, 0, len(manifest.Attachments))
+	localIDs := make(map[string]string, len(manifest.Attachments))
+	byHash := make(map[string]string, len(manifest.Attachments))
+	for _, descriptor := range manifest.Attachments {
+		entry, ok := entries[descriptor.Entry]
+		if !ok {
+			return nil, nil, fmt.Errorf("%w: Office attachment entry %q is missing", ErrInvalidDocument, descriptor.Entry)
+		}
+		localID, duplicate := byHash[entry.SHA256]
+		if !duplicate {
+			localID = "attachment_office_" + entry.SHA256[:24]
+			byHash[entry.SHA256] = localID
+			attachments = append(attachments, document.ExtractedAttachment{
+				LocalID: localID, ContentSHA256: entry.SHA256,
+				Kind: descriptor.Kind, FileName: descriptor.FileName, MIMEType: entry.MIMEType,
+				ByteSize: entry.ByteSize, BundleEntry: descriptor.Entry,
+			})
+		}
+		localIDs[descriptor.LocalID] = localID
+	}
+	return attachments, localIDs, nil
+}
+
 func loadOfficeOccurrences(
 	descriptors []sidecar.OccurrenceDescriptor,
 	localIDs map[string]string,
+	attachmentLocalIDs map[string]string,
 ) ([]document.AssetOccurrence, error) {
 	occurrences := make([]document.AssetOccurrence, 0, len(descriptors))
 	for _, descriptor := range descriptors {
@@ -271,14 +313,23 @@ func loadOfficeOccurrences(
 		if !ok {
 			return nil, fmt.Errorf("%w: Office occurrence %q has no asset", ErrInvalidDocument, descriptor.ID)
 		}
+		attachmentLocalID := ""
+		if descriptor.AttachmentLocalID != "" {
+			var attachmentOK bool
+			attachmentLocalID, attachmentOK = attachmentLocalIDs[descriptor.AttachmentLocalID]
+			if !attachmentOK {
+				return nil, fmt.Errorf("%w: Office occurrence %q has no attachment", ErrInvalidDocument, descriptor.ID)
+			}
+		}
 		var bbox *document.NormalizedBBox
 		if len(descriptor.BBox) == 4 {
 			value := document.NormalizedBBox(descriptor.BBox)
 			bbox = &value
 		}
 		occurrences = append(occurrences, document.AssetOccurrence{
-			ID: descriptor.ID, AssetLocalID: localID, UnitID: descriptor.UnitID,
-			Order: descriptor.Order, Location: officeLocationFromSidecar(descriptor.Location),
+			ID: descriptor.ID, AssetLocalID: localID, AttachmentLocalID: attachmentLocalID,
+			UnitID: descriptor.UnitID,
+			Order:  descriptor.Order, Location: officeLocationFromSidecar(descriptor.Location),
 			BBox: bbox, AltText: descriptor.AltText, Caption: descriptor.Caption,
 			OCRText: descriptor.OCRText, Decorative: descriptor.Decorative,
 			Confidence: descriptor.Confidence,

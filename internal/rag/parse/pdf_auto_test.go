@@ -624,7 +624,8 @@ func basePDFManifest(source document.Source, kind sidecar.BundleKind) sidecar.Ma
 		Source:  sidecar.SourceDescriptor{Format: "pdf", ByteSize: source.Size, SHA256: source.SHA256},
 		Parser:  sidecar.ParserDescriptor{Name: "fake-pdfium", Version: "1.0.0", WrapperVersion: "pdf-wrapper-v1"},
 		Entries: []sidecar.EntryDescriptor{}, Units: []sidecar.UnitDescriptor{}, Assets: []sidecar.AssetDescriptor{},
-		Occurrences: []sidecar.OccurrenceDescriptor{}, Pages: []sidecar.PageDescriptor{}, Warnings: []sidecar.WarningDescriptor{},
+		Attachments: []sidecar.AttachmentDescriptor{}, Occurrences: []sidecar.OccurrenceDescriptor{},
+		Pages: []sidecar.PageDescriptor{}, Warnings: []sidecar.WarningDescriptor{},
 	}
 }
 

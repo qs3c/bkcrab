@@ -44,6 +44,12 @@ type RAGAssetCleanupClaim struct {
 	ObjectWrites []RAGObjectWriteFence
 }
 
+type RAGAttachmentCleanupClaim struct {
+	AttachmentID string
+	DocID        string
+	ObjectWrites []RAGObjectWriteFence
+}
+
 // lockActiveRAGUserTx serializes every new RAG ownership mutation with the
 // durable user tombstone. The no-op UPDATE is intentional: it acquires the
 // user row/write lock on all supported dialects before status is inspected.
@@ -1007,11 +1013,18 @@ func (d *DBStore) deleteRAGVersionCatalogInTx(
 	if err := d.touchRAGVersionAssetsBeforeRemoval(ctx, tx, docID, docVersion); err != nil {
 		return err
 	}
+	if err := d.touchRAGVersionAttachmentsBeforeRemoval(ctx, tx, docID, docVersion); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_chunk_assets
 		WHERE doc_id=%s AND doc_version=%s`, d.ph(1), d.ph(2)), docID, docVersion); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_version_assets
+		WHERE doc_id=%s AND doc_version=%s`, d.ph(1), d.ph(2)), docID, docVersion); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_version_attachments
 		WHERE doc_id=%s AND doc_version=%s`, d.ph(1), d.ph(2)), docID, docVersion); err != nil {
 		return err
 	}

@@ -434,6 +434,22 @@ func mysqlMigrationSQL() []string {
 			UNIQUE KEY uq_rag_assets_doc_hash (doc_id, content_sha256),
 			KEY idx_rag_assets_doc (doc_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS rag_attachments (
+			id VARCHAR(40) PRIMARY KEY,
+			doc_id VARCHAR(120) NOT NULL,
+			content_sha256 CHAR(64) NOT NULL,
+			kind VARCHAR(32) NOT NULL,
+			file_name VARCHAR(512) NOT NULL,
+			mime_type VARCHAR(96) NOT NULL,
+			object_key LONGTEXT NOT NULL,
+			byte_size BIGINT NOT NULL,
+			first_seen_version BIGINT NOT NULL,
+			last_seen_version BIGINT NOT NULL,
+			created_at DATETIME(6) NOT NULL,
+			updated_at DATETIME(6) NOT NULL,
+			UNIQUE KEY uq_rag_attachments_doc_hash (doc_id, content_sha256),
+			KEY idx_rag_attachments_doc (doc_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS rag_object_write_staging (
 			handle_id CHAR(64) NOT NULL,
 			user_id VARCHAR(120) NOT NULL,
@@ -455,6 +471,13 @@ func mysqlMigrationSQL() []string {
 			asset_id VARCHAR(40) NOT NULL,
 			PRIMARY KEY (doc_id, doc_version, asset_id),
 			KEY idx_rag_version_assets_asset (asset_id, doc_id, doc_version)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS rag_version_attachments (
+			doc_id VARCHAR(120) NOT NULL,
+			doc_version BIGINT NOT NULL,
+			attachment_id VARCHAR(40) NOT NULL,
+			PRIMARY KEY (doc_id, doc_version, attachment_id),
+			KEY idx_rag_version_attachments_attachment (attachment_id, doc_id, doc_version)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS rag_document_maintenance_leases (
 			doc_id VARCHAR(120) NOT NULL,
@@ -505,6 +528,7 @@ func mysqlMigrationSQL() []string {
 			doc_version BIGINT NOT NULL,
 			chunk_index INTEGER NOT NULL,
 			asset_id VARCHAR(40) NOT NULL,
+			attachment_id VARCHAR(40),
 			ordinal INTEGER NOT NULL,
 			location_json LONGTEXT NOT NULL,
 			caption LONGTEXT NOT NULL,

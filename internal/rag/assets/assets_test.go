@@ -86,22 +86,33 @@ func (m *memoryObjects) Delete(ctx context.Context, key string) error {
 }
 
 type memoryCatalog struct {
-	mu            sync.Mutex
-	records       map[string]store.RAGAssetRecord
-	versionAssets map[string]map[int64][]string
-	onReplace     func(string, int64, []string)
-	beginErr      error
-	upsertErr     error
-	readyResult   bool
-	staged        []store.RAGObjectWriteFence
+	mu                 sync.Mutex
+	records            map[string]store.RAGAssetRecord
+	attachments        map[string]store.RAGAttachmentRecord
+	versionAssets      map[string]map[int64][]string
+	versionAttachments map[string]map[int64][]string
+	onReplace          func(string, int64, []string)
+	beginErr           error
+	upsertErr          error
+	readyResult        bool
+	staged             []store.RAGObjectWriteFence
 }
 
 func newMemoryCatalog() *memoryCatalog {
 	return &memoryCatalog{
-		records:       map[string]store.RAGAssetRecord{},
-		versionAssets: map[string]map[int64][]string{},
-		readyResult:   true,
+		records:            map[string]store.RAGAssetRecord{},
+		attachments:        map[string]store.RAGAttachmentRecord{},
+		versionAssets:      map[string]map[int64][]string{},
+		versionAttachments: map[string]map[int64][]string{},
+		readyResult:        true,
 	}
+}
+
+func (m *memoryCatalog) UpsertRAGAttachment(_ context.Context, record *store.RAGAttachmentRecord) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.attachments[record.ID] = *record
+	return nil
 }
 
 func (m *memoryCatalog) BeginRAGObjectWrite(_ context.Context, request store.RAGObjectWriteRequest) (*store.RAGObjectWriteFence, error) {
@@ -181,6 +192,19 @@ func (m *memoryCatalog) ListRAGAssetsByIDs(_ context.Context, ids []string) ([]s
 	return out, nil
 }
 
+func (m *memoryCatalog) ListRAGAttachmentsByIDs(_ context.Context, ids []string) ([]store.RAGAttachmentRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]store.RAGAttachmentRecord, 0, len(ids))
+	for _, id := range ids {
+		if record, ok := m.attachments[id]; ok {
+			out = append(out, record)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 func (m *memoryCatalog) ReplaceRAGVersionAssets(
 	_ context.Context,
 	docID string,
@@ -213,6 +237,43 @@ func (m *memoryCatalog) PublishRAGAssetsForIndex(
 		}
 	}
 	if err := m.ReplaceRAGVersionAssets(ctx, fence.DocID, fence.DocVersion, assetIDs); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (m *memoryCatalog) ReplaceRAGVersionAttachments(
+	_ context.Context,
+	docID string,
+	docVersion int64,
+	attachmentIDs []string,
+) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.versionAttachments[docID] == nil {
+		m.versionAttachments[docID] = map[int64][]string{}
+	}
+	m.versionAttachments[docID][docVersion] = append([]string(nil), attachmentIDs...)
+	return nil
+}
+
+func (m *memoryCatalog) PublishRAGAssetsAndAttachmentsForIndex(
+	ctx context.Context,
+	fence store.IndexFence,
+	assets []store.RAGAssetRecord,
+	assetIDs []string,
+	attachments []store.RAGAttachmentRecord,
+	attachmentIDs []string,
+) (bool, error) {
+	if ok, err := m.PublishRAGAssetsForIndex(ctx, fence, assets, assetIDs); err != nil || !ok {
+		return ok, err
+	}
+	for i := range attachments {
+		if err := m.UpsertRAGAttachment(ctx, &attachments[i]); err != nil {
+			return false, err
+		}
+	}
+	if err := m.ReplaceRAGVersionAttachments(ctx, fence.DocID, fence.DocVersion, attachmentIDs); err != nil {
 		return false, err
 	}
 	return true, nil

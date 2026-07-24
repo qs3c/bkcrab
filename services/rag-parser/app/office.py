@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import logging
 import mimetypes
 import posixpath
@@ -8,6 +9,7 @@ import re
 import secrets
 import shutil
 import stat
+import subprocess
 import warnings as pywarnings
 import zipfile
 from collections import defaultdict
@@ -18,6 +20,7 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 from xml.etree import ElementTree as StdET
 
+import olefile
 from defusedxml import ElementTree as SafeET
 from PIL import Image
 
@@ -27,6 +30,7 @@ from .protocol import (
     Bundle,
     Manifest,
     ManifestAsset,
+    ManifestAttachment,
     ManifestOccurrence,
     ManifestWarning,
     MarkdownUnit,
@@ -38,7 +42,7 @@ from .protocol import (
 
 LOGGER = logging.getLogger("rag-parser.office")
 
-WRAPPER_VERSION = "office-wrapper-v1"
+WRAPPER_VERSION = "office-wrapper-v2"
 MARKITDOWN_VERSION = "0.1.6"
 OFFICE_FORMATS = ("docx", "pptx", "xlsx")
 _PACKAGE_ABSOLUTE_ROOTS = {"_rels", "customXml", "docProps", "ppt", "word", "xl"}
@@ -59,9 +63,8 @@ _DANGEROUS_RELATIONSHIP_TYPES = (
     "attachedtemplate",
     "altchunk",
     "externallink",
-    "oleobject",
-    "package",
 )
+_OLE_RELATIONSHIP_TYPES = frozenset({"oleobject", "package"})
 _SAFE_IMAGE_FORMATS = {
     "JPEG": ("jpg", "image/jpeg"),
     "PNG": ("png", "image/png"),
@@ -81,6 +84,10 @@ class OfficeError(ValueError):
 
 class Converter(Protocol):
     def convert(self, source: Path, source_format: str) -> str: ...
+
+
+class EMFConverter(Protocol):
+    def convert(self, source: Path, destination: Path, request_dir: Path) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -115,6 +122,17 @@ class ExtractedImage:
     width: int
     height: int
     sha256: str
+    source_kind: str
+
+
+@dataclass
+class ExtractedAttachment:
+    local_id: str
+    path: Path
+    file_name: str
+    mime_type: str
+    sha256: str
+    byte_size: int
 
 
 @dataclass(frozen=True)
@@ -129,6 +147,9 @@ class PendingOccurrence:
     sentinel: str
     anchor_label: str = ""
     bbox: tuple[int, int, int, int] | None = None
+    attachment_relationship: Relationship | None = None
+    hook_kind: str = "blip"
+    hook_index: int = -1
 
 
 @dataclass(frozen=True)
@@ -165,6 +186,56 @@ class MarkItDownConverter:
         if not isinstance(text, str):
             raise OfficeError("markitdown_invalid_result", "MarkItDown returned no text_content")
         return _normalize_markdown(text)
+
+
+class LibreOfficeEMFConverter:
+    """Render untrusted EMF snapshots inside the already-isolated sidecar."""
+
+    def __init__(self, executable: str = "libreoffice", timeout_seconds: int = 30):
+        self._executable = executable
+        self._timeout_seconds = timeout_seconds
+
+    def convert(self, source: Path, destination: Path, request_dir: Path) -> None:
+        input_path = request_dir / f"{source.stem}.emf"
+        output_dir = request_dir / f"{source.stem}-render"
+        profile_dir = request_dir / f"{source.stem}-profile"
+        output_dir.mkdir(mode=0o700)
+        profile_dir.mkdir(mode=0o700)
+        shutil.copyfile(source, input_path)
+        command = [
+            self._executable,
+            "--headless",
+            "--nologo",
+            "--nodefault",
+            "--nofirststartwizard",
+            "--nolockcheck",
+            f"-env:UserInstallation={profile_dir.resolve().as_uri()}",
+            "--convert-to",
+            "png",
+            "--outdir",
+            str(output_dir),
+            str(input_path),
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=self._timeout_seconds,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise OfficeError(
+                "office_emf_render_failed",
+                "Visio EMF preview could not be rendered safely",
+            ) from exc
+        rendered = output_dir / f"{input_path.stem}.png"
+        if completed.returncode != 0 or not rendered.is_file():
+            raise OfficeError(
+                "office_emf_render_failed",
+                "Visio EMF preview could not be rendered safely",
+            )
+        shutil.copyfile(rendered, destination)
 
 
 def preflight_ooxml(
@@ -311,8 +382,33 @@ def _sanitize_relationships(
         if relationship_name in _DANGEROUS_RELATIONSHIP_TYPES:
             raise OfficeError(
                 "unsafe_ooxml_relationship",
-                "attached templates, OLE, altChunk, packages, and external links are forbidden",
+                "attached templates, altChunk, and external links are forbidden",
             )
+        if relationship_name in _OLE_RELATIONSHIP_TYPES:
+            if target_mode.lower() == "external":
+                raise OfficeError(
+                    "unsafe_ooxml_relationship",
+                    "external OLE and package relationships are forbidden",
+                )
+            if target.startswith("/"):
+                target = _canonical_package_absolute_target(
+                    part_name, target, package_names
+                )
+                node.set("Target", target)
+            _validate_internal_relationship_target(part_name, target)
+            source_part = _source_part_for_relationship(part_name)
+            resolved = _relationship_target(source_part, target)
+            package_root = source_part.split("/", 1)[0] if source_part else ""
+            if (
+                package_root not in {"word", "ppt", "xl"}
+                or not resolved.startswith(f"{package_root}/embeddings/")
+                or resolved not in package_names
+            ):
+                raise OfficeError(
+                    "unsafe_ooxml_relationship",
+                    "embedded OLE relationships must target a package embedding",
+                )
+            continue
         if target_mode.lower() == "external":
             if not lowered_type.endswith("/hyperlink"):
                 raise OfficeError(
@@ -449,6 +545,102 @@ def _document_unit() -> tuple[str, SourceLocation]:
     return "unit_document_0000", SourceLocation("document", 0, "文档")
 
 
+def _relationship_name(relationship: Relationship) -> str:
+    return relationship.rel_type.lower().rsplit("/", 1)[-1]
+
+
+def _node_relationship_id(node: Any) -> str:
+    return _attribute_by_local_name(node, "id")
+
+
+def _is_embedded_visio(node: Any) -> bool:
+    prog_id = str(node.attrib.get("ProgID", node.attrib.get("progId", ""))).strip()
+    object_type = str(node.attrib.get("Type", "")).strip()
+    return prog_id.casefold().startswith("visio.drawing.") and (
+        not object_type or object_type.casefold() == "embed"
+    )
+
+
+def _collect_docx_visio_occurrences(
+    archive: zipfile.ZipFile,
+    part: str,
+    unit_id: str,
+    location: SourceLocation,
+    relationships: Mapping[str, Mapping[str, Relationship]],
+    output: list[PendingOccurrence],
+    sentinel_nonce: str,
+) -> None:
+    root = _parse_xml(archive.read(part), part)
+    part_relationships = relationships.get(part, {})
+    for object_index, object_node in enumerate(
+        node for node in root.iter() if _local_name(node.tag) == "object"
+    ):
+        ole_node = next(
+            (node for node in object_node.iter() if _local_name(node.tag) == "OLEObject"),
+            None,
+        )
+        if ole_node is None:
+            continue
+        ole_rel = part_relationships.get(_node_relationship_id(ole_node))
+        if (
+            ole_rel is None
+            or _relationship_name(ole_rel) not in _OLE_RELATIONSHIP_TYPES
+            or not _is_embedded_visio(ole_node)
+        ):
+            continue
+        preview_node = next(
+            (node for node in object_node.iter() if _local_name(node.tag) == "imagedata"),
+            None,
+        )
+        preview_rel = (
+            part_relationships.get(_node_relationship_id(preview_node))
+            if preview_node is not None
+            else None
+        )
+        if preview_rel is None or _relationship_name(preview_rel) != "image":
+            raise OfficeError(
+                "invalid_visio_embedding",
+                "embedded Visio object is missing its image preview",
+            )
+        output.append(
+            PendingOccurrence(
+                unit_id=unit_id,
+                location=location,
+                relationship=preview_rel,
+                order=len(output),
+                alt_text="Visio 图形",
+                part=part,
+                blip_index=-1,
+                sentinel=_image_sentinel(sentinel_nonce, len(output) + 1),
+                attachment_relationship=ole_rel,
+                hook_kind="docx_object",
+                hook_index=object_index,
+            )
+        )
+
+
+def _validate_recognized_ole_relationships(
+    relationships: Mapping[str, Mapping[str, Relationship]],
+    pending: Iterable[PendingOccurrence],
+) -> None:
+    recognized = {
+        occurrence.attachment_relationship.target
+        for occurrence in pending
+        if occurrence.attachment_relationship is not None
+    }
+    declared = {
+        relationship.target
+        for part_relationships in relationships.values()
+        for relationship in part_relationships.values()
+        if _relationship_name(relationship) in _OLE_RELATIONSHIP_TYPES
+    }
+    if declared - recognized:
+        raise OfficeError(
+            "unsupported_ooxml_ole",
+            "only embedded Visio OLE objects with image previews are supported",
+        )
+
+
 def _pptx_units(
     archive: zipfile.ZipFile,
     relationships: Mapping[str, Mapping[str, Relationship]],
@@ -523,6 +715,16 @@ def _find_occurrences(
             {"inline", "anchor", "drawing", "pict"},
             sentinel_nonce,
         )
+        _collect_docx_visio_occurrences(
+            archive,
+            part,
+            unit_id,
+            location,
+            relationships,
+            pending,
+            sentinel_nonce,
+        )
+        _validate_recognized_ole_relationships(relationships, pending)
         return [(part, unit_id, location)], pending
     if source_format == "pptx":
         units = _pptx_units(archive, relationships)
@@ -536,6 +738,7 @@ def _find_occurrences(
                 pending,
                 sentinel_nonce,
             )
+        _validate_recognized_ole_relationships(relationships, pending)
         return units, pending
 
     units = _xlsx_units(archive, relationships)
@@ -560,6 +763,16 @@ def _find_occurrences(
                 pending,
                 sentinel_nonce,
             )
+        _collect_xlsx_visio_occurrences(
+            archive,
+            sheet_part,
+            unit_id,
+            location,
+            relationships,
+            pending,
+            sentinel_nonce,
+        )
+    _validate_recognized_ole_relationships(relationships, pending)
     return units, pending
 
 
@@ -676,6 +889,41 @@ def _collect_pptx_occurrences(
                     sentinel=_image_sentinel(sentinel_nonce, len(output) + 1),
                 )
             )
+    for ole_node in (node for node in root.iter() if _local_name(node.tag) == "oleObj"):
+        ole_rel = part_relationships.get(_node_relationship_id(ole_node))
+        embedded = any(_local_name(node.tag) == "embed" for node in ole_node)
+        if (
+            ole_rel is None
+            or _relationship_name(ole_rel) not in _OLE_RELATIONSHIP_TYPES
+            or not embedded
+            or not _is_embedded_visio(ole_node)
+        ):
+            continue
+        preview_blip = next(iter(_blip_nodes(ole_node)), None)
+        preview_rel = (
+            part_relationships.get(_blip_relationship_id(preview_blip))
+            if preview_blip is not None
+            else None
+        )
+        if preview_rel is None or _relationship_name(preview_rel) != "image":
+            raise OfficeError(
+                "invalid_visio_embedding",
+                "embedded Visio object is missing its image preview",
+            )
+        output.append(
+            PendingOccurrence(
+                unit_id=unit_id,
+                location=location,
+                relationship=preview_rel,
+                order=len(output),
+                alt_text=_alt_text(ole_node) or "Visio 图形",
+                part=part,
+                blip_index=blip_indexes[id(preview_blip)],
+                sentinel=_image_sentinel(sentinel_nonce, len(output) + 1),
+                attachment_relationship=ole_rel,
+                hook_kind="none",
+            )
+        )
 
 
 def _spreadsheet_column(index: int) -> str:
@@ -756,6 +1004,122 @@ def _collect_xlsx_occurrences(
                     anchor_label=anchor_label,
                 )
             )
+
+
+def _vml_anchor_label(shape: Any) -> str:
+    anchor = next(
+        (
+            str(node.text or "")
+            for node in shape.iter()
+            if _local_name(node.tag) == "Anchor"
+        ),
+        "",
+    )
+    values = [part.strip() for part in anchor.split(",")]
+    if len(values) < 4:
+        return ""
+    try:
+        column_index = int(values[0])
+        row_index = int(values[2])
+    except ValueError:
+        return ""
+    if not (0 <= row_index < _XLSX_MAX_ROWS and 0 <= column_index < _XLSX_MAX_COLUMNS):
+        return ""
+    return f"{_spreadsheet_column(column_index)}{row_index + 1}"
+
+
+def _collect_xlsx_visio_occurrences(
+    archive: zipfile.ZipFile,
+    sheet_part: str,
+    unit_id: str,
+    location: SourceLocation,
+    relationships: Mapping[str, Mapping[str, Relationship]],
+    output: list[PendingOccurrence],
+    sentinel_nonce: str,
+) -> None:
+    sheet_root = _parse_xml(archive.read(sheet_part), sheet_part)
+    sheet_relationships = relationships.get(sheet_part, {})
+    legacy_rel_id = next(
+        (
+            _node_relationship_id(node)
+            for node in sheet_root.iter()
+            if _local_name(node.tag) == "legacyDrawing"
+        ),
+        "",
+    )
+    legacy_rel = sheet_relationships.get(legacy_rel_id)
+    vml_root = None
+    vml_relationships: Mapping[str, Relationship] = {}
+    if legacy_rel is not None and legacy_rel.target in archive.namelist():
+        vml_root = _parse_xml(archive.read(legacy_rel.target), legacy_rel.target)
+        vml_relationships = relationships.get(legacy_rel.target, {})
+
+    for ole_node in (
+        node for node in sheet_root.iter() if _local_name(node.tag) == "oleObject"
+    ):
+        ole_rel = sheet_relationships.get(_node_relationship_id(ole_node))
+        if (
+            ole_rel is None
+            or _relationship_name(ole_rel) not in _OLE_RELATIONSHIP_TYPES
+            or not _is_embedded_visio(ole_node)
+        ):
+            continue
+        if vml_root is None:
+            raise OfficeError(
+                "invalid_visio_embedding",
+                "embedded Visio object is missing its VML image preview",
+            )
+        shape_id = str(ole_node.attrib.get("shapeId", "")).strip()
+        shape = next(
+            (
+                candidate
+                for candidate in vml_root.iter()
+                if _local_name(candidate.tag) == "shape"
+                and (
+                    not shape_id
+                    or str(candidate.attrib.get("id", "")).endswith(f"_s{shape_id}")
+                    or _attribute_by_local_name(candidate, "spid") == shape_id
+                )
+            ),
+            None,
+        )
+        preview_node = (
+            next(
+                (
+                    node
+                    for node in shape.iter()
+                    if _local_name(node.tag) == "imagedata"
+                ),
+                None,
+            )
+            if shape is not None
+            else None
+        )
+        preview_rel = (
+            vml_relationships.get(_node_relationship_id(preview_node))
+            if preview_node is not None
+            else None
+        )
+        if preview_rel is None or _relationship_name(preview_rel) != "image":
+            raise OfficeError(
+                "invalid_visio_embedding",
+                "embedded Visio object is missing its VML image preview",
+            )
+        output.append(
+            PendingOccurrence(
+                unit_id=unit_id,
+                location=location,
+                relationship=preview_rel,
+                order=len(output),
+                alt_text="Visio 图形",
+                part=legacy_rel.target,
+                blip_index=-1,
+                sentinel=_image_sentinel(sentinel_nonce, len(output) + 1),
+                anchor_label=_vml_anchor_label(shape),
+                attachment_relationship=ole_rel,
+                hook_kind="none",
+            )
+        )
 
 
 def _attribute_by_local_name(node: Any, name: str) -> str:
@@ -931,6 +1295,32 @@ def _instrument_office_source(
             metadata_name = "docPr" if source_format == "docx" else "cNvPr"
             for item in pending:
                 root = load_root(item.part)
+                if item.hook_kind == "none":
+                    continue
+                if item.hook_kind == "docx_object":
+                    objects = [
+                        node for node in root.iter() if _local_name(node.tag) == "object"
+                    ]
+                    if item.hook_index < 0 or item.hook_index >= len(objects):
+                        raise OfficeError(
+                            "office_image_hook_failed",
+                            "Visio object sentinel target is missing",
+                        )
+                    object_node = objects[item.hook_index]
+                    parents = _parent_map(root)
+                    parent = parents.get(object_node)
+                    if parent is None:
+                        raise OfficeError(
+                            "office_image_hook_failed",
+                            "Visio object sentinel parent is missing",
+                        )
+                    namespace = parent.tag.split("}", 1)[0] + "}" if "}" in parent.tag else ""
+                    text_node = StdET.Element(f"{namespace}t")
+                    text_node.text = item.sentinel
+                    position = list(parent).index(object_node)
+                    parent.remove(object_node)
+                    parent.insert(position, text_node)
+                    continue
                 blips = _blip_nodes(root)
                 if item.blip_index >= len(blips):
                     raise OfficeError(
@@ -985,12 +1375,49 @@ def _instrument_office_source(
                 token = f"BKCRABSHEET{sentinel_nonce}{index:04d}TOKEN"
                 sheet.set("name", token)
                 sheet_tokens[unit_id] = token
+            for sheet_part, _, _ in units:
+                load_root(sheet_part)
+
+        # The converter receives no active OLE nodes or OLE relationship
+        # targets. Visio previews are represented by our own marker/fallback,
+        # while the original VSDX is emitted separately from the trusted
+        # bundle boundary.
+        for root in roots.values():
+            parents = _parent_map(root)
+            for node in [
+                candidate
+                for candidate in root.iter()
+                if _local_name(candidate.tag) in {"OLEObject", "oleObj", "oleObject"}
+            ]:
+                parent = parents.get(node)
+                if parent is not None:
+                    parent.remove(node)
 
         with zipfile.ZipFile(
             destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
         ) as output:
+            attachment_targets = {
+                item.attachment_relationship.target
+                for item in pending
+                if item.attachment_relationship is not None
+            }
             for info in archive.infolist():
                 if info.is_dir():
+                    continue
+                if info.filename in attachment_targets:
+                    continue
+                if info.filename.endswith(".rels"):
+                    rel_root = _parse_xml(archive.read(info), info.filename)
+                    for node in list(rel_root):
+                        rel_type = str(node.attrib.get("Type", "")).lower().rsplit("/", 1)[-1]
+                        if rel_type in _OLE_RELATIONSHIP_TYPES:
+                            rel_root.remove(node)
+                    output.writestr(
+                        _sanitized_zip_info(info.filename),
+                        StdET.tostring(
+                            rel_root, encoding="utf-8", xml_declaration=True
+                        ),
+                    )
                     continue
                 if info.filename in roots:
                     raw = StdET.tostring(
@@ -1015,6 +1442,7 @@ def _materialize_images(
     pending: Iterable[PendingOccurrence],
     request_dir: Path,
     limits: OfficeLimits,
+    emf_converter: EMFConverter,
 ) -> tuple[list[ExtractedImage], dict[str, ExtractedImage]]:
     assets_dir = request_dir / "bundle-assets"
     assets_dir.mkdir(mode=0o700)
@@ -1037,8 +1465,30 @@ def _materialize_images(
                     raise OfficeError("office_asset_too_large", "an Office image exceeds the limit")
                 digest.update(chunk)
                 destination.write(chunk)
+        source_kind = "embedded_original"
+        if target.lower().endswith(".emf"):
+            rendered = assets_dir / f"candidate-{len(by_target) + 1:04d}.png"
+            emf_converter.convert(temporary, rendered, request_dir)
+            temporary.unlink()
+            temporary = rendered
+            size = temporary.stat().st_size
+            if size < 1 or size > limits.max_asset_bytes:
+                raise OfficeError(
+                    "office_asset_too_large",
+                    "a rendered Visio preview exceeds the Office asset limit",
+                )
+            digest = hashlib.sha256()
+            with temporary.open("rb") as rendered_handle:
+                while chunk := rendered_handle.read(64 * 1024):
+                    digest.update(chunk)
+            source_kind = "embedded_preview"
         sha256 = digest.hexdigest()
         extension, mime_type, width, height = _inspect_image(temporary, limits)
+        if source_kind == "embedded_preview" and mime_type != "image/png":
+            raise OfficeError(
+                "office_emf_render_failed",
+                "Visio EMF preview renderer did not produce PNG",
+            )
         existing = by_sha.get(sha256)
         if existing is not None:
             temporary.unlink()
@@ -1058,10 +1508,163 @@ def _materialize_images(
             width=width,
             height=height,
             sha256=sha256,
+            source_kind=source_kind,
         )
         ordered.append(asset)
         by_sha[sha256] = asset
         by_target[target] = asset
+    return ordered, by_target
+
+
+def _validate_vsdx_payload(payload: bytes, limits: OfficeLimits) -> None:
+    if len(payload) < 4 or len(payload) > limits.max_asset_bytes:
+        raise OfficeError(
+            "invalid_visio_embedding",
+            "embedded Visio package size is outside the allowed range",
+        )
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(payload))
+    except zipfile.BadZipFile as exc:
+        raise OfficeError(
+            "invalid_visio_embedding",
+            "embedded Visio package is not a valid OPC ZIP",
+        ) from exc
+    with archive:
+        infos = archive.infolist()
+        _validate_zip_directory(infos, limits)
+        names = {info.filename for info in infos if not info.is_dir()}
+        if "[Content_Types].xml" not in names:
+            raise OfficeError(
+                "invalid_visio_embedding",
+                "embedded Visio package has no content type manifest",
+            )
+        raw = archive.read("[Content_Types].xml")
+        _reject_xml_declarations(raw, "[Content_Types].xml")
+        root = _parse_xml(raw, "[Content_Types].xml")
+        main_parts = [
+            str(node.attrib.get("PartName", "")).lstrip("/")
+            for node in root
+            if _local_name(node.tag) == "Override"
+            and str(node.attrib.get("ContentType", ""))
+            == "application/vnd.ms-visio.drawing.main+xml"
+        ]
+        macro_parts = [
+            node
+            for node in root
+            if "macroenabled" in str(node.attrib.get("ContentType", "")).casefold()
+            or "vbaproject" in str(node.attrib.get("ContentType", "")).casefold()
+        ]
+        if len(main_parts) != 1 or main_parts[0] not in names or macro_parts:
+            raise OfficeError(
+                "invalid_visio_embedding",
+                "embedded package is not a non-macro VSDX drawing",
+            )
+
+
+def _vsdx_payload_candidates(raw: bytes) -> Iterable[bytes]:
+    if raw.startswith(b"PK\x03\x04"):
+        yield raw
+        return
+    offset = raw.find(b"PK\x03\x04")
+    while offset >= 0:
+        yield raw[offset:]
+        offset = raw.find(b"PK\x03\x04", offset + 4)
+
+
+def _extract_vsdx_payload(path: Path, limits: OfficeLimits) -> bytes:
+    candidates: list[bytes] = []
+    raw = path.read_bytes()
+    if raw.startswith(b"PK\x03\x04"):
+        candidates.append(raw)
+    elif olefile.isOleFile(str(path)):
+        try:
+            with olefile.OleFileIO(str(path)) as container:
+                for stream_path in container.listdir(streams=True, storages=False):
+                    stream_name = stream_path[-1].casefold()
+                    if stream_name not in {"package", "\x01ole10native"}:
+                        continue
+                    stream = container.openstream(stream_path)
+                    value = stream.read(limits.max_asset_bytes + 64 * 1024)
+                    if len(value) > limits.max_asset_bytes + 64 * 1024:
+                        continue
+                    candidates.append(value)
+        except OSError as exc:
+            raise OfficeError(
+                "invalid_visio_embedding",
+                "embedded Visio OLE container could not be read",
+            ) from exc
+    for candidate in candidates:
+        for payload in _vsdx_payload_candidates(candidate):
+            if len(payload) > limits.max_asset_bytes:
+                continue
+            try:
+                _validate_vsdx_payload(payload, limits)
+            except OfficeError:
+                continue
+            return payload
+    raise OfficeError(
+        "invalid_visio_embedding",
+        "embedded OLE object contains no valid VSDX package",
+    )
+
+
+def _materialize_visio_attachments(
+    archive: zipfile.ZipFile,
+    pending: Iterable[PendingOccurrence],
+    request_dir: Path,
+    limits: OfficeLimits,
+) -> tuple[list[ExtractedAttachment], dict[str, ExtractedAttachment]]:
+    attachments_dir = request_dir / "bundle-attachments"
+    attachments_dir.mkdir(mode=0o700)
+    by_target: dict[str, ExtractedAttachment] = {}
+    by_sha: dict[str, ExtractedAttachment] = {}
+    ordered: list[ExtractedAttachment] = []
+    for occurrence in pending:
+        relationship = occurrence.attachment_relationship
+        if relationship is None or relationship.target in by_target:
+            continue
+        if relationship.target not in archive.namelist():
+            raise OfficeError(
+                "invalid_visio_embedding",
+                "embedded Visio relationship target is missing",
+            )
+        candidate = attachments_dir / f"candidate-{len(by_target) + 1:04d}.bin"
+        size = 0
+        with archive.open(relationship.target) as source, candidate.open("wb") as output:
+            while chunk := source.read(64 * 1024):
+                size += len(chunk)
+                if size > limits.max_asset_bytes:
+                    raise OfficeError(
+                        "office_asset_too_large",
+                        "an embedded Visio package exceeds the Office asset limit",
+                    )
+                output.write(chunk)
+        payload = _extract_vsdx_payload(candidate, limits)
+        candidate.unlink()
+        sha256 = hashlib.sha256(payload).hexdigest()
+        existing = by_sha.get(sha256)
+        if existing is not None:
+            by_target[relationship.target] = existing
+            continue
+        if len(ordered) >= limits.max_assets:
+            raise OfficeError(
+                "office_asset_limit",
+                "Office image and attachment count exceeds the limit",
+            )
+        local_id = f"attachment_{len(ordered) + 1:04d}"
+        final_path = attachments_dir / f"{local_id}.vsdx"
+        final_path.write_bytes(payload)
+        attachment = ExtractedAttachment(
+            local_id=local_id,
+            path=final_path,
+            file_name=f"visio-{len(ordered) + 1:04d}.vsdx",
+            mime_type="application/vnd.ms-visio.drawing",
+            sha256=sha256,
+            byte_size=len(payload),
+        )
+        ordered.append(attachment)
+        by_sha[sha256] = attachment
+        by_target[relationship.target] = attachment
     return ordered, by_target
 
 
@@ -1405,19 +2008,29 @@ def build_office_bundle(
     converter: Converter,
     limits: OfficeLimits,
     preflight_warnings: Iterable[ManifestWarning] = (),
+    emf_converter: EMFConverter | None = None,
 ) -> Bundle:
     # The nonce prevents user-authored Office text/metadata from forging an
     # internal converter hook. It is removed before the deterministic bundle
     # contract is emitted.
     sentinel_nonce = secrets.token_hex(16).upper()
+    emf_converter = emf_converter or LibreOfficeEMFConverter()
     with zipfile.ZipFile(sanitized_source) as archive:
         relationships = _load_relationships(archive)
         unit_sources, pending = _find_occurrences(
             archive, source_format, relationships, sentinel_nonce
         )
         assets, assets_by_target = _materialize_images(
+            archive, pending, request_dir, limits, emf_converter
+        )
+        attachments, attachments_by_target = _materialize_visio_attachments(
             archive, pending, request_dir, limits
         )
+        if len(assets) + len(attachments) > limits.max_assets:
+            raise OfficeError(
+                "office_asset_limit",
+                "Office image and attachment count exceeds the limit",
+            )
 
     occurrences: list[ManifestOccurrence] = []
     pending_occurrences: list[tuple[PendingOccurrence, ManifestOccurrence]] = []
@@ -1445,6 +2058,11 @@ def build_office_bundle(
             ocr_text="",
             decorative=False,
             confidence=1.0,
+            attachment_local_id=(
+                attachments_by_target[item.attachment_relationship.target].local_id
+                if item.attachment_relationship is not None
+                else ""
+            ),
         )
         occurrences.append(occurrence)
         pending_occurrences.append((item, occurrence))
@@ -1562,9 +2180,24 @@ def build_office_bundle(
                 local_id=asset.local_id,
                 entry=entry_path,
                 kind="image",
-                source_kind="embedded_original",
+                source_kind=asset.source_kind,
                 width=asset.width,
                 height=asset.height,
+            )
+        )
+
+    manifest_attachments: list[ManifestAttachment] = []
+    for attachment in attachments:
+        entry_path = f"attachments/{attachment.local_id}.vsdx"
+        payloads.append(
+            PayloadEntry.from_file(entry_path, attachment.mime_type, attachment.path)
+        )
+        manifest_attachments.append(
+            ManifestAttachment(
+                local_id=attachment.local_id,
+                entry=entry_path,
+                kind="visio_source",
+                file_name=attachment.file_name,
             )
         )
 
@@ -1577,6 +2210,7 @@ def build_office_bundle(
         entries=tuple(payload.descriptor() for payload in payloads),
         units=tuple(units),
         assets=tuple(manifest_assets),
+        attachments=tuple(manifest_attachments),
         occurrences=tuple(occurrences),
         pages=(),
         warnings=tuple(manifest_warnings),
