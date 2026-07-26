@@ -24,4 +24,5 @@
 - 禁止使用 `down -v`；必须保留现有数据卷和服务器上的 `.env` 配置。
 - 构建前检查服务器根分区和 Docker 占用，根分区最好至少保留 4～5GB 可用空间。空间不足时只清理未使用的构建缓存或旧 bkcrab 镜像，不删除数据卷、正在使用的镜像或其他服务。
 - Go 构建优先使用 `GOPROXY=https://goproxy.cn,direct`；遇到网络或根分区限制时，可把临时编译目录放到 `/home/csb`，不要把临时产物留在项目目录。
+- Go 依赖拉取必须在第一次构建前就显式设置 `GOPROXY=https://goproxy.cn,direct`；禁止先使用默认 `proxy.golang.org` 长时间等待，若 Docker 构建命令未继承该变量，应立即通过 Compose 的环境配置或构建参数传入。
 - 部署后以 `docker compose ps bkcrab`、容器日志、实际 `.env` 配置的宿主端口和 `/readyz` 作为验证依据；不要假定宿主端口一定是 18953。

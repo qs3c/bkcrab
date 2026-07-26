@@ -23,6 +23,56 @@ export interface ChatTurnRenderSplit<T extends ChatTurnRenderMessage> {
   finalMsgs: T[];
 }
 
+// React Markdown percent-encodes non-ASCII and otherwise unsafe characters
+// before invoking urlTransform. Decode each path segment once before handing
+// it to buildAgentFileUrl, which owns the final URL encoding. Without this
+// normalization, a filename such as "介绍.docx" becomes "%25E4..." and the
+// workspace endpoint looks for a literal "%E4..." filename.
+function decodeMarkdownPath(path: string): string {
+  return path
+    .split("/")
+    .map((segment) => {
+      try {
+        return decodeURIComponent(segment);
+      } catch {
+        // Preserve malformed/literal percent sequences. The final encoder will
+        // safely encode the percent sign instead of throwing during rendering.
+        return segment;
+      }
+    })
+    .join("/");
+}
+
+export function workspaceMarkdownFilePath(
+  url: string,
+  sessionId: string,
+  projectId = "",
+): string | null {
+  const prefix = "/workspace/";
+  if (!url.startsWith(prefix)) return null;
+
+  const rel = decodeMarkdownPath(url.slice(prefix.length));
+  if (projectId) {
+    return sessionId
+      ? `projects/${projectId}/${sessionId}/${rel}`
+      : `projects/${projectId}/${rel}`;
+  }
+  return sessionId ? `sessions/${sessionId}/${rel}` : rel;
+}
+
+export function buildAgentFileUrl(
+  agentId: string,
+  path: string,
+  download: boolean,
+): string {
+  const encodedAgentId = encodeURIComponent(agentId);
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  const params = new URLSearchParams();
+  if (download) params.set("download", "1");
+  const qs = params.toString();
+  return `/api/agents/${encodedAgentId}/files/${encodedPath}${qs ? "?" + qs : ""}`;
+}
+
 const SYSTEM_WORKSPACE_FILES = new Set([
   "SOUL.md",
   "IDENTITY.md",

@@ -1298,14 +1298,35 @@ func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// sessionId 将上传限定到 agent 实际看到的沙箱挂载点。
-	// 我们解析会话以找到其 project_id，以便在项目聊天中的上传落在 projects/<pid>/ 旁边
-	// 与 agent 自己的写入一起；普通聊天保留旧的 sessions/<chat>/ 子目录。
+	//
+	// 附件会在聊天请求之前上传，因此全新会话尚无数据库行。此时
+	// workspaceSessionScope 无法解析 session_key；使用经过路径段校验的原始 token，
+	// 与 Agent.recoverWebTriple 对新 Web 会话的回退保持一致。否则文件会错误地
+	// 落到 agent 根目录，而下一步启动的沙箱挂载 sessions/<token>/，导致
+	// /workspace 中找不到刚上传的附件。
+	//
+	// 项目新会话同样尚无 sessions.project_id，因此客户端会同时传 projectId
+	// 作为首次轮次提示。只接受当前用户实际拥有的项目；已有会话始终以数据库
+	// 中的 chat_id/project_id 为准，忽略提示。
 	sessionKey := r.URL.Query().Get("sessionId")
 	sessionID := s.workspaceSessionScope(r.Context(), id, sessionKey)
 	projectID := s.resolveSessionProject(r.Context(), r, id, sessionKey)
-	if projectID != "" {
-		// 项目会话不使用每个聊天的子目录 — 清除它，以便 workspace store 路由到 projects/<pid>/。
-		sessionID = ""
+	if sessionID == "" && strings.TrimSpace(sessionKey) != "" {
+		sessionID = strings.TrimSpace(sessionKey)
+		if !safeWorkspaceScopeSegment(sessionID) {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "invalid sessionId"})
+			return
+		}
+		projectHint := strings.TrimSpace(r.URL.Query().Get("projectId"))
+		if projectHint != "" {
+			uid := s.effectiveUserID(r)
+			project, err := s.dataStore.GetProject(r.Context(), uid, id, projectHint)
+			if err != nil || project == nil {
+				jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "invalid projectId"})
+				return
+			}
+			projectID = project.ID
+		}
 	}
 	saved := make([]map[string]any, 0, len(headers))
 	for _, h := range headers {
@@ -1327,6 +1348,21 @@ func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
 		saved = append(saved, map[string]any{"name": h.Filename, "size": len(data)})
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "files": saved})
+}
+
+// safeWorkspaceScopeSegment validates an unresolved, client-generated session token
+// before it is used as a LocalFS/S3 scope component. Resolved chat IDs come from the
+// datastore; this guard is specifically for the lazy first-message path above.
+func safeWorkspaceScopeSegment(v string) bool {
+	if v == "" || v == "." || v == ".." || len(v) > 200 {
+		return false
+	}
+	for _, r := range v {
+		if r <= 0x20 || r == 0x7f || r == '/' || r == '\\' {
+			return false
+		}
+	}
+	return true
 }
 
 func defaultIfEmpty(v, fallback string) string {

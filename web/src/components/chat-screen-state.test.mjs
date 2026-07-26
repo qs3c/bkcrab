@@ -3,12 +3,59 @@ import assert from "node:assert/strict";
 
 const {
   getChatHistoryRenderState,
+  buildAgentFileUrl,
   findProducedFileAttachmentIndex,
   isInternalWorkspaceFile,
   splitToolTurnForRender,
+  workspaceMarkdownFilePath,
 } = await import(
   new URL("./chat-screen-state.ts", import.meta.url)
 );
+
+test("normalizes markdown-encoded CJK workspace filenames exactly once", () => {
+  const path = workspaceMarkdownFilePath(
+    "/workspace/OfficeCLI%E4%BB%8B%E7%BB%8D.docx",
+    "s-123",
+  );
+
+  assert.equal(path, "sessions/s-123/OfficeCLI介绍.docx");
+  const url = buildAgentFileUrl("agt-1", path, false);
+  assert.equal(
+    url,
+    "/api/agents/agt-1/files/sessions/s-123/OfficeCLI%E4%BB%8B%E7%BB%8D.docx",
+  );
+  assert.equal(url.includes("%25E4"), false);
+});
+
+test("normalizes spaces and percent signs from markdown workspace links", () => {
+  const path = workspaceMarkdownFilePath(
+    "/workspace/Q2%20report%20100%25.docx",
+    "s-123",
+  );
+
+  assert.equal(path, "sessions/s-123/Q2 report 100%.docx");
+  assert.equal(
+    buildAgentFileUrl("agt-1", path, true),
+    "/api/agents/agt-1/files/sessions/s-123/Q2%20report%20100%25.docx?download=1",
+  );
+});
+
+test("scopes markdown workspace links to project chats", () => {
+  const path = workspaceMarkdownFilePath(
+    "/workspace/report.pdf",
+    "s-123",
+    "p-456",
+  );
+
+  assert.equal(path, "projects/p-456/s-123/report.pdf");
+});
+
+test("ignores non-workspace markdown links", () => {
+  assert.equal(
+    workspaceMarkdownFilePath("https://example.com/report.pdf", "s-123"),
+    null,
+  );
+});
 
 test("treats a routed session with pending history as loading instead of empty", () => {
   const state = getChatHistoryRenderState({
