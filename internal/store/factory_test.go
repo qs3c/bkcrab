@@ -32,4 +32,7 @@ func TestNormalizeMySQLDSNForcesTimeParsing(t *testing.T) {
 	if cfg.Loc.String() != "UTC" {
 		t.Fatalf("UTC location not enabled: %s", cfg.Loc)
 	}
+	if !cfg.ClientFoundRows {
+		t.Fatal("clientFoundRows not enabled for fenced idempotent updates")
+	}
 }

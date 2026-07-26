@@ -72,5 +72,6 @@ jobs:
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ steps.meta.outputs.sha7 }}
             DATE=${{ steps.meta.outputs.date }}
+            GOPROXY=https://proxy.golang.org,direct
           cache-from: type=gha
           cache-to: type=gha,mode=max

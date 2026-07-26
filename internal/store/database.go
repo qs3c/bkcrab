@@ -83,6 +83,28 @@ func driverName(dialect string) string {
 // Migrate 在表不存在时创建它们。该模式是规范形状——没有就地 ALTER 操作，
 // 因为在此重写之前没有已安装的基础。
 func (d *DBStore) Migrate(ctx context.Context) error {
+	hadRAGVersionAssets, err := d.tableExists(ctx, "rag_version_assets")
+	if err != nil {
+		return fmt.Errorf("inspect rag_version_assets before migration: %w", err)
+	}
+	// A completed marker describes the particular exact-mapping table that
+	// existed when the backfill committed. If that table was removed, invalidate
+	// the marker before any DDL recreates it. Keeping this invalidation durable
+	// ensures a failure after CREATE TABLE cannot make the next run skip the
+	// still-required backfill.
+	if !hadRAGVersionAssets {
+		hasMarkers, markerErr := d.tableExists(ctx, "schema_migration_markers")
+		if markerErr != nil {
+			return fmt.Errorf("inspect schema migration markers: %w", markerErr)
+		}
+		if hasMarkers {
+			if _, markerErr = d.db.ExecContext(ctx,
+				fmt.Sprintf(`DELETE FROM schema_migration_markers WHERE name=%s`, d.ph(1)),
+				ragVersionAssetsBackfillMigration); markerErr != nil {
+				return fmt.Errorf("invalidate RAG version assets backfill marker: %w", markerErr)
+			}
+		}
+	}
 	// DDL 之前的重命名必须在 migrationSQL 之前运行——否则下面的
 	// `CREATE TABLE IF NOT EXISTS <new_name>` 行会在重命名之前创建一个空目标，
 	// 并触发"两个表都存在"的分支。
@@ -94,9 +116,22 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 		migrationSQL = mysqlMigrationSQL()
 	}
 	for _, stmt := range migrationSQL {
+		// Existing installations do not have the lease columns until the expand
+		// phase below. Keep the statement in the canonical DDL list for schema
+		// inspection, but create it from migrateRAGIndexTaskSchema after ALTERs.
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(stmt)),
+			"create index if not exists idx_rag_index_tasks_runnable") {
+			continue
+		}
 		if err := d.execDDL(ctx, stmt); err != nil {
 			return fmt.Errorf("migrate: %w\nSQL: %s", err, stmt)
 		}
+	}
+	if err := d.migrateRAGMultimodalSchema(ctx); err != nil {
+		return fmt.Errorf("migrate RAG multimodal schema: %w", err)
+	}
+	if err := d.migrateLegacyRAGVersionAssets(ctx); err != nil {
+		return fmt.Errorf("backfill RAG version assets: %w", err)
 	}
 	if err := d.migrateAgentFilesUserID(ctx); err != nil {
 		return fmt.Errorf("migrate agent_files.user_id: %w", err)
@@ -175,7 +210,7 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 // 它与会话的 user_id 不同。
 //
 // 空默认值 + 部分索引保留了在此列存在之前写入的行的现有查询计划。
-// 想要获取聊天者的读取者应使用 COALESCE(NULLIF(chatter_user_id,''), user_id)
+// 想要获取聊天者的读取者应使用 COALESCE(NULLIF(chatter_user_id,”), user_id)
 // ——回退值对于 web 频道完全正确（user_id 在那里已经是聊天者），
 // 并且匹配修复前在 IM 上的行为（无论如何每个聊天者都被错误地归属于频道拥有者）。
 func (d *DBStore) migrateSessionsAddChatterUserID(ctx context.Context) error {
@@ -224,7 +259,7 @@ func (d *DBStore) migrateSessionsAddChatterUserID(ctx context.Context) error {
 }
 
 // migrateAgentGoalsAddRouting 将 channel/account_id/chat_id/project_id
-// 改装到旧的 agent_goals 表上。所有四个列默认值为 ''——预先存在的行
+// 改装到旧的 agent_goals 表上。所有四个列默认值为 ”——预先存在的行
 // 无论如何都没有附加延续基础设施，因此空值仅表示"未记录路由；无法自动
 // 继续此目标"，TryFireContinuation 安全退出。幂等。
 func (d *DBStore) migrateAgentGoalsAddRouting(ctx context.Context) error {
@@ -277,7 +312,7 @@ func (d *DBStore) migrateSessionMessagesAddOrigin(ctx context.Context) error {
 }
 
 // migrateSessionMessagesAddTurnColumns 将 turn_status / extraction_id 列改装到
-// 旧的 session_messages 表上,并建立"待提取"部分索引。turn_status 默认 ''
+// 旧的 session_messages 表上,并建立"待提取"部分索引。turn_status 默认 ”
 // (非锚点),extraction_id 默认 NULL(未提取),历史存量行无需回填。幂等。
 func (d *DBStore) migrateSessionMessagesAddTurnColumns(ctx context.Context) error {
 	statusType, idType := "TEXT", "TEXT"
@@ -334,7 +369,7 @@ func (d *DBStore) migrateSessionMessagesAddTurnColumns(ctx context.Context) erro
 // migrateTokenUsageAddProvider 将 `provider` 列改装到旧的 token_usage_daily
 // 表上，该表在按提供商细分功能发布之前创建。预发布模式在主键中只有
 // (day, user, agent, session, model)，这使得按 provider 进行 GROUP BY 不可行
-//（并允许不同提供商的同名模型冲突）。由于该表只保存仪表板每次刷新时重新读取的
+// （并允许不同提供商的同名模型冲突）。由于该表只保存仪表板每次刷新时重新读取的
 // 累计计数器，在罕见的升级路径上删除它比使用 SQLite 的"创建新表+复制+交换"
 // 方式重建主键更便宜。幂等：如果列已存在则提前返回，如果表本身尚不存在
 // 则无操作（新安装运行 migrationSQL 中的新 CREATE TABLE）。
@@ -700,7 +735,7 @@ func (d *DBStore) migrateCronJobsAddUserID(ctx context.Context) error {
 // 改装到功能之前的 sessions 行上。现有的 session_keys 遵循
 // `<channel>_<chatID>` 约定（web_<sid>、wechat_<openid>、…），
 // 因此回填在第一个下划线处分割。account_id 没有历史来源——功能之前的安装
-// 每个频道只运行一个 bot，因此为这些行保留 '' 是正确的。
+// 每个频道只运行一个 bot，因此为这些行保留 ” 是正确的。
 // 此迁移之后写入的新会话始终显式填充完整的三元组。
 func (d *DBStore) migrateSessionsAddChannelTriple(ctx context.Context) error {
 	has, err := d.tableHasColumn(ctx, "sessions", "channel")
@@ -793,7 +828,7 @@ func (d *DBStore) migrateAgentsAddIsPublic(ctx context.Context) error {
 
 // migrateDropAgentGrants 删除旧的按用户共享表。
 // 共享现在位于 agents.is_public 上；现有的按用户授权不会向前迁移
-//（先前的模型没有发布给普通用户）。DROP TABLE IF EXISTS 是幂等的，
+// （先前的模型没有发布给普通用户）。DROP TABLE IF EXISTS 是幂等的，
 // 在从未创建该表的新安装上是无操作。
 func (d *DBStore) migrateDropAgentGrants(ctx context.Context) error {
 	if _, err := d.db.ExecContext(ctx, `DROP TABLE IF EXISTS agent_grants`); err != nil {
@@ -909,13 +944,13 @@ func (d *DBStore) migrateUsersAppUserCols(ctx context.Context) error {
 	return nil
 }
 
-// migrateAgentFilesDropTemplate 清除 agent_files 中旧的 user_id='' 模板行。
+// migrateAgentFilesDropTemplate 清除 agent_files 中旧的 user_id=” 模板行。
 // 每行在 (agent_id, filename) 没有已存在的按用户行时，被重新分配给 agent 的
 // 拥有者——保留现有内容作为拥有者的个人副本。在此次传递之后，表仅持有
 // (agent_id, real_user_id, filename) 元组；
 // 任何"跨所有用户共享 SOUL.md"的用例应位于本地文件系统中
 // <agent_home>/<name> 的文件中，运行时会回退到该文件。
-// 幂等：重新运行时找不到 user_id='' 的行并干净退出。
+// 幂等：重新运行时找不到 user_id=” 的行并干净退出。
 func (d *DBStore) migrateAgentFilesDropTemplate(ctx context.Context) error {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT agent_files.agent_id, agent_files.filename, agent_files.content, agents.user_id
@@ -1263,8 +1298,649 @@ func (d *DBStore) tableHasColumn(ctx context.Context, table, column string) (boo
 	return false, rows.Err()
 }
 
+// migrateRAGMultimodalSchema upgrades the four pre-multimodal RAG tables in
+// place after migrationSQL has ensured that all new catalog tables exist. The
+// project intentionally has no migration-version ledger, so every step must be
+// independently discoverable and safe to resume after a partially completed
+// MySQL/PostgreSQL DDL sequence.
+func (d *DBStore) migrateRAGMultimodalSchema(ctx context.Context) error {
+	kbColumns := []struct {
+		name string
+		ddl  string
+	}{
+		{"parse_mode", "TEXT NOT NULL DEFAULT 'standard'"},
+		{"enrichment_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"},
+		{"provisioning_generation", "BIGINT NOT NULL DEFAULT 0"},
+		{"provisioning_lease_owner", "TEXT NOT NULL DEFAULT ''"},
+		{"provisioning_lease_until", "TIMESTAMP"},
+	}
+	documentColumns := []struct {
+		name string
+		ddl  string
+	}{
+		{"source_sha256", "TEXT NOT NULL DEFAULT ''"},
+		{"active_version", "BIGINT NOT NULL DEFAULT 0"},
+		{"index_format_version", "SMALLINT NOT NULL DEFAULT 1"},
+		{"processing_stage", "TEXT NOT NULL DEFAULT 'queued'"},
+		{"progress_current", "INTEGER NOT NULL DEFAULT 0"},
+		{"progress_total", "INTEGER NOT NULL DEFAULT 0"},
+		{"progress_unit", "TEXT NOT NULL DEFAULT ''"},
+		{"degraded", "BOOLEAN NOT NULL DEFAULT FALSE"},
+		{"warning_count", "INTEGER NOT NULL DEFAULT 0"},
+	}
+	if d.dialect == mysqlDialect {
+		kbColumns[0].ddl = "VARCHAR(16) NOT NULL DEFAULT 'standard'"
+		kbColumns[3].ddl = "VARCHAR(96) NOT NULL DEFAULT ''"
+		kbColumns[4].ddl = "DATETIME(6)"
+		documentColumns[0].ddl = "CHAR(64) NOT NULL DEFAULT ''"
+		documentColumns[3].ddl = "VARCHAR(24) NOT NULL DEFAULT 'queued'"
+		documentColumns[6].ddl = "VARCHAR(16) NOT NULL DEFAULT ''"
+	}
+	for _, column := range kbColumns {
+		if err := d.addRAGColumnIfMissing(ctx, "rag_kbs", column.name, column.ddl); err != nil {
+			return err
+		}
+	}
+	provisioningIndexSQL := `CREATE INDEX IF NOT EXISTS idx_rag_kbs_provisioning
+		ON rag_kbs (status, provisioning_lease_until, updated_at)`
+	if d.dialect == mysqlDialect {
+		provisioningIndexSQL = `CREATE INDEX idx_rag_kbs_provisioning
+			ON rag_kbs (status, provisioning_lease_until, updated_at)`
+	}
+	if _, err := d.db.ExecContext(ctx, provisioningIndexSQL); err != nil &&
+		!(d.dialect == mysqlDialect && isMySQLDuplicateIndex(err)) {
+		return fmt.Errorf("create idx_rag_kbs_provisioning: %w", err)
+	}
+	for _, column := range documentColumns {
+		if err := d.addRAGColumnIfMissing(ctx, "rag_documents", column.name, column.ddl); err != nil {
+			return err
+		}
+	}
+	assetHashDDL := "TEXT NOT NULL DEFAULT ''"
+	if d.dialect == mysqlDialect {
+		assetHashDDL = "CHAR(64) NOT NULL DEFAULT ''"
+	}
+	if err := d.addRAGColumnIfMissing(ctx, "rag_assets", "thumbnail_sha256", assetHashDDL); err != nil {
+		return err
+	}
+	attachmentIDDDL := "TEXT"
+	if d.dialect == mysqlDialect {
+		attachmentIDDDL = "VARCHAR(40)"
+	}
+	if err := d.addRAGColumnIfMissing(ctx, "rag_chunk_assets", "attachment_id", attachmentIDDDL); err != nil {
+		return err
+	}
+	if err := d.migrateRAGDocumentVersionToBigInt(ctx); err != nil {
+		return err
+	}
+	if err := d.migrateRAGIndexTaskSchema(ctx); err != nil {
+		return err
+	}
+	if _, err := d.db.ExecContext(ctx,
+		`UPDATE rag_kbs SET parse_mode='standard' WHERE parse_mode IS NULL OR parse_mode=''`); err != nil {
+		return fmt.Errorf("backfill rag_kbs.parse_mode: %w", err)
+	}
+	if err := d.backfillLegacyRAGDocumentVersions(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+const ragVersionAssetsBackfillMigration = "rag_version_assets_exact_backfill_v1"
+
+// migrateLegacyRAGVersionAssets records completion only in the same transaction
+// as the idempotent backfill. A failed attempt therefore remains retryable even
+// when the canonical DDL already created rag_version_assets successfully.
+func (d *DBStore) migrateLegacyRAGVersionAssets(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var marked int
+	if err := tx.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT COUNT(*) FROM schema_migration_markers WHERE name=%s`, d.ph(1)),
+		ragVersionAssetsBackfillMigration).Scan(&marked); err != nil {
+		return fmt.Errorf("inspect completion marker: %w", err)
+	}
+	if marked > 0 {
+		return nil
+	}
+	if err := d.backfillLegacyRAGVersionAssets(ctx, tx); err != nil {
+		return err
+	}
+
+	var markSQL string
+	switch d.dialect {
+	case mysqlDialect:
+		markSQL = fmt.Sprintf(`INSERT IGNORE INTO schema_migration_markers (name,completed_at)
+			VALUES (%s,%s)`, d.ph(1), d.ragNowExpr())
+	case "postgres":
+		markSQL = fmt.Sprintf(`INSERT INTO schema_migration_markers (name,completed_at)
+			VALUES (%s,%s) ON CONFLICT (name) DO NOTHING`, d.ph(1), d.ragNowExpr())
+	default:
+		markSQL = fmt.Sprintf(`INSERT OR IGNORE INTO schema_migration_markers (name,completed_at)
+			VALUES (%s,%s)`, d.ph(1), d.ragNowExpr())
+	}
+	if _, err := tx.ExecContext(ctx, markSQL, ragVersionAssetsBackfillMigration); err != nil {
+		return fmt.Errorf("record completion marker: %w", err)
+	}
+	return tx.Commit()
+}
+
+// backfillLegacyRAGVersionAssets conservatively materializes exact mappings
+// from the inclusive first/last-seen range used by legacy catalogs. Only live
+// versions (or the current active version) are eligible. New writes never infer
+// membership from this range; the persister records the exact artifact set.
+func (d *DBStore) backfillLegacyRAGVersionAssets(ctx context.Context, exec ragExecutor) error {
+	selectSQL := `SELECT a.doc_id,v.doc_version,a.id
+		FROM rag_assets a
+		JOIN rag_document_versions v ON v.doc_id=a.doc_id
+		JOIN rag_documents d ON d.id=v.doc_id
+		WHERE v.doc_version BETWEEN a.first_seen_version AND a.last_seen_version
+		AND (v.status IN ('PENDING','RUNNING','DONE','RETIRED') OR d.active_version=v.doc_version)`
+	var query string
+	switch d.dialect {
+	case mysqlDialect:
+		query = `INSERT IGNORE INTO rag_version_assets (doc_id,doc_version,asset_id) ` + selectSQL
+	case "postgres":
+		query = `INSERT INTO rag_version_assets (doc_id,doc_version,asset_id) ` + selectSQL +
+			` ON CONFLICT (doc_id,doc_version,asset_id) DO NOTHING`
+	default:
+		query = `INSERT OR IGNORE INTO rag_version_assets (doc_id,doc_version,asset_id) ` + selectSQL
+	}
+	_, err := exec.ExecContext(ctx, query)
+	return err
+}
+
+func (d *DBStore) addRAGColumnIfMissing(ctx context.Context, table, column, ddl string) error {
+	has, err := d.tableHasColumn(ctx, table, column)
+	if err != nil {
+		return fmt.Errorf("inspect %s.%s: %w", table, column, err)
+	}
+	if has {
+		return nil
+	}
+	if _, err := d.db.ExecContext(ctx,
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, ddl)); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
+	}
+	return nil
+}
+
+func (d *DBStore) migrateRAGIndexTaskSchema(ctx context.Context) error {
+	hadDocVersion, err := d.tableHasColumn(ctx, "rag_index_tasks", "doc_version")
+	if err != nil {
+		return fmt.Errorf("inspect rag_index_tasks.doc_version: %w", err)
+	}
+	columns := []struct {
+		name string
+		ddl  string
+	}{
+		{"doc_version", "BIGINT"},
+		{"claim_generation", "BIGINT NOT NULL DEFAULT 0"},
+		{"lease_owner", "TEXT NOT NULL DEFAULT ''"},
+		{"lease_until", "TIMESTAMP"},
+		{"heartbeat_at", "TIMESTAMP"},
+		{"next_run_at", "TIMESTAMP"},
+	}
+	if d.dialect == mysqlDialect {
+		columns[2].ddl = "VARCHAR(96) NOT NULL DEFAULT ''"
+		columns[3].ddl = "DATETIME(6)"
+		columns[4].ddl = "DATETIME(6)"
+		columns[5].ddl = "DATETIME(6)"
+	}
+	for _, column := range columns {
+		if err := d.addRAGColumnIfMissing(ctx, "rag_index_tasks", column.name, column.ddl); err != nil {
+			return err
+		}
+	}
+	// Contract/backfill is deliberately deferred until the runtime
+	// SnapshotBuilder is available. At this point legacy doc_version values may
+	// remain NULL and legacy tasks are never claimed by the new query path.
+	_ = hadDocVersion
+	return d.ensureRAGIndexTaskIndex(ctx, ragIndexContract{
+		name:    "idx_rag_index_tasks_runnable",
+		columns: []string{"status", "next_run_at", "lease_until", "created_at"},
+	})
+}
+
+func (d *DBStore) rebuildRAGIndexTasksSQLite(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	newDDL := strings.Replace(d.ragIndexTasksTableSQL(), "rag_index_tasks", "rag_index_tasks_phase_a_new", 1)
+	statements := []string{
+		`DROP TABLE IF EXISTS rag_index_tasks_phase_a_new`,
+		newDDL,
+		`INSERT INTO rag_index_tasks_phase_a_new
+			(id,doc_id,doc_version,status,retry_count,max_retry,claim_generation,
+			 lease_owner,lease_until,heartbeat_at,next_run_at,error_msg,created_at,started_at,finished_at)
+		 SELECT id,doc_id,doc_version,status,retry_count,max_retry,claim_generation,
+			 lease_owner,lease_until,heartbeat_at,next_run_at,error_msg,created_at,started_at,finished_at
+		 FROM rag_index_tasks`,
+		`DROP TABLE rag_index_tasks`,
+		`ALTER TABLE rag_index_tasks_phase_a_new RENAME TO rag_index_tasks`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_tasks_status ON rag_index_tasks (status, created_at)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("rebuild rag_index_tasks: %w\nSQL: %s", err, statement)
+		}
+	}
+	return tx.Commit()
+}
+
+type ragIndexContract struct {
+	name    string
+	unique  bool
+	columns []string
+}
+
+type ragIndexDefinition struct {
+	unique  bool
+	exact   bool
+	columns []string
+}
+
+func ragIndexDefinitionMatches(contract ragIndexContract, definition *ragIndexDefinition) bool {
+	if definition == nil || !definition.exact || definition.unique != contract.unique ||
+		len(definition.columns) != len(contract.columns) {
+		return false
+	}
+	for index := range contract.columns {
+		if !strings.EqualFold(definition.columns[index], contract.columns[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func ragIndexContractError(contract ragIndexContract, definition *ragIndexDefinition) error {
+	if definition == nil {
+		return fmt.Errorf("store: RAG index %s was not created", contract.name)
+	}
+	return fmt.Errorf("store: RAG index %s has incompatible definition: unique=%t exact=%t columns=%v; want unique=%t columns=%v",
+		contract.name, definition.unique, definition.exact, definition.columns,
+		contract.unique, contract.columns)
+}
+
+func (d *DBStore) inspectRAGIndexTaskIndex(
+	ctx context.Context,
+	indexName string,
+) (*ragIndexDefinition, error) {
+	switch d.dialect {
+	case mysqlDialect:
+		rows, err := d.db.QueryContext(ctx, `SELECT non_unique,column_name,sub_part,index_type
+			FROM information_schema.statistics
+			WHERE table_schema=DATABASE() AND table_name='rag_index_tasks' AND index_name=?
+			ORDER BY seq_in_index`, indexName)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		definition := &ragIndexDefinition{exact: true}
+		found := false
+		for rows.Next() {
+			var nonUnique int
+			var columnName sql.NullString
+			var subPart sql.NullInt64
+			var indexType string
+			if err := rows.Scan(&nonUnique, &columnName, &subPart, &indexType); err != nil {
+				return nil, err
+			}
+			if !found {
+				definition.unique = nonUnique == 0
+				found = true
+			} else if definition.unique != (nonUnique == 0) {
+				definition.exact = false
+			}
+			if !columnName.Valid {
+				definition.exact = false
+				definition.columns = append(definition.columns, "")
+			} else {
+				definition.columns = append(definition.columns, columnName.String)
+			}
+			if subPart.Valid || !strings.EqualFold(indexType, "BTREE") {
+				definition.exact = false
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, nil
+		}
+		return definition, nil
+
+	case "postgres":
+		rows, err := d.db.QueryContext(ctx, `SELECT i.indisunique,i.indisvalid,i.indisready,
+			(i.indpred IS NULL),am.amname,a.attname
+			FROM pg_catalog.pg_class t
+			JOIN pg_catalog.pg_namespace n ON n.oid=t.relnamespace
+			JOIN pg_catalog.pg_index i ON i.indrelid=t.oid
+			JOIN pg_catalog.pg_class idx ON idx.oid=i.indexrelid
+			JOIN pg_catalog.pg_am am ON am.oid=idx.relam
+			JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum,ord) ON TRUE
+			LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid=t.oid AND a.attnum=k.attnum
+			WHERE n.nspname=current_schema() AND t.relname='rag_index_tasks' AND idx.relname=$1
+			ORDER BY k.ord`, indexName)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		definition := &ragIndexDefinition{exact: true}
+		found := false
+		for rows.Next() {
+			var unique, valid, ready, unfiltered bool
+			var indexType string
+			var columnName sql.NullString
+			if err := rows.Scan(&unique, &valid, &ready, &unfiltered, &indexType, &columnName); err != nil {
+				return nil, err
+			}
+			if !found {
+				definition.unique = unique
+				found = true
+			} else if definition.unique != unique {
+				definition.exact = false
+			}
+			if !valid || !ready || !unfiltered || !strings.EqualFold(indexType, "btree") || !columnName.Valid {
+				definition.exact = false
+			}
+			definition.columns = append(definition.columns, columnName.String)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, nil
+		}
+		return definition, nil
+
+	default:
+		rows, err := d.db.QueryContext(ctx, `PRAGMA index_list(rag_index_tasks)`)
+		if err != nil {
+			return nil, err
+		}
+		definition := &ragIndexDefinition{exact: true}
+		found := false
+		for rows.Next() {
+			var sequence, unique, partial int
+			var name, origin string
+			if err := rows.Scan(&sequence, &name, &unique, &origin, &partial); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if name == indexName {
+				found = true
+				definition.unique = unique != 0
+				definition.exact = partial == 0
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, nil
+		}
+
+		quotedName := strings.ReplaceAll(indexName, "'", "''")
+		columnRows, err := d.db.QueryContext(ctx, fmt.Sprintf(`PRAGMA index_xinfo('%s')`, quotedName))
+		if err != nil {
+			return nil, err
+		}
+		defer columnRows.Close()
+		for columnRows.Next() {
+			var sequence, columnID, descending, keyColumn int
+			var columnName sql.NullString
+			var collation sql.NullString
+			if err := columnRows.Scan(&sequence, &columnID, &columnName, &descending, &collation, &keyColumn); err != nil {
+				return nil, err
+			}
+			if keyColumn == 0 {
+				continue
+			}
+			if !columnName.Valid {
+				definition.exact = false
+				definition.columns = append(definition.columns, "")
+			} else {
+				definition.columns = append(definition.columns, columnName.String)
+			}
+		}
+		if err := columnRows.Err(); err != nil {
+			return nil, err
+		}
+		return definition, nil
+	}
+}
+
+func (d *DBStore) ensureRAGIndexTaskIndex(ctx context.Context, contract ragIndexContract) error {
+	definition, err := d.inspectRAGIndexTaskIndex(ctx, contract.name)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", contract.name, err)
+	}
+	if definition != nil {
+		if !ragIndexDefinitionMatches(contract, definition) {
+			return ragIndexContractError(contract, definition)
+		}
+		return nil
+	}
+
+	unique := ""
+	if contract.unique {
+		unique = "UNIQUE "
+	}
+	ifNotExists := "IF NOT EXISTS "
+	if d.dialect == mysqlDialect {
+		ifNotExists = ""
+	}
+	_, createErr := d.db.ExecContext(ctx, fmt.Sprintf(`CREATE %sINDEX %s%s ON rag_index_tasks (%s)`,
+		unique, ifNotExists, contract.name, strings.Join(contract.columns, ", ")))
+	if createErr != nil && !(d.dialect == mysqlDialect && isMySQLDuplicateIndex(createErr)) {
+		return fmt.Errorf("create %s: %w", contract.name, createErr)
+	}
+
+	definition, err = d.inspectRAGIndexTaskIndex(ctx, contract.name)
+	if err != nil {
+		return fmt.Errorf("verify %s: %w", contract.name, err)
+	}
+	if !ragIndexDefinitionMatches(contract, definition) {
+		return ragIndexContractError(contract, definition)
+	}
+	return nil
+}
+
+func (d *DBStore) ensureRAGIndexTaskIndexes(ctx context.Context) error {
+	indexes := []ragIndexContract{
+		{name: "idx_rag_index_tasks_runnable", columns: []string{"status", "next_run_at", "lease_until", "created_at"}},
+		{name: "uq_rag_index_tasks_doc_version", unique: true, columns: []string{"doc_id", "doc_version"}},
+	}
+	for _, index := range indexes {
+		if err := d.ensureRAGIndexTaskIndex(ctx, index); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *DBStore) ragColumnType(ctx context.Context, table, column string) (string, error) {
+	if d.dialect == "postgres" {
+		var value string
+		err := d.db.QueryRowContext(ctx, `SELECT data_type FROM information_schema.columns
+			WHERE table_schema=current_schema() AND table_name=$1 AND column_name=$2`, table, column).Scan(&value)
+		return strings.ToLower(value), err
+	}
+	if d.dialect == mysqlDialect {
+		var value string
+		err := d.db.QueryRowContext(ctx, `SELECT data_type FROM information_schema.columns
+			WHERE table_schema=DATABASE() AND table_name=? AND column_name=?`, table, column).Scan(&value)
+		return strings.ToLower(value), err
+	}
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return "", err
+		}
+		if name == column {
+			return strings.ToLower(columnType), nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return "", sql.ErrNoRows
+}
+
+func (d *DBStore) migrateRAGDocumentVersionToBigInt(ctx context.Context) error {
+	columnType, err := d.ragColumnType(ctx, "rag_documents", "version")
+	if err != nil {
+		return fmt.Errorf("inspect rag_documents.version type: %w", err)
+	}
+	if columnType == "bigint" {
+		return nil
+	}
+	switch d.dialect {
+	case "postgres":
+		if _, err := d.db.ExecContext(ctx,
+			`ALTER TABLE rag_documents ALTER COLUMN version TYPE BIGINT USING version::BIGINT`); err != nil {
+			return fmt.Errorf("alter rag_documents.version to BIGINT: %w", err)
+		}
+		return nil
+	case mysqlDialect:
+		if _, err := d.db.ExecContext(ctx,
+			`ALTER TABLE rag_documents MODIFY COLUMN version BIGINT NOT NULL DEFAULT 1`); err != nil {
+			return fmt.Errorf("alter rag_documents.version to BIGINT: %w", err)
+		}
+		return nil
+	default:
+		return d.rebuildRAGDocumentsSQLiteWithBigInt(ctx)
+	}
+}
+
+func (d *DBStore) rebuildRAGDocumentsSQLiteWithBigInt(ctx context.Context) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`DROP TABLE IF EXISTS rag_documents_phase_a_new`,
+		`CREATE TABLE rag_documents_phase_a_new (
+			id TEXT PRIMARY KEY,
+			kb_id TEXT NOT NULL,
+			file_name TEXT NOT NULL,
+			file_type TEXT NOT NULL,
+			file_size BIGINT NOT NULL DEFAULT 0,
+			object_key TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'PENDING',
+			error_msg TEXT NOT NULL DEFAULT '',
+			chunk_count INTEGER NOT NULL DEFAULT 0,
+			token_count INTEGER NOT NULL DEFAULT 0,
+			version BIGINT NOT NULL DEFAULT 1,
+			source_sha256 TEXT NOT NULL DEFAULT '',
+			active_version BIGINT NOT NULL DEFAULT 0,
+			index_format_version SMALLINT NOT NULL DEFAULT 1,
+			processing_stage TEXT NOT NULL DEFAULT 'queued',
+			progress_current INTEGER NOT NULL DEFAULT 0,
+			progress_total INTEGER NOT NULL DEFAULT 0,
+			progress_unit TEXT NOT NULL DEFAULT '',
+			degraded BOOLEAN NOT NULL DEFAULT FALSE,
+			warning_count INTEGER NOT NULL DEFAULT 0,
+			uploaded_at TIMESTAMP NOT NULL,
+			indexed_at TIMESTAMP
+		)`,
+		`INSERT INTO rag_documents_phase_a_new
+			(id,kb_id,file_name,file_type,file_size,object_key,status,error_msg,chunk_count,token_count,
+			 version,source_sha256,active_version,index_format_version,processing_stage,progress_current,
+			 progress_total,progress_unit,degraded,warning_count,uploaded_at,indexed_at)
+		 SELECT id,kb_id,file_name,file_type,file_size,object_key,status,error_msg,chunk_count,token_count,
+			 version,source_sha256,active_version,index_format_version,processing_stage,progress_current,
+			 progress_total,progress_unit,degraded,warning_count,uploaded_at,indexed_at FROM rag_documents`,
+		`DROP TABLE rag_documents`,
+		`ALTER TABLE rag_documents_phase_a_new RENAME TO rag_documents`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("rebuild rag_documents: %w\nSQL: %s", err, statement)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if err := d.execDDL(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_rag_documents_kb ON rag_documents (kb_id)`); err != nil {
+		return fmt.Errorf("recreate idx_rag_documents_kb: %w", err)
+	}
+	return nil
+}
+
+func (d *DBStore) backfillLegacyRAGDocumentVersions(ctx context.Context) error {
+	// Mark only rows that still carry the pre-multimodal signature. This marker
+	// is written before the synthetic snapshot so a crash between DDL steps can
+	// resume without ever treating an arbitrary current-format DONE row as
+	// legacy merely because its snapshot is missing.
+	if _, err := d.db.ExecContext(ctx, `UPDATE rag_documents
+		SET index_format_version=0
+		WHERE status='DONE' AND version>0 AND source_sha256=''
+		AND active_version=0 AND index_format_version=1`); err != nil {
+		return fmt.Errorf("mark legacy RAG documents: %w", err)
+	}
+	columns := `(doc_id,doc_version,status,source_sha256,parse_mode,chunk_size,chunk_overlap,
+		parser_version,splitter_version,parse_fingerprint,index_fingerprint,
+		vision_model,vision_provider_fingerprint,vision_prompt_version,
+		text_model,text_provider_fingerprint,enrichment_prompt_version,enrichment_enabled,
+		max_document_ai_requests,max_document_ai_tokens,max_document_ai_cost_microusd,
+		embedding_provider,embedding_model,embedding_dimensions,embedding_contract_fingerprint,
+		parse_artifact_key,page_count,asset_count,degraded,warning_count,created_at,updated_at)`
+	selectSQL := `SELECT d.id,d.version,'DONE',d.source_sha256,'standard',k.chunk_size,k.chunk_overlap,
+		'legacy-v0','legacy-v0','legacy-v0','legacy-v0','','','','','','',FALSE,
+		300,200000,1000000,k.embed_provider,k.embed_model,k.embed_dims,'legacy-v0',
+		'',0,0,d.degraded,d.warning_count,COALESCE(d.indexed_at,d.uploaded_at),COALESCE(d.indexed_at,d.uploaded_at)
+		FROM rag_documents d JOIN rag_kbs k ON k.id=d.kb_id
+		WHERE d.status='DONE' AND d.version>0
+		AND d.source_sha256='' AND d.active_version=0 AND d.index_format_version=0
+		AND NOT EXISTS (SELECT 1 FROM rag_document_versions v
+			WHERE v.doc_id=d.id AND v.doc_version=d.version)`
+	insertSQL := `INSERT INTO rag_document_versions ` + columns + ` ` + selectSQL
+	if d.dialect == mysqlDialect {
+		insertSQL = `INSERT IGNORE INTO rag_document_versions ` + columns + ` ` + selectSQL
+	} else {
+		insertSQL += ` ON CONFLICT (doc_id,doc_version) DO NOTHING`
+	}
+	if _, err := d.db.ExecContext(ctx, insertSQL); err != nil {
+		return fmt.Errorf("backfill synthetic legacy RAG versions: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `UPDATE rag_documents
+		SET active_version=version,index_format_version=0
+		WHERE status='DONE' AND version>0 AND EXISTS (
+			SELECT 1 FROM rag_document_versions v
+			WHERE v.doc_id=rag_documents.id AND v.doc_version=rag_documents.version
+			AND v.parser_version='legacy-v0')`); err != nil {
+		return fmt.Errorf("pin legacy RAG active versions: %w", err)
+	}
+	return nil
+}
+
 func (d *DBStore) migrationSQL() []string {
 	return []string{
+		`CREATE TABLE IF NOT EXISTS schema_migration_markers (
+			name TEXT PRIMARY KEY,
+			completed_at TIMESTAMP NOT NULL
+		)`,
 		// users 表保存第一方人类（role=super_admin/user）和
 		// 应用配置的最终用户（role=app_user）。后者由 api_key
 		// 代表下游应用创建；他们不能登录（password_hash='' 被密码登录路径拒绝）。
@@ -1610,6 +2286,95 @@ func (d *DBStore) migrationSQL() []string {
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (agent_id, slug)
 		)`,
+		`CREATE TABLE IF NOT EXISTS rag_kbs (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			embed_provider TEXT NOT NULL DEFAULT 'system',
+			embed_model TEXT NOT NULL,
+			embed_dims INTEGER NOT NULL,
+			chunk_size INTEGER NOT NULL DEFAULT 512,
+			chunk_overlap INTEGER NOT NULL DEFAULT 64,
+			parse_mode TEXT NOT NULL DEFAULT 'standard',
+			enrichment_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+			status TEXT NOT NULL DEFAULT 'active',
+			provisioning_generation BIGINT NOT NULL DEFAULT 0,
+			provisioning_lease_owner TEXT NOT NULL DEFAULT '',
+			provisioning_lease_until TIMESTAMP,
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_kbs_user ON rag_kbs (user_id)`,
+		`CREATE TABLE IF NOT EXISTS rag_chat_turns (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			kb_id TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			title TEXT NOT NULL DEFAULT '',
+			question TEXT NOT NULL,
+			answer TEXT NOT NULL,
+			sources TEXT NOT NULL DEFAULT '[]',
+			created_at TIMESTAMP NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_chat_sessions ON rag_chat_turns (user_id, kb_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_chat_turns_session ON rag_chat_turns (user_id, kb_id, session_id, created_at)`,
+		`CREATE TABLE IF NOT EXISTS rag_documents (
+			id TEXT PRIMARY KEY,
+			kb_id TEXT NOT NULL,
+			file_name TEXT NOT NULL,
+			file_type TEXT NOT NULL,
+			file_size BIGINT NOT NULL DEFAULT 0,
+			object_key TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'PENDING',
+			error_msg TEXT NOT NULL DEFAULT '',
+			chunk_count INTEGER NOT NULL DEFAULT 0,
+			token_count INTEGER NOT NULL DEFAULT 0,
+			version BIGINT NOT NULL DEFAULT 1,
+			source_sha256 TEXT NOT NULL DEFAULT '',
+			active_version BIGINT NOT NULL DEFAULT 0,
+			index_format_version SMALLINT NOT NULL DEFAULT 1,
+			processing_stage TEXT NOT NULL DEFAULT 'queued',
+			progress_current INTEGER NOT NULL DEFAULT 0,
+			progress_total INTEGER NOT NULL DEFAULT 0,
+			progress_unit TEXT NOT NULL DEFAULT '',
+			degraded BOOLEAN NOT NULL DEFAULT FALSE,
+			warning_count INTEGER NOT NULL DEFAULT 0,
+			uploaded_at TIMESTAMP NOT NULL,
+			indexed_at TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_documents_kb ON rag_documents (kb_id)`,
+		d.ragIndexTasksTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_tasks_status ON rag_index_tasks (status, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_index_tasks_runnable ON rag_index_tasks (status, next_run_at, lease_until, created_at)`,
+		d.ragDocumentVersionsTableSQL(),
+		d.ragAssetsTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_assets_doc ON rag_assets (doc_id)`,
+		d.ragAttachmentsTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_attachments_doc ON rag_attachments (doc_id)`,
+		d.ragObjectWriteStagingTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_object_write_staging_cleanup ON rag_object_write_staging (status, updated_at, handle_id)`,
+		d.ragVersionAssetsTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_version_assets_asset ON rag_version_assets (asset_id, doc_id, doc_version)`,
+		d.ragVersionAttachmentsTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_version_attachments_attachment ON rag_version_attachments (attachment_id, doc_id, doc_version)`,
+		d.ragDocumentMaintenanceLeasesTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_document_maintenance_lease_until ON rag_document_maintenance_leases (lease_until)`,
+		d.ragCacheObjectsTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_cache_objects_doc_updated ON rag_cache_objects (doc_id, updated_at)`,
+		d.ragCacheObjectFingerprintsTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_cache_fingerprints_generation ON rag_cache_object_fingerprints (doc_id, fingerprint_kind, fingerprint, updated_at)`,
+		d.ragChunksTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_chunks_lookup ON rag_chunks (kb_id, doc_id, doc_version)`,
+		d.ragChunkAssetsTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_chunk_assets_lookup ON rag_chunk_assets (doc_id, doc_version, chunk_index, ordinal)`,
+		d.ragIndexGCTasksTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_index_gc_tasks_runnable ON rag_index_gc_tasks (status, next_run_at, lease_until, created_at)`,
+		d.ragDocumentAITaskBudgetsTableSQL(),
+		d.ragDocumentAIUserBudgetsTableSQL(),
+		d.ragDocumentAIUsageTableSQL(),
+		`CREATE INDEX IF NOT EXISTS idx_rag_document_ai_usage_user_period ON rag_document_ai_usage (user_id, period_start_utc, provider_fingerprint)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_document_ai_usage_task_logical ON rag_document_ai_usage (task_id, logical_request_key)`,
 		// channel_leases 将轮询/持久连接频道适配器（微信、Telegram、Discord、
 		// Slack、飞书长连接）限制为一次一个进程。没有它，共享同一 bot 令牌的
 		// 两个云副本都将长轮询上游服务器，用户将收到每个回复两次。
@@ -1623,6 +2388,272 @@ func (d *DBStore) migrationSQL() []string {
 			PRIMARY KEY (channel, account_id)
 		)`,
 	}
+}
+
+func (d *DBStore) ragIndexTasksTableSQL() string {
+	idColumn := "INTEGER PRIMARY KEY AUTOINCREMENT"
+	if d.dialect == "postgres" {
+		idColumn = "BIGSERIAL PRIMARY KEY"
+	}
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_index_tasks (
+		id %s,
+		doc_id TEXT NOT NULL,
+		doc_version BIGINT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'PENDING',
+		retry_count INTEGER NOT NULL DEFAULT 0,
+		max_retry INTEGER NOT NULL DEFAULT 3,
+		claim_generation BIGINT NOT NULL DEFAULT 0,
+		lease_owner TEXT NOT NULL DEFAULT '',
+		lease_until TIMESTAMP,
+		heartbeat_at TIMESTAMP,
+		next_run_at TIMESTAMP,
+		error_msg TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMP NOT NULL,
+		started_at TIMESTAMP,
+		finished_at TIMESTAMP,
+		UNIQUE (doc_id, doc_version)
+	)`, idColumn)
+}
+
+func (d *DBStore) ragDocumentVersionsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_document_versions (
+		doc_id TEXT NOT NULL,
+		doc_version BIGINT NOT NULL,
+		status TEXT NOT NULL,
+		source_sha256 TEXT NOT NULL,
+		parse_mode TEXT NOT NULL,
+		chunk_size INTEGER NOT NULL,
+		chunk_overlap INTEGER NOT NULL,
+		parser_version TEXT NOT NULL,
+		splitter_version TEXT NOT NULL,
+		parse_fingerprint TEXT NOT NULL,
+		index_fingerprint TEXT NOT NULL,
+		vision_model TEXT NOT NULL,
+		vision_provider_fingerprint TEXT NOT NULL,
+		vision_prompt_version TEXT NOT NULL,
+		text_model TEXT NOT NULL,
+		text_provider_fingerprint TEXT NOT NULL,
+		enrichment_prompt_version TEXT NOT NULL,
+		enrichment_enabled BOOLEAN NOT NULL,
+		max_document_ai_requests INTEGER NOT NULL,
+		max_document_ai_tokens BIGINT NOT NULL,
+		max_document_ai_cost_microusd BIGINT NOT NULL,
+		embedding_provider TEXT NOT NULL,
+		embedding_model TEXT NOT NULL,
+		embedding_dimensions INTEGER NOT NULL,
+		embedding_contract_fingerprint TEXT NOT NULL,
+		parse_artifact_key TEXT NOT NULL DEFAULT '',
+		page_count INTEGER NOT NULL DEFAULT 0,
+		asset_count INTEGER NOT NULL DEFAULT 0,
+		degraded BOOLEAN NOT NULL DEFAULT FALSE,
+		warning_count INTEGER NOT NULL DEFAULT 0,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (doc_id, doc_version)
+	)`
+}
+
+func (d *DBStore) ragAssetsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_assets (
+		id TEXT PRIMARY KEY,
+		doc_id TEXT NOT NULL,
+		content_sha256 TEXT NOT NULL,
+		source_kind TEXT NOT NULL,
+		source_mime TEXT NOT NULL,
+		display_mime TEXT NOT NULL,
+		source_object_key TEXT NOT NULL,
+		display_object_key TEXT NOT NULL,
+		thumbnail_object_key TEXT NOT NULL,
+		display_status TEXT NOT NULL,
+		display_sha256 TEXT NOT NULL,
+		thumbnail_sha256 TEXT NOT NULL,
+		byte_size BIGINT NOT NULL,
+		width INTEGER NOT NULL,
+		height INTEGER NOT NULL,
+		first_seen_version BIGINT NOT NULL,
+		last_seen_version BIGINT NOT NULL,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		UNIQUE (doc_id, content_sha256)
+	)`
+}
+
+func (d *DBStore) ragVersionAssetsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_version_assets (
+		doc_id TEXT NOT NULL,
+		doc_version BIGINT NOT NULL,
+		asset_id TEXT NOT NULL,
+		PRIMARY KEY (doc_id, doc_version, asset_id)
+	)`
+}
+
+func (d *DBStore) ragAttachmentsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_attachments (
+		id TEXT PRIMARY KEY,
+		doc_id TEXT NOT NULL,
+		content_sha256 TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		file_name TEXT NOT NULL,
+		mime_type TEXT NOT NULL,
+		object_key TEXT NOT NULL,
+		byte_size BIGINT NOT NULL,
+		first_seen_version BIGINT NOT NULL,
+		last_seen_version BIGINT NOT NULL,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		UNIQUE (doc_id, content_sha256)
+	)`
+}
+
+func (d *DBStore) ragVersionAttachmentsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_version_attachments (
+		doc_id TEXT NOT NULL,
+		doc_version BIGINT NOT NULL,
+		attachment_id TEXT NOT NULL,
+		PRIMARY KEY (doc_id, doc_version, attachment_id)
+	)`
+}
+
+func (d *DBStore) ragDocumentMaintenanceLeasesTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_document_maintenance_leases (
+		doc_id TEXT PRIMARY KEY,
+		generation BIGINT NOT NULL DEFAULT 0,
+		lease_owner TEXT NOT NULL DEFAULT '',
+		lease_until TIMESTAMP
+	)`
+}
+
+func (d *DBStore) ragCacheObjectsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_cache_objects (
+		doc_id TEXT NOT NULL,
+		cache_kind TEXT NOT NULL,
+		cache_key TEXT NOT NULL,
+		object_key TEXT NOT NULL,
+		generation BIGINT NOT NULL DEFAULT 0,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (doc_id, cache_kind, cache_key)
+	)`
+}
+
+func (d *DBStore) ragCacheObjectFingerprintsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_cache_object_fingerprints (
+		doc_id TEXT NOT NULL,
+		cache_kind TEXT NOT NULL,
+		cache_key TEXT NOT NULL,
+		fingerprint_kind TEXT NOT NULL,
+		fingerprint TEXT NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (doc_id, cache_kind, cache_key, fingerprint_kind, fingerprint)
+	)`
+}
+
+func (d *DBStore) ragChunksTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_chunks (
+		kb_id TEXT NOT NULL,
+		doc_id TEXT NOT NULL,
+		doc_version BIGINT NOT NULL,
+		chunk_index INTEGER NOT NULL,
+		section_title TEXT NOT NULL,
+		location_json TEXT NOT NULL,
+		raw_content TEXT NOT NULL,
+		enhancement TEXT NOT NULL,
+		search_content TEXT NOT NULL,
+		token_count INTEGER NOT NULL,
+		created_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (doc_id, doc_version, chunk_index)
+	)`
+}
+
+func (d *DBStore) ragChunkAssetsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_chunk_assets (
+		doc_id TEXT NOT NULL,
+		doc_version BIGINT NOT NULL,
+		chunk_index INTEGER NOT NULL,
+		asset_id TEXT NOT NULL,
+		attachment_id TEXT,
+		ordinal INTEGER NOT NULL,
+		location_json TEXT NOT NULL,
+		caption TEXT NOT NULL,
+		ocr_text TEXT NOT NULL,
+		PRIMARY KEY (doc_id, doc_version, chunk_index, asset_id, ordinal)
+	)`
+}
+
+func (d *DBStore) ragIndexGCTasksTableSQL() string {
+	idColumn := "INTEGER PRIMARY KEY AUTOINCREMENT"
+	if d.dialect == "postgres" {
+		idColumn = "BIGSERIAL PRIMARY KEY"
+	}
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_index_gc_tasks (
+		id %s,
+		doc_id TEXT NOT NULL,
+		retired_version BIGINT NOT NULL,
+		retired_at TIMESTAMP NOT NULL,
+		not_before TIMESTAMP NOT NULL,
+		status TEXT NOT NULL,
+		claim_generation BIGINT NOT NULL DEFAULT 0,
+		lease_owner TEXT NOT NULL DEFAULT '',
+		lease_until TIMESTAMP,
+		heartbeat_at TIMESTAMP,
+		attempt_count INTEGER NOT NULL DEFAULT 0,
+		next_run_at TIMESTAMP,
+		created_at TIMESTAMP NOT NULL,
+		UNIQUE (doc_id, retired_version)
+	)`, idColumn)
+}
+
+func (d *DBStore) ragDocumentAITaskBudgetsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_document_ai_task_budgets (
+		task_id BIGINT PRIMARY KEY,
+		user_id TEXT NOT NULL,
+		max_requests BIGINT NOT NULL,
+		max_tokens BIGINT NOT NULL,
+		max_cost_microusd BIGINT NOT NULL,
+		charged_requests BIGINT NOT NULL DEFAULT 0,
+		charged_tokens BIGINT NOT NULL DEFAULT 0,
+		charged_cost_microusd BIGINT NOT NULL DEFAULT 0,
+		updated_at TIMESTAMP NOT NULL
+	)`
+}
+
+func (d *DBStore) ragDocumentAIUserBudgetsTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_document_ai_user_budgets (
+		user_id TEXT NOT NULL,
+		period_start_utc DATE NOT NULL,
+		charged_requests BIGINT NOT NULL DEFAULT 0,
+		charged_tokens BIGINT NOT NULL DEFAULT 0,
+		charged_cost_microusd BIGINT NOT NULL DEFAULT 0,
+		updated_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (user_id, period_start_utc)
+	)`
+}
+
+func (d *DBStore) ragDocumentAIUsageTableSQL() string {
+	return `CREATE TABLE IF NOT EXISTS rag_document_ai_usage (
+		idempotency_key TEXT PRIMARY KEY,
+		logical_request_key TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		doc_id TEXT NOT NULL,
+		task_id BIGINT NOT NULL,
+		doc_version BIGINT NOT NULL,
+		claim_generation BIGINT NOT NULL,
+		lease_owner TEXT NOT NULL,
+		operation TEXT NOT NULL,
+		provider_fingerprint TEXT NOT NULL,
+		period_start_utc DATE NOT NULL,
+		reserved_input_tokens BIGINT NOT NULL,
+		reserved_output_tokens BIGINT NOT NULL,
+		actual_input_tokens BIGINT NOT NULL DEFAULT 0,
+		actual_output_tokens BIGINT NOT NULL DEFAULT 0,
+		estimated_cost_microusd BIGINT NOT NULL,
+		state TEXT NOT NULL,
+		reservation_expires_at TIMESTAMP,
+		sent_at TIMESTAMP,
+		usage_estimated BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL
+	)`
 }
 
 func (d *DBStore) Close() error {
@@ -1731,13 +2762,14 @@ func (d *DBStore) ListUsers(ctx context.Context) ([]UserRecord, error) {
 }
 
 func (d *DBStore) UpdateUser(ctx context.Context, u *UserRecord) error {
-	u.UpdatedAt = time.Now().UTC()
-	_, err := d.db.ExecContext(ctx,
-		fmt.Sprintf(`UPDATE users SET username = %s, email = %s, password_hash = %s, display_name = %s,
-			role = %s, status = %s, avatar_url = %s, agent_quota = %s, updated_at = %s WHERE id = %s`,
-			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10)),
-		u.Username, u.Email, u.PasswordHash, u.DisplayName, u.Role, u.Status, u.AvatarURL, u.AgentQuota, u.UpdatedAt, u.ID)
-	return err
+	return d.updateUserWithLifecycleGuard(ctx, u)
+}
+
+// MarkUserDeleting is the only ordinary account transition allowed to write
+// the durable deleting tombstone. UpdateUser's CAS can never restore it from a
+// stale pre-delete record.
+func (d *DBStore) MarkUserDeleting(ctx context.Context, id string) (*UserRecord, error) {
+	return d.markUserDeletingWithLifecycleGuard(ctx, id)
 }
 
 func (d *DBStore) DeleteUser(ctx context.Context, id string) error {
@@ -1784,7 +2816,7 @@ func (d *DBStore) DeleteUser(ctx context.Context, id string) error {
 		return err
 	}
 	// 非 agent 范围的每用户状态（agent_files 现在仅为 agent 所有）。
-	for _, t := range []string{"web_sessions", "apikeys", "sessions", "session_messages", "session_events", "context_archives"} {
+	for _, t := range []string{"web_sessions", "apikeys", "sessions", "session_messages", "session_events", "context_archives", "rag_chat_turns"} {
 		if _, err := tx.ExecContext(ctx,
 			fmt.Sprintf("DELETE FROM %s WHERE user_id = %s", t, d.ph(1)), id); err != nil {
 			return err
@@ -2201,7 +3233,7 @@ func (d *DBStore) ListSessions(ctx context.Context, userID, agentID string) ([]S
 
 // ListSessionOwnerPairs 枚举 sessions 表中每个不同的 (user_id, agent_id)
 // 元组。管理员 Chats 页面调用此函数来查找所有 agent 上的所有对话拥有者
-//（聊天者/绑定者）——按 (拥有者, agent) 的 ListSessions 会遗漏非拥有者用户
+// （聊天者/绑定者）——按 (拥有者, agent) 的 ListSessions 会遗漏非拥有者用户
 // 与公共 agent 聊天或绑定 IM bot 的会话，因为这些行位于聊天者的 user_id 下，
 // 而不是 agent 拥有者的 user_id 下。
 func (d *DBStore) ListSessionOwnerPairs(ctx context.Context) ([]SessionOwnerPair, error) {
@@ -2396,7 +3428,7 @@ func (d *DBStore) GetContextArchive(ctx context.Context, agentID, sessionKey, id
 // seq 通过 `COALESCE(MAX(seq), -1) + 1` 在 INSERT 内原子性地计算，
 // 因此两个在同一个会话上竞争的并发追加者不会在唯一键上冲突——
 // 第二个插入在第一个提交后读取 MAX。多 pod 安全性依赖于引擎的写入序列化
-//（sqlite 全局锁，postgres MVCC + 提交时的复合主键唯一性检查）。
+// （sqlite 全局锁，postgres MVCC + 提交时的复合主键唯一性检查）。
 func (d *DBStore) AppendSessionMessage(ctx context.Context, userID, agentID, sessionKey string, msg SessionMessage) error {
 	if userID == "" {
 		return errors.New("store: AppendSessionMessage requires user_id")
@@ -2654,8 +3686,8 @@ func (d *DBStore) RenameSession(ctx context.Context, userID, agentID, sessionKey
 }
 
 // MoveSession 翻转会话的 project_id。空字符串将会话从其当前项目中分离
-//（拖出到"Chats"）。调用方必须已经迁移了工作区文件并验证了 projectID
-//（当非空时）是用户在此 agent 下拥有的真实项目——此方法仅影响 sessions 行。
+// （拖出到"Chats"）。调用方必须已经迁移了工作区文件并验证了 projectID
+// （当非空时）是用户在此 agent 下拥有的真实项目——此方法仅影响 sessions 行。
 func (d *DBStore) MoveSession(ctx context.Context, userID, agentID, sessionKey, projectID string) error {
 	_, err := d.db.ExecContext(ctx,
 		fmt.Sprintf(`UPDATE sessions SET project_id = %s WHERE user_id = %s AND agent_id = %s AND session_key = %s`,
@@ -2707,7 +3739,7 @@ func (d *DBStore) GetAgentFile(ctx context.Context, agentID, userID, filename st
 
 // GetAgentFileExact 绕过拥有者回退覆盖层，仅返回 (agent_id, user_id, filename)
 // 行，或 ErrNotFound。当调用方明确需要知道*他们自己的*覆盖行是否存在时使用
-//（例如 Customize 页面区分"你已创建覆盖"与"你正在查看拥有者的内容"）。
+// （例如 Customize 页面区分"你已创建覆盖"与"你正在查看拥有者的内容"）。
 func (d *DBStore) GetAgentFileExact(ctx context.Context, agentID, userID, filename string) ([]byte, error) {
 	if agentID == "" {
 		return nil, errors.New("store: GetAgentFileExact requires agent_id")
@@ -3480,7 +4512,7 @@ func (d *DBStore) AcquireChannelLease(ctx context.Context, channel, accountID, h
 	now := time.Now()
 	expires := now.Add(ttl)
 	if d.dialect == mysqlDialect {
-		res, err := d.db.ExecContext(ctx,
+		_, err := d.db.ExecContext(ctx,
 			`INSERT INTO channel_leases (channel, account_id, holder_id, expires_at)
 				VALUES (?, ?, ?, ?)
 				ON DUPLICATE KEY UPDATE
@@ -3490,8 +4522,16 @@ func (d *DBStore) AcquireChannelLease(ctx context.Context, channel, accountID, h
 		if err != nil {
 			return false, err
 		}
-		n, _ := res.RowsAffected()
-		return n > 0, nil
+		// clientFoundRows makes a rejected no-op update report one affected row,
+		// so RowsAffected cannot distinguish acquisition from contention. Read
+		// back the authoritative holder instead.
+		var currentHolder string
+		if err := d.db.QueryRowContext(ctx,
+			`SELECT holder_id FROM channel_leases WHERE channel = ? AND account_id = ?`,
+			channel, accountID).Scan(&currentHolder); err != nil {
+			return false, err
+		}
+		return currentHolder == holderID, nil
 	}
 	if d.dialect == "postgres" {
 		// ON CONFLICT 仅在前持有者的租约已过期或我们已持有时（续约）更新行。
@@ -3526,7 +4566,7 @@ func (d *DBStore) AcquireChannelLease(ctx context.Context, channel, accountID, h
 }
 
 // RenewChannelLease 扩展已持有的租约。当行的 holder_id 不再匹配时返回 false
-//（不是错误）——意味着前持有者的 TTL 已过，并且在对等方在我们离线时接管了。
+// （不是错误）——意味着前持有者的 TTL 已过，并且在对等方在我们离线时接管了。
 // 调用方必须将 false 视为"立即停止轮询"：对等方现在正在驱动此 (channel, account_id)
 // 对的入站流量。
 func (d *DBStore) RenewChannelLease(ctx context.Context, channel, accountID, holderID string, ttl time.Duration) (bool, error) {
@@ -3662,7 +4702,7 @@ func (d *DBStore) CountProjectSessions(ctx context.Context, userID, agentID, pro
 }
 
 // parseTimeString 尝试 modernc.org/sqlite 可能为 TIMESTAMP 列生成的常见时间格式
-//（RFC3339, RFC3339Nano 以及旧代码路径写入的 Go 默认格式）。
+// （RFC3339, RFC3339Nano 以及旧代码路径写入的 Go 默认格式）。
 func parseTimeString(s string) time.Time {
 	for _, layout := range []string{
 		time.RFC3339Nano,
@@ -3796,7 +4836,7 @@ func scanGoal(row *sql.Row) (*GoalRecord, error) {
 }
 
 // isUniqueViolation 报告 err 是否是 Postgres（SQLSTATE 23505）或 SQLite
-//（子串 "UNIQUE constraint failed"）中的 UNIQUE 约束违规。两个驱动程序在错误文本中
+// （子串 "UNIQUE constraint failed"）中的 UNIQUE 约束违规。两个驱动程序在错误文本中
 // 暴露了足够的细节来识别这一点，而无需导入驱动程序包。
 func isUniqueViolation(err error) bool {
 	if err == nil {

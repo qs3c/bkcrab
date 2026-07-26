@@ -33,12 +33,14 @@ export default function PluginsPage() {
   const [configJson, setConfigJson] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const fetchPlugins = () => {
-    setLoading(true);
-    getPlugins()
-      .then(setPlugins)
-      .catch(() => setPlugins([]))
-      .finally(() => setLoading(false));
+  const fetchPlugins = async () => {
+    try {
+      setPlugins(await getPlugins());
+    } catch {
+      setPlugins([]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {

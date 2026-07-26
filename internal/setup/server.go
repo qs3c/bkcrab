@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/qs3c/bkcrab/internal/agent"
@@ -17,6 +18,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/channels"
 	"github.com/qs3c/bkcrab/internal/config"
 	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
+	"github.com/qs3c/bkcrab/internal/rag"
 	"github.com/qs3c/bkcrab/internal/session"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/taskqueue"
@@ -77,14 +79,29 @@ type Server struct {
 	mcpRuntime     *mcpruntime.Service
 	// chatEvents 将实时的 agent 聊天事件分发到跨浏览器标签页的已订阅 SSE 客户端。
 	// 首次使用时延迟初始化，以便没有显式连接它的旧调用者仍然可以工作。
-	chatEvents *agent.EventHub
-	usage      usage.Meter
-	startedAt  time.Time
+	chatEvents        *agent.EventHub
+	usage             usage.Meter
+	rag               *rag.Service
+	ragUserCleaner    users.RAGUserCleaner
+	ragCfg            config.RAGCfg
+	ragHealthMu       sync.RWMutex
+	ragHealth         config.RAGParserHealthSnapshot
+	ragHealthProvider RAGParserHealthProvider
+	startedAt         time.Time
+}
+
+// RAGParserHealthProvider exposes an in-memory snapshot populated by a
+// background probe. Implementations must not perform network I/O in this
+// method because capability handlers call it on the request path.
+type RAGParserHealthProvider interface {
+	RAGParserHealthSnapshot() config.RAGParserHealthSnapshot
 }
 
 // NewServer 在指定端口上创建一个设置向导服务器。
 func NewServer(port int) *Server {
-	return &Server{port: port, bind: "loopback", startedAt: time.Now()}
+	ragCfg := config.RAGCfg{}
+	ragCfg.ApplyDefaults()
+	return &Server{port: port, bind: "loopback", ragCfg: ragCfg, startedAt: time.Now()}
 }
 
 // SetGatewayConfig 设置网关配置的绑定地址和 HTTP 端点。
@@ -118,6 +135,7 @@ func (s *Server) SetStore(st store.Store) {
 	s.dataStore = st
 	if st != nil {
 		s.accounts, _ = users.NewAccounts(st)
+		s.accounts.SetRAGUserCleaner(s.ragUserCleaner)
 		s.apikeys, _ = users.NewAPIKeys(st)
 	}
 }
@@ -130,6 +148,67 @@ func (s *Server) SetWorkspaceStore(ws workspace.Store) {
 // SetUsageMeter 安装按租户的资源计数器。
 func (s *Server) SetUsageMeter(m usage.Meter) {
 	s.usage = m
+}
+
+// SetRAGService installs the optional process-wide knowledge-base service.
+// Leaving it nil keeps the routes present but makes them return 503.
+func (s *Server) SetRAGService(service *rag.Service) {
+	s.rag = service
+	var cleaner users.RAGUserCleaner
+	if service != nil {
+		cleaner = service
+	}
+	s.setRAGUserCleaner(cleaner)
+	if service != nil {
+		s.SetRAGConfig(service.Config())
+	}
+}
+
+// setRAGUserCleaner keeps Accounts wiring independent of construction order:
+// gateways may install the store before or after the optional RAG service.
+func (s *Server) setRAGUserCleaner(cleaner users.RAGUserCleaner) {
+	s.ragUserCleaner = cleaner
+	if s.accounts != nil {
+		s.accounts.SetRAGUserCleaner(cleaner)
+	}
+}
+
+// SetRAGConfig installs the immutable configuration snapshot used by the
+// capability endpoint. It is separate from the service setter so capability
+// discovery can remain available while base RAG dependencies are unavailable.
+func (s *Server) SetRAGConfig(cfg config.RAGCfg) {
+	cfg.ApplyDefaults()
+	cfg.DocumentAI.AllowedEndpointHosts = append([]string(nil), cfg.DocumentAI.AllowedEndpointHosts...)
+	s.ragCfg = cfg
+}
+
+// SetRAGParserHealthSnapshot is called only by the background TTL health
+// cache. HTTP handlers read the snapshot under a lock and never probe sidecar.
+func (s *Server) SetRAGParserHealthSnapshot(snapshot config.RAGParserHealthSnapshot) {
+	snapshot.Office.Formats = append([]string(nil), snapshot.Office.Formats...)
+	s.ragHealthMu.Lock()
+	s.ragHealth = snapshot
+	s.ragHealthMu.Unlock()
+}
+
+// SetRAGParserHealthProvider installs the live cached-snapshot source used in
+// production. Tests may continue to use SetRAGParserHealthSnapshot directly.
+func (s *Server) SetRAGParserHealthProvider(provider RAGParserHealthProvider) {
+	s.ragHealthMu.Lock()
+	s.ragHealthProvider = provider
+	s.ragHealthMu.Unlock()
+}
+
+func (s *Server) ragParserHealthSnapshot() config.RAGParserHealthSnapshot {
+	s.ragHealthMu.RLock()
+	snapshot := s.ragHealth
+	provider := s.ragHealthProvider
+	s.ragHealthMu.RUnlock()
+	if provider != nil {
+		snapshot = provider.RAGParserHealthSnapshot()
+	}
+	snapshot.Office.Formats = append([]string(nil), snapshot.Office.Formats...)
+	return snapshot
 }
 
 // SetAuth 安装认证解析器。必需的。
@@ -159,9 +238,33 @@ func (s *Server) chatEventHub() *agent.EventHub {
 }
 
 // ChatEventHub 暴露 hub，以便网关可以将流管道附加到总线触发的 web 轮次
-//（cron / 目标延续 / 心跳 / 子 agent），赋予它们与用户键入轮次相同的 SSE 流式体验。
+// （cron / 目标延续 / 心跳 / 子 agent），赋予它们与用户键入轮次相同的 SSE 流式体验。
 // 包裹了 chatEventHub 的延迟初始化。
 func (s *Server) ChatEventHub() *agent.EventHub { return s.chatEventHub() }
+
+func (s *Server) registerRAGRoutes(mux *http.ServeMux, auth func(http.HandlerFunc) http.HandlerFunc) {
+	mux.HandleFunc("GET /api/rag/capabilities", auth(s.handleRAGCapabilities))
+	mux.HandleFunc("GET /api/rag/assets/{assetId}", auth(s.handleRAGAsset))
+	mux.HandleFunc("GET /api/rag/assets/{assetId}/thumbnail", auth(s.handleRAGAssetThumbnail))
+	mux.HandleFunc("GET /api/rag/attachments/{attachmentId}/download", auth(s.handleRAGAttachmentDownload))
+	mux.HandleFunc("GET /api/agents/{agentId}/chat/{sessionId}/rag-assets/{assetId}", auth(s.handleAgentRAGAsset))
+	mux.HandleFunc("GET /api/agents/{agentId}/chat/{sessionId}/rag-assets/{assetId}/thumbnail", auth(s.handleAgentRAGAssetThumbnail))
+	mux.HandleFunc("GET /api/agents/{agentId}/chat/{sessionId}/rag-attachments/{attachmentId}/download", auth(s.handleAgentRAGAttachmentDownload))
+	mux.HandleFunc("GET /api/rag/kbs", auth(s.handleListRAGKBs))
+	mux.HandleFunc("POST /api/rag/kbs", auth(s.handleCreateRAGKB))
+	mux.HandleFunc("GET /api/rag/kbs/{id}", auth(s.handleGetRAGKB))
+	mux.HandleFunc("PATCH /api/rag/kbs/{id}", auth(s.handleUpdateRAGKB))
+	mux.HandleFunc("DELETE /api/rag/kbs/{id}", auth(s.handleDeleteRAGKB))
+	mux.HandleFunc("POST /api/rag/kbs/{id}/generate-metadata", auth(s.handleGenerateRAGKBMetadata))
+	mux.HandleFunc("POST /api/rag/kbs/{id}/documents", auth(s.handleUploadRAGDocument))
+	mux.HandleFunc("GET /api/rag/kbs/{id}/documents", auth(s.handleListRAGDocuments))
+	mux.HandleFunc("DELETE /api/rag/kbs/{id}/documents/{docId}", auth(s.handleDeleteRAGDocument))
+	mux.HandleFunc("POST /api/rag/kbs/{id}/documents/{docId}/reindex", auth(s.handleReindexRAGDocument))
+	mux.HandleFunc("POST /api/rag/kbs/{id}/search", auth(s.handleRAGSearch))
+	mux.HandleFunc("POST /api/rag/kbs/{id}/chat", auth(s.handleRAGChat))
+	mux.HandleFunc("GET /api/rag/kbs/{id}/chat/sessions", auth(s.handleListRAGChatSessions))
+	mux.HandleFunc("GET /api/rag/kbs/{id}/chat/sessions/{sessionId}", auth(s.handleListRAGChatTurns))
+}
 
 // authMiddleware 包裹 auth.Resolver 的 Middleware。每个需要认证的路由都必须使用。
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -243,12 +346,22 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/agents/{id}", auth(s.handleGetAgent))
 	mux.HandleFunc("PUT /api/agents/{id}", auth(s.handleUpdateAgent))
 	mux.HandleFunc("GET /api/agents/{id}/config", auth(s.handleGetAgentConfig))
-	mux.HandleFunc("GET /api/agents/{id}/mcp", auth(s.handleGetAgentMCP))
-	mux.HandleFunc("PUT /api/agents/{id}/mcp", auth(s.handlePutAgentMCP))
-	mux.HandleFunc("POST /api/agents/{id}/mcp/test", auth(s.handleTestAgentMCP))
-	mux.HandleFunc("GET /api/agents/{id}/mcp/status", auth(s.handleGetAgentMCPStatus))
 	mux.HandleFunc("GET /api/agents/{id}/tools/registered", auth(s.handleListAgentRegisteredTools))
 	mux.HandleFunc("DELETE /api/agents/{id}", auth(s.handleDeleteAgent))
+
+	// User-owned MCP resources. Agents receive access through the mcp.servers
+	// resource-ID allow-list on the regular agent update endpoint.
+	mux.HandleFunc("GET /api/mcp/servers", auth(s.handleListMCPResources))
+	mux.HandleFunc("POST /api/mcp/servers", auth(s.handleCreateMCPResource))
+	mux.HandleFunc("GET /api/mcp/servers/{id}", auth(s.handleGetMCPResource))
+	mux.HandleFunc("PUT /api/mcp/servers/{id}", auth(s.handleUpdateMCPResource))
+	mux.HandleFunc("DELETE /api/mcp/servers/{id}", auth(s.handleDeleteMCPResource))
+	mux.HandleFunc("POST /api/mcp/servers/{id}/test", auth(s.handleTestMCPResource))
+	mux.HandleFunc("GET /api/mcp/status", auth(s.handleGetMCPStatus))
+
+	// 用户级知识库。路由始终存在；未配置 Milvus/embedding 时 handler
+	// 返回结构化 503，便于控制台明确展示禁用原因。
+	s.registerRAGRoutes(mux, auth)
 
 	mux.HandleFunc("GET /api/agents/{id}/files", auth(s.handleAgentFileList))
 	mux.HandleFunc("GET /api/agents/{id}/files.zip", auth(s.handleAgentFilesZip))
@@ -454,16 +567,16 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.ServeFileFS(w, r, h.fs, dirFallback)
 				return
 			}
-		// 嵌套动态段回退：像 agents/[id]/chat/[session] 和 agents/[id]/project/[pid] 这样的路由
-		// 在构建时发出单个占位符 ("_")。将任何紧跟在已知动态父级 (chat, project) 下的段替换为 "_"，
-		// 无论后面是什么。这涵盖了页面 HTML 和 Next 16 在客户端导航期间获取的每个路由的 RSC 负载：
-		//   /chat/<sid>/                            → /chat/_/index.html
-		//   /chat/<sid>/index.txt                   → /chat/_/index.txt
-		//   /chat/<sid>/__next.agents.$d$id.chat.$d$session.__PAGE__.txt
-		//   …
-		// 没有这个，App Router 在侧边栏点击时的 RSC 获取会得到 404（或根 index.html），
-		// 放弃软导航，回退到 window.location — 这会导致页面闪烁并中断正在进行的流。
-		// 随着新动态路由的引入，将它们添加到下面的 dynamicParents 中。
+			// 嵌套动态段回退：像 agents/[id]/chat/[session] 和 agents/[id]/project/[pid] 这样的路由
+			// 在构建时发出单个占位符 ("_")。将任何紧跟在已知动态父级 (chat, project) 下的段替换为 "_"，
+			// 无论后面是什么。这涵盖了页面 HTML 和 Next 16 在客户端导航期间获取的每个路由的 RSC 负载：
+			//   /chat/<sid>/                            → /chat/_/index.html
+			//   /chat/<sid>/index.txt                   → /chat/_/index.txt
+			//   /chat/<sid>/__next.agents.$d$id.chat.$d$session.__PAGE__.txt
+			//   …
+			// 没有这个，App Router 在侧边栏点击时的 RSC 获取会得到 404（或根 index.html），
+			// 放弃软导航，回退到 window.location — 这会导致页面闪烁并中断正在进行的流。
+			// 随着新动态路由的引入，将它们添加到下面的 dynamicParents 中。
 			dynamicParents := map[string]bool{"chat": true, "project": true}
 			sub := strings.Split(parts[2], "/")
 			substituted := false

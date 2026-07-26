@@ -57,3 +57,24 @@ func TestMergedAgentConfigCarriesMCPConfig(t *testing.T) {
 		t.Fatalf("transport = %q, want %q", got, MCPTransportSSE)
 	}
 }
+
+func TestMergedAgentConfigCopiesMCPResourceGrant(t *testing.T) {
+	cfg := &Config{}
+	prev := AgentFileConfigLoader
+	defer func() { AgentFileConfigLoader = prev }()
+	stored := []string{"sc_one", "sc_two"}
+	AgentFileConfigLoader = func(agentID, path string) (AgentFileConfig, bool) {
+		return AgentFileConfig{
+			MCP: &MCPAgentCfg{Servers: stored},
+		}, true
+	}
+
+	rc := cfg.MergedAgentConfig(AgentEntry{ID: "agt_1", UserID: "u_owner"})
+	if len(rc.MCP.Servers) != 2 || rc.MCP.Servers[0] != "sc_one" {
+		t.Fatalf("resolved MCP grants = %#v", rc.MCP.Servers)
+	}
+	rc.MCP.Servers[0] = "mutated"
+	if stored[0] != "sc_one" {
+		t.Fatal("resolved MCP grants must not alias stored config")
+	}
+}

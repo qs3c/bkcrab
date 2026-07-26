@@ -43,12 +43,14 @@ export default function ChannelsPage() {
   const [loading, setLoading] = useState(true);
   const [editChannel, setEditChannel] = useState<ChannelInfo | null>(null);
 
-  const fetchChannels = () => {
-    setLoading(true);
-    getChannels()
-      .then(setChannels)
-      .catch(() => setChannels([]))
-      .finally(() => setLoading(false));
+  const fetchChannels = async () => {
+    try {
+      setChannels(await getChannels());
+    } catch {
+      setChannels([]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {

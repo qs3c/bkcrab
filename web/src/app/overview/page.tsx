@@ -26,27 +26,28 @@ export default function OverviewPage() {
   const [runtime, setRuntime] = useState<ConfigResponse["sandbox"] | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchStatus = () => {
-    setLoading(true);
-    getStatus()
-      .then((s) => {
-        setStatus(s);
-        if (s.isAdmin) {
-          adminListChats()
-            .then((rows) => setChats(rows.length))
-            .catch(() => setChats(null));
-          getTools()
-            .then(setTools)
-            .catch(() => setTools(null));
-          // getConfig 在后端仅限 super_admin；非超级管理员会收到 403，
-          // 此时我们直接隐藏运行环境行，而不将其视为错误。
-          getConfig()
-            .then((cfg) => setRuntime(cfg.sandbox ?? null))
-            .catch(() => setRuntime(null));
-        }
-      })
-      .catch(() => setStatus(null))
-      .finally(() => setLoading(false));
+  const fetchStatus = async () => {
+    try {
+      const s = await getStatus();
+      setStatus(s);
+      if (s.isAdmin) {
+        adminListChats()
+          .then((rows) => setChats(rows.length))
+          .catch(() => setChats(null));
+        getTools()
+          .then(setTools)
+          .catch(() => setTools(null));
+        // getConfig 在后端仅限 super_admin；非超级管理员会收到 403，
+        // 此时我们直接隐藏运行环境行，而不将其视为错误。
+        getConfig()
+          .then((cfg) => setRuntime(cfg.sandbox ?? null))
+          .catch(() => setRuntime(null));
+      }
+    } catch {
+      setStatus(null);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {

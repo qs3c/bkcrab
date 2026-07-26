@@ -1,0 +1,85 @@
+{
+  "docx": {
+    "unitKinds": ["document"],
+    "unitLabels": ["文档"],
+    "assetCount": 1,
+    "occurrenceCount": 2,
+    "occurrenceAltTexts": ["Architecture diagram", "Architecture diagram"],
+    "warningCodes": [],
+    "requiredMarkdown": [
+      "# Office Golden",
+      "First item",
+      "Second item",
+      "| Product | Count |",
+      "```\nprint('alpha')\n```",
+      "```\nSELECT * FROM docs;\n```",
+      "ordinary monospace stays prose",
+      "![Architecture diagram](rag-asset://occ_document_0000_0001)",
+      "![Architecture diagram](rag-asset://occ_document_0000_0002)"
+    ],
+    "orderedMarkdown": [
+      "Before image.",
+      "rag-asset://occ_document_0000_0001",
+      "Between repeated images.",
+      "rag-asset://occ_document_0000_0002",
+      "After image."
+    ]
+  },
+  "pptx": {
+    "unitKinds": ["slide", "slide"],
+    "unitLabels": ["幻灯片 1", "幻灯片 2"],
+    "assetCount": 1,
+    "occurrenceCount": 2,
+    "occurrenceAltTexts": ["Architecture diagram", "Architecture diagram"],
+    "warningCodes": [],
+    "requiredMarkdown": [
+      "Presentation-order first slide",
+      "Top text",
+      "![Architecture diagram](rag-asset://occ_slide_0002_0001)",
+      "![Architecture diagram](rag-asset://occ_slide_0002_0002)",
+      "Group left",
+      "Group right",
+      "```\ndef slide_code():\n    return 7\n```",
+      "> 演讲者备注",
+      "> Remember the architecture caveat."
+    ],
+    "orderedMarkdown": [
+      "Presentation-order first slide",
+      "Top text",
+      "occ_slide_0002_0001",
+      "occ_slide_0002_0002",
+      "Group left",
+      "Group right",
+      "def slide_code():",
+      "Bottom text",
+      "> 演讲者备注"
+    ]
+  },
+  "xlsx": {
+    "unitKinds": ["sheet", "sheet"],
+    "unitLabels": ["Summary", "Details"],
+    "assetCount": 1,
+    "occurrenceCount": 2,
+    "occurrenceAltTexts": ["单元格 B3：Metrics chart", "单元格 A2：Metrics chart"],
+    "warningCodes": ["office_image_coarse_location", "office_image_coarse_location"],
+    "requiredMarkdown": [
+      "## Summary",
+      "| Name | Value |",
+      "### 相关图片",
+      "单元格 B3",
+      "## Details",
+      "| Key | Description |",
+      "单元格 A2",
+      "rag-asset://occ_sheet_0001_0001",
+      "rag-asset://occ_sheet_0002_0001"
+    ],
+    "orderedMarkdown": [
+      "## Summary",
+      "| Name | Value |",
+      "单元格 B3",
+      "## Details",
+      "| Key | Description |",
+      "单元格 A2"
+    ]
+  }
+}

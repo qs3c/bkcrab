@@ -49,6 +49,28 @@ interface OtherAgent {
   ownerDisplayName?: string;
 }
 
+async function loadAgentRows(): Promise<{
+  agents: AgentDetail[];
+  otherAgents: OtherAgent[];
+  isAdmin: boolean;
+}> {
+  // /api/agents 仅返回调用者拥有的智能体。其他用户拥有的
+  // 公开智能体以单独链接显示——不会自动填充到仪表板列表。
+  const agents = await getAgents().catch(() => [] as AgentDetail[]);
+  const status = await getStatus().catch(() => null);
+  const isAdmin = !!status?.isAdmin;
+  if (!isAdmin) return { agents, otherAgents: [], isAdmin };
+
+  const visibleIds = new Set(agents.map((agent) => agent.id));
+  const response = await adminListAgents().catch(() => null);
+  const all = (response?.agents || []) as OtherAgent[];
+  return {
+    agents,
+    otherAgents: all.filter((agent) => !visibleIds.has(agent.id)),
+    isAdmin,
+  };
+}
+
 // AgentAvatar 尝试加载 /api/agents/{id}/files/avatar.png，当智能体
 // 还没有头像时（404）回退到默认的 Bot 图标。
 function AgentAvatar({
@@ -151,31 +173,27 @@ export default function AgentsPage() {
 
   const fetchAgents = async () => {
     setLoading(true);
-    // /api/agents 仅返回调用者拥有的智能体。其他用户拥有的
-    // 公开智能体以单独链接显示——不会自动填充到仪表板列表。
-    const list = await getAgents().catch(() => [] as AgentDetail[]);
-    setAgents(list);
-    // 管理员还可查看其他用户的智能体（只读），显示在自己智能体下方。
-    // 我们从 /api/status 获取 isAdmin 并仅在有权时调用 adminListAgents——
-    // 非管理员会收到 403 并在界面上闪烁错误。
-    const status = await getStatus().catch(() => null);
-    const admin = !!status?.isAdmin;
-    setIsAdmin(admin);
-    if (admin) {
-      const visibleIds = new Set(list.map((a) => a.id));
-      const res = await adminListAgents().catch(() => null);
-      const all: OtherAgent[] = (res?.agents || []) as OtherAgent[];
-      setOtherAgents(all.filter((a) => !visibleIds.has(a.id)));
-    } else {
-      setOtherAgents([]);
-    }
+    const rows = await loadAgentRows();
+    setAgents(rows.agents);
+    setOtherAgents(rows.otherAgents);
+    setIsAdmin(rows.isAdmin);
     setLoading(false);
   };
 
   const ownedAgents = agents;
 
   useEffect(() => {
-    fetchAgents();
+    let cancelled = false;
+    loadAgentRows().then((rows) => {
+      if (cancelled) return;
+      setAgents(rows.agents);
+      setOtherAgents(rows.otherAgents);
+      setIsAdmin(rows.isAdmin);
+      setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // 从 /api/me 获取 quotaLocked。agent_quota === 0 表示

@@ -62,6 +62,7 @@ type managerOpts struct {
 	globalSkillsCfg  config.SkillsCfg
 	skillsLearnerCfg config.SkillsLearnerCfg
 	mcpFactory       MCPManagerFactory
+	ragService       RAGService
 }
 
 func WithSessionStore(st session.SessionStore) ManagerOption {
@@ -120,6 +121,19 @@ func WithSkillsLearner(cfg config.SkillsLearnerCfg) ManagerOption {
 
 func WithMCPManagerFactory(f MCPManagerFactory) ManagerOption {
 	return func(o *managerOpts) { o.mcpFactory = f }
+}
+
+// RAGService is the subset of the platform RAG service needed while building
+// an agent. Keeping this interface here avoids coupling agent to rag.Service.
+type RAGService interface {
+	SearchForAgent(ctx context.Context, ownerID string, kbIDs []string, query string, topN int) (tools.ToolResult, error)
+	ResolveAgentKBs(ctx context.Context, ownerID string, kbIDs []string) []tools.RAGKBRef
+}
+
+// WithRAGService enables conditional rag_search registration for agents that
+// have at least one authorized knowledge base.
+func WithRAGService(svc RAGService) ManagerOption {
+	return func(o *managerOpts) { o.ragService = svc }
 }
 
 // Manager 加载并管理所有代理实例。
@@ -266,12 +280,23 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		if ag.skillsLearner != nil && ag.lifecycleCfg.IsEnabled() {
 			ag.skillsLearner.agentID = rc.ID
 			ag.skillsLearner.ledger = m.opts.dataStore
+			// skill_manage 与 learner 共用管理器与账本:主对话工具的
+			// create/update/delete 与提取路径同一份生命周期记账。
+			ag.registry.SetSkillManage(ag.skillsLearner.Manager(), m.opts.dataStore)
 		}
 		ag.ReloadWorkspaceFiles()
 		// 聊天者所在时区的日期线 - 需要 dataStore
 		// 范围首选项查找，因此在此处连接并由
 		// 每次 ctxBuilder 重建后重新加载工作空间文件。
 		ag.ctxBuilder.SetTimezoneResolver(ag.chatterLocation)
+	}
+	if m.opts.ragService != nil && len(rc.RAG.KBs) > 0 {
+		ownerID := rc.UserID
+		if ownerID == "" {
+			ownerID = m.uid
+		}
+		refs := m.opts.ragService.ResolveAgentKBs(context.Background(), ownerID, rc.RAG.KBs)
+		tools.RegisterRAGSearch(ag.registry, m.opts.ragService, ownerID, refs, rc.RAG.TopN)
 	}
 	// 即使没有连接workspaceStore，也要标记agentID（单用户
 	// 本地模式），因此使用情况计量可以记录每个代理的汇总。

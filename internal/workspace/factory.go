@@ -9,7 +9,7 @@ import (
 // 以便在网关启动和实际后端实现之间有一个配置驱动的入口点。
 //
 // Type 是面向用户的选择器——下面预设名称之一。对于每个兼容 S3 的预设
-//（aws-s3, cloudflare-r2, …），工厂从 Region / AccountID 填充合理的
+// （aws-s3, cloudflare-r2, …），工厂从 Region / AccountID 填充合理的
 // 默认端点，使运维人员无需记住 URL；传递显式的 S3.Endpoint 可覆盖。
 type Factory struct {
 	// Type 选择后端。有效值：
@@ -47,24 +47,40 @@ func (f Factory) New(defaultLocalDir string) (Store, error) {
 		}
 		return NewLocalFS(filepath.Clean(root)), nil
 	case "aws-s3", "cloudflare-r2", "backblaze-b2", "aliyun-oss", "minio", "s3":
-		s3 := f.S3
-		if s3.Endpoint == "" {
-			ep, err := defaultEndpoint(f.Type, s3.Region, f.AccountID, f.AliyunIntern)
-			if err != nil {
-				return nil, err
-			}
-			s3.Endpoint = ep
-		}
-		// AWS S3 和大多数托管提供商严格要求 SSL；只有本地 MinIO
-		// 通常运行明文。自动启用，除非运维人员在 "minio" 预设中
-		// 明确另有说明。
-		if f.Type != "minio" && !s3.UseSSL {
-			s3.UseSSL = true
+		s3, err := f.ResolveS3Config()
+		if err != nil {
+			return nil, err
 		}
 		return NewS3(s3)
 	default:
 		return nil, fmt.Errorf("workspace: unknown type %q", f.Type)
 	}
+}
+
+// ResolveS3Config expands a remote backend preset into the exact S3-compatible
+// configuration used by Factory.New. Other subsystems that share the workspace
+// object-store infrastructure use this to avoid silently choosing a different
+// endpoint or falling back to local disk.
+func (f Factory) ResolveS3Config() (S3Config, error) {
+	switch f.Type {
+	case "aws-s3", "cloudflare-r2", "backblaze-b2", "aliyun-oss", "minio", "s3":
+	default:
+		return S3Config{}, fmt.Errorf("workspace: type %q is not an S3-compatible backend", f.Type)
+	}
+	s3 := f.S3
+	if s3.Endpoint == "" {
+		endpoint, err := defaultEndpoint(f.Type, s3.Region, f.AccountID, f.AliyunIntern)
+		if err != nil {
+			return S3Config{}, err
+		}
+		s3.Endpoint = endpoint
+	}
+	// AWS S3 and managed presets require TLS; a local MinIO endpoint commonly
+	// runs over plain HTTP and keeps the operator''s explicit flag.
+	if f.Type != "minio" && !s3.UseSSL {
+		s3.UseSSL = true
+	}
+	return s3, nil
 }
 
 // defaultEndpoint 将提供商预设 + region/account 映射到众所周知的

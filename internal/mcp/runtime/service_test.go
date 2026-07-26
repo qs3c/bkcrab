@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/mcp"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
@@ -33,6 +34,20 @@ func (f *fakeDocker) Stop(ctx context.Context, name string) error {
 
 type fakeRuntimeStore struct {
 	rec *store.MCPGatewayRuntimeRecord
+}
+
+type fakeResourceStore struct {
+	rows []store.ConfigRecord
+}
+
+func (f *fakeResourceStore) ListConfigs(ctx context.Context, kind, userID, agentID string) ([]store.ConfigRecord, error) {
+	var rows []store.ConfigRecord
+	for _, row := range f.rows {
+		if row.Kind == kind && row.UserID == userID && row.AgentID == agentID {
+			rows = append(rows, row)
+		}
+	}
+	return rows, nil
 }
 
 func (f *fakeRuntimeStore) GetMCPGatewayRuntime(ctx context.Context, userID string) (*store.MCPGatewayRuntimeRecord, error) {
@@ -175,6 +190,104 @@ func TestNewManagerFromServersSkipsDeployWhenNoEnabledServers(t *testing.T) {
 	}
 	if fs.rec != nil {
 		t.Fatalf("no runtime record should be written: %#v", fs.rec)
+	}
+}
+
+func TestNewManagerFromResourcesDeploysUserSetButFiltersAgentTools(t *testing.T) {
+	var deployed map[string]config.MCPServerConfig
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/deploy" {
+			var body struct {
+				MCPServers map[string]config.MCPServerConfig `json:"mcpServers"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode deploy: %v", err)
+			}
+			deployed = body.MCPServers
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+			return
+		}
+		if r.URL.Path != "/stream" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var request struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      json.RawMessage `json:"id"`
+			Method  string          `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		switch request.Method {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request.ID,
+				"result":  map[string]any{"protocolVersion": "2025-03-26"},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request.ID,
+				"result": map[string]any{"tools": []map[string]any{
+					{"name": "sc_alpha_read", "inputSchema": map[string]any{"type": "object"}},
+					{"name": "sc_beta_write", "inputSchema": map[string]any{"type": "object"}},
+				}},
+			})
+		default:
+			t.Fatalf("unexpected MCP method %s", request.Method)
+		}
+	}))
+	defer api.Close()
+
+	resourceRows := make([]store.ConfigRecord, 0, 2)
+	for _, resource := range []mcp.Resource{
+		{ID: "sc_alpha", UserID: "u1", Name: "github", Enabled: true, Config: config.MCPServerConfig{Type: "stdio", Command: "alpha"}},
+		{ID: "sc_beta", UserID: "u1", Name: "slack", Enabled: true, Config: config.MCPServerConfig{Type: "stdio", Command: "beta"}},
+	} {
+		row := store.ConfigRecord{ID: resource.ID}
+		resource.ApplyToRecord(&row)
+		resourceRows = append(resourceRows, row)
+	}
+	runtimeStore := &fakeRuntimeStore{}
+	resourceStore := &fakeResourceStore{rows: resourceRows}
+	svc := NewService(Options{
+		Store:     runtimeStore,
+		Resources: resourceStore,
+		Docker: &fakeDocker{ref: ContainerRef{
+			ID: "ctr-1", Name: "bkcrab-mcp-u1", BaseURL: api.URL, ExternalPort: 39001, Running: true,
+		}},
+		Config: Config{Enabled: true, Image: defaultImage, RuntimeDir: t.TempDir(), ContainerPort: 8080, Protocol: "all"},
+	})
+	manager, err := svc.NewManagerFromResources(ctxWithTestDeadline(t), "u1", []string{"sc_alpha"})
+	if err != nil {
+		t.Fatalf("new manager from resources: %v", err)
+	}
+	defer manager.Close()
+
+	if len(deployed) != 2 || deployed["sc_alpha"].Command != "alpha" || deployed["sc_beta"].Command != "beta" {
+		t.Fatalf("gateway should receive the full user resource set, got %#v", deployed)
+	}
+	tools := manager.ToolDefs()
+	if len(tools) != 1 || tools[0].Name != "mcp_github_read" {
+		t.Fatalf("agent should receive only granted tools, got %#v", tools)
+	}
+
+	disabled := false
+	alpha, err := mcp.ResourceFromRecord(resourceStore.rows[0])
+	if err != nil {
+		t.Fatalf("decode alpha resource: %v", err)
+	}
+	alpha.Enabled = false
+	alpha.Config.Enabled = &disabled
+	alpha.ApplyToRecord(&resourceStore.rows[0])
+	if err := svc.SyncUserResources(ctxWithTestDeadline(t), "u1"); err != nil {
+		t.Fatalf("sync resources: %v", err)
+	}
+	if len(deployed) != 1 || deployed["sc_beta"].Command != "beta" {
+		t.Fatalf("sync should remove disabled resources from running gateway, got %#v", deployed)
 	}
 }
 

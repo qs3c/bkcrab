@@ -21,10 +21,9 @@ type messageArgs struct {
 // 调用者不在乎（例如测试、非微信绑定部署）-
 // 在这种情况下，AllowSplit 默认为 false。
 func RegisterMessage(r *Registry, mb *bus.MessageBus, allowSplitFn func() bool) {
-	r.tools["message"] = registeredTool{
-		def: r.tools["message"].def,
-		fn:  makeMessageTool(mb, allowSplitFn),
-	}
+	registered := r.tools["message"]
+	registered.fn = resultHandlerFromToolFunc(makeMessageTool(mb, allowSplitFn))
+	r.tools["message"] = registered
 }
 
 func registerMessage(r *Registry) {

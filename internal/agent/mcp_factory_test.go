@@ -18,7 +18,7 @@ func TestManagerUsesInjectedMCPFactory(t *testing.T) {
 	})
 	_, err := NewManager([]config.ResolvedAgent{{
 		ID: "agt_1", UserID: "u1", Model: "p/m", Home: t.TempDir(),
-		MCPServers: map[string]config.MCPServerConfig{"time": {Type: "stdio", Command: "uvx"}},
+		MCP: config.MCPAgentCfg{Servers: []string{"sc_time"}},
 	}}, nil, bus.New(), WithUserID("u1"), WithMCPManagerFactory(factory))
 	if err != nil {
 		t.Fatalf("new manager: %v", err)

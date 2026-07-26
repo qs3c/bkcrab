@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "docId": "doc_multimodal_golden",
+    "fileName": "multimodal-golden.pdf",
+    "format": "pdf",
+    "byteSize": 395,
+    "sha256": "ca46dc417e4212f875bed454da71b302c702a03fed15b55b58cff84a6f9c95a7"
+  },
+  "parser": {
+    "name": "fixture-generator",
+    "version": "multimodal-corpus-v1"
+  },
+  "units": [
+    {
+      "id": "unit_page_0001",
+      "location": {
+        "kind": "page",
+        "index": 1,
+        "label": "第 1 页"
+      },
+      "markdown": "# Deployment Guide\n\nThe gateway forwards requests to the retriever.\n\n| Component | Port | Unit |\n| --- | ---: | --- |\n| Gateway | 8080 | TCP |\n| Retriever | 9090 | TCP |\n\n![请求流程图](rag-asset://occ_page_0001_0001)\n\n\u003e 图片文字：Gateway → Retriever → Text LLM"
+    },
+    {
+      "id": "unit_page_0002",
+      "location": {
+        "kind": "page",
+        "index": 2,
+        "label": "第 2 页"
+      },
+      "markdown": "## Retry Policy\n\n```go\nfunc Retry(attempt int) bool {\n    return attempt \u003c 3\n}\n```\n\nRetries stop after three attempts."
+    }
+  ],
+  "assets": [
+    {
+      "id": "ast_f50fbcb295544d84d9c1d78e5cfedaf3",
+      "contentSha256": "48de7569c653ed7a689789db9d3632767c4f15b98bf3fe4ee7f77e549d0d2284",
+      "kind": "image",
+      "sourceKind": "embedded_original",
+      "sourceMime": "image/png",
+      "width": 64,
+      "height": 32,
+      "byteSize": 179,
+      "displayStatus": "ready"
+    }
+  ],
+  "occurrences": [
+    {
+      "id": "occ_page_0001_0001",
+      "assetId": "ast_f50fbcb295544d84d9c1d78e5cfedaf3",
+      "unitId": "unit_page_0001",
+      "order": 3,
+      "location": {
+        "kind": "page",
+        "index": 1,
+        "label": "第 1 页"
+      },
+      "bbox": [
+        100,
+        300,
+        900,
+        760
+      ],
+      "caption": "请求依次经过网关、检索器和文字回答模型。",
+      "ocrText": "Gateway → Retriever → Text LLM",
+      "decorative": false,
+      "confidence": 0.97
+    }
+  ],
+  "warnings": []
+}

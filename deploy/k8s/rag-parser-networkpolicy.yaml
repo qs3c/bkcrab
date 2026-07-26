@@ -1,0 +1,40 @@
+# Parser default-deny. Policies are additive: the second resource permits only
+# bkcrab pods to enter TCP/8080, while no parser egress is ever allowed.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rag-parser-default-deny
+  namespace: bkcrab
+spec:
+  podSelector:
+    matchLabels: { app: rag-parser }
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress: []
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rag-parser-allow-bkcrab-ingress
+  namespace: bkcrab
+spec:
+  podSelector:
+    matchLabels: { app: rag-parser }
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: bkcrab }
+      ports:
+        - { protocol: TCP, port: 8080 }
+
+# If the namespace already has a default-deny egress policy selecting bkcrab,
+# add a separate additive policy allowing bkcrab -> app=rag-parser TCP/8080.
+# Do not install such a policy by itself in an otherwise unrestricted namespace:
+# selecting bkcrab for egress without the rest of its DB/object-store/provider
+# allows would unintentionally block those required destinations.

@@ -1022,6 +1022,10 @@ export async function steerChat(
 
 export interface ToolResultMetadata {
   sandbox?: boolean;
+  // Out-of-band resources selected by trusted rag_search results. The
+  // metadata stores stable references only; each UI surface constructs its
+  // own authenticated URL at render time.
+  ragResources?: RAGResourceRef[];
   // 标记在按轮工具迭代上限触发时后端发出的强制最终交付助手消息上。
   // 让 UI 显示一个小标记，以便用户知道答案是在预算限制下生成的，
   // 可能不完整。
@@ -1170,21 +1174,66 @@ export interface UploadedFile {
   size: number;
 }
 
+export interface UploadProgress {
+  loaded: number;
+  total: number;
+}
+
 export async function uploadAgentFiles(
   agentId: string,
   sessionId: string,
   files: File[],
+  onProgress?: (progress: UploadProgress) => void,
+  projectId?: string,
 ): Promise<UploadedFile[]> {
   const fd = new FormData();
   for (const f of files) fd.append("file", f, f.name);
-  const qs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
-  const res = await apiFetch(`/api/agents/${encodeURIComponent(agentId)}/files${qs}`, {
-    method: "POST",
-    body: fd,
+
+  // fetch 目前不提供请求体上传进度。聊天附件可能很大，改用 XHR 才能让
+  // 输入框准确显示“正在上传”以及已传输的百分比。
+  const params = new URLSearchParams();
+  if (sessionId) params.set("sessionId", sessionId);
+  // A project's first chat turn is lazy-created, so the session row does not
+  // exist yet while attachments are uploading. Carry the same project hint as
+  // the subsequent chat request so both operations select one workspace scope.
+  if (projectId) params.set("projectId", projectId);
+  if (typeof window !== "undefined") {
+    const actAs = new URLSearchParams(window.location.search).get("actAs");
+    if (actAs) params.set("actAs", actAs);
+  }
+  const qs = params.size > 0 ? `?${params.toString()}` : "";
+  const url = `/api/agents/${encodeURIComponent(agentId)}/files${qs}`;
+  const totalBytes = files.reduce((total, file) => total + file.size, 0);
+
+  return await new Promise<UploadedFile[]>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.withCredentials = true;
+    const token = getAuthToken();
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+
+    xhr.upload.onprogress = (event) => {
+      onProgress?.({
+        loaded: event.loaded,
+        total: event.lengthComputable ? event.total : totalBytes,
+      });
+    };
+    xhr.onerror = () => reject(new Error("upload failed: network error"));
+    xhr.onabort = () => reject(new Error("upload aborted"));
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`upload failed: ${xhr.status}`));
+        return;
+      }
+      try {
+        const data = JSON.parse(xhr.responseText) as { files?: UploadedFile[] };
+        resolve(data.files || []);
+      } catch {
+        reject(new Error("upload failed: invalid response"));
+      }
+    };
+    xhr.send(fd);
   });
-  if (!res.ok) throw new Error(`upload failed: ${res.status}`);
-  const data = await res.json();
-  return (data.files || []) as UploadedFile[];
 }
 
 // Agent 列表
@@ -1277,17 +1326,35 @@ export interface MCPServerConfig {
   enabled?: boolean;
 }
 
-export interface AgentMCPConfigResponse {
-  mcpServers: Record<string, MCPServerConfig>;
-  shareMcpConfig: boolean;
-  gateway?: {
-    status?: string;
-    baseUrl?: string;
-    image?: string;
-    lastAccessedAt?: string;
-    errorMessage?: string;
-  };
-  error?: string;
+export interface MCPGatewayStatus {
+  status?: string;
+  baseUrl?: string;
+  image?: string;
+  lastAccessedAt?: string;
+  errorMessage?: string;
+}
+
+export interface MCPResource {
+  id: string;
+  userId: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  config: MCPServerConfig;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MCPResourceInput {
+  name: string;
+  description?: string;
+  enabled: boolean;
+  config: MCPServerConfig;
+}
+
+export interface MCPResourcesResponse {
+  servers: MCPResource[];
+  gateway?: MCPGatewayStatus;
 }
 
 export interface MCPToolPreview {
@@ -1300,6 +1367,15 @@ export interface AgentMCPTestResponse {
   ok: boolean;
   tools?: MCPToolPreview[];
   error?: string;
+}
+
+export interface AgentRAGConfig {
+  kbs: string[];
+  topN?: number;
+}
+
+export interface AgentMCPConfig {
+  servers: string[];
 }
 
 // 后端接受 model / soul / skills / providers 进行更新。
@@ -1320,7 +1396,6 @@ export interface AgentUpdatePayload {
   // 切换使用此 agent 的聊天者是否继承所有者的
   // 模型 + 提供者配置。省略以保持不变。
   shareModelConfig?: boolean;
-  shareMcpConfig?: boolean;
   // PromptMode 选择框架系统提示的参与程度："agent"（完整，默认）、
   // "chatbot"（精简 — 去掉任务委派/工具使用规范/工作区更新，以
   // 保持伴侣/角色扮演人设）、"customize"（仅有日期锚点 + 引导
@@ -1344,6 +1419,10 @@ export interface AgentUpdatePayload {
   // 覆盖并回退到系统范围的启用状态。
   plugins?: Record<string, boolean>;
   pluginsReset?: boolean;
+  // 智能体可检索的用户知识库白名单。发送空 kbs 会撤销全部授权。
+  rag?: AgentRAGConfig;
+  // 智能体可调用的用户级 MCP 资源白名单。发送空列表会撤销全部授权。
+  mcp?: AgentMCPConfig;
 }
 
 export async function updateAgent(id: string, agent: AgentUpdatePayload) {
@@ -1383,39 +1462,457 @@ export interface AgentFileConfig {
   workspace?: string;
   skills?: AgentSkillsConfig;
   providers?: Record<string, ProviderData>;
+  mcp?: AgentMCPConfig;
+  // Legacy inline MCP fields are read-only migration compatibility.
   mcpServers?: Record<string, MCPServerConfig>;
   shareMcpConfig?: boolean;
+  rag?: AgentRAGConfig;
 }
 
 // 获取单个 agent 的原始 agent.json（仅按 agent 覆盖 —
 // 不是合并/解析后的配置）。用于按 agent 的模型和技能管理页面。
 export async function getAgentConfig(id: string): Promise<AgentFileConfig> {
   const res = await apiFetch(`/api/agents/${id}/config`);
-  return res.json();
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || `读取智能体配置失败 (${res.status})`);
+  return data;
 }
 
-export async function getAgentMCPConfig(id: string): Promise<AgentMCPConfigResponse> {
-  const res = await apiFetch(`/api/agents/${encodeURIComponent(id)}/mcp`);
-  return res.json();
+// RAG 知识库 API。后端以显式 camelCase DTO 返回；PascalCase fallback
+// 暂时保留，支持滚动升级期间仍在运行的旧实例。
+export type RAGParseMode = "standard" | "auto";
+
+export interface RAGCapabilityDetail {
+  enabled: boolean;
+  configured: boolean;
+  healthy: boolean;
+  available: boolean;
+  reason: string;
+  checkedAt?: string;
 }
 
-export async function saveAgentMCPConfig(
+export interface RAGSimpleCapability {
+  available: boolean;
+  reason: string;
+}
+
+export interface RAGEnrichmentCapability {
+  enabled: boolean;
+  configured: boolean;
+  available: boolean;
+  reason: string;
+}
+
+export interface RAGCapabilities {
+  supportedExtensions: string[];
+  maxFileBytes: number;
+  maxFileBytesByExtension: Record<string, number>;
+  parseModes: RAGParseMode[];
+  advanced: RAGCapabilityDetail;
+  office: RAGCapabilityDetail;
+  pdfAuto: RAGSimpleCapability;
+  officeVision: RAGSimpleCapability;
+  enrichment: RAGEnrichmentCapability;
+  documentAIBudget: {
+    maxRequestsPerDocument: number;
+    maxTokensPerDocument: number;
+    maxEstimatedCostUSDPerDocument: number;
+  };
+}
+
+export interface RAGSourceLocation {
+  kind: "document" | "page" | "slide" | "sheet" | string;
+  index: number;
+  label: string;
+}
+
+export interface RAGAttachmentRef {
+  id: string;
+  kind: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes?: number;
+}
+
+export interface RAGAssetRef {
+  id: string;
+  kind: string;
+  caption?: string;
+  pageNum?: number;
+  location?: RAGSourceLocation;
+  width?: number;
+  height?: number;
+  mimeType?: string;
+  attachment?: RAGAttachmentRef;
+}
+
+export interface RAGResourceRef {
+  asset: RAGAssetRef;
+  kbId: string;
+  kbName: string;
+  docId: string;
+  docName: string;
+  chunkIndex: number;
+  sectionTitle?: string;
+  sourceLocation?: RAGSourceLocation;
+}
+
+export interface KnowledgeBase {
+  id: string;
+  userId: string;
+  name: string;
+  description: string;
+  embedProvider: string;
+  embedModel: string;
+  embedDims: number;
+  chunkSize: number;
+  chunkOverlap: number;
+  parseMode: RAGParseMode;
+  enrichmentEnabled: boolean;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeDocument {
+  id: string;
+  kbId: string;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  status: string;
+  errorMsg: string;
+  chunkCount: number;
+  tokenCount: number;
+  version: number;
+  activeVersion: number;
+  indexFormatVersion: number;
+  appliedParseMode?: RAGParseMode;
+  targetParseMode: RAGParseMode;
+  needsReparse: boolean;
+  needsReindex: boolean;
+  progress: {
+    stage: string;
+    current: number;
+    total: number;
+    unit: string;
+    message?: string;
+  };
+  degraded: boolean;
+  warningCount: number;
+  uploadedAt: string;
+  indexedAt?: string;
+}
+
+export interface KnowledgeSearchHit {
+  kbId: string;
+  kbName: string;
+  docId: string;
+  docName: string;
+  chunkIndex: number;
+  sectionTitle?: string;
+  pageNum?: number;
+  sourceLocation?: RAGSourceLocation;
+  content: string;
+  enhancement?: string;
+  assets?: RAGAssetRef[];
+  score: number;
+}
+
+export interface KnowledgeChatResponse {
+  id: string;
+  sessionId: string;
+  answer: string;
+  hits: KnowledgeSearchHit[];
+  createdAt: string;
+}
+
+export interface KnowledgeChatSession {
+  id: string;
+  title: string;
+  turnCount: number;
+  updatedAt: string;
+}
+
+export interface KnowledgeChatTurn {
+  id: string;
+  question: string;
+  answer: string;
+  hits: KnowledgeSearchHit[];
+  createdAt: string;
+}
+
+type KnowledgeBaseWire = Record<string, unknown>;
+
+function wireValue<T>(row: KnowledgeBaseWire, camel: string, pascal: string, fallback: T): T {
+  const value = row[camel] ?? row[pascal];
+  return (value === undefined || value === null ? fallback : value) as T;
+}
+
+function normalizeKnowledgeBase(row: KnowledgeBaseWire): KnowledgeBase {
+  return {
+    id: wireValue(row, "id", "ID", ""),
+    userId: wireValue(row, "userId", "UserID", ""),
+    name: wireValue(row, "name", "Name", ""),
+    description: wireValue(row, "description", "Description", ""),
+    embedProvider: wireValue(row, "embedProvider", "EmbedProvider", ""),
+    embedModel: wireValue(row, "embedModel", "EmbedModel", ""),
+    embedDims: wireValue(row, "embedDims", "EmbedDims", 0),
+    chunkSize: wireValue(row, "chunkSize", "ChunkSize", 0),
+    chunkOverlap: wireValue(row, "chunkOverlap", "ChunkOverlap", 0),
+    parseMode: wireValue(row, "parseMode", "ParseMode", "standard"),
+    enrichmentEnabled: wireValue(row, "enrichmentEnabled", "EnrichmentEnabled", false),
+    status: wireValue(row, "status", "Status", ""),
+    createdAt: wireValue(row, "createdAt", "CreatedAt", ""),
+    updatedAt: wireValue(row, "updatedAt", "UpdatedAt", ""),
+  };
+}
+
+function normalizeKnowledgeDocument(row: KnowledgeBaseWire): KnowledgeDocument {
+  const progress = wireValue<Record<string, unknown>>(row, "progress", "Progress", {});
+  return {
+    id: wireValue(row, "id", "ID", ""),
+    kbId: wireValue(row, "kbId", "KBID", ""),
+    fileName: wireValue(row, "fileName", "FileName", ""),
+    fileType: wireValue(row, "fileType", "FileType", ""),
+    fileSize: wireValue(row, "fileSize", "FileSize", 0),
+    status: wireValue(row, "status", "Status", ""),
+    errorMsg: wireValue(row, "errorMsg", "ErrorMsg", ""),
+    chunkCount: wireValue(row, "chunkCount", "ChunkCount", 0),
+    tokenCount: wireValue(row, "tokenCount", "TokenCount", 0),
+    version: wireValue(row, "version", "Version", 0),
+    activeVersion: wireValue(row, "activeVersion", "ActiveVersion", 0),
+    indexFormatVersion: wireValue(row, "indexFormatVersion", "IndexFormatVersion", 1),
+    appliedParseMode: wireValue<RAGParseMode | undefined>(row, "appliedParseMode", "AppliedParseMode", undefined),
+    targetParseMode: wireValue(row, "targetParseMode", "TargetParseMode", "standard"),
+    needsReparse: wireValue(row, "needsReparse", "NeedsReparse", false),
+    needsReindex: wireValue(row, "needsReindex", "NeedsReindex", false),
+    progress: {
+      stage: wireValue(progress, "stage", "Stage", "queued"),
+      current: wireValue(progress, "current", "Current", 0),
+      total: wireValue(progress, "total", "Total", 0),
+      unit: wireValue(progress, "unit", "Unit", ""),
+      message: wireValue<string | undefined>(progress, "message", "Message", undefined),
+    },
+    degraded: wireValue(row, "degraded", "Degraded", false),
+    warningCount: wireValue(row, "warningCount", "WarningCount", 0),
+    uploadedAt: wireValue(row, "uploadedAt", "UploadedAt", ""),
+    indexedAt: wireValue<string | undefined>(row, "indexedAt", "IndexedAt", undefined),
+  };
+}
+
+async function ragJSON<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await apiFetch(url, init);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || data?.message || `知识库请求失败 (${res.status})`);
+  }
+  return data as T;
+}
+
+export async function getRAGCapabilities(): Promise<RAGCapabilities> {
+  return ragJSON<RAGCapabilities>("/api/rag/capabilities");
+}
+
+export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
+  const rows = await ragJSON<KnowledgeBaseWire[]>("/api/rag/kbs");
+  return (Array.isArray(rows) ? rows : []).map(normalizeKnowledgeBase);
+}
+
+export async function getKnowledgeBase(id: string): Promise<KnowledgeBase> {
+  const row = await ragJSON<KnowledgeBaseWire>(`/api/rag/kbs/${encodeURIComponent(id)}`);
+  return normalizeKnowledgeBase(row);
+}
+
+export async function createKnowledgeBase(input: {
+  name: string;
+  description?: string;
+  chunkSize?: number;
+  chunkOverlap?: number;
+  parseMode?: RAGParseMode;
+  enrichmentEnabled?: boolean;
+}): Promise<KnowledgeBase> {
+  const row = await ragJSON<KnowledgeBaseWire>("/api/rag/kbs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return normalizeKnowledgeBase(row);
+}
+
+export async function updateKnowledgeBase(
   id: string,
-  payload: { mcpServers: Record<string, MCPServerConfig>; shareMcpConfig: boolean },
-): Promise<AgentMCPConfigResponse> {
-  const res = await apiFetch(`/api/agents/${encodeURIComponent(id)}/mcp`, {
-    method: "PUT",
+  input: Partial<Pick<KnowledgeBase, "name" | "description" | "chunkSize" | "chunkOverlap" | "parseMode" | "enrichmentEnabled">>,
+): Promise<KnowledgeBase> {
+  const row = await ragJSON<KnowledgeBaseWire>(`/api/rag/kbs/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return normalizeKnowledgeBase(row);
+}
+
+export interface GeneratedKnowledgeBaseMetadata {
+  name: string;
+  description: string;
+  documentCount: number;
+  sampledDocumentCount: number;
+}
+
+export async function generateKnowledgeBaseMetadata(
+  id: string,
+  signal?: AbortSignal,
+): Promise<GeneratedKnowledgeBaseMetadata> {
+  return ragJSON<GeneratedKnowledgeBaseMetadata>(
+    `/api/rag/kbs/${encodeURIComponent(id)}/generate-metadata`,
+    { method: "POST", signal },
+  );
+}
+
+export async function deleteKnowledgeBase(id: string): Promise<void> {
+  await ragJSON(`/api/rag/kbs/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function listKnowledgeDocuments(
+  kbId: string,
+  signal?: AbortSignal,
+): Promise<KnowledgeDocument[]> {
+  const rows = await ragJSON<KnowledgeBaseWire[]>(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/documents`,
+    { signal },
+  );
+  return (Array.isArray(rows) ? rows : []).map(normalizeKnowledgeDocument);
+}
+
+export async function uploadKnowledgeDocument(
+  kbId: string,
+  file: File,
+): Promise<KnowledgeDocument> {
+  const body = new FormData();
+  body.append("file", file, file.name);
+  const row = await ragJSON<KnowledgeBaseWire>(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/documents`,
+    { method: "POST", body },
+  );
+  return normalizeKnowledgeDocument(row);
+}
+
+export async function deleteKnowledgeDocument(kbId: string, docId: string): Promise<void> {
+  await ragJSON(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/documents/${encodeURIComponent(docId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function reindexKnowledgeDocument(kbId: string, docId: string): Promise<void> {
+  await ragJSON(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/documents/${encodeURIComponent(docId)}/reindex`,
+    { method: "POST" },
+  );
+}
+
+export async function searchKnowledgeBase(
+  kbId: string,
+  query: string,
+  topN: number,
+): Promise<KnowledgeSearchHit[]> {
+  const data = await ragJSON<{ hits?: KnowledgeSearchHit[] }>(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/search`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, topN }),
+    },
+  );
+  return Array.isArray(data.hits) ? data.hits : [];
+}
+
+export async function askKnowledgeBase(
+  kbId: string,
+  question: string,
+  sessionId?: string,
+  signal?: AbortSignal,
+): Promise<KnowledgeChatResponse> {
+  const data = await ragJSON<Partial<KnowledgeChatResponse>>(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/chat`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, sessionId }),
+      signal,
+    },
+  );
+  return {
+    id: typeof data.id === "string" ? data.id : "",
+    sessionId: typeof data.sessionId === "string" ? data.sessionId : "",
+    answer: typeof data.answer === "string" ? data.answer : "",
+    hits: Array.isArray(data.hits) ? data.hits : [],
+    createdAt: typeof data.createdAt === "string" ? data.createdAt : "",
+  };
+}
+
+export async function listKnowledgeChatSessions(kbId: string): Promise<KnowledgeChatSession[]> {
+  const data = await ragJSON<{ sessions?: KnowledgeChatSession[] }>(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/chat/sessions`,
+  );
+  return Array.isArray(data.sessions) ? data.sessions : [];
+}
+
+export async function listKnowledgeChatTurns(
+  kbId: string,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<KnowledgeChatTurn[]> {
+  const data = await ragJSON<{ turns?: KnowledgeChatTurn[] }>(
+    `/api/rag/kbs/${encodeURIComponent(kbId)}/chat/sessions/${encodeURIComponent(sessionId)}`,
+    { signal },
+  );
+  return Array.isArray(data.turns) ? data.turns : [];
+}
+
+async function mcpJSON<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await apiFetch(path, init);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || `MCP 请求失败 (${res.status})`);
+  return data as T;
+}
+
+export async function listMCPResources(): Promise<MCPResourcesResponse> {
+  return mcpJSON<MCPResourcesResponse>("/api/mcp/servers");
+}
+
+export async function createMCPResource(payload: MCPResourceInput): Promise<MCPResource> {
+  const data = await mcpJSON<{ server: MCPResource }>("/api/mcp/servers", {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  return res.json();
+  return data.server;
 }
 
-export async function testAgentMCP(id: string): Promise<AgentMCPTestResponse> {
-  const res = await apiFetch(`/api/agents/${encodeURIComponent(id)}/mcp/test`, {
-    method: "POST",
+export async function updateMCPResource(id: string, payload: MCPResourceInput): Promise<MCPResource> {
+  const data = await mcpJSON<{ server: MCPResource }>(
+    `/api/mcp/servers/${encodeURIComponent(id)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  return data.server;
+}
+
+export async function deleteMCPResource(id: string): Promise<void> {
+  await mcpJSON<{ ok: boolean }>(`/api/mcp/servers/${encodeURIComponent(id)}`, {
+    method: "DELETE",
   });
-  return res.json();
+}
+
+export async function testMCPResource(id: string): Promise<AgentMCPTestResponse> {
+  return mcpJSON<AgentMCPTestResponse>(
+    `/api/mcp/servers/${encodeURIComponent(id)}/test`,
+    { method: "POST" },
+  );
 }
 
 export async function deleteAgent(id: string) {

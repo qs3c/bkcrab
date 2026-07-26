@@ -28,3 +28,15 @@ func TestApplyForeignMCPSharing(t *testing.T) {
 		t.Fatalf("shared MCP config was not preserved: %#v", rc)
 	}
 }
+
+func TestApplyForeignMCPSharingKeepsExplicitResourceGrants(t *testing.T) {
+	rc := &config.ResolvedAgent{
+		UserID: "owner",
+		MCP:    config.MCPAgentCfg{Servers: []string{"sc_github"}},
+	}
+	rec := &store.AgentRecord{UserID: "owner", Config: map[string]interface{}{}}
+	applyForeignMCPSharing(rc, rec, "viewer")
+	if len(rc.MCP.Servers) != 1 || rc.MCP.Servers[0] != "sc_github" {
+		t.Fatalf("public-agent resource grants should follow the agent: %#v", rc.MCP.Servers)
+	}
+}

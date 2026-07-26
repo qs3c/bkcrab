@@ -6,7 +6,10 @@ import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getAgent, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, listAgentFiles, listProjects, renameChatSession, revealAgentWorkspace, sendChatStream, steerChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type ContextUsage, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile } from "@/lib/api";
-import { findProducedFileAttachmentIndex, getChatHistoryRenderState, isInternalWorkspaceFile, splitToolTurnForRender } from "@/components/chat-screen-state";
+import { buildAgentFileUrl as fileUrl, findProducedFileAttachmentIndex, getChatHistoryRenderState, isInternalWorkspaceFile, splitToolTurnForRender, workspaceMarkdownFilePath } from "@/components/chat-screen-state";
+import { RAGResourceGallery } from "@/components/rag-resource-gallery";
+import { buildAgentSessionAssetURL, buildAgentSessionAttachmentURL, normalizeRAGResources } from "@/components/rag-resource-gallery-state";
+import { AgentMarkdownImage } from "@/components/rag-safe-render";
 import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, History } from "lucide-react";
 import Link from "next/link";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
@@ -29,16 +32,15 @@ function urlTransform(url: string, key: string): string {
 // ~/.bkcrab/workspaces/<agent>/sessions/<sid>/ ↔ container:/workspace），
 // 因此 workspace.Store 在 sessions/<sid>/<name> 处找到文件。我们必须
 // 预置该前缀，否则文件 API 会从智能体根目录解析并返回 404。
-function makeUrlTransform(agentId: string, sessionId: string) {
+function makeUrlTransform(agentId: string, sessionId: string, projectId = "") {
   return (url: string, key: string): string => {
     if (key === "src" && url.startsWith("data:image/")) return url;
     // 将沙箱 `/workspace/<name>` 重映射，同时适用于图片嵌入（`src`）和
     // 超链接（`href`）。如果不处理 href，模型的"点击预览"链接会指向
     // 应用源而非文件 API 并返回 404。
     if ((key === "src" || key === "href") && url.startsWith("/workspace/")) {
-      const rel = url.slice("/workspace/".length);
-      const scoped = sessionId ? `sessions/${sessionId}/${rel}` : rel;
-      return fileUrl(agentId, scoped, false);
+      const scoped = workspaceMarkdownFilePath(url, sessionId, projectId);
+      if (scoped !== null) return fileUrl(agentId, scoped, false);
     }
     return defaultUrlTransform(url);
   };
@@ -138,6 +140,14 @@ interface UserAttachment {
   previewUrl?: string;
 }
 
+interface AttachmentUploadState {
+  files: Array<{ name: string; size: number }>;
+  loaded: number;
+  total: number;
+  phase: "uploading" | "complete" | "failed";
+  error?: string;
+}
+
 // 内置斜杠命令，在输入框的 `/` 菜单中与技能一起展示。
 // 与 internal/agent/slash.go 中的调度表镜像——在该文件中添加/
 // 删除/重命名命令时需保持同步。
@@ -222,8 +232,8 @@ function MarkdownTable(props: ComponentProps<"table"> & { node?: unknown }) {
 }
 
 // 所有聊天 ReactMarkdown 渲染点共用的组件覆盖：外链走 ExternalAnchor，
-// 表格走可横向滚动的 MarkdownTable。
-const MD_COMPONENTS = { a: ExternalAnchor, table: MarkdownTable };
+// 图片经过同源/内联安全边界，表格走可横向滚动的 MarkdownTable。
+const MD_COMPONENTS = { a: ExternalAnchor, img: AgentMarkdownImage, table: MarkdownTable };
 
 // 智能体发出的分词标记，用于请求多气泡回复——必须与
 // internal/channels/base.go 中的 channels.SplitMessageMarker 匹配。
@@ -254,6 +264,7 @@ interface ChatSession {
   channel?: string;
   accountId?: string;
   chatId?: string;
+  projectId?: string;
 }
 
 function generateSessionId() {
@@ -525,6 +536,8 @@ export function ChatScreen() {
     () => urlSessionId || generateSessionId(),
   );
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const activeProjectId =
+    urlProjectId || sessions.find((s) => s.id === sessionId)?.projectId || "";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   // 活跃会话集合：每个有进行中轮次的 sessionId 一个条目。此前是单个
@@ -575,6 +588,11 @@ export function ChatScreen() {
   const [filesSheetOpen, setFilesSheetOpen] = useState(false);
   const [sessionTitle, setSessionTitle] = useState<string>("");
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachmentUpload, setAttachmentUpload] = useState<AttachmentUploadState | null>(null);
+  const isUploadingAttachments = attachmentUpload?.phase === "uploading";
+  const attachmentUploadPercent = attachmentUpload && attachmentUpload.total > 0
+    ? Math.min(100, Math.round((attachmentUpload.loaded / attachmentUpload.total) * 100))
+    : 0;
   // 灯箱：用于点击附件缩略图（输入框）或已发送消息气泡中的内联图片。
   // `null` = 关闭。
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -1233,7 +1251,12 @@ export function ChatScreen() {
     // （用户中途切走）的流回调据此停止写入前台视图。
     const sid = sessionId;
     // 允许仅发送附件（无文本），但至少需要一个。
-    if ((!text && attachments.length === 0) || !selectedAgent || (activeSessionsRef.current.has(sid) && !force)) return;
+    if (
+      (!text && attachments.length === 0) ||
+      !selectedAgent ||
+      isUploadingAttachments ||
+      (activeSessionsRef.current.has(sid) && !force)
+    ) return;
 
     // `/project/<pid>` 是侧边栏放置我们的懒创建标记。在此捕获以便
     // 搭载到首次聊天请求体；会话行存在后，project_id 在行上，
@@ -1265,6 +1288,13 @@ export function ChatScreen() {
     let imageDataUrls: string[] = [];
 
     if (filesToUpload.length > 0) {
+      const total = filesToUpload.reduce((sum, file) => sum + file.size, 0);
+      setAttachmentUpload({
+        files: filesToUpload.map((file) => ({ name: file.name, size: file.size })),
+        loaded: 0,
+        total,
+        phase: "uploading",
+      });
       userBubbleAttachments = filesToUpload.map((f) => ({
         name: f.name,
         isImage: f.type.startsWith("image/"),
@@ -1272,11 +1302,35 @@ export function ChatScreen() {
       }));
 
       try {
-        await uploadAgentFiles(selectedAgent, sessionId, filesToUpload);
+        await uploadAgentFiles(
+          selectedAgent,
+          sessionId,
+          filesToUpload,
+          (progress) => {
+            setAttachmentUpload((current) =>
+              current?.phase === "uploading"
+                ? { ...current, loaded: progress.loaded, total: progress.total || current.total }
+                : current,
+            );
+          },
+          projectIdHint,
+        );
+        setAttachmentUpload((current) =>
+          current?.phase === "uploading"
+            ? { ...current, loaded: current.total, phase: "complete" }
+            : current,
+        );
+        window.setTimeout(() => {
+          setAttachmentUpload((current) => (current?.phase === "complete" ? null : current));
+        }, 1800);
       } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : "未知错误";
+        setAttachmentUpload((current) =>
+          current ? { ...current, phase: "failed", error: errorMessage } : current,
+        );
         setMessages((prev) => [
           ...prev,
-          { id: `e-${Date.now()}`, role: "agent", content: `文件上传失败：${err instanceof Error ? err.message : "未知错误"}`, timestamp: Date.now() },
+          { id: `e-${Date.now()}`, role: "agent", content: `文件上传失败：${errorMessage}`, timestamp: Date.now() },
         ]);
         return;
       }
@@ -1753,7 +1807,7 @@ export function ChatScreen() {
         textareaRef.current?.focus();
       }
     }
-  }, [input, attachments, selectedAgent, sessionId, loadSessions, pathname, router, urlProjectId, planMode, markActive]);
+  }, [input, attachments, selectedAgent, sessionId, loadSessions, pathname, router, urlProjectId, planMode, markActive, isUploadingAttachments]);
 
   const handleStop = useCallback(() => {
     // 停止当前显示会话的进行中轮次（后台会话的轮次保持运行）。
@@ -1800,6 +1854,7 @@ export function ChatScreen() {
     // 了文件。
     const newFiles = Array.from(picked);
     e.target.value = "";
+    setAttachmentUpload(null);
     setAttachments((prev) => [...prev, ...newFiles]);
   }, []);
 
@@ -2030,6 +2085,7 @@ export function ChatScreen() {
                           surfacedSrcs={surfacedSrcs}
                           agentId={selectedAgent}
                           sessionId={sessionId}
+                          projectId={activeProjectId}
                           subagentProgress={subagentProgress}
                         />
                         {filePanels}
@@ -2043,6 +2099,7 @@ export function ChatScreen() {
                           surfacedSrcs={surfacedSrcs}
                           agentId={selectedAgent}
                           sessionId={sessionId}
+                          projectId={activeProjectId}
                           subagentProgress={subagentProgress}
                         />
                         {filePanels}
@@ -2134,6 +2191,9 @@ export function ChatScreen() {
                 const visibleFiles = (msg.files || []).filter((f) => !isInternalWorkspaceFile(f.path));
                 const hasText = !!(msg.content && msg.content.trim());
                 const hasUserAttachments = msg.role === "user" && !!(msg.attachments && msg.attachments.length > 0);
+                const ragResources = msg.role === "agent"
+                  ? normalizeRAGResources(msg.metadata?.ragResources)
+                  : [];
                 const hasStatus =
                   msg.role === "agent" &&
                   !!(
@@ -2142,7 +2202,7 @@ export function ChatScreen() {
                     msg.metadata?.planMode ||
                     msg.id === pendingPlanId
                   );
-                const hasBubbleBody = hasText || attached.length > 0 || hasUserAttachments || hasStatus;
+                const hasBubbleBody = hasText || attached.length > 0 || hasUserAttachments || hasStatus || ragResources.length > 0;
                 if (!hasBubbleBody) {
                   if (visibleFiles.length === 0) return null;
                   return (
@@ -2238,13 +2298,34 @@ export function ChatScreen() {
                             msg.content,
                             surfacedSrcs,
                             (attachedImages.get(msg.id)?.length ?? 0) > 0,
-                            makeUrlTransform(selectedAgent, sessionId),
+                            makeUrlTransform(selectedAgent, sessionId, activeProjectId),
                           ) ?? (
-                            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={makeUrlTransform(selectedAgent, sessionId)} components={MD_COMPONENTS}>
+                            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={makeUrlTransform(selectedAgent, sessionId, activeProjectId)} components={MD_COMPONENTS}>
                               {msg.content}
                             </ReactMarkdown>
                           )}
                         </div>
+                      )}
+                      {ragResources.length > 0 && (
+                        <RAGResourceGallery
+                          resources={ragResources}
+                          assetURLBuilder={(assetID, variant) => buildAgentSessionAssetURL(
+                            selectedAgent,
+                            sessionId,
+                            assetID,
+                            variant,
+                            actAsUserId,
+                          )}
+                          attachmentURLBuilder={(attachmentID) => buildAgentSessionAttachmentURL(
+                            selectedAgent,
+                            sessionId,
+                            attachmentID,
+                            actAsUserId,
+                          )}
+                          compact
+                          showDisclosure
+                          className={hasText ? "mt-3" : undefined}
+                        />
                       )}
                       {msg.role === "agent" && msg.metadata?.iterationCapReached && (
                         <div className="mt-2 flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-900 dark:text-amber-200">
@@ -2502,6 +2583,54 @@ export function ChatScreen() {
                   })}
                 </div>
               )}
+              {attachmentUpload && (
+                <div
+                  className={`mb-2 rounded-md border px-2.5 py-2 text-xs ${
+                    attachmentUpload.phase === "failed"
+                      ? "border-destructive/40 bg-destructive/10 text-destructive"
+                      : "border-primary/25 bg-primary/5 text-muted-foreground"
+                  }`}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <div className="flex items-center gap-2">
+                    {attachmentUpload.phase === "uploading" ? (
+                      <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" aria-hidden="true" />
+                    ) : attachmentUpload.phase === "complete" ? (
+                      <Check className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
+                    ) : (
+                      <X className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">
+                      {attachmentUpload.phase === "uploading"
+                        ? `正在上传 ${attachmentUpload.files.length} 个附件… ${attachmentUploadPercent}%`
+                        : attachmentUpload.phase === "complete"
+                          ? "附件已上传，正在发送给智能体…"
+                          : `附件上传失败：${attachmentUpload.error || "未知错误"}`}
+                    </span>
+                    {attachmentUpload.phase === "uploading" && (
+                      <span className="shrink-0 tabular-nums text-muted-foreground">
+                        {formatBytes(Math.min(attachmentUpload.loaded, attachmentUpload.total))} / {formatBytes(attachmentUpload.total)}
+                      </span>
+                    )}
+                  </div>
+                  {attachmentUpload.phase === "uploading" && (
+                    <div
+                      className="mt-1.5 h-1 overflow-hidden rounded-full bg-primary/15"
+                      role="progressbar"
+                      aria-label="附件上传进度"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={attachmentUploadPercent}
+                    >
+                      <div
+                        className="h-full rounded-full bg-primary transition-[width] duration-150"
+                        style={{ width: `${attachmentUploadPercent}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
 {/* 空状态输入框：Manus 风格——输入框填充顶部，操作行在下方。有消息后
                    切回紧凑单行布局，使输入框不会占据聊天主体。 */}
               {isEmpty ? (
@@ -2521,7 +2650,7 @@ export function ChatScreen() {
                             ? `消息 ${agentName || selectedAgent}... ("/" to pick a skill)`
                             : "请先选择智能体"
                     }
-                    disabled={!selectedAgent || isReadOnlyView}
+                    disabled={!selectedAgent || isReadOnlyView || isUploadingAttachments}
                     rows={3}
                     className="block w-full resize-none bg-transparent text-[15px] placeholder:text-muted-foreground/50 outline-none disabled:opacity-50"
                     style={{ maxHeight: 240, minHeight: 72 }}
@@ -2530,7 +2659,7 @@ export function ChatScreen() {
                     <div className="flex items-center gap-2 min-w-0">
                       <label
                         className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors ${
-                          !selectedAgent || sending || isReadOnlyView
+                          !selectedAgent || sending || isReadOnlyView || isUploadingAttachments
                             ? "opacity-50 cursor-not-allowed"
                             : "hover:bg-muted hover:text-foreground cursor-pointer"
                         }`}
@@ -2543,13 +2672,13 @@ export function ChatScreen() {
                           multiple
                           className="sr-only"
                           onChange={handleFilePick}
-                          disabled={!selectedAgent || sending || isReadOnlyView}
+                          disabled={!selectedAgent || sending || isReadOnlyView || isUploadingAttachments}
                         />
                       </label>
                       <button
                         type="button"
                         onClick={() => setPlanMode((enabled) => !enabled)}
-                        disabled={!selectedAgent || sending || isReadOnlyView}
+                        disabled={!selectedAgent || sending || isReadOnlyView || isUploadingAttachments}
                         title={
                           planMode
                             ? "下一条消息将使用计划模式。点击可关闭。"
@@ -2602,7 +2731,7 @@ export function ChatScreen() {
                     ) : (
                       <Button
                         onClick={() => handleSend()}
-                        disabled={(!input.trim() && attachments.length === 0) || !selectedAgent || isReadOnlyView}
+                        disabled={(!input.trim() && attachments.length === 0) || !selectedAgent || isReadOnlyView || isUploadingAttachments}
                         size="icon"
                         className="h-9 w-9 shrink-0 rounded-full"
                         aria-label="发送消息"
@@ -2616,7 +2745,7 @@ export function ChatScreen() {
                 <div className="flex items-center gap-2">
                   <label
                     className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors ${
-                      !selectedAgent || sending || isReadOnlyView
+                      !selectedAgent || sending || isReadOnlyView || isUploadingAttachments
                         ? "opacity-50 cursor-not-allowed"
                         : "hover:bg-muted hover:text-foreground cursor-pointer"
                     }`}
@@ -2629,13 +2758,13 @@ export function ChatScreen() {
                       multiple
                       className="sr-only"
                       onChange={handleFilePick}
-                      disabled={!selectedAgent || sending || isReadOnlyView}
+                      disabled={!selectedAgent || sending || isReadOnlyView || isUploadingAttachments}
                     />
                   </label>
                   <button
                     type="button"
                     onClick={() => setPlanMode((enabled) => !enabled)}
-                    disabled={!selectedAgent || sending || isReadOnlyView}
+                    disabled={!selectedAgent || sending || isReadOnlyView || isUploadingAttachments}
                     title={
                       planMode
                         ? "下一条消息将使用计划模式。点击可关闭。"
@@ -2666,7 +2795,7 @@ export function ChatScreen() {
                             ? `消息 ${agentName || selectedAgent}... ("/" to pick a skill)`
                             : "请先选择智能体"
                     }
-                    disabled={!selectedAgent || isReadOnlyView}
+                    disabled={!selectedAgent || isReadOnlyView || isUploadingAttachments}
                     rows={1}
                     className="flex-1 resize-none bg-transparent text-[15px] leading-8 placeholder:text-muted-foreground/50 outline-none disabled:opacity-50"
                     style={{ maxHeight: 200, minHeight: 32 }}
@@ -2696,7 +2825,7 @@ export function ChatScreen() {
                   ) : (
                     <Button
                       onClick={() => handleSend()}
-                      disabled={(!input.trim() && attachments.length === 0) || !selectedAgent || isReadOnlyView}
+                      disabled={(!input.trim() && attachments.length === 0) || !selectedAgent || isReadOnlyView || isUploadingAttachments}
                       size="icon"
                       className="h-8 w-8 shrink-0 rounded-lg"
                       aria-label="发送消息"
@@ -2818,10 +2947,6 @@ function ChatHeaderTitle({ title, fallback, onSave }: ChatHeaderTitleProps) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!editing) setDraft(title);
-  }, [title, editing]);
-
-  useEffect(() => {
     if (editing) inputRef.current?.select();
   }, [editing]);
 
@@ -2881,7 +3006,7 @@ function ChatHeaderTitle({ title, fallback, onSave }: ChatHeaderTitleProps) {
 /** 将一组工具调用渲染为可折叠摘要。当 `nested` 为 true 时，
  *  去掉外层 flex/max-width 包装，使父容器（ToolRoundsBundle）
  *  可以堆叠回合而每个回合不重新施加自己的气泡对齐。 */
-function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, roundIndex, subagentProgress }: { msg: ChatMessage; surfacedSrcs?: ReadonlySet<string>; agentId: string; sessionId: string; nested?: boolean; roundIndex?: number; subagentProgress?: { iteration?: number; max?: number; phase?: "thinking" | "running" | "final-delivery" | "done"; tools?: string[] } | null }) {
+function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, projectId, nested = false, roundIndex, subagentProgress }: { msg: ChatMessage; surfacedSrcs?: ReadonlySet<string>; agentId: string; sessionId: string; projectId?: string; nested?: boolean; roundIndex?: number; subagentProgress?: { iteration?: number; max?: number; phase?: "thinking" | "running" | "final-delivery" | "done"; tools?: string[] } | null }) {
   const [groupOpen, setGroupOpen] = useState(false);
   const [expandedTool, setExpandedTool] = useState<Record<string, boolean>>({});
 
@@ -2910,8 +3035,8 @@ function ToolCallGroup({ msg, surfacedSrcs, agentId, sessionId, nested = false, 
       {msg.content && (
         <div className="bg-muted rounded-2xl rounded-bl-md px-4 py-2.5">
           <div className={CHAT_PROSE_CLASS}>
-            {renderContentWithDataImages(msg.content, surfacedSrcs, false, makeUrlTransform(agentId, sessionId)) ?? (
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={makeUrlTransform(agentId, sessionId)} components={MD_COMPONENTS}>
+            {renderContentWithDataImages(msg.content, surfacedSrcs, false, makeUrlTransform(agentId, sessionId, projectId)) ?? (
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={makeUrlTransform(agentId, sessionId, projectId)} components={MD_COMPONENTS}>
                 {msg.content}
               </ReactMarkdown>
             )}
@@ -3068,12 +3193,14 @@ function ToolRoundsBundle({
   surfacedSrcs,
   agentId,
   sessionId,
+  projectId,
   subagentProgress,
 }: {
   rounds: ChatMessage[];
   surfacedSrcs?: ReadonlySet<string>;
   agentId: string;
   sessionId: string;
+  projectId?: string;
   subagentProgress?: { iteration?: number; max?: number; phase?: "thinking" | "running" | "final-delivery" | "done"; tools?: string[] } | null;
 }) {
   const [open, setOpen] = useState(false);
@@ -3115,6 +3242,7 @@ function ToolRoundsBundle({
                   surfacedSrcs={surfacedSrcs}
                   agentId={agentId}
                   sessionId={sessionId}
+                  projectId={projectId}
                   nested
                   roundIndex={idx + 1}
                   subagentProgress={subagentProgress}
@@ -3202,14 +3330,6 @@ function formatBytes(n?: number): string {
 // （当工作区 HTML 文件链接到第三方站点时）、浏览器历史和反向代理访问
 // 日志泄露。服务端仍接受 `?token=` 以向后兼容自建 URL 的 CLI 脚本；
 // 前端仅停止提供它。
-function fileUrl(agentId: string, path: string, download: boolean): string {
-  const encoded = path.split("/").map(encodeURIComponent).join("/");
-  const params = new URLSearchParams();
-  if (download) params.set("download", "1");
-  const qs = params.toString();
-  return `/api/agents/${agentId}/files/${encoded}${qs ? "?" + qs : ""}`;
-}
-
 function zipUrl(agentId: string, sessionId: string, projectId?: string): string {
   const params = new URLSearchParams();
   // projectId 优先于 sessionId——与后端的 fileScopeForRequest 优先级一致，

@@ -70,18 +70,17 @@ export default function CronPage() {
   const [newAgentId, setNewAgentId] = useState("");
   const [newMessage, setNewMessage] = useState("");
 
-  const fetchData = () => {
-    setLoading(true);
-    Promise.all([getCronJobs(), getAgents()])
-      .then(([j, a]) => {
-        setJobs(j);
-        setAgents(a);
-      })
-      .catch(() => {
-        setJobs([]);
-        setAgents([]);
-      })
-      .finally(() => setLoading(false));
+  const fetchData = async () => {
+    try {
+      const [j, a] = await Promise.all([getCronJobs(), getAgents()]);
+      setJobs(j);
+      setAgents(a);
+    } catch {
+      setJobs([]);
+      setAgents([]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {

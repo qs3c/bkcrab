@@ -268,25 +268,18 @@ func TestInitFallsBackToFirstSuperAdmin(t *testing.T) {
 func TestInitFailsWhenNoSuperAdmin(t *testing.T) {
 	st := freshStore(t)
 
-	// Seed admin via the empty-DB path so we can demote them and leave
-	// the DB with users but no super_admin.
-	res, err := Init(context.Background(), st, "alpha", InitOptions{})
-	if err != nil {
-		t.Fatalf("seed admin: %v", err)
-	}
-	accts, _ := users.NewAccounts(st)
-	if _, err := accts.Update(context.Background(), res.Agent.UserID, "", users.RoleUser, "", nil); err != nil {
-		t.Fatalf("demote admin: %v", err)
-	}
-	// Rename so the "admin" lookup doesn't short-circuit before the
-	// super_admin scan.
-	rec, _ := st.GetUser(context.Background(), res.Agent.UserID)
-	rec.Username = "alice"
-	if err := st.UpdateUser(context.Background(), rec); err != nil {
-		t.Fatalf("rename: %v", err)
+	// Seed the corrupt/legacy shape directly. Public account mutations now
+	// reject demoting the last active super_admin, so constructing this fixture
+	// through Accounts.Update would test the guard instead of Init's recovery
+	// behavior.
+	if err := st.CreateUser(context.Background(), &store.UserRecord{
+		ID: "u_alice", Username: "alice", Email: "alice@example.test",
+		Role: users.RoleUser, Status: users.StatusActive, AgentQuota: -1,
+	}); err != nil {
+		t.Fatalf("seed ordinary user: %v", err)
 	}
 
-	_, err = Init(context.Background(), st, "beta", InitOptions{})
+	_, err := Init(context.Background(), st, "beta", InitOptions{})
 	if err == nil || !strings.Contains(err.Error(), "super_admin") {
 		t.Fatalf("expected no-super_admin error, got %v", err)
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/memory"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/sandbox"
+	"github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/workspace"
 )
@@ -244,6 +245,12 @@ type Registry struct {
 
 	managedMemoryCfg memory.Config
 
+	// skillManager / skillLedger 是 skill_manage 工具的依赖:learner 的
+	// agent 级技能管理器与生命周期账本。经 SetSkillManage 装配;账本在
+	// manager 装配 dataStore 时补齐。agent 级共享依赖,ForTurn 按值复制。
+	skillManager *skills.Manager
+	skillLedger  SkillManageLedger
+
 	// perTurnRebind 收集那些捕获了每回合状态、但 *不* 由 registerBuiltins
 	// 重新注册的非内置工具的重绑钩子（目前是 goal 的 update_goal 与 cron 的
 	// create_cron_job 等——它们读 GoalSessionKey / MessageChannel 等每回合字段）。
@@ -404,6 +411,26 @@ func (r *Registry) SetAgentOwnerUserID(uid string) {
 	r.agentOwnerUserID = uid
 }
 
+// SetSkillManage 装配 skill_manage 工具的依赖:learner 的技能管理器与生命
+// 周期账本(可为 nil,无 store 时跳过记账)。builtin 处理器按调用时读取字段,
+// 因此 manager 装配路径晚于构造注册也无需重新注册。
+func (r *Registry) SetSkillManage(mgr *skills.Manager, ledger SkillManageLedger) {
+	r.skillManager = mgr
+	r.skillLedger = ledger
+}
+
+// skillWriteAllowed 判定本回合聊天者是否可写 agent 级共享技能库。所有者键
+// 取 agentOwnerUserID(agent.user_id),单用户安装未设置时回退 UserSpace 所有
+// 者 userID;chatterUserID 为空表示本回合就是所有者语境(web 回合或旧版单用
+// 户),仅 IM 多发件人回合的非所有者聊天者被拒。
+func (r *Registry) skillWriteAllowed() bool {
+	owner := r.agentOwnerUserID
+	if owner == "" {
+		owner = r.userID
+	}
+	return owner == "" || r.chatterUserID == "" || r.chatterUserID == owner
+}
+
 // SetUserSkillsRoot 点聊天时 `skills/...` 写入
 // chatter 的每用户技能目录 (~/.bkcrab/users/<uid>/skills/)。
 // 空禁用 - `skills/...` 然后回退到 systemRoot（代理
@@ -528,7 +555,7 @@ func (r *Registry) GoalSessionKey() string { return r.goalSessionKey }
 
 type registeredTool struct {
 	def    provider.Tool
-	fn     ToolFunc
+	fn     ResultHandler
 	source ToolSource
 }
 
@@ -591,6 +618,8 @@ func (r *Registry) ForTurn() *Registry {
 		envProvider:         r.envProvider,
 		skillDirs:           r.skillDirs,
 		managedMemoryCfg:    r.managedMemoryCfg,
+		skillManager:        r.skillManager,
+		skillLedger:         r.skillLedger,
 		// 后台 shell 比单个回合存活更久——按指针共享，回合间一致。
 		shellMgr: r.shellMgr,
 		// —— 每回合独立：fresh map（避免与父/兄弟回合争用），fresh 失败追踪 ——
@@ -636,6 +665,18 @@ func (r *Registry) Register(name, description string, parameters interface{}, fn
 // RegisterFrom 将一个具有显式来源的工具添加到注册表中。
 // 插件源工具可以覆盖同名的内置工具。
 func (r *Registry) RegisterFrom(name, description string, parameters interface{}, fn ToolFunc, source ToolSource) {
+	r.RegisterResultFrom(name, description, parameters, resultHandlerFromToolFunc(fn), source)
+}
+
+// RegisterResult adds a typed-result tool as a builtin. Metadata returned by
+// the raw handler is still subject to the registry's producer-specific
+// validator before any accessor can observe it.
+func (r *Registry) RegisterResult(name, description string, parameters interface{}, fn ResultHandler) {
+	r.RegisterResultFrom(name, description, parameters, fn, SourceBuiltin)
+}
+
+// RegisterResultFrom is RegisterResult with an explicit producer source.
+func (r *Registry) RegisterResultFrom(name, description string, parameters interface{}, fn ResultHandler, source ToolSource) {
 	r.tools[name] = registeredTool{
 		def: provider.Tool{
 			Type: "function",
@@ -688,11 +729,37 @@ func (r *Registry) HasBuiltin(name string) bool {
 
 // GetFunc 按名称返回工具的 ToolFunc，如果未找到则返回 nil。
 func (r *Registry) GetFunc(name string) ToolFunc {
-	t, ok := r.tools[name]
-	if !ok {
+	fn := r.GetResultFunc(name)
+	if fn == nil {
 		return nil
 	}
-	return t.fn
+	return func(ctx context.Context, args json.RawMessage) (string, error) {
+		result, err := fn(ctx, args)
+		return result.Text, err
+	}
+}
+
+// GetResultFunc returns a validator-wrapped typed handler. The raw registered
+// handler never escapes the registry, so this accessor and ExecuteResult have
+// identical trust-boundary semantics.
+func (r *Registry) GetResultFunc(name string) ResultHandler {
+	t, ok := r.tools[name]
+	if !ok || t.fn == nil {
+		return nil
+	}
+	raw := t.fn
+	source := t.source
+	return func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+		result, err := raw(ctx, args)
+		if err != nil {
+			// Error results are never metadata-bearing, even if a buggy producer
+			// populated the field alongside a partial text result.
+			result.Metadata = nil
+			return result, err
+		}
+		result.Metadata = validateResultMetadata(name, source, result.Metadata)
+		return result, nil
+	}
 }
 
 // 定义返回 LLM 的所有工具定义。
@@ -810,16 +877,28 @@ func (r *Registry) DefinitionsForMode(builtinAllow []string) []provider.Tool {
 
 // 执行按名称和给定参数运行工具。
 func (r *Registry) Execute(ctx context.Context, name string, args string) (string, error) {
-	tool, ok := r.tools[name]
-	if !ok {
+	fn := r.GetResultFunc(name)
+	if fn == nil {
+		// Preserve the legacy unknown-tool behavior: the retry suffix belongs
+		// only to an error returned by a registered handler.
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
-
-	result, err := tool.fn(ctx, json.RawMessage(args))
+	result, err := fn(ctx, json.RawMessage(args))
 	if err != nil {
-		return result + "\n[Analyze the error above and try a different approach.]", err
+		return result.Text + "\n[Analyze the error above and try a different approach.]", err
 	}
-	return result, nil
+	return result.Text, nil
+}
+
+// ExecuteResult executes a tool through the same validator-wrapped path as
+// GetResultFunc. It intentionally does not add Execute's legacy error suffix;
+// callers that need the typed result decide how to render errors.
+func (r *Registry) ExecuteResult(ctx context.Context, name string, args string) (ToolResult, error) {
+	fn := r.GetResultFunc(name)
+	if fn == nil {
+		return ToolResult{}, fmt.Errorf("unknown tool: %s", name)
+	}
+	return fn(ctx, json.RawMessage(args))
 }
 
 // SetSandboxConfig 更新了 exec 工具以使用沙箱模式。
@@ -864,6 +943,7 @@ func (r *Registry) registerBuiltins() {
 	registerExec(r)
 	registerFile(r)
 	registerMemory(r)
+	registerSkillManage(r)
 	registerApplyPatch(r)
 	registerBashOutput(r)
 	registerKillShell(r)

@@ -95,6 +95,66 @@ func NewAggregatedManager(client Client) *Manager {
 	return m
 }
 
+// NewScopedAggregatedManager exposes only tools whose gateway-level name is
+// prefixed by one of the allowed deployment IDs. The gateway still hosts the
+// user's complete resource set, while each agent receives a strictly filtered
+// view and friendly names based on the resource display name.
+func NewScopedAggregatedManager(client Client, aliases map[string]string) (*Manager, error) {
+	m := newEmptyManager()
+	if err := client.Connect(); err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("connect to aggregated MCP gateway: %w", err)
+	}
+	tools, err := client.ListTools()
+	if err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("list aggregated MCP gateway tools: %w", err)
+	}
+
+	resourceIDs := make([]string, 0, len(aliases))
+	for resourceID := range aliases {
+		resourceIDs = append(resourceIDs, resourceID)
+	}
+	sort.Slice(resourceIDs, func(i, j int) bool {
+		return len(resourceIDs[i]) > len(resourceIDs[j])
+	})
+
+	m.servers["gateway"] = client
+	for _, t := range tools {
+		resourceID, suffix, ok := scopedGatewayTool(t.Name, resourceIDs)
+		if !ok {
+			continue
+		}
+		exposed := prefixToolName(aliases[resourceID], suffix)
+		if _, collision := m.toolMap[exposed]; collision {
+			m.Close()
+			return nil, fmt.Errorf("duplicate scoped MCP tool name %q", exposed)
+		}
+		m.toolMap[exposed] = toolRoute{
+			serverName:   "gateway",
+			originalName: t.Name,
+		}
+		m.toolDefs[exposed] = ToolDef{
+			Name:        exposed,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		}
+	}
+	return m, nil
+}
+
+func scopedGatewayTool(toolName string, resourceIDs []string) (string, string, bool) {
+	for _, resourceID := range resourceIDs {
+		for _, separator := range []string{"_", "-", "/"} {
+			prefix := resourceID + separator
+			if strings.HasPrefix(toolName, prefix) && len(toolName) > len(prefix) {
+				return resourceID, strings.TrimPrefix(toolName, prefix), true
+			}
+		}
+	}
+	return "", "", false
+}
+
 func newEmptyManager() *Manager {
 	return &Manager{
 		servers:  make(map[string]Client),

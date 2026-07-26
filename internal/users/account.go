@@ -35,11 +35,36 @@ const (
 const (
 	StatusActive   = "active"
 	StatusDisabled = "disabled"
+	StatusDeleting = "deleting"
 )
 
 // ErrInvalidCredentials 掩盖"用户不存在"和"密码错误"，
 // 使登录处理程序无法被用作邮箱存在性验证工具。
 var ErrInvalidCredentials = errors.New("invalid credentials")
+
+// ErrRAGUserCleanerRequired prevents a hard user delete from orphaning RAG
+// vectors or objects when the optional RAG service was not wired at startup.
+var ErrRAGUserCleanerRequired = errors.New("users: RAG user cleaner is required")
+
+// ErrRAGUserCleanupIncomplete is safe to return from an HTTP handler. The
+// private wrapper below retains the provider/store cause for errors.Is without
+// leaking an object key or backend endpoint through Error().
+var ErrRAGUserCleanupIncomplete = errors.New("users: RAG cleanup incomplete; retry deletion")
+
+type ragUserCleanupError struct{ cause error }
+
+func (e *ragUserCleanupError) Error() string { return ErrRAGUserCleanupIncomplete.Error() }
+func (e *ragUserCleanupError) Unwrap() error { return e.cause }
+func (e *ragUserCleanupError) Is(target error) bool {
+	return target == ErrRAGUserCleanupIncomplete || errors.Is(e.cause, target)
+}
+
+// RAGUserCleaner is the deliberately narrow lifecycle boundary implemented by
+// the RAG service. The users package must not import the RAG package or know
+// how its SQL catalog, vector collection, and object prefix are cleaned.
+type RAGUserCleaner interface {
+	CleanupRAGUser(ctx context.Context, userID string) error
+}
 
 // Account 是用户行的公开表示。PasswordHash 从不离开此包——
 // 我们在 Authenticate 期间读取它，并在返回给调用者之前将其清零。
@@ -60,7 +85,8 @@ type Account struct {
 
 // Accounts 是用户账户的注册表。
 type Accounts struct {
-	store store.Store
+	store      store.Store
+	ragCleaner RAGUserCleaner
 }
 
 // NewAccounts 返回由 st 支持的账户注册表。拒绝 nil——平台没有内存模式。
@@ -69,6 +95,14 @@ func NewAccounts(st store.Store) (*Accounts, error) {
 		return nil, errors.New("users.NewAccounts: store is required")
 	}
 	return &Accounts{store: st}, nil
+}
+
+// SetRAGUserCleaner installs the optional durable RAG cleanup boundary. It is
+// configured during process assembly before requests are served.
+func (a *Accounts) SetRAGUserCleaner(cleaner RAGUserCleaner) {
+	if a != nil {
+		a.ragCleaner = cleaner
+	}
 }
 
 // Count 返回平台上的用户数量。入职流程通过 `Count(ctx) == 0`
@@ -239,6 +273,9 @@ func (a *Accounts) Update(ctx context.Context, id, displayName, role, status str
 	if err != nil {
 		return nil, err
 	}
+	if rec.Status == StatusDeleting {
+		return nil, errors.New("users.Update: deleting account is immutable")
+	}
 	if displayName != "" {
 		rec.DisplayName = displayName
 	}
@@ -258,7 +295,7 @@ func (a *Accounts) Update(ctx context.Context, id, displayName, role, status str
 		rec.AgentQuota = *agentQuota
 	}
 	if err := a.store.UpdateUser(ctx, rec); err != nil {
-		return nil, err
+		return nil, mapLastActiveSuperAdminError("Update", err)
 	}
 	return toAccount(rec), nil
 }
@@ -298,7 +335,7 @@ func (a *Accounts) VerifyPassword(ctx context.Context, id, password string) erro
 }
 
 // SetPassword 轮换账户的密码。调用者负责权限检查
-//（自身 vs. super_admin）。
+// （自身 vs. super_admin）。
 func (a *Accounts) SetPassword(ctx context.Context, id, newPassword string) error {
 	if newPassword == "" {
 		return errors.New("users.SetPassword: empty password")
@@ -364,29 +401,42 @@ func (a *Accounts) EnsureAppUser(ctx context.Context, apikeyID, externalID, disp
 	return toAccount(rec), nil
 }
 
-// Delete 删除账户及其拥有的行（级联在 store 中实现）。
-// 拒绝删除最后一个 super_admin，以免安装将自己锁定。
+// Delete tombstones an account before asking the injected RAG cleaner to
+// remove external and catalog data. Cleaner failures deliberately leave the
+// user in deleting state so the same operation can be retried safely. A user
+// with no RAG data retains the legacy no-cleaner deletion path.
+//
+// The store atomically checks the last-active-super-admin invariant in the
+// same serializable transaction that persists the tombstone.
 func (a *Accounts) Delete(ctx context.Context, id string) error {
 	target, err := a.store.GetUser(ctx, id)
 	if err != nil {
 		return err
 	}
-	if target.Role == RoleSuperAdmin {
-		all, err := a.store.ListUsers(ctx)
+	// A retry after a cleanup failure sees the durable deleting tombstone and
+	// skips the transition. The first attempt already made the guarded decision.
+	if target.Status != StatusDeleting {
+		target, err = a.store.MarkUserDeleting(ctx, id)
 		if err != nil {
-			return err
-		}
-		admins := 0
-		for _, u := range all {
-			if u.Role == RoleSuperAdmin && u.Status == StatusActive {
-				admins++
-			}
-		}
-		if admins <= 1 {
-			return errors.New("users.Delete: refusing to remove the last active super_admin")
+			return mapLastActiveSuperAdminError("Delete", err)
 		}
 	}
-	return a.store.DeleteUser(ctx, id)
+
+	kbs, err := a.store.ListRAGKBsByUser(ctx, id)
+	if err != nil {
+		return &ragUserCleanupError{cause: err}
+	}
+	if a.ragCleaner == nil {
+		if len(kbs) > 0 {
+			return ErrRAGUserCleanerRequired
+		}
+	} else if err := a.ragCleaner.CleanupRAGUser(ctx, id); err != nil {
+		return &ragUserCleanupError{cause: err}
+	}
+	if err := a.store.DeleteUser(ctx, id); err != nil {
+		return &ragUserCleanupError{cause: err}
+	}
+	return nil
 }
 
 func toAccount(r *store.UserRecord) *Account {

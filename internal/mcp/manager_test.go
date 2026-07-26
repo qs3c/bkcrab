@@ -68,6 +68,32 @@ func TestAggregatedManagerPrefixesGatewayToolsOnce(t *testing.T) {
 	}
 }
 
+func TestScopedAggregatedManagerExposesOnlyGrantedResourceTools(t *testing.T) {
+	client := &fakeClient{tools: []ToolDef{
+		{Name: "sc_alpha_read"},
+		{Name: "sc_beta_write"},
+	}}
+	mgr, err := NewScopedAggregatedManager(client, map[string]string{"sc_alpha": "github"})
+	if err != nil {
+		t.Fatalf("new scoped manager: %v", err)
+	}
+	defer mgr.Close()
+	defs := mgr.ToolDefs()
+	if len(defs) != 1 || defs[0].Name != "mcp_github_read" {
+		t.Fatalf("scoped tools = %#v, want only mcp_github_read", defs)
+	}
+	out, err := mgr.CallTool(nil, "mcp_github_read", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("call scoped tool: %v", err)
+	}
+	if out != "ok:sc_alpha_read" {
+		t.Fatalf("call output = %q", out)
+	}
+	if _, err := mgr.CallTool(nil, "mcp_sc_beta_write", json.RawMessage(`{}`)); err == nil {
+		t.Fatal("ungranted resource tool should not be callable")
+	}
+}
+
 func TestManagerCloseRunsHooks(t *testing.T) {
 	client := &fakeClient{tools: []ToolDef{{Name: "ping"}}}
 	mgr := NewAggregatedManager(client)

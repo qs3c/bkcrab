@@ -1,0 +1,15 @@
+[
+  {"name":"pure text","nativeChars":100,"textChars":100,"wantVision":false},
+  {"name":"79 nonblank characters","nativeChars":79,"textChars":79,"wantVision":true},
+  {"name":"exactly 80 characters stays native","nativeChars":80,"textChars":80,"wantVision":false},
+  {"name":"exactly 15 percent image","nativeChars":100,"textChars":100,"images":[[0,0,500,300]],"wantVision":true},
+  {"name":"20 percent image","nativeChars":100,"textChars":100,"images":[[0,0,500,400]],"wantVision":true},
+  {"name":"below image boundary","nativeChars":100,"textChars":100,"images":[[0,0,499,300]],"wantVision":false},
+  {"name":"overlapping images use union","nativeChars":100,"textChars":100,"images":[[0,0,400,300],[0,0,400,300]],"wantVision":false},
+  {"name":"table","nativeChars":100,"textChars":100,"signals":{"table":true},"wantVision":true},
+  {"name":"code","nativeChars":100,"textChars":100,"signals":{"code":true},"wantVision":true},
+  {"name":"multicolumn","nativeChars":100,"textChars":100,"signals":{"multicolumn":true},"wantVision":true},
+  {"name":"uncertain order","nativeChars":100,"textChars":100,"signals":{"readingOrderUncertain":true},"wantVision":true},
+  {"name":"scan","nativeChars":100,"textChars":100,"signals":{"scanned":true},"wantVision":true},
+  {"name":"native stats mismatch","nativeChars":20,"textChars":100,"wantVision":true}
+]

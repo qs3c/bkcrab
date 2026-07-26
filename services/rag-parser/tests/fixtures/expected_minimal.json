@@ -1,0 +1,23 @@
+{
+  "docx": {
+    "unitKind": "document",
+    "unitCount": 1,
+    "assetCount": 1,
+    "occurrenceCount": 1,
+    "warningCode": "office_image_coarse_location"
+  },
+  "pptx": {
+    "unitKind": "slide",
+    "unitCount": 1,
+    "assetCount": 1,
+    "occurrenceCount": 1,
+    "warningCode": "office_image_coarse_location"
+  },
+  "xlsx": {
+    "unitKind": "sheet",
+    "unitCount": 1,
+    "assetCount": 1,
+    "occurrenceCount": 1,
+    "warningCode": "office_image_coarse_location"
+  }
+}

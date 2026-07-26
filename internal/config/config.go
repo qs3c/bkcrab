@@ -10,11 +10,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/qs3c/bkcrab/internal/modelspec"
 )
@@ -344,6 +348,7 @@ type Config struct {
 	Gateway       GatewayCfg                 `json:"gateway,omitempty"`
 	TaskQueue     TaskQueueCfg               `json:"taskQueue,omitempty"`
 	Skills        SkillsCfg                  `json:"skills,omitempty"`
+	RAG           RAGCfg                     `json:"rag,omitempty"`
 	Memory        MemoryCfg                  `json:"memory,omitempty"`
 	Privacy       PrivacyCfg                 `json:"privacy,omitempty"`
 	SkillsLearner SkillsLearnerCfg           `json:"skillsLearner,omitempty"`
@@ -695,18 +700,22 @@ func defaultAgentFileConfigLoader(_, home string) (AgentFileConfig, bool) {
 // AgentFileConfig 是每 agent 行覆盖 JSON（agents.config 列）的 schema。
 // 每 agent 的 providers/channels 存储在各自的范围化 DB 表中，不在此持久化。
 type AgentFileConfig struct {
-	Model                string                     `json:"model,omitempty"`
-	MaxTokens            int                        `json:"maxTokens,omitempty"`
-	Temperature          float64                    `json:"temperature,omitempty"`
-	MaxToolIterations    int                        `json:"maxToolIterations,omitempty"`
-	MaxParallelToolCalls int                        `json:"maxParallelToolCalls,omitempty"`
-	Workspace            string                     `json:"workspace,omitempty"`
-	Skills               SkillsConfig               `json:"skills,omitempty"`
-	MCPServers           map[string]MCPServerConfig `json:"mcpServers,omitempty"`
-	ShareMCPConfig       bool                       `json:"shareMcpConfig,omitempty"`
-	ToolProviders        map[string]ToolProviderCfg `json:"toolProviders,omitempty"`
-	Tools                map[string]ToolCategoryCfg `json:"tools,omitempty"`
-	Providers            map[string]ProviderConfig  `json:"providers,omitempty"`
+	Model                string       `json:"model,omitempty"`
+	MaxTokens            int          `json:"maxTokens,omitempty"`
+	Temperature          float64      `json:"temperature,omitempty"`
+	MaxToolIterations    int          `json:"maxToolIterations,omitempty"`
+	MaxParallelToolCalls int          `json:"maxParallelToolCalls,omitempty"`
+	Workspace            string       `json:"workspace,omitempty"`
+	Skills               SkillsConfig `json:"skills,omitempty"`
+	RAG                  *RAGAgentCfg `json:"rag,omitempty"`
+	MCP                  *MCPAgentCfg `json:"mcp,omitempty"`
+	// Legacy inline MCP configuration. New records store user-owned MCP
+	// resources separately and keep only their IDs in MCP.Servers.
+	MCPServers     map[string]MCPServerConfig `json:"mcpServers,omitempty"`
+	ShareMCPConfig bool                       `json:"shareMcpConfig,omitempty"`
+	ToolProviders  map[string]ToolProviderCfg `json:"toolProviders,omitempty"`
+	Tools          map[string]ToolCategoryCfg `json:"tools,omitempty"`
+	Providers      map[string]ProviderConfig  `json:"providers,omitempty"`
 	// PromptMode 在文件配置层镜像 AgentEntry.PromptMode。
 	// 非空值覆盖条目级设置。
 	PromptMode string `json:"promptMode,omitempty"`
@@ -737,6 +746,663 @@ type SkillsCfg struct {
 	AgentEntries map[string]map[string]SkillEntryCfg `json:"agentEntries,omitempty"`
 	Load         SkillsLoadCfg                       `json:"load,omitempty"`
 	AlwaysLoad   []string                            `json:"alwaysLoad,omitempty"`
+}
+
+// RAGCfg is the system-level RAG configuration from the top-level "rag"
+// object. A user-scoped embedding configuration may override Embedding when
+// a knowledge base is created; the effective model and dimensions are then
+// snapshotted on that knowledge base.
+type RAGCfg struct {
+	Milvus        MilvusCfg           `json:"milvus,omitempty"`
+	Embedding     RAGEmbeddingCfg     `json:"embedding,omitempty"`
+	Reranker      RAGRerankerCfg      `json:"reranker,omitempty"`
+	Features      RAGFeatureCfg       `json:"features,omitempty"`
+	DocumentAI    RAGDocumentAICfg    `json:"documentAI,omitempty"`
+	ParserSidecar RAGParserSidecarCfg `json:"parserSidecar,omitempty"`
+	Limits        RAGLimitsCfg        `json:"limits,omitempty"`
+}
+
+// ParseMode is the user-visible document parsing policy. Keep this closed set
+// at every JSON boundary so unknown values cannot silently turn into an
+// expensive parsing mode.
+type ParseMode string
+
+const (
+	ParseModeStandard ParseMode = "standard"
+	ParseModeAuto     ParseMode = "auto"
+
+	// RAGMilvusContentMaxLength mirrors the current Milvus content VarChar
+	// schema. Raising it requires an explicit collection schema migration.
+	RAGMilvusContentMaxLength = 65_535
+)
+
+func (m ParseMode) Valid() bool {
+	return m == ParseModeStandard || m == ParseModeAuto
+}
+
+func (m *ParseMode) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return errors.New("nil ParseMode receiver")
+	}
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return fmt.Errorf("parse mode must be a string: %w", err)
+	}
+	next := ParseMode(value)
+	if !next.Valid() {
+		return fmt.Errorf("invalid parse mode %q (want standard or auto)", value)
+	}
+	*m = next
+	return nil
+}
+
+type RAGFeatureCfg struct {
+	AdvancedParsingEnabled bool `json:"advancedParsingEnabled,omitempty"`
+	OfficeParsingEnabled   bool `json:"officeParsingEnabled,omitempty"`
+	TextEnrichmentEnabled  bool `json:"textEnrichmentEnabled,omitempty"`
+}
+
+// RAGDocumentAICfg is dedicated to ingestion-time visual/text processing. It
+// is intentionally separate from answer-model providers.
+type RAGDocumentAICfg struct {
+	APIType                 string   `json:"apiType,omitempty"`
+	Endpoint                string   `json:"endpoint,omitempty"`
+	APIKey                  string   `json:"apiKey,omitempty"`
+	VisionModel             string   `json:"visionModel,omitempty"`
+	TextModel               string   `json:"textModel,omitempty"`
+	ResponseFormat          string   `json:"responseFormat,omitempty"`
+	TimeoutMS               int      `json:"timeoutMs,omitempty"`
+	VisionConcurrency       int      `json:"visionConcurrency,omitempty"`
+	EnrichmentConcurrency   int      `json:"enrichmentConcurrency,omitempty"`
+	VisionPromptVersion     string   `json:"visionPromptVersion,omitempty"`
+	EnrichmentPromptVersion string   `json:"enrichmentPromptVersion,omitempty"`
+	AllowedEndpointHosts    []string `json:"allowedEndpointHosts,omitempty"`
+	AllowPrivateEndpoint    bool     `json:"allowPrivateEndpoint,omitempty"`
+}
+
+// LogValue deliberately omits APIKey. JSON serialization remains available
+// for encrypted/persisted settings; API handlers must mask the key separately.
+func (c RAGDocumentAICfg) LogValue() slog.Value {
+	hosts := append([]string(nil), c.AllowedEndpointHosts...)
+	return slog.GroupValue(
+		slog.String("apiType", c.APIType),
+		slog.String("endpoint", c.Endpoint),
+		slog.String("visionModel", c.VisionModel),
+		slog.String("textModel", c.TextModel),
+		slog.String("responseFormat", c.ResponseFormat),
+		slog.Int("timeoutMs", c.TimeoutMS),
+		slog.Int("visionConcurrency", c.VisionConcurrency),
+		slog.Int("enrichmentConcurrency", c.EnrichmentConcurrency),
+		slog.Any("allowedEndpointHosts", hosts),
+		slog.Bool("allowPrivateEndpoint", c.AllowPrivateEndpoint),
+	)
+}
+
+const (
+	RAGDocumentAIResponseFormatJSONSchema = "json_schema"
+	RAGDocumentAIResponseFormatJSONObject = "json_object"
+)
+
+type RAGParserSidecarCfg struct {
+	Endpoint  string `json:"endpoint,omitempty"`
+	TimeoutMS int    `json:"timeoutMs,omitempty"`
+}
+
+// RAGParserHealthSnapshot is populated by a background TTL probe. Request
+// handlers consume only this immutable value and never probe the sidecar.
+type RAGParserHealthSnapshot struct {
+	ProtocolVersion string
+	Healthy         bool
+	Reason          string
+	CheckedAt       time.Time
+	ExpiresAt       time.Time
+	MaxInputBytes   int64
+	Office          RAGParserOfficeSnapshot
+	PDF             RAGParserPDFSnapshot
+}
+
+type RAGParserOfficeSnapshot struct {
+	Enabled    bool
+	Formats    []string
+	DOCXGolden bool
+	PPTXGolden bool
+	XLSXGolden bool
+}
+
+type RAGParserPDFSnapshot struct {
+	Enabled         bool
+	LicenseApproved bool
+}
+
+type RAGDetailedCapability struct {
+	Enabled    bool
+	Configured bool
+	Healthy    bool
+	Available  bool
+	Reason     string
+	CheckedAt  time.Time
+}
+
+type RAGSimpleCapability struct {
+	Available bool
+	Reason    string
+}
+
+type RAGEnrichmentCapability struct {
+	Enabled    bool
+	Configured bool
+	Available  bool
+	Reason     string
+}
+
+type RAGRuntimeCapabilities struct {
+	Advanced     RAGDetailedCapability
+	Office       RAGDetailedCapability
+	PDFAuto      RAGSimpleCapability
+	OfficeVision RAGSimpleCapability
+	Enrichment   RAGEnrichmentCapability
+}
+
+type MilvusCfg struct {
+	Address  string `json:"address,omitempty"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+}
+
+// UnmarshalJSON accepts both the implementation-plan key "username" and the
+// design-spec key "user". New serialized configuration uses "username".
+func (c *MilvusCfg) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Address  string `json:"address"`
+		Username string `json:"username"`
+		User     string `json:"user"`
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	c.Address = raw.Address
+	c.Username = raw.Username
+	if c.Username == "" {
+		c.Username = raw.User
+	}
+	c.Password = raw.Password
+	return nil
+}
+
+// RAGEmbeddingCfg describes an OpenAI-compatible embeddings endpoint.
+// Endpoint is the base URL; the client appends /embeddings.
+type RAGEmbeddingCfg struct {
+	Endpoint string `json:"endpoint,omitempty"`
+	APIKey   string `json:"apiKey,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Dims     int    `json:"dims,omitempty"`
+}
+
+// RAGRerankerCfg configures the optional second-stage semantic ranker. Endpoint
+// is either a base URL (the client appends /rerank) or a complete /rerank or
+// /reranking URL. The first implementation supports the Jina-compatible shape
+// exposed by llama.cpp's Qwen reranker service.
+type RAGRerankerCfg struct {
+	Enabled       bool    `json:"enabled,omitempty"`
+	Endpoint      string  `json:"endpoint,omitempty"`
+	APIKey        string  `json:"apiKey,omitempty"`
+	Model         string  `json:"model,omitempty"`
+	TimeoutMS     int     `json:"timeoutMs,omitempty"`
+	CandidateTopK int     `json:"candidateTopK,omitempty"`
+	MinScore      float64 `json:"minScore,omitempty"`
+}
+
+func (c RAGRerankerCfg) Available() bool {
+	return c.Enabled && strings.TrimSpace(c.Endpoint) != ""
+}
+
+type RAGLimitsCfg struct {
+	MaxFileMB                                  int     `json:"maxFileMB,omitempty"`
+	MaxDocsPerKB                               int     `json:"maxDocsPerKB,omitempty"`
+	MaxKBsPerUser                              int     `json:"maxKBsPerUser,omitempty"`
+	MaxPagesPerDocument                        int     `json:"maxPagesPerDocument,omitempty"`
+	MaxVisionPagesPerDocument                  int     `json:"maxVisionPagesPerDocument,omitempty"`
+	MaxVisionAssetsPerDocument                 int     `json:"maxVisionAssetsPerDocument,omitempty"`
+	MaxEnrichmentBlocksPerDocument             int     `json:"maxEnrichmentBlocksPerDocument,omitempty"`
+	MaxDocumentAIRequests                      int     `json:"maxDocumentAIRequests,omitempty"`
+	MaxDocumentAITokens                        int64   `json:"maxDocumentAITokens,omitempty"`
+	MaxEstimatedDocumentAICostUSD              float64 `json:"maxEstimatedDocumentAICostUSD,omitempty"`
+	MaxDocumentAIResponseBytes                 int64   `json:"maxDocumentAIResponseBytes,omitempty"`
+	MaxDocumentAIOutputTokens                  int     `json:"maxDocumentAIOutputTokens,omitempty"`
+	MaxDocumentAIJSONDepth                     int     `json:"maxDocumentAIJSONDepth,omitempty"`
+	MaxDocumentAIRequestsPerUserPerDay         int     `json:"maxDocumentAIRequestsPerUserPerDay,omitempty"`
+	MaxDocumentAITokensPerUserPerDay           int64   `json:"maxDocumentAITokensPerUserPerDay,omitempty"`
+	MaxEstimatedDocumentAICostPerUserPerDayUSD float64 `json:"maxEstimatedDocumentAICostPerUserPerDayUSD,omitempty"`
+	MaxPendingAdvancedTasksPerUser             int     `json:"maxPendingAdvancedTasksPerUser,omitempty"`
+	// Durations below are expressed in seconds; HTTP timeouts keep their
+	// explicit *MS suffix to avoid ambiguous persisted values.
+	MinAdvancedReindexInterval      int   `json:"minAdvancedReindexInterval,omitempty"`
+	MaxVisionInputBytes             int64 `json:"maxVisionInputBytes,omitempty"`
+	MaxSearchContentBytes           int   `json:"maxSearchContentBytes,omitempty"`
+	MaxMilvusFilterBytes            int   `json:"maxMilvusFilterBytes,omitempty"`
+	IndexGCGracePeriod              int   `json:"indexGCGracePeriod,omitempty"`
+	StagingArtifactTTL              int   `json:"stagingArtifactTTL,omitempty"`
+	MaxCacheFingerprintsPerDocument int   `json:"maxCacheFingerprintsPerDocument,omitempty"`
+	MaxAssetsPerDocument            int   `json:"maxAssetsPerDocument,omitempty"`
+	MaxAssetBytes                   int64 `json:"maxAssetBytes,omitempty"`
+	MaxExtractedBytes               int64 `json:"maxExtractedBytes,omitempty"`
+	MaxImagePixels                  int64 `json:"maxImagePixels,omitempty"`
+	PDFRenderDPI                    int   `json:"pdfRenderDPI,omitempty"`
+	ThumbnailMaxEdge                int   `json:"thumbnailMaxEdge,omitempty"`
+	DisplayMaxEdge                  int   `json:"displayMaxEdge,omitempty"`
+	ParseTimeoutMS                  int   `json:"parseTimeoutMS,omitempty"`
+}
+
+func (c *RAGCfg) ApplyDefaults() {
+	if c.Reranker.TimeoutMS <= 0 {
+		c.Reranker.TimeoutMS = 5000
+	}
+	if c.Reranker.CandidateTopK <= 0 {
+		c.Reranker.CandidateTopK = 20
+	} else if c.Reranker.CandidateTopK > 100 {
+		c.Reranker.CandidateTopK = 100
+	}
+	if c.Reranker.MinScore <= 0 || c.Reranker.MinScore > 1 {
+		c.Reranker.MinScore = 0.5
+	}
+	if c.DocumentAI.APIType == "" {
+		c.DocumentAI.APIType = "openai-compatible"
+	}
+	if c.DocumentAI.ResponseFormat == "" {
+		c.DocumentAI.ResponseFormat = RAGDocumentAIResponseFormatJSONSchema
+	}
+	if c.DocumentAI.TimeoutMS <= 0 {
+		c.DocumentAI.TimeoutMS = 120_000
+	}
+	if c.DocumentAI.VisionConcurrency <= 0 {
+		c.DocumentAI.VisionConcurrency = 2
+	}
+	if c.DocumentAI.EnrichmentConcurrency <= 0 {
+		c.DocumentAI.EnrichmentConcurrency = 4
+	}
+	if c.DocumentAI.VisionPromptVersion == "" {
+		c.DocumentAI.VisionPromptVersion = "vision-v3"
+	}
+	if c.DocumentAI.EnrichmentPromptVersion == "" {
+		c.DocumentAI.EnrichmentPromptVersion = "enrichment-v1"
+	}
+	c.DocumentAI.AllowedEndpointHosts = normalizeEndpointHosts(c.DocumentAI.AllowedEndpointHosts)
+
+	if c.Limits.MaxFileMB <= 0 {
+		c.Limits.MaxFileMB = 50
+	}
+	if c.Limits.MaxDocsPerKB <= 0 {
+		c.Limits.MaxDocsPerKB = 200
+	}
+	if c.Limits.MaxKBsPerUser <= 0 {
+		c.Limits.MaxKBsPerUser = 20
+	}
+	if c.Limits.MaxPagesPerDocument <= 0 {
+		c.Limits.MaxPagesPerDocument = 300
+	}
+	if c.Limits.MaxVisionPagesPerDocument <= 0 {
+		c.Limits.MaxVisionPagesPerDocument = 100
+	}
+	if c.Limits.MaxVisionAssetsPerDocument <= 0 {
+		c.Limits.MaxVisionAssetsPerDocument = 100
+	}
+	if c.Limits.MaxEnrichmentBlocksPerDocument <= 0 {
+		c.Limits.MaxEnrichmentBlocksPerDocument = 200
+	}
+	if c.Limits.MaxDocumentAIRequests <= 0 {
+		c.Limits.MaxDocumentAIRequests = 300
+	}
+	if c.Limits.MaxDocumentAITokens <= 0 {
+		c.Limits.MaxDocumentAITokens = 200_000
+	}
+	if c.Limits.MaxEstimatedDocumentAICostUSD <= 0 {
+		c.Limits.MaxEstimatedDocumentAICostUSD = 1
+	}
+	if c.Limits.MaxDocumentAIResponseBytes <= 0 {
+		c.Limits.MaxDocumentAIResponseBytes = 2 * 1024 * 1024
+	}
+	if c.Limits.MaxDocumentAIOutputTokens <= 0 {
+		c.Limits.MaxDocumentAIOutputTokens = 4096
+	}
+	if c.Limits.MaxDocumentAIJSONDepth <= 0 {
+		c.Limits.MaxDocumentAIJSONDepth = 32
+	}
+	if c.Limits.MaxDocumentAIRequestsPerUserPerDay <= 0 {
+		c.Limits.MaxDocumentAIRequestsPerUserPerDay = 1000
+	}
+	if c.Limits.MaxDocumentAITokensPerUserPerDay <= 0 {
+		c.Limits.MaxDocumentAITokensPerUserPerDay = 2_000_000
+	}
+	if c.Limits.MaxEstimatedDocumentAICostPerUserPerDayUSD <= 0 {
+		c.Limits.MaxEstimatedDocumentAICostPerUserPerDayUSD = 10
+	}
+	if c.Limits.MaxPendingAdvancedTasksPerUser <= 0 {
+		c.Limits.MaxPendingAdvancedTasksPerUser = 3
+	}
+	if c.Limits.MinAdvancedReindexInterval <= 0 {
+		c.Limits.MinAdvancedReindexInterval = 60
+	}
+	if c.Limits.MaxVisionInputBytes <= 0 {
+		c.Limits.MaxVisionInputBytes = 8 * 1024 * 1024
+	}
+	if c.Limits.MaxSearchContentBytes <= 0 {
+		c.Limits.MaxSearchContentBytes = 60 * 1024
+	}
+	if c.Limits.MaxMilvusFilterBytes <= 0 {
+		c.Limits.MaxMilvusFilterBytes = 32 * 1024
+	}
+	if c.Limits.IndexGCGracePeriod <= 0 {
+		c.Limits.IndexGCGracePeriod = 15 * 60
+	}
+	if c.Limits.StagingArtifactTTL <= 0 {
+		c.Limits.StagingArtifactTTL = 24 * 60 * 60
+	}
+	if c.Limits.MaxCacheFingerprintsPerDocument <= 0 {
+		c.Limits.MaxCacheFingerprintsPerDocument = 3
+	}
+	if c.Limits.MaxAssetsPerDocument <= 0 {
+		c.Limits.MaxAssetsPerDocument = 500
+	}
+	if c.Limits.MaxAssetBytes <= 0 {
+		c.Limits.MaxAssetBytes = 20 * 1024 * 1024
+	}
+	if c.Limits.MaxExtractedBytes <= 0 {
+		c.Limits.MaxExtractedBytes = 200 * 1024 * 1024
+	}
+	if c.Limits.MaxImagePixels <= 0 {
+		c.Limits.MaxImagePixels = 40_000_000
+	}
+	if c.Limits.PDFRenderDPI <= 0 {
+		c.Limits.PDFRenderDPI = 180
+	}
+	if c.Limits.ThumbnailMaxEdge <= 0 {
+		c.Limits.ThumbnailMaxEdge = 480
+	}
+	if c.Limits.DisplayMaxEdge <= 0 {
+		c.Limits.DisplayMaxEdge = 2400
+	}
+	if c.Limits.ParseTimeoutMS <= 0 {
+		c.Limits.ParseTimeoutMS = 600_000
+	}
+	if c.ParserSidecar.TimeoutMS <= 0 {
+		c.ParserSidecar.TimeoutMS = c.Limits.ParseTimeoutMS
+	}
+}
+
+func (c RAGCfg) Validate() error {
+	if c.DocumentAI.APIType != "" && c.DocumentAI.APIType != "openai-compatible" {
+		return fmt.Errorf("rag.documentAI.apiType %q is unsupported", c.DocumentAI.APIType)
+	}
+	if c.DocumentAI.ResponseFormat != "" &&
+		c.DocumentAI.ResponseFormat != RAGDocumentAIResponseFormatJSONSchema &&
+		c.DocumentAI.ResponseFormat != RAGDocumentAIResponseFormatJSONObject {
+		return fmt.Errorf("rag.documentAI.responseFormat %q is unsupported", c.DocumentAI.ResponseFormat)
+	}
+	if c.Limits.MaxSearchContentBytes > RAGMilvusContentMaxLength {
+		return fmt.Errorf("rag.limits.maxSearchContentBytes=%d exceeds Milvus content maxLength=%d",
+			c.Limits.MaxSearchContentBytes, RAGMilvusContentMaxLength)
+	}
+	if c.Limits.MaxDocsPerKB > 0 && c.Limits.MaxMilvusFilterBytes > 0 {
+		required := worstCaseMilvusActiveFilterBytes(c.Limits.MaxDocsPerKB)
+		if c.Limits.MaxMilvusFilterBytes < required {
+			return fmt.Errorf("rag.limits.maxMilvusFilterBytes=%d cannot hold the maxDocsPerKB=%d active-version filter (requires at least %d bytes)",
+				c.Limits.MaxMilvusFilterBytes, c.Limits.MaxDocsPerKB, required)
+		}
+	}
+	return nil
+}
+
+// worstCaseMilvusActiveFilterBytes mirrors the byte-stable predicate emitted
+// by internal/rag/vector for the DB contract's VARCHAR(64) document IDs and
+// positive int64 versions. The worst case gives every document its own version
+// group, which maximizes repeated field/operator syntax.
+func worstCaseMilvusActiveFilterBytes(maxDocs int) int {
+	if maxDocs <= 0 {
+		return 0
+	}
+	const (
+		maxDocIDBytes  = 64
+		maxVersionText = 19 // MaxInt64
+		groupSyntax    = len("(doc_version == ") + maxVersionText + len(" && doc_id in [\"") + maxDocIDBytes + len("\"])")
+		orSyntax       = len(" || ")
+	)
+	return len("(") + maxDocs*groupSyntax + (maxDocs-1)*orSyntax + len(")")
+}
+
+func (c RAGLimitsCfg) SearchContentWithinLimit(value string) bool {
+	return c.MaxSearchContentBytes > 0 && len([]byte(value)) <= c.MaxSearchContentBytes
+}
+
+// Available reports whether the system-level dependencies required to create
+// and search a knowledge base are configured.
+func (c RAGCfg) Available() bool {
+	return c.Milvus.Address != "" && c.Embedding.Endpoint != "" &&
+		c.Embedding.Model != "" && c.Embedding.Dims > 0
+}
+
+func normalizeEndpointHosts(hosts []string) []string {
+	seen := make(map[string]struct{}, len(hosts))
+	out := make([]string, 0, len(hosts))
+	for _, raw := range hosts {
+		host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".")
+		if host == "" {
+			continue
+		}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		out = append(out, host)
+	}
+	return out
+}
+
+func documentAIEndpointPolicy(c RAGDocumentAICfg) string {
+	if c.APIType != "openai-compatible" {
+		return "unsupported_api_type"
+	}
+	raw := strings.TrimSpace(c.Endpoint)
+	if raw == "" {
+		return "endpoint_not_configured"
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.IsAbs() == false || u.Hostname() == "" || u.Opaque != "" || u.User != nil || u.Fragment != "" || u.RawQuery != "" {
+		return "endpoint_policy_invalid"
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "https" && !(scheme == "http" && c.AllowPrivateEndpoint) {
+		return "endpoint_scheme_not_allowed"
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	allowed := false
+	for _, configuredHost := range normalizeEndpointHosts(c.AllowedEndpointHosts) {
+		if host == configuredHost {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return "endpoint_host_not_allowed"
+	}
+	if !c.AllowPrivateEndpoint && endpointHostIsPrivate(host) {
+		return "private_endpoint_not_allowed"
+	}
+	return ""
+}
+
+func endpointHostIsPrivate(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	if err != nil {
+		// DNS rebinding/private-address checks are repeated against resolved
+		// addresses by the Task 8 HTTP transport.
+		return false
+	}
+	return addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() ||
+		addr.IsMulticast() || addr.IsUnspecified()
+}
+
+func (c RAGCfg) advancedConfigured() (bool, string) {
+	if !c.Features.AdvancedParsingEnabled {
+		return false, "advanced_disabled"
+	}
+	if strings.TrimSpace(c.DocumentAI.VisionModel) == "" {
+		return false, "vision_model_not_configured"
+	}
+	if reason := documentAIEndpointPolicy(c.DocumentAI); reason != "" {
+		return false, reason
+	}
+	return true, ""
+}
+
+func parserSnapshotReason(c RAGCfg, snapshot RAGParserHealthSnapshot) string {
+	if strings.TrimSpace(c.ParserSidecar.Endpoint) == "" {
+		return "parser_sidecar_not_configured"
+	}
+	if !snapshot.Healthy || snapshot.CheckedAt.IsZero() {
+		if strings.TrimSpace(snapshot.Reason) != "" {
+			return snapshot.Reason
+		}
+		return "parser_health_unavailable"
+	}
+	// A health result without a finite TTL is not a cache entry. Treat both a
+	// missing expiry and an expired entry as stale so one successful probe can
+	// never keep advanced parsing enabled indefinitely.
+	if snapshot.ExpiresAt.IsZero() || !time.Now().Before(snapshot.ExpiresAt) {
+		return "parser_health_stale"
+	}
+	if snapshot.ProtocolVersion != "rag-parser/v2" {
+		return "parser_protocol_mismatch"
+	}
+	return ""
+}
+
+func hasAllOfficeFormats(formats []string) bool {
+	want := map[string]bool{"docx": false, "pptx": false, "xlsx": false}
+	for _, format := range formats {
+		format = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(format)), ".")
+		if _, ok := want[format]; ok {
+			want[format] = true
+		}
+	}
+	return want["docx"] && want["pptx"] && want["xlsx"]
+}
+
+func (c RAGCfg) officeAvailable(snapshot RAGParserHealthSnapshot) (bool, string) {
+	if !c.Features.OfficeParsingEnabled {
+		return false, "office_disabled"
+	}
+	if reason := parserSnapshotReason(c, snapshot); reason != "" {
+		return false, reason
+	}
+	if !snapshot.Office.Enabled {
+		return false, "office_capability_unavailable"
+	}
+	if !hasAllOfficeFormats(snapshot.Office.Formats) {
+		return false, "office_formats_incomplete"
+	}
+	if !snapshot.Office.DOCXGolden || !snapshot.Office.PPTXGolden || !snapshot.Office.XLSXGolden {
+		return false, "office_golden_checks_failed"
+	}
+	return true, ""
+}
+
+func (c RAGCfg) pdfAutoAvailable(snapshot RAGParserHealthSnapshot) (bool, string) {
+	if ok, reason := c.advancedConfigured(); !ok {
+		return false, reason
+	}
+	if reason := parserSnapshotReason(c, snapshot); reason != "" {
+		return false, reason
+	}
+	if !snapshot.PDF.Enabled {
+		return false, "pdf_capability_unavailable"
+	}
+	if !snapshot.PDF.LicenseApproved {
+		return false, "pdf_engine_license_not_approved"
+	}
+	return true, ""
+}
+
+func (c RAGCfg) officeVisionAvailable(snapshot RAGParserHealthSnapshot) (bool, string) {
+	if ok, reason := c.advancedConfigured(); !ok {
+		return false, reason
+	}
+	if ok, reason := c.officeAvailable(snapshot); !ok {
+		return false, reason
+	}
+	return true, ""
+}
+
+func (c RAGCfg) enrichmentAvailable() (bool, string) {
+	if !c.Features.TextEnrichmentEnabled {
+		return false, "enrichment_disabled"
+	}
+	if strings.TrimSpace(c.DocumentAI.TextModel) == "" {
+		return false, "text_model_not_configured"
+	}
+	if reason := documentAIEndpointPolicy(c.DocumentAI); reason != "" {
+		return false, reason
+	}
+	return true, ""
+}
+
+// RuntimeCapabilities derives user-visible capability state solely from
+// configuration and the last cached health snapshot. It performs no I/O.
+func (c RAGCfg) RuntimeCapabilities(snapshot RAGParserHealthSnapshot) RAGRuntimeCapabilities {
+	advancedConfigured, advancedConfigReason := c.advancedConfigured()
+	officeAvailable, officeReason := c.officeAvailable(snapshot)
+	pdfAvailable, pdfReason := c.pdfAutoAvailable(snapshot)
+	officeVisionAvailable, officeVisionReason := c.officeVisionAvailable(snapshot)
+	enrichmentAvailable, enrichmentReason := c.enrichmentAvailable()
+	advancedAvailable := pdfAvailable || officeVisionAvailable
+	advancedReason := ""
+	if !advancedAvailable {
+		advancedReason = advancedConfigReason
+		if advancedReason == "" {
+			advancedReason = "advanced_routes_unavailable"
+		}
+	}
+	parserHealthy := parserSnapshotReason(c, snapshot) == ""
+	return RAGRuntimeCapabilities{
+		Advanced: RAGDetailedCapability{
+			Enabled:    c.Features.AdvancedParsingEnabled,
+			Configured: advancedConfigured,
+			Healthy:    parserHealthy,
+			Available:  advancedAvailable,
+			Reason:     advancedReason,
+			CheckedAt:  snapshot.CheckedAt,
+		},
+		Office: RAGDetailedCapability{
+			Enabled:    c.Features.OfficeParsingEnabled,
+			Configured: c.Features.OfficeParsingEnabled && strings.TrimSpace(c.ParserSidecar.Endpoint) != "",
+			Healthy:    parserHealthy,
+			Available:  officeAvailable,
+			Reason:     officeReason,
+			CheckedAt:  snapshot.CheckedAt,
+		},
+		PDFAuto:      RAGSimpleCapability{Available: pdfAvailable, Reason: pdfReason},
+		OfficeVision: RAGSimpleCapability{Available: officeVisionAvailable, Reason: officeVisionReason},
+		Enrichment: RAGEnrichmentCapability{
+			Enabled:    c.Features.TextEnrichmentEnabled,
+			Configured: c.Features.TextEnrichmentEnabled && strings.TrimSpace(c.DocumentAI.TextModel) != "" && documentAIEndpointPolicy(c.DocumentAI) == "",
+			Available:  enrichmentAvailable,
+			Reason:     enrichmentReason,
+		},
+	}
+}
+
+// RAGAgentCfg is the per-agent allow-list stored in agents.config.
+type RAGAgentCfg struct {
+	KBs  []string `json:"kbs,omitempty"`
+	TopN int      `json:"topN,omitempty"`
+}
+
+// MCPAgentCfg is the per-agent allow-list of user-owned MCP resources.
+type MCPAgentCfg struct {
+	Servers []string `json:"servers,omitempty"`
 }
 
 type SkillsInstallCfg struct {
@@ -771,13 +1437,16 @@ type ResolvedAgent struct {
 	MaxParallelToolCalls int
 	Thinking             string
 	Skills               SkillsConfig
-	MCPServers           map[string]MCPServerConfig
-	ShareMCPConfig       bool
-	Sandbox              SandboxCfg
-	PolicyPreset         string
-	ToolProviders        map[string]ToolProviderCfg
-	Tools                map[string]ToolCategoryCfg
-	Providers            map[string]ProviderConfig
+	RAG                  RAGAgentCfg
+	MCP                  MCPAgentCfg
+	// Legacy inline MCP configuration retained for migration compatibility.
+	MCPServers     map[string]MCPServerConfig
+	ShareMCPConfig bool
+	Sandbox        SandboxCfg
+	PolicyPreset   string
+	ToolProviders  map[string]ToolProviderCfg
+	Tools          map[string]ToolCategoryCfg
+	Providers      map[string]ProviderConfig
 	// Admins 是每渠道的写入模式斜杠命令管理员白名单。
 	// 参见 AgentFileConfig.Admins 了解语义和默认值。
 	Admins map[string][]string
@@ -877,6 +1546,7 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Agents.Defaults.MaxToolIterations == 0 {
 		cfg.Agents.Defaults.MaxToolIterations = 200
 	}
+	cfg.RAG.ApplyDefaults()
 }
 
 // MergedAgentConfig 合并默认值与 agent 条目以生成完全解析的 agent 配置。
@@ -978,6 +1648,13 @@ func (cfg *Config) MergedAgentConfig(entry AgentEntry) ResolvedAgent {
 			resolved.MaxParallelToolCalls = fileCfg.MaxParallelToolCalls
 		}
 		resolved.Skills = fileCfg.Skills
+		if fileCfg.RAG != nil {
+			resolved.RAG = *fileCfg.RAG
+			resolved.RAG.KBs = append([]string(nil), fileCfg.RAG.KBs...)
+		}
+		if fileCfg.MCP != nil {
+			resolved.MCP.Servers = append([]string(nil), fileCfg.MCP.Servers...)
+		}
 		if len(fileCfg.Admins) > 0 {
 			resolved.Admins = make(map[string][]string, len(fileCfg.Admins))
 			for ch, ids := range fileCfg.Admins {
