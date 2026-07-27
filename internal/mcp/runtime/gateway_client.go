@@ -31,6 +31,12 @@ func ToLuckyServerConfig(src config.MCPServerConfig) (LuckyServerConfig, error) 
 	if dst.Env == nil {
 		dst.Env = map[string]string{}
 	}
+	if dst.Command != "" {
+		// The v2.1.0 gateway's aggregated /stream endpoint subscribes to
+		// command-backed services through their SSE bridge. Marking a stdio
+		// service as streamhttp leaves that bridge URL empty.
+		dst.GatewayProtocol = "sse"
+	}
 	if auth := strings.TrimSpace(src.Headers["Authorization"]); auth != "" {
 		const prefix = "Bearer "
 		if !strings.HasPrefix(auth, prefix) {

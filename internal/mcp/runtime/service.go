@@ -202,7 +202,7 @@ func (s *Service) NewManagerFromResources(ctx context.Context, userID string, re
 		return nil, err
 	}
 	release := s.Acquire(userID)
-	client := mcp.NewStreamableHTTPClient(strings.TrimRight(rec.BaseURL, "/")+"/stream", nil)
+	client := newGatewayMCPClient(rec.BaseURL)
 	mgr, err := mcp.NewScopedAggregatedManager(client, aliases)
 	if err != nil {
 		release()
@@ -277,7 +277,7 @@ func (s *Service) NewManagerFromServers(ctx context.Context, userID string, serv
 		return nil, err
 	}
 	release := s.Acquire(userID)
-	client := mcp.NewStreamableHTTPClient(strings.TrimRight(rec.BaseURL, "/")+"/stream", nil)
+	client := newGatewayMCPClient(rec.BaseURL)
 	aliases := make(map[string]string, len(servers))
 	for name, server := range servers {
 		if config.MCPServerEnabled(server) {
@@ -291,6 +291,13 @@ func (s *Service) NewManagerFromServers(ctx context.Context, userID string, serv
 	}
 	mgr.AddCloseHook(release)
 	return mgr, nil
+}
+
+func newGatewayMCPClient(baseURL string) *mcp.StreamableHTTPClient {
+	return mcp.NewStreamableHTTPClient(
+		strings.TrimRight(baseURL, "/")+"/stream",
+		map[string]string{"Authorization": "Bearer " + gatewayAPIKey},
+	)
 }
 
 func (s *Service) userDeployLock(userID string) *sync.Mutex {

@@ -77,13 +77,13 @@ func (f *fakeRuntimeStore) ListMCPGatewayRuntimesByStatus(ctx context.Context, s
 }
 
 func TestServiceEnsureDeploysToPerUserGateway(t *testing.T) {
-	var deployed map[string]config.MCPServerConfig
+	var deployed map[string]LuckyServerConfig
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/deploy" {
 			t.Fatalf("path = %s, want /deploy", r.URL.Path)
 		}
 		var body struct {
-			MCPServers map[string]config.MCPServerConfig `json:"mcpServers"`
+			MCPServers map[string]LuckyServerConfig `json:"mcpServers"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode: %v", err)
@@ -112,6 +112,9 @@ func TestServiceEnsureDeploysToPerUserGateway(t *testing.T) {
 	if deployed["time"].Command != "uvx" {
 		t.Fatalf("deployed payload = %#v", deployed)
 	}
+	if deployed["time"].GatewayProtocol != "sse" {
+		t.Fatalf("stdio gateway protocol = %q, want sse", deployed["time"].GatewayProtocol)
+	}
 	if fs.rec == nil || fs.rec.Status != StatusRunning {
 		t.Fatalf("runtime record = %#v", fs.rec)
 	}
@@ -128,6 +131,21 @@ func TestToLuckyConfigMapsBearerHeader(t *testing.T) {
 	}
 	if got.Env["MCP_REMOTE_AUTH_ACCESS_TOKEN"] != "token-1" {
 		t.Fatalf("env = %#v", got.Env)
+	}
+}
+
+func TestToLuckyConfigUsesSSEBridgeForStdio(t *testing.T) {
+	got, err := ToLuckyServerConfig(config.MCPServerConfig{
+		Type:      "stdio",
+		Command:   "npx",
+		Args:      []string{"-y", "@modelcontextprotocol/server-everything"},
+		Transport: config.MCPTransportStreamableHTTP,
+	})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if got.GatewayProtocol != "sse" {
+		t.Fatalf("gateway protocol = %q, want sse", got.GatewayProtocol)
 	}
 }
 
@@ -194,11 +212,11 @@ func TestNewManagerFromServersSkipsDeployWhenNoEnabledServers(t *testing.T) {
 }
 
 func TestNewManagerFromResourcesDeploysUserSetButFiltersAgentTools(t *testing.T) {
-	var deployed map[string]config.MCPServerConfig
+	var deployed map[string]LuckyServerConfig
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/deploy" {
 			var body struct {
-				MCPServers map[string]config.MCPServerConfig `json:"mcpServers"`
+				MCPServers map[string]LuckyServerConfig `json:"mcpServers"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode deploy: %v", err)
@@ -209,6 +227,9 @@ func TestNewManagerFromResourcesDeploysUserSetButFiltersAgentTools(t *testing.T)
 		}
 		if r.URL.Path != "/stream" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if got, want := r.Header.Get("Authorization"), "Bearer "+gatewayAPIKey; got != want {
+			t.Fatalf("Authorization = %q, want %q", got, want)
 		}
 		var request struct {
 			JSONRPC string          `json:"jsonrpc"`

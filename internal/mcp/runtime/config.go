@@ -7,7 +7,10 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 )
 
-const defaultImage = "ghcr.io/lucky-aeon/mcp-gateway:latest"
+const (
+	defaultImage  = "ghcr.io/lucky-aeon/mcp-gateway:latest"
+	gatewayAPIKey = "bkcrab-local"
+)
 
 type Config struct {
 	Enabled       bool

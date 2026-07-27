@@ -211,7 +211,7 @@ func writeGatewayConfig(spec ContainerSpec) error {
 		"LogLevel":        0,
 		"WorkspacePath":   "/app/vm",
 		"Bind":            fmt.Sprintf("[::]:%d", spec.ContainerPort),
-		"Auth":            map[string]any{"Enabled": false, "ApiKey": "bkcrab-local"},
+		"Auth":            map[string]any{"Enabled": false, "ApiKey": gatewayAPIKey},
 		"GatewayProtocol": protocol,
 		"McpServiceMgrConfig": map[string]any{
 			"McpServiceRetryCount": 3,
