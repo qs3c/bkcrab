@@ -51,7 +51,7 @@ const (
 	defaultBoxliteURL      = "https://api.dev.boxlite.ai/api/v1"
 	defaultBoxliteClientID = "default"
 	defaultBoxlitePrefix   = "default"
-	defaultBoxliteImage    = "thinkany/bkcrab-sandbox:latest"
+	defaultBoxliteImage    = "qs3c/bkcrab-sandbox:latest"
 )
 
 // BoxliteExecutor 针对远程 Boxlite REST API 实现 Executor。

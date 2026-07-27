@@ -169,7 +169,7 @@ data:
   # 是 E2B（远程）— 或者禁用它。要启用：在上面
   # bkcrab-secrets 中设置 E2B_API_KEY 并取消下方行的注释。
   # BKCRAB_SANDBOX_BACKEND: "e2b"
-  # BKCRAB_SANDBOX_IMAGE: "thinkany/bkcrab-sandbox:latest"   # 使用 E2B 自定义模板时使用
+  # BKCRAB_SANDBOX_IMAGE: "qs3c/bkcrab-sandbox:latest"   # 使用 E2B 自定义模板时使用
 
 ---
 # =================== 应用程序（通常无需编辑）============================

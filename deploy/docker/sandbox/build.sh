@@ -11,14 +11,14 @@
 #                                                       # 多架构 buildx
 #
 # 构建后，通过设置 → 沙箱 → 镜像或在引导期间将网关指向它。
-# 默认：thinkany/bkcrab-sandbox:latest。
+# 默认：qs3c/bkcrab-sandbox:latest。
 
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../../.." && pwd)
 
-IMAGE_NAME=${IMAGE_NAME:-thinkany/bkcrab-sandbox}
+IMAGE_NAME=${IMAGE_NAME:-qs3c/bkcrab-sandbox}
 TAG=latest
 PUSH=0
 PLATFORM=""

@@ -163,7 +163,7 @@ objectStore:
 sandbox:
   enabled: false
   backend: e2b                  # 仅 "e2b"（k8s 中不可用 Docker）
-  image: thinkany/bkcrab-sandbox:latest
+  image: qs3c/bkcrab-sandbox:latest
   e2bApiKey: ""
 
 ## Ingress

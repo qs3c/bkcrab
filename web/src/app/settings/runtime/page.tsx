@@ -239,7 +239,7 @@ export default function RuntimeSettingsPage() {
                   <Input
                     value={sandboxDockerImage}
                     onChange={(e) => setSandboxDockerImage(e.target.value)}
-                    placeholder="thinkany/bkcrab-sandbox:latest"
+                    placeholder="qs3c/bkcrab-sandbox:latest"
                     className="font-mono text-sm"
                   />
                 </div>

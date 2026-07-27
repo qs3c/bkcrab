@@ -157,7 +157,7 @@ export default function OnboardPage() {
   // 沙箱（可选——默认关闭；用户可开启并配置）
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
   const [sandboxBackend, setSandboxBackend] = useState("docker");
-  const [sandboxDockerImage, setSandboxDockerImage] = useState("thinkany/bkcrab-sandbox:latest");
+  const [sandboxDockerImage, setSandboxDockerImage] = useState("qs3c/bkcrab-sandbox:latest");
   const [sandboxE2BTemplate, setSandboxE2BTemplate] = useState("base");
   const [sandboxE2BKey, setSandboxE2BKey] = useState("");
   const [sandboxBoxliteImage, setSandboxBoxliteImage] = useState("");
@@ -898,7 +898,7 @@ function SandboxStep(props: {
                   <Input
                     value={props.dockerImage}
                     onChange={(e) => props.setDockerImage(e.target.value)}
-                    placeholder="thinkany/bkcrab-sandbox:latest"
+                    placeholder="qs3c/bkcrab-sandbox:latest"
                     className="font-mono text-sm"
                   />
                 </div>

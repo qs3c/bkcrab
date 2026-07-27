@@ -219,7 +219,7 @@ func (p *DockerExecutorPool) Backend() string { return "docker" }
 // NewDockerExecutorPool 创建一个 Docker 后端执行器池。
 func NewDockerExecutorPool(image, workspaceRoot string, policy *Policy) *DockerExecutorPool {
 	if image == "" {
-		image = "thinkany/bkcrab-sandbox:latest"
+		image = "qs3c/bkcrab-sandbox:latest"
 	}
 	return &DockerExecutorPool{
 		executors:     make(map[string]*DockerExecutor),

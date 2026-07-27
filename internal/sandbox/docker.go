@@ -50,7 +50,7 @@ type DockerSandbox struct {
 // 想要硬隔离的操作员传递具有 NetMode: "none" 的显式策略。
 func NewDockerSandbox(image, workspace string, policy *Policy) *DockerSandbox {
 	if image == "" {
-		image = "thinkany/bkcrab-sandbox:latest"
+		image = "qs3c/bkcrab-sandbox:latest"
 	}
 	if policy == nil {
 		policy = &Policy{}

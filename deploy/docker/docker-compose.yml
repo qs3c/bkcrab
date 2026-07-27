@@ -144,7 +144,7 @@ services:
         condition: service_healthy
     environment:
       DOCKER_HOST: tcp://sandbox-docker:2375
-      SANDBOX_IMAGE: "${BKCRAB_SANDBOX_IMAGE:-thinkany/bkcrab-sandbox:latest}"
+      SANDBOX_IMAGE: "${BKCRAB_SANDBOX_IMAGE:-qs3c/bkcrab-sandbox:latest}"
       HTTP_PROXY: "${HTTP_PROXY:-}"
       HTTPS_PROXY: "${HTTPS_PROXY:-}"
       NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,sandbox-docker}"

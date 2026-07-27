@@ -344,7 +344,7 @@ export default function ApikeysPage() {
                 id="key-name"
                 value={createName}
                 onChange={(e) => setCreateName(e.target.value)}
-                placeholder="例如 thinkany-web"
+                placeholder="例如 qs3c-web"
                 autoFocus
               />
             </div>

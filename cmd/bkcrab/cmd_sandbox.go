@@ -37,7 +37,7 @@ func sandboxCreateCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&image, "image", "thinkany/bkcrab-sandbox:latest", "Docker image to use")
+	cmd.Flags().StringVar(&image, "image", "qs3c/bkcrab-sandbox:latest", "Docker image to use")
 	return cmd
 }
 
