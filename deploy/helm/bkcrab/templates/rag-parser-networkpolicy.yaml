@@ -1,0 +1,65 @@
+{{- if and .Values.rag.enabled .Values.rag.parser.enabled .Values.rag.parser.networkPolicy.enabled }}
+# Default-deny both directions for parser. The following additive policy allows
+# only gateway pods to enter the parser port; parser egress stays empty.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-rag-parser-default-deny
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ include "bkcrab.fullname" . }}-rag-parser
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress: []
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-rag-parser-allow-gateway-ingress
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ include "bkcrab.fullname" . }}-rag-parser
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: {{ include "bkcrab.fullname" . }}-gateway
+    ports:
+    - protocol: TCP
+      port: {{ .Values.rag.parser.port }}
+{{- if .Values.rag.parser.networkPolicy.allowGatewayEgress }}
+---
+# Enable only when another namespace policy already limits gateway egress.
+# NetworkPolicies are additive, so this contributes only the parser allow.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-gateway-allow-rag-parser-egress
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ include "bkcrab.fullname" . }}-gateway
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: {{ include "bkcrab.fullname" . }}-rag-parser
+    ports:
+    - protocol: TCP
+      port: {{ .Values.rag.parser.port }}
+{{- end }}
+{{- end }}

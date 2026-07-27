@@ -1,6 +1,6 @@
 // Package vector defines the narrow vector-store contract used by RAG.
 //
-// UpsertChunks and DeleteOldVersions deliberately remain separate operations.
+// UpsertChunks and version deletion deliberately remain separate operations.
 // Callers can therefore finish computing and writing a new document version
 // before removing the old one, so searchable data is never deleted early.
 package vector
@@ -9,13 +9,14 @@ import "context"
 
 // ChunkData is one indexed document chunk.
 type ChunkData struct {
-	DocID        string
-	Index        int
-	Content      string
-	SectionTitle string
-	PageNum      int
-	DocVersion   int
-	Vector       []float32
+	DocID         string
+	Index         int
+	Content       string // original body returned to retrieval callers
+	SearchContent string // heading-prefixed text used by embedding and BM25
+	SectionTitle  string
+	PageNum       int
+	DocVersion    int64
+	Vector        []float32
 }
 
 // ChunkRef identifies one exact indexed chunk version. Metadata generation
@@ -24,17 +25,19 @@ type ChunkData struct {
 type ChunkRef struct {
 	DocID      string
 	Index      int
-	DocVersion int
+	DocVersion int64
 }
 
 // SearchHit is one result returned by a hybrid search.
 type SearchHit struct {
-	DocID        string
-	ChunkIndex   int
-	Content      string
-	SectionTitle string
-	PageNum      int
-	Score        float64
+	DocID         string
+	ChunkIndex    int
+	Content       string
+	SearchContent string
+	SectionTitle  string
+	PageNum       int
+	DocVersion    int64
+	Score         float64
 }
 
 // SearchQuery describes the independent routes participating in one hybrid
@@ -44,15 +47,21 @@ type SearchHit struct {
 type SearchQuery struct {
 	Dense [][]float32
 	Text  string
+	// ActiveVersions is the SQL snapshot captured at retrieval start. Every
+	// ANN route must apply the predicate derived from this exact map; result
+	// hydration repeats the same check defensively.
+	ActiveVersions map[string]int64
+	MaxFilterBytes int
 }
 
 // Store is the vector database surface needed by the RAG service.
 type Store interface {
 	EnsureCollection(ctx context.Context, kbID string, dims int) error
 	UpsertChunks(ctx context.Context, kbID string, chunks []ChunkData) error
-	// DeleteOldVersions removes entities for docID whose doc_version is less
-	// than keepVersion.
-	DeleteOldVersions(ctx context.Context, kbID, docID string, keepVersion int) error
+	// DeleteDocVersion removes only the entities for the exact physical
+	// doc_version. Delayed cleanup must use this method so one retired version
+	// cannot delete a newer version whose grace period has not elapsed.
+	DeleteDocVersion(ctx context.Context, kbID, docID string, version int64) error
 	// DeleteDoc removes every indexed version of docID.
 	DeleteDoc(ctx context.Context, kbID, docID string) error
 	DropCollection(ctx context.Context, kbID string) error

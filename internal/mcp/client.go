@@ -1,8 +1,12 @@
 package mcp
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
 
-// Client 是与 MCP 服务器通信的接口。
+	"github.com/qs3c/bkcrab/internal/config"
+)
+
 type Client interface {
 	Connect() error
 	ListTools() ([]ToolDef, error)
@@ -10,20 +14,37 @@ type Client interface {
 	Close() error
 }
 
-// ToolDef 表示 MCP 服务器返回的工具定义。
+type ClientFactory func(name string, cfg config.MCPServerConfig) (Client, error)
+
+func NewClientFromConfig(name string, cfg config.MCPServerConfig) (Client, error) {
+	switch cfg.Type {
+	case "http":
+		switch config.NormalizeMCPTransport(cfg.Transport) {
+		case config.MCPTransportStreamableHTTP:
+			return NewStreamableHTTPClient(cfg.URL, cfg.Headers), nil
+		case config.MCPTransportSSE:
+			return NewGatewaySSEClient(cfg.URL, cfg.Headers), nil
+		default:
+			return NewHTTPClient(cfg.URL, cfg.Headers), nil
+		}
+	case "stdio":
+		return NewStdioClient(cfg.Command, cfg.Args, cfg.Env), nil
+	default:
+		return nil, fmt.Errorf("unknown MCP server type %q for %s", cfg.Type, name)
+	}
+}
+
 type ToolDef struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
 	InputSchema interface{} `json:"inputSchema"`
 }
 
-// JSON-RPC 2.0 类型
-
 type jsonRPCRequest struct {
 	JSONRPC string      `json:"jsonrpc"`
-	ID      int         `json:"id"`
+	ID      int         `json:"id,omitempty"`
 	Method  string      `json:"method"`
-	Params  interface{} `json:"params"`
+	Params  interface{} `json:"params,omitempty"`
 }
 
 type jsonRPCResponse struct {
@@ -39,9 +60,9 @@ type jsonRPCError struct {
 }
 
 type initializeParams struct {
-	ProtocolVersion string       `json:"protocolVersion"`
-	Capabilities    struct{}     `json:"capabilities"`
-	ClientInfo      clientInfo   `json:"clientInfo"`
+	ProtocolVersion string     `json:"protocolVersion"`
+	Capabilities    struct{}   `json:"capabilities"`
+	ClientInfo      clientInfo `json:"clientInfo"`
 }
 
 type clientInfo struct {

@@ -16,10 +16,11 @@ RUN pnpm build
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS go-builder
 RUN apk add --no-cache git
 WORKDIR /src
-ARG GOPROXY=https://proxy.golang.org,direct
+ARG GOPROXY=https://goproxy.cn,direct
 ENV GOPROXY=${GOPROXY}
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,id=bkcrab-go-mod,target=/go/pkg/mod \
+    go mod download
 COPY . .
 # 嵌入构建好的 Web UI
 COPY --from=web-builder /src/web/out internal/setup/web
@@ -34,14 +35,18 @@ ARG DATE=unknown
 # 使得 Docker 构建的镜像与发布的二进制文件以相同方式标识自己；
 # 没有 buildinfo 行，关于页面会在每个发布的镜像上静默显示
 # "dev"（触发此修复的症状）。
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+RUN --mount=type=cache,id=bkcrab-go-mod,target=/go/pkg/mod \
+    --mount=type=cache,id=bkcrab-go-build,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags "-s -w \
       -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE} \
       -X github.com/qs3c/bkcrab/internal/buildinfo.Version=${VERSION} \
       -X github.com/qs3c/bkcrab/internal/buildinfo.Commit=${COMMIT} \
       -X github.com/qs3c/bkcrab/internal/buildinfo.Date=${DATE}" \
     -o /bkcrab ./cmd/bkcrab
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+RUN --mount=type=cache,id=bkcrab-go-mod,target=/go/pkg/mod \
+    --mount=type=cache,id=bkcrab-go-build,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -o /bkcrab-migrate-storage ./tools/migrate-storage
 
 # --- 阶段 3：运行时 ---

@@ -77,16 +77,29 @@ export default function AdminUsersPage() {
   const [regOpen, setRegOpen] = useState<boolean | null>(null);
 
   async function refresh() {
-    setError("");
     const res = await adminListUsers();
+    setError("");
     if (res.users) setUsers(res.users);
     if (res.error) setError(res.error);
   }
   useEffect(() => {
-    refresh();
+    let cancelled = false;
+    adminListUsers().then((res) => {
+      if (cancelled) return;
+      setError("");
+      if (res.users) setUsers(res.users);
+      if (res.error) setError(res.error);
+    });
     getRegistration()
-      .then((r) => setRegOpen(!!r.open))
-      .catch(() => setRegOpen(false));
+      .then((r) => {
+        if (!cancelled) setRegOpen(!!r.open);
+      })
+      .catch(() => {
+        if (!cancelled) setRegOpen(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function toggleRegistration(next: boolean) {

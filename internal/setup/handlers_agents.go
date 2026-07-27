@@ -458,6 +458,9 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		// agents.config. A nil pointer leaves the existing value untouched;
 		// an explicit empty kbs list revokes all knowledge-base access.
 		RAG *config.RAGAgentCfg `json:"rag,omitempty"`
+		// MCP replaces the per-agent allow-list of user-owned MCP resources.
+		// Connection details and secrets never enter the agent config.
+		MCP *config.MCPAgentCfg `json:"mcp,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -496,6 +499,29 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		req.RAG.KBs = normalizedKBs
+	}
+	if req.MCP != nil {
+		normalizedServers := make([]string, 0, len(req.MCP.Servers))
+		seen := make(map[string]struct{}, len(req.MCP.Servers))
+		for _, rawResourceID := range req.MCP.Servers {
+			resourceID := strings.TrimSpace(rawResourceID)
+			if resourceID == "" {
+				jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "mcp.servers must not contain empty IDs"})
+				return
+			}
+			if _, duplicate := seen[resourceID]; duplicate {
+				continue
+			}
+			seen[resourceID] = struct{}{}
+			resource, err := s.dataStore.GetConfig(r.Context(), resourceID)
+			if err != nil || resource == nil || resource.Kind != store.KindMCPServer ||
+				resource.UserID != rec.UserID || resource.AgentID != "" {
+				jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "mcp.servers contains a resource not owned by the agent owner"})
+				return
+			}
+			normalizedServers = append(normalizedServers, resourceID)
+		}
+		req.MCP.Servers = normalizedServers
 	}
 	if req.Name != "" {
 		rec.Name = req.Name
@@ -541,6 +567,23 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 				"topN": req.RAG.TopN,
 			}
 		}
+	}
+	if req.MCP != nil {
+		if rec.Config == nil {
+			rec.Config = map[string]interface{}{}
+		}
+		if len(req.MCP.Servers) == 0 {
+			delete(rec.Config, "mcp")
+		} else {
+			rec.Config["mcp"] = map[string]interface{}{
+				"servers": append([]string(nil), req.MCP.Servers...),
+			}
+		}
+		// Once an agent has been saved through the resource-grant API, remove
+		// legacy inline credentials so the agent config cannot remain a second
+		// secret-bearing source of truth.
+		delete(rec.Config, "mcpServers")
+		delete(rec.Config, "shareMcpConfig")
 	}
 	if err := s.dataStore.SaveAgent(r.Context(), rec); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})

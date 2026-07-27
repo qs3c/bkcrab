@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"os"
 	"path"
@@ -23,6 +24,7 @@ import (
 type Store interface {
 	Put(ctx context.Context, key string, r io.Reader, size int64, contentType string) error
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
+	Delete(ctx context.Context, key string) error
 	DeletePrefix(ctx context.Context, prefix string) error
 }
 
@@ -80,6 +82,10 @@ func (s *LocalFS) Put(ctx context.Context, key string, r io.Reader, size int64, 
 		_ = tmp.Close()
 		return fmt.Errorf("write object %s: %w", key, err)
 	}
+	if err := ctx.Err(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close object %s: %w", key, err)
 	}
@@ -103,6 +109,22 @@ func (s *LocalFS) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+// Delete removes exactly one validated object key. It is idempotent and never
+// interprets a key as a directory or prefix.
+func (s *LocalFS) Delete(ctx context.Context, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	fullPath, err := s.resolveKey(key)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete object %s: %w", key, err)
+	}
+	return nil
 }
 
 func (s *LocalFS) DeletePrefix(ctx context.Context, prefix string) error {
@@ -197,9 +219,22 @@ func (s *S3) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	// error so callers do not discover it only on their first read.
 	if _, err := obj.Stat(); err != nil {
 		_ = obj.Close()
-		return nil, err
+		return nil, normalizeS3ReadError(err)
 	}
 	return obj, nil
+}
+
+// Delete removes exactly one validated object. S3 deletion is idempotent for
+// an already absent key.
+func (s *S3) Delete(ctx context.Context, key string) error {
+	clean, err := validateObjectKey(key)
+	if err != nil {
+		return err
+	}
+	if err := s.client.RemoveObject(ctx, s.bucket, s.objectKey(clean), minio.RemoveObjectOptions{}); err != nil {
+		return fmt.Errorf("s3 remove %s: %w", key, err)
+	}
+	return nil
 }
 
 func (s *S3) DeletePrefix(ctx context.Context, prefix string) error {
@@ -261,6 +296,14 @@ func validateObjectKey(key string) (string, error) {
 		return "", fmt.Errorf("object key %q 必须是相对路径", key)
 	}
 	return clean, nil
+}
+
+func normalizeS3ReadError(err error) error {
+	response := minio.ToErrorResponse(err)
+	if response.StatusCode == 404 || response.Code == "NoSuchKey" || response.Code == "NoSuchObject" {
+		return fmt.Errorf("%w: %v", fs.ErrNotExist, err)
+	}
+	return err
 }
 
 func validateDeletePrefix(prefix string) (string, error) {

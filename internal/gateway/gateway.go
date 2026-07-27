@@ -28,12 +28,17 @@ import (
 	"github.com/qs3c/bkcrab/internal/channels"
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/cron"
+	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
 	"github.com/qs3c/bkcrab/internal/plugin"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/rag"
+	ragenrich "github.com/qs3c/bkcrab/internal/rag/enrich"
 	ragobjects "github.com/qs3c/bkcrab/internal/rag/objects"
+	ragparse "github.com/qs3c/bkcrab/internal/rag/parse"
+	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
 	ragrerank "github.com/qs3c/bkcrab/internal/rag/rerank"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
+	ragvision "github.com/qs3c/bkcrab/internal/rag/vision"
 	"github.com/qs3c/bkcrab/internal/sandbox"
 	"github.com/qs3c/bkcrab/internal/scope"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -161,8 +166,11 @@ type Gateway struct {
 	accounts    *users.Accounts
 	workspace   workspace.Store
 	sandboxPool sandbox.ExecutorPool
+	mcpRuntime  *mcpruntime.Service
 	usage       usage.Meter
 	ragSvc      *rag.Service
+	ragCfg      config.RAGCfg
+	ragParser   *sidecar.Client
 	envCfg      *config.EnvConfig
 	// chatEvents 设置后，允许总线触发的 web 轮次（cron/目标延续/心跳/子代理）
 	// 通过用户输入的 POST /api/chat 轮次使用的同一个 SSE hub 流式传输。
@@ -190,11 +198,28 @@ func (g *Gateway) Usage() usage.Meter { return g.usage }
 // Milvus or embedding configuration is incomplete or startup failed.
 func (g *Gateway) RAG() *rag.Service { return g.ragSvc }
 
+// RAGConfig returns the validated system snapshot even when the optional base
+// RAG service could not be initialized, allowing capability discovery to
+// explain unavailable advanced routes without probing dependencies.
+func (g *Gateway) RAGConfig() config.RAGCfg { return g.ragCfg }
+
+// RAGParserHealthSnapshot returns only the last background-probed snapshot.
+// It never performs network I/O and is safe to call from HTTP handlers.
+func (g *Gateway) RAGParserHealthSnapshot() config.RAGParserHealthSnapshot {
+	if g == nil || g.ragParser == nil {
+		return config.RAGParserHealthSnapshot{}
+	}
+	return g.ragParser.HealthSnapshot()
+}
+
 // Store 返回网关的存储后端。
 func (g *Gateway) Store() store.Store { return g.store }
 
 // TaskQueue 返回网关的任务队列。
 func (g *Gateway) TaskQueue() *taskqueue.Queue { return g.taskQueue }
+
+// MCPRuntime returns the gateway-backed MCP runtime service.
+func (g *Gateway) MCPRuntime() *mcpruntime.Service { return g.mcpRuntime }
 
 // EnvConfig 返回引导配置（BKCRAB_* 环境变量）。
 func (g *Gateway) EnvConfig() *config.EnvConfig { return g.envCfg }
@@ -253,39 +278,142 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	ws := wsInner
 
 	var ragSvc *rag.Service
+	var legacySnapshotBuilder store.RAGLegacyTaskSnapshotBuilder
 	ragCfg := readSystemRAGCfg(st, env)
+	if err := ragCfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid RAG configuration: %w", err)
+	}
+	ragParserClient, parserErr := newRAGParserClient(ragCfg)
+	if parserErr != nil {
+		// The parser is optional infrastructure. A malformed or unavailable
+		// endpoint disables only sidecar-backed routes; base RAG still starts.
+		slog.Error("rag: parser sidecar configuration invalid; sidecar routes disabled", "error", parserErr)
+		ragParserClient = nil
+	}
+	var primitives ragparse.PrimitiveExtractor
+	if ragParserClient != nil {
+		primitives = ragParserClient
+	}
+	officeAvailable := func() bool {
+		if ragParserClient == nil {
+			return false
+		}
+		return ragCfg.RuntimeCapabilities(ragParserClient.HealthSnapshot()).Office.Available
+	}
+	documentParser := ragparse.NewLocalParser(
+		primitives, ragCfg.Limits.MaxPagesPerDocument, ragCfg.Limits.MaxExtractedBytes,
+	)
+	allowLegacyTaskMigration := env.RAGLegacyTaskMigrationMode == config.RAGLegacyTaskMigrationModeOfflineV1
+	if env.RAGLegacyTaskMigrationMode != "" && !allowLegacyTaskMigration {
+		return nil, fmt.Errorf(
+			"invalid BKCRAB_RAG_LEGACY_TASK_MIGRATION_MODE %q; expected %q",
+			env.RAGLegacyTaskMigrationMode, config.RAGLegacyTaskMigrationModeOfflineV1,
+		)
+	}
 	if ragCfg.Available() {
 		ragObjects, objectErr := newRAGObjectStore(osCfg, homeDir)
 		if objectErr != nil {
 			slog.Error("rag: original object store initialization failed; RAG disabled", "error", objectErr)
-		} else if vecStore, vecErr := vector.NewMilvus(context.Background(), ragCfg.Milvus.Address, ragCfg.Milvus.Username, ragCfg.Milvus.Password); vecErr != nil {
-			slog.Error("rag: Milvus connection failed; RAG disabled", "error", vecErr)
 		} else {
-			var ranker ragrerank.Reranker
-			if ragCfg.Reranker.Available() {
-				client, rerankErr := ragrerank.NewHTTP(
-					ragCfg.Reranker.Endpoint,
-					ragCfg.Reranker.APIKey,
-					ragCfg.Reranker.Model,
-					time.Duration(ragCfg.Reranker.TimeoutMS)*time.Millisecond,
+			var pageVision ragvision.PageTranscriber
+			var imageVision ragvision.ImageTranscriber
+			var textEnricher ragenrich.Enricher
+			if ragCfg.Features.AdvancedParsingEnabled && strings.TrimSpace(ragCfg.DocumentAI.VisionModel) != "" {
+				visionClient, visionErr := ragvision.NewOpenAICompatible(
+					ragCfg.DocumentAI,
+					ragCfg.Limits,
+					ragvision.NewObjectCache(ragObjects, ragvision.DefaultSchemaLimits(), st),
 				)
-				if rerankErr != nil {
-					slog.Error("rag: reranker configuration invalid; continuing with RRF", "error", rerankErr)
+				if visionErr != nil {
+					slog.Error("rag: DocumentAI vision configuration invalid; visual routes disabled", "error", visionErr)
 				} else {
-					ranker = client
+					pageVision = visionClient
+					imageVision = visionClient
 				}
 			}
-			ragSvc = rag.New(rag.Deps{
-				Store:        st,
-				Vector:       vecStore,
-				Objects:      ragObjects,
-				Cfg:          ragCfg,
-				UserEmbedCfg: userEmbeddingCfgLookup(st),
-				QueryLLM:     userRAGQueryLLM(st, meter),
-				Reranker:     ranker,
+			if ragCfg.Features.TextEnrichmentEnabled && strings.TrimSpace(ragCfg.DocumentAI.TextModel) != "" {
+				enrichmentClient, enrichmentErr := ragenrich.NewOpenAICompatible(
+					ragCfg.DocumentAI,
+					ragCfg.Limits,
+					ragenrich.NewObjectCache(ragObjects, ragenrich.DefaultSchemaLimits(), st),
+				)
+				if enrichmentErr != nil {
+					slog.Error("rag: DocumentAI enrichment configuration invalid; enrichment disabled", "error", enrichmentErr)
+				} else {
+					textEnricher = enrichmentClient
+				}
+			}
+			// Legacy snapshot construction only needs SQL, the original object
+			// store and provider configuration. Assemble it before connecting to
+			// Milvus so a temporary vector outage cannot turn runnable legacy work
+			// into permanent FAILED rows.
+			snapshotSvc := rag.New(rag.Deps{
+				Store:           st,
+				Objects:         ragObjects,
+				Cfg:             ragCfg,
+				UserEmbedCfg:    userEmbeddingCfgLookup(st),
+				Parser:          documentParser,
+				Primitives:      primitives,
+				OfficeAvailable: officeAvailable,
 			})
-			slog.Info("rag service enabled", "milvus", ragCfg.Milvus.Address)
+			legacySnapshotBuilder = func(
+				ctx context.Context,
+				doc *store.RAGDocumentRecord,
+				docVersion int64,
+			) (*store.RAGDocumentVersionRecord, error) {
+				snapshot, err := snapshotSvc.BuildVersionSnapshot(ctx, doc)
+				if err != nil {
+					return nil, err
+				}
+				snapshot.DocVersion = docVersion
+				return snapshot, nil
+			}
+
+			vecStore, vecErr := vector.NewMilvus(context.Background(), ragCfg.Milvus.Address, ragCfg.Milvus.Username, ragCfg.Milvus.Password)
+			if vecErr != nil {
+				slog.Error("rag: Milvus connection failed; RAG disabled", "error", vecErr)
+			} else {
+				var ranker ragrerank.Reranker
+				if ragCfg.Reranker.Available() {
+					client, rerankErr := ragrerank.NewHTTP(
+						ragCfg.Reranker.Endpoint,
+						ragCfg.Reranker.APIKey,
+						ragCfg.Reranker.Model,
+						time.Duration(ragCfg.Reranker.TimeoutMS)*time.Millisecond,
+					)
+					if rerankErr != nil {
+						slog.Error("rag: reranker configuration invalid; continuing with RRF", "error", rerankErr)
+					} else {
+						ranker = client
+					}
+				}
+				ragSvc = rag.New(rag.Deps{
+					Store:           st,
+					Vector:          vecStore,
+					Objects:         ragObjects,
+					Cfg:             ragCfg,
+					UserEmbedCfg:    userEmbeddingCfgLookup(st),
+					QueryLLM:        userRAGQueryLLM(st, meter),
+					Reranker:        ranker,
+					Parser:          documentParser,
+					Primitives:      primitives,
+					PageVision:      pageVision,
+					ImageVision:     imageVision,
+					Enricher:        textEnricher,
+					OfficeAvailable: officeAvailable,
+				})
+				slog.Info("rag service enabled", "milvus", ragCfg.Milvus.Address)
+			}
 		}
+	}
+	// Legacy runnable rows are contracted only after the runtime can build the
+	// same immutable, secret-free snapshot used by new uploads. If those
+	// dependencies are unavailable, the store returns an error without mutating
+	// a legacy survivor; canonical/no-legacy databases still start normally.
+	if err := st.MigrateLegacyRAGIndexTasks(
+		context.Background(), legacySnapshotBuilder, allowLegacyTaskMigration,
+	); err != nil {
+		return nil, fmt.Errorf("migrate legacy RAG index tasks: %w", err)
 	}
 
 	// holderID 是印记在 channel_leases.holder_id 中的每个进程标识符。
@@ -348,6 +476,12 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	// 每个用户的构建器为这些空间产生 nil，代理的 exec 工具拒绝运行并显示
 	// "sandbox required but no executor available"。
 	systemSandboxPool := buildSystemSandboxPool(readSystemSandboxCfg(st), ws)
+	mcpRuntime := mcpruntime.NewService(mcpruntime.Options{
+		Store:     st,
+		Resources: st,
+		Docker:    mcpruntime.NewDockerCLIClient(),
+		Config:    mcpruntime.FromEnv(env.MCPGateway),
+	})
 
 	// Accounts 服务由入站路由循环用于延迟铸造每个（通道，IM 发送者）的 app_user 行，
 	// 以便 IM 通道上的每个聊天者最终拥有自己稳定的 bkcrab u_xxx id
@@ -364,13 +498,16 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		workspace:   ws,
 		usage:       meter,
 		sandboxPool: systemSandboxPool,
-		users:       newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, pluginMgr, ragSvc),
+		mcpRuntime:  mcpRuntime,
+		users:       newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, mcpRuntime, pluginMgr, ragSvc),
 		chanMgr:     chanMgr,
 		webChan:     webChan,
 		scheduler:   scheduler,
 		webhookSrv:  webhookSrv,
 		pluginMgr:   pluginMgr,
 		ragSvc:      ragSvc,
+		ragCfg:      ragCfg,
+		ragParser:   ragParserClient,
 		envCfg:      env,
 	}
 
@@ -511,6 +648,9 @@ func (g *Gateway) IsCloudMode() bool { return true }
 func (g *Gateway) Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	if g.ragParser != nil {
+		g.ragParser.StartHealthProbe(ctx)
+	}
 	if g.ragSvc != nil {
 		g.ragSvc.Start(ctx)
 	}
@@ -540,6 +680,9 @@ func (g *Gateway) Run() error {
 	}()
 
 	var wg sync.WaitGroup
+	if g.mcpRuntime != nil {
+		g.mcpRuntime.Start(ctx)
+	}
 	wg.Add(1)
 	go func() { defer wg.Done(); g.users.startEvictor(ctx) }()
 	wg.Add(1)
@@ -583,6 +726,12 @@ func (g *Gateway) Run() error {
 	}
 	if g.pluginMgr != nil {
 		g.pluginMgr.StopAll()
+	}
+	if g.users != nil {
+		g.users.closeAll()
+	}
+	if g.mcpRuntime != nil {
+		_ = g.mcpRuntime.StopAll(context.Background())
 	}
 	if g.sandboxPool != nil {
 		g.sandboxPool.CloseAll()
@@ -653,6 +802,36 @@ func readSystemRAGCfg(st store.Store, env *config.EnvConfig) config.RAGCfg {
 	}
 	out.ApplyDefaults()
 	return out
+}
+
+func newRAGParserClient(cfg config.RAGCfg) (*sidecar.Client, error) {
+	cfg.ApplyDefaults()
+	if strings.TrimSpace(cfg.ParserSidecar.Endpoint) == "" {
+		return nil, nil
+	}
+	maxInputBytes := int64(cfg.Limits.MaxFileMB) * 1024 * 1024
+	maxEntryBytes := maxInputBytes
+	if cfg.Limits.MaxAssetBytes > maxEntryBytes {
+		maxEntryBytes = cfg.Limits.MaxAssetBytes
+	}
+	return sidecar.NewClient(sidecar.ClientConfig{
+		Endpoint: cfg.ParserSidecar.Endpoint,
+		Timeout:  time.Duration(cfg.ParserSidecar.TimeoutMS) * time.Millisecond,
+		Limits: sidecar.ClientLimits{
+			MaxInputBytes:     maxInputBytes,
+			MaxOutputBytes:    cfg.Limits.MaxExtractedBytes,
+			MaxExtractedBytes: cfg.Limits.MaxExtractedBytes,
+			MaxEntryBytes:     maxEntryBytes,
+			MaxAssetBytes:     cfg.Limits.MaxAssetBytes,
+			MaxRenderBytes:    cfg.Limits.MaxVisionInputBytes,
+			MaxPages:          cfg.Limits.MaxPagesPerDocument,
+			MaxAssets:         cfg.Limits.MaxAssetsPerDocument,
+			MaxImagePixels:    cfg.Limits.MaxImagePixels,
+		},
+		// services/rag-parser/docs/pdf-engine-adr.md approves the exact
+		// pypdfium2/PDFium distribution enforced by the sidecar client.
+		PDFLicenseApproved: true,
+	})
 }
 
 func userEmbeddingCfgLookup(st store.Store) rag.UserEmbedCfgFn {

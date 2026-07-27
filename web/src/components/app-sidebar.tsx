@@ -21,6 +21,7 @@ import { AgentSettingsDialog } from "@/components/agent-settings-dialog";
 import {
   BotIcon,
   BrainIcon,
+  CableIcon,
   CoinsIcon,
   DatabaseIcon,
   KeyRoundIcon,
@@ -52,7 +53,7 @@ import {
 // 仍然显示平台导航
 function extractAgentId(pathname: string): string | null {
   const match = pathname.match(
-    /^\/agents\/([^/]+)\/(chat|customize|skills|models|knowledge|sessions|channels|chats|scheduler|project)/,
+    /^\/agents\/([^/]+)\/(chat|customize|skills|models|knowledge|sessions|channels|chats|scheduler|project|mcp)/,
   );
   return match ? match[1] : null;
 }
@@ -79,12 +80,14 @@ const USER_AGENT_GROUP: NavItem[] = [
   { title: "智能体", url: "/agents/", icon: BotIcon },
   { title: "模型", url: "/models/", icon: BrainIcon },
   { title: "知识库", url: "/knowledge/", icon: DatabaseIcon },
+  { title: "MCP", url: "/mcp/", icon: CableIcon },
 ];
 
 const ADMIN_AGENT_GROUP: NavItem[] = [
   { title: "智能体", url: "/agents/", icon: BotIcon },
   { title: "模型", url: "/models/", icon: BrainIcon },
   { title: "知识库", url: "/knowledge/", icon: DatabaseIcon },
+  { title: "MCP", url: "/mcp/", icon: CableIcon },
   { title: "技能", url: "/skills/", icon: SparklesIcon },
   { title: "工具", url: "/tools/", icon: WrenchIcon },
 ];

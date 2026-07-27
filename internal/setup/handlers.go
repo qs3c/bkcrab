@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -464,6 +465,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	masked.RAG.Milvus.Password = maskConfigSecret(cfg.RAG.Milvus.Password)
 	masked.RAG.Embedding.APIKey = maskConfigSecret(cfg.RAG.Embedding.APIKey)
 	masked.RAG.Reranker.APIKey = maskConfigSecret(cfg.RAG.Reranker.APIKey)
+	masked.RAG.DocumentAI.APIKey = maskConfigSecret(cfg.RAG.DocumentAI.APIKey)
 	if len(cfg.Skills.Entries) > 0 {
 		me := make(map[string]config.SkillEntryCfg, len(cfg.Skills.Entries))
 		for k, v := range cfg.Skills.Entries {
@@ -625,6 +627,9 @@ func (s *Server) saveRAGConfigPatch(r *http.Request, patch json.RawMessage) erro
 		if value, ok := rawNestedString(raw, "reranker", "apiKey"); ok && isMaskedSecret(value) {
 			next.Reranker.APIKey = current.Reranker.APIKey
 		}
+		if value, ok := rawNestedString(raw, "documentAI", "apiKey"); ok && isMaskedSecret(value) {
+			next.DocumentAI.APIKey = current.DocumentAI.APIKey
+		}
 		return scope.SaveSettingByScope(r.Context(), s.dataStore, sc, scopeID, "rag", ragSystemData(next))
 	}
 
@@ -688,10 +693,7 @@ func rawNestedString(raw map[string]json.RawMessage, section, key string) (strin
 }
 
 func ragSystemData(cfg config.RAGCfg) map[string]interface{} {
-	if cfg.Milvus == (config.MilvusCfg{}) &&
-		cfg.Embedding == (config.RAGEmbeddingCfg{}) &&
-		cfg.Reranker == (config.RAGRerankerCfg{}) &&
-		cfg.Limits == (config.RAGLimitsCfg{}) {
+	if reflect.DeepEqual(cfg, config.RAGCfg{}) {
 		return nil
 	}
 	return toMap(cfg)
@@ -777,7 +779,7 @@ func (s *Server) handleTestStoredProvider(w http.ResponseWriter, r *http.Request
 
 // runProviderTest 向上游 provider 发起轻量级聊天补全。
 // 在内联测试（请求体中提供密钥，在创建/重新密钥时使用）和存储测试
-//（服务器端查找密钥，在编辑时使用）之间共享。
+// （服务器端查找密钥，在编辑时使用）之间共享。
 //
 // 我们有意识地比"HTTP 2xx = ok"更严格，因为某些上游（one-api/new-api 网关、
 // 通用反向代理，甚至配置错误的 nginx）会在错误路径上愉快地返回 200 和 HTML。
@@ -983,7 +985,7 @@ func (r chatRequest) preMaterialized() bool {
 
 // annotateMessageWithAttachments 在每个附件前向用户消息添加一行
 // `[Attached: /workspace/<file>]` — 与 Web UI 使用的相同面包屑格式
-//（参见 web/src/app/agents/[id]/chat/page.tsx:639-645），
+// （参见 web/src/app/agents/[id]/chat/page.tsx:639-645），
 // 因此 LLM 看到的传输形状无论轮次是通过 Web 聊天还是聊天 API 到达都是相同的。
 // provider.StripAttachedPrefix 在存储的历史记录到达 UI 气泡/页面标题之前清除这些标签。
 //
@@ -1636,7 +1638,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMoveSessionProject 将一个聊天重新分配给不同的项目
-//（或在 projectId 为 "" 时将其分离回松散聊天列表）。
+// （或在 projectId 为 "" 时将其分离回松散聊天列表）。
 // 支持侧边栏拖放功能：将聊天行拖到项目标题上/从项目标题拖出会触发此端点。
 //
 // 请求体：{ "agentId": "...", "projectId": "<pid>" | "" }
@@ -1647,7 +1649,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 //   - 绑定到此聊天的任何活跃 sandbox 被释放，以便替换容器以新的绑定挂载路径启动。
 //
 // 当目标目录已有文件时返回 409，code="destination_exists"
-//（防御性 — session_keys 是唯一的，因此这不应自然发生，但比静默合并好）。
+// （防御性 — session_keys 是唯一的，因此这不应自然发生，但比静默合并好）。
 func (s *Server) handleMoveSessionProject(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agentId")
 	var req struct {
@@ -1706,7 +1708,7 @@ func (s *Server) handleMoveSessionProject(w http.ResponseWriter, r *http.Request
 }
 
 // handleFeishuWebhook 接收飞书 / Feishu 事件 POST。路由是公开的
-//（飞书不通过 bkcrab bearer 认证）；每事件安全性
+// （飞书不通过 bkcrab bearer 认证）；每事件安全性
 // 在飞书适配器内部通过验证负载的 header.token 与连接时存储的验证令牌来强制执行。
 //
 // 将原始 body 交给网关（通过类型断言的 dispatcher hook），
@@ -1745,12 +1747,12 @@ func (s *Server) handleFeishuWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleLINEWebhook 接收 LINE Messaging API 事件 POST。路由是公开的
-//（LINE 不通过 bkcrab bearer 认证）；每事件安全性
+// （LINE 不通过 bkcrab bearer 认证）；每事件安全性
 // 来自 `x-line-signature` 中的 HMAC-SHA256 签名，
 // 适配器根据 channel_secret + 原始 body 进行验证。
 //
 // 读取 body 一次，将原始字节 + 签名交给网关 dispatcher
-//（重新编码 JSON 会改变计算 HMAC 所用的字节并破坏验证）。
+// （重新编码 JSON 会改变计算 HMAC 所用的字节并破坏验证）。
 func (s *Server) handleLINEWebhook(w http.ResponseWriter, r *http.Request) {
 	accountID := r.PathValue("accountId")
 	if accountID == "" {

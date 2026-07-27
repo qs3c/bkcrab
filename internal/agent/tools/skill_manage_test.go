@@ -166,11 +166,11 @@ func execRegistrySkillManage(t *testing.T, r *Registry, args map[string]any) (st
 	if err != nil {
 		t.Fatal(err)
 	}
-	tool, ok := r.tools["skill_manage"]
-	if !ok {
+	fn := r.GetFunc("skill_manage")
+	if fn == nil {
 		t.Fatal("skill_manage not registered")
 	}
-	return tool.fn(context.Background(), raw)
+	return fn(context.Background(), raw)
 }
 
 func TestSkillManageOwnerGateOnTurnRegistry(t *testing.T) {

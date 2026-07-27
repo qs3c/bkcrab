@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+
+	"github.com/qs3c/bkcrab/internal/rag/chunktext"
 )
 
 const fakeRRFK = 60
@@ -30,7 +32,7 @@ type fakeCollection struct {
 type fakeEntryKey struct {
 	docID   string
 	index   int
-	version int
+	version int64
 }
 
 type fakeRankedChunk struct {
@@ -93,8 +95,8 @@ func (f *Fake) UpsertChunks(ctx context.Context, kbID string, chunks []ChunkData
 		}
 	}
 
-	versions := make([]int, 0, 1)
-	seenVersion := make(map[int]struct{})
+	versions := make([]int64, 0, 1)
+	seenVersion := make(map[int64]struct{})
 	for _, chunk := range chunks {
 		key := fakeEntryKey{docID: chunk.DocID, index: chunk.Index, version: chunk.DocVersion}
 		c.entries[key] = cloneChunk(chunk)
@@ -109,7 +111,7 @@ func (f *Fake) UpsertChunks(ctx context.Context, kbID string, chunks []ChunkData
 	return nil
 }
 
-func (f *Fake) DeleteOldVersions(ctx context.Context, kbID, docID string, keepVersion int) error {
+func (f *Fake) DeleteDocVersion(ctx context.Context, kbID, docID string, version int64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -121,11 +123,11 @@ func (f *Fake) DeleteOldVersions(ctx context.Context, kbID, docID string, keepVe
 		return err
 	}
 	for key := range c.entries {
-		if key.docID == docID && key.version < keepVersion {
+		if key.docID == docID && key.version == version {
 			delete(c.entries, key)
 		}
 	}
-	c.ops = append(c.ops, fmt.Sprintf("delete_old_v%d", keepVersion))
+	c.ops = append(c.ops, fmt.Sprintf("delete_v%d", version))
 	return nil
 }
 
@@ -155,9 +157,9 @@ func (f *Fake) DropCollection(ctx context.Context, kbID string) error {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if _, err := f.collectionLocked(kbID); err != nil {
-		return err
-	}
+	// Collection cleanup is an idempotent lifecycle operation. A retry after a
+	// later object/catalog failure must not get stuck merely because the first
+	// attempt already removed the in-memory collection.
 	delete(f.collections, kbID)
 	return nil
 }
@@ -189,6 +191,9 @@ func (f *Fake) HybridSearch(ctx context.Context, kbID string, query SearchQuery,
 	}
 	entries := make([]fakeRankedChunk, 0, len(c.entries))
 	for key, chunk := range c.entries {
+		if version, active := query.ActiveVersions[key.docID]; !active || version != key.version {
+			continue
+		}
 		entries = append(entries, fakeRankedChunk{key: key, chunk: cloneChunk(chunk)})
 	}
 	f.mu.RUnlock()
@@ -226,12 +231,14 @@ func (f *Fake) HybridSearch(ctx context.Context, kbID string, query SearchQuery,
 	hits := make([]SearchHit, 0, len(merged))
 	for _, item := range merged {
 		hits = append(hits, SearchHit{
-			DocID:        item.chunk.DocID,
-			ChunkIndex:   item.chunk.Index,
-			Content:      item.chunk.Content,
-			SectionTitle: item.chunk.SectionTitle,
-			PageNum:      item.chunk.PageNum,
-			Score:        item.score,
+			DocID:         item.chunk.DocID,
+			ChunkIndex:    item.chunk.Index,
+			Content:       item.chunk.Content,
+			SearchContent: chunktext.ForIndex(item.chunk.SearchContent, item.chunk.SectionTitle, item.chunk.Content),
+			SectionTitle:  item.chunk.SectionTitle,
+			PageNum:       item.chunk.PageNum,
+			DocVersion:    item.chunk.DocVersion,
+			Score:         item.score,
 		})
 	}
 	return hits, nil
@@ -259,7 +266,7 @@ func (f *Fake) Count(kbID string) int {
 }
 
 // Ops returns a copy of the write-order log for kbID. Upserts are recorded as
-// "upsert_vN" and version cleanup as "delete_old_vN".
+// "upsert_vN" and exact cleanup as "delete_vN".
 func (f *Fake) Ops(kbID string) []string {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
@@ -299,7 +306,9 @@ func rankDense(entries []fakeRankedChunk, query []float32, limit int) []fakeRank
 func rankText(entries []fakeRankedChunk, terms []string, limit int) []fakeRankedChunk {
 	ranked := make([]fakeRankedChunk, 0, len(entries))
 	for _, item := range entries {
-		content := strings.ToLower(item.chunk.Content)
+		content := strings.ToLower(chunktext.ForIndex(
+			item.chunk.SearchContent, item.chunk.SectionTitle, item.chunk.Content,
+		))
 		score := 0
 		for _, term := range terms {
 			score += strings.Count(content, term)

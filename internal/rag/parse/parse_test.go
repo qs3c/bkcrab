@@ -30,7 +30,9 @@ func TestParseMarkdownAndText(t *testing.T) {
 
 func TestSupportedExtAndUnknownExtension(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"a.md", "a.MARKDOWN", "a.Txt", "a.PDF", "a.docx"} {
+	for _, name := range []string{
+		"a.md", "a.MARKDOWN", "a.Txt", "a.PDF", "a.docx", "a.PPTX", "a.xlsx",
+	} {
 		if !SupportedExt(name) {
 			t.Errorf("SupportedExt(%q) = false", name)
 		}

@@ -16,6 +16,7 @@ require (
 	github.com/minio/minio-go/v7 v7.0.100
 	github.com/slack-go/slack v0.19.0
 	github.com/spf13/cobra v1.10.2
+	github.com/yuin/goldmark v1.7.13
 	golang.org/x/crypto v0.46.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.48.2

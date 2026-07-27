@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   AlertCircle,
   CheckCircle2,
@@ -26,6 +27,7 @@ import {
   deleteKnowledgeBase,
   deleteKnowledgeDocument,
   generateKnowledgeBaseMetadata,
+  getRAGCapabilities,
   getMe,
   listKnowledgeBases,
   listKnowledgeDocuments,
@@ -36,7 +38,32 @@ import {
   type KnowledgeBase,
   type KnowledgeDocument,
   type KnowledgeSearchHit,
+  type RAGCapabilities,
+  type RAGParseMode,
 } from "@/lib/api";
+import { RAGResourceGallery } from "@/components/rag-resource-gallery";
+import {
+  appendActAs,
+  availableUploadExtensions,
+  buildKnowledgeBasePayload,
+  canChangeFeature,
+  collectRAGResources,
+  createPollController,
+  documentActionLabel,
+  documentNeedsLabel,
+  formatDocumentAIBudget,
+  formatParseModeTransition,
+  getDocumentProgressLabel,
+  getDocumentStatusState,
+  getRAGCapabilityRows,
+  getRAGOptInDisclosure,
+  isAutoAvailable,
+  isTerminalDocument,
+  pdfAutoBehavior,
+  shouldApplyDocumentLoad,
+  shouldPollDocuments,
+  uploadLimitForFile,
+} from "@/components/rag-resource-gallery-state";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -69,6 +96,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -81,14 +109,14 @@ import { Textarea } from "@/components/ui/textarea";
 
 const DEFAULT_CHUNK_SIZE = 512;
 const DEFAULT_CHUNK_OVERLAP = 64;
-const ACCEPTED_EXTENSIONS = [".md", ".txt", ".pdf", ".docx"];
-const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
 type KBForm = {
   name: string;
   description: string;
   chunkSize: string;
   chunkOverlap: string;
+  parseMode: RAGParseMode;
+  enrichmentEnabled: boolean;
 };
 
 const EMPTY_FORM: KBForm = {
@@ -96,6 +124,8 @@ const EMPTY_FORM: KBForm = {
   description: "",
   chunkSize: String(DEFAULT_CHUNK_SIZE),
   chunkOverlap: String(DEFAULT_CHUNK_OVERLAP),
+  parseMode: "standard",
+  enrichmentEnabled: false,
 };
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -115,38 +145,59 @@ function formatTime(value?: string): string {
   return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("zh-CN");
 }
 
-function documentStatus(status: string) {
-  switch (status.toUpperCase()) {
-    case "DONE":
-      return {
-        label: "已索引",
-        icon: CheckCircle2,
-        className: "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-      };
-    case "FAILED":
-      return {
-        label: "失败",
-        icon: XCircle,
-        className: "border-destructive/25 bg-destructive/10 text-destructive",
-      };
-    case "PROCESSING":
-      return {
-        label: "处理中",
-        icon: Loader2,
-        className: "border-blue-500/25 bg-blue-500/10 text-blue-700 dark:text-blue-400",
-      };
-    default:
-      return {
-        label: "等待处理",
-        icon: Loader2,
-        className: "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-400",
-      };
+function documentStatus(doc: KnowledgeDocument) {
+  const state = getDocumentStatusState(doc);
+  if (state.kind === "failed") {
+    return {
+      ...state,
+      icon: XCircle,
+      className: "border-destructive/25 bg-destructive/10 text-destructive",
+    };
   }
+  if (state.kind === "degraded") {
+    return {
+      ...state,
+      icon: CheckCircle2,
+      className: "border-amber-500/25 bg-amber-500/10 text-amber-800 dark:text-amber-300",
+    };
+  }
+  if (state.kind === "done") {
+    return {
+      ...state,
+      icon: CheckCircle2,
+      className: "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+    };
+  }
+  return {
+    ...state,
+    icon: Loader2,
+    className: state.kind === "queued"
+      ? "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+      : "border-blue-500/25 bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  };
+}
+
+function progressText(doc: KnowledgeDocument): string {
+  const label = getDocumentProgressLabel(doc);
+  if (doc.progress.total <= 0) return label;
+  const units: Record<string, string> = {
+    pages: "页",
+    assets: "张图片",
+    blocks: "个区块",
+    chunks: "个分片",
+  };
+  const unit = units[doc.progress.unit.toLowerCase()] || doc.progress.unit;
+  return `${label} ${doc.progress.current}/${doc.progress.total}${unit ? ` ${unit}` : ""}`;
 }
 
 export default function KnowledgePage() {
+  const searchParams = useSearchParams();
+  const actAs = searchParams.get("actAs")?.trim() || "";
   const [knowledgeBases, setKnowledgeBases] = React.useState<KnowledgeBase[]>([]);
+  const [capabilities, setCapabilities] = React.useState<RAGCapabilities | null>(null);
   const [selectedId, setSelectedId] = React.useState("");
+  const selectedIdRef = React.useRef("");
+  const documentsRequestGenerationRef = React.useRef(0);
   const [documents, setDocuments] = React.useState<KnowledgeDocument[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [documentsLoading, setDocumentsLoading] = React.useState(false);
@@ -159,6 +210,7 @@ export default function KnowledgePage() {
   const [form, setForm] = React.useState<KBForm>(EMPTY_FORM);
   const [formError, setFormError] = React.useState("");
   const [saving, setSaving] = React.useState(false);
+  const [pendingOptIn, setPendingOptIn] = React.useState<"auto" | "enrichment" | null>(null);
   const [generatingMetadata, setGeneratingMetadata] = React.useState(false);
   const metadataRequestRef = React.useRef<AbortController | null>(null);
   const [deleteKBTarget, setDeleteKBTarget] = React.useState<KnowledgeBase | null>(null);
@@ -179,6 +231,32 @@ export default function KnowledgePage() {
     () => knowledgeBases.find((kb) => kb.id === selectedId) ?? null,
     [knowledgeBases, selectedId],
   );
+  const uploadExtensions = React.useMemo(
+    () => availableUploadExtensions(capabilities),
+    [capabilities],
+  );
+  const uploadLimits = React.useMemo(() => {
+    const groups = new Map<number, string[]>();
+    for (const extension of uploadExtensions) {
+      const limit = uploadLimitForFile(`file${extension}`, capabilities);
+      if (limit <= 0) continue;
+      const extensions = groups.get(limit) || [];
+      extensions.push(extension.slice(1).toUpperCase());
+      groups.set(limit, extensions);
+    }
+    return [...groups.entries()]
+      .map(([limit, extensions]) => `${extensions.join("/")} ${formatBytes(limit)}`)
+      .join("；");
+  }, [capabilities, uploadExtensions]);
+  const autoAvailable = isAutoAvailable(capabilities);
+
+  const selectKnowledgeBase = React.useCallback((nextID: string) => {
+    if (selectedIdRef.current !== nextID) {
+      selectedIdRef.current = nextID;
+      documentsRequestGenerationRef.current += 1;
+    }
+    setSelectedId(nextID);
+  }, []);
 
   const loadKnowledgeBases = React.useCallback(async (preferredId?: string) => {
     setLoading(true);
@@ -186,54 +264,100 @@ export default function KnowledgePage() {
     try {
       const rows = await listKnowledgeBases();
       setKnowledgeBases(rows);
-      setSelectedId((current) => {
-        const desired = preferredId || current;
-        return rows.some((kb) => kb.id === desired) ? desired : rows[0]?.id || "";
-      });
+      const desired = preferredId || selectedIdRef.current;
+      selectKnowledgeBase(rows.some((kb) => kb.id === desired) ? desired : rows[0]?.id || "");
     } catch (err) {
       setKnowledgeBases([]);
-      setSelectedId("");
+      selectKnowledgeBase("");
       setError(errorMessage(err, "读取知识库失败"));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectKnowledgeBase]);
 
-  const loadDocuments = React.useCallback(async (kbId: string, quiet = false) => {
+  const loadDocuments = React.useCallback(async (
+    kbId: string,
+    quiet = false,
+    signal?: AbortSignal,
+  ) => {
+    if (!kbId || selectedIdRef.current !== kbId || signal?.aborted) return;
+    const requestGeneration = documentsRequestGenerationRef.current + 1;
+    documentsRequestGenerationRef.current = requestGeneration;
     if (!quiet) setDocumentsLoading(true);
     try {
-      const rows = await listKnowledgeDocuments(kbId);
+      const rows = await listKnowledgeDocuments(kbId, signal);
+      if (!shouldApplyDocumentLoad(
+        kbId,
+        requestGeneration,
+        selectedIdRef.current,
+        documentsRequestGenerationRef.current,
+        signal?.aborted === true,
+      )) return;
       setDocuments(rows);
     } catch (err) {
-      if (!quiet) setError(errorMessage(err, "读取文档失败"));
+      if (shouldApplyDocumentLoad(
+        kbId,
+        requestGeneration,
+        selectedIdRef.current,
+        documentsRequestGenerationRef.current,
+        signal?.aborted === true,
+      ) && !quiet) setError(errorMessage(err, "读取文档失败"));
     } finally {
-      if (!quiet) setDocumentsLoading(false);
+      if (shouldApplyDocumentLoad(
+        kbId,
+        requestGeneration,
+        selectedIdRef.current,
+        documentsRequestGenerationRef.current,
+        signal?.aborted === true,
+      )) {
+        setDocumentsLoading(false);
+      }
     }
   }, []);
 
   React.useEffect(() => {
     void loadKnowledgeBases();
+    void getRAGCapabilities()
+      .then(setCapabilities)
+      .catch((err) => {
+        setCapabilities(null);
+        setError(errorMessage(err, "读取 RAG 能力失败，上传与高级配置已停用"));
+      });
     void getMe().then((me) => setReadOnly(me.readOnly === true)).catch(() => undefined);
-  }, [loadKnowledgeBases]);
+  }, [actAs, loadKnowledgeBases]);
 
   React.useEffect(() => {
     setDocuments([]);
     setHits([]);
     setSearched(false);
-    if (selectedId) void loadDocuments(selectedId);
+    if (!selectedId) return;
+    const controller = new AbortController();
+    void loadDocuments(selectedId, false, controller.signal);
+    return () => controller.abort();
   }, [selectedId, loadDocuments]);
 
-  const indexing = documents.some((doc) =>
-    ["PENDING", "PROCESSING"].includes(doc.status.toUpperCase()),
-  );
+  const indexing = shouldPollDocuments(documents);
   const readyDocumentCount = documents.filter((doc) =>
     doc.status.toUpperCase() === "DONE",
   ).length;
 
   React.useEffect(() => {
     if (!selectedId || !indexing) return;
-    const timer = window.setInterval(() => void loadDocuments(selectedId, true), 2500);
-    return () => window.clearInterval(timer);
+    const controller = new AbortController();
+    const poller = createPollController(
+      (callback, delay) => window.setTimeout(callback, delay),
+      (handle) => window.clearTimeout(handle as number),
+    );
+    const poll = () => {
+      void loadDocuments(selectedId, true, controller.signal).finally(() => {
+        if (!controller.signal.aborted) poller.schedule(poll, 2500);
+      });
+    };
+    poller.schedule(poll, 2500);
+    return () => {
+      controller.abort();
+      poller.stop();
+    };
   }, [selectedId, indexing, loadDocuments]);
 
   const openCreate = () => {
@@ -242,6 +366,7 @@ export default function KnowledgePage() {
     setGeneratingMetadata(false);
     setEditing(null);
     setForm(EMPTY_FORM);
+    setPendingOptIn(null);
     setFormError("");
     setFormOpen(true);
   };
@@ -256,7 +381,10 @@ export default function KnowledgePage() {
       description: kb.description,
       chunkSize: String(kb.chunkSize),
       chunkOverlap: String(kb.chunkOverlap),
+      parseMode: kb.parseMode || "standard",
+      enrichmentEnabled: kb.enrichmentEnabled === true,
     });
+    setPendingOptIn(null);
     setFormError("");
     setFormOpen(true);
   };
@@ -291,6 +419,7 @@ export default function KnowledgePage() {
       metadataRequestRef.current?.abort();
       metadataRequestRef.current = null;
       setGeneratingMetadata(false);
+      setPendingOptIn(null);
     }
     setFormOpen(open);
   };
@@ -315,12 +444,15 @@ export default function KnowledgePage() {
     setSaving(true);
     setFormError("");
     try {
-      const payload = {
+      const payload = buildKnowledgeBasePayload({
         name,
-        description: form.description.trim(),
+        description: form.description,
         chunkSize,
         chunkOverlap,
-      };
+        parseMode: form.parseMode,
+        enrichmentEnabled: form.enrichmentEnabled,
+      });
+      const wasEditing = !!editing;
       const saved = editing
         ? await updateKnowledgeBase(editing.id, payload)
         : await createKnowledgeBase(payload);
@@ -328,6 +460,9 @@ export default function KnowledgePage() {
       setNotice(editing ? "知识库设置已保存" : "知识库已创建，可以开始上传文档");
       window.setTimeout(() => setNotice(""), 2500);
       await loadKnowledgeBases(saved.id);
+      if (wasEditing && saved.id === selectedId) {
+        await loadDocuments(saved.id, true);
+      }
     } catch (err) {
       setFormError(errorMessage(err, "保存知识库失败"));
     } finally {
@@ -352,17 +487,14 @@ export default function KnowledgePage() {
 
   const uploadFiles = async (files: File[]) => {
     if (!selected || files.length === 0) return;
-    const invalid = files.find((file) => {
-      const lower = file.name.toLowerCase();
-      return !ACCEPTED_EXTENSIONS.some((extension) => lower.endsWith(extension));
-    });
+    const invalid = files.find((file) => uploadLimitForFile(file.name, capabilities) <= 0);
     if (invalid) {
-      setError(`${invalid.name} 的格式不受支持，请上传 MD、TXT、PDF 或 DOCX`);
+      setError(`${invalid.name} 的格式当前不可用；可上传 ${uploadExtensions.map((extension) => extension.slice(1).toUpperCase()).join("、") || "能力接口允许的格式"}`);
       return;
     }
-    const tooLarge = files.find((file) => file.size > MAX_FILE_BYTES);
+    const tooLarge = files.find((file) => file.size > uploadLimitForFile(file.name, capabilities));
     if (tooLarge) {
-      setError(`${tooLarge.name} 超过 20 MB 大小限制`);
+      setError(`${tooLarge.name} 超过该格式 ${formatBytes(uploadLimitForFile(tooLarge.name, capabilities))} 的大小限制`);
       return;
     }
     setUploading(true);
@@ -424,6 +556,46 @@ export default function KnowledgePage() {
     }
   };
 
+  const changeAutoMode = (enabled: boolean) => {
+    const currentlyEnabled = form.parseMode === "auto";
+    if (!canChangeFeature(currentlyEnabled, enabled, autoAvailable)) {
+      setFormError(capabilities?.advanced.reason || "高级 RAG 当前不可用，无法新开启");
+      return;
+    }
+    setFormError("");
+    if (enabled && !currentlyEnabled) {
+      setPendingOptIn("auto");
+      return;
+    }
+    setForm((current) => ({ ...current, parseMode: enabled ? "auto" : "standard" }));
+  };
+
+  const changeEnrichment = (enabled: boolean) => {
+    const currentlyEnabled = form.enrichmentEnabled;
+    const available = capabilities?.enrichment.available === true;
+    if (!canChangeFeature(currentlyEnabled, enabled, available)) {
+      setFormError(capabilities?.enrichment.reason || "表格/代码语义增强当前不可用，无法新开启");
+      return;
+    }
+    setFormError("");
+    if (enabled && !currentlyEnabled) {
+      setPendingOptIn("enrichment");
+      return;
+    }
+    setForm((current) => ({ ...current, enrichmentEnabled: enabled }));
+  };
+
+  const confirmOptIn = () => {
+    if (pendingOptIn === "auto") {
+      setForm((current) => ({ ...current, parseMode: "auto" }));
+    } else if (pendingOptIn === "enrichment") {
+      setForm((current) => ({ ...current, enrichmentEnabled: true }));
+    }
+    setPendingOptIn(null);
+  };
+
+  const capabilityRows = getRAGCapabilityRows(capabilities);
+
   return (
     <div className="mx-auto max-w-7xl space-y-6 p-4 sm:p-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -461,7 +633,7 @@ export default function KnowledgePage() {
             <div>
               <h2 className="font-medium">还没有知识库</h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                新建一个知识库，上传 MD、TXT、PDF 或 DOCX 文档后即可让智能体检索。
+                新建知识库并上传能力接口允许的文档后，即可让智能体检索。
               </p>
             </div>
             <Button onClick={openCreate} disabled={readOnly}>
@@ -482,7 +654,7 @@ export default function KnowledgePage() {
                 <button
                   key={kb.id}
                   type="button"
-                  onClick={() => setSelectedId(kb.id)}
+                  onClick={() => selectKnowledgeBase(kb.id)}
                   className={cn(
                     "flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors",
                     selectedId === kb.id ? "bg-primary/10 text-foreground" : "hover:bg-muted",
@@ -535,11 +707,13 @@ export default function KnowledgePage() {
                     </Button>
                   </CardAction>
                 </CardHeader>
-                <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
                   <Metadata label="Embedding 模型" value={selected.embedModel} />
                   <Metadata label="向量维度" value={`${selected.embedDims} 维`} />
                   <Metadata label="分片长度" value={`${selected.chunkSize} tokens`} />
                   <Metadata label="重叠长度" value={`${selected.chunkOverlap} tokens`} />
+                  <Metadata label="解析模式" value={selected.parseMode === "auto" ? "高级 RAG" : "标准解析"} />
+                  <Metadata label="表格/代码增强" value={selected.enrichmentEnabled ? "已开启" : "已关闭"} />
                 </CardContent>
               </Card>
 
@@ -552,20 +726,25 @@ export default function KnowledgePage() {
                       ref={fileInputRef}
                       type="file"
                       className="hidden"
-                      accept={ACCEPTED_EXTENSIONS.join(",")}
+                      accept={uploadExtensions.join(",")}
                       multiple
                       onChange={(event) => void uploadFiles(Array.from(event.target.files || []))}
                     />
-                    <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} disabled={readOnly || uploading}>
+                    <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} disabled={readOnly || uploading || uploadExtensions.length === 0}>
                       {uploading ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
                       {uploading ? "上传中" : "上传文档"}
                     </Button>
                   </CardAction>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  {selected.parseMode === "auto" && capabilities && pdfAutoBehavior(selected.parseMode, capabilities) === "native-fallback" && (
+                    <Message tone="warning">
+                      PDF 视觉解析当前不可用；上传到此高级 RAG 知识库的 PDF 会使用原生文字解析并记录降级。{capabilities.pdfAuto.reason ? `原因：${capabilities.pdfAuto.reason}` : ""}
+                    </Message>
+                  )}
                   <button
                     type="button"
-                    disabled={readOnly || uploading}
+                    disabled={readOnly || uploading || uploadExtensions.length === 0}
                     onClick={() => fileInputRef.current?.click()}
                     onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
                     onDragOver={(event) => event.preventDefault()}
@@ -578,12 +757,16 @@ export default function KnowledgePage() {
                     className={cn(
                       "flex w-full flex-col items-center justify-center rounded-xl border border-dashed px-4 py-7 text-center transition-colors",
                       dragging ? "border-primary bg-primary/5" : "border-border hover:bg-muted/40",
-                      (readOnly || uploading) && "cursor-not-allowed opacity-60",
+                      (readOnly || uploading || uploadExtensions.length === 0) && "cursor-not-allowed opacity-60",
                     )}
                   >
                     {uploading ? <Loader2 className="mb-2 size-6 animate-spin text-primary" /> : <Upload className="mb-2 size-6 text-muted-foreground" />}
                     <span className="text-sm font-medium">{uploadProgress || "拖放文件到这里，或点击选择"}</span>
-                    <span className="mt-1 text-xs text-muted-foreground">支持 MD、TXT、PDF、DOCX，单文件最大 20 MB</span>
+                    <span className="mt-1 text-xs text-muted-foreground">
+                      {uploadExtensions.length > 0
+                        ? `支持 ${uploadExtensions.map((extension) => extension.slice(1).toUpperCase()).join("、")}；${uploadLimits || "大小限制由服务器决定"}`
+                        : "当前没有可上传的文档格式"}
+                    </span>
                   </button>
 
                   {documentsLoading ? (
@@ -609,8 +792,9 @@ export default function KnowledgePage() {
                         </TableHeader>
                         <TableBody>
                           {documents.map((doc) => {
-                            const status = documentStatus(doc.status);
+                            const status = documentStatus(doc);
                             const StatusIcon = status.icon;
+                            const needsLabel = documentNeedsLabel(doc);
                             return (
                               <TableRow key={doc.id}>
                                 <TableCell>
@@ -619,24 +803,44 @@ export default function KnowledgePage() {
                                     <span className="min-w-0">
                                       <span className="block max-w-[260px] truncate text-sm font-medium" title={doc.fileName}>{doc.fileName}</span>
                                       <span className="text-xs text-muted-foreground">{formatBytes(doc.fileSize)} · v{doc.version}</span>
+                                      <span className="block text-[11px] text-muted-foreground">
+                                        {formatParseModeTransition(doc)}
+                                      </span>
                                     </span>
                                   </div>
                                   {doc.errorMsg && <p className="mt-1 max-w-[320px] text-xs text-destructive">{doc.errorMsg}</p>}
                                 </TableCell>
                                 <TableCell>
                                   <Badge variant="outline" className={status.className}>
-                                    <StatusIcon className={cn("size-3", ["PENDING", "PROCESSING"].includes(doc.status.toUpperCase()) && "animate-spin")} />
+                                    <StatusIcon className={cn("size-3", status.spinning && "animate-spin")} />
                                     {status.label}
                                   </Badge>
+                                  <p className="mt-1 max-w-48 text-xs text-muted-foreground">{progressText(doc)}</p>
+                                  {doc.warningCount > 0 && (
+                                    <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-300">{doc.warningCount} 条警告</p>
+                                  )}
                                 </TableCell>
                                 <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
                                   {doc.status.toUpperCase() === "DONE" ? `${doc.chunkCount} 段 · ${doc.tokenCount} tokens` : "-"}
+                                  {needsLabel && (
+                                    <Badge variant="outline" className="ml-2 border-amber-500/25 bg-amber-500/10 text-amber-800 dark:text-amber-300">
+                                      {needsLabel}
+                                    </Badge>
+                                  )}
                                 </TableCell>
                                 <TableCell className="whitespace-nowrap text-sm text-muted-foreground">{formatTime(doc.uploadedAt)}</TableCell>
                                 <TableCell>
                                   <div className="flex justify-end gap-1">
-                                    <Button variant="ghost" size="icon" aria-label="重新索引" title="重新索引" onClick={() => void reindexDocument(doc)} disabled={readOnly || ["PENDING", "PROCESSING"].includes(doc.status.toUpperCase())}>
+                                    <Button
+                                      variant={needsLabel ? "outline" : "ghost"}
+                                      size={needsLabel ? "sm" : "icon"}
+                                      aria-label={documentActionLabel(doc)}
+                                      title={documentActionLabel(doc)}
+                                      onClick={() => void reindexDocument(doc)}
+                                      disabled={readOnly || !isTerminalDocument(doc)}
+                                    >
                                       <RefreshCw className="size-4" />
+                                      {needsLabel && documentActionLabel(doc)}
                                     </Button>
                                     <Button variant="ghost" size="icon" aria-label="删除文档" title="删除文档" onClick={() => setDeleteDocTarget(doc)} disabled={readOnly} className="text-muted-foreground hover:text-destructive">
                                       <Trash2 className="size-4" />
@@ -659,7 +863,7 @@ export default function KnowledgePage() {
                   <CardDescription>直接查询当前知识库，确认切片内容与召回效果。</CardDescription>
                   <CardAction>
                     <Link
-                      href={`/knowledge/chat/?id=${encodeURIComponent(selected.id)}`}
+                      href={appendActAs(`/knowledge/chat/?id=${encodeURIComponent(selected.id)}`, actAs)}
                       className={buttonVariants({ size: "sm" })}
                     >
                       <MessageSquareText className="size-3.5" />
@@ -698,6 +902,13 @@ export default function KnowledgePage() {
                             <span className="ml-auto font-mono">score {hit.score.toFixed(4)}</span>
                           </div>
                           <p className="whitespace-pre-wrap text-sm leading-6">{hit.content}</p>
+                          <RAGResourceGallery
+                            resources={collectRAGResources([hit])}
+                            actAs={actAs}
+                            title="命中图片"
+                            compact
+                            className="mt-3"
+                          />
                         </div>
                       ))}
                     </div>
@@ -710,7 +921,7 @@ export default function KnowledgePage() {
       )}
 
       <Dialog open={formOpen} onOpenChange={setKnowledgeFormOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="max-h-[90svh] overflow-y-auto sm:max-w-2xl">
           <form onSubmit={saveKnowledgeBase}>
             <DialogHeader>
               <DialogTitle>{editing ? "编辑知识库" : "新建知识库"}</DialogTitle>
@@ -746,9 +957,73 @@ export default function KnowledgePage() {
                   <Input id="kb-chunk-overlap" type="number" min={0} value={form.chunkOverlap} onChange={(event) => setForm((current) => ({ ...current, chunkOverlap: event.target.value }))} />
                 </div>
               </div>
+              <div className="space-y-3 rounded-lg border p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1">
+                    <Label htmlFor="kb-auto-mode">高级 RAG</Label>
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      开启后使用 <code>parseMode: auto</code>。复杂 PDF 页面和 Office 图片可能发送给管理员配置的第三方 DocumentAI。
+                    </p>
+                  </div>
+                  <Switch
+                    id="kb-auto-mode"
+                    checked={form.parseMode === "auto"}
+                    onCheckedChange={changeAutoMode}
+                    disabled={saving || generatingMetadata || (!autoAvailable && form.parseMode !== "auto")}
+                    aria-label="高级 RAG"
+                  />
+                </div>
+                <p className="text-xs font-medium text-muted-foreground">{formatDocumentAIBudget(capabilities)}</p>
+                {form.parseMode === "auto" && capabilities && !capabilities.pdfAuto.available && (
+                  <Message tone="warning">
+                    PDF auto 当前不可用，PDF 会走原生文字解析；这不会阻止 Office auto。{capabilities.pdfAuto.reason ? `原因：${capabilities.pdfAuto.reason}` : ""}
+                  </Message>
+                )}
+              </div>
+
+              <div className="space-y-3 rounded-lg border p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1">
+                    <Label htmlFor="kb-enrichment">表格/代码语义增强</Label>
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      独立 opt-in；无论标准或高级模式，表格与代码原文都会发送给管理员配置的第三方 DocumentAI TextModel。
+                    </p>
+                  </div>
+                  <Switch
+                    id="kb-enrichment"
+                    checked={form.enrichmentEnabled}
+                    onCheckedChange={changeEnrichment}
+                    disabled={saving || generatingMetadata || (capabilities?.enrichment.available !== true && !form.enrichmentEnabled)}
+                    aria-label="表格和代码语义增强"
+                  />
+                </div>
+                <p className="text-xs font-medium text-muted-foreground">{formatDocumentAIBudget(capabilities)}</p>
+                {capabilities?.enrichment.available !== true && (
+                  <p className="text-xs text-amber-700 dark:text-amber-300">
+                    当前不能新开启：{capabilities?.enrichment.reason || "系统开关或 TextModel 不可用"}。已开启的知识库仍可在此关闭。
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2 rounded-lg bg-muted/50 p-3">
+                <p className="text-xs font-medium">系统能力</p>
+                {capabilityRows.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">能力信息尚未加载，高级配置保持关闭。</p>
+                ) : capabilityRows.map(({ label, capability }) => (
+                  <div key={label} className="flex items-start justify-between gap-3 text-xs">
+                    <span>{label}</span>
+                    <span className={cn(
+                      "max-w-[70%] text-right",
+                      capability.available ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-300",
+                    )}>
+                      {capability.available ? "可用" : capability.reason || "不可用"}
+                    </span>
+                  </div>
+                ))}
+              </div>
               {editing && (
                 <div className="rounded-lg bg-muted/60 p-3 text-xs text-muted-foreground">
-                  已绑定 {editing.embedModel}（{editing.embedDims} 维）。修改分片参数后，已有文档需要重新索引才会生效。
+                  已绑定 {editing.embedModel}（{editing.embedDims} 维）。修改解析模式后文档会标记为需要重新解析；修改增强或分片参数后会标记为需要重新索引，不会自动重跑。
                 </div>
               )}
             </div>
@@ -762,6 +1037,26 @@ export default function KnowledgePage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={pendingOptIn !== null} onOpenChange={(open) => !open && setPendingOptIn(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pendingOptIn === "auto" ? "开启高级 RAG？" : "开启表格/代码语义增强？"}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <span className="block">
+                {getRAGOptInDisclosure(pendingOptIn || "enrichment")}
+              </span>
+              <span className="block font-medium text-foreground">{formatDocumentAIBudget(capabilities)}</span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmOptIn}>确认开启</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={!!deleteKBTarget} onOpenChange={(open) => !open && setDeleteKBTarget(null)}>
         <AlertDialogContent>

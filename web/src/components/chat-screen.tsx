@@ -7,6 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getAgent, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, listAgentFiles, listProjects, renameChatSession, revealAgentWorkspace, sendChatStream, steerChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type ContextUsage, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile } from "@/lib/api";
 import { buildAgentFileUrl as fileUrl, findProducedFileAttachmentIndex, getChatHistoryRenderState, isInternalWorkspaceFile, splitToolTurnForRender, workspaceMarkdownFilePath } from "@/components/chat-screen-state";
+import { RAGResourceGallery } from "@/components/rag-resource-gallery";
+import { buildAgentSessionAssetURL, buildAgentSessionAttachmentURL, normalizeRAGResources } from "@/components/rag-resource-gallery-state";
+import { AgentMarkdownImage } from "@/components/rag-safe-render";
 import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, History } from "lucide-react";
 import Link from "next/link";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
@@ -229,8 +232,8 @@ function MarkdownTable(props: ComponentProps<"table"> & { node?: unknown }) {
 }
 
 // 所有聊天 ReactMarkdown 渲染点共用的组件覆盖：外链走 ExternalAnchor，
-// 表格走可横向滚动的 MarkdownTable。
-const MD_COMPONENTS = { a: ExternalAnchor, table: MarkdownTable };
+// 图片经过同源/内联安全边界，表格走可横向滚动的 MarkdownTable。
+const MD_COMPONENTS = { a: ExternalAnchor, img: AgentMarkdownImage, table: MarkdownTable };
 
 // 智能体发出的分词标记，用于请求多气泡回复——必须与
 // internal/channels/base.go 中的 channels.SplitMessageMarker 匹配。
@@ -2188,6 +2191,9 @@ export function ChatScreen() {
                 const visibleFiles = (msg.files || []).filter((f) => !isInternalWorkspaceFile(f.path));
                 const hasText = !!(msg.content && msg.content.trim());
                 const hasUserAttachments = msg.role === "user" && !!(msg.attachments && msg.attachments.length > 0);
+                const ragResources = msg.role === "agent"
+                  ? normalizeRAGResources(msg.metadata?.ragResources)
+                  : [];
                 const hasStatus =
                   msg.role === "agent" &&
                   !!(
@@ -2196,7 +2202,7 @@ export function ChatScreen() {
                     msg.metadata?.planMode ||
                     msg.id === pendingPlanId
                   );
-                const hasBubbleBody = hasText || attached.length > 0 || hasUserAttachments || hasStatus;
+                const hasBubbleBody = hasText || attached.length > 0 || hasUserAttachments || hasStatus || ragResources.length > 0;
                 if (!hasBubbleBody) {
                   if (visibleFiles.length === 0) return null;
                   return (
@@ -2299,6 +2305,27 @@ export function ChatScreen() {
                             </ReactMarkdown>
                           )}
                         </div>
+                      )}
+                      {ragResources.length > 0 && (
+                        <RAGResourceGallery
+                          resources={ragResources}
+                          assetURLBuilder={(assetID, variant) => buildAgentSessionAssetURL(
+                            selectedAgent,
+                            sessionId,
+                            assetID,
+                            variant,
+                            actAsUserId,
+                          )}
+                          attachmentURLBuilder={(attachmentID) => buildAgentSessionAttachmentURL(
+                            selectedAgent,
+                            sessionId,
+                            attachmentID,
+                            actAsUserId,
+                          )}
+                          compact
+                          showDisclosure
+                          className={hasText ? "mt-3" : undefined}
+                        />
                       )}
                       {msg.role === "agent" && msg.metadata?.iterationCapReached && (
                         <div className="mt-2 flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-900 dark:text-amber-200">
@@ -2918,10 +2945,6 @@ function ChatHeaderTitle({ title, fallback, onSave }: ChatHeaderTitleProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!editing) setDraft(title);
-  }, [title, editing]);
 
   useEffect(() => {
     if (editing) inputRef.current?.select();

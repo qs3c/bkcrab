@@ -32,7 +32,14 @@ type toolAdapter struct {
 	name        string
 	description string
 	params      interface{}
-	fn          tools.ToolFunc
+	registry    *tools.Registry
+}
+
+// sdkBridgeData is deliberately private and has no exported fields. It is an
+// in-process envelope carried by the SDK's ToolResult.Data; even if an SDK
+// caller accidentally JSON-marshals Data, the metadata cannot be serialized.
+type sdkBridgeData struct {
+	metadata tools.ResultMetadata
 }
 
 func (t *toolAdapter) Name() string        { return t.name }
@@ -61,9 +68,14 @@ func (t *toolAdapter) Call(ctx context.Context, input map[string]interface{}, tC
 		return &sdktypes.ToolResult{IsError: true, Error: err.Error()}, nil
 	}
 
-	result, err := t.fn(ctx, json.RawMessage(argsJSON))
+	if t.registry == nil {
+		err := fmt.Errorf("tool registry is unavailable")
+		return &sdktypes.ToolResult{IsError: true, Error: err.Error()}, nil
+	}
+
+	result, err := t.registry.ExecuteResult(ctx, t.name, string(argsJSON))
 	if err != nil {
-		errText := result
+		errText := result.Text
 		if errText != "" {
 			errText += "\n"
 		}
@@ -78,12 +90,16 @@ func (t *toolAdapter) Call(ctx context.Context, input map[string]interface{}, tC
 		}, nil
 	}
 
-	return &sdktypes.ToolResult{
+	sdkResult := &sdktypes.ToolResult{
 		Content: []sdktypes.ContentBlock{{
 			Type: sdktypes.ContentBlockText,
-			Text: result,
+			Text: result.Text,
 		}},
-	}, nil
+	}
+	if len(result.Metadata) > 0 {
+		sdkResult.Data = sdkBridgeData{metadata: result.Metadata.Clone()}
+	}
+	return sdkResult, nil
 }
 
 func (t *toolAdapter) IsConcurrencySafe(input map[string]interface{}) bool {
@@ -110,15 +126,14 @@ func newSDKEngine(sessionID string) *sdkEngine {
 func buildSDKRegistry(fcRegistry *tools.Registry) *sdktools.Registry {
 	sdkReg := sdktools.NewRegistry()
 	for _, def := range fcRegistry.Definitions() {
-		fn := fcRegistry.GetFunc(def.Function.Name)
-		if fn == nil {
+		if fcRegistry.GetResultFunc(def.Function.Name) == nil {
 			continue
 		}
 		sdkReg.Register(&toolAdapter{
 			name:        def.Function.Name,
 			description: def.Function.Description,
 			params:      def.Function.Parameters,
-			fn:          fn,
+			registry:    fcRegistry,
 		})
 	}
 	return sdkReg
@@ -129,6 +144,7 @@ type toolCallResult struct {
 	toolCallID string
 	toolName   string
 	result     string
+	metadata   tools.ResultMetadata
 	err        error
 }
 
@@ -214,10 +230,17 @@ func (e *sdkEngine) executeToolsConcurrently(ctx context.Context, fcRegistry *to
 				err:        resp.Error,
 			}
 		} else {
+			var metadata tools.ResultMetadata
+			if resp.Result != nil {
+				if data, ok := resp.Result.Data.(sdkBridgeData); ok {
+					metadata = data.metadata.Clone()
+				}
+			}
 			results[i] = toolCallResult{
 				toolCallID: resp.ToolUseID,
 				toolName:   toolCalls[i].Function.Name,
 				result:     resultText,
+				metadata:   metadata,
 			}
 		}
 	}

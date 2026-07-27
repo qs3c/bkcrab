@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,15 +62,45 @@ func TestMilvusHelpers(t *testing.T) {
 	if got, want := ragCollectionName("kb-a/中文"), "rag_kb_a___"; got != want {
 		t.Fatalf("ragCollectionName = %q, want %q", got, want)
 	}
-	chunk := ChunkData{DocID: "doc_1", DocVersion: 2, Index: 7}
-	if got, want := milvusChunkID(chunk), "doc_1_2_7"; got != want {
+	chunk := ChunkData{DocID: "doc_1", DocVersion: 1 << 40, Index: 7}
+	if got, want := milvusChunkID(chunk), "doc_1_1099511627776_7"; got != want {
 		t.Fatalf("milvusChunkID = %q, want %q", got, want)
 	}
 	if got, want := escapeMilvusExprString("a\\b\"c"), "a\\\\b\\\"c"; got != want {
 		t.Fatalf("escapeMilvusExprString = %q, want %q", got, want)
 	}
+	if got, want := milvusDocVersionExpr("a\\b\"c", 1<<40),
+		`doc_id == "a\\b\"c" && doc_version == 1099511627776`; got != want {
+		t.Fatalf("milvusDocVersionExpr = %q, want %q", got, want)
+	}
 	if _, err := NewMilvus(context.Background(), "", "", ""); err == nil {
 		t.Fatal("空地址应在连接前被拒绝")
+	}
+}
+
+func TestMilvusActiveVersionFilterIsStableAndBounded(t *testing.T) {
+	t.Parallel()
+	active := map[string]int64{"doc_b": 2, "doc_a": 1, "doc_c": 2}
+	got, err := buildActiveVersionFilter(active, 32*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `((doc_version == 1 && doc_id in ["doc_a"]) || (doc_version == 2 && doc_id in ["doc_b","doc_c"]))`
+	if got != want {
+		t.Fatalf("filter = %q, want %q", got, want)
+	}
+	if _, err := buildActiveVersionFilter(map[string]int64{`doc_"unsafe`: 1}, 32*1024); err == nil {
+		t.Fatal("unsafe document ID was accepted")
+	}
+	if _, err := buildActiveVersionFilter(active, len(got)-1); err == nil {
+		t.Fatal("oversized filter was accepted")
+	}
+}
+
+func TestMilvusActiveVersionFilterRejectsDocumentIDBeyondDBContract(t *testing.T) {
+	tooLong := "d" + strings.Repeat("x", 64)
+	if _, err := buildActiveVersionFilter(map[string]int64{tooLong: 1}, 32*1024); err == nil {
+		t.Fatal("active-version filter accepted a document ID longer than VARCHAR(64)")
 	}
 }
 
@@ -123,8 +154,9 @@ func TestMilvusRoundTrip(t *testing.T) {
 	}
 
 	hits, err := m.HybridSearch(ctx, kbID, SearchQuery{
-		Dense: [][]float32{{0.9, 0.1, 0, 0}, {0.8, 0.2, 0, 0}},
-		Text:  "天气",
+		Dense:          [][]float32{{0.9, 0.1, 0, 0}, {0.8, 0.2, 0, 0}},
+		Text:           "天气",
+		ActiveVersions: map[string]int64{"d1": 1},
 	}, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -135,16 +167,19 @@ func TestMilvusRoundTrip(t *testing.T) {
 	if hits[0].SectionTitle != "天气" || hits[0].PageNum != 1 {
 		t.Fatalf("结果元数据未完整返回: %+v", hits[0])
 	}
+	if hits[0].DocVersion != 1 {
+		t.Fatalf("结果 doc_version = %d, want 1", hits[0].DocVersion)
+	}
 
 	if err := m.UpsertChunks(ctx, kbID, []ChunkData{{
 		DocID: "d1", Index: 0, Content: "新版本", DocVersion: 2, Vector: []float32{1, 0, 0, 0},
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.DeleteOldVersions(ctx, kbID, "d1", 2); err != nil {
+	if err := m.DeleteDocVersion(ctx, kbID, "d1", 1); err != nil {
 		t.Fatal(err)
 	}
-	hits, err = m.HybridSearch(ctx, kbID, SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}}, 10)
+	hits, err = m.HybridSearch(ctx, kbID, SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}, ActiveVersions: map[string]int64{"d1": 2}}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +190,7 @@ func TestMilvusRoundTrip(t *testing.T) {
 	if err := m.DeleteDoc(ctx, kbID, "d1"); err != nil {
 		t.Fatal(err)
 	}
-	hits, err = m.HybridSearch(ctx, kbID, SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}}, 10)
+	hits, err = m.HybridSearch(ctx, kbID, SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}, ActiveVersions: map[string]int64{"d1": 2}}, 10)
 	if err != nil || len(hits) != 0 {
 		t.Fatalf("DeleteDoc 后仍有结果: %+v err=%v", hits, err)
 	}
@@ -164,5 +199,66 @@ func TestMilvusRoundTrip(t *testing.T) {
 	}
 	if err := m.DropCollection(ctx, kbID); err != nil {
 		t.Fatalf("DropCollection 对不存在 collection 应幂等: %v", err)
+	}
+}
+
+func TestMilvusActiveVersionFilter(t *testing.T) {
+	addr := os.Getenv("RAG_TEST_MILVUS_ADDR")
+	if addr == "" {
+		t.Skip("RAG_TEST_MILVUS_ADDR is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	m, err := NewMilvus(ctx, addr, os.Getenv("RAG_TEST_MILVUS_USER"), os.Getenv("RAG_TEST_MILVUS_PASSWORD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer closeCancel()
+		if err := m.Close(closeCtx); err != nil {
+			t.Logf("close Milvus client: %v", err)
+		}
+	})
+	kbID := fmt.Sprintf("test_active_filter_%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		if err := m.DropCollection(cleanupCtx, kbID); err != nil {
+			t.Logf("cleanup collection: %v", err)
+		}
+	})
+	if err := m.EnsureCollection(ctx, kbID, 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.UpsertChunks(ctx, kbID, []ChunkData{
+		{DocID: "filter_doc", DocVersion: 1, Index: 0, Content: "alpha active version one", Vector: []float32{1, 0, 0, 0}},
+		{DocID: "filter_doc", DocVersion: 2, Index: 0, Content: "beta active version two", Vector: []float32{1, 0, 0, 0}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	queries := []struct {
+		name  string
+		query SearchQuery
+	}{
+		{name: "single dense", query: SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}}},
+		{name: "dense and sparse", query: SearchQuery{Dense: [][]float32{{1, 0, 0, 0}}, Text: "alpha"}},
+		{name: "rewritten and hyde dense", query: SearchQuery{Dense: [][]float32{{1, 0, 0, 0}, {1, 0, 0, 0}}}},
+		{name: "all ann routes", query: SearchQuery{Dense: [][]float32{{1, 0, 0, 0}, {1, 0, 0, 0}}, Text: "alpha"}},
+	}
+	for _, version := range []int64{1, 2} {
+		for _, test := range queries {
+			t.Run(fmt.Sprintf("%s/version_%d", test.name, version), func(t *testing.T) {
+				query := test.query
+				query.ActiveVersions = map[string]int64{"filter_doc": version}
+				hits, err := m.HybridSearch(ctx, kbID, query, 10)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(hits) != 1 || hits[0].DocVersion != version {
+					t.Fatalf("active version %d hits=%+v", version, hits)
+				}
+			})
+		}
 	}
 }

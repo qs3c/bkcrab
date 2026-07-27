@@ -89,6 +89,7 @@ export interface AgentDetail {
   // 聊天者仅能看到自己的用户级 + 系统级配置 — 他们需要自带
   // 模型/提供者，否则 agent 对他们不可用。
   shareModelConfig?: boolean;
+  shareMcpConfig?: boolean;
   model: string;
   workspace?: string;
   maxTokens?: number;
@@ -1021,6 +1022,10 @@ export async function steerChat(
 
 export interface ToolResultMetadata {
   sandbox?: boolean;
+  // Out-of-band resources selected by trusted rag_search results. The
+  // metadata stores stable references only; each UI surface constructs its
+  // own authenticated URL at render time.
+  ragResources?: RAGResourceRef[];
   // 标记在按轮工具迭代上限触发时后端发出的强制最终交付助手消息上。
   // 让 UI 显示一个小标记，以便用户知道答案是在预算限制下生成的，
   // 可能不完整。
@@ -1310,9 +1315,67 @@ export interface AgentSkillsConfig {
   alwaysLoad?: string[];
 }
 
+export interface MCPServerConfig {
+  type: "stdio" | "http";
+  url?: string;
+  headers?: Record<string, string>;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  transport?: "sse" | "streamable-http";
+  enabled?: boolean;
+}
+
+export interface MCPGatewayStatus {
+  status?: string;
+  baseUrl?: string;
+  image?: string;
+  lastAccessedAt?: string;
+  errorMessage?: string;
+}
+
+export interface MCPResource {
+  id: string;
+  userId: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  config: MCPServerConfig;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MCPResourceInput {
+  name: string;
+  description?: string;
+  enabled: boolean;
+  config: MCPServerConfig;
+}
+
+export interface MCPResourcesResponse {
+  servers: MCPResource[];
+  gateway?: MCPGatewayStatus;
+}
+
+export interface MCPToolPreview {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+}
+
+export interface AgentMCPTestResponse {
+  ok: boolean;
+  tools?: MCPToolPreview[];
+  error?: string;
+}
+
 export interface AgentRAGConfig {
   kbs: string[];
   topN?: number;
+}
+
+export interface AgentMCPConfig {
+  servers: string[];
 }
 
 // 后端接受 model / soul / skills / providers 进行更新。
@@ -1358,6 +1421,8 @@ export interface AgentUpdatePayload {
   pluginsReset?: boolean;
   // 智能体可检索的用户知识库白名单。发送空 kbs 会撤销全部授权。
   rag?: AgentRAGConfig;
+  // 智能体可调用的用户级 MCP 资源白名单。发送空列表会撤销全部授权。
+  mcp?: AgentMCPConfig;
 }
 
 export async function updateAgent(id: string, agent: AgentUpdatePayload) {
@@ -1397,6 +1462,10 @@ export interface AgentFileConfig {
   workspace?: string;
   skills?: AgentSkillsConfig;
   providers?: Record<string, ProviderData>;
+  mcp?: AgentMCPConfig;
+  // Legacy inline MCP fields are read-only migration compatibility.
+  mcpServers?: Record<string, MCPServerConfig>;
+  shareMcpConfig?: boolean;
   rag?: AgentRAGConfig;
 }
 
@@ -1409,8 +1478,85 @@ export async function getAgentConfig(id: string): Promise<AgentFileConfig> {
   return data;
 }
 
-// RAG 知识库 API。Go 的存储记录目前直接序列化为 PascalCase；这里统一
-// 转成前端惯用的 camelCase，后端以后补 JSON tag 时页面也无需改动。
+// RAG 知识库 API。后端以显式 camelCase DTO 返回；PascalCase fallback
+// 暂时保留，支持滚动升级期间仍在运行的旧实例。
+export type RAGParseMode = "standard" | "auto";
+
+export interface RAGCapabilityDetail {
+  enabled: boolean;
+  configured: boolean;
+  healthy: boolean;
+  available: boolean;
+  reason: string;
+  checkedAt?: string;
+}
+
+export interface RAGSimpleCapability {
+  available: boolean;
+  reason: string;
+}
+
+export interface RAGEnrichmentCapability {
+  enabled: boolean;
+  configured: boolean;
+  available: boolean;
+  reason: string;
+}
+
+export interface RAGCapabilities {
+  supportedExtensions: string[];
+  maxFileBytes: number;
+  maxFileBytesByExtension: Record<string, number>;
+  parseModes: RAGParseMode[];
+  advanced: RAGCapabilityDetail;
+  office: RAGCapabilityDetail;
+  pdfAuto: RAGSimpleCapability;
+  officeVision: RAGSimpleCapability;
+  enrichment: RAGEnrichmentCapability;
+  documentAIBudget: {
+    maxRequestsPerDocument: number;
+    maxTokensPerDocument: number;
+    maxEstimatedCostUSDPerDocument: number;
+  };
+}
+
+export interface RAGSourceLocation {
+  kind: "document" | "page" | "slide" | "sheet" | string;
+  index: number;
+  label: string;
+}
+
+export interface RAGAttachmentRef {
+  id: string;
+  kind: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes?: number;
+}
+
+export interface RAGAssetRef {
+  id: string;
+  kind: string;
+  caption?: string;
+  pageNum?: number;
+  location?: RAGSourceLocation;
+  width?: number;
+  height?: number;
+  mimeType?: string;
+  attachment?: RAGAttachmentRef;
+}
+
+export interface RAGResourceRef {
+  asset: RAGAssetRef;
+  kbId: string;
+  kbName: string;
+  docId: string;
+  docName: string;
+  chunkIndex: number;
+  sectionTitle?: string;
+  sourceLocation?: RAGSourceLocation;
+}
+
 export interface KnowledgeBase {
   id: string;
   userId: string;
@@ -1421,6 +1567,8 @@ export interface KnowledgeBase {
   embedDims: number;
   chunkSize: number;
   chunkOverlap: number;
+  parseMode: RAGParseMode;
+  enrichmentEnabled: boolean;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -1437,6 +1585,21 @@ export interface KnowledgeDocument {
   chunkCount: number;
   tokenCount: number;
   version: number;
+  activeVersion: number;
+  indexFormatVersion: number;
+  appliedParseMode?: RAGParseMode;
+  targetParseMode: RAGParseMode;
+  needsReparse: boolean;
+  needsReindex: boolean;
+  progress: {
+    stage: string;
+    current: number;
+    total: number;
+    unit: string;
+    message?: string;
+  };
+  degraded: boolean;
+  warningCount: number;
   uploadedAt: string;
   indexedAt?: string;
 }
@@ -1449,7 +1612,10 @@ export interface KnowledgeSearchHit {
   chunkIndex: number;
   sectionTitle?: string;
   pageNum?: number;
+  sourceLocation?: RAGSourceLocation;
   content: string;
+  enhancement?: string;
+  assets?: RAGAssetRef[];
   score: number;
 }
 
@@ -1494,6 +1660,8 @@ function normalizeKnowledgeBase(row: KnowledgeBaseWire): KnowledgeBase {
     embedDims: wireValue(row, "embedDims", "EmbedDims", 0),
     chunkSize: wireValue(row, "chunkSize", "ChunkSize", 0),
     chunkOverlap: wireValue(row, "chunkOverlap", "ChunkOverlap", 0),
+    parseMode: wireValue(row, "parseMode", "ParseMode", "standard"),
+    enrichmentEnabled: wireValue(row, "enrichmentEnabled", "EnrichmentEnabled", false),
     status: wireValue(row, "status", "Status", ""),
     createdAt: wireValue(row, "createdAt", "CreatedAt", ""),
     updatedAt: wireValue(row, "updatedAt", "UpdatedAt", ""),
@@ -1501,6 +1669,7 @@ function normalizeKnowledgeBase(row: KnowledgeBaseWire): KnowledgeBase {
 }
 
 function normalizeKnowledgeDocument(row: KnowledgeBaseWire): KnowledgeDocument {
+  const progress = wireValue<Record<string, unknown>>(row, "progress", "Progress", {});
   return {
     id: wireValue(row, "id", "ID", ""),
     kbId: wireValue(row, "kbId", "KBID", ""),
@@ -1512,6 +1681,21 @@ function normalizeKnowledgeDocument(row: KnowledgeBaseWire): KnowledgeDocument {
     chunkCount: wireValue(row, "chunkCount", "ChunkCount", 0),
     tokenCount: wireValue(row, "tokenCount", "TokenCount", 0),
     version: wireValue(row, "version", "Version", 0),
+    activeVersion: wireValue(row, "activeVersion", "ActiveVersion", 0),
+    indexFormatVersion: wireValue(row, "indexFormatVersion", "IndexFormatVersion", 1),
+    appliedParseMode: wireValue<RAGParseMode | undefined>(row, "appliedParseMode", "AppliedParseMode", undefined),
+    targetParseMode: wireValue(row, "targetParseMode", "TargetParseMode", "standard"),
+    needsReparse: wireValue(row, "needsReparse", "NeedsReparse", false),
+    needsReindex: wireValue(row, "needsReindex", "NeedsReindex", false),
+    progress: {
+      stage: wireValue(progress, "stage", "Stage", "queued"),
+      current: wireValue(progress, "current", "Current", 0),
+      total: wireValue(progress, "total", "Total", 0),
+      unit: wireValue(progress, "unit", "Unit", ""),
+      message: wireValue<string | undefined>(progress, "message", "Message", undefined),
+    },
+    degraded: wireValue(row, "degraded", "Degraded", false),
+    warningCount: wireValue(row, "warningCount", "WarningCount", 0),
     uploadedAt: wireValue(row, "uploadedAt", "UploadedAt", ""),
     indexedAt: wireValue<string | undefined>(row, "indexedAt", "IndexedAt", undefined),
   };
@@ -1524,6 +1708,10 @@ async function ragJSON<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(data?.error || data?.message || `知识库请求失败 (${res.status})`);
   }
   return data as T;
+}
+
+export async function getRAGCapabilities(): Promise<RAGCapabilities> {
+  return ragJSON<RAGCapabilities>("/api/rag/capabilities");
 }
 
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
@@ -1541,6 +1729,8 @@ export async function createKnowledgeBase(input: {
   description?: string;
   chunkSize?: number;
   chunkOverlap?: number;
+  parseMode?: RAGParseMode;
+  enrichmentEnabled?: boolean;
 }): Promise<KnowledgeBase> {
   const row = await ragJSON<KnowledgeBaseWire>("/api/rag/kbs", {
     method: "POST",
@@ -1552,7 +1742,7 @@ export async function createKnowledgeBase(input: {
 
 export async function updateKnowledgeBase(
   id: string,
-  input: Partial<Pick<KnowledgeBase, "name" | "description" | "chunkSize" | "chunkOverlap">>,
+  input: Partial<Pick<KnowledgeBase, "name" | "description" | "chunkSize" | "chunkOverlap" | "parseMode" | "enrichmentEnabled">>,
 ): Promise<KnowledgeBase> {
   const row = await ragJSON<KnowledgeBaseWire>(`/api/rag/kbs/${encodeURIComponent(id)}`, {
     method: "PATCH",
@@ -1583,9 +1773,13 @@ export async function deleteKnowledgeBase(id: string): Promise<void> {
   await ragJSON(`/api/rag/kbs/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-export async function listKnowledgeDocuments(kbId: string): Promise<KnowledgeDocument[]> {
+export async function listKnowledgeDocuments(
+  kbId: string,
+  signal?: AbortSignal,
+): Promise<KnowledgeDocument[]> {
   const rows = await ragJSON<KnowledgeBaseWire[]>(
     `/api/rag/kbs/${encodeURIComponent(kbId)}/documents`,
+    { signal },
   );
   return (Array.isArray(rows) ? rows : []).map(normalizeKnowledgeDocument);
 }
@@ -1674,6 +1868,51 @@ export async function listKnowledgeChatTurns(
     { signal },
   );
   return Array.isArray(data.turns) ? data.turns : [];
+}
+
+async function mcpJSON<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await apiFetch(path, init);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || `MCP 请求失败 (${res.status})`);
+  return data as T;
+}
+
+export async function listMCPResources(): Promise<MCPResourcesResponse> {
+  return mcpJSON<MCPResourcesResponse>("/api/mcp/servers");
+}
+
+export async function createMCPResource(payload: MCPResourceInput): Promise<MCPResource> {
+  const data = await mcpJSON<{ server: MCPResource }>("/api/mcp/servers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return data.server;
+}
+
+export async function updateMCPResource(id: string, payload: MCPResourceInput): Promise<MCPResource> {
+  const data = await mcpJSON<{ server: MCPResource }>(
+    `/api/mcp/servers/${encodeURIComponent(id)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  return data.server;
+}
+
+export async function deleteMCPResource(id: string): Promise<void> {
+  await mcpJSON<{ ok: boolean }>(`/api/mcp/servers/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function testMCPResource(id: string): Promise<AgentMCPTestResponse> {
+  return mcpJSON<AgentMCPTestResponse>(
+    `/api/mcp/servers/${encodeURIComponent(id)}/test`,
+    { method: "POST" },
+  );
 }
 
 export async function deleteAgent(id: string) {

@@ -86,6 +86,35 @@ func TestLocalFSOverwriteAndPathGuards(t *testing.T) {
 	}
 }
 
+func TestLocalFSDeleteExactObjectOnly(t *testing.T) {
+	s := NewLocalFS(t.TempDir())
+	ctx := context.Background()
+	first := Key("u1", "kb1", "doc1", "first.txt")
+	second := Key("u1", "kb1", "doc1", "second.txt")
+	for _, key := range []string{first, second} {
+		if err := s.Put(ctx, key, strings.NewReader("x"), 1, "text/plain"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Delete(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(ctx, first); err == nil {
+		t.Fatal("exactly deleted object still exists")
+	}
+	r, err := s.Get(ctx, second)
+	if err != nil {
+		t.Fatalf("sibling object was deleted: %v", err)
+	}
+	_ = r.Close()
+	if err := s.Delete(ctx, first); err != nil {
+		t.Fatalf("exact delete must be idempotent: %v", err)
+	}
+	if err := s.Delete(ctx, `..\\escape`); err == nil {
+		t.Fatal("Delete must reject path traversal")
+	}
+}
+
 func TestNewS3UsesWorkspaceConfigWithoutNetwork(t *testing.T) {
 	if _, err := NewS3(workspace.S3Config{}); err == nil {
 		t.Fatal("缺失必要 S3 配置应报错")

@@ -34,9 +34,10 @@ type MetadataSource struct {
 	SampledDocumentCount int
 }
 
-// BuildMetadataSource samples only DONE documents. DONE is deliberately the
-// boundary: it means parsing, splitting, embedding, and vector upsert all
-// succeeded, so generated metadata describes content Agents can actually use.
+// BuildMetadataSource samples only retrieval-visible active versions. A newer
+// target may be pending or failed while the previous active index remains
+// healthy; document.Status and document.Version therefore are not visibility
+// boundaries.
 func (s *Service) BuildMetadataSource(ctx context.Context, ownerID, kbID string) (*MetadataSource, error) {
 	if _, err := s.GetKB(ctx, ownerID, kbID); err != nil {
 		return nil, err
@@ -47,7 +48,7 @@ func (s *Service) BuildMetadataSource(ctx context.Context, ownerID, kbID string)
 	}
 	ready := make([]store.RAGDocumentRecord, 0, len(documents))
 	for _, document := range documents {
-		if strings.EqualFold(document.Status, "DONE") && document.ChunkCount > 0 {
+		if document.ActiveVersion > 0 && document.ChunkCount > 0 {
 			ready = append(ready, document)
 		}
 	}
@@ -60,7 +61,7 @@ func (s *Service) BuildMetadataSource(ctx context.Context, ownerID, kbID string)
 	for _, document := range selected {
 		for _, index := range metadataChunkIndexes(document.ChunkCount) {
 			refs = append(refs, vector.ChunkRef{
-				DocID: document.ID, Index: index, DocVersion: document.Version,
+				DocID: document.ID, Index: index, DocVersion: document.ActiveVersion,
 			})
 		}
 	}
@@ -84,7 +85,7 @@ func (s *Service) BuildMetadataSource(ctx context.Context, ownerID, kbID string)
 		available := make([]vector.ChunkData, 0, len(indexes))
 		for _, index := range indexes {
 			if chunk, ok := byRef[vector.ChunkRef{
-				DocID: document.ID, Index: index, DocVersion: document.Version,
+				DocID: document.ID, Index: index, DocVersion: document.ActiveVersion,
 			}]; ok && strings.TrimSpace(chunk.Content) != "" {
 				available = append(available, chunk)
 			}

@@ -34,6 +34,7 @@ type Store interface {
 	GetUserByExternal(ctx context.Context, apikeyID, externalID string) (*UserRecord, error)
 	ListUsers(ctx context.Context) ([]UserRecord, error)
 	UpdateUser(ctx context.Context, u *UserRecord) error
+	MarkUserDeleting(ctx context.Context, id string) (*UserRecord, error)
 	DeleteUser(ctx context.Context, id string) error
 	CountUsers(ctx context.Context) (int, error)
 
@@ -217,9 +218,19 @@ type Store interface {
 	SaveConfig(ctx context.Context, c *ConfigRecord) error
 	DeleteConfig(ctx context.Context, id string) error
 	LookupChannelByCredential(ctx context.Context, channelType, credKey string) (*ConfigRecord, error)
+	GetMCPGatewayRuntime(ctx context.Context, userID string) (*MCPGatewayRuntimeRecord, error)
+	SaveMCPGatewayRuntime(ctx context.Context, rec *MCPGatewayRuntimeRecord) error
+	ListMCPGatewayRuntimesByStatus(ctx context.Context, statuses ...string) ([]MCPGatewayRuntimeRecord, error)
 
 	// --- RAG knowledge bases ---
 	CreateRAGKB(ctx context.Context, kb *RAGKBRecord) error
+	BeginRAGKBProvisioning(ctx context.Context, kb *RAGKBRecord, leaseOwner string, leaseDuration time.Duration, maxKBsPerUser int) (*RAGKBProvisionFence, error)
+	HeartbeatRAGKBProvisioning(ctx context.Context, fence RAGKBProvisionFence, leaseDuration time.Duration) (bool, error)
+	ActivateRAGKBProvisioning(ctx context.Context, fence RAGKBProvisionFence) (*RAGKBRecord, bool, error)
+	AbortRAGKBProvisioning(ctx context.Context, fence RAGKBProvisionFence) (*RAGKBRecord, bool, error)
+	ListExpiredRAGKBProvisions(ctx context.Context, limit int) ([]RAGKBProvisionCleanupCandidate, error)
+	ExpireRAGKBProvisioning(ctx context.Context, candidate RAGKBProvisionCleanupCandidate) (*RAGKBRecord, bool, error)
+	IsRAGKBCleanupReady(ctx context.Context, kbID string) (bool, error)
 	GetRAGKB(ctx context.Context, id string) (*RAGKBRecord, error)
 	ListRAGKBsByUser(ctx context.Context, userID string) ([]RAGKBRecord, error)
 	UpdateRAGKB(ctx context.Context, kb *RAGKBRecord) error
@@ -228,17 +239,101 @@ type Store interface {
 	ListRAGChatTurns(ctx context.Context, userID, kbID, sessionID string) ([]RAGChatTurnRecord, error)
 	ListRAGChatSessions(ctx context.Context, userID, kbID string, limit int) ([]RAGChatSessionRecord, error)
 	CreateRAGDocument(ctx context.Context, doc *RAGDocumentRecord) error
-	CreateRAGDocumentWithIndexTask(ctx context.Context, doc *RAGDocumentRecord, maxRetry int) (int64, error)
+	CreateRAGDocumentWithVersionAndIndexTask(ctx context.Context, doc *RAGDocumentRecord, version *RAGDocumentVersionRecord, maxRetry int) (int64, error)
+	CreateRAGDocumentWithVersionAndIndexTaskPolicy(ctx context.Context, doc *RAGDocumentRecord, version *RAGDocumentVersionRecord, maxRetry int, policy RAGAdvancedEnqueuePolicy) (int64, error)
 	GetRAGDocument(ctx context.Context, id string) (*RAGDocumentRecord, error)
 	ListRAGDocumentsByKB(ctx context.Context, kbID string) ([]RAGDocumentRecord, error)
-	UpdateRAGDocument(ctx context.Context, doc *RAGDocumentRecord) error
-	UpdateRAGDocumentIfVersion(ctx context.Context, doc *RAGDocumentRecord, expectedVersion int) (bool, error)
-	UpdateRAGDocumentWithIndexTask(ctx context.Context, doc *RAGDocumentRecord, maxRetry int) (int64, error)
+	MarkRAGDocumentDeleting(ctx context.Context, id string) (*RAGDocumentRecord, error)
+	MarkRAGKBDeleting(ctx context.Context, id string) (*RAGKBRecord, error)
+	ListDeletingRAGDocuments(ctx context.Context, afterID string, limit int) ([]RAGDocumentRecord, error)
+	ListDeletingRAGKBs(ctx context.Context, afterID string, limit int) ([]RAGKBRecord, error)
+	IsRAGDocumentCleanupReady(ctx context.Context, docID string) (bool, error)
 	DeleteRAGDocument(ctx context.Context, id string) error
-	CreateRAGIndexTask(ctx context.Context, docID string, maxRetry int) (int64, error)
+	CreateRAGDocumentVersion(ctx context.Context, version *RAGDocumentVersionRecord) error
+	GetRAGDocumentVersion(ctx context.Context, docID string, docVersion int64) (*RAGDocumentVersionRecord, error)
+	ListRAGDocumentVersions(ctx context.Context, docID string) ([]RAGDocumentVersionRecord, error)
+	PutRAGChunks(ctx context.Context, chunks []RAGChunkRecord) error
+	ListRAGChunksByRefs(ctx context.Context, refs []RAGChunkRef) ([]RAGChunkRecord, error)
+	ListRAGChunksByDocumentVersion(ctx context.Context, docID string, docVersion int64) ([]RAGChunkRecord, error)
+	DeleteRAGChunksByDocumentVersion(ctx context.Context, docID string, docVersion int64) error
+	UpsertRAGAsset(ctx context.Context, asset *RAGAssetRecord) error
+	ReplaceRAGVersionAssets(ctx context.Context, docID string, docVersion int64, assetIDs []string) error
+	PublishRAGAssetsForIndex(ctx context.Context, fence IndexFence, assets []RAGAssetRecord, assetIDs []string) (bool, error)
+	GetRAGAsset(ctx context.Context, id string) (*RAGAssetRecord, error)
+	ListRAGAssetsByIDs(ctx context.Context, ids []string) ([]RAGAssetRecord, error)
+	ListRAGAssetsByChunkRefs(ctx context.Context, refs []RAGChunkRef) ([]RAGAssetRecord, error)
+	ListRAGAssetsByDocument(ctx context.Context, docID string) ([]RAGAssetRecord, error)
+	DeleteRAGAssetsByDocument(ctx context.Context, docID string) error
+	UpsertRAGAttachment(ctx context.Context, attachment *RAGAttachmentRecord) error
+	ReplaceRAGVersionAttachments(ctx context.Context, docID string, docVersion int64, attachmentIDs []string) error
+	PublishRAGAssetsAndAttachmentsForIndex(ctx context.Context, fence IndexFence, assets []RAGAssetRecord, assetIDs []string, attachments []RAGAttachmentRecord, attachmentIDs []string) (bool, error)
+	GetRAGAttachment(ctx context.Context, id string) (*RAGAttachmentRecord, error)
+	ListRAGAttachmentsByIDs(ctx context.Context, ids []string) ([]RAGAttachmentRecord, error)
+	ListRAGAttachmentsByDocument(ctx context.Context, docID string) ([]RAGAttachmentRecord, error)
+	DeleteRAGAttachmentsByDocument(ctx context.Context, docID string) error
+	IsRAGAttachmentInVersion(ctx context.Context, docID string, docVersion int64, attachmentID string) (bool, error)
+	PutRAGChunkAssets(ctx context.Context, mappings []RAGChunkAssetRecord) error
+	ListRAGChunkAssetsByRefs(ctx context.Context, refs []RAGChunkRef) ([]RAGChunkAssetRecord, error)
+	DeleteRAGChunkAssetsByDocumentVersion(ctx context.Context, docID string, docVersion int64) error
 	GetRAGIndexTask(ctx context.Context, id int64) (*RAGIndexTaskRecord, error)
-	UpdateRAGIndexTask(ctx context.Context, id int64, status string, retryCount int, errMsg string) error
 	ListRunnableRAGIndexTasks(ctx context.Context) ([]RAGIndexTaskRecord, error)
+	AdvanceDocumentVersionAndCreateTask(ctx context.Context, expectedVersion int64, snapshot *RAGDocumentVersionRecord) (*RAGIndexTaskRecord, error)
+	AdvanceDocumentVersionAndCreateTaskPolicy(ctx context.Context, expectedVersion int64, snapshot *RAGDocumentVersionRecord, policy RAGAdvancedEnqueuePolicy) (*RAGIndexTaskRecord, error)
+	ClaimRAGIndexTask(ctx context.Context, workerID string, leaseDuration time.Duration) (*RAGIndexClaim, error)
+	CheckRAGIndexFence(ctx context.Context, fence IndexFence) (bool, error)
+	HeartbeatRAGIndexTask(ctx context.Context, fence IndexFence, leaseDuration time.Duration) (bool, error)
+	AcknowledgeRAGIndexTaskQuiesced(ctx context.Context, fence IndexFence) (bool, error)
+	UpdateProgressRAGIndexTask(ctx context.Context, fence IndexFence, progress RAGIndexProgress) (bool, error)
+	UpdateWarningRAGIndexTask(ctx context.Context, fence IndexFence, degraded bool, warningCount int) (bool, error)
+	RecordRAGDocumentParseArtifact(ctx context.Context, fence IndexFence, artifactKey string) (bool, error)
+	RetryRAGIndexTask(ctx context.Context, fence IndexFence, errMsg string, nextRunDelay time.Duration) (bool, error)
+	FailRAGIndexTask(ctx context.Context, fence IndexFence, errMsg string) (bool, error)
+	ActivateAndFinishRAGIndexTask(ctx context.Context, fence IndexFence, activation RAGIndexActivation, gcGracePeriod time.Duration) (bool, error)
+	SupersedeRAGIndexTaskAndCreateVersion(ctx context.Context, fence IndexFence, snapshot *RAGDocumentVersionRecord) (*RAGIndexTaskRecord, bool, error)
+	MigrateLegacyRAGIndexTasks(ctx context.Context, builder RAGLegacyTaskSnapshotBuilder, allowBackfill bool) error
+	CreateRAGIndexGCTask(ctx context.Context, task *RAGIndexGCTaskRecord) (int64, error)
+	GetRAGIndexGCTask(ctx context.Context, id int64) (*RAGIndexGCTaskRecord, error)
+	ListRAGIndexGCTasks(ctx context.Context, status string, limit int) ([]RAGIndexGCTaskRecord, error)
+	UpdateRAGIndexGCTaskState(ctx context.Context, id int64, expectedStatus, status string, nextRunAt *time.Time) (bool, error)
+	DeleteRAGIndexGCTask(ctx context.Context, id int64) error
+	ClaimRAGIndexGCTask(ctx context.Context, workerID string, leaseDuration time.Duration) (*RAGIndexGCClaim, error)
+	CheckRAGIndexGCFence(ctx context.Context, fence RAGIndexGCFence) (bool, error)
+	HeartbeatRAGIndexGCTask(ctx context.Context, fence RAGIndexGCFence, leaseDuration time.Duration) (bool, error)
+	RetryRAGIndexGCTask(ctx context.Context, fence RAGIndexGCFence, nextRunDelay time.Duration) (bool, error)
+	FinishRAGIndexGCTask(ctx context.Context, fence RAGIndexGCFence) (bool, error)
+	ListRAGVersionCleanupCandidates(ctx context.Context, staleFor time.Duration, limit int) ([]RAGVersionCleanupCandidate, error)
+	ClaimRAGDocumentMaintenance(ctx context.Context, docID, leaseOwner string, leaseDuration time.Duration) (*RAGDocumentMaintenanceFence, error)
+	CheckRAGDocumentMaintenance(ctx context.Context, fence RAGDocumentMaintenanceFence) (bool, error)
+	HeartbeatRAGDocumentMaintenance(ctx context.Context, fence RAGDocumentMaintenanceFence, leaseDuration time.Duration) (bool, error)
+	ReleaseRAGDocumentMaintenance(ctx context.Context, fence RAGDocumentMaintenanceFence) (bool, error)
+	MarkRAGDocumentVersionGCED(ctx context.Context, docID string, docVersion int64) (bool, error)
+	IsRAGParseArtifactReferenced(ctx context.Context, docID, artifactKey string) (bool, error)
+	ListRAGStagingAssetCleanupCandidates(ctx context.Context, staleFor time.Duration, limit int) ([]RAGAssetRecord, error)
+	IsRAGAssetReferenced(ctx context.Context, assetID string) (bool, error)
+	DeleteRAGAsset(ctx context.Context, assetID string) error
+	DeleteRAGAssetWithMaintenance(ctx context.Context, fence RAGDocumentMaintenanceFence, assetID string) (bool, error)
+	ClaimRAGStagingAssetCleanup(ctx context.Context, fence RAGDocumentMaintenanceFence, assetID string) (*RAGAssetCleanupClaim, bool, error)
+	ListRAGStagingAttachmentCleanupCandidates(ctx context.Context, staleFor time.Duration, limit int) ([]RAGAttachmentRecord, error)
+	ClaimRAGStagingAttachmentCleanup(ctx context.Context, fence RAGDocumentMaintenanceFence, attachmentID string) (*RAGAttachmentCleanupClaim, bool, error)
+	BeginRAGObjectWrite(ctx context.Context, request RAGObjectWriteRequest) (*RAGObjectWriteFence, error)
+	MarkRAGObjectWriteReady(ctx context.Context, fence RAGObjectWriteFence) (bool, error)
+	ListRAGObjectWriteCleanupCandidates(ctx context.Context, staleFor time.Duration, limit int) ([]RAGObjectWriteFence, error)
+	ClaimRAGObjectWriteCleanup(ctx context.Context, candidate RAGObjectWriteFence) (*RAGObjectWriteFence, bool, error)
+	FinishRAGObjectWriteCleanup(ctx context.Context, fence RAGObjectWriteFence) (bool, error)
+	RegisterRAGCacheObject(ctx context.Context, record RAGCacheObjectRecord) error
+	ListRAGCacheCatalogDocuments(ctx context.Context, afterDocID string, limit int) ([]string, error)
+	PruneRAGCacheCatalogAndListCleanupCandidates(ctx context.Context, fence RAGDocumentMaintenanceFence, staleFor time.Duration, maxUnreferencedFingerprints, limit int) ([]RAGCacheObjectCleanupCandidate, error)
+	DeleteRAGCacheObjectWithMaintenance(ctx context.Context, fence RAGDocumentMaintenanceFence, candidate RAGCacheObjectCleanupCandidate) (bool, error)
+	CreateRAGDocumentAITaskBudget(ctx context.Context, budget *RAGDocumentAITaskBudgetRecord) error
+	GetRAGDocumentAITaskBudget(ctx context.Context, taskID int64) (*RAGDocumentAITaskBudgetRecord, error)
+	CreateRAGDocumentAIUserBudget(ctx context.Context, budget *RAGDocumentAIUserBudgetRecord) error
+	GetRAGDocumentAIUserBudget(ctx context.Context, userID string, periodStartUTC time.Time) (*RAGDocumentAIUserBudgetRecord, error)
+	GetRAGDocumentAIUsage(ctx context.Context, idempotencyKey string) (*RAGDocumentAIUsageRecord, error)
+	ReserveRAGDocumentAIUsage(ctx context.Context, fence IndexFence, usage *RAGDocumentAIUsageRecord, userLimits RAGDocumentAILimits) (bool, error)
+	MarkSentRAGDocumentAIUsage(ctx context.Context, idempotencyKey string, fence IndexFence) (bool, error)
+	CommitRAGDocumentAIUsage(ctx context.Context, idempotencyKey string, actualInputTokens, actualOutputTokens, actualCostMicroUSD int64, usageEstimated bool) (bool, error)
+	ReleaseRAGDocumentAIUsage(ctx context.Context, idempotencyKey string) (bool, error)
+	ReconcileRAGDocumentAIUsage(ctx context.Context, reservedBefore, sentBefore time.Time, limit int) (int, error)
 
 	// --- Cron 任务（每个 agent）---
 	//
@@ -371,6 +466,24 @@ type AgentRecord struct {
 	UpdatedAt time.Time              `json:"updatedAt"`
 }
 
+type MCPGatewayRuntimeRecord struct {
+	ID                  string    `json:"id"`
+	UserID              string    `json:"userId"`
+	Status              string    `json:"status"`
+	DockerContainerID   string    `json:"dockerContainerId,omitempty"`
+	ContainerName       string    `json:"containerName,omitempty"`
+	Image               string    `json:"image"`
+	InternalPort        int       `json:"internalPort"`
+	ExternalPort        int       `json:"externalPort,omitempty"`
+	BaseURL             string    `json:"baseUrl,omitempty"`
+	APIKey              string    `json:"-"`
+	DeployedServersJSON string    `json:"deployedServersJson,omitempty"`
+	LastAccessedAt      time.Time `json:"lastAccessedAt"`
+	ErrorMessage        string    `json:"errorMessage,omitempty"`
+	CreatedAt           time.Time `json:"createdAt"`
+	UpdatedAt           time.Time `json:"updatedAt"`
+}
+
 // SessionRecord 持有一个对话会话。
 //
 // Channel / AccountID / ChatID 标识此会话所属的上游对话
@@ -492,9 +605,10 @@ type ProjectRecord struct {
 
 // ConfigRecord 的 kind 常量。
 const (
-	KindProvider = "provider"
-	KindChannel  = "channel"
-	KindSetting  = "setting"
+	KindProvider  = "provider"
+	KindChannel   = "channel"
+	KindSetting   = "setting"
+	KindMCPServer = "mcp_server"
 )
 
 // ConfigRecord 是 configs 表中的一行——providers、channels 和命名空间设置
