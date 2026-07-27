@@ -12,7 +12,7 @@ IDs, never connection credentials.
 | `BKCRAB_MCP_GATEWAY_IMAGE` | `ghcr.io/lucky-aeon/mcp-gateway:latest` |
 | `BKCRAB_MCP_GATEWAY_RUNTIME_DIR` | `$BKCRAB_HOME/mcp-gateways` |
 | `BKCRAB_MCP_GATEWAY_CONTAINER_PORT` | `8080` |
-| `BKCRAB_MCP_GATEWAY_PROTOCOL` | `all` |
+| `BKCRAB_MCP_GATEWAY_PROTOCOL` | `streamhttp` |
 | `BKCRAB_MCP_GATEWAY_IDLE_TTL_SEC` | `1800` |
 
 ## Behavior

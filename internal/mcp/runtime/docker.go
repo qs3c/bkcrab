@@ -65,6 +65,7 @@ func (c *CLIClient) Ensure(ctx context.Context, spec ContainerSpec) (ContainerRe
 	if c.Runner == nil {
 		c.Runner = execRunner{}
 	}
+	protocol := gatewayProtocol(spec.Protocol)
 	if err := writeGatewayConfig(spec); err != nil {
 		return ContainerRef{}, err
 	}
@@ -97,6 +98,7 @@ func (c *CLIClient) Ensure(ctx context.Context, spec ContainerSpec) (ContainerRe
 		"--restart", "unless-stopped",
 		spec.Image,
 		"-cfg", "/app/vm/config.json",
+		"-protocol", protocol,
 		"-yes",
 	)
 	if err != nil {
@@ -204,10 +206,7 @@ func writeGatewayConfig(spec ContainerSpec) error {
 	if err := os.MkdirAll(spec.ConfigDir, 0o755); err != nil {
 		return fmt.Errorf("create gateway config dir: %w", err)
 	}
-	protocol := spec.Protocol
-	if protocol == "" {
-		protocol = "all"
-	}
+	protocol := gatewayProtocol(spec.Protocol)
 	cfg := map[string]any{
 		"LogLevel":        0,
 		"WorkspacePath":   "/app/vm",
@@ -226,4 +225,16 @@ func writeGatewayConfig(spec ContainerSpec) error {
 		return fmt.Errorf("write gateway config: %w", err)
 	}
 	return nil
+}
+
+func gatewayProtocol(protocol string) string {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "", "all", "streamable-http", "streamable_http", "streamhttp":
+		// BkCrab connects to the gateway through /stream. Gateway v2.1.0
+		// does not register that route when its protocol is "all", so use
+		// the gateway's streamhttp spelling explicitly.
+		return "streamhttp"
+	default:
+		return strings.ToLower(strings.TrimSpace(protocol))
+	}
 }

@@ -39,7 +39,7 @@ func FromEnv(env config.EnvMCPGateway) Config {
 	}
 	protocol := env.Protocol
 	if protocol == "" {
-		protocol = "all"
+		protocol = "streamhttp"
 	}
 	idle := time.Duration(env.IdleTTLSec) * time.Second
 	if idle <= 0 {

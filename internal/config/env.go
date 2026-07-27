@@ -84,7 +84,7 @@ func LoadEnv() *EnvConfig {
 			Enabled:       true,
 			Image:         "ghcr.io/lucky-aeon/mcp-gateway:latest",
 			ContainerPort: 8080,
-			Protocol:      "all",
+			Protocol:      "streamhttp",
 			IdleTTLSec:    1800,
 		},
 	}

@@ -64,13 +64,17 @@ func TestCLIClientEnsureUsesRemoteDockerHostForPublishedGateway(t *testing.T) {
 		t.Fatalf("read gateway config: %v", err)
 	}
 	var gatewayConfig struct {
-		WorkspacePath string `json:"WorkspacePath"`
+		WorkspacePath   string `json:"WorkspacePath"`
+		GatewayProtocol string `json:"GatewayProtocol"`
 	}
 	if err := json.Unmarshal(configData, &gatewayConfig); err != nil {
 		t.Fatalf("decode gateway config: %v", err)
 	}
 	if got, want := gatewayConfig.WorkspacePath, "/app/vm"; got != want {
 		t.Fatalf("WorkspacePath = %q, want %q", got, want)
+	}
+	if got, want := gatewayConfig.GatewayProtocol, "streamhttp"; got != want {
+		t.Fatalf("GatewayProtocol = %q, want %q", got, want)
 	}
 
 	wantRun := []string{
@@ -81,6 +85,7 @@ func TestCLIClientEnsureUsesRemoteDockerHostForPublishedGateway(t *testing.T) {
 		"--restart", "unless-stopped",
 		"ghcr.io/lucky-aeon/mcp-gateway:test",
 		"-cfg", "/app/vm/config.json",
+		"-protocol", "streamhttp",
 		"-yes",
 	}
 	if len(runner.calls) != 3 {
@@ -111,5 +116,13 @@ func TestNewCLIClientReadsDockerHost(t *testing.T) {
 	client := NewCLIClient()
 	if got, want := client.DockerHost, "tcp://sandbox-docker:2375"; got != want {
 		t.Fatalf("DockerHost = %q, want %q", got, want)
+	}
+}
+
+func TestGatewayProtocolUsesStreamHTTPForAll(t *testing.T) {
+	for _, input := range []string{"", "all", "streamable-http", "streamhttp"} {
+		if got, want := gatewayProtocol(input), "streamhttp"; got != want {
+			t.Fatalf("gatewayProtocol(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
