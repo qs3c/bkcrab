@@ -11,6 +11,12 @@
 /dist/
 *.bundle
 
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
 # Test binary, built with `go test -c`
 *.test
 
