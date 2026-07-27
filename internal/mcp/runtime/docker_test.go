@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -57,6 +59,19 @@ func TestCLIClientEnsureUsesRemoteDockerHostForPublishedGateway(t *testing.T) {
 	if got, want := ref.BaseURL, "http://sandbox-docker:32768"; got != want {
 		t.Fatalf("BaseURL = %q, want %q", got, want)
 	}
+	configData, err := os.ReadFile(filepath.Join(configDir, "config.json"))
+	if err != nil {
+		t.Fatalf("read gateway config: %v", err)
+	}
+	var gatewayConfig struct {
+		WorkspacePath string `json:"WorkspacePath"`
+	}
+	if err := json.Unmarshal(configData, &gatewayConfig); err != nil {
+		t.Fatalf("decode gateway config: %v", err)
+	}
+	if got, want := gatewayConfig.WorkspacePath, "/app/vm"; got != want {
+		t.Fatalf("WorkspacePath = %q, want %q", got, want)
+	}
 
 	wantRun := []string{
 		"docker", "run", "-d",
@@ -65,6 +80,8 @@ func TestCLIClientEnsureUsesRemoteDockerHostForPublishedGateway(t *testing.T) {
 		"-v", filepath.Clean(configDir) + ":/app/vm",
 		"--restart", "unless-stopped",
 		"ghcr.io/lucky-aeon/mcp-gateway:test",
+		"-cfg", "/app/vm/config.json",
+		"-yes",
 	}
 	if len(runner.calls) != 3 {
 		t.Fatalf("command count = %d, want 3: %#v", len(runner.calls), runner.calls)

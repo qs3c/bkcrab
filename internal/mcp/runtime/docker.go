@@ -96,6 +96,8 @@ func (c *CLIClient) Ensure(ctx context.Context, spec ContainerSpec) (ContainerRe
 		"-v", volume,
 		"--restart", "unless-stopped",
 		spec.Image,
+		"-cfg", "/app/vm/config.json",
+		"-yes",
 	)
 	if err != nil {
 		return ContainerRef{}, fmt.Errorf("docker run %s: %w: %s", spec.Name, err, string(out))
@@ -208,7 +210,7 @@ func writeGatewayConfig(spec ContainerSpec) error {
 	}
 	cfg := map[string]any{
 		"LogLevel":        0,
-		"WorkspacePath":   "./vm",
+		"WorkspacePath":   "/app/vm",
 		"Bind":            fmt.Sprintf("[::]:%d", spec.ContainerPort),
 		"Auth":            map[string]any{"Enabled": false, "ApiKey": "bkcrab-local"},
 		"GatewayProtocol": protocol,
