@@ -32,6 +32,7 @@ services:
       BKCRAB_OBJECT_STORE_ACCESSKEY: "${MINIO_ROOT_USER:?set MINIO_ROOT_USER in deploy/docker/.env}"
       BKCRAB_OBJECT_STORE_SECRETKEY: "${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in deploy/docker/.env}"
       BKCRAB_OBJECT_STORE_USESSL: "false"
+      BKCRAB_MCP_GATEWAY_IMAGE: "${BKCRAB_MCP_GATEWAY_IMAGE:-ghcr.io/lucky-aeon/mcp-gateway:latest}"
       DOCKER_HOST: tcp://sandbox-docker:2375
     depends_on:
       mysql:
@@ -41,6 +42,8 @@ services:
       sandbox-docker:
         condition: service_healthy
       sandbox-image-init:
+        condition: service_completed_successfully
+      mcp-gateway-image-init:
         condition: service_completed_successfully
     command: ["gateway"]
     healthcheck:
@@ -187,6 +190,46 @@ services:
 
         echo "==> verifying sandbox image has Python"
         $${dind_docker} run --rm "$${SANDBOX_IMAGE}" python --version
+
+  mcp-gateway-image-init:
+    image: docker:28-dind
+    restart: "no"
+    depends_on:
+      sandbox-docker:
+        condition: service_healthy
+    environment:
+      DOCKER_HOST: tcp://sandbox-docker:2375
+      MCP_GATEWAY_IMAGE: "${BKCRAB_MCP_GATEWAY_IMAGE:-ghcr.io/lucky-aeon/mcp-gateway:latest}"
+      HTTP_PROXY: "${HTTP_PROXY:-}"
+      HTTPS_PROXY: "${HTTPS_PROXY:-}"
+      NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,sandbox-docker}"
+      http_proxy: "${http_proxy:-}"
+      https_proxy: "${https_proxy:-}"
+      no_proxy: "${no_proxy:-localhost,127.0.0.1,sandbox-docker}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        host_docker="docker --host unix:///var/run/docker.sock"
+        dind_docker="docker --host tcp://sandbox-docker:2375"
+
+        if $${dind_docker} image inspect "$${MCP_GATEWAY_IMAGE}" >/dev/null 2>&1; then
+          echo "==> MCP gateway image already present in DinD: $${MCP_GATEWAY_IMAGE}"
+        else
+          if ! $${host_docker} image inspect "$${MCP_GATEWAY_IMAGE}" >/dev/null 2>&1; then
+            echo "==> MCP gateway image missing on host Docker; pulling: $${MCP_GATEWAY_IMAGE}"
+            $${host_docker} pull "$${MCP_GATEWAY_IMAGE}"
+          fi
+
+          echo "==> loading MCP gateway image into DinD: $${MCP_GATEWAY_IMAGE}"
+          $${host_docker} save "$${MCP_GATEWAY_IMAGE}" | $${dind_docker} load
+        fi
+
+        echo "==> verifying MCP gateway image"
+        $${dind_docker} image inspect "$${MCP_GATEWAY_IMAGE}" >/dev/null
 
   migrate-storage:
     profiles: ["migration"]

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,11 +46,15 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 }
 
 type CLIClient struct {
-	Runner CommandRunner
+	Runner     CommandRunner
+	DockerHost string
 }
 
 func NewCLIClient() *CLIClient {
-	return &CLIClient{Runner: execRunner{}}
+	return &CLIClient{
+		Runner:     execRunner{},
+		DockerHost: os.Getenv("DOCKER_HOST"),
+	}
 }
 
 func NewDockerCLIClient() *CLIClient {
@@ -77,9 +82,17 @@ func (c *CLIClient) Ensure(ctx context.Context, spec ContainerSpec) (ContainerRe
 	}
 
 	volume := filepath.Clean(spec.ConfigDir) + ":/app/vm"
+	publishHost := "127.0.0.1"
+	if c.remoteDaemonHost() != "" {
+		// The Docker daemon may run in a sibling DinD container. Binding the
+		// published port to that daemon's loopback interface would make it
+		// unreachable from bkcrab, so expose it on the daemon container's
+		// network interface and connect through DOCKER_HOST instead.
+		publishHost = "0.0.0.0"
+	}
 	out, err := c.Runner.Run(ctx, "docker", "run", "-d",
 		"--name", spec.Name,
-		"-p", fmt.Sprintf("127.0.0.1::%d", spec.ContainerPort),
+		"-p", fmt.Sprintf("%s::%d", publishHost, spec.ContainerPort),
 		"-v", volume,
 		"--restart", "unless-stopped",
 		spec.Image,
@@ -136,24 +149,53 @@ func (c *CLIClient) resolvePort(ctx context.Context, name string, containerPort 
 	if err != nil {
 		return ContainerRef{}, fmt.Errorf("docker port %s: %w: %s", name, err, string(out))
 	}
-	host, portText, err := net.SplitHostPort(strings.TrimSpace(string(out)))
-	if err != nil {
-		return ContainerRef{}, fmt.Errorf("parse docker port %q: %w", strings.TrimSpace(string(out)), err)
+	var host, portText string
+	var parseErr error
+	for _, mapping := range strings.Fields(string(out)) {
+		host, portText, parseErr = net.SplitHostPort(mapping)
+		if parseErr == nil {
+			break
+		}
+	}
+	if portText == "" {
+		if parseErr == nil {
+			parseErr = fmt.Errorf("no published port found")
+		}
+		return ContainerRef{}, fmt.Errorf("parse docker port %q: %w", strings.TrimSpace(string(out)), parseErr)
 	}
 	port, err := strconv.Atoi(portText)
 	if err != nil {
 		return ContainerRef{}, fmt.Errorf("parse docker host port %q: %w", portText, err)
 	}
-	if host == "" || host == "::" || host == "0.0.0.0" || host == "[::]" {
+	if remoteHost := c.remoteDaemonHost(); remoteHost != "" {
+		host = remoteHost
+	} else if host == "" || host == "::" || host == "0.0.0.0" || host == "[::]" {
 		host = "127.0.0.1"
 	}
 	return ContainerRef{
 		ID:           id,
 		Name:         name,
-		BaseURL:      fmt.Sprintf("http://%s:%d", host, port),
+		BaseURL:      "http://" + net.JoinHostPort(host, strconv.Itoa(port)),
 		ExternalPort: port,
 		Running:      true,
 	}, nil
+}
+
+func (c *CLIClient) remoteDaemonHost() string {
+	raw := strings.TrimSpace(c.DockerHost)
+	if raw == "" {
+		return ""
+	}
+	endpoint, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(endpoint.Scheme) {
+	case "tcp", "http", "https", "ssh":
+		return endpoint.Hostname()
+	default:
+		return ""
+	}
 }
 
 func writeGatewayConfig(spec ContainerSpec) error {
