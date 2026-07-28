@@ -40,6 +40,13 @@ type fakeResourceStore struct {
 	rows []store.ConfigRecord
 }
 
+func TestNewServiceDefaultsGatewayRequestTimeoutToFiveMinutes(t *testing.T) {
+	svc := NewService(Options{})
+	if got, want := svc.httpClient.Timeout, 5*time.Minute; got != want {
+		t.Fatalf("gateway request timeout = %s, want %s", got, want)
+	}
+}
+
 func (f *fakeResourceStore) ListConfigs(ctx context.Context, kind, userID, agentID string) ([]store.ConfigRecord, error) {
 	var rows []store.ConfigRecord
 	for _, row := range f.rows {

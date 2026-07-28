@@ -76,7 +76,7 @@ func NewService(opts Options) *Service {
 		cfg.DeployTimeout = 5 * time.Minute
 	}
 	if cfg.RequestTimeout <= 0 {
-		cfg.RequestTimeout = 30 * time.Second
+		cfg.RequestTimeout = 5 * time.Minute
 	}
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
