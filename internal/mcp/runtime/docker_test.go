@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -34,7 +35,7 @@ func (r *recordingCommandRunner) Run(_ context.Context, name string, args ...str
 func TestCLIClientEnsureUsesRemoteDockerHostForPublishedGateway(t *testing.T) {
 	runner := &recordingCommandRunner{
 		outputs: [][]byte{
-			nil,
+			[]byte("Error: No such object: gateway"),
 			[]byte("container-id\n"),
 			[]byte("0.0.0.0:32768\n"),
 		},
@@ -93,6 +94,81 @@ func TestCLIClientEnsureUsesRemoteDockerHostForPublishedGateway(t *testing.T) {
 	}
 	if !reflect.DeepEqual(runner.calls[1], wantRun) {
 		t.Fatalf("docker run command = %#v, want %#v", runner.calls[1], wantRun)
+	}
+}
+
+func TestCLIClientEnsureRecreatesContainerWhenImageChanges(t *testing.T) {
+	runner := &recordingCommandRunner{
+		outputs: [][]byte{
+			[]byte(`[{"Id":"old-id","Name":"/gateway","Config":{"Image":"ghcr.io/lucky-aeon/mcp-gateway:latest"},"State":{"Running":true}}]`),
+			[]byte("gateway\n"),
+			[]byte("new-id\n"),
+			[]byte("0.0.0.0:32770\n"),
+		},
+	}
+	configDir := t.TempDir()
+	client := &CLIClient{
+		Runner:     runner,
+		DockerHost: "tcp://sandbox-docker:2375",
+	}
+
+	ref, err := client.Ensure(context.Background(), ContainerSpec{
+		Name:          "gateway",
+		Image:         "qs3c/mcp-gateway:patched",
+		ConfigDir:     configDir,
+		ContainerPort: 8080,
+		Protocol:      "streamhttp",
+	})
+	if err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	if got, want := ref.ID, "new-id"; got != want {
+		t.Fatalf("container ID = %q, want %q", got, want)
+	}
+	if got, want := ref.BaseURL, "http://sandbox-docker:32770"; got != want {
+		t.Fatalf("BaseURL = %q, want %q", got, want)
+	}
+	wantRemove := []string{"docker", "rm", "-f", "gateway"}
+	if !reflect.DeepEqual(runner.calls[1], wantRemove) {
+		t.Fatalf("docker remove command = %#v, want %#v", runner.calls[1], wantRemove)
+	}
+	wantRun := []string{
+		"docker", "run", "-d",
+		"--name", "gateway",
+		"-p", "0.0.0.0::8080",
+		"-v", filepath.Clean(configDir) + ":/app/vm",
+		"--restart", "unless-stopped",
+		"qs3c/mcp-gateway:patched",
+		"-cfg", "/app/vm/config.json",
+		"-protocol", "streamhttp",
+		"-yes",
+	}
+	if !reflect.DeepEqual(runner.calls[2], wantRun) {
+		t.Fatalf("docker run command = %#v, want %#v", runner.calls[2], wantRun)
+	}
+}
+
+func TestCLIClientEnsureReportsDockerInspectFailure(t *testing.T) {
+	runner := &recordingCommandRunner{
+		outputs: [][]byte{[]byte("Cannot connect to the Docker daemon at tcp://sandbox-docker:2375")},
+		errs:    []error{errors.New("exit status 1")},
+	}
+	client := &CLIClient{Runner: runner}
+
+	_, err := client.Ensure(context.Background(), ContainerSpec{
+		Name:          "gateway",
+		Image:         "qs3c/mcp-gateway:patched",
+		ConfigDir:     t.TempDir(),
+		ContainerPort: 8080,
+	})
+	if err == nil {
+		t.Fatal("Ensure() error = nil, want Docker inspect failure")
+	}
+	if got := err.Error(); !strings.Contains(got, "docker inspect gateway") || !strings.Contains(got, "Cannot connect") {
+		t.Fatalf("Ensure() error = %q, want inspect/connect detail", got)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("command count = %d, want 1: %#v", len(runner.calls), runner.calls)
 	}
 }
 

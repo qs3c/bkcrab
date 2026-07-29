@@ -29,6 +29,7 @@ type ContainerSpec struct {
 type ContainerRef struct {
 	ID           string
 	Name         string
+	Image        string
 	BaseURL      string
 	ExternalPort int
 	Running      bool
@@ -69,9 +70,16 @@ func (c *CLIClient) Ensure(ctx context.Context, spec ContainerSpec) (ContainerRe
 	if err := writeGatewayConfig(spec); err != nil {
 		return ContainerRef{}, err
 	}
-	ref, exists, err := c.inspect(ctx, spec.Name, spec.ContainerPort)
+	ref, exists, err := c.inspect(ctx, spec.Name)
 	if err != nil {
 		return ContainerRef{}, err
+	}
+	if exists && strings.TrimSpace(ref.Image) != "" && strings.TrimSpace(ref.Image) != strings.TrimSpace(spec.Image) {
+		out, err := c.Runner.Run(ctx, "docker", "rm", "-f", spec.Name)
+		if err != nil {
+			return ContainerRef{}, fmt.Errorf("docker remove stale %s: %w: %s", spec.Name, err, string(out))
+		}
+		exists = false
 	}
 	if exists {
 		if !ref.Running {
@@ -118,14 +126,21 @@ func (c *CLIClient) Stop(ctx context.Context, name string) error {
 	return nil
 }
 
-func (c *CLIClient) inspect(ctx context.Context, name string, port int) (ContainerRef, bool, error) {
+func (c *CLIClient) inspect(ctx context.Context, name string) (ContainerRef, bool, error) {
 	out, err := c.Runner.Run(ctx, "docker", "inspect", name)
 	if err != nil {
-		return ContainerRef{}, false, nil
+		message := strings.ToLower(string(out))
+		if strings.Contains(message, "no such object") || strings.Contains(message, "no such container") {
+			return ContainerRef{}, false, nil
+		}
+		return ContainerRef{}, false, fmt.Errorf("docker inspect %s: %w: %s", name, err, string(out))
 	}
 	var rows []struct {
-		ID    string `json:"Id"`
-		Name  string `json:"Name"`
+		ID     string `json:"Id"`
+		Name   string `json:"Name"`
+		Config struct {
+			Image string `json:"Image"`
+		} `json:"Config"`
 		State struct {
 			Running bool `json:"Running"`
 		} `json:"State"`
@@ -136,14 +151,11 @@ func (c *CLIClient) inspect(ctx context.Context, name string, port int) (Contain
 	if len(rows) == 0 {
 		return ContainerRef{}, false, nil
 	}
-	ref := ContainerRef{ID: rows[0].ID, Name: strings.TrimPrefix(rows[0].Name, "/"), Running: rows[0].State.Running}
-	if ref.Running {
-		portRef, err := c.resolvePort(ctx, name, port, ref.ID)
-		if err != nil {
-			return ContainerRef{}, true, err
-		}
-		ref.BaseURL = portRef.BaseURL
-		ref.ExternalPort = portRef.ExternalPort
+	ref := ContainerRef{
+		ID:      rows[0].ID,
+		Name:    strings.TrimPrefix(rows[0].Name, "/"),
+		Image:   rows[0].Config.Image,
+		Running: rows[0].State.Running,
 	}
 	return ref, true, nil
 }
