@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,9 +20,10 @@ import (
 )
 
 const (
-	StatusRunning = "running"
-	StatusStopped = "stopped"
-	StatusError   = "error"
+	StatusRunning  = "running"
+	StatusDegraded = "degraded"
+	StatusStopped  = "stopped"
+	StatusError    = "error"
 )
 
 type RuntimeStore interface {
@@ -32,6 +34,35 @@ type RuntimeStore interface {
 
 type ResourceStore interface {
 	ListConfigs(ctx context.Context, kind, userID, agentID string) ([]store.ConfigRecord, error)
+	SaveConfig(ctx context.Context, rec *store.ConfigRecord) error
+}
+
+type DeploymentError struct {
+	Failures map[string]GatewayServiceDeployResult
+}
+
+func (e *DeploymentError) Error() string {
+	if e == nil || len(e.Failures) == 0 {
+		return "MCP 服务部署失败"
+	}
+	names := make([]string, 0, len(e.Failures))
+	for name := range e.Failures {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	details := make([]string, 0, len(names))
+	for _, name := range names {
+		result := e.Failures[name]
+		reason := strings.TrimSpace(result.Error)
+		if reason == "" {
+			reason = strings.TrimSpace(result.Message)
+		}
+		if reason == "" {
+			reason = "未知错误"
+		}
+		details = append(details, fmt.Sprintf("%s: %s", name, reason))
+	}
+	return "MCP 服务部署失败：" + strings.Join(details, "；")
 }
 
 type Options struct {
@@ -98,15 +129,15 @@ func NewService(opts Options) *Service {
 	}
 }
 
-func (s *Service) Deploy(ctx context.Context, userID string, servers map[string]config.MCPServerConfig) (*store.MCPGatewayRuntimeRecord, error) {
+func (s *Service) Deploy(ctx context.Context, userID string, servers map[string]config.MCPServerConfig) (*store.MCPGatewayRuntimeRecord, *GatewayDeployResponse, error) {
 	if !s.cfg.Enabled {
-		return nil, errors.New("mcp gateway runtime is disabled")
+		return nil, nil, errors.New("mcp gateway runtime is disabled")
 	}
 	if s.store == nil {
-		return nil, errors.New("mcp gateway runtime store is required")
+		return nil, nil, errors.New("mcp gateway runtime store is required")
 	}
 	if userID == "" {
-		return nil, errors.New("mcp gateway runtime user_id is required")
+		return nil, nil, errors.New("mcp gateway runtime user_id is required")
 	}
 	lock := s.userDeployLock(userID)
 	lock.Lock()
@@ -129,22 +160,38 @@ func (s *Service) Deploy(ctx context.Context, userID string, servers map[string]
 		Protocol:      s.cfg.Protocol,
 	})
 	if err != nil {
-		return nil, s.saveError(ctx, userID, name, err)
+		cause := fmt.Errorf("ensure MCP gateway container: %w", err)
+		if statusErr := s.persistDeploymentFailure(ctx, userID, servers, cause); statusErr != nil {
+			cause = fmt.Errorf("%w; persist per-service deployment status: %v", cause, statusErr)
+		}
+		return nil, nil, s.saveError(ctx, userID, name, cause)
 	}
-	if err := DeployToGateway(ctx, s.httpClient, ref.BaseURL, servers); err != nil {
-		return nil, s.saveError(ctx, userID, name, err)
+	deployment, err := DeployToGateway(ctx, s.httpClient, ref.BaseURL, servers)
+	if err != nil {
+		cause := err
+		if statusErr := s.persistDeploymentFailure(ctx, userID, servers, cause); statusErr != nil {
+			cause = fmt.Errorf("%w; persist per-service deployment status: %v", cause, statusErr)
+		}
+		return nil, nil, s.saveError(ctx, userID, name, cause)
+	}
+	if err := s.persistDeploymentResults(ctx, userID, deployment); err != nil {
+		return nil, deployment, s.saveError(ctx, userID, name, fmt.Errorf("persist per-service deployment results: %w", err))
 	}
 
 	now := time.Now().UTC()
 	rec, err := s.store.GetMCPGatewayRuntime(ctx, userID)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
-			return nil, err
+			return nil, deployment, err
 		}
 		rec = &store.MCPGatewayRuntimeRecord{UserID: userID}
 	}
 	deployed, _ := json.Marshal(enabledServers(servers))
+	failures := deployment.FailedResults(nil)
 	rec.Status = StatusRunning
+	if len(failures) > 0 {
+		rec.Status = StatusDegraded
+	}
 	rec.DockerContainerID = ref.ID
 	rec.ContainerName = name
 	rec.Image = s.cfg.Image
@@ -155,10 +202,13 @@ func (s *Service) Deploy(ctx context.Context, userID string, servers map[string]
 	rec.DeployedServersJSON = string(deployed)
 	rec.LastAccessedAt = now
 	rec.ErrorMessage = ""
-	if err := s.store.SaveMCPGatewayRuntime(ctx, rec); err != nil {
-		return nil, err
+	if len(failures) > 0 {
+		rec.ErrorMessage = (&DeploymentError{Failures: failures}).Error()
 	}
-	return rec, nil
+	if err := s.store.SaveMCPGatewayRuntime(ctx, rec); err != nil {
+		return nil, deployment, err
+	}
+	return rec, deployment, nil
 }
 
 func (s *Service) NewManagerForAgent(ctx context.Context, rc config.ResolvedAgent) (*mcp.Manager, error) {
@@ -166,7 +216,7 @@ func (s *Service) NewManagerForAgent(ctx context.Context, rc config.ResolvedAgen
 }
 
 func (s *Service) TestResources(ctx context.Context, userID string, resourceIDs []string) ([]mcp.ToolDef, error) {
-	mgr, err := s.NewManagerFromResources(ctx, userID, resourceIDs)
+	mgr, err := s.newManagerFromResources(ctx, userID, resourceIDs, true)
 	if err != nil {
 		return nil, err
 	}
@@ -175,6 +225,10 @@ func (s *Service) TestResources(ctx context.Context, userID string, resourceIDs 
 }
 
 func (s *Service) NewManagerFromResources(ctx context.Context, userID string, resourceIDs []string) (*mcp.Manager, error) {
+	return s.newManagerFromResources(ctx, userID, resourceIDs, false)
+}
+
+func (s *Service) newManagerFromResources(ctx context.Context, userID string, resourceIDs []string, requireHealthy bool) (*mcp.Manager, error) {
 	if len(resourceIDs) == 0 {
 		return mcp.NewManager(nil), nil
 	}
@@ -189,6 +243,9 @@ func (s *Service) NewManagerFromResources(ctx context.Context, userID string, re
 		if !ok {
 			return nil, fmt.Errorf("MCP resource %q is not owned by user %q", resourceID, userID)
 		}
+		if requireHealthy && !resource.Enabled {
+			return nil, fmt.Errorf("MCP resource %q is disabled", resource.Name)
+		}
 		if resource.Enabled {
 			aliases[resource.ID] = resource.Name
 		}
@@ -197,15 +254,25 @@ func (s *Service) NewManagerFromResources(ctx context.Context, userID string, re
 		return mcp.NewManager(nil), nil
 	}
 
-	rec, err := s.Deploy(ctx, userID, allServers)
+	rec, deployment, err := s.Deploy(ctx, userID, allServers)
 	if err != nil {
 		return nil, err
+	}
+	if requireHealthy {
+		if failures := deployment.FailedResults(resourceIDs); len(failures) > 0 {
+			return nil, &DeploymentError{Failures: failures}
+		}
 	}
 	release := s.Acquire(userID)
 	client := newGatewayMCPClient(rec.BaseURL)
 	mgr, err := mcp.NewScopedAggregatedManager(client, aliases)
 	if err != nil {
 		release()
+		if requireHealthy {
+			if statusErr := s.persistResourceIDsFailure(ctx, userID, resourceIDs, err); statusErr != nil {
+				return nil, fmt.Errorf("%w; persist target MCP failure status: %v", err, statusErr)
+			}
+		}
 		return nil, err
 	}
 	mgr.AddCloseHook(release)
@@ -223,15 +290,21 @@ func (s *Service) SyncUserResources(ctx context.Context, userID string) error {
 		}
 		return err
 	}
-	if status == nil || status.Status != StatusRunning {
+	if status == nil || (status.Status != StatusRunning && status.Status != StatusDegraded) {
 		return nil
 	}
 	servers, _, err := s.userResourceSet(ctx, userID)
 	if err != nil {
 		return err
 	}
-	_, err = s.Deploy(ctx, userID, servers)
-	return err
+	_, deployment, err := s.Deploy(ctx, userID, servers)
+	if err != nil {
+		return err
+	}
+	if failures := deployment.FailedResults(nil); len(failures) > 0 {
+		return &DeploymentError{Failures: failures}
+	}
+	return nil
 }
 
 func (s *Service) userResourceSet(ctx context.Context, userID string) (map[string]config.MCPServerConfig, map[string]mcp.Resource, error) {
@@ -272,9 +345,12 @@ func (s *Service) NewManagerFromServers(ctx context.Context, userID string, serv
 	if len(enabledServers(servers)) == 0 {
 		return mcp.NewManager(nil), nil
 	}
-	rec, err := s.Deploy(ctx, userID, servers)
+	rec, deployment, err := s.Deploy(ctx, userID, servers)
 	if err != nil {
 		return nil, err
+	}
+	if failures := deployment.FailedResults(enabledServerNames(servers)); len(failures) > 0 {
+		return nil, &DeploymentError{Failures: failures}
 	}
 	release := s.Acquire(userID)
 	client := newGatewayMCPClient(rec.BaseURL)
@@ -334,7 +410,7 @@ func (s *Service) StopIdle(ctx context.Context, now time.Time) error {
 	if s.store == nil {
 		return errors.New("mcp gateway runtime store is required")
 	}
-	rows, err := s.store.ListMCPGatewayRuntimesByStatus(ctx, StatusRunning)
+	rows, err := s.store.ListMCPGatewayRuntimesByStatus(ctx, StatusRunning, StatusDegraded)
 	if err != nil {
 		return err
 	}
@@ -382,7 +458,7 @@ func (s *Service) StopAll(ctx context.Context) error {
 	if s.store == nil {
 		return errors.New("mcp gateway runtime store is required")
 	}
-	rows, err := s.store.ListMCPGatewayRuntimesByStatus(ctx, StatusRunning)
+	rows, err := s.store.ListMCPGatewayRuntimesByStatus(ctx, StatusRunning, StatusDegraded)
 	if err != nil {
 		return err
 	}
@@ -452,4 +528,84 @@ func enabledServers(servers map[string]config.MCPServerConfig) map[string]config
 		}
 	}
 	return out
+}
+
+func enabledServerNames(servers map[string]config.MCPServerConfig) []string {
+	names := make([]string, 0, len(servers))
+	for name, server := range servers {
+		if config.MCPServerEnabled(server) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func (s *Service) persistDeploymentResults(ctx context.Context, userID string, deployment *GatewayDeployResponse) error {
+	if deployment == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	states := make(map[string]mcp.ResourceDeployment, len(deployment.Results))
+	for name, result := range deployment.Results {
+		updatedAt := now
+		states[name] = mcp.ResourceDeployment{
+			Status:    result.Status,
+			Message:   result.Message,
+			Error:     result.Error,
+			UpdatedAt: &updatedAt,
+		}
+	}
+	return s.persistResourceDeploymentStates(ctx, userID, states)
+}
+
+func (s *Service) persistDeploymentFailure(ctx context.Context, userID string, servers map[string]config.MCPServerConfig, cause error) error {
+	resourceIDs := make([]string, 0, len(servers))
+	for name, server := range servers {
+		if !config.MCPServerEnabled(server) {
+			continue
+		}
+		resourceIDs = append(resourceIDs, name)
+	}
+	return s.persistResourceIDsFailure(ctx, userID, resourceIDs, cause)
+}
+
+func (s *Service) persistResourceIDsFailure(ctx context.Context, userID string, resourceIDs []string, cause error) error {
+	now := time.Now().UTC()
+	states := make(map[string]mcp.ResourceDeployment, len(resourceIDs))
+	for _, resourceID := range resourceIDs {
+		updatedAt := now
+		states[resourceID] = mcp.ResourceDeployment{
+			Status:    DeployStatusFailed,
+			Message:   "MCP 服务部署失败",
+			Error:     cause.Error(),
+			UpdatedAt: &updatedAt,
+		}
+	}
+	return s.persistResourceDeploymentStates(ctx, userID, states)
+}
+
+func (s *Service) persistResourceDeploymentStates(ctx context.Context, userID string, states map[string]mcp.ResourceDeployment) error {
+	if s.resources == nil || len(states) == 0 {
+		return nil
+	}
+	rows, err := s.resources.ListConfigs(ctx, store.KindMCPServer, userID, "")
+	if err != nil {
+		return fmt.Errorf("list MCP resources for deployment status: %w", err)
+	}
+	for i := range rows {
+		state, ok := states[rows[i].ID]
+		if !ok {
+			continue
+		}
+		resource, err := mcp.ResourceFromRecord(rows[i])
+		if err != nil {
+			return err
+		}
+		resource.Deployment = &state
+		resource.ApplyToRecord(&rows[i])
+		if err := s.resources.SaveConfig(ctx, &rows[i]); err != nil {
+			return fmt.Errorf("save MCP resource %q deployment status: %w", rows[i].ID, err)
+		}
+	}
+	return nil
 }

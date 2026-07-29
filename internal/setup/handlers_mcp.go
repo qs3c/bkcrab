@@ -30,6 +30,22 @@ type mcpResourceWriteRequest struct {
 	Config      config.MCPServerConfig `json:"config"`
 }
 
+func pendingMCPDeployment(enabled bool) *mcp.ResourceDeployment {
+	now := time.Now().UTC()
+	if !enabled {
+		return &mcp.ResourceDeployment{
+			Status:    mcp.ResourceDeploymentDisabled,
+			Message:   "服务已停用",
+			UpdatedAt: &now,
+		}
+	}
+	return &mcp.ResourceDeployment{
+		Status:    mcp.ResourceDeploymentPending,
+		Message:   "等待首次部署或连接测试",
+		UpdatedAt: &now,
+	}
+}
+
 func maskMCPServers(src map[string]config.MCPServerConfig) map[string]config.MCPServerConfig {
 	out := make(map[string]config.MCPServerConfig, len(src))
 	for name, cfg := range src {
@@ -337,6 +353,7 @@ func (s *Server) handleCreateMCPResource(w http.ResponseWriter, r *http.Request)
 		Description: strings.TrimSpace(req.Description),
 		Enabled:     enabled,
 		Config:      req.Config,
+		Deployment:  pendingMCPDeployment(enabled),
 	}
 	rec := &store.ConfigRecord{}
 	resource.ApplyToRecord(rec)
@@ -397,6 +414,7 @@ func (s *Server) handleUpdateMCPResource(w http.ResponseWriter, r *http.Request)
 	next.Description = strings.TrimSpace(req.Description)
 	next.Enabled = enabled
 	next.Config = merged
+	next.Deployment = pendingMCPDeployment(enabled)
 	next.ApplyToRecord(rec)
 	if err := s.dataStore.SaveConfig(r.Context(), rec); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})

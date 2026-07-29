@@ -153,12 +153,81 @@ function gatewayLabel(gateway?: MCPGatewayStatus): string {
   switch (gateway?.status) {
     case "running":
       return "运行中";
+    case "degraded":
+      return "部分异常";
     case "error":
       return "异常";
     case "stopped":
       return "未运行";
     default:
       return "待启动";
+  }
+}
+
+type ServiceStatus = {
+  label: string;
+  variant: "default" | "secondary" | "destructive" | "outline";
+  detail: string;
+  error: boolean;
+};
+
+function serviceStatus(resource: MCPResource, gateway: MCPGatewayStatus | undefined, testing: boolean): ServiceStatus {
+  if (testing) {
+    return { label: "检测中", variant: "secondary", detail: "正在部署并读取工具列表", error: false };
+  }
+  if (!resource.enabled || resource.deployment?.status === "disabled") {
+    return { label: "已停用", variant: "secondary", detail: "该服务不会部署到 MCP Gateway", error: false };
+  }
+
+  const deployment = resource.deployment;
+  if (deployment?.status === "failed") {
+    return {
+      label: "异常",
+      variant: "destructive",
+      detail: deployment.error || deployment.message || "MCP 服务部署失败",
+      error: true,
+    };
+  }
+  if (gateway?.status === "error") {
+    return {
+      label: "网关异常",
+      variant: "destructive",
+      detail: gateway.errorMessage || "用户 MCP Gateway 当前不可用",
+      error: true,
+    };
+  }
+  if (gateway?.status === "stopped" && ["deployed", "existed", "replaced"].includes(deployment?.status || "")) {
+    return {
+      label: "网关已停止",
+      variant: "outline",
+      detail: "服务上次部署成功，将在测试或 Agent 使用时重新启动",
+      error: false,
+    };
+  }
+
+  switch (deployment?.status) {
+    case "deployed":
+    case "existed":
+      return {
+        label: "运行中",
+        variant: "default",
+        detail: deployment.message || "服务已在 MCP Gateway 中运行",
+        error: false,
+      };
+    case "replaced":
+      return {
+        label: "已恢复",
+        variant: "default",
+        detail: deployment.message || "原异常服务已被重新部署",
+        error: false,
+      };
+    default:
+      return {
+        label: "待部署",
+        variant: "outline",
+        detail: deployment?.message || "首次测试或 Agent 使用时自动部署",
+        error: false,
+      };
   }
 }
 
@@ -222,7 +291,9 @@ export default function MCPPage() {
       setDialogOpen(false);
       await load();
     } catch (err) {
-      setError(errorMessage(err, "保存 MCP 服务失败"));
+      const message = errorMessage(err, "保存 MCP 服务失败");
+      await load();
+      setError(message);
     } finally {
       setSaving(false);
     }
@@ -237,7 +308,9 @@ export default function MCPPage() {
       setNotice(`${resource.name} 连接成功，发现 ${response.tools?.length || 0} 个工具`);
       await load();
     } catch (err) {
-      setError(errorMessage(err, `测试 ${resource.name} 失败`));
+      const message = errorMessage(err, `测试 ${resource.name} 失败`);
+      await load();
+      setError(message);
     } finally {
       setTestingID("");
     }
@@ -253,7 +326,9 @@ export default function MCPPage() {
       setDeleteTarget(null);
       await load();
     } catch (err) {
-      setError(errorMessage(err, "删除 MCP 服务失败"));
+      const message = errorMessage(err, "删除 MCP 服务失败");
+      await load();
+      setError(message);
     } finally {
       setDeleting(false);
     }
@@ -296,7 +371,13 @@ export default function MCPPage() {
               {gateway?.errorMessage || gateway?.baseUrl || "首次测试或使用 MCP 工具时自动启动"}
             </p>
           </div>
-          <Badge variant={gateway?.status === "error" ? "destructive" : gateway?.status === "running" ? "default" : "outline"}>
+          <Badge variant={
+            gateway?.status === "error" || gateway?.status === "degraded"
+              ? "destructive"
+              : gateway?.status === "running"
+                ? "default"
+                : "outline"
+          }>
             {gatewayLabel(gateway)}
           </Badge>
         </CardContent>
@@ -325,57 +406,70 @@ export default function MCPPage() {
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {resources.map((resource) => (
-            <Card key={resource.id}>
-              <CardHeader>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <CardTitle className="flex flex-wrap items-center gap-2">
-                      <span className="truncate">{resource.name}</span>
-                      <Badge variant="outline">{resource.config.type}</Badge>
-                      {!resource.enabled && <Badge variant="secondary">已停用</Badge>}
-                    </CardTitle>
-                    <CardDescription className="mt-1 line-clamp-2">
-                      {resource.description || "未填写说明"}
-                    </CardDescription>
+          {resources.map((resource) => {
+            const status = serviceStatus(resource, gateway, testingID === resource.id);
+            return (
+              <Card key={resource.id} className={status.error ? "border-destructive/35" : undefined}>
+                <CardHeader>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <CardTitle className="flex flex-wrap items-center gap-2">
+                        <span className="truncate">{resource.name}</span>
+                        <Badge variant="outline">{resource.config.type}</Badge>
+                        <Badge variant={status.variant}>{status.label}</Badge>
+                      </CardTitle>
+                      <CardDescription className="mt-1 line-clamp-2">
+                        {resource.description || "未填写说明"}
+                      </CardDescription>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button variant="ghost" size="icon" onClick={() => openEdit(resource)} aria-label={`编辑 ${resource.name}`}>
+                        <Pencil className="size-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(resource)} aria-label={`删除 ${resource.name}`}>
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Button variant="ghost" size="icon" onClick={() => openEdit(resource)} aria-label={`编辑 ${resource.name}`}>
-                      <Pencil className="size-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(resource)} aria-label={`删除 ${resource.name}`}>
-                      <Trash2 className="size-4" />
-                    </Button>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className={`flex items-start gap-2 rounded-md border px-2.5 py-2 text-xs ${
+                    status.error
+                      ? "border-destructive/25 bg-destructive/10 text-destructive"
+                      : "border-border bg-muted/35 text-muted-foreground"
+                  }`}>
+                    {status.error
+                      ? <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+                      : <CheckCircle2 className="mt-0.5 size-3.5 shrink-0" />}
+                    <span className="break-words">{status.detail}</span>
                   </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="truncate rounded-md bg-muted px-2.5 py-2 font-mono text-xs text-muted-foreground">
-                  {resource.config.type === "http"
-                    ? resource.config.url
-                    : [resource.config.command, ...(resource.config.args || [])].filter(Boolean).join(" ")}
-                </p>
-                {(testTools[resource.id]?.length || 0) > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {testTools[resource.id].map((tool) => (
-                      <Badge key={tool.name} variant="secondary" className="font-mono text-[10px]">
-                        {tool.name}
-                      </Badge>
-                    ))}
-                  </div>
-                )}
-                <Button
-                  variant="outline"
-                  className="w-full"
-                  disabled={!resource.enabled || testingID === resource.id}
-                  onClick={() => void test(resource)}
-                >
-                  {testingID === resource.id ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
-                  {testingID === resource.id ? "正在连接" : "测试连接与工具"}
-                </Button>
-              </CardContent>
-            </Card>
-          ))}
+                  <p className="truncate rounded-md bg-muted px-2.5 py-2 font-mono text-xs text-muted-foreground">
+                    {resource.config.type === "http"
+                      ? resource.config.url
+                      : [resource.config.command, ...(resource.config.args || [])].filter(Boolean).join(" ")}
+                  </p>
+                  {(testTools[resource.id]?.length || 0) > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {testTools[resource.id].map((tool) => (
+                        <Badge key={tool.name} variant="secondary" className="font-mono text-[10px]">
+                          {tool.name}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    disabled={!resource.enabled || testingID === resource.id}
+                    onClick={() => void test(resource)}
+                  >
+                    {testingID === resource.id ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
+                    {testingID === resource.id ? "正在连接" : "测试连接与工具"}
+                  </Button>
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
 

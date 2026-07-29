@@ -6,6 +6,17 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 )
 
+func TestPendingMCPDeploymentReflectsEnabledState(t *testing.T) {
+	enabled := pendingMCPDeployment(true)
+	if enabled.Status != "pending" || enabled.UpdatedAt == nil {
+		t.Fatalf("enabled deployment = %#v", enabled)
+	}
+	disabled := pendingMCPDeployment(false)
+	if disabled.Status != "disabled" || disabled.UpdatedAt == nil {
+		t.Fatalf("disabled deployment = %#v", disabled)
+	}
+}
+
 func TestMaskMCPServersMasksEnvAndHeaders(t *testing.T) {
 	in := map[string]config.MCPServerConfig{
 		"github": {

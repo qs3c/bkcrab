@@ -18,19 +18,33 @@ type Resource struct {
 	Description string                 `json:"description,omitempty"`
 	Enabled     bool                   `json:"enabled"`
 	Config      config.MCPServerConfig `json:"config"`
+	Deployment  *ResourceDeployment    `json:"deployment,omitempty"`
 	CreatedAt   time.Time              `json:"createdAt"`
 	UpdatedAt   time.Time              `json:"updatedAt"`
 }
 
+const (
+	ResourceDeploymentPending  = "pending"
+	ResourceDeploymentDisabled = "disabled"
+)
+
+type ResourceDeployment struct {
+	Status    string     `json:"status"`
+	Message   string     `json:"message,omitempty"`
+	Error     string     `json:"error,omitempty"`
+	UpdatedAt *time.Time `json:"updatedAt,omitempty"`
+}
+
 type resourceData struct {
-	Description string            `json:"description,omitempty"`
-	Type        string            `json:"type"`
-	URL         string            `json:"url,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	Command     string            `json:"command,omitempty"`
-	Args        []string          `json:"args,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	Transport   string            `json:"transport,omitempty"`
+	Description string              `json:"description,omitempty"`
+	Type        string              `json:"type"`
+	URL         string              `json:"url,omitempty"`
+	Headers     map[string]string   `json:"headers,omitempty"`
+	Command     string              `json:"command,omitempty"`
+	Args        []string            `json:"args,omitempty"`
+	Env         map[string]string   `json:"env,omitempty"`
+	Transport   string              `json:"transport,omitempty"`
+	Deployment  *ResourceDeployment `json:"deployment,omitempty"`
 }
 
 func ResourceFromRecord(rec store.ConfigRecord) (Resource, error) {
@@ -62,8 +76,9 @@ func ResourceFromRecord(rec store.ConfigRecord) (Resource, error) {
 			Transport: data.Transport,
 			Enabled:   &enabled,
 		},
-		CreatedAt: rec.CreatedAt,
-		UpdatedAt: rec.UpdatedAt,
+		Deployment: data.Deployment,
+		CreatedAt:  rec.CreatedAt,
+		UpdatedAt:  rec.UpdatedAt,
 	}, nil
 }
 
@@ -76,7 +91,7 @@ func (r Resource) ApplyToRecord(rec *store.ConfigRecord) {
 	rec.AgentID = ""
 	rec.Name = r.Name
 	rec.Enabled = r.Enabled
-	rec.Data = map[string]interface{}{
+	data := map[string]interface{}{
 		"description": r.Description,
 		"type":        r.Config.Type,
 		"url":         r.Config.URL,
@@ -86,4 +101,8 @@ func (r Resource) ApplyToRecord(rec *store.ConfigRecord) {
 		"env":         r.Config.Env,
 		"transport":   r.Config.Transport,
 	}
+	if r.Deployment != nil {
+		data["deployment"] = r.Deployment
+	}
+	rec.Data = data
 }

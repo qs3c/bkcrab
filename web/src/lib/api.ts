@@ -1334,6 +1334,13 @@ export interface MCPGatewayStatus {
   errorMessage?: string;
 }
 
+export interface MCPResourceDeployment {
+  status: "pending" | "disabled" | "deployed" | "existed" | "replaced" | "failed" | string;
+  message?: string;
+  error?: string;
+  updatedAt?: string;
+}
+
 export interface MCPResource {
   id: string;
   userId: string;
@@ -1341,6 +1348,7 @@ export interface MCPResource {
   description?: string;
   enabled: boolean;
   config: MCPServerConfig;
+  deployment?: MCPResourceDeployment;
   createdAt: string;
   updatedAt: string;
 }

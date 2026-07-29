@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,6 +56,17 @@ func (f *fakeResourceStore) ListConfigs(ctx context.Context, kind, userID, agent
 		}
 	}
 	return rows, nil
+}
+
+func (f *fakeResourceStore) SaveConfig(ctx context.Context, rec *store.ConfigRecord) error {
+	for i := range f.rows {
+		if f.rows[i].ID == rec.ID {
+			f.rows[i] = *rec
+			return nil
+		}
+	}
+	f.rows = append(f.rows, *rec)
+	return nil
 }
 
 func (f *fakeRuntimeStore) GetMCPGatewayRuntime(ctx context.Context, userID string) (*store.MCPGatewayRuntimeRecord, error) {
@@ -110,8 +122,12 @@ func TestServiceEnsureDeploysToPerUserGateway(t *testing.T) {
 	servers := map[string]config.MCPServerConfig{
 		"time": {Type: "stdio", Command: "uvx", Args: []string{"mcp-server-time"}, Env: map[string]string{"TZ": "Asia/Shanghai"}},
 	}
-	if _, err := svc.Deploy(ctxWithTestDeadline(t), "u1", servers); err != nil {
+	_, deployment, err := svc.Deploy(ctxWithTestDeadline(t), "u1", servers)
+	if err != nil {
 		t.Fatalf("deploy: %v", err)
+	}
+	if deployment == nil || !deployment.Success || deployment.Results["time"].Status != DeployStatusDeployed {
+		t.Fatalf("deployment response = %#v", deployment)
 	}
 	if len(fd.started) != 1 {
 		t.Fatalf("docker starts = %d, want 1", len(fd.started))
@@ -164,6 +180,47 @@ func TestToLuckyConfigRejectsUnsupportedHeader(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected unsupported custom header error")
+	}
+}
+
+func TestDeployToGatewayParsesPartialContent(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusPartialContent)
+		_ = json.NewEncoder(w).Encode(GatewayDeployResponse{
+			Success: false,
+			Results: map[string]GatewayServiceDeployResult{
+				"sc_alpha": {
+					Name:    "sc_alpha",
+					Status:  DeployStatusFailed,
+					Message: "部署失败",
+					Error:   "command exited",
+				},
+				"sc_beta": {
+					Name:    "sc_beta",
+					Status:  DeployStatusDeployed,
+					Message: "服务部署成功",
+				},
+			},
+		})
+	}))
+	defer api.Close()
+
+	result, err := DeployToGateway(ctxWithTestDeadline(t), api.Client(), api.URL, map[string]config.MCPServerConfig{
+		"sc_alpha": {Type: "stdio", Command: "alpha"},
+		"sc_beta":  {Type: "stdio", Command: "beta"},
+	})
+	if err != nil {
+		t.Fatalf("deploy partial response: %v", err)
+	}
+	if result.Success {
+		t.Fatalf("partial response reported success: %#v", result)
+	}
+	failures := result.FailedResults(nil)
+	if len(failures) != 1 || failures["sc_alpha"].Error != "command exited" {
+		t.Fatalf("failures = %#v", failures)
+	}
+	if got := result.Results["sc_beta"].Status; got != DeployStatusDeployed {
+		t.Fatalf("sc_beta status = %q", got)
 	}
 }
 
@@ -316,6 +373,89 @@ func TestNewManagerFromResourcesDeploysUserSetButFiltersAgentTools(t *testing.T)
 	}
 	if len(deployed) != 1 || deployed["sc_beta"].Command != "beta" {
 		t.Fatalf("sync should remove disabled resources from running gateway, got %#v", deployed)
+	}
+}
+
+func TestTestResourcesStopsBeforeStreamWhenTargetDeploymentFails(t *testing.T) {
+	streamCalls := 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/deploy":
+			w.WriteHeader(http.StatusPartialContent)
+			_ = json.NewEncoder(w).Encode(GatewayDeployResponse{
+				Success: false,
+				Results: map[string]GatewayServiceDeployResult{
+					"sc_alpha": {
+						Name:    "sc_alpha",
+						Status:  DeployStatusFailed,
+						Message: "部署失败",
+						Error:   "alpha failed to start",
+					},
+					"sc_beta": {
+						Name:    "sc_beta",
+						Status:  DeployStatusDeployed,
+						Message: "服务部署成功",
+					},
+				},
+			})
+		case "/stream":
+			streamCalls++
+			t.Fatal("target deployment failure must stop before /stream")
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	resourceRows := make([]store.ConfigRecord, 0, 2)
+	for _, resource := range []mcp.Resource{
+		{ID: "sc_alpha", UserID: "u1", Name: "github", Enabled: true, Config: config.MCPServerConfig{Type: "stdio", Command: "alpha"}},
+		{ID: "sc_beta", UserID: "u1", Name: "slack", Enabled: true, Config: config.MCPServerConfig{Type: "stdio", Command: "beta"}},
+	} {
+		row := store.ConfigRecord{ID: resource.ID}
+		resource.ApplyToRecord(&row)
+		resourceRows = append(resourceRows, row)
+	}
+	runtimeStore := &fakeRuntimeStore{}
+	resourceStore := &fakeResourceStore{rows: resourceRows}
+	svc := NewService(Options{
+		Store:     runtimeStore,
+		Resources: resourceStore,
+		Docker: &fakeDocker{ref: ContainerRef{
+			ID: "ctr-1", Name: "bkcrab-mcp-u1", BaseURL: api.URL, ExternalPort: 39001, Running: true,
+		}},
+		Config: Config{Enabled: true, Image: defaultImage, RuntimeDir: t.TempDir(), ContainerPort: 8080, Protocol: "streamhttp"},
+	})
+
+	tools, err := svc.TestResources(ctxWithTestDeadline(t), "u1", []string{"sc_alpha"})
+	if err == nil {
+		t.Fatal("expected target deployment failure")
+	}
+	if tools != nil {
+		t.Fatalf("tools = %#v, want nil", tools)
+	}
+	if !strings.Contains(err.Error(), "alpha failed to start") {
+		t.Fatalf("error = %v", err)
+	}
+	if streamCalls != 0 {
+		t.Fatalf("stream calls = %d, want 0", streamCalls)
+	}
+	alpha, err := mcp.ResourceFromRecord(resourceStore.rows[0])
+	if err != nil {
+		t.Fatalf("decode alpha: %v", err)
+	}
+	if alpha.Deployment == nil || alpha.Deployment.Status != DeployStatusFailed || alpha.Deployment.Error != "alpha failed to start" {
+		t.Fatalf("alpha deployment = %#v", alpha.Deployment)
+	}
+	beta, err := mcp.ResourceFromRecord(resourceStore.rows[1])
+	if err != nil {
+		t.Fatalf("decode beta: %v", err)
+	}
+	if beta.Deployment == nil || beta.Deployment.Status != DeployStatusDeployed {
+		t.Fatalf("beta deployment = %#v", beta.Deployment)
+	}
+	if runtimeStore.rec == nil || runtimeStore.rec.Status != StatusDegraded {
+		t.Fatalf("runtime record = %#v", runtimeStore.rec)
 	}
 }
 
