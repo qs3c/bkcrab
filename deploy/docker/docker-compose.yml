@@ -130,6 +130,9 @@ services:
     volumes:
       - bkcrab-data:/data/.bkcrab
       - sandbox-docker-data:/var/lib/docker
+    # Runtime PID and socket files must not survive a DinD container restart.
+    tmpfs:
+      - /var/run
     healthcheck:
       test: ["CMD", "docker", "info"]
       interval: 5s
