@@ -14,6 +14,8 @@ require (
 	github.com/lib/pq v1.12.3
 	github.com/milvus-io/milvus/client/v2 v2.6.3
 	github.com/minio/minio-go/v7 v7.0.100
+	github.com/rabbitmq/amqp091-go v1.13.0
+	github.com/redis/go-redis/v9 v9.20.1
 	github.com/slack-go/slack v0.19.0
 	github.com/spf13/cobra v1.10.2
 	github.com/yuin/goldmark v1.7.13

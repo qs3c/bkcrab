@@ -1,9 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const RAGLegacyTaskMigrationModeOfflineV1 = "offline-v1"
@@ -22,6 +24,7 @@ type EnvConfig struct {
 	MCPGateway EnvMCPGateway
 	Log        EnvLog
 	RAG        RAGCfg
+	FairQueue  FairQueueCfg
 
 	// RAGLegacyTaskMigrationMode is a deployment-only acknowledgement for the
 	// offline legacy index-task backfill. It is intentionally separate from
@@ -79,7 +82,8 @@ func LoadEnv() *EnvConfig {
 	cfg := &EnvConfig{
 		// MySQL 默认必需。AutoMigrate 创建全新 schema，但仍需 DSN，
 		// 且启动时绝不回退到 SQLite。
-		Storage: EnvStorage{Type: "mysql", AutoMigrate: true},
+		Storage:   EnvStorage{Type: "mysql", AutoMigrate: true},
+		FairQueue: DefaultFairQueueCfg(),
 		MCPGateway: EnvMCPGateway{
 			Enabled:       true,
 			Image:         "ghcr.io/lucky-aeon/mcp-gateway:latest",
@@ -165,6 +169,7 @@ func LoadEnv() *EnvConfig {
 	if v := os.Getenv("BKCRAB_LOG_LEVEL"); v != "" {
 		cfg.Log.Level = v
 	}
+	applyFairQueueEnv(&cfg.FairQueue)
 
 	if v := os.Getenv("BKCRAB_RAG_MILVUS_ADDRESS"); v != "" {
 		cfg.RAG.Milvus.Address = v
@@ -369,6 +374,88 @@ func LoadEnv() *EnvConfig {
 	return cfg
 }
 
+func applyFairQueueEnv(cfg *FairQueueCfg) {
+	if cfg == nil {
+		return
+	}
+	setString := func(name string, dst *string, trim bool) {
+		if raw, ok := os.LookupEnv(name); ok {
+			if trim {
+				raw = strings.TrimSpace(raw)
+			}
+			*dst = raw
+		}
+	}
+	setBool := func(name string, dst *bool) {
+		raw, ok := os.LookupEnv(name)
+		if !ok {
+			return
+		}
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "1", "true":
+			*dst = true
+		case "0", "false":
+			*dst = false
+		default:
+			cfg.envErrors = append(cfg.envErrors, fmt.Errorf("%s must be true, false, 1, or 0", name))
+		}
+	}
+	setInt := func(name string, dst *int) {
+		raw, ok := os.LookupEnv(name)
+		if !ok {
+			return
+		}
+		value, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil {
+			cfg.envErrors = append(cfg.envErrors, fmt.Errorf("%s must be an integer", name))
+			return
+		}
+		*dst = value
+	}
+	setDuration := func(name string, dst *time.Duration) {
+		raw, ok := os.LookupEnv(name)
+		if !ok {
+			return
+		}
+		value, err := time.ParseDuration(strings.TrimSpace(raw))
+		if err != nil {
+			cfg.envErrors = append(cfg.envErrors, fmt.Errorf("%s must be a Go duration", name))
+			return
+		}
+		*dst = value
+	}
+
+	setBool("BKCRAB_FAIR_QUEUE_ENABLED", &cfg.Enabled)
+	setString("BKCRAB_FAIR_QUEUE_REDIS_ADDR", &cfg.RedisAddr, true)
+	setString("BKCRAB_FAIR_QUEUE_REDIS_PASSWORD", &cfg.RedisPassword, false)
+	setInt("BKCRAB_FAIR_QUEUE_REDIS_DB", &cfg.RedisDB)
+	setString("BKCRAB_FAIR_QUEUE_REDIS_MODE", &cfg.RedisMode, true)
+	setString("BKCRAB_FAIR_QUEUE_RABBITMQ_URL", &cfg.RabbitMQURL, true)
+	setString("BKCRAB_FAIR_QUEUE_EXCHANGE", &cfg.Exchange, true)
+	setString("BKCRAB_FAIR_QUEUE_DEAD_LETTER_EXCHANGE", &cfg.DeadLetterExchange, true)
+	setString("BKCRAB_FAIR_QUEUE_KEY_PREFIX", &cfg.KeyPrefix, false)
+	setString("BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY", &cfg.MySQLWriterTopology, true)
+
+	r := &cfg.RAGIndex
+	setString("BKCRAB_RAG_INDEX_WORKER_MODE", &r.WorkerMode, true)
+	setInt("BKCRAB_RAG_INDEX_LOCAL_WORKERS", &r.LocalWorkers)
+	setInt("BKCRAB_RAG_INDEX_GLOBAL_CONCURRENCY", &r.GlobalConcurrency)
+	setInt("BKCRAB_RAG_INDEX_PER_USER_BASE_CONCURRENCY", &r.PerUserBaseConcurrency)
+	setInt("BKCRAB_RAG_INDEX_PER_USER_BURST_CONCURRENCY", &r.PerUserBurstConcurrency)
+	setBool("BKCRAB_RAG_INDEX_BORROW_ENABLED", &r.BorrowEnabled)
+	setDuration("BKCRAB_RAG_INDEX_RECONCILE_INTERVAL", &r.ReconcileInterval)
+	setDuration("BKCRAB_RAG_INDEX_RESERVATION_TTL", &r.ReservationTTL)
+	setDuration("BKCRAB_RAG_INDEX_RESERVATION_HEARTBEAT", &r.ReservationHeartbeat)
+	setDuration("BKCRAB_RAG_INDEX_PREPARE_TIMEOUT", &r.PrepareTimeout)
+	setDuration("BKCRAB_RAG_INDEX_PROVISIONAL_TTL", &r.ProvisionalTTL)
+	setDuration("BKCRAB_RAG_INDEX_DISPATCH_INTERVAL", &r.DispatchInterval)
+	setDuration("BKCRAB_RAG_INDEX_PUBLISH_ATTEMPT_TIMEOUT", &r.PublishAttemptTimeout)
+	setDuration("BKCRAB_RAG_INDEX_EXPIRED_SWEEP_INTERVAL", &r.ExpiredRunningSweepInterval)
+	setDuration("BKCRAB_RAG_INDEX_PROCESSING_TTL", &r.ProcessingTurnTTL)
+	setInt("BKCRAB_RAG_INDEX_RECONCILE_PAGE_SIZE", &r.ReconcilePageSize)
+	setDuration("BKCRAB_RAG_INDEX_RECOVERY_DRAIN_TIMEOUT", &r.RecoveryDrainTimeout)
+}
+
 func positiveEnvInt(name string) int {
 	n, err := strconv.Atoi(os.Getenv(name))
 	if err != nil || n <= 0 {
@@ -497,6 +584,8 @@ var bootSecretEnvKeys = []string{
 	"BKCRAB_RAG_EMBEDDING_API_KEY",
 	"BKCRAB_RAG_RERANKER_API_KEY",
 	"BKCRAB_RAG_DOCUMENT_AI_API_KEY",
+	"BKCRAB_FAIR_QUEUE_RABBITMQ_URL",
+	"BKCRAB_FAIR_QUEUE_REDIS_PASSWORD",
 }
 
 func ScrubBootSecrets() {

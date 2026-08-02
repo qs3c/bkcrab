@@ -126,6 +126,200 @@ type StorageCfg struct {
 	AutoMigrate bool   `json:"autoMigrate,omitempty"`
 }
 
+const (
+	FairQueueRedisModeStandalone       = "standalone"
+	FairQueueWorkerModeLegacy          = "legacy"
+	FairQueueWorkerModePaused          = "paused"
+	FairQueueWorkerModeFair            = "fair"
+	FairQueueMySQLWriterTopologySingle = "single"
+	FairQueueMaxDuration               = 24 * time.Hour
+	FairQueueMaxReconcilePageSize      = 10_000
+)
+
+// FairQueueCfg is deployment infrastructure configuration. It is held by
+// EnvConfig rather than Config so database-backed user and agent scopes cannot
+// override shared Redis/RabbitMQ safety settings.
+type FairQueueCfg struct {
+	Enabled             bool
+	RedisAddr           string
+	RedisPassword       string
+	RedisDB             int
+	RedisMode           string
+	RabbitMQURL         string
+	Exchange            string
+	DeadLetterExchange  string
+	KeyPrefix           string
+	MySQLWriterTopology string
+	RAGIndex            FairQueueResourceCfg
+
+	envErrors []error
+}
+
+type FairQueueResourceCfg struct {
+	WorkerMode                  string
+	LocalWorkers                int
+	GlobalConcurrency           int
+	PerUserBaseConcurrency      int
+	PerUserBurstConcurrency     int
+	BorrowEnabled               bool
+	ReconcileInterval           time.Duration
+	ExpiredRunningSweepInterval time.Duration
+	ReconcilePageSize           int
+	ReservationTTL              time.Duration
+	ReservationHeartbeat        time.Duration
+	PrepareTimeout              time.Duration
+	ProvisionalTTL              time.Duration
+	ProcessingTurnTTL           time.Duration
+	RecoveryDrainTimeout        time.Duration
+	DispatchInterval            time.Duration
+	PublishAttemptTimeout       time.Duration
+}
+
+func DefaultFairQueueCfg() FairQueueCfg {
+	return FairQueueCfg{
+		RedisMode:          FairQueueRedisModeStandalone,
+		Exchange:           "bkcrab.fair.task",
+		DeadLetterExchange: "bkcrab.fair.dlx",
+		KeyPrefix:          "bkcrab:",
+		RAGIndex: FairQueueResourceCfg{
+			WorkerMode:                  FairQueueWorkerModeLegacy,
+			LocalWorkers:                4,
+			GlobalConcurrency:           4,
+			PerUserBaseConcurrency:      2,
+			PerUserBurstConcurrency:     4,
+			BorrowEnabled:               true,
+			ReconcileInterval:           30 * time.Second,
+			ExpiredRunningSweepInterval: 15 * time.Second,
+			ReconcilePageSize:           200,
+			ReservationTTL:              60 * time.Second,
+			ReservationHeartbeat:        20 * time.Second,
+			PrepareTimeout:              10 * time.Second,
+			ProvisionalTTL:              15 * time.Second,
+			ProcessingTurnTTL:           15 * time.Second,
+			RecoveryDrainTimeout:        2 * time.Minute,
+			DispatchInterval:            time.Second,
+			PublishAttemptTimeout:       15 * time.Second,
+		},
+	}
+}
+
+// LogValue keeps deployment credentials out of structured logs while still
+// exposing the non-secret settings needed to diagnose rollout configuration.
+func (c FairQueueCfg) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Bool("enabled", c.Enabled),
+		slog.String("redisAddr", c.RedisAddr),
+		slog.Bool("redisPasswordConfigured", c.RedisPassword != ""),
+		slog.Int("redisDB", c.RedisDB),
+		slog.String("redisMode", c.RedisMode),
+		slog.Bool("rabbitMQConfigured", strings.TrimSpace(c.RabbitMQURL) != ""),
+		slog.String("exchange", c.Exchange),
+		slog.String("deadLetterExchange", c.DeadLetterExchange),
+		slog.String("keyPrefix", c.KeyPrefix),
+		slog.String("mysqlWriterTopology", c.MySQLWriterTopology),
+		slog.Any("ragIndex", c.RAGIndex),
+	)
+}
+
+func (c FairQueueCfg) Validate(storageType string) error {
+	if len(c.envErrors) > 0 {
+		return fmt.Errorf("invalid fair queue environment: %w", errors.Join(c.envErrors...))
+	}
+	if c.RedisMode != FairQueueRedisModeStandalone {
+		return fmt.Errorf("fairQueue.redisMode %q is unsupported; only %q is allowed", c.RedisMode, FairQueueRedisModeStandalone)
+	}
+	if c.RedisDB < 0 {
+		return fmt.Errorf("fairQueue.redisDB must be non-negative, got %d", c.RedisDB)
+	}
+
+	r := c.RAGIndex
+	switch r.WorkerMode {
+	case FairQueueWorkerModeLegacy, FairQueueWorkerModePaused, FairQueueWorkerModeFair:
+	default:
+		return fmt.Errorf("ragIndex.workerMode %q is unsupported", r.WorkerMode)
+	}
+	if r.LocalWorkers <= 0 {
+		return fmt.Errorf("ragIndex.localWorkers must be positive, got %d", r.LocalWorkers)
+	}
+	if r.PerUserBaseConcurrency <= 0 {
+		return fmt.Errorf("ragIndex.perUserBaseConcurrency must be positive, got %d", r.PerUserBaseConcurrency)
+	}
+	if r.PerUserBaseConcurrency > r.PerUserBurstConcurrency ||
+		r.PerUserBurstConcurrency > r.GlobalConcurrency {
+		return fmt.Errorf("ragIndex concurrency must satisfy base <= burst <= global, got %d <= %d <= %d",
+			r.PerUserBaseConcurrency, r.PerUserBurstConcurrency, r.GlobalConcurrency)
+	}
+
+	durations := []struct {
+		name  string
+		value time.Duration
+	}{
+		{"reconcileInterval", r.ReconcileInterval},
+		{"expiredRunningSweepInterval", r.ExpiredRunningSweepInterval},
+		{"reservationTTL", r.ReservationTTL},
+		{"reservationHeartbeat", r.ReservationHeartbeat},
+		{"prepareTimeout", r.PrepareTimeout},
+		{"provisionalTTL", r.ProvisionalTTL},
+		{"processingTurnTTL", r.ProcessingTurnTTL},
+		{"recoveryDrainTimeout", r.RecoveryDrainTimeout},
+		{"dispatchInterval", r.DispatchInterval},
+		{"publishAttemptTimeout", r.PublishAttemptTimeout},
+	}
+	for _, duration := range durations {
+		if duration.value <= 0 || duration.value > FairQueueMaxDuration {
+			return fmt.Errorf("ragIndex.%s must be in (0, %s], got %s", duration.name, FairQueueMaxDuration, duration.value)
+		}
+	}
+	if r.ReconcilePageSize <= 0 || r.ReconcilePageSize > FairQueueMaxReconcilePageSize {
+		return fmt.Errorf("ragIndex.reconcilePageSize must be in [1, %d], got %d", FairQueueMaxReconcilePageSize, r.ReconcilePageSize)
+	}
+	if r.ReservationHeartbeat >= r.ReservationTTL {
+		return fmt.Errorf("ragIndex.reservationHeartbeat must be less than reservationTTL")
+	}
+	if r.PrepareTimeout >= r.ProvisionalTTL {
+		return fmt.Errorf("ragIndex.prepareTimeout must be less than provisionalTTL")
+	}
+	if r.ProvisionalTTL >= r.RecoveryDrainTimeout {
+		return fmt.Errorf("ragIndex.provisionalTTL must be less than recoveryDrainTimeout")
+	}
+	if r.ProcessingTurnTTL >= r.RecoveryDrainTimeout {
+		return fmt.Errorf("ragIndex.processingTurnTTL must be less than recoveryDrainTimeout")
+	}
+	if r.PublishAttemptTimeout >= r.RecoveryDrainTimeout {
+		return fmt.Errorf("ragIndex.publishAttemptTimeout must be less than recoveryDrainTimeout")
+	}
+
+	if c.Enabled {
+		if strings.TrimSpace(c.RedisAddr) == "" {
+			return errors.New("fairQueue.redisAddr is required when fair queue infrastructure is enabled")
+		}
+		if strings.TrimSpace(c.RabbitMQURL) == "" {
+			return errors.New("fairQueue.rabbitMQURL is required when fair queue infrastructure is enabled")
+		}
+		if strings.TrimSpace(c.Exchange) == "" {
+			return errors.New("fairQueue.exchange is required when fair queue infrastructure is enabled")
+		}
+		if strings.TrimSpace(c.DeadLetterExchange) == "" {
+			return errors.New("fairQueue.deadLetterExchange is required when fair queue infrastructure is enabled")
+		}
+		if strings.TrimSpace(c.KeyPrefix) == "" {
+			return errors.New("fairQueue.keyPrefix is required when fair queue infrastructure is enabled")
+		}
+	}
+	if r.WorkerMode == FairQueueWorkerModeFair {
+		if !c.Enabled {
+			return errors.New("ragIndex.workerMode=fair requires fairQueue.enabled=true")
+		}
+		if storageType != "mysql" {
+			return fmt.Errorf("ragIndex.workerMode=fair requires MySQL storage, got %q", storageType)
+		}
+		if c.MySQLWriterTopology != FairQueueMySQLWriterTopologySingle {
+			return fmt.Errorf("ragIndex.workerMode=fair requires fairQueue.mysqlWriterTopology=%q", FairQueueMySQLWriterTopologySingle)
+		}
+	}
+	return nil
+}
+
 // ObjectStoreCfg 控制对象存储后端。
 type ObjectStoreCfg struct {
 	Type         string              `json:"type,omitempty"`
