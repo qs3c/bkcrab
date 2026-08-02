@@ -829,7 +829,7 @@ git commit -m "feat(queue): add redis fair ring and renewable reservations"
 - Create: `internal/fairqueue/dispatcher.go`
 - Create: `internal/fairqueue/dispatcher_test.go`
 
-- [ ] **Step 1: 写 fake source/rabbit/coordinator 失败测试**
+- [x] **Step 1: 写 fake source/rabbit/coordinator 失败测试**
 
 严格固定顺序：
 
@@ -856,17 +856,17 @@ ListDispatchCandidates / GetDispatchableByID
 - reaper 与两个实例并发、reaper 在 arm 后崩溃均幂等；reclaim message Mark 后因 `dispatch_generation>claim_generation` 不会被下一轮再次 arm；旧 duplicate 也不能在 rearm 前 reclaim。不把 RUNNING 改 PENDING、不创建 version、不增加 retry；
 - backoff 有上限且 context cancel 能退出。
 
-- [ ] **Step 2: 实现 dispatcher**
+- [x] **Step 2: 实现 dispatcher**
 
 dispatcher 不持久化自己的队列；source 的业务 task generation/marker 就是发布依据。公平包不查询 MySQL、不解析/重建 Guard，并在 publish 到 Mark 之间保存原始 candidate。批量 scanner/reaper 每页有界并使用 source 返回的 keyset cursor；一轮结束后等待 interval，不允许空页 busy loop。
 
-- [ ] **Step 3: 验证**
+- [x] **Step 3: 验证**
 
 ```bash
 go test ./internal/fairqueue -run 'TestDispatcher' -v
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add internal/fairqueue/dispatcher*
