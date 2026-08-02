@@ -75,14 +75,17 @@ func TestFairQueueOperationProposalValidationAndTimeNormalization(t *testing.T) 
 	if err != nil || !lowerHex32Pattern.MatchString(id) {
 		t.Fatalf("operation id=%q err=%v", id, err)
 	}
-	deadline := time.Date(2026, 8, 2, 1, 2, 3, 987654321, time.FixedZone("test", 8*60*60))
+	deadline := time.Date(2026, 8, 2, 1, 2, 3, 987000000, time.UTC)
 	normalized := normalizeFairQueueOperationProposal(FairQueueOperationProposal{
 		Resource: "rag.index", OperationID: id, Kind: FairQueueOperationForceRebuild,
 		CurrentWriterFingerprint: strings.Repeat("a", 64), ForceNotBefore: &deadline,
 	})
 	if normalized.ForceNotBefore == nil || normalized.ForceNotBefore.Location() != time.UTC ||
-		normalized.ForceNotBefore.Nanosecond()%1000 != 0 {
-		t.Fatalf("force deadline was not normalized to MySQL microseconds: %v", normalized.ForceNotBefore)
+		normalized.ForceNotBefore.Nanosecond()%int(time.Millisecond) != 0 {
+		t.Fatalf("force deadline is not canonical milliseconds: %v", normalized.ForceNotBefore)
+	}
+	if err := validateFairQueueOperationProposal(normalized); err != nil {
+		t.Fatalf("canonical proposal rejected: %v", err)
 	}
 	bad := normalized
 	bad.OperationID = strings.Repeat("A", 32)
@@ -98,6 +101,54 @@ func TestFairQueueOperationProposalValidationAndTimeNormalization(t *testing.T) 
 	bad.Resource = "RAG.index"
 	if !errors.Is(validateFairQueueOperationProposal(bad), ErrFairQueueOperationInvalid) {
 		t.Fatal("noncanonical uppercase resource was accepted")
+	}
+	bad = normalized
+	bad.Resource = ".rag.index"
+	if !errors.Is(validateFairQueueOperationProposal(bad), ErrFairQueueOperationInvalid) {
+		t.Fatal("resource without an alphanumeric prefix was accepted")
+	}
+	bad = normalized
+	fractionalDeadline := deadline.Add(time.Nanosecond)
+	bad.ForceNotBefore = &fractionalDeadline
+	if !errors.Is(validateFairQueueOperationProposal(bad), ErrFairQueueOperationInvalid) {
+		t.Fatal("sub-millisecond force deadline was accepted")
+	}
+	bad = normalized
+	nonUTCDeadline := deadline.In(time.FixedZone("test", 8*60*60))
+	bad.ForceNotBefore = &nonUTCDeadline
+	if !errors.Is(validateFairQueueOperationProposal(bad), ErrFairQueueOperationInvalid) {
+		t.Fatal("non-UTC force deadline was accepted")
+	}
+}
+
+func TestFairQueueOperationRecordCanonicalValueDomains(t *testing.T) {
+	now := time.Date(2026, 8, 2, 1, 2, 3, 0, time.UTC)
+	base := FairQueueOperationRecord{
+		Resource: "rag.index", OperationID: strings.Repeat("1", 32),
+		Kind: FairQueueOperationRabbitRepair, Phase: FairQueueOperationActive,
+		CurrentWriterFingerprint: strings.Repeat("a", 64), Version: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	validHighWater := "page 42:opaque"
+	base.RepairHighWater = &validHighWater
+	if err := validateFairQueueOperationRecord(base); err != nil {
+		t.Fatalf("canonical record rejected: %v", err)
+	}
+
+	for _, highWater := range []string{"", " 42", "42 ", "\t42", "42\n", "页42"} {
+		t.Run(fmt.Sprintf("high-water-%q", highWater), func(t *testing.T) {
+			record := base
+			record.RepairHighWater = &highWater
+			if !errors.Is(validateFairQueueOperationRecord(record), ErrFairQueueOperationInvalid) {
+				t.Fatal("noncanonical high water was accepted")
+			}
+		})
+	}
+
+	reversed := base
+	reversed.UpdatedAt = now.Add(-time.Microsecond)
+	if !errors.Is(validateFairQueueOperationRecord(reversed), ErrFairQueueOperationInvalid) {
+		t.Fatal("record whose updated_at precedes created_at was accepted")
 	}
 }
 
@@ -177,7 +228,7 @@ func TestFairQueueOperationJournalFullCASAndIdempotency(t *testing.T) {
 	if _, err := session.BeginSpecial(ctx, &completed, FairQueueOperationProposal{
 		Resource: "rag.index", OperationID: strings.Repeat("3", 32),
 		Kind: FairQueueOperationForceRebuild, CurrentWriterFingerprint: writer,
-		ForceNotBefore: func() *time.Time { value := time.Now().UTC(); return &value }(),
+		ForceNotBefore: func() *time.Time { value := time.Now().UTC().Truncate(time.Millisecond); return &value }(),
 	}); !errors.Is(err, ErrFairQueueOperationConflict) {
 		t.Fatalf("stale completed CAS error=%v", err)
 	}

@@ -50,7 +50,7 @@ const (
 )
 
 var (
-	fairQueueResourcePattern = regexp.MustCompile(`^[a-z0-9._-]+$`)
+	fairQueueResourcePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,119}$`)
 	lowerHex32Pattern        = regexp.MustCompile(`^[0-9a-f]{32}$`)
 	lowerHex64Pattern        = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
@@ -102,6 +102,23 @@ func validFairQueueResource(resource string) bool {
 		resource == strings.TrimSpace(resource) && fairQueueResourcePattern.MatchString(resource)
 }
 
+func validFairQueueHighWater(highWater string) bool {
+	if highWater == "" || len(highWater) > 191 || highWater != strings.TrimSpace(highWater) {
+		return false
+	}
+	for i := 0; i < len(highWater); i++ {
+		if highWater[i] < 0x20 || highWater[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func validFairQueueForceNotBefore(value *time.Time) bool {
+	return value != nil && !value.IsZero() && value.Location() == time.UTC &&
+		value.Nanosecond()%int(time.Millisecond) == 0
+}
+
 func validateFairQueueOperationProposal(proposal FairQueueOperationProposal) error {
 	if !validFairQueueResource(proposal.Resource) ||
 		!lowerHex32Pattern.MatchString(proposal.OperationID) ||
@@ -124,7 +141,7 @@ func validateFairQueueOperationProposal(proposal FairQueueOperationProposal) err
 		}
 	case FairQueueOperationForceRebuild:
 		if proposal.OriginalWriterFingerprint != "" || proposal.TargetWriterFingerprint != "" ||
-			proposal.ForceNotBefore == nil || proposal.ForceNotBefore.IsZero() {
+			!validFairQueueForceNotBefore(proposal.ForceNotBefore) {
 			return ErrFairQueueOperationInvalid
 		}
 	default:
@@ -142,7 +159,7 @@ func validateFairQueueOperationRecord(record FairQueueOperationRecord) error {
 		ForceNotBefore:            record.ForceNotBefore,
 	}
 	if err := validateFairQueueOperationProposal(proposal); err != nil || record.Version <= 0 ||
-		record.CreatedAt.IsZero() || record.UpdatedAt.IsZero() {
+		record.CreatedAt.IsZero() || record.UpdatedAt.IsZero() || record.UpdatedAt.Before(record.CreatedAt) {
 		return ErrFairQueueOperationInvalid
 	}
 	switch record.Phase {
@@ -150,8 +167,7 @@ func validateFairQueueOperationRecord(record FairQueueOperationRecord) error {
 	default:
 		return ErrFairQueueOperationInvalid
 	}
-	if record.RepairHighWater != nil &&
-		(strings.TrimSpace(*record.RepairHighWater) == "" || len(*record.RepairHighWater) > 191) {
+	if record.RepairHighWater != nil && !validFairQueueHighWater(*record.RepairHighWater) {
 		return ErrFairQueueOperationInvalid
 	}
 	switch record.Kind {
@@ -873,12 +889,12 @@ func (session *FairQueueOperationStartSession) BeginSpecial(
 			err = errors.Join(err, session.discardUnsafeConnection(verifyErr))
 		}
 	}()
-	proposal = normalizeFairQueueOperationProposal(proposal)
 	if err := validateFairQueueOperationProposal(proposal); err != nil ||
 		proposal.Resource != session.resource ||
 		proposal.CurrentWriterFingerprint != session.expectedWriter {
 		return FairQueueOperationRecord{}, ErrFairQueueOperationInvalid
 	}
+	proposal = normalizeFairQueueOperationProposal(proposal)
 	current, found, err := readFairQueueOperation(ctx, session.conn, proposal.Resource)
 	if err != nil {
 		return FairQueueOperationRecord{}, err
@@ -947,7 +963,7 @@ func (d *DBStore) SetFairQueueOperationRepairHighWater(
 ) (FairQueueOperationRecord, error) {
 	if expected.Kind != FairQueueOperationRabbitRepair || expected.Phase != FairQueueOperationActive ||
 		(expected.RepairHighWater != nil && *expected.RepairHighWater != highWater) ||
-		strings.TrimSpace(highWater) == "" || len(highWater) > 191 {
+		!validFairQueueHighWater(highWater) {
 		return FairQueueOperationRecord{}, ErrFairQueueOperationInvalid
 	}
 	return d.mutateFairQueueOperation(ctx, expected,
