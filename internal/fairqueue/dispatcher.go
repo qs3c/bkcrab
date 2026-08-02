@@ -23,6 +23,20 @@ var (
 	errDispatcherRunning   = errors.New("fairqueue: dispatcher is already running")
 )
 
+// stalePublisherSourceFailure preserves the authoritative safety category for
+// diagnostics while telling Runtime that this particular source read belongs
+// to a gate generation that was already closed and reopened. Only source
+// reads outside the publisher-attempt registry can produce this wrapper.
+type stalePublisherSourceFailure struct{ err error }
+
+func (e stalePublisherSourceFailure) Error() string { return e.err.Error() }
+func (e stalePublisherSourceFailure) Unwrap() error { return e.err }
+
+func isStalePublisherSourceFailure(err error) bool {
+	var stale stalePublisherSourceFailure
+	return errors.As(err, &stale)
+}
+
 // DispatcherOptions bounds every page, publish attempt, retry, and idle wait.
 // Zero values select conservative defaults; negative values are rejected.
 type DispatcherOptions struct {
@@ -100,9 +114,10 @@ type Dispatcher struct {
 	running bool
 }
 
-// NewDispatcher stages fence but leaves the publisher gate closed. Runtime
-// recovery or READY reconciliation must explicitly open it before dispatch can
-// begin. Every actual attempt still revalidates that fence before Rabbit I/O.
+// NewDispatcher stages a validated fence but leaves the publisher gate closed.
+// Runtime recovery or READY reconciliation must explicitly open it before
+// dispatch can begin. NewClosedDispatcher is used when startup has not yet
+// established any authoritative READY fence.
 func NewDispatcher(
 	resource string,
 	fence ResourceFence,
@@ -112,10 +127,28 @@ func NewDispatcher(
 	coordinator Coordinator,
 	options DispatcherOptions,
 ) (*Dispatcher, error) {
-	if err := ValidateResource(resource); err != nil {
+	if err := fence.Validate(); err != nil {
 		return nil, err
 	}
-	if err := fence.Validate(); err != nil {
+	dispatcher, err := NewClosedDispatcher(resource, source, rearm, rabbit, coordinator, options)
+	if err != nil {
+		return nil, err
+	}
+	dispatcher.fence = fence
+	return dispatcher, nil
+}
+
+// NewClosedDispatcher creates a fail-closed dispatcher without inventing an
+// epoch or writer identity before startup recovery has established READY.
+func NewClosedDispatcher(
+	resource string,
+	source DispatchSource,
+	rearm ExpiredRearmSource,
+	rabbit RabbitClient,
+	coordinator Coordinator,
+	options DispatcherOptions,
+) (*Dispatcher, error) {
+	if err := ValidateResource(resource); err != nil {
 		return nil, err
 	}
 	if source == nil {
@@ -138,7 +171,6 @@ func NewDispatcher(
 	close(drained)
 	return &Dispatcher{
 		resource:    resource,
-		fence:       fence,
 		source:      source,
 		rearm:       rearm,
 		rabbit:      rabbit,
@@ -216,16 +248,16 @@ func (d *Dispatcher) WaitForPublisherDrain(ctx context.Context) error {
 	}
 }
 
-func (d *Dispatcher) publisherFence() (ResourceFence, error) {
+func (d *Dispatcher) publisherFence() (ResourceFence, uint64, error) {
 	if d == nil {
-		return ResourceFence{}, errors.New("fairqueue: nil dispatcher")
+		return ResourceFence{}, 0, errors.New("fairqueue: nil dispatcher")
 	}
 	d.gateMu.Lock()
 	defer d.gateMu.Unlock()
 	if !d.gateOpen {
-		return ResourceFence{}, errors.Join(ErrResourceNotReady, errPublisherGateClosed)
+		return ResourceFence{}, 0, errors.Join(ErrResourceNotReady, errPublisherGateClosed)
 	}
-	return d.fence, nil
+	return d.fence, d.gateGen, nil
 }
 
 func (d *Dispatcher) beginPublisherAttempt() (ResourceFence, uint64, func(), error) {
@@ -268,6 +300,25 @@ func (d *Dispatcher) closePublisherGateFor(fence ResourceFence, gateGen uint64) 
 	d.gateMu.Unlock()
 }
 
+func (d *Dispatcher) classifyFatalSourceFailure(fence ResourceFence, gateGen uint64, err error) error {
+	if !errors.Is(err, ErrAuthoritativeWriterMismatch) {
+		return err
+	}
+	d.gateMu.Lock()
+	if d.fence == fence && d.gateGen == gateGen {
+		d.gateOpen = false
+		d.gateGen++
+		d.gateMu.Unlock()
+		return err
+	}
+	reopened := d.gateOpen && (d.fence != fence || d.gateGen != gateGen)
+	d.gateMu.Unlock()
+	if reopened {
+		return stalePublisherSourceFailure{err: err}
+	}
+	return err
+}
+
 // TryDispatch reloads the canonical candidate by ID and then uses exactly the
 // same single-candidate path as the periodic scanner. The boolean reports only
 // whether the source returned a candidate.
@@ -278,7 +329,8 @@ func (d *Dispatcher) TryDispatch(ctx context.Context, taskID string) (bool, erro
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	if _, err := d.publisherFence(); err != nil {
+	sourceFence, sourceGateGen, err := d.publisherFence()
+	if err != nil {
 		return false, err
 	}
 	if err := ValidateTaskID(taskID); err != nil {
@@ -286,6 +338,7 @@ func (d *Dispatcher) TryDispatch(ctx context.Context, taskID string) (bool, erro
 	}
 	candidate, ok, err := d.source.GetDispatchableByID(ctx, taskID)
 	if err != nil {
+		err = d.classifyFatalSourceFailure(sourceFence, sourceGateGen, err)
 		return false, fmt.Errorf("fairqueue: get dispatch candidate: %w", err)
 	}
 	if !ok {
@@ -318,11 +371,13 @@ func (d *Dispatcher) dispatchPage(ctx context.Context, after string) (string, bo
 	if err := ValidateCursor(after); err != nil {
 		return after, false, err
 	}
-	if _, err := d.publisherFence(); err != nil {
+	sourceFence, sourceGateGen, err := d.publisherFence()
+	if err != nil {
 		return after, false, err
 	}
 	candidates, next, err := d.source.ListDispatchCandidates(ctx, after, d.options.PageSize)
 	if err != nil {
+		err = d.classifyFatalSourceFailure(sourceFence, sourceGateGen, err)
 		return after, false, fmt.Errorf("fairqueue: list dispatch candidates: %w", err)
 	}
 	next, err = normalizeDispatcherPage(len(candidates), next, after, d.options.PageSize)
@@ -381,6 +436,7 @@ func (d *Dispatcher) rearmPage(ctx context.Context, after string) (string, bool,
 	cancel()
 	finish()
 	if err != nil {
+		d.closePublisherGateOnFatalSource(fence, gateGen, err)
 		return after, false, fmt.Errorf("fairqueue: rearm expired candidates: %w", err)
 	}
 	if contextErr != nil {
@@ -458,6 +514,9 @@ func (d *Dispatcher) dispatchCandidate(ctx context.Context, candidate DispatchCa
 
 	marked, markErr := d.source.MarkDispatched(attemptCtx, original)
 	attemptErr := attemptCtx.Err()
+	if markErr != nil && errors.Is(markErr, ErrAuthoritativeWriterMismatch) {
+		d.closePublisherGateFor(fence, gateGen)
+	}
 
 	// The bounded publisher attempt ends at the original-candidate Mark. Redis
 	// activation is a separately bounded, fenced repair of scheduling state.
@@ -499,6 +558,12 @@ func (d *Dispatcher) activateAfterPublish(ctx context.Context, fence ResourceFen
 	return nil
 }
 
+func (d *Dispatcher) closePublisherGateOnFatalSource(fence ResourceFence, gateGen uint64, err error) {
+	if errors.Is(err, ErrAuthoritativeWriterMismatch) {
+		d.closePublisherGateFor(fence, gateGen)
+	}
+}
+
 // Run starts the periodic dispatch scanner and the independent always-on
 // expired-RUNNING reaper. Dependency failures retry with bounded backoff; a
 // complete keyset round waits for its configured interval, including empty
@@ -535,6 +600,21 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	first := <-results
 	cancel()
 	second := <-results
+	// A writer identity failure is a safety event, not ordinary cancellation.
+	// Preserve it even when the parent shutdown races with the source result so
+	// Runtime can immediately cancel all authoritative pipelines.
+	if errors.Is(first, ErrAuthoritativeWriterMismatch) && !isStalePublisherSourceFailure(first) {
+		return first
+	}
+	if errors.Is(second, ErrAuthoritativeWriterMismatch) && !isStalePublisherSourceFailure(second) {
+		return second
+	}
+	if errors.Is(first, ErrAuthoritativeWriterMismatch) {
+		return first
+	}
+	if errors.Is(second, ErrAuthoritativeWriterMismatch) {
+		return second
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -553,6 +633,9 @@ func (d *Dispatcher) runDispatchLoop(ctx context.Context) error {
 		}
 		next, _, err := d.dispatchPage(ctx, cursor)
 		if err != nil {
+			if errors.Is(err, ErrAuthoritativeWriterMismatch) {
+				return err
+			}
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -581,6 +664,9 @@ func (d *Dispatcher) runRearmLoop(ctx context.Context) error {
 		}
 		next, _, err := d.rearmPage(ctx, cursor)
 		if err != nil {
+			if errors.Is(err, ErrAuthoritativeWriterMismatch) {
+				return err
+			}
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}

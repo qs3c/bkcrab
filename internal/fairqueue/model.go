@@ -40,14 +40,15 @@ var (
 
 	// Boundary implementations wrap these stable categories so runtimes can
 	// fail closed without parsing transport, Redis, or Lua error strings.
-	ErrDependencyUnavailable = errors.New("fairqueue: dependency unavailable")
-	ErrUnsupportedTopology   = errors.New("fairqueue: unsupported dependency topology")
-	ErrResourceNotReady      = errors.New("fairqueue: resource is not ready")
-	ErrFenceMismatch         = errors.New("fairqueue: resource fence mismatch")
-	ErrRecoveryOwnerStale    = errors.New("fairqueue: recovery owner is stale")
-	ErrCoordinationCorrupt   = errors.New("fairqueue: corrupt coordination state")
-	ErrPublishUnroutable     = errors.New("fairqueue: publish was unroutable")
-	ErrPublishUnconfirmed    = errors.New("fairqueue: publish was not confirmed")
+	ErrDependencyUnavailable       = errors.New("fairqueue: dependency unavailable")
+	ErrUnsupportedTopology         = errors.New("fairqueue: unsupported dependency topology")
+	ErrResourceNotReady            = errors.New("fairqueue: resource is not ready")
+	ErrFenceMismatch               = errors.New("fairqueue: resource fence mismatch")
+	ErrAuthoritativeWriterMismatch = errors.New("fairqueue: authoritative writer identity mismatch")
+	ErrRecoveryOwnerStale          = errors.New("fairqueue: recovery owner is stale")
+	ErrCoordinationCorrupt         = errors.New("fairqueue: corrupt coordination state")
+	ErrPublishUnroutable           = errors.New("fairqueue: publish was unroutable")
+	ErrPublishUnconfirmed          = errors.New("fairqueue: publish was not confirmed")
 
 	lowerHex32Pattern        = regexp.MustCompile(`^[0-9a-f]{32}$`)
 	lowerHex64Pattern        = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -549,6 +550,13 @@ func (r PrepareResult) ValidateFor(request PrepareRequest, prepared PreparedTask
 	}
 	if err := r.Validate(prepared); err != nil {
 		return err
+	}
+	// A repair-only transport envelope can never be silently ACKed or merely
+	// requeued via an executable-message disposition. Its domain adapter must
+	// first classify/repair every bounded locator and then route the original
+	// delivery through the explicit confirmed-DLQ action.
+	if request.Message == nil && r.Disposition != PreparePoisonPermanentInvalidMessage {
+		return ErrInvalidPrepareResult
 	}
 	if r.Disposition != PrepareClaimed {
 		return nil
@@ -1411,6 +1419,12 @@ type ExpiredRearmSource interface {
 	RearmExpiredPage(ctx context.Context, after string, limit int) ([]DispatchCandidate, string, error)
 }
 
+// TaskPreparer owns the canonical claim transaction and all domain-specific
+// classification. If a commit outcome is uncertain, Prepare must perform a
+// fresh bounded canonical read using its own claim identity before returning;
+// a non-nil error tells the runtime only to NACK/no-run, never to guess that a
+// claim committed. Repair-only requests must return the explicit poison/DLQ
+// disposition enforced by PrepareResult.ValidateFor.
 type TaskPreparer interface {
 	Prepare(ctx context.Context, request PrepareRequest) (PreparedTask, PrepareResult, error)
 }

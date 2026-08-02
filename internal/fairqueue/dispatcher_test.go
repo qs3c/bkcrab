@@ -348,6 +348,98 @@ func TestDispatcherReadyCheckFailureClosesGateBeforeRabbit(t *testing.T) {
 	}
 }
 
+func TestDispatcherAuthoritativeWriterMismatchClosesGateAndStopsRun(t *testing.T) {
+	t.Parallel()
+
+	source := &dispatcherSourceFake{listFn: func(context.Context, string, int) ([]DispatchCandidate, string, error) {
+		return nil, "", ErrAuthoritativeWriterMismatch
+	}}
+	rabbit := &dispatcherRabbitFake{}
+	dispatcher := newDispatcherForTest(t, source, &dispatcherRearmFake{}, rabbit, &dispatcherCoordinatorFake{}, dispatcherTestOptions())
+
+	err := dispatcher.Run(context.Background())
+	if !errors.Is(err, ErrAuthoritativeWriterMismatch) {
+		t.Fatalf("Run() error = %v, want ErrAuthoritativeWriterMismatch", err)
+	}
+	if dispatcher.PublisherGateOpen() {
+		t.Fatal("fatal writer mismatch left publisher gate open")
+	}
+	if rabbit.calls.Load() != 0 {
+		t.Fatalf("fatal source read published %d messages", rabbit.calls.Load())
+	}
+}
+
+func TestDispatcherFatalMarkClosesGateAfterConfirmedPublish(t *testing.T) {
+	t.Parallel()
+
+	candidate := dispatcherTestCandidate("task-fatal-mark", "guard-fatal-mark", 15)
+	source := &dispatcherSourceFake{
+		getFn: func(context.Context, string) (DispatchCandidate, bool, error) {
+			return candidate, true, nil
+		},
+		markFn: func(context.Context, DispatchCandidate) (bool, error) {
+			return false, ErrAuthoritativeWriterMismatch
+		},
+	}
+	coordinator := &dispatcherCoordinatorFake{}
+	dispatcher := newDispatcherForTest(t, source, &dispatcherRearmFake{}, &dispatcherRabbitFake{}, coordinator, dispatcherTestOptions())
+
+	if _, err := dispatcher.TryDispatch(context.Background(), candidate.Message.TaskID); !errors.Is(err, ErrAuthoritativeWriterMismatch) {
+		t.Fatalf("TryDispatch() error = %v, want ErrAuthoritativeWriterMismatch", err)
+	}
+	if dispatcher.PublisherGateOpen() {
+		t.Fatal("fatal Mark left publisher gate open")
+	}
+	if source.markCalls.Load() != 1 || coordinator.ensureCalls.Load() != 1 || coordinator.activateCalls.Load() != 0 {
+		t.Fatalf("fatal Mark calls mark/ensure/activate = %d/%d/%d, want 1/1/0",
+			source.markCalls.Load(), coordinator.ensureCalls.Load(), coordinator.activateCalls.Load())
+	}
+}
+
+func TestDispatcherLateFatalSourceCannotCloseReopenedSameFence(t *testing.T) {
+	t.Parallel()
+
+	listStarted := make(chan struct{})
+	releaseList := make(chan struct{})
+	source := &dispatcherSourceFake{listFn: func(ctx context.Context, _ string, _ int) ([]DispatchCandidate, string, error) {
+		close(listStarted)
+		select {
+		case <-releaseList:
+			return nil, "", ErrAuthoritativeWriterMismatch
+		case <-ctx.Done():
+			return nil, "", ctx.Err()
+		}
+	}}
+	dispatcher := newDispatcherForTest(t, source, &dispatcherRearmFake{}, &dispatcherRabbitFake{}, &dispatcherCoordinatorFake{}, dispatcherTestOptions())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := dispatcher.DispatchPage(context.Background(), "")
+		done <- err
+	}()
+	select {
+	case <-listStarted:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch source read did not start")
+	}
+	dispatcher.ClosePublisherGate()
+	if err := dispatcher.OpenPublisherGate(dispatcherTestFence("a")); err != nil {
+		t.Fatalf("OpenPublisherGate(same fence) error = %v", err)
+	}
+	close(releaseList)
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrAuthoritativeWriterMismatch) {
+			t.Fatalf("DispatchPage() error = %v, want ErrAuthoritativeWriterMismatch", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("late source read did not finish")
+	}
+	if !dispatcher.PublisherGateOpen() {
+		t.Fatal("late old-generation source failure closed same-fence reopened gate")
+	}
+}
+
 func TestDispatcherClosedGateSkipsSourceAndReopensWithNewFence(t *testing.T) {
 	t.Parallel()
 

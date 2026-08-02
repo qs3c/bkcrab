@@ -884,7 +884,7 @@ git commit -m "feat(queue): dispatch durable business tasks with publisher confi
 - Create: `internal/fairqueue/runtime.go`
 - Create: `internal/fairqueue/runtime_test.go`
 
-- [ ] **Step 1: 写调度失败测试**
+- [x] **Step 1: 写调度失败测试**
 
 覆盖：
 
@@ -911,7 +911,9 @@ Run 期间按 20s heartbeat Redis stable reservation
 global worker channel 有界，不能无限 goroutine
 ```
 
-- [ ] **Step 2: 实现 scheduler loop**
+Task 7 在通用 runtime 层锁定 delivery settlement、Bind/ACK/Run、gate、heartbeat 与 shutdown 边界；`basic.get` 后进程崩溃的持续 reconciliation 由 Task 8 证明，RAG 精确 claim/rearm 的端到端重发与不双跑由 Task 9 证明。
+
+- [x] **Step 2: 实现 scheduler loop**
 
 每个 resource 独立 loop：
 
@@ -926,7 +928,7 @@ NextTurn(resource fence, random turn token)
 
 若 global 满或 Redis 不可用，使用 context-aware backoff；不得回退到无协调执行。
 
-- [ ] **Step 3: 实现 worker envelope**
+- [x] **Step 3: 实现 worker envelope**
 
 envelope 持有：
 
@@ -943,7 +945,7 @@ worker 必须把随机 provisional token 原子 Bind/Promote 为共享 helper �
 
 `basic.get -> Prepare/claim` 必须使用独立 bounded prepare context，deadline 小于 provisional TTL；超时后不得继续一个失去 provisional 容量所有权的 DB claim。若 commit 结果已不确定，必须先按 canonical task 查询归类，不能盲目 NACK 后再次执行。
 
-- [ ] **Step 4: graceful shutdown 测试**
+- [x] **Step 4: graceful shutdown 测试**
 
 ```text
 停止 scheduler 后不再 basic.get
@@ -953,13 +955,13 @@ release 尽力执行
 Rabbit/Redis client Close 只执行一次
 ```
 
-- [ ] **Step 5: 验证**
+- [x] **Step 5: 验证**
 
 ```bash
 go test ./internal/fairqueue -run 'Test(Scheduler|Runtime|Worker)' -v
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/fairqueue/scheduler* internal/fairqueue/runtime*

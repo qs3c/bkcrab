@@ -263,13 +263,21 @@ func TestPrepareResultValidateForBindsClaimToRequest(t *testing.T) {
 	repairOnly.BodyCandidate = nil
 	repairOnly.RawBody = []byte(`{}`)
 	repairOnly.DecodeErrorCode = "invalid-body"
-	nonClaimed := PrepareResult{
+	poison := PrepareResult{
+		Disposition:     PreparePoisonPermanentInvalidMessage,
+		DeliveryAction:  DeliveryConfirmDLQThenAck,
+		CanonicalEffect: CanonicalPoisonRepairSettled,
+	}
+	if err := poison.ValidateFor(repairOnly, nil); err != nil {
+		t.Fatalf("repair-only poison ValidateFor() error = %v", err)
+	}
+	nonDLQ := PrepareResult{
 		Disposition:     PrepareDuplicateStaleTerminal,
 		DeliveryAction:  DeliveryAckRelease,
 		CanonicalEffect: CanonicalNone,
 	}
-	if err := nonClaimed.ValidateFor(repairOnly, nil); err != nil {
-		t.Fatalf("repair-only ValidateFor() error = %v", err)
+	if err := nonDLQ.ValidateFor(repairOnly, nil); !errors.Is(err, ErrInvalidPrepareResult) {
+		t.Fatalf("repair-only non-DLQ ValidateFor() error = %v, want ErrInvalidPrepareResult", err)
 	}
 }
 
@@ -767,6 +775,7 @@ func TestBoundaryErrorCategoriesSupportErrorsIs(t *testing.T) {
 		ErrUnsupportedTopology,
 		ErrResourceNotReady,
 		ErrFenceMismatch,
+		ErrAuthoritativeWriterMismatch,
 		ErrRecoveryOwnerStale,
 		ErrCoordinationCorrupt,
 		ErrPublishUnroutable,
