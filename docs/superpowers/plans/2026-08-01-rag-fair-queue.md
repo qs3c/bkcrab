@@ -982,7 +982,7 @@ git commit -m "feat(queue): run fair tenant schedulers with bounded workers"
 - Create: `internal/fairqueue/recovery_operators_test.go`
 - Modify: `internal/fairqueue/runtime.go`
 
-- [ ] **Step 1: 写恢复失败测试**
+- [x] **Step 1: 写恢复失败测试**
 
 覆盖：
 
@@ -1016,7 +1016,7 @@ recovery owner 在中页失锁，新 owner takeover 后完成；旧 owner 后续
 Mark 成功、Activate 前进程退出：READY 后 MySQL dispatched reconciliation 最终声明 topology/检查 depth/激活
 ```
 
-- [ ] **Step 2: 实现 Task 3 已定义的 paged snapshot contract**
+- [x] **Step 2: 实现 Task 3 已定义的 paged snapshot contract**
 
 ```go
 CaptureHighWater() string
@@ -1027,7 +1027,7 @@ ListValidRunning(highWater, afterTaskID, limit) RecoveryPage[RunningLease]
 
 high-water 在 bounded publish/prepare drain 后由 source 捕获，并显式传给每个 page；三个 cursor 独立推进，禁止把全表聚合成一个 snapshot。known tenants 来自 `id<=highWater` 的所有 canonical task distinct `user_id` keyset 页；`DispatchedRef` 包含 tenant 与 stable dispatch token；`RunningLease` 包含 task ID、tenant、claim generation、MySQL lease expiry，以及同一查询返回的 DB now。Promote、renew/release 与 recovery 必须调用唯一 shared helper，固定生成 `r:<SHA-256(resource\x00taskID\x00claimGeneration)>`，并用固定 test vector 证明字节级一致，避免双计数。恢复时先算 `remaining=lease_until-DB_NOW`，再用 Redis `TIME + remaining` 写 score，禁止直接比较两台机器的绝对时间。所有 MySQL page 使用稳定 keyset cursor 与 DB time。
 
-- [ ] **Step 3: 实现 recovery loop**
+- [x] **Step 3: 实现 recovery loop**
 
 要求：
 
@@ -1044,7 +1044,7 @@ high-water 在 bounded publish/prepare drain 后由 source 捕获，并显式传
 - dispatcher 的 expired RUNNING reaper loop 独立常驻但受 resource state/epoch gate；RECOVERING 中停止 mutation，只有 READY 后恢复武装与 dispatch，recovery loop 内不直接改 task/version/retry。
 - Rabbit数据确认丢失时由`rabbit_disaster_repair.go`独立operator编排`BrokerRepairSource+OperationJournal`：dry-run报告broker-backed candidate；apply在`WithStartFence` callback内Acquire/renew/check raw lock，先按Rabbit允许矩阵preflight，再创建/恢复ACTIVE journal，recheck后用同一owner/ID BeginRabbitRepairWithLock。在bounded attempts drain后首次把repair high-water写journal并镜像Redis，再对original Guard逐页`RearmAfterBrokerLoss`，CAS成功形成marker=NULL发布义务；完整pass先标journal再镜像Redis。随后只重建topology与Redis通用high-water状态，**不在RECOVERING中publish**。Finish按READY_COMMITTED→Redis READY/last ID→COMPLETED顺序，普通dispatcher再重发。若rearm半页后Redis也全丢，normal runtime从journal看到ACTIVE只能等待/告警；带双确认的operator按原ID rehydrate并从头幂等重扫。旧broker必须先隔离；fairqueue不import RAG/store。Cobra入口在Task15只做参数/确认/装配。
 
-- [ ] **Step 4: 实现 writer rebind 与 Redis force-rebuild operators**
+- [x] **Step 4: 实现 writer rebind 与 Redis force-rebuild operators**
 
 `recovery_operators.go` 提供 dry-run/report 与 apply API，显式接收 attestation；不把安全确认只留在 Cobra：
 
@@ -1057,13 +1057,13 @@ ApplyRedisForceRebuild(ctx, resource string, attestation ForceRebuildAttestation
 
 `WriterRebindAttestation`至少含旧writer已fence、全部该resource runtime/recovery coordinator已由平台停止并保持到COMPLETED、新writer authoritative三个外部bool。dry-run只供审阅。writer apply重验new-writer readiness，在**新 authoritative writer**的`WithStartFence` callback内取得raw lock、preflight Writer矩阵、写/恢复未完成journal并BeginWithLock；ACTIVE+READY expected-old明确允许完成pre-Begin首次CAS，READY_COMMITTED+READY target/last-ID同值则只Complete。force operator receiver必须显式持Coordinator、OperationJournal、resource timing config、current-writer verifier、Rabbit truth-source verifier与standalone-Redis inspector；裸`RecoverySource`只提供MySQL rebuild pages，不能承担这些检查。force apply重验current writer fence/Redis/Rabbit/attestation，只允许卡住的RECOVERING+NORMAL/same-ID FORCE/missing+未完成journal三种Begin起态，并按统一双锁序执行；READY/其它special拒绝（匹配terminal-reconcile除外）。提前Finish、半删/Redis全丢、zero-remaining完整pass、READY_COMMITTED中断/terminal-reconcile与takeover均有测试。
 
-- [ ] **Step 5: 验证**
+- [x] **Step 5: 验证**
 
 ```bash
 go test ./internal/fairqueue -run 'Test(Recovery|RabbitDisasterRepair|WriterRebind|RedisForceRebuild)' -v
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/fairqueue/recovery* internal/fairqueue/rabbit_disaster_repair* internal/fairqueue/runtime.go

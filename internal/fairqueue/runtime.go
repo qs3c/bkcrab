@@ -78,6 +78,13 @@ type ResourceRegistration struct {
 	Preparer           TaskPreparer
 	DispatchSource     DispatchSource
 	ExpiredRearmSource ExpiredRearmSource
+	// RecoverySource and WriterFingerprint opt a resource into the automatic
+	// startup barrier and continuous canonical reconciliation loop. They must
+	// be supplied together. A registration without them remains fail-closed
+	// until OpenResource is called explicitly, which is useful for low-level
+	// embedding and tests.
+	RecoverySource    RecoverySource
+	WriterFingerprint string
 }
 
 type runtimeTokenSource interface {
@@ -111,6 +118,7 @@ type workerEnvelope struct {
 type Runtime struct {
 	rabbit      RabbitClient
 	coordinator RuntimeCoordinator
+	journal     OperationJournal
 	options     RuntimeOptions
 	tokens      runtimeTokenSource
 
@@ -136,6 +144,9 @@ type runtimeResource struct {
 	preparer   TaskPreparer
 	dispatcher *Dispatcher
 	scheduler  *Scheduler
+	recovery   *RecoveryCoordinator
+	source     RecoverySource
+	writer     string
 
 	gateOps        sync.Mutex
 	mu             sync.Mutex
@@ -188,19 +199,27 @@ type runtimeWorkerPermit struct {
 	runningID uint64
 }
 
-func NewRuntime(rabbit RabbitClient, coordinator RuntimeCoordinator, options RuntimeOptions) (*Runtime, error) {
+func NewRuntime(
+	rabbit RabbitClient,
+	coordinator RuntimeCoordinator,
+	journal OperationJournal,
+	options RuntimeOptions,
+) (*Runtime, error) {
 	if rabbit == nil {
 		return nil, errors.New("fairqueue: runtime Rabbit client is required")
 	}
 	if coordinator == nil {
 		return nil, errors.New("fairqueue: runtime coordinator is required")
 	}
+	if journal == nil {
+		return nil, errors.New("fairqueue: authoritative operation journal is required")
+	}
 	normalized, err := options.withDefaults()
 	if err != nil {
 		return nil, err
 	}
 	return &Runtime{
-		rabbit: rabbit, coordinator: coordinator, options: normalized,
+		rabbit: rabbit, coordinator: coordinator, journal: journal, options: normalized,
 		tokens: cryptoRuntimeTokenSource{}, resources: make(map[string]*runtimeResource),
 		fatalCh: make(chan struct{}), shutdownDone: make(chan struct{}),
 	}, nil
@@ -215,6 +234,14 @@ func (r *Runtime) RegisterResource(registration ResourceRegistration) error {
 	}
 	if registration.Preparer == nil || registration.DispatchSource == nil || registration.ExpiredRearmSource == nil {
 		return errors.New("fairqueue: resource preparer, dispatch source, and expired rearm source are required")
+	}
+	if (registration.RecoverySource == nil) != (registration.WriterFingerprint == "") {
+		return errors.New("fairqueue: recovery source and writer fingerprint must be supplied together")
+	}
+	if registration.RecoverySource != nil {
+		if err := (WriterIdentity{Fingerprint: registration.WriterFingerprint}).Validate(); err != nil {
+			return fmt.Errorf("fairqueue: register resource writer: %w", err)
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -262,6 +289,15 @@ func (r *Runtime) RegisterResource(registration ResourceRegistration) error {
 		return err
 	}
 	resource.scheduler = scheduler
+	if registration.RecoverySource != nil {
+		recovery, err := NewRecoveryCoordinator(r.coordinator, r.rabbit, r, RecoveryOptions{})
+		if err != nil {
+			return err
+		}
+		resource.recovery = recovery
+		resource.source = registration.RecoverySource
+		resource.writer = registration.WriterFingerprint
+	}
 
 	r.resources[registration.Config.Key] = resource
 	return nil
@@ -1022,6 +1058,11 @@ func (r *Runtime) Run(ctx context.Context) error {
 		resources = append(resources, entry)
 	}
 	componentCount := len(resources) * 2
+	for _, entry := range resources {
+		if entry.recovery != nil {
+			componentCount++
+		}
+	}
 	componentDone := make(chan struct{})
 	r.componentDone = componentDone
 	var componentWG sync.WaitGroup
@@ -1058,6 +1099,16 @@ func (r *Runtime) Run(ctx context.Context) error {
 			defer componentWG.Done()
 			r.runComponent(runCtx, results, entry, entry.dispatcher.Run)
 		}()
+		if entry.recovery != nil {
+			go func() {
+				defer componentWG.Done()
+				r.runComponent(runCtx, results, entry, func(componentCtx context.Context) error {
+					return entry.recovery.Run(
+						componentCtx, entry.config, entry.writer, entry.source, r.journal,
+					)
+				})
+			}()
+		}
 	}
 
 	var cause error

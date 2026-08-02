@@ -119,6 +119,8 @@ func (runtimeTestRearmSource) RearmExpiredPage(context.Context, string, int) ([]
 	return nil, "", nil
 }
 
+type runtimeTestJournal struct{ OperationJournal }
+
 type runtimeTestDelivery struct {
 	request     PrepareRequest
 	ackErr      error
@@ -195,6 +197,16 @@ type runtimeTestRabbit struct {
 	closeCalls   atomic.Int32
 }
 
+type runtimeAutomaticRecoveryRabbit struct{ runtimeTestRabbit }
+
+func (*runtimeAutomaticRecoveryRabbit) EnsureTenantTopology(context.Context, string, string) error {
+	return nil
+}
+
+func (*runtimeAutomaticRecoveryRabbit) ReadyDepth(context.Context, string, string) (int64, error) {
+	return 0, nil
+}
+
 func (r *runtimeTestRabbit) PublishMandatoryConfirmed(context.Context, Message) (PublishReceipt, error) {
 	r.publishCalls.Add(1)
 	return PublishReceipt{AttemptID: "11111111111111111111111111111111"}, nil
@@ -242,6 +254,38 @@ type runtimeTestCoordinator struct {
 	ensureCalls   atomic.Int32
 	activateCalls atomic.Int32
 	closeCalls    atomic.Int32
+}
+
+type runtimeAutomaticRecoveryCoordinator struct {
+	*recoveryTestCoordinator
+	closeCalls    atomic.Int32
+	ensureOnce    sync.Once
+	ensureStarted chan struct{}
+	ensureRelease <-chan struct{}
+}
+
+func (c *runtimeAutomaticRecoveryCoordinator) Close() error {
+	c.closeCalls.Add(1)
+	return nil
+}
+
+func (c *runtimeAutomaticRecoveryCoordinator) EnsureKnownTenant(
+	ctx context.Context,
+	resource string,
+	fence ResourceFence,
+	tenant string,
+) error {
+	if c.ensureStarted != nil {
+		c.ensureOnce.Do(func() { close(c.ensureStarted) })
+	}
+	if c.ensureRelease != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-c.ensureRelease:
+		}
+	}
+	return c.recoveryTestCoordinator.EnsureKnownTenant(ctx, resource, fence, tenant)
 }
 
 func (c *runtimeTestCoordinator) CheckReadyFence(context.Context, string, ResourceFence) error {
@@ -468,7 +512,7 @@ func newRuntimeTestHarnessWithSource(t *testing.T, preparer *runtimeTestPreparer
 	t.Helper()
 	rabbit := &runtimeTestRabbit{delivery: delivery}
 	coordinator := &runtimeTestCoordinator{}
-	runtime, err := NewRuntime(rabbit, coordinator, runtimeTestOptions())
+	runtime, err := NewRuntime(rabbit, coordinator, &runtimeTestJournal{}, runtimeTestOptions())
 	if err != nil {
 		t.Fatalf("NewRuntime() error = %v", err)
 	}
@@ -536,6 +580,99 @@ func TestRuntimeRegistrationStartsFailClosedAndRejectsDuplicates(t *testing.T) {
 	}
 	if err := runtime.RegisterResource(registration); err == nil {
 		t.Fatal("duplicate RegisterResource() error = nil")
+	}
+}
+
+func TestRuntimeRequiresAuthoritativeOperationJournal(t *testing.T) {
+	_, err := NewRuntime(&runtimeTestRabbit{}, &runtimeTestCoordinator{}, nil, runtimeTestOptions())
+	if err == nil {
+		t.Fatal("NewRuntime() without OperationJournal error = nil")
+	}
+}
+
+func TestRuntimeRegistrationRequiresCompleteRecoveryIdentity(t *testing.T) {
+	runtime, _, _ := newRuntimeTestHarness(t, &runtimeTestPreparer{}, nil)
+	registration := ResourceRegistration{
+		Config: runtimeTestConfig(), DispatchSource: runtimeTestDispatchSource{},
+		ExpiredRearmSource: runtimeTestRearmSource{}, Preparer: &runtimeTestPreparer{},
+		WriterFingerprint: runtimeTestFence(0).WriterFingerprint,
+	}
+	registration.Config.Key = "rag.embed"
+	if err := runtime.RegisterResource(registration); err == nil {
+		t.Fatal("RegisterResource() with writer but no RecoverySource error = nil")
+	}
+}
+
+func TestRuntimeAutomaticRecoveryOpensOnlyAfterCanonicalBarrier(t *testing.T) {
+	config := recoveryTestConfig()
+	config.RecoveryDrainTimeout = 500 * time.Millisecond
+	fence := recoveryTestFence()
+	ensureStarted := make(chan struct{})
+	ensureRelease := make(chan struct{})
+	coordinator := &runtimeAutomaticRecoveryCoordinator{
+		recoveryTestCoordinator: newRecoveryTestCoordinator(fence),
+		ensureStarted:           ensureStarted, ensureRelease: ensureRelease,
+	}
+	rabbit := &runtimeAutomaticRecoveryRabbit{}
+	runtime, err := NewRuntime(rabbit, coordinator, fakeOperationJournal{}, runtimeTestOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &recoveryTestSource{
+		highWater: "1",
+		known:     []TenantRef{{TenantID: "tenant-before-open"}},
+	}
+	if err := runtime.RegisterResource(ResourceRegistration{
+		Config: config, Preparer: &runtimeTestPreparer{},
+		DispatchSource: runtimeTestDispatchSource{}, ExpiredRearmSource: runtimeTestRearmSource{},
+		RecoverySource: source, WriterFingerprint: fence.WriterFingerprint,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := runtime.resource(config.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, open := entry.readySnapshot(); open {
+		t.Fatal("resource gate was open before the startup recovery barrier")
+	}
+
+	cancel, done := startRuntimeTest(t, runtime)
+	released := false
+	defer func() {
+		if !released {
+			close(ensureRelease)
+		}
+		cancel()
+	}()
+	select {
+	case <-ensureStarted:
+	case <-time.After(time.Second):
+		t.Fatal("canonical reconciliation did not reach its blocked write")
+	}
+	if _, _, open := entry.readySnapshot(); open || entry.dispatcher.PublisherGateOpen() {
+		t.Fatal("resource gate opened before canonical reconciliation completed")
+	}
+	if dispatched, dispatchErr := runtime.TryDispatch(context.Background(), config.Key, "42"); dispatched || !errors.Is(dispatchErr, ErrResourceNotReady) {
+		t.Fatalf("TryDispatch() during startup barrier = %v, %v", dispatched, dispatchErr)
+	}
+	close(ensureRelease)
+	released = true
+	waitRuntimeTest(t, func() bool {
+		_, _, open := entry.readySnapshot()
+		coordinator.mu.Lock()
+		known := append([]string(nil), coordinator.known...)
+		coordinator.mu.Unlock()
+		return open && len(known) != 0 && known[0] == "tenant-before-open"
+	}, "automatic recovery canonical pass and gate open")
+	cancel()
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("Run() error = %v, want context.Canceled", runErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Runtime.Run did not stop")
 	}
 }
 
@@ -906,7 +1043,7 @@ func TestRuntimeDispatcherWriterMismatchImmediatelyCancelsRunningAndClosesGates(
 	preparer := &runtimeTestPreparer{prepared: task, result: runtimeClaimedResult(request)}
 	rabbit := &runtimeTestRabbit{delivery: delivery}
 	coordinator := &runtimeTestCoordinator{}
-	runtime, err := NewRuntime(rabbit, coordinator, runtimeTestOptions())
+	runtime, err := NewRuntime(rabbit, coordinator, &runtimeTestJournal{}, runtimeTestOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1005,7 +1142,7 @@ func TestRuntimeShutdownReleasesAndClosesWhenRunIgnoresCancellation(t *testing.T
 	preparer := &runtimeTestPreparer{prepared: task, result: runtimeClaimedResult(request)}
 	rabbit := &runtimeTestRabbit{delivery: delivery}
 	coordinator := &runtimeTestCoordinator{}
-	runtime, err := NewRuntime(rabbit, coordinator, options)
+	runtime, err := NewRuntime(rabbit, coordinator, &runtimeTestJournal{}, options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1472,7 +1609,7 @@ func TestRuntimeShutdownWaitsForDirectDispatchPostMarkActivationBeforeCoordinato
 func TestRuntimeZeroResourceRunIsWokenByExternalShutdown(t *testing.T) {
 	rabbit := &runtimeTestRabbit{}
 	coordinator := &runtimeTestCoordinator{}
-	runtime, err := NewRuntime(rabbit, coordinator, runtimeTestOptions())
+	runtime, err := NewRuntime(rabbit, coordinator, &runtimeTestJournal{}, runtimeTestOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
