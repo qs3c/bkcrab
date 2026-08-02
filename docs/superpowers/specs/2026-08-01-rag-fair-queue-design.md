@@ -218,7 +218,7 @@ type PrepareRequest struct {
     RegisteredResource string
     QueueTenantHash  string
     PublishAttemptID string
-    RawBody          []byte // transport 上限内，仅供 confirmed DLQ
+    RawBody          []byte // 最多 1 MiB，仅供 confirmed DLQ
     DecodeErrorCode  string
 }
 
@@ -266,7 +266,9 @@ BrokerRepairSource:
 
 `Guard` 在 RAG adapter 中至少绑定 `dispatch_generation + status + claim_generation + retry_count + next_run_at + lease/due 条件`；`MarkDispatched` 必须以这些值、`dispatch_generation > claim_generation`、`dispatched_at IS NULL` 和数据库当前时间做单条 CAS。消息消费与精确 claim 也必须匹配 token generation。这样上一轮 retry/reclaim 的迟到 confirm 或 Rabbit stale delivery 不能作用于下一 dispatch epoch。
 
-`PrepareRequest.Message` 只有在 JSON body、stable headers、registered resource 与 queue tenant hash 已通过 transport 级一致性校验时才非 nil。可独立解析且字段受限的 body 先放 `BodyCandidate`，header 独立放 `HeaderToken`：body 损坏时可用 header、header 缺失/类型坏时可用 body、两者 mismatch 时分别作为 repair locator 与 MySQL/queue context 交叉验证，但三种情况都不得返回 claimed。mismatch 时不能猜“body 或 header 谁才是真的”：对每个能独立通过 registered resource、queue tenant、MySQL canonical row、当前 generation 与 due CAS 验证的候选（最多两个）分别执行 generation repair；额外形成的发布义务由 exact claim 去重。只有 body 与 header 都无法形成受约束 locator 时才走不可定位 poison disposition。raw body 只供 DLQ，不进入业务日志/表，也不能由 adapter 再解析来绕过 transport 校验。
+`PrepareRequest.Message` 只有在不超过 64 KiB 的 JSON body、stable headers、registered resource 与 queue tenant hash 已通过 transport 级一致性校验时才非 nil；此时 `RawBody` 必须仍能 strict-decode 为同一个 `BodyCandidate`，且不能同时携带 decode error。可独立解析且字段受限的 body 先放 `BodyCandidate`，header 独立放 `HeaderToken`：body 损坏时可用 header、header 缺失/类型坏时可用 body、两者 mismatch 时分别作为 repair locator 与 MySQL/queue context 交叉验证，但三种情况都不得返回 claimed。mismatch 时不能猜“body 或 header 谁才是真的”：对每个能独立通过 registered resource、queue tenant、MySQL canonical row、当前 generation 与 due CAS 验证的候选（最多两个）分别执行 generation repair；额外形成的发布义务由 exact claim 去重。只有 body 与 header 都无法形成受约束 locator 时才走不可定位 poison disposition。为让超过协议上限的无效消息仍能 confirmed DLQ，transport 可保留最多 1 MiB raw body；超过该保留上限的 delivery 在 transport 边界拒绝。raw body 只供 DLQ，不进入业务日志/表，也不能由 adapter 再解析来绕过 transport 校验。
+
+Rabbit/Redis/Coordinator 边界错误必须包装稳定类别，至少区分 dependency unavailable、unsupported topology、resource not ready、resource fence mismatch、stale recovery owner、corrupt coordination state、publish unroutable 与 publish unconfirmed；scheduler/runtime 只能用 `errors.Is`/`errors.As` 分类，不能解析依赖或 Lua 错误字符串。
 
 接口名称允许实施时按 Go 依赖方向微调，但不得让 fairqueue 查询 RAG 私有表、解释 `Guard` 或 import RAG 类型。所有 list 接口必须是有界、稳定 keyset 分页，不能一次把全表读入内存。high-water 必须在 bounded publish/prepare drain 后由 source 捕获；每个 page 显式携带它，不能只把上界留在 recovery loop 的注释里。
 
@@ -719,7 +721,7 @@ apply按统一顺序在**新 authoritative writer**取得MySQL start lock、再�
 
 ### 10.8 Redis 损坏后的 force rebuild
 
-普通recovery发现provisional/processing metadata损坏时保持RECOVERING。force入口默认dry-run，apply需确认flag。一期只支持standalone，且只作为卡住的`RECOVERING+NORMAL`逃生口，不允许从健康READY主动force。apply按统一顺序取得MySQL start lock与通用Redis raw lock并读取Redis TIME；journal mutation前的只读preflight只允许旧owner已失效的`RECOVERING+NORMAL`首次接管、同operation ID FORCE takeover，或已有未完成journal且control missing时rehydrate，READY/其它special/ID-writer冲突均零mutation拒绝。在允许起态下于journal CAS建立/恢复未完成FORCE_REBUILD record与不可缩短的`force_not_before`，复验raw lock后再用同一owner/operation ID的`BeginForceRebuildWithLock`原子重复矩阵并切新epoch；READY_COMMITTED rehydrate仍须重做丢失的Redis reset/rebuild passes。takeover复用journal原值。达到not-before且旧attempt结束后，在standalone primary按精确prefix/hash-tag有界SCAN/delete全部可重建keys，保留control/lock/progress。只有完成一整轮zero remaining owned rebuildable keys，才在journal标记`force_delete_pass_complete=true`并同步fenced mirror；半删崩溃或 Redis 全丢时同kindoperator按journal从头幂等重扫/重建。随后`SetRecoveryHighWater`保留force字段并完整rebuild。`FinishRecovery(FORCE)`硬验Redis TIME不早于journal not-before、journal/delete mirror及通用passes，再按通用journal提交顺序完成；普通runtime不得接管/Finish。operator必须显式持current-writer、Rabbit truth source、standalone Redis与timing config verifier，不能从裸RecoverySource假设这些事实。
+普通recovery发现provisional/processing metadata损坏时保持RECOVERING。force入口默认dry-run，apply需确认flag。一期只支持standalone writable primary，且只作为卡住的`RECOVERING+NORMAL`逃生口，不允许从健康READY主动force。operator 通过独立 `RedisInspector` 重验 topology，并在取得 MySQL start lock 与通用 Redis raw lock 后调用 side-effect-free、同时校验 lock value 的 `ComputeForceRebuildDeadlineWithLock`；该调用使用 Redis `TIME`，返回 observed time 与按等待窗口向上取整到毫秒的、绝不缩短的 `force_not_before`，禁止用节点本地时钟。journal mutation前的只读preflight只允许旧owner已失效的`RECOVERING+NORMAL`首次接管、同operation ID FORCE takeover，或已有未完成journal且control missing时rehydrate，READY/其它special/ID-writer冲突均零mutation拒绝。在允许起态下于journal CAS建立/恢复未完成FORCE_REBUILD record与该`force_not_before`，复验raw lock后再用同一owner/operation ID的`BeginForceRebuildWithLock`原子重复矩阵并切新epoch；READY_COMMITTED rehydrate仍须重做丢失的Redis reset/rebuild passes。takeover复用journal原值。达到not-before且旧attempt结束后，在standalone primary按精确prefix/hash-tag有界SCAN/delete全部可重建keys，保留control/lock/progress。只有完成一整轮zero remaining owned rebuildable keys，才在journal标记`force_delete_pass_complete=true`并同步fenced mirror；半删崩溃或 Redis 全丢时同kindoperator按journal从头幂等重扫/重建。随后`SetRecoveryHighWater`保留force字段并完整rebuild。`FinishRecovery(FORCE)`硬验Redis TIME不早于journal not-before、journal/delete mirror及通用passes，再按通用journal提交顺序完成；普通runtime不得接管/Finish。operator必须显式持current-writer、Rabbit truth source、standalone Redis与timing config verifier，不能从裸RecoverySource假设这些事实。
 
 清理后从 authoritative MySQL/Rabbit 执行完整 high-water rebuild、valid-RUNNING 双向收敛和最终 cleanup，再置 READY。命令中断可由新 owner从头重入；若无法证明 key 归属、等待窗口或 MySQL/Rabbit 真相源完整，保持 RECOVERING并拒绝 force-ready。
 

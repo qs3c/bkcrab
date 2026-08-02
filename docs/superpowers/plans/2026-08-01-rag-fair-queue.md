@@ -426,7 +426,7 @@ git commit -m "feat(rag): persist tenant and rabbit dispatch marker on index tas
 - Create: `internal/fairqueue/policy.go`
 - Create: `internal/fairqueue/policy_test.go`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 覆盖：
 
@@ -447,7 +447,7 @@ resource-specific bounded task-ID validator：rag.index 接受正十进制，通
   global full -> deny
 ```
 
-- [ ] **Step 2: 定义领域无关接口**
+- [x] **Step 2: 定义领域无关接口**
 
 接口至少分离：
 
@@ -486,7 +486,9 @@ type PreparedTask interface {
 
 `DispatchCandidate{Message, Guard}` 必须携带稳定的 `DispatchToken{Resource, TaskID, Generation}` 与 source 产生的 opaque CAS snapshot。`DispatchSource` 同时提供返回完整 candidate 的 keyset page 与 `GetDispatchableByID`，fast path 也只能使用后者；`MarkDispatched(ctx, candidate)` 必须收到原 candidate 并把 Guard 原样交回领域 CAS，不能退化成 token 或 `(taskID,status)` CAS。每次 AMQP publish 另生成随机 `PublishAttemptID` 关联这一次 `basic.return`/confirm；它不是 stable dispatch token，不能进入 MySQL CAS。
 
-`PrepareRequest` 保留 raw delivery、独立解析的 body candidate、stable header candidate 与可信 queue context。runtime 只有在 body/header/context 一致时才填 `Message`；body-only、header-only 或 mismatch poison 都只能用各自受约束 locator 做 canonical repair，绝不能重建为可执行 Message。mismatch 不选择“看起来更可信”的一边：每个能独立通过 resource、queue tenant、MySQL canonical/current-generation/due CAS 的候选（最多两个）都要 repair，重复/额外发布由 exact claim 去重。raw body 受 transport 大小上限约束，只交 confirmed DLQ，adapter 不得自行重解析，不进入领域表/日志。
+`PrepareRequest` 保留 raw delivery、独立解析的 body candidate、stable header candidate 与可信 queue context。runtime 只有在 body/header/context 一致时才填 `Message`；可执行 body 不超过 64 KiB，raw body 必须 strict-decode 为同一个 candidate 且没有 decode error。body-only、header-only 或 mismatch poison 都只能用各自受约束 locator 做 canonical repair，绝不能重建为可执行 Message。mismatch 不选择“看起来更可信”的一边：每个能独立通过 resource、queue tenant、MySQL canonical/current-generation/due CAS 的候选（最多两个）都要 repair，重复/额外发布由 exact claim 去重。为让超过协议上限的 poison 仍能 confirmed DLQ，transport 可保留最多 1 MiB raw body；再大的 delivery 在 transport 边界拒绝。raw body 只交 confirmed DLQ，adapter 不得自行重解析，不进入领域表/日志。
+
+Task 3 同时固定跨 Rabbit/Redis/Coordinator 的错误分类：dependency unavailable、unsupported topology、resource not ready、resource fence mismatch、stale recovery owner、corrupt coordination state、publish unroutable 与 publish unconfirmed。后续实现必须包装对应 sentinel，runtime 只用 `errors.Is`/`errors.As` 分支，不解析依赖或 Lua 错误文本。
 
 Task 3 必须在 `model.go` 一次定义后续接口签名所需的全部领域无关 DTO：泛型 `RecoveryPage[T]`、`TenantRef`、`DispatchedRef`、`RunningLease`、`ReservationRef`、`RedisKeyRef`、`WriterIdentity`、`WriterReadinessReport`、`RecoveryLock`、只读 `RecoveryControlSnapshot`、`RecoveryKind`、固定 `RecoveryPass`、`RecoveryProgress`、Rabbit/Writer/Force operation-specific progress、journal `OperationPhase/RecoveryOperationRecord`，以及三类 operator report/attestation 类型。Task 3 的 commit 必须能独立编译；后续 Task 5/8 只能实现/消费这些合约，不能到 Task 5/8 才补类型。
 
@@ -558,13 +560,13 @@ poison/permanent-invalid-message -> canonical task 可定位时先 generation re
 
 maintenance 不能只返回“本轮没领取”并 ACK 已发布消息；source 必须在同一 canonical 事务中形成 durable retry 结果：PENDING 与 expired RUNNING 都保持原 status，以 DB time 设置有界 future `next_run_at`，执行 `dispatch_generation=GREATEST(dispatch_generation,claim_generation)+1, dispatched_at=NULL`，再返回 `canonical-repaired-retry`。dispatcher、Mark 与 exact claim 对两种 status 都服从该时间门，避免 Rabbit hot loop。消息 tenant/token 被篡改属于 poison delivery，不得把仍合法的 canonical task 标成失败。
 
-- [ ] **Step 3: 实现纯策略并跑测试**
+- [x] **Step 3: 实现纯策略并跑测试**
 
 ```bash
 go test ./internal/fairqueue -run 'Test(Policy|Message|QueueName)' -v
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add internal/fairqueue
@@ -741,10 +743,12 @@ ListReadyStableInflight(ctx, resource, fence, cursor, limit) RecoveryPage[Reserv
 EnsureReadyStableInflight(ctx, resource, fence, tenant, stableToken, remainingTTL)
 ReapExpiredTurnsAndProvisionals(ctx, resource, fence, limit)
 
+RedisInspector.InspectRedisTopology(ctx) RedisTopology // standalone/cluster + writable-primary，只读
 AcquireRecoveryLock(ctx, resource, randomOwnerToken, ttl) RecoveryLock // 仅SET NX，不改变control/progress
 CheckRecoveryLock(ctx, resource, recoveryLock) // side-effect-free；stale owner typed拒绝
 RenewRecoveryLock(ctx, resource, recoveryLock, ttl)
 InspectRecoveryStart(ctx, resource, recoveryLock) RecoveryControlSnapshot // 持raw lock的只读preflight
+ComputeForceRebuildDeadlineWithLock(ctx, resource, recoveryLock, minimumDelay) ForceRebuildDeadline // 同一Lua校验raw lock并读Redis TIME，deadline向上取整到毫秒
 ReleaseRecoveryLock(ctx, resource, recoveryLock) // compare-delete，仅用于Begin前拒绝路径
 BeginRecoveryWithLock(ctx, resource, writerFingerprint, recoveryLock, ttl) RecoveryFence
 BeginRabbitRepairWithLock(ctx, resource, writerFingerprint, operationID, recoveryLock, ttl) RecoveryFence
