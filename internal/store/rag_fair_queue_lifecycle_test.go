@@ -22,6 +22,33 @@ func TestRAGFairQueueLifecycleEntryPointsRejectMalformedWriter(t *testing.T) {
 	ctx := context.Background()
 	doc := &RAGDocumentRecord{ID: "never-created", KBID: "never-used", Version: 1}
 	version := &RAGDocumentVersionRecord{DocID: doc.ID, DocVersion: 1}
+	originalRequest := RAGObjectWriteRequest{
+		UserID: "never-used", KBID: doc.KBID, DocID: doc.ID,
+		ObjectKind: RAGObjectKindOriginal, ObjectKey: "never-used", ReferenceKey: doc.ID,
+	}
+	originalFence := RAGObjectWriteFence{
+		UserID: "never-used", KBID: doc.KBID, DocID: doc.ID,
+		ObjectKind: RAGObjectKindOriginal, ObjectKey: "never-used", ReferenceKey: doc.ID,
+	}
+	if got, err := fair.GetRAGKBForLifecycle(ctx, doc.KBID); got != nil || !errors.Is(err, ErrFairQueueWriterMismatch) {
+		t.Fatalf("lifecycle KB=%+v err=%v", got, err)
+	}
+	if got, err := fair.GetRAGDocumentForLifecycle(ctx, doc.ID); got != nil || !errors.Is(err, ErrFairQueueWriterMismatch) {
+		t.Fatalf("lifecycle document=%+v err=%v", got, err)
+	}
+	if got, err := fair.ListRAGDocumentsByKBForLifecycle(ctx, doc.KBID); got != nil || !errors.Is(err, ErrFairQueueWriterMismatch) {
+		t.Fatalf("lifecycle documents=%+v err=%v", got, err)
+	}
+	if got, err := fair.GetUserForRAGLifecycle(ctx, "never-used"); got != nil || !errors.Is(err, ErrFairQueueWriterMismatch) {
+		t.Fatalf("lifecycle user=%+v err=%v", got, err)
+	}
+
+	if got, err := fair.BeginOriginalRAGObjectWrite(ctx, originalRequest); got != nil || !errors.Is(err, ErrFairQueueWriterMismatch) {
+		t.Fatalf("original begin=%+v err=%v", got, err)
+	}
+	if ready, err := fair.MarkOriginalRAGObjectWriteReady(ctx, originalFence); ready || !errors.Is(err, ErrFairQueueWriterMismatch) {
+		t.Fatalf("original ready=%v err=%v", ready, err)
+	}
 
 	if taskID, err := fair.CreateRAGDocumentWithVersionAndIndexTask(ctx, doc, version, 3); taskID != 0 || !errors.Is(err, ErrFairQueueWriterMismatch) {
 		t.Fatalf("create task=%d err=%v", taskID, err)
@@ -259,6 +286,8 @@ func TestRAGFairQueueLifecycleMySQL(t *testing.T) {
 	userID := "u_" + suffix
 	kbID := "kb_" + suffix
 	docID := "doc_" + suffix
+	missingDocID := "doc_missing_" + suffix
+	objectKey := "rag/" + userID + "/" + kbID + "/" + docID + "/source.md"
 	secondKBID := "kb_cancel_" + suffix
 	ensureRAGLifecycleUser(t, st, userID, "active")
 	now := time.Now().UTC()
@@ -274,9 +303,10 @@ func TestRAGFairQueueLifecycleMySQL(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_, _ = st.db.ExecContext(cleanupCtx, `DELETE FROM rag_index_tasks WHERE doc_id=?`, docID)
-		_, _ = st.db.ExecContext(cleanupCtx, `DELETE FROM rag_document_versions WHERE doc_id=?`, docID)
-		_, _ = st.db.ExecContext(cleanupCtx, `DELETE FROM rag_documents WHERE id=?`, docID)
+		_, _ = st.db.ExecContext(cleanupCtx, `DELETE FROM rag_object_write_staging WHERE object_key=?`, objectKey)
+		_, _ = st.db.ExecContext(cleanupCtx, `DELETE FROM rag_index_tasks WHERE doc_id IN (?,?)`, docID, missingDocID)
+		_, _ = st.db.ExecContext(cleanupCtx, `DELETE FROM rag_document_versions WHERE doc_id IN (?,?)`, docID, missingDocID)
+		_, _ = st.db.ExecContext(cleanupCtx, `DELETE FROM rag_documents WHERE id IN (?,?)`, docID, missingDocID)
 		_, _ = st.db.ExecContext(cleanupCtx, `DELETE FROM rag_kbs WHERE id IN (?,?)`, kbID, secondKBID)
 		_, _ = st.db.ExecContext(cleanupCtx, `DELETE FROM users WHERE id=?`, userID)
 	})
@@ -292,11 +322,33 @@ func TestRAGFairQueueLifecycleMySQL(t *testing.T) {
 	version := testRAGVersion(docID, 1)
 	doc := &RAGDocumentRecord{
 		ID: docID, KBID: kbID, FileName: docID + ".md", FileType: "md", FileSize: 1,
-		ObjectKey: "rag/" + userID + "/" + kbID + "/" + docID + ".md",
+		ObjectKey: objectKey,
 		Status:    "PENDING", Version: 1, SourceSHA256: version.SourceSHA256,
 		IndexFormatVersion: 1, ProcessingStage: "queued", UploadedAt: now,
 	}
+	original, err := fair.BeginOriginalRAGObjectWrite(ctx, RAGObjectWriteRequest{
+		UserID: userID, KBID: kbID, DocID: docID, ObjectKind: RAGObjectKindOriginal,
+		ObjectKey: objectKey, ReferenceKey: docID,
+	})
+	if err != nil || original == nil {
+		t.Fatalf("fair original begin=%+v err=%v", original, err)
+	}
+	if ready, err := fair.MarkOriginalRAGObjectWriteReady(ctx, *original); err != nil || !ready {
+		t.Fatalf("fair original ready=%v err=%v", ready, err)
+	}
 	policy := RAGAdvancedEnqueuePolicy{UserID: userID, MaxPendingTasks: 10}
+	missingDoc := *doc
+	missingDoc.ID = missingDocID
+	missingDoc.ObjectKey = "rag/" + userID + "/" + kbID + "/" + missingDocID + "/source.md"
+	missingVersion := testRAGVersion(missingDocID, 1)
+	if taskID, err := fair.CreateRAGDocumentWithVersionAndIndexTaskPolicy(
+		ctx, &missingDoc, missingVersion, 3, policy,
+	); taskID != 0 || !errors.Is(err, ErrRAGLifecycleInactive) {
+		t.Fatalf("fair create without original staging task=%d err=%v", taskID, err)
+	}
+	if got, err := st.GetRAGDocument(ctx, missingDocID); got != nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing-staging document=%+v err=%v", got, err)
+	}
 	taskID, err := fair.CreateRAGDocumentWithVersionAndIndexTaskPolicy(ctx, doc, version, 3, policy)
 	if err != nil || taskID <= 0 {
 		t.Fatalf("fair create task=%d err=%v", taskID, err)

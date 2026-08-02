@@ -129,6 +129,23 @@ func (d *DBStore) BeginRAGObjectWrite(ctx context.Context, request RAGObjectWrit
 		return nil, err
 	}
 	defer tx.Rollback()
+	created, err := d.beginRAGObjectWriteInTx(ctx, tx, request)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return created, nil
+}
+
+// beginRAGObjectWriteInTx validates the canonical lifecycle hierarchy before
+// registering an immutable object key. The caller owns transaction commit.
+func (d *DBStore) beginRAGObjectWriteInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	request RAGObjectWriteRequest,
+) (*RAGObjectWriteFence, error) {
 	if _, err := d.lockActiveRAGKBOwnerTx(ctx, tx, request.KBID, request.UserID); err != nil {
 		return nil, err
 	}
@@ -147,14 +164,7 @@ func (d *DBStore) BeginRAGObjectWrite(ctx context.Context, request RAGObjectWrit
 			return nil, err
 		}
 	}
-	created, err := d.beginRAGObjectWriteLockedInTx(ctx, tx, request)
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return created, nil
+	return d.beginRAGObjectWriteLockedInTx(ctx, tx, request)
 }
 
 // beginRAGObjectWriteLockedInTx contains the staging-table mutation shared by
@@ -289,45 +299,38 @@ func (d *DBStore) markRAGObjectWriteReadyOn(
 	return count == 1, err
 }
 
-func (d *DBStore) markRAGObjectWriteReadyForIndexInTx(
+// markRAGObjectWriteReadyExactOn validates every immutable locator before the
+// READY transition. Fair API staging uses this stronger form so a malformed or
+// cross-object fence cannot mutate a row merely by guessing its handle ID.
+func (d *DBStore) markRAGObjectWriteReadyExactOn(
 	ctx context.Context,
-	tx *sql.Tx,
-	locked *ragLockedIndexFence,
-	objectFence RAGObjectWriteFence,
+	exec ragExecutor,
+	fence RAGObjectWriteFence,
 ) (bool, error) {
 	normalized, normalizeErr := normalizeRAGObjectWriteRequest(RAGObjectWriteRequest{
-		UserID: objectFence.UserID, KBID: objectFence.KBID, DocID: objectFence.DocID,
-		ObjectKind: objectFence.ObjectKind, ObjectKey: objectFence.ObjectKey,
-		ReferenceKey: objectFence.ReferenceKey,
+		UserID: fence.UserID, KBID: fence.KBID, DocID: fence.DocID,
+		ObjectKind: fence.ObjectKind, ObjectKey: fence.ObjectKey,
+		ReferenceKey: fence.ReferenceKey,
 	})
-	if normalizeErr != nil || normalized.UserID != objectFence.UserID ||
-		normalized.KBID != objectFence.KBID || normalized.DocID != objectFence.DocID ||
-		normalized.ObjectKind != objectFence.ObjectKind || normalized.ObjectKey != objectFence.ObjectKey ||
-		normalized.ReferenceKey != objectFence.ReferenceKey {
+	if normalizeErr != nil || normalized.UserID != fence.UserID ||
+		normalized.KBID != fence.KBID || normalized.DocID != fence.DocID ||
+		normalized.ObjectKind != fence.ObjectKind || normalized.ObjectKey != fence.ObjectKey ||
+		normalized.ReferenceKey != fence.ReferenceKey || fence.HandleID == "" ||
+		fence.Generation <= 0 || fence.Status != ragObjectWriteWriting ||
+		fence.HandleID != ragObjectWriteHandleID(fence.ObjectKey) {
 		return false, ErrRAGDocumentVersionMismatch
 	}
-	if locked == nil || locked.doc == nil || locked.task == nil ||
-		objectFence.HandleID == "" || objectFence.Generation <= 0 ||
-		objectFence.Status != ragObjectWriteWriting ||
-		objectFence.HandleID != ragObjectWriteHandleID(objectFence.ObjectKey) ||
-		objectFence.DocID != locked.doc.ID || objectFence.DocID != locked.task.DocID ||
-		objectFence.KBID != locked.doc.KBID || objectFence.UserID != locked.task.UserID {
-		return false, ErrRAGDocumentVersionMismatch
-	}
-	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, objectFence.DocID); err != nil {
-		return false, err
-	}
-	now, err := d.ragDBNow(ctx, tx)
+	now, err := d.ragDBNow(ctx, exec)
 	if err != nil {
 		return false, err
 	}
-	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_object_write_staging SET
+	result, err := exec.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_object_write_staging SET
 		status='READY',updated_at=%s WHERE handle_id=%s AND generation=%s AND status='WRITING'
 		AND user_id=%s AND kb_id=%s AND doc_id=%s AND object_kind=%s
 		AND object_key=%s AND reference_key=%s`, d.ph(1), d.ph(2), d.ph(3), d.ph(4),
-		d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9)), now, objectFence.HandleID,
-		objectFence.Generation, objectFence.UserID, objectFence.KBID, objectFence.DocID,
-		objectFence.ObjectKind, objectFence.ObjectKey, objectFence.ReferenceKey)
+		d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9)), now, fence.HandleID,
+		fence.Generation, fence.UserID, fence.KBID, fence.DocID, fence.ObjectKind,
+		fence.ObjectKey, fence.ReferenceKey)
 	if err != nil {
 		return false, err
 	}
@@ -336,14 +339,30 @@ func (d *DBStore) markRAGObjectWriteReadyForIndexInTx(
 		return updated, err
 	}
 	var count int
-	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM rag_object_write_staging
+	err = exec.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM rag_object_write_staging
 		WHERE handle_id=%s AND generation=%s AND status='PUBLISHED' AND user_id=%s
 		AND kb_id=%s AND doc_id=%s AND object_kind=%s AND object_key=%s AND reference_key=%s`,
 		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8)),
-		objectFence.HandleID, objectFence.Generation, objectFence.UserID, objectFence.KBID,
-		objectFence.DocID, objectFence.ObjectKind, objectFence.ObjectKey,
-		objectFence.ReferenceKey).Scan(&count)
+		fence.HandleID, fence.Generation, fence.UserID, fence.KBID, fence.DocID,
+		fence.ObjectKind, fence.ObjectKey, fence.ReferenceKey).Scan(&count)
 	return count == 1, err
+}
+
+func (d *DBStore) markRAGObjectWriteReadyForIndexInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	locked *ragLockedIndexFence,
+	objectFence RAGObjectWriteFence,
+) (bool, error) {
+	if locked == nil || locked.doc == nil || locked.task == nil ||
+		objectFence.DocID != locked.doc.ID || objectFence.DocID != locked.task.DocID ||
+		objectFence.KBID != locked.doc.KBID || objectFence.UserID != locked.task.UserID {
+		return false, ErrRAGDocumentVersionMismatch
+	}
+	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, objectFence.DocID); err != nil {
+		return false, err
+	}
+	return d.markRAGObjectWriteReadyExactOn(ctx, tx, objectFence)
 }
 
 // MarkRAGObjectWriteReadyForIndex publishes the staging acknowledgement only
@@ -362,6 +381,74 @@ func (d *DBStore) MarkRAGObjectWriteReadyForIndex(
 				ctx, tx, locked, objectFence,
 			)
 		})
+}
+
+// consumeRequiredRAGOriginalWriteInTx publishes the exact original-object
+// staging row required by fair API task creation. Unlike the shared legacy
+// consumer, a missing row is never treated as a pre-existing object.
+func (d *DBStore) consumeRequiredRAGOriginalWriteInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	expectedOwner string,
+	doc *RAGDocumentRecord,
+) error {
+	if tx == nil || doc == nil {
+		return ErrRAGDocumentVersionMismatch
+	}
+	request, err := normalizeRAGObjectWriteRequest(RAGObjectWriteRequest{
+		UserID: expectedOwner, KBID: doc.KBID, DocID: doc.ID,
+		ObjectKind: RAGObjectKindOriginal, ObjectKey: doc.ObjectKey,
+		ReferenceKey: doc.ID,
+	})
+	if err != nil {
+		return err
+	}
+	handleID := ragObjectWriteHandleID(request.ObjectKey)
+	record, err := scanRAGObjectWrite(tx.QueryRowContext(ctx, fmt.Sprintf(
+		`SELECT `+ragObjectWriteColumns+` FROM rag_object_write_staging WHERE handle_id=%s%s`,
+		d.ph(1), d.ragLockSuffix(),
+	), handleID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrRAGLifecycleInactive
+	}
+	if err != nil {
+		return err
+	}
+	if record.HandleID != handleID || record.UserID != request.UserID ||
+		record.KBID != request.KBID || record.DocID != request.DocID ||
+		record.ObjectKind != request.ObjectKind || record.ObjectKey != request.ObjectKey ||
+		record.ReferenceKey != request.ReferenceKey || record.Generation <= 0 {
+		return ErrRAGDocumentVersionMismatch
+	}
+	switch record.Status {
+	case ragObjectWritePublished:
+		return nil
+	case ragObjectWriteReady:
+		now, err := d.ragDBNow(ctx, tx)
+		if err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_object_write_staging SET
+			status='PUBLISHED',updated_at=%s WHERE handle_id=%s AND generation=%s AND status='READY'
+			AND user_id=%s AND kb_id=%s AND doc_id=%s AND object_kind=%s
+			AND object_key=%s AND reference_key=%s`, d.ph(1), d.ph(2), d.ph(3), d.ph(4),
+			d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9)), now, record.HandleID,
+			record.Generation, record.UserID, record.KBID, record.DocID, record.ObjectKind,
+			record.ObjectKey, record.ReferenceKey)
+		if err != nil {
+			return err
+		}
+		published, err := ragRowsAffected(result)
+		if err != nil {
+			return err
+		}
+		if !published {
+			return ErrRAGLifecycleInactive
+		}
+		return nil
+	default:
+		return ErrRAGLifecycleInactive
+	}
 }
 
 // consumeRAGObjectWritesInTx is called from the SQL transaction which creates

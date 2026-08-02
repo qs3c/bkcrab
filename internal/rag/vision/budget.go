@@ -33,6 +33,13 @@ type BudgetLedger interface {
 	ReleaseRAGDocumentAIUsage(context.Context, string) (bool, error)
 }
 
+// FencedTaskBudgetLedger creates the task budget on the same live index-task
+// fence used by the rest of a fair-queue execution. Fair workers must not fall
+// back to the legacy, unfenced create path.
+type FencedTaskBudgetLedger interface {
+	CreateRAGDocumentAITaskBudgetForIndex(context.Context, store.IndexFence, *store.RAGDocumentAITaskBudgetRecord) error
+}
+
 type TaskBudgetConfig struct {
 	Fence          store.IndexFence
 	UserID         string
@@ -222,11 +229,21 @@ func (b *TaskDocumentAIBudget) ensureTaskBudget(ctx context.Context) error {
 	if limits.MaxRequests < 0 || limits.MaxTokens < 0 || limits.MaxCostMicroUSD < 0 {
 		return errors.New("vision: invalid task DocumentAI limits")
 	}
-	err := b.ledger.CreateRAGDocumentAITaskBudget(ctx, &store.RAGDocumentAITaskBudgetRecord{
+	record := &store.RAGDocumentAITaskBudgetRecord{
 		TaskID: b.config.Fence.TaskID, UserID: b.config.UserID,
 		MaxRequests: limits.MaxRequests, MaxTokens: limits.MaxTokens,
 		MaxCostMicroUSD: limits.MaxCostMicroUSD,
-	})
+	}
+	var err error
+	if b.config.Fence.ExpectedWriterFingerprint != "" {
+		ledger, ok := b.ledger.(FencedTaskBudgetLedger)
+		if !ok {
+			return store.ErrRAGDocumentAIInvalidFence
+		}
+		err = ledger.CreateRAGDocumentAITaskBudgetForIndex(ctx, b.config.Fence, record)
+	} else {
+		err = b.ledger.CreateRAGDocumentAITaskBudget(ctx, record)
+	}
 	if err == nil {
 		b.ensured = true
 	}

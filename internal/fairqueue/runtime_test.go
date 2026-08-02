@@ -1018,6 +1018,89 @@ func TestRuntimeAuthoritativeWriterMismatchFailsRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeAuthoritativeStateCorruptionFailsRun(t *testing.T) {
+	request := schedulerTestRequest(t, "tenant-a", "42", 7)
+	delivery := &runtimeTestDelivery{request: request}
+	preparer := &runtimeTestPreparer{err: ErrAuthoritativeStateCorrupt}
+	runtime, _, coordinator := newRuntimeTestHarness(t, preparer, delivery)
+	if err := runtime.OpenResource("rag.index", runtimeTestFence(0)); err != nil {
+		t.Fatal(err)
+	}
+	_, done := startRuntimeTest(t, runtime)
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrAuthoritativeStateCorrupt) {
+			t.Fatalf("Run() error = %v, want ErrAuthoritativeStateCorrupt", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not fail on authoritative state corruption")
+	}
+	if delivery.nacked.Load() != 0 || coordinator.ensureCalls.Load() != 0 {
+		t.Fatalf("authoritative corruption nack/ensure-active = %d/%d, want 0/0",
+			delivery.nacked.Load(), coordinator.ensureCalls.Load())
+	}
+	if coordinator.releaseCalls.Load() == 0 {
+		t.Fatal("authoritative corruption did not release its provisional reservation")
+	}
+}
+
+func TestRuntimeMixedAuthoritativeCorruptionIsNotStalePublisherExempt(t *testing.T) {
+	runtime, _, _ := newRuntimeTestHarness(t, &runtimeTestPreparer{}, nil)
+	entry, err := runtime.resource("rag.index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondErr := errors.New("component retried after mixed authoritative failure")
+	var calls atomic.Int32
+	results := make(chan error, 1)
+	go runtime.runComponent(context.Background(), results, entry, func(context.Context) error {
+		if calls.Add(1) == 1 {
+			return stalePublisherSourceFailure{err: errors.Join(
+				ErrAuthoritativeWriterMismatch,
+				ErrAuthoritativeStateCorrupt,
+			)}
+		}
+		return secondErr
+	})
+	select {
+	case got := <-results:
+		if !errors.Is(got, ErrAuthoritativeStateCorrupt) || errors.Is(got, secondErr) {
+			t.Fatalf("component error = %v, want mixed authoritative corruption", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("component did not report mixed authoritative corruption")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("component calls = %d, want 1", calls.Load())
+	}
+	runtime.mu.Lock()
+	fatalErr := runtime.fatalErr
+	runtime.mu.Unlock()
+	if !errors.Is(fatalErr, ErrAuthoritativeStateCorrupt) {
+		t.Fatalf("runtime fatal error = %v, want ErrAuthoritativeStateCorrupt", fatalErr)
+	}
+}
+
+func TestRuntimePreparedTaskAuthoritativeStateCorruptionIsGlobalFatal(t *testing.T) {
+	request := schedulerTestRequest(t, "tenant-a", "42", 7)
+	delivery := &runtimeTestDelivery{request: request}
+	task := &runtimeTestTask{err: ErrAuthoritativeStateCorrupt}
+	preparer := &runtimeTestPreparer{prepared: task, result: runtimeClaimedResult(request)}
+	runtime, _, _ := newRuntimeTestHarness(t, preparer, delivery)
+	if err := runtime.OpenResource("rag.index", runtimeTestFence(0)); err != nil {
+		t.Fatal(err)
+	}
+	_, done := startRuntimeTest(t, runtime)
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrAuthoritativeStateCorrupt) {
+			t.Fatalf("Run() error = %v, want ErrAuthoritativeStateCorrupt", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not fail after PreparedTask authoritative state corruption")
+	}
+}
+
 func TestRuntimeShutdownClosesSharedClientsOnce(t *testing.T) {
 	runtime, rabbit, coordinator := newRuntimeTestHarness(t, &runtimeTestPreparer{}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

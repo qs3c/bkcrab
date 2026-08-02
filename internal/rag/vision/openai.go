@@ -24,6 +24,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/telemetry"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 type Client struct {
@@ -704,7 +705,8 @@ func (c *Client) callWithTransientRetry(
 			return result, nil
 		}
 		lastErr = err
-		if !IsRetryable(err) || attempt+1 >= documentAIMaxTransientAttempts || ctx.Err() != nil {
+		if documentAISettlementSafetyError(err) || !IsRetryable(err) ||
+			attempt+1 >= documentAIMaxTransientAttempts || ctx.Err() != nil {
 			break
 		}
 		timer := time.NewTimer(documentAITransientRetryDelay(attempt + 1))
@@ -721,6 +723,12 @@ func (c *Client) callWithTransientRetry(
 		}
 	}
 	return callResult{}, lastErr
+}
+
+func documentAISettlementSafetyError(err error) bool {
+	return errors.Is(err, store.ErrFairQueueWriterMismatch) ||
+		errors.Is(err, store.ErrFairQueueUnsafeConnection) ||
+		errors.Is(err, store.ErrRAGDocumentAILedgerCorrupt)
 }
 
 func documentAITransientRetryDelay(retry int) time.Duration {
@@ -770,13 +778,11 @@ func (c *Client) call(
 	case c.semaphore <- struct{}{}:
 		defer func() { <-c.semaphore }()
 	case <-ctx.Done():
-		_ = reservation.Release(settlementContext(ctx))
-		return callResult{}, ctx.Err()
+		return callResult{}, errors.Join(ctx.Err(), reservation.Release(settlementContext(ctx)))
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(requestBody))
 	if err != nil {
-		_ = reservation.Release(settlementContext(ctx))
-		return callResult{}, err
+		return callResult{}, errors.Join(err, reservation.Release(settlementContext(ctx)))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept-Encoding", "gzip")
@@ -784,11 +790,10 @@ func (c *Client) call(
 		request.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 	if err := reservation.MarkSent(ctx, budget.Fence()); err != nil {
-		return callResult{}, err
+		return callResult{}, errors.Join(err, reservation.Release(settlementContext(ctx)))
 	}
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		_ = reservation.CommitEstimated(settlementContext(ctx))
 		kind := ErrorUpstream
 		if errors.Is(err, errDocumentAIRedirect) {
 			kind = ErrorPolicy
@@ -800,28 +805,29 @@ func (c *Client) call(
 				kind = ErrorTimeout
 			}
 		}
-		return callResult{}, &Error{Kind: kind, Err: err}
+		primaryErr := &Error{Kind: kind, Err: err}
+		return callResult{}, errors.Join(primaryErr, reservation.CommitEstimated(settlementContext(ctx)))
 	}
 	defer response.Body.Close()
 	raw, err := c.readResponse(response)
 	if err != nil {
-		_ = reservation.CommitEstimated(settlementContext(ctx))
-		return callResult{}, &Error{Kind: ErrorInvalid, StatusCode: response.StatusCode, Err: err}
+		primaryErr := &Error{Kind: ErrorInvalid, StatusCode: response.StatusCode, Err: err}
+		return callResult{}, errors.Join(primaryErr, reservation.CommitEstimated(settlementContext(ctx)))
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		_ = reservation.CommitEstimated(settlementContext(ctx))
 		kind := ErrorInvalid
 		if response.StatusCode == http.StatusTooManyRequests {
 			kind = ErrorRateLimit
 		} else if response.StatusCode >= 500 {
 			kind = ErrorUpstream
 		}
-		return callResult{}, &Error{Kind: kind, StatusCode: response.StatusCode, Err: errors.New("DocumentAI provider rejected request")}
+		primaryErr := &Error{Kind: kind, StatusCode: response.StatusCode, Err: errors.New("DocumentAI provider rejected request")}
+		return callResult{}, errors.Join(primaryErr, reservation.CommitEstimated(settlementContext(ctx)))
 	}
 	content, reported, err := parseChatResponse(raw, c.maxOutputTokens, c.schemaLimits.MaxJSONDepth)
 	if err != nil {
-		_ = reservation.CommitEstimated(settlementContext(ctx))
-		return callResult{}, &Error{Kind: ErrorInvalid, Err: err}
+		primaryErr := &Error{Kind: ErrorInvalid, Err: err}
+		return callResult{}, errors.Join(primaryErr, reservation.CommitEstimated(settlementContext(ctx)))
 	}
 	actual := Usage{CostMicroUSD: cost}
 	if reported != nil {

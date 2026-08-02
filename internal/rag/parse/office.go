@@ -457,6 +457,9 @@ func (p *LocalParser) describeOfficeAssets(
 			err = description.Validate(vision.DefaultSchemaLimits())
 		}
 		if err != nil {
+			if isRAGFairQueueSafetyError(err) {
+				return nil, nil, err
+			}
 			if ctx.Err() != nil {
 				return nil, nil, ctx.Err()
 			}

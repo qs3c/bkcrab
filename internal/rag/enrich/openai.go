@@ -540,14 +540,12 @@ func (c *Client) call(
 	case c.semaphore <- struct{}{}:
 		defer func() { <-c.semaphore }()
 	case <-ctx.Done():
-		_ = reservation.Release(settlementContext(ctx))
-		return callResult{}, ctx.Err()
+		return callResult{}, errors.Join(ctx.Err(), reservation.Release(settlementContext(ctx)))
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(requestBody))
 	if err != nil {
-		_ = reservation.Release(settlementContext(ctx))
-		return callResult{}, err
+		return callResult{}, errors.Join(err, reservation.Release(settlementContext(ctx)))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept-Encoding", "gzip")
@@ -555,12 +553,10 @@ func (c *Client) call(
 		request.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 	if err := reservation.MarkSent(ctx, budget.Fence()); err != nil {
-		_ = reservation.Release(settlementContext(ctx))
-		return callResult{}, err
+		return callResult{}, errors.Join(err, reservation.Release(settlementContext(ctx)))
 	}
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		_ = reservation.CommitEstimated(settlementContext(ctx))
 		kind := vision.ErrorUpstream
 		if errors.Is(err, errDocumentAIRedirect) {
 			kind = vision.ErrorPolicy
@@ -572,29 +568,30 @@ func (c *Client) call(
 				kind = vision.ErrorTimeout
 			}
 		}
-		return callResult{}, &vision.Error{Kind: kind, Err: err}
+		primaryErr := &vision.Error{Kind: kind, Err: err}
+		return callResult{}, errors.Join(primaryErr, reservation.CommitEstimated(settlementContext(ctx)))
 	}
 	defer response.Body.Close()
 	raw, err := c.readResponse(response)
 	if err != nil {
-		_ = reservation.CommitEstimated(settlementContext(ctx))
-		return callResult{}, &vision.Error{Kind: vision.ErrorInvalid, StatusCode: response.StatusCode, Err: err}
+		primaryErr := &vision.Error{Kind: vision.ErrorInvalid, StatusCode: response.StatusCode, Err: err}
+		return callResult{}, errors.Join(primaryErr, reservation.CommitEstimated(settlementContext(ctx)))
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		_ = reservation.CommitEstimated(settlementContext(ctx))
 		kind := vision.ErrorInvalid
 		if response.StatusCode == http.StatusTooManyRequests {
 			kind = vision.ErrorRateLimit
 		} else if response.StatusCode >= 500 {
 			kind = vision.ErrorUpstream
 		}
-		return callResult{}, &vision.Error{Kind: kind, StatusCode: response.StatusCode,
+		primaryErr := &vision.Error{Kind: kind, StatusCode: response.StatusCode,
 			Err: errors.New("DocumentAI provider rejected request")}
+		return callResult{}, errors.Join(primaryErr, reservation.CommitEstimated(settlementContext(ctx)))
 	}
 	content, reported, err := parseChatResponse(raw, outputLimit, c.schemaLimits.MaxJSONDepth)
 	if err != nil {
-		_ = reservation.CommitEstimated(settlementContext(ctx))
-		return callResult{}, &vision.Error{Kind: vision.ErrorInvalid, Err: err}
+		primaryErr := &vision.Error{Kind: vision.ErrorInvalid, Err: err}
+		return callResult{}, errors.Join(primaryErr, reservation.CommitEstimated(settlementContext(ctx)))
 	}
 	usage := vision.Usage{CostMicroUSD: cost}
 	if reported != nil {

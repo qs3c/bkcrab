@@ -435,7 +435,7 @@ func (r *Runtime) TryDispatch(ctx context.Context, resource, taskID string) (boo
 	}
 	defer entry.finishDirectDispatch()
 	dispatched, err := entry.dispatcher.TryDispatch(ctx, taskID)
-	if errors.Is(err, ErrAuthoritativeWriterMismatch) && !isStalePublisherSourceFailure(err) {
+	if authoritativeFatalError(err) && !stalePublisherWriterMismatchOnly(err) {
 		r.failAuthoritativeWriter(err)
 	}
 	return dispatched, err
@@ -513,7 +513,7 @@ func (p *runtimeWorkerPermit) reportCoordinationFailure(err error) {
 	if p == nil || err == nil {
 		return
 	}
-	if errors.Is(err, ErrAuthoritativeWriterMismatch) {
+	if authoritativeFatalError(err) {
 		p.runtime.failAuthoritativeWriter(err)
 		return
 	}
@@ -726,8 +726,15 @@ func (r *Runtime) executeWorker(permit *runtimeWorkerPermit, envelope workerEnve
 
 	prepared, result, prepareErr := permit.resource.preparer.Prepare(envelope.prepareCtx, envelope.request)
 	if prepareErr != nil {
-		if errors.Is(prepareErr, ErrAuthoritativeWriterMismatch) {
+		if authoritativeFatalError(prepareErr) {
 			r.failAuthoritativeWriter(prepareErr)
+			// Keep the authoritative delivery unsettled. Closing the Rabbit
+			// connection after the global fatal will requeue it once, without an
+			// immediate cross-instance NACK hot loop. Redis capacity is rebuildable
+			// and can be released independently.
+			r.releaseReservationTokens(permit, envelope, envelope.provisionalID)
+			permit.finishWithoutRun()
+			return
 		}
 		r.nackActivateRelease(permit, envelope)
 		permit.finishWithoutRun()
@@ -971,7 +978,7 @@ func (r *Runtime) runPrepared(
 	}()
 
 	runErr := runPreparedTaskSafely(prepared, runCtx)
-	if errors.Is(runErr, ErrAuthoritativeWriterMismatch) {
+	if authoritativeFatalError(runErr) {
 		r.failAuthoritativeWriter(runErr)
 	}
 	cancelRun()
@@ -1016,7 +1023,7 @@ func (r *Runtime) handleCoordinationFailure(entry *runtimeResource, fence Resour
 	if err == nil {
 		return
 	}
-	if errors.Is(err, ErrAuthoritativeWriterMismatch) {
+	if authoritativeFatalError(err) {
 		r.failAuthoritativeWriter(err)
 		return
 	}
@@ -1179,11 +1186,10 @@ func (r *Runtime) runComponent(
 		// let that stale result tear the reopened Runtime down. Restart the local
 		// component so it observes the new generation. A current-generation
 		// writer mismatch always closes the dispatcher gate before reaching here.
-		if errors.Is(err, ErrAuthoritativeWriterMismatch) &&
-			isStalePublisherSourceFailure(err) && ctx.Err() == nil {
+		if stalePublisherWriterMismatchOnly(err) && ctx.Err() == nil {
 			continue
 		}
-		if errors.Is(err, ErrAuthoritativeWriterMismatch) {
+		if authoritativeFatalError(err) {
 			r.failAuthoritativeWriter(err)
 		}
 		results <- err
@@ -1208,8 +1214,19 @@ func (entry *runtimeResource) startWorkers() {
 	}
 }
 
+func authoritativeFatalError(err error) bool {
+	return errors.Is(err, ErrAuthoritativeWriterMismatch) ||
+		errors.Is(err, ErrAuthoritativeStateCorrupt)
+}
+
+func stalePublisherWriterMismatchOnly(err error) bool {
+	return errors.Is(err, ErrAuthoritativeWriterMismatch) &&
+		!errors.Is(err, ErrAuthoritativeStateCorrupt) &&
+		isStalePublisherSourceFailure(err)
+}
+
 func (r *Runtime) failAuthoritativeWriter(err error) {
-	if err == nil || !errors.Is(err, ErrAuthoritativeWriterMismatch) {
+	if err == nil || !authoritativeFatalError(err) {
 		return
 	}
 	r.fatalOnce.Do(func() {

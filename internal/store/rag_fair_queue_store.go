@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 )
 
 // RAGFairQueueStore binds every fair-queue read and mutation to the same
@@ -35,6 +36,30 @@ func (s *RAGFairQueueStore) ExpectedWriterFingerprint() string {
 		return ""
 	}
 	return s.expectedWriter
+}
+
+// GetConfigByName reads execution-affecting user configuration from the
+// expected writer on one pinned physical connection. The snapshot is withheld
+// if the post-read session identity check fails.
+func (s *RAGFairQueueStore) GetConfigByName(
+	ctx context.Context,
+	kind, userID, agentID, name string,
+) (*ConfigRecord, error) {
+	var record *ConfigRecord
+	err := s.withExpectedWriterConn(ctx,
+		func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+			var err error
+			record, err = scanConfigRow(conn.QueryRowContext(ctx,
+				fmt.Sprintf(`SELECT `+configSelectCols+`
+					FROM configs WHERE kind = %s AND user_id = %s AND agent_id = %s AND name = %s`,
+					s.store.ph(1), s.store.ph(2), s.store.ph(3), s.store.ph(4)),
+				kind, userID, agentID, name))
+			return err
+		})
+	if err != nil {
+		return nil, err
+	}
+	return record, nil
 }
 
 func (s *RAGFairQueueStore) validate() error {

@@ -22,13 +22,16 @@ import (
 )
 
 type testBudgetLedger struct {
-	mu       sync.Mutex
-	reserved int
-	sent     int
-	commits  int
-	releases int
-	requests []store.RAGDocumentAIUsageRecord
-	usage    []committedTestUsage
+	mu         sync.Mutex
+	reserved   int
+	sent       int
+	commits    int
+	releases   int
+	requests   []store.RAGDocumentAIUsageRecord
+	usage      []committedTestUsage
+	markErr    error
+	commitErr  error
+	releaseErr error
 }
 
 type committedTestUsage struct {
@@ -53,22 +56,22 @@ func (l *testBudgetLedger) ReserveRAGDocumentAIUsage(_ context.Context, _ store.
 }
 func (l *testBudgetLedger) MarkSentRAGDocumentAIUsage(context.Context, string, store.IndexFence) (bool, error) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.sent++
-	l.mu.Unlock()
-	return true, nil
+	return l.markErr == nil, l.markErr
 }
 func (l *testBudgetLedger) CommitRAGDocumentAIUsage(_ context.Context, _ string, input, output, cost int64, estimated bool) (bool, error) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.commits++
 	l.usage = append(l.usage, committedTestUsage{input: input, output: output, cost: cost, estimated: estimated})
-	l.mu.Unlock()
-	return true, nil
+	return l.commitErr == nil, l.commitErr
 }
 func (l *testBudgetLedger) ReleaseRAGDocumentAIUsage(context.Context, string) (bool, error) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.releases++
-	l.mu.Unlock()
-	return true, nil
+	return l.releaseErr == nil, l.releaseErr
 }
 
 func (l *testBudgetLedger) counts() (int, int, int, int) {
@@ -118,6 +121,68 @@ func writeOpenAIResponse(t *testing.T, w http.ResponseWriter, content string) {
 		"usage":   map[string]any{"prompt_tokens": 20, "completion_tokens": 40},
 	}); err != nil {
 		t.Errorf("encode response: %v", err)
+	}
+}
+
+func TestOpenAICallPreservesBudgetSettlementErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "provider unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	newClient := func(t *testing.T) *Client {
+		t.Helper()
+		client, err := NewOpenAICompatible(documentAIConfigForServer(t, server.URL), documentAILimits(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return client
+	}
+	call := func(ctx context.Context, client *Client, ledger *testBudgetLedger) error {
+		_, err := client.call(ctx, testTaskBudget(ledger), "settlement", 0, []byte(`{}`), 8)
+		return err
+	}
+
+	t.Run("release joins cancellation", func(t *testing.T) {
+		client := newClient(t)
+		client.semaphore = make(chan struct{})
+		ledger := &testBudgetLedger{releaseErr: store.ErrFairQueueUnsafeConnection}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := call(ctx, client, ledger)
+		if !errors.Is(err, context.Canceled) || !errors.Is(err, store.ErrFairQueueUnsafeConnection) {
+			t.Fatalf("error = %v, want cancellation and settlement safety error", err)
+		}
+	})
+
+	t.Run("mark sent releases and joins failures", func(t *testing.T) {
+		markErr := errors.New("mark sent failed")
+		ledger := &testBudgetLedger{
+			markErr: markErr, releaseErr: store.ErrFairQueueWriterMismatch,
+		}
+		err := call(context.Background(), newClient(t), ledger)
+		if !errors.Is(err, markErr) || !errors.Is(err, store.ErrFairQueueWriterMismatch) {
+			t.Fatalf("error = %v, want mark and release errors", err)
+		}
+		_, _, _, releases := ledger.counts()
+		if releases != 1 {
+			t.Fatalf("release calls = %d, want 1", releases)
+		}
+	})
+
+	for _, settlementErr := range []error{
+		store.ErrFairQueueWriterMismatch,
+		store.ErrFairQueueUnsafeConnection,
+		store.ErrRAGDocumentAILedgerCorrupt,
+	} {
+		t.Run("commit estimated "+settlementErr.Error(), func(t *testing.T) {
+			err := call(context.Background(), newClient(t), &testBudgetLedger{commitErr: settlementErr})
+			var providerErr *vision.Error
+			if !errors.As(err, &providerErr) || providerErr.Kind != vision.ErrorUpstream ||
+				!errors.Is(err, settlementErr) {
+				t.Fatalf("error = %v, want upstream classification and settlement error", err)
+			}
+		})
 	}
 }
 

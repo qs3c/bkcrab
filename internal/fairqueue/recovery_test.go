@@ -367,19 +367,23 @@ func (c *recoveryTestCoordinator) ReapExpiredTurnsAndProvisionals(context.Contex
 type recoveryTestSource struct {
 	mu sync.Mutex
 
-	highWater string
-	captures  int
-	known     []TenantRef
-	dispatch  []DispatchedRef
-	running   []RunningLease
-	seenHigh  []string
-	afterPage func()
+	highWater  string
+	captureErr error
+	captures   int
+	known      []TenantRef
+	dispatch   []DispatchedRef
+	running    []RunningLease
+	seenHigh   []string
+	afterPage  func()
 }
 
 func (s *recoveryTestSource) CaptureHighWater(context.Context) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.captures++
+	if s.captureErr != nil {
+		return "", s.captureErr
+	}
 	return s.highWater, nil
 }
 
@@ -489,6 +493,30 @@ func TestRecoveryDrainAttemptsClosesAndWaitsFullPublishWindow(t *testing.T) {
 	defer runtime.mu.Unlock()
 	if runtime.closed != 1 || runtime.drained != 1 {
 		t.Fatalf("runtime close/drain = %d/%d, want 1/1", runtime.closed, runtime.drained)
+	}
+}
+
+func TestRecoveryRunPropagatesAuthoritativeStateCorruptWithoutRetry(t *testing.T) {
+	t.Parallel()
+
+	config := recoveryTestConfig()
+	fence := recoveryTestFence()
+	coordinator := newRecoveryTestCoordinator(fence)
+	runtime := &recoveryTestRuntime{}
+	runner := newRecoveryTestRunner(t, coordinator, &recoveryTestRabbit{}, runtime)
+	source := &recoveryTestSource{captureErr: ErrAuthoritativeStateCorrupt}
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	err := runner.Run(ctx, config, fence.WriterFingerprint, source, fakeOperationJournal{})
+	if !errors.Is(err, ErrAuthoritativeStateCorrupt) {
+		t.Fatalf("Run() error = %v, want ErrAuthoritativeStateCorrupt", err)
+	}
+	source.mu.Lock()
+	captures := source.captures
+	source.mu.Unlock()
+	if captures != 1 {
+		t.Fatalf("CaptureHighWater calls = %d, want 1", captures)
 	}
 }
 

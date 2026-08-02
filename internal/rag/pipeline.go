@@ -43,6 +43,7 @@ const (
 	indexTaskPendingLimitCode       = "pending_limit"
 	indexTaskReindexRateLimitCode   = "reindex_rate_limit"
 	indexTaskRejectedTelemetryState = "rejected"
+	fairClaimFinalizeTimeout        = 5 * time.Second
 )
 
 // Start launches bounded durable workers. The in-process channel only reduces
@@ -50,13 +51,15 @@ const (
 // wake (including a full channel) recover without a process restart.
 func (s *Service) Start(ctx context.Context) {
 	s.startOnce.Do(func() {
-		for i := 0; i < s.workerCount; i++ {
-			go s.worker(ctx)
+		if s.workerMode == WorkerModeLegacy {
+			for i := 0; i < s.workerCount; i++ {
+				go s.worker(ctx)
+			}
+			go s.taskPump(ctx)
+			s.wakeWorkers()
 		}
-		go s.taskPump(ctx)
 		go s.documentAIReconcileLoop(ctx)
 		go s.lifecycleLoop(ctx)
-		s.wakeWorkers()
 	})
 }
 
@@ -113,7 +116,9 @@ func (s *Service) claimAvailable(ctx context.Context) {
 		if claim == nil {
 			return
 		}
-		s.runClaim(ctx, claim)
+		if err := s.runClaim(ctx, claim); err != nil && ctx.Err() == nil {
+			slog.Error("rag: index claim execution failed", "task", claim.Fence.TaskID, "error", err)
+		}
 	}
 }
 
@@ -212,7 +217,7 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName st
 		s.emitIndexTaskPolicyRejection(ctx, doc.ID, doc.Version, "enqueue", err)
 		return nil, err
 	}
-	s.scheduleTask(taskID)
+	s.notifyTask(ctx, taskID)
 	return doc, nil
 }
 
@@ -252,7 +257,7 @@ func (s *Service) ReindexDocument(ctx context.Context, ownerID, kbID, docID stri
 		s.emitIndexTaskPolicyRejection(ctx, doc.ID, doc.Version, "reindex", err)
 		return err
 	}
-	s.scheduleTask(task.ID)
+	s.notifyTask(ctx, task.ID)
 	return nil
 }
 
@@ -314,6 +319,30 @@ func (s *Service) scheduleTask(taskID int64) {
 	}
 }
 
+func (s *Service) notifyTask(ctx context.Context, taskID int64) {
+	if s == nil || taskID <= 0 {
+		return
+	}
+	switch s.workerMode {
+	case WorkerModeLegacy:
+		s.scheduleTask(taskID)
+	case WorkerModeFair:
+		if s.taskNotifier == nil {
+			slog.Warn("rag: fair task notifier unavailable; durable dispatcher scan will recover", "task", taskID)
+			return
+		}
+		if err := s.taskNotifier.TryDispatch(ctx, taskID); err != nil {
+			slog.Warn("rag: fair task fast-path dispatch failed; durable dispatcher scan will recover",
+				"task", taskID, "error", err)
+		}
+	case WorkerModePaused:
+		// Durable SQL is authoritative. A later fair or legacy rollout will
+		// discover the task after the deployment drain completes.
+	default:
+		// Unknown values fail closed and never wake an index claimant.
+	}
+}
+
 // runTask remains for package-level compatibility tests. The id is only a
 // hint: correctness requires claiming the next due row from SQL.
 func (s *Service) runTask(ctx context.Context, _ int64) {
@@ -326,18 +355,87 @@ func (s *Service) runTask(ctx context.Context, _ int64) {
 		return
 	}
 	if claim != nil {
-		s.runClaim(ctx, claim)
+		if err := s.runClaim(ctx, claim); err != nil && ctx.Err() == nil {
+			slog.Error("rag: index claim execution failed", "task", claim.Fence.TaskID, "error", err)
+		}
 	}
 }
 
-func (s *Service) runClaim(parent context.Context, claim *store.RAGIndexClaim) {
+// RunFairClaim is the sole pipeline entry point exposed to the fair adapter.
+// The delivered claim supplies the expected writer identity used by every
+// context-aware read/catalog mutation and by the fenced budget facade.
+func (s *Service) RunFairClaim(parent context.Context, claim *store.RAGIndexClaim) error {
+	if s == nil || s.workerMode != WorkerModeFair || s.fairExecution == nil || s.fairStore == nil {
+		return store.ErrFairQueueMySQLRequired
+	}
+	if claim == nil || !validFairWriterFingerprint(claim.Fence.ExpectedWriterFingerprint) {
+		return store.ErrFairQueueWriterMismatch
+	}
+	if s.fairStore.ExpectedWriterFingerprint() != claim.Fence.ExpectedWriterFingerprint {
+		return store.ErrFairQueueWriterMismatch
+	}
+	err := s.runClaim(withFairIndexFence(parent, claim.Fence), claim)
+	if isFatalFairClaimError(claim, err) {
+		return err
+	}
+	if errors.Is(err, errIndexFenceLost) {
+		// The exact lease is already gone. Its Rabbit delivery is stale and may
+		// be acknowledged; the canonical row decides whether another generation
+		// is due.
+		return nil
+	}
+	return err
+}
+
+func validFairWriterFingerprint(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, c := range value {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func isFairStoreSafetyError(err error) bool {
+	return errors.Is(err, store.ErrFairQueueWriterMismatch) ||
+		errors.Is(err, store.ErrFairQueueUnsafeConnection)
+}
+
+func isFatalFairClaimError(claim *store.RAGIndexClaim, err error) bool {
+	return claim != nil && claim.Fence.ExpectedWriterFingerprint != "" &&
+		(isFairStoreSafetyError(err) || errors.Is(err, store.ErrRAGDocumentVersionMismatch) ||
+			errors.Is(err, store.ErrRAGDocumentVersionConflict) ||
+			errors.Is(err, store.ErrRAGDocumentSourceConflict) ||
+			errors.Is(err, store.ErrRAGDocumentAILedgerCorrupt))
+}
+
+func isFairFenceLossError(claim *store.RAGIndexClaim, err error) bool {
+	return claim != nil && claim.Fence.ExpectedWriterFingerprint != "" &&
+		(errors.Is(err, errIndexFenceLost) ||
+			errors.Is(err, store.ErrRAGDocumentAIInvalidFence) ||
+			errors.Is(err, store.ErrRAGLifecycleInactive))
+}
+
+func (s *Service) runClaim(parent context.Context, claim *store.RAGIndexClaim) (resultErr error) {
 	if claim == nil {
-		return
+		return nil
 	}
 	defer func() {
-		if _, err := s.st.AcknowledgeRAGIndexTaskQuiesced(parent, claim.Fence); err != nil && parent.Err() == nil {
-			slog.Warn("rag: failed to acknowledge superseded worker quiescence",
-				"task", claim.Fence.TaskID, "error", err)
+		ackCtx := parent
+		if claim.Fence.ExpectedWriterFingerprint != "" {
+			var cancel context.CancelFunc
+			ackCtx, cancel = context.WithTimeout(context.WithoutCancel(parent), fairClaimFinalizeTimeout)
+			defer cancel()
+		}
+		if _, err := s.st.AcknowledgeRAGIndexTaskQuiesced(ackCtx, claim.Fence); err != nil {
+			if parent.Err() == nil || isFatalFairClaimError(claim, err) {
+				resultErr = errors.Join(resultErr, err)
+				slog.Warn("rag: failed to acknowledge superseded worker quiescence",
+					"task", claim.Fence.TaskID, "error", err)
+			}
 		}
 	}()
 	claimStarted := time.Now()
@@ -348,15 +446,21 @@ func (s *Service) runClaim(parent context.Context, claim *store.RAGIndexClaim) {
 	defer cancelWork()
 	heartbeatCtx, stopHeartbeat := context.WithCancel(parent)
 	var leaseLost atomic.Bool
-	heartbeatDone := make(chan struct{})
+	heartbeatDone := make(chan error, 1)
 	go func() {
-		defer close(heartbeatDone)
-		s.heartbeatLoop(heartbeatCtx, claim.Fence, &leaseLost, cancelWork)
+		heartbeatDone <- s.heartbeatLoop(heartbeatCtx, claim.Fence, &leaseLost, cancelWork)
 	}()
-	stopAndWaitHeartbeat := func() {
-		stopHeartbeat()
-		<-heartbeatDone
+	heartbeatStopped := false
+	var heartbeatErr error
+	stopAndWaitHeartbeat := func() error {
+		if !heartbeatStopped {
+			heartbeatStopped = true
+			stopHeartbeat()
+			heartbeatErr = <-heartbeatDone
+		}
+		return heartbeatErr
 	}
+	defer stopAndWaitHeartbeat()
 
 	doc, err := s.st.GetRAGDocument(workCtx, claim.Fence.DocID)
 	previousActive := int64(0)
@@ -370,44 +474,75 @@ func (s *Service) runClaim(parent context.Context, claim *store.RAGIndexClaim) {
 		if err == nil && !sameRuntimeProviderContracts(&claim.Version, current) {
 			current.DocVersion = 0
 			created, ok, supersedeErr := s.st.SupersedeRAGIndexTaskAndCreateVersion(workCtx, claim.Fence, current)
-			stopAndWaitHeartbeat()
+			heartbeatErr := stopAndWaitHeartbeat()
 			if supersedeErr != nil {
 				telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
 					claim, "supersede", "error", "store_error",
 				))
 				slog.Error("rag: supersede provider-mismatched index task", "task", claim.Fence.TaskID, "error", supersedeErr)
-				return
+				return errors.Join(supersedeErr, heartbeatErr)
 			}
-			if ok && created != nil {
+			if heartbeatErr != nil {
+				return heartbeatErr
+			}
+			if ok && (created == nil || created.ID <= 0 || created.DocID != claim.Fence.DocID ||
+				created.DocVersion <= claim.Fence.DocVersion) {
+				telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
+					claim, "supersede", "error", "store_error",
+				))
+				return store.ErrRAGDocumentVersionMismatch
+			}
+			if ok {
 				telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
 					claim, "supersede", "ok", "",
 				))
-				s.scheduleTask(created.ID)
+				s.notifyTask(parent, created.ID)
 			} else {
 				telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
 					claim, "supersede", "rejected", "fence_lost",
 				))
 			}
-			return
+			if !ok {
+				return errIndexFenceLost
+			}
+			return nil
 		}
 	}
 	if err != nil {
-		stopAndWaitHeartbeat()
-		s.finishClaimFailure(parent, claim, err, leaseLost.Load())
-		return
+		heartbeatErr := stopAndWaitHeartbeat()
+		if heartbeatErr != nil {
+			return heartbeatErr
+		}
+		if isFatalFairClaimError(claim, err) {
+			cancelWork()
+			return err
+		}
+		if isFairFenceLossError(claim, err) {
+			return errIndexFenceLost
+		}
+		return s.finishClaimFailure(parent, claim, err, leaseLost.Load())
 	}
 
 	activation, err := s.indexClaim(workCtx, claim, embeddingBinding)
 	if errors.Is(err, errIndexFenceLost) {
 		cancelWork()
 	}
-	stopAndWaitHeartbeat()
+	heartbeatErr = stopAndWaitHeartbeat()
+	if heartbeatErr != nil {
+		return heartbeatErr
+	}
 	if err != nil {
-		s.finishClaimFailure(parent, claim, err, leaseLost.Load())
-		return
+		if isFatalFairClaimError(claim, err) {
+			cancelWork()
+			return err
+		}
+		if isFairFenceLossError(claim, err) {
+			return errIndexFenceLost
+		}
+		return s.finishClaimFailure(parent, claim, err, leaseLost.Load())
 	}
 	if leaseLost.Load() || parent.Err() != nil {
-		return
+		return parent.Err()
 	}
 	ok, err := s.st.ActivateAndFinishRAGIndexTask(parent, claim.Fence, activation, s.gcGracePeriod)
 	if err != nil {
@@ -418,7 +553,7 @@ func (s *Service) runClaim(parent context.Context, claim *store.RAGIndexClaim) {
 			Duration: time.Since(claimStarted),
 		})
 		slog.Error("rag: atomic index activation failed", "task", claim.Fence.TaskID, "error", err)
-		return
+		return err
 	}
 	if !ok {
 		telemetry.Emit(parent, s.telemetry, telemetry.EventActiveVersionSwitch, telemetry.Fields{
@@ -429,7 +564,7 @@ func (s *Service) runClaim(parent context.Context, claim *store.RAGIndexClaim) {
 		})
 		slog.Info("rag: skipped activation after index fence was lost", "task", claim.Fence.TaskID,
 			"doc_version", claim.Fence.DocVersion, "generation", claim.Fence.ClaimGeneration)
-		return
+		return errIndexFenceLost
 	}
 	retiredVersion := int64(0)
 	if previousActive > 0 && previousActive != claim.Fence.DocVersion {
@@ -441,6 +576,7 @@ func (s *Service) runClaim(parent context.Context, claim *store.RAGIndexClaim) {
 		ClaimGeneration: claim.Fence.ClaimGeneration, Transition: "activate", Outcome: "ok",
 		Duration: time.Since(claimStarted),
 	})
+	return nil
 }
 
 func (s *Service) heartbeatLoop(
@@ -448,7 +584,7 @@ func (s *Service) heartbeatLoop(
 	fence store.IndexFence,
 	leaseLost *atomic.Bool,
 	cancelWork context.CancelFunc,
-) {
+) error {
 	interval := s.heartbeatInterval
 	if interval <= 0 || interval >= s.leaseDuration {
 		interval = s.leaseDuration / 3
@@ -461,11 +597,23 @@ func (s *Service) heartbeatLoop(
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-ticker.C:
 			ok, err := s.st.HeartbeatRAGIndexTask(ctx, fence, s.leaseDuration)
+			if isFairStoreSafetyError(err) {
+				telemetry.Emit(ctx, s.telemetry, telemetry.EventIndexTask, telemetry.Fields{
+					DocID: fence.DocID, TaskID: fence.TaskID, DocVersion: fence.DocVersion,
+					ClaimGeneration: fence.ClaimGeneration, Transition: "heartbeat",
+					Outcome: "error", ErrorCode: "store_error",
+				})
+				leaseLost.Store(true)
+				cancelWork()
+				slog.Error("rag: index heartbeat safety failure; canceling work",
+					"task", fence.TaskID, "error", err)
+				return err
+			}
 			if ctx.Err() != nil {
-				return
+				return nil
 			}
 			if err != nil || !ok {
 				errorCode := "fence_lost"
@@ -482,7 +630,10 @@ func (s *Service) heartbeatLoop(
 				if err != nil && ctx.Err() == nil {
 					slog.Error("rag: index heartbeat failed; canceling work", "task", fence.TaskID, "error", err)
 				}
-				return
+				if err != nil {
+					return err
+				}
+				return errIndexFenceLost
 			}
 			telemetry.Emit(ctx, s.telemetry, telemetry.EventIndexTask, telemetry.Fields{
 				DocID: fence.DocID, TaskID: fence.TaskID, DocVersion: fence.DocVersion,
@@ -492,9 +643,12 @@ func (s *Service) heartbeatLoop(
 	}
 }
 
-func (s *Service) finishClaimFailure(parent context.Context, claim *store.RAGIndexClaim, err error, leaseLost bool) {
+func (s *Service) finishClaimFailure(parent context.Context, claim *store.RAGIndexClaim, err error, leaseLost bool) error {
 	if err == nil || claim == nil || leaseLost || parent.Err() != nil || errors.Is(err, errIndexFenceLost) {
-		return
+		return nil
+	}
+	if isFatalFairClaimError(claim, err) || isFairFenceLossError(claim, err) {
+		return err
 	}
 	transient := isTransientIndexError(err)
 	message := safeIndexErrorMessage(err, transient)
@@ -506,6 +660,7 @@ func (s *Service) finishClaimFailure(parent context.Context, claim *store.RAGInd
 				claim, "retry", "error", "store_error",
 			))
 			slog.Error("rag: persist transient index retry", "task", claim.Fence.TaskID, "error", retryErr)
+			return retryErr
 		} else if ok {
 			fields := indexTaskTelemetryFields(claim, "retry", "scheduled", "")
 			fields.RetryCount = claim.Task.RetryCount + 1
@@ -516,8 +671,9 @@ func (s *Service) finishClaimFailure(parent context.Context, claim *store.RAGInd
 			telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
 				claim, "retry", "rejected", "fence_lost",
 			))
+			return errIndexFenceLost
 		}
-		return
+		return nil
 	}
 	ok, failErr := s.st.FailRAGIndexTask(parent, claim.Fence, message)
 	if failErr != nil {
@@ -525,6 +681,7 @@ func (s *Service) finishClaimFailure(parent context.Context, claim *store.RAGInd
 			claim, "finish", "error", "store_error",
 		))
 		slog.Error("rag: persist permanent index failure", "task", claim.Fence.TaskID, "error", failErr)
+		return failErr
 	} else if ok {
 		telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
 			claim, "finish", "error", "permanent_failure",
@@ -534,7 +691,9 @@ func (s *Service) finishClaimFailure(parent context.Context, claim *store.RAGInd
 		telemetry.Emit(parent, s.telemetry, telemetry.EventIndexTask, indexTaskTelemetryFields(
 			claim, "finish", "rejected", "fence_lost",
 		))
+		return errIndexFenceLost
 	}
+	return nil
 }
 
 func indexTaskTelemetryFields(
@@ -1035,7 +1194,7 @@ func (s *Service) splitAndEnrich(
 	}
 	processor := enrich.NewProcessor(s.enricher)
 	processor.SetRecorder(s.telemetry)
-	enriched, warnings := processor.EnrichChunks(ctx, chunks, enrich.ProcessConfig{
+	enriched, warnings, err := processor.EnrichChunks(ctx, chunks, enrich.ProcessConfig{
 		SystemEnabled: true, TextModel: version.TextModel, KBEnabled: true,
 		MaxBlocks: s.cfg.Limits.MaxEnrichmentBlocksPerDocument, Finalize: finalizeConfig,
 		Scope: enrich.CacheScope{
@@ -1043,6 +1202,9 @@ func (s *Service) splitAndEnrich(
 			IndexFingerprint: version.IndexFingerprint,
 		},
 	}, budget)
+	if err != nil {
+		return nil, nil, err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -1141,13 +1303,16 @@ func (s *Service) stageIndexVersion(
 			})
 		}
 	}
+	_, fairExecution := fairIndexFenceFromContext(ctx)
 	for start := 0; start < len(sqlChunks); start += pipelineStageBatchSize {
-		valid, err := s.st.CheckRAGIndexFence(ctx, fence)
-		if err != nil {
-			return nil, err
-		}
-		if !valid {
-			return nil, errIndexFenceLost
+		if !fairExecution {
+			valid, err := s.st.CheckRAGIndexFence(ctx, fence)
+			if err != nil {
+				return nil, err
+			}
+			if !valid {
+				return nil, errIndexFenceLost
+			}
 		}
 		end := min(start+pipelineStageBatchSize, len(sqlChunks))
 		if err := s.st.PutRAGChunks(ctx, sqlChunks[start:end]); err != nil {
@@ -1155,12 +1320,14 @@ func (s *Service) stageIndexVersion(
 		}
 	}
 	for start := 0; start < len(mappings); start += pipelineStageBatchSize {
-		valid, err := s.st.CheckRAGIndexFence(ctx, fence)
-		if err != nil {
-			return nil, err
-		}
-		if !valid {
-			return nil, errIndexFenceLost
+		if !fairExecution {
+			valid, err := s.st.CheckRAGIndexFence(ctx, fence)
+			if err != nil {
+				return nil, err
+			}
+			if !valid {
+				return nil, errIndexFenceLost
+			}
 		}
 		end := min(start+pipelineStageBatchSize, len(mappings))
 		if err := s.st.PutRAGChunkAssets(ctx, mappings[start:end]); err != nil {

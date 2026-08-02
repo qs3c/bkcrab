@@ -1215,10 +1215,38 @@ git commit -m "feat(rag): claim exact rabbit-delivered index tasks with fences"
 - Modify: `internal/rag/service.go`
 - Modify: `internal/rag/pipeline.go`
 - Modify: `internal/rag/pipeline_test.go`
+- Modify: `internal/rag/parse/pdf_auto.go`
+- Modify: `internal/rag/parse/pdf_auto_test.go`
+- Modify: `internal/rag/parse/office.go`
+- Modify: `internal/rag/parse/office_test.go`
+- Modify: `internal/rag/enrich/enrich.go`
+- Modify: `internal/rag/enrich/enrich_test.go`
+- Modify: `internal/rag/enrich/openai.go`
+- Modify: `internal/rag/enrich/openai_test.go`
+- Modify: `internal/rag/enrich/telemetry_test.go`
+- Modify: `internal/rag/vision/openai.go`
+- Modify: `internal/rag/vision/openai_test.go`
+- Modify: `internal/rag/vision/budget.go`
+- Modify: `internal/rag/vision/budget_test.go`
+- Modify: `internal/fairqueue/model.go`
+- Modify: `internal/fairqueue/model_test.go`
+- Modify: `internal/fairqueue/dispatcher.go`
+- Modify: `internal/fairqueue/dispatcher_test.go`
+- Modify: `internal/fairqueue/runtime.go`
+- Modify: `internal/fairqueue/runtime_test.go`
+- Modify: `internal/fairqueue/recovery.go`
+- Modify: `internal/fairqueue/recovery_test.go`
 - Modify: `internal/store/rag_fair_queue_contract.go`
 - Modify: `internal/store/rag_fair_queue_contract_test.go`
+- Modify: `internal/store/rag_fair_queue_store.go`
+- Modify: `internal/store/rag_fair_queue_store_test.go`
+- Modify: `internal/store/rag_fair_queue_lifecycle.go`
+- Modify: `internal/store/rag_fair_queue_lifecycle_test.go`
+- Modify: `internal/store/rag.go`
+- Modify: `internal/store/rag_object_staging.go`
+- Modify: `internal/store/rag_object_staging_test.go`
 
-- [ ] **Step 1: 写 adapter 失败测试**
+- [x] **Step 1: 写 adapter 失败测试**
 
 覆盖：
 
@@ -1242,7 +1270,7 @@ OperationJournal.WithStartFence桥接store pinned-session callback；callback内
 expired RUNNING 仅在 lease/next_run due 且 `dispatch_generation=claim_generation` 时 rearm 为 `dispatch_generation=claim_generation+1`/清 marker并保持 RUNNING；重新 delivery 复用 existing reclaim
 ```
 
-- [ ] **Step 2: 把索引 worker 模式显式化**
+- [x] **Step 2: 把索引 worker 模式显式化**
 
 RAG `Service.Start` 中拆分：
 
@@ -1255,7 +1283,7 @@ fair mode：不启动 legacy index workers，由 fairqueue Runtime 调用 adapte
 
 不得通过 Redis/Rabbit 健康状态动态切到 legacy mode；运行模式只由启动配置决定。`paused` 只用于部署 drain，切换必须走 legacy→paused→fair 或反向流程。
 
-- [ ] **Step 3: 修改创建任务后的通知**
+- [x] **Step 3: 修改创建任务后的通知**
 
 ```text
 legacy mode -> scheduleTask(taskID)
@@ -1265,7 +1293,7 @@ fair mode   -> dispatcher.TryDispatch(taskID) fast path
 
 fast path 失败只记录 warn；MySQL `dispatched_at=NULL + dispatch_generation>claim_generation + due` 保证后台扫描恢复。所有产生 replacement/reindex task 的内部路径也必须通知。
 
-- [ ] **Step 4: Retry/finish 合约**
+- [x] **Step 4: Retry/finish 合约**
 
 确认 `RetryRAGIndexTask`：
 
@@ -1283,17 +1311,30 @@ PreparedTask 持有 claim 返回的 expected writer fingerprint；pipeline 的�
 
 `runClaim`/heartbeat/finalize 当前的日志型错误边界必须改为可向`PreparedTask.Run`传播typed fatal safety error；adapter在Prepare、Run、dispatch/recovery/journal所有边界集中把store的writer mismatch/unsafe-connection错误映射为`fairqueue.ErrAuthoritativeWriterMismatch`。WriterRebindSource需要的identity重读、schema/invariant、valid-RUNNING count与RecoverySource必须由专用non-auto-migrate store窄接口完整提供，不能从启动缓存伪造或退化为普通`Store`读取。
 
-- [ ] **Step 5: 验证**
+fair `TaskDocumentAIBudget` 必须优先调用 Task 9 的 `CreateRAGDocumentAITaskBudgetForIndex`，把完整 `IndexFence` 传入同一 pinned live-fence transaction；缺少该窄接口时 fail closed，不能回退到无 fence 的 legacy Create。canonical owner/domain corruption 映射为独立的 `fairqueue.ErrAuthoritativeStateCorrupt`，与 writer mismatch 一样同步关闭 gates、取消全部 PreparedTask并进入 operator-required fatal 状态，不能 NACK hot-loop。
+
+`ErrAuthoritativeStateCorrupt` 的 fatal 边界必须覆盖 Runtime、dispatcher（含 confirm 后 Mark）、expired rearm 与 recovery 的全部 source loop；只有纯 stale-publisher writer mismatch 可以使用旧 generation 豁免，混合携带 corruption 的错误绝不能被豁免。Prepare 检出 authoritative fatal 后不得主动 NACK/EnsureActive 形成跨实例 hot-loop，只做有界 reservation cleanup，由连接关闭保持 delivery unsettled。fair DocumentAI ledger 在构造时按 claim fence 永久绑定 expected-writer facade，Get/Commit/Release 不能依赖调用方继续携带 context marker后退到 legacy pool。
+
+fair pipeline 构造/比对 immutable snapshot 时读取 user embedding 配置必须走 claim expected-writer 绑定的 pinned facade；writer/connection mismatch 时不得创建 replacement、通知 dispatcher 或发出 provider 请求。所有 fair execution-only chunk/cache/object mutation 在 context fence 丢失时 fail closed，不能回退到 legacy pool；共享 cache catalog 在构造时永久绑定 worker mode。
+
+fair API 在 claim 创建前构造 Upload/Reindex immutable snapshot 时，KB/document/user/quota reads 和 user embedding config 也必须走 expected-writer pinned facade；session switch 不得返回 DTO、写 object 或创建/通知 task。original object 的 Begin/READY 使用无 claim 的 expected-writer lifecycle transaction，fair create 必须消费 exact `READY|PUBLISHED` original staging locator；缺行、WRITING/DELETING 或任一 user/KB/doc/kind/key/reference/generation 不一致均零 document/task mutation。仅 legacy create 保留“无 staging 行视为 pre-existing object”的兼容语义。
+
+provider snapshot supersede 只有在 store 返回 `ok=true` 且 replacement task ID/doc/version 完整有效时才可 ACK，并且必须通知所选 worker mode；`ok=true` 但 replacement 缺失/畸形按 authoritative state corruption fail closed。
+
+DocumentAI provider 的 Release/MarkSent/Commit settlement error 不得丢弃，必须与 primary error 合并返回；vision、Office parse 与 enrichment 的 graceful degradation 只能吞普通 provider 错误，writer mismatch、unsafe connection 和 ledger corruption 必须原样上冒，最终映射成 runtime authoritative fatal。
+
+- [x] **Step 5: 验证**
 
 ```bash
 go test ./internal/rag -run 'Test.*(FairQueue|Pipeline|Retry|Recovery)' -v
 go test ./internal/rag/...
+go test ./internal/fairqueue ./internal/store
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
-git add internal/rag
+git add docs/superpowers/plans/2026-08-01-rag-fair-queue.md internal/rag internal/fairqueue internal/store
 git commit -m "feat(rag): execute index pipeline through fair queue adapter"
 ```
 

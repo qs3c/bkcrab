@@ -4,9 +4,31 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
+
+type ragFairQueueAdminSourceContract interface {
+	ReadWriterIdentity(context.Context) (FairQueueWriterIdentity, error)
+	CheckSchemaAndInvariants(context.Context) (RAGFairQueueContractReport, error)
+	CountValidRunning(context.Context) (int64, error)
+
+	CaptureRAGFairQueueHighWater(context.Context) (int64, error)
+	ListCanonicalRAGTenantsPage(context.Context, int64, string, int) ([]string, string, error)
+	ListDispatchedRAGIndexTasksPage(context.Context, int64, int64, int) ([]RAGIndexTaskRecord, int64, error)
+	ListValidRunningRAGIndexTasksPage(context.Context, int64, int64, int) ([]RAGIndexTaskRunningSnapshot, int64, error)
+
+	ReadFairQueueOperation(context.Context, string, string) (FairQueueOperationRecord, bool, error)
+	WithFairQueueOperationStartFence(context.Context, string, string, func(*FairQueueOperationStartSession) error) error
+	SetFairQueueOperationRepairHighWater(context.Context, FairQueueOperationRecord, string) (FairQueueOperationRecord, error)
+	MarkFairQueueOperationRepairPassComplete(context.Context, FairQueueOperationRecord) (FairQueueOperationRecord, error)
+	MarkFairQueueOperationForceDeletePassComplete(context.Context, FairQueueOperationRecord) (FairQueueOperationRecord, error)
+	CommitFairQueueOperationReady(context.Context, FairQueueOperationRecord) (FairQueueOperationRecord, error)
+	CompleteFairQueueOperation(context.Context, FairQueueOperationRecord) (FairQueueOperationRecord, error)
+}
+
+var _ ragFairQueueAdminSourceContract = (*RAGFairQueueAdminSource)(nil)
 
 func TestRAGFairQueueAdminStoreRejectsUnsafeOpenModes(t *testing.T) {
 	tests := []struct {
@@ -40,6 +62,90 @@ func TestRAGFairQueueAdminStoreRejectsUnsafeOpenModes(t *testing.T) {
 				t.Fatalf("error=%v want %v", err, test.want)
 			}
 		})
+	}
+}
+
+func TestRAGFairQueueAdminSourceReadsFreshBoundWriterIdentity(t *testing.T) {
+	state := &fairQueueFenceDriverState{connIDs: []int64{41, 41}}
+	db, expected := newFairQueueFenceTestStore(t, state)
+	admin := &FairQueueAdminStore{
+		db: db,
+		// The construction-time value is intentionally wrong: the source must
+		// re-read the pinned physical writer rather than echo this cache.
+		writerFingerprint: strings.Repeat("f", 64),
+	}
+	source, err := admin.BindRAGFairQueueSource(expected)
+	if err != nil {
+		t.Fatalf("bind admin source: %v", err)
+	}
+	identity, err := source.ReadWriterIdentity(context.Background())
+	if err != nil || identity.Fingerprint != expected {
+		t.Fatalf("fresh identity=%+v err=%v want=%q", identity, err, expected)
+	}
+}
+
+func TestRAGFairQueueAdminSourceWriterMismatchReturnsNoIdentity(t *testing.T) {
+	state := &fairQueueFenceDriverState{connIDs: []int64{41}}
+	db, _ := newFairQueueFenceTestStore(t, state)
+	admin := &FairQueueAdminStore{db: db}
+	source, err := admin.BindRAGFairQueueSource(strings.Repeat("b", 64))
+	if err != nil {
+		t.Fatalf("bind shape-valid source: %v", err)
+	}
+	identity, err := source.ReadWriterIdentity(context.Background())
+	if identity != (FairQueueWriterIdentity{}) || !errors.Is(err, ErrFairQueueWriterMismatch) {
+		t.Fatalf("identity=%+v err=%v", identity, err)
+	}
+	_, _, closed := state.counts()
+	if closed != 1 {
+		t.Fatalf("mismatched physical writer closes=%d, want 1", closed)
+	}
+}
+
+func TestRAGFairQueueAdminSourceDelegatesStartFenceWithoutLosingSession(t *testing.T) {
+	state := &fairQueueFenceDriverState{
+		connIDs: []int64{7, 7, 7}, getResult: int64(1), releaseResult: int64(1),
+	}
+	db, writer := newFairQueueFenceTestStore(t, state)
+	source, err := (&FairQueueAdminStore{db: db}).BindRAGFairQueueSource(writer)
+	if err != nil {
+		t.Fatalf("bind admin source: %v", err)
+	}
+	called := false
+	err = source.WithFairQueueOperationStartFence(
+		context.Background(), "rag.index", writer,
+		func(session *FairQueueOperationStartSession) error {
+			called = session != nil && session.conn != nil && session.resource == "rag.index"
+			return nil
+		},
+	)
+	if err != nil || !called {
+		t.Fatalf("start fence called=%v err=%v", called, err)
+	}
+	get, release, closed := state.counts()
+	if get != 1 || release != 1 || closed != 0 {
+		t.Fatalf("GET=%d RELEASE=%d physical-close=%d", get, release, closed)
+	}
+}
+
+func TestCountValidRunningRAGIndexTasksUsesCanonicalFullFence(t *testing.T) {
+	st := openRAGTaskClaimStore(t)
+	seedRAGTaskDocument(t, st, "doc_admin_running", 3)
+	claim, err := st.ClaimRAGIndexTask(context.Background(), "admin-running", time.Minute)
+	if err != nil || claim == nil {
+		t.Fatalf("claim=%+v err=%v", claim, err)
+	}
+	count, err := st.countValidRunningRAGIndexTasksOn(context.Background(), st.db)
+	if err != nil || count != 1 {
+		t.Fatalf("valid running count=%d err=%v", count, err)
+	}
+	if _, err := st.db.ExecContext(context.Background(),
+		`UPDATE rag_index_tasks SET heartbeat_at=NULL WHERE id=?`, claim.Task.ID); err != nil {
+		t.Fatal(err)
+	}
+	count, err = st.countValidRunningRAGIndexTasksOn(context.Background(), st.db)
+	if err != nil || count != 0 {
+		t.Fatalf("pseudo-running count=%d err=%v", count, err)
 	}
 }
 

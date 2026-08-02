@@ -1310,7 +1310,7 @@ func (d *DBStore) createRAGDocumentWithVersionAndIndexTask(
 		expectedOwner = policy.UserID
 	}
 	taskID, err := d.createRAGDocumentWithVersionAndIndexTaskInTx(
-		ctx, tx, doc, version, maxRetry, policy, expectedOwner,
+		ctx, tx, doc, version, maxRetry, policy, expectedOwner, false,
 	)
 	if err != nil {
 		return 0, err
@@ -1347,6 +1347,7 @@ func (d *DBStore) createRAGDocumentWithVersionAndIndexTaskInTx(
 	maxRetry int,
 	policy *RAGAdvancedEnqueuePolicy,
 	expectedOwner string,
+	requireOriginalStaging bool,
 ) (int64, error) {
 	if tx == nil || doc == nil || version == nil {
 		return 0, ErrRAGDocumentVersionMismatch
@@ -1360,7 +1361,13 @@ func (d *DBStore) createRAGDocumentWithVersionAndIndexTaskInTx(
 	if err := d.enforceRAGAdvancedEnqueuePolicyTx(ctx, tx, doc.KBID, doc.ID, version, policy, false); err != nil {
 		return 0, err
 	}
-	if err := d.consumeRAGObjectWritesInTx(ctx, tx, doc.ID, doc.ObjectKey); err != nil {
+	if requireOriginalStaging {
+		if err := d.consumeRequiredRAGOriginalWriteInTx(
+			ctx, tx, expectedOwner, doc,
+		); err != nil {
+			return 0, err
+		}
+	} else if err := d.consumeRAGObjectWritesInTx(ctx, tx, doc.ID, doc.ObjectKey); err != nil {
 		return 0, err
 	}
 	if err := d.createRAGDocument(ctx, tx, doc); err != nil {

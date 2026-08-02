@@ -67,6 +67,106 @@ func withRAGFairQueueLifecycleTx[T any](
 	return result, nil
 }
 
+// GetRAGKBForLifecycle reads API task-creation policy from the expected
+// writer. The facade withholds the DTO until its post-read session check.
+func (s *RAGFairQueueStore) GetRAGKBForLifecycle(
+	ctx context.Context,
+	id string,
+) (*RAGKBRecord, error) {
+	var record *RAGKBRecord
+	err := s.withExpectedWriterConn(ctx,
+		func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+			var err error
+			record, err = scanRAGKB(conn.QueryRowContext(ctx, fmt.Sprintf(
+				`SELECT `+ragKBColumns+` FROM rag_kbs WHERE id=%s`, s.store.ph(1),
+			), id))
+			return scanErr(err)
+		})
+	if err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+// GetRAGDocumentForLifecycle reads the canonical document snapshot used by
+// fair-mode reindex/delete APIs from the expected writer.
+func (s *RAGFairQueueStore) GetRAGDocumentForLifecycle(
+	ctx context.Context,
+	id string,
+) (*RAGDocumentRecord, error) {
+	var record *RAGDocumentRecord
+	err := s.withExpectedWriterConn(ctx,
+		func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+			var err error
+			record, err = scanRAGDocument(conn.QueryRowContext(ctx, fmt.Sprintf(
+				`SELECT `+ragDocumentColumns+` FROM rag_documents WHERE id=%s`, s.store.ph(1),
+			), id))
+			return scanErr(err)
+		})
+	if err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+// ListRAGDocumentsByKBForLifecycle keeps the upload quota snapshot on the
+// expected writer and withholds the entire page after a session switch.
+func (s *RAGFairQueueStore) ListRAGDocumentsByKBForLifecycle(
+	ctx context.Context,
+	kbID string,
+) ([]RAGDocumentRecord, error) {
+	var records []RAGDocumentRecord
+	err := s.withExpectedWriterConn(ctx,
+		func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+			rows, err := conn.QueryContext(ctx, fmt.Sprintf(
+				`SELECT `+ragDocumentColumns+` FROM rag_documents WHERE kb_id=%s ORDER BY uploaded_at,id`,
+				s.store.ph(1),
+			), kbID)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			page := make([]RAGDocumentRecord, 0)
+			for rows.Next() {
+				record, err := scanRAGDocument(rows)
+				if err != nil {
+					return err
+				}
+				page = append(page, *record)
+			}
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			records = page
+			return nil
+		})
+	if err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+// GetUserForRAGLifecycle binds the active-owner read used by upload/reindex
+// policy to the same expected writer as subsequent lifecycle mutations.
+func (s *RAGFairQueueStore) GetUserForRAGLifecycle(
+	ctx context.Context,
+	id string,
+) (*UserRecord, error) {
+	var record *UserRecord
+	err := s.withExpectedWriterConn(ctx,
+		func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+			var err error
+			record, err = scanUser(conn.QueryRowContext(ctx, fmt.Sprintf(
+				`SELECT `+userColumns+` FROM users WHERE id=%s`, s.store.ph(1),
+			), id))
+			return scanErr(err)
+		})
+	if err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
 func (s *RAGFairQueueStore) CreateRAGDocumentWithVersionAndIndexTask(
 	ctx context.Context,
 	doc *RAGDocumentRecord,
@@ -74,6 +174,66 @@ func (s *RAGFairQueueStore) CreateRAGDocumentWithVersionAndIndexTask(
 	maxRetry int,
 ) (int64, error) {
 	return s.createRAGDocumentWithVersionAndIndexTask(ctx, doc, version, maxRetry, nil)
+}
+
+// BeginOriginalRAGObjectWrite registers the upload object's immutable key on
+// the expected writer before the document row and index task exist. This API
+// lifecycle operation has no claim fence yet, so writer identity and the
+// canonical KB owner are its fail-closed boundary.
+func (s *RAGFairQueueStore) BeginOriginalRAGObjectWrite(
+	ctx context.Context,
+	request RAGObjectWriteRequest,
+) (*RAGObjectWriteFence, error) {
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
+	request, err := normalizeRAGObjectWriteRequest(request)
+	if err != nil {
+		return nil, err
+	}
+	if request.ObjectKind != RAGObjectKindOriginal {
+		return nil, ErrRAGDocumentVersionMismatch
+	}
+	var created *RAGObjectWriteFence
+	err = s.withExpectedWriterTx(ctx, func(tx *sql.Tx) error {
+		var coreErr error
+		created, coreErr = s.store.beginRAGObjectWriteInTx(ctx, tx, request)
+		return coreErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return created, nil
+}
+
+// MarkOriginalRAGObjectWriteReady acknowledges the exact immutable upload
+// object on the expected writer. All locator fields are validated before the
+// transition and the active KB owner is locked in the same transaction.
+func (s *RAGFairQueueStore) MarkOriginalRAGObjectWriteReady(
+	ctx context.Context,
+	fence RAGObjectWriteFence,
+) (bool, error) {
+	if err := s.validate(); err != nil {
+		return false, err
+	}
+	if fence.ObjectKind != RAGObjectKindOriginal {
+		return false, ErrRAGDocumentVersionMismatch
+	}
+	var ready bool
+	err := s.withExpectedWriterTx(ctx, func(tx *sql.Tx) error {
+		if _, err := s.store.lockActiveRAGKBOwnerTx(
+			ctx, tx, fence.KBID, fence.UserID,
+		); err != nil {
+			return err
+		}
+		var coreErr error
+		ready, coreErr = s.store.markRAGObjectWriteReadyExactOn(ctx, tx, fence)
+		return coreErr
+	})
+	if err != nil {
+		return false, err
+	}
+	return ready, nil
 }
 
 func (s *RAGFairQueueStore) CreateRAGDocumentWithVersionAndIndexTaskPolicy(
@@ -124,7 +284,7 @@ func (s *RAGFairQueueStore) createRAGDocumentWithVersionAndIndexTask(
 				expectedOwner = policy.UserID
 			}
 			return s.store.createRAGDocumentWithVersionAndIndexTaskInTx(
-				ctx, tx, &docCopy, &versionCopy, maxRetry, policy, expectedOwner,
+				ctx, tx, &docCopy, &versionCopy, maxRetry, policy, expectedOwner, true,
 			)
 		})
 }

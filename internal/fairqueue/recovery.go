@@ -173,7 +173,7 @@ func (c *RecoveryCoordinator) Run(
 }
 
 func recoveryTerminalError(err error) bool {
-	return errors.Is(err, ErrAuthoritativeWriterMismatch) ||
+	return authoritativeFatalError(err) ||
 		errors.Is(err, ErrUnsupportedTopology) ||
 		errors.Is(err, ErrRecoveryOperatorRequired)
 }

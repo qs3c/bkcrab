@@ -776,6 +776,7 @@ func TestBoundaryErrorCategoriesSupportErrorsIs(t *testing.T) {
 		ErrResourceNotReady,
 		ErrFenceMismatch,
 		ErrAuthoritativeWriterMismatch,
+		ErrAuthoritativeStateCorrupt,
 		ErrRecoveryOwnerStale,
 		ErrCoordinationCorrupt,
 		ErrPublishUnroutable,

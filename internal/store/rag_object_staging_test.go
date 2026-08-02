@@ -58,6 +58,68 @@ func TestRAGOriginalWriteHandleIsConsumedAtomicallyByDocumentCreate(t *testing.T
 	}
 }
 
+func TestStrictRAGOriginalWriteRequiresExactReadyStaging(t *testing.T) {
+	st := openTestDB(t)
+	defer st.Close()
+	ctx := context.Background()
+	kb, doc := seedRAGObjectWriteOwner(t, st, false)
+	version := testRAGDocumentVersion(doc.ID, 1)
+	if err := prepareRAGDocumentWithVersionAndIndexTask(doc, version); err != nil {
+		t.Fatal(err)
+	}
+	createStrict := func() (int64, error) {
+		tx, err := st.db.BeginTx(ctx, nil)
+		if err != nil {
+			return 0, err
+		}
+		defer tx.Rollback()
+		taskID, err := st.createRAGDocumentWithVersionAndIndexTaskInTx(
+			ctx, tx, doc, version, 3, nil, kb.UserID, true,
+		)
+		if err != nil {
+			return 0, err
+		}
+		return taskID, tx.Commit()
+	}
+	if taskID, err := createStrict(); taskID != 0 || !errors.Is(err, ErrRAGLifecycleInactive) {
+		t.Fatalf("missing strict original task=%d err=%v", taskID, err)
+	}
+	fence, err := st.BeginRAGObjectWrite(ctx, RAGObjectWriteRequest{
+		UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID, ObjectKind: RAGObjectKindOriginal,
+		ObjectKey: doc.ObjectKey, ReferenceKey: doc.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready, err := st.MarkRAGObjectWriteReady(ctx, *fence); err != nil || !ready {
+		t.Fatalf("ready=%v err=%v", ready, err)
+	}
+	if _, err := st.db.ExecContext(ctx,
+		`UPDATE rag_object_write_staging SET reference_key=? WHERE handle_id=?`,
+		"wrong-reference", fence.HandleID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if taskID, err := createStrict(); taskID != 0 || !errors.Is(err, ErrRAGDocumentVersionMismatch) {
+		t.Fatalf("mismatched strict original task=%d err=%v", taskID, err)
+	}
+	if _, err := st.db.ExecContext(ctx,
+		`UPDATE rag_object_write_staging SET reference_key=? WHERE handle_id=?`,
+		doc.ID, fence.HandleID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if taskID, err := createStrict(); taskID <= 0 || err != nil {
+		t.Fatalf("ready strict original task=%d err=%v", taskID, err)
+	}
+	var status string
+	if err := st.db.QueryRowContext(ctx,
+		`SELECT status FROM rag_object_write_staging WHERE handle_id=?`, fence.HandleID,
+	).Scan(&status); err != nil || status != ragObjectWritePublished {
+		t.Fatalf("strict original status=%q err=%v", status, err)
+	}
+}
+
 func TestRAGAssetWriteHandlesSurviveFailureAndBlockLatePublicationAfterGCClaim(t *testing.T) {
 	st := openTestDB(t)
 	defer st.Close()

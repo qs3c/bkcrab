@@ -301,7 +301,7 @@ func (d *Dispatcher) closePublisherGateFor(fence ResourceFence, gateGen uint64) 
 }
 
 func (d *Dispatcher) classifyFatalSourceFailure(fence ResourceFence, gateGen uint64, err error) error {
-	if !errors.Is(err, ErrAuthoritativeWriterMismatch) {
+	if !authoritativeFatalError(err) {
 		return err
 	}
 	d.gateMu.Lock()
@@ -313,7 +313,8 @@ func (d *Dispatcher) classifyFatalSourceFailure(fence ResourceFence, gateGen uin
 	}
 	reopened := d.gateOpen && (d.fence != fence || d.gateGen != gateGen)
 	d.gateMu.Unlock()
-	if reopened {
+	if reopened && errors.Is(err, ErrAuthoritativeWriterMismatch) &&
+		!errors.Is(err, ErrAuthoritativeStateCorrupt) {
 		return stalePublisherSourceFailure{err: err}
 	}
 	return err
@@ -514,13 +515,19 @@ func (d *Dispatcher) dispatchCandidate(ctx context.Context, candidate DispatchCa
 
 	marked, markErr := d.source.MarkDispatched(attemptCtx, original)
 	attemptErr := attemptCtx.Err()
-	if markErr != nil && errors.Is(markErr, ErrAuthoritativeWriterMismatch) {
+	if authoritativeFatalError(markErr) {
 		d.closePublisherGateFor(fence, gateGen)
 	}
 
 	// The bounded publisher attempt ends at the original-candidate Mark. Redis
 	// activation is a separately bounded, fenced repair of scheduling state.
 	finish()
+	if authoritativeFatalError(markErr) {
+		// The confirmed delivery remains recoverable from MySQL/Rabbit during the
+		// next authoritative rebuild. Never derive a Redis mutation from a source
+		// result whose writer identity or canonical state is no longer trusted.
+		return fmt.Errorf("fairqueue: mark dispatched candidate: %w", markErr)
+	}
 	if markErr != nil || attemptErr != nil {
 		_ = d.activateAfterPublish(ctx, fence, gateGen, original, false)
 		if markErr != nil {
@@ -559,7 +566,7 @@ func (d *Dispatcher) activateAfterPublish(ctx context.Context, fence ResourceFen
 }
 
 func (d *Dispatcher) closePublisherGateOnFatalSource(fence ResourceFence, gateGen uint64, err error) {
-	if errors.Is(err, ErrAuthoritativeWriterMismatch) {
+	if authoritativeFatalError(err) {
 		d.closePublisherGateFor(fence, gateGen)
 	}
 }
@@ -600,19 +607,21 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	first := <-results
 	cancel()
 	second := <-results
-	// A writer identity failure is a safety event, not ordinary cancellation.
-	// Preserve it even when the parent shutdown races with the source result so
-	// Runtime can immediately cancel all authoritative pipelines.
-	if errors.Is(first, ErrAuthoritativeWriterMismatch) && !isStalePublisherSourceFailure(first) {
+	// An authoritative source failure is a safety event, not ordinary
+	// cancellation. Preserve it even when parent shutdown races with the source
+	// result so Runtime can immediately cancel all authoritative pipelines. The
+	// only exemption is a pure writer mismatch from an obsolete gate generation;
+	// corruption is never stale-exempted, including a joined mixed error.
+	if authoritativeFatalError(first) && !stalePublisherWriterMismatchOnly(first) {
 		return first
 	}
-	if errors.Is(second, ErrAuthoritativeWriterMismatch) && !isStalePublisherSourceFailure(second) {
+	if authoritativeFatalError(second) && !stalePublisherWriterMismatchOnly(second) {
 		return second
 	}
-	if errors.Is(first, ErrAuthoritativeWriterMismatch) {
+	if authoritativeFatalError(first) {
 		return first
 	}
-	if errors.Is(second, ErrAuthoritativeWriterMismatch) {
+	if authoritativeFatalError(second) {
 		return second
 	}
 	if ctx.Err() != nil {
@@ -633,7 +642,7 @@ func (d *Dispatcher) runDispatchLoop(ctx context.Context) error {
 		}
 		next, _, err := d.dispatchPage(ctx, cursor)
 		if err != nil {
-			if errors.Is(err, ErrAuthoritativeWriterMismatch) {
+			if authoritativeFatalError(err) {
 				return err
 			}
 			if ctx.Err() != nil {
@@ -664,7 +673,7 @@ func (d *Dispatcher) runRearmLoop(ctx context.Context) error {
 		}
 		next, _, err := d.rearmPage(ctx, cursor)
 		if err != nil {
-			if errors.Is(err, ErrAuthoritativeWriterMismatch) {
+			if authoritativeFatalError(err) {
 				return err
 			}
 			if ctx.Err() != nil {

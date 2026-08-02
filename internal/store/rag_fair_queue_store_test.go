@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type ragFairQueueStoreDriverState struct {
@@ -22,6 +23,8 @@ type ragFairQueueStoreDriverState struct {
 	identityCalls int
 	highWater     int64
 	highWaterRead int
+	configRead    int
+	configData    string
 	physicalClose int
 }
 
@@ -67,6 +70,16 @@ func (c *ragFairQueueStoreDriverConn) QueryContext(
 		c.state.highWaterRead++
 		return &ragFairQueueStoreDriverRows{
 			columns: []string{"high_water"}, values: []driver.Value{c.state.highWater},
+		}, nil
+	case strings.Contains(query, "FROM configs"):
+		c.state.configRead++
+		now := time.Unix(1_700_000_000, 0).UTC()
+		return &ragFairQueueStoreDriverRows{
+			columns: strings.Split(configSelectCols, ", "),
+			values: []driver.Value{
+				"cfg-rag", KindSetting, "user", "user-1", "", "rag", true, "",
+				c.state.configData, now, now,
+			},
 		}, nil
 	default:
 		return nil, fmt.Errorf("unexpected query %q", query)
@@ -204,4 +217,44 @@ func TestRAGFairQueueWriterFacadeWithholdsSnapshotAfterSessionSwitch(t *testing.
 				state.identityCalls, state.highWaterRead, state.physicalClose)
 		}
 	})
+}
+
+func TestRAGFairQueueWriterFacadePinsUserConfigRead(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		connectionIDs []int64
+		wantErr       error
+		wantRecord    bool
+		wantClose     int
+	}{
+		{name: "stable", connectionIDs: []int64{7, 7}, wantRecord: true},
+		{name: "session switches after read", connectionIDs: []int64{7, 8}, wantErr: ErrFairQueueWriterMismatch, wantClose: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := &ragFairQueueStoreDriverState{
+				connectionIDs: test.connectionIDs,
+				configData:    `{"embedding":{"endpoint":"https://embed.example/v1","model":"embed-v1","dims":8}}`,
+			}
+			st, writer := newRAGFairQueueFacadeTestStore(t, state)
+			facade, err := st.BindRAGFairQueueWriter(writer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := facade.GetConfigByName(
+				context.Background(), KindSetting, "user-1", "", "rag",
+			)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("GetConfigByName error=%v, want %v", err, test.wantErr)
+			}
+			if (record != nil) != test.wantRecord {
+				t.Fatalf("GetConfigByName record=%+v, wantRecord=%v", record, test.wantRecord)
+			}
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			if state.configRead != 1 || state.identityCalls != 2 || state.physicalClose != test.wantClose {
+				t.Fatalf("config/identity/close=%d/%d/%d, want 1/2/%d",
+					state.configRead, state.identityCalls, state.physicalClose, test.wantClose)
+			}
+		})
+	}
 }

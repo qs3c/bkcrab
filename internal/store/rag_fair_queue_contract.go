@@ -28,6 +28,18 @@ type FairQueueAdminStore struct {
 	writerFingerprint string
 }
 
+// RAGFairQueueAdminSource is the non-auto-migrating, expected-writer-bound
+// store surface used by RAG recovery and safety operators. It deliberately
+// exposes neither the underlying *sql.DB nor the general Store interface.
+// Every method which reaches MySQL revalidates the bound writer on a pinned
+// physical connection; writerFingerprint cached by FairQueueAdminStore is not
+// an authority for these reads.
+type RAGFairQueueAdminSource struct {
+	admin          *FairQueueAdminStore
+	rag            *RAGFairQueueStore
+	expectedWriter string
+}
+
 func OpenFairQueueAdminStore(cfg StorageConfig) (*FairQueueAdminStore, error) {
 	if cfg.Type != StorageMySQL {
 		return nil, ErrFairQueueMySQLRequired
@@ -66,6 +78,297 @@ func (s *FairQueueAdminStore) WriterFingerprint() string {
 		return ""
 	}
 	return s.writerFingerprint
+}
+
+// BindRAGFairQueueSource creates the narrow admin/recovery facade for one
+// expected writer. Binding validates shape and MySQL-only usage but performs no
+// identity discovery; ReadWriterIdentity and every subsequent operation do a
+// fresh pinned-connection verification.
+func (s *FairQueueAdminStore) BindRAGFairQueueSource(
+	expectedWriter string,
+) (*RAGFairQueueAdminSource, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrFairQueueMySQLRequired
+	}
+	rag, err := s.db.BindRAGFairQueueWriter(expectedWriter)
+	if err != nil {
+		return nil, err
+	}
+	return &RAGFairQueueAdminSource{
+		admin: s, rag: rag, expectedWriter: expectedWriter,
+	}, nil
+}
+
+func (s *RAGFairQueueAdminSource) validate() error {
+	if s == nil || s.admin == nil || s.admin.db == nil || s.rag == nil ||
+		s.rag.store != s.admin.db || s.rag.expectedWriter != s.expectedWriter {
+		return ErrFairQueueUnsafeConnection
+	}
+	if !lowerHex64Pattern.MatchString(s.expectedWriter) {
+		return ErrFairQueueWriterMismatch
+	}
+	if s.admin.db.dialect != mysqlDialect {
+		return ErrFairQueueMySQLRequired
+	}
+	return nil
+}
+
+func (s *RAGFairQueueAdminSource) requireExpectedWriter(expectedWriter string) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if expectedWriter != s.expectedWriter {
+		return ErrFairQueueWriterMismatch
+	}
+	return nil
+}
+
+// ReadWriterIdentity performs a fresh expected-writer check. In particular it
+// never echoes FairQueueAdminStore.WriterFingerprint, which is only the
+// construction-time observation used by CLI presentation.
+func (s *RAGFairQueueAdminSource) ReadWriterIdentity(
+	ctx context.Context,
+) (FairQueueWriterIdentity, error) {
+	if err := s.validate(); err != nil {
+		return FairQueueWriterIdentity{}, err
+	}
+	var writer FairQueueWriterIdentity
+	err := s.rag.withExpectedWriterConn(ctx,
+		func(_ *sql.Conn, identity fairQueueMySQLIdentity) error {
+			writer = FairQueueWriterIdentity{Fingerprint: identity.fingerprint}
+			return nil
+		})
+	if err != nil {
+		return FairQueueWriterIdentity{}, err
+	}
+	return writer, nil
+}
+
+// CheckSchemaAndInvariants returns the complete aggregate contract report from
+// the bound writer. The adapter maps this losslessly to its domain-neutral
+// readiness report; no cached startup inspection is substituted here.
+func (s *RAGFairQueueAdminSource) CheckSchemaAndInvariants(
+	ctx context.Context,
+) (RAGFairQueueContractReport, error) {
+	if err := s.validate(); err != nil {
+		return RAGFairQueueContractReport{}, err
+	}
+	var report RAGFairQueueContractReport
+	err := s.rag.withExpectedWriterConn(ctx,
+		func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+			var err error
+			report, err = s.admin.inspectRAGFairQueueContractOnConn(ctx, conn)
+			return err
+		})
+	if err != nil {
+		return RAGFairQueueContractReport{}, err
+	}
+	return report, nil
+}
+
+func (d *DBStore) countValidRunningRAGIndexTasksOn(
+	ctx context.Context,
+	session ragFairQueueSession,
+) (int64, error) {
+	if d == nil || session == nil {
+		return 0, ErrFairQueueUnsafeConnection
+	}
+	materialized := ""
+	if d.dialect == "postgres" {
+		materialized = "MATERIALIZED "
+	}
+	var count int64
+	err := session.QueryRowContext(ctx, fmt.Sprintf(`WITH rag_fair_clock AS %s(SELECT %s AS observed_db_now)
+		SELECT COUNT(*) FROM rag_index_tasks t
+		JOIN rag_documents d ON d.id=t.doc_id
+		JOIN rag_kbs kb ON kb.id=d.kb_id AND kb.user_id=t.user_id
+		JOIN users u ON u.id=kb.user_id
+		JOIN rag_document_versions v ON v.doc_id=t.doc_id AND v.doc_version=t.doc_version
+		CROSS JOIN rag_fair_clock
+		WHERE `+ragFairQueueValidRunningPredicate, materialized, d.ragNowExpr())).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	if count < 0 {
+		return 0, ErrFairQueueUnsafeConnection
+	}
+	return count, nil
+}
+
+// CountValidRunning uses exactly the same canonical RUNNING predicate and
+// database clock as recovery snapshots and the final MySQL capacity gate.
+func (s *RAGFairQueueAdminSource) CountValidRunning(ctx context.Context) (int64, error) {
+	if err := s.validate(); err != nil {
+		return 0, err
+	}
+	var count int64
+	err := s.rag.withExpectedWriterConn(ctx,
+		func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+			var err error
+			count, err = s.admin.db.countValidRunningRAGIndexTasksOn(ctx, conn)
+			return err
+		})
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// The recovery delegates retain Task 9's bounded keyset pages and their
+// writer-bound snapshot withholding semantics.
+func (s *RAGFairQueueAdminSource) CaptureRAGFairQueueHighWater(
+	ctx context.Context,
+) (int64, error) {
+	if err := s.validate(); err != nil {
+		return 0, err
+	}
+	return s.rag.CaptureRAGFairQueueHighWater(ctx)
+}
+
+func (s *RAGFairQueueAdminSource) ListCanonicalRAGTenantsPage(
+	ctx context.Context,
+	highWater int64,
+	afterUserID string,
+	limit int,
+) ([]string, string, error) {
+	if err := s.validate(); err != nil {
+		return nil, afterUserID, err
+	}
+	return s.rag.ListCanonicalRAGTenantsPage(ctx, highWater, afterUserID, limit)
+}
+
+func (s *RAGFairQueueAdminSource) ListDispatchedRAGIndexTasksPage(
+	ctx context.Context,
+	highWater, afterTaskID int64,
+	limit int,
+) ([]RAGIndexTaskRecord, int64, error) {
+	if err := s.validate(); err != nil {
+		return nil, afterTaskID, err
+	}
+	return s.rag.ListDispatchedRAGIndexTasksPage(ctx, highWater, afterTaskID, limit)
+}
+
+func (s *RAGFairQueueAdminSource) ListValidRunningRAGIndexTasksPage(
+	ctx context.Context,
+	highWater, afterTaskID int64,
+	limit int,
+) ([]RAGIndexTaskRunningSnapshot, int64, error) {
+	if err := s.validate(); err != nil {
+		return nil, afterTaskID, err
+	}
+	return s.rag.ListValidRunningRAGIndexTasksPage(ctx, highWater, afterTaskID, limit)
+}
+
+// The journal bridge keeps store-native records/proposals intact. In
+// particular WithFairQueueOperationStartFence passes through the exact start
+// session that owns the named lock, so adapter Read/BeginSpecial calls cannot
+// accidentally hop to another pooled connection.
+func (s *RAGFairQueueAdminSource) ReadFairQueueOperation(
+	ctx context.Context,
+	resource, expectedWriter string,
+) (FairQueueOperationRecord, bool, error) {
+	if err := s.requireExpectedWriter(expectedWriter); err != nil {
+		return FairQueueOperationRecord{}, false, err
+	}
+	record, found, err := s.admin.db.ReadFairQueueOperation(ctx, resource, expectedWriter)
+	if err != nil {
+		return FairQueueOperationRecord{}, false, err
+	}
+	return record, found, nil
+}
+
+func (s *RAGFairQueueAdminSource) WithFairQueueOperationStartFence(
+	ctx context.Context,
+	resource, expectedWriter string,
+	fn func(*FairQueueOperationStartSession) error,
+) error {
+	if err := s.requireExpectedWriter(expectedWriter); err != nil {
+		return err
+	}
+	return s.admin.db.WithFairQueueOperationStartFence(ctx, resource, expectedWriter, fn)
+}
+
+func (s *RAGFairQueueAdminSource) requireOperationWriter(
+	expected FairQueueOperationRecord,
+) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if expected.CurrentWriterFingerprint != s.expectedWriter {
+		return ErrFairQueueWriterMismatch
+	}
+	return nil
+}
+
+func (s *RAGFairQueueAdminSource) SetFairQueueOperationRepairHighWater(
+	ctx context.Context,
+	expected FairQueueOperationRecord,
+	highWater string,
+) (FairQueueOperationRecord, error) {
+	if err := s.requireOperationWriter(expected); err != nil {
+		return FairQueueOperationRecord{}, err
+	}
+	record, err := s.admin.db.SetFairQueueOperationRepairHighWater(ctx, expected, highWater)
+	if err != nil {
+		return FairQueueOperationRecord{}, err
+	}
+	return record, nil
+}
+
+func (s *RAGFairQueueAdminSource) MarkFairQueueOperationRepairPassComplete(
+	ctx context.Context,
+	expected FairQueueOperationRecord,
+) (FairQueueOperationRecord, error) {
+	if err := s.requireOperationWriter(expected); err != nil {
+		return FairQueueOperationRecord{}, err
+	}
+	record, err := s.admin.db.MarkFairQueueOperationRepairPassComplete(ctx, expected)
+	if err != nil {
+		return FairQueueOperationRecord{}, err
+	}
+	return record, nil
+}
+
+func (s *RAGFairQueueAdminSource) MarkFairQueueOperationForceDeletePassComplete(
+	ctx context.Context,
+	expected FairQueueOperationRecord,
+) (FairQueueOperationRecord, error) {
+	if err := s.requireOperationWriter(expected); err != nil {
+		return FairQueueOperationRecord{}, err
+	}
+	record, err := s.admin.db.MarkFairQueueOperationForceDeletePassComplete(ctx, expected)
+	if err != nil {
+		return FairQueueOperationRecord{}, err
+	}
+	return record, nil
+}
+
+func (s *RAGFairQueueAdminSource) CommitFairQueueOperationReady(
+	ctx context.Context,
+	expected FairQueueOperationRecord,
+) (FairQueueOperationRecord, error) {
+	if err := s.requireOperationWriter(expected); err != nil {
+		return FairQueueOperationRecord{}, err
+	}
+	record, err := s.admin.db.CommitFairQueueOperationReady(ctx, expected)
+	if err != nil {
+		return FairQueueOperationRecord{}, err
+	}
+	return record, nil
+}
+
+func (s *RAGFairQueueAdminSource) CompleteFairQueueOperation(
+	ctx context.Context,
+	expected FairQueueOperationRecord,
+) (FairQueueOperationRecord, error) {
+	if err := s.requireOperationWriter(expected); err != nil {
+		return FairQueueOperationRecord{}, err
+	}
+	record, err := s.admin.db.CompleteFairQueueOperation(ctx, expected)
+	if err != nil {
+		return FairQueueOperationRecord{}, err
+	}
+	return record, nil
 }
 
 // RAGFairQueueContractAttestation is an operator assertion, not a database

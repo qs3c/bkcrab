@@ -45,6 +45,7 @@ var (
 	ErrResourceNotReady            = errors.New("fairqueue: resource is not ready")
 	ErrFenceMismatch               = errors.New("fairqueue: resource fence mismatch")
 	ErrAuthoritativeWriterMismatch = errors.New("fairqueue: authoritative writer identity mismatch")
+	ErrAuthoritativeStateCorrupt   = errors.New("fairqueue: authoritative state is corrupt")
 	ErrRecoveryOwnerStale          = errors.New("fairqueue: recovery owner is stale")
 	ErrCoordinationCorrupt         = errors.New("fairqueue: corrupt coordination state")
 	ErrPublishUnroutable           = errors.New("fairqueue: publish was unroutable")
