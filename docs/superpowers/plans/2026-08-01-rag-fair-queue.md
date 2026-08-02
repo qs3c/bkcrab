@@ -662,7 +662,7 @@ git commit -m "feat(queue): add durable rabbitmq tenant transport"
 - Create: `internal/fairqueue/redis.go`
 - Create: `internal/fairqueue/redis_test.go`
 
-- [ ] **Step 1: 先固定 Lua 合约测试**
+- [x] **Step 1: 先固定 Lua 合约测试**
 
 使用 env-gated real Redis（`BKCRAB_TEST_REDIS_ADDR`）覆盖：
 
@@ -707,7 +707,7 @@ Recovery drain:
   RestoreKnownTenant 不激活；RestoreActiveTenant 才进入 active/ring，known-only tenant 不影响 sole-active borrow
 ```
 
-- [ ] **Step 2: 实现 key builder 和 Lua scripts**
+- [x] **Step 2: 实现 key builder 和 Lua scripts**
 
 所有脚本使用 Redis server `TIME`，不使用各 bkcrab 节点本地时钟决定 expiry。所有 key 带统一 prefix，并用同一 `{resource}` hash tag 保证一个 resource 的 Lua keys 位于同一 slot。至少包含：
 
@@ -778,7 +778,7 @@ FinishRecovery(ctx, resource, recoveryFence)
 
 `FinishRecovery`的Lua必须在校验owner token/operation ID后同一原子操作把control operation kind清为NONE、完成READY、将special ID写入`last_completed_operation_id`、删除progress与compare-and-delete当前recovery lock；不能先清kind再READY，READY+special kind必须被视为corrupt/fail closed。special调用方须先把MySQL journal CAS到READY_COMMITTED；Finish成功后再best-effort COMPLETED。不得在返回后裸`DEL recovery_lock`。测试覆盖各special kind成功后READY无残留kind、错误ID拒绝、READY_COMMITTED/control ID对账，以及finish成功后另一owner立即取得锁、旧owner迟到cleanup不能删除新锁。
 
-- [ ] **Step 3: 故障测试**
+- [x] **Step 3: 故障测试**
 
 ```text
 Redis timeout 返回 typed unavailable error
@@ -807,13 +807,13 @@ force rebuild 的 key list/delete 逐 key 验证统一 prefix 与精确 `{resour
 普通 recovery reset 也通过 recovery-fenced ListOwnedResourceKeys/DeleteOwnedResourceKeys 有界清所有动态 tenant ZSET/metadata；即使 known/meta 部分缺失，tenant-only orphan 也不能残留
 ```
 
-- [ ] **Step 4: 验证**
+- [x] **Step 4: 验证**
 
 ```bash
 go test ./internal/fairqueue -run 'TestRedis' -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/fairqueue/redis*

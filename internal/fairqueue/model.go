@@ -1467,7 +1467,9 @@ type Coordinator interface {
 	AcquireProvisional(ctx context.Context, resource string, fence ResourceFence, tenant, attemptID string, limits CapacityLimits, ttl time.Duration) (ReservationDecision, error)
 	BindReservation(ctx context.Context, resource string, fence ResourceFence, tenant, attemptID, stableToken string, ttl time.Duration) error
 	RenewStable(ctx context.Context, resource string, fence ResourceFence, tenant, stableToken string, ttl time.Duration) error
-	Release(ctx context.Context, resource string, fence ResourceFence, tenant, stableToken string) error
+	// Release accepts either the provisional attempt ID allocated before claim
+	// or the stable reservation token produced after a successful bind.
+	Release(ctx context.Context, resource string, fence ResourceFence, tenant, token string) error
 	ListReadyStableInflight(ctx context.Context, resource string, fence ResourceFence, cursor string, limit int) (RecoveryPage[ReservationRef], error)
 	EnsureReadyStableInflight(ctx context.Context, resource string, fence ResourceFence, tenant, stableToken string, ttl time.Duration) error
 	ReapExpiredTurnsAndProvisionals(ctx context.Context, resource string, fence ResourceFence, limit int) (RecoveryCleanupResult, error)
