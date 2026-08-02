@@ -486,7 +486,7 @@ type PreparedTask interface {
 
 `DispatchCandidate{Message, Guard}` 必须携带稳定的 `DispatchToken{Resource, TaskID, Generation}` 与 source 产生的 opaque CAS snapshot。`DispatchSource` 同时提供返回完整 candidate 的 keyset page 与 `GetDispatchableByID`，fast path 也只能使用后者；`MarkDispatched(ctx, candidate)` 必须收到原 candidate 并把 Guard 原样交回领域 CAS，不能退化成 token 或 `(taskID,status)` CAS。每次 AMQP publish 另生成随机 `PublishAttemptID` 关联这一次 `basic.return`/confirm；它不是 stable dispatch token，不能进入 MySQL CAS。
 
-`PrepareRequest` 保留 raw delivery、独立解析的 body candidate、stable header candidate 与可信 queue context。runtime 只有在 body/header/context 一致时才填 `Message`；可执行 body 不超过 64 KiB，raw body 必须 strict-decode 为同一个 candidate 且没有 decode error。body-only、header-only 或 mismatch poison 都只能用各自受约束 locator 做 canonical repair，绝不能重建为可执行 Message。mismatch 不选择“看起来更可信”的一边：每个能独立通过 resource、queue tenant、MySQL canonical/current-generation/due CAS 的候选（最多两个）都要 repair，重复/额外发布由 exact claim 去重。为让超过协议上限的 poison 仍能 confirmed DLQ，transport 可保留最多 1 MiB raw body；再大的 delivery 在 transport 边界拒绝。raw body 只交 confirmed DLQ，adapter 不得自行重解析，不进入领域表/日志。
+`PrepareRequest` 保留 raw delivery、独立解析的 body candidate、四个 stable header parse facts、repair-only header token、可信 queue context 与 property parse 结果。runtime 只有在 body/完整 v1 headers/context 一致，且相等的 `message_id/correlation_id` 都是 canonical 128-bit 小写 hex 时才填 `Message`；反过来，全部 executable facts 已一致时 `Message` 必须存在且等于 candidate，验证器拒绝静默降级。可执行 body 不超过 64 KiB，raw body 必须 strict-decode 为同一个 candidate，body/header/property error code 都为空。`BodyCandidate`/`HeaderToken` 是通过当前 `Registry` 的权威 locator：即使是 repair-only request，只要 `BodyCandidate` 非 nil，也必须由 retained、≤64 KiB raw body strict-decode 得到且 body error 为空；HeaderToken 非 nil 必须匹配独立 header facts。locator 缺失时对应 error code 非空；通用语法合法但 unknown resource/resource-specific task ID 非法时允许 locator nil，不能由 registry-blind 校验反向提升。大 body、omitted body 和 decode failure 均不得携带 candidate。protocol version 损坏时其余三个已通过 Registry 的合法 header 仍可留下 repair locator，但不能授权执行。body-only、header-only 或 mismatch poison 都只能用各自受约束 locator 做 canonical repair，绝不能重建为可执行 Message。mismatch 不选择“看起来更可信”的一边：每个能独立通过 resource、queue tenant、MySQL canonical/current-generation/due CAS 的候选（最多两个）都要 repair，重复/额外发布由 exact claim 去重。为让超过协议上限的 poison 仍能 confirmed DLQ，transport 可保留最多 1 MiB raw body；再大的 delivery 丢弃原文，仅保留 size、SHA-256、受限 header/property 事实和 error codes，并继续交给显式 confirmed DLQ。raw body 只交 transport 校验和 confirmed DLQ，adapter 不得自行重解析，不进入领域表/日志。
 
 Task 3 同时固定跨 Rabbit/Redis/Coordinator 的错误分类：dependency unavailable、unsupported topology、resource not ready、resource fence mismatch、stale recovery owner、corrupt coordination state、publish unroutable 与 publish unconfirmed。后续实现必须包装对应 sentinel，runtime 只用 `errors.Is`/`errors.As` 分支，不解析依赖或 Lua 错误文本。
 
@@ -601,7 +601,7 @@ git commit -m "feat(queue): define domain-neutral fair scheduling contracts"
 
 不要让业务层直接依赖 `amqp.Delivery`；封装 transport delivery interface，便于 scheduler 单测。
 
-transport delivery 必须保留 bounded raw body、body 的独立 schema/shape parse result、四个 header 的独立 parse result、registered consumer resource、queue tenant hash 和 PublishAttemptID。任一一致性失败不能丢掉仍受约束的 BodyCandidate/HeaderToken，也不能把其中一个合成正常 Message；runtime 用这些独立事实构造 `PrepareRequest`。
+transport delivery 必须保留 bounded raw body（超过 1 MiB 时只保留 size + SHA-256）、body 的独立 schema/shape parse result、四个 header 的独立 parse result、registered consumer resource、queue tenant hash，以及相等且 canonical 时的 PublishAttemptID。body/header/property 三类错误独立记录；任一一致性失败不能丢掉仍受约束的 BodyCandidate/HeaderToken，也不能把其中一个合成正常 Message；runtime 用这些独立事实构造 `PrepareRequest`。
 
 - [ ] **Step 2: 实现 client**
 
@@ -614,8 +614,9 @@ dead-letter exchange=bkcrab.fair.dlx；durable queue=bkcrab.fair.dlq.<registered
 每个连接世代 publish 前 ExchangeDeclare -> QueueDeclare(args: DLX) -> QueueBind
 mandatory=true；persistent delivery；每次发布生成随机 PublishAttemptID 写 AMQP message_id/correlation_id
 stable identity 同时写入四个固定 AMQP headers；consumer 只接受 exact AMQP type、已注册 resource、通过该 resource 注册 validator 的受限 task ID/正 generation，且 headers 不能决定 topology
-publish context timeout
+publish context timeout；底层库的 publish 调用不保证替调用方消费 context，必须由 confirm/return 等待和世代失效显式兑现 timeout
 按 channel publish sequence + PublishAttemptID 关联 confirm/basic.return；ACK 且无 return 才成功；重试生成新 attempt ID 但保留同一 stable DispatchToken
+一旦 attempt ID 已分配，后续 publish/return/NACK/timeout 失败也返回对应非零 receipt
 连接和 channel 并发安全
 shutdown 时停止新操作并关闭连接
 ```
@@ -634,6 +635,7 @@ body 合法但 header 缺失/类型坏 -> Message=nil、BodyCandidate 保留，c
 body/header 各自合法但 identity mismatch -> Message=nil、两个 locator 都保留并分别对 queue/MySQL 交叉验证；每个独立验证成功的 canonical candidate 都获得新 generation 发布义务，绝不执行原 delivery
 header-only delivery 构造的 PrepareRequest.Message 必须为 nil；无论 adapter 返回什么，runtime 都拒绝把它当 claimed 执行
 poison delivery -> canonical identity 可定位时先 repair，再显式 mandatory/confirmed publish 到 durable resource DLQ -> ACK 原 delivery；DLQ 失败则 NACK requeue；body/header 都不可定位的非协议消息 confirmed DLQ 后 ACK；重启后仍可检查/重放
+超过 1 MiB 的 poison delivery -> transport 不返回原文，只返回 size + SHA-256 + bounded facts -> 显式 confirmed DLQ；成功后 ACK，失败则 NACK requeue
 连接重建后 durable message 仍在
 同 resource 不同 tenant 队列隔离
 ```

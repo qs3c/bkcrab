@@ -212,14 +212,25 @@ type DispatchCandidate struct {
 // PrepareRequest 保留 transport 事实。只有 Message 非 nil 且 body/header/context
 // 已互相一致时才允许执行；HeaderToken 不能被提升成可执行 Message。
 type PrepareRequest struct {
-    Message          *Message // only executable form
-    BodyCandidate    *Message // independently parsed/shape-validated, repair-only unless Message is set
-    HeaderToken      *DispatchToken // independently parsed, repair-only unless Message is set
+    Message          *Message          // only executable form
+    BodyCandidate    *Message          // independently parsed/shape-validated, repair-only unless Message is set
+    HeaderToken      *DispatchToken    // independently parsed, repair-only unless Message is set
+    HeaderFacts      StableHeaderFacts // four headers retained independently; bad/missing version may still leave a repair locator
     RegisteredResource string
     QueueTenantHash  string
     PublishAttemptID string
-    RawBody          []byte // 最多 1 MiB，仅供 confirmed DLQ
-    DecodeErrorCode  string
+    RawBody          []byte // 最多 1 MiB，仅供校验和 confirmed DLQ
+    RawBodyOmitted   bool   // 超过 1 MiB 时丢弃原文，只保留下面的有界证据
+    RawBodySize      int64
+    RawBodySHA256    string
+    DecodeErrorCode  string // body/schema error，与另外两类独立
+    HeaderErrorCode  string
+    PropertyErrorCode string // message_id/correlation_id error
+}
+
+type DeadLetterRequest struct {
+    Delivery   PrepareRequest // topology 只取这里的 RegisteredResource/QueueTenantHash
+    ReasonCode string         // canonical bounded ASCII code
 }
 
 type ResourceConfig struct {
@@ -266,7 +277,7 @@ BrokerRepairSource:
 
 `Guard` 在 RAG adapter 中至少绑定 `dispatch_generation + status + claim_generation + retry_count + next_run_at + lease/due 条件`；`MarkDispatched` 必须以这些值、`dispatch_generation > claim_generation`、`dispatched_at IS NULL` 和数据库当前时间做单条 CAS。消息消费与精确 claim 也必须匹配 token generation。这样上一轮 retry/reclaim 的迟到 confirm 或 Rabbit stale delivery 不能作用于下一 dispatch epoch。
 
-`PrepareRequest.Message` 只有在不超过 64 KiB 的 JSON body、stable headers、registered resource 与 queue tenant hash 已通过 transport 级一致性校验时才非 nil；此时 `RawBody` 必须仍能 strict-decode 为同一个 `BodyCandidate`，且不能同时携带 decode error。可独立解析且字段受限的 body 先放 `BodyCandidate`，header 独立放 `HeaderToken`：body 损坏时可用 header、header 缺失/类型坏时可用 body、两者 mismatch 时分别作为 repair locator 与 MySQL/queue context 交叉验证，但三种情况都不得返回 claimed。mismatch 时不能猜“body 或 header 谁才是真的”：对每个能独立通过 registered resource、queue tenant、MySQL canonical row、当前 generation 与 due CAS 验证的候选（最多两个）分别执行 generation repair；额外形成的发布义务由 exact claim 去重。只有 body 与 header 都无法形成受约束 locator 时才走不可定位 poison disposition。为让超过协议上限的无效消息仍能 confirmed DLQ，transport 可保留最多 1 MiB raw body；超过该保留上限的 delivery 在 transport 边界拒绝。raw body 只供 DLQ，不进入业务日志/表，也不能由 adapter 再解析来绕过 transport 校验。
+`PrepareRequest.Message` 只有在不超过 64 KiB 的 JSON body、四个 stable headers、registered resource、queue tenant hash 和 AMQP properties 已通过 transport 级一致性校验时才非 nil；反过来，只要这些 executable transport facts 完整一致，`Message` 就必须非 nil 且等于 `BodyCandidate`，不能静默降级成 repair-only。此时 `RawBody` 必须仍能 strict-decode 为同一个 `BodyCandidate`，`message_id` 与 `correlation_id` 必须相等且都是 canonical 128-bit 小写 hex `PublishAttemptID`，并且 body/header/property 三类 error code 都为空。`BodyCandidate` 与 `HeaderToken` 都表示已经通过当前 `Registry` 的权威 locator：只要 `BodyCandidate` 非 nil，它就必须由 retained、≤64 KiB raw body strict-decode 得到且 body error 为空；只要 `HeaderToken` 非 nil，它就必须与独立 facts 一致。locator 缺失时对应 canonical error code 必须非空，但通用 JSON/header 语法合法而 resource 未注册或 task ID 未通过 resource-specific validator 时允许 candidate/token 为 nil，不能由 registry-blind 的通用校验反向提升成 locator。大于 64 KiB、已省略或 decode 失败的 body 都不能携带 candidate，防止伪造 locator 脱离 wire evidence。四个 header 的 exact-type parse 事实分别保留在 `HeaderFacts`；只有完整 v1 facts 才能授权执行，protocol version 缺失/损坏时，其余三个已通过 Registry 的稳定字段仍可形成 repair-only `HeaderToken`。可独立解析且字段受限的 body 先放 `BodyCandidate`，header 独立放 `HeaderToken`：body 损坏时可用 header、header 缺失/类型坏时可用 body、两者 mismatch 时分别作为 repair locator 与 MySQL/queue context 交叉验证，但三种情况都不得返回 claimed。mismatch 时不能猜“body 或 header 谁才是真的”：对每个能独立通过 registered resource、queue tenant、MySQL canonical row、当前 generation 与 due CAS 验证的候选（最多两个）分别执行 generation repair；额外形成的发布义务由 exact claim 去重。只有 body 与 header 都无法形成受约束 locator 时才走不可定位 poison disposition。为让超过协议上限的无效消息仍能 confirmed DLQ，transport 可保留最多 1 MiB raw body；再大的 delivery 丢弃原文，仅保留原始尺寸、SHA-256、受限 header/property 事实和错误码，仍交给 runtime 显式 confirmed DLQ。raw body 只供 transport 校验和 DLQ，不进入业务日志/表，也不能由 adapter 再解析来绕过 transport 校验。
 
 Rabbit/Redis/Coordinator 边界错误必须包装稳定类别，至少区分 dependency unavailable、unsupported topology、resource not ready、resource fence mismatch、stale recovery owner、corrupt coordination state、publish unroutable 与 publish unconfirmed；scheduler/runtime 只能用 `errors.Is`/`errors.As` 分类，不能解析依赖或 Lua 错误字符串。
 
@@ -388,13 +399,13 @@ x-bkcrab-task-id:          longstr("12345")
 x-bkcrab-dispatch-generation: int64(7)
 ```
 
-所有 fair publisher 都必须同时写 body 与这四个 header。consumer 只接受上述精确 AMQP 类型、已注册 resource、受限长度且通过该 resource 注册 validator 的 task ID 与正 generation；`rag.index` validator 接受 canonical 正十进制 ID，后续 `image.generate` 可接受受限 `imgt_...` ID，通用层不能硬编码“task ID 必须为数值”。正常执行还要求 body、header、当前 queue context 和 MySQL canonical row 全部一致。header 只是 body 无法解码时定位 canonical task 并执行 generation repair 的冗余信封，绝不能单独授权业务执行、选择 topology 或覆盖 canonical owner。若 body 与 header 都无法给出受约束且可由 MySQL 交叉验证的 identity，则该 delivery 不可能是本协议 publisher 产生的 canonical v1 消息，可以 confirmed DLQ 后 ACK。消息不保存原文、对象存储 key、document snapshot、provider key 或其它敏感载荷。
+所有 fair publisher 都必须同时写 body 与这四个 header，并把同一个 canonical `PublishAttemptID` 同时写入 `message_id` 与 `correlation_id`。consumer 对四个 header 分别执行 exact AMQP type parse，独立保留成功事实和 header error；只有完整 v1 header set、两个 property ID 相等且 canonical、已注册 resource、受限长度且通过该 resource 注册 validator 的 task ID 与正 generation 才可执行。`rag.index` validator 接受 canonical 正十进制 ID，后续 `image.generate` 可接受受限 `imgt_...` ID，通用层不能硬编码“task ID 必须为数值”。正常执行还要求 body、header、properties、当前 queue context 和 MySQL canonical row 全部一致。header 只是 body 无法解码时定位 canonical task 并执行 generation repair 的冗余信封，绝不能单独授权业务执行、选择 topology 或覆盖 canonical owner。若 body 与 header 都无法给出受约束且可由 MySQL 交叉验证的 identity，则该 delivery 不可能是本协议 publisher 产生的 canonical v1 消息，可以 confirmed DLQ 后 ACK。消息不保存原文、对象存储 key、document snapshot、provider key 或其它敏感载荷。
 
 ### 6.3 发布语义
 
 1. MySQL 事务先创建 task；commit 后走一次 inline fast path，后台 dispatcher 与常驻 expired-RUNNING sweeper 周期补扫；
 2. adapter 从 task 当前 `dispatch_generation` 生成稳定 `DispatchToken` 和绑定当前 epoch 的 `Guard`；publisher 为每次 wire attempt 另生成 `PublishAttemptID`；
-3. publisher 幂等 declare exchange/queue/binding，在 confirm channel 上以 persistent、`mandatory=true` 发布，并用 AMQP `message_id=PublishAttemptID` 关联 `basic.return`、confirm、timeout 和 channel close；
+3. publisher 幂等 declare exchange/queue/binding，在 confirm channel 上以 persistent、`mandatory=true` 发布，并用相等的 AMQP `message_id/correlation_id=PublishAttemptID` 关联 `basic.return`、confirm、timeout 和 channel close；attempt 一经分配，即使 publish/return/NACK/timeout 失败也返回非零 receipt，便于安全关联该次 wire outcome；
 4. 只有目标消息收到 positive confirm 且未收到 `basic.return` 才算“已路由”。Rabbit 对 unroutable 消息也可能 positive confirm，因此缺任一条件、return、nack、timeout 或 channel close 都不得写 `dispatched_at`；
 5. 已路由后调用领域 `MarkDispatched(candidate)`；RAG CAS 必须同时匹配 `id`、token 的 `dispatch_generation`、`dispatch_generation > claim_generation`、`dispatched_at IS NULL`、候选的 `status/claim_generation/retry_count/next_run_at`，并重新以 `DB_NOW` 验证 PENDING due 或 RUNNING lease expired，且两种 status 的 `next_run_at` 均已到期；
 6. CAS 成功后调用 epoch-gated Redis activation。CAS 失败表示消息已成为 stale/duplicate，仍执行基于 MySQL canonical tenant 的 reconciliation 提示，但绝不能把迟到 mark 写入新 retry/reclaim epoch；
@@ -411,7 +422,7 @@ Rabbit confirm 成功但 MySQL 标记前崩溃时会重复发布；这是有意�
 - MySQL 暂时不可用、无法判断 task 状态：NACK requeue，释放 reservation；
 - capacity-deferred：task 不变，NACK requeue、重新 activation 并采用有界 backoff；
 - document maintenance 冲突：不得只 ACK 丢弃。领域事务把 PENDING 或 lease 已过期的 RUNNING 保持原 status，原子递增 dispatch generation、清 marker，并以 DB time 写入有界的 future `next_run_at`；随后 ACK 当前 delivery。dispatcher 与精确 claim 对两种 status 都必须服从该时间门，避免 Rabbit hot loop；
-- 格式/版本/resource/task type 非法的 poison message，以及 body/header/tenant/routing 与 MySQL canonical task 不匹配的消息，都不得执行或静默 ACK。优先使用经类型/长度校验的 stable headers，并以注册 queue context 和 MySQL row 交叉验证；即使 body 完全损坏也必须能定位协议自产的 canonical v1 task。若能定位 canonical task，必须先完成下面的 generation repair；随后把有界原消息、稳定 `dispatch_token`、随机 `PublishAttemptID`、原因和哈希 tenant 以 persistent + mandatory + confirm 方式**显式发布**到 durable DLQ，repair 已提交且 DLQ confirm 成功后才 ACK 原 delivery。DLQ routing/resource 必须来自当前已注册 consumer/queue context，不能使用未验证 payload/header 创建 topology。repair 暂时失败或 DLQ 不可用时 NACK requeue；不能把 application NACK/DLX 当作已确认的 DLQ 写入；只有 body 与 stable headers 都无法定位 canonical identity 的外部/损坏消息才可在 confirmed DLQ 后直接 ACK；
+- 格式/版本/resource/task type 非法的 poison message，以及 body/header/property/tenant/routing 与 MySQL canonical task 不匹配的消息，都不得执行或静默 ACK。优先使用经类型/长度校验的 stable headers，并以注册 queue context 和 MySQL row 交叉验证；即使 body 完全损坏也必须能定位协议自产的 canonical v1 task。若能定位 canonical task，必须先完成下面的 generation repair；随后通过 `DeadLetterRequest` 把有界原消息（超过 1 MiB 时改为 size + SHA-256）、稳定 `dispatch_token`、随机 `PublishAttemptID`、有界原因码和哈希 tenant 以 persistent + mandatory + confirm 方式**显式发布**到 durable DLQ，repair 已提交且 DLQ confirm 成功后才 ACK 原 delivery。DLQ routing/resource 必须来自 request 内当前已注册 consumer/queue context，不能接受单独 resource 参数，也不能使用未验证 payload/header 创建 topology。repair 暂时失败或 DLQ 不可用时 NACK requeue；不能把 application NACK/DLX 当作已确认的 DLQ 写入；只有 body 与 stable headers 都无法定位 canonical identity 的外部/损坏消息才可在 confirmed DLQ 后直接 ACK；
 - mismatch canonical repair CAS：不能任意选择 body 或 header locator；对每个独立通过 registered resource、queue tenant、MySQL canonical row、当前 generation 与 due 条件验证的候选（最多两个）都尝试 repair。只有该 locator 的消息 generation 仍等于 task 当前 generation且 task 当前仍是 due PENDING 或 expired RUNNING 时，才原子 `dispatch_generation=GREATEST(dispatch_generation,claim_generation)+1、dispatched_at=NULL`，再从 MySQL canonical owner 生成新 token 走完整发布流程；若 generation 已变化、已 RUNNING-valid 或已终态则记录 no-op disposition。不得依据不可信消息改 `user_id` 或清空新 epoch 的 `dispatched_at`。同一 canonical row 被两个 locator 指向时第二个 CAS自然 no-op；两个不同合法 row 都形成新发布义务时，额外重发由 exact claim 安全去重。repair 后、DLQ ACK 前崩溃允许原 poison delivery 重现和 DLQ 重复，但不会丢失合法 task 的新发布义务。
 
 DLQ 是 Rabbit 基础设施，不是业务表；本设计仍不增加 jobs/outbox/tenant 表。DLQ consumer、保留期和告警是运维职责，默认不会自动把 poison message 投回业务队列。

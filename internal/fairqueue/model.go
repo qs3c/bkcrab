@@ -22,12 +22,11 @@ const (
 	MaxMessageBytes = 64 << 10
 	// MaxRawDeliveryBytes is deliberately larger than MaxMessageBytes so a
 	// bounded, permanently invalid delivery can still be confirmed to the DLQ.
-	MaxRawDeliveryBytes    = 1 << 20
-	MaxRecoveryPageLimit   = maxRecoveryPageSize
-	maxOpaqueGuardBytes    = 64 << 10
-	maxDecodeErrorBytes    = 128
-	maxRedisKeyBytes       = 4096
-	maxPublishAttemptBytes = 64
+	MaxRawDeliveryBytes  = 1 << 20
+	MaxRecoveryPageLimit = maxRecoveryPageSize
+	maxOpaqueGuardBytes  = 64 << 10
+	maxDecodeErrorBytes  = 128
+	maxRedisKeyBytes     = 4096
 )
 
 var (
@@ -53,6 +52,7 @@ var (
 	lowerHex32Pattern        = regexp.MustCompile(`^[0-9a-f]{32}$`)
 	lowerHex64Pattern        = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	stableReservationPattern = regexp.MustCompile(`^r:[0-9a-f]{64}$`)
+	reasonCodePattern        = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,127}$`)
 )
 
 // DispatchToken is the durable logical delivery epoch. TaskID remains opaque
@@ -271,6 +271,52 @@ type DispatchCandidate struct {
 	Guard   string  `json:"-"`
 }
 
+// StableHeaderFacts preserves each independently type-checked AMQP header.
+// A repair-only token can remain usable when the protocol-version header is
+// missing or invalid; only a complete v1 set can authorize execution.
+type StableHeaderFacts struct {
+	ProtocolVersion    *int32  `json:"protocol_version,omitempty"`
+	Resource           *string `json:"resource,omitempty"`
+	TaskID             *string `json:"task_id,omitempty"`
+	DispatchGeneration *int64  `json:"dispatch_generation,omitempty"`
+}
+
+func (f StableHeaderFacts) Validate() error {
+	if f.Resource != nil {
+		if err := validateBoundedText("header resource", *f.Resource, maxResourceBytes, false); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidModel, err)
+		}
+	}
+	if f.TaskID != nil {
+		if err := validateBoundedText("header task ID", *f.TaskID, maxTaskIDBytes, false); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidModel, err)
+		}
+	}
+	return nil
+}
+
+func (f StableHeaderFacts) Token() (DispatchToken, bool) {
+	if f.Resource == nil || f.TaskID == nil || f.DispatchGeneration == nil || *f.DispatchGeneration <= 0 {
+		return DispatchToken{}, false
+	}
+	token := DispatchToken{
+		Resource: *f.Resource, TaskID: *f.TaskID, Generation: uint64(*f.DispatchGeneration),
+	}
+	return token, token.Validate() == nil
+}
+
+func (f StableHeaderFacts) MatchesToken(token DispatchToken) bool {
+	parsed, ok := f.Token()
+	return ok && parsed == token
+}
+
+func (f StableHeaderFacts) CompleteV1Token() (DispatchToken, bool) {
+	if f.ProtocolVersion == nil || *f.ProtocolVersion != int32(MessageVersion1) {
+		return DispatchToken{}, false
+	}
+	return f.Token()
+}
+
 func (c DispatchCandidate) Validate() error {
 	if err := c.Message.Validate(); err != nil {
 		return err
@@ -284,14 +330,20 @@ func (c DispatchCandidate) Validate() error {
 // PrepareRequest preserves independently validated transport facts. Message is
 // non-nil only when body, headers, registered resource, and queue context agree.
 type PrepareRequest struct {
-	Message            *Message       `json:"-"`
-	BodyCandidate      *Message       `json:"-"`
-	HeaderToken        *DispatchToken `json:"-"`
-	RegisteredResource string         `json:"registered_resource"`
-	QueueTenantHash    string         `json:"queue_tenant_hash"`
-	PublishAttemptID   string         `json:"publish_attempt_id"`
-	RawBody            []byte         `json:"-"`
-	DecodeErrorCode    string         `json:"decode_error_code"`
+	Message            *Message          `json:"-"`
+	BodyCandidate      *Message          `json:"-"`
+	HeaderToken        *DispatchToken    `json:"-"`
+	HeaderFacts        StableHeaderFacts `json:"-"`
+	RegisteredResource string            `json:"registered_resource"`
+	QueueTenantHash    string            `json:"queue_tenant_hash"`
+	PublishAttemptID   string            `json:"publish_attempt_id"`
+	RawBody            []byte            `json:"-"`
+	RawBodyOmitted     bool              `json:"raw_body_omitted"`
+	RawBodySize        int64             `json:"raw_body_size"`
+	RawBodySHA256      string            `json:"raw_body_sha256"`
+	DecodeErrorCode    string            `json:"decode_error_code"`
+	HeaderErrorCode    string            `json:"header_error_code"`
+	PropertyErrorCode  string            `json:"property_error_code"`
 }
 
 func (r PrepareRequest) Validate() error {
@@ -304,30 +356,79 @@ func (r PrepareRequest) Validate() error {
 	if len(r.RawBody) > MaxRawDeliveryBytes {
 		return fmt.Errorf("%w: raw body exceeds transport limit", ErrInvalidModel)
 	}
-	if err := validateOptionalBoundedText("publish attempt ID", r.PublishAttemptID, maxPublishAttemptBytes); err != nil {
+	if r.RawBodyOmitted {
+		if len(r.RawBody) != 0 || r.RawBodySize <= MaxRawDeliveryBytes ||
+			!lowerHex64Pattern.MatchString(r.RawBodySHA256) || r.Message != nil || r.BodyCandidate != nil ||
+			r.DecodeErrorCode == "" {
+			return fmt.Errorf("%w: invalid omitted raw body metadata", ErrInvalidModel)
+		}
+	} else if r.RawBodySize != 0 || r.RawBodySHA256 != "" {
+		return fmt.Errorf("%w: retained raw body carries omission metadata", ErrInvalidModel)
+	}
+	if r.PublishAttemptID != "" && !lowerHex32Pattern.MatchString(r.PublishAttemptID) {
+		return fmt.Errorf("%w: publish attempt ID must be empty or 128-bit lowercase hex", ErrInvalidModel)
+	}
+	if err := validateOptionalReasonCode("decode error code", r.DecodeErrorCode); err != nil {
 		return err
 	}
-	if err := validateOptionalBoundedText("decode error code", r.DecodeErrorCode, maxDecodeErrorBytes); err != nil {
+	if err := validateOptionalReasonCode("header error code", r.HeaderErrorCode); err != nil {
+		return err
+	}
+	if err := validateOptionalReasonCode("property error code", r.PropertyErrorCode); err != nil {
+		return err
+	}
+	if err := r.HeaderFacts.Validate(); err != nil {
 		return err
 	}
 	if r.BodyCandidate != nil {
 		if err := r.BodyCandidate.Validate(); err != nil {
 			return err
 		}
+		if r.RawBodyOmitted || len(r.RawBody) == 0 || len(r.RawBody) > MaxMessageBytes || r.DecodeErrorCode != "" {
+			return fmt.Errorf("%w: body candidate requires a valid protocol-sized raw body", ErrInvalidModel)
+		}
+		decodedBody, err := StrictDecodeMessage(r.RawBody)
+		if err != nil || !reflectMessageIdentity(decodedBody, *r.BodyCandidate) {
+			return fmt.Errorf("%w: raw body does not match body candidate", ErrInvalidModel)
+		}
+	} else if r.DecodeErrorCode == "" {
+		return fmt.Errorf("%w: missing body candidate requires a body error code", ErrInvalidModel)
 	}
+	headerToken, hasHeaderToken := r.HeaderFacts.Token()
 	if r.HeaderToken != nil {
 		if err := r.HeaderToken.Validate(); err != nil {
 			return err
 		}
+		if !hasHeaderToken || headerToken != *r.HeaderToken {
+			return fmt.Errorf("%w: stable header facts do not match token", ErrInvalidModel)
+		}
+		_, completeHeaders := r.HeaderFacts.CompleteV1Token()
+		if completeHeaders != (r.HeaderErrorCode == "") {
+			return fmt.Errorf("%w: header error code does not match parsed header facts", ErrInvalidModel)
+		}
+	} else if r.HeaderErrorCode == "" {
+		return fmt.Errorf("%w: missing header token requires a header error code", ErrInvalidModel)
+	}
+	if (r.PublishAttemptID != "") != (r.PropertyErrorCode == "") {
+		return fmt.Errorf("%w: property error code does not match publish attempt facts", ErrInvalidModel)
+	}
+	completeHeaderToken, completeHeaders := r.HeaderFacts.CompleteV1Token()
+	canExecute := r.BodyCandidate != nil && r.HeaderToken != nil && completeHeaders &&
+		completeHeaderToken == *r.HeaderToken && lowerHex32Pattern.MatchString(r.PublishAttemptID) &&
+		r.DecodeErrorCode == "" && r.HeaderErrorCode == "" && r.PropertyErrorCode == "" &&
+		r.BodyCandidate.DispatchToken == *r.HeaderToken && r.BodyCandidate.Resource == r.RegisteredResource
+	if canExecute {
+		tenantHash, err := TenantHash(r.BodyCandidate.Resource, r.BodyCandidate.TenantID)
+		canExecute = err == nil && tenantHash == r.QueueTenantHash
 	}
 	if r.Message == nil {
+		if canExecute {
+			return fmt.Errorf("%w: canonical transport facts require an executable message", ErrInvalidModel)
+		}
 		return nil
 	}
-	if r.BodyCandidate == nil || r.HeaderToken == nil {
-		return fmt.Errorf("%w: executable message requires body and header candidates", ErrInvalidModel)
-	}
-	if len(r.RawBody) == 0 || len(r.RawBody) > MaxMessageBytes || r.DecodeErrorCode != "" {
-		return fmt.Errorf("%w: executable message requires a valid protocol-sized raw body", ErrInvalidModel)
+	if !canExecute {
+		return fmt.Errorf("%w: executable message requires canonical transport facts", ErrInvalidModel)
 	}
 	decodedBody, err := StrictDecodeMessage(r.RawBody)
 	if err != nil || !reflectMessageIdentity(decodedBody, *r.BodyCandidate) {
@@ -340,10 +441,6 @@ func (r PrepareRequest) Validate() error {
 		r.Message.Resource != r.RegisteredResource {
 		return fmt.Errorf("%w: executable transport identities do not agree", ErrInvalidModel)
 	}
-	tenantHash, err := TenantHash(r.Message.Resource, r.Message.TenantID)
-	if err != nil || tenantHash != r.QueueTenantHash {
-		return fmt.Errorf("%w: executable message does not match queue tenant", ErrInvalidModel)
-	}
 	return nil
 }
 
@@ -351,17 +448,12 @@ func reflectMessageIdentity(left, right Message) bool {
 	return left == right
 }
 
-func validateOptionalBoundedText(name, value string, maxBytes int) error {
+func validateOptionalReasonCode(name, value string) error {
 	if value == "" {
 		return nil
 	}
-	if len(value) > maxBytes || !utf8.ValidString(value) {
-		return fmt.Errorf("%w: %s is not bounded UTF-8", ErrInvalidModel, name)
-	}
-	for _, character := range value {
-		if character == 0 || unicode.IsControl(character) {
-			return fmt.Errorf("%w: %s contains a control character", ErrInvalidModel, name)
-		}
+	if len(value) > maxDecodeErrorBytes || !reasonCodePattern.MatchString(value) {
+		return fmt.Errorf("%w: %s must be canonical bounded ASCII", ErrInvalidModel, name)
 	}
 	return nil
 }
@@ -1268,6 +1360,24 @@ func (r PublishReceipt) Validate() error {
 	return nil
 }
 
+// DeadLetterRequest separates the trusted consumer context and bounded reason
+// from untrusted delivery facts. Rabbit topology must use Delivery's registered
+// resource and never body/header resource values.
+type DeadLetterRequest struct {
+	Delivery   PrepareRequest `json:"delivery"`
+	ReasonCode string         `json:"reason_code"`
+}
+
+func (r DeadLetterRequest) Validate() error {
+	if err := r.Delivery.Validate(); err != nil {
+		return err
+	}
+	if !reasonCodePattern.MatchString(r.ReasonCode) {
+		return fmt.Errorf("%w: dead-letter reason must be canonical bounded ASCII", ErrInvalidModel)
+	}
+	return nil
+}
+
 // Delivery is the transport boundary exposed to runtimes and tests, avoiding
 // any dependency on amqp.Delivery in domain code.
 type Delivery interface {
@@ -1278,10 +1388,12 @@ type Delivery interface {
 
 type RabbitClient interface {
 	EnsureTenantTopology(ctx context.Context, resource, tenant string) error
+	// Publish methods return a non-zero receipt on every outcome after an
+	// attempt ID has been allocated, including return, NACK, and timeout.
 	PublishMandatoryConfirmed(ctx context.Context, message Message) (PublishReceipt, error)
 	GetOne(ctx context.Context, resource, tenant string) (Delivery, bool, error)
 	ReadyDepth(ctx context.Context, resource, tenant string) (int64, error)
-	PublishDeadLetterConfirmed(ctx context.Context, resource string, request PrepareRequest) (PublishReceipt, error)
+	PublishDeadLetterConfirmed(ctx context.Context, request DeadLetterRequest) (PublishReceipt, error)
 	Close() error
 }
 

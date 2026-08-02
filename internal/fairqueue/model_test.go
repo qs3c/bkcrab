@@ -33,6 +33,17 @@ func validTestMessage() Message {
 	}
 }
 
+func validHeaderFacts(token DispatchToken) StableHeaderFacts {
+	version := int32(MessageVersion1)
+	resource := token.Resource
+	taskID := token.TaskID
+	generation := int64(token.Generation)
+	return StableHeaderFacts{
+		ProtocolVersion: &version, Resource: &resource, TaskID: &taskID,
+		DispatchGeneration: &generation,
+	}
+}
+
 func TestMessageV1StrictJSONRoundTrip(t *testing.T) {
 	want := validTestMessage()
 	raw, err := json.Marshal(want)
@@ -199,8 +210,10 @@ func TestPrepareResultValidateForBindsClaimToRequest(t *testing.T) {
 		Message:            &message,
 		BodyCandidate:      &body,
 		HeaderToken:        &header,
+		HeaderFacts:        validHeaderFacts(header),
 		RegisteredResource: message.Resource,
 		QueueTenantHash:    hash,
+		PublishAttemptID:   testOperationID,
 		RawBody:            rawBody,
 	}
 	prepared := testPreparedTask{}
@@ -247,6 +260,9 @@ func TestPrepareResultValidateForBindsClaimToRequest(t *testing.T) {
 
 	repairOnly := request
 	repairOnly.Message = nil
+	repairOnly.BodyCandidate = nil
+	repairOnly.RawBody = []byte(`{}`)
+	repairOnly.DecodeErrorCode = "invalid-body"
 	nonClaimed := PrepareResult{
 		Disposition:     PrepareDuplicateStaleTerminal,
 		DeliveryAction:  DeliveryAckRelease,
@@ -273,6 +289,7 @@ func TestPrepareRequestExecutableGateAndSafeJSON(t *testing.T) {
 		Message:            &message,
 		BodyCandidate:      &body,
 		HeaderToken:        &header,
+		HeaderFacts:        validHeaderFacts(header),
 		RegisteredResource: message.Resource,
 		QueueTenantHash:    hash,
 		PublishAttemptID:   testOperationID,
@@ -285,7 +302,7 @@ func TestPrepareRequestExecutableGateAndSafeJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{message.TenantID, "task_id", "raw_body", "body_candidate", "header_token"} {
+	for _, secret := range []string{message.TenantID, "task_id", `"raw_body":`, "body_candidate", "header_token"} {
 		if strings.Contains(string(safe), secret) {
 			t.Fatalf("PrepareRequest JSON leaked %q: %s", secret, safe)
 		}
@@ -297,10 +314,32 @@ func TestPrepareRequestExecutableGateAndSafeJSON(t *testing.T) {
 		t.Fatal("executable request without header accepted")
 	}
 
-	repairOnly := missingHeader
+	repairOnly := request
 	repairOnly.Message = nil
+	repairOnly.BodyCandidate = nil
+	repairOnly.RawBody = []byte(`{}`)
+	repairOnly.DecodeErrorCode = "invalid-body"
 	if err := repairOnly.Validate(); err != nil {
 		t.Fatalf("repair-only request rejected: %v", err)
+	}
+	silentlyDowngraded := request
+	silentlyDowngraded.Message = nil
+	if err := silentlyDowngraded.Validate(); err == nil {
+		t.Fatal("canonical transport facts without executable message accepted")
+	}
+	mismatchToken := DispatchToken{Resource: header.Resource, TaskID: "43", Generation: header.Generation}
+	crossFactMismatch := request
+	crossFactMismatch.Message = nil
+	crossFactMismatch.HeaderToken = &mismatchToken
+	crossFactMismatch.HeaderFacts = validHeaderFacts(mismatchToken)
+	if err := crossFactMismatch.Validate(); err != nil {
+		t.Fatalf("repair-only body/header mismatch rejected: %v", err)
+	}
+	queueMismatch := request
+	queueMismatch.Message = nil
+	queueMismatch.QueueTenantHash = strings.Repeat("0", 64)
+	if err := queueMismatch.Validate(); err != nil {
+		t.Fatalf("repair-only queue mismatch rejected: %v", err)
 	}
 
 	wrongHash := request
@@ -323,8 +362,55 @@ func TestPrepareRequestExecutableGateAndSafeJSON(t *testing.T) {
 	if err := decodeFailedClaim.Validate(); err == nil {
 		t.Fatal("executable request with a decode error accepted")
 	}
+	missingAttemptClaim := request
+	missingAttemptClaim.PublishAttemptID = ""
+	if err := missingAttemptClaim.Validate(); err == nil {
+		t.Fatal("executable request without a canonical publish attempt accepted")
+	}
+	mismatchedHeaderFacts := request
+	mismatchedHeaderFacts.HeaderFacts = validHeaderFacts(DispatchToken{
+		Resource: header.Resource, TaskID: "43", Generation: header.Generation,
+	})
+	if err := mismatchedHeaderFacts.Validate(); err == nil {
+		t.Fatal("header token/facts mismatch accepted")
+	}
+	missingRepairHeaderToken := request
+	missingRepairHeaderToken.Message = nil
+	missingRepairHeaderToken.HeaderToken = nil
+	if err := missingRepairHeaderToken.Validate(); err == nil {
+		t.Fatal("missing registry-validated header token without an error accepted")
+	}
+	missingRepairHeaderToken.HeaderErrorCode = "unregistered-header-resource"
+	if err := missingRepairHeaderToken.Validate(); err != nil {
+		t.Fatalf("registry-rejected generic header facts were not preserved safely: %v", err)
+	}
+	registryRejectedBody := request
+	registryRejectedBody.Message = nil
+	registryRejectedBody.BodyCandidate = nil
+	registryRejectedBody.DecodeErrorCode = "unregistered-body-resource"
+	if err := registryRejectedBody.Validate(); err != nil {
+		t.Fatalf("registry-rejected generic body was not preserved safely: %v", err)
+	}
+	invalidAttempt := request
+	invalidAttempt.Message = nil
+	invalidAttempt.PublishAttemptID = "attacker supplied text"
+	invalidAttempt.PropertyErrorCode = "invalid-properties"
+	if err := invalidAttempt.Validate(); err == nil {
+		t.Fatal("non-canonical publish attempt retained")
+	}
+	incompleteHeadersWithoutError := request
+	incompleteHeadersWithoutError.Message = nil
+	incompleteHeadersWithoutError.HeaderFacts.ProtocolVersion = nil
+	if err := incompleteHeadersWithoutError.Validate(); err == nil {
+		t.Fatal("incomplete headers without an error code accepted")
+	}
+	incompleteHeadersWithoutError.HeaderErrorCode = "invalid-headers"
+	if err := incompleteHeadersWithoutError.Validate(); err != nil {
+		t.Fatalf("repair locator with an independent header error rejected: %v", err)
+	}
 
 	oversizedProtocolBody := repairOnly
+	oversizedProtocolBody.BodyCandidate = nil
 	oversizedProtocolBody.RawBody = make([]byte, MaxMessageBytes+1)
 	oversizedProtocolBody.DecodeErrorCode = "body-too-large"
 	if err := oversizedProtocolBody.Validate(); err != nil {
@@ -338,11 +424,56 @@ func TestPrepareRequestExecutableGateAndSafeJSON(t *testing.T) {
 	if err := poison.ValidateFor(oversizedProtocolBody, nil); err != nil {
 		t.Fatalf("oversized protocol body could not reach poison/DLQ: %v", err)
 	}
+	forgedRepairLocator := request
+	forgedRepairLocator.Message = nil
+	forgedRepairLocator.RawBody = []byte(`{}`)
+	forgedRepairLocator.DecodeErrorCode = ""
+	if err := forgedRepairLocator.Validate(); err == nil {
+		t.Fatal("repair-only body candidate detached from raw body accepted")
+	}
 
 	oversizedTransportBody := repairOnly
+	oversizedTransportBody.BodyCandidate = nil
 	oversizedTransportBody.RawBody = make([]byte, MaxRawDeliveryBytes+1)
 	if err := oversizedTransportBody.Validate(); err == nil {
 		t.Fatal("raw body beyond transport retention limit accepted")
+	}
+	omittedTransportBody := request
+	omittedTransportBody.Message = nil
+	omittedTransportBody.BodyCandidate = nil
+	omittedTransportBody.RawBody = nil
+	omittedTransportBody.RawBodyOmitted = true
+	omittedTransportBody.RawBodySize = MaxRawDeliveryBytes + 1
+	omittedTransportBody.RawBodySHA256 = strings.Repeat("a", 64)
+	omittedTransportBody.DecodeErrorCode = "raw-body-too-large"
+	if err := omittedTransportBody.Validate(); err != nil {
+		t.Fatalf("bounded oversized-delivery metadata rejected: %v", err)
+	}
+	deadLetter := DeadLetterRequest{Delivery: omittedTransportBody, ReasonCode: "body-too-large"}
+	if err := deadLetter.Validate(); err != nil {
+		t.Fatalf("DeadLetterRequest.Validate() error = %v", err)
+	}
+	deadLetter.ReasonCode = "unsafe reason text"
+	if err := deadLetter.Validate(); err == nil {
+		t.Fatal("unsafe dead-letter reason accepted")
+	}
+}
+
+func TestStableHeaderFactsPreserveRepairLocator(t *testing.T) {
+	token := validTestMessage().DispatchToken
+	facts := validHeaderFacts(token)
+	if err := facts.Validate(); err != nil {
+		t.Fatalf("StableHeaderFacts.Validate() error = %v", err)
+	}
+	if got, ok := facts.CompleteV1Token(); !ok || got != token {
+		t.Fatalf("CompleteV1Token() = %#v, %v", got, ok)
+	}
+	facts.ProtocolVersion = nil
+	if got, ok := facts.Token(); !ok || got != token {
+		t.Fatalf("repair Token() = %#v, %v", got, ok)
+	}
+	if _, ok := facts.CompleteV1Token(); ok {
+		t.Fatal("incomplete protocol facts authorized execution")
 	}
 }
 
@@ -923,7 +1054,7 @@ func (fakeRabbitClient) GetOne(context.Context, string, string) (Delivery, bool,
 	return nil, false, nil
 }
 func (fakeRabbitClient) ReadyDepth(context.Context, string, string) (int64, error) { return 0, nil }
-func (fakeRabbitClient) PublishDeadLetterConfirmed(context.Context, string, PrepareRequest) (PublishReceipt, error) {
+func (fakeRabbitClient) PublishDeadLetterConfirmed(context.Context, DeadLetterRequest) (PublishReceipt, error) {
 	return PublishReceipt{}, nil
 }
 func (fakeRabbitClient) Close() error { return nil }
