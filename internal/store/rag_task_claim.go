@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -14,11 +16,12 @@ import (
 // IndexFence is the immutable capability held by one claimed index attempt.
 // Every worker mutation must match all fields and an unexpired database lease.
 type IndexFence struct {
-	TaskID          int64
-	DocID           string
-	DocVersion      int64
-	ClaimGeneration int64
-	LeaseOwner      string
+	TaskID                    int64
+	DocID                     string
+	DocVersion                int64
+	ClaimGeneration           int64
+	LeaseOwner                string
+	ExpectedWriterFingerprint string
 }
 
 type RAGIndexClaim struct {
@@ -38,6 +41,209 @@ type RAGIndexActivation struct {
 	VersionResult RAGDocumentVersionResult
 	ChunkCount    int
 	TokenCount    int
+}
+
+type RAGFairQueueClaimDisposition string
+
+const (
+	RAGFairQueueClaimed                RAGFairQueueClaimDisposition = "claimed"
+	RAGFairQueueClaimCapacityDeferred  RAGFairQueueClaimDisposition = "capacity-deferred"
+	RAGFairQueueClaimDuplicateStale    RAGFairQueueClaimDisposition = "duplicate-stale-terminal"
+	RAGFairQueueClaimCanonicalTerminal RAGFairQueueClaimDisposition = "canonical-repaired-terminal"
+	RAGFairQueueClaimCanonicalRetry    RAGFairQueueClaimDisposition = "canonical-repaired-retry"
+	RAGFairQueueClaimPoison            RAGFairQueueClaimDisposition = "poison"
+	RAGFairQueueClaimPoisonRepaired    RAGFairQueueClaimDisposition = "poison-repaired"
+)
+
+type RAGFairQueueClaimLimits struct {
+	GlobalConcurrency       int
+	PerUserBurstConcurrency int
+	AdvisoryLockTimeout     time.Duration
+	MaintenanceRetryDelay   time.Duration
+}
+
+func (l RAGFairQueueClaimLimits) normalized() (RAGFairQueueClaimLimits, error) {
+	if l.GlobalConcurrency <= 0 || l.PerUserBurstConcurrency <= 0 ||
+		l.PerUserBurstConcurrency > l.GlobalConcurrency {
+		return RAGFairQueueClaimLimits{}, errors.New("store: invalid RAG fair queue capacity limits")
+	}
+	if l.AdvisoryLockTimeout == 0 {
+		l.AdvisoryLockTimeout = 5 * time.Second
+	}
+	if l.MaintenanceRetryDelay == 0 {
+		l.MaintenanceRetryDelay = time.Second
+	}
+	if l.AdvisoryLockTimeout <= 0 || l.MaintenanceRetryDelay <= 0 {
+		return RAGFairQueueClaimLimits{}, errors.New("store: invalid RAG fair queue claim timing")
+	}
+	return l, nil
+}
+
+type RAGFairQueueClaimResult struct {
+	Disposition RAGFairQueueClaimDisposition
+	Claim       *RAGIndexClaim
+}
+
+type ragIndexClaimMode struct {
+	expectedUserID             string
+	expectedDispatchGeneration int64
+	expectedWriterFingerprint  string
+	limits                     *RAGFairQueueClaimLimits
+	sessionIdentity            *fairQueueMySQLIdentity
+	capacityLockName           string
+}
+
+var ErrRAGFairQueueCapacityLockUnavailable = errors.New("store: RAG fair queue capacity lock unavailable")
+
+func (m ragIndexClaimMode) fair() bool { return m.limits != nil }
+
+func (d *DBStore) commitRAGIndexClaimTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	mode ragIndexClaimMode,
+) error {
+	if mode.sessionIdentity != nil {
+		if mode.capacityLockName == "" {
+			return ErrFairQueueUnsafeConnection
+		}
+		if err := verifyFairQueueMySQLSession(
+			ctx, tx, *mode.sessionIdentity, mode.capacityLockName,
+		); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		if mode.sessionIdentity != nil {
+			return errors.Join(ErrFairQueueUnsafeConnection, err)
+		}
+		return err
+	}
+	return nil
+}
+
+func fairQueueCapacityLockName(database, resource string) string {
+	digest := sha256.Sum256([]byte(database + "\x00" + resource))
+	return "bkcrab:fq:" + hex.EncodeToString(digest[:])[:48]
+}
+
+func (s *RAGFairQueueStore) ClaimRAGIndexTaskByID(
+	ctx context.Context,
+	taskID int64,
+	expectedUserID string,
+	expectedDispatchGeneration int64,
+	workerID string,
+	leaseDuration time.Duration,
+	limits RAGFairQueueClaimLimits,
+) (result RAGFairQueueClaimResult, err error) {
+	result.Disposition = RAGFairQueueClaimDuplicateStale
+	if s == nil || s.store == nil {
+		return result, ErrFairQueueMySQLRequired
+	}
+	if taskID <= 0 || strings.TrimSpace(expectedUserID) == "" || expectedDispatchGeneration <= 0 {
+		return result, errors.New("store: invalid RAG fair queue delivery identity")
+	}
+	if !validRAGWorkerID(workerID) {
+		return result, errors.New("store: RAG worker id must be 1..96 trimmed bytes")
+	}
+	if leaseDuration <= 0 {
+		return result, errors.New("store: RAG lease duration must be positive")
+	}
+	limits, err = limits.normalized()
+	if err != nil {
+		return result, err
+	}
+	err = s.store.withFairQueueExpectedWriterConn(ctx, s.expectedWriter,
+		func(conn *sql.Conn, identity fairQueueMySQLIdentity) (callbackErr error) {
+			lockName := fairQueueCapacityLockName(identity.database, "rag.index")
+			timeoutSeconds := limits.AdvisoryLockTimeout.Seconds()
+			if deadline, ok := ctx.Deadline(); ok {
+				remaining := time.Until(deadline).Seconds()
+				if remaining <= 0 {
+					return context.DeadlineExceeded
+				}
+				if remaining < timeoutSeconds {
+					timeoutSeconds = remaining
+				}
+			}
+			var acquired sql.NullInt64
+			if lockErr := conn.QueryRowContext(ctx, `SELECT GET_LOCK(?, ?)`, lockName, timeoutSeconds).
+				Scan(&acquired); lockErr != nil {
+				return errors.Join(ErrRAGFairQueueCapacityLockUnavailable,
+					ErrFairQueueUnsafeConnection, lockErr)
+			}
+			if !acquired.Valid {
+				return errors.Join(ErrRAGFairQueueCapacityLockUnavailable, ErrFairQueueUnsafeConnection)
+			}
+			if acquired.Int64 != 1 {
+				return ErrRAGFairQueueCapacityLockUnavailable
+			}
+
+			lockHeld := true
+			defer func() {
+				if !lockHeld {
+					return
+				}
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), fairQueueOperationCleanupTimeout)
+				defer cancel()
+				var released sql.NullInt64
+				releaseErr := conn.QueryRowContext(cleanupCtx, `SELECT RELEASE_LOCK(?)`, lockName).Scan(&released)
+				lockHeld = false
+				if releaseErr != nil || !released.Valid || released.Int64 != 1 {
+					callbackErr = errors.Join(callbackErr, ErrFairQueueUnsafeConnection, releaseErr)
+				}
+			}()
+			if verifyErr := verifyFairQueueMySQLSession(ctx, conn, identity, lockName); verifyErr != nil {
+				lockHeld = false
+				return errors.Join(verifyErr, discardFairQueueSQLConn(conn))
+			}
+
+			var docID string
+			lookupErr := conn.QueryRowContext(ctx,
+				`SELECT doc_id FROM rag_index_tasks WHERE id=?`, taskID).Scan(&docID)
+			if errors.Is(lookupErr, sql.ErrNoRows) {
+				return nil
+			}
+			if lookupErr != nil {
+				return lookupErr
+			}
+			var route ragOwnershipRoute
+			routeErr := conn.QueryRowContext(ctx, `SELECT d.kb_id,kb.user_id
+				FROM rag_documents d JOIN rag_kbs kb ON kb.id=d.kb_id WHERE d.id=?`, docID).
+				Scan(&route.KBID, &route.UserID)
+			if errors.Is(routeErr, sql.ErrNoRows) {
+				routeErr = ErrNotFound
+			}
+			tx, beginErr := conn.BeginTx(ctx, nil)
+			if beginErr != nil {
+				return errors.Join(ErrFairQueueUnsafeConnection, beginErr)
+			}
+			defer func() {
+				if rollbackErr := tx.Rollback(); rollbackErr != nil &&
+					!errors.Is(rollbackErr, sql.ErrTxDone) {
+					callbackErr = errors.Join(
+						callbackErr, ErrFairQueueUnsafeConnection, rollbackErr,
+					)
+				}
+			}()
+			claimResult, _, claimErr := s.store.claimRAGIndexTaskIDInTx(
+				ctx, tx, taskID, docID, route, routeErr, workerID, leaseDuration,
+				ragIndexClaimMode{
+					expectedUserID: expectedUserID, expectedDispatchGeneration: expectedDispatchGeneration,
+					expectedWriterFingerprint: s.expectedWriter, limits: &limits,
+					sessionIdentity: &identity, capacityLockName: lockName,
+				},
+			)
+			if claimErr == nil {
+				result = claimResult
+			}
+			return claimErr
+		})
+	if err != nil {
+		return RAGFairQueueClaimResult{
+			Disposition: RAGFairQueueClaimDuplicateStale,
+		}, err
+	}
+	return result, nil
 }
 
 // RAGLegacyTaskSnapshotBuilder is supplied only after the RAG service and its
@@ -255,7 +461,6 @@ func (d *DBStore) claimOneRAGIndexTask(
 	if err != nil {
 		return nil, false, err
 	}
-
 	route, routeErr := d.ragOwnershipRoute(ctx, docID)
 	if routeErr != nil && !errors.Is(routeErr, ErrNotFound) {
 		return nil, false, routeErr
@@ -265,114 +470,225 @@ func (d *DBStore) claimOneRAGIndexTask(
 		return nil, false, err
 	}
 	defer tx.Rollback()
+	result, consumed, err := d.claimRAGIndexTaskIDInTx(
+		ctx, tx, taskID, docID, route, routeErr, workerID, leaseDuration, ragIndexClaimMode{},
+	)
+	return result.Claim, consumed, err
+}
+
+func (d *DBStore) claimRAGIndexTaskIDInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	taskID int64,
+	docID string,
+	route ragOwnershipRoute,
+	routeErr error,
+	workerID string,
+	leaseDuration time.Duration,
+	mode ragIndexClaimMode,
+) (RAGFairQueueClaimResult, bool, error) {
+	duplicate := RAGFairQueueClaimResult{Disposition: RAGFairQueueClaimDuplicateStale}
+	if tx == nil {
+		return duplicate, false, errors.New("store: nil RAG claim transaction")
+	}
+	if mode.fair() {
+		if strings.TrimSpace(mode.expectedUserID) == "" || mode.expectedDispatchGeneration <= 0 ||
+			!lowerHex64Pattern.MatchString(mode.expectedWriterFingerprint) {
+			return duplicate, false, errors.New("store: invalid RAG fair queue claim identity")
+		}
+		normalized, err := mode.limits.normalized()
+		if err != nil {
+			return duplicate, false, err
+		}
+		mode.limits = &normalized
+	}
+	nowExpr := d.ragNowExpr()
+	if routeErr != nil && !errors.Is(routeErr, ErrNotFound) {
+		return duplicate, false, routeErr
+	}
 	if errors.Is(routeErr, ErrNotFound) {
 		task, taskErr := d.ragTaskInTx(ctx, tx, taskID)
 		if ragIsNoRows(taskErr) {
-			return nil, true, nil
+			return duplicate, true, nil
 		}
 		if taskErr != nil {
-			return nil, false, taskErr
+			return duplicate, false, taskErr
 		}
 		if task.DocID != docID {
-			return nil, true, nil
+			return duplicate, true, nil
 		}
-		if _, updateErr := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
+		now, nowErr := d.ragDBNow(ctx, tx)
+		if nowErr != nil {
+			return duplicate, false, nowErr
+		}
+		if mode.fair() && (task.DispatchGeneration != mode.expectedDispatchGeneration ||
+			task.DispatchGeneration <= task.ClaimGeneration || !ragTaskDue(task, now)) {
+			return duplicate, true, nil
+		}
+		result, updateErr := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 			status='FAILED',error_msg='orphan index task',finished_at=%s,
-			lease_owner='',lease_until=NULL,heartbeat_at=NULL
+			lease_owner='',lease_until=NULL,heartbeat_at=NULL,next_run_at=NULL
 			WHERE id=%s AND doc_id=%s AND doc_version=%s AND dispatch_generation=%s
 			AND claim_generation=%s AND status IN ('PENDING','RUNNING')`, nowExpr,
 			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)), taskID, task.DocID,
-			task.DocVersion, task.DispatchGeneration, task.ClaimGeneration); updateErr != nil {
-			return nil, false, updateErr
+			task.DocVersion, task.DispatchGeneration, task.ClaimGeneration)
+		if updateErr != nil {
+			return duplicate, false, updateErr
 		}
-		return nil, true, tx.Commit()
+		changed, rowsErr := ragRowsAffected(result)
+		if rowsErr != nil {
+			return duplicate, false, rowsErr
+		}
+		if !changed {
+			return duplicate, true, nil
+		}
+		if err := d.commitRAGIndexClaimTx(ctx, tx, mode); err != nil {
+			return duplicate, false, err
+		}
+		return RAGFairQueueClaimResult{Disposition: RAGFairQueueClaimCanonicalTerminal}, true, nil
 	}
 
 	_, ownershipActive, err := d.lockRAGKBOwnerTx(ctx, tx, route.KBID, route.UserID)
 	if err != nil {
-		return nil, false, err
+		return duplicate, false, err
 	}
 	doc, err := d.ragDocumentInTx(ctx, tx, docID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, true, nil
+		return duplicate, true, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return duplicate, false, err
 	}
 	if doc.KBID != route.KBID {
-		return nil, true, nil
+		return duplicate, true, nil
 	}
+	maintenanceActive := false
 	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, doc.ID); err != nil {
 		if errors.Is(err, ErrRAGDocumentMaintenanceActive) {
-			return nil, true, nil
+			maintenanceActive = true
+		} else {
+			return duplicate, false, err
 		}
-		return nil, false, err
 	}
 	task, err := d.ragTaskInTx(ctx, tx, taskID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, true, nil
+		return duplicate, true, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return duplicate, false, err
 	}
 	now, err := d.ragDBNow(ctx, tx)
 	if err != nil {
-		return nil, false, err
+		return duplicate, false, err
 	}
 	if task.DocID != doc.ID || !ragTaskDue(task, now) {
-		return nil, true, nil
+		return duplicate, true, nil
 	}
 	if strings.TrimSpace(task.UserID) != "" && task.UserID != route.UserID {
-		if err := d.failInvalidRAGTaskInTx(ctx, tx, doc, task, "index task owner does not match knowledge base owner"); err != nil {
-			return nil, false, err
+		return duplicate, false, ErrRAGFairQueueCanonicalOwner
+	}
+	if mode.fair() {
+		if task.UserID == "" {
+			return duplicate, false, ErrRAGFairQueueCanonicalOwner
 		}
-		return nil, true, tx.Commit()
+		if task.DispatchGeneration != mode.expectedDispatchGeneration ||
+			task.DispatchGeneration <= task.ClaimGeneration {
+			return duplicate, true, nil
+		}
+		if mode.expectedUserID != task.UserID {
+			return RAGFairQueueClaimResult{Disposition: RAGFairQueueClaimPoison}, true, nil
+		}
+	}
+	if maintenanceActive {
+		if !mode.fair() {
+			return duplicate, true, nil
+		}
+		changed, repairErr := d.deferRAGFairQueueMaintenanceInTx(
+			ctx, tx, task, now, mode.limits.MaintenanceRetryDelay,
+		)
+		if repairErr != nil {
+			return duplicate, false, repairErr
+		}
+		if !changed {
+			return duplicate, true, nil
+		}
+		if err := d.commitRAGIndexClaimTx(ctx, tx, mode); err != nil {
+			return duplicate, false, err
+		}
+		return RAGFairQueueClaimResult{Disposition: RAGFairQueueClaimCanonicalRetry}, true, nil
 	}
 	if !ownershipActive {
 		if err := d.supersedeRunnableRAGTasksInTx(ctx, tx, doc.ID); err != nil {
-			return nil, false, err
+			return duplicate, false, err
 		}
-		return nil, true, tx.Commit()
+		if err := d.commitRAGIndexClaimTx(ctx, tx, mode); err != nil {
+			return duplicate, false, err
+		}
+		return RAGFairQueueClaimResult{Disposition: RAGFairQueueClaimCanonicalTerminal}, true, nil
 	}
 	if doc.Version != task.DocVersion {
 		if err := d.failInvalidRAGTaskInTx(ctx, tx, doc, task,
 			"stale task does not match document target version"); err != nil {
-			return nil, false, err
+			return duplicate, false, err
 		}
-		return nil, true, tx.Commit()
+		if err := d.commitRAGIndexClaimTx(ctx, tx, mode); err != nil {
+			return duplicate, false, err
+		}
+		return RAGFairQueueClaimResult{Disposition: RAGFairQueueClaimCanonicalTerminal}, true, nil
 	}
 	version, err := d.ragVersionInTx(ctx, tx, task.DocID, task.DocVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := d.failInvalidRAGTaskInTx(ctx, tx, doc, task, "missing immutable version snapshot"); err != nil {
-			return nil, false, err
+			return duplicate, false, err
 		}
-		return nil, true, tx.Commit()
+		if err := d.commitRAGIndexClaimTx(ctx, tx, mode); err != nil {
+			return duplicate, false, err
+		}
+		return RAGFairQueueClaimResult{Disposition: RAGFairQueueClaimCanonicalTerminal}, true, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return duplicate, false, err
 	}
 	if validationErr := d.validateRAGVersionSnapshotForDocument(ctx, tx, doc, version); validationErr != nil {
 		if !errors.Is(validationErr, ErrRAGDocumentVersionIncomplete) &&
 			!errors.Is(validationErr, ErrRAGDocumentVersionMismatch) &&
 			!errors.Is(validationErr, ErrRAGDocumentSourceConflict) &&
 			!errors.Is(validationErr, ErrNotFound) {
-			return nil, false, validationErr
+			return duplicate, false, validationErr
 		}
 		if err := d.failInvalidRAGTaskInTx(ctx, tx, doc, task,
 			"invalid immutable version snapshot: "+validationErr.Error()); err != nil {
-			return nil, false, err
+			return duplicate, false, err
 		}
-		return nil, true, tx.Commit()
+		if err := d.commitRAGIndexClaimTx(ctx, tx, mode); err != nil {
+			return duplicate, false, err
+		}
+		return RAGFairQueueClaimResult{Disposition: RAGFairQueueClaimCanonicalTerminal}, true, nil
 	}
 	if err := d.reconcileRAGDocumentSourceHash(ctx, tx, doc, version.SourceSHA256); err != nil {
 		if errors.Is(err, ErrRAGDocumentVersionMismatch) || errors.Is(err, ErrRAGDocumentSourceConflict) {
 			if failErr := d.failInvalidRAGTaskInTx(ctx, tx, doc, task,
 				"invalid immutable version source: "+err.Error()); failErr != nil {
-				return nil, false, failErr
+				return duplicate, false, failErr
 			}
-			return nil, true, tx.Commit()
+			if commitErr := d.commitRAGIndexClaimTx(ctx, tx, mode); commitErr != nil {
+				return duplicate, false, commitErr
+			}
+			return RAGFairQueueClaimResult{Disposition: RAGFairQueueClaimCanonicalTerminal}, true, nil
 		}
-		return nil, false, err
+		return duplicate, false, err
+	}
+
+	if mode.fair() {
+		available, capacityErr := d.ragFairQueueCapacityAvailableInTx(
+			ctx, tx, task.UserID, *mode.limits,
+		)
+		if capacityErr != nil {
+			return duplicate, false, capacityErr
+		}
+		if !available {
+			return RAGFairQueueClaimResult{Disposition: RAGFairQueueClaimCapacityDeferred}, true, nil
+		}
 	}
 
 	oldStatus := task.Status
@@ -385,18 +701,25 @@ func (d *DBStore) claimOneRAGIndexTask(
 		allocateFresh = true
 	case task.Status == "RUNNING" && version.Status == RAGDocumentVersionRunning:
 		if retryCount >= task.MaxRetry {
-			if err := d.failInvalidRAGTaskInTx(ctx, tx, doc, task, "index lease expired after retry budget exhausted"); err != nil {
-				return nil, false, err
+			if err := d.failInvalidRAGTaskInTx(ctx, tx, doc, task,
+				"index lease expired after retry budget exhausted"); err != nil {
+				return duplicate, false, err
 			}
-			return nil, true, tx.Commit()
+			if err := d.commitRAGIndexClaimTx(ctx, tx, mode); err != nil {
+				return duplicate, false, err
+			}
+			return RAGFairQueueClaimResult{Disposition: RAGFairQueueClaimCanonicalTerminal}, true, nil
 		}
 		retryCount++
 		allocateFresh = true
 	default:
 		if err := d.failInvalidRAGTaskInTx(ctx, tx, doc, task, "invalid task/version state"); err != nil {
-			return nil, false, err
+			return duplicate, false, err
 		}
-		return nil, true, tx.Commit()
+		if err := d.commitRAGIndexClaimTx(ctx, tx, mode); err != nil {
+			return duplicate, false, err
+		}
+		return RAGFairQueueClaimResult{Disposition: RAGFairQueueClaimCanonicalTerminal}, true, nil
 	}
 
 	if allocateFresh {
@@ -409,14 +732,14 @@ func (d *DBStore) claimOneRAGIndexTask(
 			d.ph(1), nowExpr, d.ph(2), d.ph(3), d.ph(4)), terminalStatus,
 			task.DocID, oldVersion, version.Status)
 		if err != nil {
-			return nil, false, err
+			return duplicate, false, err
 		}
 		if ok, err := ragRowsAffected(result); err != nil || !ok {
-			return nil, true, err
+			return duplicate, true, err
 		}
 		newVersion, err := d.nextRAGDocumentVersionInTx(ctx, tx, doc)
 		if err != nil {
-			return nil, false, err
+			return duplicate, false, err
 		}
 		copyVersion := *version
 		copyVersion.DocVersion = newVersion
@@ -425,7 +748,7 @@ func (d *DBStore) claimOneRAGIndexTask(
 		prepareNewRAGDocumentVersion(&copyVersion)
 		copyVersion.Status = RAGDocumentVersionRunning
 		if err := d.createRAGDocumentVersion(ctx, tx, &copyVersion); err != nil {
-			return nil, false, err
+			return duplicate, false, err
 		}
 		version = &copyVersion
 		task.DocVersion = newVersion
@@ -434,7 +757,7 @@ func (d *DBStore) claimOneRAGIndexTask(
 			progress_current=0,progress_total=0,progress_unit='',degraded=FALSE,warning_count=0
 			WHERE id=%s AND version=%s`, d.ph(1), d.ph(2), d.ph(3)),
 			newVersion, doc.ID, doc.Version); err != nil {
-			return nil, false, err
+			return duplicate, false, err
 		}
 		doc.Version = newVersion
 	} else {
@@ -442,26 +765,31 @@ func (d *DBStore) claimOneRAGIndexTask(
 			status='RUNNING',updated_at=%s WHERE doc_id=%s AND doc_version=%s AND status='PENDING'`,
 			nowExpr, d.ph(1), d.ph(2)), task.DocID, task.DocVersion)
 		if err != nil {
-			return nil, false, err
+			return duplicate, false, err
 		}
 		if ok, err := ragRowsAffected(result); err != nil || !ok {
-			return nil, true, err
+			return duplicate, true, err
 		}
 		version.Status = RAGDocumentVersionRunning
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
 			status='PROCESSING',error_msg='',processing_stage='claimed'
 			WHERE id=%s AND version=%s`, d.ph(1), d.ph(2)), doc.ID, task.DocVersion); err != nil {
-			return nil, false, err
+			return duplicate, false, err
 		}
 	}
 
 	leaseUntil := now.Add(leaseDuration)
-	if task.ClaimGeneration == math.MaxInt64 {
-		return nil, false, ErrRAGDispatchGenerationExhausted
-	}
-	newGeneration := task.ClaimGeneration + 1
-	if task.DispatchGeneration > newGeneration {
-		newGeneration = task.DispatchGeneration
+	var newGeneration int64
+	if mode.fair() {
+		newGeneration = mode.expectedDispatchGeneration
+	} else {
+		if task.ClaimGeneration == math.MaxInt64 {
+			return duplicate, false, ErrRAGDispatchGenerationExhausted
+		}
+		newGeneration = task.ClaimGeneration + 1
+		if task.DispatchGeneration > newGeneration {
+			newGeneration = task.DispatchGeneration
+		}
 	}
 	condition := "status='PENDING' AND (next_run_at IS NULL OR next_run_at <= " + nowExpr + ")"
 	if oldStatus == "RUNNING" {
@@ -482,13 +810,13 @@ func (d *DBStore) claimOneRAGIndexTask(
 		workerID, leaseUntil, task.ID, oldVersion, task.DispatchGeneration,
 		task.ClaimGeneration, task.UserID)
 	if err != nil {
-		return nil, false, err
+		return duplicate, false, err
 	}
 	if ok, err := ragRowsAffected(result); err != nil || !ok {
-		return nil, true, err
+		return duplicate, true, err
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, false, err
+	if err := d.commitRAGIndexClaimTx(ctx, tx, mode); err != nil {
+		return duplicate, false, err
 	}
 	task.Status = "RUNNING"
 	task.UserID = route.UserID
@@ -506,8 +834,101 @@ func (d *DBStore) claimOneRAGIndexTask(
 	fence := IndexFence{
 		TaskID: task.ID, DocID: task.DocID, DocVersion: task.DocVersion,
 		ClaimGeneration: task.ClaimGeneration, LeaseOwner: task.LeaseOwner,
+		ExpectedWriterFingerprint: mode.expectedWriterFingerprint,
 	}
-	return &RAGIndexClaim{Task: *task, Version: *version, Fence: fence}, true, nil
+	claim := &RAGIndexClaim{Task: *task, Version: *version, Fence: fence}
+	return RAGFairQueueClaimResult{Disposition: RAGFairQueueClaimed, Claim: claim}, true, nil
+}
+
+func (d *DBStore) ragFairQueueCapacityAvailableInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	userID string,
+	limits RAGFairQueueClaimLimits,
+) (bool, error) {
+	base := ` FROM rag_index_tasks t
+		JOIN rag_documents d ON d.id=t.doc_id
+		JOIN rag_kbs kb ON kb.id=d.kb_id AND kb.user_id=t.user_id
+		JOIN users u ON u.id=kb.user_id
+		JOIN rag_document_versions v ON v.doc_id=t.doc_id AND v.doc_version=t.doc_version
+		WHERE t.status='RUNNING' AND t.dispatch_generation=t.claim_generation
+		AND t.claim_generation>0 AND t.lease_owner<>'' AND t.lease_until>` + d.ragNowExpr() + `
+		AND t.heartbeat_at IS NOT NULL AND t.next_run_at IS NULL
+		AND v.status='RUNNING' AND d.version=t.doc_version
+		AND UPPER(d.status)='PROCESSING' AND LOWER(kb.status)='active' AND LOWER(u.status)='active'`
+	var global int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*)`+base).Scan(&global); err != nil {
+		return false, err
+	}
+	if global >= limits.GlobalConcurrency {
+		return false, nil
+	}
+	var tenant int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*)`+base+` AND t.user_id=`+d.ph(1), userID).Scan(&tenant); err != nil {
+		return false, err
+	}
+	return tenant < limits.PerUserBurstConcurrency, nil
+}
+
+func (d *DBStore) repairRAGFairQueuePoisonInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	task *RAGIndexTaskRecord,
+	now time.Time,
+	maintenanceActive bool,
+	maintenanceDelay time.Duration,
+) (bool, error) {
+	base := task.DispatchGeneration
+	if task.ClaimGeneration > base {
+		base = task.ClaimGeneration
+	}
+	if base == math.MaxInt64 {
+		return false, ErrRAGDispatchGenerationExhausted
+	}
+	var nextRunAt any = task.NextRunAt
+	if maintenanceActive {
+		nextRunAt = now.Add(maintenanceDelay)
+	}
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
+		dispatch_generation=%s,dispatched_at=NULL,next_run_at=%s
+		WHERE id=%s AND doc_id=%s AND doc_version=%s AND user_id=%s AND status=%s
+		AND dispatch_generation=%s AND claim_generation=%s AND retry_count=%s
+		AND dispatch_generation>claim_generation`, d.ph(1), d.ph(2), d.ph(3), d.ph(4),
+		d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10)), base+1, nextRunAt,
+		task.ID, task.DocID, task.DocVersion, task.UserID, task.Status,
+		task.DispatchGeneration, task.ClaimGeneration, task.RetryCount)
+	if err != nil {
+		return false, err
+	}
+	return ragRowsAffected(result)
+}
+
+func (d *DBStore) deferRAGFairQueueMaintenanceInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	task *RAGIndexTaskRecord,
+	now time.Time,
+	delay time.Duration,
+) (bool, error) {
+	base := task.DispatchGeneration
+	if task.ClaimGeneration > base {
+		base = task.ClaimGeneration
+	}
+	if base == math.MaxInt64 {
+		return false, ErrRAGDispatchGenerationExhausted
+	}
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
+		dispatch_generation=%s,dispatched_at=NULL,next_run_at=%s
+		WHERE id=%s AND doc_id=%s AND doc_version=%s AND user_id=%s AND status=%s
+		AND dispatch_generation=%s AND claim_generation=%s AND retry_count=%s`,
+		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7),
+		d.ph(8), d.ph(9), d.ph(10)), base+1, now.Add(delay), task.ID, task.DocID,
+		task.DocVersion, task.UserID, task.Status, task.DispatchGeneration,
+		task.ClaimGeneration, task.RetryCount)
+	if err != nil {
+		return false, err
+	}
+	return ragRowsAffected(result)
 }
 
 func (d *DBStore) nextRAGDocumentVersionInTx(
@@ -564,15 +985,49 @@ func (d *DBStore) failInvalidRAGTaskInTx(
 }
 
 func (d *DBStore) CheckRAGIndexFence(ctx context.Context, fence IndexFence) (bool, error) {
+	if fence.ExpectedWriterFingerprint != "" {
+		if !lowerHex64Pattern.MatchString(fence.ExpectedWriterFingerprint) {
+			return false, ErrFairQueueWriterMismatch
+		}
+		var valid bool
+		err := d.withFairQueueExpectedWriterConn(ctx, fence.ExpectedWriterFingerprint,
+			func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+				var err error
+				valid, err = d.checkRAGIndexFenceOn(ctx, conn, fence, true)
+				return err
+			})
+		if err != nil {
+			return false, err
+		}
+		return valid, nil
+	}
+	return d.checkRAGIndexFenceOn(ctx, d.db, fence, false)
+}
+
+func (d *DBStore) checkRAGIndexFenceOn(
+	ctx context.Context,
+	exec ragExecutor,
+	fence IndexFence,
+	strictFair bool,
+) (bool, error) {
+	versionJoin := ""
+	strictConditions := ""
+	if strictFair {
+		versionJoin = ` JOIN rag_document_versions v
+			ON v.doc_id=t.doc_id AND v.doc_version=t.doc_version`
+		strictConditions = ` AND t.user_id=kb.user_id AND d.version=t.doc_version
+			AND UPPER(d.status)='PROCESSING' AND v.status='RUNNING'`
+	}
 	var present int
-	err := d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT 1 FROM rag_index_tasks t
+	err := exec.QueryRowContext(ctx, fmt.Sprintf(`SELECT 1 FROM rag_index_tasks t
 		JOIN rag_documents d ON d.id=t.doc_id JOIN rag_kbs kb ON kb.id=d.kb_id
-		JOIN users u ON u.id=kb.user_id
+		JOIN users u ON u.id=kb.user_id%s
 		WHERE t.id=%s AND t.doc_id=%s AND t.doc_version=%s AND t.claim_generation=%s
 		AND t.lease_owner=%s AND t.status='RUNNING' AND t.lease_until > %s
 		AND t.dispatch_generation=t.claim_generation
-		AND UPPER(d.status)<>'DELETING' AND LOWER(kb.status)='active' AND LOWER(u.status)='active'`,
-		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ragNowExpr()),
+		AND UPPER(d.status)<>'DELETING' AND LOWER(kb.status)='active' AND LOWER(u.status)='active'%s`,
+		versionJoin, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ragNowExpr(),
+		strictConditions),
 		fence.TaskID, fence.DocID, fence.DocVersion, fence.ClaimGeneration,
 		fence.LeaseOwner).Scan(&present)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -588,6 +1043,9 @@ func (d *DBStore) HeartbeatRAGIndexTask(
 ) (bool, error) {
 	if leaseDuration <= 0 {
 		return false, errors.New("store: RAG lease duration must be positive")
+	}
+	if fence.ExpectedWriterFingerprint != "" {
+		return d.heartbeatRAGIndexTaskFair(ctx, fence, leaseDuration)
 	}
 	now, err := d.ragDBNow(ctx, d.db)
 	if err != nil {
@@ -611,6 +1069,113 @@ func (d *DBStore) HeartbeatRAGIndexTask(
 	return ragRowsAffected(result)
 }
 
+func (d *DBStore) heartbeatRAGIndexTaskFair(
+	ctx context.Context,
+	fence IndexFence,
+	leaseDuration time.Duration,
+) (renewed bool, err error) {
+	if !lowerHex64Pattern.MatchString(fence.ExpectedWriterFingerprint) {
+		return false, ErrFairQueueWriterMismatch
+	}
+	err = d.withFairQueueExpectedWriterConn(ctx, fence.ExpectedWriterFingerprint,
+		func(conn *sql.Conn, identity fairQueueMySQLIdentity) (callbackErr error) {
+			lockName := fairQueueCapacityLockName(identity.database, "rag.index")
+			timeoutSeconds := fairQueueOperationStartLockTimeout.Seconds()
+			if deadline, ok := ctx.Deadline(); ok {
+				remaining := time.Until(deadline).Seconds()
+				if remaining <= 0 {
+					return context.DeadlineExceeded
+				}
+				if remaining < timeoutSeconds {
+					timeoutSeconds = remaining
+				}
+			}
+			var acquired sql.NullInt64
+			if lockErr := conn.QueryRowContext(ctx, `SELECT GET_LOCK(?, ?)`, lockName, timeoutSeconds).
+				Scan(&acquired); lockErr != nil {
+				return errors.Join(ErrRAGFairQueueCapacityLockUnavailable,
+					ErrFairQueueUnsafeConnection, lockErr)
+			}
+			if !acquired.Valid {
+				return errors.Join(ErrRAGFairQueueCapacityLockUnavailable, ErrFairQueueUnsafeConnection)
+			}
+			if acquired.Int64 != 1 {
+				return ErrRAGFairQueueCapacityLockUnavailable
+			}
+			lockHeld := true
+			defer func() {
+				if !lockHeld {
+					return
+				}
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), fairQueueOperationCleanupTimeout)
+				defer cancel()
+				var released sql.NullInt64
+				releaseErr := conn.QueryRowContext(cleanupCtx, `SELECT RELEASE_LOCK(?)`, lockName).Scan(&released)
+				lockHeld = false
+				if releaseErr != nil || !released.Valid || released.Int64 != 1 {
+					callbackErr = errors.Join(callbackErr, ErrFairQueueUnsafeConnection, releaseErr)
+				}
+			}()
+			if verifyErr := verifyFairQueueMySQLSession(ctx, conn, identity, lockName); verifyErr != nil {
+				lockHeld = false
+				return errors.Join(verifyErr, discardFairQueueSQLConn(conn))
+			}
+			tx, beginErr := conn.BeginTx(ctx, nil)
+			if beginErr != nil {
+				return errors.Join(ErrFairQueueUnsafeConnection, beginErr)
+			}
+			defer func() {
+				if rollbackErr := tx.Rollback(); rollbackErr != nil &&
+					!errors.Is(rollbackErr, sql.ErrTxDone) {
+					callbackErr = errors.Join(
+						callbackErr, ErrFairQueueUnsafeConnection, rollbackErr,
+					)
+				}
+			}()
+			now, nowErr := d.ragDBNow(ctx, tx)
+			if nowErr != nil {
+				return nowErr
+			}
+			result, updateErr := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
+				lease_until=%s,heartbeat_at=%s WHERE id=%s AND doc_id=%s AND doc_version=%s
+				AND claim_generation=%s AND lease_owner=%s AND status='RUNNING'
+				AND dispatch_generation=claim_generation AND lease_until > %s
+				AND EXISTS (SELECT 1 FROM rag_documents d
+					JOIN rag_kbs kb ON kb.id=d.kb_id JOIN users u ON u.id=kb.user_id
+					JOIN rag_document_versions v
+						ON v.doc_id=d.id AND v.doc_version=%s
+					WHERE d.id=%s AND d.version=%s AND UPPER(d.status)='PROCESSING'
+					AND v.status='RUNNING' AND rag_index_tasks.user_id=kb.user_id
+					AND LOWER(kb.status)='active' AND LOWER(u.status)='active')`,
+				d.ph(1), d.ragNowExpr(), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6),
+				d.ragNowExpr(), d.ph(7), d.ph(8), d.ph(9)), now.Add(leaseDuration), fence.TaskID,
+				fence.DocID, fence.DocVersion, fence.ClaimGeneration, fence.LeaseOwner,
+				fence.DocVersion, fence.DocID, fence.DocVersion)
+			if updateErr != nil {
+				return updateErr
+			}
+			changed, rowsErr := ragRowsAffected(result)
+			if rowsErr != nil {
+				return rowsErr
+			}
+			if !changed {
+				return nil
+			}
+			if verifyErr := verifyFairQueueMySQLSession(ctx, tx, identity, lockName); verifyErr != nil {
+				return verifyErr
+			}
+			if commitErr := tx.Commit(); commitErr != nil {
+				return errors.Join(ErrFairQueueUnsafeConnection, commitErr)
+			}
+			renewed = true
+			return nil
+		})
+	if err != nil {
+		return false, err
+	}
+	return renewed, nil
+}
+
 // AcknowledgeRAGIndexTaskQuiesced lets a worker that observed a durable
 // supersession release the tombstone's fallback lease wait as soon as all of
 // its external writes have stopped. A crashed/uncooperative worker simply
@@ -619,7 +1184,36 @@ func (d *DBStore) AcknowledgeRAGIndexTaskQuiesced(
 	ctx context.Context,
 	fence IndexFence,
 ) (bool, error) {
-	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
+	if fence.ExpectedWriterFingerprint == "" {
+		return d.acknowledgeRAGIndexTaskQuiescedOn(ctx, d.db, fence)
+	}
+	if !lowerHex64Pattern.MatchString(fence.ExpectedWriterFingerprint) {
+		return false, ErrFairQueueWriterMismatch
+	}
+	var acknowledged bool
+	fairStore := &RAGFairQueueStore{
+		store: d, expectedWriter: fence.ExpectedWriterFingerprint,
+	}
+	err := fairStore.withExpectedWriterTx(ctx, func(tx *sql.Tx) error {
+		changed, err := d.acknowledgeRAGIndexTaskQuiescedOn(ctx, tx, fence)
+		if err != nil || !changed {
+			return err
+		}
+		acknowledged = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return acknowledged, nil
+}
+
+func (d *DBStore) acknowledgeRAGIndexTaskQuiescedOn(
+	ctx context.Context,
+	exec ragExecutor,
+	fence IndexFence,
+) (bool, error) {
+	result, err := exec.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 		lease_owner='',lease_until=NULL,heartbeat_at=NULL
 		WHERE id=%s AND doc_id=%s AND doc_version=%s AND claim_generation=%s
 		AND dispatch_generation=claim_generation AND lease_owner=%s
@@ -682,33 +1276,116 @@ func (d *DBStore) lockRAGIndexFence(
 		task.DispatchGeneration == task.ClaimGeneration &&
 		task.Status == "RUNNING" && task.LeaseUntil != nil && task.LeaseUntil.After(now) &&
 		version.Status == RAGDocumentVersionRunning
+	if fence.ExpectedWriterFingerprint != "" {
+		valid = valid && task.UserID == route.UserID && doc.Version == fence.DocVersion &&
+			strings.EqualFold(doc.Status, "PROCESSING")
+	}
 	if !valid {
 		return nil, false, nil
 	}
 	return &ragLockedIndexFence{doc: doc, task: task, version: version, now: now}, true, nil
 }
 
-func (d *DBStore) beginRAGIndexFenceTx(
+func (d *DBStore) ragOwnershipRouteOn(
+	ctx context.Context,
+	exec ragExecutor,
+	docID string,
+) (ragOwnershipRoute, error) {
+	var route ragOwnershipRoute
+	err := exec.QueryRowContext(ctx, fmt.Sprintf(`SELECT d.kb_id,kb.user_id
+		FROM rag_documents d JOIN rag_kbs kb ON kb.id=d.kb_id WHERE d.id=%s`, d.ph(1)), docID).
+		Scan(&route.KBID, &route.UserID)
+	if err != nil {
+		return ragOwnershipRoute{}, scanErr(err)
+	}
+	return route, nil
+}
+
+func (d *DBStore) withLiveRAGIndexFenceTx(
 	ctx context.Context,
 	fence IndexFence,
-) (*sql.Tx, *ragLockedIndexFence, bool, error) {
-	route, err := d.ragOwnershipRoute(ctx, fence.DocID)
-	if errors.Is(err, ErrNotFound) {
-		return nil, nil, false, nil
+	fn func(*sql.Tx, *ragLockedIndexFence) (bool, error),
+) (bool, error) {
+	if fn == nil {
+		return false, errors.New("store: nil RAG live fence transaction callback")
 	}
+	if fence.ExpectedWriterFingerprint == "" {
+		route, err := d.ragOwnershipRoute(ctx, fence.DocID)
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		tx, err := d.db.BeginTx(ctx, nil)
+		if err != nil {
+			return false, err
+		}
+		defer func() { _ = tx.Rollback() }()
+		locked, ok, err := d.lockRAGIndexFence(ctx, tx, fence, route)
+		if err != nil || !ok {
+			return false, err
+		}
+		commit, err := fn(tx, locked)
+		if err != nil || !commit {
+			return false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	if !lowerHex64Pattern.MatchString(fence.ExpectedWriterFingerprint) {
+		return false, ErrFairQueueWriterMismatch
+	}
+	var committed bool
+	err := d.withFairQueueExpectedWriterConn(ctx, fence.ExpectedWriterFingerprint,
+		func(conn *sql.Conn, identity fairQueueMySQLIdentity) (callbackErr error) {
+			route, err := d.ragOwnershipRouteOn(ctx, conn, fence.DocID)
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			tx, err := conn.BeginTx(ctx, nil)
+			if err != nil {
+				return errors.Join(ErrFairQueueUnsafeConnection, err)
+			}
+			txCommitted := false
+			defer func() {
+				if txCommitted {
+					return
+				}
+				if rollbackErr := tx.Rollback(); rollbackErr != nil &&
+					!errors.Is(rollbackErr, sql.ErrTxDone) {
+					callbackErr = errors.Join(
+						callbackErr, ErrFairQueueUnsafeConnection, rollbackErr,
+					)
+				}
+			}()
+			locked, ok, err := d.lockRAGIndexFence(ctx, tx, fence, route)
+			if err != nil || !ok {
+				return err
+			}
+			commit, err := fn(tx, locked)
+			if err != nil || !commit {
+				return err
+			}
+			if err := verifyFairQueueMySQLSession(ctx, tx, identity, ""); err != nil {
+				return err
+			}
+			if err := tx.Commit(); err != nil {
+				return errors.Join(ErrFairQueueUnsafeConnection, err)
+			}
+			txCommitted = true
+			committed = true
+			return nil
+		})
 	if err != nil {
-		return nil, nil, false, err
+		return false, err
 	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	locked, ok, err := d.lockRAGIndexFence(ctx, tx, fence, route)
-	if err != nil || !ok {
-		_ = tx.Rollback()
-		return nil, nil, false, err
-	}
-	return tx, locked, true, nil
+	return committed, nil
 }
 
 func (d *DBStore) UpdateProgressRAGIndexTask(
@@ -716,23 +1393,21 @@ func (d *DBStore) UpdateProgressRAGIndexTask(
 	fence IndexFence,
 	progress RAGIndexProgress,
 ) (bool, error) {
-	tx, locked, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
-	if err != nil || !ok {
-		return false, err
-	}
-	defer tx.Rollback()
-	if locked.doc.Version != fence.DocVersion {
-		return false, nil
-	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
-		processing_stage=%s,progress_current=%s,progress_total=%s,progress_unit=%s
-		WHERE id=%s AND version=%s AND UPPER(status)<>'DELETING'`,
-		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6)),
-		progress.Stage, progress.Current, progress.Total, progress.Unit,
-		fence.DocID, fence.DocVersion); err != nil {
-		return false, err
-	}
-	return true, tx.Commit()
+	return d.withLiveRAGIndexFenceTx(ctx, fence,
+		func(tx *sql.Tx, locked *ragLockedIndexFence) (bool, error) {
+			if locked.doc.Version != fence.DocVersion {
+				return false, nil
+			}
+			if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
+				processing_stage=%s,progress_current=%s,progress_total=%s,progress_unit=%s
+				WHERE id=%s AND version=%s AND UPPER(status)<>'DELETING'`,
+				d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6)),
+				progress.Stage, progress.Current, progress.Total, progress.Unit,
+				fence.DocID, fence.DocVersion); err != nil {
+				return false, err
+			}
+			return true, nil
+		})
 }
 
 func (d *DBStore) UpdateWarningRAGIndexTask(
@@ -741,26 +1416,24 @@ func (d *DBStore) UpdateWarningRAGIndexTask(
 	degraded bool,
 	warningCount int,
 ) (bool, error) {
-	tx, locked, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
-	if err != nil || !ok {
-		return false, err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
-		degraded=%s,warning_count=%s,updated_at=%s WHERE doc_id=%s AND doc_version=%s
-		AND status='RUNNING'`, d.ph(1), d.ph(2), d.ragNowExpr(), d.ph(3), d.ph(4)),
-		degraded, warningCount, fence.DocID, fence.DocVersion); err != nil {
-		return false, err
-	}
-	if locked.doc.Version == fence.DocVersion {
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
-			degraded=%s,warning_count=%s WHERE id=%s AND version=%s`,
-			d.ph(1), d.ph(2), d.ph(3), d.ph(4)), degraded, warningCount,
-			fence.DocID, fence.DocVersion); err != nil {
-			return false, err
-		}
-	}
-	return true, tx.Commit()
+	return d.withLiveRAGIndexFenceTx(ctx, fence,
+		func(tx *sql.Tx, locked *ragLockedIndexFence) (bool, error) {
+			if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
+				degraded=%s,warning_count=%s,updated_at=%s WHERE doc_id=%s AND doc_version=%s
+				AND status='RUNNING'`, d.ph(1), d.ph(2), d.ragNowExpr(), d.ph(3), d.ph(4)),
+				degraded, warningCount, fence.DocID, fence.DocVersion); err != nil {
+				return false, err
+			}
+			if locked.doc.Version == fence.DocVersion {
+				if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
+					degraded=%s,warning_count=%s WHERE id=%s AND version=%s`,
+					d.ph(1), d.ph(2), d.ph(3), d.ph(4)), degraded, warningCount,
+					fence.DocID, fence.DocVersion); err != nil {
+					return false, err
+				}
+			}
+			return true, nil
+		})
 }
 
 // RecordRAGDocumentParseArtifact persists the deterministic object-store
@@ -777,36 +1450,34 @@ func (d *DBStore) RecordRAGDocumentParseArtifact(
 		artifactKey != strings.ReplaceAll(artifactKey, "\\", "/") {
 		return false, ErrRAGDocumentVersionMismatch
 	}
-	tx, locked, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
-	if err != nil || !ok {
-		return false, err
-	}
-	defer tx.Rollback()
-	if locked.version.ParseArtifactKey != "" && locked.version.ParseArtifactKey != artifactKey {
-		return false, ErrRAGDocumentVersionConflict
-	}
-	var deletingHandles int
-	if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*)
-		FROM rag_object_write_staging WHERE doc_id=%s AND reference_key=%s
-		AND status='DELETING'`, d.ph(1), d.ph(2)), fence.DocID, artifactKey).
-		Scan(&deletingHandles); err != nil {
-		return false, err
-	}
-	if deletingHandles != 0 {
-		return false, ErrRAGLifecycleInactive
-	}
-	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
-		parse_artifact_key=%s,updated_at=%s WHERE doc_id=%s AND doc_version=%s
-		AND status='RUNNING' AND (parse_artifact_key='' OR parse_artifact_key=%s)`,
-		d.ph(1), d.ragNowExpr(), d.ph(2), d.ph(3), d.ph(4)), artifactKey,
-		fence.DocID, fence.DocVersion, artifactKey)
-	if err != nil {
-		return false, err
-	}
-	if updated, err := ragRowsAffected(result); err != nil || !updated {
-		return false, err
-	}
-	return true, tx.Commit()
+	return d.withLiveRAGIndexFenceTx(ctx, fence,
+		func(tx *sql.Tx, locked *ragLockedIndexFence) (bool, error) {
+			if locked.version.ParseArtifactKey != "" && locked.version.ParseArtifactKey != artifactKey {
+				return false, ErrRAGDocumentVersionConflict
+			}
+			var deletingHandles int
+			if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*)
+				FROM rag_object_write_staging WHERE doc_id=%s AND reference_key=%s
+				AND status='DELETING'`, d.ph(1), d.ph(2)), fence.DocID, artifactKey).
+				Scan(&deletingHandles); err != nil {
+				return false, err
+			}
+			if deletingHandles != 0 {
+				return false, ErrRAGLifecycleInactive
+			}
+			result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
+				parse_artifact_key=%s,updated_at=%s WHERE doc_id=%s AND doc_version=%s
+				AND status='RUNNING' AND (parse_artifact_key='' OR parse_artifact_key=%s)`,
+				d.ph(1), d.ragNowExpr(), d.ph(2), d.ph(3), d.ph(4)), artifactKey,
+				fence.DocID, fence.DocVersion, artifactKey)
+			if err != nil {
+				return false, err
+			}
+			if updated, err := ragRowsAffected(result); err != nil || !updated {
+				return false, err
+			}
+			return true, nil
+		})
 }
 
 func (d *DBStore) RetryRAGIndexTask(
@@ -836,80 +1507,78 @@ func (d *DBStore) finishOrRetryRAGIndexTask(
 	transient bool,
 	nextRunDelay time.Duration,
 ) (bool, error) {
-	tx, locked, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
-	if err != nil || !ok {
-		return false, err
-	}
-	defer tx.Rollback()
-	retry := transient && locked.task.RetryCount < locked.task.MaxRetry
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
+	return d.withLiveRAGIndexFenceTx(ctx, fence,
+		func(tx *sql.Tx, locked *ragLockedIndexFence) (bool, error) {
+			retry := transient && locked.task.RetryCount < locked.task.MaxRetry
+			if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
 		status='FAILED',updated_at=%s WHERE doc_id=%s AND doc_version=%s
 		AND status='RUNNING'`, d.ragNowExpr(), d.ph(1), d.ph(2)),
-		fence.DocID, fence.DocVersion); err != nil {
-		return false, err
-	}
-	taskStatus := "FAILED"
-	docStatus := "FAILED"
-	stage := "failed"
-	finished := locked.now
-	var nextRunAt *time.Time
-	retryCount := locked.task.RetryCount
-	dispatchGeneration := locked.task.DispatchGeneration
-	var dispatchedAt any
-	if locked.task.DispatchedAt != nil {
-		dispatchedAt = *locked.task.DispatchedAt
-	}
-	if retry {
-		taskStatus = "PENDING"
-		docStatus = "PENDING"
-		stage = "retry_wait"
-		if nextRunDelay > 0 {
-			next := locked.now.Add(nextRunDelay)
-			nextRunAt = &next
-		}
-		retryCount++
-		baseGeneration := locked.task.DispatchGeneration
-		if locked.task.ClaimGeneration > baseGeneration {
-			baseGeneration = locked.task.ClaimGeneration
-		}
-		if baseGeneration == math.MaxInt64 {
-			return false, ErrRAGDispatchGenerationExhausted
-		}
-		dispatchGeneration = baseGeneration + 1
-		dispatchedAt = nil
-	}
-	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
+				fence.DocID, fence.DocVersion); err != nil {
+				return false, err
+			}
+			taskStatus := "FAILED"
+			docStatus := "FAILED"
+			stage := "failed"
+			finished := locked.now
+			var nextRunAt *time.Time
+			retryCount := locked.task.RetryCount
+			dispatchGeneration := locked.task.DispatchGeneration
+			var dispatchedAt any
+			if locked.task.DispatchedAt != nil {
+				dispatchedAt = *locked.task.DispatchedAt
+			}
+			if retry {
+				taskStatus = "PENDING"
+				docStatus = "PENDING"
+				stage = "retry_wait"
+				if nextRunDelay > 0 {
+					next := locked.now.Add(nextRunDelay)
+					nextRunAt = &next
+				}
+				retryCount++
+				baseGeneration := locked.task.DispatchGeneration
+				if locked.task.ClaimGeneration > baseGeneration {
+					baseGeneration = locked.task.ClaimGeneration
+				}
+				if baseGeneration == math.MaxInt64 {
+					return false, ErrRAGDispatchGenerationExhausted
+				}
+				dispatchGeneration = baseGeneration + 1
+				dispatchedAt = nil
+			}
+			result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 		status=%s,retry_count=%s,error_msg=%s,next_run_at=%s,
 		dispatch_generation=%s,dispatched_at=%s,
 		lease_owner='',lease_until=NULL,heartbeat_at=NULL,finished_at=%s
 		WHERE id=%s AND doc_id=%s AND doc_version=%s AND dispatch_generation=%s
 		AND claim_generation=%s AND lease_owner=%s AND status='RUNNING'
 		AND dispatch_generation=claim_generation AND lease_until > %s`,
-		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7),
-		d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13),
-		d.ragNowExpr()), taskStatus, retryCount, errMsg, nextRunAt,
-		dispatchGeneration, dispatchedAt, func() any {
-			if retry {
-				return nil
+				d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7),
+				d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13),
+				d.ragNowExpr()), taskStatus, retryCount, errMsg, nextRunAt,
+				dispatchGeneration, dispatchedAt, func() any {
+					if retry {
+						return nil
+					}
+					return finished
+				}(), fence.TaskID, fence.DocID, fence.DocVersion, locked.task.DispatchGeneration,
+				fence.ClaimGeneration, fence.LeaseOwner)
+			if err != nil {
+				return false, err
 			}
-			return finished
-		}(), fence.TaskID, fence.DocID, fence.DocVersion, locked.task.DispatchGeneration,
-		fence.ClaimGeneration, fence.LeaseOwner)
-	if err != nil {
-		return false, err
-	}
-	if updated, err := ragRowsAffected(result); err != nil || !updated {
-		return false, err
-	}
-	if locked.doc.Version == fence.DocVersion {
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
+			if updated, err := ragRowsAffected(result); err != nil || !updated {
+				return false, err
+			}
+			if locked.doc.Version == fence.DocVersion {
+				if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
 			status=%s,error_msg=%s,processing_stage=%s WHERE id=%s AND version=%s`,
-			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)), docStatus, errMsg,
-			stage, fence.DocID, fence.DocVersion); err != nil {
-			return false, err
-		}
-	}
-	return true, tx.Commit()
+					d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)), docStatus, errMsg,
+					stage, fence.DocID, fence.DocVersion); err != nil {
+					return false, err
+				}
+			}
+			return true, nil
+		})
 }
 
 func (d *DBStore) ActivateAndFinishRAGIndexTask(
@@ -921,105 +1590,103 @@ func (d *DBStore) ActivateAndFinishRAGIndexTask(
 	if gcGracePeriod < 0 {
 		gcGracePeriod = 0
 	}
-	tx, locked, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
-	if err != nil || !ok {
-		return false, err
-	}
-	defer tx.Rollback()
-	if locked.doc.Version != fence.DocVersion {
-		return false, nil
-	}
-	if err := d.reconcileRAGDocumentSourceHash(ctx, tx, locked.doc, locked.version.SourceSHA256); err != nil {
-		return false, err
-	}
-	if locked.version.ParseArtifactKey != "" &&
-		locked.version.ParseArtifactKey != activation.VersionResult.ParseArtifactKey {
-		return false, ErrRAGDocumentVersionConflict
-	}
-	if artifactKey := strings.TrimSpace(activation.VersionResult.ParseArtifactKey); artifactKey != "" {
-		normalizedKey := path.Join(path.Dir(artifactKey), "normalized.md")
-		if err := d.consumeRAGObjectWritesInTx(
-			ctx, tx, fence.DocID, normalizedKey, artifactKey,
-		); err != nil {
-			return false, err
-		}
-	}
-	activation.VersionResult.Status = RAGDocumentVersionDone
-	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
+	return d.withLiveRAGIndexFenceTx(ctx, fence,
+		func(tx *sql.Tx, locked *ragLockedIndexFence) (bool, error) {
+			if locked.doc.Version != fence.DocVersion {
+				return false, nil
+			}
+			if err := d.reconcileRAGDocumentSourceHash(ctx, tx, locked.doc, locked.version.SourceSHA256); err != nil {
+				return false, err
+			}
+			if locked.version.ParseArtifactKey != "" &&
+				locked.version.ParseArtifactKey != activation.VersionResult.ParseArtifactKey {
+				return false, ErrRAGDocumentVersionConflict
+			}
+			if artifactKey := strings.TrimSpace(activation.VersionResult.ParseArtifactKey); artifactKey != "" {
+				normalizedKey := path.Join(path.Dir(artifactKey), "normalized.md")
+				if err := d.consumeRAGObjectWritesInTx(
+					ctx, tx, fence.DocID, normalizedKey, artifactKey,
+				); err != nil {
+					return false, err
+				}
+			}
+			activation.VersionResult.Status = RAGDocumentVersionDone
+			result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
 		status='DONE',parse_artifact_key=%s,page_count=%s,asset_count=%s,degraded=%s,
 		warning_count=%s,updated_at=%s WHERE doc_id=%s AND doc_version=%s
 		AND status='RUNNING'`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5),
-		d.ragNowExpr(), d.ph(6), d.ph(7)), activation.VersionResult.ParseArtifactKey,
-		activation.VersionResult.PageCount, activation.VersionResult.AssetCount,
-		activation.VersionResult.Degraded, activation.VersionResult.WarningCount,
-		fence.DocID, fence.DocVersion)
-	if err != nil {
-		return false, err
-	}
-	if updated, err := ragRowsAffected(result); err != nil || !updated {
-		return false, err
-	}
+				d.ragNowExpr(), d.ph(6), d.ph(7)), activation.VersionResult.ParseArtifactKey,
+				activation.VersionResult.PageCount, activation.VersionResult.AssetCount,
+				activation.VersionResult.Degraded, activation.VersionResult.WarningCount,
+				fence.DocID, fence.DocVersion)
+			if err != nil {
+				return false, err
+			}
+			if updated, err := ragRowsAffected(result); err != nil || !updated {
+				return false, err
+			}
 
-	previousActive := locked.doc.ActiveVersion
-	result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
+			previousActive := locked.doc.ActiveVersion
+			result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
 		active_version=%s,status='DONE',error_msg='',chunk_count=%s,token_count=%s,
 		index_format_version=1,processing_stage='done',progress_current=progress_total,degraded=%s,
 		warning_count=%s,indexed_at=%s WHERE id=%s AND version=%s`, d.ph(1),
-		d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ragNowExpr(), d.ph(6), d.ph(7)),
-		fence.DocVersion, activation.ChunkCount, activation.TokenCount,
-		activation.VersionResult.Degraded, activation.VersionResult.WarningCount,
-		fence.DocID, fence.DocVersion)
-	if err != nil {
-		return false, err
-	}
-	if updated, err := ragRowsAffected(result); err != nil || !updated {
-		return false, err
-	}
+				d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ragNowExpr(), d.ph(6), d.ph(7)),
+				fence.DocVersion, activation.ChunkCount, activation.TokenCount,
+				activation.VersionResult.Degraded, activation.VersionResult.WarningCount,
+				fence.DocID, fence.DocVersion)
+			if err != nil {
+				return false, err
+			}
+			if updated, err := ragRowsAffected(result); err != nil || !updated {
+				return false, err
+			}
 
-	if previousActive > 0 && previousActive != fence.DocVersion {
-		result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
+			if previousActive > 0 && previousActive != fence.DocVersion {
+				result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
 			status='RETIRED',updated_at=%s WHERE doc_id=%s AND doc_version=%s
 			AND status='DONE'`, d.ragNowExpr(), d.ph(1), d.ph(2)),
-			fence.DocID, previousActive)
-		if err != nil {
-			return false, err
-		}
-		if updated, err := ragRowsAffected(result); err != nil || !updated {
-			return false, err
-		}
-		notBefore := locked.now.Add(gcGracePeriod)
-		query := fmt.Sprintf(`INSERT INTO rag_index_gc_tasks (
+					fence.DocID, previousActive)
+				if err != nil {
+					return false, err
+				}
+				if updated, err := ragRowsAffected(result); err != nil || !updated {
+					return false, err
+				}
+				notBefore := locked.now.Add(gcGracePeriod)
+				query := fmt.Sprintf(`INSERT INTO rag_index_gc_tasks (
 			doc_id,retired_version,retired_at,not_before,status,claim_generation,
 			lease_owner,lease_until,heartbeat_at,attempt_count,next_run_at,created_at)
 			VALUES (%s,%s,%s,%s,'PENDING',0,'',NULL,NULL,0,%s,%s)`,
-			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6))
-		if d.dialect == mysqlDialect {
-			query += ` ON DUPLICATE KEY UPDATE id=id`
-		} else {
-			query += ` ON CONFLICT (doc_id,retired_version) DO NOTHING`
-		}
-		if _, err := tx.ExecContext(ctx, query, fence.DocID, previousActive,
-			locked.now, notBefore, notBefore, locked.now); err != nil {
-			return false, err
-		}
-	}
+					d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6))
+				if d.dialect == mysqlDialect {
+					query += ` ON DUPLICATE KEY UPDATE id=id`
+				} else {
+					query += ` ON CONFLICT (doc_id,retired_version) DO NOTHING`
+				}
+				if _, err := tx.ExecContext(ctx, query, fence.DocID, previousActive,
+					locked.now, notBefore, notBefore, locked.now); err != nil {
+					return false, err
+				}
+			}
 
-	result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
+			result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 		status='DONE',error_msg='',finished_at=%s,lease_owner='',lease_until=NULL,
 		heartbeat_at=NULL,next_run_at=NULL WHERE id=%s AND doc_id=%s AND doc_version=%s
 		AND dispatch_generation=%s AND claim_generation=%s AND lease_owner=%s
 		AND status='RUNNING' AND dispatch_generation=claim_generation
 		AND lease_until > %s`, d.ragNowExpr(), d.ph(1), d.ph(2), d.ph(3),
-		d.ph(4), d.ph(5), d.ph(6), d.ragNowExpr()), fence.TaskID, fence.DocID,
-		fence.DocVersion, locked.task.DispatchGeneration, fence.ClaimGeneration,
-		fence.LeaseOwner)
-	if err != nil {
-		return false, err
-	}
-	if updated, err := ragRowsAffected(result); err != nil || !updated {
-		return false, err
-	}
-	return true, tx.Commit()
+				d.ph(4), d.ph(5), d.ph(6), d.ragNowExpr()), fence.TaskID, fence.DocID,
+				fence.DocVersion, locked.task.DispatchGeneration, fence.ClaimGeneration,
+				fence.LeaseOwner)
+			if err != nil {
+				return false, err
+			}
+			if updated, err := ragRowsAffected(result); err != nil || !updated {
+				return false, err
+			}
+			return true, nil
+		})
 }
 
 func (d *DBStore) AdvanceDocumentVersionAndCreateTask(
@@ -1066,11 +1733,35 @@ func (d *DBStore) advanceDocumentVersionAndCreateTask(
 		return nil, err
 	}
 	defer tx.Rollback()
-	expectedOwner := preflightKB.UserID
+	route := ragOwnershipRoute{KBID: preflightDoc.KBID, UserID: preflightKB.UserID}
+	task, err := d.advanceDocumentVersionAndCreateTaskInTx(
+		ctx, tx, expectedVersion, snapshot, policy, route,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return task, nil
+}
+
+func (d *DBStore) advanceDocumentVersionAndCreateTaskInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	expectedVersion int64,
+	snapshot *RAGDocumentVersionRecord,
+	policy *RAGAdvancedEnqueuePolicy,
+	route ragOwnershipRoute,
+) (*RAGIndexTaskRecord, error) {
+	if tx == nil || snapshot == nil || snapshot.DocID == "" {
+		return nil, ErrRAGDocumentVersionMismatch
+	}
+	expectedOwner := route.UserID
 	if policy != nil {
 		expectedOwner = policy.UserID
 	}
-	if _, err := d.lockActiveRAGKBOwnerTx(ctx, tx, preflightDoc.KBID, expectedOwner); err != nil {
+	if _, err := d.lockActiveRAGKBOwnerTx(ctx, tx, route.KBID, expectedOwner); err != nil {
 		return nil, err
 	}
 	doc, err := d.ragDocumentInTx(ctx, tx, snapshot.DocID)
@@ -1080,7 +1771,7 @@ func (d *DBStore) advanceDocumentVersionAndCreateTask(
 	if err != nil {
 		return nil, err
 	}
-	if doc.KBID != preflightDoc.KBID {
+	if doc.KBID != route.KBID {
 		return nil, ErrRAGDocumentVersionMismatch
 	}
 	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, doc.ID); err != nil {
@@ -1099,7 +1790,9 @@ func (d *DBStore) advanceDocumentVersionAndCreateTask(
 	if err := d.reconcileRAGDocumentSourceHash(ctx, tx, doc, snapshot.SourceSHA256); err != nil {
 		return nil, err
 	}
-	if err := d.enforceRAGAdvancedEnqueuePolicyTx(ctx, tx, doc.KBID, doc.ID, snapshot, policy, true); err != nil {
+	if err := d.enforceRAGAdvancedEnqueuePolicyTx(
+		ctx, tx, doc.KBID, doc.ID, snapshot, policy, true,
+	); err != nil {
 		return nil, err
 	}
 	newVersion, err := d.nextRAGDocumentVersionInTx(ctx, tx, doc)
@@ -1141,9 +1834,6 @@ func (d *DBStore) advanceDocumentVersionAndCreateTask(
 	}
 	task, err := d.ragTaskInTx(ctx, tx, taskID)
 	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return task, nil
@@ -1200,79 +1890,80 @@ func (d *DBStore) SupersedeRAGIndexTaskAndCreateVersion(
 	if snapshot == nil || snapshot.DocID != fence.DocID {
 		return nil, false, ErrRAGDocumentVersionMismatch
 	}
-	tx, locked, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
-	if err != nil || !ok {
-		return nil, false, err
-	}
-	defer tx.Rollback()
-	if locked.doc.Version != fence.DocVersion {
-		return nil, false, nil
-	}
-	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, locked.doc.ID); err != nil {
-		return nil, false, err
-	}
-	if err := d.reconcileRAGDocumentSourceHash(ctx, tx, locked.doc, snapshot.SourceSHA256); err != nil {
-		return nil, false, err
-	}
-	newVersion, err := d.nextRAGDocumentVersionInTx(ctx, tx, locked.doc)
-	if err != nil {
-		return nil, false, err
-	}
-	copySnapshot := *snapshot
-	copySnapshot.DocVersion = newVersion
-	copySnapshot.CreatedAt = time.Time{}
-	copySnapshot.UpdatedAt = time.Time{}
-	prepareNewRAGDocumentVersion(&copySnapshot)
-	if err := d.validateRAGVersionSnapshotForDocument(ctx, tx, locked.doc, &copySnapshot); err != nil {
-		return nil, false, err
-	}
-	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
+	var created *RAGIndexTaskRecord
+	changed, err := d.withLiveRAGIndexFenceTx(ctx, fence,
+		func(tx *sql.Tx, locked *ragLockedIndexFence) (bool, error) {
+			if locked.doc.Version != fence.DocVersion {
+				return false, nil
+			}
+			if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, locked.doc.ID); err != nil {
+				return false, err
+			}
+			if err := d.reconcileRAGDocumentSourceHash(ctx, tx, locked.doc, snapshot.SourceSHA256); err != nil {
+				return false, err
+			}
+			newVersion, err := d.nextRAGDocumentVersionInTx(ctx, tx, locked.doc)
+			if err != nil {
+				return false, err
+			}
+			copySnapshot := *snapshot
+			copySnapshot.DocVersion = newVersion
+			copySnapshot.CreatedAt = time.Time{}
+			copySnapshot.UpdatedAt = time.Time{}
+			prepareNewRAGDocumentVersion(&copySnapshot)
+			if err := d.validateRAGVersionSnapshotForDocument(ctx, tx, locked.doc, &copySnapshot); err != nil {
+				return false, err
+			}
+			result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
 		status='SUPERSEDED',updated_at=%s WHERE doc_id=%s AND doc_version=%s
 		AND status='RUNNING'`, d.ragNowExpr(), d.ph(1), d.ph(2)),
-		fence.DocID, fence.DocVersion)
-	if err != nil {
-		return nil, false, err
-	}
-	if updated, err := ragRowsAffected(result); err != nil || !updated {
-		return nil, false, err
-	}
-	result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
+				fence.DocID, fence.DocVersion)
+			if err != nil {
+				return false, err
+			}
+			if updated, err := ragRowsAffected(result); err != nil || !updated {
+				return false, err
+			}
+			result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 		status='SUPERSEDED',error_msg='provider snapshot changed',finished_at=%s,
 		lease_owner='',lease_until=NULL,heartbeat_at=NULL,next_run_at=NULL
 		WHERE id=%s AND doc_id=%s AND doc_version=%s AND dispatch_generation=%s
 		AND claim_generation=%s AND lease_owner=%s AND status='RUNNING'
 		AND dispatch_generation=claim_generation AND lease_until > %s`,
-		d.ragNowExpr(), d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6),
-		d.ragNowExpr()), fence.TaskID, fence.DocID, fence.DocVersion,
-		locked.task.DispatchGeneration, fence.ClaimGeneration, fence.LeaseOwner)
-	if err != nil {
-		return nil, false, err
-	}
-	if updated, err := ragRowsAffected(result); err != nil || !updated {
-		return nil, false, err
-	}
-	if err := d.createRAGDocumentVersion(ctx, tx, &copySnapshot); err != nil {
-		return nil, false, err
-	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
+				d.ragNowExpr(), d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6),
+				d.ragNowExpr()), fence.TaskID, fence.DocID, fence.DocVersion,
+				locked.task.DispatchGeneration, fence.ClaimGeneration, fence.LeaseOwner)
+			if err != nil {
+				return false, err
+			}
+			if updated, err := ragRowsAffected(result); err != nil || !updated {
+				return false, err
+			}
+			if err := d.createRAGDocumentVersion(ctx, tx, &copySnapshot); err != nil {
+				return false, err
+			}
+			if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
 		version=%s,status='PENDING',error_msg='',processing_stage='queued',
 		progress_current=0,progress_total=0,progress_unit='',degraded=FALSE,warning_count=0
 		WHERE id=%s AND version=%s`, d.ph(1), d.ph(2), d.ph(3)),
-		newVersion, fence.DocID, fence.DocVersion); err != nil {
+				newVersion, fence.DocID, fence.DocVersion); err != nil {
+				return false, err
+			}
+			taskID, err := d.createRAGIndexTaskForVersion(ctx, tx, fence.DocID, newVersion, locked.task.MaxRetry)
+			if err != nil {
+				return false, err
+			}
+			task, err := d.ragTaskInTx(ctx, tx, taskID)
+			if err != nil {
+				return false, err
+			}
+			created = task
+			return true, nil
+		})
+	if err != nil || !changed {
 		return nil, false, err
 	}
-	taskID, err := d.createRAGIndexTaskForVersion(ctx, tx, fence.DocID, newVersion, locked.task.MaxRetry)
-	if err != nil {
-		return nil, false, err
-	}
-	task, err := d.ragTaskInTx(ctx, tx, taskID)
-	if err != nil {
-		return nil, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, false, err
-	}
-	return task, true, nil
+	return created, true, nil
 }
 
 // MigrateLegacyRAGIndexTasks performs the runtime backfill after old workers

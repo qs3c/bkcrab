@@ -94,12 +94,6 @@ func ragCacheDirectory(cacheKind string) (string, bool) {
 }
 
 func validateRAGCacheObjectRecord(record RAGCacheObjectRecord) error {
-	record.DocID = strings.TrimSpace(record.DocID)
-	record.CacheKind = strings.TrimSpace(record.CacheKind)
-	record.CacheKey = strings.TrimSpace(record.CacheKey)
-	record.ObjectKey = strings.TrimSpace(record.ObjectKey)
-	record.FingerprintKind = strings.TrimSpace(record.FingerprintKind)
-	record.Fingerprint = strings.TrimSpace(record.Fingerprint)
 	wantFingerprintKind, ok := ragCacheFingerprintKind(record.CacheKind)
 	if record.DocID == "" || !ok || record.FingerprintKind != wantFingerprintKind ||
 		!ragCanonicalSHA256(record.CacheKey) || !ragCanonicalSHA256(record.Fingerprint) ||
@@ -107,6 +101,19 @@ func validateRAGCacheObjectRecord(record RAGCacheObjectRecord) error {
 		return ErrRAGDocumentVersionMismatch
 	}
 	return nil
+}
+
+func normalizeRAGCacheObjectRecord(record RAGCacheObjectRecord) (RAGCacheObjectRecord, error) {
+	record.DocID = strings.TrimSpace(record.DocID)
+	record.CacheKind = strings.TrimSpace(record.CacheKind)
+	record.CacheKey = strings.TrimSpace(record.CacheKey)
+	record.ObjectKey = strings.TrimSpace(record.ObjectKey)
+	record.FingerprintKind = strings.TrimSpace(record.FingerprintKind)
+	record.Fingerprint = strings.TrimSpace(record.Fingerprint)
+	if err := validateRAGCacheObjectRecord(record); err != nil {
+		return RAGCacheObjectRecord{}, err
+	}
+	return record, nil
 }
 
 func expectedRAGCacheObjectKey(route ragOwnershipRoute, docID, cacheKind, cacheKey string) (string, error) {
@@ -123,13 +130,9 @@ func expectedRAGCacheObjectKey(route ragOwnershipRoute, docID, cacheKind, cacheK
 // maintenance check serialize cache IO with destructive lifecycle work across
 // service instances.
 func (d *DBStore) RegisterRAGCacheObject(ctx context.Context, record RAGCacheObjectRecord) error {
-	record.DocID = strings.TrimSpace(record.DocID)
-	record.CacheKind = strings.TrimSpace(record.CacheKind)
-	record.CacheKey = strings.TrimSpace(record.CacheKey)
-	record.ObjectKey = strings.TrimSpace(record.ObjectKey)
-	record.FingerprintKind = strings.TrimSpace(record.FingerprintKind)
-	record.Fingerprint = strings.TrimSpace(record.Fingerprint)
-	if err := validateRAGCacheObjectRecord(record); err != nil {
+	var err error
+	record, err = normalizeRAGCacheObjectRecord(record)
+	if err != nil {
 		return err
 	}
 	route, err := d.ragOwnershipRoute(ctx, record.DocID)
@@ -159,6 +162,19 @@ func (d *DBStore) RegisterRAGCacheObject(ctx context.Context, record RAGCacheObj
 	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, record.DocID); err != nil {
 		return err
 	}
+	if err := d.registerRAGCacheObjectLockedInTx(ctx, tx, record); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// registerRAGCacheObjectLockedInTx contains only the cache catalog mutation.
+// The caller owns canonical hierarchy and maintenance validation in tx.
+func (d *DBStore) registerRAGCacheObjectLockedInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	record RAGCacheObjectRecord,
+) error {
 	now, err := d.ragDBNow(ctx, tx)
 	if err != nil {
 		return err
@@ -220,7 +236,74 @@ func (d *DBStore) RegisterRAGCacheObject(ctx context.Context, record RAGCacheObj
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
+}
+
+func (d *DBStore) registerRAGCacheObjectForIndexInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	locked *ragLockedIndexFence,
+	record RAGCacheObjectRecord,
+) error {
+	record, err := normalizeRAGCacheObjectRecord(record)
+	if err != nil {
+		return err
+	}
+	if locked == nil || locked.doc == nil || locked.task == nil || locked.version == nil ||
+		record.DocID != locked.doc.ID || record.DocID != locked.task.DocID {
+		return ErrRAGDocumentVersionMismatch
+	}
+	wantFingerprint := locked.version.ParseFingerprint
+	if record.FingerprintKind == RAGCacheFingerprintIndex {
+		wantFingerprint = locked.version.IndexFingerprint
+	}
+	if record.Fingerprint != wantFingerprint {
+		return ErrRAGDocumentVersionMismatch
+	}
+	route := ragOwnershipRoute{KBID: locked.doc.KBID, UserID: locked.task.UserID}
+	expectedObjectKey, err := expectedRAGCacheObjectKey(
+		route, record.DocID, record.CacheKind, record.CacheKey,
+	)
+	if err != nil || record.ObjectKey != expectedObjectKey {
+		return ErrRAGDocumentVersionMismatch
+	}
+	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, record.DocID); err != nil {
+		return err
+	}
+	return d.registerRAGCacheObjectLockedInTx(ctx, tx, record)
+}
+
+// RegisterRAGCacheObjectForIndex registers a cache hit/put only while the
+// delivered fair execution still owns its live task lease on the expected
+// writer. The object key proves the canonical user and KB route.
+func (d *DBStore) RegisterRAGCacheObjectForIndex(
+	ctx context.Context,
+	fence IndexFence,
+	record RAGCacheObjectRecord,
+) error {
+	if !lowerHex64Pattern.MatchString(fence.ExpectedWriterFingerprint) {
+		return ErrFairQueueWriterMismatch
+	}
+	record, err := normalizeRAGCacheObjectRecord(record)
+	if err != nil {
+		return err
+	}
+	changed, err := d.withLiveRAGIndexFenceTx(ctx, fence,
+		func(tx *sql.Tx, locked *ragLockedIndexFence) (bool, error) {
+			if err := d.registerRAGCacheObjectForIndexInTx(
+				ctx, tx, locked, record,
+			); err != nil {
+				return false, err
+			}
+			return true, nil
+		})
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return ErrRAGLifecycleInactive
+	}
+	return nil
 }
 
 func (d *DBStore) ListRAGCacheCatalogDocuments(

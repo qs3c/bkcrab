@@ -406,6 +406,7 @@ func (d *DBStore) withFairQueueExpectedWriterConn(
 		return ErrFairQueueMySQLRequired
 	}
 	if !lowerHex64Pattern.MatchString(expectedWriter) {
+		d.recordFairQueueConnectionMismatch()
 		return ErrFairQueueWriterMismatch
 	}
 	conn, err := d.db.Conn(ctx)
@@ -416,12 +417,18 @@ func (d *DBStore) withFairQueueExpectedWriterConn(
 	identity, err := readFairQueueMySQLIdentity(ctx, conn)
 	if err != nil || identity.fingerprint != expectedWriter {
 		discardErr := discardFairQueueSQLConn(conn)
+		d.recordFairQueueConnectionMismatch()
 		if err != nil {
 			return errors.Join(ErrFairQueueUnsafeConnection, err, discardErr)
 		}
 		return errors.Join(ErrFairQueueWriterMismatch, discardErr)
 	}
-	callbackErr := fn(conn, identity)
+	var callbackErr error
+	var panicValue any
+	func() {
+		defer func() { panicValue = recover() }()
+		callbackErr = fn(conn, identity)
+	}()
 
 	// Always revalidate through an independent bounded context. In particular,
 	// callback cancellation or an inner safety error must not bypass the final
@@ -435,12 +442,40 @@ func (d *DBStore) withFairQueueExpectedWriterConn(
 	} else if !sameFairQueueMySQLSession(identity, after) {
 		safetyErr = ErrFairQueueWriterMismatch
 	}
+	if panicValue != nil {
+		safetyErr = errors.Join(safetyErr, ErrFairQueueUnsafeConnection)
+	}
 	if safetyErr != nil || fairQueueConnectionErrorRequiresDiscard(callbackErr) {
 		if discardErr := discardFairQueueSQLConn(conn); discardErr != nil {
 			safetyErr = errors.Join(safetyErr, ErrFairQueueUnsafeConnection, discardErr)
 		}
 	}
-	return errors.Join(callbackErr, safetyErr)
+	result := errors.Join(callbackErr, safetyErr)
+	if errors.Is(result, ErrFairQueueWriterMismatch) || errors.Is(result, ErrFairQueueUnsafeConnection) {
+		d.recordFairQueueConnectionMismatch()
+	} else {
+		d.recordFairQueueConnectionVerified(time.Now())
+	}
+	if panicValue != nil {
+		panic(panicValue)
+	}
+	return result
+}
+
+// ReadFairQueueWriterIdentity discovers the authoritative writer through a
+// pinned physical MySQL connection and returns only its canonical fingerprint.
+// The private identity material used for the double session check never crosses
+// this API boundary.
+func (d *DBStore) ReadFairQueueWriterIdentity(ctx context.Context) (FairQueueWriterIdentity, error) {
+	identity, err := d.discoverFairQueueWriterIdentity(ctx)
+	if err != nil {
+		return FairQueueWriterIdentity{}, err
+	}
+	if !lowerHex64Pattern.MatchString(identity.fingerprint) {
+		d.recordFairQueueConnectionMismatch()
+		return FairQueueWriterIdentity{}, ErrFairQueueWriterMismatch
+	}
+	return FairQueueWriterIdentity{Fingerprint: identity.fingerprint}, nil
 }
 
 func (d *DBStore) discoverFairQueueWriterIdentity(ctx context.Context) (identity fairQueueMySQLIdentity, err error) {
@@ -454,17 +489,20 @@ func (d *DBStore) discoverFairQueueWriterIdentity(ctx context.Context) (identity
 	defer func() { _ = conn.Close() }()
 	identity, err = readFairQueueMySQLIdentity(ctx, conn)
 	if err != nil {
-		_ = discardFairQueueSQLConn(conn)
-		return fairQueueMySQLIdentity{}, errors.Join(ErrFairQueueUnsafeConnection, err)
+		discardErr := discardFairQueueSQLConn(conn)
+		d.recordFairQueueConnectionMismatch()
+		return fairQueueMySQLIdentity{}, errors.Join(ErrFairQueueUnsafeConnection, err, discardErr)
 	}
 	after, verifyErr := readFairQueueMySQLIdentity(ctx, conn)
 	if verifyErr != nil || !sameFairQueueMySQLSession(identity, after) {
-		_ = discardFairQueueSQLConn(conn)
+		discardErr := discardFairQueueSQLConn(conn)
+		d.recordFairQueueConnectionMismatch()
 		if verifyErr != nil {
-			return fairQueueMySQLIdentity{}, errors.Join(ErrFairQueueUnsafeConnection, verifyErr)
+			return fairQueueMySQLIdentity{}, errors.Join(ErrFairQueueUnsafeConnection, verifyErr, discardErr)
 		}
-		return fairQueueMySQLIdentity{}, ErrFairQueueWriterMismatch
+		return fairQueueMySQLIdentity{}, errors.Join(ErrFairQueueWriterMismatch, discardErr)
 	}
+	d.recordFairQueueConnectionVerified(time.Now())
 	return identity, nil
 }
 
@@ -501,6 +539,7 @@ func (d *DBStore) WithFairQueueOperationStartFence(
 	identity, err := readFairQueueMySQLIdentity(ctx, conn)
 	if err != nil || identity.fingerprint != expectedWriter {
 		discardErr := discardFairQueueSQLConn(conn)
+		d.recordFairQueueConnectionMismatch()
 		if err != nil {
 			return errors.Join(ErrFairQueueUnsafeConnection, err, discardErr)
 		}
@@ -531,6 +570,7 @@ func (d *DBStore) WithFairQueueOperationStartFence(
 	// with a cleanup context independent of the request context.
 	lockHeld := true
 	discardAfterRelease := false
+	var verifiedAt time.Time
 	defer func() {
 		panicValue := recover()
 		if lockHeld {
@@ -549,7 +589,19 @@ func (d *DBStore) WithFairQueueOperationStartFence(
 			}
 		}
 		if discardAfterRelease {
-			err = errors.Join(err, discardFairQueueSQLConn(conn))
+			if discardErr := discardFairQueueSQLConn(conn); discardErr != nil {
+				err = errors.Join(err, ErrFairQueueUnsafeConnection, discardErr)
+			}
+		}
+		outcome := FairQueueSessionAffinityState("")
+		if !verifiedAt.IsZero() {
+			outcome = FairQueueSessionAffinityVerified
+		}
+		if errors.Is(err, ErrFairQueueWriterMismatch) || errors.Is(err, ErrFairQueueUnsafeConnection) {
+			outcome = FairQueueSessionAffinityMismatch
+		}
+		if outcome != "" {
+			d.recordFairQueueConnectionSafetyOutcome(verifiedAt, outcome)
 		}
 		if panicValue != nil {
 			panic(panicValue)
@@ -561,6 +613,7 @@ func (d *DBStore) WithFairQueueOperationStartFence(
 		lockHeld = false // physical close releases the session-level lock
 		return errors.Join(err, discardErr)
 	}
+	verifiedAt = time.Now()
 	err = fn(&FairQueueOperationStartSession{
 		store: d, conn: conn, resource: resource, expectedWriter: expectedWriter,
 		identity: identity, lockName: lockName,
@@ -574,6 +627,8 @@ func (d *DBStore) WithFairQueueOperationStartFence(
 	if verifyErr != nil {
 		discardAfterRelease = true
 		err = errors.Join(err, verifyErr)
+	} else {
+		verifiedAt = time.Now()
 	}
 	return err
 }

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +23,79 @@ import (
 type DBStore struct {
 	db      *sql.DB
 	dialect string // "mysql"、"postgres" 或 "sqlite"
+
+	fairQueueSafetyMu       sync.RWMutex
+	fairQueueSafetySnapshot FairQueueConnectionSafetySnapshot
+}
+
+// FairQueueWriterIdentity is the public, non-sensitive identity of the
+// authoritative MySQL writer. The source UUID, database, and physical
+// connection ID remain confined to the connection-verification code.
+type FairQueueWriterIdentity struct {
+	Fingerprint string
+}
+
+// FairQueueSessionAffinityState describes the last conclusive physical
+// connection identity check. Dependency availability is reported separately;
+// an ordinary dependency error therefore does not manufacture an affinity
+// result.
+type FairQueueSessionAffinityState string
+
+const (
+	FairQueueSessionAffinityUnknown  FairQueueSessionAffinityState = "unknown"
+	FairQueueSessionAffinityVerified FairQueueSessionAffinityState = "verified"
+	FairQueueSessionAffinityMismatch FairQueueSessionAffinityState = "mismatch"
+)
+
+// FairQueueConnectionSafetySnapshot contains only health-safe connection
+// identity facts. A zero LastSuccessfulVerifiedAt means that this store has not
+// yet completed a successful same-session verification.
+type FairQueueConnectionSafetySnapshot struct {
+	LastSuccessfulVerifiedAt time.Time
+	SessionAffinity          FairQueueSessionAffinityState
+}
+
+// ReadFairQueueConnectionSafetySnapshot returns a race-free copy of the most
+// recent connection identity safety result.
+func (d *DBStore) ReadFairQueueConnectionSafetySnapshot() FairQueueConnectionSafetySnapshot {
+	if d == nil {
+		return FairQueueConnectionSafetySnapshot{SessionAffinity: FairQueueSessionAffinityUnknown}
+	}
+	d.fairQueueSafetyMu.RLock()
+	snapshot := d.fairQueueSafetySnapshot
+	d.fairQueueSafetyMu.RUnlock()
+	if snapshot.SessionAffinity == "" {
+		snapshot.SessionAffinity = FairQueueSessionAffinityUnknown
+	}
+	return snapshot
+}
+
+func (d *DBStore) recordFairQueueConnectionVerified(verifiedAt time.Time) {
+	if verifiedAt.IsZero() {
+		verifiedAt = time.Now()
+	}
+	d.recordFairQueueConnectionSafetyOutcome(verifiedAt, FairQueueSessionAffinityVerified)
+}
+
+func (d *DBStore) recordFairQueueConnectionMismatch() {
+	d.recordFairQueueConnectionSafetyOutcome(time.Time{}, FairQueueSessionAffinityMismatch)
+}
+
+func (d *DBStore) recordFairQueueConnectionSafetyOutcome(
+	verifiedAt time.Time,
+	state FairQueueSessionAffinityState,
+) {
+	if d == nil {
+		return
+	}
+	d.fairQueueSafetyMu.Lock()
+	if verifiedAt = verifiedAt.UTC(); !verifiedAt.IsZero() &&
+		(d.fairQueueSafetySnapshot.LastSuccessfulVerifiedAt.IsZero() ||
+			verifiedAt.After(d.fairQueueSafetySnapshot.LastSuccessfulVerifiedAt)) {
+		d.fairQueueSafetySnapshot.LastSuccessfulVerifiedAt = verifiedAt
+	}
+	d.fairQueueSafetySnapshot.SessionAffinity = state
+	d.fairQueueSafetyMu.Unlock()
 }
 
 // NewDBStore 创建一个数据库支持的 store。

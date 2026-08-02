@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -522,5 +523,409 @@ func TestRAGFairQueueContractApplyMySQL(t *testing.T) {
 	closeErr := reopened.Close()
 	if reopenErr != nil || !reopenedReport.Contracted || closeErr != nil {
 		t.Fatalf("reopened contract report=%+v readErr=%v closeErr=%v", reopenedReport, reopenErr, closeErr)
+	}
+}
+
+type ragFairQueueMySQLClaimTask struct {
+	taskID int64
+	docID  string
+	kbID   string
+	userID string
+}
+
+func seedRAGFairQueueMySQLClaimTasks(
+	t *testing.T,
+	st *DBStore,
+	suffix string,
+	users []string,
+) []ragFairQueueMySQLClaimTask {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	tasks := make([]ragFairQueueMySQLClaimTask, 0, len(users))
+	for i, userID := range users {
+		ensureRAGLifecycleUser(t, st, userID, "active")
+		kbID := fmt.Sprintf("kb_%s_%d", suffix, i)
+		docID := fmt.Sprintf("doc_%s_%d", suffix, i)
+		if err := st.CreateRAGKB(ctx, &RAGKBRecord{
+			ID: kbID, UserID: userID, Name: kbID, EmbedProvider: "system",
+			EmbedModel: "embed-v1", EmbedDims: 3, ChunkSize: 512, ChunkOverlap: 64,
+			ParseMode: RAGParseModeStandard, Status: "active", CreatedAt: now,
+		}); err != nil {
+			t.Fatalf("create fair claim KB %s: %v", kbID, err)
+		}
+		doc := &RAGDocumentRecord{
+			ID: docID, KBID: kbID, FileName: docID + ".md", FileType: "md", FileSize: 1,
+			ObjectKey: "rag/" + userID + "/" + kbID + "/" + docID + ".md",
+			Status:    "PENDING", Version: 1, SourceSHA256: testRAGVersion(docID, 1).SourceSHA256,
+			IndexFormatVersion: 1, ProcessingStage: "queued", UploadedAt: now,
+		}
+		taskID, err := st.CreateRAGDocumentWithVersionAndIndexTask(
+			ctx, doc, testRAGVersion(docID, 1), 3,
+		)
+		if err != nil {
+			t.Fatalf("create fair claim task %s: %v", docID, err)
+		}
+		tasks = append(tasks, ragFairQueueMySQLClaimTask{
+			taskID: taskID, docID: docID, kbID: kbID, userID: userID,
+		})
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		for i := len(tasks) - 1; i >= 0; i-- {
+			task := tasks[i]
+			_, _ = st.db.ExecContext(cleanupCtx,
+				`DELETE FROM rag_document_ai_usage WHERE task_id=?`, task.taskID)
+			_, _ = st.db.ExecContext(cleanupCtx,
+				`DELETE FROM rag_document_ai_task_budgets WHERE task_id=?`, task.taskID)
+			_, _ = st.db.ExecContext(cleanupCtx, `DELETE FROM rag_index_tasks WHERE id=?`, task.taskID)
+			_, _ = st.db.ExecContext(cleanupCtx, `DELETE FROM rag_document_versions WHERE doc_id=?`, task.docID)
+			_, _ = st.db.ExecContext(cleanupCtx, `DELETE FROM rag_documents WHERE id=?`, task.docID)
+			_, _ = st.db.ExecContext(cleanupCtx, `DELETE FROM rag_kbs WHERE id=?`, task.kbID)
+			_, _ = st.db.ExecContext(cleanupCtx, `DELETE FROM users WHERE id=?`, task.userID)
+		}
+	})
+	return tasks
+}
+
+func TestRAGFairQueueExactClaimMySQLCapacityIsGlobalAcrossStores(t *testing.T) {
+	ctx := context.Background()
+	primary := openRAGFairQueueMySQLTestStore(t)
+	if err := primary.Migrate(ctx); err != nil {
+		t.Fatalf("migrate exact claim schema: %v", err)
+	}
+	identity, err := primary.ReadFairQueueWriterIdentity(ctx)
+	if err != nil {
+		t.Fatalf("read exact claim writer: %v", err)
+	}
+	first, err := primary.BindRAGFairQueueWriter(identity.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondStore, err := NewDBStore(mysqlDialect, os.Getenv("BKCRAB_TEST_MYSQL_DSN"))
+	if err != nil {
+		t.Fatalf("open second exact claim store: %v", err)
+	}
+	t.Cleanup(func() { _ = secondStore.Close() })
+	second, err := secondStore.BindRAGFairQueueWriter(identity.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	highWater, err := first.CaptureRAGFairQueueHighWater(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, _, err := first.ListValidRunningRAGIndexTasksPage(ctx, highWater, 0, 10_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(running) != 0 {
+		t.Skipf("exact capacity integration requires no pre-existing valid RUNNING tasks; found %d", len(running))
+	}
+
+	tests := []struct {
+		name   string
+		global int
+		burst  int
+		users  func(string) []string
+	}{
+		{
+			name: "global", global: 4, burst: 4,
+			users: func(suffix string) []string {
+				users := make([]string, 8)
+				for i := range users {
+					users[i] = fmt.Sprintf("u_%s_%d", suffix, i)
+				}
+				return users
+			},
+		},
+		{
+			name: "per-user-burst", global: 8, burst: 4,
+			users: func(suffix string) []string {
+				users := make([]string, 8)
+				for i := range users {
+					users[i] = "u_" + suffix
+				}
+				return users
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			suffix := fmt.Sprintf("fq_claim_%s_%d", strings.ReplaceAll(test.name, "-", "_"), time.Now().UnixNano())
+			tasks := seedRAGFairQueueMySQLClaimTasks(t, primary, suffix, test.users(suffix))
+			type outcome struct {
+				result RAGFairQueueClaimResult
+				err    error
+			}
+			start := make(chan struct{})
+			outcomes := make(chan outcome, len(tasks))
+			var wg sync.WaitGroup
+			for i, task := range tasks {
+				wg.Add(1)
+				go func(i int, task ragFairQueueMySQLClaimTask) {
+					defer wg.Done()
+					<-start
+					facade := first
+					if i%2 == 1 {
+						facade = second
+					}
+					result, err := facade.ClaimRAGIndexTaskByID(ctx, task.taskID, task.userID, 1,
+						fmt.Sprintf("fair-mysql-worker-%d", i), time.Minute, RAGFairQueueClaimLimits{
+							GlobalConcurrency: test.global, PerUserBurstConcurrency: test.burst,
+						})
+					outcomes <- outcome{result: result, err: err}
+				}(i, task)
+			}
+			close(start)
+			wg.Wait()
+			close(outcomes)
+			claimed, deferred := 0, 0
+			for outcome := range outcomes {
+				if outcome.err != nil {
+					t.Fatalf("concurrent exact claim: %v", outcome.err)
+				}
+				switch outcome.result.Disposition {
+				case RAGFairQueueClaimed:
+					claimed++
+				case RAGFairQueueClaimCapacityDeferred:
+					deferred++
+				default:
+					t.Fatalf("unexpected exact claim disposition %q", outcome.result.Disposition)
+				}
+			}
+			if claimed != 4 || deferred != 4 {
+				t.Fatalf("claimed=%d deferred=%d, want 4/4", claimed, deferred)
+			}
+			validRunning := 0
+			for _, task := range tasks {
+				row, err := primary.GetRAGIndexTask(ctx, task.taskID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if row.Status == "RUNNING" && row.DispatchGeneration == row.ClaimGeneration {
+					validRunning++
+				}
+			}
+			if validRunning != 4 {
+				t.Fatalf("valid RUNNING=%d, want 4", validRunning)
+			}
+		})
+	}
+}
+
+func TestRAGFairQueueExactClaimMySQLAdvisoryLockTimeoutDoesNotMutate(t *testing.T) {
+	ctx := context.Background()
+	st := openRAGFairQueueMySQLTestStore(t)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := st.discoverFairQueueWriterIdentity(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facade, err := st.BindRAGFairQueueWriter(identity.fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	suffix := fmt.Sprintf("fq_claim_lock_%d", time.Now().UnixNano())
+	userID := "u_" + suffix
+	tasks := seedRAGFairQueueMySQLClaimTasks(t, st, suffix, []string{userID})
+
+	st.db.SetMaxOpenConns(4)
+	conn, err := st.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	lockName := fairQueueCapacityLockName(identity.database, "rag.index")
+	var acquired sql.NullInt64
+	if err := conn.QueryRowContext(ctx, `SELECT GET_LOCK(?, 1)`, lockName).Scan(&acquired); err != nil ||
+		!acquired.Valid || acquired.Int64 != 1 {
+		t.Fatalf("hold exact claim capacity lock: acquired=%v err=%v", acquired, err)
+	}
+	defer func() {
+		var released sql.NullInt64
+		_ = conn.QueryRowContext(context.Background(), `SELECT RELEASE_LOCK(?)`, lockName).Scan(&released)
+	}()
+
+	result, err := facade.ClaimRAGIndexTaskByID(ctx, tasks[0].taskID, userID, 1,
+		"fair-lock-timeout-worker", time.Minute, RAGFairQueueClaimLimits{
+			GlobalConcurrency: 4, PerUserBurstConcurrency: 4, AdvisoryLockTimeout: 100 * time.Millisecond,
+		})
+	if !errors.Is(err, ErrRAGFairQueueCapacityLockUnavailable) || result.Claim != nil {
+		t.Fatalf("lock-timeout result=%+v err=%v", result, err)
+	}
+	task, readErr := st.GetRAGIndexTask(ctx, tasks[0].taskID)
+	if readErr != nil || task.Status != "PENDING" || task.DispatchGeneration != 1 ||
+		task.ClaimGeneration != 0 || task.DispatchedAt != nil {
+		t.Fatalf("lock-timeout mutated task=%+v err=%v", task, readErr)
+	}
+}
+
+func TestRAGFairQueueHeartbeatAndExpiredRearmShareMySQLCapacityFence(t *testing.T) {
+	ctx := context.Background()
+	st := openRAGFairQueueMySQLTestStore(t)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := st.discoverFairQueueWriterIdentity(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facade, err := st.BindRAGFairQueueWriter(identity.fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	suffix := fmt.Sprintf("fq_heartbeat_sweeper_%d", time.Now().UnixNano())
+	users := []string{"u_" + suffix + "_heartbeat", "u_" + suffix + "_sweeper"}
+	tasks := seedRAGFairQueueMySQLClaimTasks(t, st, suffix, users)
+	limits := RAGFairQueueClaimLimits{GlobalConcurrency: 128, PerUserBurstConcurrency: 128}
+
+	heartbeatClaim, err := facade.ClaimRAGIndexTaskByID(
+		ctx, tasks[0].taskID, tasks[0].userID, 1, "fair-heartbeat-winner", time.Minute, limits,
+	)
+	if err != nil || heartbeatClaim.Disposition != RAGFairQueueClaimed || heartbeatClaim.Claim == nil {
+		t.Fatalf("claim heartbeat task: result=%+v err=%v", heartbeatClaim, err)
+	}
+	if renewed, err := st.HeartbeatRAGIndexTask(
+		ctx, heartbeatClaim.Claim.Fence, 2*time.Minute,
+	); err != nil || !renewed {
+		t.Fatalf("renew heartbeat task: renewed=%v err=%v", renewed, err)
+	}
+	page, _, err := facade.ArmExpiredRAGIndexTasksPage(ctx, 0, 10_000)
+	if err != nil {
+		t.Fatalf("arm after heartbeat: %v", err)
+	}
+	for _, candidate := range page {
+		if candidate.Task.ID == tasks[0].taskID {
+			t.Fatalf("renewed heartbeat task was rearmed: %+v", candidate)
+		}
+	}
+
+	sweeperClaim, err := facade.ClaimRAGIndexTaskByID(
+		ctx, tasks[1].taskID, tasks[1].userID, 1, "fair-sweeper-winner", time.Minute, limits,
+	)
+	if err != nil || sweeperClaim.Disposition != RAGFairQueueClaimed || sweeperClaim.Claim == nil {
+		t.Fatalf("claim sweeper task: result=%+v err=%v", sweeperClaim, err)
+	}
+
+	st.db.SetMaxOpenConns(6)
+	lockConn, err := st.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockConn.Close()
+	lockName := fairQueueCapacityLockName(identity.database, "rag.index")
+	var acquired sql.NullInt64
+	if err := lockConn.QueryRowContext(ctx, `SELECT GET_LOCK(?, 1)`, lockName).Scan(&acquired); err != nil ||
+		!acquired.Valid || acquired.Int64 != 1 {
+		t.Fatalf("hold heartbeat/sweeper capacity lock: acquired=%v err=%v", acquired, err)
+	}
+	released := false
+	defer func() {
+		if released {
+			return
+		}
+		var result sql.NullInt64
+		_ = lockConn.QueryRowContext(context.Background(), `SELECT RELEASE_LOCK(?)`, lockName).Scan(&result)
+	}()
+
+	heartbeatCtx, cancelHeartbeat := context.WithTimeout(ctx, 150*time.Millisecond)
+	renewed, heartbeatErr := st.HeartbeatRAGIndexTask(
+		heartbeatCtx, sweeperClaim.Claim.Fence, 2*time.Minute,
+	)
+	cancelHeartbeat()
+	if renewed || !errors.Is(heartbeatErr, ErrRAGFairQueueCapacityLockUnavailable) {
+		t.Fatalf("heartbeat crossed held capacity lock: renewed=%v err=%v", renewed, heartbeatErr)
+	}
+	if _, err := lockConn.ExecContext(ctx,
+		`UPDATE rag_index_tasks SET lease_until=DATE_SUB(UTC_TIMESTAMP(6), INTERVAL 1 SECOND)
+		 WHERE id=?`, tasks[1].taskID); err != nil {
+		t.Fatalf("expire sweeper task: %v", err)
+	}
+	sweeperCtx, cancelSweeper := context.WithTimeout(ctx, 150*time.Millisecond)
+	blockedPage, _, sweeperErr := facade.ArmExpiredRAGIndexTasksPage(sweeperCtx, 0, 10_000)
+	cancelSweeper()
+	if !errors.Is(sweeperErr, ErrRAGFairQueueCapacityLockUnavailable) || len(blockedPage) != 0 {
+		t.Fatalf("sweeper crossed held capacity lock: page=%+v err=%v", blockedPage, sweeperErr)
+	}
+	before, err := st.GetRAGIndexTask(ctx, tasks[1].taskID)
+	if err != nil || before.Status != "RUNNING" ||
+		before.DispatchGeneration != before.ClaimGeneration {
+		t.Fatalf("blocked sweeper mutated task=%+v err=%v", before, err)
+	}
+
+	var releaseResult sql.NullInt64
+	if err := lockConn.QueryRowContext(ctx, `SELECT RELEASE_LOCK(?)`, lockName).Scan(&releaseResult); err != nil ||
+		!releaseResult.Valid || releaseResult.Int64 != 1 {
+		t.Fatalf("release heartbeat/sweeper capacity lock: result=%v err=%v", releaseResult, err)
+	}
+	released = true
+
+	rearmed, _, err := facade.ArmExpiredRAGIndexTasksPage(ctx, 0, 10_000)
+	if err != nil {
+		t.Fatalf("rearm expired task: %v", err)
+	}
+	var found *RAGIndexTaskDispatchCandidate
+	for i := range rearmed {
+		if rearmed[i].Task.ID == tasks[1].taskID {
+			found = &rearmed[i]
+			break
+		}
+	}
+	if found == nil || found.Task.DispatchGeneration != sweeperClaim.Claim.Fence.ClaimGeneration+1 {
+		t.Fatalf("expired task rearm=%+v", found)
+	}
+	if renewed, err := st.HeartbeatRAGIndexTask(
+		ctx, sweeperClaim.Claim.Fence, 2*time.Minute,
+	); err != nil || renewed {
+		t.Fatalf("old heartbeat revived swept task: renewed=%v err=%v", renewed, err)
+	}
+}
+
+func TestRAGFairQueueCapacityFenceMySQLReleaseFailureFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	st := openRAGFairQueueMySQLTestStore(t)
+	st.db.SetMaxOpenConns(4)
+	identity, err := st.discoverFairQueueWriterIdentity(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var killErr error
+	err = st.withRAGFairQueueCapacityLock(
+		ctx, identity.fingerprint, time.Second,
+		func(session ragFairQueueCapacitySession) error {
+			_, killErr = st.db.ExecContext(ctx, fmt.Sprintf(
+				"KILL CONNECTION %d", session.identity.connectionID,
+			))
+			return nil
+		},
+	)
+	if killErr != nil {
+		t.Skipf("MySQL test principal cannot kill its own capacity session: %v", killErr)
+	}
+	if !errors.Is(err, ErrFairQueueUnsafeConnection) {
+		t.Fatalf("killed capacity session error=%v", err)
+	}
+	lockName := fairQueueCapacityLockName(identity.database, "rag.index")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var owner sql.NullInt64
+		if queryErr := st.db.QueryRowContext(ctx, `SELECT IS_USED_LOCK(?)`, lockName).Scan(&owner); queryErr != nil {
+			t.Fatalf("inspect killed capacity lock: %v", queryErr)
+		}
+		if !owner.Valid {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("killed capacity session leaked named lock to connection %d", owner.Int64)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if snapshot := st.ReadFairQueueConnectionSafetySnapshot(); snapshot.SessionAffinity != FairQueueSessionAffinityMismatch {
+		t.Fatalf("release failure safety snapshot=%+v", snapshot)
 	}
 }

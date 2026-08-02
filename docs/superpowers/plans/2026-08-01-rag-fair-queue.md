@@ -1078,19 +1078,39 @@ git commit -m "feat(queue): rebuild fair scheduling state after dependency outag
 
 **Files:**
 
-- Modify: `internal/store/store.go`
+- Modify: `internal/store/database.go`
+- Modify: `internal/store/fairqueue_operation.go`
 - Modify: `internal/store/rag.go`
-- Modify: `internal/store/rag_test.go`
+- Modify: `internal/store/rag_attachments.go`
+- Modify: `internal/store/rag_budget.go`
+- Modify: `internal/store/rag_cache.go`
+- Modify: `internal/store/rag_lifecycle.go`
+- Modify: `internal/store/rag_object_staging.go`
 - Modify: `internal/store/rag_task_claim.go`
-- Modify: `internal/store/rag_task_claim_test.go`
+- Modify: `internal/store/rag_fair_queue_repair.go`
 - Modify: `internal/store/rag_fair_queue_mysql_test.go`
+- Create: `internal/store/fairqueue_writer_identity_test.go`
+- Create: `internal/store/rag_fair_queue_budget.go`
+- Create: `internal/store/rag_fair_queue_budget_test.go`
+- Create: `internal/store/rag_fair_queue_capacity.go`
+- Create: `internal/store/rag_fair_queue_capacity_test.go`
+- Create: `internal/store/rag_fair_queue_claim_test.go`
+- Create: `internal/store/rag_fair_queue_execution_reads.go`
+- Create: `internal/store/rag_fair_queue_execution_reads_test.go`
+- Create: `internal/store/rag_fair_queue_execution_test.go`
+- Create: `internal/store/rag_fair_queue_lifecycle.go`
+- Create: `internal/store/rag_fair_queue_lifecycle_test.go`
+- Create: `internal/store/rag_fair_queue_store.go`
+- Create: `internal/store/rag_fair_queue_store_test.go`
+- Create: `internal/store/rag_fair_queue_poison.go`
+- Create: `internal/store/rag_index_object_fence_test.go`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 新增测试覆盖：
 
 ```text
-ClaimRAGIndexTaskByID 显式接收 expectedDispatchGeneration，只领取指定 task，并校验 message dispatch_generation 与 due canonical row
+ClaimRAGIndexTaskByID 显式接收 expected writer fingerprint 与 expectedDispatchGeneration（或由显式 expected-writer-bound facade 提供前者），只领取指定 task，并校验 message dispatch_generation 与 due canonical row
 expectedUserID 与 task.user_id 不一致时拒绝且不修改 task
 重复 delivery 只有一个 claim 成功
 8 个并发精确 claim 在两个 store 实例下，有效 RUNNING 始终不超过 global=4
@@ -1110,12 +1130,13 @@ poison tenant/token delivery 修复 canonical dispatch generation 后进入 DLQ�
 从 claim/heartbeat/count 使用的 authoritative writer 查询 `@@server_uuid` 并生成绑定 databaseName 的 fingerprint；查询失败 fail closed
 每个 claim/heartbeat pinned conn 在 GET_LOCK 前与成功后复验 `@@server_uuid + DATABASE() + CONNECTION_ID()`；transparent switch/session 不粘连时无业务 mutation
 fair execution 的 finish/retry/fail/supersede/cancel/quiesce 等写路径也验证 expected writer identity，不走未验证 pool mutation
+pipeline 的 chunk/chunk-asset/object-staging/cache catalog/DocumentAI budget 等执行期写入不得保留 `CheckFence -> pool mutation` TOCTOU；必须改为同一 expected-writer pinned transaction 内复验 execution fence 后写入
 fair mode的durable task create/read/cancel入口也走expected-writer pinned helper；transparent switch时create事务不提交且不触发notifier
 Dispatch list/by-ID/Mark、expired rearm、poison repair、Recovery CaptureHighWater/每页、BrokerRepair与continuous reconciliation 的 read/write 全部使用 expected-writer pinned helper；透明切换不能产生 candidate/snapshot或置READY
 真实 MySQL 中 RELEASE_LOCK 返回异常/连接状态不明时物理 discard，后续 pool borrower 不继承 named lock
 ```
 
-- [ ] **Step 2: 抽取共享 claim 内核**
+- [x] **Step 2: 抽取共享 claim 内核**
 
 避免复制两套 300 行锁/fence 逻辑：
 
@@ -1129,7 +1150,7 @@ Dispatch list/by-ID/Mark、expired rearm、poison repair、Recovery CaptureHighW
 
 共享内核显式接收 claim mode/expected dispatch generation：legacy wrapper 计算 `new_generation=GREATEST(dispatch_generation,claim_generation+1)` 并同时写两个 generation；fair wrapper 要求 canonical/message dispatch generation 相等且严格大于旧 claim generation，再把 claim generation设为它。不得为了复用而让 legacy 伪造 Rabbit token，也不得让 fair 退回无 token 的 `+1` 路径。
 
-- [ ] **Step 3: 增加 MySQL 最终并发闸门**
+- [x] **Step 3: 增加 MySQL 最终并发闸门**
 
 先实现并单测统一 lock-name builder。lock name 必须用参数传给 MySQL、在同一 server 上按 database + resource 隔离、确定性且不超过 MySQL 64-byte 限制；固定为 `bkcrab:fq:` + SHA-256(`database + NUL + resource`) 的前 48 个小写 hex（总长 58），不要直接截断可能碰撞的长 database/resource 字符串。
 
@@ -1149,7 +1170,7 @@ SELECT @@server_uuid, DATABASE(), CONNECTION_ID() -> expected identity
 
 identity queries、`GET_LOCK`、BEGIN/查询/COMMIT 与 `RELEASE_LOCK` 必须都使用该 pinned connection；不得从 pool 上混用 `d.db`。连接建立 hook 可提前验证，但逐临界区复验不可省略。事务隔离级别/首次读必须保证看见取得 advisory lock 前已经提交的 heartbeat。advisory lock 不得跨越 `runClaim`。连接获取、identity/session mismatch、lock timeout、context cancel、begin/commit failure 和 release failure 都要有测试。identity mismatch 与 release/connection 状态不明都必须通过 driver bad-connection/物理 discard 移出 pool，并以 typed fatal safety error关闭 runtime gate/取消 pipeline——不能假设 `sql.Conn.Close()` 会销毁物理连接。释放使用独立于已取消 request 的 bounded cleanup context并必须恰好返回 1。该逻辑只在 MySQL fair mode 使用，不为 SQLite/PostgreSQL 实现等价物。
 
-- [ ] **Step 4: 把 MySQL heartbeat 纳入同一最终闸门**
+- [x] **Step 4: 把 MySQL heartbeat 纳入同一最终闸门**
 
 `HeartbeatRAGIndexTask` 也必须在 pinned connection 上取得**完全相同 resource lock name**，再 BEGIN、按 fence/generation CAS 延长 lease、COMMIT、RELEASE_LOCK。heartbeat UPDATE 必须同时匹配 RUNNING、owner、doc/version、expected claim generation、`lease_until > DB_NOW` 和 `dispatch_generation=claim_generation`；否则永久丢 fence并取消 worker。这样 claim 的有效 RUNNING 计数不会在 MVCC snapshot 中漏掉一个尚未提交的 lease 延长，sweeper rearm 也不会被旧 worker 续回。覆盖：
 
@@ -1163,20 +1184,20 @@ heartbeat 先提交时 sweeper expired CAS=false；sweeper 先推进 dispatch ge
 
 上述 advisory-lock、heartbeat/sweeper 排序、逐 connection identity/session 校验和物理 discard 不能只用 sqlmock；在 `rag_fair_queue_mysql_test.go` 增加 `BKCRAB_TEST_MYSQL_DSN` 门控的两个真实 `*sql.DB`/多连接测试，并用可控 connector 注入透明 server UUID/connection ID 变化验证 transaction 前 fail closed。
 
-- [ ] **Step 5: 增加 tenant/dispatch/fence 校验与 canonical disposition**
+- [x] **Step 5: 增加 tenant/dispatch/fence 校验与 canonical disposition**
 
 task `user_id` 与锁定 KB owner、Rabbit expected tenant 三者必须一致；message dispatch generation 必须等于 row dispatch generation 且严格大于 row claim generation，成功后直接令二者相等。把 existing claim 内核的“领取成功 / 容量不足 / 暂时错误 / 已终态 / 已修复终态 / 已修复 retry / poison”显式返回给 adapter。maintenance repair 必须 durable，并让 PENDING/expired RUNNING 都受 future `next_run_at` 门控；可定位的 poison delivery先在 canonical 事务中按 `GREATEST(dispatch_generation,claim_generation)+1` 推进并清 marker，再显式 confirmed publish 到 DLQ，保证合法 task 会由 dispatcher 发出新 token。
 
-fair claim/execution fence携expected writer fingerprint。抽取同一identity-checked pinned read/transaction helper：除当前pipeline的`ActivateAndFinishRAGIndexTask`、`SupersedeRAGIndexTaskAndCreateVersion`、`RetryRAGIndexTask`、`FailRAGIndexTask`、cancel/`AcknowledgeRAGIndexTaskQuiesced`外，还覆盖fair-mode durable task create/read/cancel、Task2的dispatch list/by-ID/Mark、expired rearm/poison/broker repair，以及recovery high-water/每个page与continuous reconciliation。读操作在返回DTO前也验证connection identity；每条mutation仍匹配原owner/version/claim/lease fence。逐项测试mismatch时不返回可发布/可恢复snapshot、不提交create/cancel、不触发notifier、不激活结果、不建立replacement发布义务并返回fatal safety error；终结/释放路径不取得容量lock。
+fair claim/execution fence携expected writer fingerprint。抽取同一identity-checked pinned read/transaction helper：除当前pipeline的`ActivateAndFinishRAGIndexTask`、`SupersedeRAGIndexTaskAndCreateVersion`、`RetryRAGIndexTask`、`FailRAGIndexTask`、cancel/`AcknowledgeRAGIndexTaskQuiesced`外，还覆盖chunk/chunk-asset/object-staging/cache catalog/DocumentAI budget等执行期写入、fair-mode durable task create/read/cancel、Task2的dispatch list/by-ID/Mark、expired rearm/poison/broker repair，以及recovery high-water/每个page与continuous reconciliation。禁止保留先`CheckRAGIndexFence`再通过pool裸写的TOCTOU路径；读操作在返回DTO前也验证connection identity；每条mutation仍匹配原owner/version/claim/lease fence。逐项测试mismatch时不返回可发布/可恢复snapshot、不提交create/cancel/执行期数据、不触发notifier、不激活结果、不建立replacement发布义务并返回fatal safety error；终结/释放路径不取得容量lock。Task 9 同时导出同一`DBStore`上的窄writer discovery API及线程安全的最近connection identity安全快照（只含成功验证时间和verified/unknown/mismatch状态，不暴露server UUID/database/connection ID），供Task 11装配与health真实读取。
 
-- [ ] **Step 6: 验证**
+- [x] **Step 6: 验证**
 
 ```bash
 go test ./internal/store -run 'TestRAG.*Claim' -v
 go test ./internal/store -run 'TestRAG.*(Lifecycle|Budget|Fence)' -v
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/store
@@ -1194,6 +1215,8 @@ git commit -m "feat(rag): claim exact rabbit-delivered index tasks with fences"
 - Modify: `internal/rag/service.go`
 - Modify: `internal/rag/pipeline.go`
 - Modify: `internal/rag/pipeline_test.go`
+- Modify: `internal/store/rag_fair_queue_contract.go`
+- Modify: `internal/store/rag_fair_queue_contract_test.go`
 
 - [ ] **Step 1: 写 adapter 失败测试**
 
@@ -1258,6 +1281,8 @@ PreparedTask.Run 返回后由 fair runtime 无条件 release Redis reservation�
 
 PreparedTask 持有 claim 返回的 expected writer fingerprint；pipeline 的成功、retry、fail、supersede/replacement、cancel/quiesce 每条 store mutation 都必须走 Task 9 的 identity-checked execution helper。typed writer mismatch 立即 cancel provider/embedding context并上报 runtime fatal safety state，不能降级为普通 retry。
 
+`runClaim`/heartbeat/finalize 当前的日志型错误边界必须改为可向`PreparedTask.Run`传播typed fatal safety error；adapter在Prepare、Run、dispatch/recovery/journal所有边界集中把store的writer mismatch/unsafe-connection错误映射为`fairqueue.ErrAuthoritativeWriterMismatch`。WriterRebindSource需要的identity重读、schema/invariant、valid-RUNNING count与RecoverySource必须由专用non-auto-migrate store窄接口完整提供，不能从启动缓存伪造或退化为普通`Store`读取。
+
 - [ ] **Step 5: 验证**
 
 ```bash
@@ -1279,10 +1304,19 @@ git commit -m "feat(rag): execute index pipeline through fair queue adapter"
 **Files:**
 
 - Modify: `internal/gateway/gateway.go`
+- Create: `internal/gateway/rag_fair_queue.go`
 - Create: `internal/gateway/rag_fair_queue_test.go`
+- Modify: `internal/fairqueue/rabbit.go`
+- Modify: `internal/fairqueue/rabbit_test.go`
+- Modify: `internal/fairqueue/redis.go`
+- Modify: `internal/fairqueue/runtime.go`
+- Modify: `internal/fairqueue/runtime_test.go`
+- Modify: `internal/fairqueue/recovery.go`
+- Modify: `internal/fairqueue/recovery_test.go`
 - Modify: `internal/setup/server.go`
 - Create: `internal/setup/handlers_health.go`
 - Create: `internal/setup/handlers_health_test.go`
+- Modify: `cmd/bkcrab/main.go`
 
 - [ ] **Step 1: 写启动/配置失败测试**
 
@@ -1294,6 +1328,7 @@ worker mode=paused：不创建 claimant，API/其它 RAG maintenance 仍启动�
 worker mode=fair + non-MySQL：启动校验失败
 worker mode=fair：先创建 clients/runtime、注册 rag.index，再启动 loops
 worker mode=fair：scheduler 默认关闭，startup rebuild/reconcile 完成后才开
+worker mode=fair：Rabbit resource/base topology readiness 与 Redis standalone/writable-primary readiness 都在开放resource gate前被证明；任一依赖初始不可用时API以degraded启动并由有界supervisor重试，不能让同步client构造失败杀死gateway，也不能在空库时绕过Rabbit探测开放gate
 worker mode=fair：从 claim/heartbeat 所用 MySQL writer 查询 `@@server_uuid`，生成绑定 databaseName 的 fingerprint；查询失败返回启动错误
 worker mode=fair：把RAG adapter的OperationJournal注入Runtime；journal ACTIVE/不匹配READY_COMMITTED时scheduler/dispatcher关闭并报告operator-required
 READY_COMMITTED + Redis READY last_completed_operation_id精确匹配时可补记COMPLETED；ID/kind/writer任一不符fail closed
@@ -1319,6 +1354,8 @@ gateway 负责：
 向 RAG Service 注入 fair notifier/mode
 启动 runtime 和 RAG maintenance loops
 ```
+
+当前Redis client构造会同步执行INFO/ROLE，而Rabbit只提供per-tenant topology方法；实现时需增加可重试的fair-runtime supervisor和resource/base topology readiness probe（或等价的lazy/probed client边界）。supervisor在依赖未就绪时保持scheduler/dispatcher gate关闭但不阻止MySQL-backed API启动；探测必须在startup barrier开放resource前完成。fairqueue Runtime/Recovery还需提供不含敏感token的只读health snapshot，setup handler不得凭启动时间或本地布尔伪造resource/journal/loop状态。
 
 不实现 Redis/MySQL 运行时 mode fence，因为旧二进制不会遵守它，容易制造虚假的安全感。从 legacy 切 fair 必须采用维护窗口和三态本地配置：先将所有兼容实例从 legacy 滚动到 paused（混合期只有 legacy claim），确认旧 Pod/进程为零并在 paused 阶段等待有效 RUNNING 完成或 lease 到期；再从 paused 滚动到 fair（混合期只有 fair claim）。禁止直接 fair/legacy canary 混跑；回滚严格走 fair→paused（在 paused 阶段 drain）→**兼容 dual-write release**的 legacy。contract 后禁止启动 pre-expand binary。
 

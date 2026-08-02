@@ -1287,16 +1287,8 @@ func (d *DBStore) createRAGDocumentWithVersionAndIndexTask(
 	maxRetry int,
 	policy *RAGAdvancedEnqueuePolicy,
 ) (int64, error) {
-	if doc == nil || version == nil || version.DocID != doc.ID || version.DocVersion != doc.Version {
-		return 0, ErrRAGDocumentVersionMismatch
-	}
-	prepareNewRAGDocumentVersion(version)
-	normalizedSource, fillSource, err := ragDocumentSourceHash(doc.SourceSHA256, version.SourceSHA256)
-	if err != nil {
+	if err := prepareRAGDocumentWithVersionAndIndexTask(doc, version); err != nil {
 		return 0, err
-	}
-	if fillSource {
-		doc.SourceSHA256 = normalizedSource
 	}
 	if err := d.validateRAGVersionSnapshotForDocument(ctx, d.db, doc, version); err != nil {
 		return 0, err
@@ -1317,7 +1309,52 @@ func (d *DBStore) createRAGDocumentWithVersionAndIndexTask(
 	if policy != nil {
 		expectedOwner = policy.UserID
 	}
+	taskID, err := d.createRAGDocumentWithVersionAndIndexTaskInTx(
+		ctx, tx, doc, version, maxRetry, policy, expectedOwner,
+	)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return taskID, nil
+}
+
+func prepareRAGDocumentWithVersionAndIndexTask(
+	doc *RAGDocumentRecord,
+	version *RAGDocumentVersionRecord,
+) error {
+	if doc == nil || version == nil || version.DocID != doc.ID || version.DocVersion != doc.Version {
+		return ErrRAGDocumentVersionMismatch
+	}
+	prepareNewRAGDocumentVersion(version)
+	normalizedSource, fillSource, err := ragDocumentSourceHash(doc.SourceSHA256, version.SourceSHA256)
+	if err != nil {
+		return err
+	}
+	if fillSource {
+		doc.SourceSHA256 = normalizedSource
+	}
+	return nil
+}
+
+func (d *DBStore) createRAGDocumentWithVersionAndIndexTaskInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	doc *RAGDocumentRecord,
+	version *RAGDocumentVersionRecord,
+	maxRetry int,
+	policy *RAGAdvancedEnqueuePolicy,
+	expectedOwner string,
+) (int64, error) {
+	if tx == nil || doc == nil || version == nil {
+		return 0, ErrRAGDocumentVersionMismatch
+	}
 	if _, err := d.lockActiveRAGKBOwnerTx(ctx, tx, doc.KBID, expectedOwner); err != nil {
+		return 0, err
+	}
+	if err := d.validateRAGVersionSnapshotForDocument(ctx, tx, doc, version); err != nil {
 		return 0, err
 	}
 	if err := d.enforceRAGAdvancedEnqueuePolicyTx(ctx, tx, doc.KBID, doc.ID, version, policy, false); err != nil {
@@ -1334,9 +1371,6 @@ func (d *DBStore) createRAGDocumentWithVersionAndIndexTask(
 	}
 	taskID, err := d.createRAGIndexTask(ctx, tx, doc.ID, maxRetry)
 	if err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	return taskID, nil
@@ -1644,6 +1678,71 @@ func (d *DBStore) PutRAGChunks(ctx context.Context, chunks []RAGChunkRecord) err
 	if len(chunks) > maxRAGBatchRecords {
 		return ErrRAGBatchTooLarge
 	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := d.putRAGChunksInTx(ctx, tx, chunks); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// PutRAGChunksForIndex is the fair-mode catalog entry point. Unlike the
+// legacy bulk writer, the live task fence and every row are validated under
+// the same expected-writer transaction which performs the upsert.
+func (d *DBStore) PutRAGChunksForIndex(
+	ctx context.Context,
+	fence IndexFence,
+	chunks []RAGChunkRecord,
+) (bool, error) {
+	if !lowerHex64Pattern.MatchString(fence.ExpectedWriterFingerprint) {
+		return false, ErrFairQueueWriterMismatch
+	}
+	if len(chunks) > maxRAGBatchRecords {
+		return false, ErrRAGBatchTooLarge
+	}
+	return d.withLiveRAGIndexFenceTx(ctx, fence,
+		func(tx *sql.Tx, locked *ragLockedIndexFence) (bool, error) {
+			if err := d.putRAGChunksForIndexInTx(ctx, tx, locked, fence, chunks); err != nil {
+				return false, err
+			}
+			return true, nil
+		})
+}
+
+func (d *DBStore) putRAGChunksForIndexInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	locked *ragLockedIndexFence,
+	fence IndexFence,
+	chunks []RAGChunkRecord,
+) error {
+	if tx == nil || locked == nil || locked.doc == nil {
+		return ErrRAGDocumentVersionMismatch
+	}
+	for i := range chunks {
+		chunk := &chunks[i]
+		if chunk.DocID != fence.DocID || chunk.DocVersion != fence.DocVersion ||
+			chunk.KBID != locked.doc.KBID {
+			return ErrRAGDocumentVersionMismatch
+		}
+	}
+	return d.putRAGChunksInTx(ctx, tx, chunks)
+}
+
+func (d *DBStore) putRAGChunksInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	chunks []RAGChunkRecord,
+) error {
+	if len(chunks) == 0 {
+		return nil
+	}
+	if len(chunks) > maxRAGBatchRecords {
+		return ErrRAGBatchTooLarge
+	}
 	query := fmt.Sprintf(`INSERT INTO rag_chunks (
 		kb_id, doc_id, doc_version, chunk_index, section_title, location_json,
 		raw_content, enhancement, search_content, token_count, created_at)
@@ -1663,11 +1762,6 @@ func (d *DBStore) PutRAGChunks(ctx context.Context, chunks []RAGChunkRecord) err
 			enhancement=excluded.enhancement, search_content=excluded.search_content,
 			token_count=excluded.token_count, created_at=excluded.created_at`
 	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	stmt, err := tx.PrepareContext(ctx, query)
 	if err != nil {
 		return err
@@ -1686,7 +1780,7 @@ func (d *DBStore) PutRAGChunks(ctx context.Context, chunks []RAGChunkRecord) err
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (d *DBStore) ListRAGChunksByRefs(ctx context.Context, refs []RAGChunkRef) ([]RAGChunkRecord, error) {
@@ -1747,6 +1841,70 @@ func (d *DBStore) PutRAGChunkAssets(ctx context.Context, mappings []RAGChunkAsse
 	if len(mappings) > maxRAGBatchRecords {
 		return ErrRAGBatchTooLarge
 	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := d.putRAGChunkAssetsInTx(ctx, tx, mappings); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// PutRAGChunkAssetsForIndex is the fair-mode mapping writer. The batch
+// identity and the live execution fence are checked atomically with its SQL
+// upserts on the expected authoritative writer.
+func (d *DBStore) PutRAGChunkAssetsForIndex(
+	ctx context.Context,
+	fence IndexFence,
+	mappings []RAGChunkAssetRecord,
+) (bool, error) {
+	if !lowerHex64Pattern.MatchString(fence.ExpectedWriterFingerprint) {
+		return false, ErrFairQueueWriterMismatch
+	}
+	if len(mappings) > maxRAGBatchRecords {
+		return false, ErrRAGBatchTooLarge
+	}
+	return d.withLiveRAGIndexFenceTx(ctx, fence,
+		func(tx *sql.Tx, locked *ragLockedIndexFence) (bool, error) {
+			if err := d.putRAGChunkAssetsForIndexInTx(ctx, tx, locked, fence, mappings); err != nil {
+				return false, err
+			}
+			return true, nil
+		})
+}
+
+func (d *DBStore) putRAGChunkAssetsForIndexInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	locked *ragLockedIndexFence,
+	fence IndexFence,
+	mappings []RAGChunkAssetRecord,
+) error {
+	if tx == nil || locked == nil || locked.doc == nil {
+		return ErrRAGDocumentVersionMismatch
+	}
+	for i := range mappings {
+		mapping := &mappings[i]
+		if mapping.DocID != fence.DocID || mapping.DocVersion != fence.DocVersion {
+			return ErrRAGDocumentVersionMismatch
+		}
+	}
+	return d.putRAGChunkAssetsInTx(ctx, tx, mappings)
+}
+
+func (d *DBStore) putRAGChunkAssetsInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	mappings []RAGChunkAssetRecord,
+) error {
+	if len(mappings) == 0 {
+		return nil
+	}
+	if len(mappings) > maxRAGBatchRecords {
+		return ErrRAGBatchTooLarge
+	}
 	query := fmt.Sprintf(`INSERT INTO rag_chunk_assets (
 		doc_id, doc_version, chunk_index, asset_id, attachment_id, ordinal,
 		location_json, caption, ocr_text)
@@ -1762,11 +1920,6 @@ func (d *DBStore) PutRAGChunkAssets(ctx context.Context, mappings []RAGChunkAsse
 			location_json=excluded.location_json,
 			caption=excluded.caption, ocr_text=excluded.ocr_text`
 	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	stmt, err := tx.PrepareContext(ctx, query)
 	if err != nil {
 		return err
@@ -1780,7 +1933,7 @@ func (d *DBStore) PutRAGChunkAssets(ctx context.Context, mappings []RAGChunkAsse
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func nullableRAGString(value string) any {
@@ -1992,43 +2145,38 @@ func (d *DBStore) PublishRAGAssetsForIndex(
 		return false, ErrRAGAssetConflict
 	}
 
-	tx, _, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
-	if err != nil || !ok {
-		return false, err
-	}
-	defer tx.Rollback()
-	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, fence.DocID); err != nil {
-		return false, err
-	}
-	for i := range assets {
-		if err := d.publishRAGAssetInTx(ctx, tx, &assets[i]); err != nil {
-			return false, err
-		}
-	}
-	if err := d.touchRAGVersionAssetsBeforeRemoval(ctx, tx, fence.DocID, fence.DocVersion); err != nil {
-		return false, err
-	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_version_assets
-		WHERE doc_id=%s AND doc_version=%s`, d.ph(1), d.ph(2)), fence.DocID, fence.DocVersion); err != nil {
-		return false, err
-	}
-	if len(uniqueIDs) != 0 {
-		stmt, err := tx.PrepareContext(ctx, fmt.Sprintf(`INSERT INTO rag_version_assets
-			(doc_id,doc_version,asset_id) VALUES (%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3)))
-		if err != nil {
-			return false, err
-		}
-		defer stmt.Close()
-		for _, id := range uniqueIDs {
-			if _, err := stmt.ExecContext(ctx, fence.DocID, fence.DocVersion, id); err != nil {
+	return d.withLiveRAGIndexFenceTx(ctx, fence,
+		func(tx *sql.Tx, _ *ragLockedIndexFence) (bool, error) {
+			if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, fence.DocID); err != nil {
 				return false, err
 			}
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return true, nil
+			for i := range assets {
+				if err := d.publishRAGAssetInTx(ctx, tx, &assets[i]); err != nil {
+					return false, err
+				}
+			}
+			if err := d.touchRAGVersionAssetsBeforeRemoval(ctx, tx, fence.DocID, fence.DocVersion); err != nil {
+				return false, err
+			}
+			if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_version_assets
+				WHERE doc_id=%s AND doc_version=%s`, d.ph(1), d.ph(2)), fence.DocID, fence.DocVersion); err != nil {
+				return false, err
+			}
+			if len(uniqueIDs) != 0 {
+				stmt, err := tx.PrepareContext(ctx, fmt.Sprintf(`INSERT INTO rag_version_assets
+					(doc_id,doc_version,asset_id) VALUES (%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3)))
+				if err != nil {
+					return false, err
+				}
+				defer stmt.Close()
+				for _, id := range uniqueIDs {
+					if _, err := stmt.ExecContext(ctx, fence.DocID, fence.DocVersion, id); err != nil {
+						return false, err
+					}
+				}
+			}
+			return true, nil
+		})
 }
 
 func (d *DBStore) publishRAGAssetInTx(ctx context.Context, tx *sql.Tx, asset *RAGAssetRecord) error {
@@ -2442,43 +2590,13 @@ func (d *DBStore) DeleteRAGIndexGCTask(ctx context.Context, id int64) error {
 }
 
 func (d *DBStore) CreateRAGDocumentAITaskBudget(ctx context.Context, budget *RAGDocumentAITaskBudgetRecord) error {
-	if budget == nil || budget.TaskID <= 0 || strings.TrimSpace(budget.UserID) == "" ||
-		budget.MaxRequests < 0 || budget.MaxTokens < 0 || budget.MaxCostMicroUSD < 0 ||
-		budget.ChargedRequests < 0 || budget.ChargedTokens < 0 || budget.ChargedCostMicroUSD < 0 {
+	if !validRAGDocumentAITaskBudgetRecord(budget) {
 		return errors.New("store: invalid RAG DocumentAI task budget")
 	}
 	if budget.UpdatedAt.IsZero() {
 		budget.UpdatedAt = time.Now().UTC()
 	}
-	query := fmt.Sprintf(`INSERT INTO rag_document_ai_task_budgets (
-		task_id, user_id, max_requests, max_tokens, max_cost_microusd,
-		charged_requests, charged_tokens, charged_cost_microusd, updated_at)
-		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)`, d.ph(1), d.ph(2),
-		d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9))
-	if d.dialect == "mysql" {
-		query += ` ON DUPLICATE KEY UPDATE task_id=task_id`
-	} else {
-		query += ` ON CONFLICT (task_id) DO NOTHING`
-	}
-	_, err := d.db.ExecContext(ctx, query, budget.TaskID, budget.UserID,
-		budget.MaxRequests, budget.MaxTokens, budget.MaxCostMicroUSD,
-		budget.ChargedRequests, budget.ChargedTokens,
-		budget.ChargedCostMicroUSD, budget.UpdatedAt)
-	if err != nil {
-		return err
-	}
-	// INSERT .. DO NOTHING is the crash/reclaim idempotency path, not
-	// permission to silently reuse a task ID with another immutable snapshot.
-	// Verify the existing row after the insert race has settled.
-	existing, err := d.GetRAGDocumentAITaskBudget(ctx, budget.TaskID)
-	if err != nil {
-		return err
-	}
-	if existing.UserID != budget.UserID || existing.MaxRequests != budget.MaxRequests ||
-		existing.MaxTokens != budget.MaxTokens || existing.MaxCostMicroUSD != budget.MaxCostMicroUSD {
-		return ErrRAGDocumentAIUsageConflict
-	}
-	return nil
+	return d.createRAGDocumentAITaskBudgetOn(ctx, d.db, budget)
 }
 
 func (d *DBStore) GetRAGDocumentAITaskBudget(ctx context.Context, taskID int64) (*RAGDocumentAITaskBudgetRecord, error) {

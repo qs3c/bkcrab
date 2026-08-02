@@ -455,6 +455,25 @@ func (d *DBStore) MarkRAGDocumentDeleting(ctx context.Context, id string) (*RAGD
 		return nil, err
 	}
 	defer tx.Rollback()
+	updated, err := d.markRAGDocumentDeletingInTx(ctx, tx, id, route)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+func (d *DBStore) markRAGDocumentDeletingInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	id string,
+	route ragOwnershipRoute,
+) (*RAGDocumentRecord, error) {
+	if tx == nil {
+		return nil, errors.New("store: nil RAG document tombstone transaction")
+	}
 	doc, _, err := d.lockRAGDocumentHierarchyTx(ctx, tx, id, route)
 	if err != nil {
 		return nil, err
@@ -471,9 +490,6 @@ func (d *DBStore) MarkRAGDocumentDeleting(ctx context.Context, id string) (*RAGD
 	updated, err := scanRAGDocument(tx.QueryRowContext(ctx, fmt.Sprintf(
 		`SELECT `+ragDocumentColumns+` FROM rag_documents WHERE id=%s`, d.ph(1)), doc.ID))
 	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return updated, nil
@@ -495,6 +511,25 @@ func (d *DBStore) MarkRAGKBDeleting(ctx context.Context, id string) (*RAGKBRecor
 		return nil, err
 	}
 	defer tx.Rollback()
+	updated, err := d.markRAGKBDeletingInTx(ctx, tx, id, expectedUserID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+func (d *DBStore) markRAGKBDeletingInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	id string,
+	expectedUserID string,
+) (*RAGKBRecord, error) {
+	if tx == nil {
+		return nil, errors.New("store: nil RAG KB tombstone transaction")
+	}
 	kb, _, err := d.lockRAGKBOwnerTx(ctx, tx, id, expectedUserID)
 	if kb == nil && err == nil {
 		return nil, ErrNotFound
@@ -542,9 +577,6 @@ func (d *DBStore) MarkRAGKBDeleting(ctx context.Context, id string) (*RAGKBRecor
 	updated, err := scanRAGKB(tx.QueryRowContext(ctx, fmt.Sprintf(
 		`SELECT `+ragKBColumns+` FROM rag_kbs WHERE id=%s`, d.ph(1)), kb.ID))
 	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return updated, nil

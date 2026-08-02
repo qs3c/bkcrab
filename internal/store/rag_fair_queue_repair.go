@@ -18,6 +18,15 @@ var (
 	ErrRAGFairQueueCanonicalOwner = errors.New("store: RAG fair queue canonical owner invariant violated")
 )
 
+// ragFairQueueSession is implemented by *sql.DB, *sql.Conn and *sql.Tx. Fair
+// mode passes a pinned writer connection (or a transaction begun on it), while
+// the legacy DBStore methods continue to pass the pool exactly as before.
+type ragFairQueueSession interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 // RAGIndexTaskTimestampGuard is the exact database representation of one
 // nullable timestamp. An explicit null bit makes a missing JSON field invalid
 // instead of silently treating it as a legitimate SQL NULL snapshot.
@@ -204,8 +213,18 @@ func (d *DBStore) ragIndexTaskIDWindow(
 	highWater *int64,
 	limit int,
 ) ([]int64, int64, error) {
+	return d.ragIndexTaskIDWindowOn(ctx, d.db, afterID, highWater, limit)
+}
+
+func (d *DBStore) ragIndexTaskIDWindowOn(
+	ctx context.Context,
+	session ragFairQueueSession,
+	afterID int64,
+	highWater *int64,
+	limit int,
+) ([]int64, int64, error) {
 	query, args := d.ragIndexTaskIDWindowQuery(afterID, highWater, limit)
-	rows, err := d.db.QueryContext(ctx, query, args...)
+	rows, err := session.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, afterID, err
 	}
@@ -394,15 +413,24 @@ func (d *DBStore) ListDispatchableRAGIndexTasksPage(
 	afterID int64,
 	limit int,
 ) ([]RAGIndexTaskDispatchCandidate, int64, error) {
+	return d.listDispatchableRAGIndexTasksPageOn(ctx, d.db, afterID, limit)
+}
+
+func (d *DBStore) listDispatchableRAGIndexTasksPageOn(
+	ctx context.Context,
+	session ragFairQueueSession,
+	afterID int64,
+	limit int,
+) ([]RAGIndexTaskDispatchCandidate, int64, error) {
 	if err := validateRAGFairQueueIDPage(afterID, limit); err != nil {
 		return nil, afterID, err
 	}
-	ids, nextAfterID, err := d.ragIndexTaskIDWindow(ctx, afterID, nil, limit)
+	ids, nextAfterID, err := d.ragIndexTaskIDWindowOn(ctx, session, afterID, nil, limit)
 	if err != nil || len(ids) == 0 {
 		return nil, nextAfterID, err
 	}
 	query, args := d.ragDispatchableRAGIndexTasksByIDsQuery(ids)
-	rows, err := d.db.QueryContext(ctx, query, args...)
+	rows, err := session.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, afterID, err
 	}
@@ -417,6 +445,14 @@ func (d *DBStore) GetDispatchableRAGIndexTaskByID(
 	ctx context.Context,
 	taskID int64,
 ) (*RAGIndexTaskDispatchCandidate, error) {
+	return d.getDispatchableRAGIndexTaskByIDOn(ctx, d.db, taskID)
+}
+
+func (d *DBStore) getDispatchableRAGIndexTaskByIDOn(
+	ctx context.Context,
+	session ragFairQueueSession,
+	taskID int64,
+) (*RAGIndexTaskDispatchCandidate, error) {
 	if taskID <= 0 {
 		return nil, ErrNotFound
 	}
@@ -425,7 +461,7 @@ func (d *DBStore) GetDispatchableRAGIndexTaskByID(
 		AND t.user_id IS NOT NULL AND t.dispatched_at IS NULL
 		AND t.dispatch_generation>t.claim_generation`, d.ph(1))
 	query += ` AND ` + d.ragFairQueueDuePredicate("t")
-	candidate, err := d.scanRAGIndexTaskDispatchCandidate(d.db.QueryRowContext(ctx, query, taskID))
+	candidate, err := d.scanRAGIndexTaskDispatchCandidate(session.QueryRowContext(ctx, query, taskID))
 	if err != nil {
 		return nil, scanErr(err)
 	}
@@ -434,6 +470,14 @@ func (d *DBStore) GetDispatchableRAGIndexTaskByID(
 
 func (d *DBStore) MarkRAGIndexTaskDispatched(
 	ctx context.Context,
+	candidate RAGIndexTaskDispatchCandidate,
+) (bool, error) {
+	return d.markRAGIndexTaskDispatchedOn(ctx, d.db, candidate)
+}
+
+func (d *DBStore) markRAGIndexTaskDispatchedOn(
+	ctx context.Context,
+	session ragFairQueueSession,
 	candidate RAGIndexTaskDispatchCandidate,
 ) (bool, error) {
 	if !validRAGIndexTaskDispatchCandidate(candidate) || candidate.Guard.DispatchedAt != nil ||
@@ -452,7 +496,7 @@ func (d *DBStore) MarkRAGIndexTaskDispatched(
 		d.ragNullSafeRawTimestampEqual("lease_until", 11),
 		ragCanonicalTaskOwnerExists("rag_index_tasks"))
 	query += ` AND ` + d.ragFairQueueDuePredicate("rag_index_tasks")
-	result, err := d.db.ExecContext(ctx, query,
+	result, err := session.ExecContext(ctx, query,
 		guard.TaskID, guard.DocID, guard.DocVersion, guard.UserID, guard.Status,
 		guard.DispatchGeneration, guard.ClaimGeneration, guard.RetryCount,
 		guard.LeaseOwner, ragTimestampGuardArgument(guard.NextRunAtRaw),
@@ -486,15 +530,24 @@ func (d *DBStore) ArmExpiredRAGIndexTasksPage(
 	afterID int64,
 	limit int,
 ) ([]RAGIndexTaskDispatchCandidate, int64, error) {
+	return d.armExpiredRAGIndexTasksPageOn(ctx, d.db, afterID, limit)
+}
+
+func (d *DBStore) armExpiredRAGIndexTasksPageOn(
+	ctx context.Context,
+	session ragFairQueueSession,
+	afterID int64,
+	limit int,
+) ([]RAGIndexTaskDispatchCandidate, int64, error) {
 	if err := validateRAGFairQueueIDPage(afterID, limit); err != nil {
 		return nil, afterID, err
 	}
-	ids, nextAfterID, err := d.ragIndexTaskIDWindow(ctx, afterID, nil, limit)
+	ids, nextAfterID, err := d.ragIndexTaskIDWindowOn(ctx, session, afterID, nil, limit)
 	if err != nil || len(ids) == 0 {
 		return nil, nextAfterID, err
 	}
 	query, args := d.ragExpiredRAGIndexTasksByIDsQuery(ids)
-	rows, err := d.db.QueryContext(ctx, query, args...)
+	rows, err := session.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, afterID, err
 	}
@@ -504,7 +557,7 @@ func (d *DBStore) ArmExpiredRAGIndexTasksPage(
 	}
 	armed := make([]RAGIndexTaskDispatchCandidate, 0, len(candidates))
 	for i := range candidates {
-		candidate, changed, err := d.armExpiredRAGIndexTask(ctx, candidates[i])
+		candidate, changed, err := d.armExpiredRAGIndexTaskOn(ctx, session, candidates[i])
 		if err != nil {
 			return nil, afterID, err
 		}
@@ -519,6 +572,14 @@ func (d *DBStore) armExpiredRAGIndexTask(
 	ctx context.Context,
 	original RAGIndexTaskDispatchCandidate,
 ) (*RAGIndexTaskDispatchCandidate, bool, error) {
+	return d.armExpiredRAGIndexTaskOn(ctx, d.db, original)
+}
+
+func (d *DBStore) armExpiredRAGIndexTaskOn(
+	ctx context.Context,
+	session ragFairQueueSession,
+	original RAGIndexTaskDispatchCandidate,
+) (*RAGIndexTaskDispatchCandidate, bool, error) {
 	if !validRAGIndexTaskDispatchCandidate(original) || original.Task.Status != "RUNNING" ||
 		original.Task.DispatchGeneration != original.Task.ClaimGeneration {
 		return nil, false, ErrRAGIndexTaskDispatchGuard
@@ -527,7 +588,7 @@ func (d *DBStore) armExpiredRAGIndexTask(
 	if task.ClaimGeneration == math.MaxInt64 {
 		return nil, false, ErrRAGDispatchGenerationExhausted
 	}
-	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks
+	result, err := session.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks
 		SET dispatch_generation=claim_generation+1,dispatched_at=NULL
 		WHERE id=%s AND doc_id=%s AND doc_version=%s AND user_id=%s
 		AND status='RUNNING' AND dispatch_generation=%s AND claim_generation=%s
@@ -559,8 +620,15 @@ func (d *DBStore) armExpiredRAGIndexTask(
 }
 
 func (d *DBStore) CaptureRAGFairQueueHighWater(ctx context.Context) (int64, error) {
+	return d.captureRAGFairQueueHighWaterOn(ctx, d.db)
+}
+
+func (d *DBStore) captureRAGFairQueueHighWaterOn(
+	ctx context.Context,
+	session ragFairQueueSession,
+) (int64, error) {
 	var highWater int64
-	err := d.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0) FROM rag_index_tasks`).Scan(&highWater)
+	err := session.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0) FROM rag_index_tasks`).Scan(&highWater)
 	return highWater, err
 }
 
@@ -582,8 +650,17 @@ func (d *DBStore) ragTenantOwnerWindow(
 	afterUserID string,
 	limit int,
 ) ([]string, string, error) {
+	return d.ragTenantOwnerWindowOn(ctx, d.db, afterUserID, limit)
+}
+
+func (d *DBStore) ragTenantOwnerWindowOn(
+	ctx context.Context,
+	session ragFairQueueSession,
+	afterUserID string,
+	limit int,
+) ([]string, string, error) {
 	query, args := d.ragTenantOwnerWindowQuery(afterUserID, limit)
-	rows, err := d.db.QueryContext(ctx, query, args...)
+	rows, err := session.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, afterUserID, err
 	}
@@ -649,18 +726,28 @@ func (d *DBStore) ListCanonicalRAGTenantsPage(
 	afterUserID string,
 	limit int,
 ) ([]string, string, error) {
+	return d.listCanonicalRAGTenantsPageOn(ctx, d.db, highWater, afterUserID, limit)
+}
+
+func (d *DBStore) listCanonicalRAGTenantsPageOn(
+	ctx context.Context,
+	session ragFairQueueSession,
+	highWater int64,
+	afterUserID string,
+	limit int,
+) ([]string, string, error) {
 	if highWater < 0 {
 		return nil, afterUserID, errors.New("store: RAG fair queue high water must be non-negative")
 	}
 	if limit <= 0 || limit > maxRAGFairQueueStorePageSize {
 		return nil, afterUserID, fmt.Errorf("store: RAG fair queue page size must be in 1..%d", maxRAGFairQueueStorePageSize)
 	}
-	owners, nextUserID, err := d.ragTenantOwnerWindow(ctx, afterUserID, limit)
+	owners, nextUserID, err := d.ragTenantOwnerWindowOn(ctx, session, afterUserID, limit)
 	if err != nil || len(owners) == 0 {
 		return []string{}, nextUserID, err
 	}
 	query, args := d.ragCanonicalTenantFirstTasksQuery(highWater, owners)
-	rows, err := d.db.QueryContext(ctx, query, args...)
+	rows, err := session.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, afterUserID, err
 	}
@@ -706,15 +793,26 @@ func (d *DBStore) ListDispatchedRAGIndexTasksPage(
 	highWater, afterTaskID int64,
 	limit int,
 ) ([]RAGIndexTaskRecord, int64, error) {
+	return d.listDispatchedRAGIndexTasksPageOn(ctx, d.db, highWater, afterTaskID, limit)
+}
+
+func (d *DBStore) listDispatchedRAGIndexTasksPageOn(
+	ctx context.Context,
+	session ragFairQueueSession,
+	highWater, afterTaskID int64,
+	limit int,
+) ([]RAGIndexTaskRecord, int64, error) {
 	if err := validateRAGFairQueueHighWaterPage(highWater, afterTaskID, limit); err != nil {
 		return nil, afterTaskID, err
 	}
-	ids, nextAfterID, err := d.ragIndexTaskIDWindow(ctx, afterTaskID, &highWater, limit)
+	ids, nextAfterID, err := d.ragIndexTaskIDWindowOn(
+		ctx, session, afterTaskID, &highWater, limit,
+	)
 	if err != nil || len(ids) == 0 {
 		return nil, nextAfterID, err
 	}
 	query, args := d.ragDispatchedRAGIndexTasksByIDsQuery(ids)
-	rows, err := d.db.QueryContext(ctx, query, args...)
+	rows, err := session.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, afterTaskID, err
 	}
@@ -749,15 +847,26 @@ func (d *DBStore) ListValidRunningRAGIndexTasksPage(
 	highWater, afterTaskID int64,
 	limit int,
 ) ([]RAGIndexTaskRunningSnapshot, int64, error) {
+	return d.listValidRunningRAGIndexTasksPageOn(ctx, d.db, highWater, afterTaskID, limit)
+}
+
+func (d *DBStore) listValidRunningRAGIndexTasksPageOn(
+	ctx context.Context,
+	session ragFairQueueSession,
+	highWater, afterTaskID int64,
+	limit int,
+) ([]RAGIndexTaskRunningSnapshot, int64, error) {
 	if err := validateRAGFairQueueHighWaterPage(highWater, afterTaskID, limit); err != nil {
 		return nil, afterTaskID, err
 	}
-	ids, nextAfterID, err := d.ragIndexTaskIDWindow(ctx, afterTaskID, &highWater, limit)
+	ids, nextAfterID, err := d.ragIndexTaskIDWindowOn(
+		ctx, session, afterTaskID, &highWater, limit,
+	)
 	if err != nil || len(ids) == 0 {
 		return nil, nextAfterID, err
 	}
 	query, args := d.ragValidRunningRAGIndexTasksByIDsQuery(ids)
-	rows, err := d.db.QueryContext(ctx, query, args...)
+	rows, err := session.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, afterTaskID, err
 	}
@@ -784,7 +893,7 @@ func (d *DBStore) ListValidRunningRAGIndexTasksPage(
 }
 
 func (d *DBStore) CaptureRAGBrokerRepairHighWater(ctx context.Context) (int64, error) {
-	return d.CaptureRAGFairQueueHighWater(ctx)
+	return d.captureRAGFairQueueHighWaterOn(ctx, d.db)
 }
 
 func (d *DBStore) ragBrokerBackedRAGCandidatesByIDsQuery(ids []int64) (string, []any) {
@@ -802,15 +911,26 @@ func (d *DBStore) ListBrokerBackedRAGCandidatesPage(
 	highWater, afterTaskID int64,
 	limit int,
 ) ([]RAGIndexTaskDispatchCandidate, int64, error) {
+	return d.listBrokerBackedRAGCandidatesPageOn(ctx, d.db, highWater, afterTaskID, limit)
+}
+
+func (d *DBStore) listBrokerBackedRAGCandidatesPageOn(
+	ctx context.Context,
+	session ragFairQueueSession,
+	highWater, afterTaskID int64,
+	limit int,
+) ([]RAGIndexTaskDispatchCandidate, int64, error) {
 	if err := validateRAGFairQueueHighWaterPage(highWater, afterTaskID, limit); err != nil {
 		return nil, afterTaskID, err
 	}
-	ids, nextAfterID, err := d.ragIndexTaskIDWindow(ctx, afterTaskID, &highWater, limit)
+	ids, nextAfterID, err := d.ragIndexTaskIDWindowOn(
+		ctx, session, afterTaskID, &highWater, limit,
+	)
 	if err != nil || len(ids) == 0 {
 		return nil, nextAfterID, err
 	}
 	query, args := d.ragBrokerBackedRAGCandidatesByIDsQuery(ids)
-	rows, err := d.db.QueryContext(ctx, query, args...)
+	rows, err := session.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, afterTaskID, err
 	}
@@ -823,6 +943,14 @@ func (d *DBStore) ListBrokerBackedRAGCandidatesPage(
 
 func (d *DBStore) RearmRAGCandidateAfterBrokerLoss(
 	ctx context.Context,
+	original RAGIndexTaskDispatchCandidate,
+) (*RAGIndexTaskDispatchCandidate, bool, error) {
+	return d.rearmRAGCandidateAfterBrokerLossOn(ctx, d.db, original)
+}
+
+func (d *DBStore) rearmRAGCandidateAfterBrokerLossOn(
+	ctx context.Context,
+	session ragFairQueueSession,
 	original RAGIndexTaskDispatchCandidate,
 ) (*RAGIndexTaskDispatchCandidate, bool, error) {
 	if !validRAGIndexTaskDispatchCandidate(original) || original.Guard.DispatchedAt == nil ||
@@ -850,7 +978,7 @@ func (d *DBStore) RearmRAGCandidateAfterBrokerLoss(
 		d.ragNullSafeRawTimestampEqual("dispatched_at", 13),
 		ragCanonicalTaskOwnerExists("rag_index_tasks"))
 	query += ` AND ` + d.ragFairQueueDuePredicate("rag_index_tasks")
-	result, err := d.db.ExecContext(ctx, query,
+	result, err := session.ExecContext(ctx, query,
 		newGeneration, guard.TaskID, guard.DocID, guard.DocVersion, guard.UserID,
 		guard.Status, guard.DispatchGeneration, guard.ClaimGeneration, guard.RetryCount,
 		guard.LeaseOwner, ragTimestampGuardArgument(guard.NextRunAtRaw),

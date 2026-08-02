@@ -358,55 +358,50 @@ func (d *DBStore) PublishRAGAssetsAndAttachmentsForIndex(
 		return false, err
 	}
 
-	tx, _, ok, err := d.beginRAGIndexFenceTx(ctx, fence)
-	if err != nil || !ok {
-		return false, err
-	}
-	defer tx.Rollback()
-	if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, fence.DocID); err != nil {
-		return false, err
-	}
-	for i := range assets {
-		if err := d.publishRAGAssetInTx(ctx, tx, &assets[i]); err != nil {
-			return false, err
-		}
-	}
-	for i := range attachments {
-		if err := d.publishRAGAttachmentInTx(ctx, tx, &attachments[i]); err != nil {
-			return false, err
-		}
-	}
-	if err := d.touchRAGVersionAssetsBeforeRemoval(ctx, tx, fence.DocID, fence.DocVersion); err != nil {
-		return false, err
-	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_version_assets
-		WHERE doc_id=%s AND doc_version=%s`, d.ph(1), d.ph(2)), fence.DocID, fence.DocVersion); err != nil {
-		return false, err
-	}
-	if len(uniqueAssetIDs) != 0 {
-		stmt, err := tx.PrepareContext(ctx, fmt.Sprintf(`INSERT INTO rag_version_assets
-			(doc_id,doc_version,asset_id) VALUES (%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3)))
-		if err != nil {
-			return false, err
-		}
-		for _, id := range uniqueAssetIDs {
-			if _, err := stmt.ExecContext(ctx, fence.DocID, fence.DocVersion, id); err != nil {
-				stmt.Close()
+	return d.withLiveRAGIndexFenceTx(ctx, fence,
+		func(tx *sql.Tx, _ *ragLockedIndexFence) (bool, error) {
+			if err := d.rejectActiveRAGDocumentMaintenanceInTx(ctx, tx, fence.DocID); err != nil {
 				return false, err
 			}
-		}
-		if err := stmt.Close(); err != nil {
-			return false, err
-		}
-	}
-	if err := d.replaceRAGVersionAttachmentsInTx(
-		ctx, tx, fence.DocID, fence.DocVersion, uniqueAttachmentIDs); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return true, nil
+			for i := range assets {
+				if err := d.publishRAGAssetInTx(ctx, tx, &assets[i]); err != nil {
+					return false, err
+				}
+			}
+			for i := range attachments {
+				if err := d.publishRAGAttachmentInTx(ctx, tx, &attachments[i]); err != nil {
+					return false, err
+				}
+			}
+			if err := d.touchRAGVersionAssetsBeforeRemoval(ctx, tx, fence.DocID, fence.DocVersion); err != nil {
+				return false, err
+			}
+			if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_version_assets
+				WHERE doc_id=%s AND doc_version=%s`, d.ph(1), d.ph(2)), fence.DocID, fence.DocVersion); err != nil {
+				return false, err
+			}
+			if len(uniqueAssetIDs) != 0 {
+				stmt, err := tx.PrepareContext(ctx, fmt.Sprintf(`INSERT INTO rag_version_assets
+					(doc_id,doc_version,asset_id) VALUES (%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3)))
+				if err != nil {
+					return false, err
+				}
+				for _, id := range uniqueAssetIDs {
+					if _, err := stmt.ExecContext(ctx, fence.DocID, fence.DocVersion, id); err != nil {
+						stmt.Close()
+						return false, err
+					}
+				}
+				if err := stmt.Close(); err != nil {
+					return false, err
+				}
+			}
+			if err := d.replaceRAGVersionAttachmentsInTx(
+				ctx, tx, fence.DocID, fence.DocVersion, uniqueAttachmentIDs); err != nil {
+				return false, err
+			}
+			return true, nil
+		})
 }
 
 func exactRAGPublicationIDs(ids []string, records map[string]struct{}, conflict error) ([]string, error) {
