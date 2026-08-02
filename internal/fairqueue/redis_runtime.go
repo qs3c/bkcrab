@@ -55,12 +55,15 @@ local function redis_now_ms()
 end
 
 local function canonical_control(values)
-  for index = 1, 7 do
+	  for index = 1, 8 do
     if values[index] == false then return false end
   end
   if not lower_hex(values[4], 32) or not positive_int64(values[5]) or
     not lower_hex(values[6], 64) or
-    (values[7] ~= "" and not lower_hex(values[7], 32)) then
+	    (values[7] == "" and values[8] ~= "NONE") or
+	    (values[7] ~= "" and (not lower_hex(values[7], 32) or
+	      (values[8] ~= "RABBIT_REPAIR" and values[8] ~= "WRITER_REBIND" and
+	        values[8] ~= "FORCE_REBUILD"))) then
     return false
   end
   if values[1] == "READY" then
@@ -85,7 +88,8 @@ local function check_ready(control, progress, epoch, writer)
   end
   local values = redis.call("HMGET", control,
     "state", "operation_kind", "operation_id", "epoch",
-    "protocol_version", "writer_fingerprint", "last_completed_operation_id")
+	    "protocol_version", "writer_fingerprint", "last_completed_operation_id",
+	    "last_completed_operation_kind")
   if not canonical_control(values) then return CORRUPT end
   if values[1] == "RECOVERING" then
     return NOT_READY
@@ -279,7 +283,8 @@ if actual_type ~= "hash" then
 end
 local values = redis.call("HMGET", KEYS[1],
   "state", "operation_kind", "operation_id", "epoch",
-  "protocol_version", "writer_fingerprint", "last_completed_operation_id")
+	  "protocol_version", "writer_fingerprint", "last_completed_operation_id",
+	  "last_completed_operation_kind")
 if not canonical_control(values) then return {CORRUPT} end
 if values[1] == "RECOVERING" then
   return {NOT_READY}

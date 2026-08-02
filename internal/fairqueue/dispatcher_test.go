@@ -1373,3 +1373,64 @@ func TestDispatcherRunBackoffIsBoundedAndCancellationStopsBothLoops(t *testing.T
 		t.Fatal("Run() did not stop after context cancellation")
 	}
 }
+
+func TestDispatcherHealthRecordsOnlySuccessfulDispatchAndSweepPages(t *testing.T) {
+	source := &dispatcherSourceFake{}
+	rearm := &dispatcherRearmFake{}
+	dispatcher := newDispatcherForTest(t, source, rearm, &dispatcherRabbitFake{},
+		&dispatcherCoordinatorFake{}, dispatcherTestOptions())
+	now := time.Date(2026, 8, 3, 4, 0, 0, 0, time.UTC)
+	health := newResourceHealth(func() time.Time { return now })
+	health.markGateOpen()
+	dispatcher.health = health
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- dispatcher.Run(ctx) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		snapshot := health.snapshot()
+		if snapshot.Loops.Dispatcher.LastSuccessAt != nil && snapshot.Loops.Sweeper.LastSuccessAt != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("successful dispatcher loops were not recorded: %+v", snapshot.Loops)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Dispatcher.Run() error = %v", err)
+	}
+
+	failingSource := &dispatcherSourceFake{listFn: func(context.Context, string, int) ([]DispatchCandidate, string, error) {
+		return nil, "", errDispatcherTest
+	}}
+	failingRearm := &dispatcherRearmFake{rearmFn: func(context.Context, string, int) ([]DispatchCandidate, string, error) {
+		return nil, "", errDispatcherTest
+	}}
+	failing := newDispatcherForTest(t, failingSource, failingRearm,
+		&dispatcherRabbitFake{}, &dispatcherCoordinatorFake{}, dispatcherTestOptions())
+	failingHealth := newResourceHealth(func() time.Time { return now })
+	failingHealth.markGateOpen()
+	failing.health = failingHealth
+	failCtx, failCancel := context.WithCancel(context.Background())
+	failDone := make(chan error, 1)
+	go func() { failDone <- failing.Run(failCtx) }()
+	deadline = time.Now().Add(time.Second)
+	for failingSource.listCalls.Load() < 2 || failingRearm.calls.Load() < 2 {
+		if time.Now().After(deadline) {
+			failCancel()
+			t.Fatalf("failed dispatcher loops did not run: dispatch=%d sweep=%d",
+				failingSource.listCalls.Load(), failingRearm.calls.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	failCancel()
+	<-failDone
+	failedSnapshot := failingHealth.snapshot()
+	if failedSnapshot.Loops.Dispatcher.LastSuccessAt != nil || failedSnapshot.Loops.Sweeper.LastSuccessAt != nil {
+		t.Fatalf("failed dispatcher iteration invented success: %+v", failedSnapshot.Loops)
+	}
+}

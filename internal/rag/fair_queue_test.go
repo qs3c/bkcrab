@@ -198,11 +198,12 @@ func (f *fakeRAGFairQueueAdmin) ListValidRunningRAGIndexTasksPage(ctx context.Co
 type fakeRAGFairQueueJournalSession struct {
 	record   store.FairQueueOperationRecord
 	found    bool
+	err      error
 	proposal store.FairQueueOperationProposal
 }
 
 func (f *fakeRAGFairQueueJournalSession) Read(context.Context) (store.FairQueueOperationRecord, bool, error) {
-	return f.record, f.found, nil
+	return f.record, f.found, f.err
 }
 func (f *fakeRAGFairQueueJournalSession) BeginSpecial(_ context.Context, _ *store.FairQueueOperationRecord, proposal store.FairQueueOperationProposal) (store.FairQueueOperationRecord, error) {
 	f.proposal = proposal
@@ -219,11 +220,12 @@ func (f *fakeRAGFairQueueJournalSession) BeginSpecial(_ context.Context, _ *stor
 type fakeRAGFairQueueJournal struct {
 	record  store.FairQueueOperationRecord
 	found   bool
+	err     error
 	session *fakeRAGFairQueueJournalSession
 }
 
 func (f *fakeRAGFairQueueJournal) ReadFairQueueOperation(context.Context, string, string) (store.FairQueueOperationRecord, bool, error) {
-	return f.record, f.found, nil
+	return f.record, f.found, f.err
 }
 func (f *fakeRAGFairQueueJournal) WithFairQueueOperationStartFence(ctx context.Context, _ string, _ string, fn func(RAGFairQueueJournalStartSession) error) error {
 	return fn(f.session)
@@ -763,6 +765,70 @@ func TestRAGFairQueueOperationJournalLosslessStartBridge(t *testing.T) {
 	}
 	if session.proposal.OperationID != "cccccccccccccccccccccccccccccccc" || session.proposal.Kind != store.FairQueueOperationRabbitRepair {
 		t.Fatalf("proposal=%#v", session.proposal)
+	}
+}
+
+func TestRAGFairQueueOperationJournalPromotesPersistedCorruptionToAuthoritativeFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		backend *fakeRAGFairQueueJournal
+	}{
+		{
+			name: "store scanner rejected row",
+			backend: &fakeRAGFairQueueJournal{
+				err: errors.Join(store.ErrFairQueueOperationInvalid, errors.New("corrupt row")),
+			},
+		},
+		{
+			name: "adapter conversion rejected row",
+			backend: &fakeRAGFairQueueJournal{
+				found: true,
+				record: store.FairQueueOperationRecord{
+					Resource: RAGFairQueueResource,
+					Kind:     store.FairQueueOperationKind("BROKEN"),
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			journal, err := NewRAGFairQueueOperationJournal(test.backend)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, found, err := journal.Read(context.Background(), RAGFairQueueResource, testRAGWriter)
+			if found || !errors.Is(err, fairqueue.ErrInvalidOperationRecord) ||
+				!errors.Is(err, fairqueue.ErrAuthoritativeStateCorrupt) {
+				t.Fatalf("Read() = found=%v err=%v, want invalid + authoritative corruption", found, err)
+			}
+		})
+	}
+}
+
+func TestRAGFairQueueOperationStartSessionPromotesPersistedCorruption(t *testing.T) {
+	t.Parallel()
+	session := &fakeRAGFairQueueJournalSession{
+		err: errors.Join(store.ErrFairQueueOperationInvalid, errors.New("corrupt fenced row")),
+	}
+	backend := &fakeRAGFairQueueJournal{session: session}
+	journal, err := NewRAGFairQueueOperationJournal(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = journal.WithStartFence(context.Background(), RAGFairQueueResource, testRAGWriter,
+		func(start fairqueue.OperationStartSession) error {
+			_, found, readErr := start.Read(context.Background())
+			if found || !errors.Is(readErr, fairqueue.ErrInvalidOperationRecord) ||
+				!errors.Is(readErr, fairqueue.ErrAuthoritativeStateCorrupt) {
+				t.Fatalf("start.Read() = found=%v err=%v, want invalid + authoritative corruption", found, readErr)
+			}
+			return readErr
+		})
+	if !errors.Is(err, fairqueue.ErrAuthoritativeStateCorrupt) {
+		t.Fatalf("WithStartFence() error = %v, want authoritative corruption", err)
 	}
 }
 

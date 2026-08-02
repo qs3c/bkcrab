@@ -52,13 +52,24 @@ type RabbitOptions struct {
 	OperationTimeout   time.Duration
 }
 
+// RabbitResourceProbe is a sanitized resource-level startup observation. It
+// proves the shared exchanges and the registered resource DLQ can be declared
+// and inspected without requiring a tenant or publishing a synthetic message.
+type RabbitResourceProbe struct {
+	Resource        string `json:"resource"`
+	DeadLetterDepth int64  `json:"dead_letter_depth"`
+}
+
 type Rabbit struct {
-	options  RabbitOptions
-	registry *Registry
-	dialer   rabbitDialer
-	attempts rabbitAttemptIDSource
+	options   RabbitOptions
+	registry  *Registry
+	dialer    rabbitDialer
+	attempts  rabbitAttemptIDSource
+	healthNow func() time.Time
 
 	operationGate *rabbitOperationGate
+	healthMu      sync.RWMutex
+	health        RabbitHealthSnapshot
 
 	stateMu        sync.Mutex
 	closed         bool
@@ -206,6 +217,8 @@ func newRabbit(
 	return &Rabbit{
 		options: options, registry: registry, dialer: dialer, attempts: attempts,
 		operationGate: newRabbitOperationGate(),
+		healthNow:     time.Now,
+		health:        RabbitHealthSnapshot{Status: DependencyStatusUnavailable},
 	}, nil
 }
 
@@ -315,11 +328,151 @@ func (r *Rabbit) operationContext(parent context.Context) (context.Context, cont
 	return ctx, cancel, nil
 }
 
-func (r *Rabbit) EnsureTenantTopology(ctx context.Context, resource, tenant string) error {
+// HealthSnapshot returns the latest in-memory RabbitMQ observations. It never
+// performs broker I/O and copies timestamp pointers so callers cannot mutate
+// the transport's cached state.
+func (r *Rabbit) HealthSnapshot() RabbitHealthSnapshot {
+	if r == nil {
+		return RabbitHealthSnapshot{Status: DependencyStatusUnavailable}
+	}
+	r.healthMu.RLock()
+	snapshot := r.health
+	snapshot.LastConfirmAt = cloneHealthTimePtr(r.health.LastConfirmAt)
+	snapshot.LastReturnAt = cloneHealthTimePtr(r.health.LastReturnAt)
+	r.healthMu.RUnlock()
+	return snapshot
+}
+
+func (r *Rabbit) markRabbitOK(generation *rabbitGeneration) {
+	if r == nil || generation == nil {
+		return
+	}
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
+	if r.closed || r.generation != generation || generation.isDead() {
+		return
+	}
+	r.healthMu.Lock()
+	r.health.Status = DependencyStatusOK
+	r.healthMu.Unlock()
+}
+
+func (r *Rabbit) markRabbitUnavailable() {
+	if r == nil {
+		return
+	}
+	r.healthMu.Lock()
+	r.health.Status = DependencyStatusUnavailable
+	r.healthMu.Unlock()
+}
+
+func (r *Rabbit) markRabbitProbeOK(generation *rabbitGeneration, depth int64) {
+	if r == nil || generation == nil {
+		return
+	}
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
+	if r.closed || r.generation != generation || generation.isDead() {
+		return
+	}
+	r.healthMu.Lock()
+	r.health.Status = DependencyStatusOK
+	r.health.DLQDepthSample = depth
+	r.healthMu.Unlock()
+}
+
+func (r *Rabbit) markRabbitReadyDepthOK(generation *rabbitGeneration, depth int64) {
+	if r == nil || generation == nil {
+		return
+	}
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
+	if r.closed || r.generation != generation || generation.isDead() {
+		return
+	}
+	r.healthMu.Lock()
+	r.health.Status = DependencyStatusOK
+	r.health.ReadyDepthSample = depth
+	r.healthMu.Unlock()
+}
+
+func (r *Rabbit) markRabbitConfirm() {
+	if r == nil {
+		return
+	}
+	now := r.healthNow().UTC()
+	r.healthMu.Lock()
+	r.health.LastConfirmAt = cloneHealthTime(now)
+	r.healthMu.Unlock()
+}
+
+func (r *Rabbit) markRabbitReturn() {
+	if r == nil {
+		return
+	}
+	now := r.healthNow().UTC()
+	r.healthMu.Lock()
+	r.health.LastReturnAt = cloneHealthTime(now)
+	r.healthMu.Unlock()
+}
+
+// ProbeResourceTopology establishes one live confirm-capable generation,
+// declares the durable shared exchanges and resource DLQ topology, and
+// verifies the DLQ can be inspected. It deliberately has no tenant input, so
+// an empty canonical database cannot bypass RabbitMQ startup readiness.
+func (r *Rabbit) ProbeResourceTopology(ctx context.Context, resource string) (probe RabbitResourceProbe, err error) {
+	if _, ok := r.registry.Lookup(resource); !ok {
+		return RabbitResourceProbe{}, fmt.Errorf("fairqueue: unknown registered resource %q", resource)
+	}
+	defer func() {
+		if err != nil {
+			r.markRabbitUnavailable()
+		}
+	}()
+	operationCtx, cancel, err := r.operationContext(ctx)
+	if err != nil {
+		return RabbitResourceProbe{}, err
+	}
+	defer cancel()
+
+	if err := r.operationGate.acquire(operationCtx); err != nil {
+		return RabbitResourceProbe{}, rabbitDependencyContextError(err, "acquire resource probe operation gate")
+	}
+	defer r.operationGate.release()
+	generation, err := r.ensureGeneration(operationCtx)
+	if err != nil {
+		return RabbitResourceProbe{}, err
+	}
+	if err := r.ensureDeadLetterTopology(operationCtx, generation, resource); err != nil {
+		r.invalidateGeneration(generation, true)
+		return RabbitResourceProbe{}, rabbitTopologyError(err, "declare resource probe topology")
+	}
+	queueName, err := DeadLetterQueueName(resource)
+	if err != nil {
+		return RabbitResourceProbe{}, err
+	}
+	queue, err := rabbitRPCValue1(r, operationCtx, generation, func() (amqp.Queue, error) {
+		return generation.channel.QueueInspect(queueName)
+	})
+	if err != nil {
+		r.invalidateGeneration(generation, true)
+		return RabbitResourceProbe{}, rabbitDependencyContextError(err, "inspect resource dead-letter queue")
+	}
+	probe = RabbitResourceProbe{Resource: resource, DeadLetterDepth: int64(queue.Messages)}
+	r.markRabbitProbeOK(generation, probe.DeadLetterDepth)
+	return probe, nil
+}
+
+func (r *Rabbit) EnsureTenantTopology(ctx context.Context, resource, tenant string) (err error) {
 	topology, err := r.validateTenantTopology(resource, tenant)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err != nil {
+			r.markRabbitUnavailable()
+		}
+	}()
 	operationCtx, cancel, err := r.operationContext(ctx)
 	if err != nil {
 		return err
@@ -338,10 +491,11 @@ func (r *Rabbit) EnsureTenantTopology(ctx context.Context, resource, tenant stri
 		r.invalidateGeneration(generation, true)
 		return rabbitTopologyError(err, "declare tenant topology")
 	}
+	r.markRabbitOK(generation)
 	return nil
 }
 
-func (r *Rabbit) PublishMandatoryConfirmed(ctx context.Context, message Message) (PublishReceipt, error) {
+func (r *Rabbit) PublishMandatoryConfirmed(ctx context.Context, message Message) (receipt PublishReceipt, err error) {
 	if err := r.registry.ValidateMessage(message); err != nil {
 		return PublishReceipt{}, err
 	}
@@ -353,7 +507,12 @@ func (r *Rabbit) PublishMandatoryConfirmed(ctx context.Context, message Message)
 	if err != nil {
 		return PublishReceipt{}, err
 	}
-	receipt, err := r.allocateAttempt()
+	defer func() {
+		if err != nil {
+			r.markRabbitUnavailable()
+		}
+	}()
+	receipt, err = r.allocateAttempt()
 	if err != nil {
 		return PublishReceipt{}, err
 	}
@@ -395,14 +554,22 @@ func (r *Rabbit) PublishMandatoryConfirmed(ctx context.Context, message Message)
 	if errors.Is(err, ErrPublishUnroutable) {
 		delete(generation.tenantTopologies, topology.queue)
 	}
+	if err == nil {
+		r.markRabbitOK(generation)
+	}
 	return receipt, err
 }
 
-func (r *Rabbit) GetOne(ctx context.Context, resource, tenant string) (Delivery, bool, error) {
+func (r *Rabbit) GetOne(ctx context.Context, resource, tenant string) (result Delivery, found bool, err error) {
 	topology, err := r.validateTenantTopology(resource, tenant)
 	if err != nil {
 		return nil, false, err
 	}
+	defer func() {
+		if err != nil {
+			r.markRabbitUnavailable()
+		}
+	}()
 	operationCtx, cancel, err := r.operationContext(ctx)
 	if err != nil {
 		return nil, false, err
@@ -429,6 +596,7 @@ func (r *Rabbit) GetOne(ctx context.Context, resource, tenant string) (Delivery,
 		return nil, false, rabbitDependencyContextError(err, "get delivery")
 	}
 	if !ok {
+		r.markRabbitOK(generation)
 		return nil, false, nil
 	}
 	request := r.prepareRequest(delivery, topology)
@@ -436,17 +604,24 @@ func (r *Rabbit) GetOne(ctx context.Context, resource, tenant string) (Delivery,
 		r.invalidateGeneration(generation, true)
 		return nil, false, fmt.Errorf("%w: RabbitMQ delivery violated the transport contract", ErrInvalidModel)
 	}
-	return &rabbitDelivery{
+	result = &rabbitDelivery{
 		request: request, acknowledger: delivery.Acknowledger, deliveryTag: delivery.DeliveryTag,
 		operationGate: r.operationGate, owner: r, generation: generation,
-	}, true, nil
+	}
+	r.markRabbitOK(generation)
+	return result, true, nil
 }
 
-func (r *Rabbit) ReadyDepth(ctx context.Context, resource, tenant string) (int64, error) {
+func (r *Rabbit) ReadyDepth(ctx context.Context, resource, tenant string) (depth int64, err error) {
 	topology, err := r.validateTenantTopology(resource, tenant)
 	if err != nil {
 		return 0, err
 	}
+	defer func() {
+		if err != nil {
+			r.markRabbitUnavailable()
+		}
+	}()
 	operationCtx, cancel, err := r.operationContext(ctx)
 	if err != nil {
 		return 0, err
@@ -472,10 +647,12 @@ func (r *Rabbit) ReadyDepth(ctx context.Context, resource, tenant string) (int64
 		r.invalidateGeneration(generation, true)
 		return 0, rabbitDependencyContextError(err, "inspect ready depth")
 	}
-	return int64(queue.Messages), nil
+	depth = int64(queue.Messages)
+	r.markRabbitReadyDepthOK(generation, depth)
+	return depth, nil
 }
 
-func (r *Rabbit) PublishDeadLetterConfirmed(ctx context.Context, request DeadLetterRequest) (PublishReceipt, error) {
+func (r *Rabbit) PublishDeadLetterConfirmed(ctx context.Context, request DeadLetterRequest) (receipt PublishReceipt, err error) {
 	if err := request.Validate(); err != nil {
 		return PublishReceipt{}, err
 	}
@@ -487,7 +664,12 @@ func (r *Rabbit) PublishDeadLetterConfirmed(ctx context.Context, request DeadLet
 	if err != nil {
 		return PublishReceipt{}, fmt.Errorf("fairqueue: encode dead-letter envelope: %w", err)
 	}
-	receipt, err := r.allocateAttempt()
+	defer func() {
+		if err != nil {
+			r.markRabbitUnavailable()
+		}
+	}()
+	receipt, err = r.allocateAttempt()
 	if err != nil {
 		return PublishReceipt{}, err
 	}
@@ -537,6 +719,9 @@ func (r *Rabbit) PublishDeadLetterConfirmed(ctx context.Context, request DeadLet
 	if errors.Is(err, ErrPublishUnroutable) {
 		delete(generation.deadLetterTopology, resource)
 	}
+	if err == nil {
+		r.markRabbitOK(generation)
+	}
 	return receipt, err
 }
 
@@ -544,12 +729,14 @@ func (r *Rabbit) Close() error {
 	r.stateMu.Lock()
 	if r.closed {
 		r.stateMu.Unlock()
+		r.markRabbitUnavailable()
 		return nil
 	}
 	r.closed = true
 	generation := r.generation
 	r.generation = nil
 	r.stateMu.Unlock()
+	r.markRabbitUnavailable()
 	if generation != nil {
 		generation.markDead()
 		generation.closeBounded()
@@ -840,12 +1027,16 @@ func (r *Rabbit) publishConfirmed(
 				r.invalidateGeneration(generation, true)
 				return errors.Join(ErrPublishUnconfirmed, rabbitDependencyError("invalid publisher confirmation"))
 			}
+			r.markRabbitConfirm()
 			drainedReturn, err := drainRabbitReturns(generation.returns, attemptID)
 			if err != nil {
 				r.invalidateGeneration(generation, true)
 				return errors.Join(ErrPublishUnconfirmed, err)
 			}
 			returned = returned || drainedReturn
+			if drainedReturn {
+				r.markRabbitReturn()
+			}
 			if !confirmation.Ack {
 				r.invalidateGeneration(generation, true)
 				if returned {
@@ -862,6 +1053,7 @@ func (r *Rabbit) publishConfirmed(
 				r.invalidateGeneration(generation, true)
 				return errors.Join(ErrPublishUnconfirmed, rabbitDependencyError("invalid mandatory return"))
 			}
+			r.markRabbitReturn()
 			returned = true
 		case <-ctx.Done():
 			r.invalidateGeneration(generation, true)
@@ -898,6 +1090,7 @@ func (r *Rabbit) invalidateGeneration(generation *rabbitGeneration, force bool) 
 		r.generation = nil
 	}
 	r.stateMu.Unlock()
+	r.markRabbitUnavailable()
 	generation.markDead()
 	if force {
 		generation.abort()
@@ -915,6 +1108,7 @@ func (r *Rabbit) watchGeneration(generation *rabbitGeneration) {
 		}
 		r.stateMu.Unlock()
 		generation.abort()
+		r.markRabbitUnavailable()
 	case <-generation.done:
 	}
 }
@@ -1261,11 +1455,17 @@ func (d *rabbitDelivery) settle(ctx context.Context, ack, requeue bool) error {
 	select {
 	case err := <-result:
 		if err == nil && d.generation != nil && d.generation.isDead() {
+			if d.owner != nil {
+				d.owner.markRabbitUnavailable()
+			}
 			return rabbitDependencyError("generation closed during settlement")
 		}
 		if err != nil {
 			d.abortGeneration()
 			return rabbitDependencyError("settle delivery")
+		}
+		if d.owner != nil {
+			d.owner.markRabbitOK(d.generation)
 		}
 		return nil
 	case <-operationCtx.Done():

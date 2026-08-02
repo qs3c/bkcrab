@@ -36,10 +36,26 @@ type redisTopologyProbeClient struct {
 	role        any
 	roleErr     error
 
-	doCalls     int
-	scanCalls   int
-	scriptCalls int
-	closeCalls  int
+	doCalls       int
+	scanCalls     int
+	scriptCalls   int
+	closeCalls    int
+	scriptResults []redisTestScriptResult
+}
+
+type redisTestScriptResult struct {
+	value any
+	err   error
+}
+
+func (c *redisTopologyProbeClient) nextScriptResult() *redisv9.Cmd {
+	c.scriptCalls++
+	if len(c.scriptResults) == 0 {
+		return redisv9.NewCmdResult(nil, nil)
+	}
+	result := c.scriptResults[0]
+	c.scriptResults = c.scriptResults[1:]
+	return redisv9.NewCmdResult(result.value, result.err)
 }
 
 func (c *redisTopologyProbeClient) Info(context.Context, ...string) *redisv9.StringCmd {
@@ -57,13 +73,11 @@ func (c *redisTopologyProbeClient) Scan(context.Context, uint64, string, int64) 
 }
 
 func (c *redisTopologyProbeClient) Eval(context.Context, string, []string, ...interface{}) *redisv9.Cmd {
-	c.scriptCalls++
-	return redisv9.NewCmdResult(nil, nil)
+	return c.nextScriptResult()
 }
 
 func (c *redisTopologyProbeClient) EvalSha(context.Context, string, []string, ...interface{}) *redisv9.Cmd {
-	c.scriptCalls++
-	return redisv9.NewCmdResult(nil, nil)
+	return c.nextScriptResult()
 }
 
 func (c *redisTopologyProbeClient) EvalRO(context.Context, string, []string, ...interface{}) *redisv9.Cmd {
@@ -650,6 +664,133 @@ func TestRedisStandaloneProbe(t *testing.T) {
 	if topology.Mode != RedisDeploymentStandalone || !topology.WritablePrimary ||
 		!topology.SupportsFairQueue() {
 		t.Fatalf("topology = %#v, want standalone writable primary", topology)
+	}
+}
+
+func TestRedisProbeResourceHealthIsReadOnlyAndSanitized(t *testing.T) {
+	epoch := strings.Repeat("1", 32)
+	client := &redisTopologyProbeClient{
+		clusterInfo: "# Cluster\r\ncluster_enabled:0\r\n",
+		role:        []interface{}{"master", int64(0), []interface{}{}},
+		scriptResults: []redisTestScriptResult{
+			{value: []interface{}{"OK", "1", "READY", epoch, "1", redisTestWriterA, "NONE", "", "", "NONE"}},
+			{value: []interface{}{"OK", "2", "3"}},
+		},
+	}
+	coordinator := &Redis{
+		options: RedisOptions{KeyPrefix: "bkcrab:", OperationTimeout: time.Second},
+		client:  client, tokens: redisFixedTokenSource{token: strings.Repeat("a", 32)},
+	}
+
+	probe, err := coordinator.ProbeResourceHealth(context.Background(), "rag.index")
+	if err != nil {
+		t.Fatalf("ProbeResourceHealth() error = %v", err)
+	}
+	if probe.Resource != "rag.index" ||
+		probe.Topology != (RedisTopology{Mode: RedisDeploymentStandalone, WritablePrimary: true}) ||
+		!probe.Control.Present || probe.Control.State != ResourceReady ||
+		probe.Control.Epoch != epoch || probe.Control.WriterFingerprint != redisTestWriterA ||
+		probe.ProvisionalCount != 2 || probe.ProcessingCount != 3 {
+		t.Fatalf("ProbeResourceHealth() = %+v", probe)
+	}
+	if client.doCalls != 1 || client.scanCalls != 0 || client.scriptCalls != 2 {
+		t.Fatalf("probe I/O = do:%d scan:%d script:%d", client.doCalls, client.scanCalls, client.scriptCalls)
+	}
+	encoded := fmt.Sprintf("%+v", probe)
+	for _, forbidden := range []string{"redis.invalid", "password", "bkcrab:", "tenant-", "task-", "owner-token"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("resource probe leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestRedisProbeResourceHealthFailsClosed(t *testing.T) {
+	tests := []struct {
+		name        string
+		client      *redisTopologyProbeClient
+		want        error
+		wantDoCalls int
+		wantScripts int
+	}{
+		{
+			name:   "topology dependency unavailable",
+			client: &redisTopologyProbeClient{infoErr: context.DeadlineExceeded},
+			want:   context.DeadlineExceeded,
+		},
+		{
+			name: "unsupported cluster topology",
+			client: &redisTopologyProbeClient{
+				clusterInfo: "# Cluster\r\ncluster_enabled:1\r\n",
+				role:        []interface{}{"master"},
+			},
+			want: ErrUnsupportedTopology,
+		},
+		{
+			name: "corrupt control",
+			client: &redisTopologyProbeClient{
+				clusterInfo:   "# Cluster\r\ncluster_enabled:0\r\n",
+				role:          []interface{}{"master"},
+				scriptResults: []redisTestScriptResult{{value: []interface{}{redisResultCoordinationCorrupt}}},
+			},
+			want: ErrCoordinationCorrupt, wantDoCalls: 1, wantScripts: 1,
+		},
+		{
+			name: "malformed counts",
+			client: &redisTopologyProbeClient{
+				clusterInfo: "# Cluster\r\ncluster_enabled:0\r\n",
+				role:        []interface{}{"master"},
+				scriptResults: []redisTestScriptResult{
+					{value: []interface{}{"OK", "0"}},
+					{value: []interface{}{"OK", "not-a-count", "0"}},
+				},
+			},
+			want: ErrCoordinationCorrupt, wantDoCalls: 1, wantScripts: 2,
+		},
+		{
+			name: "negative counts",
+			client: &redisTopologyProbeClient{
+				clusterInfo: "# Cluster\r\ncluster_enabled:0\r\n",
+				role:        []interface{}{"master"},
+				scriptResults: []redisTestScriptResult{
+					{value: []interface{}{"OK", "0"}},
+					{value: []interface{}{"OK", "-1", "0"}},
+				},
+			},
+			want: ErrCoordinationCorrupt, wantDoCalls: 1, wantScripts: 2,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			coordinator := &Redis{
+				options: RedisOptions{KeyPrefix: "bkcrab:", OperationTimeout: time.Second},
+				client:  test.client, tokens: redisFixedTokenSource{token: strings.Repeat("a", 32)},
+			}
+			probe, err := coordinator.ProbeResourceHealth(context.Background(), "rag.index")
+			if probe != (RedisResourceHealthProbe{}) || !errors.Is(err, test.want) {
+				t.Fatalf("ProbeResourceHealth() = %+v, %v, want %v", probe, err, test.want)
+			}
+			if test.want == context.DeadlineExceeded && !errors.Is(err, ErrDependencyUnavailable) {
+				t.Fatalf("dependency probe error = %v, want ErrDependencyUnavailable", err)
+			}
+			if test.client.doCalls != test.wantDoCalls || test.client.scriptCalls != test.wantScripts || test.client.scanCalls != 0 {
+				t.Fatalf("failed probe I/O = do:%d script:%d scan:%d", test.client.doCalls, test.client.scriptCalls, test.client.scanCalls)
+			}
+		})
+	}
+}
+
+func TestRedisProbeResourceHealthRejectsInvalidResourceBeforeIO(t *testing.T) {
+	client := &redisTopologyProbeClient{}
+	coordinator := &Redis{
+		options: RedisOptions{KeyPrefix: "bkcrab:", OperationTimeout: time.Second},
+		client:  client, tokens: redisFixedTokenSource{token: strings.Repeat("a", 32)},
+	}
+	probe, err := coordinator.ProbeResourceHealth(context.Background(), "invalid resource")
+	if probe != (RedisResourceHealthProbe{}) || !errors.Is(err, ErrInvalidModel) {
+		t.Fatalf("invalid resource probe = %+v, %v", probe, err)
+	}
+	if client.doCalls != 0 || client.scriptCalls != 0 || client.scanCalls != 0 {
+		t.Fatalf("invalid resource performed I/O: do=%d script=%d scan=%d", client.doCalls, client.scriptCalls, client.scanCalls)
 	}
 }
 

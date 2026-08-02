@@ -147,6 +147,7 @@ type runtimeResource struct {
 	recovery   *RecoveryCoordinator
 	source     RecoverySource
 	writer     string
+	health     *resourceHealth
 
 	gateOps        sync.Mutex
 	mu             sync.Mutex
@@ -271,6 +272,7 @@ func (r *Runtime) RegisterResource(registration ResourceRegistration) error {
 		cleanupTimeout: r.options.CleanupTimeout,
 		workCh:         make(chan runtimeWork, registration.Config.LocalWorkers),
 		workStop:       make(chan struct{}),
+		health:         newResourceHealth(nil),
 	}
 	if resource.cleanupTimeout == 0 {
 		resource.cleanupTimeout = defaultSchedulerCleanupTimeout(registration.Config)
@@ -289,12 +291,15 @@ func (r *Runtime) RegisterResource(registration ResourceRegistration) error {
 		return err
 	}
 	resource.scheduler = scheduler
+	resource.scheduler.health = resource.health
+	resource.dispatcher.health = resource.health
 	if registration.RecoverySource != nil {
 		recovery, err := NewRecoveryCoordinator(r.coordinator, r.rabbit, r, RecoveryOptions{})
 		if err != nil {
 			return err
 		}
 		resource.recovery = recovery
+		resource.recovery.health = resource.health
 		resource.source = registration.RecoverySource
 		resource.writer = registration.WriterFingerprint
 	}
@@ -323,6 +328,17 @@ func (r *Runtime) resource(resource string) (*runtimeResource, error) {
 		return nil, fmt.Errorf("%w: %s", errRuntimeNotFound, resource)
 	}
 	return entry, nil
+}
+
+// HealthSnapshot returns a defensive, dependency-I/O-free snapshot for one
+// registered resource. Dependency clients and the gateway may enrich the
+// returned copy without mutating Runtime state.
+func (r *Runtime) HealthSnapshot(resource string) (HealthSnapshot, error) {
+	entry, err := r.resource(resource)
+	if err != nil {
+		return HealthSnapshot{}, err
+	}
+	return HealthSnapshot{FairQueue: entry.health.snapshot()}, nil
 }
 
 // OpenResource installs one reconciled READY fence in both local gates. It
@@ -362,6 +378,7 @@ func (r *Runtime) OpenResource(resource string, fence ResourceFence) error {
 	entry.gateOpen = true
 	entry.gateGeneration++
 	entry.mu.Unlock()
+	entry.health.markGateOpen()
 	return nil
 }
 
@@ -383,6 +400,7 @@ func (entry *runtimeResource) closeGates() {
 	entry.gateGeneration++
 	entry.mu.Unlock()
 	entry.dispatcher.ClosePublisherGate()
+	entry.health.markGateClosed()
 	entry.gateOps.Unlock()
 }
 
@@ -397,6 +415,7 @@ func (entry *runtimeResource) closeGatesFor(fence ResourceFence, generation uint
 	entry.mu.Unlock()
 	if matched {
 		entry.dispatcher.ClosePublisherGate()
+		entry.health.markGateClosed()
 	}
 	entry.gateOps.Unlock()
 }
@@ -1225,6 +1244,22 @@ func stalePublisherWriterMismatchOnly(err error) bool {
 		isStalePublisherSourceFailure(err)
 }
 
+// FailAuthoritative injects an independently observed authoritative safety
+// failure into the same fail-closed path used by scheduler, dispatcher, and
+// prepared-task failures. It synchronously closes every resource gate and
+// invokes every running task's cancellation before returning. Repeated valid
+// calls are idempotent and preserve the first fatal cause.
+func (r *Runtime) FailAuthoritative(err error) error {
+	if r == nil {
+		return fmt.Errorf("%w: nil runtime", ErrInvalidModel)
+	}
+	if !authoritativeFatalError(err) {
+		return fmt.Errorf("%w: runtime fatal cause is not authoritative", ErrInvalidModel)
+	}
+	r.failAuthoritativeWriter(err)
+	return nil
+}
+
 func (r *Runtime) failAuthoritativeWriter(err error) {
 	if err == nil || !authoritativeFatalError(err) {
 		return
@@ -1237,6 +1272,9 @@ func (r *Runtime) failAuthoritativeWriter(err error) {
 			resources = append(resources, entry)
 		}
 		r.mu.Unlock()
+		for _, entry := range resources {
+			entry.health.markAuthoritativeFatal()
+		}
 		// initiateShutdown synchronously closes both admission gates before
 		// component cancellation. A writer mismatch additionally cancels every
 		// already-running task immediately instead of granting normal grace.
@@ -1280,6 +1318,7 @@ func (r *Runtime) initiateShutdown() {
 	r.mu.Unlock()
 	if first {
 		for _, entry := range resources {
+			entry.health.markShuttingDown()
 			entry.closeGates()
 		}
 	}

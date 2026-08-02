@@ -7,6 +7,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestReadFairQueueWriterIdentityReturnsOnlyCanonicalFingerprint(t *testing.T) {
@@ -90,6 +91,33 @@ func TestFairQueueConnectionSafetySnapshotStateMachine(t *testing.T) {
 	if recovered.SessionAffinity != FairQueueSessionAffinityVerified ||
 		recovered.LastSuccessfulVerifiedAt.Before(verified.LastSuccessfulVerifiedAt) {
 		t.Fatalf("recovered snapshot=%+v, previous=%+v", recovered, verified)
+	}
+}
+
+func TestFairQueueSafetyFailureObserverIsOneShotAndRunsOutsideStoreLock(t *testing.T) {
+	t.Parallel()
+	st := &DBStore{}
+	calls := 0
+	st.SetFairQueueSafetyFailureObserver(func() {
+		calls++
+		_ = st.ReadFairQueueConnectionSafetySnapshot()
+	})
+	st.recordFairQueueConnectionMismatch()
+	st.recordFairQueueConnectionVerified(time.Now())
+	st.recordFairQueueConnectionMismatch()
+	if calls != 1 {
+		t.Fatalf("safety observer calls = %d, want 1", calls)
+	}
+}
+
+func TestFairQueueSafetyFailureObserverSeesPreexistingMismatch(t *testing.T) {
+	t.Parallel()
+	st := &DBStore{}
+	st.recordFairQueueConnectionMismatch()
+	calls := 0
+	st.SetFairQueueSafetyFailureObserver(func() { calls++ })
+	if calls != 1 {
+		t.Fatalf("late safety observer calls = %d, want 1", calls)
 	}
 }
 

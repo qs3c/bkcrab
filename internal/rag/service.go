@@ -843,6 +843,10 @@ type Deps struct {
 	Workers         int
 	WorkerMode      WorkerMode
 	Notifier        TaskNotifier
+	// LeaseDuration and HeartbeatInterval are the immutable fair-queue policy
+	// selected by the gateway. Zero preserves the legacy defaults.
+	LeaseDuration     time.Duration
+	HeartbeatInterval time.Duration
 }
 
 type Service struct {
@@ -894,6 +898,12 @@ func New(d Deps) *Service {
 	}
 	if d.Workers <= 0 {
 		d.Workers = 2
+	}
+	if d.LeaseDuration <= 0 {
+		d.LeaseDuration = time.Minute
+	}
+	if d.HeartbeatInterval <= 0 {
+		d.HeartbeatInterval = 20 * time.Second
 	}
 	if d.Parser == nil {
 		d.Parser = parse.NewLocalParser(
@@ -976,8 +986,8 @@ func New(d Deps) *Service {
 		fairStore:                       d.FairStore,
 		fairExecution:                   fairExecution,
 		pollInterval:                    time.Second,
-		leaseDuration:                   time.Minute,
-		heartbeatInterval:               20 * time.Second,
+		leaseDuration:                   d.LeaseDuration,
+		heartbeatInterval:               d.HeartbeatInterval,
 		gcGracePeriod:                   time.Duration(d.Cfg.Limits.IndexGCGracePeriod) * time.Second,
 		stagingArtifactTTL:              time.Duration(d.Cfg.Limits.StagingArtifactTTL) * time.Second,
 		maxCacheFingerprintsPerDocument: d.Cfg.Limits.MaxCacheFingerprintsPerDocument,

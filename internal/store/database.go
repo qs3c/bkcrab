@@ -26,6 +26,9 @@ type DBStore struct {
 
 	fairQueueSafetyMu       sync.RWMutex
 	fairQueueSafetySnapshot FairQueueConnectionSafetySnapshot
+	fairQueueSafetyFailed   bool
+	fairQueueSafetyNotified bool
+	fairQueueSafetyObserver func()
 }
 
 // FairQueueWriterIdentity is the public, non-sensitive identity of the
@@ -70,6 +73,28 @@ func (d *DBStore) ReadFairQueueConnectionSafetySnapshot() FairQueueConnectionSaf
 	return snapshot
 }
 
+// SetFairQueueSafetyFailureObserver installs the process-level fail-closed
+// callback for the first pinned writer/session mismatch. The recent-state
+// snapshot above remains recoverable for diagnostics, while this independent
+// latch can never be cleared during the DBStore lifetime. The callback runs
+// synchronously and outside the store mutex so it may close runtime gates.
+func (d *DBStore) SetFairQueueSafetyFailureObserver(observer func()) {
+	if d == nil {
+		return
+	}
+	var notify func()
+	d.fairQueueSafetyMu.Lock()
+	d.fairQueueSafetyObserver = observer
+	if d.fairQueueSafetyFailed && !d.fairQueueSafetyNotified && observer != nil {
+		d.fairQueueSafetyNotified = true
+		notify = observer
+	}
+	d.fairQueueSafetyMu.Unlock()
+	if notify != nil {
+		notify()
+	}
+}
+
 func (d *DBStore) recordFairQueueConnectionVerified(verifiedAt time.Time) {
 	if verifiedAt.IsZero() {
 		verifiedAt = time.Now()
@@ -88,6 +113,7 @@ func (d *DBStore) recordFairQueueConnectionSafetyOutcome(
 	if d == nil {
 		return
 	}
+	var notify func()
 	d.fairQueueSafetyMu.Lock()
 	if verifiedAt = verifiedAt.UTC(); !verifiedAt.IsZero() &&
 		(d.fairQueueSafetySnapshot.LastSuccessfulVerifiedAt.IsZero() ||
@@ -95,7 +121,17 @@ func (d *DBStore) recordFairQueueConnectionSafetyOutcome(
 		d.fairQueueSafetySnapshot.LastSuccessfulVerifiedAt = verifiedAt
 	}
 	d.fairQueueSafetySnapshot.SessionAffinity = state
+	if state == FairQueueSessionAffinityMismatch {
+		d.fairQueueSafetyFailed = true
+		if !d.fairQueueSafetyNotified && d.fairQueueSafetyObserver != nil {
+			d.fairQueueSafetyNotified = true
+			notify = d.fairQueueSafetyObserver
+		}
+	}
 	d.fairQueueSafetyMu.Unlock()
+	if notify != nil {
+		notify()
+	}
 }
 
 // NewDBStore 创建一个数据库支持的 store。

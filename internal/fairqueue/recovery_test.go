@@ -56,6 +56,7 @@ type recoveryTestRuntime struct {
 	opened     int
 	openFence  ResourceFence
 	drainBlock <-chan struct{}
+	openErr    error
 }
 
 func (r *recoveryTestRuntime) CloseResource(string) error {
@@ -86,14 +87,33 @@ func (r *recoveryTestRuntime) OpenResource(_ string, fence ResourceFence) error 
 	r.opened++
 	r.openFence = fence
 	r.mu.Unlock()
-	return nil
+	return r.openErr
 }
 
 type recoveryTestRabbit struct {
 	fakeRabbitClient
-	mu       sync.Mutex
-	topology []string
-	depths   map[string]int64
+	mu         sync.Mutex
+	topology   []string
+	depths     map[string]int64
+	probeErr   error
+	probe      RabbitResourceProbe
+	probeCalls int
+}
+
+func (r *recoveryTestRabbit) ProbeResourceTopology(_ context.Context, resource string) (RabbitResourceProbe, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.probeCalls++
+	if resource == "" {
+		return RabbitResourceProbe{}, errors.New("empty resource")
+	}
+	if r.probeErr != nil {
+		return RabbitResourceProbe{}, r.probeErr
+	}
+	if r.probe != (RabbitResourceProbe{}) {
+		return r.probe, nil
+	}
+	return RabbitResourceProbe{Resource: resource}, nil
 }
 
 func (r *recoveryTestRabbit) EnsureTenantTopology(_ context.Context, _, tenant string) error {
@@ -648,6 +668,126 @@ type recoveryActiveJournal struct {
 	record RecoveryOperationRecord
 }
 
+type recoveryCountingJournal struct {
+	fakeOperationJournal
+	reads int
+}
+
+func (j *recoveryCountingJournal) Read(context.Context, string, string) (RecoveryOperationRecord, bool, error) {
+	j.reads++
+	return RecoveryOperationRecord{}, false, nil
+}
+
+func TestRecoveryEnsureRequiresRabbitResourceTopologyProbeBeforeJournalOrRedis(t *testing.T) {
+	config := recoveryTestConfig()
+	fence := recoveryTestFence()
+	coordinator := newRecoveryTestCoordinator(fence)
+	runtime := &recoveryTestRuntime{}
+	journal := &recoveryCountingJournal{}
+	runner := newRecoveryTestRunner(t, coordinator, fakeRabbitClient{}, runtime)
+	runner.health = newResourceHealth(nil)
+
+	_, err := runner.EnsureResourceReady(context.Background(), config, fence.WriterFingerprint,
+		&recoveryTestSource{highWater: "1"}, journal)
+	if !errors.Is(err, ErrUnsupportedTopology) || !errors.Is(err, ErrResourceNotReady) {
+		t.Fatalf("EnsureResourceReady() error = %v, want unsupported topology + not ready", err)
+	}
+	if journal.reads != 0 || coordinator.observeCount != 0 {
+		t.Fatalf("missing Rabbit prober reached journal/Redis: reads=%d observes=%d", journal.reads, coordinator.observeCount)
+	}
+	if health := runner.health.snapshot(); health.Recovery.Startup != RecoveryStartupFailed || health.Status != HealthStatusFailed {
+		t.Fatalf("missing Rabbit prober recovery health = %+v, want failed", health.Recovery)
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.opened != 0 {
+		t.Fatalf("missing Rabbit prober opened resource %d times", runtime.opened)
+	}
+}
+
+func TestRecoveryEnsureRabbitProbeFailureKeepsGateClosedBeforeJournalOrRedis(t *testing.T) {
+	config := recoveryTestConfig()
+	fence := recoveryTestFence()
+	coordinator := newRecoveryTestCoordinator(fence)
+	runtime := &recoveryTestRuntime{}
+	journal := &recoveryCountingJournal{}
+	probeErr := errors.New("rabbit unavailable")
+	rabbit := &recoveryTestRabbit{probeErr: probeErr}
+	runner := newRecoveryTestRunner(t, coordinator, rabbit, runtime)
+	runner.health = newResourceHealth(nil)
+
+	_, err := runner.EnsureResourceReady(context.Background(), config, fence.WriterFingerprint,
+		&recoveryTestSource{highWater: "1"}, journal)
+	if !errors.Is(err, probeErr) || !errors.Is(err, ErrResourceNotReady) {
+		t.Fatalf("EnsureResourceReady() error = %v, want probe error + not ready", err)
+	}
+	if journal.reads != 0 || coordinator.observeCount != 0 || rabbit.probeCalls != 1 {
+		t.Fatalf("probe failure ordering: reads=%d observes=%d probes=%d", journal.reads, coordinator.observeCount, rabbit.probeCalls)
+	}
+	if health := runner.health.snapshot(); health.Recovery.Startup != RecoveryStartupRunning {
+		t.Fatalf("transient Rabbit failure recovery health = %+v, want running", health.Recovery)
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.opened != 0 {
+		t.Fatalf("failed Rabbit probe opened resource %d times", runtime.opened)
+	}
+}
+
+func TestRecoveryEnsureRejectsInvalidRabbitProbeFactsBeforeJournalOrRedis(t *testing.T) {
+	config := recoveryTestConfig()
+	fence := recoveryTestFence()
+	coordinator := newRecoveryTestCoordinator(fence)
+	runtime := &recoveryTestRuntime{}
+	journal := &recoveryCountingJournal{}
+	rabbit := &recoveryTestRabbit{probe: RabbitResourceProbe{Resource: "other.resource", DeadLetterDepth: -1}}
+	runner := newRecoveryTestRunner(t, coordinator, rabbit, runtime)
+	runner.health = newResourceHealth(nil)
+
+	_, err := runner.EnsureResourceReady(context.Background(), config, fence.WriterFingerprint,
+		&recoveryTestSource{highWater: "1"}, journal)
+	if !errors.Is(err, ErrAuthoritativeStateCorrupt) || !errors.Is(err, ErrResourceNotReady) {
+		t.Fatalf("EnsureResourceReady() error = %v, want authoritative corruption + not ready", err)
+	}
+	if journal.reads != 0 || coordinator.observeCount != 0 || rabbit.probeCalls != 1 {
+		t.Fatalf("invalid probe facts reached journal/Redis: reads=%d observes=%d probes=%d",
+			journal.reads, coordinator.observeCount, rabbit.probeCalls)
+	}
+	if health := runner.health.snapshot(); health.Status != HealthStatusFailed || health.Recovery.Startup != RecoveryStartupFailed {
+		t.Fatalf("invalid Rabbit probe health = %+v", health)
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.opened != 0 {
+		t.Fatalf("invalid Rabbit probe opened resource %d times", runtime.opened)
+	}
+}
+
+func TestRecoveryCoordinationCorruptionRequiresOperatorInsteadOfRetryLoop(t *testing.T) {
+	t.Parallel()
+	if !recoveryTerminalError(ErrCoordinationCorrupt) {
+		t.Fatal("coordination corruption was classified as retryable dependency degradation")
+	}
+}
+
+type recoveryInvalidJournal struct{ fakeOperationJournal }
+
+func (recoveryInvalidJournal) Read(context.Context, string, string) (RecoveryOperationRecord, bool, error) {
+	return RecoveryOperationRecord{}, false, ErrInvalidOperationRecord
+}
+
+func TestRecoveryInvalidPersistedJournalIsTerminalCoordinationCorruption(t *testing.T) {
+	t.Parallel()
+	runner := newRecoveryTestRunner(t, newRecoveryTestCoordinator(recoveryTestFence()),
+		&recoveryTestRabbit{}, &recoveryTestRuntime{})
+	_, _, err := runner.readJournal(context.Background(), recoveryInvalidJournal{},
+		recoveryTestConfig().Key, recoveryTestWriter())
+	if !errors.Is(err, ErrInvalidOperationRecord) || !errors.Is(err, ErrCoordinationCorrupt) ||
+		!recoveryTerminalError(err) {
+		t.Fatalf("readJournal() error = %v, want terminal invalid coordination state", err)
+	}
+}
+
 func (j recoveryActiveJournal) Read(context.Context, string, string) (RecoveryOperationRecord, bool, error) {
 	return j.record, true, nil
 }
@@ -683,6 +823,8 @@ func TestRecoveryEnsureJoinsReadyOnlyAfterCanonicalPass(t *testing.T) {
 	coordinator.snapshot = RecoveryControlSnapshot{}
 	runtime := &recoveryTestRuntime{}
 	runner := newRecoveryTestRunner(t, coordinator, &recoveryTestRabbit{depths: map[string]int64{}}, runtime)
+	now := time.Date(2026, 8, 3, 5, 0, 0, 0, time.UTC)
+	runner.health = newResourceHealth(func() time.Time { return now })
 	source := &recoveryTestSource{highWater: "1", known: []TenantRef{{TenantID: "tenant"}}}
 	ready, err := runner.EnsureResourceReady(context.Background(), config, fence.WriterFingerprint,
 		source, fakeOperationJournal{})
@@ -700,6 +842,33 @@ func TestRecoveryEnsureJoinsReadyOnlyAfterCanonicalPass(t *testing.T) {
 	runtime.mu.Unlock()
 	if opened != 1 || len(known) == 0 || known[0] != "tenant" {
 		t.Fatalf("opened=%d known=%v", opened, known)
+	}
+	health := runner.health.snapshot()
+	if health.Recovery.Startup != RecoveryStartupComplete || health.Recovery.PagesCompleted == 0 ||
+		!health.Recovery.Converged || !health.Recovery.OperationPassComplete {
+		t.Fatalf("successful startup recovery health = %+v", health.Recovery)
+	}
+	if health.Loops.Reconciler.LastSuccessAt == nil || !health.Loops.Reconciler.LastSuccessAt.Equal(now) {
+		t.Fatalf("successful startup reconciliation health = %+v", health.Loops.Reconciler)
+	}
+}
+
+func TestRecoveryDoesNotReportCompleteBeforeResourceGateOpens(t *testing.T) {
+	config := recoveryTestConfig()
+	fence := recoveryTestFence()
+	coordinator := newRecoveryTestCoordinator(fence)
+	openErr := errors.New("gate open failed")
+	runtime := &recoveryTestRuntime{openErr: openErr}
+	runner := newRecoveryTestRunner(t, coordinator, &recoveryTestRabbit{depths: map[string]int64{}}, runtime)
+	runner.health = newResourceHealth(nil)
+	_, err := runner.EnsureResourceReady(context.Background(), config, fence.WriterFingerprint,
+		&recoveryTestSource{highWater: "1"}, fakeOperationJournal{})
+	if !errors.Is(err, openErr) {
+		t.Fatalf("EnsureResourceReady() error = %v, want gate-open failure", err)
+	}
+	health := runner.health.snapshot()
+	if health.Recovery.Startup == RecoveryStartupComplete || health.GateOpen {
+		t.Fatalf("failed gate open reported completed recovery: %+v", health)
 	}
 }
 
@@ -817,6 +986,7 @@ func TestRecoveryReadyCommittedCompletesInsideStartFence(t *testing.T) {
 		Present: true, State: ResourceReady, Epoch: fence.Epoch,
 		ProtocolVersion: ProtocolVersion, WriterFingerprint: fence.WriterFingerprint,
 		Kind: RecoveryNone, LastCompletedOperationID: strings.Repeat("d", 32),
+		LastCompletedOperationKind: RecoveryRabbitRepair,
 	}
 	runtime := &recoveryTestRuntime{}
 	runner := newRecoveryTestRunner(t, coordinator, &recoveryTestRabbit{depths: map[string]int64{}}, runtime)
@@ -831,6 +1001,31 @@ func TestRecoveryReadyCommittedCompletesInsideStartFence(t *testing.T) {
 	end := slicesIndex(events, "mysql:end")
 	if complete < 0 || end < 0 || complete >= end {
 		t.Fatalf("terminal order = %v; Complete must precede start-fence release", events)
+	}
+}
+
+func TestRecoveryReadyCommittedRejectsWrongCompletedKind(t *testing.T) {
+	config := recoveryTestConfig()
+	fence := recoveryTestFence()
+	coordinator := newRecoveryTestCoordinator(fence)
+	coordinator.snapshot = RecoveryControlSnapshot{
+		Present: true, State: ResourceReady, Epoch: fence.Epoch,
+		ProtocolVersion: ProtocolVersion, WriterFingerprint: fence.WriterFingerprint,
+		Kind: RecoveryNone, LastCompletedOperationID: strings.Repeat("d", 32),
+		LastCompletedOperationKind: RecoveryWriterRebind,
+	}
+	runtime := &recoveryTestRuntime{}
+	runner := newRecoveryTestRunner(t, coordinator, &recoveryTestRabbit{depths: map[string]int64{}}, runtime)
+	runner.tokens = recoveryStaticTokenSource{token: strings.Repeat("e", 32)}
+	events := []string{}
+	journal := &recoveryTerminalJournal{events: &events, record: recoveryTerminalRecord(OperationReadyCommitted)}
+	_, err := runner.EnsureResourceReady(context.Background(), config, fence.WriterFingerprint,
+		&recoveryTestSource{highWater: "100"}, journal)
+	if !errors.Is(err, ErrRecoveryOperatorRequired) {
+		t.Fatalf("EnsureResourceReady() error = %v, want operator-required kind mismatch", err)
+	}
+	if slicesIndex(events, "journal:complete") >= 0 {
+		t.Fatalf("wrong completed kind advanced journal: %v", events)
 	}
 }
 

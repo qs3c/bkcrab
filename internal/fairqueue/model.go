@@ -1004,15 +1004,16 @@ func (f RecoveryFence) Validate() error {
 // RecoveryControlSnapshot is a read-only preflight view. Present=false has one
 // canonical zero representation so missing and corrupt control are distinct.
 type RecoveryControlSnapshot struct {
-	Present                  bool              `json:"present"`
-	State                    ResourceState     `json:"state"`
-	Epoch                    string            `json:"epoch"`
-	ProtocolVersion          int               `json:"protocol_version"`
-	WriterFingerprint        string            `json:"writer_fingerprint"`
-	Kind                     RecoveryKind      `json:"kind"`
-	OperationID              string            `json:"operation_id"`
-	LastCompletedOperationID string            `json:"last_completed_operation_id"`
-	Progress                 *RecoveryProgress `json:"progress,omitempty"`
+	Present                    bool              `json:"present"`
+	State                      ResourceState     `json:"state"`
+	Epoch                      string            `json:"epoch"`
+	ProtocolVersion            int               `json:"protocol_version"`
+	WriterFingerprint          string            `json:"writer_fingerprint"`
+	Kind                       RecoveryKind      `json:"kind"`
+	OperationID                string            `json:"operation_id"`
+	LastCompletedOperationID   string            `json:"last_completed_operation_id"`
+	LastCompletedOperationKind RecoveryKind      `json:"last_completed_operation_kind"`
+	Progress                   *RecoveryProgress `json:"progress,omitempty"`
 }
 
 func (s RecoveryControlSnapshot) Validate() error {
@@ -1027,8 +1028,13 @@ func (s RecoveryControlSnapshot) Validate() error {
 		s.ProtocolVersion != MessageVersion1 {
 		return fmt.Errorf("%w: invalid control identity", ErrInvalidRecoveryState)
 	}
-	if s.LastCompletedOperationID != "" && !lowerHex32Pattern.MatchString(s.LastCompletedOperationID) {
-		return fmt.Errorf("%w: invalid last completed operation ID", ErrInvalidRecoveryState)
+	if s.LastCompletedOperationID == "" {
+		if s.LastCompletedOperationKind != "" && s.LastCompletedOperationKind != RecoveryNone {
+			return fmt.Errorf("%w: last completed operation kind has no ID", ErrInvalidRecoveryState)
+		}
+	} else if !lowerHex32Pattern.MatchString(s.LastCompletedOperationID) ||
+		!s.LastCompletedOperationKind.special() {
+		return fmt.Errorf("%w: invalid last completed operation identity", ErrInvalidRecoveryState)
 	}
 	switch s.State {
 	case ResourceReady:

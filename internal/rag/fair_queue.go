@@ -271,6 +271,14 @@ func mapRAGFairQueueStoreError(err error) error {
 	}
 }
 
+func mapRAGFairQueuePersistedJournalError(err error) error {
+	mapped := mapRAGFairQueueStoreError(err)
+	if errors.Is(mapped, fairqueue.ErrInvalidOperationRecord) {
+		return errors.Join(fairqueue.ErrAuthoritativeStateCorrupt, mapped)
+	}
+	return mapped
+}
+
 func ragFatalStoreError(err error) error {
 	if err == nil {
 		return nil
@@ -1230,12 +1238,15 @@ func (j *RAGFairQueueOperationJournal) Read(ctx context.Context, resource, expec
 	}
 	record, found, err := j.backend.ReadFairQueueOperation(ctx, resource, expectedWriter)
 	if err != nil {
-		return fairqueue.RecoveryOperationRecord{}, false, mapRAGFairQueueStoreError(err)
+		return fairqueue.RecoveryOperationRecord{}, false, mapRAGFairQueuePersistedJournalError(err)
 	}
 	if !found {
 		return fairqueue.RecoveryOperationRecord{}, false, nil
 	}
 	converted, err := fairOperationFromStore(record)
+	if err != nil {
+		return fairqueue.RecoveryOperationRecord{}, false, mapRAGFairQueuePersistedJournalError(err)
+	}
 	if err == nil && (converted.Resource != resource || converted.CurrentWriterFingerprint != expectedWriter) {
 		return fairqueue.RecoveryOperationRecord{}, false, authoritativeStateError("journal read escaped its resource or writer")
 	}
@@ -1251,12 +1262,15 @@ type ragFairQueueOperationStartSession struct {
 func (s ragFairQueueOperationStartSession) Read(ctx context.Context) (fairqueue.RecoveryOperationRecord, bool, error) {
 	record, found, err := s.backend.Read(ctx)
 	if err != nil {
-		return fairqueue.RecoveryOperationRecord{}, false, mapRAGFairQueueStoreError(err)
+		return fairqueue.RecoveryOperationRecord{}, false, mapRAGFairQueuePersistedJournalError(err)
 	}
 	if !found {
 		return fairqueue.RecoveryOperationRecord{}, false, nil
 	}
 	converted, err := fairOperationFromStore(record)
+	if err != nil {
+		return fairqueue.RecoveryOperationRecord{}, false, mapRAGFairQueuePersistedJournalError(err)
+	}
 	if err == nil && (converted.Resource != s.resource || converted.CurrentWriterFingerprint != s.writer) {
 		return fairqueue.RecoveryOperationRecord{}, false, authoritativeStateError("journal start read escaped its fence")
 	}
@@ -1280,11 +1294,11 @@ func (s ragFairQueueOperationStartSession) BeginSpecial(ctx context.Context, exp
 	}
 	record, err := s.backend.BeginSpecial(ctx, storeExpected, storeProposal)
 	if err != nil {
-		return fairqueue.RecoveryOperationRecord{}, mapRAGFairQueueStoreError(err)
+		return fairqueue.RecoveryOperationRecord{}, mapRAGFairQueuePersistedJournalError(err)
 	}
 	converted, err := fairOperationFromStore(record)
 	if err != nil {
-		return fairqueue.RecoveryOperationRecord{}, err
+		return fairqueue.RecoveryOperationRecord{}, mapRAGFairQueuePersistedJournalError(err)
 	}
 	if !sameRAGOperationIdentity(converted, proposal) || converted.Phase != fairqueue.OperationActive {
 		return fairqueue.RecoveryOperationRecord{}, authoritativeStateError("journal begin returned a different operation")
@@ -1340,11 +1354,11 @@ func (j *RAGFairQueueOperationJournal) mutate(_ context.Context, expected fairqu
 	}
 	result, err := fn(converted)
 	if err != nil {
-		return fairqueue.RecoveryOperationRecord{}, mapRAGFairQueueStoreError(err)
+		return fairqueue.RecoveryOperationRecord{}, mapRAGFairQueuePersistedJournalError(err)
 	}
 	convertedResult, err := fairOperationFromStore(result)
 	if err != nil {
-		return fairqueue.RecoveryOperationRecord{}, err
+		return fairqueue.RecoveryOperationRecord{}, mapRAGFairQueuePersistedJournalError(err)
 	}
 	if !sameRAGOperationIdentity(convertedResult, expected) || convertedResult.Version < expected.Version {
 		return fairqueue.RecoveryOperationRecord{}, authoritativeStateError("journal mutation returned a different operation")

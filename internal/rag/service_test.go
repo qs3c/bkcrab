@@ -2104,3 +2104,24 @@ func TestAgentToolResultCarriesStableURLFreeResources(t *testing.T) {
 		}
 	}
 }
+
+func TestServiceUsesInjectedFairQueueLeasePolicy(t *testing.T) {
+	t.Parallel()
+
+	service := New(Deps{
+		WorkerMode:        WorkerModeFair,
+		LeaseDuration:     3 * time.Minute,
+		HeartbeatInterval: 45 * time.Second,
+	})
+	if service.leaseDuration != 3*time.Minute {
+		t.Fatalf("lease duration = %s, want 3m", service.leaseDuration)
+	}
+	if service.heartbeatInterval != 45*time.Second {
+		t.Fatalf("heartbeat interval = %s, want 45s", service.heartbeatInterval)
+	}
+
+	legacy := New(Deps{})
+	if legacy.leaseDuration != time.Minute || legacy.heartbeatInterval != 20*time.Second {
+		t.Fatalf("legacy defaults = %s/%s, want 1m/20s", legacy.leaseDuration, legacy.heartbeatInterval)
+	}
+}

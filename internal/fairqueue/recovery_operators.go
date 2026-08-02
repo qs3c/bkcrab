@@ -333,9 +333,10 @@ func recordUnfinished(record RecoveryOperationRecord, found bool) bool {
 	return found && record.Phase != OperationCompleted
 }
 
-func controlTerminal(control RecoveryControlSnapshot, writer, operationID string) bool {
+func controlTerminal(control RecoveryControlSnapshot, writer, operationID string, kind RecoveryKind) bool {
 	return control.Present && control.State == ResourceReady && control.Kind == RecoveryNone &&
-		control.WriterFingerprint == writer && control.LastCompletedOperationID == operationID
+		control.WriterFingerprint == writer && control.LastCompletedOperationID == operationID &&
+		control.LastCompletedOperationKind == kind
 }
 
 func completeTerminal(
@@ -430,7 +431,7 @@ func writerStartAllowed(
 ) (terminal, resume bool, err error) {
 	matching := found && writerRecordMatches(record, expectedOld, target)
 	if matching && (record.Phase == OperationReadyCommitted || record.Phase == OperationCompleted) &&
-		controlTerminal(control, target, record.OperationID) {
+		controlTerminal(control, target, record.OperationID, record.Kind) {
 		return true, false, nil
 	}
 	if recordUnfinished(record, found) && !matching {
@@ -812,7 +813,7 @@ func forceStartAllowed(
 ) (terminal, resume bool, err error) {
 	matching := found && forceRecordMatches(record, writer)
 	if matching && (record.Phase == OperationReadyCommitted || record.Phase == OperationCompleted) &&
-		controlTerminal(control, writer, record.OperationID) {
+		controlTerminal(control, writer, record.OperationID, record.Kind) {
 		return true, false, nil
 	}
 	if recordUnfinished(record, found) && !matching {
@@ -1100,7 +1101,7 @@ func ValidateNormalRecoveryJournal(
 	case OperationActive:
 		return operationRequiredf("special operation %s is ACTIVE", record.Kind)
 	case OperationReadyCommitted:
-		if !controlTerminal(control, expectedWriter, record.OperationID) {
+		if !controlTerminal(control, expectedWriter, record.OperationID, record.Kind) {
 			return operationRequiredf("READY_COMMITTED operation lacks matching READY control")
 		}
 	case OperationCompleted:
@@ -1123,14 +1124,18 @@ if redis.call('EXISTS', KEYS[1]) ~= 1 then
 end
 local control = redis.call('HMGET', KEYS[1],
   'state', 'epoch', 'protocol_version', 'writer_fingerprint',
-  'operation_kind', 'operation_id', 'last_completed_operation_id')
-for i = 1, 7 do
+	  'operation_kind', 'operation_id', 'last_completed_operation_id',
+	  'last_completed_operation_kind')
+for i = 1, 8 do
   if control[i] == false then return {'FQ_COORDINATION_CORRUPT'} end
 end
 if not tonumber(control[3]) or tonumber(control[3]) < 1 or
     math.floor(tonumber(control[3])) ~= tonumber(control[3]) or
     not fq_hex(control[2], 32) or not fq_hex(control[4], 64) or
-    (control[7] ~= '' and not fq_hex(control[7], 32)) then
+	    (control[7] == '' and control[8] ~= 'NONE') or
+	    (control[7] ~= '' and (not fq_hex(control[7], 32) or
+	      (control[8] ~= 'RABBIT_REPAIR' and control[8] ~= 'WRITER_REBIND' and
+	        control[8] ~= 'FORCE_REBUILD'))) then
   return {'FQ_COORDINATION_CORRUPT'}
 end
 if control[3] ~= ARGV[1] then return {'FQ_FENCE_MISMATCH'} end
@@ -1139,7 +1144,7 @@ if control[1] == 'READY' then
     return {'FQ_COORDINATION_CORRUPT'}
   end
   return {'OK', '1', control[1], control[2], control[3], control[4],
-    control[5], control[6], control[7]}
+	    control[5], control[6], control[7], control[8]}
 end
 if control[1] ~= 'RECOVERING' or control[5] == 'NONE' or redis.call('EXISTS', KEYS[2]) ~= 1 then
   return {'FQ_COORDINATION_CORRUPT'}
@@ -1162,7 +1167,7 @@ if progress[1] ~= control[2] or progress[2] ~= control[5] or progress[3] ~= cont
   return {'FQ_COORDINATION_CORRUPT'}
 end
 local result = {'OK', '1', control[1], control[2], control[3], control[4],
-  control[5], control[6], control[7]}
+	  control[5], control[6], control[7], control[8]}
 for i = 1, 19 do table.insert(result, progress[i]) end
 return result
 `)

@@ -84,13 +84,14 @@ local function fq_recovery_fence()
   if redis.call('EXISTS', KEYS[1]) ~= 1 then
     return 'FQ_NOT_READY'
   end
-  local control = redis.call('HMGET', KEYS[1],
-    'epoch', 'state', 'operation_kind', 'operation_id',
-    'protocol_version', 'writer_fingerprint', 'last_completed_operation_id')
-  if not control[1] or not control[2] or not control[3] or control[4] == false or
-      not control[5] or not control[6] or control[7] == false then
-    return 'FQ_COORDINATION_CORRUPT'
-  end
+	  local control = redis.call('HMGET', KEYS[1],
+	    'epoch', 'state', 'operation_kind', 'operation_id',
+	    'protocol_version', 'writer_fingerprint', 'last_completed_operation_id',
+	    'last_completed_operation_kind')
+	  if not control[1] or not control[2] or not control[3] or control[4] == false or
+	      not control[5] or not control[6] or control[7] == false or control[8] == false then
+	    return 'FQ_COORDINATION_CORRUPT'
+	  end
   if not tonumber(control[5]) or tonumber(control[5]) < 1 or
       math.floor(tonumber(control[5])) ~= tonumber(control[5]) then
     return 'FQ_COORDINATION_CORRUPT'
@@ -98,8 +99,11 @@ local function fq_recovery_fence()
   if control[5] ~= '1' then
     return 'FQ_FENCE_MISMATCH'
   end
-  if not fq_hex(control[1], 32) or not fq_hex(control[6], 64) or
-      (control[7] ~= '' and not fq_hex(control[7], 32)) then
+	  if not fq_hex(control[1], 32) or not fq_hex(control[6], 64) or
+	      (control[7] == '' and control[8] ~= 'NONE') or
+	      (control[7] ~= '' and (not fq_hex(control[7], 32) or
+	        (control[8] ~= 'RABBIT_REPAIR' and control[8] ~= 'WRITER_REBIND' and
+	          control[8] ~= 'FORCE_REBUILD'))) then
     return 'FQ_COORDINATION_CORRUPT'
   end
   if control[2] ~= 'RECOVERING' then
@@ -254,6 +258,29 @@ type RedisOptions struct {
 	KeyPrefix        string
 	OperationTimeout time.Duration
 }
+
+// RedisResourceHealthProbe is a read-only, resource-scoped observation. The
+// raw control identity is retained so the gateway can derive short diagnostic
+// fingerprints; callers must never expose its epoch or operation IDs without
+// hashing them first. Connection settings, tenants, tasks, and owner tokens
+// are deliberately absent.
+type RedisResourceHealthProbe struct {
+	Resource         string                  `json:"resource"`
+	Topology         RedisTopology           `json:"topology"`
+	Control          RecoveryControlSnapshot `json:"control"`
+	ProvisionalCount int64                   `json:"provisional_count"`
+	ProcessingCount  int64                   `json:"processing_count"`
+}
+
+var redisResourceHealthCountsScript = redis.NewScript(redisRawLockFenceLua + `
+local provisional_type = fq_key_type(KEYS[1])
+local processing_type = fq_key_type(KEYS[2])
+if (provisional_type ~= 'none' and provisional_type ~= 'zset') or
+   (processing_type ~= 'none' and processing_type ~= 'zset') then
+  return {'FQ_COORDINATION_CORRUPT'}
+end
+return {'OK', tostring(redis.call('ZCARD', KEYS[1])), tostring(redis.call('ZCARD', KEYS[2]))}
+`)
 
 // Redis implements the rebuildable fair-scheduling coordination boundary.
 // The authoritative task and recovery journals remain outside Redis.
@@ -468,6 +495,66 @@ func (r *Redis) operationContext(parent context.Context) (context.Context, conte
 
 func (r *Redis) InspectRedisTopology(ctx context.Context) (RedisTopology, error) {
 	return r.inspectRedisTopology(ctx)
+}
+
+// ProbeResourceHealth verifies the live Redis deployment topology, reads the
+// resource control/progress snapshot, and counts only the two bounded runtime
+// lease sets needed by operational health. Every Redis command is read-only.
+func (r *Redis) ProbeResourceHealth(ctx context.Context, resource string) (RedisResourceHealthProbe, error) {
+	if r == nil {
+		return RedisResourceHealthProbe{}, fmt.Errorf("%w: nil Redis health probe", ErrInvalidModel)
+	}
+	if err := ValidateResource(resource); err != nil {
+		return RedisResourceHealthProbe{}, fmt.Errorf("%w: invalid Redis resource", ErrInvalidModel)
+	}
+	topology, err := r.InspectRedisTopology(ctx)
+	if err != nil {
+		return RedisResourceHealthProbe{}, err
+	}
+	if !topology.SupportsFairQueue() {
+		return RedisResourceHealthProbe{}, fmt.Errorf("%w: Redis must be a standalone writable primary", ErrUnsupportedTopology)
+	}
+	control, err := r.InspectRecoveryControl(ctx, resource)
+	if err != nil {
+		return RedisResourceHealthProbe{}, err
+	}
+	keys, err := r.resourceKeys(resource)
+	if err != nil {
+		return RedisResourceHealthProbe{}, err
+	}
+	opCtx, cancel, err := r.operationContext(ctx)
+	if err != nil {
+		return RedisResourceHealthProbe{}, err
+	}
+	defer cancel()
+	result, err := r.runScript(opCtx, "inspect resource health counts", redisResourceHealthCountsScript,
+		[]string{keys.provisional, keys.processingTurns})
+	if err != nil {
+		return RedisResourceHealthProbe{}, err
+	}
+	values, err := redisArrayResult(result)
+	if err != nil {
+		return RedisResourceHealthProbe{}, err
+	}
+	if len(values) != 3 {
+		return RedisResourceHealthProbe{}, fmt.Errorf("%w: malformed Redis health count response", ErrCoordinationCorrupt)
+	}
+	code, ok := redisResultString(values[0])
+	if !ok {
+		return RedisResourceHealthProbe{}, fmt.Errorf("%w: malformed Redis health count response", ErrCoordinationCorrupt)
+	}
+	if code != redisResultOK {
+		return RedisResourceHealthProbe{}, redisScriptError(code)
+	}
+	provisional, provisionalOK := redisResultInt64(values[1])
+	processing, processingOK := redisResultInt64(values[2])
+	if !provisionalOK || !processingOK || provisional < 0 || processing < 0 {
+		return RedisResourceHealthProbe{}, fmt.Errorf("%w: invalid Redis health count response", ErrCoordinationCorrupt)
+	}
+	return RedisResourceHealthProbe{
+		Resource: resource, Topology: topology, Control: control,
+		ProvisionalCount: provisional, ProcessingCount: processing,
+	}, nil
 }
 
 func (r *Redis) inspectRedisTopology(ctx context.Context) (RedisTopology, error) {
@@ -756,8 +843,9 @@ if redis.call('EXISTS', KEYS[1]) ~= 1 then
 end
 local control = redis.call('HMGET', KEYS[1],
   'state', 'epoch', 'protocol_version', 'writer_fingerprint',
-  'operation_kind', 'operation_id', 'last_completed_operation_id')
-for i = 1, 7 do
+  'operation_kind', 'operation_id', 'last_completed_operation_id',
+  'last_completed_operation_kind')
+for i = 1, 8 do
   if control[i] == false then
     return {'FQ_COORDINATION_CORRUPT'}
   end
@@ -765,7 +853,10 @@ end
 if not tonumber(control[3]) or tonumber(control[3]) < 1 or
     math.floor(tonumber(control[3])) ~= tonumber(control[3]) or
     not fq_hex(control[2], 32) or not fq_hex(control[4], 64) or
-    (control[7] ~= '' and not fq_hex(control[7], 32)) then
+    (control[7] == '' and control[8] ~= 'NONE') or
+    (control[7] ~= '' and (not fq_hex(control[7], 32) or
+      (control[8] ~= 'RABBIT_REPAIR' and control[8] ~= 'WRITER_REBIND' and
+        control[8] ~= 'FORCE_REBUILD'))) then
   return {'FQ_COORDINATION_CORRUPT'}
 end
 if control[3] ~= ARGV[2] then return {'FQ_FENCE_MISMATCH'} end
@@ -774,7 +865,7 @@ if control[1] == 'READY' then
     return {'FQ_COORDINATION_CORRUPT'}
   end
   return {'OK', '1', control[1], control[2], control[3], control[4],
-    control[5], control[6], control[7]}
+    control[5], control[6], control[7], control[8]}
 end
 if control[1] ~= 'RECOVERING' or control[5] == 'NONE' or redis.call('EXISTS', KEYS[3]) ~= 1 then
   return {'FQ_COORDINATION_CORRUPT'}
@@ -797,7 +888,7 @@ if progress[1] ~= control[2] or progress[2] ~= control[5] or progress[3] ~= cont
   return {'FQ_COORDINATION_CORRUPT'}
 end
 local result = {'OK', '1', control[1], control[2], control[3], control[4],
-  control[5], control[6], control[7]}
+  control[5], control[6], control[7], control[8]}
 for i = 1, 19 do table.insert(result, progress[i]) end
 return result
 `)
@@ -820,6 +911,7 @@ local initialize = false
 local takeover = false
 local target_writer = writer_a
 local last_completed = ''
+local last_completed_kind = 'NONE'
 local control = nil
 
 local function canonical_uint(value, positive)
@@ -894,14 +986,17 @@ if exists == 0 then
 else
   control = redis.call('HMGET', KEYS[1],
     'epoch', 'state', 'operation_kind', 'operation_id',
-    'protocol_version', 'writer_fingerprint', 'last_completed_operation_id')
-  for i = 1, 6 do
-    if control[i] == false then return {'FQ_COORDINATION_CORRUPT'} end
-  end
-  if control[7] == false then return {'FQ_COORDINATION_CORRUPT'} end
-  if not fq_hex(control[1], 32) or not fq_hex(control[6], 64) or
-      (control[7] ~= '' and not fq_hex(control[7], 32)) or
-      not canonical_uint(control[5], true) then
+	    'protocol_version', 'writer_fingerprint', 'last_completed_operation_id',
+	    'last_completed_operation_kind')
+	  for i = 1, 8 do
+	    if control[i] == false then return {'FQ_COORDINATION_CORRUPT'} end
+	  end
+	  if not fq_hex(control[1], 32) or not fq_hex(control[6], 64) or
+	      (control[7] == '' and control[8] ~= 'NONE') or
+	      (control[7] ~= '' and (not fq_hex(control[7], 32) or
+	        (control[8] ~= 'RABBIT_REPAIR' and control[8] ~= 'WRITER_REBIND' and
+	          control[8] ~= 'FORCE_REBUILD'))) or
+	      not canonical_uint(control[5], true) then
     return {'FQ_COORDINATION_CORRUPT'}
   end
   if control[5] ~= ARGV[9] then return {'FQ_FENCE_MISMATCH'} end
@@ -925,7 +1020,8 @@ else
   else
     return {'FQ_COORDINATION_CORRUPT'}
   end
-  last_completed = control[7]
+	  last_completed = control[7]
+	  last_completed_kind = control[8]
 
   if control[2] == 'READY' then
     if control[3] ~= 'NONE' or control[4] ~= '' or redis.call('EXISTS', KEYS[3]) ~= 0 then
@@ -985,6 +1081,7 @@ redis.call('HSET', KEYS[1],
   'operation_kind', requested_kind,
   'operation_id', operation_id,
   'last_completed_operation_id', last_completed,
+	  'last_completed_operation_kind', last_completed_kind,
   'protocol_version', ARGV[9],
   'writer_fingerprint', target_writer)
 if initialize then
@@ -1421,14 +1518,18 @@ return 'OK'
 if redis.call('EXISTS', KEYS[1]) == 1 then
   local completed = redis.call('HMGET', KEYS[1],
     'epoch', 'state', 'operation_kind', 'operation_id',
-    'protocol_version', 'writer_fingerprint', 'last_completed_operation_id')
+	    'protocol_version', 'writer_fingerprint', 'last_completed_operation_id',
+	    'last_completed_operation_kind')
   if completed[1] == ARGV[1] and completed[2] == 'READY' and completed[6] == ARGV[2] then
-    for index = 1, 7 do
+	    for index = 1, 8 do
       if completed[index] == false then return 'FQ_COORDINATION_CORRUPT' end
     end
     if completed[3] ~= 'NONE' or completed[4] ~= '' or not fq_hex(completed[1], 32) or
         not fq_hex(completed[6], 64) or
-        (completed[7] ~= '' and not fq_hex(completed[7], 32)) or
+	        (completed[7] == '' and completed[8] ~= 'NONE') or
+	        (completed[7] ~= '' and (not fq_hex(completed[7], 32) or
+	          (completed[8] ~= 'RABBIT_REPAIR' and completed[8] ~= 'WRITER_REBIND' and
+	            completed[8] ~= 'FORCE_REBUILD'))) or
         not tonumber(completed[5]) or tonumber(completed[5]) < 1 or
         math.floor(tonumber(completed[5])) ~= tonumber(completed[5]) then
       return 'FQ_COORDINATION_CORRUPT'
@@ -1436,7 +1537,7 @@ if redis.call('EXISTS', KEYS[1]) == 1 then
     if redis.call('EXISTS', KEYS[3]) ~= 0 then return 'FQ_COORDINATION_CORRUPT' end
     if completed[5] ~= '1' then return 'FQ_FENCE_MISMATCH' end
     if (ARGV[4] == 'NORMAL' and ARGV[5] == '') or
-        (ARGV[4] ~= 'NORMAL' and completed[7] == ARGV[5]) then
+	        (ARGV[4] ~= 'NORMAL' and completed[7] == ARGV[5] and completed[8] == ARGV[4]) then
       return 'OK'
     end
     return 'FQ_FENCE_MISMATCH'
@@ -1503,10 +1604,15 @@ elseif ARGV[4] ~= 'NORMAL' then
   return 'FQ_FENCE_MISMATCH'
 end
 local last_completed = redis.call('HGET', KEYS[1], 'last_completed_operation_id') or ''
-if ARGV[4] ~= 'NORMAL' then last_completed = ARGV[5] end
+local last_completed_kind = redis.call('HGET', KEYS[1], 'last_completed_operation_kind') or 'NONE'
+if ARGV[4] ~= 'NORMAL' then
+  last_completed = ARGV[5]
+  last_completed_kind = ARGV[4]
+end
 redis.call('HSET', KEYS[1],
   'state', 'READY', 'operation_kind', 'NONE', 'operation_id', '',
-  'last_completed_operation_id', last_completed)
+	  'last_completed_operation_id', last_completed,
+	  'last_completed_operation_kind', last_completed_kind)
 redis.call('DEL', KEYS[3])
 redis.call('DEL', KEYS[2])
 return 'OK'
@@ -1695,7 +1801,7 @@ func parseRecoverySnapshot(values []interface{}) (RecoveryControlSnapshot, error
 		}
 		return RecoveryControlSnapshot{}, nil
 	}
-	if present != "1" || len(values) < 9 {
+	if present != "1" || len(values) < 10 {
 		return RecoveryControlSnapshot{}, fmt.Errorf("%w: malformed Redis control response", ErrCoordinationCorrupt)
 	}
 	state, err := redisArrayString(values, 2)
@@ -1726,18 +1832,23 @@ func parseRecoverySnapshot(values []interface{}) (RecoveryControlSnapshot, error
 	if err != nil {
 		return RecoveryControlSnapshot{}, err
 	}
+	lastCompletedKind, err := redisArrayString(values, 9)
+	if err != nil {
+		return RecoveryControlSnapshot{}, err
+	}
 	snapshot := RecoveryControlSnapshot{
-		Present:                  true,
-		State:                    ResourceState(state),
-		Epoch:                    epoch,
-		ProtocolVersion:          int(protocol),
-		WriterFingerprint:        writer,
-		Kind:                     RecoveryKind(kind),
-		OperationID:              operationID,
-		LastCompletedOperationID: lastCompleted,
+		Present:                    true,
+		State:                      ResourceState(state),
+		Epoch:                      epoch,
+		ProtocolVersion:            int(protocol),
+		WriterFingerprint:          writer,
+		Kind:                       RecoveryKind(kind),
+		OperationID:                operationID,
+		LastCompletedOperationID:   lastCompleted,
+		LastCompletedOperationKind: RecoveryKind(lastCompletedKind),
 	}
 	if snapshot.State == ResourceReady {
-		if len(values) != 9 {
+		if len(values) != 10 {
 			return RecoveryControlSnapshot{}, fmt.Errorf("%w: READY response retains progress", ErrCoordinationCorrupt)
 		}
 		if err := snapshot.Validate(); err != nil {
@@ -1745,22 +1856,22 @@ func parseRecoverySnapshot(values []interface{}) (RecoveryControlSnapshot, error
 		}
 		return snapshot, nil
 	}
-	if len(values) != 28 {
+	if len(values) != 29 {
 		return RecoveryControlSnapshot{}, fmt.Errorf("%w: malformed Redis recovery progress", ErrCoordinationCorrupt)
 	}
-	progressEpoch, err := redisArrayString(values, 9)
+	progressEpoch, err := redisArrayString(values, 10)
 	if err != nil || progressEpoch != snapshot.Epoch {
 		return RecoveryControlSnapshot{}, fmt.Errorf("%w: recovery progress epoch mismatch", ErrCoordinationCorrupt)
 	}
-	progressKind, err := redisArrayString(values, 10)
+	progressKind, err := redisArrayString(values, 11)
 	if err != nil {
 		return RecoveryControlSnapshot{}, err
 	}
-	progressOperation, err := redisArrayString(values, 11)
+	progressOperation, err := redisArrayString(values, 12)
 	if err != nil {
 		return RecoveryControlSnapshot{}, err
 	}
-	highWater, err := redisArrayString(values, 12)
+	highWater, err := redisArrayString(values, 13)
 	if err != nil {
 		return RecoveryControlSnapshot{}, err
 	}
@@ -1779,15 +1890,15 @@ func parseRecoverySnapshot(values []interface{}) (RecoveryControlSnapshot, error
 		}
 		return RecoveryPassProgress{Cycle: uint64(cycle), Complete: complete, DiffCount: diff}, nil
 	}
-	known, err := readPass(13)
+	known, err := readPass(14)
 	if err != nil {
 		return RecoveryControlSnapshot{}, err
 	}
-	dispatched, err := readPass(16)
+	dispatched, err := readPass(17)
 	if err != nil {
 		return RecoveryControlSnapshot{}, err
 	}
-	running, err := readPass(19)
+	running, err := readPass(20)
 	if err != nil {
 		return RecoveryControlSnapshot{}, err
 	}
@@ -1801,11 +1912,11 @@ func parseRecoverySnapshot(values []interface{}) (RecoveryControlSnapshot, error
 	}
 	switch progress.Kind {
 	case RecoveryRabbitRepair:
-		repairHighWater, valueErr := redisArrayString(values, 22)
+		repairHighWater, valueErr := redisArrayString(values, 23)
 		if valueErr != nil {
 			return RecoveryControlSnapshot{}, valueErr
 		}
-		repairComplete, valueErr := redisArrayBool(values, 23)
+		repairComplete, valueErr := redisArrayBool(values, 24)
 		if valueErr != nil {
 			return RecoveryControlSnapshot{}, valueErr
 		}
@@ -1813,11 +1924,11 @@ func parseRecoverySnapshot(values []interface{}) (RecoveryControlSnapshot, error
 			RepairHighWater: repairHighWater, RepairPassComplete: repairComplete,
 		}
 	case RecoveryWriterRebind:
-		original, valueErr := redisArrayString(values, 24)
+		original, valueErr := redisArrayString(values, 25)
 		if valueErr != nil {
 			return RecoveryControlSnapshot{}, valueErr
 		}
-		target, valueErr := redisArrayString(values, 25)
+		target, valueErr := redisArrayString(values, 26)
 		if valueErr != nil {
 			return RecoveryControlSnapshot{}, valueErr
 		}
@@ -1825,11 +1936,11 @@ func parseRecoverySnapshot(values []interface{}) (RecoveryControlSnapshot, error
 			OriginalWriterFingerprint: original, TargetWriterFingerprint: target,
 		}
 	case RecoveryForceRebuild:
-		notBefore, valueErr := redisArrayInt64(values, 26, false)
+		notBefore, valueErr := redisArrayInt64(values, 27, false)
 		if valueErr != nil {
 			return RecoveryControlSnapshot{}, valueErr
 		}
-		deleteComplete, valueErr := redisArrayBool(values, 27)
+		deleteComplete, valueErr := redisArrayBool(values, 28)
 		if valueErr != nil {
 			return RecoveryControlSnapshot{}, valueErr
 		}

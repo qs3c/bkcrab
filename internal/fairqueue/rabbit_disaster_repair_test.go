@@ -676,6 +676,7 @@ func TestRabbitDisasterRepairReadyCommittedTerminalOnlyCompletesJournal(t *testi
 	}
 	control := rabbitRepairTestReadyControl()
 	control.LastCompletedOperationID = rabbitRepairTestOp
+	control.LastCompletedOperationKind = RecoveryRabbitRepair
 	broker := &rabbitRepairTestBroker{events: events}
 	coordinator := &rabbitRepairTestCoordinator{events: events, controls: []RecoveryControlSnapshot{control}}
 	recovery := &rabbitRepairTestRecovery{events: events}
@@ -1018,6 +1019,7 @@ func TestRabbitDisasterRepairRejectsOperationIDCollisionBeforeJournalMutation(t 
 	journal := &rabbitRepairTestJournal{events: events}
 	control := rabbitRepairTestReadyControl()
 	control.LastCompletedOperationID = rabbitRepairTestOp
+	control.LastCompletedOperationKind = RecoveryRabbitRepair
 	coordinator := &rabbitRepairTestCoordinator{events: events, controls: []RecoveryControlSnapshot{control}}
 	repair := newRabbitRepairTestSubject(t, &rabbitRepairTestBroker{events: events}, journal,
 		coordinator, &rabbitRepairTestRecovery{events: events})

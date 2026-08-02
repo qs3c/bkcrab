@@ -199,6 +199,10 @@ type runtimeTestRabbit struct {
 
 type runtimeAutomaticRecoveryRabbit struct{ runtimeTestRabbit }
 
+func (*runtimeAutomaticRecoveryRabbit) ProbeResourceTopology(_ context.Context, resource string) (RabbitResourceProbe, error) {
+	return RabbitResourceProbe{Resource: resource}, nil
+}
+
 func (*runtimeAutomaticRecoveryRabbit) EnsureTenantTopology(context.Context, string, string) error {
 	return nil
 }
@@ -581,6 +585,187 @@ func TestRuntimeRegistrationStartsFailClosedAndRejectsDuplicates(t *testing.T) {
 	if err := runtime.RegisterResource(registration); err == nil {
 		t.Fatal("duplicate RegisterResource() error = nil")
 	}
+}
+
+func TestRuntimeHealthSnapshotTracksGateFatalAndShutdownSynchronously(t *testing.T) {
+	runtime, _, _ := newRuntimeTestHarness(t, &runtimeTestPreparer{}, nil)
+	initial, err := runtime.HealthSnapshot("rag.index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.FairQueue.Status != HealthStatusDegraded || initial.FairQueue.GateOpen ||
+		initial.FairQueue.Loops.Scheduler.State != LoopStatePaused {
+		t.Fatalf("initial health = %+v", initial.FairQueue)
+	}
+	fence := runtimeTestFence(0)
+	if err := runtime.OpenResource("rag.index", fence); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := runtime.HealthSnapshot("rag.index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.FairQueue.Status != HealthStatusHealthy || !ready.FairQueue.GateOpen ||
+		ready.FairQueue.Loops.Scheduler.State != LoopStateRunning {
+		t.Fatalf("open health = %+v", ready.FairQueue)
+	}
+
+	runtime.failAuthoritativeWriter(ErrAuthoritativeWriterMismatch)
+	failed, err := runtime.HealthSnapshot("rag.index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.FairQueue.Status != HealthStatusFailed || !failed.FairQueue.Fatal ||
+		!failed.FairQueue.ShuttingDown || failed.FairQueue.GateOpen {
+		t.Fatalf("fatal health = %+v", failed.FairQueue)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := runtime.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeFailAuthoritativeRejectsNonSafetyErrorsWithoutStateChange(t *testing.T) {
+	runtime, rabbit, coordinator := newRuntimeTestHarness(t, &runtimeTestPreparer{}, nil)
+	if err := runtime.OpenResource("rag.index", runtimeTestFence(0)); err != nil {
+		t.Fatal(err)
+	}
+	for _, cause := range []error{nil, errors.New("transient dependency failure")} {
+		if err := runtime.FailAuthoritative(cause); !errors.Is(err, ErrInvalidModel) {
+			t.Fatalf("FailAuthoritative(%v) error = %v, want ErrInvalidModel", cause, err)
+		}
+	}
+	var nilRuntime *Runtime
+	if err := nilRuntime.FailAuthoritative(ErrAuthoritativeWriterMismatch); !errors.Is(err, ErrInvalidModel) {
+		t.Fatalf("nil Runtime FailAuthoritative() error = %v, want ErrInvalidModel", err)
+	}
+	fence, _, open := runtimeResourceReadySnapshot(t, runtime, "rag.index")
+	if !open || fence != runtimeTestFence(0) {
+		t.Fatalf("rejected fatal input changed gate: fence=%+v open=%v", fence, open)
+	}
+	health, err := runtime.HealthSnapshot("rag.index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.FairQueue.Status != HealthStatusHealthy || health.FairQueue.Fatal || health.FairQueue.ShuttingDown {
+		t.Fatalf("rejected fatal input changed health: %+v", health.FairQueue)
+	}
+	runtime.mu.Lock()
+	fatalErr := runtime.fatalErr
+	shuttingDown := runtime.shuttingDown
+	runtime.mu.Unlock()
+	if fatalErr != nil || shuttingDown || rabbit.closeCalls.Load() != 0 || coordinator.closeCalls.Load() != 0 {
+		t.Fatalf("rejected fatal input changed runtime: fatal=%v shuttingDown=%v closes=%d/%d",
+			fatalErr, shuttingDown, rabbit.closeCalls.Load(), coordinator.closeCalls.Load())
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := runtime.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeFailAuthoritativeSynchronouslyClosesAllGatesAndCancelsRunning(t *testing.T) {
+	request := schedulerTestRequest(t, "tenant-a", "42", 7)
+	delivery := &runtimeTestDelivery{request: request}
+	task := &runtimeTestTask{started: make(chan struct{}), release: make(chan struct{})}
+	preparer := &runtimeTestPreparer{prepared: task, result: runtimeClaimedResult(request)}
+	runtime, rabbit, coordinator := newRuntimeTestHarness(t, preparer, delivery)
+	second := runtimeTestConfig()
+	second.Key = "rag.embed"
+	if err := runtime.RegisterResource(ResourceRegistration{
+		Config: second, DispatchSource: runtimeTestDispatchSource{},
+		ExpiredRearmSource: runtimeTestRearmSource{}, Preparer: &runtimeTestPreparer{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.OpenResource("rag.index", runtimeTestFence(0)); err != nil {
+		t.Fatal(err)
+	}
+	_, runDone := startRuntimeTest(t, runtime)
+	select {
+	case <-task.started:
+	case <-time.After(time.Second):
+		t.Fatal("prepared task did not start")
+	}
+	if err := runtime.OpenResource("rag.embed", runtimeTestFence(1)); err != nil {
+		t.Fatal(err)
+	}
+
+	entry, err := runtime.resource("rag.index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelCalled := make(chan struct{})
+	var cancelOnce sync.Once
+	entry.mu.Lock()
+	if len(entry.runningTasks) != 1 {
+		entry.mu.Unlock()
+		t.Fatalf("running tasks = %d, want 1", len(entry.runningTasks))
+	}
+	for _, running := range entry.runningTasks {
+		original := running.cancel
+		running.cancel = func() {
+			cancelOnce.Do(func() { close(cancelCalled) })
+			original()
+		}
+	}
+	entry.mu.Unlock()
+
+	cause := errors.Join(errors.New("background writer probe"), ErrAuthoritativeWriterMismatch)
+	if err := runtime.FailAuthoritative(cause); err != nil {
+		t.Fatalf("FailAuthoritative() error = %v", err)
+	}
+	select {
+	case <-cancelCalled:
+	default:
+		t.Fatal("FailAuthoritative returned before invoking the running task cancel function")
+	}
+	for _, resource := range []string{"rag.index", "rag.embed"} {
+		_, _, open := runtimeResourceReadySnapshot(t, runtime, resource)
+		if open {
+			t.Fatalf("FailAuthoritative left %s gate open", resource)
+		}
+		health, healthErr := runtime.HealthSnapshot(resource)
+		if healthErr != nil {
+			t.Fatal(healthErr)
+		}
+		if health.FairQueue.Status != HealthStatusFailed || !health.FairQueue.Fatal ||
+			!health.FairQueue.ShuttingDown || health.FairQueue.GateOpen {
+			t.Fatalf("%s fatal health = %+v", resource, health.FairQueue)
+		}
+	}
+
+	if err := runtime.FailAuthoritative(ErrAuthoritativeStateCorrupt); err != nil {
+		t.Fatalf("idempotent FailAuthoritative() error = %v", err)
+	}
+	runtime.mu.Lock()
+	fatalErr := runtime.fatalErr
+	runtime.mu.Unlock()
+	if !errors.Is(fatalErr, ErrAuthoritativeWriterMismatch) || errors.Is(fatalErr, ErrAuthoritativeStateCorrupt) {
+		t.Fatalf("idempotent call replaced first fatal error: %v", fatalErr)
+	}
+	select {
+	case err := <-runDone:
+		if !errors.Is(err, ErrAuthoritativeWriterMismatch) {
+			t.Fatalf("Run() error = %v, want first writer mismatch", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Runtime.Run did not return after external authoritative failure")
+	}
+	if rabbit.closeCalls.Load() != 1 || coordinator.closeCalls.Load() != 1 {
+		t.Fatalf("idempotent fatal close calls = %d/%d, want 1/1", rabbit.closeCalls.Load(), coordinator.closeCalls.Load())
+	}
+}
+
+func runtimeResourceReadySnapshot(t *testing.T, runtime *Runtime, resource string) (ResourceFence, uint64, bool) {
+	t.Helper()
+	entry, err := runtime.resource(resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entry.readySnapshot()
 }
 
 func TestRuntimeRequiresAuthoritativeOperationJournal(t *testing.T) {

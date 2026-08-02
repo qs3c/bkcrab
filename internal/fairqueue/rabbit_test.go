@@ -1029,6 +1029,338 @@ func TestRabbitReadyDepthCloseAndRegistryValidation(t *testing.T) {
 	}
 }
 
+func TestRabbitProbeResourceTopologyWithoutTenant(t *testing.T) {
+	channel := newRabbitTestChannel()
+	channel.inspect = amqp.Queue{Messages: 3}
+	connection := &rabbitTestConnection{channel: channel}
+	dialer := &rabbitTestDialer{results: []rabbitTestDialResult{{connection: connection}}}
+	client := newRabbitTestClient(t, dialer)
+
+	probe, err := client.ProbeResourceTopology(context.Background(), "rag.index")
+	if err != nil {
+		t.Fatalf("ProbeResourceTopology() error = %v", err)
+	}
+	wantDLQ, err := DeadLetterQueueName("rag.index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probe.Resource != "rag.index" || probe.DeadLetterDepth != 3 {
+		t.Fatalf("ProbeResourceTopology() = %+v", probe)
+	}
+	operations := channel.snapshotOps()
+	wantKinds := []rabbitTestOpKind{
+		rabbitTestConfirm,
+		rabbitTestExchangeDeclare,
+		rabbitTestExchangeDeclare,
+		rabbitTestQueueDeclare,
+		rabbitTestQueueBind,
+		rabbitTestQueueInspect,
+	}
+	if len(operations) != len(wantKinds) {
+		t.Fatalf("probe operations = %+v", operations)
+	}
+	for index, want := range wantKinds {
+		if operations[index].kind != want {
+			t.Fatalf("probe operation[%d] = %+v, want %s", index, operations[index], want)
+		}
+	}
+	if operations[1].name != "test.fair.task" || !operations[1].durable || operations[1].autoDelete ||
+		operations[2].name != "test.fair.dlx" || !operations[2].durable || operations[2].autoDelete {
+		t.Fatalf("base topology = %+v", operations[1:3])
+	}
+	if operations[3].name != wantDLQ || !operations[3].durable || operations[3].autoDelete || operations[3].exclusive ||
+		operations[4].name != wantDLQ || operations[4].exchange != "test.fair.dlx" || operations[4].routingKey != "rag.index" ||
+		operations[5].name != wantDLQ {
+		t.Fatalf("resource DLQ topology = %+v", operations[3:])
+	}
+	for _, operation := range operations {
+		if operation.kind == rabbitTestPublish || operation.kind == rabbitTestGet {
+			t.Fatalf("resource probe emitted a message operation: %+v", operation)
+		}
+	}
+	if dialer.callCount() != 1 {
+		t.Fatalf("probe dial calls = %d, want 1", dialer.callCount())
+	}
+}
+
+func TestRabbitProbeResourceTopologyReconnectRedeclares(t *testing.T) {
+	firstChannel := newRabbitTestChannel()
+	secondChannel := newRabbitTestChannel()
+	firstConnection := &rabbitTestConnection{channel: firstChannel, aborted: make(chan struct{})}
+	secondConnection := &rabbitTestConnection{channel: secondChannel, aborted: make(chan struct{})}
+	dialer := &rabbitTestDialer{results: []rabbitTestDialResult{
+		{connection: firstConnection}, {connection: secondConnection},
+	}}
+	client := newRabbitTestClient(t, dialer)
+
+	if _, err := client.ProbeResourceTopology(context.Background(), "rag.index"); err != nil {
+		t.Fatalf("initial ProbeResourceTopology() error = %v", err)
+	}
+	client.stateMu.Lock()
+	firstGeneration := client.generation
+	client.stateMu.Unlock()
+	firstChannel.emitClose(t)
+	select {
+	case <-firstGeneration.done:
+	case <-time.After(time.Second):
+		t.Fatal("probe generation close was not observed")
+	}
+
+	if _, err := client.ProbeResourceTopology(context.Background(), "rag.index"); err != nil {
+		t.Fatalf("ProbeResourceTopology() after reconnect error = %v", err)
+	}
+	if dialer.callCount() != 2 {
+		t.Fatalf("probe dial calls = %d, want 2", dialer.callCount())
+	}
+	operations := secondChannel.snapshotOps()
+	if rabbitTestDeclarationCount(operations) != 4 || operations[len(operations)-1].kind != rabbitTestQueueInspect {
+		t.Fatalf("reconnected probe did not redeclare and inspect resource topology: %+v", operations)
+	}
+}
+
+func TestRabbitProbeResourceTopologyFailsClosed(t *testing.T) {
+	t.Run("precondition mismatch", func(t *testing.T) {
+		channel := newRabbitTestChannel()
+		channel.rpcErrors[rabbitTestQueueDeclare] = &amqp.Error{
+			Code: amqp.PreconditionFailed, Reason: "inequivalent durable DLQ topology",
+		}
+		connection := &rabbitTestConnection{channel: channel, aborted: make(chan struct{})}
+		dialer := &rabbitTestDialer{results: []rabbitTestDialResult{{connection: connection}}}
+		client := newRabbitTestClient(t, dialer)
+
+		probe, err := client.ProbeResourceTopology(context.Background(), "rag.index")
+		if !errors.Is(err, ErrUnsupportedTopology) || probe != (RabbitResourceProbe{}) {
+			t.Fatalf("precondition probe = %+v, %v", probe, err)
+		}
+		if connection.abortCalls.Load() != 1 {
+			t.Fatalf("precondition probe Abort calls = %d, want 1", connection.abortCalls.Load())
+		}
+	})
+
+	t.Run("inspect timeout", func(t *testing.T) {
+		channel := newRabbitTestChannel()
+		channel.rpcGates[rabbitTestQueueInspect] = make(chan struct{})
+		connection := &rabbitTestConnection{channel: channel, aborted: make(chan struct{})}
+		dialer := &rabbitTestDialer{results: []rabbitTestDialResult{{connection: connection}}}
+		client := newRabbitTestClientWithOptions(t, dialer, RabbitOptions{
+			URL: "amqp://unit.test/", OperationTimeout: 30 * time.Millisecond,
+		})
+
+		probe, err := client.ProbeResourceTopology(context.Background(), "rag.index")
+		if !errors.Is(err, ErrDependencyUnavailable) || !errors.Is(err, context.DeadlineExceeded) ||
+			probe != (RabbitResourceProbe{}) {
+			t.Fatalf("timeout probe = %+v, %v", probe, err)
+		}
+		if connection.abortCalls.Load() != 1 {
+			t.Fatalf("timeout probe Abort calls = %d, want 1", connection.abortCalls.Load())
+		}
+	})
+
+	t.Run("unknown resource before I/O", func(t *testing.T) {
+		dialer := &rabbitTestDialer{}
+		client := newRabbitTestClient(t, dialer)
+		if probe, err := client.ProbeResourceTopology(context.Background(), "unknown.resource"); err == nil || probe != (RabbitResourceProbe{}) {
+			t.Fatalf("unknown resource probe = %+v, %v", probe, err)
+		}
+		if dialer.callCount() != 0 {
+			t.Fatalf("unknown resource probe dialed %d times", dialer.callCount())
+		}
+	})
+}
+
+func TestRabbitProbeResourceTopologyCloseIsIdempotent(t *testing.T) {
+	channel := newRabbitTestChannel()
+	connection := &rabbitTestConnection{channel: channel}
+	dialer := &rabbitTestDialer{results: []rabbitTestDialResult{{connection: connection}}}
+	client := newRabbitTestClient(t, dialer)
+	if _, err := client.ProbeResourceTopology(context.Background(), "rag.index"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if connection.closeCalls.Load() != 1 {
+		t.Fatalf("probe connection close calls = %d, want 1", connection.closeCalls.Load())
+	}
+	if probe, err := client.ProbeResourceTopology(context.Background(), "rag.index"); !errors.Is(err, ErrDependencyUnavailable) || probe != (RabbitResourceProbe{}) {
+		t.Fatalf("probe after Close = %+v, %v", probe, err)
+	}
+}
+
+func TestRabbitHealthSnapshotCachesSuccessfulProbesWithoutIO(t *testing.T) {
+	channel := newRabbitTestChannel()
+	channel.inspect = amqp.Queue{Messages: 3}
+	connection := &rabbitTestConnection{channel: channel}
+	dialer := &rabbitTestDialer{results: []rabbitTestDialResult{{connection: connection}}}
+	client := newRabbitTestClient(t, dialer)
+
+	initial := client.HealthSnapshot()
+	if initial != (RabbitHealthSnapshot{Status: DependencyStatusUnavailable}) {
+		t.Fatalf("initial HealthSnapshot() = %+v", initial)
+	}
+	if dialer.callCount() != 0 {
+		t.Fatalf("initial HealthSnapshot dialed %d times", dialer.callCount())
+	}
+
+	if _, err := client.ProbeResourceTopology(context.Background(), "rag.index"); err != nil {
+		t.Fatal(err)
+	}
+	probeSnapshot := client.HealthSnapshot()
+	if probeSnapshot.Status != DependencyStatusOK || probeSnapshot.DLQDepthSample != 3 ||
+		probeSnapshot.ReadyDepthSample != 0 || probeSnapshot.LastConfirmAt != nil || probeSnapshot.LastReturnAt != nil {
+		t.Fatalf("HealthSnapshot after resource probe = %+v", probeSnapshot)
+	}
+
+	channel.mu.Lock()
+	channel.inspect = amqp.Queue{Messages: 7}
+	channel.mu.Unlock()
+	if depth, err := client.ReadyDepth(context.Background(), "rag.index", "tenant-secret"); err != nil || depth != 7 {
+		t.Fatalf("ReadyDepth() = %d, %v", depth, err)
+	}
+	operationsBefore := len(channel.snapshotOps())
+	dialsBefore := dialer.callCount()
+	snapshot := client.HealthSnapshot()
+	if snapshot.Status != DependencyStatusOK || snapshot.ReadyDepthSample != 7 || snapshot.DLQDepthSample != 3 {
+		t.Fatalf("HealthSnapshot after depth probe = %+v", snapshot)
+	}
+	if got := len(channel.snapshotOps()); got != operationsBefore || dialer.callCount() != dialsBefore {
+		t.Fatalf("HealthSnapshot performed I/O: operations %d -> %d, dials %d -> %d",
+			operationsBefore, got, dialsBefore, dialer.callCount())
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"amqp://unit.test/", "tenant-secret", rabbitTestAttemptA} {
+		if bytes.Contains(encoded, []byte(secret)) {
+			t.Fatalf("HealthSnapshot leaked %q: %s", secret, encoded)
+		}
+	}
+}
+
+func TestRabbitHealthSnapshotRecordsActualConfirmAndReturnEvents(t *testing.T) {
+	channel := newRabbitTestChannel()
+	connection := &rabbitTestConnection{channel: channel}
+	dialer := &rabbitTestDialer{results: []rabbitTestDialResult{{connection: connection}}}
+	client := newRabbitTestClient(t, dialer, rabbitTestAttemptA, rabbitTestAttemptB)
+	clock := time.Date(2026, time.August, 3, 10, 0, 0, 0, time.FixedZone("test", 8*60*60))
+	client.healthNow = func() time.Time { return clock }
+
+	if _, err := client.ProbeResourceTopology(context.Background(), "rag.index"); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := client.HealthSnapshot(); snapshot.LastConfirmAt != nil || snapshot.LastReturnAt != nil {
+		t.Fatalf("topology confirm mode created fake publisher events: %+v", snapshot)
+	}
+
+	firstResult := make(chan rabbitTestPublishResult, 1)
+	go func() {
+		receipt, err := client.PublishMandatoryConfirmed(context.Background(), rabbitTestMessage())
+		firstResult <- rabbitTestPublishResult{receipt: receipt, err: err}
+	}()
+	firstCall := channel.takePublish(t)
+	confirmAt := clock
+	channel.emitConfirm(t, firstCall, true)
+	if result := <-firstResult; result.err != nil {
+		t.Fatalf("confirmed publish error = %v", result.err)
+	}
+	confirmed := client.HealthSnapshot()
+	if confirmed.Status != DependencyStatusOK || confirmed.LastConfirmAt == nil || !confirmed.LastConfirmAt.Equal(confirmAt) || confirmed.LastReturnAt != nil {
+		t.Fatalf("HealthSnapshot after confirmed publish = %+v", confirmed)
+	}
+
+	secondResult := make(chan rabbitTestPublishResult, 1)
+	go func() {
+		receipt, err := client.PublishMandatoryConfirmed(context.Background(), rabbitTestMessage())
+		secondResult <- rabbitTestPublishResult{receipt: receipt, err: err}
+	}()
+	secondCall := channel.takePublish(t)
+	clock = clock.Add(time.Minute)
+	returnAt := clock
+	channel.emitReturn(t, secondCall)
+	deadline := time.Now().Add(time.Second)
+	for {
+		snapshot := client.HealthSnapshot()
+		if snapshot.LastReturnAt != nil && snapshot.LastReturnAt.Equal(returnAt) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("mandatory return was not reflected: %+v", snapshot)
+		}
+	}
+	clock = clock.Add(time.Minute)
+	secondConfirmAt := clock
+	channel.emitConfirm(t, secondCall, true)
+	if result := <-secondResult; !errors.Is(result.err, ErrPublishUnroutable) {
+		t.Fatalf("returned publish error = %v", result.err)
+	}
+	returned := client.HealthSnapshot()
+	if returned.Status != DependencyStatusUnavailable || returned.LastConfirmAt == nil || !returned.LastConfirmAt.Equal(secondConfirmAt) ||
+		returned.LastReturnAt == nil || !returned.LastReturnAt.Equal(returnAt) {
+		t.Fatalf("HealthSnapshot after returned publish = %+v", returned)
+	}
+
+	*returned.LastConfirmAt = time.Time{}
+	*returned.LastReturnAt = time.Time{}
+	defensive := client.HealthSnapshot()
+	if defensive.LastConfirmAt == nil || !defensive.LastConfirmAt.Equal(secondConfirmAt) ||
+		defensive.LastReturnAt == nil || !defensive.LastReturnAt.Equal(returnAt) {
+		t.Fatalf("HealthSnapshot pointers were not defensively copied: %+v", defensive)
+	}
+}
+
+func TestRabbitHealthSnapshotFailsClosedAndSupportsConcurrentReads(t *testing.T) {
+	channel := newRabbitTestChannel()
+	connection := &rabbitTestConnection{channel: channel, aborted: make(chan struct{})}
+	dialer := &rabbitTestDialer{results: []rabbitTestDialResult{{connection: connection}}}
+	client := newRabbitTestClient(t, dialer)
+	if _, err := client.ProbeResourceTopology(context.Background(), "rag.index"); err != nil {
+		t.Fatal(err)
+	}
+
+	const readers = 16
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	for i := 0; i < readers; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			for j := 0; j < 100; j++ {
+				_ = client.HealthSnapshot()
+			}
+		}()
+	}
+	close(start)
+	for i := 0; i < 20; i++ {
+		if _, err := client.ReadyDepth(context.Background(), "rag.index", "tenant-a"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wait.Wait()
+
+	channel.emitClose(t)
+	deadline := time.Now().Add(time.Second)
+	for client.HealthSnapshot().Status != DependencyStatusUnavailable {
+		if time.Now().After(deadline) {
+			t.Fatalf("HealthSnapshot after generation close = %+v", client.HealthSnapshot())
+		}
+	}
+	failed := client.HealthSnapshot()
+	if failed.LastConfirmAt != nil || failed.LastReturnAt != nil {
+		t.Fatalf("failed non-publish operation created fake event times: %+v", failed)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := client.HealthSnapshot(); snapshot.Status != DependencyStatusUnavailable {
+		t.Fatalf("HealthSnapshot after Close = %+v", snapshot)
+	}
+}
+
 func TestRabbitCloseDeadlineErrorForcesAbort(t *testing.T) {
 	channel := newRabbitTestChannel()
 	connection := &rabbitTestConnection{

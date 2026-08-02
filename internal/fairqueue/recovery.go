@@ -25,6 +25,15 @@ type RecoveryRuntime interface {
 	OpenResource(resource string, fence ResourceFence) error
 }
 
+// RabbitResourceTopologyProber proves the shared exchanges and resource-level
+// dead-letter topology before any journal/Redis observation can open a gate.
+// Tenant queues are still declared lazily from authoritative MySQL pages.
+type RabbitResourceTopologyProber interface {
+	ProbeResourceTopology(context.Context, string) (RabbitResourceProbe, error)
+}
+
+var _ RabbitResourceTopologyProber = (*Rabbit)(nil)
+
 // RecoveryOptions contains process-local recovery timings. Page sizes,
 // attempt deadlines, drain bounds, and reconciliation cadence remain resource
 // policy and are therefore read from ResourceConfig.
@@ -90,6 +99,7 @@ type RecoveryCoordinator struct {
 	runtime     RecoveryRuntime
 	options     RecoveryOptions
 	tokens      runtimeTokenSource
+	health      *resourceHealth
 }
 
 func NewRecoveryCoordinator(
@@ -133,6 +143,7 @@ func (c *RecoveryCoordinator) Run(
 	if err := c.validateBarrierInputs(config, writer, source, journal); err != nil {
 		return err
 	}
+	c.health.markRecoveryRunning()
 	defer func() { _ = c.runtime.CloseResource(config.Key) }()
 
 	backoff := c.options.BackoffInitial
@@ -141,6 +152,9 @@ func (c *RecoveryCoordinator) Run(
 		if err != nil {
 			_ = c.runtime.CloseResource(config.Key)
 			if recoveryTerminalError(err) || ctx.Err() != nil {
+				if recoveryTerminalError(err) {
+					c.health.markRecoveryFailed()
+				}
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
@@ -175,6 +189,7 @@ func (c *RecoveryCoordinator) Run(
 func recoveryTerminalError(err error) bool {
 	return authoritativeFatalError(err) ||
 		errors.Is(err, ErrUnsupportedTopology) ||
+		errors.Is(err, ErrCoordinationCorrupt) ||
 		errors.Is(err, ErrRecoveryOperatorRequired)
 }
 
@@ -228,15 +243,37 @@ func (c *RecoveryCoordinator) EnsureResourceReady(
 	writer string,
 	source RecoverySource,
 	journal OperationJournal,
-) (ResourceFence, error) {
+) (ready ResourceFence, resultErr error) {
 	if ctx == nil {
 		return ResourceFence{}, errors.New("fairqueue: nil recovery context")
 	}
 	if err := c.validateBarrierInputs(config, writer, source, journal); err != nil {
 		return ResourceFence{}, err
 	}
+	c.health.markRecoveryRunning()
+	defer func() {
+		if recoveryTerminalError(resultErr) {
+			c.health.markRecoveryFailed()
+		}
+	}()
 	if err := c.runtime.CloseResource(config.Key); err != nil {
 		return ResourceFence{}, err
+	}
+	prober, ok := c.rabbit.(RabbitResourceTopologyProber)
+	if !ok {
+		return ResourceFence{}, errors.Join(ErrUnsupportedTopology, ErrResourceNotReady,
+			errors.New("fairqueue: Rabbit client cannot prove resource topology"))
+	}
+	probeCtx, cancelProbe := c.operationContext(ctx)
+	probe, probeErr := prober.ProbeResourceTopology(probeCtx, config.Key)
+	cancelProbe()
+	if probeErr != nil {
+		return ResourceFence{}, errors.Join(ErrResourceNotReady,
+			fmt.Errorf("fairqueue: probe Rabbit resource topology: %w", probeErr))
+	}
+	if probe.Resource != config.Key || probe.DeadLetterDepth < 0 {
+		return ResourceFence{}, errors.Join(ErrAuthoritativeStateCorrupt, ErrResourceNotReady,
+			errors.New("fairqueue: Rabbit resource topology probe returned invalid facts"))
 	}
 
 	record, present, err := c.readJournal(ctx, journal, config.Key, writer)
@@ -258,6 +295,7 @@ func (c *RecoveryCoordinator) EnsureResourceReady(
 			if err := c.runtime.OpenResource(config.Key, readyFence); err != nil {
 				return ResourceFence{}, err
 			}
+			c.health.markRecoveryComplete()
 			return readyFence, nil
 		} else if !errors.Is(err, ErrCoordinationCorrupt) {
 			return ResourceFence{}, err
@@ -290,6 +328,7 @@ func (c *RecoveryCoordinator) EnsureResourceReady(
 	if err := c.runtime.OpenResource(config.Key, readyFence); err != nil {
 		return ResourceFence{}, err
 	}
+	c.health.markRecoveryComplete()
 	return readyFence, nil
 }
 
@@ -311,6 +350,9 @@ func (c *RecoveryCoordinator) readJournal(
 	defer cancel()
 	record, present, err := journal.Read(opCtx, resource, writer)
 	if err != nil {
+		if errors.Is(err, ErrInvalidOperationRecord) {
+			return RecoveryOperationRecord{}, false, errors.Join(ErrCoordinationCorrupt, err)
+		}
 		return RecoveryOperationRecord{}, false, err
 	}
 	if !present {
@@ -365,7 +407,8 @@ func (c *RecoveryCoordinator) reconcileReadyCommitted(
 		}
 		exact = snapshot.Present && snapshot.State == ResourceReady &&
 			snapshot.WriterFingerprint == writer &&
-			snapshot.LastCompletedOperationID == record.OperationID
+			snapshot.LastCompletedOperationID == record.OperationID &&
+			snapshot.LastCompletedOperationKind == record.Kind
 		if !exact {
 			return operatorRequired("READY_COMMITTED journal does not match Redis terminal control")
 		}
@@ -551,7 +594,7 @@ func (c *RecoveryCoordinator) RunRecovery(
 	if err := c.validateRecoveryRun(ctx, config, fence, source); err != nil {
 		return err
 	}
-	return c.withRecoveryRenewal(ctx, config.Key, fence, func(runCtx context.Context) error {
+	err := c.withRecoveryRenewal(ctx, config.Key, fence, func(runCtx context.Context) error {
 		if err := c.DrainAttempts(runCtx, config); err != nil {
 			return err
 		}
@@ -629,6 +672,11 @@ func (c *RecoveryCoordinator) RunRecovery(
 		}
 		return c.restoreDispatchedRecovery(runCtx, config, fence, source, highWater, cycle)
 	})
+	if err == nil {
+		c.health.markRecoveryConverged()
+		c.health.markRecoveryPassComplete()
+	}
+	return err
 }
 
 func (c *RecoveryCoordinator) validateRecoveryRun(
@@ -814,6 +862,7 @@ func (c *RecoveryCoordinator) deleteOwnedResourceKeys(
 		}); err != nil {
 			return err
 		}
+		c.health.markRecoveryPageComplete()
 		if page.Done {
 			return nil
 		}
@@ -847,6 +896,7 @@ func (c *RecoveryCoordinator) restoreKnownRecovery(
 				return err
 			}
 		}
+		c.health.markRecoveryPageComplete()
 		if page.Done {
 			break
 		}
@@ -912,6 +962,7 @@ func (c *RecoveryCoordinator) restoreRunningRecovery(
 				return err
 			}
 		}
+		c.health.markRecoveryPageComplete()
 		if page.Done {
 			return nil
 		}
@@ -1004,6 +1055,7 @@ func (c *RecoveryCoordinator) restoreDispatchedRecovery(
 				}
 			}
 		}
+		c.health.markRecoveryPageComplete()
 		if page.Done {
 			break
 		}
@@ -1142,6 +1194,7 @@ func (c *RecoveryCoordinator) loadRecoveryCanonicalStable(
 			}
 			result[token] = canonicalStableLease{tenant: item.TenantID, ttl: ttl}
 		}
+		c.health.markRecoveryPageComplete()
 		if page.Done {
 			return result, nil
 		}
@@ -1184,6 +1237,7 @@ func (c *RecoveryCoordinator) loadRecoveryRedisStable(
 		if err := c.renewRecovery(ctx, config.Key, fence); err != nil {
 			return nil, err
 		}
+		c.health.markRecoveryPageComplete()
 		if page.Done {
 			return result, nil
 		}
@@ -1280,11 +1334,16 @@ func (c *RecoveryCoordinator) ReconcileReady(
 		if err := cleanup.Validate(); err != nil {
 			return errors.Join(ErrCoordinationCorrupt, err)
 		}
+		c.health.markRecoveryPageComplete()
 		if cleanup.RemovedProvisionals+cleanup.RemovedTurns < int64(config.ReconcilePageSize) {
 			break
 		}
 	}
-	return c.checkReady(ctx, config.Key, fence)
+	if err := c.checkReady(ctx, config.Key, fence); err != nil {
+		return err
+	}
+	c.health.markLoopSuccess(loopReconciler)
+	return nil
 }
 
 func (c *RecoveryCoordinator) checkReady(ctx context.Context, resource string, fence ResourceFence) error {
@@ -1330,6 +1389,7 @@ func (c *RecoveryCoordinator) reconcileReadyKnown(
 				return err
 			}
 		}
+		c.health.markRecoveryPageComplete()
 		if page.Done {
 			return nil
 		}
@@ -1408,6 +1468,7 @@ func (c *RecoveryCoordinator) reconcileReadyDispatched(
 		if err := c.checkReady(ctx, config.Key, fence); err != nil {
 			return err
 		}
+		c.health.markRecoveryPageComplete()
 		if page.Done {
 			return nil
 		}
@@ -1450,6 +1511,7 @@ func (c *RecoveryCoordinator) reconcileReadyStable(
 		if err := c.checkReady(ctx, config.Key, fence); err != nil {
 			return err
 		}
+		c.health.markRecoveryPageComplete()
 		if page.Done {
 			break
 		}
@@ -1475,6 +1537,7 @@ func (c *RecoveryCoordinator) reconcileReadyStable(
 			}
 			redisStable[item.StableToken] = item
 		}
+		c.health.markRecoveryPageComplete()
 		if page.Done {
 			break
 		}

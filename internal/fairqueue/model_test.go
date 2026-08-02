@@ -683,6 +683,15 @@ func TestRecoveryFenceAndControlSnapshotValidation(t *testing.T) {
 	if err := ready.Validate(); err != nil {
 		t.Fatalf("ready snapshot rejected: %v", err)
 	}
+	completedReady := ready
+	completedReady.LastCompletedOperationID = testOperationID
+	if err := completedReady.Validate(); err == nil {
+		t.Fatal("READY completion without last-completed kind accepted")
+	}
+	completedReady.LastCompletedOperationKind = RecoveryRabbitRepair
+	if err := completedReady.Validate(); err != nil {
+		t.Fatalf("READY completion with exact kind rejected: %v", err)
+	}
 
 	progress := RecoveryProgress{Kind: RecoveryNormal}
 	recovering := RecoveryControlSnapshot{

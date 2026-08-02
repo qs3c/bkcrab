@@ -28,6 +28,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/channels"
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/cron"
+	"github.com/qs3c/bkcrab/internal/fairqueue"
 	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
 	"github.com/qs3c/bkcrab/internal/plugin"
 	"github.com/qs3c/bkcrab/internal/provider"
@@ -154,24 +155,26 @@ func buildToolChainFromResolved(resolved config.ResolvedAgent, category string) 
 // `sandboxPool` 是网关范围的执行器池。从系统作用域沙箱配置构建一次，由每个 UserSpace 共享。
 // 每个 UserSpace 的 `SandboxPool` 字段只是一个借用的引用；关闭时只关闭这一个池。
 type Gateway struct {
-	bus         *bus.MessageBus
-	users       *userSpaceRegistry
-	chanMgr     *channels.Manager
-	webChan     *channels.WebChannel
-	scheduler   *cron.Scheduler
-	webhookSrv  *webhook.Server
-	pluginMgr   *plugin.Manager
-	taskQueue   *taskqueue.Queue
-	store       store.Store
-	accounts    *users.Accounts
-	workspace   workspace.Store
-	sandboxPool sandbox.ExecutorPool
-	mcpRuntime  *mcpruntime.Service
-	usage       usage.Meter
-	ragSvc      *rag.Service
-	ragCfg      config.RAGCfg
-	ragParser   *sidecar.Client
-	envCfg      *config.EnvConfig
+	bus             *bus.MessageBus
+	users           *userSpaceRegistry
+	chanMgr         *channels.Manager
+	webChan         *channels.WebChannel
+	scheduler       *cron.Scheduler
+	webhookSrv      *webhook.Server
+	pluginMgr       *plugin.Manager
+	taskQueue       *taskqueue.Queue
+	store           store.Store
+	accounts        *users.Accounts
+	workspace       workspace.Store
+	sandboxPool     sandbox.ExecutorPool
+	mcpRuntime      *mcpruntime.Service
+	usage           usage.Meter
+	ragSvc          *rag.Service
+	ragCfg          config.RAGCfg
+	ragParser       *sidecar.Client
+	ragFairQueue    *ragFairQueueAssembly
+	fairQueueHealth *ragFairQueueHealthState
+	envCfg          *config.EnvConfig
 	// chatEvents 设置后，允许总线触发的 web 轮次（cron/目标延续/心跳/子代理）
 	// 通过用户输入的 POST /api/chat 轮次使用的同一个 SSE hub 流式传输。
 	// 安全地为 nil：未设置时保留传统的 bus.Outbound → WebChannel 异步气泡路径。
@@ -212,6 +215,29 @@ func (g *Gateway) RAGParserHealthSnapshot() config.RAGParserHealthSnapshot {
 	return g.ragParser.HealthSnapshot()
 }
 
+// FairQueueHealthSnapshot returns only cached, serialization-safe facts. It
+// performs no dependency I/O and is safe for readiness/admin HTTP handlers.
+func (g *Gateway) FairQueueHealthSnapshot() fairqueue.HealthSnapshot {
+	if g == nil || g.fairQueueHealth == nil {
+		return fairqueue.HealthSnapshot{FairQueue: fairqueue.FairQueueHealthSnapshot{
+			Status: fairqueue.HealthStatusFailed,
+			MySQL: fairqueue.MySQLHealthSnapshot{
+				Status:          fairqueue.MySQLStatusUnavailable,
+				SessionAffinity: fairqueue.SessionAffinityUnknown,
+			},
+		}}
+	}
+	var runtimeSnapshot fairqueue.HealthSnapshot
+	status := fairQueueStatusDegraded
+	if g.ragFairQueue != nil && g.ragFairQueue.supervisor != nil {
+		status = g.ragFairQueue.supervisor.Status()
+		if current, ok := g.ragFairQueue.supervisor.RuntimeHealthSnapshot(rag.RAGFairQueueResource); ok {
+			runtimeSnapshot = current
+		}
+	}
+	return g.fairQueueHealth.snapshot(runtimeSnapshot, status)
+}
+
 // Store 返回网关的存储后端。
 func (g *Gateway) Store() store.Store { return g.store }
 
@@ -228,7 +254,11 @@ func (g *Gateway) EnvConfig() *config.EnvConfig { return g.envCfg }
 // 但在认证请求到达用户之前不会加载任何代理。
 func New(env *config.EnvConfig) (*Gateway, error) {
 	if env == nil {
-		env = &config.EnvConfig{}
+		env = &config.EnvConfig{FairQueue: config.DefaultFairQueueCfg()}
+	}
+	fairPlan, err := planRAGFairQueue(env.FairQueue, env.Storage.Type)
+	if err != nil {
+		return nil, err
 	}
 	mb := bus.New()
 
@@ -283,6 +313,23 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	if err := ragCfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid RAG configuration: %w", err)
 	}
+	if fairPlan.StartFairClaimant && env.RAGLegacyTaskMigrationMode != "" {
+		return nil, errors.New("fair RAG worker mode cannot run the offline legacy task migration")
+	}
+	var ragFairQueue *ragFairQueueAssembly
+	fairQueueOwned := false
+	if fairPlan.StartFairClaimant {
+		ragFairQueue, err = buildRAGFairQueueAssembly(context.Background(), env, st)
+		if err != nil {
+			return nil, err
+		}
+		fairQueueOwned = true
+		defer func() {
+			if fairQueueOwned {
+				_ = ragFairQueue.Close()
+			}
+		}()
+	}
 	ragParserClient, parserErr := newRAGParserClient(ragCfg)
 	if parserErr != nil {
 		// The parser is optional infrastructure. A malformed or unavailable
@@ -313,8 +360,15 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	if ragCfg.Available() {
 		ragObjects, objectErr := newRAGObjectStore(osCfg, homeDir)
 		if objectErr != nil {
+			if fairPlan.StartFairClaimant {
+				return nil, fmt.Errorf("rag: original object store required by fair workers: %w", objectErr)
+			}
 			slog.Error("rag: original object store initialization failed; RAG disabled", "error", objectErr)
 		} else {
+			var cacheCatalog store.RAGCacheCatalog = st
+			if ragFairQueue != nil {
+				cacheCatalog = rag.NewFairExecutionCacheCatalog(st, ragFairQueue.mainStore, fairPlan.Mode)
+			}
 			var pageVision ragvision.PageTranscriber
 			var imageVision ragvision.ImageTranscriber
 			var textEnricher ragenrich.Enricher
@@ -322,7 +376,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 				visionClient, visionErr := ragvision.NewOpenAICompatible(
 					ragCfg.DocumentAI,
 					ragCfg.Limits,
-					ragvision.NewObjectCache(ragObjects, ragvision.DefaultSchemaLimits(), st),
+					ragvision.NewObjectCache(ragObjects, ragvision.DefaultSchemaLimits(), cacheCatalog),
 				)
 				if visionErr != nil {
 					slog.Error("rag: DocumentAI vision configuration invalid; visual routes disabled", "error", visionErr)
@@ -335,7 +389,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 				enrichmentClient, enrichmentErr := ragenrich.NewOpenAICompatible(
 					ragCfg.DocumentAI,
 					ragCfg.Limits,
-					ragenrich.NewObjectCache(ragObjects, ragenrich.DefaultSchemaLimits(), st),
+					ragenrich.NewObjectCache(ragObjects, ragenrich.DefaultSchemaLimits(), cacheCatalog),
 				)
 				if enrichmentErr != nil {
 					slog.Error("rag: DocumentAI enrichment configuration invalid; enrichment disabled", "error", enrichmentErr)
@@ -371,6 +425,9 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 
 			vecStore, vecErr := vector.NewMilvus(context.Background(), ragCfg.Milvus.Address, ragCfg.Milvus.Username, ragCfg.Milvus.Password)
 			if vecErr != nil {
+				if fairPlan.StartFairClaimant {
+					return nil, fmt.Errorf("rag: vector store required by fair workers: %w", vecErr)
+				}
 				slog.Error("rag: Milvus connection failed; RAG disabled", "error", vecErr)
 			} else {
 				var ranker ragrerank.Reranker
@@ -387,7 +444,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 						ranker = client
 					}
 				}
-				ragSvc = rag.New(rag.Deps{
+				serviceDeps := rag.Deps{
 					Store:           st,
 					Vector:          vecStore,
 					Objects:         ragObjects,
@@ -401,19 +458,36 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					ImageVision:     imageVision,
 					Enricher:        textEnricher,
 					OfficeAvailable: officeAvailable,
-				})
+				}
+				applyRAGFairQueueServicePolicy(&serviceDeps, fairPlan, env.FairQueue.RAGIndex)
+				if ragFairQueue != nil {
+					serviceDeps.FairStore = ragFairQueue.fairStore
+					serviceDeps.FairExecution = ragFairQueue.mainStore
+					serviceDeps.Notifier = ragFairQueue.notifier
+				}
+				ragSvc = rag.New(serviceDeps)
+				if ragFairQueue != nil {
+					if err := ragFairQueue.BindService(ragSvc); err != nil {
+						return nil, err
+					}
+				}
 				slog.Info("rag service enabled", "milvus", ragCfg.Milvus.Address)
 			}
 		}
+	}
+	if fairPlan.StartFairClaimant && ragSvc == nil {
+		return nil, errors.New("rag: fair worker mode requires an available RAG service")
 	}
 	// Legacy runnable rows are contracted only after the runtime can build the
 	// same immutable, secret-free snapshot used by new uploads. If those
 	// dependencies are unavailable, the store returns an error without mutating
 	// a legacy survivor; canonical/no-legacy databases still start normally.
-	if err := st.MigrateLegacyRAGIndexTasks(
-		context.Background(), legacySnapshotBuilder, allowLegacyTaskMigration,
-	); err != nil {
-		return nil, fmt.Errorf("migrate legacy RAG index tasks: %w", err)
+	if !fairPlan.StartFairClaimant {
+		if err := st.MigrateLegacyRAGIndexTasks(
+			context.Background(), legacySnapshotBuilder, allowLegacyTaskMigration,
+		); err != nil {
+			return nil, fmt.Errorf("migrate legacy RAG index tasks: %w", err)
+		}
 	}
 
 	// holderID 是印记在 channel_leases.holder_id 中的每个进程标识符。
@@ -490,25 +564,34 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init accounts: %w", err)
 	}
+	fairQueueHealth := newRAGFairQueueHealthState(ragFairQueueHealthOptions{
+		Enabled: env.FairQueue.Enabled, Mode: fairPlan.Mode,
+		WriterTopology: env.FairQueue.MySQLWriterTopology,
+	})
+	if ragFairQueue != nil && ragFairQueue.health != nil {
+		fairQueueHealth = ragFairQueue.health
+	}
 
 	g := &Gateway{
-		bus:         mb,
-		store:       st,
-		accounts:    accts,
-		workspace:   ws,
-		usage:       meter,
-		sandboxPool: systemSandboxPool,
-		mcpRuntime:  mcpRuntime,
-		users:       newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, mcpRuntime, pluginMgr, ragSvc),
-		chanMgr:     chanMgr,
-		webChan:     webChan,
-		scheduler:   scheduler,
-		webhookSrv:  webhookSrv,
-		pluginMgr:   pluginMgr,
-		ragSvc:      ragSvc,
-		ragCfg:      ragCfg,
-		ragParser:   ragParserClient,
-		envCfg:      env,
+		bus:             mb,
+		store:           st,
+		accounts:        accts,
+		workspace:       ws,
+		usage:           meter,
+		sandboxPool:     systemSandboxPool,
+		mcpRuntime:      mcpRuntime,
+		users:           newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, mcpRuntime, pluginMgr, ragSvc),
+		chanMgr:         chanMgr,
+		webChan:         webChan,
+		scheduler:       scheduler,
+		webhookSrv:      webhookSrv,
+		pluginMgr:       pluginMgr,
+		ragSvc:          ragSvc,
+		ragCfg:          ragCfg,
+		ragParser:       ragParserClient,
+		ragFairQueue:    ragFairQueue,
+		fairQueueHealth: fairQueueHealth,
+		envCfg:          env,
 	}
 
 	if webhookSrv != nil {
@@ -610,7 +693,11 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	if err := registerChannelsFromStore(st, mb, chanMgr); err != nil {
 		slog.Warn("registerChannelsFromStore", "error", err)
 	}
+	if ragFairQueue != nil {
+		ragFairQueue.InstallSafetyObserver()
+	}
 
+	fairQueueOwned = false
 	return g, nil
 }
 
@@ -648,6 +735,28 @@ func (g *Gateway) IsCloudMode() bool { return true }
 func (g *Gateway) Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	stopCh := make(chan os.Signal, 1)
+	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(stopCh)
+	go func() {
+		select {
+		case sig := <-stopCh:
+			slog.Info("received signal, shutting down", "signal", sig)
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return g.RunContext(ctx)
+}
+
+// RunContext runs gateway-owned components until ctx is canceled. Process
+// entrypoints use it to stop HTTP admission and drain active handlers before
+// canceling fair-queue/runtime dependencies. Run remains the signal-owning
+// compatibility wrapper for other callers.
+func (g *Gateway) RunContext(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("gateway: nil run context")
+	}
 	if g.ragParser != nil {
 		g.ragParser.StartHealthProbe(ctx)
 	}
@@ -655,16 +764,9 @@ func (g *Gateway) Run() error {
 		g.ragSvc.Start(ctx)
 	}
 
-	stopCh := make(chan os.Signal, 1)
-	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-stopCh
-		slog.Info("received signal, shutting down", "signal", sig)
-		cancel()
-	}()
-
 	reloadCh := make(chan os.Signal, 1)
 	notifyReloadSignal(reloadCh)
+	defer signal.Stop(reloadCh)
 	go func() {
 		for {
 			select {
@@ -680,6 +782,34 @@ func (g *Gateway) Run() error {
 	}()
 
 	var wg sync.WaitGroup
+	if dbStore, ok := g.store.(*store.DBStore); ok && g.fairQueueHealth != nil {
+		expectedWriter := ""
+		var onMismatch func(error)
+		if g.ragFairQueue != nil {
+			expectedWriter = g.ragFairQueue.writer
+			if g.ragFairQueue.supervisor != nil {
+				onMismatch = func(err error) {
+					if failErr := g.ragFairQueue.supervisor.FailAuthoritative(err); failErr != nil {
+						slog.Error("RAG fair queue writer safety failure", "error", failErr)
+					}
+				}
+			}
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			g.fairQueueHealth.runMySQLProbe(ctx, dbStore, expectedWriter, onMismatch)
+		}()
+	}
+	if g.ragFairQueue != nil && g.ragFairQueue.supervisor != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := g.ragFairQueue.supervisor.Run(ctx); err != nil && ctx.Err() == nil {
+				slog.Error("RAG fair queue runtime stopped fail-closed", "error", err)
+			}
+		}()
+	}
 	if g.mcpRuntime != nil {
 		g.mcpRuntime.Start(ctx)
 	}
@@ -742,6 +872,11 @@ func (g *Gateway) Run() error {
 			slog.Warn("rag service close failed", "error", err)
 		}
 		closeCancel()
+	}
+	if g.ragFairQueue != nil {
+		if err := g.ragFairQueue.Close(); err != nil {
+			slog.Warn("RAG fair queue admin store close failed", "error", err)
+		}
 	}
 	slog.Info("gateway stopped")
 	return nil

@@ -102,6 +102,7 @@ type Dispatcher struct {
 	rabbit      RabbitClient
 	coordinator Coordinator
 	options     DispatcherOptions
+	health      *resourceHealth
 
 	gateMu   sync.Mutex
 	gateOpen bool
@@ -654,6 +655,7 @@ func (d *Dispatcher) runDispatchLoop(ctx context.Context) error {
 			backoff = nextDispatcherBackoff(backoff, d.options.BackoffMax)
 			continue
 		}
+		d.health.markLoopSuccess(loopDispatcher)
 		backoff = d.options.BackoffInitial
 		cursor = next
 		if cursor == "" {
@@ -685,6 +687,7 @@ func (d *Dispatcher) runRearmLoop(ctx context.Context) error {
 			backoff = nextDispatcherBackoff(backoff, d.options.BackoffMax)
 			continue
 		}
+		d.health.markLoopSuccess(loopSweeper)
 		backoff = d.options.BackoffInitial
 		cursor = next
 		if cursor == "" {

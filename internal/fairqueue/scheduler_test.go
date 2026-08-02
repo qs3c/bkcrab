@@ -263,6 +263,49 @@ func newSchedulerTestSubject(
 	return scheduler
 }
 
+func TestSchedulerHealthRecordsOnlySuccessfulOpenGateIterations(t *testing.T) {
+	admission := &schedulerTestAdmission{}
+	scheduler := newSchedulerTestSubject(t, admission, schedulerTestCoordinator{}, schedulerTestRabbit{},
+		&schedulerTestTokens{}, SchedulerOptions{IdleInterval: time.Millisecond})
+	now := time.Date(2026, 8, 3, 3, 0, 0, 0, time.UTC)
+	health := newResourceHealth(func() time.Time { return now })
+	scheduler.health = health
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- scheduler.Run(ctx) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		admission.mu.Lock()
+		calls := admission.calls
+		admission.mu.Unlock()
+		if calls >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("scheduler did not complete closed-gate idle iterations")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := health.snapshot().Loops.Scheduler.LastSuccessAt; got != nil {
+		t.Fatalf("closed-gate scheduler invented success at %v", *got)
+	}
+
+	health.markGateOpen()
+	deadline = time.Now().Add(time.Second)
+	for health.snapshot().Loops.Scheduler.LastSuccessAt == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("open-gate successful scheduler iteration was not recorded")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestSchedulerRoundRobinAndStrictTurnOrder(t *testing.T) {
 	tenants := []string{"tenant-a", "tenant-b", "tenant-c", "tenant-a", "tenant-b"}
 	log := &schedulerCallLog{}

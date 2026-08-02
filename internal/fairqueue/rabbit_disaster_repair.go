@@ -522,7 +522,8 @@ func (r *RabbitDisasterRepair) validateBeginControl(
 				ErrCoordinationCorrupt)
 		}
 		if phase == OperationReadyCommitted {
-			if control.LastCompletedOperationID == operationID {
+			if control.LastCompletedOperationID == operationID &&
+				control.LastCompletedOperationKind == RecoveryRabbitRepair {
 				return true, nil
 			}
 			return false, fmt.Errorf("%w: READY control does not attest committed Rabbit repair",

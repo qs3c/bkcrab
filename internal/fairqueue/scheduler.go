@@ -104,6 +104,7 @@ type Scheduler struct {
 	coordinator Coordinator
 	tokens      runtimeTokenSource
 	options     SchedulerOptions
+	health      *resourceHealth
 
 	runMu   sync.Mutex
 	running bool
@@ -214,6 +215,9 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		}
 		if err != nil && schedulerFatal(err) {
 			return err
+		}
+		if err == nil {
+			s.health.markLoopSuccess(loopScheduler)
 		}
 
 		var delay time.Duration

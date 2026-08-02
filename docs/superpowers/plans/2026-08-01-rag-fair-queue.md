@@ -1347,19 +1347,41 @@ git commit -m "feat(rag): execute index pipeline through fair queue adapter"
 - Modify: `internal/gateway/gateway.go`
 - Create: `internal/gateway/rag_fair_queue.go`
 - Create: `internal/gateway/rag_fair_queue_test.go`
+- Modify: `internal/rag/service.go`
+- Modify: `internal/rag/service_test.go`
+- Modify: `internal/rag/fair_queue.go`
+- Modify: `internal/rag/fair_queue_test.go`
 - Modify: `internal/fairqueue/rabbit.go`
 - Modify: `internal/fairqueue/rabbit_test.go`
 - Modify: `internal/fairqueue/redis.go`
+- Modify: `internal/fairqueue/redis_test.go`
+- Modify: `internal/fairqueue/redis_runtime.go`
+- Modify: `internal/fairqueue/model.go`
+- Modify: `internal/fairqueue/model_test.go`
+- Create: `internal/fairqueue/health.go`
+- Create: `internal/fairqueue/health_test.go`
+- Modify: `internal/fairqueue/scheduler.go`
+- Modify: `internal/fairqueue/scheduler_test.go`
+- Modify: `internal/fairqueue/dispatcher.go`
+- Modify: `internal/fairqueue/dispatcher_test.go`
 - Modify: `internal/fairqueue/runtime.go`
 - Modify: `internal/fairqueue/runtime_test.go`
 - Modify: `internal/fairqueue/recovery.go`
 - Modify: `internal/fairqueue/recovery_test.go`
+- Modify: `internal/fairqueue/recovery_operators.go`
+- Modify: `internal/fairqueue/recovery_operators_test.go`
+- Modify: `internal/fairqueue/rabbit_disaster_repair.go`
+- Modify: `internal/fairqueue/rabbit_disaster_repair_test.go`
+- Modify: `internal/store/database.go`
+- Modify: `internal/store/fairqueue_writer_identity_test.go`
 - Modify: `internal/setup/server.go`
 - Create: `internal/setup/handlers_health.go`
 - Create: `internal/setup/handlers_health_test.go`
+- Create: `internal/setup/server_lifecycle_test.go`
 - Modify: `cmd/bkcrab/main.go`
+- Create: `cmd/bkcrab/main_lifecycle_test.go`
 
-- [ ] **Step 1: 写启动/配置失败测试**
+- [x] **Step 1: 写启动/配置失败测试**
 
 覆盖：
 
@@ -1383,7 +1405,7 @@ shutdown：先停 scheduler/dispatcher，再停 clients
 enabled=false+mode=fair启动失败；enabled=true+legacy/paused允许供其它registered resource使用共享clients但绝不启动RAG fair loop；gateway只能switch `workerMode`决定RAG loop
 ```
 
-- [ ] **Step 2: 装配 Runtime**
+- [x] **Step 2: 装配 Runtime**
 
 gateway 负责：
 
@@ -1393,16 +1415,29 @@ gateway 负责：
 创建 fairqueue.Runtime
 用 RAG adapter 注册 rag.index 的source/preparer与OperationJournal，并把journal传给Runtime/EnsureResourceReady
 向 RAG Service 注入 fair notifier/mode
+向 RAG Service 注入与 resource config 相同的 immutable lease/heartbeat；禁止沿用与配置分裂的硬编码值
 启动 runtime 和 RAG maintenance loops
 ```
+
+`offline-v1` legacy task 回填只允许在 `legacy`/`paused` 维护阶段执行；`fair` 启动只验证已完成的 schema/contract，不能隐式修改 legacy survivor。
+
+Task 11 安全审计发现原 Redis READY control 只保留 `last_completed_operation_id`，无法满足本任务对 READY_COMMITTED 的 kind/ID/writer 精确证明。修订 control 合约，额外持久化并校验 `last_completed_operation_kind`；ID 非空但 kind 缺失/不匹配一律 fail closed，normal history 为空时保持 `NONE`。
+
+运行期 pinned writer/session mismatch 不能依赖周期探测：`DBStore` 增加独立于“最近一次连接状态”的一次性 safety-fatal observer，gateway 同步粘滞 failed、关闭 runtime gates 并取消运行任务。supervisor 必须在线性化 terminal latch 后才绑定新 dependency generation，且每个成功构造的 generation 在退出、取消或拒绝路径都完成 bounded shutdown；旧 generation 关闭失败时禁止创建下一代。
+
+进程关闭顺序修订为先停止 HTTP admission 并等待 active handlers，再取消 gateway/fair runtime，最后关闭 RAG service/admin store；HTTP server 的 `Run` 必须等待 `Shutdown` 完成而不是只等待 listener 关闭。健康 `healthy` 还必须证明 MySQL/schema/session、READY control、startup convergence/pass、gate 和所有循环新鲜；Redis coordination corruption 报告 failed/operator-required，不能伪装成普通 dependency unavailable 无限重试。
+
+Task 11 后置安全审计补充：持久化 journal scanner/conversion 的 `ErrInvalidOperationRecord` 必须提升为 authoritative state corruption，并在 recovery/runtime 中作为 terminal safety failure 关闭 gate，不能保留旧 healthy 快照或进入重试热循环。API 主 store 的 MySQL/schema readiness 与独立 admin/journal pool 的可用性必须分开缓存：journal 成功/失败都不得覆盖 `/readyz` 的主库状态；任意非安全型 journal 读取错误只清除 `journalKnown`、令 scheduler overall degraded，writer mismatch/state corruption 则粘滞 failed。主 API MySQL unavailable、schema invalid 或 writer mismatch 均归类 overall failed；Rabbit、Redis 或 journal 的暂时故障仍不撤掉 MySQL-backed API readiness。
 
 当前Redis client构造会同步执行INFO/ROLE，而Rabbit只提供per-tenant topology方法；实现时需增加可重试的fair-runtime supervisor和resource/base topology readiness probe（或等价的lazy/probed client边界）。supervisor在依赖未就绪时保持scheduler/dispatcher gate关闭但不阻止MySQL-backed API启动；探测必须在startup barrier开放resource前完成。fairqueue Runtime/Recovery还需提供不含敏感token的只读health snapshot，setup handler不得凭启动时间或本地布尔伪造resource/journal/loop状态。
 
 不实现 Redis/MySQL 运行时 mode fence，因为旧二进制不会遵守它，容易制造虚假的安全感。从 legacy 切 fair 必须采用维护窗口和三态本地配置：先将所有兼容实例从 legacy 滚动到 paused（混合期只有 legacy claim），确认旧 Pod/进程为零并在 paused 阶段等待有效 RUNNING 完成或 lease 到期；再从 paused 滚动到 fair（混合期只有 fair claim）。禁止直接 fair/legacy canary 混跑；回滚严格走 fair→paused（在 paused 阶段 drain）→**兼容 dual-write release**的 legacy。contract 后禁止启动 pre-expand binary。
 
+Task 11 只用单元/组件测试冻结上述三态 selector、单进程启动与关闭语义；部署 manifest 的两阶段 rollout 渲染与跨 Pod 证明仍由 Phase D 的 Task 13/14 完成。Phase C 不为满足 Step 1 中的部署描述提前修改 deploy/Helm/Kubernetes 文件。
+
 若现有 gateway 构造函数过大，抽取 `buildFairQueueRuntime` 私有工厂并用接口 fake 测试，不把连接细节散落到 handler。
 
-- [ ] **Step 3: 分离 liveness、readiness 与依赖健康状态**
+- [x] **Step 3: 分离 liveness、readiness 与依赖健康状态**
 
 保留现有路径兼容性，但把 liveness/readiness 从共用 handler 中分离并写 handler/probe 测试：
 
@@ -1474,7 +1509,7 @@ admin detail 内容：
 
 `operatorRequired=true`覆盖journal ACTIVE、无匹配READY control的READY_COMMITTED，以及未完成journal/control kind/ID/writer任一不一致；COMPLETED视为无未完成special，Redis丢失后可NORMAL rebuild。不能只看Redis kind。不可输出raw operation ID/resource epoch、recovery owner/token、DSN、password、Rabbit URL credentials、tenant/task标识。Kubernetes liveness/readiness probes必须分别指向`/livez`与`/readyz`，不能用admin detail或`/healthz`造成依赖故障时反复重启。
 
-- [ ] **Step 4: 验证**
+- [x] **Step 4: 验证**
 
 ```bash
 go test ./internal/gateway -run 'Test.*FairQueue' -v
@@ -1482,7 +1517,7 @@ go test ./internal/setup -run 'Test.*Health' -v
 go build ./...
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/gateway internal/setup

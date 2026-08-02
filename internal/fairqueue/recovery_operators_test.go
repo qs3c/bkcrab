@@ -557,6 +557,7 @@ func TestWriterRebindResumesActiveJournalBeforeBeginCrash(t *testing.T) {
 func TestWriterRebindTerminalReconcileCompletesWithoutBegin(t *testing.T) {
 	control := operatorReadyControl(operatorTestWriterNew)
 	control.LastCompletedOperationID = operatorTestOperation
+	control.LastCompletedOperationKind = RecoveryWriterRebind
 	operators, coordinator, journal, _, source, events := newOperatorTestFixture(t, control)
 	journal.record = operatorTestRecord(RecoveryWriterRebind, OperationReadyCommitted, operatorTestWriterNew)
 	journal.found = true
@@ -737,6 +738,7 @@ func TestRedisForceRebuildReadyCommittedRehydratesMissingRedis(t *testing.T) {
 func TestRedisForceRebuildTerminalReconcileCompletesOnlyJournal(t *testing.T) {
 	control := operatorReadyControl(operatorTestWriterNew)
 	control.LastCompletedOperationID = operatorTestOperation
+	control.LastCompletedOperationKind = RecoveryForceRebuild
 	operators, coordinator, journal, _, _, events := newOperatorTestFixture(t, control)
 	journal.record = operatorTestRecord(RecoveryForceRebuild, OperationReadyCommitted, operatorTestWriterNew)
 	journal.found = true
@@ -763,6 +765,11 @@ func TestValidateNormalRecoveryJournalRequiresSameKindOperator(t *testing.T) {
 		t.Fatalf("ValidateNormalRecoveryJournal(unmatched READY_COMMITTED) error = %v", err)
 	}
 	control.LastCompletedOperationID = operatorTestOperation
+	control.LastCompletedOperationKind = RecoveryForceRebuild
+	if err := ValidateNormalRecoveryJournal(readyCommitted, true, control, operatorTestWriterNew); !errors.Is(err, ErrRecoveryOperatorRequired) {
+		t.Fatalf("ValidateNormalRecoveryJournal(wrong terminal kind) error = %v", err)
+	}
+	control.LastCompletedOperationKind = RecoveryWriterRebind
 	if err := ValidateNormalRecoveryJournal(readyCommitted, true, control, operatorTestWriterNew); err != nil {
 		t.Fatalf("ValidateNormalRecoveryJournal(matched terminal) error = %v", err)
 	}
