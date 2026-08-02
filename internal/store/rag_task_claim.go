@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"path"
 	"strings"
 	"time"
@@ -179,7 +180,9 @@ func ragTaskDue(task *RAGIndexTaskRecord, now time.Time) bool {
 	case "PENDING":
 		return task.NextRunAt == nil || !task.NextRunAt.After(now)
 	case "RUNNING":
-		return task.LeaseUntil == nil || !task.LeaseUntil.After(now)
+		leaseDue := task.LeaseUntil == nil || !task.LeaseUntil.After(now)
+		nextRunDue := task.NextRunAt == nil || !task.NextRunAt.After(now)
+		return leaseDue && nextRunDue
 	default:
 		return false
 	}
@@ -241,10 +244,11 @@ func (d *DBStore) claimOneRAGIndexTask(
 	err := d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT id,doc_id FROM rag_index_tasks t
 		WHERE doc_version IS NOT NULL AND doc_version > 0 AND (
 			(status='PENDING' AND (next_run_at IS NULL OR next_run_at <= %s)) OR
-			(status='RUNNING' AND (lease_until IS NULL OR lease_until <= %s)))
+			(status='RUNNING' AND (lease_until IS NULL OR lease_until <= %s)
+				AND (next_run_at IS NULL OR next_run_at <= %s)))
 		AND NOT EXISTS (SELECT 1 FROM rag_document_maintenance_leases m
 			WHERE m.doc_id=t.doc_id AND m.lease_until IS NOT NULL AND m.lease_until>%s)
-		ORDER BY created_at,id LIMIT 1`, nowExpr, nowExpr, nowExpr)).Scan(&taskID, &docID)
+		ORDER BY created_at,id LIMIT 1`, nowExpr, nowExpr, nowExpr, nowExpr)).Scan(&taskID, &docID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -275,7 +279,10 @@ func (d *DBStore) claimOneRAGIndexTask(
 		if _, updateErr := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 			status='FAILED',error_msg='orphan index task',finished_at=%s,
 			lease_owner='',lease_until=NULL,heartbeat_at=NULL
-			WHERE id=%s AND status IN ('PENDING','RUNNING')`, nowExpr, d.ph(1)), taskID); updateErr != nil {
+			WHERE id=%s AND doc_id=%s AND doc_version=%s AND dispatch_generation=%s
+			AND claim_generation=%s AND status IN ('PENDING','RUNNING')`, nowExpr,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)), taskID, task.DocID,
+			task.DocVersion, task.DispatchGeneration, task.ClaimGeneration); updateErr != nil {
 			return nil, false, updateErr
 		}
 		return nil, true, tx.Commit()
@@ -314,6 +321,12 @@ func (d *DBStore) claimOneRAGIndexTask(
 	}
 	if task.DocID != doc.ID || !ragTaskDue(task, now) {
 		return nil, true, nil
+	}
+	if strings.TrimSpace(task.UserID) != "" && task.UserID != route.UserID {
+		if err := d.failInvalidRAGTaskInTx(ctx, tx, doc, task, "index task owner does not match knowledge base owner"); err != nil {
+			return nil, false, err
+		}
+		return nil, true, tx.Commit()
 	}
 	if !ownershipActive {
 		if err := d.supersedeRunnableRAGTasksInTx(ctx, tx, doc.ID); err != nil {
@@ -443,20 +456,31 @@ func (d *DBStore) claimOneRAGIndexTask(
 	}
 
 	leaseUntil := now.Add(leaseDuration)
+	if task.ClaimGeneration == math.MaxInt64 {
+		return nil, false, ErrRAGDispatchGenerationExhausted
+	}
 	newGeneration := task.ClaimGeneration + 1
+	if task.DispatchGeneration > newGeneration {
+		newGeneration = task.DispatchGeneration
+	}
 	condition := "status='PENDING' AND (next_run_at IS NULL OR next_run_at <= " + nowExpr + ")"
 	if oldStatus == "RUNNING" {
-		condition = "status='RUNNING' AND (lease_until IS NULL OR lease_until <= " + nowExpr + ")"
+		condition = "status='RUNNING' AND (lease_until IS NULL OR lease_until <= " + nowExpr + ")" +
+			" AND (next_run_at IS NULL OR next_run_at <= " + nowExpr + ")"
 	}
 	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
-		doc_version=%s,status='RUNNING',retry_count=%s,claim_generation=%s,
-		lease_owner=%s,lease_until=%s,heartbeat_at=%s,next_run_at=NULL,error_msg='',
+		doc_version=%s,user_id=%s,status='RUNNING',retry_count=%s,
+		dispatch_generation=%s,claim_generation=%s,
+		dispatched_at=COALESCE(dispatched_at,%s),lease_owner=%s,lease_until=%s,
+		heartbeat_at=%s,next_run_at=NULL,error_msg='',
 		started_at=COALESCE(started_at,%s),finished_at=NULL
-		WHERE id=%s AND doc_version=%s AND claim_generation=%s AND %s`,
-		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), nowExpr, nowExpr,
-		d.ph(6), d.ph(7), d.ph(8), condition), task.DocVersion, retryCount,
-		newGeneration, workerID, leaseUntil, task.ID, oldVersion,
-		task.ClaimGeneration)
+		WHERE id=%s AND doc_version=%s AND dispatch_generation=%s AND claim_generation=%s
+		AND (user_id IS NULL OR TRIM(user_id)='' OR user_id=%s) AND %s`,
+		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), nowExpr, d.ph(6), d.ph(7),
+		nowExpr, nowExpr, d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), condition),
+		task.DocVersion, route.UserID, retryCount, newGeneration, newGeneration,
+		workerID, leaseUntil, task.ID, oldVersion, task.DispatchGeneration,
+		task.ClaimGeneration, task.UserID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -467,8 +491,13 @@ func (d *DBStore) claimOneRAGIndexTask(
 		return nil, false, err
 	}
 	task.Status = "RUNNING"
+	task.UserID = route.UserID
 	task.RetryCount = retryCount
+	task.DispatchGeneration = newGeneration
 	task.ClaimGeneration = newGeneration
+	if task.DispatchedAt == nil {
+		task.DispatchedAt = &now
+	}
 	task.LeaseOwner = workerID
 	task.LeaseUntil = &leaseUntil
 	task.HeartbeatAt = &now
@@ -518,9 +547,10 @@ func (d *DBStore) failInvalidRAGTaskInTx(
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 		status='FAILED',error_msg=%s,finished_at=%s,lease_owner='',lease_until=NULL,
 		heartbeat_at=NULL,next_run_at=NULL WHERE id=%s AND doc_version=%s
-		AND claim_generation=%s AND status IN ('PENDING','RUNNING')`,
-		d.ph(1), nowExpr, d.ph(2), d.ph(3), d.ph(4)), reason, task.ID,
-		task.DocVersion, task.ClaimGeneration); err != nil {
+		AND dispatch_generation=%s AND claim_generation=%s
+		AND status IN ('PENDING','RUNNING')`, d.ph(1), nowExpr, d.ph(2), d.ph(3),
+		d.ph(4), d.ph(5)), reason, task.ID, task.DocVersion,
+		task.DispatchGeneration, task.ClaimGeneration); err != nil {
 		return err
 	}
 	if doc.Version == task.DocVersion {
@@ -540,6 +570,7 @@ func (d *DBStore) CheckRAGIndexFence(ctx context.Context, fence IndexFence) (boo
 		JOIN users u ON u.id=kb.user_id
 		WHERE t.id=%s AND t.doc_id=%s AND t.doc_version=%s AND t.claim_generation=%s
 		AND t.lease_owner=%s AND t.status='RUNNING' AND t.lease_until > %s
+		AND t.dispatch_generation=t.claim_generation
 		AND UPPER(d.status)<>'DELETING' AND LOWER(kb.status)='active' AND LOWER(u.status)='active'`,
 		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ragNowExpr()),
 		fence.TaskID, fence.DocID, fence.DocVersion, fence.ClaimGeneration,
@@ -565,7 +596,8 @@ func (d *DBStore) HeartbeatRAGIndexTask(
 	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 		lease_until=%s,heartbeat_at=%s WHERE id=%s AND doc_id=%s AND doc_version=%s
 		AND claim_generation=%s AND lease_owner=%s AND status='RUNNING'
-		AND lease_until > %s AND EXISTS (SELECT 1 FROM rag_documents d
+		AND dispatch_generation=claim_generation AND lease_until > %s
+		AND EXISTS (SELECT 1 FROM rag_documents d
 			JOIN rag_kbs kb ON kb.id=d.kb_id JOIN users u ON u.id=kb.user_id
 			WHERE d.id=%s AND UPPER(d.status)<>'DELETING'
 			AND LOWER(kb.status)='active' AND LOWER(u.status)='active')`,
@@ -590,7 +622,8 @@ func (d *DBStore) AcknowledgeRAGIndexTaskQuiesced(
 	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 		lease_owner='',lease_until=NULL,heartbeat_at=NULL
 		WHERE id=%s AND doc_id=%s AND doc_version=%s AND claim_generation=%s
-		AND lease_owner=%s AND status='SUPERSEDED'`, d.ph(1), d.ph(2), d.ph(3),
+		AND dispatch_generation=claim_generation AND lease_owner=%s
+		AND status='SUPERSEDED'`, d.ph(1), d.ph(2), d.ph(3),
 		d.ph(4), d.ph(5)), fence.TaskID, fence.DocID, fence.DocVersion,
 		fence.ClaimGeneration, fence.LeaseOwner)
 	if err != nil {
@@ -646,6 +679,7 @@ func (d *DBStore) lockRAGIndexFence(
 	}
 	valid := task.DocID == fence.DocID && task.DocVersion == fence.DocVersion &&
 		task.ClaimGeneration == fence.ClaimGeneration && task.LeaseOwner == fence.LeaseOwner &&
+		task.DispatchGeneration == task.ClaimGeneration &&
 		task.Status == "RUNNING" && task.LeaseUntil != nil && task.LeaseUntil.After(now) &&
 		version.Status == RAGDocumentVersionRunning
 	if !valid {
@@ -820,6 +854,11 @@ func (d *DBStore) finishOrRetryRAGIndexTask(
 	finished := locked.now
 	var nextRunAt *time.Time
 	retryCount := locked.task.RetryCount
+	dispatchGeneration := locked.task.DispatchGeneration
+	var dispatchedAt any
+	if locked.task.DispatchedAt != nil {
+		dispatchedAt = *locked.task.DispatchedAt
+	}
 	if retry {
 		taskStatus = "PENDING"
 		docStatus = "PENDING"
@@ -829,21 +868,33 @@ func (d *DBStore) finishOrRetryRAGIndexTask(
 			nextRunAt = &next
 		}
 		retryCount++
+		baseGeneration := locked.task.DispatchGeneration
+		if locked.task.ClaimGeneration > baseGeneration {
+			baseGeneration = locked.task.ClaimGeneration
+		}
+		if baseGeneration == math.MaxInt64 {
+			return false, ErrRAGDispatchGenerationExhausted
+		}
+		dispatchGeneration = baseGeneration + 1
+		dispatchedAt = nil
 	}
 	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 		status=%s,retry_count=%s,error_msg=%s,next_run_at=%s,
+		dispatch_generation=%s,dispatched_at=%s,
 		lease_owner='',lease_until=NULL,heartbeat_at=NULL,finished_at=%s
-		WHERE id=%s AND doc_id=%s AND doc_version=%s AND claim_generation=%s
-		AND lease_owner=%s AND status='RUNNING' AND lease_until > %s`,
+		WHERE id=%s AND doc_id=%s AND doc_version=%s AND dispatch_generation=%s
+		AND claim_generation=%s AND lease_owner=%s AND status='RUNNING'
+		AND dispatch_generation=claim_generation AND lease_until > %s`,
 		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7),
-		d.ph(8), d.ph(9), d.ph(10), d.ragNowExpr()), taskStatus, retryCount,
-		errMsg, nextRunAt, func() any {
+		d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13),
+		d.ragNowExpr()), taskStatus, retryCount, errMsg, nextRunAt,
+		dispatchGeneration, dispatchedAt, func() any {
 			if retry {
 				return nil
 			}
 			return finished
-		}(), fence.TaskID, fence.DocID, fence.DocVersion, fence.ClaimGeneration,
-		fence.LeaseOwner)
+		}(), fence.TaskID, fence.DocID, fence.DocVersion, locked.task.DispatchGeneration,
+		fence.ClaimGeneration, fence.LeaseOwner)
 	if err != nil {
 		return false, err
 	}
@@ -956,10 +1007,12 @@ func (d *DBStore) ActivateAndFinishRAGIndexTask(
 	result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 		status='DONE',error_msg='',finished_at=%s,lease_owner='',lease_until=NULL,
 		heartbeat_at=NULL,next_run_at=NULL WHERE id=%s AND doc_id=%s AND doc_version=%s
-		AND claim_generation=%s AND lease_owner=%s AND status='RUNNING'
+		AND dispatch_generation=%s AND claim_generation=%s AND lease_owner=%s
+		AND status='RUNNING' AND dispatch_generation=claim_generation
 		AND lease_until > %s`, d.ragNowExpr(), d.ph(1), d.ph(2), d.ph(3),
-		d.ph(4), d.ph(5), d.ragNowExpr()), fence.TaskID, fence.DocID,
-		fence.DocVersion, fence.ClaimGeneration, fence.LeaseOwner)
+		d.ph(4), d.ph(5), d.ph(6), d.ragNowExpr()), fence.TaskID, fence.DocID,
+		fence.DocVersion, locked.task.DispatchGeneration, fence.ClaimGeneration,
+		fence.LeaseOwner)
 	if err != nil {
 		return false, err
 	}
@@ -1129,10 +1182,10 @@ func (d *DBStore) supersedeRunnableRAGTasksInTx(ctx context.Context, tx *sql.Tx,
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 			status='SUPERSEDED',error_msg='superseded by newer document version',
 			finished_at=%s,lease_owner=%s,lease_until=%s,heartbeat_at=NULL,next_run_at=NULL
-			WHERE id=%s AND doc_version=%s AND claim_generation=%s
+			WHERE id=%s AND doc_version=%s AND dispatch_generation=%s AND claim_generation=%s
 			AND status IN ('PENDING','RUNNING')`, d.ragNowExpr(), d.ph(1), d.ph(2),
-			d.ph(3), d.ph(4), d.ph(5)), task.LeaseOwner, task.LeaseUntil, task.ID,
-			task.DocVersion, task.ClaimGeneration); err != nil {
+			d.ph(3), d.ph(4), d.ph(5), d.ph(6)), task.LeaseOwner, task.LeaseUntil,
+			task.ID, task.DocVersion, task.DispatchGeneration, task.ClaimGeneration); err != nil {
 			return err
 		}
 	}
@@ -1186,11 +1239,12 @@ func (d *DBStore) SupersedeRAGIndexTaskAndCreateVersion(
 	result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
 		status='SUPERSEDED',error_msg='provider snapshot changed',finished_at=%s,
 		lease_owner='',lease_until=NULL,heartbeat_at=NULL,next_run_at=NULL
-		WHERE id=%s AND doc_id=%s AND doc_version=%s AND claim_generation=%s
-		AND lease_owner=%s AND status='RUNNING' AND lease_until > %s`,
-		d.ragNowExpr(), d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5),
+		WHERE id=%s AND doc_id=%s AND doc_version=%s AND dispatch_generation=%s
+		AND claim_generation=%s AND lease_owner=%s AND status='RUNNING'
+		AND dispatch_generation=claim_generation AND lease_until > %s`,
+		d.ragNowExpr(), d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6),
 		d.ragNowExpr()), fence.TaskID, fence.DocID, fence.DocVersion,
-		fence.ClaimGeneration, fence.LeaseOwner)
+		locked.task.DispatchGeneration, fence.ClaimGeneration, fence.LeaseOwner)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1459,12 +1513,16 @@ func (d *DBStore) migrateOneLegacyRAGTask(
 	snapshot *RAGDocumentVersionRecord,
 	buildErr error,
 ) error {
+	route, err := d.ragOwnershipRoute(ctx, doc.ID)
+	if err != nil {
+		return err
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	lockedDoc, err := d.ragDocumentInTx(ctx, tx, doc.ID)
+	lockedDoc, _, err := d.lockRAGDocumentHierarchyTx(ctx, tx, doc.ID, route)
 	if err != nil {
 		return scanErr(err)
 	}
@@ -1508,10 +1566,11 @@ func (d *DBStore) migrateOneLegacyRAGTask(
 	if buildErr != nil {
 		reason := "legacy index task snapshot failed: " + buildErr.Error()
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
-			doc_version=%s,status='FAILED',claim_generation=0,lease_owner='',
-			lease_until=NULL,heartbeat_at=NULL,next_run_at=NULL,error_msg=%s,
-			finished_at=%s WHERE id=%s AND doc_version IS NULL`, d.ph(1), d.ph(2),
-			d.ragNowExpr(), d.ph(3)), nextVersion, reason, survivorID); err != nil {
+			doc_version=%s,user_id=%s,status='FAILED',dispatch_generation=1,
+			claim_generation=0,dispatched_at=NULL,lease_owner='',lease_until=NULL,
+			heartbeat_at=NULL,next_run_at=NULL,error_msg=%s,finished_at=%s
+			WHERE id=%s AND doc_version IS NULL`, d.ph(1), d.ph(2), d.ph(3),
+			d.ragNowExpr(), d.ph(4)), nextVersion, route.UserID, reason, survivorID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET
@@ -1527,10 +1586,11 @@ func (d *DBStore) migrateOneLegacyRAGTask(
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_index_tasks SET
-		doc_version=%s,status='PENDING',claim_generation=0,lease_owner='',
-		lease_until=NULL,heartbeat_at=NULL,next_run_at=NULL,error_msg='',
-		started_at=NULL,finished_at=NULL WHERE id=%s AND doc_version IS NULL`,
-		d.ph(1), d.ph(2)), nextVersion, survivorID); err != nil {
+		doc_version=%s,user_id=%s,status='PENDING',dispatch_generation=1,
+		claim_generation=0,dispatched_at=NULL,lease_owner='',lease_until=NULL,
+		heartbeat_at=NULL,next_run_at=NULL,error_msg='',started_at=NULL,finished_at=NULL
+		WHERE id=%s AND doc_version IS NULL`, d.ph(1), d.ph(2), d.ph(3)),
+		nextVersion, route.UserID, survivorID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_documents SET

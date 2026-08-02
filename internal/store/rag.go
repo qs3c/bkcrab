@@ -61,6 +61,7 @@ var (
 	ErrRAGKBQuotaExceeded             = errors.New("store: RAG knowledge-base quota exceeded")
 	ErrRAGLegacyTaskMigrationRequired = errors.New("store: legacy RAG task migration requires explicit offline-v1 acknowledgement")
 	ErrRAGLegacySnapshotBuilder       = errors.New("store: legacy RAG runnable task requires a snapshot builder")
+	ErrRAGDispatchGenerationExhausted = errors.New("store: RAG dispatch generation exhausted")
 )
 
 // RAGKBProvisionFence is the durable capability held while the vector
@@ -257,21 +258,24 @@ type RAGDocumentRecord struct {
 // RAGIndexTaskRecord is the durable recovery record for asynchronous document
 // indexing. PENDING and RUNNING rows are both recoverable after a restart.
 type RAGIndexTaskRecord struct {
-	ID              int64
-	DocID           string
-	DocVersion      int64
-	Status          string
-	RetryCount      int
-	MaxRetry        int
-	ClaimGeneration int64
-	LeaseOwner      string
-	LeaseUntil      *time.Time
-	HeartbeatAt     *time.Time
-	NextRunAt       *time.Time
-	ErrorMsg        string
-	CreatedAt       time.Time
-	StartedAt       *time.Time
-	FinishedAt      *time.Time
+	ID                 int64
+	DocID              string
+	DocVersion         int64
+	UserID             string
+	Status             string
+	RetryCount         int
+	MaxRetry           int
+	DispatchGeneration int64
+	ClaimGeneration    int64
+	DispatchedAt       *time.Time
+	LeaseOwner         string
+	LeaseUntil         *time.Time
+	HeartbeatAt        *time.Time
+	NextRunAt          *time.Time
+	ErrorMsg           string
+	CreatedAt          time.Time
+	StartedAt          *time.Time
+	FinishedAt         *time.Time
 }
 
 // RAGDocumentVersionRecord stores the immutable configuration snapshot and
@@ -500,8 +504,8 @@ const ragDocumentColumns = `id, kb_id, file_name, file_type, file_size, object_k
 	index_format_version, processing_stage, progress_current, progress_total, progress_unit,
 	degraded, warning_count, uploaded_at, indexed_at`
 
-const ragIndexTaskColumns = `id, doc_id, doc_version, status, retry_count, max_retry,
-	claim_generation, lease_owner, lease_until, heartbeat_at, next_run_at, error_msg,
+const ragIndexTaskColumns = `id, doc_id, doc_version, user_id, status, retry_count, max_retry,
+	dispatch_generation, claim_generation, dispatched_at, lease_owner, lease_until, heartbeat_at, next_run_at, error_msg,
 	created_at, started_at, finished_at`
 
 const ragChatTurnColumns = `id, user_id, kb_id, session_id, title, question,
@@ -607,15 +611,32 @@ func scanRAGDocument(scanner ragScanner) (*RAGDocumentRecord, error) {
 }
 
 func scanRAGIndexTask(scanner ragScanner) (*RAGIndexTaskRecord, error) {
+	return scanRAGIndexTaskWithExtras(scanner)
+}
+
+// scanRAGIndexTaskWithExtras keeps the canonical task scanner reusable by
+// source queries that append database-native guard/clock projections. The
+// extra destinations must follow ragIndexTaskColumns in SELECT order.
+func scanRAGIndexTaskWithExtras(scanner ragScanner, extras ...any) (*RAGIndexTaskRecord, error) {
 	var task RAGIndexTaskRecord
-	var leaseUntil, heartbeatAt, nextRunAt, startedAt, finishedAt sql.NullTime
-	if err := scanner.Scan(
-		&task.ID, &task.DocID, &task.DocVersion, &task.Status, &task.RetryCount,
-		&task.MaxRetry, &task.ClaimGeneration, &task.LeaseOwner, &leaseUntil,
+	var userID sql.NullString
+	var dispatchedAt, leaseUntil, heartbeatAt, nextRunAt, startedAt, finishedAt sql.NullTime
+	destinations := []any{
+		&task.ID, &task.DocID, &task.DocVersion, &userID, &task.Status, &task.RetryCount,
+		&task.MaxRetry, &task.DispatchGeneration, &task.ClaimGeneration, &dispatchedAt,
+		&task.LeaseOwner, &leaseUntil,
 		&heartbeatAt, &nextRunAt, &task.ErrorMsg, &task.CreatedAt, &startedAt,
 		&finishedAt,
-	); err != nil {
+	}
+	destinations = append(destinations, extras...)
+	if err := scanner.Scan(destinations...); err != nil {
 		return nil, err
+	}
+	if userID.Valid {
+		task.UserID = userID.String
+	}
+	if dispatchedAt.Valid {
+		task.DispatchedAt = &dispatchedAt.Time
 	}
 	if leaseUntil.Valid {
 		task.LeaseUntil = &leaseUntil.Time
@@ -1544,21 +1565,30 @@ func (d *DBStore) createRAGIndexTaskForVersion(
 	if maxRetry <= 0 {
 		maxRetry = 3
 	}
+	var userID string
+	if err := exec.QueryRowContext(ctx, fmt.Sprintf(`SELECT kb.user_id
+		FROM rag_documents doc JOIN rag_kbs kb ON kb.id=doc.kb_id
+		WHERE doc.id=%s`, d.ph(1)), docID).Scan(&userID); err != nil {
+		return 0, scanErr(err)
+	}
+	if userID == "" || userID != strings.TrimSpace(userID) {
+		return 0, ErrRAGLifecycleInactive
+	}
 	if d.dialect == "postgres" {
 		var id int64
 		err := exec.QueryRowContext(ctx, fmt.Sprintf(`INSERT INTO rag_index_tasks
-			(doc_id, doc_version, status, retry_count, max_retry, claim_generation,
-			 lease_owner, error_msg, created_at)
-			VALUES (%s, %s, 'PENDING', 0, %s, 0, '', '', CURRENT_TIMESTAMP) RETURNING id`,
-			d.ph(1), d.ph(2), d.ph(3)), docID, docVersion, maxRetry).Scan(&id)
+			(doc_id, doc_version, user_id, status, retry_count, max_retry,
+			 dispatch_generation, claim_generation, dispatched_at, lease_owner, error_msg, created_at)
+			VALUES (%s, %s, %s, 'PENDING', 0, %s, 1, 0, NULL, '', '', CURRENT_TIMESTAMP) RETURNING id`,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4)), docID, docVersion, userID, maxRetry).Scan(&id)
 		return id, err
 	}
 
 	result, err := exec.ExecContext(ctx, `INSERT INTO rag_index_tasks
-		(doc_id, doc_version, status, retry_count, max_retry, claim_generation,
-		 lease_owner, error_msg, created_at)
-		VALUES (?, ?, 'PENDING', 0, ?, 0, '', '', CURRENT_TIMESTAMP)`,
-		docID, docVersion, maxRetry)
+		(doc_id, doc_version, user_id, status, retry_count, max_retry,
+		 dispatch_generation, claim_generation, dispatched_at, lease_owner, error_msg, created_at)
+		VALUES (?, ?, ?, 'PENDING', 0, ?, 1, 0, NULL, '', '', CURRENT_TIMESTAMP)`,
+		docID, docVersion, userID, maxRetry)
 	if err != nil {
 		return 0, err
 	}

@@ -246,7 +246,7 @@ go test ./internal/config -run 'TestFairQueue' -v
 go build ./...
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add go.mod go.sum internal/config
@@ -272,7 +272,7 @@ git commit -m "build(queue): add rabbitmq redis fair-queue configuration"
 - Create: `internal/store/fairqueue_operation.go`
 - Create: `internal/store/fairqueue_operation_test.go`
 
-- [ ] **Step 1: 写 MySQL migration/dispatch 失败测试**
+- [x] **Step 1: 写 MySQL migration/dispatch 失败测试**
 
 使用现有 MySQL env-gated 测试模式，覆盖：
 
@@ -303,13 +303,13 @@ operation-start lock name稳定、独立于capacity lock且<64 bytes；callback�
 
 建议门控变量沿用现有 `BKCRAB_TEST_MYSQL_DSN` 或当前 store 测试统一变量。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 go test ./internal/store -run 'TestRAGFairQueue.*MySQL' -v
 ```
 
-- [ ] **Step 3: 扩展 record/scanner/DDL**
+- [x] **Step 3: 扩展 record/scanner/DDL**
 
 `RAGIndexTaskRecord` 增加：
 
@@ -336,7 +336,7 @@ MySQL 本兼容 release 的 fresh canonical table 与在线 expand migration 都
 
 `user_id NOT NULL` 是发布末尾的独立 contract migration，不得藏在自动 startup migration 中。如果现有 SQLite 单测共用 `ragIndexTaskColumns`，fresh canonical DDL 同步增加三列以保持编译/扫描兼容；公平运行模式仍通过配置拒绝 SQLite/PostgreSQL，不为两者实现并发合约。
 
-- [ ] **Step 4: 在所有 task 创建路径写入 user_id**
+- [x] **Step 4: 在所有 task 创建路径写入 user_id**
 
 检查并覆盖：
 
@@ -354,7 +354,7 @@ MySQL 本兼容 release 的 fresh canonical table 与在线 expand migration 都
 
 兼容 release 还必须更新 legacy claim/retry/reset 路径：即使 fair flag 关闭，legacy 成功 claim 也先计算 `new_generation=GREATEST(dispatch_generation,claim_generation+1)` 并把两个 generation 都设为它，任何形成下一次执行义务的 retry/reset 再按 `GREATEST(dispatch_generation,claim_generation)+1` 推进。fair exact claim 则只在 row dispatch generation 严格更大时把 claim generation 设为 message/row dispatch generation。只有这样，旧二进制退出后的最终 backfill 才不会继续被新旧格式写入打穿。
 
-- [ ] **Step 5: 增加最小发布 store 接口**
+- [x] **Step 5: 增加最小发布 store 接口**
 
 通用 fairqueue 使用稳定 token，但 generation 的推进由领域 source 的事务负责。建议 store 接口：
 
@@ -386,7 +386,7 @@ RearmRAGCandidateAfterBrokerLoss(ctx, originalGuard) -> new candidate / stale-no
 
 `fairqueue_operation.go` 提供不耦合 Rabbit/Redis 的窄 journal API：读取/创建 ACTIVE special、首次写 repair high-water、标记 repair/delete pass、CAS READY_COMMITTED、补记 COMPLETED。Task 2 只定义 store-private `FairQueueOperationRecord/StartSession` 与 raw API，不 import 尚未创建的 `internal/fairqueue`；Task 10 的 RAG adapter（以及后续 Image adapter）把它转换为 Task 3 的 `OperationJournal`，因此 Task 2 commit 可独立编译。store `WithFairQueueOperationStartFence`必须在同一expected-writer pinned connection验证identity，取得独立于capacity lock且稳定小于64 bytes的database/resource session `GET_LOCK`，并让callback内的journal start读写复用该connection；连接断开自动释放。callback结束用独立bounded cleanup context执行恰好一次`RELEASE_LOCK`；返回0/NULL/error/timeout时必须物理discard底层connection，不能只`sql.Conn.Close`回池。调用方在该callback内再取得/续约Redis raw lock并preflight；MySQL start lock是journal CAS的权威串行fence。创建/恢复ACTIVE后必须再次Check raw lock，成功才用同一owner/operation ID执行BeginWithLock。raw TTL若恰在跨存储CAS窗口过期，可留下ACTIVE，但必须零Begin、零Redis control/progress mutation、零业务mutation（raw lock acquire/renew/compare-delete cleanup除外），由同kind恢复；所有路径固定MySQL→Redis锁序。READY_COMMITTED只在source-specific progress已由journal证明且Redis通用passes已复验后写入。每次mutation接收完整expected record（resource/opID/version/kind/writer）并返回新record；stale record零mutation。重复同参数操作幂等，不同kind/ID/old-target/deadline拒绝。writer-rebind记录写入**新 authoritative writer**；Rabbit/force记录写入当前writer。
 
-- [ ] **Step 6: 实现并测试独立 contract migration API**
+- [x] **Step 6: 实现并测试独立 contract migration API**
 
 在 `internal/store/rag_fair_queue_contract.go` 提供不进入通用 `Store` 大接口的窄 API `CheckRAGFairQueueContract(ctx) -> Report` 与幂等 `ApplyRAGFairQueueContract(ctx, attestation)`；CLI 在 Task 15 装配。它只允许专用 `AutoMigrate=false` MySQL opener 调用，不由旧版可执行文件会触发的 startup auto-migrate 执行：
 
@@ -398,14 +398,14 @@ contract 重试幂等；回滚不删除列、不放宽已验证数据
 apply 前后都从 INFORMATION_SCHEMA 验证 `user_id NOT NULL`，并重新跑 NULL/owner/generation invariant 检查
 ```
 
-- [ ] **Step 7: 验证相关 store 回归**
+- [x] **Step 7: 验证相关 store 回归**
 
 ```bash
 go test ./internal/store -run 'TestRAG(Task|Lifecycle|Budget|Enqueue|FairQueue)' -v
 go test ./internal/store -run 'TestRAG.*Migration' -v
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add internal/store

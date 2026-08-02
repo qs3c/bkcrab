@@ -87,6 +87,23 @@ func mysqlMigrationSQL() []string {
 			completed_at DATETIME(6) NOT NULL,
 			PRIMARY KEY (name)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS fairqueue_resource_operations (
+			resource VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+			operation_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+			kind VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+			phase VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+			current_writer_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+			original_writer_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+			target_writer_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+			repair_high_water VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin,
+			repair_pass_complete BOOLEAN NOT NULL DEFAULT FALSE,
+			force_not_before DATETIME(6),
+			force_delete_pass_complete BOOLEAN NOT NULL DEFAULT FALSE,
+			version BIGINT NOT NULL DEFAULT 1,
+			created_at DATETIME(6) NOT NULL,
+			updated_at DATETIME(6) NOT NULL,
+			PRIMARY KEY (resource)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS users (
 			id VARCHAR(120) PRIMARY KEY,
 			username VARCHAR(191) NOT NULL UNIQUE,
@@ -377,10 +394,13 @@ func mysqlMigrationSQL() []string {
 			id BIGINT NOT NULL AUTO_INCREMENT,
 			doc_id VARCHAR(120) NOT NULL,
 			doc_version BIGINT NOT NULL,
+			user_id VARCHAR(120),
 			status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
 			retry_count INTEGER NOT NULL DEFAULT 0,
 			max_retry INTEGER NOT NULL DEFAULT 3,
+			dispatch_generation BIGINT NOT NULL DEFAULT 1,
 			claim_generation BIGINT NOT NULL DEFAULT 0,
+			dispatched_at DATETIME(6),
 			lease_owner VARCHAR(96) NOT NULL DEFAULT '',
 			lease_until DATETIME(6),
 			heartbeat_at DATETIME(6),
@@ -392,7 +412,11 @@ func mysqlMigrationSQL() []string {
 			PRIMARY KEY (id),
 			UNIQUE KEY uq_rag_index_tasks_doc_version (doc_id, doc_version),
 			KEY idx_rag_tasks_status (status, created_at),
-			KEY idx_rag_index_tasks_runnable (status, next_run_at, lease_until, created_at)
+			KEY idx_rag_index_tasks_runnable (status, next_run_at, lease_until, created_at),
+			KEY idx_rag_index_tasks_dispatch (status, dispatched_at, next_run_at, id),
+			KEY idx_rag_index_tasks_expired (status, lease_until, next_run_at, id),
+			KEY idx_rag_index_tasks_user_id (user_id, id),
+			KEY idx_rag_index_tasks_user_running (user_id, status, lease_until)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS rag_document_versions (
 			doc_id VARCHAR(120) NOT NULL,
