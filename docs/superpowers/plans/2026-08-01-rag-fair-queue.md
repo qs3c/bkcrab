@@ -582,7 +582,7 @@ git commit -m "feat(queue): define domain-neutral fair scheduling contracts"
 - Create: `internal/fairqueue/rabbit.go`
 - Create: `internal/fairqueue/rabbit_test.go`
 
-- [ ] **Step 1: 用 fake AMQP boundary 写失败测试**
+- [x] **Step 1: 用 fake AMQP boundary 写失败测试**
 
 覆盖：
 
@@ -603,7 +603,7 @@ git commit -m "feat(queue): define domain-neutral fair scheduling contracts"
 
 transport delivery 必须保留 bounded raw body（超过 1 MiB 时只保留 size + SHA-256）、body 的独立 schema/shape parse result、四个 header 的独立 parse result、registered consumer resource、queue tenant hash，以及相等且 canonical 时的 PublishAttemptID。body/header/property 三类错误独立记录；任一一致性失败不能丢掉仍受约束的 BodyCandidate/HeaderToken，也不能把其中一个合成正常 Message；runtime 用这些独立事实构造 `PrepareRequest`。
 
-- [ ] **Step 2: 实现 client**
+- [x] **Step 2: 实现 client**
 
 要求：
 
@@ -623,7 +623,7 @@ shutdown 时停止新操作并关闭连接
 
 topology cache 只在当前 connection/channel 世代有效；重连后必须清空并重新 declare/bind。禁止仅凭 positive publisher confirm 判断 routed，因为 Rabbit 对 unroutable mandatory message 也可能 positive confirm。
 
-- [ ] **Step 3: 增加 env-gated Rabbit 集成测试**
+- [x] **Step 3: 增加 env-gated Rabbit 集成测试**
 
 使用 `BKCRAB_TEST_RABBITMQ_URL`：
 
@@ -640,13 +640,13 @@ poison delivery -> canonical identity 可定位时先 repair，再显式 mandato
 同 resource 不同 tenant 队列隔离
 ```
 
-- [ ] **Step 4: 验证**
+- [x] **Step 4: 验证**
 
 ```bash
 go test ./internal/fairqueue -run 'TestRabbit' -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/fairqueue/rabbit*
