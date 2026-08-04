@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/qs3c/bkcrab/internal/buildinfo"
+	"github.com/qs3c/bkcrab/internal/imagegen"
 	"github.com/qs3c/bkcrab/internal/memory"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/sandbox"
@@ -542,6 +543,24 @@ func (r *Registry) MessageChannel() string { return r.messageChannel }
 // MessageChatID 返回飞行中回合的聊天/会话 ID，
 // 或“”（如果未设置）。
 func (r *Registry) MessageChatID() string { return r.messageChatID }
+
+// ImagegenExecutionIdentity returns the trusted, read-only identity and
+// workspace scope for the current turn. None of these fields are model input.
+func (r *Registry) ImagegenExecutionIdentity() imagegen.ExecutionIdentity {
+	owner := r.agentOwnerUserID
+	if owner == "" {
+		owner = r.userID
+	}
+	return imagegen.ExecutionIdentity{
+		UserID:             r.ChatterUserID(),
+		ConfigUserID:       r.userID,
+		AgentOwnerUserID:   owner,
+		AgentID:            r.agentID,
+		WorkspaceProjectID: r.projectID,
+		WorkspaceSessionID: r.sessionID,
+		MessageChannel:     r.messageChannel,
+	}
+}
 
 // SetGoalSessionKey记录持久化的session_key
 // 飞行中转弯，以便 update_goal 可以寻址右侧行。呼叫者

@@ -18,13 +18,14 @@ const RAGLegacyTaskMigrationModeOfflineV1 = "offline-v1"
 // 显式名称）设置。systemd unit、docker-compose、k8s deployment env 是
 // 规范的设置位置。
 type EnvConfig struct {
-	Gateway    EnvGateway
-	Storage    EnvStorage
-	Sandbox    EnvSandbox
-	MCPGateway EnvMCPGateway
-	Log        EnvLog
-	RAG        RAGCfg
-	FairQueue  FairQueueCfg
+	Gateway       EnvGateway
+	Storage       EnvStorage
+	Sandbox       EnvSandbox
+	MCPGateway    EnvMCPGateway
+	Log           EnvLog
+	RAG           RAGCfg
+	FairQueue     FairQueueCfg
+	ImagegenBatch ImagegenBatchCfg
 
 	// RAGLegacyTaskMigrationMode is a deployment-only acknowledgement for the
 	// offline legacy index-task backfill. It is intentionally separate from
@@ -82,8 +83,9 @@ func LoadEnv() *EnvConfig {
 	cfg := &EnvConfig{
 		// MySQL 默认必需。AutoMigrate 创建全新 schema，但仍需 DSN，
 		// 且启动时绝不回退到 SQLite。
-		Storage:   EnvStorage{Type: "mysql", AutoMigrate: true},
-		FairQueue: DefaultFairQueueCfg(),
+		Storage:       EnvStorage{Type: "mysql", AutoMigrate: true},
+		FairQueue:     DefaultFairQueueCfg(),
+		ImagegenBatch: DefaultImagegenBatchCfg(),
 		MCPGateway: EnvMCPGateway{
 			Enabled:       true,
 			Image:         "ghcr.io/lucky-aeon/mcp-gateway:latest",
@@ -170,6 +172,7 @@ func LoadEnv() *EnvConfig {
 		cfg.Log.Level = v
 	}
 	applyFairQueueEnv(&cfg.FairQueue)
+	applyImagegenBatchEnv(&cfg.ImagegenBatch)
 
 	if v := os.Getenv("BKCRAB_RAG_MILVUS_ADDRESS"); v != "" {
 		cfg.RAG.Milvus.Address = v
@@ -372,6 +375,98 @@ func LoadEnv() *EnvConfig {
 		cfg.RAG.Limits.ParseTimeoutMS = v
 	}
 	return cfg
+}
+
+func applyImagegenBatchEnv(cfg *ImagegenBatchCfg) {
+	if cfg == nil {
+		return
+	}
+	setMode := func(name string, dst *ImagegenBatchMode) {
+		if raw, ok := os.LookupEnv(name); ok {
+			*dst = ImagegenBatchMode(strings.ToLower(strings.TrimSpace(raw)))
+		}
+	}
+	setInt := func(name string, dst *int) {
+		raw, ok := os.LookupEnv(name)
+		if !ok {
+			return
+		}
+		value, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil {
+			cfg.envErrors = append(cfg.envErrors, fmt.Errorf("%s must be an integer", name))
+			return
+		}
+		*dst = value
+	}
+	setInt64 := func(name string, dst *int64) {
+		raw, ok := os.LookupEnv(name)
+		if !ok {
+			return
+		}
+		value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			cfg.envErrors = append(cfg.envErrors, fmt.Errorf("%s must be an integer", name))
+			return
+		}
+		*dst = value
+	}
+	setBool := func(name string, dst *bool) {
+		raw, ok := os.LookupEnv(name)
+		if !ok {
+			return
+		}
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "1", "true":
+			*dst = true
+		case "0", "false":
+			*dst = false
+		default:
+			cfg.envErrors = append(cfg.envErrors, fmt.Errorf("%s must be true, false, 1, or 0", name))
+		}
+	}
+	setDuration := func(name string, dst *time.Duration) {
+		raw, ok := os.LookupEnv(name)
+		if !ok {
+			return
+		}
+		value, err := time.ParseDuration(strings.TrimSpace(raw))
+		if err != nil {
+			cfg.envErrors = append(cfg.envErrors, fmt.Errorf("%s must be a Go duration", name))
+			return
+		}
+		*dst = value
+	}
+
+	setMode("BKCRAB_IMAGEGEN_BATCH_MODE", &cfg.Mode)
+	setInt("BKCRAB_IMAGEGEN_MAX_IMAGES_PER_BATCH", &cfg.MaxImagesPerBatch)
+	setInt("BKCRAB_IMAGEGEN_MAX_IMAGES_PER_TASK", &cfg.MaxImagesPerTask)
+	setDuration("BKCRAB_IMAGEGEN_TOOL_WAIT_DEFAULT", &cfg.ToolWaitDefault)
+	setDuration("BKCRAB_IMAGEGEN_TOOL_WAIT_MAX", &cfg.ToolWaitMax)
+	setInt("BKCRAB_IMAGEGEN_PROMPT_MAX_RUNES", &cfg.PromptMaxRunes)
+	setInt64("BKCRAB_IMAGEGEN_REQUEST_MAX_BYTES", &cfg.RequestMaxBytes)
+	setInt64("BKCRAB_IMAGEGEN_IMAGE_MAX_BYTES", &cfg.ImageMaxBytes)
+	setInt64("BKCRAB_IMAGEGEN_BATCH_MAX_BYTES", &cfg.BatchMaxBytes)
+	setInt("BKCRAB_IMAGEGEN_LOCAL_WORKERS", &cfg.LocalWorkers)
+	setInt("BKCRAB_IMAGEGEN_GLOBAL_CONCURRENCY", &cfg.GlobalConcurrency)
+	setInt("BKCRAB_IMAGEGEN_PER_USER_BASE_CONCURRENCY", &cfg.PerUserBaseConcurrency)
+	setInt("BKCRAB_IMAGEGEN_PER_USER_BURST_CONCURRENCY", &cfg.PerUserBurstConcurrency)
+	setBool("BKCRAB_IMAGEGEN_BORROW_ENABLED", &cfg.BorrowEnabled)
+	setDuration("BKCRAB_IMAGEGEN_TASK_LEASE", &cfg.TaskLease)
+	setDuration("BKCRAB_IMAGEGEN_TASK_HEARTBEAT", &cfg.TaskHeartbeat)
+	setDuration("BKCRAB_IMAGEGEN_RESERVATION_TTL", &cfg.ReservationTTL)
+	setDuration("BKCRAB_IMAGEGEN_RESERVATION_HEARTBEAT", &cfg.ReservationHeartbeat)
+	setDuration("BKCRAB_IMAGEGEN_PREPARE_TIMEOUT", &cfg.PrepareTimeout)
+	setDuration("BKCRAB_IMAGEGEN_PROVISIONAL_TTL", &cfg.ProvisionalTTL)
+	setDuration("BKCRAB_IMAGEGEN_PROCESSING_TTL", &cfg.ProcessingTurnTTL)
+	setDuration("BKCRAB_IMAGEGEN_PUBLISH_ATTEMPT_TIMEOUT", &cfg.PublishAttemptTimeout)
+	setDuration("BKCRAB_IMAGEGEN_RECOVERY_DRAIN_TIMEOUT", &cfg.RecoveryDrainTimeout)
+	setDuration("BKCRAB_IMAGEGEN_DISPATCH_INTERVAL", &cfg.DispatchInterval)
+	setDuration("BKCRAB_IMAGEGEN_RECONCILE_INTERVAL", &cfg.ReconcileInterval)
+	setDuration("BKCRAB_IMAGEGEN_EXPIRED_SWEEP_INTERVAL", &cfg.ExpiredSweepInterval)
+	setInt("BKCRAB_IMAGEGEN_RECONCILE_PAGE_SIZE", &cfg.ReconcilePageSize)
+	setInt("BKCRAB_IMAGEGEN_MAX_RETRIES", &cfg.MaxRetries)
+	setDuration("BKCRAB_IMAGEGEN_PROVIDER_CALL_TIMEOUT", &cfg.ProviderCallTimeout)
+	setInt("BKCRAB_IMAGEGEN_PROVIDER_CONCURRENCY_DEFAULT", &cfg.ProviderConcurrencyDefault)
 }
 
 func applyFairQueueEnv(cfg *FairQueueCfg) {

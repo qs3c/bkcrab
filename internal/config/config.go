@@ -127,14 +127,182 @@ type StorageCfg struct {
 }
 
 const (
-	FairQueueRedisModeStandalone       = "standalone"
-	FairQueueWorkerModeLegacy          = "legacy"
-	FairQueueWorkerModePaused          = "paused"
-	FairQueueWorkerModeFair            = "fair"
-	FairQueueMySQLWriterTopologySingle = "single"
-	FairQueueMaxDuration               = 24 * time.Hour
-	FairQueueMaxReconcilePageSize      = 10_000
+	FairQueueRedisModeStandalone                         = "standalone"
+	FairQueueWorkerModeLegacy                            = "legacy"
+	FairQueueWorkerModePaused                            = "paused"
+	FairQueueWorkerModeFair                              = "fair"
+	FairQueueMySQLWriterTopologySingle                   = "single"
+	FairQueueMaxDuration                                 = 24 * time.Hour
+	FairQueueMaxReconcilePageSize                        = 10_000
+	ImagegenBatchModeLegacy            ImagegenBatchMode = "legacy"
+	ImagegenBatchModeDrain             ImagegenBatchMode = "drain"
+	ImagegenBatchModeFair              ImagegenBatchMode = "fair"
 )
+
+type ImagegenBatchMode string
+
+// ImagegenBatchCfg is deployment-scoped because its limits protect shared
+// scheduler, database, and provider capacity. User and agent config overlays
+// must not be able to change these values.
+type ImagegenBatchCfg struct {
+	Mode                       ImagegenBatchMode
+	MaxImagesPerBatch          int
+	MaxImagesPerTask           int
+	ToolWaitDefault            time.Duration
+	ToolWaitMax                time.Duration
+	PromptMaxRunes             int
+	RequestMaxBytes            int64
+	ImageMaxBytes              int64
+	BatchMaxBytes              int64
+	LocalWorkers               int
+	GlobalConcurrency          int
+	PerUserBaseConcurrency     int
+	PerUserBurstConcurrency    int
+	BorrowEnabled              bool
+	TaskLease                  time.Duration
+	TaskHeartbeat              time.Duration
+	ReservationTTL             time.Duration
+	ReservationHeartbeat       time.Duration
+	PrepareTimeout             time.Duration
+	ProvisionalTTL             time.Duration
+	ProcessingTurnTTL          time.Duration
+	PublishAttemptTimeout      time.Duration
+	RecoveryDrainTimeout       time.Duration
+	DispatchInterval           time.Duration
+	ReconcileInterval          time.Duration
+	ExpiredSweepInterval       time.Duration
+	ReconcilePageSize          int
+	MaxRetries                 int
+	ProviderCallTimeout        time.Duration
+	ProviderConcurrencyDefault int
+	ProviderConcurrency        map[string]int
+
+	envErrors []error
+}
+
+func DefaultImagegenBatchCfg() ImagegenBatchCfg {
+	return ImagegenBatchCfg{
+		Mode:                       ImagegenBatchModeLegacy,
+		MaxImagesPerBatch:          16,
+		MaxImagesPerTask:           4,
+		ToolWaitDefault:            180 * time.Second,
+		ToolWaitMax:                240 * time.Second,
+		PromptMaxRunes:             8000,
+		RequestMaxBytes:            128 * 1024,
+		ImageMaxBytes:              20 * 1024 * 1024,
+		BatchMaxBytes:              128 * 1024 * 1024,
+		LocalWorkers:               4,
+		GlobalConcurrency:          4,
+		PerUserBaseConcurrency:     2,
+		PerUserBurstConcurrency:    4,
+		BorrowEnabled:              true,
+		TaskLease:                  180 * time.Second,
+		TaskHeartbeat:              30 * time.Second,
+		ReservationTTL:             180 * time.Second,
+		ReservationHeartbeat:       30 * time.Second,
+		PrepareTimeout:             10 * time.Second,
+		ProvisionalTTL:             15 * time.Second,
+		ProcessingTurnTTL:          15 * time.Second,
+		PublishAttemptTimeout:      15 * time.Second,
+		RecoveryDrainTimeout:       2 * time.Minute,
+		DispatchInterval:           time.Second,
+		ReconcileInterval:          30 * time.Second,
+		ExpiredSweepInterval:       15 * time.Second,
+		ReconcilePageSize:          200,
+		MaxRetries:                 3,
+		ProviderCallTimeout:        120 * time.Second,
+		ProviderConcurrencyDefault: 4,
+		ProviderConcurrency:        make(map[string]int),
+	}
+}
+
+func (c ImagegenBatchCfg) Validate(storageType string, fairQueue FairQueueCfg) error {
+	if len(c.envErrors) > 0 {
+		return fmt.Errorf("invalid imagegen batch environment: %w", errors.Join(c.envErrors...))
+	}
+	switch c.Mode {
+	case ImagegenBatchModeLegacy, ImagegenBatchModeDrain, ImagegenBatchModeFair:
+	default:
+		return fmt.Errorf("imagegenBatch.mode %q is unsupported", c.Mode)
+	}
+	if c.MaxImagesPerBatch < 1 || c.MaxImagesPerBatch > 16 {
+		return fmt.Errorf("imagegenBatch.maxImagesPerBatch must be in [1,16], got %d", c.MaxImagesPerBatch)
+	}
+	if c.MaxImagesPerTask < 1 || c.MaxImagesPerTask > 4 {
+		return fmt.Errorf("imagegenBatch.maxImagesPerTask must be in [1,4], got %d", c.MaxImagesPerTask)
+	}
+	if c.ToolWaitDefault < 0 || c.ToolWaitMax <= 0 || c.ToolWaitDefault > c.ToolWaitMax || c.ToolWaitMax > 240*time.Second {
+		return fmt.Errorf("imagegenBatch tool waits must satisfy 0 <= default <= max <= 240s")
+	}
+	if c.PromptMaxRunes <= 0 || c.RequestMaxBytes <= 0 || c.ImageMaxBytes <= 0 || c.BatchMaxBytes < c.ImageMaxBytes {
+		return errors.New("imagegenBatch request and byte limits must be positive and batchMaxBytes >= imageMaxBytes")
+	}
+	if c.LocalWorkers <= 0 || c.GlobalConcurrency <= 0 || c.PerUserBaseConcurrency <= 0 ||
+		c.PerUserBaseConcurrency > c.PerUserBurstConcurrency || c.PerUserBurstConcurrency > c.GlobalConcurrency {
+		return fmt.Errorf("imagegenBatch concurrency must satisfy positive workers and base <= burst <= global, got %d <= %d <= %d", c.PerUserBaseConcurrency, c.PerUserBurstConcurrency, c.GlobalConcurrency)
+	}
+	durations := []struct {
+		name  string
+		value time.Duration
+	}{
+		{"taskLease", c.TaskLease},
+		{"taskHeartbeat", c.TaskHeartbeat},
+		{"reservationTTL", c.ReservationTTL},
+		{"reservationHeartbeat", c.ReservationHeartbeat},
+		{"prepareTimeout", c.PrepareTimeout},
+		{"provisionalTTL", c.ProvisionalTTL},
+		{"processingTurnTTL", c.ProcessingTurnTTL},
+		{"publishAttemptTimeout", c.PublishAttemptTimeout},
+		{"recoveryDrainTimeout", c.RecoveryDrainTimeout},
+		{"dispatchInterval", c.DispatchInterval},
+		{"reconcileInterval", c.ReconcileInterval},
+		{"expiredSweepInterval", c.ExpiredSweepInterval},
+		{"providerCallTimeout", c.ProviderCallTimeout},
+	}
+	for _, duration := range durations {
+		if duration.value <= 0 || duration.value > FairQueueMaxDuration {
+			return fmt.Errorf("imagegenBatch.%s must be in (0,%s], got %s", duration.name, FairQueueMaxDuration, duration.value)
+		}
+	}
+	if c.TaskHeartbeat >= c.TaskLease {
+		return errors.New("imagegenBatch.taskHeartbeat must be less than taskLease")
+	}
+	if c.ReservationHeartbeat >= c.ReservationTTL {
+		return errors.New("imagegenBatch.reservationHeartbeat must be less than reservationTTL")
+	}
+	if c.PrepareTimeout >= c.ProvisionalTTL {
+		return errors.New("imagegenBatch.prepareTimeout must be less than provisionalTTL")
+	}
+	if c.ProvisionalTTL >= c.RecoveryDrainTimeout || c.ProcessingTurnTTL >= c.RecoveryDrainTimeout || c.PublishAttemptTimeout >= c.RecoveryDrainTimeout {
+		return errors.New("imagegenBatch provisional, processing, and publish timeouts must be less than recoveryDrainTimeout")
+	}
+	if c.ReconcilePageSize <= 0 || c.ReconcilePageSize > FairQueueMaxReconcilePageSize {
+		return fmt.Errorf("imagegenBatch.reconcilePageSize must be in [1,%d], got %d", FairQueueMaxReconcilePageSize, c.ReconcilePageSize)
+	}
+	if c.MaxRetries < 0 || c.ProviderConcurrencyDefault <= 0 {
+		return errors.New("imagegenBatch maxRetries must be non-negative and providerConcurrencyDefault must be positive")
+	}
+	for provider, limit := range c.ProviderConcurrency {
+		if strings.TrimSpace(provider) == "" || limit <= 0 {
+			return fmt.Errorf("imagegenBatch provider concurrency entry %q must have a positive limit", provider)
+		}
+	}
+	if c.Mode == ImagegenBatchModeFair || c.Mode == ImagegenBatchModeDrain {
+		if storageType != "mysql" {
+			return fmt.Errorf("imagegenBatch.mode=%s requires MySQL storage, got %q", c.Mode, storageType)
+		}
+		if !fairQueue.Enabled {
+			return fmt.Errorf("imagegenBatch.mode=%s requires fairQueue.enabled=true", c.Mode)
+		}
+		if fairQueue.MySQLWriterTopology != FairQueueMySQLWriterTopologySingle {
+			return fmt.Errorf("imagegenBatch.mode=%s requires fairQueue.mysqlWriterTopology=%q", c.Mode, FairQueueMySQLWriterTopologySingle)
+		}
+		if err := fairQueue.Validate(storageType); err != nil {
+			return fmt.Errorf("imagegenBatch shared fair queue config: %w", err)
+		}
+	}
+	return nil
+}
 
 // FairQueueCfg is deployment infrastructure configuration. It is held by
 // EnvConfig rather than Config so database-backed user and agent scopes cannot
