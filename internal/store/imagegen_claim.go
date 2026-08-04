@@ -105,6 +105,73 @@ func (s *ImageFairQueueStore) validate() error {
 	return nil
 }
 
+// CheckImageGenerationSchema verifies the complete worker-facing column set
+// on a freshly writer-verified pinned connection. Startup uses this fail-closed
+// check before exposing fair/drain runtime dependencies.
+func (s *ImageFairQueueStore) CheckImageGenerationSchema(ctx context.Context) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	return s.store.withFairQueueExpectedWriterConn(ctx, s.expectedWriter, func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+		rows, err := conn.QueryContext(ctx, `SELECT id,user_id,config_user_id,agent_owner_user_id,agent_id,workspace_project_id,workspace_session_id,
+			request_json,provider_plan_json,status,requested_count,succeeded_count,failed_count,canceled_count,cancel_requested,error_msg,
+			created_at,started_at,finished_at,updated_at FROM image_generation_batches LIMIT 0`)
+		if err != nil {
+			return err
+		}
+		_ = rows.Close()
+		rows, err = conn.QueryContext(ctx, `SELECT id,sequence_id,batch_id,user_id,item_index,chunk_index,label,prompt,size,requested_count,
+			request_fingerprint,status,retry_count,max_retry,claim_generation,dispatch_generation,lease_owner,lease_until,heartbeat_at,next_run_at,
+			dispatched_at,provider,model,manifest_key,artifacts_json,error_code,error_msg,created_at,started_at,finished_at,updated_at
+			FROM image_generation_tasks LIMIT 0`)
+		if err != nil {
+			return err
+		}
+		return rows.Close()
+	})
+}
+
+func (s *ImageFairQueueStore) ReadImageFairQueueWriterIdentity(ctx context.Context) (string, error) {
+	if err := s.validate(); err != nil {
+		return "", err
+	}
+	var fingerprint string
+	err := s.store.withFairQueueExpectedWriterConn(ctx, s.expectedWriter, func(_ *sql.Conn, identity fairQueueMySQLIdentity) error {
+		fingerprint = identity.fingerprint
+		return nil
+	})
+	return fingerprint, err
+}
+
+func (s *ImageFairQueueStore) ImageGenerationInvariantCounts(ctx context.Context) (ownerViolations, generationViolations int64, err error) {
+	if err = s.validate(); err != nil {
+		return 0, 0, err
+	}
+	err = s.store.withFairQueueExpectedWriterConn(ctx, s.expectedWriter, func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+		if queryErr := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM image_generation_tasks t
+			LEFT JOIN image_generation_batches b ON b.id=t.batch_id
+			WHERE b.id IS NULL OR t.user_id<>b.user_id`).Scan(&ownerViolations); queryErr != nil {
+			return queryErr
+		}
+		return conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM image_generation_tasks
+			WHERE claim_generation<0 OR dispatch_generation<0 OR claim_generation>dispatch_generation
+			OR (status='RUNNING' AND (claim_generation=0 OR dispatch_generation<>claim_generation OR COALESCE(lease_owner,'')='' OR lease_until IS NULL))`).Scan(&generationViolations)
+	})
+	return ownerViolations, generationViolations, err
+}
+
+func (s *ImageFairQueueStore) CountValidRunningImageGenerationTasks(ctx context.Context) (count int64, err error) {
+	if err = s.validate(); err != nil {
+		return 0, err
+	}
+	err = s.store.withFairQueueExpectedWriterConn(ctx, s.expectedWriter, func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+		return conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM image_generation_tasks
+			WHERE status='RUNNING' AND lease_until>UTC_TIMESTAMP(6) AND dispatch_generation=claim_generation
+			AND claim_generation>0 AND COALESCE(lease_owner,'')<>'' AND heartbeat_at IS NOT NULL AND next_run_at IS NULL`).Scan(&count)
+	})
+	return count, err
+}
+
 func (s *ImageFairQueueStore) withResourceTx(ctx context.Context, lockTimeout time.Duration, fn func(*sql.Tx) error) error {
 	if err := s.validate(); err != nil {
 		return err

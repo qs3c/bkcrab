@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/qs3c/bkcrab/internal/agent"
+	agenttools "github.com/qs3c/bkcrab/internal/agent/tools"
 	"github.com/qs3c/bkcrab/internal/bus"
 	"github.com/qs3c/bkcrab/internal/config"
 	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
@@ -298,7 +299,9 @@ type UserSpace struct {
 	// PluginMgr 从网关借用（进程范围单例）。在此持有以便 EnsureAgent —
 	// 外部代理附加路径 — 可以将钩子插件注册到延迟构建的代理上，
 	// 而无需回溯到网关。当 systemPlugins 关闭时为 nil。
-	PluginMgr *plugin.Manager
+	PluginMgr       *plugin.Manager
+	ImagegenCfg     config.ImagegenBatchCfg
+	ImagegenBatches agenttools.ImagegenBatchService
 
 	mu sync.Mutex
 }
@@ -552,7 +555,7 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 		return fmt.Errorf("EnsureAgent: add agent: %w", err)
 	}
 	if added := sp.Agents.AgentByID(rc.ID); added != nil {
-		registerAgentToolChains(ctx, st, sp.UserID, []config.ResolvedAgent{rc}, []*agent.Agent{added})
+		registerAgentToolChains(ctx, st, sp.UserID, []config.ResolvedAgent{rc}, []*agent.Agent{added}, sp.ImagegenCfg, sp.ImagegenBatches)
 	}
 	if sp.SandboxPool != nil {
 		if ag := sp.Agents.AgentByID(rc.ID); ag != nil {
@@ -585,7 +588,7 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 //
 // `systemSandboxPool` 是网关范围的池 — 由结果 UserSpace 借用，不拥有。
 // 当系统作用域禁用沙箱时传递 nil；在这种情况下代理将以仅路径文件根运行。
-func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, mcpRuntime *mcpruntime.Service, pluginMgr *plugin.Manager, ragService agent.RAGService) (*UserSpace, error) {
+func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, mcpRuntime *mcpruntime.Service, pluginMgr *plugin.Manager, ragService agent.RAGService, imageCfg config.ImagegenBatchCfg, imageBatches agenttools.ImagegenBatchService) (*UserSpace, error) {
 	if userID == "" {
 		return nil, fmt.Errorf("loadUserSpace: userID required")
 	}
@@ -731,7 +734,7 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 		return nil, fmt.Errorf("create agent manager for user %q: %w", userID, err)
 	}
 
-	registerAgentToolChains(ctx, st, userID, resolved, agentMgr.All())
+	registerAgentToolChains(ctx, st, userID, resolved, agentMgr.All(), imageCfg, imageBatches)
 
 	pool := attachSandboxToAgents(systemSandboxPool, userID, resolved, agentMgr)
 
@@ -747,13 +750,15 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 	slog.Info("loaded user space", "user", userID, "agents", agentMgr.Names())
 
 	return &UserSpace{
-		UserID:      userID,
-		Config:      cfg,
-		Provider:    prov,
-		Agents:      agentMgr,
-		SandboxPool: pool,
-		MCPRuntime:  mcpRuntime,
-		PluginMgr:   pluginMgr,
+		UserID:          userID,
+		Config:          cfg,
+		Provider:        prov,
+		Agents:          agentMgr,
+		SandboxPool:     pool,
+		MCPRuntime:      mcpRuntime,
+		PluginMgr:       pluginMgr,
+		ImagegenCfg:     imageCfg,
+		ImagegenBatches: imageBatches,
 	}, nil
 }
 
@@ -867,9 +872,11 @@ type userSpaceRegistry struct {
 	// pluginMgr 是共享的（进程范围）插件管理器。当 systemPlugins 禁用时为 nil。
 	// 由 loadUserSpace 和 EnsureAgent 使用，用于将钩子类型插件注册到每个代理的 HookRegistry，
 	// 由每个代理的 plugins.enabled 配置控制。
-	pluginMgr  *plugin.Manager
-	ragService agent.RAGService
-	idleTTL    time.Duration
+	pluginMgr    *plugin.Manager
+	ragService   agent.RAGService
+	imageCfg     config.ImagegenBatchCfg
+	imageBatches agenttools.ImagegenBatchService
+	idleTTL      time.Duration
 }
 
 type userSpaceEntry struct {
@@ -877,7 +884,7 @@ type userSpaceEntry struct {
 	lastUsed time.Time
 }
 
-func newUserSpaceRegistry(mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, mcpRuntime *mcpruntime.Service, pluginMgr *plugin.Manager, ragService agent.RAGService) *userSpaceRegistry {
+func newUserSpaceRegistry(mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, mcpRuntime *mcpruntime.Service, pluginMgr *plugin.Manager, ragService agent.RAGService, imageCfg config.ImagegenBatchCfg, imageBatches agenttools.ImagegenBatchService) *userSpaceRegistry {
 	return &userSpaceRegistry{
 		spaces:            make(map[string]*userSpaceEntry),
 		bus:               mb,
@@ -888,6 +895,8 @@ func newUserSpaceRegistry(mb *bus.MessageBus, st store.Store, ws workspace.Store
 		mcpRuntime:        mcpRuntime,
 		pluginMgr:         pluginMgr,
 		ragService:        ragService,
+		imageCfg:          imageCfg,
+		imageBatches:      imageBatches,
 		idleTTL:           30 * time.Minute,
 	}
 }
@@ -915,7 +924,7 @@ func (r *userSpaceRegistry) getOrLoad(ctx context.Context, userID string) (*User
 		e.lastUsed = time.Now()
 		return e.space, nil
 	}
-	sp, err := loadUserSpace(ctx, userID, r.bus, r.store, r.workspace, r.meter, r.systemSandboxPool, r.mcpRuntime, r.pluginMgr, r.ragService)
+	sp, err := loadUserSpace(ctx, userID, r.bus, r.store, r.workspace, r.meter, r.systemSandboxPool, r.mcpRuntime, r.pluginMgr, r.ragService, r.imageCfg, r.imageBatches)
 	if err != nil {
 		return nil, err
 	}

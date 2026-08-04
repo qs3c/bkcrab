@@ -13,9 +13,11 @@ import (
 // categoryCatalog 是管理 UI 的权威来源，用于定义哪些工具类别存在以及哪些提供者可以支持它们。
 // 扩展此列表（一旦新提供者在 toolproviders 包中存在）即可使它们自动出现在 UI 中。
 type categoryCatalog struct {
-	Name      string            `json:"name"`  // e.g. "web_search"
-	Label     string            `json:"label"` // human-friendly name
-	Providers []providerCatalog `json:"providers"`
+	Name           string            `json:"name"`  // e.g. "web_search"
+	Label          string            `json:"label"` // human-friendly name
+	Providers      []providerCatalog `json:"providers"`
+	ModelToolName  string            `json:"modelToolName,omitempty"`
+	MaxBatchImages int               `json:"maxBatchImages,omitempty"`
 }
 
 type providerCatalog struct {
@@ -53,8 +55,10 @@ var builtinCatalog = []categoryCatalog{
 		},
 	},
 	{
-		Name:  "image_gen",
-		Label: "Image Generation",
+		Name:           "image_gen",
+		Label:          "Image Generation",
+		ModelToolName:  "image_gen_batch",
+		MaxBatchImages: 16,
 		Providers: []providerCatalog{
 			{Name: "openai", Label: "OpenAI", NeedsKey: true, Models: []string{"gpt-image-1", "dall-e-3"}},
 			{Name: "replicate", Label: "Replicate", NeedsKey: true, Models: []string{"flux-schnell", "flux-dev", "flux-pro", "sdxl", "ideogram"}},

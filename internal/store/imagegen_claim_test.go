@@ -29,6 +29,27 @@ func imagegenClaimLimits() ImageGenerationClaimLimits {
 	}
 }
 
+func TestImageGenerationWriterReadinessUsesPinnedAuthoritativeSession(t *testing.T) {
+	st := openImagegenMySQLTestStore(t)
+	fair := imagegenBoundFairStore(t, st)
+	ctx := context.Background()
+	if err := fair.CheckImageGenerationSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := fair.ReadImageFairQueueWriterIdentity(ctx)
+	if err != nil || identity != fair.ExpectedWriterFingerprint() {
+		t.Fatalf("identity=%q err=%v", identity, err)
+	}
+	owner, generation, err := fair.ImageGenerationInvariantCounts(ctx)
+	if err != nil || owner != 0 || generation != 0 {
+		t.Fatalf("invariants owner=%d generation=%d err=%v", owner, generation, err)
+	}
+	running, err := fair.CountValidRunningImageGenerationTasks(ctx)
+	if err != nil || running < 0 {
+		t.Fatalf("running=%d err=%v", running, err)
+	}
+}
+
 func TestImageGenerationExactClaimGenerationTenantAndDuplicate(t *testing.T) {
 	st := openImagegenMySQLTestStore(t)
 	fair := imagegenBoundFairStore(t, st)

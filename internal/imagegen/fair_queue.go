@@ -68,6 +68,13 @@ type ImageFairQueueRecoveryStore interface {
 	RearmImageCandidateAfterBrokerLoss(context.Context, store.ImageTaskDispatchCandidate) (*store.ImageTaskDispatchCandidate, bool, error)
 }
 
+type ImageFairQueueWriterStore interface {
+	ReadImageFairQueueWriterIdentity(context.Context) (string, error)
+	CheckImageGenerationSchema(context.Context) error
+	ImageGenerationInvariantCounts(context.Context) (int64, int64, error)
+	CountValidRunningImageGenerationTasks(context.Context) (int64, error)
+}
+
 type FairQueueAdapterOptions struct {
 	Store              ImageFairQueueStore
 	Recovery           ImageFairQueueRecoveryStore
@@ -91,9 +98,73 @@ var (
 	_ fairqueue.TaskPreparer       = (*FairQueueAdapter)(nil)
 	_ fairqueue.RecoverySource     = (*FairQueueAdapter)(nil)
 	_ fairqueue.BrokerRepairSource = (*FairQueueAdapter)(nil)
+	_ fairqueue.WriterRebindSource = (*FairQueueAdapter)(nil)
 	_ ImageFairQueueStore          = (*store.ImageFairQueueStore)(nil)
 	_ ImageFairQueueRecoveryStore  = (*store.ImageFairQueueStore)(nil)
+	_ ImageFairQueueWriterStore    = (*store.ImageFairQueueStore)(nil)
 )
+
+func (a *FairQueueAdapter) writerStore() (ImageFairQueueWriterStore, error) {
+	writer, ok := a.options.Store.(ImageFairQueueWriterStore)
+	if !ok || writer == nil {
+		return nil, fairqueue.ErrDependencyUnavailable
+	}
+	return writer, nil
+}
+
+func (a *FairQueueAdapter) ReadWriterIdentity(ctx context.Context) (fairqueue.WriterIdentity, error) {
+	writer, err := a.writerStore()
+	if err != nil {
+		return fairqueue.WriterIdentity{}, err
+	}
+	fingerprint, err := writer.ReadImageFairQueueWriterIdentity(ctx)
+	if err != nil {
+		return fairqueue.WriterIdentity{}, err
+	}
+	identity := fairqueue.WriterIdentity{Fingerprint: fingerprint}
+	if err := identity.Validate(); err != nil {
+		return fairqueue.WriterIdentity{}, fairqueue.ErrAuthoritativeWriterMismatch
+	}
+	return identity, nil
+}
+
+func (a *FairQueueAdapter) CheckSchemaAndInvariants(ctx context.Context) (fairqueue.WriterReadinessReport, error) {
+	writer, err := a.writerStore()
+	if err != nil {
+		return fairqueue.WriterReadinessReport{}, err
+	}
+	identity, err := a.ReadWriterIdentity(ctx)
+	if err != nil {
+		return fairqueue.WriterReadinessReport{}, err
+	}
+	if err := writer.CheckImageGenerationSchema(ctx); err != nil {
+		return fairqueue.WriterReadinessReport{}, err
+	}
+	owner, generation, err := writer.ImageGenerationInvariantCounts(ctx)
+	if err != nil || owner < 0 || generation < 0 {
+		return fairqueue.WriterReadinessReport{}, fairqueue.ErrAuthoritativeStateCorrupt
+	}
+	confirm, err := a.ReadWriterIdentity(ctx)
+	if err != nil || confirm != identity {
+		return fairqueue.WriterReadinessReport{}, fairqueue.ErrAuthoritativeWriterMismatch
+	}
+	return fairqueue.WriterReadinessReport{Writer: identity, SchemaReady: true, OwnerInvariantViolationCount: owner, GenerationViolationCount: generation}, nil
+}
+
+func (a *FairQueueAdapter) CountValidRunning(ctx context.Context) (int64, error) {
+	writer, err := a.writerStore()
+	if err != nil {
+		return 0, err
+	}
+	count, err := writer.CountValidRunningImageGenerationTasks(ctx)
+	if err != nil || count < 0 {
+		if err != nil {
+			return 0, err
+		}
+		return 0, fairqueue.ErrAuthoritativeStateCorrupt
+	}
+	return count, nil
+}
 
 func NewFairQueueAdapter(options FairQueueAdapterOptions) *FairQueueAdapter {
 	if options.Recovery == nil {

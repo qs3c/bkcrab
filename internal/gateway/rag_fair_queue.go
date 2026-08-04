@@ -582,15 +582,19 @@ func initializeRAGFairQueueJournalHealth(
 	writer string,
 	health *ragFairQueueHealthState,
 ) error {
+	return initializeFairQueueJournalHealth(ctx, journal, rag.RAGFairQueueResource, writer, health)
+}
+
+func initializeFairQueueJournalHealth(ctx context.Context, journal fairqueue.OperationJournal, resource, writer string, health *ragFairQueueHealthState) error {
 	if ctx == nil || journal == nil || writer == "" || health == nil {
-		return errors.New("gateway: invalid initial RAG fair queue journal probe")
+		return errors.New("gateway: invalid initial fair queue journal probe")
 	}
-	record, present, readErr := journal.Read(ctx, rag.RAGFairQueueResource, writer)
+	record, present, readErr := journal.Read(ctx, resource, writer)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if fatal := health.applyJournalProbe(record, present, readErr); fatal != nil {
-		return fmt.Errorf("gateway: read RAG fair queue operation journal: %w", fatal)
+		return fmt.Errorf("gateway: read fair queue operation journal: %w", fatal)
 	}
 	return nil
 }
@@ -774,6 +778,7 @@ type ragFairQueueManagedRuntime struct {
 	health        *ragFairQueueHealthState
 	probeTimeout  time.Duration
 	probeInterval time.Duration
+	resource      string
 }
 
 func (r *ragFairQueueManagedRuntime) Run(ctx context.Context) error {
@@ -814,7 +819,11 @@ func (r *ragFairQueueManagedRuntime) refreshHealth(ctx context.Context) {
 	}
 	r.health.updateRabbit(r.rabbit.HealthSnapshot())
 	redisCtx, cancelRedis := context.WithTimeout(ctx, r.probeTimeout)
-	redisProbe, redisErr := r.redis.ProbeResourceHealth(redisCtx, rag.RAGFairQueueResource)
+	resource := r.resource
+	if resource == "" {
+		resource = rag.RAGFairQueueResource
+	}
+	redisProbe, redisErr := r.redis.ProbeResourceHealth(redisCtx, resource)
 	cancelRedis()
 	if redisErr == nil {
 		r.health.updateRedis(redisProbe)
@@ -823,7 +832,7 @@ func (r *ragFairQueueManagedRuntime) refreshHealth(ctx context.Context) {
 	}
 	journalCtx, cancelJournal := context.WithTimeout(ctx, r.probeTimeout)
 	journalRecord, journalPresent, journalErr := r.journal.Read(
-		journalCtx, rag.RAGFairQueueResource, r.writer,
+		journalCtx, resource, r.writer,
 	)
 	cancelJournal()
 	if fatal := r.health.applyJournalProbe(journalRecord, journalPresent, journalErr); fatal != nil {
