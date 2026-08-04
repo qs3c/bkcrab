@@ -67,6 +67,7 @@ type ResolvedProviderConfig struct {
 	APIKey   string            `json:"-"`
 	Endpoint string            `json:"-"`
 	Options  map[string]string `json:"-"`
+	Model    string            `json:"-"`
 }
 
 type ResolvedProviderCandidate struct {

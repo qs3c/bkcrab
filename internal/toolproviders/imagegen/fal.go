@@ -1,91 +1,104 @@
 package imagegen
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
+	domain "github.com/qs3c/bkcrab/internal/imagegen"
 	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
-// Fal 向 https://fal.run/<model-path> 发送请求。
-// 引用中的 "<model>" 部分成为 URL 的尾部（例如 "fal/flux-dev" →
-// https://fal.run/fal-ai/flux/dev）。认证方式为 "Key <token>"。
 type Fal struct{}
 
 func (Fal) Category() string { return Category }
 func (Fal) Name() string     { return "fal" }
 
 var falModelRoutes = map[string]string{
-	"flux-dev":     "fal-ai/flux/dev",
-	"flux-schnell": "fal-ai/flux/schnell",
-	"flux-pro":     "fal-ai/flux-pro",
+	"flux-dev": "fal-ai/flux/dev", "flux-schnell": "fal-ai/flux/schnell", "flux-pro": "fal-ai/flux-pro",
 }
 
-func (f *Fal) Execute(ctx context.Context, req toolproviders.Request) (toolproviders.Response, error) {
-	a, err := parseArgs(req.Args)
-	if err != nil {
-		return toolproviders.Response{}, err
-	}
-	if req.Config.APIKey == "" {
-		return toolproviders.Response{}, fmt.Errorf("fal: missing api key")
-	}
-	modelKey := req.Config.Model
-	if modelKey == "" {
-		modelKey = "flux-dev"
-	}
-	path, ok := falModelRoutes[modelKey]
-	if !ok {
-		// 允许调用方也传递原始模型路径（例如 "fal/fal-ai/flux/dev"）。
-		path = modelKey
-	}
+func (f *Fal) Capability(string) domain.Capability {
+	return domain.Capability{MaxImagesPerCall: 4, SupportedSizes: canonicalSizes()}
+}
 
-	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
-	defer cancel()
-
-	body := map[string]any{
-		"prompt":     a.Prompt,
-		"num_images": a.N,
+func (f *Fal) Generate(ctx context.Context, cfg domain.ResolvedProviderConfig, req domain.GenerateRequest) (domain.ProviderResult, error) {
+	if err := validateAdapterRequest(f.Name(), req); err != nil {
+		return domain.ProviderResult{}, err
 	}
-	if a.Size != "" {
-		body["image_size"] = a.Size
+	if cfg.APIKey == "" {
+		return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorAuthConfig, f.Name(), 0, errors.New("missing credential"))
 	}
-	buf, _ := json.Marshal(body)
-	url := "https://fal.run/" + path
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
+	model := cfgModel(cfg, "flux-dev")
+	path := falModelRoutes[model]
+	if path == "" {
+		path = model
+	}
+	endpoint := cfg.Endpoint
+	if endpoint == "" {
+		endpoint = "https://fal.run/" + strings.TrimPrefix(path, "/")
+	}
+	body := map[string]any{"prompt": req.Prompt, "num_images": req.Count, "image_size": falSize(req.Size)}
+	response, err := postJSON(ctx, endpoint, body, map[string]string{"Authorization": "Key " + cfg.APIKey})
 	if err != nil {
-		return toolproviders.Response{}, err
+		return domain.ProviderResult{}, typedTransportError(f.Name(), err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Key "+req.Config.APIKey)
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return toolproviders.Response{}, toolproviders.Retry(fmt.Errorf("fal request: %w", err))
+	defer response.Body.Close()
+	if err := classifyHTTPResponse(f.Name(), response, http.StatusOK); err != nil {
+		return domain.ProviderResult{}, err
 	}
-	defer resp.Body.Close()
-	if err := retriableHTTP("fal", resp); err != nil {
-		return toolproviders.Response{}, err
-	}
-	var out struct {
+	var payload struct {
 		Images []struct {
 			URL string `json:"url"`
 		} `json:"images"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return toolproviders.Response{}, fmt.Errorf("fal decode: %w", err)
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorMalformedResult, f.Name(), response.StatusCode, err)
 	}
-	urls := make([]string, 0, len(out.Images))
-	for _, img := range out.Images {
-		if img.URL != "" {
-			urls = append(urls, img.URL)
+	if len(payload.Images) == 0 {
+		return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorEmptyResult, f.Name(), response.StatusCode, errors.New("empty images"))
+	}
+	if len(payload.Images) != req.Count {
+		return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorIncompleteResult, f.Name(), response.StatusCode, errors.New("unexpected image count"))
+	}
+	result := domain.ProviderResult{Provider: f.Name(), Model: model, Images: make([]domain.GeneratedImage, 0, len(payload.Images))}
+	for _, image := range payload.Images {
+		if !validSourceURL(image.URL) {
+			return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorMalformedResult, f.Name(), response.StatusCode, errors.New("invalid source URL"))
 		}
+		result.Images = append(result.Images, domain.GeneratedImage{SourceURL: image.URL})
 	}
-	if len(urls) == 0 {
-		return toolproviders.Response{}, toolproviders.ErrNoResults
+	return result, nil
+}
+
+func (f *Fal) Execute(ctx context.Context, request toolproviders.Request) (toolproviders.Response, error) {
+	parsed, err := parseArgs(request.Args)
+	if err != nil {
+		return toolproviders.Response{}, err
 	}
-	return toolproviders.Response{Text: renderURLs(a.Prompt, urls)}, nil
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	result, err := f.Generate(ctx, domain.ResolvedProviderConfig{
+		APIKey: request.Config.APIKey, Endpoint: request.Config.Endpoint, Options: request.Config.Options, Model: request.Config.Model,
+	}, domain.GenerateRequest{Prompt: parsed.Prompt, Size: canonicalLegacySize(parsed.Size), Count: parsed.N})
+	if err != nil {
+		return toolproviders.Response{}, legacyProviderError(err)
+	}
+	return legacyProviderResponse(parsed.Prompt, result), nil
+}
+
+func falSize(size string) string {
+	switch size {
+	case "", domain.SizeSquare:
+		return "square_hd"
+	case domain.SizeLandscape:
+		return "landscape_4_3"
+	case domain.SizePortrait:
+		return "portrait_4_3"
+	default:
+		return size
+	}
 }
