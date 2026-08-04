@@ -180,7 +180,7 @@ func validateFairQueueCLIResource(resource string) error {
 	if resource == "" {
 		return errors.New("--resource is required")
 	}
-	if resource != rag.RAGFairQueueResource {
+	if resource != rag.RAGFairQueueResource && resource != store.ImageGenerationResource {
 		return fmt.Errorf("unknown fairqueue resource %q", resource)
 	}
 	return nil

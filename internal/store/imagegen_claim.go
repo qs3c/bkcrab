@@ -8,6 +8,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"github.com/qs3c/bkcrab/internal/fairqueue"
 )
 
 type ImageGenerationClaimDisposition string
@@ -203,6 +205,56 @@ func (s *ImageFairQueueStore) RequestImageBatchCancel(ctx context.Context, userI
 	return batch, tasks, nil
 }
 
+func (s *ImageFairQueueStore) HeartbeatImageGenerationTask(ctx context.Context, fence ImageGenerationFence, leaseDuration time.Duration) (ImageGenerationHeartbeatDisposition, error) {
+	if err := s.validate(); err != nil {
+		return ImageGenerationHeartbeatStale, err
+	}
+	if fence.ExpectedWriterFingerprint != s.expectedWriter {
+		return ImageGenerationHeartbeatStale, ErrFairQueueWriterMismatch
+	}
+	return s.store.HeartbeatImageGenerationTask(ctx, fence, leaseDuration)
+}
+
+func (s *ImageFairQueueStore) FinishImageGenerationTaskDone(ctx context.Context, fence ImageGenerationFence, result ImageTaskDoneResult) (*ImageGenerationBatchRecord, bool, error) {
+	if err := s.validate(); err != nil {
+		return nil, false, err
+	}
+	if fence.ExpectedWriterFingerprint != s.expectedWriter {
+		return nil, false, ErrFairQueueWriterMismatch
+	}
+	return s.store.FinishImageGenerationTaskDone(ctx, fence, result)
+}
+
+func (s *ImageFairQueueStore) FinishImageGenerationTaskRetry(ctx context.Context, fence ImageGenerationFence, errorCode string, nextRun time.Time) (bool, error) {
+	if err := s.validate(); err != nil {
+		return false, err
+	}
+	if fence.ExpectedWriterFingerprint != s.expectedWriter {
+		return false, ErrFairQueueWriterMismatch
+	}
+	return s.store.FinishImageGenerationTaskRetry(ctx, fence, errorCode, nextRun)
+}
+
+func (s *ImageFairQueueStore) FinishImageGenerationTaskFailed(ctx context.Context, fence ImageGenerationFence, errorCode string) (bool, error) {
+	if err := s.validate(); err != nil {
+		return false, err
+	}
+	if fence.ExpectedWriterFingerprint != s.expectedWriter {
+		return false, ErrFairQueueWriterMismatch
+	}
+	return s.store.FinishImageGenerationTaskFailed(ctx, fence, errorCode)
+}
+
+func (s *ImageFairQueueStore) FinishImageGenerationTaskCanceled(ctx context.Context, fence ImageGenerationFence) (bool, error) {
+	if err := s.validate(); err != nil {
+		return false, err
+	}
+	if fence.ExpectedWriterFingerprint != s.expectedWriter {
+		return false, ErrFairQueueWriterMismatch
+	}
+	return s.store.FinishImageGenerationTaskCanceled(ctx, fence)
+}
+
 func (s *ImageFairQueueStore) ListDispatchableImageTasksPage(ctx context.Context, afterSequenceID int64, limit int) ([]ImageTaskDispatchCandidate, int64, error) {
 	if err := s.validate(); err != nil {
 		return nil, afterSequenceID, err
@@ -291,6 +343,179 @@ func (s *ImageFairQueueStore) MarkImageTaskDispatched(ctx context.Context, candi
 		return nil
 	})
 	return changed, err
+}
+
+func (s *ImageFairQueueStore) CaptureImageFairQueueHighWater(ctx context.Context) (int64, error) {
+	var highWater int64
+	err := s.store.withFairQueueExpectedWriterConn(ctx, s.expectedWriter, func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+		return conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence_id),0) FROM image_generation_tasks`).Scan(&highWater)
+	})
+	return highWater, err
+}
+
+func (s *ImageFairQueueStore) ListCanonicalImageTenants(ctx context.Context, highWater int64, afterUserID string, limit int) ([]string, string, error) {
+	if highWater < 0 || limit < 1 || limit > 10_000 {
+		return nil, afterUserID, errors.New("store: invalid image tenant page")
+	}
+	var tenants []string
+	next := afterUserID
+	err := s.store.withFairQueueExpectedWriterConn(ctx, s.expectedWriter, func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+		rows, err := conn.QueryContext(ctx, `SELECT DISTINCT user_id FROM image_generation_tasks WHERE sequence_id<=? AND user_id>? ORDER BY user_id LIMIT ?`, highWater, afterUserID, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var userID string
+			if err := rows.Scan(&userID); err != nil {
+				return err
+			}
+			tenants = append(tenants, userID)
+			next = userID
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, afterUserID, err
+	}
+	return tenants, next, nil
+}
+
+func (s *ImageFairQueueStore) ListDispatchedImageTasks(ctx context.Context, highWater, afterSequenceID int64, limit int) ([]ImageTaskDispatchRecord, int64, error) {
+	if highWater < 0 || validateImagePage(afterSequenceID, limit) != nil {
+		return nil, afterSequenceID, errors.New("store: invalid dispatched image task page")
+	}
+	var tasks []ImageTaskDispatchRecord
+	err := s.store.withFairQueueExpectedWriterConn(ctx, s.expectedWriter, func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+		rows, err := conn.QueryContext(ctx, `SELECT `+imageTaskColumns+` FROM image_generation_tasks
+			WHERE sequence_id>? AND sequence_id<=? AND dispatched_at IS NOT NULL
+			AND ((status='PENDING' AND dispatch_generation>claim_generation) OR (status='RUNNING' AND dispatch_generation>=claim_generation))
+			ORDER BY sequence_id LIMIT ?`, afterSequenceID, highWater, limit)
+		if err != nil {
+			return err
+		}
+		full, err := scanImageTaskRows(rows)
+		if err != nil {
+			return err
+		}
+		for _, task := range full {
+			tasks = append(tasks, imageTaskDispatchRecord(task))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, afterSequenceID, err
+	}
+	next := afterSequenceID
+	if len(tasks) > 0 {
+		next = tasks[len(tasks)-1].SequenceID
+	}
+	return tasks, next, nil
+}
+
+func (s *ImageFairQueueStore) ListValidRunningImageTasks(ctx context.Context, highWater, afterSequenceID int64, limit int) ([]ImageRunningTaskSnapshot, int64, error) {
+	if highWater < 0 || validateImagePage(afterSequenceID, limit) != nil {
+		return nil, afterSequenceID, errors.New("store: invalid running image task page")
+	}
+	var snapshots []ImageRunningTaskSnapshot
+	err := s.store.withFairQueueExpectedWriterConn(ctx, s.expectedWriter, func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+		rows, err := conn.QueryContext(ctx, `SELECT `+imageTaskColumns+`,UTC_TIMESTAMP(6) FROM image_generation_tasks
+			WHERE sequence_id>? AND sequence_id<=? AND status='RUNNING' AND dispatch_generation=claim_generation AND claim_generation>0
+			AND COALESCE(lease_owner,'')<>'' AND lease_until>UTC_TIMESTAMP(6) AND heartbeat_at IS NOT NULL AND next_run_at IS NULL
+			ORDER BY sequence_id LIMIT ?`, afterSequenceID, highWater, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			task, observed, err := scanImageRunningTask(rows)
+			if err != nil {
+				return err
+			}
+			snapshots = append(snapshots, ImageRunningTaskSnapshot{Task: imageTaskDispatchRecord(*task), ObservedDBNow: observed})
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, afterSequenceID, err
+	}
+	next := afterSequenceID
+	if len(snapshots) > 0 {
+		next = snapshots[len(snapshots)-1].Task.SequenceID
+	}
+	return snapshots, next, nil
+}
+
+func (s *ImageFairQueueStore) CaptureImageBrokerRepairHighWater(ctx context.Context) (int64, error) {
+	return s.CaptureImageFairQueueHighWater(ctx)
+}
+
+func (s *ImageFairQueueStore) ListBrokerBackedImageCandidates(ctx context.Context, highWater, afterSequenceID int64, limit int) ([]ImageTaskDispatchCandidate, int64, error) {
+	if highWater < 0 || validateImagePage(afterSequenceID, limit) != nil {
+		return nil, afterSequenceID, errors.New("store: invalid broker image task page")
+	}
+	var candidates []ImageTaskDispatchCandidate
+	err := s.store.withFairQueueExpectedWriterConn(ctx, s.expectedWriter, func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
+		rows, err := conn.QueryContext(ctx, `SELECT `+qualifiedImageTaskColumns("t")+` FROM image_generation_tasks t
+			JOIN image_generation_batches b ON b.id=t.batch_id
+			WHERE t.sequence_id>? AND t.sequence_id<=? AND t.status IN ('PENDING','RUNNING')
+			AND t.dispatch_generation>t.claim_generation AND t.dispatched_at IS NOT NULL
+			AND b.cancel_requested=FALSE AND `+imageTaskDuePredicate("t")+` ORDER BY t.sequence_id LIMIT ?`, afterSequenceID, highWater, limit)
+		if err != nil {
+			return err
+		}
+		candidates, err = scanImageCandidateRows(rows)
+		return err
+	})
+	if err != nil {
+		return nil, afterSequenceID, err
+	}
+	next := afterSequenceID
+	if len(candidates) > 0 {
+		next = candidates[len(candidates)-1].Task.SequenceID
+	}
+	return candidates, next, nil
+}
+
+func (s *ImageFairQueueStore) RearmImageCandidateAfterBrokerLoss(ctx context.Context, original ImageTaskDispatchCandidate) (rearmed *ImageTaskDispatchCandidate, changed bool, err error) {
+	err = s.withResourceTx(ctx, 5*time.Second, func(tx *sql.Tx) (inner error) {
+		rearmed, changed, inner = s.store.rearmImageCandidateOn(ctx, tx, original)
+		return inner
+	})
+	return rearmed, changed, err
+}
+
+func (s *ImageFairQueueStore) RepairPoisonImageCandidate(ctx context.Context, locator ImagePoisonRepairLocator, registeredResource, queueTenantHash string) (rearmed *ImageTaskDispatchCandidate, disposition ImagePoisonRepairDisposition, err error) {
+	disposition = ImagePoisonRepairUnlocatable
+	if registeredResource != ImageGenerationResource || !imageTaskIDPattern.MatchString(locator.TaskID) || locator.Generation <= 0 {
+		return nil, disposition, nil
+	}
+	err = s.withResourceTx(ctx, 5*time.Second, func(tx *sql.Tx) error {
+		query := `SELECT ` + qualifiedImageTaskColumns("t") + ` FROM image_generation_tasks t
+			JOIN image_generation_batches b ON b.id=t.batch_id
+			WHERE t.id=? AND t.status IN ('PENDING','RUNNING') AND t.dispatch_generation>t.claim_generation
+			AND b.cancel_requested=FALSE AND ` + imageTaskDuePredicate("t") + ` FOR UPDATE`
+		task, readErr := scanImageTask(tx.QueryRowContext(ctx, query, locator.TaskID))
+		if errors.Is(readErr, ErrNotFound) {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+		hash, hashErr := fairqueue.TenantHash(registeredResource, task.UserID)
+		if hashErr != nil || hash != queueTenantHash || task.DispatchGeneration != locator.Generation || task.DispatchedAt == nil {
+			disposition = ImagePoisonRepairStale
+			return nil
+		}
+		original := newImageTaskDispatchCandidate(imageTaskDispatchRecord(*task))
+		rearmed, _, readErr = s.store.rearmImageCandidateOn(ctx, tx, original)
+		if readErr != nil {
+			return readErr
+		}
+		disposition = ImagePoisonRepairRearmed
+		return nil
+	})
+	return rearmed, disposition, err
 }
 
 func validImageWorkerID(value string) bool {

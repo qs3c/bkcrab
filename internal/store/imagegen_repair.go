@@ -489,14 +489,18 @@ func (d *DBStore) ListBrokerBackedImageCandidates(ctx context.Context, highWater
 	return candidates, next, nil
 }
 
-func (d *DBStore) rearmImageCandidate(ctx context.Context, original ImageTaskDispatchCandidate) (*ImageTaskDispatchCandidate, bool, error) {
+type imageExecContext interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func (d *DBStore) rearmImageCandidateOn(ctx context.Context, session imageExecContext, original ImageTaskDispatchCandidate) (*ImageTaskDispatchCandidate, bool, error) {
 	if !validImageTaskDispatchCandidate(original) || original.Guard.DispatchedAt == nil ||
 		original.Guard.DispatchGeneration <= original.Guard.ClaimGeneration ||
 		original.Guard.DispatchGeneration == math.MaxInt64 {
 		return nil, false, ErrImageTaskDispatchGuard
 	}
 	guard := original.Guard
-	result, err := d.db.ExecContext(ctx, `UPDATE image_generation_tasks t
+	result, err := session.ExecContext(ctx, `UPDATE image_generation_tasks t
 		JOIN image_generation_batches b ON b.id=t.batch_id
 		SET t.dispatch_generation=GREATEST(t.dispatch_generation,t.claim_generation)+1,
 			t.dispatched_at=NULL,t.updated_at=UTC_TIMESTAMP(6)
@@ -520,6 +524,10 @@ func (d *DBStore) rearmImageCandidate(ctx context.Context, original ImageTaskDis
 	original.Task.DispatchedAt = nil
 	candidate := newImageTaskDispatchCandidate(original.Task)
 	return &candidate, true, nil
+}
+
+func (d *DBStore) rearmImageCandidate(ctx context.Context, original ImageTaskDispatchCandidate) (*ImageTaskDispatchCandidate, bool, error) {
+	return d.rearmImageCandidateOn(ctx, d.db, original)
 }
 
 func maxImageGeneration(left, right int64) int64 {
