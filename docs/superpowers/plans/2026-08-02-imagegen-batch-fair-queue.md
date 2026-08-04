@@ -151,7 +151,7 @@ fairqueue
 - Modify: `internal/agent/tools/registry.go`
 - Modify: `internal/agent/tools/registry_forturn_test.go`
 
-- [ ] **Step 1: 写配置失败测试**
+- [x] **Step 1: 写配置失败测试**
 
 固定默认值：
 
@@ -205,7 +205,7 @@ fair/drain + fairqueue disabled 或 writerTopology!=single -> error
 mode 非 legacy|drain|fair -> error
 ```
 
-- [ ] **Step 2: 增加配置类型与 env**
+- [x] **Step 2: 增加配置类型与 env**
 
 建议：
 
@@ -247,7 +247,7 @@ type ImagegenBatchCfg struct {
 
 Imagegen 调度配置是部署级约束，不允许普通用户/Agent scope 覆盖 global/base/burst；provider chain/credential 继续沿用现有 scope。
 
-- [ ] **Step 3: 定义领域 DTO 和严格解析**
+- [x] **Step 3: 定义领域 DTO 和严格解析**
 
 覆盖：
 
@@ -266,7 +266,7 @@ status/cancel 只接收 batch_id
 未知字段是否拒绝按工具现有策略固定
 ```
 
-- [ ] **Step 4: 实现确定性 planner**
+- [x] **Step 4: 实现确定性 planner**
 
 测试：
 
@@ -281,7 +281,7 @@ count=16 -> [4,4,4,4]
 request fingerprint 稳定
 ```
 
-- [ ] **Step 5: 暴露只读 turn identity/scope**
+- [x] **Step 5: 暴露只读 turn identity/scope**
 
 为 batch tool 提供明确 getter/context struct，至少包含：
 
@@ -297,7 +297,7 @@ message channel（仅审计/未来通知）
 
 `Registry.ForTurn` 必须正确复制不可变身份并隔离每回合 workspace scope。不能让工具从模型参数获取这些字段。
 
-- [ ] **Step 6: 验证**
+- [x] **Step 6: 验证**
 
 ```bash
 go test ./internal/config -run 'TestImagegenBatch' -v
@@ -305,7 +305,7 @@ go test ./internal/imagegen -run 'Test(Model|Normalize|Planner)' -v
 go test ./internal/agent/tools -run 'TestRegistryForTurn.*Image' -v
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/config internal/imagegen/model* internal/imagegen/planner* internal/agent/tools/registry*
@@ -326,7 +326,7 @@ git commit -m "feat(imagegen): define batch limits identity and deterministic pl
 - Create: `internal/store/imagegen_test.go`
 - Create: `internal/store/imagegen_mysql_test.go`
 
-- [ ] **Step 1: 写 MySQL schema 失败测试**
+- [x] **Step 1: 写 MySQL schema 失败测试**
 
 使用现有 `BKCRAB_TEST_MYSQL_DSN` 门控模式，断言：
 
@@ -342,7 +342,7 @@ JSON 字段可扫描
 
 Imagegen 只新增这两张业务表，不增加 artifact/outbox/jobs/tenant 表；复用 RAG 前置已经创建的 `fairqueue_resource_operations` special-recovery safety journal。
 
-- [ ] **Step 2: 事务创建 batch + tasks**
+- [x] **Step 2: 事务创建 batch + tasks**
 
 新增概念接口：
 
@@ -361,7 +361,7 @@ CreateImageGenerationBatch(ctx, CreateBatchRequest) (*BatchRecord, []TaskRecord,
 - request/provider plan JSON 不含 secret；
 - prompt 只存在 MySQL 领域表，不复制进 dispatch DTO。
 
-- [ ] **Step 3: 读取与授权查询**
+- [x] **Step 3: 读取与授权查询**
 
 实现：
 
@@ -373,7 +373,7 @@ GetImageGenerationTask
 
 canonical owner 同时匹配 `user_id + agent_id`；同 Agent 可跨 session 查询，另一 Agent 即使 user 相同也统一返回 not found/forbidden，错误不能泄露 batch 是否存在。task 结果按 item/chunk 排序。
 
-- [ ] **Step 4: Durable dispatch source**
+- [x] **Step 4: Durable dispatch source**
 
 实现：
 
@@ -402,7 +402,7 @@ RepairPoisonImageCandidate(repairLocator,registeredResource,queueTenantHash) -> 
 
 所有 recovery/broker page 在 store SQL 层显式限制 `sequence_id<=highWater`，不用 adapter 事后过滤；task page 按 sequence_id keyset，known tenant 按 user_id keyset，均有界且不用 OFFSET。`imagegen_repair.go` 的 broker-loss apply只对仍匹配 original Guard、非终态、batch未取消且仍需执行的row推进generation；poison repair从受限locator加载canonical batch/task，验证registered resource、canonical tenant hash、current generation/due与未取消后用同一GREATEST CAS返回新candidate，不能信任payload tenant或修改owner。real-MySQL测试用 `EXPLAIN ANALYZE`/rows-examined固定dispatch、rearm、known/dispatched/running、broker/poison repair与global/per-user count的索引访问上界。
 
-- [ ] **Step 5: Batch 聚合与终态幂等**
+- [x] **Step 5: Batch 聚合与终态幂等**
 
 实现 store 内事务 helper：
 
@@ -416,7 +416,7 @@ Recompute/UpdateBatchAggregate
 
 覆盖重复 finalize、并发两个 task 终态、DONE/PARTIAL/FAILED/CANCELED 组合。计数不得因重复消息增加两次。
 
-- [ ] **Step 6: Cancel store 合约**
+- [x] **Step 6: Cancel store 合约**
 
 ```text
 RequestImageBatchCancel(user,agent,batch)
@@ -429,14 +429,14 @@ RequestImageBatchCancel(user,agent,batch)
 
 重复 cancel 幂等；所有 batch/task 多行事务固定 batch→task 锁序；终态不回退；stale Rabbit delivery 无法重新 claim 已取消 task。
 
-- [ ] **Step 7: 验证**
+- [x] **Step 7: 验证**
 
 ```bash
 go test ./internal/store -run 'TestImageGeneration' -v
 go test ./internal/store -run 'TestImagegen.*MySQL' -v
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add internal/store
@@ -458,7 +458,7 @@ git commit -m "feat(imagegen): persist batches tasks and dispatch epochs in mysq
 - Modify: `internal/toolproviders/registry.go`
 - Create: `internal/toolproviders/registry_imagegen_test.go`
 
-- [ ] **Step 1: 写配置作用域失败测试**
+- [x] **Step 1: 写配置作用域失败测试**
 
 覆盖：
 
@@ -473,7 +473,7 @@ Agent owner 与 runtime user 不同
 batch chain 顺序仍使用提交时 snapshot
 ```
 
-- [ ] **Step 2: 定义 resolver 接口**
+- [x] **Step 2: 定义 resolver 接口**
 
 Imagegen 领域只依赖：
 
@@ -486,13 +486,13 @@ type ProviderPlanResolver interface {
 
 `SafeProviderPlan` 可进 MySQL，`ResolvedProviderPlan` 含 secret 且只能在内存短暂存在。
 
-- [ ] **Step 3: 抽取共享作用域逻辑**
+- [x] **Step 3: 抽取共享作用域逻辑**
 
 不要在后台 worker 复制一份与 `loadUserSpace/EnsureAgent` 不同的覆盖规则。把有效 tool chain 解析提取成可测试 helper，由当前同步注册和异步 resolver 共用。
 
 如果现有 foreign Agent owner overlay 不能通过单一 `config_user_id` 复现，`ExecutionIdentity` 必须同时携带 runtime user、agent owner、agent ID 和 share policy；不得把最终 API key 持久化来规避设计问题。
 
-- [ ] **Step 4: Secret scanner**
+- [x] **Step 4: Secret scanner**
 
 序列化 `SafeProviderPlan` 后测试不得出现：
 
@@ -507,14 +507,14 @@ resolved endpoint credential query
 
 允许 provider/model ref、fallback 开关、schema version、非敏感 capability 选择。
 
-- [ ] **Step 5: 验证**
+- [x] **Step 5: 验证**
 
 ```bash
 go test ./internal/gateway -run 'TestImagegenProviderResolver' -v
 go test ./internal/toolproviders -run 'Test.*Resolve' -v
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/gateway/gateway.go internal/gateway/userspace.go internal/gateway/imagegen_provider_resolver.go internal/gateway/imagegen_provider_resolver_test.go internal/toolproviders/registry.go internal/toolproviders/registry_imagegen_test.go
@@ -538,7 +538,7 @@ git commit -m "refactor(tools): resolve durable image provider plans without sto
 - Create: `internal/imagegen/service.go`
 - Create: `internal/imagegen/service_test.go`
 
-- [ ] **Step 1: 先写 typed adapter 测试**
+- [x] **Step 1: 先写 typed adapter 测试**
 
 每个 provider 使用 `httptest.Server`，覆盖：
 
@@ -558,7 +558,7 @@ ctx cancel
 
 测试中不得访问真实网络。
 
-- [ ] **Step 2: 定义 capability 与 typed backend**
+- [x] **Step 2: 定义 capability 与 typed backend**
 
 ```go
 type Backend interface {
@@ -570,7 +570,7 @@ type Backend interface {
 
 provider adapter 不再生成最终 Markdown。过渡期旧 generic `Execute` 可调用 typed backend + legacy renderer，以保持 batch feature disabled 时兼容。
 
-- [ ] **Step 3: 统一错误分类**
+- [x] **Step 3: 统一错误分类**
 
 实现并测试：
 
@@ -588,7 +588,7 @@ MALFORMED_RESULT
 
 安全拒绝不允许换 provider 绕过；auth/config 可尝试显式 fallback；429/5xx/timeout/empty 可 fallback 并在全部耗尽后 retry。
 
-- [ ] **Step 4: 实现 ImageGenerationService**
+- [x] **Step 4: 实现 ImageGenerationService**
 
 固定：
 
@@ -601,18 +601,18 @@ MALFORMED_RESULT
 - attempts summary 有界且不含 secret/响应正文；
 - 总 ctx deadline 和每 provider timeout 都可取消。
 
-- [ ] **Step 5: 旧 image_gen 回归**
+- [x] **Step 5: 旧 image_gen 回归**
 
 mode=legacy 时，现有 `image_gen` 仍能通过 typed adapter 返回原 Markdown；`n>4` 的旧行为暂不改变，避免本任务夹带工具协议变更。
 
-- [ ] **Step 6: 验证**
+- [x] **Step 6: 验证**
 
 ```bash
 go test ./internal/toolproviders/imagegen -v
 go test ./internal/imagegen -run 'TestGenerationService' -v
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/toolproviders/imagegen internal/imagegen/service*
@@ -629,7 +629,7 @@ git commit -m "refactor(imagegen): return typed images with classified provider 
 - Create: `internal/imagegen/artifacts_test.go`
 - Create: `internal/imagegen/artifacts_integration_test.go`（LocalFS always；S3由现有test env门控）
 
-- [ ] **Step 1: 写安全边界失败测试**
+- [x] **Step 1: 写安全边界失败测试**
 
 覆盖：
 
@@ -647,7 +647,7 @@ path traversal reject
 signed URL query 不进入日志/error
 ```
 
-- [ ] **Step 2: 实现 canonical object key builder**
+- [x] **Step 2: 实现 canonical object key builder**
 
 ```text
 imagegen/<batch>/<task>/claims/<claimGeneration>/
@@ -657,7 +657,7 @@ imagegen/<batch>/<task>/claims/<claimGeneration>/
 
 所有 ID/path segment 必须由服务端 canonical validator 生成。不能使用 prompt、label、provider URL 文件名。
 
-- [ ] **Step 3: 实现 publish 顺序**
+- [x] **Step 3: 实现 publish 顺序**
 
 ```text
 validate exact image count
@@ -670,7 +670,7 @@ validate exact image count
 
 manifest 带 task/batch/claim generation/request fingerprint/provider/model/artifacts。
 
-- [ ] **Step 4: 实现 salvage**
+- [x] **Step 4: 实现 salvage**
 
 新 claim 调 provider 前：
 
@@ -681,7 +681,7 @@ manifest 带 task/batch/claim generation/request fingerprint/provider/model/arti
 - 校验成功返回 recovered manifest；
 - 任何不一致按 miss 处理并告警，不信任 object 内容修改 task identity。
 
-- [ ] **Step 5: 清理边界**
+- [x] **Step 5: 清理边界**
 
 提供 best-effort：
 
@@ -693,14 +693,14 @@ List/cleanup stale claim prefixes（有界、可取消）
 
 失败 cleanup 不得回滚已经 fenced 完成的业务状态；记录指标并由后续 GC 重试。
 
-- [ ] **Step 6: 验证**
+- [x] **Step 6: 验证**
 
 ```bash
 go test ./internal/imagegen -run 'TestArtifact' -v
 go test ./internal/workspace/...
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/imagegen/artifacts* internal/workspace
@@ -719,7 +719,7 @@ git commit -m "feat(imagegen): persist validated image artifacts with recoverabl
 - Create: `internal/imagegen/batch_test.go`
 - Modify: `internal/imagegen/model.go`
 
-- [ ] **Step 1: 定义依赖接口和 fake 测试**
+- [x] **Step 1: 定义依赖接口和 fake 测试**
 
 `BatchService` 依赖窄接口：
 
@@ -733,7 +733,7 @@ ArtifactURLResolver (optional signed URL)
 
 不直接依赖 gateway/agent/tool registry。
 
-- [ ] **Step 2: Create 失败测试**
+- [x] **Step 2: Create 失败测试**
 
 覆盖：
 
@@ -746,7 +746,7 @@ ArtifactURLResolver (optional signed URL)
 - create ctx 取消发生在 commit 后不删除 batch；
 - plan JSON 不含 secret。
 
-- [ ] **Step 3: Status 失败测试**
+- [x] **Step 3: Status 失败测试**
 
 覆盖：
 
@@ -760,7 +760,7 @@ artifact origin scope
 signed URL unsupported fallback
 ```
 
-- [ ] **Step 4: Cancel 失败测试**
+- [x] **Step 4: Cancel 失败测试**
 
 覆盖：
 
@@ -773,7 +773,7 @@ signed URL unsupported fallback
 - cancel 后 dispatcher 不再选择 task。
 - RUNNING worker 在观察 cancel 前崩溃：expired-cancel sweeper 最终聚合 CANCELED，且不产生新 provider call。
 
-- [ ] **Step 5: 有限等待**
+- [x] **Step 5: 有限等待**
 
 实现：
 
@@ -789,13 +789,13 @@ deadline 返回 current status，不 cancel
 
 单测使用 fake clock，不能真实 sleep 180 秒。
 
-- [ ] **Step 6: 验证**
+- [x] **Step 6: 验证**
 
 ```bash
 go test ./internal/imagegen -run 'TestBatchService' -v
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/imagegen/batch*
@@ -813,7 +813,7 @@ git commit -m "feat(imagegen): orchestrate durable image batches and bounded wai
 - Modify: `internal/imagegen/service.go`
 - Modify: `internal/imagegen/service_test.go`
 
-- [ ] **Step 1: 固定 limiter 合约**
+- [x] **Step 1: 固定 limiter 合约**
 
 ```go
 type ProviderCallGate interface {
@@ -825,7 +825,7 @@ type ProviderCallGate interface {
 
 物理 provider call 每次单独 acquire/release；fallback 从 A 切到 B 时不能复用 A 的 token。
 
-- [ ] **Step 2: 写 Redis Lua 集成测试**
+- [x] **Step 2: 写 Redis Lua 集成测试**
 
 使用 `BKCRAB_TEST_REDIS_ADDR`：
 
@@ -839,7 +839,7 @@ Redis TIME
 错误 token 不能释放其它 lease
 ```
 
-- [ ] **Step 3: Service 集成行为**
+- [x] **Step 3: Service 集成行为**
 
 ```text
 permit deny -> 尝试下一个 fallback
@@ -852,14 +852,14 @@ panic -> release
 
 provider limiter 是可用性/第三方保护，不是 MySQL 业务 fence。
 
-- [ ] **Step 4: 验证**
+- [x] **Step 4: 验证**
 
 ```bash
 go test ./internal/imagegen -run 'TestProviderLimiter' -v
 go test ./internal/imagegen -run 'TestGenerationService.*Limit' -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/imagegen/provider_limiter* internal/imagegen/service*
@@ -884,7 +884,7 @@ git commit -m "feat(imagegen): limit physical provider calls across fallback"
 - Modify: `internal/store/rag_task_claim.go`
 - Modify: `internal/store/rag_task_claim_test.go`
 
-- [ ] **Step 1: 写 exact claim 失败测试**
+- [x] **Step 1: 写 exact claim 失败测试**
 
 覆盖：
 
@@ -906,7 +906,7 @@ generation 从3安全跳到7时 claim=7；返回事务覆盖前真实 PreviousCl
 claim 返回 execution fence 的 expected writer fingerprint
 ```
 
-- [ ] **Step 2: 实现 resource advisory lock**
+- [x] **Step 2: 实现 resource advisory lock**
 
 使用与 RAG fairqueue 完全相同的：
 
@@ -919,7 +919,7 @@ resource = image.generate
 
 本Task还把Task2/6已写的batch create/status/cancel、dispatch list/by-ID/Mark、expired rearm/cancel、poison/broker repair，以及Task9将消费的recovery high-water/每个page与continuous reconciliation全部改走expected-writer pinned read/transaction helper；read方法也在返回DTO前验证identity。real-MySQL测试对每条路径注入transparent writer switch，断言不返回candidate/snapshot、不提交且触发同一fatal gate。
 
-- [ ] **Step 3: 最终容量闸门并发测试**
+- [x] **Step 3: 最终容量闸门并发测试**
 
 两个 store 实例、8 个并发 claim：
 
@@ -933,7 +933,7 @@ advisory lock timeout -> no mutation
 
 统计使用 authoritative writer DB_NOW，不走 replica。
 
-- [ ] **Step 4: Heartbeat**
+- [x] **Step 4: Heartbeat**
 
 `HeartbeatImageGenerationTask` 必须取得同一 resource lock：
 
@@ -943,7 +943,7 @@ advisory lock timeout -> no mutation
 - 取消时返回 cancel disposition，不再续租；
 - claim/heartbeat 对有效 lease 写入存在全序。
 
-- [ ] **Step 5: Finish/retry/cancel fence**
+- [x] **Step 5: Finish/retry/cancel fence**
 
 实现：
 
@@ -956,11 +956,11 @@ FinishCanceled(claim)
 
 所有 execution-owned mutation 先用 claim 携带的 expected writer fingerprint 在 pinned connection 上复验 writer/session identity，再在同一事务中按固定 batch→task 锁序校验 RUNNING、claim generation、owner、`lease_until>DB_NOW` 与 `dispatch_generation=claim_generation`。Retry 原子 retry+1、`dispatch_generation=GREATEST(dispatch_generation,claim_generation)+1`、marker NULL、PENDING+future next_run；永久失败/取消聚合 batch。salvage finalize 使用 exact claim 返回的 `PreviousClaimGeneration` 验证 manifest，再以当前 execution fence 提交。测试覆盖 cancel-vs-finalize、cancel-vs-heartbeat、writer transparent switch、lease恰好过期、rearm 后迟到 finalize、死锁重试与终态唯一性。
 
-- [ ] **Step 6: Expired sweeper/reclaim**
+- [x] **Step 6: Expired sweeper/reclaim**
 
 常驻 sweeper 在 writer-verified resource lock 下分页处理 expired RUNNING。若 batch 未取消，只对 `dispatch_generation=claim_generation` 的 original Guard CAS 写 `dispatch_generation=claim_generation+1, dispatched_at=NULL`，status 保持 RUNNING；已 rearm 的 `dispatch_generation>claim_generation` 不重复推进。若 batch 已 cancel，则不 rearm：以 expired claim/generation/lease fence 转 CANCELED并聚合 batch，覆盖 worker崩溃与已 rearm未 claim 两种情况。exact reclaim 再决定 retry、使用 `PreviousClaimGeneration` salvage 或失败；heartbeat与 sweeper 只有一个能赢。
 
-- [ ] **Step 7: 验证**
+- [x] **Step 7: 验证**
 
 ```bash
 go test ./internal/store -run 'TestImageGeneration.*Claim' -v
@@ -968,7 +968,7 @@ go test ./internal/store -run 'TestImageGeneration.*(Heartbeat|Retry|Cancel|Capa
 go test ./internal/store -run 'Test.*FairQueue.*Writer|TestRAG.*Claim' -v
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add internal/store/imagegen.go internal/store/imagegen_repair.go internal/store/imagegen_claim.go internal/store/imagegen_claim_test.go internal/store/imagegen_mysql_test.go internal/store/fairqueue_mysql_fence.go internal/store/fairqueue_mysql_fence_test.go internal/store/rag_task_claim.go internal/store/rag_task_claim_test.go internal/store/store.go
@@ -988,7 +988,7 @@ git commit -m "feat(imagegen): fence exact claims heartbeats and retries in mysq
 - Modify: `cmd/bkcrab/cmd_admin_fairqueue.go`
 - Modify: `cmd/bkcrab/cmd_admin_fairqueue_test.go`
 
-- [ ] **Step 1: 写 DispatchSource adapter 测试**
+- [x] **Step 1: 写 DispatchSource adapter 测试**
 
 覆盖：
 
@@ -1006,7 +1006,7 @@ canonical reconciliation tenant
 RecoverySource/BrokerRepairSource/WriterRebindSource 都由同一 adapter 映射，fairqueue 不 import imagegen/store
 ```
 
-- [ ] **Step 2: 写 Prepare disposition 测试**
+- [x] **Step 2: 写 Prepare disposition 测试**
 
 ```text
 claimed
@@ -1026,7 +1026,7 @@ header-only 无论 adapter 返回什么都不能成为 claimed；terminal/cancel
 
 映射遵循通用 fairqueue 契约，不能为 Imagegen 私自 ACK 不可判断的消息。
 
-- [ ] **Step 3: PreparedTask.Run**
+- [x] **Step 3: PreparedTask.Run**
 
 执行顺序：
 
@@ -1047,7 +1047,7 @@ check/salvage exact claim 返回的 PreviousClaimGeneration manifest（不能用
 - object manifest complete + DB error -> 留待 salvage；
 - panic/context cancel -> 分类并 release。
 
-- [ ] **Step 4: Heartbeat 双 lease**
+- [x] **Step 4: Heartbeat 双 lease**
 
 Run 期间：
 
@@ -1059,7 +1059,7 @@ provider physical lease renew（仅调用期间）
 
 任一业务 fence 丢失取消 provider ctx。Redis epoch 变化按通用 recovery identity 刷新；不能拿 provisional token 跑长任务。
 
-- [ ] **Step 5: RecoverySource**
+- [x] **Step 5: RecoverySource**
 
 实现通用 paged contract，而不是一次性数组 snapshot：
 
@@ -1074,11 +1074,11 @@ ListValidRunning(highWater,afterSequenceID,limit) -> lease expiry + 同查询 DB
 
 同一adapter还要把store-private `FairQueueOperationRecord/StartSession`与通用`RecoveryOperationRecord/OperationJournal`无损桥接：所有Read显式传expected writer，mutation交回完整expected record/version CAS，`WithStartFence` callback保持同一pinned session及异常物理discard语义。runtime启动/重连先读`image.generate` journal；ACTIVE或无匹配READY control的READY_COMMITTED保持operator-required，匹配last-completed ID才可补记COMPLETED。
 
-- [ ] **Step 6: 注册通用运维 source**
+- [x] **Step 6: 注册通用运维 source**
 
 在 admin fairqueue resource registry 显式注册 `image.generate` 的 `BrokerRepairSource`、`WriterRebindSource`、`RecoverySource`和`OperationJournal`，使三个通用命令可用。测试要求unknown resource仍在连接前拒绝；三类apply都复用MySQL start fence→Redis raw lock/preflight→journal CAS→recheck→Begin顺序和operation ID。Rabbit repair排除canceled/terminal，并覆盖ACTIVE+READY/NONE pre-Begin恢复；writer rebind复验schema/generation/valid-RUNNING=0并要求所有image runtime/recovery coordinator保持停止到COMPLETED；force只允许卡住NORMAL/same-ID/missing+未完成journal且只触碰`{image.generate}`keys。READY_COMMITTED+missing需重做Redis通用passes；READY_COMMITTED+READY/last-ID同值只CAS COMPLETED。缺确认、不允许起态、stale expected record、TOCTOU或中断都保持非READY且零越权mutation；raw在journal窗口失效可留下ACTIVE，但必须零Begin、零Redis control/progress mutation、零业务mutation（raw lock维护除外），Redis全丢由同ID journal resume。
 
-- [ ] **Step 7: 验证**
+- [x] **Step 7: 验证**
 
 ```bash
 go test ./internal/imagegen -run 'TestFairQueue' -v
@@ -1086,7 +1086,7 @@ go test ./internal/fairqueue -run 'Test.*Image' -v
 go test ./cmd/bkcrab -run 'TestAdminFairQueue.*Image' -v
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add internal/imagegen/fair_queue.go internal/imagegen/fair_queue_test.go internal/imagegen/service.go internal/imagegen/artifacts.go cmd/bkcrab/cmd_admin_fairqueue.go cmd/bkcrab/cmd_admin_fairqueue_test.go
@@ -1109,7 +1109,7 @@ git commit -m "feat(imagegen): execute image tasks through the fairqueue runtime
 - Modify: `internal/agent/loop.go`
 - Create: `internal/agent/loop_imagegen_metadata_test.go`
 
-- [ ] **Step 1: 固定 JSON schema/人工校验测试**
+- [x] **Step 1: 固定 JSON schema/人工校验测试**
 
 覆盖：
 
@@ -1127,7 +1127,7 @@ unknown/malformed args
 
 工具 description 明确“提交后可能返回 batch ID，不要在同一轮高频轮询”。
 
-- [ ] **Step 2: 注册模式**
+- [x] **Step 2: 注册模式**
 
 ```text
 mode=legacy:
@@ -1145,7 +1145,7 @@ mode=drain:
 
 ≤4 张 create 仍创建一个 durable task，不允许走同步 shortcut。
 
-- [ ] **Step 3: Tool handler**
+- [x] **Step 3: Tool handler**
 
 handler：
 
@@ -1158,7 +1158,7 @@ handler：
 - status 返回排序 artifacts/错误摘要；
 - 不输出 base64/provider 原始 URL query。
 
-- [ ] **Step 4: Typed metadata validator**
+- [x] **Step 4: Typed metadata validator**
 
 扩展 `ToolResult.Metadata`：
 
@@ -1175,7 +1175,7 @@ stable ordering
 
 插件/MCP/其它 builtin 的同名 metadata 拒绝并安全日志。
 
-- [ ] **Step 5: Agent/gateway-facing delivery accumulation**
+- [x] **Step 5: Agent/gateway-facing delivery accumulation**
 
 Agent loop 应从可信 metadata 收集 artifact refs，并在最终结果交付时保留；不能依赖模型逐字复制 Markdown。覆盖：
 
@@ -1187,14 +1187,14 @@ Agent loop 应从可信 metadata 收集 artifact refs，并在最终结果交付
 - Web streaming 不重复渲染正文；
 - IM 最终 MediaItem 次序稳定。
 
-- [ ] **Step 6: 验证**
+- [x] **Step 6: 验证**
 
 ```bash
 go test ./internal/agent/tools -run 'TestImageGenBatch' -v
 go test ./internal/agent -run 'TestImagegen.*Metadata' -v
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/agent
@@ -1214,7 +1214,7 @@ git commit -m "feat(tools): expose durable image_gen_batch actions and artifact 
 - Modify: `internal/setup/handlers_health.go`
 - Modify: `internal/setup/handlers_health_test.go`
 
-- [ ] **Step 1: 写装配失败测试**
+- [x] **Step 1: 写装配失败测试**
 
 覆盖：
 
@@ -1233,13 +1233,13 @@ shared Agent identity 传递正确
 共享 Redis handshake发现 cluster_enabled=1时拒绝image resource；RAG legacy不妨碍image fair使用全局fairqueue clients
 ```
 
-- [ ] **Step 2: Gateway 组件装配**
+- [x] **Step 2: Gateway 组件装配**
 
 `ImageGenerationService`、BatchService、provider limiter 和 fair adapter 应是可测试依赖，不能在 tool handler 内临时构造 Rabbit/Redis/MySQL clients。
 
 fairqueue Runtime 按 resource 注册 Imagegen source/preparer与OperationJournal adapter；RAG 与 Imagegen 共用连接池/基础 client时必须各自 namespace/配置，关闭只执行一次。共享 `FairQueue.Enabled` 只控制基础设施，RAG/image各自 mode决定resource loop；不能因 RAG=legacy误停 image=fair。
 
-- [ ] **Step 3: Tool catalog/UI**
+- [x] **Step 3: Tool catalog/UI**
 
 管理 UI 继续配置 category `image_gen` 的 provider chain；模型工具名称变为 `image_gen_batch`。说明：
 
@@ -1248,7 +1248,7 @@ fairqueue Runtime 按 resource 注册 Imagegen source/preparer与OperationJourna
 - batch mode 是部署级三态开关；
 - UI 不把 16 张上限误当 provider 单次 n。
 
-- [ ] **Step 4: 健康状态**
+- [x] **Step 4: 健康状态**
 
 暴露：
 
@@ -1273,11 +1273,11 @@ raw operation ID、secret/DSN/endpoint credential 不进入 health detail。
 
 probe 语义与共享 fairqueue 一致：`/livez` 只表示进程存活；`/readyz` 表示 API/MySQL schema 可服务 durable create/status/cancel，不因 image Redis RECOVERING、Rabbit或provider暂时不可用而摘掉整个 API Pod；image scheduler/create的细粒度 gate在受保护 health detail与action错误中体现。MySQL整体不可用或schema不兼容可使readiness失败，单个resource recovering不可以。
 
-- [ ] **Step 5: 旧工具切换闸门**
+- [x] **Step 5: 旧工具切换闸门**
 
 所有实例先以legacy部署兼容版本并确认更旧binary归零。正向必须分两次全量rollout：legacy→drain，确认legacy Pod与旧同步调用归零；再drain→fair。禁止直接rolling legacy→fair。fair/drain中依赖故障保持batch tool已注册，禁止回退旧工具。回滚全量fair→drain，待无非终态batch后再drain→legacy；任一阶段平台不能证明旧ReplicaSet归零就保持drain。
 
-- [ ] **Step 6: 验证**
+- [x] **Step 6: 验证**
 
 ```bash
 go test ./internal/gateway -run 'TestImagegenBatch' -v
@@ -1285,7 +1285,7 @@ go test ./internal/setup -run 'Test.*(Tools|Health).*Image' -v
 go build ./...
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/gateway internal/setup
@@ -1311,11 +1311,11 @@ git commit -m "feat(gateway): wire image batch scheduling and health gates"
 - Modify: `deploy/k8s/bkcrab.yaml`
 - Create: `internal/setup/imagegen_deployment_test.go`
 
-- [ ] **Step 1: 接入全部 Imagegen env**
+- [x] **Step 1: 接入全部 Imagegen env**
 
 默认 `BKCRAB_IMAGEGEN_BATCH_MODE=legacy`。fair/drain profile显式开启共享 fairqueue、Redis standalone 与 MySQL writer topology=single；secret仍由现有 tool provider config管理，不把provider key放进ConfigMap或示例明文。
 
-- [ ] **Step 2: 单实例 profile**
+- [x] **Step 2: 单实例 profile**
 
 允许：
 
@@ -1327,7 +1327,7 @@ replicas=1
 
 文档明确 LocalFS 只支持单实例 image worker。
 
-- [ ] **Step 3: 多实例 profile**
+- [x] **Step 3: 多实例 profile**
 
 要求：
 
@@ -1341,7 +1341,7 @@ same fairqueue/image config
 
 worker 不需要本地共享磁盘。
 
-- [ ] **Step 4: Helm/K8s 校验**
+- [x] **Step 4: Helm/K8s 校验**
 
 - image batch mode=legacy|drain|fair和值可覆盖；
 - Secret/ConfigMap 分离；
@@ -1351,7 +1351,7 @@ worker 不需要本地共享磁盘。
 - 不输出 provider secret。
 - 模板/manifest拒绝Redis Cluster并固定writerTopology=single；正向切换必须两个独立全量rollout `legacy→drain→fair`并逐阶段证明旧ReplicaSet归零，回滚`fair→drain→legacy`。
 
-- [ ] **Step 5: 验证**
+- [x] **Step 5: 验证**
 
 ```bash
 docker compose -f deploy/docker/docker-compose.yml config
@@ -1360,7 +1360,7 @@ helm template bkcrab deploy/helm/bkcrab
 go test ./internal/setup -run 'TestImagegen.*(Deployment|Rollout|Probe)' -v
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add deploy internal/setup/imagegen_deployment_test.go
@@ -1378,7 +1378,7 @@ git commit -m "deploy(imagegen): configure durable fair image batches"
 - Create: `internal/imagegen/integration_harness_test.go`
 - Modify: `internal/setup/imagegen_deployment_test.go`
 
-- [ ] **Step 1: env-gated harness**
+- [x] **Step 1: env-gated harness**
 
 ```text
 BKCRAB_TEST_MYSQL_DSN
@@ -1389,7 +1389,7 @@ BKCRAB_TEST_OBJECT_STORE_* 或 isolated LocalFS temp root
 
 每个测试使用唯一 Rabbit exchange/key prefix/workspace scope，并只清理自己的 namespace。
 
-- [ ] **Step 2: Planner/tool 场景**
+- [x] **Step 2: Planner/tool 场景**
 
 ```text
 single prompt count=16 -> 4 tasks
@@ -1401,7 +1401,7 @@ status returns ordered artifacts
 same user+agent cross-session status succeeds；same user different agent is denied
 ```
 
-- [ ] **Step 3: 公平与借用**
+- [x] **Step 3: 公平与借用**
 
 可控 blocking fake provider：
 
@@ -1415,7 +1415,7 @@ same user<=4
 delete Redis reservations -> MySQL still blocks fifth
 ```
 
-- [ ] **Step 4: Provider/fallback**
+- [x] **Step 4: Provider/fallback**
 
 ```text
 primary success
@@ -1427,7 +1427,7 @@ incomplete count -> no partial task commit
 provider physical concurrency limit
 ```
 
-- [ ] **Step 5: Artifact/crash**
+- [x] **Step 5: Artifact/crash**
 
 ```text
 base64/URL -> persisted workspace object
@@ -1440,7 +1440,7 @@ wrong MIME/oversize/SSRF reject
 cross-Pod status reads shared object
 ```
 
-- [ ] **Step 6: Partial/cancel**
+- [x] **Step 6: Partial/cancel**
 
 ```text
 3 tasks DONE + 1 FAILED -> batch PARTIAL
@@ -1452,7 +1452,7 @@ cancel after partial success -> CANCELED with completed artifacts retained
 repeat cancel idempotent
 ```
 
-- [ ] **Step 7: 基础设施故障**
+- [x] **Step 7: 基础设施故障**
 
 ```text
 Rabbit down: create succeeds, recovery dispatches
@@ -1473,7 +1473,7 @@ Redis tenant-only orphan key在普通reset中被bounded owned-key scan删除；C
 mode正向legacy→drain→fair与回滚fair→drain→legacy：逐阶段旧ReplicaSet归零；drain拒绝create但status/cancel/既有worker可用，绝无legacy/fair混跑
 ```
 
-- [ ] **Step 8: 安全扫描**
+- [x] **Step 8: 安全扫描**
 
 在 Rabbit payload、Redis values、MySQL provider plan、tool result、logs fixture 中搜索：
 
@@ -1488,7 +1488,7 @@ signed URL secret query
 
 只允许 prompt sentinel 出现在预期 MySQL task prompt/request 列，不得出现在其它系统。
 
-- [ ] **Step 9: 验证**
+- [x] **Step 9: 验证**
 
 ```bash
 go test ./internal/imagegen -run 'TestIntegration' -v
@@ -1497,7 +1497,7 @@ go test ./internal/setup -run 'TestImagegen.*(Deployment|Rollout|Probe)' -v
 go test ./cmd/bkcrab -run 'TestAdminFairQueue.*Image' -v
 ```
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add internal/imagegen/integration_test.go internal/imagegen/fair_queue_integration_test.go internal/imagegen/integration_harness_test.go internal/setup/imagegen_deployment_test.go
@@ -1515,7 +1515,7 @@ git commit -m "test(imagegen): cover fair batches fallback artifacts and recover
 - Modify: `docs/rag-fair-queue-operations.md`（在 registered resource 表增加 image.generate）
 - Modify: this plan checkboxes as work completes
 
-- [ ] **Step 1: 文档**
+- [x] **Step 1: 文档**
 
 记录：
 
@@ -1528,7 +1528,7 @@ git commit -m "test(imagegen): cover fair batches fallback artifacts and recover
 - cancel、PARTIAL、retry、salvage；
 - legacy/fair/drain/rollback runbook；三条通用admin命令的 image.generate dry-run/apply前置与故障恢复。
 
-- [ ] **Step 2: 局部回归**
+- [x] **Step 2: 局部回归**
 
 ```bash
 go test ./internal/toolproviders/imagegen -v
@@ -1540,7 +1540,7 @@ go test ./internal/gateway -run 'TestImagegen' -v
 go test ./internal/setup -run 'Test.*Image' -v
 ```
 
-- [ ] **Step 3: 全量验证**
+- [x] **Step 3: 全量验证**
 
 ```bash
 go test ./...
@@ -1550,7 +1550,7 @@ go build ./...
 
 若仓库已有 lint/前端测试命令，按 CI 配置补跑；不得猜测并写入不存在的命令。
 
-- [ ] **Step 4: 灰度证据**
+- [x] **Step 4: 灰度证据**
 
 保存：
 
@@ -1567,7 +1567,7 @@ Rabbit/Redis/object recovery
 no base64/secret leakage
 ```
 
-- [ ] **Step 5: 发布顺序**
+- [x] **Step 5: 发布顺序**
 
 ```text
 1. fairqueue prerequisite complete
@@ -1579,37 +1579,37 @@ no base64/secret leakage
 7. multi-instance only after shared object-store validation
 ```
 
-- [ ] **Step 6: 最终自审**
+- [x] **Step 6: 最终自审**
 
-- [ ] Imagegen 只新增两张业务表，并复用前置通用 special-recovery safety journal。
-- [ ] 没有新增 artifact/outbox/jobs/tenant 业务表。
-- [ ] image bytes/base64 不进 MySQL/Rabbit/Redis/tool text/log。
-- [ ] Rabbit 不含 prompt/provider plan。
-- [ ] count>16 明确拒绝，不截断。
-- [ ] ≤4 也走 durable fair task。
-- [ ] user/config user/agent owner 身份没有混用。
-- [ ] provider plan 可重建且不含 secret。
-- [ ] exact claim 与 heartbeat 共用 resource lock。
-- [ ] claim/heartbeat/finalize/source/recovery每页都逐pinned-connection验证writer identity；mismatch fatal fail closed。
-- [ ] claim令claim_generation=dispatch_generation并保留marker；retry/rearm/repair遵守GREATEST invariant，salvage使用PreviousClaimGeneration。
-- [ ] global=4、base=2、burst=4、borrow=true 有验收。
-- [ ] provider 物理调用有独立 limiter。
-- [ ] manifest salvage 避免主要崩溃窗口重复付费。
-- [ ] cancel/stale worker 不能越过 fence 提交。
-- [ ] PARTIAL 保留成功 artifact。
-- [ ] batch mode 不暴露旧同步 `image_gen`。
-- [ ] 多实例要求共享 workspace。
-- [ ] status/cancel 校验 canonical owner。
-- [ ] status/cancel校验user+agent，允许同Agent跨session且拒绝跨Agent。
-- [ ] worker崩溃后的cancel由expired-cancel sweeper收敛，不永久CANCELING。
-- [ ] RecoverySource使用sequence_id high-water/keyset/DB_NOW，stable token双向zero-diff后才READY。
-- [ ] image.generate已注册rabbit-disaster-repair/rebind-writer/redis-force-rebuild。
-- [ ] image runtime注入OperationJournal；Redis全丢不抹掉special intent，三阶段Finish按operation ID对账。
-- [ ] rebind期间所有image runtime/recovery coordinator保持停止到journal COMPLETED；force仅允许卡住NORMAL/same-ID/missing+未完成journal起态。
-- [ ] fair→drain→legacy期间batch管理入口不断且旧同步工具不混跑。
-- [ ] 正向也严格legacy→drain→fair两阶段，每阶段旧ReplicaSet归零后才继续。
+- [x] Imagegen 只新增两张业务表，并复用前置通用 special-recovery safety journal。
+- [x] 没有新增 artifact/outbox/jobs/tenant 业务表。
+- [x] image bytes/base64 不进 MySQL/Rabbit/Redis/tool text/log。
+- [x] Rabbit 不含 prompt/provider plan。
+- [x] count>16 明确拒绝，不截断。
+- [x] ≤4 也走 durable fair task。
+- [x] user/config user/agent owner 身份没有混用。
+- [x] provider plan 可重建且不含 secret。
+- [x] exact claim 与 heartbeat 共用 resource lock。
+- [x] claim/heartbeat/finalize/source/recovery每页都逐pinned-connection验证writer identity；mismatch fatal fail closed。
+- [x] claim令claim_generation=dispatch_generation并保留marker；retry/rearm/repair遵守GREATEST invariant，salvage使用PreviousClaimGeneration。
+- [x] global=4、base=2、burst=4、borrow=true 有验收。
+- [x] provider 物理调用有独立 limiter。
+- [x] manifest salvage 避免主要崩溃窗口重复付费。
+- [x] cancel/stale worker 不能越过 fence 提交。
+- [x] PARTIAL 保留成功 artifact。
+- [x] batch mode 不暴露旧同步 `image_gen`。
+- [x] 多实例要求共享 workspace。
+- [x] status/cancel 校验 canonical owner。
+- [x] status/cancel校验user+agent，允许同Agent跨session且拒绝跨Agent。
+- [x] worker崩溃后的cancel由expired-cancel sweeper收敛，不永久CANCELING。
+- [x] RecoverySource使用sequence_id high-water/keyset/DB_NOW，stable token双向zero-diff后才READY。
+- [x] image.generate已注册rabbit-disaster-repair/rebind-writer/redis-force-rebuild。
+- [x] image runtime注入OperationJournal；Redis全丢不抹掉special intent，三阶段Finish按operation ID对账。
+- [x] rebind期间所有image runtime/recovery coordinator保持停止到journal COMPLETED；force仅允许卡住NORMAL/same-ID/missing+未完成journal起态。
+- [x] fair→drain→legacy期间batch管理入口不断且旧同步工具不混跑。
+- [x] 正向也严格legacy→drain→fair两阶段，每阶段旧ReplicaSet归零后才继续。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add docs/database.md docs/imagegen-batch-operations.md docs/rag-fair-queue-operations.md docs/superpowers/plans/2026-08-02-imagegen-batch-fair-queue.md docs/superpowers/specs/2026-08-02-imagegen-batch-fair-queue-design.md
