@@ -173,6 +173,11 @@ type Store interface {
 	ListBrokerBackedImageCandidates(ctx context.Context, highWater, afterSequenceID int64, limit int) ([]ImageTaskDispatchCandidate, int64, error)
 	RearmImageCandidateAfterBrokerLoss(ctx context.Context, original ImageTaskDispatchCandidate) (*ImageTaskDispatchCandidate, bool, error)
 	RepairPoisonImageCandidate(ctx context.Context, locator ImagePoisonRepairLocator, registeredResource, queueTenantHash string) (*ImageTaskDispatchCandidate, ImagePoisonRepairDisposition, error)
+	HeartbeatImageGenerationTask(ctx context.Context, fence ImageGenerationFence, leaseDuration time.Duration) (ImageGenerationHeartbeatDisposition, error)
+	FinishImageGenerationTaskDone(ctx context.Context, fence ImageGenerationFence, result ImageTaskDoneResult) (*ImageGenerationBatchRecord, bool, error)
+	FinishImageGenerationTaskRetry(ctx context.Context, fence ImageGenerationFence, errorCode string, nextRun time.Time) (bool, error)
+	FinishImageGenerationTaskFailed(ctx context.Context, fence ImageGenerationFence, errorCode string) (bool, error)
+	FinishImageGenerationTaskCanceled(ctx context.Context, fence ImageGenerationFence) (bool, error)
 
 	// --- Context archives ---
 	//

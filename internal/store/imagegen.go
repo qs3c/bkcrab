@@ -274,11 +274,22 @@ func (d *DBStore) CreateImageGenerationBatch(ctx context.Context, request Create
 		return nil, nil, err
 	}
 	defer tx.Rollback()
+	batch, tasks, err := d.createImageGenerationBatchTx(ctx, tx, request)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	return batch, tasks, nil
+}
+
+func (d *DBStore) createImageGenerationBatchTx(ctx context.Context, tx *sql.Tx, request CreateImageGenerationBatchRequest) (*ImageGenerationBatchRecord, []ImageGenerationTaskRecord, error) {
 	var now time.Time
 	if err := tx.QueryRowContext(ctx, `SELECT UTC_TIMESTAMP(6)`).Scan(&now); err != nil {
 		return nil, nil, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO image_generation_batches
+	_, err := tx.ExecContext(ctx, `INSERT INTO image_generation_batches
 		(id,user_id,config_user_id,agent_owner_user_id,agent_id,workspace_project_id,
 		 workspace_session_id,request_json,provider_plan_json,status,requested_count,
 		 created_at,updated_at)
@@ -313,9 +324,6 @@ func (d *DBStore) CreateImageGenerationBatch(ctx context.Context, request Create
 			RequestFingerprint: input.RequestFingerprint, Status: ImageGenerationTaskPending,
 			MaxRetry: request.MaxRetries, DispatchGeneration: 1, CreatedAt: now, UpdatedAt: now,
 		})
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, nil, err
 	}
 	batch := &ImageGenerationBatchRecord{
 		ID: request.BatchID, UserID: request.UserID, ConfigUserID: request.ConfigUserID,
@@ -671,6 +679,17 @@ func (d *DBStore) RequestImageBatchCancel(ctx context.Context, userID, agentID, 
 		return nil, nil, err
 	}
 	defer tx.Rollback()
+	batch, tasks, err := d.requestImageBatchCancelTx(ctx, tx, userID, agentID, batchID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	return batch, tasks, nil
+}
+
+func (d *DBStore) requestImageBatchCancelTx(ctx context.Context, tx *sql.Tx, userID, agentID, batchID string) (*ImageGenerationBatchRecord, []ImageGenerationTaskRecord, error) {
 	batch, err := scanImageBatch(tx.QueryRowContext(ctx, `SELECT `+imageBatchColumns+` FROM image_generation_batches WHERE id=? AND user_id=? AND agent_id=? FOR UPDATE`, batchID, userID, agentID))
 	if err != nil {
 		return nil, nil, err
@@ -694,9 +713,6 @@ func (d *DBStore) RequestImageBatchCancel(ctx context.Context, userID, agentID, 
 	}
 	tasks, err := scanImageTaskRows(rows)
 	if err != nil {
-		return nil, nil, err
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, nil, err
 	}
 	return batch, tasks, nil
