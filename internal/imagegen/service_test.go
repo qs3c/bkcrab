@@ -40,6 +40,47 @@ type generationServiceBackend struct {
 	generate   func(context.Context, ResolvedProviderConfig, GenerateRequest) (ProviderResult, error)
 }
 
+type generationServiceGate struct {
+	mu        sync.Mutex
+	denied    map[string]bool
+	attempted []ProviderLease
+	acquired  []ProviderLease
+	renewed   []ProviderLease
+	released  []ProviderLease
+}
+
+func (g *generationServiceGate) Acquire(_ context.Context, provider, model, token string, _ int, _ time.Duration) (ProviderLease, bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	lease := ProviderLease{Provider: provider, Model: model, Key: provider + ":" + model, Token: token}
+	g.attempted = append(g.attempted, lease)
+	if g.denied[provider] {
+		return lease, false, nil
+	}
+	g.acquired = append(g.acquired, lease)
+	return lease, true, nil
+}
+
+func (g *generationServiceGate) Renew(_ context.Context, lease ProviderLease, _ time.Duration) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.renewed = append(g.renewed, lease)
+	return nil
+}
+
+func (g *generationServiceGate) Release(_ context.Context, lease ProviderLease) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.released = append(g.released, lease)
+	return nil
+}
+
+func (g *generationServiceGate) counts() (int, int, int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.acquired), len(g.renewed), len(g.released)
+}
+
 func (b *generationServiceBackend) Category() string { return "image_gen" }
 func (b *generationServiceBackend) Name() string     { return b.name }
 func (b *generationServiceBackend) Execute(context.Context, toolproviders.Request) (toolproviders.Response, error) {
@@ -156,5 +197,114 @@ func TestGenerationServiceValidatesRequestAndHonorsCancellation(t *testing.T) {
 	_, err := service.Generate(context.Background(), generationServiceIdentity(), generationServicePlan(false, "slow"), GenerateRequest{Prompt: "prompt", Size: SizeSquare, Count: 1})
 	if ProviderErrorKind(err) != ErrorUpstreamTransient {
 		t.Fatalf("timeout kind=%s err=%v", ProviderErrorKind(err), err)
+	}
+}
+
+func TestGenerationServiceLimiterDenialFallsBackAndUsesFreshToken(t *testing.T) {
+	resolver := &generationServiceResolver{configs: map[string]string{"alpha": "key", "beta": "key"}}
+	registry := toolproviders.NewRegistry()
+	var calls []string
+	for _, name := range []string{"alpha", "beta"} {
+		name := name
+		registry.Register(&generationServiceBackend{name: name, capability: Capability{MaxImagesPerCall: 1, SupportedSizes: []string{SizeSquare}}, generate: func(context.Context, ResolvedProviderConfig, GenerateRequest) (ProviderResult, error) {
+			calls = append(calls, name)
+			return ProviderResult{Images: []GeneratedImage{{SourceURL: "https://example.invalid/image.png"}}}, nil
+		}})
+	}
+	gate := &generationServiceGate{denied: map[string]bool{"alpha": true}}
+	service := NewGenerationService(resolver, registry, gate, time.Second)
+	result, err := service.Generate(context.Background(), generationServiceIdentity(), generationServicePlan(true, "alpha", "beta"), GenerateRequest{Prompt: "prompt", Size: SizeSquare, Count: 1})
+	if err != nil || result.Provider != "beta" || len(calls) != 1 || calls[0] != "beta" {
+		t.Fatalf("limiter fallback result=%#v calls=%#v err=%v", result, calls, err)
+	}
+	if len(result.Attempts) != 2 || result.Attempts[0].Kind != ErrorRateLimited {
+		t.Fatalf("limiter attempt classification: %#v", result.Attempts)
+	}
+	gate.mu.Lock()
+	if len(gate.attempted) != 2 || gate.attempted[0].Token == gate.attempted[1].Token {
+		t.Fatalf("each physical fallback call needs a fresh token: %#v", gate.attempted)
+	}
+	gate.mu.Unlock()
+	acquired, _, released := gate.counts()
+	if acquired != 1 || released != 1 {
+		t.Fatalf("lease lifecycle acquired=%d released=%d", acquired, released)
+	}
+}
+
+func TestGenerationServiceLimiterAllDeniedReturnsRateLimitedWithoutWaiting(t *testing.T) {
+	resolver := &generationServiceResolver{configs: map[string]string{"alpha": "key", "beta": "key"}}
+	registry := toolproviders.NewRegistry()
+	called := false
+	for _, name := range []string{"alpha", "beta"} {
+		registry.Register(&generationServiceBackend{name: name, capability: Capability{MaxImagesPerCall: 1, SupportedSizes: []string{SizeSquare}}, generate: func(context.Context, ResolvedProviderConfig, GenerateRequest) (ProviderResult, error) {
+			called = true
+			return ProviderResult{}, nil
+		}})
+	}
+	gate := &generationServiceGate{denied: map[string]bool{"alpha": true, "beta": true}}
+	started := time.Now()
+	_, err := NewGenerationService(resolver, registry, gate, time.Second).Generate(context.Background(), generationServiceIdentity(), generationServicePlan(true, "alpha", "beta"), GenerateRequest{Prompt: "prompt", Size: SizeSquare, Count: 1})
+	if ProviderErrorKind(err) != ErrorRateLimited || called || time.Since(started) > 250*time.Millisecond {
+		t.Fatalf("all denied kind=%s called=%v elapsed=%s err=%v", ProviderErrorKind(err), called, time.Since(started), err)
+	}
+}
+
+func TestGenerationServiceLimiterReleasesOnCancelAndPanic(t *testing.T) {
+	t.Run("cancel", func(t *testing.T) {
+		resolver := &generationServiceResolver{configs: map[string]string{"slow": "key"}}
+		registry := toolproviders.NewRegistry()
+		registry.Register(&generationServiceBackend{name: "slow", capability: Capability{MaxImagesPerCall: 1, SupportedSizes: []string{SizeSquare}}, generate: func(ctx context.Context, _ ResolvedProviderConfig, _ GenerateRequest) (ProviderResult, error) {
+			<-ctx.Done()
+			return ProviderResult{}, ctx.Err()
+		}})
+		gate := &generationServiceGate{}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, _ = NewGenerationService(resolver, registry, gate, time.Second).Generate(ctx, generationServiceIdentity(), generationServicePlan(false, "slow"), GenerateRequest{Prompt: "prompt", Size: SizeSquare, Count: 1})
+		acquired, _, released := gate.counts()
+		if acquired != 1 || released != 1 {
+			t.Fatalf("cancel lease lifecycle acquired=%d released=%d", acquired, released)
+		}
+	})
+
+	t.Run("panic", func(t *testing.T) {
+		resolver := &generationServiceResolver{configs: map[string]string{"panic": "key"}}
+		registry := toolproviders.NewRegistry()
+		registry.Register(&generationServiceBackend{name: "panic", capability: Capability{MaxImagesPerCall: 1, SupportedSizes: []string{SizeSquare}}, generate: func(context.Context, ResolvedProviderConfig, GenerateRequest) (ProviderResult, error) {
+			panic("provider panic")
+		}})
+		gate := &generationServiceGate{}
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("expected provider panic")
+				}
+			}()
+			_, _ = NewGenerationService(resolver, registry, gate, time.Second).Generate(context.Background(), generationServiceIdentity(), generationServicePlan(false, "panic"), GenerateRequest{Prompt: "prompt", Size: SizeSquare, Count: 1})
+		}()
+		acquired, _, released := gate.counts()
+		if acquired != 1 || released != 1 {
+			t.Fatalf("panic lease lifecycle acquired=%d released=%d", acquired, released)
+		}
+	})
+}
+
+func TestGenerationServiceLimiterRenewsLongProviderCall(t *testing.T) {
+	resolver := &generationServiceResolver{configs: map[string]string{"slow": "key"}}
+	registry := toolproviders.NewRegistry()
+	registry.Register(&generationServiceBackend{name: "slow", capability: Capability{MaxImagesPerCall: 1, SupportedSizes: []string{SizeSquare}}, generate: func(context.Context, ResolvedProviderConfig, GenerateRequest) (ProviderResult, error) {
+		time.Sleep(45 * time.Millisecond)
+		return ProviderResult{Images: []GeneratedImage{{SourceURL: "https://example.invalid/image.png"}}}, nil
+	}})
+	gate := &generationServiceGate{}
+	service := NewGenerationService(resolver, registry, gate, time.Second)
+	service.providerLeaseTTL = 30 * time.Millisecond
+	_, err := service.Generate(context.Background(), generationServiceIdentity(), generationServicePlan(false, "slow"), GenerateRequest{Prompt: "prompt", Size: SizeSquare, Count: 1})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	acquired, renewed, released := gate.counts()
+	if acquired != 1 || renewed < 1 || released != 1 {
+		t.Fatalf("long-call lease lifecycle acquired=%d renewed=%d released=%d", acquired, renewed, released)
 	}
 }
