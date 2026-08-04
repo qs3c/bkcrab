@@ -1,0 +1,84 @@
+{{- if .Values.rabbitmq.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-rabbitmq
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: {{ include "bkcrab.fullname" . }}-rabbitmq
+  ports:
+  - name: amqp
+    port: 5672
+    targetPort: amqp
+  - name: management
+    port: 15672
+    targetPort: management
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-rabbitmq
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "bkcrab.fullname" . }}-rabbitmq
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "bkcrab.fullname" . }}-rabbitmq
+  template:
+    metadata:
+      labels:
+        app: {{ include "bkcrab.fullname" . }}-rabbitmq
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+      - name: rabbitmq
+        image: {{ .Values.rabbitmq.image | quote }}
+        env:
+        - name: RABBITMQ_DEFAULT_USER
+          value: {{ .Values.rabbitmq.username | quote }}
+        - name: RABBITMQ_DEFAULT_PASS
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "bkcrab.fullname" . }}-secrets
+              key: FAIR_QUEUE_RABBITMQ_PASSWORD
+        - name: RABBITMQ_DEFAULT_VHOST
+          value: {{ .Values.rabbitmq.vhost | quote }}
+        ports:
+        - name: amqp
+          containerPort: 5672
+        - name: management
+          containerPort: 15672
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rabbitmq
+        resources:
+          {{- toYaml .Values.rabbitmq.resources | nindent 10 }}
+        readinessProbe:
+          exec:
+            command: ["rabbitmq-diagnostics", "-q", "ping"]
+          periodSeconds: 5
+          timeoutSeconds: 5
+        livenessProbe:
+          exec:
+            command: ["rabbitmq-diagnostics", "-q", "ping"]
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: { drop: ["ALL"] }
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: {{ .Values.rabbitmq.storage }}
+{{- end }}

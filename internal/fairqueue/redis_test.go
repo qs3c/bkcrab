@@ -669,17 +669,21 @@ func TestRedisStandaloneProbe(t *testing.T) {
 
 func TestRedisProbeResourceHealthIsReadOnlyAndSanitized(t *testing.T) {
 	epoch := strings.Repeat("1", 32)
+	values := make(map[TelemetryName]int64)
+	telemetry := TelemetrySinkFunc(func(_ context.Context, event TelemetryEvent) {
+		values[event.Name] = event.Value
+	})
 	client := &redisTopologyProbeClient{
 		clusterInfo: "# Cluster\r\ncluster_enabled:0\r\n",
 		role:        []interface{}{"master", int64(0), []interface{}{}},
 		scriptResults: []redisTestScriptResult{
 			{value: []interface{}{"OK", "1", "READY", epoch, "1", redisTestWriterA, "NONE", "", "", "NONE"}},
-			{value: []interface{}{"OK", "2", "3"}},
+			{value: []interface{}{"OK", "2", "3", "4", "4", "4", "1", "3"}},
 		},
 	}
 	coordinator := &Redis{
 		options: RedisOptions{KeyPrefix: "bkcrab:", OperationTimeout: time.Second},
-		client:  client, tokens: redisFixedTokenSource{token: strings.Repeat("a", 32)},
+		client:  client, tokens: redisFixedTokenSource{token: strings.Repeat("a", 32)}, telemetry: telemetry,
 	}
 
 	probe, err := coordinator.ProbeResourceHealth(context.Background(), "rag.index")
@@ -690,11 +694,20 @@ func TestRedisProbeResourceHealthIsReadOnlyAndSanitized(t *testing.T) {
 		probe.Topology != (RedisTopology{Mode: RedisDeploymentStandalone, WritablePrimary: true}) ||
 		!probe.Control.Present || probe.Control.State != ResourceReady ||
 		probe.Control.Epoch != epoch || probe.Control.WriterFingerprint != redisTestWriterA ||
-		probe.ProvisionalCount != 2 || probe.ProcessingCount != 3 {
+		probe.ProvisionalCount != 2 || probe.ProcessingCount != 3 || probe.ActiveCount != 4 ||
+		probe.RingCount != 4 || probe.RingMemberCount != 4 || probe.StableCount != 1 || probe.GlobalInflight != 3 {
 		t.Fatalf("ProbeResourceHealth() = %+v", probe)
 	}
 	if client.doCalls != 1 || client.scanCalls != 0 || client.scriptCalls != 2 {
 		t.Fatalf("probe I/O = do:%d scan:%d script:%d", client.doCalls, client.scanCalls, client.scriptCalls)
+	}
+	for name, want := range map[TelemetryName]int64{
+		TelemetryActiveTenants: 4, TelemetryRing: 4, TelemetryRingMembers: 4,
+		TelemetryGlobalInflight: 3, TelemetryProcessingTurn: 3,
+	} {
+		if got := values[name]; got != want {
+			t.Fatalf("telemetry %s=%d, want %d; all=%v", name, got, want, values)
+		}
 	}
 	encoded := fmt.Sprintf("%+v", probe)
 	for _, forbidden := range []string{"redis.invalid", "password", "bkcrab:", "tenant-", "task-", "owner-token"} {
@@ -741,7 +754,7 @@ func TestRedisProbeResourceHealthFailsClosed(t *testing.T) {
 				role:        []interface{}{"master"},
 				scriptResults: []redisTestScriptResult{
 					{value: []interface{}{"OK", "0"}},
-					{value: []interface{}{"OK", "not-a-count", "0"}},
+					{value: []interface{}{"OK", "not-a-count", "0", "0", "0", "0", "0", "0"}},
 				},
 			},
 			want: ErrCoordinationCorrupt, wantDoCalls: 1, wantScripts: 2,
@@ -753,7 +766,7 @@ func TestRedisProbeResourceHealthFailsClosed(t *testing.T) {
 				role:        []interface{}{"master"},
 				scriptResults: []redisTestScriptResult{
 					{value: []interface{}{"OK", "0"}},
-					{value: []interface{}{"OK", "-1", "0"}},
+					{value: []interface{}{"OK", "-1", "0", "0", "0", "0", "0", "0"}},
 				},
 			},
 			want: ErrCoordinationCorrupt, wantDoCalls: 1, wantScripts: 2,

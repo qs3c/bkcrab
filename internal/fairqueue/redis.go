@@ -257,6 +257,7 @@ type RedisOptions struct {
 	DB               int
 	KeyPrefix        string
 	OperationTimeout time.Duration
+	Telemetry        TelemetrySink
 }
 
 // RedisResourceHealthProbe is a read-only, resource-scoped observation. The
@@ -268,26 +269,45 @@ type RedisResourceHealthProbe struct {
 	Resource         string                  `json:"resource"`
 	Topology         RedisTopology           `json:"topology"`
 	Control          RecoveryControlSnapshot `json:"control"`
+	ActiveCount      int64                   `json:"active_count"`
+	RingCount        int64                   `json:"ring_count"`
+	RingMemberCount  int64                   `json:"ring_member_count"`
+	GlobalInflight   int64                   `json:"global_inflight"`
 	ProvisionalCount int64                   `json:"provisional_count"`
+	StableCount      int64                   `json:"stable_count"`
 	ProcessingCount  int64                   `json:"processing_count"`
 }
 
 var redisResourceHealthCountsScript = redis.NewScript(redisRawLockFenceLua + `
 local provisional_type = fq_key_type(KEYS[1])
 local processing_type = fq_key_type(KEYS[2])
+local active_type = fq_key_type(KEYS[3])
+local ring_type = fq_key_type(KEYS[4])
+local members_type = fq_key_type(KEYS[5])
+local stable_type = fq_key_type(KEYS[6])
+local inflight_type = fq_key_type(KEYS[7])
 if (provisional_type ~= 'none' and provisional_type ~= 'zset') or
-   (processing_type ~= 'none' and processing_type ~= 'zset') then
+   (processing_type ~= 'none' and processing_type ~= 'zset') or
+   (active_type ~= 'none' and active_type ~= 'set') or
+   (ring_type ~= 'none' and ring_type ~= 'list') or
+   (members_type ~= 'none' and members_type ~= 'set') or
+   (stable_type ~= 'none' and stable_type ~= 'zset') or
+   (inflight_type ~= 'none' and inflight_type ~= 'zset') then
   return {'FQ_COORDINATION_CORRUPT'}
 end
-return {'OK', tostring(redis.call('ZCARD', KEYS[1])), tostring(redis.call('ZCARD', KEYS[2]))}
+return {'OK', tostring(redis.call('ZCARD', KEYS[1])), tostring(redis.call('ZCARD', KEYS[2])),
+  tostring(redis.call('SCARD', KEYS[3])), tostring(redis.call('LLEN', KEYS[4])),
+  tostring(redis.call('SCARD', KEYS[5])), tostring(redis.call('ZCARD', KEYS[6])),
+  tostring(redis.call('ZCARD', KEYS[7]))}
 `)
 
 // Redis implements the rebuildable fair-scheduling coordination boundary.
 // The authoritative task and recovery journals remain outside Redis.
 type Redis struct {
-	options RedisOptions
-	client  redisClient
-	tokens  redisTokenSource
+	options   RedisOptions
+	client    redisClient
+	tokens    redisTokenSource
+	telemetry TelemetrySink
 
 	closeMu sync.Mutex
 	closed  bool
@@ -450,8 +470,9 @@ func newRedis(ctx context.Context, options RedisOptions, client redisClient, tok
 			KeyPrefix:        validated.KeyPrefix,
 			OperationTimeout: validated.OperationTimeout,
 		},
-		client: client,
-		tokens: tokens,
+		client:    client,
+		tokens:    tokens,
+		telemetry: validated.Telemetry,
 	}
 	topology, err := coordinator.inspectRedisTopology(ctx)
 	if err != nil {
@@ -500,13 +521,20 @@ func (r *Redis) InspectRedisTopology(ctx context.Context) (RedisTopology, error)
 // ProbeResourceHealth verifies the live Redis deployment topology, reads the
 // resource control/progress snapshot, and counts only the two bounded runtime
 // lease sets needed by operational health. Every Redis command is read-only.
-func (r *Redis) ProbeResourceHealth(ctx context.Context, resource string) (RedisResourceHealthProbe, error) {
+func (r *Redis) ProbeResourceHealth(ctx context.Context, resource string) (probe RedisResourceHealthProbe, err error) {
 	if r == nil {
 		return RedisResourceHealthProbe{}, fmt.Errorf("%w: nil Redis health probe", ErrInvalidModel)
 	}
 	if err := ValidateResource(resource); err != nil {
 		return RedisResourceHealthProbe{}, fmt.Errorf("%w: invalid Redis resource", ErrInvalidModel)
 	}
+	defer func() {
+		outcome := "ready"
+		if err != nil {
+			outcome = "unavailable"
+		}
+		EmitTelemetry(ctx, r.telemetry, TelemetryEvent{Name: TelemetryDependencyTransition, Resource: resource, Outcome: outcome, Dependency: "redis"})
+	}()
 	topology, err := r.InspectRedisTopology(ctx)
 	if err != nil {
 		return RedisResourceHealthProbe{}, err
@@ -528,7 +556,8 @@ func (r *Redis) ProbeResourceHealth(ctx context.Context, resource string) (Redis
 	}
 	defer cancel()
 	result, err := r.runScript(opCtx, "inspect resource health counts", redisResourceHealthCountsScript,
-		[]string{keys.provisional, keys.processingTurns})
+		[]string{keys.provisional, keys.processingTurns, keys.activeUsers, keys.ring,
+			keys.ringMembers, keys.stableIndex, keys.globalInflight})
 	if err != nil {
 		return RedisResourceHealthProbe{}, err
 	}
@@ -536,7 +565,7 @@ func (r *Redis) ProbeResourceHealth(ctx context.Context, resource string) (Redis
 	if err != nil {
 		return RedisResourceHealthProbe{}, err
 	}
-	if len(values) != 3 {
+	if len(values) != 8 {
 		return RedisResourceHealthProbe{}, fmt.Errorf("%w: malformed Redis health count response", ErrCoordinationCorrupt)
 	}
 	code, ok := redisResultString(values[0])
@@ -546,14 +575,26 @@ func (r *Redis) ProbeResourceHealth(ctx context.Context, resource string) (Redis
 	if code != redisResultOK {
 		return RedisResourceHealthProbe{}, redisScriptError(code)
 	}
-	provisional, provisionalOK := redisResultInt64(values[1])
-	processing, processingOK := redisResultInt64(values[2])
-	if !provisionalOK || !processingOK || provisional < 0 || processing < 0 {
-		return RedisResourceHealthProbe{}, fmt.Errorf("%w: invalid Redis health count response", ErrCoordinationCorrupt)
+	counts := make([]int64, 7)
+	for index := range counts {
+		value, valid := redisResultInt64(values[index+1])
+		if !valid || value < 0 {
+			return RedisResourceHealthProbe{}, fmt.Errorf("%w: invalid Redis health count response", ErrCoordinationCorrupt)
+		}
+		counts[index] = value
 	}
+	provisional, processing, active, ring, members, stable, global := counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6]
+	EmitTelemetry(ctx, r.telemetry, TelemetryEvent{Name: TelemetryReservation, Resource: resource, Outcome: "ok", ReservationKind: "provisional", Dependency: "redis", Value: provisional})
+	EmitTelemetry(ctx, r.telemetry, TelemetryEvent{Name: TelemetryReservation, Resource: resource, Outcome: "ok", ReservationKind: "stable", Dependency: "redis", Value: stable})
+	EmitTelemetry(ctx, r.telemetry, TelemetryEvent{Name: TelemetryProcessingTurn, Resource: resource, Outcome: "ok", ReservationKind: "processing", Dependency: "redis", Value: processing})
+	EmitTelemetry(ctx, r.telemetry, TelemetryEvent{Name: TelemetryActiveTenants, Resource: resource, Outcome: "ok", Dependency: "redis", Value: active})
+	EmitTelemetry(ctx, r.telemetry, TelemetryEvent{Name: TelemetryRing, Resource: resource, Outcome: "ok", Dependency: "redis", Value: ring})
+	EmitTelemetry(ctx, r.telemetry, TelemetryEvent{Name: TelemetryRingMembers, Resource: resource, Outcome: "ok", Dependency: "redis", Value: members})
+	EmitTelemetry(ctx, r.telemetry, TelemetryEvent{Name: TelemetryGlobalInflight, Resource: resource, Outcome: "ok", Dependency: "redis", Value: global})
 	return RedisResourceHealthProbe{
 		Resource: resource, Topology: topology, Control: control,
-		ProvisionalCount: provisional, ProcessingCount: processing,
+		ActiveCount: active, RingCount: ring, RingMemberCount: members, GlobalInflight: global,
+		ProvisionalCount: provisional, StableCount: stable, ProcessingCount: processing,
 	}, nil
 }
 

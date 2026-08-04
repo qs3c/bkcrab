@@ -48,6 +48,7 @@ type RecoveryOperatorOptions struct {
 	RecoveryLockTTL           time.Duration
 	RecoveryLockRenewInterval time.Duration
 	ForceRebuildMinimumDelay  time.Duration
+	Telemetry                 TelemetrySink
 }
 
 func (o RecoveryOperatorOptions) validate() error {
@@ -103,6 +104,7 @@ type RecoveryOperators struct {
 	rabbitTruth   RabbitTruthSourceVerifier
 	options       RecoveryOperatorOptions
 	tokens        recoveryOperatorTokenSource
+	telemetry     TelemetrySink
 }
 
 func NewRecoveryOperators(
@@ -124,7 +126,8 @@ func NewRecoveryOperators(
 	return &RecoveryOperators{
 		coordinator: coordinator, runner: runner, journal: journal, redis: redis,
 		currentWriter: currentWriter, rabbitTruth: rabbitTruth, options: options,
-		tokens: cryptoRecoveryOperatorTokens{},
+		tokens:    cryptoRecoveryOperatorTokens{},
+		telemetry: options.Telemetry,
 	}, nil
 }
 
@@ -611,7 +614,9 @@ func (o *RecoveryOperators) ApplyWriterRebind(
 	resource, expectedOld string,
 	attestation WriterRebindAttestation,
 	source WriterRebindSource,
-) error {
+) (applyErr error) {
+	started := time.Now()
+	defer func() { o.recordApplyTelemetry(ctx, resource, started, applyErr) }()
 	if err := validateOperatorContext(ctx); err != nil {
 		return err
 	}
@@ -1041,7 +1046,9 @@ func (o *RecoveryOperators) ApplyRedisForceRebuild(
 	resource string,
 	attestation ForceRebuildAttestation,
 	source RecoverySource,
-) error {
+) (applyErr error) {
+	started := time.Now()
+	defer func() { o.recordApplyTelemetry(ctx, resource, started, applyErr) }()
 	if err := validateOperatorContext(ctx); err != nil {
 		return err
 	}
@@ -1076,6 +1083,22 @@ func (o *RecoveryOperators) ApplyRedisForceRebuild(
 	}
 	return o.finishSpecial(ctx, result, source, func(ctx context.Context) error {
 		return o.recheckForceSafety(ctx, resource, result.record.CurrentWriterFingerprint)
+	})
+}
+
+func (o *RecoveryOperators) recordApplyTelemetry(ctx context.Context, resource string, started time.Time, err error) {
+	if o == nil || ctx == nil || ValidateResource(resource) != nil {
+		return
+	}
+	outcome := "completed"
+	if errors.Is(err, ErrFenceMismatch) {
+		outcome = "fence_lost"
+	} else if err != nil {
+		outcome = "error"
+	}
+	EmitTelemetry(context.WithoutCancel(ctx), o.telemetry, TelemetryEvent{
+		Name: TelemetryRecovery, Resource: resource, Outcome: outcome,
+		Dependency: "runtime", Duration: time.Since(started),
 	})
 }
 

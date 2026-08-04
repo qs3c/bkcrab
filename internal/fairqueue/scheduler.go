@@ -26,6 +26,7 @@ type SchedulerOptions struct {
 	BackoffInitial time.Duration
 	BackoffMax     time.Duration
 	CleanupTimeout time.Duration
+	Telemetry      TelemetrySink
 }
 
 func (o SchedulerOptions) withDefaults(config ResourceConfig) (SchedulerOptions, error) {
@@ -105,6 +106,7 @@ type Scheduler struct {
 	tokens      runtimeTokenSource
 	options     SchedulerOptions
 	health      *resourceHealth
+	telemetry   TelemetrySink
 
 	runMu   sync.Mutex
 	running bool
@@ -176,7 +178,7 @@ func newSchedulerWithAdmission(
 	}
 	return &Scheduler{
 		admission: admission, resource: config.Key, config: config,
-		rabbit: rabbit, coordinator: coordinator, tokens: tokens, options: normalized,
+		rabbit: rabbit, coordinator: coordinator, tokens: tokens, options: normalized, telemetry: normalized.Telemetry,
 	}, nil
 }
 
@@ -258,6 +260,7 @@ func (s *Scheduler) runOne(ctx context.Context) (schedulerStep, error) {
 	// free with respect to Redis and RabbitMQ.
 	permit, ok := s.admission.tryReserve(s.resource)
 	if !ok {
+		EmitTelemetry(ctx, s.telemetry, TelemetryEvent{Name: TelemetrySchedulerGate, Resource: s.resource, Outcome: "paused", Dependency: "runtime"})
 		return schedulerStepIdle, nil
 	}
 	permitOwned := true
@@ -278,12 +281,15 @@ func (s *Scheduler) runOne(ctx context.Context) (schedulerStep, error) {
 	)
 	cancelTurn()
 	if err != nil {
+		EmitTelemetry(ctx, s.telemetry, TelemetryEvent{Name: TelemetryProcessingTurn, Resource: s.resource, Outcome: "error", ReservationKind: "processing", Dependency: "redis"})
 		permit.reportCoordinationFailure(err)
 		return schedulerStepBackoff, fmt.Errorf("fairqueue: acquire processing turn: %w", err)
 	}
 	if !found {
+		EmitTelemetry(ctx, s.telemetry, TelemetryEvent{Name: TelemetryProcessingTurn, Resource: s.resource, Outcome: "empty", ReservationKind: "processing", Dependency: "redis"})
 		return schedulerStepIdle, nil
 	}
+	EmitTelemetry(ctx, s.telemetry, TelemetryEvent{Name: TelemetryProcessingTurn, Resource: s.resource, Outcome: "granted", ReservationKind: "processing", Dependency: "redis"})
 	if err := turn.Validate(); err != nil || turn.Token != ProcessingTurnToken(turnID) || turn.TenantID == "" {
 		permit.reportCoordinationFailure(ErrCoordinationCorrupt)
 		return schedulerStepBackoff, fmt.Errorf("%w: coordinator returned an invalid processing turn", ErrInvalidModel)
@@ -310,6 +316,7 @@ func (s *Scheduler) runOne(ctx context.Context) (schedulerStep, error) {
 		s.config.ProvisionalTTL,
 	)
 	if err != nil {
+		EmitTelemetry(ctx, s.telemetry, TelemetryEvent{Name: TelemetryReservation, Resource: s.resource, Outcome: "error", ReservationKind: "provisional", Dependency: "redis"})
 		cancelPrepare()
 		permit.reportCoordinationFailure(err)
 		cleanupErr := s.rotateAndRelease(ctx, permit, turn, true, provisionalID, true)
@@ -323,10 +330,12 @@ func (s *Scheduler) runOne(ctx context.Context) (schedulerStep, error) {
 		return schedulerStepBackoff, errors.Join(decisionErr, cleanupErr)
 	}
 	if !granted {
+		EmitTelemetry(ctx, s.telemetry, TelemetryEvent{Name: TelemetryReservation, Resource: s.resource, Outcome: "denied", ReservationKind: "provisional", Dependency: "redis"})
 		cancelPrepare()
 		cleanupErr := s.rotateAndRelease(ctx, permit, turn, true, "", false)
 		return schedulerStepBackoff, cleanupErr
 	}
+	EmitTelemetry(ctx, s.telemetry, TelemetryEvent{Name: TelemetryReservation, Resource: s.resource, Outcome: "granted", ReservationKind: "provisional", Dependency: "redis"})
 
 	delivery, got, getErr := s.rabbit.GetOne(prepareCtx, s.resource, turn.TenantID)
 	if errors.Is(getErr, ErrUnsupportedTopology) {
@@ -369,6 +378,11 @@ func (s *Scheduler) runOne(ctx context.Context) (schedulerStep, error) {
 	}
 
 	depth, depthErr := s.rabbit.ReadyDepth(prepareCtx, s.resource, turn.TenantID)
+	depthOutcome := "ok"
+	if depthErr != nil {
+		depthOutcome = "error"
+	}
+	EmitTelemetry(ctx, s.telemetry, TelemetryEvent{Name: TelemetryRabbitDepth, Resource: s.resource, Outcome: depthOutcome, Dependency: "rabbitmq", Value: depth})
 	if errors.Is(depthErr, ErrUnsupportedTopology) {
 		permit.reportCoordinationFailure(depthErr)
 	}

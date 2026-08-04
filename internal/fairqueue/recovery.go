@@ -44,6 +44,7 @@ type RecoveryOptions struct {
 	OperationTimeout  time.Duration
 	BackoffInitial    time.Duration
 	BackoffMax        time.Duration
+	Telemetry         TelemetrySink
 }
 
 func (o RecoveryOptions) withDefaults() (RecoveryOptions, error) {
@@ -100,6 +101,7 @@ type RecoveryCoordinator struct {
 	options     RecoveryOptions
 	tokens      runtimeTokenSource
 	health      *resourceHealth
+	telemetry   TelemetrySink
 }
 
 func NewRecoveryCoordinator(
@@ -124,6 +126,7 @@ func NewRecoveryCoordinator(
 		runtime:     runtime,
 		options:     normalized,
 		tokens:      cryptoRuntimeTokenSource{},
+		telemetry:   normalized.Telemetry,
 	}, nil
 }
 
@@ -136,7 +139,7 @@ func (c *RecoveryCoordinator) Run(
 	writer string,
 	source RecoverySource,
 	journal OperationJournal,
-) error {
+) (runErr error) {
 	if ctx == nil {
 		return errors.New("fairqueue: nil recovery context")
 	}
@@ -144,6 +147,18 @@ func (c *RecoveryCoordinator) Run(
 		return err
 	}
 	c.health.markRecoveryRunning()
+	started := time.Now()
+	EmitTelemetry(ctx, c.telemetry, TelemetryEvent{Name: TelemetryRecovery, Resource: config.Key, Outcome: "started", Dependency: "runtime"})
+	EmitTelemetry(ctx, c.telemetry, TelemetryEvent{Name: TelemetryResourceState, Resource: config.Key, Outcome: "recovering", Dependency: "redis"})
+	defer func() {
+		outcome := "completed"
+		if errors.Is(runErr, ErrFenceMismatch) {
+			outcome = "fence_lost"
+		} else if runErr != nil || ctx.Err() != nil {
+			outcome = "error"
+		}
+		EmitTelemetry(context.WithoutCancel(ctx), c.telemetry, TelemetryEvent{Name: TelemetryRecovery, Resource: config.Key, Outcome: outcome, Dependency: "runtime", Duration: time.Since(started)})
+	}()
 	defer func() { _ = c.runtime.CloseResource(config.Key) }()
 
 	backoff := c.options.BackoffInitial
@@ -184,6 +199,14 @@ func (c *RecoveryCoordinator) Run(
 			}
 		}
 	}
+}
+
+func (c *RecoveryCoordinator) recordRecoveryPage(ctx context.Context, resource string, count int64) {
+	c.health.markRecoveryPageComplete()
+	EmitTelemetry(ctx, c.telemetry, TelemetryEvent{
+		Name: TelemetryRecoveryPage, Resource: resource, Outcome: "ok",
+		Dependency: "mysql", Value: count,
+	})
 }
 
 func recoveryTerminalError(err error) bool {
@@ -862,7 +885,7 @@ func (c *RecoveryCoordinator) deleteOwnedResourceKeys(
 		}); err != nil {
 			return err
 		}
-		c.health.markRecoveryPageComplete()
+		c.recordRecoveryPage(ctx, config.Key, int64(len(page.Items)))
 		if page.Done {
 			return nil
 		}
@@ -896,7 +919,7 @@ func (c *RecoveryCoordinator) restoreKnownRecovery(
 				return err
 			}
 		}
-		c.health.markRecoveryPageComplete()
+		c.recordRecoveryPage(ctx, config.Key, int64(len(page.Items)))
 		if page.Done {
 			break
 		}
@@ -962,7 +985,7 @@ func (c *RecoveryCoordinator) restoreRunningRecovery(
 				return err
 			}
 		}
-		c.health.markRecoveryPageComplete()
+		c.recordRecoveryPage(ctx, config.Key, int64(len(page.Items)))
 		if page.Done {
 			return nil
 		}
@@ -1055,7 +1078,7 @@ func (c *RecoveryCoordinator) restoreDispatchedRecovery(
 				}
 			}
 		}
-		c.health.markRecoveryPageComplete()
+		c.recordRecoveryPage(ctx, config.Key, int64(len(page.Items)))
 		if page.Done {
 			break
 		}
@@ -1162,6 +1185,7 @@ func (c *RecoveryCoordinator) reconcileRecoveryStable(
 			return 0, err
 		}
 	}
+	EmitTelemetry(ctx, c.telemetry, TelemetryEvent{Name: TelemetryCanonicalCorrection, Resource: config.Key, Outcome: "repair", Dependency: "redis", Value: diff})
 	return diff, nil
 }
 
@@ -1194,7 +1218,7 @@ func (c *RecoveryCoordinator) loadRecoveryCanonicalStable(
 			}
 			result[token] = canonicalStableLease{tenant: item.TenantID, ttl: ttl}
 		}
-		c.health.markRecoveryPageComplete()
+		c.recordRecoveryPage(ctx, config.Key, int64(len(page.Items)))
 		if page.Done {
 			return result, nil
 		}
@@ -1237,7 +1261,7 @@ func (c *RecoveryCoordinator) loadRecoveryRedisStable(
 		if err := c.renewRecovery(ctx, config.Key, fence); err != nil {
 			return nil, err
 		}
-		c.health.markRecoveryPageComplete()
+		c.recordRecoveryPage(ctx, config.Key, int64(len(page.Items)))
 		if page.Done {
 			return result, nil
 		}
@@ -1334,7 +1358,7 @@ func (c *RecoveryCoordinator) ReconcileReady(
 		if err := cleanup.Validate(); err != nil {
 			return errors.Join(ErrCoordinationCorrupt, err)
 		}
-		c.health.markRecoveryPageComplete()
+		c.recordRecoveryPage(ctx, config.Key, cleanup.RemovedProvisionals+cleanup.RemovedTurns)
 		if cleanup.RemovedProvisionals+cleanup.RemovedTurns < int64(config.ReconcilePageSize) {
 			break
 		}
@@ -1389,7 +1413,7 @@ func (c *RecoveryCoordinator) reconcileReadyKnown(
 				return err
 			}
 		}
-		c.health.markRecoveryPageComplete()
+		c.recordRecoveryPage(ctx, config.Key, int64(len(page.Items)))
 		if page.Done {
 			return nil
 		}
@@ -1468,7 +1492,7 @@ func (c *RecoveryCoordinator) reconcileReadyDispatched(
 		if err := c.checkReady(ctx, config.Key, fence); err != nil {
 			return err
 		}
-		c.health.markRecoveryPageComplete()
+		c.recordRecoveryPage(ctx, config.Key, int64(len(page.Items)))
 		if page.Done {
 			return nil
 		}
@@ -1511,7 +1535,7 @@ func (c *RecoveryCoordinator) reconcileReadyStable(
 		if err := c.checkReady(ctx, config.Key, fence); err != nil {
 			return err
 		}
-		c.health.markRecoveryPageComplete()
+		c.recordRecoveryPage(ctx, config.Key, int64(len(page.Items)))
 		if page.Done {
 			break
 		}
@@ -1537,18 +1561,20 @@ func (c *RecoveryCoordinator) reconcileReadyStable(
 			}
 			redisStable[item.StableToken] = item
 		}
-		c.health.markRecoveryPageComplete()
+		c.recordRecoveryPage(ctx, config.Key, int64(len(page.Items)))
 		if page.Done {
 			break
 		}
 		after = page.NextCursor
 	}
 
+	var corrections int64
 	for token, ref := range redisStable {
 		lease, ok := canonical[token]
 		if ok && lease.tenant == ref.TenantID {
 			continue
 		}
+		corrections++
 		opCtx, cancel := c.operationContext(ctx)
 		err := c.coordinator.Release(opCtx, config.Key, fence, ref.TenantID, ref.StableToken)
 		cancel()
@@ -1557,6 +1583,9 @@ func (c *RecoveryCoordinator) reconcileReadyStable(
 		}
 	}
 	for token, lease := range canonical {
+		if ref, ok := redisStable[token]; !ok || ref.TenantID != lease.tenant {
+			corrections++
+		}
 		opCtx, cancel := c.operationContext(ctx)
 		err := c.coordinator.EnsureReadyStableInflight(opCtx, config.Key, fence,
 			lease.tenant, token, lease.ttl)
@@ -1565,5 +1594,9 @@ func (c *RecoveryCoordinator) reconcileReadyStable(
 			return err
 		}
 	}
-	return c.checkReady(ctx, config.Key, fence)
+	if err := c.checkReady(ctx, config.Key, fence); err != nil {
+		return err
+	}
+	EmitTelemetry(ctx, c.telemetry, TelemetryEvent{Name: TelemetryCanonicalCorrection, Resource: config.Key, Outcome: "repair", Dependency: "redis", Value: corrections})
+	return nil
 }

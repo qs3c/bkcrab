@@ -89,7 +89,12 @@ type RedisHealthSnapshot struct {
 	OperationIDFingerprint              *string `json:"operationIdFingerprint"`
 	LastCompletedOperationIDFingerprint *string `json:"lastCompletedOperationIdFingerprint"`
 	EpochFingerprint                    string  `json:"epochFingerprint"`
+	ActiveCount                         int64   `json:"activeCount"`
+	RingCount                           int64   `json:"ringCount"`
+	RingMemberCount                     int64   `json:"ringMemberCount"`
+	GlobalInflight                      int64   `json:"globalInflight"`
 	ProvisionalCount                    int64   `json:"provisionalCount"`
+	StableCount                         int64   `json:"stableCount"`
 	ProcessingCount                     int64   `json:"processingCount"`
 }
 

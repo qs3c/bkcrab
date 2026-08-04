@@ -477,3 +477,43 @@ rolling-worker migration.
    upload/reindex entry points. Do not roll back by restarting an old worker
    after contract; restore the database backup or deploy a compatible forward
    fix instead.
+
+### RAG fairqueue durable state and contract
+
+Fair scheduling extends `rag_index_tasks` without creating a generic job or
+outbox table. `user_id` is copied from the owning knowledge base and is
+immutable for the task lifetime. The expand release keeps it nullable so an
+older INSERT can omit it; the explicit contract command backfills ownership,
+checks generation invariants, and finally changes it to `NOT NULL`.
+
+`dispatch_generation` identifies the current logical Rabbit delivery.
+`dispatched_at` is written only after mandatory publish confirmation and only
+with the original candidate guard. A stale Mark CAS leaves the new canonical
+snapshot untouched. `PENDING + next_run_at<=DB_NOW + dispatched_at IS NULL`
+is a publish obligation. A due `PENDING` row with a marker is already broker
+backed. `RUNNING` is valid only with the matching positive
+`claim_generation`, owner, heartbeat, and unexpired lease. Retry clears the
+marker and advances the generation only when the next attempt becomes due.
+
+`fairqueue_resource_operations` contains at most one safety journal row per
+registered resource. It is not an outbox and never contains task or tenant
+payloads. `operation_id`, `kind`, `phase`, writer fingerprints, bounded repair
+cursor/progress, version, and timestamps form a compare-and-swap journal for
+`RABBIT_REPAIR`, `WRITER_REBIND`, and `FORCE_REBUILD`. `ACTIVE` and
+`READY_COMMITTED` are operator-owned; ordinary startup stays closed until the
+same operation reaches `COMPLETED` or Redis proves the exact matching terminal
+ID.
+
+Fair mode is MySQL-only and requires every claim, heartbeat, count, sweep, and
+finalization to resolve the same database-bound writer fingerprint on a pinned
+physical session. Do not configure multi-primary or tenant-sharded writers.
+After broker data loss, the fenced repair advances each obligation with
+`dispatch_generation=GREATEST(dispatch_generation,claim_generation)+1` and
+clears the marker. Merely setting `dispatched_at=NULL` is unsafe because a late
+pre-disaster delivery could still claim the same generation.
+
+Run `bkcrab admin fairqueue contract-migrate` first as a read-only aggregate
+check. Apply requires `--apply --confirm-all-writers-dual-write`; startup
+auto-migration never performs this contract. After contract, the rollback
+floor is the compatible expand/dual-write release—never restart a pre-expand
+binary against the contracted schema.

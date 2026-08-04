@@ -39,6 +39,18 @@ spec:
             secretKeyRef:
               name: {{ include "bkcrab.fullname" . }}-secrets
               key: STORAGE_DSN
+        {{- if .Values.fairQueue.enabled }}
+        - name: BKCRAB_FAIR_QUEUE_REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "bkcrab.fullname" . }}-secrets
+              key: FAIR_QUEUE_REDIS_PASSWORD
+        - name: BKCRAB_FAIR_QUEUE_RABBITMQ_URL
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "bkcrab.fullname" . }}-secrets
+              key: FAIR_QUEUE_RABBITMQ_URL
+        {{- end }}
         {{- if and (ne .Values.objectStore.type "local") .Values.objectStore.accessKey }}
         - name: BKCRAB_OBJECT_STORE_ACCESSKEY
           valueFrom:

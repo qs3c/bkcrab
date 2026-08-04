@@ -1556,7 +1556,7 @@ git commit -m "feat(gateway): wire rag fair queue runtime and health state"
 - Modify: `internal/store/rag_task_claim_test.go`
 - Modify: `internal/gateway/rag_fair_queue_test.go`
 
-- [ ] **Step 1: 先写 telemetry 失败测试**
+- [x] **Step 1: 先写 telemetry 失败测试**
 
 固定低基数标签（resource、outcome、reservation kind、dependency），禁止 tenant/task/token/URL 成为 metric label，并覆盖：
 
@@ -1572,11 +1572,11 @@ resource epoch/state/writer-fingerprint mismatch、scheduler gate、recovery dur
 Rabbit/Redis availability transition；日志会 scrub credential/raw epoch/owner/reservation token
 ```
 
-- [ ] **Step 2: 实现窄 telemetry sink 并接线**
+- [x] **Step 2: 实现窄 telemetry sink 并接线**
 
 fairqueue 核心依赖无业务类型的 sink/no-op 实现；Task 4/5/6/7/8 创建的 dispatcher、Rabbit、Redis、scheduler/runtime/recovery/operator 路径都在本任务显式注入同一 sink，RAG adapter 与 MySQL claim helper 映射到现有 telemetry，gateway 负责生命周期装配。指标采集失败不得影响 claim/ACK/fence。结构化日志可带 resource、outcome、task ID、dispatch generation、随机 PublishAttemptID、哈希 tenant 和安全错误类别，以关联 confirm/return/DLQ；这些值不得成为 metric label。日志不带原始 tenant ID、task payload、raw resource epoch、reservation/recovery owner token 或凭据。
 
-- [ ] **Step 3: 验证告警所需信号**
+- [x] **Step 3: 验证告警所需信号**
 
 用 fake sink 断言 failure path 恰好计数，至少能基于以下条件告警：oldest undispatched/expired age 持续增长、DLQ 非零、scheduler 长期 paused、recovery fence lost/反复 rebuild、advisory-lock timeout、Redis stable reservation 与 MySQL RUNNING 持续不一致。
 
@@ -1612,7 +1612,7 @@ git commit -m "feat(queue): expose fair scheduling telemetry"
 - Modify: `deploy/k8s/bkcrab.yaml`
 - Modify: `internal/setup/rag_deployment_test.go`
 
-- [ ] **Step 1: Docker Compose**
+- [x] **Step 1: Docker Compose**
 
 增加：
 
@@ -1625,7 +1625,7 @@ fair profile 显式 `BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY=single`；claim/hea
 
 开发默认仍可通过 `BKCRAB_FAIR_QUEUE_ENABLED=false` 不启动公平调度；RAG 公平 profile 显式开启。
 
-- [ ] **Step 2: multi-pod 验证拓扑**
+- [x] **Step 2: multi-pod 验证拓扑**
 
 两个 bkcrab gateway 共享：
 
@@ -1637,7 +1637,7 @@ fair profile 显式 `BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY=single`；claim/hea
 两个 Pod 查询到相同 `@@server_uuid`/database-bound fingerprint；不支持多 primary 或按 tenant 分片 writer
 ```
 
-- [ ] **Step 3: Helm/K8s**
+- [x] **Step 3: Helm/K8s**
 
 values 同时支持：
 
@@ -1680,7 +1680,7 @@ git commit -m "deploy(queue): add redis rabbitmq for fair scheduling"
 - Modify: `internal/setup/rag_deployment_test.go`
 - Test directly parses Task 13 的 `deploy/docker/*`、`deploy/multi-pod/docker-compose.yaml`、Helm templates 与 `deploy/k8s/bkcrab.yaml`；不另建未命名 fixture
 
-- [ ] **Step 1: 建立 env-gated harness**
+- [x] **Step 1: 建立 env-gated harness**
 
 需要：
 
@@ -1692,7 +1692,7 @@ BKCRAB_TEST_RABBITMQ_URL
 
 每个 test 使用唯一 exchange/key prefix，结束后只清理自己的 namespace。
 
-- [ ] **Step 2: 公平性验收**
+- [x] **Step 2: 公平性验收**
 
 使用可控 blocking fake RAG executor：
 
@@ -1710,7 +1710,7 @@ Scenario C：A/B/C 各持续 backlog
   单用户有竞争时不继续获得 borrowed slot
 ```
 
-- [ ] **Step 3: delivery/claim/retry 验收**
+- [x] **Step 3: delivery/claim/retry 验收**
 
 ```text
 重复 publish 同一 task -> 只有一个 claim generation 运行
@@ -1729,7 +1729,7 @@ publish 成功后、Mark 前修改同 generation guard 字段 -> Mark false；�
 heartbeat/sweeper 竞态 -> heartbeat 先赢则 sweeper 不 rearm，sweeper 先赢则旧 heartbeat 永久 fence lost
 ```
 
-- [ ] **Step 4: 故障注入**
+- [x] **Step 4: 故障注入**
 
 ```text
 停 Rabbit：上传成功，dispatched_at 为空；恢复后发布
@@ -1749,7 +1749,7 @@ writer 透明切换/connection ID 不粘连 -> claim/heartbeat及所有 executio
 Redis rebuild 用 DB_NOW 剩余时长映射 Redis TIME，注入节点时钟偏差仍不提前释放 stable token
 ```
 
-- [ ] **Step 5: 多实例全局约束**
+- [x] **Step 5: 多实例全局约束**
 
 同时启动两个 runtime，各 `localWorkers=4`，断言合计 running 永不超过 4。另用同一 Redis control 注入两个不同 writer fingerprint，断言 identity mismatch 的 runtime 在任何 claim/publish 前 fail closed。
 
@@ -1759,7 +1759,7 @@ Redis rebuild 用 DB_NOW 剩余时长映射 Redis TIME，注入节点时钟偏�
 
 在隔离 MySQL/部署 fixture 上覆盖：expand 后旧 INSERT 省略新列仍成功；兼容 writer dual-write 与 keyset backfill 收敛；contract dry-run 在 NULL/缺 attestation 时拒绝、满足后 apply 并由 INFORMATION_SCHEMA 证明 `user_id IS_NULLABLE='NO'`。渲染并执行 `legacy -> paused（在 paused 阶段 drain） -> fair` 两次独立 rollout，断言任何时刻都不存在 legacy claimant 与 fair claimant 混跑；回滚路径同理。
 
-- [ ] **Step 7: 验证**
+- [x] **Step 7: 验证**
 
 ```bash
 go test ./internal/fairqueue -run TestIntegration -v
@@ -1789,7 +1789,7 @@ git commit -m "test(queue): cover multi-tenant fairness and crash recovery"
 - Modify: `deploy/multi-pod/README.md`
 - Modify: this plan checkboxes during implementation
 
-- [ ] **Step 1: 实现受确认保护的运维 CLI**
+- [x] **Step 1: 实现受确认保护的运维 CLI**
 
 在现有 `bkcrab admin` 下注册：
 
@@ -1806,7 +1806,7 @@ bkcrab admin fairqueue redis-force-rebuild --resource <registered-resource> [--a
 
 不带 `--apply` 一律为只读 dry-run/check；apply 缺少对应全部确认 flag 时在任何 mutation 前失败。三个 resource 命令的 `--resource` 都是必填 flag，并且只能选择 CLI 已注册对应 source/operator/journal adapter 的 resource；本 RAG 任务完成时只有 `rag.index`，未知值在连接/写入前拒绝，后续 Imagegen 可显式注册 `image.generate`。rebind的`--confirm-resource-runtimes-stopped`表示claimant/publisher/scheduler/recovery coordinator已由平台停止且保持到journal COMPLETED；CLI不能自行推断。命令使用专用 MySQL-only/non-auto-migrate opener及所需 Redis/Rabbit client，不复用当前 `openStoreFromEnv()`，也不启动 gateway。Cobra 层只做 `Args: cobra.NoArgs`、flag/attestation、依赖装配和安全输出：contract 调 Task 2 API，Rabbit/rebind/force 命令调 Task 8 operator 与 Task10 RAG sources/journal；core apply 自身必须重验，不能信任 CLI dry-run report。测试用 injected runner 固定默认 dry-run、required resource、unknown resource、缺确认零 mutation、context cancel、TOCTOU、错误退出和幂等重入；输出不得含 DSN/凭据/raw operation ID/epoch/tenant/task identity。
 
-- [ ] **Step 2: 更新数据库文档**
+- [x] **Step 2: 更新数据库文档**
 
 记录：
 
@@ -1817,7 +1817,7 @@ bkcrab admin fairqueue redis-force-rebuild --resource <registered-resource> [--a
 - MySQL-only fairqueue enablement；
 - broker 数据灾难时必须在 recovery fence 下推进 `dispatch_generation=GREATEST(dispatch_generation,claim_generation)+1` 并清 marker；明确禁止只重置 dispatched marker。
 
-- [ ] **Step 3: 更新运维文档**
+- [x] **Step 3: 更新运维文档**
 
 覆盖：
 
@@ -1844,7 +1844,7 @@ go build ./...
 go test ./...
 ```
 
-- [ ] **Step 5: 真实依赖集成回归**
+- [x] **Step 5: 真实依赖集成回归**
 
 ```text
 MySQL 8
@@ -1856,7 +1856,7 @@ RabbitMQ durable queues/messages
 
 保存关键验收证据：global max、A 独占借用、B 到来后的下一槽优先、2/2 收敛、Redis/Rabbit 故障恢复、分页 rebuild 内存界、writer fingerprint fence、heartbeat/sweeper 排序和 mark→activate crash 修复。
 
-- [ ] **Step 6: 执行并验证 expand/backfill/contract 里程碑**
+- [x] **Step 6: 执行并验证 expand/backfill/contract 里程碑**
 
 发布顺序必须留下可审计证据：先在 legacy 模式部署兼容 expand/dual-write release，验证旧 INSERT 兼容并确认所有更旧 writer 已归零；运行 `contract-migrate` dry-run保存 aggregate remaining/page-count/invariant报告，再带 attestation apply，由apply自己从头完成最终 bounded keyset backfill至零差异后contract；最后直接从 INFORMATION_SCHEMA验证 `rag_index_tasks.user_id IS_NULLABLE='NO'`，并重跑零NULL/owner/generation检查。任何一步失败都停止在兼容legacy/paused，不开启fair；contract不由startup auto-migrate代做。contract一旦完成，最低可回滚版本就是该兼容dual-write release；若必须回pre-expand binary，只能在contract前做出决定。
 

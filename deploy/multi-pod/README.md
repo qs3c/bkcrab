@@ -1,12 +1,19 @@
-# Multi-pod smoke test — stateless gateway + MySQL + S3 (MinIO)
+# Multi-pod smoke test — stateless gateway + shared fairqueue
 
 This compose brings up:
 
 - **MySQL 8.4** — sessions, memory, identity files, agent metadata, bindings
 - **MinIO** — S3-compatible bucket for workspace artifacts (auto-creates `bkcrab` bucket)
+- **Redis 7.4** — persistent shared fair ring, turns, and reservations
+- **RabbitMQ 4.1** — persistent shared task exchange and tenant queues
 - **pod-a** on `:18953` and **pod-b** on `:18954` — identical gateway binaries, pointed at the same DB and S3
 
 Both pods use `BKCRAB_AUTH_TOKEN=dev-admin-token`. Any admin API call takes `Authorization: Bearer dev-admin-token`.
+
+The fixture explicitly uses one MySQL writer DSN, one Redis keyspace, and one
+RabbitMQ vhost/exchange. Each process still generates a distinct worker ID.
+Before first fair startup, run the contract migration with a one-off compatible
+admin binary; never start this fixture with a pre-expand schema.
 
 ## Run
 
@@ -125,6 +132,19 @@ sessions in-flight on pod A would need to be re-initiated (the sandbox
 itself is pod-local), but the agent's identity / sessions / memory /
 workspace files are all in MySQL + MinIO.
 
+### 8. Fairqueue global constraints
+
+Submit eight RAG index tasks for user A and confirm up to four can run while A
+is alone. Add backlog for user B, release one A task, and confirm B receives the
+next slot; sustained competition converges toward A=2/B=2. Across both Pods,
+valid MySQL `RUNNING` rows and Redis stable reservations must never exceed the
+configured global four. Stop one Pod and verify the other reclaims work only
+after the MySQL lease expires.
+
+Compare `SELECT @@server_uuid, DATABASE()` through both Pod configurations.
+The derived writer fingerprint must match. A mismatch is fatal and must close
+claim/publish gates before any new work.
+
 ## What this does NOT verify yet
 
 - **Sandbox lifecycle** — lazy creation + idle eviction + flush is in code
@@ -138,10 +158,11 @@ workspace files are all in MySQL + MinIO.
   provider (OpenAI / Anthropic / Ollama) via `/api/config` after bringing
   up the stack, then open `http://localhost:18953` for the admin UI.
 
-## Teardown
+## Stop while retaining evidence and data
 
 ```bash
-docker compose -f deploy/multi-pod/docker-compose.yaml down -v
+docker compose -f deploy/multi-pod/docker-compose.yaml stop
 ```
 
-`-v` wipes MySQL + MinIO volumes so the next run starts clean.
+Do not use `down -v` during rollout or incident work: it destroys MySQL,
+MinIO, Redis, and RabbitMQ evidence and data volumes.

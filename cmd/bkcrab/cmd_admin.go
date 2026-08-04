@@ -22,6 +22,7 @@ func adminCmd() *cobra.Command {
 	cmd.AddCommand(adminResetPasswordCmd())
 	cmd.AddCommand(adminGrantRoleCmd())
 	cmd.AddCommand(adminListUsersCmd())
+	cmd.AddCommand(adminFairQueueCmd())
 	return cmd
 }
 

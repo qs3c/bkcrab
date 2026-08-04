@@ -50,6 +50,7 @@ type RabbitOptions struct {
 	Exchange           string
 	DeadLetterExchange string
 	OperationTimeout   time.Duration
+	Telemetry          TelemetrySink
 }
 
 // RabbitResourceProbe is a sanitized resource-level startup observation. It
@@ -66,6 +67,7 @@ type Rabbit struct {
 	dialer    rabbitDialer
 	attempts  rabbitAttemptIDSource
 	healthNow func() time.Time
+	telemetry TelemetrySink
 
 	operationGate *rabbitOperationGate
 	healthMu      sync.RWMutex
@@ -216,6 +218,7 @@ func newRabbit(
 	}
 	return &Rabbit{
 		options: options, registry: registry, dialer: dialer, attempts: attempts,
+		telemetry:     options.Telemetry,
 		operationGate: newRabbitOperationGate(),
 		healthNow:     time.Now,
 		health:        RabbitHealthSnapshot{Status: DependencyStatusUnavailable},
@@ -510,6 +513,7 @@ func (r *Rabbit) PublishMandatoryConfirmed(ctx context.Context, message Message)
 	defer func() {
 		if err != nil {
 			r.markRabbitUnavailable()
+			EmitTelemetry(ctx, r.telemetry, TelemetryEvent{Name: TelemetryDependencyTransition, Resource: message.Resource, Outcome: "unavailable", Dependency: "rabbitmq"})
 		}
 	}()
 	receipt, err = r.allocateAttempt()
@@ -556,6 +560,7 @@ func (r *Rabbit) PublishMandatoryConfirmed(ctx context.Context, message Message)
 	}
 	if err == nil {
 		r.markRabbitOK(generation)
+		EmitTelemetry(ctx, r.telemetry, TelemetryEvent{Name: TelemetryDependencyTransition, Resource: message.Resource, Outcome: "ready", Dependency: "rabbitmq"})
 	}
 	return receipt, err
 }
@@ -620,6 +625,7 @@ func (r *Rabbit) ReadyDepth(ctx context.Context, resource, tenant string) (depth
 	defer func() {
 		if err != nil {
 			r.markRabbitUnavailable()
+			EmitTelemetry(ctx, r.telemetry, TelemetryEvent{Name: TelemetryDependencyTransition, Resource: resource, Outcome: "unavailable", Dependency: "rabbitmq"})
 		}
 	}()
 	operationCtx, cancel, err := r.operationContext(ctx)
@@ -649,6 +655,7 @@ func (r *Rabbit) ReadyDepth(ctx context.Context, resource, tenant string) (depth
 	}
 	depth = int64(queue.Messages)
 	r.markRabbitReadyDepthOK(generation, depth)
+	EmitTelemetry(ctx, r.telemetry, TelemetryEvent{Name: TelemetryRabbitDepth, Resource: resource, Outcome: "ok", Dependency: "rabbitmq", Value: depth})
 	return depth, nil
 }
 

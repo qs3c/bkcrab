@@ -57,9 +57,117 @@ stringData:
   RAG_MILVUS_PASSWORD: ""
   RAG_EMBEDDING_API_KEY: ""
   RAG_RERANKER_API_KEY: ""
+  # Generate unique values and keep RabbitMQ password URL-safe. These are only
+  # used when the final fair rollout enables the resource.
+  FAIR_QUEUE_REDIS_PASSWORD: "REPLACE_WITH_RANDOM_REDIS_PASSWORD"
+  FAIR_QUEUE_RABBITMQ_PASSWORD: "REPLACE_WITH_URL_SAFE_RABBITMQ_PASSWORD"
+  FAIR_QUEUE_RABBITMQ_URL: "amqp://bkcrab:REPLACE_WITH_URL_SAFE_RABBITMQ_PASSWORD@bkcrab-rabbitmq:5672/bkcrab"
 
   # 启用沙箱时设置，然后在下方 Deployment 中取消对应环境变量条目的注释。
   # E2B_API_KEY: "REPLACE_WITH_E2B_KEY"
+
+---
+# Fairqueue Redis/RabbitMQ are internal-only reference deployments. Production
+# may replace them with managed endpoints, but must retain persistence and the
+# standalone/single-writer topology contract.
+apiVersion: v1
+kind: Service
+metadata: { name: bkcrab-redis, namespace: bkcrab }
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector: { app: bkcrab-redis }
+  ports: [{ name: redis, port: 6379, targetPort: redis }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: bkcrab-redis, namespace: bkcrab }
+spec:
+  serviceName: bkcrab-redis
+  replicas: 1
+  selector: { matchLabels: { app: bkcrab-redis } }
+  template:
+    metadata: { labels: { app: bkcrab-redis } }
+    spec:
+      securityContext: { fsGroup: 1000 }
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          args: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--requirepass", "$(REDIS_PASSWORD)"]
+          env:
+            - { name: REDIS_PASSWORD, valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: FAIR_QUEUE_REDIS_PASSWORD } } }
+          ports: [{ name: redis, containerPort: 6379 }]
+          volumeMounts: [{ name: data, mountPath: /data }]
+          readinessProbe:
+            exec: { command: ["sh", "-ec", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"] }
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["sh", "-ec", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"] }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 8Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: bkcrab-rabbitmq, namespace: bkcrab }
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector: { app: bkcrab-rabbitmq }
+  ports:
+    - { name: amqp, port: 5672, targetPort: amqp }
+    - { name: management, port: 15672, targetPort: management }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: bkcrab-rabbitmq, namespace: bkcrab }
+spec:
+  serviceName: bkcrab-rabbitmq
+  replicas: 1
+  selector: { matchLabels: { app: bkcrab-rabbitmq } }
+  template:
+    metadata: { labels: { app: bkcrab-rabbitmq } }
+    spec:
+      securityContext: { fsGroup: 999 }
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:4.1-management-alpine
+          env:
+            - { name: RABBITMQ_DEFAULT_USER, value: bkcrab }
+            - { name: RABBITMQ_DEFAULT_PASS, valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: FAIR_QUEUE_RABBITMQ_PASSWORD } } }
+            - { name: RABBITMQ_DEFAULT_VHOST, value: bkcrab }
+          ports:
+            - { name: amqp, containerPort: 5672 }
+            - { name: management, containerPort: 15672 }
+          volumeMounts: [{ name: data, mountPath: /var/lib/rabbitmq }]
+          readinessProbe:
+            exec: { command: ["rabbitmq-diagnostics", "-q", "ping"] }
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["rabbitmq-diagnostics", "-q", "ping"] }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 8Gi } }
 
 ---
 # =================== 在此编辑（对象存储提供者）==========================
@@ -83,6 +191,23 @@ data:
   BKCRAB_BIND: "all"
   BKCRAB_STORAGE_TYPE: "mysql"
   BKCRAB_STORAGE_AUTO_MIGRATE: "true"
+
+  # Fair scheduling remains legacy by default. Perform two separate complete
+  # rollouts: legacy -> paused (drain/prove old RS=0), then paused -> fair.
+  BKCRAB_FAIR_QUEUE_ENABLED: "false"
+  BKCRAB_FAIR_QUEUE_REDIS_ADDR: "bkcrab-redis:6379"
+  BKCRAB_FAIR_QUEUE_REDIS_DB: "0"
+  BKCRAB_FAIR_QUEUE_REDIS_MODE: "standalone"
+  BKCRAB_FAIR_QUEUE_EXCHANGE: "bkcrab.fair.task"
+  BKCRAB_FAIR_QUEUE_DEAD_LETTER_EXCHANGE: "bkcrab.fair.dlx"
+  BKCRAB_FAIR_QUEUE_KEY_PREFIX: "bkcrab:"
+  BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY: "single"
+  BKCRAB_RAG_INDEX_WORKER_MODE: "legacy"
+  BKCRAB_RAG_INDEX_LOCAL_WORKERS: "4"
+  BKCRAB_RAG_INDEX_GLOBAL_CONCURRENCY: "4"
+  BKCRAB_RAG_INDEX_PER_USER_BASE_CONCURRENCY: "2"
+  BKCRAB_RAG_INDEX_PER_USER_BURST_CONCURRENCY: "4"
+  BKCRAB_RAG_INDEX_BORROW_ENABLED: "true"
 
   # ─── 多模态文档 RAG（默认关闭发布开关）───
   # parser 只在集群内部暴露；主服务异步探测 /healthz。
@@ -199,6 +324,8 @@ spec:
           env:
             - { name: BKCRAB_HOME,                    value: "/data/.bkcrab" }
             - { name: BKCRAB_STORAGE_DSN,             valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: STORAGE_DSN } } }
+            - { name: BKCRAB_FAIR_QUEUE_REDIS_PASSWORD, valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: FAIR_QUEUE_REDIS_PASSWORD } } }
+            - { name: BKCRAB_FAIR_QUEUE_RABBITMQ_URL, valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: FAIR_QUEUE_RABBITMQ_URL } } }
             - { name: BKCRAB_OBJECT_STORE_ACCESSKEY,  valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: OBJECT_STORE_ACCESSKEY } } }
             - { name: BKCRAB_OBJECT_STORE_SECRETKEY,  valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: OBJECT_STORE_SECRETKEY } } }
             - { name: BKCRAB_RAG_DOCUMENT_AI_API_KEY, valueFrom: { secretKeyRef: { name: bkcrab-secrets, key: DOCUMENT_AI_API_KEY } } }

@@ -300,6 +300,90 @@ func TestRAGDeploymentHelmConstrainsParser(t *testing.T) {
 	)
 }
 
+func TestRAGFairQueueDeploymentComposeWiresDurableDependencies(t *testing.T) {
+	root := deploymentRepoRoot(t)
+	base := deploymentRead(t, filepath.Join(root, "deploy", "docker", "docker-compose.yml"))
+	ragOverlay := deploymentRead(t, filepath.Join(root, "deploy", "docker", "docker-compose.rag.yml"))
+	multi := deploymentRead(t, filepath.Join(root, "deploy", "multi-pod", "docker-compose.yaml"))
+	for name, raw := range map[string][]byte{"docker": base, "multi-pod": multi} {
+		var document map[string]any
+		if err := yaml.Unmarshal(raw, &document); err != nil {
+			t.Fatalf("decode %s compose: %v", name, err)
+		}
+		services := deploymentMap(t, document["services"], name+".services")
+		redis := deploymentMap(t, services["redis"], name+".redis")
+		rabbit := deploymentMap(t, services["rabbitmq"], name+".rabbitmq")
+		if _, ok := redis["healthcheck"]; !ok {
+			t.Fatalf("%s Redis is missing healthcheck", name)
+		}
+		if _, ok := rabbit["healthcheck"]; !ok {
+			t.Fatalf("%s RabbitMQ is missing healthcheck", name)
+		}
+		deploymentRequireContains(t, raw, "appendonly", "/var/lib/rabbitmq", "BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY", "single")
+	}
+	deploymentRequireContains(t, base,
+		`BKCRAB_FAIR_QUEUE_ENABLED: "${FAIR_QUEUE_ENABLED:-false}"`,
+		`BKCRAB_RAG_INDEX_WORKER_MODE: "${RAG_INDEX_WORKER_MODE:-legacy}"`,
+		`127.0.0.1:${REDIS_PORT:-6379}:6379`,
+		`127.0.0.1:${RABBITMQ_PORT:-5672}:5672`,
+	)
+	deploymentRequireContains(t, ragOverlay,
+		`BKCRAB_FAIR_QUEUE_ENABLED: "true"`,
+		`BKCRAB_RAG_INDEX_WORKER_MODE: fair`,
+		`BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY: single`,
+	)
+	deploymentRequireContains(t, multi, `127.0.0.1:6379:6379`, `127.0.0.1:5672:5672`)
+	for _, pod := range []string{"pod-a", "pod-b"} {
+		if !bytes.Contains(multi, []byte(pod+":")) {
+			t.Fatalf("multi-pod fixture missing %s", pod)
+		}
+	}
+}
+
+func TestRAGFairQueueHelmAndKubernetesExposeSafeRolloutState(t *testing.T) {
+	root := deploymentRepoRoot(t)
+	values := deploymentRead(t, filepath.Join(root, "deploy", "helm", "bkcrab", "values.yaml"))
+	config := deploymentRead(t, filepath.Join(root, "deploy", "helm", "bkcrab", "templates", "configmap.yaml"))
+	secrets := deploymentRead(t, filepath.Join(root, "deploy", "helm", "bkcrab", "templates", "secrets.yaml"))
+	gateway := deploymentRead(t, filepath.Join(root, "deploy", "helm", "bkcrab", "templates", "gateway.yaml"))
+	redis := deploymentRead(t, filepath.Join(root, "deploy", "helm", "bkcrab", "templates", "redis.yaml"))
+	rabbit := deploymentRead(t, filepath.Join(root, "deploy", "helm", "bkcrab", "templates", "rabbitmq.yaml"))
+	direct := deploymentRead(t, filepath.Join(root, "deploy", "k8s", "bkcrab.yaml"))
+
+	var valuesDocument map[string]any
+	if err := yaml.Unmarshal(values, &valuesDocument); err != nil {
+		t.Fatalf("decode Helm values: %v", err)
+	}
+	fair := deploymentMap(t, valuesDocument["fairQueue"], "values.fairQueue")
+	ragIndex := deploymentMap(t, fair["ragIndex"], "values.fairQueue.ragIndex")
+	if enabled, ok := fair["enabled"].(bool); !ok || enabled {
+		t.Fatal("Helm fairqueue must default disabled")
+	}
+	if got := deploymentString(t, ragIndex["workerMode"], "ragIndex.workerMode"); got != "legacy" {
+		t.Fatalf("default workerMode=%q, want legacy", got)
+	}
+	if got := deploymentString(t, fair["mysqlWriterTopology"], "mysqlWriterTopology"); got != "single" {
+		t.Fatalf("writer topology=%q, want single", got)
+	}
+	deploymentRequireContains(t, config,
+		"BKCRAB_FAIR_QUEUE_ENABLED", "BKCRAB_RAG_INDEX_WORKER_MODE",
+		"BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY",
+	)
+	deploymentRequireContains(t, secrets, "FAIR_QUEUE_REDIS_PASSWORD", "FAIR_QUEUE_RABBITMQ_URL")
+	deploymentRequireContains(t, gateway, "BKCRAB_FAIR_QUEUE_REDIS_PASSWORD", "BKCRAB_FAIR_QUEUE_RABBITMQ_URL")
+	for name, raw := range map[string][]byte{"redis": redis, "rabbitmq": rabbit} {
+		deploymentRequireContains(t, raw, "kind: StatefulSet", "kind: Service", "type: ClusterIP", "volumeClaimTemplates:", "readinessProbe:", "livenessProbe:", "resources:")
+		if bytes.Contains(raw, []byte("type: LoadBalancer")) || bytes.Contains(raw, []byte("type: NodePort")) {
+			t.Fatalf("Helm %s must not be public", name)
+		}
+	}
+	deploymentRequireValidYAML(t, direct, "deploy/k8s/bkcrab.yaml")
+	deploymentRequireContains(t, direct,
+		`BKCRAB_FAIR_QUEUE_ENABLED: "false"`, `BKCRAB_RAG_INDEX_WORKER_MODE: "legacy"`,
+		"kind: StatefulSet", "bkcrab-redis", "bkcrab-rabbitmq", "clusterIP: None",
+	)
+}
+
 func deploymentRepoRoot(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", ".."))

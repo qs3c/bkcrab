@@ -31,6 +31,7 @@ type RuntimeOptions struct {
 	BackoffMax            time.Duration
 	CleanupTimeout        time.Duration
 	ShutdownGrace         time.Duration
+	Telemetry             TelemetrySink
 }
 
 func (o RuntimeOptions) withDefaults() (RuntimeOptions, error) {
@@ -121,6 +122,7 @@ type Runtime struct {
 	journal     OperationJournal
 	options     RuntimeOptions
 	tokens      runtimeTokenSource
+	telemetry   TelemetrySink
 
 	mu            sync.Mutex
 	resources     map[string]*runtimeResource
@@ -221,7 +223,7 @@ func NewRuntime(
 	}
 	return &Runtime{
 		rabbit: rabbit, coordinator: coordinator, journal: journal, options: normalized,
-		tokens: cryptoRuntimeTokenSource{}, resources: make(map[string]*runtimeResource),
+		tokens: cryptoRuntimeTokenSource{}, telemetry: normalized.Telemetry, resources: make(map[string]*runtimeResource),
 		fatalCh: make(chan struct{}), shutdownDone: make(chan struct{}),
 	}, nil
 }
@@ -259,6 +261,7 @@ func (r *Runtime) RegisterResource(registration ResourceRegistration) error {
 		PublishAttemptTimeout:       registration.Config.PublishAttemptTimeout,
 		BackoffInitial:              r.options.BackoffInitial,
 		BackoffMax:                  r.options.BackoffMax,
+		Telemetry:                   r.telemetry,
 	}
 	dispatcher, err := NewClosedDispatcher(registration.Config.Key, registration.DispatchSource,
 		registration.ExpiredRearmSource, r.rabbit, r.coordinator, dispatcherOptions)
@@ -285,6 +288,7 @@ func (r *Runtime) RegisterResource(registration ResourceRegistration) error {
 		BackoffInitial: r.options.BackoffInitial,
 		BackoffMax:     r.options.BackoffMax,
 		CleanupTimeout: resource.cleanupTimeout,
+		Telemetry:      r.telemetry,
 	}
 	scheduler, err := newScheduler(r, registration.Config, r.rabbit, r.coordinator, r.tokens, schedulerOptions)
 	if err != nil {
@@ -294,7 +298,7 @@ func (r *Runtime) RegisterResource(registration ResourceRegistration) error {
 	resource.scheduler.health = resource.health
 	resource.dispatcher.health = resource.health
 	if registration.RecoverySource != nil {
-		recovery, err := NewRecoveryCoordinator(r.coordinator, r.rabbit, r, RecoveryOptions{})
+		recovery, err := NewRecoveryCoordinator(r.coordinator, r.rabbit, r, RecoveryOptions{Telemetry: r.telemetry})
 		if err != nil {
 			return err
 		}
@@ -379,6 +383,8 @@ func (r *Runtime) OpenResource(resource string, fence ResourceFence) error {
 	entry.gateGeneration++
 	entry.mu.Unlock()
 	entry.health.markGateOpen()
+	EmitTelemetry(context.Background(), r.telemetry, TelemetryEvent{Name: TelemetrySchedulerGate, Resource: resource, Outcome: "ready", Dependency: "runtime"})
+	EmitTelemetry(context.Background(), r.telemetry, TelemetryEvent{Name: TelemetryResourceState, Resource: resource, Outcome: "ready", Dependency: "runtime"})
 	return nil
 }
 
@@ -390,6 +396,8 @@ func (r *Runtime) CloseResource(resource string) error {
 		return err
 	}
 	entry.closeGates()
+	EmitTelemetry(context.Background(), r.telemetry, TelemetryEvent{Name: TelemetrySchedulerGate, Resource: resource, Outcome: "paused", Dependency: "runtime"})
+	EmitTelemetry(context.Background(), r.telemetry, TelemetryEvent{Name: TelemetryResourceState, Resource: resource, Outcome: "paused", Dependency: "runtime"})
 	return nil
 }
 
@@ -718,6 +726,7 @@ func (p *runtimeWorkerPermit) stateSnapshot() runtimePermitState {
 }
 
 func (r *Runtime) executeWorker(permit *runtimeWorkerPermit, envelope workerEnvelope) {
+	prepareStarted := time.Now()
 	defer func() {
 		envelope.cancelPrepare()
 		if recover() != nil {
@@ -745,6 +754,7 @@ func (r *Runtime) executeWorker(permit *runtimeWorkerPermit, envelope workerEnve
 
 	prepared, result, prepareErr := permit.resource.preparer.Prepare(envelope.prepareCtx, envelope.request)
 	if prepareErr != nil {
+		EmitTelemetry(envelope.prepareCtx, r.telemetry, TelemetryEvent{Name: TelemetryPrepareDisposition, Resource: envelope.resource, Outcome: "error", Dependency: "mysql", TaskID: prepareRequestTaskID(envelope.request), Duration: time.Since(prepareStarted)})
 		if authoritativeFatalError(prepareErr) {
 			r.failAuthoritativeWriter(prepareErr)
 			// Keep the authoritative delivery unsettled. Closing the Rabbit
@@ -760,11 +770,13 @@ func (r *Runtime) executeWorker(permit *runtimeWorkerPermit, envelope workerEnve
 		return
 	}
 	if err := result.ValidateFor(envelope.request, prepared); err != nil {
+		EmitTelemetry(envelope.prepareCtx, r.telemetry, TelemetryEvent{Name: TelemetryPrepareDisposition, Resource: envelope.resource, Outcome: "invalid", Dependency: "runtime", TaskID: prepareRequestTaskID(envelope.request), Duration: time.Since(prepareStarted)})
 		permit.resource.closeGatesFor(envelope.fence, envelope.gateGeneration)
 		r.nackActivateRelease(permit, envelope)
 		permit.finishWithoutRun()
 		return
 	}
+	EmitTelemetry(envelope.prepareCtx, r.telemetry, TelemetryEvent{Name: TelemetryPrepareDisposition, Resource: envelope.resource, Outcome: telemetryPrepareOutcome(result.Disposition), Dependency: "mysql", TaskID: prepareRequestTaskID(envelope.request), Duration: time.Since(prepareStarted)})
 
 	if result.Disposition == PrepareClaimed {
 		if envelope.prepareCtx.Err() != nil {
@@ -785,6 +797,7 @@ func (r *Runtime) executeWorker(permit *runtimeWorkerPermit, envelope workerEnve
 			envelope.prepareCtx, envelope.resource, envelope.fence, envelope.tenant,
 			envelope.provisionalID, stableToken, permit.resource.config.ReservationTTL,
 		); err != nil {
+			EmitTelemetry(envelope.prepareCtx, r.telemetry, TelemetryEvent{Name: TelemetryReservation, Resource: envelope.resource, Outcome: "error", ReservationKind: "stable", Dependency: "redis", TaskID: result.Claim.TaskID})
 			if envelope.prepareCtx.Err() == nil {
 				permit.reportCoordinationFailure(err)
 			}
@@ -795,6 +808,7 @@ func (r *Runtime) executeWorker(permit *runtimeWorkerPermit, envelope workerEnve
 			permit.finishWithoutRun()
 			return
 		}
+		EmitTelemetry(envelope.prepareCtx, r.telemetry, TelemetryEvent{Name: TelemetryReservation, Resource: envelope.resource, Outcome: "promoted", ReservationKind: "stable", Dependency: "redis", TaskID: result.Claim.TaskID})
 		// Bind may have committed just as the one absolute prepare deadline (or
 		// shutdown cancellation) fired. The stable reservation must be released
 		// and the canonical claim consumed, but work that crossed that deadline
@@ -896,7 +910,10 @@ func (r *Runtime) nackActivateRelease(permit *runtimeWorkerPermit, envelope work
 	if err := r.coordinator.Release(
 		releaseCtx, envelope.resource, envelope.fence, envelope.tenant, envelope.provisionalID,
 	); err != nil {
+		EmitTelemetry(context.WithoutCancel(envelope.prepareCtx), r.telemetry, TelemetryEvent{Name: TelemetryReservation, Resource: envelope.resource, Outcome: "error", ReservationKind: "provisional", Dependency: "redis", TaskID: prepareRequestTaskID(envelope.request)})
 		permit.reportCleanupFailure(releaseCtx, err)
+	} else {
+		EmitTelemetry(context.WithoutCancel(envelope.prepareCtx), r.telemetry, TelemetryEvent{Name: TelemetryReservation, Resource: envelope.resource, Outcome: "released", ReservationKind: "provisional", Dependency: "redis", TaskID: prepareRequestTaskID(envelope.request)})
 	}
 	cancelRelease()
 }
@@ -918,10 +935,17 @@ func (r *Runtime) releaseReservationTokens(permit *runtimeWorkerPermit, envelope
 			continue
 		}
 		releaseCtx, cancelRelease := r.workerCleanupContext(permit.resource, envelope.prepareCtx)
+		kind := "stable"
+		if token == envelope.provisionalID {
+			kind = "provisional"
+		}
 		if err := r.coordinator.Release(
 			releaseCtx, envelope.resource, envelope.fence, envelope.tenant, token,
 		); err != nil {
+			EmitTelemetry(context.WithoutCancel(envelope.prepareCtx), r.telemetry, TelemetryEvent{Name: TelemetryReservation, Resource: envelope.resource, Outcome: "error", ReservationKind: kind, Dependency: "redis", TaskID: prepareRequestTaskID(envelope.request)})
 			permit.reportCleanupFailure(releaseCtx, err)
+		} else {
+			EmitTelemetry(context.WithoutCancel(envelope.prepareCtx), r.telemetry, TelemetryEvent{Name: TelemetryReservation, Resource: envelope.resource, Outcome: "released", ReservationKind: kind, Dependency: "redis", TaskID: prepareRequestTaskID(envelope.request)})
 		}
 		cancelRelease()
 	}
@@ -934,6 +958,7 @@ func (r *Runtime) deadLetterSettleRelease(permit *runtimeWorkerPermit, envelope 
 	})
 	cancelPublish()
 	if publishErr == nil {
+		EmitTelemetry(envelope.prepareCtx, r.telemetry, TelemetryEvent{Name: TelemetryDeadLetter, Resource: envelope.resource, Outcome: "dlq", Dependency: "rabbitmq", TaskID: prepareRequestTaskID(envelope.request)})
 		publishErr = receipt.Validate()
 	}
 	if publishErr == nil {
@@ -941,6 +966,7 @@ func (r *Runtime) deadLetterSettleRelease(permit *runtimeWorkerPermit, envelope 
 		_ = envelope.delivery.Ack(ackCtx)
 		cancelAck()
 	} else {
+		EmitTelemetry(envelope.prepareCtx, r.telemetry, TelemetryEvent{Name: TelemetryDeadLetter, Resource: envelope.resource, Outcome: "requeue", Dependency: "rabbitmq", TaskID: prepareRequestTaskID(envelope.request)})
 		nackCtx, cancelNack := r.workerCleanupContext(permit.resource, envelope.prepareCtx)
 		nackErr := envelope.delivery.Nack(nackCtx, true)
 		cancelNack()
@@ -969,6 +995,8 @@ func (r *Runtime) runPrepared(
 	runCtx context.Context,
 	cancelRun context.CancelFunc,
 ) {
+	runStarted := time.Now()
+	EmitTelemetry(runCtx, r.telemetry, TelemetryEvent{Name: TelemetryTaskRun, Resource: envelope.resource, Outcome: "started", Dependency: "runtime", TaskID: prepareRequestTaskID(envelope.request)})
 	heartbeatDone := make(chan struct{})
 	go func() {
 		defer close(heartbeatDone)
@@ -989,6 +1017,11 @@ func (r *Runtime) runPrepared(
 					stableToken, permit.resource.config.ReservationTTL,
 				)
 				cancel()
+				renewOutcome := "renewed"
+				if err != nil {
+					renewOutcome = "error"
+				}
+				EmitTelemetry(context.WithoutCancel(runCtx), r.telemetry, TelemetryEvent{Name: TelemetryReservation, Resource: envelope.resource, Outcome: renewOutcome, ReservationKind: "stable", Dependency: "redis", TaskID: prepareRequestTaskID(envelope.request)})
 				if err != nil {
 					r.handleCoordinationFailure(permit.resource, fence, generation, err)
 				}
@@ -997,6 +1030,11 @@ func (r *Runtime) runPrepared(
 	}()
 
 	runErr := runPreparedTaskSafely(prepared, runCtx)
+	runOutcome := "completed"
+	if runErr != nil {
+		runOutcome = "error"
+	}
+	EmitTelemetry(context.WithoutCancel(runCtx), r.telemetry, TelemetryEvent{Name: TelemetryTaskRun, Resource: envelope.resource, Outcome: runOutcome, Dependency: "runtime", TaskID: prepareRequestTaskID(envelope.request), Duration: time.Since(runStarted)})
 	if authoritativeFatalError(runErr) {
 		r.failAuthoritativeWriter(runErr)
 	}
@@ -1008,10 +1046,47 @@ func (r *Runtime) runPrepared(
 	if err := r.coordinator.Release(
 		releaseCtx, envelope.resource, fence, envelope.tenant, stableToken,
 	); err != nil {
+		EmitTelemetry(context.WithoutCancel(runCtx), r.telemetry, TelemetryEvent{Name: TelemetryReservation, Resource: envelope.resource, Outcome: "error", ReservationKind: "stable", Dependency: "redis", TaskID: prepareRequestTaskID(envelope.request)})
 		r.handleCoordinationFailure(permit.resource, fence, generation, err)
+	} else {
+		EmitTelemetry(context.WithoutCancel(runCtx), r.telemetry, TelemetryEvent{Name: TelemetryReservation, Resource: envelope.resource, Outcome: "released", ReservationKind: "stable", Dependency: "redis", TaskID: prepareRequestTaskID(envelope.request)})
 	}
 	cancelRelease()
 	permit.finishRun()
+}
+
+func prepareRequestTaskID(request PrepareRequest) string {
+	if request.Message != nil {
+		return request.Message.TaskID
+	}
+	if request.BodyCandidate != nil {
+		return request.BodyCandidate.TaskID
+	}
+	if request.HeaderToken != nil {
+		return request.HeaderToken.TaskID
+	}
+	return ""
+}
+
+func telemetryPrepareOutcome(disposition PrepareDisposition) string {
+	switch disposition {
+	case PrepareClaimed:
+		return "claimed"
+	case PrepareCapacityDeferred:
+		return "capacity_deferred"
+	case PrepareDuplicateStaleTerminal:
+		return "duplicate"
+	case PrepareCanonicalRepairedRetry:
+		return "retry_not_due"
+	case PreparePoisonPermanentInvalidMessage:
+		return "invalid"
+	case PrepareTransientInfrastructure:
+		return "error"
+	case PrepareCanonicalRepairedTerminal:
+		return "repair"
+	default:
+		return "terminal"
+	}
 }
 
 func runPreparedTaskSafely(prepared PreparedTask, ctx context.Context) (err error) {
@@ -1274,6 +1349,7 @@ func (r *Runtime) failAuthoritativeWriter(err error) {
 		r.mu.Unlock()
 		for _, entry := range resources {
 			entry.health.markAuthoritativeFatal()
+			EmitTelemetry(context.Background(), r.telemetry, TelemetryEvent{Name: TelemetryResourceState, Resource: entry.config.Key, Outcome: "mismatch", Dependency: "mysql"})
 		}
 		// initiateShutdown synchronously closes both admission gates before
 		// component cancellation. A writer mismatch additionally cancels every

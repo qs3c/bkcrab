@@ -9,6 +9,27 @@ data:
   BKCRAB_BIND: "all"
   BKCRAB_STORAGE_TYPE: {{ include "bkcrab.storageType" . | quote }}
   BKCRAB_STORAGE_AUTO_MIGRATE: "true"
+
+  ## Fairqueue infrastructure and rollout state. Credentials/AMQP URL are in
+  ## Secret. mysqlWriterTopology intentionally has no multi-writer option.
+  BKCRAB_FAIR_QUEUE_ENABLED: {{ .Values.fairQueue.enabled | quote }}
+  {{- if .Values.redis.enabled }}
+  BKCRAB_FAIR_QUEUE_REDIS_ADDR: {{ printf "%s-redis:6379" (include "bkcrab.fullname" .) | quote }}
+  {{- else }}
+  BKCRAB_FAIR_QUEUE_REDIS_ADDR: {{ .Values.redis.address | quote }}
+  {{- end }}
+  BKCRAB_FAIR_QUEUE_REDIS_DB: {{ .Values.fairQueue.redisDB | quote }}
+  BKCRAB_FAIR_QUEUE_REDIS_MODE: {{ .Values.fairQueue.redisMode | quote }}
+  BKCRAB_FAIR_QUEUE_EXCHANGE: {{ .Values.fairQueue.exchange | quote }}
+  BKCRAB_FAIR_QUEUE_DEAD_LETTER_EXCHANGE: {{ .Values.fairQueue.deadLetterExchange | quote }}
+  BKCRAB_FAIR_QUEUE_KEY_PREFIX: {{ .Values.fairQueue.keyPrefix | quote }}
+  BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY: {{ .Values.fairQueue.mysqlWriterTopology | quote }}
+  BKCRAB_RAG_INDEX_WORKER_MODE: {{ .Values.fairQueue.ragIndex.workerMode | quote }}
+  BKCRAB_RAG_INDEX_LOCAL_WORKERS: {{ .Values.fairQueue.ragIndex.localWorkers | quote }}
+  BKCRAB_RAG_INDEX_GLOBAL_CONCURRENCY: {{ .Values.fairQueue.ragIndex.globalConcurrency | quote }}
+  BKCRAB_RAG_INDEX_PER_USER_BASE_CONCURRENCY: {{ .Values.fairQueue.ragIndex.perUserBaseConcurrency | quote }}
+  BKCRAB_RAG_INDEX_PER_USER_BURST_CONCURRENCY: {{ .Values.fairQueue.ragIndex.perUserBurstConcurrency | quote }}
+  BKCRAB_RAG_INDEX_BORROW_ENABLED: {{ .Values.fairQueue.ragIndex.borrowEnabled | quote }}
   {{- if .Values.rag.enabled }}
 
   ## RAG 基础服务与独立 feature gates

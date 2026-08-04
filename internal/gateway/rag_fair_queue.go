@@ -14,6 +14,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/fairqueue"
 	"github.com/qs3c/bkcrab/internal/rag"
+	ragtelemetry "github.com/qs3c/bkcrab/internal/rag/telemetry"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
@@ -416,7 +417,12 @@ func (s *ragFairQueueHealthState) snapshot(
 		health.Redis.Status = fairqueue.DependencyStatusOK
 		health.Redis.Mode = string(redisProbe.Topology.Mode)
 		health.Redis.ClusterEnabled = redisProbe.Topology.Mode == fairqueue.RedisDeploymentCluster
+		health.Redis.ActiveCount = redisProbe.ActiveCount
+		health.Redis.RingCount = redisProbe.RingCount
+		health.Redis.RingMemberCount = redisProbe.RingMemberCount
+		health.Redis.GlobalInflight = redisProbe.GlobalInflight
 		health.Redis.ProvisionalCount = redisProbe.ProvisionalCount
+		health.Redis.StableCount = redisProbe.StableCount
 		health.Redis.ProcessingCount = redisProbe.ProcessingCount
 		if control.Present {
 			health.Redis.ResourceState = string(control.State)
@@ -643,11 +649,13 @@ func buildRAGFairQueueAssembly(
 	}
 	runner := &ragFairQueueRunnerProxy{}
 	resourceConfig := makeRAGFairQueueResourceConfig(env.FairQueue.RAGIndex)
+	fairTelemetry := ragtelemetry.NewFairQueueSink(ragtelemetry.NewSlogRecorder(nil))
 	adapter, err := rag.NewRAGFairQueueAdapter(
 		fairStore, runner, adminSource, journalStore,
 		rag.RAGFairQueueAdapterOptions{
 			WorkerID:      "rag-fair-" + uuid.NewString(),
 			LeaseDuration: resourceConfig.ReservationTTL,
+			Telemetry:     fairTelemetry,
 			ClaimLimits: store.RAGFairQueueClaimLimits{
 				GlobalConcurrency:       resourceConfig.GlobalConcurrency,
 				PerUserBurstConcurrency: resourceConfig.PerUserBurstConcurrency,
@@ -690,7 +698,7 @@ func buildRAGFairQueueAssembly(
 			coordinator, err := fairqueue.NewRedis(probeCtx, fairqueue.RedisOptions{
 				Addr: env.FairQueue.RedisAddr, Password: env.FairQueue.RedisPassword,
 				DB: env.FairQueue.RedisDB, KeyPrefix: env.FairQueue.KeyPrefix,
-				OperationTimeout: resourceConfig.PublishAttemptTimeout,
+				OperationTimeout: resourceConfig.PublishAttemptTimeout, Telemetry: fairTelemetry,
 			})
 			if err != nil {
 				health.markRedisUnavailable(err)
@@ -710,6 +718,7 @@ func buildRAGFairQueueAssembly(
 				URL: env.FairQueue.RabbitMQURL, Exchange: env.FairQueue.Exchange,
 				DeadLetterExchange: env.FairQueue.DeadLetterExchange,
 				OperationTimeout:   resourceConfig.PublishAttemptTimeout,
+				Telemetry:          fairTelemetry,
 			}, registry)
 		},
 		newRuntime: func(
@@ -718,7 +727,7 @@ func buildRAGFairQueueAssembly(
 			journal fairqueue.OperationJournal,
 		) (ragFairQueueRuntime, error) {
 			runtime, err := fairqueue.NewRuntime(rabbitClient, coordinator, journal, fairqueue.RuntimeOptions{
-				ShutdownGrace: resourceConfig.RecoveryDrainTimeout,
+				ShutdownGrace: resourceConfig.RecoveryDrainTimeout, Telemetry: fairTelemetry,
 			})
 			if err != nil {
 				return nil, err

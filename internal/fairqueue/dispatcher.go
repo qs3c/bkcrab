@@ -46,6 +46,7 @@ type DispatcherOptions struct {
 	PublishAttemptTimeout       time.Duration
 	BackoffInitial              time.Duration
 	BackoffMax                  time.Duration
+	Telemetry                   TelemetrySink
 }
 
 func (o DispatcherOptions) withDefaults() (DispatcherOptions, error) {
@@ -103,6 +104,7 @@ type Dispatcher struct {
 	coordinator Coordinator
 	options     DispatcherOptions
 	health      *resourceHealth
+	telemetry   TelemetrySink
 
 	gateMu   sync.Mutex
 	gateOpen bool
@@ -179,6 +181,7 @@ func NewClosedDispatcher(
 		options:     normalized,
 		gateGen:     1,
 		drained:     drained,
+		telemetry:   normalized.Telemetry,
 	}, nil
 }
 
@@ -377,11 +380,14 @@ func (d *Dispatcher) dispatchPage(ctx context.Context, after string) (string, bo
 	if err != nil {
 		return after, false, err
 	}
+	started := time.Now()
 	candidates, next, err := d.source.ListDispatchCandidates(ctx, after, d.options.PageSize)
 	if err != nil {
+		EmitTelemetry(ctx, d.telemetry, TelemetryEvent{Name: TelemetryDispatchScan, Resource: d.resource, Outcome: "error", Dependency: "mysql", Duration: time.Since(started)})
 		err = d.classifyFatalSourceFailure(sourceFence, sourceGateGen, err)
 		return after, false, fmt.Errorf("fairqueue: list dispatch candidates: %w", err)
 	}
+	EmitTelemetry(ctx, d.telemetry, TelemetryEvent{Name: TelemetryDispatchScan, Resource: d.resource, Outcome: "ok", Dependency: "mysql", Value: int64(len(candidates)), Duration: time.Since(started)})
 	next, err = normalizeDispatcherPage(len(candidates), next, after, d.options.PageSize)
 	if err != nil {
 		return after, false, err
@@ -438,9 +444,11 @@ func (d *Dispatcher) rearmPage(ctx context.Context, after string) (string, bool,
 	cancel()
 	finish()
 	if err != nil {
+		EmitTelemetry(ctx, d.telemetry, TelemetryEvent{Name: TelemetryExpiredRunning, Resource: d.resource, Outcome: "error", Dependency: "mysql"})
 		d.closePublisherGateOnFatalSource(fence, gateGen, err)
 		return after, false, fmt.Errorf("fairqueue: rearm expired candidates: %w", err)
 	}
+	EmitTelemetry(ctx, d.telemetry, TelemetryEvent{Name: TelemetryExpiredRunning, Resource: d.resource, Outcome: "armed", Dependency: "mysql", Value: int64(len(candidates))})
 	if contextErr != nil {
 		return after, false, contextErr
 	}
@@ -503,13 +511,20 @@ func (d *Dispatcher) dispatchCandidate(ctx context.Context, candidate DispatchCa
 		return err
 	}
 
+	publishStarted := time.Now()
 	receipt, err := d.rabbit.PublishMandatoryConfirmed(attemptCtx, original.Message)
 	if err != nil {
+		outcome := "error"
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
+			outcome = "timeout"
+		}
+		EmitTelemetry(ctx, d.telemetry, TelemetryEvent{Name: TelemetryDispatchPublish, Resource: d.resource, Outcome: outcome, Dependency: "rabbitmq", TaskID: original.Message.TaskID, DispatchGeneration: int64(original.Message.DispatchToken.Generation), Duration: time.Since(publishStarted)})
 		return fmt.Errorf("fairqueue: publish candidate: %w", err)
 	}
 	if err := receipt.Validate(); err != nil {
 		return err
 	}
+	EmitTelemetry(ctx, d.telemetry, TelemetryEvent{Name: TelemetryDispatchPublish, Resource: d.resource, Outcome: "confirmed", Dependency: "rabbitmq", TaskID: original.Message.TaskID, DispatchGeneration: int64(original.Message.DispatchToken.Generation), PublishAttemptID: receipt.AttemptID, Duration: time.Since(publishStarted)})
 	if err := attemptCtx.Err(); err != nil {
 		return err
 	}
@@ -519,6 +534,13 @@ func (d *Dispatcher) dispatchCandidate(ctx context.Context, candidate DispatchCa
 	if authoritativeFatalError(markErr) {
 		d.closePublisherGateFor(fence, gateGen)
 	}
+	markOutcome := "ok"
+	if markErr != nil {
+		markOutcome = "error"
+	} else if !marked {
+		markOutcome = "stale"
+	}
+	EmitTelemetry(ctx, d.telemetry, TelemetryEvent{Name: TelemetryDispatchMark, Resource: d.resource, Outcome: markOutcome, Dependency: "mysql", TaskID: original.Message.TaskID, DispatchGeneration: int64(original.Message.DispatchToken.Generation)})
 
 	// The bounded publisher attempt ends at the original-candidate Mark. Redis
 	// activation is a separately bounded, fenced repair of scheduling state.

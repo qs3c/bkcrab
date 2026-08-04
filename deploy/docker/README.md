@@ -190,6 +190,31 @@ RAG_TEST_MILVUS_ADDR=127.0.0.1:19530 \
   go test ./internal/rag/vector -run TestMilvusRoundTrip -v
 ```
 
+## RAG fairqueue 依赖与两阶段切换
+
+基础 Compose 同时提供持久化 Redis（AOF）和 RabbitMQ management；management
+只绑定 `127.0.0.1`。在 `.env` 中为 `REDIS_PASSWORD` 和
+`RABBITMQ_PASSWORD` 生成独立随机值，Rabbit 密码必须是 URL-safe。开发默认
+仍为 `FAIR_QUEUE_ENABLED=false`、`RAG_INDEX_WORKER_MODE=legacy`。
+
+正式切换不能做 legacy/fair canary，必须是两个独立的全量部署：
+
+1. 先部署兼容 dual-write 镜像，执行
+   `bkcrab admin fairqueue contract-migrate` dry-run；确认所有旧 writer 已归零
+   后用 `--apply --confirm-all-writers-dual-write` 完成 contract。
+2. 全量设置 `RAG_INDEX_WORKER_MODE=paused`，仍保持
+   `FAIR_QUEUE_ENABLED=false`。等待旧容器归零、heartbeat 静止且所有旧
+   claimant 退出；无法证明时保持 paused。
+3. 第二次全量部署设置 `FAIR_QUEUE_ENABLED=true`、
+   `RAG_INDEX_WORKER_MODE=fair`、writer topology `single`。检查 Redis、Rabbit
+   health 和 `/readyz`；Rabbit/Redis 暂时 degraded 不应使 API Pod 失活，但
+   scheduler 会停止新 claim。
+4. 回滚按 `fair -> paused`，排空非终态任务后再到兼容 dual-write 的
+   `legacy`。contract 后禁止回到 pre-expand 镜像。
+
+详细的 Redis/Rabbit 灾难恢复、writer rebind 和 journal 对账见
+[`docs/rag-fair-queue-operations.md`](../../docs/rag-fair-queue-operations.md)。
+
 ## 停止与升级
 
 停止服务但保留数据卷：

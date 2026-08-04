@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/qs3c/bkcrab/internal/fairqueue"
 )
 
 // EventName is deliberately closed. Unknown event names are dropped at the
@@ -29,12 +31,14 @@ const (
 	EventIndexTask           EventName = "rag.index_task"
 	EventActiveVersionSwitch EventName = "rag.active_version_switch"
 	EventLifecycleGC         EventName = "rag.lifecycle.gc"
+	EventFairQueue           EventName = "rag.fairqueue"
 )
 
 var allowedEvents = map[EventName]struct{}{
 	EventParserDocument: {}, EventParserPages: {}, EventParserSidecarCall: {},
 	EventResultCache: {}, EventDocumentAIBudget: {}, EventDocumentAICall: {},
 	EventEnrichmentBatch: {}, EventIndexTask: {}, EventActiveVersionSwitch: {}, EventLifecycleGC: {},
+	EventFairQueue: {},
 }
 
 // Fields is intentionally made only of privacy-safe dimensions and numeric
@@ -48,15 +52,19 @@ type Fields struct {
 	RetiredVersion  int64
 	ClaimGeneration int64
 
-	Format        string
-	ParseMode     string
-	ParserVersion string
-	Operation     string
-	Transition    string
-	Outcome       string
-	ErrorCode     string
-	CacheKind     string
-	CacheStatus   string
+	Format          string
+	ParseMode       string
+	ParserVersion   string
+	Operation       string
+	Transition      string
+	Outcome         string
+	ErrorCode       string
+	CacheKind       string
+	CacheStatus     string
+	Resource        string
+	Metric          string
+	Dependency      string
+	ReservationKind string
 
 	Attempt       int
 	RetryCount    int
@@ -72,6 +80,7 @@ type Fields struct {
 	RequestCount  int
 	BlockCount    int
 	SuccessCount  int
+	Value         int64
 
 	InputTokens  int64
 	OutputTokens int64
@@ -145,7 +154,16 @@ var (
 		"enqueue": {}, "reindex": {}, "claim": {}, "supersede": {}, "heartbeat": {}, "retry": {}, "finish": {}, "activate": {},
 		"reserve": {}, "sent": {}, "release": {}, "commit": {}, "commit_overrun": {}, "reconcile": {},
 	}
-	allowedOutcomes   = enumSet{"ok": {}, "error": {}, "rejected": {}, "scheduled": {}, "skipped": {}}
+	allowedOutcomes = enumSet{
+		"ok": {}, "error": {}, "rejected": {}, "scheduled": {}, "skipped": {},
+		"timeout": {}, "returned": {}, "confirmed": {}, "stale": {}, "granted": {},
+		"denied": {}, "renewed": {}, "released": {}, "promoted": {}, "armed": {},
+		"redispatched": {}, "paused": {}, "ready": {}, "recovering": {}, "fence_lost": {},
+		"mismatch": {}, "duplicate": {}, "repair": {}, "dlq": {}, "requeue": {},
+		"empty": {}, "unavailable": {}, "claimed": {}, "capacity_deferred": {},
+		"terminal": {}, "retry_not_due": {}, "poison": {}, "canceled": {}, "invalid": {},
+		"started": {}, "completed": {},
+	}
 	allowedErrorCodes = enumSet{
 		"store_error": {}, "fence_lost": {}, "maintenance_fence_lost": {}, "maintenance_error": {},
 		"maintenance_busy": {}, "vector_error": {}, "permanent_failure": {}, "pending_limit": {},
@@ -172,6 +190,12 @@ func sanitize(fields Fields) Fields {
 	fields.ErrorCode = sanitizeEnum(fields.ErrorCode, allowedErrorCodes)
 	fields.CacheKind = sanitizeEnum(fields.CacheKind, allowedCacheKinds)
 	fields.CacheStatus = sanitizeEnum(fields.CacheStatus, allowedCacheStatuses)
+	if fairqueue.ValidateResource(fields.Resource) != nil {
+		fields.Resource = ""
+	}
+	fields.Metric = sanitizeStableToken(fields.Metric)
+	fields.Dependency = sanitizeEnum(fields.Dependency, enumSet{"mysql": {}, "redis": {}, "rabbitmq": {}, "runtime": {}})
+	fields.ReservationKind = sanitizeEnum(fields.ReservationKind, enumSet{"provisional": {}, "stable": {}, "processing": {}})
 
 	fields.TaskID = nonNegative64(fields.TaskID)
 	fields.DocVersion = nonNegative64(fields.DocVersion)
@@ -194,6 +218,7 @@ func sanitize(fields Fields) Fields {
 	fields.RequestCount = nonNegative(fields.RequestCount)
 	fields.BlockCount = nonNegative(fields.BlockCount)
 	fields.SuccessCount = nonNegative(fields.SuccessCount)
+	fields.Value = nonNegative64(fields.Value)
 	fields.InputTokens = nonNegative64(fields.InputTokens)
 	fields.OutputTokens = nonNegative64(fields.OutputTokens)
 	fields.CostMicroUSD = nonNegative64(fields.CostMicroUSD)
@@ -325,6 +350,11 @@ func eventLevel(event Event) slog.Level {
 			return slog.LevelDebug
 		}
 		return slog.LevelInfo
+	case EventFairQueue:
+		if event.Fields.Outcome == "error" || event.Fields.Outcome == "unavailable" || event.Fields.Outcome == "fence_lost" {
+			return slog.LevelWarn
+		}
+		return slog.LevelDebug
 	}
 	// These are operational measurements rather than user-facing activity
 	// logs. Debug is the safe default; a metrics recorder can consume them at
@@ -364,6 +394,10 @@ func eventAttrs(fields Fields) []slog.Attr {
 	addString("error_code", fields.ErrorCode)
 	addString("cache_kind", fields.CacheKind)
 	addString("cache_status", fields.CacheStatus)
+	addString("resource", fields.Resource)
+	addString("metric", fields.Metric)
+	addString("dependency", fields.Dependency)
+	addString("reservation_kind", fields.ReservationKind)
 	addInt("attempt", fields.Attempt)
 	addInt("retry_count", fields.RetryCount)
 	if fields.Duration != 0 {
@@ -380,6 +414,7 @@ func eventAttrs(fields Fields) []slog.Attr {
 	addInt("request_count", fields.RequestCount)
 	addInt("block_count", fields.BlockCount)
 	addInt("success_count", fields.SuccessCount)
+	addInt64("value", fields.Value)
 	addInt64("input_tokens", fields.InputTokens)
 	addInt64("output_tokens", fields.OutputTokens)
 	addInt64("cost_microusd", fields.CostMicroUSD)
@@ -387,4 +422,27 @@ func eventAttrs(fields Fields) []slog.Attr {
 		attrs = append(attrs, slog.Bool("usage_estimated", true))
 	}
 	return attrs
+}
+
+// FairQueueSink bridges the domain-neutral queue telemetry contract to the
+// existing RAG recorder without exposing its log-only task/tenant correlation
+// fields as metric dimensions.
+type FairQueueSink struct{ Recorder Recorder }
+
+func NewFairQueueSink(recorder Recorder) fairqueue.TelemetrySink {
+	if recorder == nil {
+		recorder = NopRecorder()
+	}
+	return &FairQueueSink{Recorder: recorder}
+}
+
+func (s *FairQueueSink) RecordFairQueue(ctx context.Context, event fairqueue.TelemetryEvent) {
+	if s == nil || s.Recorder == nil {
+		return
+	}
+	Emit(ctx, s.Recorder, EventFairQueue, Fields{
+		Resource: event.Resource, Metric: string(event.Name), Outcome: event.Outcome,
+		Dependency: event.Dependency, ReservationKind: event.ReservationKind,
+		Value: event.Value, Duration: event.Duration,
+	})
 }

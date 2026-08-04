@@ -116,6 +116,7 @@ type RAGFairQueueAdapterOptions struct {
 	LeaseDuration       time.Duration
 	ClaimLimits         store.RAGFairQueueClaimLimits
 	ClaimRecheckTimeout time.Duration
+	Telemetry           fairqueue.TelemetrySink
 }
 
 type RAGFairQueueAdapter struct {
@@ -623,10 +624,23 @@ func (a *RAGFairQueueAdapter) Prepare(ctx context.Context, request fairqueue.Pre
 	if err != nil {
 		return nil, fairqueue.PrepareResult{}, err
 	}
+	claimStarted := time.Now()
 	claimResult, claimErr := a.source.ClaimRAGIndexTaskByID(
 		ctx, id, message.TenantID, int64(message.DispatchToken.Generation),
 		a.options.WorkerID, a.options.LeaseDuration, a.options.ClaimLimits,
 	)
+	claimOutcome := "ok"
+	if claimErr != nil {
+		claimOutcome = "error"
+		if errors.Is(claimErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			claimOutcome = "timeout"
+		}
+	}
+	fairqueue.EmitTelemetry(ctx, a.options.Telemetry, fairqueue.TelemetryEvent{
+		Name: fairqueue.TelemetryClaimLock, Resource: RAGFairQueueResource,
+		Outcome: claimOutcome, Dependency: "mysql", TaskID: message.TaskID,
+		DispatchGeneration: int64(message.DispatchToken.Generation), Duration: time.Since(claimStarted),
+	})
 	if claimErr != nil {
 		freshErr := a.freshReadAfterClaimError(ctx, id, message)
 		return nil, fairqueue.PrepareResult{}, mapRAGFairQueueStoreError(errors.Join(claimErr, freshErr))
@@ -634,6 +648,11 @@ func (a *RAGFairQueueAdapter) Prepare(ctx context.Context, request fairqueue.Pre
 	if claimResult.Disposition != store.RAGFairQueueClaimed && claimResult.Claim != nil {
 		return nil, fairqueue.PrepareResult{}, authoritativeStateError("non-claimed disposition carried a claim")
 	}
+	fairqueue.EmitTelemetry(ctx, a.options.Telemetry, fairqueue.TelemetryEvent{
+		Name: fairqueue.TelemetryTaskClaim, Resource: RAGFairQueueResource,
+		Outcome: ragClaimTelemetryOutcome(claimResult.Disposition), Dependency: "mysql",
+		TaskID: message.TaskID, DispatchGeneration: int64(message.DispatchToken.Generation),
+	})
 	switch claimResult.Disposition {
 	case store.RAGFairQueueClaimed:
 		if err := a.validateClaim(message, claimResult.Claim); err != nil {
@@ -647,18 +666,49 @@ func (a *RAGFairQueueAdapter) Prepare(ctx context.Context, request fairqueue.Pre
 		}
 		return prepared, result, nil
 	case store.RAGFairQueueClaimCapacityDeferred:
+		fairqueue.EmitTelemetry(ctx, a.options.Telemetry, fairqueue.TelemetryEvent{Name: fairqueue.TelemetryClaimCapacity, Resource: RAGFairQueueResource, Outcome: "denied", Dependency: "mysql", TaskID: message.TaskID})
 		return nil, prepareResult(fairqueue.PrepareCapacityDeferred, fairqueue.DeliveryNackRequeue, fairqueue.CanonicalNone), nil
 	case store.RAGFairQueueClaimDuplicateStale:
 		return nil, prepareResult(fairqueue.PrepareDuplicateStaleTerminal, fairqueue.DeliveryAckRelease, fairqueue.CanonicalNone), nil
 	case store.RAGFairQueueClaimCanonicalTerminal:
+		a.emitCanonicalCorrection(ctx, message)
 		return nil, prepareResult(fairqueue.PrepareCanonicalRepairedTerminal, fairqueue.DeliveryAckRelease, fairqueue.CanonicalTerminalRepairCommitted), nil
 	case store.RAGFairQueueClaimCanonicalRetry:
+		a.emitCanonicalCorrection(ctx, message)
 		return nil, prepareResult(fairqueue.PrepareCanonicalRepairedRetry, fairqueue.DeliveryAckRelease, fairqueue.CanonicalRetryRepairCommitted), nil
 	case store.RAGFairQueueClaimPoison, store.RAGFairQueueClaimPoisonRepaired:
+		if claimResult.Disposition == store.RAGFairQueueClaimPoisonRepaired {
+			a.emitCanonicalCorrection(ctx, message)
+		}
 		return a.preparePoison(ctx, request)
 	default:
 		return nil, fairqueue.PrepareResult{}, authoritativeStateError("unknown canonical claim disposition")
 	}
+}
+
+func ragClaimTelemetryOutcome(disposition store.RAGFairQueueClaimDisposition) string {
+	switch disposition {
+	case store.RAGFairQueueClaimed:
+		return "claimed"
+	case store.RAGFairQueueClaimCapacityDeferred:
+		return "capacity_deferred"
+	case store.RAGFairQueueClaimDuplicateStale:
+		return "duplicate"
+	case store.RAGFairQueueClaimCanonicalTerminal, store.RAGFairQueueClaimCanonicalRetry:
+		return "repair"
+	case store.RAGFairQueueClaimPoison, store.RAGFairQueueClaimPoisonRepaired:
+		return "poison"
+	default:
+		return "invalid"
+	}
+}
+
+func (a *RAGFairQueueAdapter) emitCanonicalCorrection(ctx context.Context, message fairqueue.Message) {
+	fairqueue.EmitTelemetry(ctx, a.options.Telemetry, fairqueue.TelemetryEvent{
+		Name: fairqueue.TelemetryCanonicalCorrection, Resource: RAGFairQueueResource,
+		Outcome: "repair", Dependency: "mysql", Value: 1, TaskID: message.TaskID,
+		DispatchGeneration: int64(message.DispatchToken.Generation),
+	})
 }
 
 func prepareResult(disposition fairqueue.PrepareDisposition, action fairqueue.DeliveryAction, effect fairqueue.CanonicalEffect) fairqueue.PrepareResult {

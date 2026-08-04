@@ -104,6 +104,47 @@ rag:
     pdfRenderDPI: 180
     parseTimeoutMS: 600000
 
+## Durable fair scheduling. The default remains the legacy claimant. Promotion
+## requires two complete rollouts: legacy -> paused (drain and prove old
+## ReplicaSet=0), then paused -> fair. Never canary legacy and fair together.
+fairQueue:
+  enabled: false
+  mysqlWriterTopology: single
+  redisMode: standalone
+  redisDB: 0
+  keyPrefix: "bkcrab:"
+  exchange: bkcrab.fair.task
+  deadLetterExchange: bkcrab.fair.dlx
+  ragIndex:
+    workerMode: legacy       # legacy | paused | fair
+    localWorkers: 4
+    globalConcurrency: 4
+    perUserBaseConcurrency: 2
+    perUserBurstConcurrency: 4
+    borrowEnabled: true
+
+redis:
+  enabled: false             # false uses external address below
+  address: ""
+  password: ""              # Secret; required when fairQueue.enabled
+  image: redis:7.4-alpine
+  storage: 8Gi
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
+rabbitmq:
+  enabled: false             # false uses external URL below
+  url: ""                    # Secret; required when fairQueue.enabled
+  username: bkcrab
+  password: ""              # Secret; required for the built-in broker
+  vhost: bkcrab
+  image: rabbitmq:4.1-management-alpine
+  storage: 8Gi
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+
 ## HPA
 autoscaling:
   enabled: true
