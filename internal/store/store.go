@@ -151,6 +151,29 @@ type Store interface {
 	LoadTurnMessages(ctx context.Context, userID, agentID string, refs []TurnRef) ([]TurnGroup, error)
 	ListSessionMessages(ctx context.Context, userID, agentID, sessionKey string) ([]SessionMessage, error)
 
+	// --- Durable image generation batches (MySQL authoritative only) ---
+	CreateImageGenerationBatch(ctx context.Context, request CreateImageGenerationBatchRequest) (*ImageGenerationBatchRecord, []ImageGenerationTaskRecord, error)
+	GetImageGenerationBatchForPrincipal(ctx context.Context, userID, agentID, batchID string) (*ImageGenerationBatchRecord, error)
+	ListImageGenerationTasks(ctx context.Context, batchID string) ([]ImageGenerationTaskRecord, error)
+	GetImageGenerationTask(ctx context.Context, taskID string) (*ImageGenerationTaskRecord, error)
+	MarkImageGenerationBatchStarted(ctx context.Context, batchID string) (*ImageGenerationBatchRecord, bool, error)
+	FinalizeImageTaskDone(ctx context.Context, taskID string, result ImageTaskDoneResult) (*ImageGenerationBatchRecord, bool, error)
+	FinalizeImageTaskFailed(ctx context.Context, taskID, errorCode, errorMessage string) (*ImageGenerationBatchRecord, bool, error)
+	FinalizeImageTaskCanceled(ctx context.Context, taskID string) (*ImageGenerationBatchRecord, bool, error)
+	RequestImageBatchCancel(ctx context.Context, userID, agentID, batchID string) (*ImageGenerationBatchRecord, []ImageGenerationTaskRecord, error)
+	ListDispatchableImageTasksPage(ctx context.Context, afterSequenceID int64, limit int) ([]ImageTaskDispatchCandidate, int64, error)
+	GetDispatchableImageTaskByID(ctx context.Context, taskID string) (*ImageTaskDispatchCandidate, error)
+	MarkImageTaskDispatched(ctx context.Context, candidate ImageTaskDispatchCandidate, dispatchGeneration int64) (bool, error)
+	ArmExpiredImageTasks(ctx context.Context, afterSequenceID int64, limit int) ([]ImageTaskDispatchCandidate, int64, error)
+	CaptureImageFairQueueHighWater(ctx context.Context) (int64, error)
+	ListCanonicalImageTenants(ctx context.Context, highWater int64, afterUserID string, limit int) ([]string, string, error)
+	ListDispatchedImageTasks(ctx context.Context, highWater, afterSequenceID int64, limit int) ([]ImageTaskDispatchRecord, int64, error)
+	ListValidRunningImageTasks(ctx context.Context, highWater, afterSequenceID int64, limit int) ([]ImageRunningTaskSnapshot, int64, error)
+	CaptureImageBrokerRepairHighWater(ctx context.Context) (int64, error)
+	ListBrokerBackedImageCandidates(ctx context.Context, highWater, afterSequenceID int64, limit int) ([]ImageTaskDispatchCandidate, int64, error)
+	RearmImageCandidateAfterBrokerLoss(ctx context.Context, original ImageTaskDispatchCandidate) (*ImageTaskDispatchCandidate, bool, error)
+	RepairPoisonImageCandidate(ctx context.Context, locator ImagePoisonRepairLocator, registeredResource, queueTenantHash string) (*ImageTaskDispatchCandidate, ImagePoisonRepairDisposition, error)
+
 	// --- Context archives ---
 	//
 	// ContextArchiveRecord stores original tool results removed from the LLM
