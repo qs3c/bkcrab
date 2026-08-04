@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path"
+	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -17,14 +20,16 @@ import (
 const (
 	// RAGResourcesMetadataKey is the sole typed metadata key accepted from the
 	// trusted rag_search builtin. Tool output text is never inspected for it.
-	RAGResourcesMetadataKey = "ragResources"
+	RAGResourcesMetadataKey   = "ragResources"
+	ImageArtifactsMetadataKey = "imageArtifacts"
 
 	// These are transport-boundary limits, not the smaller gallery display
 	// limit. A search may return resources from several final hits; the agent
 	// loop applies its own display/deduplication cap when it aggregates them.
-	maxRAGResourcesPerToolResult = 64
-	maxResultMetadataValueBytes  = 256 << 10
-	maxResultMetadataLogBytes    = 48
+	maxRAGResourcesPerToolResult   = 64
+	maxImageArtifactsPerToolResult = 16
+	maxResultMetadataValueBytes    = 256 << 10
+	maxResultMetadataLogBytes      = 48
 )
 
 // ResultMetadata is an in-process, producer-authenticated side channel for a
@@ -82,12 +87,48 @@ type ragResourceRefWire struct {
 	SourceLocation document.SourceLocation `json:"sourceLocation"`
 }
 
+type ImageArtifactRef struct {
+	BatchID    string `json:"batch_id"`
+	TaskID     string `json:"task_id"`
+	ItemIndex  int    `json:"item_index"`
+	ChunkIndex int    `json:"chunk_index"`
+	Label      string `json:"label"`
+	Index      int    `json:"index"`
+	Path       string `json:"path"`
+	URL        string `json:"url,omitempty"`
+	MIMEType   string `json:"mime_type"`
+	Size       int64  `json:"size"`
+	Width      int    `json:"width"`
+	Height     int    `json:"height"`
+	SHA256     string `json:"sha256"`
+	Origin     struct {
+		AgentID   string `json:"agent_id"`
+		ProjectID string `json:"project_id,omitempty"`
+		SessionID string `json:"session_id,omitempty"`
+	} `json:"origin"`
+}
+
+var (
+	canonicalImageBatchID = regexp.MustCompile(`^imgb_[a-z0-9]{16,64}$`)
+	canonicalImageTaskID  = regexp.MustCompile(`^imgt_[a-z0-9]{16,64}$`)
+	canonicalImageHash    = regexp.MustCompile(`^[a-f0-9]{64}$`)
+)
+
 func validateResultMetadata(toolName string, source ToolSource, metadata ResultMetadata) ResultMetadata {
 	if len(metadata) == 0 {
 		return nil
 	}
 
-	if source != SourceBuiltin || toolName != "rag_search" {
+	allowedKey := ""
+	if source == SourceBuiltin {
+		switch toolName {
+		case "rag_search":
+			allowedKey = RAGResourcesMetadataKey
+		case "image_gen_batch":
+			allowedKey = ImageArtifactsMetadataKey
+		}
+	}
+	if allowedKey == "" {
 		warnResultMetadataRejected(toolName, source, "producer is not allowed", "", 0)
 		return nil
 	}
@@ -95,14 +136,20 @@ func validateResultMetadata(toolName string, source ToolSource, metadata ResultM
 	var out ResultMetadata
 	warned := false
 	for key, raw := range metadata {
-		if key != RAGResourcesMetadataKey {
+		if key != allowedKey {
 			if !warned {
 				warnResultMetadataRejected(toolName, source, "metadata key is not allowed", key, len(raw))
 				warned = true
 			}
 			continue
 		}
-		if err := validateRAGResourcesMetadata(raw); err != nil {
+		var err error
+		if allowedKey == RAGResourcesMetadataKey {
+			err = validateRAGResourcesMetadata(raw)
+		} else {
+			err = validateImageArtifactsMetadata(raw)
+		}
+		if err != nil {
 			if !warned {
 				warnResultMetadataRejected(toolName, source, err.Error(), key, len(raw))
 				warned = true
@@ -115,6 +162,95 @@ func validateResultMetadata(toolName string, source ToolSource, metadata ResultM
 		out[key] = append(json.RawMessage(nil), raw...)
 	}
 	return out
+}
+
+func validateImageArtifactsMetadata(raw json.RawMessage) error {
+	if len(raw) == 0 || len(raw) > maxResultMetadataValueBytes {
+		return fmt.Errorf("metadata value is empty or exceeds byte limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var refs []ImageArtifactRef
+	if err := dec.Decode(&refs); err != nil || refs == nil || ensureJSONEOF(dec) != nil {
+		return fmt.Errorf("metadata value has invalid shape")
+	}
+	if len(refs) > maxImageArtifactsPerToolResult {
+		return fmt.Errorf("metadata value exceeds artifact count limit")
+	}
+	var previous *ImageArtifactRef
+	seen := make(map[string]struct{}, len(refs))
+	for i := range refs {
+		ref := &refs[i]
+		if err := validateImageArtifactRef(*ref); err != nil {
+			return fmt.Errorf("metadata artifact %d has invalid shape", i)
+		}
+		key := ref.BatchID + "\x00" + ref.TaskID + "\x00" + ref.Path
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("metadata artifact %d is duplicated", i)
+		}
+		seen[key] = struct{}{}
+		if previous != nil && !imageArtifactBefore(*previous, *ref) {
+			return fmt.Errorf("metadata artifacts are not in stable order")
+		}
+		previous = ref
+	}
+	return nil
+}
+
+func validateImageArtifactRef(ref ImageArtifactRef) error {
+	if !canonicalImageBatchID.MatchString(ref.BatchID) || !canonicalImageTaskID.MatchString(ref.TaskID) || ref.URL != "" ||
+		ref.ItemIndex < 0 || ref.ChunkIndex < 0 || ref.Index < 0 || ref.Size < 1 || ref.Width < 1 || ref.Height < 1 ||
+		!canonicalImageHash.MatchString(ref.SHA256) || !safeImageArtifactSegment(ref.Origin.AgentID, false) ||
+		!safeImageArtifactSegment(ref.Origin.ProjectID, true) || !safeImageArtifactSegment(ref.Origin.SessionID, true) {
+		return fmt.Errorf("identity or dimensions are invalid")
+	}
+	ext := map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}
+	extension, ok := ext[ref.MIMEType]
+	if !ok {
+		return fmt.Errorf("MIME type is invalid")
+	}
+	clean := path.Clean(ref.Path)
+	prefix := path.Join("imagegen", ref.BatchID, ref.TaskID, "claims") + "/"
+	if clean != ref.Path || !strings.HasPrefix(clean, prefix) {
+		return fmt.Errorf("path is invalid")
+	}
+	rest := strings.TrimPrefix(clean, prefix)
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 {
+		return fmt.Errorf("path is invalid")
+	}
+	generation, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || generation < 1 {
+		return fmt.Errorf("claim generation is invalid")
+	}
+	wantName := fmt.Sprintf("image-%d-%s%s", ref.Index, ref.SHA256, extension)
+	if parts[1] != wantName {
+		return fmt.Errorf("artifact filename is invalid")
+	}
+	return nil
+}
+
+func safeImageArtifactSegment(value string, allowEmpty bool) bool {
+	if value == "" {
+		return allowEmpty
+	}
+	return len(value) <= 191 && value != "." && value != ".." && !strings.ContainsAny(value, "/\\\x00\r\n")
+}
+
+func imageArtifactBefore(a, b ImageArtifactRef) bool {
+	if a.ItemIndex != b.ItemIndex {
+		return a.ItemIndex < b.ItemIndex
+	}
+	if a.ChunkIndex != b.ChunkIndex {
+		return a.ChunkIndex < b.ChunkIndex
+	}
+	if a.Index != b.Index {
+		return a.Index < b.Index
+	}
+	if a.TaskID != b.TaskID {
+		return a.TaskID < b.TaskID
+	}
+	return a.Path < b.Path
 }
 
 func validateRAGResourcesMetadata(raw json.RawMessage) error {
@@ -200,7 +336,7 @@ func canonicalRAGAssetID(id string) bool {
 func warnResultMetadataRejected(toolName string, source ToolSource, reason, key string, size int) {
 	logTool := boundedResultMetadataLogValue(toolName)
 	logKey := key
-	if logKey != "" && logKey != RAGResourcesMetadataKey {
+	if logKey != "" && logKey != RAGResourcesMetadataKey && logKey != ImageArtifactsMetadataKey {
 		logKey = "<untrusted>"
 	}
 	logKey = boundedResultMetadataLogValue(logKey)

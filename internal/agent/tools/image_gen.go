@@ -6,8 +6,20 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
+
+// RegisterImageGenerationTools is the deployment-mode switch. It never uses
+// dependency readiness as a fallback signal: fair/drain expose only the
+// durable tool, while legacy exposes only the configured synchronous chain.
+func RegisterImageGenerationTools(r *Registry, cfg config.ImagegenBatchCfg, chain *toolproviders.Chain, batches ImagegenBatchService) {
+	if cfg.Mode == config.ImagegenBatchModeLegacy {
+		RegisterImageGenChain(r, chain)
+		return
+	}
+	RegisterImageGenBatch(r, cfg, batches)
+}
 
 // RegisterImageGenChain 针对提供者注册 image_gen 工具
 // 链。仅当链中至少有一个提供商已注册时才注册

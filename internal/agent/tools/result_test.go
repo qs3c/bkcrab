@@ -115,6 +115,39 @@ func TestValidateResultMetadataEnforcesCountAndByteLimits(t *testing.T) {
 	}
 }
 
+func validImageArtifactsRaw() json.RawMessage {
+	hash := strings.Repeat("a", 64)
+	return json.RawMessage(`[{"batch_id":"imgb_0000000000000001","task_id":"imgt_0000000000000001","item_index":0,"chunk_index":0,"label":"","index":0,"path":"imagegen/imgb_0000000000000001/imgt_0000000000000001/claims/3/image-0-` + hash + `.png","mime_type":"image/png","size":12,"width":2,"height":2,"sha256":"` + hash + `","origin":{"agent_id":"agent_1","project_id":"project-1","session_id":"old-session"}}]`)
+}
+
+func TestImageGenBatchMetadataTrustBoundary(t *testing.T) {
+	valid := validImageArtifactsRaw()
+	got := validateResultMetadata("image_gen_batch", SourceBuiltin, ResultMetadata{ImageArtifactsMetadataKey: valid})
+	if string(got[ImageArtifactsMetadataKey]) != string(valid) {
+		t.Fatalf("valid artifacts rejected: %v", got)
+	}
+	cases := []struct {
+		name   string
+		tool   string
+		source ToolSource
+		raw    json.RawMessage
+	}{
+		{"plugin", "image_gen_batch", SourcePlugin, valid},
+		{"other builtin", "write_file", SourceBuiltin, valid},
+		{"provider url", "image_gen_batch", SourceBuiltin, json.RawMessage(strings.Replace(string(valid), `"mime_type"`, `"url":"https://provider.invalid/x?secret=y","mime_type"`, 1))},
+		{"noncanonical path", "image_gen_batch", SourceBuiltin, json.RawMessage(strings.Replace(string(valid), `imagegen/imgb_`, `../imgb_`, 1))},
+		{"nonimage mime", "image_gen_batch", SourceBuiltin, json.RawMessage(strings.Replace(string(valid), `image/png`, `text/html`, 1))},
+		{"unknown field", "image_gen_batch", SourceBuiltin, json.RawMessage(strings.Replace(string(valid), `"origin"`, `"evil":true,"origin"`, 1))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if out := validateResultMetadata(tc.tool, tc.source, ResultMetadata{ImageArtifactsMetadataKey: tc.raw}); out != nil {
+				t.Fatalf("invalid artifacts accepted: %v", out)
+			}
+		})
+	}
+}
+
 type lockedLogBuffer struct {
 	mu sync.Mutex
 	bytes.Buffer
