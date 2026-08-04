@@ -20,10 +20,14 @@ func TestImagegenDeploymentManifestsCarrySafetyContract(t *testing.T) {
 	}
 	for _, filename := range files {
 		data, err := os.ReadFile(filename)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		text := string(data)
 		for _, token := range required {
-			if !strings.Contains(text, token) { t.Errorf("%s missing %s", filename, token) }
+			if !strings.Contains(text, token) {
+				t.Errorf("%s missing %s", filename, token)
+			}
 		}
 	}
 }
@@ -31,10 +35,14 @@ func TestImagegenDeploymentManifestsCarrySafetyContract(t *testing.T) {
 func TestImagegenDeploymentDocumentsTwoRolloutGateAndSharedWorkspace(t *testing.T) {
 	for _, filename := range []string{"../../deploy/docker/README.md", "../../deploy/multi-pod/README.md", "../../deploy/k8s/bkcrab.yaml"} {
 		data, err := os.ReadFile(filename)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		text := string(data)
 		for _, token := range []string{"legacy", "drain", "fair", "ReplicaSet", "S3", "LocalFS"} {
-			if !strings.Contains(text, token) { t.Errorf("%s missing rollout/workspace token %s", filename, token) }
+			if !strings.Contains(text, token) {
+				t.Errorf("%s missing rollout/workspace token %s", filename, token)
+			}
 		}
 	}
 }
