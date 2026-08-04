@@ -29,6 +29,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/cron"
 	"github.com/qs3c/bkcrab/internal/fairqueue"
+	imagegendomain "github.com/qs3c/bkcrab/internal/imagegen"
 	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
 	"github.com/qs3c/bkcrab/internal/plugin"
 	"github.com/qs3c/bkcrab/internal/provider"
@@ -67,12 +68,32 @@ var toolProviderRegistry = func() *toolproviders.Registry {
 // ToolProviderRegistry 为想要列出可用提供者的调用者（管理 API）暴露注册表。
 func ToolProviderRegistry() *toolproviders.Registry { return toolProviderRegistry }
 
-// registerAgentToolChains 使用合并的配置视图（解析器叠加的系统+用户+代理作用域）将每个提供者支持的工具类别挂接到给定的代理上。
-func registerAgentToolChains(cfg *config.Config, agents []*agent.Agent) {
+// registerAgentToolChains uses the same persistent scope resolver as durable
+// image work. This prevents synchronous registration and background execution
+// from disagreeing about owner sharing or viewer overrides.
+func registerAgentToolChains(ctx context.Context, st store.Store, configUserID string, resolved []config.ResolvedAgent, agents []*agent.Agent) {
 	envSearxNG := strings.TrimSpace(os.Getenv("BKCRAB_SEARXNG_ENDPOINT"))
+	resolvedByID := make(map[string]config.ResolvedAgent, len(resolved))
+	for _, item := range resolved {
+		resolvedByID[item.ID] = item
+	}
 	for _, ag := range agents {
-		resolved := cfg.MergedAgentConfig(config.AgentEntry{ID: ag.Name()})
-		chain := buildToolChainFromResolved(resolved, "web_search")
+		item, ok := resolvedByID[ag.Name()]
+		if !ok {
+			slog.Warn("tool chain registration skipped: resolved agent missing", "agent", ag.Name())
+			continue
+		}
+		identity := imagegendomain.ExecutionIdentity{
+			UserID: configUserID, ConfigUserID: configUserID,
+			AgentOwnerUserID: item.UserID, AgentID: item.ID,
+		}
+		if effective, err := resolveEffectiveToolConfig(ctx, st, identity); err != nil {
+			slog.Warn("tool chain scope resolution failed", "agent", item.ID, "error", err)
+		} else {
+			item.ToolProviders = effective.Providers
+			item.Tools = effective.Tools
+		}
+		chain := buildToolChainFromResolved(item, "web_search")
 		// 回退：如果没有配置 web_search 链且环境中设置了 BKCRAB_SEARXNG_ENDPOINT，
 		// 合成一个指向该端点的单提供者链。一行设置（"docker run searxng …" + 环境变量）
 		// 是一个可以在第一次尝试就找到正确 URL 的代理与一个耗费 11 轮猜测的代理之间的区别 —
@@ -83,15 +104,15 @@ func registerAgentToolChains(cfg *config.Config, agents []*agent.Agent) {
 		if chain != nil {
 			ag.RegisterWebSearchChain(chain)
 		}
-		if chain := buildToolChainFromResolved(resolved, "image_gen"); chain != nil {
+		if chain := buildToolChainFromResolved(item, "image_gen"); chain != nil {
 			ag.RegisterImageGenChain(chain)
 		}
-		if chain := buildToolChainFromResolved(resolved, "tts"); chain != nil {
+		if chain := buildToolChainFromResolved(item, "tts"); chain != nil {
 			ag.RegisterTTSChain(chain)
 		}
 		// web_fetch：链优先，否则代理保留构建时已注册的内置直接获取器（loop.go 中的 RegisterWebFetch），
 		// 因此此调用仅在管理员实际配置了链时才交换后端。
-		if chain := buildToolChainFromResolved(resolved, "web_fetch"); chain != nil {
+		if chain := buildToolChainFromResolved(item, "web_fetch"); chain != nil {
 			ag.RegisterWebFetchChain(chain)
 		}
 	}
@@ -155,26 +176,27 @@ func buildToolChainFromResolved(resolved config.ResolvedAgent, category string) 
 // `sandboxPool` 是网关范围的执行器池。从系统作用域沙箱配置构建一次，由每个 UserSpace 共享。
 // 每个 UserSpace 的 `SandboxPool` 字段只是一个借用的引用；关闭时只关闭这一个池。
 type Gateway struct {
-	bus             *bus.MessageBus
-	users           *userSpaceRegistry
-	chanMgr         *channels.Manager
-	webChan         *channels.WebChannel
-	scheduler       *cron.Scheduler
-	webhookSrv      *webhook.Server
-	pluginMgr       *plugin.Manager
-	taskQueue       *taskqueue.Queue
-	store           store.Store
-	accounts        *users.Accounts
-	workspace       workspace.Store
-	sandboxPool     sandbox.ExecutorPool
-	mcpRuntime      *mcpruntime.Service
-	usage           usage.Meter
-	ragSvc          *rag.Service
-	ragCfg          config.RAGCfg
-	ragParser       *sidecar.Client
-	ragFairQueue    *ragFairQueueAssembly
-	fairQueueHealth *ragFairQueueHealthState
-	envCfg          *config.EnvConfig
+	bus              *bus.MessageBus
+	users            *userSpaceRegistry
+	chanMgr          *channels.Manager
+	webChan          *channels.WebChannel
+	scheduler        *cron.Scheduler
+	webhookSrv       *webhook.Server
+	pluginMgr        *plugin.Manager
+	taskQueue        *taskqueue.Queue
+	store            store.Store
+	accounts         *users.Accounts
+	workspace        workspace.Store
+	sandboxPool      sandbox.ExecutorPool
+	mcpRuntime       *mcpruntime.Service
+	usage            usage.Meter
+	ragSvc           *rag.Service
+	ragCfg           config.RAGCfg
+	ragParser        *sidecar.Client
+	ragFairQueue     *ragFairQueueAssembly
+	fairQueueHealth  *ragFairQueueHealthState
+	imagegenResolver imagegendomain.ProviderPlanResolver
+	envCfg           *config.EnvConfig
 	// chatEvents 设置后，允许总线触发的 web 轮次（cron/目标延续/心跳/子代理）
 	// 通过用户输入的 POST /api/chat 轮次使用的同一个 SSE hub 流式传输。
 	// 安全地为 nil：未设置时保留传统的 bus.Outbound → WebChannel 异步气泡路径。
@@ -240,6 +262,15 @@ func (g *Gateway) FairQueueHealthSnapshot() fairqueue.HealthSnapshot {
 
 // Store 返回网关的存储后端。
 func (g *Gateway) Store() store.Store { return g.store }
+
+// ImagegenProviderPlanResolver exposes the secret-free snapshot/current-secret
+// resolver for later batch and worker assembly.
+func (g *Gateway) ImagegenProviderPlanResolver() imagegendomain.ProviderPlanResolver {
+	if g == nil {
+		return nil
+	}
+	return g.imagegenResolver
+}
 
 // TaskQueue 返回网关的任务队列。
 func (g *Gateway) TaskQueue() *taskqueue.Queue { return g.taskQueue }
@@ -573,25 +604,26 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	}
 
 	g := &Gateway{
-		bus:             mb,
-		store:           st,
-		accounts:        accts,
-		workspace:       ws,
-		usage:           meter,
-		sandboxPool:     systemSandboxPool,
-		mcpRuntime:      mcpRuntime,
-		users:           newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, mcpRuntime, pluginMgr, ragSvc),
-		chanMgr:         chanMgr,
-		webChan:         webChan,
-		scheduler:       scheduler,
-		webhookSrv:      webhookSrv,
-		pluginMgr:       pluginMgr,
-		ragSvc:          ragSvc,
-		ragCfg:          ragCfg,
-		ragParser:       ragParserClient,
-		ragFairQueue:    ragFairQueue,
-		fairQueueHealth: fairQueueHealth,
-		envCfg:          env,
+		bus:              mb,
+		store:            st,
+		accounts:         accts,
+		workspace:        ws,
+		usage:            meter,
+		sandboxPool:      systemSandboxPool,
+		mcpRuntime:       mcpRuntime,
+		users:            newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, mcpRuntime, pluginMgr, ragSvc),
+		chanMgr:          chanMgr,
+		webChan:          webChan,
+		scheduler:        scheduler,
+		webhookSrv:       webhookSrv,
+		pluginMgr:        pluginMgr,
+		ragSvc:           ragSvc,
+		ragCfg:           ragCfg,
+		ragParser:        ragParserClient,
+		ragFairQueue:     ragFairQueue,
+		fairQueueHealth:  fairQueueHealth,
+		imagegenResolver: NewImagegenProviderResolver(st, toolProviderRegistry),
+		envCfg:           env,
 	}
 
 	if webhookSrv != nil {

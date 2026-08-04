@@ -551,6 +551,9 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 	if err := sp.Agents.AddAgentWithSkillsCfg(rc, sp.Provider, mb, skillsCfg); err != nil {
 		return fmt.Errorf("EnsureAgent: add agent: %w", err)
 	}
+	if added := sp.Agents.AgentByID(rc.ID); added != nil {
+		registerAgentToolChains(ctx, st, sp.UserID, []config.ResolvedAgent{rc}, []*agent.Agent{added})
+	}
 	if sp.SandboxPool != nil {
 		if ag := sp.Agents.AgentByID(rc.ID); ag != nil {
 			ag.SetSandboxPool(sp.SandboxPool)
@@ -728,7 +731,7 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 		return nil, fmt.Errorf("create agent manager for user %q: %w", userID, err)
 	}
 
-	registerAgentToolChains(cfg, agentMgr.All())
+	registerAgentToolChains(ctx, st, userID, resolved, agentMgr.All())
 
 	pool := attachSandboxToAgents(systemSandboxPool, userID, resolved, agentMgr)
 
