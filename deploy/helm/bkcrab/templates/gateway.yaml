@@ -1,3 +1,15 @@
+{{- if and (ne .Values.imagegenBatch.mode "legacy") (not .Values.fairQueue.enabled) }}
+{{- fail "imagegenBatch.mode drain/fair requires fairQueue.enabled=true" }}
+{{- end }}
+{{- if and (ne .Values.imagegenBatch.mode "legacy") (ne .Values.fairQueue.redisMode "standalone") }}
+{{- fail "imagegenBatch drain/fair requires standalone Redis" }}
+{{- end }}
+{{- if and (ne .Values.imagegenBatch.mode "legacy") (ne .Values.fairQueue.mysqlWriterTopology "single") }}
+{{- fail "imagegenBatch drain/fair requires mysqlWriterTopology=single" }}
+{{- end }}
+{{- if and (gt (int .Values.gateway.replicas) 1) (eq .Values.objectStore.type "local") }}
+{{- fail "multi-replica gateway requires a shared S3-compatible objectStore; LocalFS is single-instance only" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

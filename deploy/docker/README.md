@@ -215,6 +215,19 @@ RAG_TEST_MILVUS_ADDR=127.0.0.1:19530 \
 详细的 Redis/Rabbit 灾难恢复、writer rebind 和 journal 对账见
 [`docs/rag-fair-queue-operations.md`](../../docs/rag-fair-queue-operations.md)。
 
+### Imagegen batch rollout 与 workspace
+
+`IMAGEGEN_BATCH_MODE` 默认 `legacy`。Imagegen 的正向切换必须是两次独立全量
+rollout：先 `legacy -> drain`，确认所有旧 ReplicaSet/容器和同步 `image_gen`
+调用归零；再 `drain -> fair`。禁止 legacy/fair canary。回滚按
+`fair -> drain`，等待所有非终态 batch 排空后才能 `drain -> legacy`。
+
+Compose 默认使用 MinIO（S3-compatible）作为共享 workspace，因此 fair/drain
+worker 可以跨实例恢复 artifact。若改为 LocalFS，只允许一个 gateway/worker
+实例；LocalFS 不能用于多副本。MySQL 必须是所有 Pod 看到相同
+`@@server_uuid + DATABASE()` 的 single writer，Redis 必须是 standalone，Rabbit
+和 Redis 暂时不可用时 create 仍先持久化到 MySQL，恢复后再 dispatch。
+
 ## 停止与升级
 
 停止服务但保留数据卷：

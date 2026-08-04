@@ -20,7 +20,7 @@ timezone: "Asia/Shanghai"
 
 ## Gateway
 gateway:
-  replicas: 2
+  replicas: 1
   port: 18953
   resources:
     requests:
@@ -31,7 +31,7 @@ gateway:
       memory: 1Gi
   # SSE/WS 的排空预算。preStop 休眠占用大部分；剩余部分留给 Go 的优雅关闭。
   preStopSleepSeconds: 15
-  terminationGracePeriodSeconds: 30
+  terminationGracePeriodSeconds: 150
 
 ## 多模态文档 RAG。三个高成本能力是独立发布开关，默认关闭。
 ## 即使 parser 健康，也只有显式打开对应 gate 后才允许新任务使用。
@@ -123,6 +123,40 @@ fairQueue:
     perUserBurstConcurrency: 4
     borrowEnabled: true
 
+## Durable image generation. Keep legacy for the compatibility rollout, then
+## promote every replica to drain and only later every replica to fair.
+imagegenBatch:
+  mode: legacy                 # legacy | drain | fair
+  maxImagesPerBatch: 16
+  maxImagesPerTask: 4
+  toolWaitDefault: 180s
+  toolWaitMax: 240s
+  promptMaxRunes: 8000
+  requestMaxBytes: 131072
+  imageMaxBytes: 20971520
+  batchMaxBytes: 134217728
+  localWorkers: 4
+  globalConcurrency: 4
+  perUserBaseConcurrency: 2
+  perUserBurstConcurrency: 4
+  borrowEnabled: true
+  taskLease: 180s
+  taskHeartbeat: 30s
+  reservationTTL: 180s
+  reservationHeartbeat: 30s
+  prepareTimeout: 10s
+  provisionalTTL: 15s
+  processingTTL: 15s
+  publishAttemptTimeout: 15s
+  recoveryDrainTimeout: 120s
+  dispatchInterval: 1s
+  reconcileInterval: 30s
+  expiredSweepInterval: 15s
+  reconcilePageSize: 200
+  maxRetries: 3
+  providerCallTimeout: 120s
+  providerConcurrencyDefault: 4
+
 redis:
   enabled: false             # false uses external address below
   address: ""
@@ -147,8 +181,8 @@ rabbitmq:
 
 ## HPA
 autoscaling:
-  enabled: true
-  minReplicas: 2
+  enabled: false
+  minReplicas: 1
   maxReplicas: 10
   targetCPUUtilizationPercentage: 60
 
