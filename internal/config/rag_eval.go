@@ -69,7 +69,7 @@ type RAGEvaluationCfg struct {
 
 type RAGEvaluatorCfg struct {
 	Endpoint            string `json:"endpoint,omitempty"`
-	APIKey              string `json:"apiKey,omitempty"`
+	APIKey              string `json:"-"`
 	TimeoutMS           int    `json:"timeoutMs,omitempty"`
 	MetricBundleVersion string `json:"metricBundleVersion,omitempty"`
 	LLMProvider         string `json:"llmProvider,omitempty"`
@@ -77,6 +77,20 @@ type RAGEvaluatorCfg struct {
 	EmbeddingProvider   string `json:"embeddingProvider,omitempty"`
 	EmbeddingModel      string `json:"embeddingModel,omitempty"`
 }
+
+const (
+	ragEvalMaxTimeoutMS               = 10 * 60 * 1000
+	ragEvalMaxWorkerConcurrency       = 32
+	ragEvalMaxBatchSize               = 256
+	ragEvalMaxContextsPerSample       = 100
+	ragEvalMaxContextBytes            = 1024 * 1024
+	ragEvalMaxRequestBytes      int64 = 64 * 1024 * 1024
+	ragEvalMaxRunCases                = 100_000
+	ragEvalMaxRunTokens         int64 = 1_000_000_000
+	ragEvalMaxRunCostUSD              = 100_000.0
+	ragEvalMaxRunDurationSec          = 7 * 24 * 60 * 60
+	ragEvalMaxRetentionDays           = 10 * 365
+)
 
 func (c RAGEvaluatorCfg) LogValue() slog.Value {
 	return slog.GroupValue(
@@ -139,16 +153,22 @@ func (c RAGEvaluationCfg) Validate() error {
 	if c.Enabled && strings.TrimSpace(c.Sidecar.Endpoint) == "" {
 		return errors.New("rag.evaluation.sidecar.endpoint is required when evaluation is enabled")
 	}
-	if c.Sidecar.TimeoutMS < 0 || c.WorkerConcurrency < 0 || c.WorkerConcurrency > 32 ||
-		c.MaxBatchSize < 0 || c.MaxBatchSize > 256 || c.MaxContextsPerSample < 0 ||
-		c.MaxContextsPerSample > 100 || c.MaxContextBytes < 0 || c.MaxRequestBytes < 0 ||
-		c.MaxRunCases < 0 || c.MaxRunCases > 100_000 || c.MaxRunTokens < 0 ||
-		c.MaxRunDurationSec < 0 || c.RunRetentionDays < 0 || c.DatasetRetentionDays < 0 ||
-		c.GenerationRetentionDays < 0 {
+	if c.Sidecar.TimeoutMS < 0 || c.Sidecar.TimeoutMS > ragEvalMaxTimeoutMS ||
+		c.WorkerConcurrency < 0 || c.WorkerConcurrency > ragEvalMaxWorkerConcurrency ||
+		c.MaxBatchSize < 0 || c.MaxBatchSize > ragEvalMaxBatchSize ||
+		c.MaxContextsPerSample < 0 || c.MaxContextsPerSample > ragEvalMaxContextsPerSample ||
+		c.MaxContextBytes < 0 || c.MaxContextBytes > ragEvalMaxContextBytes ||
+		c.MaxRequestBytes < 0 || c.MaxRequestBytes > ragEvalMaxRequestBytes ||
+		c.MaxRunCases < 0 || c.MaxRunCases > ragEvalMaxRunCases ||
+		c.MaxRunTokens < 0 || c.MaxRunTokens > ragEvalMaxRunTokens ||
+		c.MaxRunDurationSec < 0 || c.MaxRunDurationSec > ragEvalMaxRunDurationSec ||
+		c.RunRetentionDays < 0 || c.RunRetentionDays > ragEvalMaxRetentionDays ||
+		c.DatasetRetentionDays < 0 || c.DatasetRetentionDays > ragEvalMaxRetentionDays ||
+		c.GenerationRetentionDays < 0 || c.GenerationRetentionDays > ragEvalMaxRetentionDays {
 		return errors.New("rag.evaluation contains an invalid limit")
 	}
-	if math.IsNaN(c.MaxRunCostUSD) || math.IsInf(c.MaxRunCostUSD, 0) || c.MaxRunCostUSD < 0 {
-		return errors.New("rag.evaluation.maxRunCostUSD must be finite and non-negative")
+	if math.IsNaN(c.MaxRunCostUSD) || math.IsInf(c.MaxRunCostUSD, 0) || c.MaxRunCostUSD < 0 || c.MaxRunCostUSD > ragEvalMaxRunCostUSD {
+		return fmt.Errorf("rag.evaluation.maxRunCostUSD must be finite and between 0 and %.0f", ragEvalMaxRunCostUSD)
 	}
 	if v := strings.TrimSpace(c.Sidecar.MetricBundleVersion); v != "" && v != "rag-core-v1" {
 		return fmt.Errorf("rag.evaluation.sidecar.metricBundleVersion %q is unsupported", v)
@@ -277,7 +297,7 @@ type RAGEvaluationCapabilities struct {
 func (c RAGEvaluationCfg) Capabilities(healthy bool, reason string) RAGEvaluationCapabilities {
 	return RAGEvaluationCapabilities{
 		Enabled: c.Enabled, SidecarConfigured: strings.TrimSpace(c.Sidecar.Endpoint) != "",
-		SidecarHealthy: healthy, Reason: reason, MetricBundleVersion: c.Sidecar.MetricBundleVersion,
+		SidecarHealthy: c.Enabled && healthy, Reason: reason, MetricBundleVersion: c.Sidecar.MetricBundleVersion,
 		Metrics:   []string{"context_precision", "context_recall", "faithfulness", "response_relevancy", "factual_correctness", "hit_at_k", "recall_at_k", "mrr", "ndcg", "citation_precision", "citation_coverage", "abstention_accuracy"},
 		Importers: []string{"canonical-json"}, MaxBatchSize: c.MaxBatchSize, MaxRunCases: c.MaxRunCases,
 	}

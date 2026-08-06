@@ -137,12 +137,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先写默认关闭、合法边界、未知枚举、secret `LogValue` 的失败测试。
-- [ ] 给所有新增限制设置保守默认值，但 `enabled=false`。
-- [ ] 区分 answer model 与 evaluator model；禁止把 evaluator secret marshal 到 API DTO。
-- [ ] 环境变量使用 `BKCRAB_RAG_EVAL_*` 前缀；兼容 Docker 注入，不覆盖普通 RAG 配置。
-- [ ] 为 policy/profile 写稳定 canonical JSON/fingerprint helper 的输入类型；真正 hash 在后续 eval 包实现。
-- [ ] 运行 `go test ./internal/config`。
+- [x] 先写默认关闭、合法边界、未知枚举、secret `LogValue` 的失败测试。
+- [x] 给所有新增限制设置保守默认值，但 `enabled=false`。
+- [x] 区分 answer model 与 evaluator model；禁止把 evaluator secret marshal 到 API DTO。
+- [x] 环境变量使用 `BKCRAB_RAG_EVAL_*` 前缀；兼容 Docker 注入，不覆盖普通 RAG 配置。
+- [x] 为 policy/profile 写稳定 canonical JSON/fingerprint helper 的输入类型；真正 hash 在后续 eval 包实现。
+- [x] 运行 `go test ./internal/config`。
 
 **Gate:** 未启用时不创建 evaluator client/worker，不新增外部调用，不改变 `/api/rag/*` 行为。
 
