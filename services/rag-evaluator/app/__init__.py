@@ -1,0 +1,1 @@
+"""BkCrab RAG evaluator sidecar."""

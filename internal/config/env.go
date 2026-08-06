@@ -36,6 +36,7 @@ type EnvConfig struct {
 	ragEnrichmentEnabledSet              bool
 	ragDocumentAIAllowPrivateEndpointSet bool
 	ragDocumentAIAllowedEndpointHostsSet bool
+	ragEvaluationEnabledSet              bool
 }
 
 type EnvGateway struct {
@@ -270,6 +271,70 @@ func LoadEnv() *EnvConfig {
 	if v := positiveEnvInt("BKCRAB_RAG_PARSER_TIMEOUT_MS"); v > 0 {
 		cfg.RAG.ParserSidecar.TimeoutMS = v
 	}
+	if v, ok := lookupEnvBool("BKCRAB_RAG_EVAL_ENABLED"); ok {
+		cfg.RAG.Evaluation.Enabled = v
+		cfg.ragEvaluationEnabledSet = true
+	}
+	if v := os.Getenv("BKCRAB_RAG_EVAL_ENDPOINT"); v != "" {
+		cfg.RAG.Evaluation.Sidecar.Endpoint = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_EVAL_API_KEY"); v != "" {
+		cfg.RAG.Evaluation.Sidecar.APIKey = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_EVAL_TIMEOUT_MS"); v > 0 {
+		cfg.RAG.Evaluation.Sidecar.TimeoutMS = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_EVAL_METRIC_BUNDLE_VERSION"); v != "" {
+		cfg.RAG.Evaluation.Sidecar.MetricBundleVersion = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_EVAL_LLM_PROVIDER"); v != "" {
+		cfg.RAG.Evaluation.Sidecar.LLMProvider = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_EVAL_LLM_MODEL"); v != "" {
+		cfg.RAG.Evaluation.Sidecar.LLMModel = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_EVAL_EMBEDDING_PROVIDER"); v != "" {
+		cfg.RAG.Evaluation.Sidecar.EmbeddingProvider = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_EVAL_EMBEDDING_MODEL"); v != "" {
+		cfg.RAG.Evaluation.Sidecar.EmbeddingModel = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_EVAL_WORKER_CONCURRENCY"); v > 0 {
+		cfg.RAG.Evaluation.WorkerConcurrency = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_EVAL_MAX_BATCH_SIZE"); v > 0 {
+		cfg.RAG.Evaluation.MaxBatchSize = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_EVAL_MAX_CONTEXTS_PER_SAMPLE"); v > 0 {
+		cfg.RAG.Evaluation.MaxContextsPerSample = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_EVAL_MAX_CONTEXT_BYTES"); v > 0 {
+		cfg.RAG.Evaluation.MaxContextBytes = v
+	}
+	if v := positiveEnvInt64("BKCRAB_RAG_EVAL_MAX_REQUEST_BYTES"); v > 0 {
+		cfg.RAG.Evaluation.MaxRequestBytes = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_EVAL_MAX_RUN_CASES"); v > 0 {
+		cfg.RAG.Evaluation.MaxRunCases = v
+	}
+	if v := positiveEnvInt64("BKCRAB_RAG_EVAL_MAX_RUN_TOKENS"); v > 0 {
+		cfg.RAG.Evaluation.MaxRunTokens = v
+	}
+	if v := positiveEnvFloat("BKCRAB_RAG_EVAL_MAX_RUN_COST_USD"); v > 0 {
+		cfg.RAG.Evaluation.MaxRunCostUSD = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_EVAL_MAX_RUN_DURATION_SEC"); v > 0 {
+		cfg.RAG.Evaluation.MaxRunDurationSec = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_EVAL_RUN_RETENTION_DAYS"); v > 0 {
+		cfg.RAG.Evaluation.RunRetentionDays = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_EVAL_DATASET_RETENTION_DAYS"); v > 0 {
+		cfg.RAG.Evaluation.DatasetRetentionDays = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_EVAL_GENERATION_RETENTION_DAYS"); v > 0 {
+		cfg.RAG.Evaluation.GenerationRetentionDays = v
+	}
 	if v := positiveEnvInt("BKCRAB_RAG_LIMITS_MAX_FILE_MB"); v > 0 {
 		cfg.RAG.Limits.MaxFileMB = v
 	}
@@ -497,6 +562,7 @@ var bootSecretEnvKeys = []string{
 	"BKCRAB_RAG_EMBEDDING_API_KEY",
 	"BKCRAB_RAG_RERANKER_API_KEY",
 	"BKCRAB_RAG_DOCUMENT_AI_API_KEY",
+	"BKCRAB_RAG_EVAL_API_KEY",
 }
 
 func ScrubBootSecrets() {
@@ -609,6 +675,69 @@ func (e *EnvConfig) ApplySystemRAG(dst *RAGCfg) {
 	}
 	if e.RAG.ParserSidecar.TimeoutMS > 0 {
 		dst.ParserSidecar.TimeoutMS = e.RAG.ParserSidecar.TimeoutMS
+	}
+	if e.ragEvaluationEnabledSet {
+		dst.Evaluation.Enabled = e.RAG.Evaluation.Enabled
+	}
+	if e.RAG.Evaluation.Sidecar.Endpoint != "" {
+		dst.Evaluation.Sidecar.Endpoint = e.RAG.Evaluation.Sidecar.Endpoint
+	}
+	if e.RAG.Evaluation.Sidecar.APIKey != "" {
+		dst.Evaluation.Sidecar.APIKey = e.RAG.Evaluation.Sidecar.APIKey
+	}
+	if e.RAG.Evaluation.Sidecar.TimeoutMS > 0 {
+		dst.Evaluation.Sidecar.TimeoutMS = e.RAG.Evaluation.Sidecar.TimeoutMS
+	}
+	if e.RAG.Evaluation.Sidecar.MetricBundleVersion != "" {
+		dst.Evaluation.Sidecar.MetricBundleVersion = e.RAG.Evaluation.Sidecar.MetricBundleVersion
+	}
+	if e.RAG.Evaluation.Sidecar.LLMProvider != "" {
+		dst.Evaluation.Sidecar.LLMProvider = e.RAG.Evaluation.Sidecar.LLMProvider
+	}
+	if e.RAG.Evaluation.Sidecar.LLMModel != "" {
+		dst.Evaluation.Sidecar.LLMModel = e.RAG.Evaluation.Sidecar.LLMModel
+	}
+	if e.RAG.Evaluation.Sidecar.EmbeddingProvider != "" {
+		dst.Evaluation.Sidecar.EmbeddingProvider = e.RAG.Evaluation.Sidecar.EmbeddingProvider
+	}
+	if e.RAG.Evaluation.Sidecar.EmbeddingModel != "" {
+		dst.Evaluation.Sidecar.EmbeddingModel = e.RAG.Evaluation.Sidecar.EmbeddingModel
+	}
+	if e.RAG.Evaluation.WorkerConcurrency > 0 {
+		dst.Evaluation.WorkerConcurrency = e.RAG.Evaluation.WorkerConcurrency
+	}
+	if e.RAG.Evaluation.MaxBatchSize > 0 {
+		dst.Evaluation.MaxBatchSize = e.RAG.Evaluation.MaxBatchSize
+	}
+	if e.RAG.Evaluation.MaxContextsPerSample > 0 {
+		dst.Evaluation.MaxContextsPerSample = e.RAG.Evaluation.MaxContextsPerSample
+	}
+	if e.RAG.Evaluation.MaxContextBytes > 0 {
+		dst.Evaluation.MaxContextBytes = e.RAG.Evaluation.MaxContextBytes
+	}
+	if e.RAG.Evaluation.MaxRequestBytes > 0 {
+		dst.Evaluation.MaxRequestBytes = e.RAG.Evaluation.MaxRequestBytes
+	}
+	if e.RAG.Evaluation.MaxRunCases > 0 {
+		dst.Evaluation.MaxRunCases = e.RAG.Evaluation.MaxRunCases
+	}
+	if e.RAG.Evaluation.MaxRunTokens > 0 {
+		dst.Evaluation.MaxRunTokens = e.RAG.Evaluation.MaxRunTokens
+	}
+	if e.RAG.Evaluation.MaxRunCostUSD > 0 {
+		dst.Evaluation.MaxRunCostUSD = e.RAG.Evaluation.MaxRunCostUSD
+	}
+	if e.RAG.Evaluation.MaxRunDurationSec > 0 {
+		dst.Evaluation.MaxRunDurationSec = e.RAG.Evaluation.MaxRunDurationSec
+	}
+	if e.RAG.Evaluation.RunRetentionDays > 0 {
+		dst.Evaluation.RunRetentionDays = e.RAG.Evaluation.RunRetentionDays
+	}
+	if e.RAG.Evaluation.DatasetRetentionDays > 0 {
+		dst.Evaluation.DatasetRetentionDays = e.RAG.Evaluation.DatasetRetentionDays
+	}
+	if e.RAG.Evaluation.GenerationRetentionDays > 0 {
+		dst.Evaluation.GenerationRetentionDays = e.RAG.Evaluation.GenerationRetentionDays
 	}
 	if e.RAG.Limits.MaxFileMB > 0 {
 		dst.Limits.MaxFileMB = e.RAG.Limits.MaxFileMB

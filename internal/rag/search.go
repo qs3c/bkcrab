@@ -90,6 +90,81 @@ type SearchContext struct {
 	History []string
 }
 
+// SearchOptions is an immutable per-request override used by evaluation runs.
+// Nil booleans preserve production behavior; explicit false disables a stage.
+type SearchOptions struct {
+	TopN          int      `json:"topN,omitempty"`
+	CandidateTopK int      `json:"candidateTopK,omitempty"`
+	MinScore      *float64 `json:"minScore,omitempty"`
+	Rewrite       *bool    `json:"rewrite,omitempty"`
+	HyDE          *bool    `json:"hyde,omitempty"`
+	Reranker      *bool    `json:"reranker,omitempty"`
+}
+
+type SearchTrace struct {
+	RetrievalID      string  `json:"retrievalId"`
+	DurationMS       int64   `json:"durationMs"`
+	CandidateCount   int     `json:"candidateCount"`
+	ReturnedCount    int     `json:"returnedCount"`
+	RewriteEnabled   bool    `json:"rewriteEnabled"`
+	HyDEEnabled      bool    `json:"hydeEnabled"`
+	RerankerEnabled  bool    `json:"rerankerEnabled"`
+	RerankerFallback bool    `json:"rerankerFallback"`
+	MinScore         float64 `json:"minScore"`
+	TopN             int     `json:"topN"`
+	CandidateTopK    int     `json:"candidateTopK"`
+}
+
+type searchOptionsKey struct{}
+
+// SearchWithOptions runs the same production retrieval implementation while
+// injecting a bounded immutable option snapshot and returning a secret-free
+// trace. It never mutates Service configuration.
+func (s *Service) SearchWithOptions(ctx context.Context, ownerID string, kbIDs []string, input SearchContext, options SearchOptions) ([]Hit, SearchTrace, error) {
+	if options.TopN <= 0 {
+		options.TopN = 5
+	}
+	if options.TopN > 20 {
+		options.TopN = 20
+	}
+	if options.CandidateTopK > 100 {
+		options.CandidateTopK = 100
+	}
+	if options.CandidateTopK > 0 && options.CandidateTopK < options.TopN {
+		options.CandidateTopK = options.TopN
+	}
+	if options.MinScore != nil && (*options.MinScore < 0 || *options.MinScore > 1 || math.IsNaN(*options.MinScore) || math.IsInf(*options.MinScore, 0)) {
+		return nil, SearchTrace{}, errors.New("minScore must be between 0 and 1")
+	}
+	retrievalID := uuid.NewString()
+	started := time.Now()
+	ctx = context.WithValue(ctx, searchOptionsKey{}, options)
+	hits, err := s.SearchWithContext(ctx, ownerID, kbIDs, input, options.TopN)
+	rewrite, hyde, reranker := true, true, s.reranker != nil
+	if options.Rewrite != nil {
+		rewrite = *options.Rewrite
+	}
+	if options.HyDE != nil {
+		hyde = *options.HyDE
+	}
+	if options.Reranker != nil {
+		reranker = *options.Reranker && s.reranker != nil
+	}
+	candidateTopK := options.CandidateTopK
+	if candidateTopK <= 0 {
+		candidateTopK = s.cfg.Reranker.CandidateTopK
+	}
+	if candidateTopK < options.TopN {
+		candidateTopK = options.TopN
+	}
+	minScore := s.cfg.Reranker.MinScore
+	if options.MinScore != nil {
+		minScore = *options.MinScore
+	}
+	trace := SearchTrace{RetrievalID: retrievalID, DurationMS: time.Since(started).Milliseconds(), ReturnedCount: len(hits), RewriteEnabled: rewrite, HyDEEnabled: hyde, RerankerEnabled: reranker, MinScore: minScore, TopN: options.TopN, CandidateTopK: candidateTopK}
+	return hits, trace, err
+}
+
 // Search performs hybrid retrieval across authorized KBs and merges their
 // results by score. Every target is ownership-checked before any query runs.
 func (s *Service) Search(ctx context.Context, ownerID string, kbIDs []string, query string, topN int) ([]Hit, error) {
@@ -163,7 +238,24 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		return []Hit{}, nil
 	}
 
-	plan := s.planQuery(ctx, retrievalID, kbs[0].UserID, SearchContext{Query: query, History: input.History})
+	options, hasOptions := ctx.Value(searchOptionsKey{}).(SearchOptions)
+	rewriteEnabled, hydeEnabled := true, true
+	if hasOptions && options.Rewrite != nil {
+		rewriteEnabled = *options.Rewrite
+	}
+	if hasOptions && options.HyDE != nil {
+		hydeEnabled = *options.HyDE
+	}
+	plan := QueryPlan{RewrittenQuery: query, HypotheticalDocument: query}
+	if rewriteEnabled || hydeEnabled {
+		plan = s.planQuery(ctx, retrievalID, kbs[0].UserID, SearchContext{Query: query, History: input.History})
+	}
+	if !rewriteEnabled {
+		plan.RewrittenQuery = query
+	}
+	if !hydeEnabled {
+		plan.HypotheticalDocument = plan.RewrittenQuery
+	}
 	targets := make([]target, 0, len(kbs))
 	vectorCache := make(map[string][][]float32)
 	for _, kb := range kbs {
@@ -193,6 +285,9 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 	}
 
 	candidateTopK := s.cfg.Reranker.CandidateTopK
+	if hasOptions && options.CandidateTopK > 0 {
+		candidateTopK = options.CandidateTopK
+	}
 	if candidateTopK < topN {
 		candidateTopK = topN
 	}
@@ -307,8 +402,16 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		results = results[:candidateTopK]
 	}
 	candidateCount := len(results)
-	if s.reranker != nil && len(results) > 0 {
-		reranked, err := s.rerankHits(ctx, retrievalID, plan.RewrittenQuery, results, topN)
+	rerankerEnabled := s.reranker != nil
+	if hasOptions && options.Reranker != nil {
+		rerankerEnabled = *options.Reranker && s.reranker != nil
+	}
+	if rerankerEnabled && len(results) > 0 {
+		minScore := s.cfg.Reranker.MinScore
+		if hasOptions && options.MinScore != nil {
+			minScore = *options.MinScore
+		}
+		reranked, err := s.rerankHitsWithMinScore(ctx, retrievalID, plan.RewrittenQuery, results, topN, minScore)
 		if err == nil {
 			slog.Info("rag: retrieval completed",
 				"retrieval_id", retrievalID,
@@ -353,6 +456,10 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 // service or response error is returned to SearchWithContext, which falls back
 // to the untouched RRF ordering without applying this threshold.
 func (s *Service) rerankHits(ctx context.Context, retrievalID, query string, candidates []Hit, topN int) ([]Hit, error) {
+	return s.rerankHitsWithMinScore(ctx, retrievalID, query, candidates, topN, s.cfg.Reranker.MinScore)
+}
+
+func (s *Service) rerankHitsWithMinScore(ctx context.Context, retrievalID, query string, candidates []Hit, topN int, minScore float64) ([]Hit, error) {
 	started := time.Now()
 	documents := make([]string, len(candidates))
 	for index := range candidates {
@@ -394,7 +501,7 @@ func (s *Service) rerankHits(ctx context.Context, retrievalID, query string, can
 
 	filtered := make([]Hit, 0, len(ranked))
 	for _, item := range ranked {
-		if item.Score < s.cfg.Reranker.MinScore {
+		if item.Score < minScore {
 			continue
 		}
 		hit := candidates[item.Index]
@@ -416,7 +523,7 @@ func (s *Service) rerankHits(ctx context.Context, retrievalID, query string, can
 		"ranked", len(ranked),
 		"returned", len(filtered),
 		"filtered", len(ranked)-len(filtered),
-		"min_score", s.cfg.Reranker.MinScore,
+		"min_score", minScore,
 		"top_score", topScore,
 		"lowest_returned_score", lowestReturnedScore,
 		"duration_ms", time.Since(started).Milliseconds(),

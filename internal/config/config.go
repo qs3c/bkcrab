@@ -756,6 +756,7 @@ type RAGCfg struct {
 	Milvus        MilvusCfg           `json:"milvus,omitempty"`
 	Embedding     RAGEmbeddingCfg     `json:"embedding,omitempty"`
 	Reranker      RAGRerankerCfg      `json:"reranker,omitempty"`
+	Evaluation    RAGEvaluationCfg    `json:"evaluation,omitempty"`
 	Features      RAGFeatureCfg       `json:"features,omitempty"`
 	DocumentAI    RAGDocumentAICfg    `json:"documentAI,omitempty"`
 	ParserSidecar RAGParserSidecarCfg `json:"parserSidecar,omitempty"`
@@ -995,6 +996,7 @@ type RAGLimitsCfg struct {
 }
 
 func (c *RAGCfg) ApplyDefaults() {
+	c.Evaluation.ApplyDefaults()
 	if c.Reranker.TimeoutMS <= 0 {
 		c.Reranker.TimeoutMS = 5000
 	}
@@ -1131,6 +1133,9 @@ func (c *RAGCfg) ApplyDefaults() {
 }
 
 func (c RAGCfg) Validate() error {
+	if err := c.Evaluation.Validate(); err != nil {
+		return err
+	}
 	if c.DocumentAI.APIType != "" && c.DocumentAI.APIType != "openai-compatible" {
 		return fmt.Errorf("rag.documentAI.apiType %q is unsupported", c.DocumentAI.APIType)
 	}

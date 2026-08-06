@@ -2455,3 +2455,66 @@ export async function getAgentTokenUsage(
   );
   return res.json();
 }
+
+// ---------- 超级管理员：RAG 测评 ----------
+
+export interface RAGEvalCapabilities {
+  enabled: boolean;
+  sidecarConfigured: boolean;
+  sidecarHealthy: boolean;
+  reason?: string;
+  metricBundleVersion: string;
+  metrics: string[];
+  importers: string[];
+  maxBatchSize: number;
+  maxRunCases: number;
+}
+
+export interface RAGEvalDataset {
+  id: string;
+  name: string;
+  description: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RAGEvalRun {
+  id: string;
+  datasetVersionId: string;
+  baselineRunId?: string;
+  mode: "FULL_PIPELINE" | "ONLINE_ONLY";
+  profileId: string;
+  status: string;
+  stage: string;
+  progressJson: string;
+  errorCode?: string;
+  errorMessage?: string;
+  createdAt: string;
+}
+
+export async function getRAGEvalCapabilities(): Promise<RAGEvalCapabilities> {
+  return (await apiFetch("/api/admin/rag-evals/capabilities")).json();
+}
+
+export async function listRAGEvalDatasets(): Promise<RAGEvalDataset[]> {
+  const result = await (await apiFetch("/api/admin/rag-evals/datasets?limit=100")).json();
+  return result.items ?? [];
+}
+
+export async function createRAGEvalDataset(name: string, description: string): Promise<RAGEvalDataset> {
+  return (await apiFetch("/api/admin/rag-evals/datasets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, description }),
+  })).json();
+}
+
+export async function listRAGEvalRuns(): Promise<RAGEvalRun[]> {
+  const result = await (await apiFetch("/api/admin/rag-evals/runs?limit=100")).json();
+  return result.items ?? [];
+}
+
+export async function cancelRAGEvalRun(id: string): Promise<void> {
+  await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+}

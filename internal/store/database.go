@@ -199,6 +199,9 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 	if err := d.migrateSessionsAddChatterUserID(ctx); err != nil {
 		return fmt.Errorf("migrate sessions chatter_user_id: %w", err)
 	}
+	if err := d.migrateRAGEvaluationSchema(ctx); err != nil {
+		return fmt.Errorf("migrate RAG evaluation schema: %w", err)
+	}
 	return nil
 }
 

@@ -5,6 +5,7 @@ services:
     networks:
       - default
       - rag-parser-internal
+      - rag-evaluator-internal
     environment:
       BKCRAB_RAG_MILVUS_ADDRESS: milvus-standalone:19530
       BKCRAB_RAG_MILVUS_USERNAME: "${MILVUS_USERNAME:-}"
@@ -25,6 +26,14 @@ services:
       BKCRAB_RAG_ENRICHMENT_ENABLED: "${RAG_ENRICHMENT_ENABLED:-false}"
       BKCRAB_RAG_PARSER_ENDPOINT: http://rag-parser:8080
       BKCRAB_RAG_PARSER_TIMEOUT_MS: "${RAG_PARSE_TIMEOUT_MS:-600000}"
+      BKCRAB_RAG_EVAL_ENABLED: "${RAG_EVAL_ENABLED:-false}"
+      BKCRAB_RAG_EVAL_ENDPOINT: "http://rag-evaluator:8080"
+      BKCRAB_RAG_EVAL_API_KEY: "${RAG_EVALUATOR_API_KEY:-}"
+      BKCRAB_RAG_EVAL_METRIC_BUNDLE_VERSION: "rag-core-v1"
+      BKCRAB_RAG_EVAL_WORKER_CONCURRENCY: "${RAG_EVAL_WORKER_CONCURRENCY:-1}"
+      BKCRAB_RAG_EVAL_MAX_BATCH_SIZE: "${RAG_EVAL_MAX_BATCH_SIZE:-16}"
+      BKCRAB_RAG_EVAL_MAX_RUN_CASES: "${RAG_EVAL_MAX_RUN_CASES:-1000}"
+      BKCRAB_RAG_EVAL_MAX_RUN_COST_USD: "${RAG_EVAL_MAX_RUN_COST_USD:-25}"
       BKCRAB_RAG_DOCUMENT_AI_API_TYPE: "${RAG_DOCUMENT_AI_API_TYPE:-openai-compatible}"
       BKCRAB_RAG_DOCUMENT_AI_ENDPOINT: "${RAG_DOCUMENT_AI_ENDPOINT:-}"
       BKCRAB_RAG_DOCUMENT_AI_API_KEY: "${RAG_DOCUMENT_AI_API_KEY:-}"
@@ -99,6 +108,45 @@ services:
       start_period: 10s
       retries: 5
 
+  rag-evaluator:
+    profiles: ["rag-evaluation"]
+    build:
+      context: ../../services/rag-evaluator
+      dockerfile: Dockerfile
+    image: "${RAG_EVALUATOR_IMAGE:-bkcrab/rag-evaluator:0.1.0}"
+    restart: unless-stopped
+    init: true
+    user: "65532:65532"
+    read_only: true
+    environment:
+      RAG_EVALUATOR_SERVICE_VERSION: "${RAG_EVALUATOR_SERVICE_VERSION:-0.1.0}"
+      RAG_EVALUATOR_PORT: "8080"
+      RAG_EVALUATOR_API_KEY: "${RAG_EVALUATOR_API_KEY:-}"
+      RAG_EVALUATOR_MAX_REQUEST_BYTES: "${RAG_EVALUATOR_MAX_REQUEST_BYTES:-4194304}"
+      RAG_EVALUATOR_LLM_ENDPOINT: "${RAG_EVALUATOR_LLM_ENDPOINT:-}"
+      RAG_EVALUATOR_LLM_API_KEY: "${RAG_EVALUATOR_LLM_API_KEY:-}"
+      RAG_EVALUATOR_LLM_MODEL: "${RAG_EVALUATOR_LLM_MODEL:-}"
+      RAG_EVALUATOR_EMBEDDING_ENDPOINT: "${RAG_EVALUATOR_EMBEDDING_ENDPOINT:-}"
+      RAG_EVALUATOR_EMBEDDING_API_KEY: "${RAG_EVALUATOR_EMBEDDING_API_KEY:-}"
+      RAG_EVALUATOR_EMBEDDING_MODEL: "${RAG_EVALUATOR_EMBEDDING_MODEL:-}"
+      HOME: /tmp
+      TMPDIR: /tmp
+      XDG_CACHE_HOME: /tmp/cache
+    tmpfs:
+      - "/tmp:size=${RAG_EVALUATOR_TMPFS_SIZE_BYTES:-268435456},mode=0700,uid=65532,gid=65532"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    cpus: "${RAG_EVALUATOR_CPUS:-1.0}"
+    mem_limit: "${RAG_EVALUATOR_MEMORY_LIMIT:-1g}"
+    networks: [rag-evaluator-internal]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"]
+      interval: 15s
+      timeout: 3s
+      start_period: 15s
+      retries: 5
+
   milvus-etcd:
     image: quay.io/coreos/etcd:v3.5.18
     restart: unless-stopped
@@ -156,4 +204,6 @@ volumes:
 networks:
   default: {}
   rag-parser-internal:
+    internal: true
+  rag-evaluator-internal:
     internal: true

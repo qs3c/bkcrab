@@ -292,6 +292,24 @@ func (s *Server) requireSuperAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return s.authMiddleware(auth.RequirePlatformAdmin(next))
 }
 
+// requireSuperAdminSession is the stricter data-plane gate for evaluation
+// corpora, traces and policy promotion. Admin API keys and actAs sessions are
+// intentionally excluded until a dedicated rag_eval automation scope exists.
+func (s *Server) requireSuperAdminSession(next http.HandlerFunc) http.HandlerFunc {
+	return s.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := auth.FromContext(r.Context())
+		if !ok || !isRAGEvalAdminIdentity(identity) {
+			jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "super_admin session required"})
+			return
+		}
+		next(w, r)
+	})
+}
+
+func isRAGEvalAdminIdentity(identity auth.Identity) bool {
+	return identity.Role == users.RoleSuperAdmin && identity.AuthMethod == "session" && !identity.IsActingAs()
+}
+
 // Run 启动 HTTP 服务器并阻塞，直到上下文被取消。
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -308,6 +326,7 @@ func (s *Server) Run(ctx context.Context) error {
 	auth := s.authMiddleware
 	opt := s.optionalAuth
 	admin := s.requireSuperAdmin
+	evalAdmin := s.requireSuperAdminSession
 
 	// 引导 / 登录。
 	mux.HandleFunc("GET /api/status", opt(s.handleStatus))
@@ -322,6 +341,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/admin/registration", admin(s.handleGetRegistration))
 	mux.HandleFunc("PUT /api/admin/registration", admin(s.handleSetRegistration))
 	mux.HandleFunc("GET /api/admin/chats", admin(s.handleAdminChats))
+	s.registerRAGEvaluationRoutes(mux, evalAdmin)
 
 	// 按用户配置（system_settings + 作用域内的 providers/channels）。
 	mux.HandleFunc("GET /api/config", auth(s.handleGetConfig))
