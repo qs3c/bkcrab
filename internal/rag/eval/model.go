@@ -7,7 +7,11 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 )
 
-const MetricBundleV1 = "rag-core-v1"
+const (
+	MetricBundleV1                   = "rag-core-v1"
+	ExpectedEvaluatorProtocolVersion = "rag-evaluator-v1"
+	ExpectedRagasVersion             = "0.3.9"
+)
 
 type CorpusDocument struct {
 	ID        string         `json:"id"`

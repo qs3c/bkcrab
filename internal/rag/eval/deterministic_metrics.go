@@ -1,15 +1,17 @@
 package eval
 
 import (
+	"fmt"
 	"math"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 type DeterministicInput struct {
 	RetrievedContextIDs []string
 	ReferenceContextIDs []string
-	Citations           []string
 	Response            string
 	ExpectedAbstention  bool
 	Abstained           bool
@@ -20,18 +22,24 @@ func DeterministicMetrics(input DeterministicInput, k int) map[string]MetricResu
 		k = len(input.RetrievedContextIDs)
 	}
 	results := map[string]MetricResult{}
-	if len(input.ReferenceContextIDs) == 0 {
+	relevant := make(map[string]struct{}, len(input.ReferenceContextIDs))
+	for _, id := range input.ReferenceContextIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			relevant[id] = struct{}{}
+		}
+	}
+	if len(relevant) == 0 {
 		for _, name := range []string{"hit_at_k", "recall_at_k", "mrr", "ndcg"} {
 			results[name] = MetricResult{Status: MetricSkippedMissingInput, Reason: "reference_context_ids is required"}
 		}
 	} else {
-		relevant := make(map[string]struct{}, len(input.ReferenceContextIDs))
-		for _, id := range input.ReferenceContextIDs {
-			relevant[id] = struct{}{}
-		}
 		hits, first, dcg := 0, 0, 0.0
 		seen := map[string]struct{}{}
 		for i, id := range input.RetrievedContextIDs[:k] {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
 			if _, duplicate := seen[id]; duplicate {
 				continue
 			}
@@ -70,36 +78,77 @@ func DeterministicMetrics(input DeterministicInput, k int) map[string]MetricResu
 		results["mrr"] = MetricResult{Status: MetricOK, Value: score(mrr)}
 		results["ndcg"] = MetricResult{Status: MetricOK, Value: score(ndcg)}
 	}
-	if input.Citations == nil {
-		results["citation_precision"] = MetricResult{Status: MetricSkippedMissingInput, Reason: "citations are required"}
-	} else {
-		retrieved := map[string]struct{}{}
-		for _, id := range input.RetrievedContextIDs {
-			retrieved[id] = struct{}{}
-		}
-		valid := 0
-		unique := map[string]struct{}{}
-		for _, id := range input.Citations {
-			if _, ok := unique[id]; ok {
-				continue
-			}
-			unique[id] = struct{}{}
-			if _, ok := retrieved[id]; ok {
-				valid++
-			}
-		}
-		value := 1.0
-		if len(unique) > 0 {
-			value = float64(valid) / float64(len(unique))
-		}
-		results["citation_precision"] = MetricResult{Status: MetricOK, Value: score(value)}
-	}
+	precision, coverage := citationMetrics(input.Response, input.RetrievedContextIDs)
+	results["citation_precision"] = precision
+	results["citation_coverage"] = coverage
 	abstention := 0.0
 	if input.ExpectedAbstention == input.Abstained {
 		abstention = 1
 	}
 	results["abstention_accuracy"] = MetricResult{Status: MetricOK, Value: score(abstention)}
 	return results
+}
+
+var citationPattern = regexp.MustCompile(`\[([0-9]+)\]`)
+var claimSeparator = regexp.MustCompile(`[.!?。！？\n]+`)
+
+// citationMetrics implements the v1 deterministic [n] contract. Precision is
+// the fraction of unique numeric citations that address an existing, non-empty
+// retrieved context ID. Coverage is the fraction of non-empty sentence-like
+// claims containing at least one valid citation. Other syntaxes are ignored.
+func citationMetrics(response string, contextIDs []string) (MetricResult, MetricResult) {
+	if len(contextIDs) == 0 {
+		skipped := MetricResult{Status: MetricSkippedMissingInput, Reason: "retrieved_context_ids is required"}
+		return skipped, skipped
+	}
+	validIndex := func(index int) bool {
+		return index > 0 && index <= len(contextIDs) && strings.TrimSpace(contextIDs[index-1]) != ""
+	}
+	unique, valid, invalid := map[int]struct{}{}, 0, []int{}
+	for _, match := range citationPattern.FindAllStringSubmatch(response, -1) {
+		index, err := strconv.Atoi(match[1])
+		if err != nil {
+			continue
+		}
+		if _, duplicate := unique[index]; duplicate {
+			continue
+		}
+		unique[index] = struct{}{}
+		if validIndex(index) {
+			valid++
+		} else {
+			invalid = append(invalid, index)
+		}
+	}
+	reason := ""
+	if len(invalid) > 0 {
+		sort.Ints(invalid)
+		reason = fmt.Sprintf("out-of-range citations: %v", invalid)
+	}
+	precision := MetricResult{Status: MetricSkippedMissingInput, Reason: "response has no [n] citations"}
+	if len(unique) > 0 {
+		precision = MetricResult{Status: MetricOK, Value: score(float64(valid) / float64(len(unique))), Reason: reason}
+	}
+	claims, covered := 0, 0
+	for _, claim := range claimSeparator.Split(response, -1) {
+		claim = strings.TrimSpace(claim)
+		if claim == "" || strings.TrimSpace(citationPattern.ReplaceAllString(claim, "")) == "" {
+			continue
+		}
+		claims++
+		for _, match := range citationPattern.FindAllStringSubmatch(claim, -1) {
+			index, err := strconv.Atoi(match[1])
+			if err == nil && validIndex(index) {
+				covered++
+				break
+			}
+		}
+	}
+	coverage := MetricResult{Status: MetricSkippedMissingInput, Reason: "response claims are required"}
+	if claims > 0 {
+		coverage = MetricResult{Status: MetricOK, Value: score(float64(covered) / float64(claims)), Reason: reason}
+	}
+	return precision, coverage
 }
 
 func LooksLikeAbstention(response string) bool {

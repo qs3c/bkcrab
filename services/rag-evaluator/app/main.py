@@ -11,7 +11,12 @@ from importlib.metadata import version
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .metrics import MetricEngine, build_ragas_engine, collection_metric_types
+from .metrics import (
+    METRIC_REQUIRED_FIELDS,
+    MetricEngine,
+    build_ragas_engine,
+    collection_metric_types,
+)
 from .protocol import (
     ALLOWED_METRICS,
     METRIC_BUNDLE_VERSION,
@@ -97,6 +102,7 @@ def create_app(settings: Settings, engine: MetricEngine | None = None) -> FastAP
             "metricBundleVersion": METRIC_BUNDLE_VERSION,
             "judgeConfigured": settings.judge_configured,
             "metricsInitialized": len(initialized_metrics) == len(ALLOWED_METRICS),
+            "metricRequiredFields": METRIC_REQUIRED_FIELDS,
         }
 
     @app.post("/v1/evaluate", response_model=EvaluateResponse, dependencies=[Depends(authorize)])

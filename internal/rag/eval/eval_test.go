@@ -70,7 +70,7 @@ func TestProfileFingerprintValidates(t *testing.T) {
 }
 
 func TestDeterministicMetrics(t *testing.T) {
-	results := DeterministicMetrics(DeterministicInput{RetrievedContextIDs: []string{"x", "a", "b"}, ReferenceContextIDs: []string{"a", "b"}, Citations: []string{"a", "bad"}, ExpectedAbstention: true, Abstained: true}, 3)
+	results := DeterministicMetrics(DeterministicInput{RetrievedContextIDs: []string{"x", "a", "b"}, ReferenceContextIDs: []string{"a", "b"}, Response: "answer [2] and bad [4].", ExpectedAbstention: true, Abstained: true}, 3)
 	if got := *results["recall_at_k"].Value; got != 1 {
 		t.Fatalf("recall=%v", got)
 	}

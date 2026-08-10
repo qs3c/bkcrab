@@ -10,14 +10,25 @@ from .settings import Settings
 
 ScoreFn = Callable[[str, Sample], Awaitable[float]]
 
+METRIC_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "context_precision": ("userInput", "reference", "retrievedContexts"),
+    "context_recall": ("reference", "retrievedContexts"),
+    "faithfulness": ("response", "retrievedContexts"),
+    "response_relevancy": ("userInput", "response"),
+    "factual_correctness": ("response", "reference"),
+}
+
 
 def missing_input(metric: str, sample: Sample) -> str | None:
-    if metric in {"context_precision", "context_recall", "factual_correctness"} and not sample.reference:
-        return "reference is required"
-    if metric in {"context_precision", "context_recall", "faithfulness"} and not sample.retrievedContexts:
-        return "retrievedContexts is required"
-    if metric in {"faithfulness", "response_relevancy", "factual_correctness"} and not sample.response:
-        return "response is required"
+    values: dict[str, object] = {
+        "userInput": sample.userInput,
+        "retrievedContexts": sample.retrievedContexts,
+        "response": sample.response,
+        "reference": sample.reference,
+    }
+    for field in METRIC_REQUIRED_FIELDS[metric]:
+        if not values[field]:
+            return f"{field} is required"
     return None
 
 

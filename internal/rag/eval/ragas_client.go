@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"path"
@@ -18,7 +19,21 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 )
 
-var RagasMetrics = map[string]struct{}{"context_precision": {}, "context_recall": {}, "faithfulness": {}, "response_relevancy": {}, "factual_correctness": {}}
+var RagasMetricRequiredFields = map[string][]string{
+	"context_precision":   {"userInput", "reference", "retrievedContexts"},
+	"context_recall":      {"reference", "retrievedContexts"},
+	"faithfulness":        {"response", "retrievedContexts"},
+	"response_relevancy":  {"userInput", "response"},
+	"factual_correctness": {"response", "reference"},
+}
+
+var RagasMetrics = func() map[string]struct{} {
+	metrics := make(map[string]struct{}, len(RagasMetricRequiredFields))
+	for name := range RagasMetricRequiredFields {
+		metrics[name] = struct{}{}
+	}
+	return metrics
+}()
 
 type EvaluationSample struct {
 	CaseID              string   `json:"caseId"`
@@ -77,13 +92,14 @@ func NewRagasClient(endpoint, apiKey string, timeout time.Duration, maxBatch, ma
 }
 
 type evaluatorHealth struct {
-	OK                  bool   `json:"ok"`
-	ServiceVersion      string `json:"serviceVersion"`
-	ProtocolVersion     string `json:"protocolVersion"`
-	RagasVersion        string `json:"ragasVersion"`
-	MetricBundleVersion string `json:"metricBundleVersion"`
-	JudgeConfigured     bool   `json:"judgeConfigured"`
-	MetricsInitialized  bool   `json:"metricsInitialized"`
+	OK                   bool                `json:"ok"`
+	ServiceVersion       string              `json:"serviceVersion"`
+	ProtocolVersion      string              `json:"protocolVersion"`
+	RagasVersion         string              `json:"ragasVersion"`
+	MetricBundleVersion  string              `json:"metricBundleVersion"`
+	JudgeConfigured      bool                `json:"judgeConfigured"`
+	MetricsInitialized   bool                `json:"metricsInitialized"`
+	MetricRequiredFields map[string][]string `json:"metricRequiredFields"`
 }
 
 func (c *RagasClient) healthURL() string {
@@ -113,6 +129,24 @@ func (c *RagasClient) healthFailure(now time.Time, reason string) config.RAGEval
 	return c.storeHealth(config.RAGEvaluatorHealthSnapshot{
 		Healthy: false, Reason: reason, CheckedAt: now, ExpiresAt: now.Add(c.healthTTL),
 	})
+}
+
+func requiredFieldsCompatible(got map[string][]string) bool {
+	if len(got) != len(RagasMetricRequiredFields) {
+		return false
+	}
+	for metric, expected := range RagasMetricRequiredFields {
+		actual, ok := got[metric]
+		if !ok || len(actual) != len(expected) {
+			return false
+		}
+		for i := range expected {
+			if actual[i] != expected[i] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // ProbeHealth is called only by the background loop (and tests), never by an
@@ -153,8 +187,8 @@ func (c *RagasClient) ProbeHealth(ctx context.Context) (config.RAGEvaluatorHealt
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err = decoder.Decode(&health); err != nil || !health.OK || !health.MetricsInitialized ||
-		health.ProtocolVersion != "rag-evaluator-v1" || health.MetricBundleVersion != MetricBundleV1 ||
-		strings.TrimSpace(health.RagasVersion) == "" {
+		health.ProtocolVersion != ExpectedEvaluatorProtocolVersion || health.MetricBundleVersion != MetricBundleV1 ||
+		health.RagasVersion != ExpectedRagasVersion || !requiredFieldsCompatible(health.MetricRequiredFields) {
 		if err == nil {
 			err = errors.New("incompatible evaluator health response")
 		}
@@ -199,63 +233,247 @@ func (c *RagasClient) probeHealthWithTimeout(ctx context.Context) {
 	_, _ = c.ProbeHealth(probeCtx)
 }
 
-func (c *RagasClient) Evaluate(ctx context.Context, request EvaluateRequest) (EvaluateResponse, error) {
-	var response EvaluateResponse
-	if request.RequestID == "" {
-		return response, errors.New("requestId is required")
+type wireMetricResult struct {
+	Status MetricStatus `json:"status"`
+	Value  *float64     `json:"value"`
+	Reason string       `json:"reason"`
+}
+
+type wireCaseMetricResults struct {
+	CaseID  string                      `json:"caseId"`
+	Metrics map[string]wireMetricResult `json:"metrics"`
+}
+
+func (result *wireCaseMetricResults) UnmarshalJSON(data []byte) error {
+	var envelope struct {
+		CaseID  string          `json:"caseId"`
+		Metrics json.RawMessage `json:"metrics"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("case result contains trailing JSON")
+	}
+	metricDecoder := json.NewDecoder(bytes.NewReader(envelope.Metrics))
+	metricDecoder.DisallowUnknownFields()
+	token, err := metricDecoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return errors.New("case metrics must be an object")
+	}
+	metrics := map[string]wireMetricResult{}
+	for metricDecoder.More() {
+		nameToken, err := metricDecoder.Token()
+		if err != nil {
+			return err
+		}
+		name, ok := nameToken.(string)
+		if !ok {
+			return errors.New("metric name must be a string")
+		}
+		if _, duplicate := metrics[name]; duplicate {
+			return fmt.Errorf("duplicate response metric %q", name)
+		}
+		var metric wireMetricResult
+		if err := metricDecoder.Decode(&metric); err != nil {
+			return err
+		}
+		metrics[name] = metric
+	}
+	if _, err := metricDecoder.Token(); err != nil {
+		return err
+	}
+	if err := metricDecoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("case metrics contain trailing JSON")
+	}
+	result.CaseID, result.Metrics = envelope.CaseID, metrics
+	return nil
+}
+
+type wireEvaluateResponse struct {
+	RequestID           string                  `json:"requestId"`
+	RagasVersion        string                  `json:"ragasVersion"`
+	MetricBundleVersion string                  `json:"metricBundleVersion"`
+	Results             []wireCaseMetricResults `json:"results"`
+}
+
+func (c *RagasClient) validateEvaluateRequest(request *EvaluateRequest) error {
+	if strings.TrimSpace(request.RequestID) == "" {
+		return errors.New("requestId is required")
+	}
+	if len(request.RequestID) > 255 {
+		return errors.New("requestId exceeds byte limit")
 	}
 	if request.MetricBundleVersion != "" && request.MetricBundleVersion != MetricBundleV1 {
-		return response, errors.New("unsupported metric bundle")
+		return errors.New("unsupported metric bundle")
 	}
 	request.MetricBundleVersion = MetricBundleV1
-	if len(request.Samples) == 0 || len(request.Samples) > c.maxBatch {
-		return response, errors.New("invalid sample batch size")
+	if len(request.Metrics) == 0 || len(request.Metrics) > len(RagasMetrics) {
+		return errors.New("invalid metric count")
 	}
+	seenMetrics := make(map[string]struct{}, len(request.Metrics))
 	for _, metric := range request.Metrics {
 		if _, ok := RagasMetrics[metric]; !ok {
-			return response, fmt.Errorf("unsupported metric %q", metric)
+			return fmt.Errorf("unsupported metric %q", metric)
 		}
+		if _, duplicate := seenMetrics[metric]; duplicate {
+			return fmt.Errorf("duplicate metric %q", metric)
+		}
+		seenMetrics[metric] = struct{}{}
 	}
+	if len(request.Samples) == 0 || c.maxBatch <= 0 || len(request.Samples) > c.maxBatch {
+		return errors.New("invalid sample batch size")
+	}
+	seenCases := make(map[string]struct{}, len(request.Samples))
 	for _, sample := range request.Samples {
-		if sample.CaseID == "" || sample.UserInput == "" {
-			return response, errors.New("caseId and userInput are required")
+		if strings.TrimSpace(sample.CaseID) == "" || strings.TrimSpace(sample.UserInput) == "" {
+			return errors.New("caseId and userInput are required")
 		}
-		if len(sample.RetrievedContexts) > c.maxContexts {
-			return response, errors.New("too many contexts")
+		if len(sample.CaseID) > 255 {
+			return errors.New("caseId exceeds byte limit")
 		}
-		for _, value := range sample.RetrievedContexts {
-			if len(value) > c.maxContextBytes {
-				return response, errors.New("context exceeds byte limit")
+		if _, duplicate := seenCases[sample.CaseID]; duplicate {
+			return fmt.Errorf("duplicate caseId %q", sample.CaseID)
+		}
+		seenCases[sample.CaseID] = struct{}{}
+		if len(sample.RetrievedContexts) > c.maxContexts || len(sample.ReferenceContexts) > c.maxContexts {
+			return errors.New("too many contexts")
+		}
+		if len(sample.RetrievedContextIDs) != len(sample.RetrievedContexts) {
+			return errors.New("retrievedContextIds must match retrievedContexts")
+		}
+		if len(sample.UserInput) > 64<<10 || len(sample.Response) > 256<<10 || len(sample.Reference) > 256<<10 {
+			return errors.New("sample text exceeds byte limit")
+		}
+		for _, value := range append(append([]string(nil), sample.RetrievedContexts...), sample.ReferenceContexts...) {
+			if c.maxContextBytes <= 0 || len(value) > c.maxContextBytes {
+				return errors.New("context exceeds byte limit")
 			}
 		}
 	}
+	return nil
+}
+
+func validateWireMetric(result wireMetricResult) (MetricResult, error) {
+	if len(result.Reason) > 2048 {
+		return MetricResult{}, errors.New("metric reason exceeds byte limit")
+	}
+	switch result.Status {
+	case MetricOK:
+		if result.Value == nil || math.IsNaN(*result.Value) || math.IsInf(*result.Value, 0) || *result.Value < 0 || *result.Value > 1 {
+			return MetricResult{}, errors.New("ok metric requires a finite score in [0,1]")
+		}
+	case MetricSkippedMissingInput, MetricError:
+		if result.Value != nil {
+			return MetricResult{}, errors.New("non-ok metric must not contain a score")
+		}
+	default:
+		return MetricResult{}, fmt.Errorf("unknown metric status %q", result.Status)
+	}
+	return MetricResult{Status: result.Status, Value: result.Value, Reason: result.Reason}, nil
+}
+
+func validateWireResponse(request EvaluateRequest, wire wireEvaluateResponse) (EvaluateResponse, error) {
+	if wire.RequestID != request.RequestID || wire.MetricBundleVersion != MetricBundleV1 || wire.RagasVersion != ExpectedRagasVersion {
+		return EvaluateResponse{}, errors.New("evaluator response contract mismatch")
+	}
+	expectedCases := make(map[string]struct{}, len(request.Samples))
+	for _, sample := range request.Samples {
+		expectedCases[sample.CaseID] = struct{}{}
+	}
+	expectedMetrics := make(map[string]struct{}, len(request.Metrics))
+	for _, metric := range request.Metrics {
+		expectedMetrics[metric] = struct{}{}
+	}
+	seenCases := make(map[string]struct{}, len(wire.Results))
+	response := EvaluateResponse{RequestID: wire.RequestID, RagasVersion: wire.RagasVersion, MetricBundleVersion: wire.MetricBundleVersion}
+	for _, item := range wire.Results {
+		if _, ok := expectedCases[item.CaseID]; !ok {
+			return EvaluateResponse{}, fmt.Errorf("unknown response caseId %q", item.CaseID)
+		}
+		if _, duplicate := seenCases[item.CaseID]; duplicate {
+			return EvaluateResponse{}, fmt.Errorf("duplicate response caseId %q", item.CaseID)
+		}
+		seenCases[item.CaseID] = struct{}{}
+		if len(item.Metrics) != len(expectedMetrics) {
+			return EvaluateResponse{}, fmt.Errorf("case %q returned incomplete metrics", item.CaseID)
+		}
+		metrics := make(map[string]MetricResult, len(item.Metrics))
+		for name, wireMetric := range item.Metrics {
+			if _, ok := expectedMetrics[name]; !ok {
+				return EvaluateResponse{}, fmt.Errorf("unknown response metric %q", name)
+			}
+			metric, err := validateWireMetric(wireMetric)
+			if err != nil {
+				return EvaluateResponse{}, fmt.Errorf("metric %q: %w", name, err)
+			}
+			metrics[name] = metric
+		}
+		response.Results = append(response.Results, CaseMetricResults{CaseID: item.CaseID, Metrics: metrics})
+	}
+	if len(seenCases) != len(expectedCases) {
+		return EvaluateResponse{}, errors.New("evaluator response omitted cases")
+	}
+	return response, nil
+}
+
+func (c *RagasClient) Evaluate(ctx context.Context, request EvaluateRequest) (EvaluateResponse, error) {
+	if c == nil {
+		return EvaluateResponse{}, errors.New("evaluator client is not configured")
+	}
+	if err := c.validateEvaluateRequest(&request); err != nil {
+		return EvaluateResponse{}, err
+	}
 	body, err := json.Marshal(request)
 	if err != nil {
-		return response, err
+		return EvaluateResponse{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/v1/evaluate", bytes.NewReader(body))
-	if err != nil {
-		return response, err
+	const maxRequestBytes = 4 << 20
+	if len(body) > maxRequestBytes {
+		return EvaluateResponse{}, errors.New("evaluator request exceeds 4 MiB")
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-	res, err := c.client.Do(req)
-	if err != nil {
-		return response, err
+	var res *http.Response
+	for attempt := 0; attempt < 2; attempt++ {
+		req, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/v1/evaluate", bytes.NewReader(body))
+		if requestErr != nil {
+			return EvaluateResponse{}, requestErr
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if c.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		}
+		res, err = c.client.Do(req)
+		if err == nil {
+			break
+		}
+		if res != nil || ctx.Err() != nil || attempt == 1 {
+			return EvaluateResponse{}, err
+		}
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		limited, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-		return response, fmt.Errorf("evaluator returned %d: %s", res.StatusCode, strings.TrimSpace(string(limited)))
+		return EvaluateResponse{}, fmt.Errorf("evaluator returned HTTP %d", res.StatusCode)
 	}
-	decoder := json.NewDecoder(io.LimitReader(res.Body, 8<<20))
-	if err := decoder.Decode(&response); err != nil {
-		return response, err
+	const maxResponseBytes = int64(8 << 20)
+	responseBody, err := io.ReadAll(io.LimitReader(res.Body, maxResponseBytes+1))
+	if err != nil {
+		return EvaluateResponse{}, err
 	}
-	if response.RequestID != request.RequestID || response.MetricBundleVersion != MetricBundleV1 {
-		return EvaluateResponse{}, errors.New("evaluator response contract mismatch")
+	if int64(len(responseBody)) > maxResponseBytes {
+		return EvaluateResponse{}, errors.New("evaluator response exceeds 8 MiB")
 	}
-	return response, nil
+	var wire wireEvaluateResponse
+	decoder := json.NewDecoder(bytes.NewReader(responseBody))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&wire); err != nil {
+		return EvaluateResponse{}, fmt.Errorf("decode evaluator response: %w", err)
+	}
+	var trailing any
+	if err = decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return EvaluateResponse{}, errors.New("evaluator response contains trailing JSON")
+	}
+	return validateWireResponse(request, wire)
 }

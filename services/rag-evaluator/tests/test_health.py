@@ -19,4 +19,11 @@ def test_health_contract_reports_all_compatibility_versions():
         "metricBundleVersion": "rag-core-v1",
         "judgeConfigured": settings.judge_configured,
         "metricsInitialized": True,
+        "metricRequiredFields": {
+            "context_precision": ["userInput", "reference", "retrievedContexts"],
+            "context_recall": ["reference", "retrievedContexts"],
+            "faithfulness": ["response", "retrievedContexts"],
+            "response_relevancy": ["userInput", "response"],
+            "factual_correctness": ["response", "reference"],
+        },
     }

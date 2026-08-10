@@ -474,12 +474,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 使用 `httptest` 覆盖 2xx/4xx/5xx、超时、截断、重复/未知 case/metric、NaN/Inf/out-of-range score。
-- [ ] 非幂等错误不可盲重试；requestId 相同的安全网络失败可受限重试。
-- [ ] deterministic metrics 使用 stable context IDs；无标注时 skip，不用文本模糊匹配冒充 ground truth。
-- [ ] 引用 parser 只识别当前 RAG 明确的 `[n]` 契约，越界引用计错并保留 reason。
-- [ ] metric status 使用 closed enum：ok/skipped_missing_input/error。
-- [ ] 运行 `go test ./internal/rag/eval -run 'Ragas|Metric|Citation|Abstention'`。
+- [x] 使用 `httptest` 覆盖 2xx/4xx/5xx、超时、截断、重复/未知 case/metric、NaN/Inf/out-of-range score。
+- [x] 非幂等错误不可盲重试；requestId 相同的安全网络失败可受限重试。
+- [x] deterministic metrics 使用 stable context IDs；无标注时 skip，不用文本模糊匹配冒充 ground truth。
+- [x] 引用 parser 只识别当前 RAG 明确的 `[n]` 契约，越界引用计错并保留 reason。
+- [x] metric status 使用 closed enum：ok/skipped_missing_input/error。
+- [x] 运行 `go test ./internal/rag/eval -run 'Ragas|Metric|Citation|Abstention'`。
 
 ---
 
