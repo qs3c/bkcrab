@@ -265,12 +265,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先把现有 search tests 变为行为黄金测试，记录默认路径的 hits/order/score/fallback。
-- [ ] 新增 options 校验，禁止 candidateTopK < topN、非法 minScore、未知 failure policy。
-- [ ] Query planner 返回 rewrite/HyDE route metadata；关闭 Rewrite/HyDE 时走清晰、可测试的原 query 路径。
-- [ ] reranker 成功/失败、minScore 过滤、RRF fallback 都写 trace；`minScore` 仍只作用于 rerank score。
-- [ ] 保持 Agent adapter 与现有 handler 调用兼容，不在此任务改变产品默认。
-- [ ] 运行 `go test ./internal/rag/... ./internal/setup -run 'RAGSearch|QueryPlan|Rerank'`。
+- [x] 先把现有 search tests 变为行为黄金测试，记录默认路径的 hits/order/score/fallback。
+- [x] 新增 options 校验，禁止 candidateTopK < topN、非法 minScore、未知 failure policy。
+- [x] Query planner 返回 rewrite/HyDE route metadata；关闭 Rewrite/HyDE 时走清晰、可测试的原 query 路径。
+- [x] reranker 成功/失败、minScore 过滤、RRF fallback 都写 trace；`minScore` 仍只作用于 rerank score。
+- [x] 保持 Agent adapter 与现有 handler 调用兼容，不在此任务改变产品默认。
+- [x] 运行 `go test ./internal/rag/... ./internal/setup -run 'RAGSearch|QueryPlan|Rerank'`。
 
 **Gate:** 对相同现有配置，兼容 wrapper 的输出和日志安全边界不得改变。
 
