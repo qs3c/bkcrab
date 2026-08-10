@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/qs3c/bkcrab/internal/config"
@@ -11,7 +12,7 @@ func validDataset() CanonicalDataset {
 	return CanonicalDataset{
 		Name: "golden",
 		Corpus: []CorpusDocument{{
-			ID: "doc-1", FileName: "policy.pdf", MediaType: "application/pdf", SHA256: "abc", SizeBytes: 10,
+			ID: "doc-1", FileName: "policy.pdf", MediaType: "application/pdf", SHA256: strings.Repeat("a", 64), SizeBytes: 10,
 		}},
 		Cases: []Case{{
 			ID: "case-1", UserInput: "question", Reference: "answer", ReferenceContextIDs: []string{"doc-1#s1"},

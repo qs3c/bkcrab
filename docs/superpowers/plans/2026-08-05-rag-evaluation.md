@@ -233,12 +233,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先写空 corpus/case、重复 ID、悬空 reference ID、过大 metadata、非法 UTF-8、缺 metric input 测试。
-- [ ] 明确“missing metric input → coverage warning/skip”，不要自动补假 reference。
-- [ ] canonical hash 使用稳定字段排序、规范化 JSON 和原件 sha256；对象键、createdAt 不影响 corpus fingerprint。
-- [ ] secret/token/endpoint credential 永不进入 fingerprint 或 validation report。
-- [ ] 只实现内存 canonical importer 测试桩；外部文件格式在决策后以独立 adapter 增加。
-- [ ] 运行 `go test ./internal/rag/eval -run 'Model|Valid|Fingerprint'`。
+- [x] 先写空 corpus/case、重复 ID、悬空 reference ID、过大 metadata、非法 UTF-8、缺 metric input 测试。
+- [x] 明确“missing metric input → coverage warning/skip”，不要自动补假 reference。
+- [x] canonical hash 使用稳定字段排序、规范化 JSON 和原件 sha256；对象键、createdAt 不影响 corpus fingerprint。
+- [x] secret/token/endpoint credential 永不进入 fingerprint 或 validation report。
+- [x] 只实现内存 canonical importer 测试桩；外部文件格式在决策后以独立 adapter 增加。
+- [x] 运行 `go test ./internal/rag/eval -run 'Model|Valid|Fingerprint'`。
 
 **Decision gate:** 在实现首个真实 import adapter 前确认 JSONL/JSON、CSV/XLSX、ZIP/目录和手工录入的首期组合。
 
