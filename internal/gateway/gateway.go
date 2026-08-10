@@ -33,6 +33,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/rag"
 	ragenrich "github.com/qs3c/bkcrab/internal/rag/enrich"
+	rageval "github.com/qs3c/bkcrab/internal/rag/eval"
 	ragobjects "github.com/qs3c/bkcrab/internal/rag/objects"
 	ragparse "github.com/qs3c/bkcrab/internal/rag/parse"
 	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
@@ -154,24 +155,25 @@ func buildToolChainFromResolved(resolved config.ResolvedAgent, category string) 
 // `sandboxPool` 是网关范围的执行器池。从系统作用域沙箱配置构建一次，由每个 UserSpace 共享。
 // 每个 UserSpace 的 `SandboxPool` 字段只是一个借用的引用；关闭时只关闭这一个池。
 type Gateway struct {
-	bus         *bus.MessageBus
-	users       *userSpaceRegistry
-	chanMgr     *channels.Manager
-	webChan     *channels.WebChannel
-	scheduler   *cron.Scheduler
-	webhookSrv  *webhook.Server
-	pluginMgr   *plugin.Manager
-	taskQueue   *taskqueue.Queue
-	store       store.Store
-	accounts    *users.Accounts
-	workspace   workspace.Store
-	sandboxPool sandbox.ExecutorPool
-	mcpRuntime  *mcpruntime.Service
-	usage       usage.Meter
-	ragSvc      *rag.Service
-	ragCfg      config.RAGCfg
-	ragParser   *sidecar.Client
-	envCfg      *config.EnvConfig
+	bus          *bus.MessageBus
+	users        *userSpaceRegistry
+	chanMgr      *channels.Manager
+	webChan      *channels.WebChannel
+	scheduler    *cron.Scheduler
+	webhookSrv   *webhook.Server
+	pluginMgr    *plugin.Manager
+	taskQueue    *taskqueue.Queue
+	store        store.Store
+	accounts     *users.Accounts
+	workspace    workspace.Store
+	sandboxPool  sandbox.ExecutorPool
+	mcpRuntime   *mcpruntime.Service
+	usage        usage.Meter
+	ragSvc       *rag.Service
+	ragCfg       config.RAGCfg
+	ragParser    *sidecar.Client
+	ragEvaluator *rageval.RagasClient
+	envCfg       *config.EnvConfig
 	// chatEvents 设置后，允许总线触发的 web 轮次（cron/目标延续/心跳/子代理）
 	// 通过用户输入的 POST /api/chat 轮次使用的同一个 SSE hub 流式传输。
 	// 安全地为 nil：未设置时保留传统的 bus.Outbound → WebChannel 异步气泡路径。
@@ -210,6 +212,14 @@ func (g *Gateway) RAGParserHealthSnapshot() config.RAGParserHealthSnapshot {
 		return config.RAGParserHealthSnapshot{}
 	}
 	return g.ragParser.HealthSnapshot()
+}
+
+// RAGEvaluatorHealthSnapshot returns only the last background-probed value.
+func (g *Gateway) RAGEvaluatorHealthSnapshot() config.RAGEvaluatorHealthSnapshot {
+	if g == nil || g.ragEvaluator == nil {
+		return config.RAGEvaluatorHealthSnapshot{}
+	}
+	return g.ragEvaluator.HealthSnapshot()
 }
 
 // Store 返回网关的存储后端。
@@ -297,6 +307,19 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		// endpoint disables only sidecar-backed routes; base RAG still starts.
 		slog.Error("rag: parser sidecar configuration invalid; sidecar routes disabled", "error", parserErr)
 		ragParserClient = nil
+	}
+	var ragEvaluatorClient *rageval.RagasClient
+	if ragCfg.Evaluation.Enabled {
+		ragEvaluatorClient, err = rageval.NewRagasClient(
+			ragCfg.Evaluation.Sidecar.Endpoint, ragCfg.Evaluation.Sidecar.APIKey,
+			time.Duration(ragCfg.Evaluation.Sidecar.TimeoutMS)*time.Millisecond,
+			ragCfg.Evaluation.MaxBatchSize, ragCfg.Evaluation.MaxContextsPerSample,
+			ragCfg.Evaluation.MaxContextBytes,
+		)
+		if err != nil {
+			slog.Error("rag: evaluator sidecar configuration invalid; evaluation unavailable", "error", err)
+			ragEvaluatorClient = nil
+		}
 	}
 	var primitives ragparse.PrimitiveExtractor
 	if ragParserClient != nil {
@@ -509,23 +532,24 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	}
 
 	g := &Gateway{
-		bus:         mb,
-		store:       st,
-		accounts:    accts,
-		workspace:   ws,
-		usage:       meter,
-		sandboxPool: systemSandboxPool,
-		mcpRuntime:  mcpRuntime,
-		users:       newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, mcpRuntime, pluginMgr, ragSvc),
-		chanMgr:     chanMgr,
-		webChan:     webChan,
-		scheduler:   scheduler,
-		webhookSrv:  webhookSrv,
-		pluginMgr:   pluginMgr,
-		ragSvc:      ragSvc,
-		ragCfg:      ragCfg,
-		ragParser:   ragParserClient,
-		envCfg:      env,
+		bus:          mb,
+		store:        st,
+		accounts:     accts,
+		workspace:    ws,
+		usage:        meter,
+		sandboxPool:  systemSandboxPool,
+		mcpRuntime:   mcpRuntime,
+		users:        newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, mcpRuntime, pluginMgr, ragSvc),
+		chanMgr:      chanMgr,
+		webChan:      webChan,
+		scheduler:    scheduler,
+		webhookSrv:   webhookSrv,
+		pluginMgr:    pluginMgr,
+		ragSvc:       ragSvc,
+		ragCfg:       ragCfg,
+		ragParser:    ragParserClient,
+		ragEvaluator: ragEvaluatorClient,
+		envCfg:       env,
 	}
 
 	if webhookSrv != nil {
@@ -667,6 +691,9 @@ func (g *Gateway) Run() error {
 	defer cancel()
 	if g.ragParser != nil {
 		g.ragParser.StartHealthProbe(ctx)
+	}
+	if g.ragEvaluator != nil {
+		g.ragEvaluator.StartHealthProbe(ctx)
 	}
 	if g.ragSvc != nil {
 		g.ragSvc.Start(ctx)

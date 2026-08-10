@@ -79,16 +79,19 @@ type Server struct {
 	mcpRuntime     *mcpruntime.Service
 	// chatEvents 将实时的 agent 聊天事件分发到跨浏览器标签页的已订阅 SSE 客户端。
 	// 首次使用时延迟初始化，以便没有显式连接它的旧调用者仍然可以工作。
-	chatEvents        *agent.EventHub
-	usage             usage.Meter
-	rag               *rag.Service
-	ragRuntimePolicy  rag.RuntimePolicyProvider
-	ragUserCleaner    users.RAGUserCleaner
-	ragCfg            config.RAGCfg
-	ragHealthMu       sync.RWMutex
-	ragHealth         config.RAGParserHealthSnapshot
-	ragHealthProvider RAGParserHealthProvider
-	startedAt         time.Time
+	chatEvents            *agent.EventHub
+	usage                 usage.Meter
+	rag                   *rag.Service
+	ragRuntimePolicy      rag.RuntimePolicyProvider
+	ragUserCleaner        users.RAGUserCleaner
+	ragCfg                config.RAGCfg
+	ragHealthMu           sync.RWMutex
+	ragHealth             config.RAGParserHealthSnapshot
+	ragHealthProvider     RAGParserHealthProvider
+	ragEvalHealthMu       sync.RWMutex
+	ragEvalHealth         config.RAGEvaluatorHealthSnapshot
+	ragEvalHealthProvider RAGEvaluatorHealthProvider
+	startedAt             time.Time
 }
 
 // RAGParserHealthProvider exposes an in-memory snapshot populated by a
@@ -96,6 +99,10 @@ type Server struct {
 // method because capability handlers call it on the request path.
 type RAGParserHealthProvider interface {
 	RAGParserHealthSnapshot() config.RAGParserHealthSnapshot
+}
+
+type RAGEvaluatorHealthProvider interface {
+	RAGEvaluatorHealthSnapshot() config.RAGEvaluatorHealthSnapshot
 }
 
 // NewServer 在指定端口上创建一个设置向导服务器。
@@ -211,6 +218,28 @@ func (s *Server) ragParserHealthSnapshot() config.RAGParserHealthSnapshot {
 		snapshot = provider.RAGParserHealthSnapshot()
 	}
 	snapshot.Office.Formats = append([]string(nil), snapshot.Office.Formats...)
+	return snapshot
+}
+
+func (s *Server) SetRAGEvaluatorHealthSnapshot(snapshot config.RAGEvaluatorHealthSnapshot) {
+	s.ragEvalHealthMu.Lock()
+	s.ragEvalHealth = snapshot
+	s.ragEvalHealthMu.Unlock()
+}
+
+func (s *Server) SetRAGEvaluatorHealthProvider(provider RAGEvaluatorHealthProvider) {
+	s.ragEvalHealthMu.Lock()
+	s.ragEvalHealthProvider = provider
+	s.ragEvalHealthMu.Unlock()
+}
+
+func (s *Server) ragEvaluatorHealthSnapshot() config.RAGEvaluatorHealthSnapshot {
+	s.ragEvalHealthMu.RLock()
+	snapshot, provider := s.ragEvalHealth, s.ragEvalHealthProvider
+	s.ragEvalHealthMu.RUnlock()
+	if provider != nil {
+		snapshot = provider.RAGEvaluatorHealthSnapshot()
+	}
 	return snapshot
 }
 

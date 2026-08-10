@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/qs3c/bkcrab/internal/auth"
 	"github.com/qs3c/bkcrab/internal/config"
@@ -59,11 +60,16 @@ func evalIdentity(r *http.Request) string {
 }
 
 func (s *Server) handleRAGEvalCapabilities(w http.ResponseWriter, _ *http.Request) {
-	reason := "evaluator health has not been observed"
+	snapshot := s.ragEvaluatorHealthSnapshot()
+	healthy := snapshot.Healthy && snapshot.Fresh(time.Now())
+	reason := snapshot.Reason
+	if reason == "" && !healthy {
+		reason = "evaluator health has not been observed"
+	}
 	if !s.ragCfg.Evaluation.Enabled {
 		reason = "RAG evaluation is disabled"
 	}
-	jsonResponse(w, http.StatusOK, s.ragCfg.Evaluation.Capabilities(false, reason))
+	jsonResponse(w, http.StatusOK, s.ragCfg.Evaluation.Capabilities(healthy, reason))
 }
 func (s *Server) handleListRAGEvalDatasets(w http.ResponseWriter, r *http.Request) {
 	st, ok := s.evalStore(w)

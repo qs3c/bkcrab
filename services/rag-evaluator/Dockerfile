@@ -3,7 +3,8 @@ FROM python:3.12.13-slim-bookworm
 
 COPY --from=uv /uv /uvx /usr/local/bin/
 ENV PATH="/opt/rag-evaluator/.venv/bin:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
-    HOME=/tmp TMPDIR=/tmp XDG_CACHE_HOME=/tmp/cache UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+    HOME=/tmp TMPDIR=/tmp XDG_CACHE_HOME=/tmp/cache GIT_PYTHON_REFRESH=quiet \
+    UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 WORKDIR /opt/rag-evaluator
 RUN groupadd --gid 65532 rag-evaluator && useradd --uid 65532 --gid 65532 --no-create-home --shell /usr/sbin/nologin rag-evaluator
 COPY pyproject.toml uv.lock ./

@@ -11,8 +11,9 @@ from importlib.metadata import version
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .metrics import MetricEngine, build_ragas_engine
+from .metrics import MetricEngine, build_ragas_engine, collection_metric_types
 from .protocol import (
+    ALLOWED_METRICS,
     METRIC_BUNDLE_VERSION,
     PROTOCOL_VERSION,
     CaseResult,
@@ -64,6 +65,11 @@ class IdempotencyCache:
 
 def create_app(settings: Settings, engine: MetricEngine | None = None) -> FastAPI:
     metric_engine = engine or build_ragas_engine(settings)
+    # Production startup imports every pinned Ragas collection metric. This is
+    # an offline readiness check only: no LLM or embedding request is made.
+    initialized_metrics = (
+        tuple(collection_metric_types()) if engine is None else tuple(sorted(ALLOWED_METRICS))
+    )
     cache = IdempotencyCache(settings.idempotency_cache_entries)
     app = FastAPI(title="bkcrab-rag-evaluator", docs_url=None, redoc_url=None)
 
@@ -90,6 +96,7 @@ def create_app(settings: Settings, engine: MetricEngine | None = None) -> FastAP
             "ragasVersion": version("ragas"),
             "metricBundleVersion": METRIC_BUNDLE_VERSION,
             "judgeConfigured": settings.judge_configured,
+            "metricsInitialized": len(initialized_metrics) == len(ALLOWED_METRICS),
         }
 
     @app.post("/v1/evaluate", response_model=EvaluateResponse, dependencies=[Depends(authorize)])

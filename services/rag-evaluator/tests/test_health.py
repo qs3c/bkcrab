@@ -18,4 +18,5 @@ def test_health_contract_reports_all_compatibility_versions():
         "ragasVersion": "0.3.9",
         "metricBundleVersion": "rag-core-v1",
         "judgeConfigured": settings.judge_configured,
+        "metricsInitialized": True,
     }

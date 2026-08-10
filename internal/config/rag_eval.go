@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+	"time"
 )
 
 func decodeClosedJSON(data []byte, target any) error {
@@ -76,6 +77,24 @@ type RAGEvaluatorCfg struct {
 	LLMModel            string `json:"llmModel,omitempty"`
 	EmbeddingProvider   string `json:"embeddingProvider,omitempty"`
 	EmbeddingModel      string `json:"embeddingModel,omitempty"`
+}
+
+// RAGEvaluatorHealthSnapshot is written only by the evaluator's background
+// health probe. HTTP request paths consume this cached value without doing I/O.
+type RAGEvaluatorHealthSnapshot struct {
+	Healthy             bool
+	Reason              string
+	ServiceVersion      string
+	ProtocolVersion     string
+	RagasVersion        string
+	MetricBundleVersion string
+	JudgeConfigured     bool
+	CheckedAt           time.Time
+	ExpiresAt           time.Time
+}
+
+func (s RAGEvaluatorHealthSnapshot) Fresh(now time.Time) bool {
+	return !s.ExpiresAt.IsZero() && now.Before(s.ExpiresAt)
 }
 
 const (

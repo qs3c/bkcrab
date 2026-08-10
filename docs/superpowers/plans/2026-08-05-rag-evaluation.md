@@ -448,12 +448,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 沿用 `rag-parser` 固定 uv + locked install 范式，不复制其 LibreOffice 系统依赖。
-- [ ] healthcheck 验证 Ragas/metric 初始化，不发真实 judge 请求。
-- [ ] compose 只让 `bkcrab` 与 evaluator 进入 `rag-evaluator-internal`。
-- [ ] 增加部署静态测试：无 ports、read_only、非 root、no-new-privileges、resource limits。
-- [ ] evaluator 不获取 Milvus/S3/DB/生产 embedding key。
-- [ ] 构建镜像并在无外网运行 fake health/protocol smoke。
+- [x] 沿用 `rag-parser` 固定 uv + locked install 范式，不复制其 LibreOffice 系统依赖。
+- [x] healthcheck 验证 Ragas/metric 初始化，不发真实 judge 请求。
+- [x] compose 只让 `bkcrab` 与 evaluator 进入 `rag-evaluator-internal`。
+- [x] 增加部署静态测试：无 ports、read_only、非 root、no-new-privileges、resource limits。
+- [x] evaluator 不获取 Milvus/S3/DB/生产 embedding key。
+- [x] 构建镜像并在无外网运行 fake health/protocol smoke。
 
 ### Task 12：Go Ragas client 与确定性指标
 
