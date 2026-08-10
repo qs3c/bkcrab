@@ -211,20 +211,22 @@ func validateRunnableRAGVersionSnapshot(version *RAGDocumentVersionRecord) error
 // model, and dimensions are snapshotted when the KB is created and are not
 // changed by UpdateRAGKB.
 type RAGKBRecord struct {
-	ID                string
-	UserID            string
-	Name              string
-	Description       string
-	EmbedProvider     string
-	EmbedModel        string
-	EmbedDims         int
-	ChunkSize         int
-	ChunkOverlap      int
-	ParseMode         string
-	EnrichmentEnabled bool
-	Status            string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                  string
+	UserID              string
+	Name                string
+	Description         string
+	EmbedProvider       string
+	EmbedModel          string
+	EmbedDims           int
+	ChunkSize           int
+	ChunkOverlap        int
+	ParseMode           string
+	EnrichmentEnabled   bool
+	Status              string
+	PinnedPolicyVersion sql.NullInt64
+	ActiveGenerationID  sql.NullString
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 // RAGDocumentRecord tracks an uploaded source document, its newest target
@@ -493,7 +495,8 @@ type RAGChatSessionRecord struct {
 }
 
 const ragKBColumns = `id, user_id, name, description, embed_provider, embed_model,
-	embed_dims, chunk_size, chunk_overlap, parse_mode, enrichment_enabled, status, created_at, updated_at`
+	embed_dims, chunk_size, chunk_overlap, parse_mode, enrichment_enabled, status,
+	pinned_policy_version, active_generation_id, created_at, updated_at`
 
 const ragDocumentColumns = `id, kb_id, file_name, file_type, file_size, object_key,
 	status, error_msg, chunk_count, token_count, version, source_sha256, active_version,
@@ -580,7 +583,8 @@ func scanRAGKB(scanner ragScanner) (*RAGKBRecord, error) {
 	if err := scanner.Scan(
 		&kb.ID, &kb.UserID, &kb.Name, &kb.Description, &kb.EmbedProvider,
 		&kb.EmbedModel, &kb.EmbedDims, &kb.ChunkSize, &kb.ChunkOverlap,
-		&kb.ParseMode, &kb.EnrichmentEnabled, &kb.Status, &kb.CreatedAt, &kb.UpdatedAt,
+		&kb.ParseMode, &kb.EnrichmentEnabled, &kb.Status, &kb.PinnedPolicyVersion,
+		&kb.ActiveGenerationID, &kb.CreatedAt, &kb.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -968,6 +972,21 @@ func (d *DBStore) DeleteRAGKB(ctx context.Context, id string) error {
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM rag_chat_turns WHERE kb_id = %s`, d.ph(1)), id); err != nil {
 		return err
+	}
+	// Policy-sync children are explicitly removed before the KB pointer row.
+	// No request-time finalizer guesses or drops collection keys here; physical
+	// collection cleanup remains a separately fenced lifecycle operation.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_kb_generation_documents WHERE generation_id IN (SELECT id FROM rag_kb_index_generations WHERE kb_id=%s)`, d.ph(1)), id); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`DELETE FROM rag_kb_policy_sync_tasks WHERE kb_id=%s`,
+		`DELETE FROM rag_policy_audit_log WHERE target_kb_id=%s`,
+		`DELETE FROM rag_kb_index_generations WHERE kb_id=%s`,
+	} {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(statement, d.ph(1)), id); err != nil {
+			return err
+		}
 	}
 
 	for _, table := range []string{

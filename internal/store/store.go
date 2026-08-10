@@ -360,6 +360,25 @@ type Store interface {
 	PutRAGEvalMetricResult(ctx context.Context, fence RAGEvalRunFence, record RAGEvalMetricResultRecord) (bool, error)
 	RecordRAGEvalUsage(ctx context.Context, record *RAGEvalUsageRecord) (bool, error)
 
+	// --- RAG policies, immutable index generations, and policy sync ---
+	CreateRAGPolicy(ctx context.Context, record *RAGPolicyRecord) error
+	ActivateRAGPolicy(ctx context.Context, kind string, expected, current int64, actor, sourceRun, note, action string) (bool, error)
+	ActiveRAGPolicy(ctx context.Context, kind string) (*RAGPolicyRecord, error)
+	CreateRAGKBGeneration(ctx context.Context, record *RAGKBGenerationRecord, documents []RAGGenerationDocumentRecord) error
+	GetRAGKBGeneration(ctx context.Context, id string) (*RAGKBGenerationRecord, error)
+	ListRAGKBGenerationDocuments(ctx context.Context, generationID string) ([]RAGGenerationDocumentRecord, error)
+	ResolveActiveRAGKBGeneration(ctx context.Context, kbID string) (*RAGKBGenerationRecord, []RAGGenerationDocumentRecord, error)
+	CreateRAGPolicySyncTask(ctx context.Context, record *RAGPolicySyncTaskRecord) error
+	GetRAGPolicySyncTask(ctx context.Context, id string) (*RAGPolicySyncTaskRecord, error)
+	ClaimRAGPolicySyncTask(ctx context.Context, taskID, worker string, lease time.Duration) (*RAGPolicySyncFence, bool, error)
+	HeartbeatRAGPolicySyncTask(ctx context.Context, fence RAGPolicySyncFence, lease time.Duration) (bool, error)
+	RequestCancelRAGPolicySyncTask(ctx context.Context, id string) (bool, error)
+	FinishRAGPolicySyncTask(ctx context.Context, fence RAGPolicySyncFence, status, errorCode, errorMessage string) (bool, error)
+	UpdateRAGGenerationDocument(ctx context.Context, fence RAGPolicySyncFence, docID, status, errorCode, errorMessage string) (bool, error)
+	MarkRAGKBGenerationReady(ctx context.Context, fence RAGPolicySyncFence, documentCount, chunkCount int64) (bool, error)
+	ActivateRAGKBGeneration(ctx context.Context, fence RAGPolicySyncFence, expectedActiveID, actor, note string, rollbackWindow time.Duration) (bool, error)
+	RollbackRAGKBGeneration(ctx context.Context, kbID, targetRetiredID, expectedActiveID, actor, note string, rollbackWindow time.Duration) (bool, error)
+
 	// --- Cron 任务（每个 agent）---
 	//
 	// Cron 行由 agent 拥有；执行身份是 agent 的 user_id。

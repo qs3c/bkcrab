@@ -201,13 +201,13 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先写 policy immutable、active pointer CAS、两个 ACTIVE 被拒、旧 fence 不能切换的测试。
-- [ ] 不依赖仅 PostgreSQL 支持的 partial unique index；对三方言使用事务、状态 CAS 和可移植辅助约束。
-- [ ] `ActivateRAGKBGeneration` 同一事务完成 target ACTIVE、old RETIRED、KB pointer/pinned policy 更新和 audit append。
-- [ ] generation mapping 是策略升级 Search 的权威 active version 集合。
-- [ ] sync 失败/取消不得修改 KB pointer；rollback 只能指向仍在 rollback window 且完整的 RETIRED generation。
-- [ ] 为删除 KB/用户增加 generation/sync/audit 的级联或显式清理顺序。
-- [ ] 运行 `go test ./internal/store -run 'RAGPolicy|RAGGeneration|RAGSync'`。
+- [x] 先写 policy immutable、active pointer CAS、两个 ACTIVE 被拒、旧 fence 不能切换的测试。
+- [x] 不依赖仅 PostgreSQL 支持的 partial unique index；对三方言使用事务、状态 CAS 和可移植辅助约束。
+- [x] `ActivateRAGKBGeneration` 同一事务完成 target ACTIVE、old RETIRED、KB pointer/pinned policy 更新和 audit append。
+- [x] generation mapping 是策略升级 Search 的权威 active version 集合。
+- [x] sync 失败/取消不得修改 KB pointer；rollback 只能指向仍在 rollback window 且完整的 RETIRED generation。
+- [x] 为删除 KB/用户增加 generation/sync/audit 的级联或显式清理顺序。
+- [x] 运行 `go test ./internal/store -run 'RAGPolicy|RAGGeneration|RAGSync'`。
 
 **Gate:** 此任务只建立存储能力；Search 仍走旧路径。
 
