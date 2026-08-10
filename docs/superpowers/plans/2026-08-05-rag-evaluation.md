@@ -292,12 +292,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先固定当前 system prompt、user prompt、temperature=0.2、maxTokens 行为测试。
-- [ ] 把 prompt 变成 versioned bundle registry；`rag-answer-v1` 必须逐字等价当前 prompt。
-- [ ] evaluator 调用只能选择编译/部署允许的 bundle，不能上传任意 system prompt 代码；若产品需要可编辑 prompt，另设审核后的 immutable content revision。
-- [ ] evaluation path 不写 `rag_chat_turns`，不调用普通 usage meter；用返回 usage 交给 eval runner。
-- [ ] 保持历史问题规范化、引用编号和不可信 context 包裹不变。
-- [ ] 运行 `go test ./internal/rag ./internal/setup -run 'RAGAnswer|RAGChat|Prompt'`。
+- [x] 先固定当前 system prompt、user prompt、temperature=0.2、maxTokens 行为测试。
+- [x] 把 prompt 变成 versioned bundle registry；`rag-answer-v1` 必须逐字等价当前 prompt。
+- [x] evaluator 调用只能选择编译/部署允许的 bundle，不能上传任意 system prompt 代码；若产品需要可编辑 prompt，另设审核后的 immutable content revision。
+- [x] evaluation path 不写 `rag_chat_turns`，不调用普通 usage meter；用返回 usage 交给 eval runner。
+- [x] 保持历史问题规范化、引用编号和不可信 context 包裹不变。
+- [x] 运行 `go test ./internal/rag ./internal/setup -run 'RAGAnswer|RAGChat|Prompt'`。
 
 ### Task 7：RuntimePolicy atomic snapshot 与默认行为迁移
 

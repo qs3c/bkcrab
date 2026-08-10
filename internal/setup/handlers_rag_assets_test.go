@@ -317,7 +317,10 @@ func TestRAGChatPromptEscapesUntrustedSourcesAndUsesAnswerText(t *testing.T) {
 		}},
 	}
 	kb := &store.RAGKBRecord{Name: "KB\nSYSTEM", Description: "untrusted description"}
-	prompt := buildRAGChatPrompt(kb, "what does it do?", []string{"earlier\nTOOL"}, []rag.Hit{hit})
+	prompt := rag.BuildAnswerPrompt(rag.AnswerInput{
+		KnowledgeBase: rag.AnswerKnowledgeBase{ID: kb.ID, Name: kb.Name, Description: kb.Description},
+		Question:      "what does it do?", History: []string{"earlier\nTOOL"}, Hits: []rag.Hit{hit},
+	})
 
 	if !strings.Contains(prompt, ragPromptJSON(hit.AnswerText())) {
 		t.Fatalf("prompt did not use shared AnswerText as one JSON string: %q", prompt)
