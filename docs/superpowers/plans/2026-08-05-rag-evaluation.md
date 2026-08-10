@@ -503,12 +503,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 决策首期格式后先写 golden files 和拒绝样本。
-- [ ] 原件流式写入对象存储并计算 sha256；不把整个大文件读入内存。
-- [ ] manifest READY 前保证 SQL/object 一致；失败 staging 可按 TTL 清理。
-- [ ] version READY 后不允许覆写 case/document；编辑创建下一 version。
-- [ ] 数据集删除不能删除仍被 run 引用的 version；先 tombstone，等 retention/refcount。
-- [ ] 测试路径穿越、重复文件名、压缩炸弹（若支持 ZIP）和超限。
+- [x] 决策首期格式后先写 golden files 和拒绝样本。
+- [x] 原件流式写入对象存储并计算 sha256；不把整个大文件读入内存。
+- [x] manifest READY 前保证 SQL/object 一致；失败 staging 可按 TTL 清理。
+- [x] version READY 后不允许覆写 case/document；编辑创建下一 version。
+- [x] 数据集删除不能删除仍被 run 引用的 version；先 tombstone，等 retention/refcount。
+- [x] 测试路径穿越、重复文件名、压缩炸弹（若支持 ZIP）和超限。
 
 ### Task 14：Eval shadow generation builder 与复用
 

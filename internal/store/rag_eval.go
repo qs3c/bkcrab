@@ -38,8 +38,9 @@ const (
 )
 
 var (
-	ErrRAGEvalImmutable = errors.New("store: immutable RAG evaluation record")
-	ErrRAGEvalFenceLost = errors.New("store: RAG evaluation fence lost")
+	ErrRAGEvalImmutable  = errors.New("store: immutable RAG evaluation record")
+	ErrRAGEvalFenceLost  = errors.New("store: RAG evaluation fence lost")
+	ErrRAGEvalReferenced = errors.New("store: RAG evaluation dataset is referenced by a run")
 )
 
 type RAGEvalDatasetRecord struct {
@@ -213,6 +214,93 @@ func (d *DBStore) TombstoneRAGEvalDataset(ctx context.Context, id string) (bool,
 	return n == 1, err
 }
 
+func (d *DBStore) ListRAGEvalDatasetStagingCandidates(ctx context.Context, before time.Time, limit int) ([]RAGEvalDatasetVersionRecord, error) {
+	limit = boundedRAGEvalListLimit(limit)
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_eval_dataset_versions
+		WHERE status IN (%s,%s,%s) AND created_at<=%s ORDER BY created_at,id LIMIT %s`,
+		ragEvalDatasetVersionColumns, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)),
+		RAGEvalDatasetDraft, RAGEvalDatasetFailed, RAGEvalDatasetReady, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RAGEvalDatasetVersionRecord{}
+	for rows.Next() {
+		item, err := scanRAGEvalDatasetVersion(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, *item)
+	}
+	return items, rows.Err()
+}
+
+func (d *DBStore) ListRAGEvalDatasetGCCandidates(ctx context.Context, before time.Time, limit int) ([]string, error) {
+	limit = boundedRAGEvalListLimit(limit)
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT d.id FROM rag_eval_datasets d
+		WHERE d.deleted_at IS NOT NULL AND d.deleted_at<=%s AND NOT EXISTS (
+			SELECT 1 FROM rag_eval_dataset_versions v JOIN rag_eval_runs r ON r.dataset_version_id=v.id WHERE v.dataset_id=d.id
+		) ORDER BY d.deleted_at,d.id LIMIT %s`, d.ph(1), d.ph(2)), before, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	return items, rows.Err()
+}
+
+// PurgeRAGEvalDataset removes only an already tombstoned, unreferenced
+// dataset. The reference check and child-row deletion share one transaction.
+func (d *DBStore) PurgeRAGEvalDataset(ctx context.Context, id string) (bool, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	query := fmt.Sprintf(`SELECT deleted_at FROM rag_eval_datasets WHERE id=%s`, d.ph(1))
+	if d.dialect != "sqlite" {
+		query += " FOR UPDATE"
+	}
+	var deletedAt sql.NullTime
+	if err = tx.QueryRowContext(ctx, query, id).Scan(&deletedAt); errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	if !deletedAt.Valid {
+		return false, errors.New("store: active evaluation dataset cannot be purged")
+	}
+	var references int
+	if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM rag_eval_runs r JOIN rag_eval_dataset_versions v
+		ON v.id=r.dataset_version_id WHERE v.dataset_id=%s`, d.ph(1)), id).Scan(&references); err != nil {
+		return false, err
+	}
+	if references > 0 {
+		return false, ErrRAGEvalReferenced
+	}
+	for _, statement := range []string{
+		`DELETE FROM rag_eval_cases WHERE dataset_version_id IN (SELECT id FROM rag_eval_dataset_versions WHERE dataset_id=%s)`,
+		`DELETE FROM rag_eval_corpus_documents WHERE dataset_version_id IN (SELECT id FROM rag_eval_dataset_versions WHERE dataset_id=%s)`,
+		`DELETE FROM rag_eval_dataset_versions WHERE dataset_id=%s`,
+		`DELETE FROM rag_eval_datasets WHERE id=%s AND deleted_at IS NOT NULL`,
+	} {
+		if _, err = tx.ExecContext(ctx, fmt.Sprintf(statement, d.ph(1)), id); err != nil {
+			return false, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (d *DBStore) CreateRAGEvalDatasetVersion(ctx context.Context, record *RAGEvalDatasetVersionRecord) error {
 	if record == nil || record.DatasetID == "" || record.Version <= 0 || strings.TrimSpace(record.SourceType) == "" || strings.TrimSpace(record.CreatedBy) == "" {
 		return errors.New("dataset version identity is required")
@@ -228,6 +316,13 @@ func (d *DBStore) CreateRAGEvalDatasetVersion(ctx context.Context, record *RAGEv
 	}
 	if record.Status != RAGEvalDatasetDraft {
 		return errors.New("new dataset version must be DRAFT")
+	}
+	var datasetExists int
+	if err := d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM rag_eval_datasets WHERE id=%s AND deleted_at IS NULL`, d.ph(1)), record.DatasetID).Scan(&datasetExists); err != nil {
+		return err
+	}
+	if datasetExists != 1 {
+		return ErrNotFound
 	}
 	now := time.Now().UTC()
 	record.CreatedAt = now
@@ -259,7 +354,7 @@ func (d *DBStore) GetRAGEvalDatasetVersion(ctx context.Context, id string) (*RAG
 func validDatasetTransition(from, to string) bool {
 	switch from {
 	case RAGEvalDatasetDraft:
-		return to == RAGEvalDatasetValidating
+		return to == RAGEvalDatasetValidating || to == RAGEvalDatasetFailed
 	case RAGEvalDatasetValidating:
 		return to == RAGEvalDatasetReady || to == RAGEvalDatasetFailed
 	}

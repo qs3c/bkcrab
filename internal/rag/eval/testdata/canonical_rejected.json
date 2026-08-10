@@ -1,0 +1,13 @@
+{
+  "name": "rejected dataset",
+  "corpus": [
+    {
+      "id": "doc-1",
+      "fileName": "guide.txt",
+      "mediaType": "text/plain",
+      "sha256": "not-a-sha256",
+      "sizeBytes": 12
+    }
+  ],
+  "cases": [{"id": "case-1", "user_input": "question"}]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "golden dataset",
+  "description": "Task 13 canonical-json fixture",
+  "corpus": [
+    {
+      "id": "doc-1",
+      "fileName": "guide.txt",
+      "mediaType": "text/plain",
+      "sha256": "f7196c7739a42cc9e9e6be4ba11d3752fb1d26c3b91cd73b6eb18bb9b38c493d",
+      "sizeBytes": 12
+    }
+  ],
+  "cases": [
+    {
+      "id": "case-1",
+      "user_input": "What does the guide contain?",
+      "reference": "A corpus greeting.",
+      "reference_context_ids": ["doc-1#chunk-1"],
+      "expected_abstention": false
+    }
+  ]
+}

@@ -10,7 +10,7 @@ import (
 	"sync"
 )
 
-const CanonicalImporterName = "canonical"
+const CanonicalImporterName = "canonical-json"
 
 type ImportSource struct {
 	Type    string

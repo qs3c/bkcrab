@@ -90,6 +90,79 @@ func TestRAGEvalMigrationAndDatasetLifecycle(t *testing.T) {
 	if err != nil || len(items) != 0 {
 		t.Fatalf("tombstoned dataset still listed: %+v err=%v", items, err)
 	}
+	candidates, err := st.ListRAGEvalDatasetGCCandidates(ctx, time.Now().Add(time.Minute), 10)
+	if err != nil || len(candidates) != 1 || candidates[0] != dataset.ID {
+		t.Fatalf("GC candidates=%v err=%v", candidates, err)
+	}
+	if purged, err := st.PurgeRAGEvalDataset(ctx, dataset.ID); err != nil || !purged {
+		t.Fatalf("purge=%v err=%v", purged, err)
+	}
+	if _, err := st.GetRAGEvalDatasetVersion(ctx, version.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("purged version remains: %v", err)
+	}
+}
+
+func TestRAGEvalDatasetGCBlocksReferencedVersion(t *testing.T) {
+	st := openTestDB(t)
+	defer st.Close()
+	ctx := context.Background()
+	dataset := &RAGEvalDatasetRecord{Name: "referenced", CreatedBy: "admin"}
+	if err := st.CreateRAGEvalDataset(ctx, dataset); err != nil {
+		t.Fatal(err)
+	}
+	version := &RAGEvalDatasetVersionRecord{DatasetID: dataset.ID, Version: 1, SourceType: "canonical-json", CreatedBy: "admin"}
+	if err := st.CreateRAGEvalDatasetVersion(ctx, version); err != nil {
+		t.Fatal(err)
+	}
+	run := &RAGEvalRunRecord{DatasetVersionID: version.ID, ProfileID: "profile", Mode: RAGEvalRunModeOnlineOnly, CreatedBy: "admin"}
+	if err := st.CreateRAGEvalRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := st.TombstoneRAGEvalDataset(ctx, dataset.ID); err != nil || !changed {
+		t.Fatalf("tombstone=%v err=%v", changed, err)
+	}
+	candidates, err := st.ListRAGEvalDatasetGCCandidates(ctx, time.Now().Add(time.Minute), 10)
+	if err != nil || len(candidates) != 0 {
+		t.Fatalf("referenced dataset became GC candidate: %v err=%v", candidates, err)
+	}
+	if purged, err := st.PurgeRAGEvalDataset(ctx, dataset.ID); !errors.Is(err, ErrRAGEvalReferenced) || purged {
+		t.Fatalf("referenced purge=%v err=%v", purged, err)
+	}
+}
+
+func TestRAGEvalDatasetStagingCandidatesAreTTLBounded(t *testing.T) {
+	st := openTestDB(t)
+	defer st.Close()
+	ctx := context.Background()
+	dataset := &RAGEvalDatasetRecord{Name: "staging", CreatedBy: "admin"}
+	if err := st.CreateRAGEvalDataset(ctx, dataset); err != nil {
+		t.Fatal(err)
+	}
+	version := &RAGEvalDatasetVersionRecord{DatasetID: dataset.ID, Version: 1, SourceType: "canonical-json", CreatedBy: "admin"}
+	if err := st.CreateRAGEvalDatasetVersion(ctx, version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `UPDATE rag_eval_dataset_versions SET created_at=? WHERE id=?`, time.Now().Add(-2*time.Hour), version.ID); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := st.ListRAGEvalDatasetStagingCandidates(ctx, time.Now().Add(-time.Hour), 10)
+	if err != nil || len(candidates) != 1 || candidates[0].ID != version.ID {
+		t.Fatalf("staging candidates=%+v err=%v", candidates, err)
+	}
+	if _, err := st.TransitionRAGEvalDatasetVersion(ctx, version.ID, RAGEvalDatasetDraft, RAGEvalDatasetValidating, "{}"); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err = st.ListRAGEvalDatasetStagingCandidates(ctx, time.Now(), 10)
+	if err != nil || len(candidates) != 0 {
+		t.Fatalf("VALIDATING version was cleanup candidate: %+v err=%v", candidates, err)
+	}
+	if changed, err := st.TransitionRAGEvalDatasetVersion(ctx, version.ID, RAGEvalDatasetValidating, RAGEvalDatasetReady, "{}"); err != nil || !changed {
+		t.Fatalf("publish version=%v err=%v", changed, err)
+	}
+	candidates, err = st.ListRAGEvalDatasetStagingCandidates(ctx, time.Now(), 10)
+	if err != nil || len(candidates) != 1 || candidates[0].ID != version.ID {
+		t.Fatalf("READY version leftover staging was not cleanup candidate: %+v err=%v", candidates, err)
+	}
 }
 
 func TestRAGEvalRunFenceAndUsageIdempotency(t *testing.T) {

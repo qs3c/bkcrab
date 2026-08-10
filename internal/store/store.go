@@ -339,6 +339,9 @@ type Store interface {
 	CreateRAGEvalDataset(ctx context.Context, record *RAGEvalDatasetRecord) error
 	ListRAGEvalDatasets(ctx context.Context, cursor string, limit int) ([]RAGEvalDatasetRecord, error)
 	TombstoneRAGEvalDataset(ctx context.Context, id string) (bool, error)
+	ListRAGEvalDatasetStagingCandidates(ctx context.Context, before time.Time, limit int) ([]RAGEvalDatasetVersionRecord, error)
+	ListRAGEvalDatasetGCCandidates(ctx context.Context, before time.Time, limit int) ([]string, error)
+	PurgeRAGEvalDataset(ctx context.Context, id string) (bool, error)
 	CreateRAGEvalDatasetVersion(ctx context.Context, record *RAGEvalDatasetVersionRecord) error
 	GetRAGEvalDatasetVersion(ctx context.Context, id string) (*RAGEvalDatasetVersionRecord, error)
 	TransitionRAGEvalDatasetVersion(ctx context.Context, id, from, to, reportJSON string) (bool, error)

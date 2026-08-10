@@ -75,6 +75,12 @@ Ragas 固定指标为 Context Precision、Context Recall、Faithfulness、Respon
 
 聚合输出 count、scored、skipped、error、mean、median/p50 与 p95。Baseline/Candidate 只对相同 case 的有效成对分数计算 delta，并明确列出缺失样例。
 
+## Dataset 一期格式与生命周期
+
+一期 import adapter 固定为 `canonical-json`，不接受 ZIP 或其它归档格式。manifest 使用严格、有界 JSON 解码；corpus 原件按 manifest 声明的字节数流式写入 staging，同时计算 SHA-256，不整文件读入内存。文件名必须是单一安全文件名，同一版本内大小写不敏感地禁止重名。
+
+版本按 `DRAFT → VALIDATING → READY` 发布，校验或对象提交失败进入 `FAILED`。只有 READY 版本可供后续 run 使用，READY 后 case/document 不可覆写；修改数据必须创建更高版本。DRAFT/FAILED 以及 READY 后遗留的 staging 可按 TTL 清理。删除 dataset 先 tombstone；仍被 run 引用时禁止物理清理，retention 到期且引用为零后才删除 SQL 与版本对象前缀。
+
 `minScore` 在 UI 和文档中称为“最低 reranker 分数”；它不是概率。reranker 失败时的 RRF fallback 必须保留在 trace 中。
 
 ## 验证
