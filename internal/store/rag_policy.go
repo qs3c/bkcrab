@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,6 +82,56 @@ type RAGPolicySyncFence struct {
 	TaskID, KBID, TargetGenerationID, LeaseOwner string
 	TargetPolicyVersion                          int64
 	FenceToken                                   int64
+}
+
+var ErrRAGLegacyGenerationConflict = errors.New("store: legacy RAG generation snapshot conflict")
+
+type legacyIngestionPolicySnapshot struct {
+	SchemaVersion string                         `json:"schemaVersion"`
+	Source        string                         `json:"source"`
+	KB            legacyIngestionKBSnapshot      `json:"kb"`
+	Documents     []legacyIngestionDocumentState `json:"documents"`
+}
+
+type legacyIngestionKBSnapshot struct {
+	ID                string `json:"id"`
+	EmbeddingProvider string `json:"embeddingProvider"`
+	EmbeddingModel    string `json:"embeddingModel"`
+	EmbeddingDims     int    `json:"embeddingDims"`
+	ChunkSize         int    `json:"chunkSize"`
+	ChunkOverlap      int    `json:"chunkOverlap"`
+	ParseMode         string `json:"parseMode"`
+	EnrichmentEnabled bool   `json:"enrichmentEnabled"`
+}
+
+type legacyIngestionDocumentState struct {
+	ID                 string                          `json:"id"`
+	ActiveVersion      int64                           `json:"activeVersion"`
+	SourceSHA256       string                          `json:"sourceSha256,omitempty"`
+	IndexFormatVersion int                             `json:"indexFormatVersion"`
+	SnapshotMissing    bool                            `json:"snapshotMissing,omitempty"`
+	Snapshot           *legacyIngestionVersionSnapshot `json:"snapshot,omitempty"`
+}
+
+type legacyIngestionVersionSnapshot struct {
+	ParseMode                    string `json:"parseMode"`
+	ChunkSize                    int    `json:"chunkSize"`
+	ChunkOverlap                 int    `json:"chunkOverlap"`
+	ParserVersion                string `json:"parserVersion"`
+	SplitterVersion              string `json:"splitterVersion"`
+	ParseFingerprint             string `json:"parseFingerprint"`
+	IndexFingerprint             string `json:"indexFingerprint"`
+	VisionModel                  string `json:"visionModel,omitempty"`
+	VisionProviderFingerprint    string `json:"visionProviderFingerprint,omitempty"`
+	VisionPromptVersion          string `json:"visionPromptVersion,omitempty"`
+	TextModel                    string `json:"textModel,omitempty"`
+	TextProviderFingerprint      string `json:"textProviderFingerprint,omitempty"`
+	EnrichmentPromptVersion      string `json:"enrichmentPromptVersion,omitempty"`
+	EnrichmentEnabled            bool   `json:"enrichmentEnabled"`
+	EmbeddingProvider            string `json:"embeddingProvider"`
+	EmbeddingModel               string `json:"embeddingModel"`
+	EmbeddingDimensions          int    `json:"embeddingDimensions"`
+	EmbeddingContractFingerprint string `json:"embeddingContractFingerprint"`
 }
 
 func validRAGPolicyStatus(status string) bool {
@@ -342,6 +394,260 @@ func (d *DBStore) ResolveActiveRAGKBGeneration(ctx context.Context, kbID string)
 		return nil, nil, err
 	}
 	return generation, documents, nil
+}
+
+// BackfillLegacyRAGGenerations materializes an immutable description of each
+// active legacy KB and points it at the collection that already exists. It does
+// not create, copy, or mutate vector data. Deterministic identities plus
+// conflict verification make repeated and concurrent startup calls idempotent.
+func (d *DBStore) BackfillLegacyRAGGenerations(ctx context.Context) error {
+	rows, err := d.db.QueryContext(ctx, `SELECT id FROM rag_kbs WHERE LOWER(status)='active' AND active_generation_id IS NULL ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	var kbIDs []string
+	for rows.Next() {
+		var kbID string
+		if err := rows.Scan(&kbID); err != nil {
+			rows.Close()
+			return err
+		}
+		kbIDs = append(kbIDs, kbID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, kbID := range kbIDs {
+		if err := d.backfillLegacyRAGGeneration(ctx, kbID); err != nil {
+			return fmt.Errorf("backfill legacy RAG generation %s: %w", kbID, err)
+		}
+	}
+	return nil
+}
+
+func (d *DBStore) backfillLegacyRAGGeneration(ctx context.Context, kbID string) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Acquire the per-KB write lock before reading the snapshot. On SQLite the
+	// no-op update also prevents two deferred transactions from racing while
+	// upgrading a read snapshot to a writer.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kbs SET updated_at=updated_at WHERE id=%s AND LOWER(status)='active' AND active_generation_id IS NULL`, d.ph(1)), kbID); err != nil {
+		return err
+	}
+	kbQuery := fmt.Sprintf(`SELECT `+ragKBColumns+` FROM rag_kbs WHERE id=%s AND LOWER(status)='active'`, d.ph(1))
+	if d.dialect != "sqlite" {
+		kbQuery += " FOR UPDATE"
+	}
+	kb, err := scanRAGKB(tx.QueryRowContext(ctx, kbQuery, kbID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return tx.Commit()
+	}
+	if err != nil {
+		return err
+	}
+	if kb.ActiveGenerationID.Valid && strings.TrimSpace(kb.ActiveGenerationID.String) != "" {
+		return tx.Commit()
+	}
+
+	documents, chunkCount, err := d.legacyGenerationDocumentsTx(ctx, tx, kb.ID)
+	if err != nil {
+		return err
+	}
+	policy := legacyIngestionPolicySnapshot{
+		SchemaVersion: "legacy-ingestion-v1",
+		Source:        "legacy-backfill",
+		KB: legacyIngestionKBSnapshot{
+			ID: kb.ID, EmbeddingProvider: kb.EmbedProvider, EmbeddingModel: kb.EmbedModel,
+			EmbeddingDims: kb.EmbedDims, ChunkSize: kb.ChunkSize, ChunkOverlap: kb.ChunkOverlap,
+			ParseMode: kb.ParseMode, EnrichmentEnabled: kb.EnrichmentEnabled,
+		},
+		Documents: documents,
+	}
+	policyJSON, err := json.Marshal(policy)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(policyJSON)
+	fingerprint := fmt.Sprintf("%x", digest[:])
+	policyVersion := int64(binary.BigEndian.Uint64(digest[:8]) & uint64(^uint64(0)>>1))
+	if policyVersion == 0 {
+		policyVersion = 1
+	}
+	generationDigest := sha256.Sum256([]byte("legacy-rag-generation\x00" + kb.ID))
+	generationID := fmt.Sprintf("rkg_legacy_%x", generationDigest[:16])
+	now := time.Now().UTC()
+
+	if err := d.insertLegacyIngestionPolicyTx(ctx, tx, policyVersion, string(policyJSON), fingerprint, now); err != nil {
+		return err
+	}
+	if err := d.insertLegacyGenerationTx(ctx, tx, &RAGKBGenerationRecord{
+		ID: generationID, KBID: kb.ID, PolicyVersion: policyVersion, CollectionKey: kb.ID,
+		EmbeddingModel: kb.EmbedModel, EmbeddingDims: kb.EmbedDims, Status: RAGGenerationActive,
+		DocumentCount: int64(len(documents)), ChunkCount: chunkCount,
+		CreatedBy: "system:legacy-generation-backfill", CreatedAt: now,
+	}); err != nil {
+		return err
+	}
+	for _, document := range documents {
+		if err := d.insertLegacyGenerationDocumentTx(ctx, tx, generationID, document.ID, document.ActiveVersion); err != nil {
+			return err
+		}
+	}
+	if err := d.verifyLegacyGenerationDocumentsTx(ctx, tx, generationID, documents); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kbs SET active_generation_id=%s,pinned_policy_version=%s,updated_at=%s WHERE id=%s AND active_generation_id IS NULL AND LOWER(status)='active'`, d.ph(1), d.ph(2), d.ph(3), d.ph(4)), generationID, policyVersion, now, kb.ID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return ErrRAGLegacyGenerationConflict
+	}
+	return tx.Commit()
+}
+
+func (d *DBStore) legacyGenerationDocumentsTx(ctx context.Context, tx *sql.Tx, kbID string) ([]legacyIngestionDocumentState, int64, error) {
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT `+ragDocumentColumns+` FROM rag_documents WHERE kb_id=%s AND active_version>0 AND LOWER(status)<>LOWER(%s) ORDER BY id`, d.ph(1), d.ph(2)), kbID, RAGDocumentStatusDeleting)
+	if err != nil {
+		return nil, 0, err
+	}
+	var active []RAGDocumentRecord
+	for rows.Next() {
+		document, err := scanRAGDocument(rows)
+		if err != nil {
+			rows.Close()
+			return nil, 0, err
+		}
+		active = append(active, *document)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, 0, err
+	}
+
+	documents := make([]legacyIngestionDocumentState, 0, len(active))
+	var chunkCount int64
+	for _, document := range active {
+		item := legacyIngestionDocumentState{
+			ID: document.ID, ActiveVersion: document.ActiveVersion, SourceSHA256: document.SourceSHA256,
+			IndexFormatVersion: document.IndexFormatVersion,
+		}
+		version, err := scanRAGDocumentVersion(tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT `+ragDocumentVersionColumns+` FROM rag_document_versions WHERE doc_id=%s AND doc_version=%s`, d.ph(1), d.ph(2)), document.ID, document.ActiveVersion))
+		if errors.Is(err, sql.ErrNoRows) {
+			item.SnapshotMissing = true
+		} else if err != nil {
+			return nil, 0, err
+		} else {
+			item.Snapshot = &legacyIngestionVersionSnapshot{
+				ParseMode: version.ParseMode, ChunkSize: version.ChunkSize, ChunkOverlap: version.ChunkOverlap,
+				ParserVersion: version.ParserVersion, SplitterVersion: version.SplitterVersion,
+				ParseFingerprint: version.ParseFingerprint, IndexFingerprint: version.IndexFingerprint,
+				VisionModel: version.VisionModel, VisionProviderFingerprint: version.VisionProviderFingerprint,
+				VisionPromptVersion: version.VisionPromptVersion, TextModel: version.TextModel,
+				TextProviderFingerprint: version.TextProviderFingerprint,
+				EnrichmentPromptVersion: version.EnrichmentPromptVersion, EnrichmentEnabled: version.EnrichmentEnabled,
+				EmbeddingProvider: version.EmbeddingProvider, EmbeddingModel: version.EmbeddingModel,
+				EmbeddingDimensions:          version.EmbeddingDimensions,
+				EmbeddingContractFingerprint: version.EmbeddingContractFingerprint,
+			}
+		}
+		documents = append(documents, item)
+		chunkCount += int64(document.ChunkCount)
+	}
+	return documents, chunkCount, nil
+}
+
+func (d *DBStore) insertLegacyIngestionPolicyTx(ctx context.Context, tx *sql.Tx, version int64, policyJSON, fingerprint string, now time.Time) error {
+	query := fmt.Sprintf(`INSERT INTO rag_ingestion_policies(version,policy_json,fingerprint,status,source_eval_run_id,created_by,note,created_at,activated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9))
+	if d.dialect == mysqlDialect {
+		query = strings.Replace(query, "INSERT INTO", "INSERT IGNORE INTO", 1)
+	} else {
+		query += " ON CONFLICT(version) DO NOTHING"
+	}
+	if _, err := tx.ExecContext(ctx, query, version, policyJSON, fingerprint, RAGPolicyRetired, nil, "system:legacy-generation-backfill", "historical legacy snapshot; not the active platform policy", now, nil); err != nil {
+		return err
+	}
+	var storedJSON, storedFingerprint string
+	if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT policy_json,fingerprint FROM rag_ingestion_policies WHERE version=%s`, d.ph(1)), version).Scan(&storedJSON, &storedFingerprint); err != nil {
+		return err
+	}
+	if storedJSON != policyJSON || storedFingerprint != fingerprint {
+		return ErrRAGLegacyGenerationConflict
+	}
+	return nil
+}
+
+func (d *DBStore) insertLegacyGenerationTx(ctx context.Context, tx *sql.Tx, record *RAGKBGenerationRecord) error {
+	query := fmt.Sprintf(`INSERT INTO rag_kb_index_generations(id,kb_id,policy_version,collection_key,embedding_model,embedding_dims,status,document_count,chunk_count,error_code,error_message,created_by,created_at,activated_at,lease_owner,fence_token) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14), d.ph(15), d.ph(16))
+	if d.dialect == mysqlDialect {
+		query = strings.Replace(query, "INSERT INTO", "INSERT IGNORE INTO", 1)
+	} else {
+		query += " ON CONFLICT(id) DO NOTHING"
+	}
+	if _, err := tx.ExecContext(ctx, query, record.ID, record.KBID, record.PolicyVersion, record.CollectionKey, record.EmbeddingModel, record.EmbeddingDims, record.Status, record.DocumentCount, record.ChunkCount, "", "", record.CreatedBy, record.CreatedAt, record.CreatedAt, "", 0); err != nil {
+		return err
+	}
+	stored, err := scanRAGKBGeneration(tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_kb_index_generations WHERE id=%s`, ragKBGenerationColumns, d.ph(1)), record.ID))
+	if err != nil {
+		return err
+	}
+	if stored.KBID != record.KBID || stored.PolicyVersion != record.PolicyVersion || stored.CollectionKey != record.CollectionKey || stored.EmbeddingModel != record.EmbeddingModel || stored.EmbeddingDims != record.EmbeddingDims || stored.Status != RAGGenerationActive || stored.DocumentCount != record.DocumentCount || stored.ChunkCount != record.ChunkCount {
+		return ErrRAGLegacyGenerationConflict
+	}
+	return nil
+}
+
+func (d *DBStore) insertLegacyGenerationDocumentTx(ctx context.Context, tx *sql.Tx, generationID, docID string, docVersion int64) error {
+	query := fmt.Sprintf(`INSERT INTO rag_kb_generation_documents(generation_id,doc_id,doc_version,status,error_code,error_message) VALUES(%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6))
+	if d.dialect == mysqlDialect {
+		query = strings.Replace(query, "INSERT INTO", "INSERT IGNORE INTO", 1)
+	} else {
+		query += " ON CONFLICT(generation_id,doc_id) DO NOTHING"
+	}
+	_, err := tx.ExecContext(ctx, query, generationID, docID, docVersion, RAGGenerationDocumentReady, "", "")
+	return err
+}
+
+func (d *DBStore) verifyLegacyGenerationDocumentsTx(ctx context.Context, tx *sql.Tx, generationID string, expected []legacyIngestionDocumentState) error {
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT doc_id,doc_version,status FROM rag_kb_generation_documents WHERE generation_id=%s ORDER BY doc_id`, d.ph(1)), generationID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	index := 0
+	for rows.Next() {
+		var docID, status string
+		var docVersion int64
+		if err := rows.Scan(&docID, &docVersion, &status); err != nil {
+			return err
+		}
+		if index >= len(expected) || docID != expected[index].ID || docVersion != expected[index].ActiveVersion || status != RAGGenerationDocumentReady {
+			return ErrRAGLegacyGenerationConflict
+		}
+		index++
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if index != len(expected) {
+		return ErrRAGLegacyGenerationConflict
+	}
+	return nil
 }
 
 func (d *DBStore) CreateRAGPolicySyncTask(ctx context.Context, record *RAGPolicySyncTaskRecord) error {

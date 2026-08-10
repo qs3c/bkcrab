@@ -32,7 +32,8 @@ func TestRAGAdvancedDefaultsAndSearchContentValidation(t *testing.T) {
 	var cfg RAGCfg
 	cfg.ApplyDefaults()
 
-	if cfg.Features.AdvancedParsingEnabled || cfg.Features.OfficeParsingEnabled || cfg.Features.TextEnrichmentEnabled {
+	if cfg.Features.AdvancedParsingEnabled || cfg.Features.OfficeParsingEnabled || cfg.Features.TextEnrichmentEnabled ||
+		cfg.Features.GenerationShadowReadEnabled || cfg.Features.GenerationResolverAuthoritative {
 		t.Fatalf("RAG feature flags must default off: %+v", cfg.Features)
 	}
 	if cfg.DocumentAI.APIType != "openai-compatible" || cfg.DocumentAI.TimeoutMS <= 0 ||
@@ -115,6 +116,8 @@ func TestRAGAdvancedEnvironmentOverlay(t *testing.T) {
 	t.Setenv("BKCRAB_RAG_ADVANCED_ENABLED", "false")
 	t.Setenv("BKCRAB_RAG_OFFICE_ENABLED", "true")
 	t.Setenv("BKCRAB_RAG_ENRICHMENT_ENABLED", "true")
+	t.Setenv("BKCRAB_RAG_GENERATION_SHADOW_READ_ENABLED", "true")
+	t.Setenv("BKCRAB_RAG_GENERATION_RESOLVER_AUTHORITATIVE", "true")
 	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_API_TYPE", "openai-compatible")
 	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_ENDPOINT", "http://document-ai.internal/v1")
 	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_API_KEY", "document-ai-secret")
@@ -138,7 +141,8 @@ func TestRAGAdvancedEnvironmentOverlay(t *testing.T) {
 	}
 	env.ApplySystemRAG(&dst)
 
-	if dst.Features.AdvancedParsingEnabled || !dst.Features.OfficeParsingEnabled || !dst.Features.TextEnrichmentEnabled {
+	if dst.Features.AdvancedParsingEnabled || !dst.Features.OfficeParsingEnabled || !dst.Features.TextEnrichmentEnabled ||
+		!dst.Features.GenerationShadowReadEnabled || !dst.Features.GenerationResolverAuthoritative {
 		t.Fatalf("feature flag overlay = %+v", dst.Features)
 	}
 	if dst.DocumentAI.Endpoint != "http://document-ai.internal/v1" ||

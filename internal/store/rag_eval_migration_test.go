@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 var ragEvalTask2Tables = []string{
@@ -45,10 +47,29 @@ func runRAGEvalMigrationDialect(t *testing.T, dialect, dsn string) {
 	}
 	defer st.Close()
 	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("%s initial migration: %v", dialect, err)
+	}
+	suffix := uuid.NewString()
+	userID := "u_eval_migration_" + suffix
+	ensureRAGLifecycleUser(t, st, userID, "active")
+	defer func() { _ = st.DeleteUser(context.Background(), userID) }()
+	kb := &RAGKBRecord{
+		ID: "kb_eval_migration_" + suffix, UserID: userID, Name: "migration",
+		EmbedProvider: "system", EmbedModel: "embed-v1", EmbedDims: 3,
+		ChunkSize: 512, ChunkOverlap: 64, ParseMode: RAGParseModeStandard, Status: "active",
+	}
+	if err := st.CreateRAGKB(ctx, kb); err != nil {
+		t.Fatalf("%s seed legacy KB: %v", dialect, err)
+	}
 	for attempt := 1; attempt <= 2; attempt++ {
 		if err := st.Migrate(ctx); err != nil {
-			t.Fatalf("%s migration attempt %d: %v", dialect, attempt, err)
+			t.Fatalf("%s backfill migration attempt %d: %v", dialect, attempt, err)
 		}
+	}
+	generation, documents, err := st.ResolveActiveRAGKBGeneration(ctx, kb.ID)
+	if err != nil || generation.CollectionKey != kb.ID || len(documents) != 0 {
+		t.Fatalf("%s legacy generation=%+v documents=%+v err=%v", dialect, generation, documents, err)
 	}
 	for _, table := range ragEvalTask2Tables {
 		exists, err := st.tableExists(ctx, table)

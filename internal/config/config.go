@@ -798,9 +798,11 @@ func (m *ParseMode) UnmarshalJSON(data []byte) error {
 }
 
 type RAGFeatureCfg struct {
-	AdvancedParsingEnabled bool `json:"advancedParsingEnabled,omitempty"`
-	OfficeParsingEnabled   bool `json:"officeParsingEnabled,omitempty"`
-	TextEnrichmentEnabled  bool `json:"textEnrichmentEnabled,omitempty"`
+	AdvancedParsingEnabled          bool `json:"advancedParsingEnabled,omitempty"`
+	OfficeParsingEnabled            bool `json:"officeParsingEnabled,omitempty"`
+	TextEnrichmentEnabled           bool `json:"textEnrichmentEnabled,omitempty"`
+	GenerationShadowReadEnabled     bool `json:"generationShadowReadEnabled,omitempty"`
+	GenerationResolverAuthoritative bool `json:"generationResolverAuthoritative,omitempty"`
 }
 
 // RAGDocumentAICfg is dedicated to ingestion-time visual/text processing. It

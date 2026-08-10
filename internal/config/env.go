@@ -34,6 +34,8 @@ type EnvConfig struct {
 	ragAdvancedEnabledSet                bool
 	ragOfficeEnabledSet                  bool
 	ragEnrichmentEnabledSet              bool
+	ragGenerationShadowReadEnabledSet    bool
+	ragGenerationResolverAuthoritySet    bool
 	ragDocumentAIAllowPrivateEndpointSet bool
 	ragDocumentAIAllowedEndpointHostsSet bool
 	ragEvaluationEnabledSet              bool
@@ -223,6 +225,14 @@ func LoadEnv() *EnvConfig {
 	if v, ok := lookupEnvBool("BKCRAB_RAG_ENRICHMENT_ENABLED"); ok {
 		cfg.RAG.Features.TextEnrichmentEnabled = v
 		cfg.ragEnrichmentEnabledSet = true
+	}
+	if v, ok := lookupEnvBool("BKCRAB_RAG_GENERATION_SHADOW_READ_ENABLED"); ok {
+		cfg.RAG.Features.GenerationShadowReadEnabled = v
+		cfg.ragGenerationShadowReadEnabledSet = true
+	}
+	if v, ok := lookupEnvBool("BKCRAB_RAG_GENERATION_RESOLVER_AUTHORITATIVE"); ok {
+		cfg.RAG.Features.GenerationResolverAuthoritative = v
+		cfg.ragGenerationResolverAuthoritySet = true
 	}
 	if v := os.Getenv("BKCRAB_RAG_DOCUMENT_AI_API_TYPE"); v != "" {
 		cfg.RAG.DocumentAI.APIType = v
@@ -630,6 +640,12 @@ func (e *EnvConfig) ApplySystemRAG(dst *RAGCfg) {
 	}
 	if e.ragEnrichmentEnabledSet {
 		dst.Features.TextEnrichmentEnabled = e.RAG.Features.TextEnrichmentEnabled
+	}
+	if e.ragGenerationShadowReadEnabledSet {
+		dst.Features.GenerationShadowReadEnabled = e.RAG.Features.GenerationShadowReadEnabled
+	}
+	if e.ragGenerationResolverAuthoritySet {
+		dst.Features.GenerationResolverAuthoritative = e.RAG.Features.GenerationResolverAuthoritative
 	}
 	if e.RAG.DocumentAI.APIType != "" {
 		dst.DocumentAI.APIType = e.RAG.DocumentAI.APIType

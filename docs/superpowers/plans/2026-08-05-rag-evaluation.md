@@ -383,12 +383,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先写空 KB、部分 active docs、删除中 doc、重复启动和并发 backfill 测试。
-- [ ] legacy policy fingerprint 由现有 KB/版本快照合成，不假装它等于最新 platform policy。
-- [ ] backfill 只引用现有 collection，不复制向量。
-- [ ] 双读模式比较旧 activeVersions 与 generation mapping；不一致报警但仍用旧路径。
-- [ ] 所有 KB 校验通过后通过 feature gate 切 generation resolver 为权威路径。
-- [ ] 运行 SQLite 默认测试和环境门控 MySQL/Postgres migration tests。
+- [x] 先写空 KB、部分 active docs、删除中 doc、重复启动和并发 backfill 测试。
+- [x] legacy policy fingerprint 由现有 KB/版本快照合成，不假装它等于最新 platform policy。
+- [x] backfill 只引用现有 collection，不复制向量。
+- [x] 双读模式比较旧 activeVersions 与 generation mapping；不一致报警但仍用旧路径。
+- [x] 所有 KB 校验通过后通过 feature gate 切 generation resolver 为权威路径。
+- [x] 运行 SQLite 默认测试和环境门控 MySQL/Postgres migration tests。
 
 **Release gate:** 未完成线上数据抽样双读一致性前，不删除 legacy fallback。
 

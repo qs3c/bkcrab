@@ -25,6 +25,16 @@ func LegacyCollectionKey(kbID string) (CollectionKey, error) {
 	return CollectionKey(kbID), nil
 }
 
+// CollectionKeyFromPersistence validates the trusted SQL representation before
+// it crosses into a vector driver. Physical keys are never accepted from API
+// requests.
+func CollectionKeyFromPersistence(value string) (CollectionKey, error) {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > 255 {
+		return "", errors.New("invalid persisted collection key")
+	}
+	return CollectionKey(value), nil
+}
+
 // GenerationCollectionKey derives a bounded key without embedding logical KB
 // names or other user text. generationID is a server-generated identifier and
 // remains visible in the physical name for operational correlation.

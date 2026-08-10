@@ -257,9 +257,11 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		topN = 100
 	}
 	type target struct {
-		kb            *store.RAGKBRecord
-		collectionKey vector.CollectionKey
-		dense         [][]float32
+		kb             *store.RAGKBRecord
+		collectionKey  vector.CollectionKey
+		dense          [][]float32
+		documents      map[string]store.RAGDocumentRecord
+		activeVersions map[string]int64
 	}
 	kbs := make([]*store.RAGKBRecord, 0, len(kbIDs))
 	seenKB := make(map[string]struct{}, len(kbIDs))
@@ -340,7 +342,23 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 	targets := make([]target, 0, len(kbs))
 	vectorCache := make(map[string][][]float32)
 	for _, kb := range kbs {
-		collectionKey, err := s.resolveCollection(ctx, kb.ID)
+		docs, err := s.st.ListRAGDocumentsByKB(ctx, kb.ID)
+		if err != nil {
+			return nil, err
+		}
+		documents := make(map[string]store.RAGDocumentRecord, len(docs))
+		activeVersions := make(map[string]int64, len(docs))
+		for _, doc := range docs {
+			if doc.ActiveVersion <= 0 || strings.EqualFold(doc.Status, store.RAGDocumentStatusDeleting) {
+				continue
+			}
+			documents[doc.ID] = doc
+			activeVersions[doc.ID] = doc.ActiveVersion
+		}
+		if len(activeVersions) == 0 {
+			continue
+		}
+		collectionKey, err := s.resolveSearchCollection(ctx, kb.ID, activeVersions)
 		if err != nil {
 			return nil, err
 		}
@@ -366,7 +384,10 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 			queryVectors = vectors
 			vectorCache[cacheKey] = queryVectors
 		}
-		targets = append(targets, target{kb: kb, collectionKey: collectionKey, dense: queryVectors})
+		targets = append(targets, target{
+			kb: kb, collectionKey: collectionKey, dense: queryVectors,
+			documents: documents, activeVersions: activeVersions,
+		})
 	}
 
 	candidateTopK := runtimePolicy.CandidateTopK
@@ -378,28 +399,12 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 	}
 	results := make([]Hit, 0, len(targets)*candidateTopK)
 	for _, target := range targets {
-		docs, err := s.st.ListRAGDocumentsByKB(ctx, target.kb.ID)
-		if err != nil {
-			return nil, err
-		}
-		docByID := make(map[string]store.RAGDocumentRecord, len(docs))
-		activeVersions := make(map[string]int64, len(docs))
-		for _, doc := range docs {
-			if doc.ActiveVersion <= 0 || strings.EqualFold(doc.Status, "deleting") {
-				continue
-			}
-			docByID[doc.ID] = doc
-			activeVersions[doc.ID] = doc.ActiveVersion
-		}
-		if len(activeVersions) == 0 {
-			continue
-		}
 		if err := s.vec.EnsureCollection(ctx, target.collectionKey, target.kb.EmbedDims); err != nil {
 			return nil, fmt.Errorf("准备检索 %s: %w", target.kb.Name, err)
 		}
 		vectorHits, err := s.vec.HybridSearch(ctx, target.collectionKey, vector.SearchQuery{
 			Dense: target.dense, Text: plan.RewrittenQuery,
-			ActiveVersions: activeVersions, MaxFilterBytes: s.cfg.Limits.MaxMilvusFilterBytes,
+			ActiveVersions: target.activeVersions, MaxFilterBytes: s.cfg.Limits.MaxMilvusFilterBytes,
 		}, candidateTopK)
 		if err != nil {
 			return nil, fmt.Errorf("检索 %s: %w", target.kb.Name, err)
@@ -407,7 +412,7 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		refs := make([]store.RAGChunkRef, 0, len(vectorHits))
 		filteredVectorHits := make([]vector.SearchHit, 0, len(vectorHits))
 		for _, hit := range vectorHits {
-			doc, exists := docByID[hit.DocID]
+			doc, exists := target.documents[hit.DocID]
 			if !exists || doc.ActiveVersion != hit.DocVersion {
 				continue
 			}
@@ -424,7 +429,7 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		}
 		activeChanged := false
 		for _, hit := range filteredVectorHits {
-			doc := docByID[hit.DocID]
+			doc := target.documents[hit.DocID]
 			chunk, exists := catalogByRef[ragChunkKey(hit.DocID, hit.DocVersion, hit.ChunkIndex)]
 			if !exists && doc.IndexFormatVersion != 0 {
 				current, lookupErr := s.st.GetRAGDocument(ctx, hit.DocID)
@@ -487,12 +492,14 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		results = results[:candidateTopK]
 	}
 	candidateCount := len(results)
+	denseRouteCount := 0
+	if len(targets) > 0 {
+		denseRouteCount = len(targets[0].dense)
+	}
 	if trace != nil {
 		trace.RetrievalDurationMS = time.Since(retrievalStarted).Milliseconds()
 		trace.CandidateCount = candidateCount
-		if len(targets) > 0 {
-			trace.DenseRouteCount = len(targets[0].dense)
-		}
+		trace.DenseRouteCount = denseRouteCount
 		setRecallScoreRange(trace, results)
 	}
 	rerankerRequested := s.reranker != nil
@@ -534,7 +541,7 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 				"retrieval_id", retrievalID,
 				"owner", ownerID,
 				"knowledge_bases", len(kbs),
-				"dense_routes", len(targets[0].dense),
+				"dense_routes", denseRouteCount,
 				"candidates", candidateCount,
 				"returned", len(reranked),
 				"reranked", true,
@@ -568,7 +575,7 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		"retrieval_id", retrievalID,
 		"owner", ownerID,
 		"knowledge_bases", len(kbs),
-		"dense_routes", len(targets[0].dense),
+		"dense_routes", denseRouteCount,
 		"candidates", candidateCount,
 		"returned", len(results),
 		"reranked", false,

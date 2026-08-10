@@ -283,6 +283,14 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	if err := ragCfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid RAG configuration: %w", err)
 	}
+	generationMode := rag.GenerationResolutionLegacy
+	if ragCfg.Features.GenerationShadowReadEnabled {
+		generationMode = rag.GenerationResolutionShadow
+	}
+	if ragCfg.Features.GenerationResolverAuthoritative {
+		generationMode = rag.GenerationResolutionAuthoritative
+	}
+	collectionResolver := rag.NewGenerationResolver(st, generationMode, nil)
 	ragParserClient, parserErr := newRAGParserClient(ragCfg)
 	if parserErr != nil {
 		// The parser is optional infrastructure. A malformed or unavailable
@@ -358,6 +366,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 				Cfg:             ragCfg,
 				UserEmbedCfg:    userEmbeddingCfgLookup(st),
 				RuntimePolicy:   runtimePolicy,
+				Collections:     collectionResolver,
 				Parser:          documentParser,
 				Primitives:      primitives,
 				OfficeAvailable: officeAvailable,
@@ -400,6 +409,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					Cfg:             ragCfg,
 					UserEmbedCfg:    userEmbeddingCfgLookup(st),
 					RuntimePolicy:   runtimePolicy,
+					Collections:     collectionResolver,
 					QueryLLM:        userRAGQueryLLM(st, meter),
 					Reranker:        ranker,
 					Parser:          documentParser,

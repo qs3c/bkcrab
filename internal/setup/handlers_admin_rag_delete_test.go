@@ -84,7 +84,7 @@ func TestServerWiresRAGUserCleanerForEitherSetterOrder(t *testing.T) {
 			seedAdminRAGDeleteUser(t, st, userID, kbID)
 
 			vectors := vector.NewFake()
-			if err := vectors.EnsureCollection(ctx, kbID, 4); err != nil {
+			if err := vectors.EnsureCollection(ctx, vector.CollectionKey(kbID), 4); err != nil {
 				t.Fatalf("ensure fake vector collection: %v", err)
 			}
 			service := rag.New(rag.Deps{

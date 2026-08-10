@@ -202,6 +202,9 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 	if err := d.migrateRAGEvaluationSchema(ctx); err != nil {
 		return fmt.Errorf("migrate RAG evaluation schema: %w", err)
 	}
+	if err := d.BackfillLegacyRAGGenerations(ctx); err != nil {
+		return fmt.Errorf("backfill legacy RAG generations: %w", err)
+	}
 	return nil
 }
 

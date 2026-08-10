@@ -460,7 +460,7 @@ func TestRAGChatTextOnlyContextReturnsAndReplaysAssets(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := vec.UpsertChunks(ctx, kb.ID, []vector.ChunkData{{
+	if err := vec.UpsertChunks(ctx, vector.CollectionKey(kb.ID), []vector.ChunkData{{
 		DocID: doc.ID, Index: 0, DocVersion: 1, Content: "vector fallback must not be used",
 		SearchContent: searchContent, Vector: []float32{1, 0, 0, 0},
 	}}); err != nil {

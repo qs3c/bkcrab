@@ -46,6 +46,10 @@ type CollectionResolver interface {
 	ResolveCollection(ctx context.Context, kbID string) (vector.CollectionKey, error)
 }
 
+type SearchCollectionResolver interface {
+	ResolveSearchCollection(ctx context.Context, kbID string, activeVersions map[string]int64) (vector.CollectionKey, error)
+}
+
 type LegacyCollectionResolver struct{}
 
 func (LegacyCollectionResolver) ResolveCollection(_ context.Context, kbID string) (vector.CollectionKey, error) {
@@ -211,6 +215,13 @@ func (s *Service) resolveCollection(ctx context.Context, kbID string) (vector.Co
 		return "", errors.New("rag collection resolver unavailable")
 	}
 	return s.collections.ResolveCollection(ctx, kbID)
+}
+
+func (s *Service) resolveSearchCollection(ctx context.Context, kbID string, activeVersions map[string]int64) (vector.CollectionKey, error) {
+	if resolver, ok := s.collections.(SearchCollectionResolver); ok {
+		return resolver.ResolveSearchCollection(ctx, kbID, activeVersions)
+	}
+	return s.resolveCollection(ctx, kbID)
 }
 
 // newTaskDocumentAIBudget binds one immutable version snapshot and claim fence

@@ -42,6 +42,17 @@ docker compose \
 
 不启用该 profile 或保持 `RAG_EVAL_ENABLED=false` 时，bkcrab 不依赖 evaluator 启动。不要给 evaluator 增加宿主机端口映射。
 
+## Generation 迁移门禁
+
+启动迁移会为存量 KB 合成 immutable legacy ingestion policy 与 active generation mapping，只引用现有 Milvus collection，不复制或重建向量。发布时按以下顺序推进：
+
+1. 保持两个开关关闭，确认 backfill 完成；
+2. 设置 `BKCRAB_RAG_GENERATION_SHADOW_READ_ENABLED=true`，观察旧 `activeVersions` 与 generation mapping 的不一致告警；
+3. 完成线上数据抽样且所有 KB 一致后，设置 `BKCRAB_RAG_GENERATION_RESOLVER_AUTHORITATIVE=true`；
+4. 若出现不一致，resolver 仍回退 legacy collection。未完成抽样前不得删除该 fallback。
+
+两个开关默认均为 `false`。authoritative 模式也会在每次检索时使用同一份 `activeVersions` 快照做校验，校验失败时不会切换物理 collection。
+
 ## 配置
 
 主服务使用 `BKCRAB_RAG_EVAL_*` 引导变量；Compose 从较短的 `RAG_EVAL_*` / `RAG_EVALUATOR_*` 变量映射。关键限制包括：
