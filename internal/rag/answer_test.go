@@ -69,7 +69,8 @@ func TestRAGAnswerV1FreezesPromptOptionsAndProductionSideEffects(t *testing.T) {
 		},
 	}, AnswerOptions{
 		Model: "test/qa-model", Temperature: 0.2, MaxTokens: 4096,
-		PromptBundleVersion: RAGAnswerPromptBundleV1,
+		PromptBundleVersion:  RAGAnswerPromptBundleV1,
+		RuntimePolicyVersion: 7,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +101,7 @@ func TestRAGAnswerV1FreezesPromptOptionsAndProductionSideEffects(t *testing.T) {
 		t.Fatalf("rag-answer-v1 user prompt drifted:\ngot:  %q\nwant: %q", model.messages[1].Content, wantUser)
 	}
 	if trace.Response != "默认端口是 8080。[1]" || saved.Response != trace.Response ||
-		!trace.Persisted || !trace.UsageRecorded || trace.Persistence == nil || trace.Persistence.ID != "turn_1" ||
+		!trace.Persisted || !trace.UsageRecorded || trace.RuntimePolicyVersion != 7 || trace.Persistence == nil || trace.Persistence.ID != "turn_1" ||
 		trace.Persistence.CreatedAt != createdAt {
 		t.Fatalf("production trace/persistence = %+v saved=%+v", trace, saved)
 	}

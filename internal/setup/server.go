@@ -82,6 +82,7 @@ type Server struct {
 	chatEvents        *agent.EventHub
 	usage             usage.Meter
 	rag               *rag.Service
+	ragRuntimePolicy  rag.RuntimePolicyProvider
 	ragUserCleaner    users.RAGUserCleaner
 	ragCfg            config.RAGCfg
 	ragHealthMu       sync.RWMutex
@@ -154,9 +155,11 @@ func (s *Server) SetUsageMeter(m usage.Meter) {
 // Leaving it nil keeps the routes present but makes them return 503.
 func (s *Server) SetRAGService(service *rag.Service) {
 	s.rag = service
+	s.ragRuntimePolicy = nil
 	var cleaner users.RAGUserCleaner
 	if service != nil {
 		cleaner = service
+		s.ragRuntimePolicy = service.RuntimePolicyProvider()
 	}
 	s.setRAGUserCleaner(cleaner)
 	if service != nil {

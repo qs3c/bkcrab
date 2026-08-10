@@ -343,6 +343,11 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					textEnricher = enrichmentClient
 				}
 			}
+			runtimePolicy, runtimePolicyErr := rag.NewRuntimePolicySnapshot(rag.DefaultRuntimePolicy(ragCfg))
+			if runtimePolicyErr != nil {
+				slog.Error("rag: default runtime policy invalid; using service fallback", "error", runtimePolicyErr)
+				runtimePolicy = nil
+			}
 			// Legacy snapshot construction only needs SQL, the original object
 			// store and provider configuration. Assemble it before connecting to
 			// Milvus so a temporary vector outage cannot turn runnable legacy work
@@ -352,6 +357,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 				Objects:         ragObjects,
 				Cfg:             ragCfg,
 				UserEmbedCfg:    userEmbeddingCfgLookup(st),
+				RuntimePolicy:   runtimePolicy,
 				Parser:          documentParser,
 				Primitives:      primitives,
 				OfficeAvailable: officeAvailable,
@@ -393,6 +399,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					Objects:         ragObjects,
 					Cfg:             ragCfg,
 					UserEmbedCfg:    userEmbeddingCfgLookup(st),
+					RuntimePolicy:   runtimePolicy,
 					QueryLLM:        userRAGQueryLLM(st, meter),
 					Reranker:        ranker,
 					Parser:          documentParser,

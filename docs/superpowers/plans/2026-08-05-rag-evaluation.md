@@ -320,12 +320,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先写并发读/原子 swap、请求中途 swap 不改变已捕获 snapshot、非法 revision 拒绝测试。
-- [ ] 把 `ragChatTopN`、temperature、prompt version 和 service cfg 中的 query-time candidate/minScore 迁移到 snapshot。
-- [ ] 仍从现有环境/config 生成初始 version 1；feature flag 关闭时不要求新 policy 表已有数据。
-- [ ] snapshot 只复制 bounded value，不暴露可并发修改 map/slice。
-- [ ] 添加 revision version 到 search/answer trace。
-- [ ] 运行 `go test -race ./internal/rag ./internal/setup -run 'RuntimePolicy|RAGChat|RAGSearch'`。
+- [x] 先写并发读/原子 swap、请求中途 swap 不改变已捕获 snapshot、非法 revision 拒绝测试。
+- [x] 把 `ragChatTopN`、temperature、prompt version 和 service cfg 中的 query-time candidate/minScore 迁移到 snapshot。
+- [x] 仍从现有环境/config 生成初始 version 1；feature flag 关闭时不要求新 policy 表已有数据。
+- [x] snapshot 只复制 bounded value，不暴露可并发修改 map/slice。
+- [x] 添加 revision version 到 search/answer trace。
+- [x] 运行 `go test -race ./internal/rag ./internal/setup -run 'RuntimePolicy|RAGChat|RAGSearch'`。
 
 **Gate:** migration 完成前线上输出与当前常量一致。
 

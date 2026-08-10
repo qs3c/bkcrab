@@ -41,19 +41,20 @@ type UserEmbedCfgFn func(ctx context.Context, userID string) (config.RAGEmbeddin
 type QueryLLMFn func(ctx context.Context, userID, systemPrompt, userPrompt string) (string, error)
 
 type Deps struct {
-	Store        store.Store
-	Vector       vector.Store
-	Objects      objects.Store
-	Cfg          config.RAGCfg
-	UserEmbedCfg UserEmbedCfgFn
-	QueryLLM     QueryLLMFn
-	Reranker     rerank.Reranker
-	Parser       parse.Parser
-	Primitives   parse.PrimitiveExtractor
-	PageVision   vision.PageTranscriber
-	ImageVision  vision.ImageTranscriber
-	Enricher     enrich.Enricher
-	Tokenizer    enrich.Tokenizer
+	Store         store.Store
+	Vector        vector.Store
+	Objects       objects.Store
+	Cfg           config.RAGCfg
+	UserEmbedCfg  UserEmbedCfgFn
+	QueryLLM      QueryLLMFn
+	RuntimePolicy RuntimePolicyProvider
+	Reranker      rerank.Reranker
+	Parser        parse.Parser
+	Primitives    parse.PrimitiveExtractor
+	PageVision    vision.PageTranscriber
+	ImageVision   vision.ImageTranscriber
+	Enricher      enrich.Enricher
+	Tokenizer     enrich.Tokenizer
 	// Telemetry receives privacy-safe, closed-schema operational events. When
 	// omitted, the service uses the default structured logger.
 	Telemetry telemetry.Recorder
@@ -70,6 +71,7 @@ type Service struct {
 	cfg             config.RAGCfg
 	userCfg         UserEmbedCfgFn
 	queryLLM        QueryLLMFn
+	runtimePolicy   RuntimePolicyProvider
 	reranker        rerank.Reranker
 	parser          parse.Parser
 	primitives      parse.PrimitiveExtractor
@@ -102,6 +104,9 @@ type Service struct {
 
 func New(d Deps) *Service {
 	d.Cfg.ApplyDefaults()
+	if d.RuntimePolicy == nil {
+		d.RuntimePolicy, _ = NewRuntimePolicySnapshot(DefaultRuntimePolicy(d.Cfg))
+	}
 	recorder := d.Telemetry
 	if recorder == nil {
 		recorder = telemetry.NewSlogRecorder(nil)
@@ -161,6 +166,7 @@ func New(d Deps) *Service {
 		cfg:                             d.Cfg,
 		userCfg:                         d.UserEmbedCfg,
 		queryLLM:                        d.QueryLLM,
+		runtimePolicy:                   d.RuntimePolicy,
 		reranker:                        d.Reranker,
 		parser:                          d.Parser,
 		primitives:                      d.Primitives,

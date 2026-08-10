@@ -101,6 +101,7 @@ type SearchOptions struct {
 	HyDE                  *bool                           `json:"hyde,omitempty"`
 	Reranker              *bool                           `json:"reranker,omitempty"`
 	RerankerFailurePolicy config.RAGRerankerFailurePolicy `json:"rerankerFailurePolicy,omitempty"`
+	RuntimePolicyVersion  int64                           `json:"runtimePolicyVersion,omitempty"`
 }
 
 type SearchTrace struct {
@@ -131,6 +132,7 @@ type SearchTrace struct {
 	RerankerFallback      bool                            `json:"rerankerFallback"`
 	RerankerFailureCode   string                          `json:"rerankerFailureCode,omitempty"`
 	RerankerFailurePolicy config.RAGRerankerFailurePolicy `json:"rerankerFailurePolicy"`
+	RuntimePolicyVersion  int64                           `json:"runtimePolicyVersion"`
 	Degraded              bool                            `json:"degraded"`
 	MinScore              float64                         `json:"minScore"`
 	TopN                  int                             `json:"topN"`
@@ -148,14 +150,15 @@ type searchTraceKey struct{}
 // injecting a bounded immutable option snapshot and returning a secret-free
 // trace. It never mutates Service configuration.
 func (s *Service) SearchWithOptions(ctx context.Context, ownerID string, kbIDs []string, input SearchContext, options SearchOptions) ([]Hit, SearchTrace, error) {
-	if options.TopN < 0 || options.TopN > 20 {
-		return nil, SearchTrace{}, errors.New("topN must be between 1 and 20")
+	ctx, runtimePolicy := s.CaptureRuntimePolicy(ctx)
+	if options.TopN < 0 || options.TopN > 100 {
+		return nil, SearchTrace{}, errors.New("topN must be zero or between 1 and 100")
 	}
 	if options.TopN == 0 {
-		options.TopN = 5
+		options.TopN = runtimePolicy.TopN
 	}
-	if options.CandidateTopK < 0 || options.CandidateTopK > 100 {
-		return nil, SearchTrace{}, errors.New("candidateTopK must be between 1 and 100")
+	if options.CandidateTopK < 0 || options.CandidateTopK > 500 {
+		return nil, SearchTrace{}, errors.New("candidateTopK must be zero or between 1 and 500")
 	}
 	if options.CandidateTopK > 0 && options.CandidateTopK < options.TopN {
 		return nil, SearchTrace{}, errors.New("candidateTopK must be greater than or equal to topN")
@@ -171,13 +174,13 @@ func (s *Service) SearchWithOptions(ctx context.Context, ownerID string, kbIDs [
 	}
 	candidateTopK := options.CandidateTopK
 	if candidateTopK == 0 {
-		candidateTopK = s.cfg.Reranker.CandidateTopK
+		candidateTopK = runtimePolicy.CandidateTopK
 	}
 	if candidateTopK < options.TopN {
 		candidateTopK = options.TopN
 	}
 	options.CandidateTopK = candidateTopK
-	minScore := s.cfg.Reranker.MinScore
+	minScore := runtimePolicy.MinScore
 	if options.MinScore != nil {
 		minScore = *options.MinScore
 	}
@@ -192,6 +195,10 @@ func (s *Service) SearchWithOptions(ctx context.Context, ownerID string, kbIDs [
 	if options.Reranker != nil {
 		rerankerRequested = *options.Reranker
 	}
+	policyVersion := options.RuntimePolicyVersion
+	if policyVersion == 0 {
+		policyVersion = runtimePolicy.Version
+	}
 	retrievalID := uuid.NewString()
 	started := time.Now()
 	trace := SearchTrace{
@@ -199,6 +206,7 @@ func (s *Service) SearchWithOptions(ctx context.Context, ownerID string, kbIDs [
 		RerankerRequested: rerankerRequested, RerankerConfigured: s.reranker != nil,
 		RerankerEnabled:       rerankerRequested && s.reranker != nil,
 		RerankerFailurePolicy: options.RerankerFailurePolicy,
+		RuntimePolicyVersion:  policyVersion,
 		MinScore:              minScore, TopN: options.TopN, CandidateTopK: candidateTopK,
 	}
 	ctx = context.WithValue(ctx, searchOptionsKey{}, options)
@@ -221,6 +229,7 @@ func (s *Service) Search(ctx context.Context, ownerID string, kbIDs []string, qu
 // BM25 and one dense route; HyDE drives a second dense route. If planning fails
 // or omits HyDE, the identical dense inputs are deduplicated.
 func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs []string, input SearchContext, topN int) ([]Hit, error) {
+	ctx, _ = s.CaptureRuntimePolicy(ctx)
 	return s.searchWithContext(ctx, ownerID, kbIDs, input, topN, false)
 }
 
@@ -232,15 +241,20 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		resetSearchExecutionTrace(trace)
 	}
 	started := time.Now()
+	options, hasOptions := ctx.Value(searchOptionsKey{}).(SearchOptions)
 	query := strings.TrimSpace(input.Query)
 	if query == "" {
 		return nil, fmt.Errorf("query 不能为空")
 	}
 	if topN <= 0 {
-		topN = 5
+		_, runtimePolicy := s.CaptureRuntimePolicy(ctx)
+		topN = runtimePolicy.TopN
 	}
-	if topN > 20 {
+	if topN > 20 && !hasOptions {
 		topN = 20
+	}
+	if topN > 100 {
+		topN = 100
 	}
 	type target struct {
 		kb    *store.RAGKBRecord
@@ -290,7 +304,7 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		trace.KnowledgeBaseCount = len(kbs)
 	}
 
-	options, hasOptions := ctx.Value(searchOptionsKey{}).(SearchOptions)
+	_, runtimePolicy := s.CaptureRuntimePolicy(ctx)
 	rewriteEnabled, hydeEnabled := true, true
 	if hasOptions && options.Rewrite != nil {
 		rewriteEnabled = *options.Rewrite
@@ -350,7 +364,7 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		targets = append(targets, target{kb: kb, dense: queryVectors})
 	}
 
-	candidateTopK := s.cfg.Reranker.CandidateTopK
+	candidateTopK := runtimePolicy.CandidateTopK
 	if hasOptions && options.CandidateTopK > 0 {
 		candidateTopK = options.CandidateTopK
 	}
@@ -492,7 +506,7 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		}
 	}
 	if rerankerEnabled && len(results) > 0 {
-		minScore := s.cfg.Reranker.MinScore
+		minScore := runtimePolicy.MinScore
 		if hasOptions && options.MinScore != nil {
 			minScore = *options.MinScore
 		}

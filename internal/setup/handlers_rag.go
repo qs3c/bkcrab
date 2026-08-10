@@ -22,11 +22,9 @@ import (
 )
 
 const (
-	ragChatTopN                = 5
 	ragChatMaxHistoryQuestions = rag.AnswerMaxHistoryQuestions
 	ragChatMaxHistoryRunes     = rag.AnswerMaxHistoryRunes
 	ragChatMaxQuestionRunes    = 8000
-	ragChatMaxOutputTokens     = 4096
 	ragChatMaxSessionIDBytes   = 120
 	ragChatMaxTitleRunes       = 60
 )
@@ -748,11 +746,16 @@ func (s *Server) handleRAGChat(w http.ResponseWriter, r *http.Request) {
 		historyQuestions = append(historyQuestions, turn.Question)
 	}
 	history := normalizeRAGChatHistory(historyQuestions)
-
-	hits, err := s.rag.SearchWithContext(r.Context(), ownerID, []string{kb.ID}, rag.SearchContext{
+	requestContext, runtimePolicy := s.rag.CaptureRuntimePolicy(r.Context())
+	r = r.WithContext(requestContext)
+	minScore := runtimePolicy.MinScore
+	hits, _, err := s.rag.SearchWithOptions(r.Context(), ownerID, []string{kb.ID}, rag.SearchContext{
 		Query:   question,
 		History: history,
-	}, ragChatTopN)
+	}, rag.SearchOptions{
+		TopN: runtimePolicy.TopN, CandidateTopK: runtimePolicy.CandidateTopK, MinScore: &minScore,
+		RuntimePolicyVersion: runtimePolicy.Version,
+	})
 	if err != nil {
 		writeRAGError(w, err)
 		return
@@ -772,10 +775,7 @@ func (s *Server) handleRAGChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	maxTokens := cfg.Agents.Defaults.MaxTokens
-	if maxTokens <= 0 || maxTokens > ragChatMaxOutputTokens {
-		maxTokens = ragChatMaxOutputTokens
-	}
+	maxTokens := runtimePolicy.MaxTokens
 	title := ragChatTitle(question)
 	if len(persistedTurns) > 0 && strings.TrimSpace(persistedTurns[0].Title) != "" {
 		title = persistedTurns[0].Title
@@ -815,8 +815,9 @@ func (s *Server) handleRAGChat(w http.ResponseWriter, r *http.Request) {
 			RecordUsage: recordAnswerUsage,
 		},
 	}, rag.AnswerOptions{
-		Model: model, Temperature: 0.2, MaxTokens: maxTokens,
-		PromptBundleVersion: rag.RAGAnswerPromptBundleV1,
+		Model: model, Temperature: runtimePolicy.Temperature, MaxTokens: maxTokens,
+		PromptBundleVersion:  runtimePolicy.RAGPromptBundleVersion,
+		RuntimePolicyVersion: runtimePolicy.Version,
 	})
 	if err != nil {
 		switch rag.AnswerErrorCode(err) {

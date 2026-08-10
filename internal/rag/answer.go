@@ -52,10 +52,11 @@ const (
 )
 
 type AnswerOptions struct {
-	Model               string  `json:"model"`
-	Temperature         float64 `json:"temperature"`
-	MaxTokens           int     `json:"maxTokens"`
-	PromptBundleVersion string  `json:"promptBundleVersion"`
+	Model                string  `json:"model"`
+	Temperature          float64 `json:"temperature"`
+	MaxTokens            int     `json:"maxTokens"`
+	PromptBundleVersion  string  `json:"promptBundleVersion"`
+	RuntimePolicyVersion int64   `json:"runtimePolicyVersion,omitempty"`
 }
 
 type AnswerKnowledgeBase struct {
@@ -102,18 +103,19 @@ type AnswerPersistence struct {
 }
 
 type AnswerTrace struct {
-	Mode                AnswerMode         `json:"mode"`
-	Response            string             `json:"response"`
-	Citations           []AnswerCitation   `json:"citations"`
-	Usage               AnswerUsage        `json:"usage"`
-	LatencyMS           int64              `json:"latencyMs"`
-	Model               string             `json:"model"`
-	PromptBundleVersion string             `json:"promptBundleVersion"`
-	Persisted           bool               `json:"persisted"`
-	UsageRecorded       bool               `json:"usageRecorded"`
-	UsageRecordFailed   bool               `json:"usageRecordFailed"`
-	Persistence         *AnswerPersistence `json:"persistence,omitempty"`
-	ErrorCode           string             `json:"errorCode,omitempty"`
+	Mode                 AnswerMode         `json:"mode"`
+	Response             string             `json:"response"`
+	Citations            []AnswerCitation   `json:"citations"`
+	Usage                AnswerUsage        `json:"usage"`
+	LatencyMS            int64              `json:"latencyMs"`
+	Model                string             `json:"model"`
+	PromptBundleVersion  string             `json:"promptBundleVersion"`
+	RuntimePolicyVersion int64              `json:"runtimePolicyVersion"`
+	Persisted            bool               `json:"persisted"`
+	UsageRecorded        bool               `json:"usageRecorded"`
+	UsageRecordFailed    bool               `json:"usageRecordFailed"`
+	Persistence          *AnswerPersistence `json:"persistence,omitempty"`
+	ErrorCode            string             `json:"errorCode,omitempty"`
 }
 
 type AnswerProductionHooks struct {
@@ -164,8 +166,9 @@ func GenerateAnswer(ctx context.Context, model AnswerModel, request AnswerReques
 	started := time.Now()
 	trace := AnswerTrace{
 		Mode: request.Mode, Model: strings.TrimSpace(options.Model),
-		PromptBundleVersion: strings.TrimSpace(options.PromptBundleVersion),
-		Citations:           answerCitations(request.Input.Hits),
+		PromptBundleVersion:  strings.TrimSpace(options.PromptBundleVersion),
+		RuntimePolicyVersion: options.RuntimePolicyVersion,
+		Citations:            answerCitations(request.Input.Hits),
 	}
 	finishError := func(code string, err error) (AnswerTrace, error) {
 		trace.ErrorCode = code
