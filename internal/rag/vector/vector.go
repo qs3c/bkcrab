@@ -5,7 +5,44 @@
 // before removing the old one, so searchable data is never deleted early.
 package vector
 
-import "context"
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"strings"
+)
+
+// CollectionKey is an opaque, server-resolved vector target. HTTP handlers and
+// client DTOs must continue accepting logical KB IDs only.
+type CollectionKey string
+
+func LegacyCollectionKey(kbID string) (CollectionKey, error) {
+	kbID = strings.TrimSpace(kbID)
+	if kbID == "" || len(kbID) > 255 {
+		return "", errors.New("invalid legacy collection identity")
+	}
+	return CollectionKey(kbID), nil
+}
+
+// GenerationCollectionKey derives a bounded key without embedding logical KB
+// names or other user text. generationID is a server-generated identifier and
+// remains visible in the physical name for operational correlation.
+func GenerationCollectionKey(logicalKBID, generationID string) (CollectionKey, error) {
+	logicalKBID = strings.TrimSpace(logicalKBID)
+	generationID = strings.TrimSpace(generationID)
+	if logicalKBID == "" || generationID == "" || len(logicalKBID) > 255 || len(generationID) > 120 {
+		return "", errors.New("invalid generation collection identity")
+	}
+	for _, char := range generationID {
+		if char == '_' || char == '-' || char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' {
+			continue
+		}
+		return "", errors.New("invalid generation id")
+	}
+	hash := sha256.Sum256([]byte(logicalKBID))
+	return CollectionKey(fmt.Sprintf("kb_%x_g_%s", hash[:8], generationID)), nil
+}
 
 // ChunkData is one indexed document chunk.
 type ChunkData struct {
@@ -56,20 +93,20 @@ type SearchQuery struct {
 
 // Store is the vector database surface needed by the RAG service.
 type Store interface {
-	EnsureCollection(ctx context.Context, kbID string, dims int) error
-	UpsertChunks(ctx context.Context, kbID string, chunks []ChunkData) error
+	EnsureCollection(ctx context.Context, collectionKey CollectionKey, dims int) error
+	UpsertChunks(ctx context.Context, collectionKey CollectionKey, chunks []ChunkData) error
 	// DeleteDocVersion removes only the entities for the exact physical
 	// doc_version. Delayed cleanup must use this method so one retired version
 	// cannot delete a newer version whose grace period has not elapsed.
-	DeleteDocVersion(ctx context.Context, kbID, docID string, version int64) error
+	DeleteDocVersion(ctx context.Context, collectionKey CollectionKey, docID string, version int64) error
 	// DeleteDoc removes every indexed version of docID.
-	DeleteDoc(ctx context.Context, kbID, docID string) error
-	DropCollection(ctx context.Context, kbID string) error
+	DeleteDoc(ctx context.Context, collectionKey CollectionKey, docID string) error
+	DropCollection(ctx context.Context, collectionKey CollectionKey) error
 	// HybridSearch combines one or more dense-vector routes and an optional
 	// full-text route with RRF. At least one dense route is required.
-	HybridSearch(ctx context.Context, kbID string, query SearchQuery, topK int) ([]SearchHit, error)
+	HybridSearch(ctx context.Context, collectionKey CollectionKey, query SearchQuery, topK int) ([]SearchHit, error)
 	// GetChunks returns the exact indexed chunks named by refs. Missing refs are
 	// omitted, allowing callers to tolerate a concurrent reindex without ever
 	// reading an older document version.
-	GetChunks(ctx context.Context, kbID string, refs []ChunkRef) ([]ChunkData, error)
+	GetChunks(ctx context.Context, collectionKey CollectionKey, refs []ChunkRef) ([]ChunkData, error)
 }

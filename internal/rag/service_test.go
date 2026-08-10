@@ -44,6 +44,14 @@ type failFirstObjectDelete struct {
 	attempts atomic.Int32
 }
 
+type fixedCollectionResolver struct {
+	key vector.CollectionKey
+}
+
+func (r fixedCollectionResolver) ResolveCollection(context.Context, string) (vector.CollectionKey, error) {
+	return r.key, nil
+}
+
 type blockingLatePutObjects struct {
 	objects.Store
 	blockKey string
@@ -444,17 +452,17 @@ type cancelAfterEnsureVector struct {
 	dropAttempts atomic.Int32
 }
 
-func (v *cancelAfterEnsureVector) EnsureCollection(ctx context.Context, kbID string, dims int) error {
+func (v *cancelAfterEnsureVector) EnsureCollection(ctx context.Context, kbID vector.CollectionKey, dims int) error {
 	if err := v.Fake.EnsureCollection(ctx, kbID, dims); err != nil {
 		return err
 	}
-	v.created <- kbID
+	v.created <- string(kbID)
 	v.cancel()
 	<-ctx.Done()
 	return ctx.Err()
 }
 
-func (v *cancelAfterEnsureVector) DropCollection(ctx context.Context, kbID string) error {
+func (v *cancelAfterEnsureVector) DropCollection(ctx context.Context, kbID vector.CollectionKey) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -469,16 +477,16 @@ type blockingProvisionVector struct {
 	started chan string
 }
 
-func (v *blockingProvisionVector) EnsureCollection(ctx context.Context, kbID string, dims int) error {
+func (v *blockingProvisionVector) EnsureCollection(ctx context.Context, kbID vector.CollectionKey, dims int) error {
 	if err := v.Fake.EnsureCollection(ctx, kbID, dims); err != nil {
 		return err
 	}
-	v.started <- kbID
+	v.started <- string(kbID)
 	<-ctx.Done()
 	return ctx.Err()
 }
 
-func (v *failOnceDeleteVector) DeleteDoc(ctx context.Context, kbID, docID string) error {
+func (v *failOnceDeleteVector) DeleteDoc(ctx context.Context, kbID vector.CollectionKey, docID string) error {
 	v.mu.Lock()
 	fail := v.failDocDelete
 	v.failDocDelete = false
@@ -489,7 +497,7 @@ func (v *failOnceDeleteVector) DeleteDoc(ctx context.Context, kbID, docID string
 	return v.Fake.DeleteDoc(ctx, kbID, docID)
 }
 
-func (v *failOnceDeleteVector) DropCollection(ctx context.Context, kbID string) error {
+func (v *failOnceDeleteVector) DropCollection(ctx context.Context, kbID vector.CollectionKey) error {
 	v.mu.Lock()
 	fail := v.failKBDelete
 	v.failKBDelete = false
@@ -507,41 +515,42 @@ func newVersionTrackingVector() *versionTrackingVector {
 	}
 }
 
-func (v *versionTrackingVector) UpsertChunks(ctx context.Context, kbID string, chunks []vector.ChunkData) error {
+func (v *versionTrackingVector) UpsertChunks(ctx context.Context, kbID vector.CollectionKey, chunks []vector.ChunkData) error {
 	if err := v.Fake.UpsertChunks(ctx, kbID, chunks); err != nil {
 		return err
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.versions[kbID] == nil {
-		v.versions[kbID] = make(map[string]map[int64]int)
+	key := string(kbID)
+	if v.versions[key] == nil {
+		v.versions[key] = make(map[string]map[int64]int)
 	}
 	for _, chunk := range chunks {
-		if v.versions[kbID][chunk.DocID] == nil {
-			v.versions[kbID][chunk.DocID] = make(map[int64]int)
+		if v.versions[key][chunk.DocID] == nil {
+			v.versions[key][chunk.DocID] = make(map[int64]int)
 		}
-		v.versions[kbID][chunk.DocID][chunk.DocVersion]++
+		v.versions[key][chunk.DocID][chunk.DocVersion]++
 	}
 	return nil
 }
 
-func (v *versionTrackingVector) DeleteDocVersion(ctx context.Context, kbID, docID string, version int64) error {
+func (v *versionTrackingVector) DeleteDocVersion(ctx context.Context, kbID vector.CollectionKey, docID string, version int64) error {
 	if err := v.Fake.DeleteDocVersion(ctx, kbID, docID, version); err != nil {
 		return err
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	delete(v.versions[kbID][docID], version)
+	delete(v.versions[string(kbID)][docID], version)
 	return nil
 }
 
-func (v *versionTrackingVector) DeleteDoc(ctx context.Context, kbID, docID string) error {
+func (v *versionTrackingVector) DeleteDoc(ctx context.Context, kbID vector.CollectionKey, docID string) error {
 	if err := v.Fake.DeleteDoc(ctx, kbID, docID); err != nil {
 		return err
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	delete(v.versions[kbID], docID)
+	delete(v.versions[string(kbID)], docID)
 	return nil
 }
 
@@ -622,7 +631,7 @@ func TestKnowledgeBaseLifecycleAndOwnership(t *testing.T) {
 	if kb.EmbedModel != "embed-test" || kb.EmbedDims != 4 || kb.ChunkSize != 512 || kb.ChunkOverlap != 64 {
 		t.Fatalf("knowledge-base snapshot/defaults are wrong: %+v", kb)
 	}
-	if !fake.HasCollection(kb.ID) {
+	if !fake.HasCollection(vector.CollectionKey(kb.ID)) {
 		t.Fatal("CreateKB did not ensure a collection")
 	}
 	if _, err := service.GetKB(ctx, "u2", kb.ID); !errors.Is(err, ErrForbidden) {
@@ -635,8 +644,40 @@ func TestKnowledgeBaseLifecycleAndOwnership(t *testing.T) {
 	if err := service.DeleteKB(ctx, "u1", kb.ID); err != nil {
 		t.Fatal(err)
 	}
-	if fake.HasCollection(kb.ID) {
+	if fake.HasCollection(vector.CollectionKey(kb.ID)) {
 		t.Fatal("DeleteKB did not drop collection")
+	}
+}
+
+func TestKnowledgeBaseLifecycleUsesResolvedCollectionKey(t *testing.T) {
+	embedding := newEmbeddingServer(t)
+	fake := vector.NewFake()
+	resolved, err := vector.GenerationCollectionKey("logical-kb", "generation_01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(Deps{
+		Store: newRAGTestStore(t), Vector: fake, Objects: objects.NewLocalFS(t.TempDir()),
+		Collections: fixedCollectionResolver{key: resolved},
+		Cfg: config.RAGCfg{
+			Milvus: config.MilvusCfg{Address: "fake"},
+			Embedding: config.RAGEmbeddingCfg{
+				Endpoint: embedding.URL, Model: "embed-test", Dims: 4,
+			},
+		},
+	})
+	kb, err := service.CreateKB(context.Background(), "u1", "resolved target", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fake.HasCollection(resolved) || fake.HasCollection(vector.CollectionKey(kb.ID)) {
+		t.Fatalf("provisioning bypassed resolver: resolved=%v logical=%v", fake.HasCollection(resolved), fake.HasCollection(vector.CollectionKey(kb.ID)))
+	}
+	if err := service.DeleteKB(context.Background(), "u1", kb.ID); err != nil {
+		t.Fatal(err)
+	}
+	if fake.HasCollection(resolved) {
+		t.Fatal("DeleteKB guessed a logical collection instead of dropping the resolved key")
 	}
 }
 
@@ -664,18 +705,18 @@ func TestCreateKBCancellationRetainsDurableCleanupHandleAfterDropFailure(t *test
 	if err != nil || marked.Status != store.RAGKBStatusDeleting {
 		t.Fatalf("durable cleanup handle=%+v err=%v", marked, err)
 	}
-	if !vec.HasCollection(kbID) || vec.dropAttempts.Load() != 1 {
+	if !vec.HasCollection(vector.CollectionKey(kbID)) || vec.dropAttempts.Load() != 1 {
 		t.Fatalf("failed first cleanup collection=%v attempts=%d",
-			vec.HasCollection(kbID), vec.dropAttempts.Load())
+			vec.HasCollection(vector.CollectionKey(kbID)), vec.dropAttempts.Load())
 	}
 
 	service.runLifecyclePass(context.Background())
 	if _, err := service.st.GetRAGKB(context.Background(), kbID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("retry did not finalize KB row: %v", err)
 	}
-	if vec.HasCollection(kbID) || vec.dropAttempts.Load() != 2 {
+	if vec.HasCollection(vector.CollectionKey(kbID)) || vec.dropAttempts.Load() != 2 {
 		t.Fatalf("retry cleanup collection=%v attempts=%d",
-			vec.HasCollection(kbID), vec.dropAttempts.Load())
+			vec.HasCollection(vector.CollectionKey(kbID)), vec.dropAttempts.Load())
 	}
 }
 
@@ -731,7 +772,7 @@ func TestCreateKBUserTombstoneCancelsInFlightProvisioning(t *testing.T) {
 	if _, err := st.GetRAGKB(context.Background(), kbID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("KB row survived cleanup: %v", err)
 	}
-	if vec.HasCollection(kbID) {
+	if vec.HasCollection(vector.CollectionKey(kbID)) {
 		t.Fatal("collection survived user tombstone cleanup")
 	}
 }
@@ -750,7 +791,7 @@ func TestLifecycleRecoversCrashedKBProvisioning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := vec.EnsureCollection(context.Background(), kb.ID, kb.EmbedDims); err != nil {
+	if err := vec.EnsureCollection(context.Background(), vector.CollectionKey(kb.ID), kb.EmbedDims); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.st.(*store.DBStore).DB().ExecContext(context.Background(),
@@ -763,7 +804,7 @@ func TestLifecycleRecoversCrashedKBProvisioning(t *testing.T) {
 	if _, err := service.st.GetRAGKB(context.Background(), kb.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("crashed provisioning row was not finalized: %v", err)
 	}
-	if vec.HasCollection(kb.ID) {
+	if vec.HasCollection(vector.CollectionKey(kb.ID)) {
 		t.Fatal("crashed provisioning collection was not dropped")
 	}
 }
@@ -863,10 +904,10 @@ func TestUploadReindexSearchAndDelete(t *testing.T) {
 	if indexed.ChunkCount == 0 || indexed.TokenCount == 0 || indexed.IndexedAt == nil {
 		t.Fatalf("index statistics were not persisted: %+v", indexed)
 	}
-	if fake.Count(manual.ID) != indexed.ChunkCount {
-		t.Fatalf("vector count = %d, document chunks = %d", fake.Count(manual.ID), indexed.ChunkCount)
+	if fake.Count(vector.CollectionKey(manual.ID)) != indexed.ChunkCount {
+		t.Fatalf("vector count = %d, document chunks = %d", fake.Count(vector.CollectionKey(manual.ID)), indexed.ChunkCount)
 	}
-	storedChunks, err := fake.GetChunks(ctx, manual.ID, []vector.ChunkRef{{
+	storedChunks, err := fake.GetChunks(ctx, vector.CollectionKey(manual.ID), []vector.ChunkRef{{
 		DocID: manualDoc.ID, Index: 0, DocVersion: manualDoc.Version,
 	}})
 	if err != nil || len(storedChunks) != 1 {
@@ -896,7 +937,7 @@ func TestUploadReindexSearchAndDelete(t *testing.T) {
 	if reindexed.Version != 2 {
 		t.Fatalf("reindex version = %d, want 2", reindexed.Version)
 	}
-	operations := fake.Ops(manual.ID)
+	operations := fake.Ops(vector.CollectionKey(manual.ID))
 	upsert := -1
 	for index, operation := range operations {
 		if operation == "upsert_v2" && upsert < 0 {
@@ -913,7 +954,7 @@ func TestUploadReindexSearchAndDelete(t *testing.T) {
 	if err := service.DeleteDocument(ctx, "u1", manual.ID, manualDoc.ID); err != nil {
 		t.Fatal(err)
 	}
-	if fake.Count(manual.ID) != 0 {
+	if fake.Count(vector.CollectionKey(manual.ID)) != 0 {
 		t.Fatal("DeleteDocument left vector chunks behind")
 	}
 }
@@ -992,7 +1033,7 @@ func TestDeleteDocumentWaitsForInFlightIndex(t *testing.T) {
 	if _, err := service.st.GetRAGIndexTask(ctx, taskID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("index task row remained after document deletion: %v", err)
 	}
-	if count := fake.Count(kb.ID); count != 0 {
+	if count := fake.Count(vector.CollectionKey(kb.ID)); count != 0 {
 		t.Fatalf("document vectors remained after deletion: %d", count)
 	}
 }
@@ -1096,7 +1137,7 @@ func TestRAGDocumentDeleteRetainsTombstoneUntilCleanupRetrySucceeds(t *testing.T
 	if !strings.EqualFold(tombstone.Status, "deleting") || tombstone.ActiveVersion != 0 {
 		t.Fatalf("cleanup failure lost durable tombstone: %+v", tombstone)
 	}
-	if vec.Count(kb.ID) == 0 {
+	if vec.Count(vector.CollectionKey(kb.ID)) == 0 {
 		t.Fatal("failure injection did not leave the external vector for retry")
 	}
 
@@ -1106,7 +1147,7 @@ func TestRAGDocumentDeleteRetainsTombstoneUntilCleanupRetrySucceeds(t *testing.T
 	if _, err := service.st.GetRAGDocument(ctx, doc.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("document row remained after successful retry: %v", err)
 	}
-	if count := vec.Count(kb.ID); count != 0 {
+	if count := vec.Count(vector.CollectionKey(kb.ID)); count != 0 {
 		t.Fatalf("vectors remained after successful retry: %d", count)
 	}
 }
@@ -1225,7 +1266,7 @@ func TestRAGExactVersionGCAndSweepRemoveLateWritesWithoutTouchingNewerGrace(t *t
 			gcClaim, gcFinish, events.snapshot())
 	}
 
-	if err := tracked.UpsertChunks(ctx, kb.ID, []vector.ChunkData{{
+	if err := tracked.UpsertChunks(ctx, vector.CollectionKey(kb.ID), []vector.ChunkData{{
 		DocID: doc.ID, Index: 99, DocVersion: 1, Content: "late", SearchContent: "late",
 		Vector: []float32{1, 0, 0, 0},
 	}}); err != nil {
@@ -1909,7 +1950,7 @@ func TestReindexWaitsForInFlightIndexWithoutVersionRollback(t *testing.T) {
 	if len(versions) != 2 || versions[0] != 1 || versions[1] != 2 {
 		t.Fatalf("vector versions after reindex = %v, want retired v1 retained until delayed GC", versions)
 	}
-	ops := tracked.Ops(kb.ID)
+	ops := tracked.Ops(vector.CollectionKey(kb.ID))
 	wantOps := []string{"upsert_v1", "upsert_v2"}
 	if len(ops) != len(wantOps) {
 		t.Fatalf("vector operations = %v, want %v", ops, wantOps)

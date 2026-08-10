@@ -20,7 +20,7 @@ const fakeRRFK = 60
 // production contract requires.
 type Fake struct {
 	mu          sync.RWMutex
-	collections map[string]*fakeCollection
+	collections map[CollectionKey]*fakeCollection
 }
 
 type fakeCollection struct {
@@ -43,46 +43,46 @@ type fakeRankedChunk struct {
 
 // NewFake returns an empty, concurrency-safe in-memory vector store.
 func NewFake() *Fake {
-	return &Fake{collections: make(map[string]*fakeCollection)}
+	return &Fake{collections: make(map[CollectionKey]*fakeCollection)}
 }
 
-func (f *Fake) EnsureCollection(ctx context.Context, kbID string, dims int) error {
+func (f *Fake) EnsureCollection(ctx context.Context, collectionKey CollectionKey, dims int) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if kbID == "" {
+	if collectionKey == "" {
 		return fmt.Errorf("collection id 不能为空")
 	}
 	if dims <= 0 {
-		return fmt.Errorf("collection %s 的向量维度必须大于 0", kbID)
+		return fmt.Errorf("collection %s 的向量维度必须大于 0", collectionKey)
 	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.collections == nil {
-		f.collections = make(map[string]*fakeCollection)
+		f.collections = make(map[CollectionKey]*fakeCollection)
 	}
-	if existing, ok := f.collections[kbID]; ok {
+	if existing, ok := f.collections[collectionKey]; ok {
 		if existing.dims != dims {
-			return fmt.Errorf("collection %s 已存在，维度为 %d，不能改为 %d", kbID, existing.dims, dims)
+			return fmt.Errorf("collection %s 已存在，维度为 %d，不能改为 %d", collectionKey, existing.dims, dims)
 		}
 		return nil
 	}
-	f.collections[kbID] = &fakeCollection{
+	f.collections[collectionKey] = &fakeCollection{
 		dims:    dims,
 		entries: make(map[fakeEntryKey]ChunkData),
 	}
 	return nil
 }
 
-func (f *Fake) UpsertChunks(ctx context.Context, kbID string, chunks []ChunkData) error {
+func (f *Fake) UpsertChunks(ctx context.Context, collectionKey CollectionKey, chunks []ChunkData) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	c, err := f.collectionLocked(kbID)
+	c, err := f.collectionLocked(collectionKey)
 	if err != nil {
 		return err
 	}
@@ -91,7 +91,7 @@ func (f *Fake) UpsertChunks(ctx context.Context, kbID string, chunks []ChunkData
 	// upsert behind.
 	for i, chunk := range chunks {
 		if len(chunk.Vector) != c.dims {
-			return fmt.Errorf("collection %s: chunk %d 的向量维度为 %d，期望 %d", kbID, i, len(chunk.Vector), c.dims)
+			return fmt.Errorf("collection %s: chunk %d 的向量维度为 %d，期望 %d", collectionKey, i, len(chunk.Vector), c.dims)
 		}
 	}
 
@@ -111,14 +111,14 @@ func (f *Fake) UpsertChunks(ctx context.Context, kbID string, chunks []ChunkData
 	return nil
 }
 
-func (f *Fake) DeleteDocVersion(ctx context.Context, kbID, docID string, version int64) error {
+func (f *Fake) DeleteDocVersion(ctx context.Context, collectionKey CollectionKey, docID string, version int64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	c, err := f.collectionLocked(kbID)
+	c, err := f.collectionLocked(collectionKey)
 	if err != nil {
 		return err
 	}
@@ -131,14 +131,14 @@ func (f *Fake) DeleteDocVersion(ctx context.Context, kbID, docID string, version
 	return nil
 }
 
-func (f *Fake) DeleteDoc(ctx context.Context, kbID, docID string) error {
+func (f *Fake) DeleteDoc(ctx context.Context, collectionKey CollectionKey, docID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	c, err := f.collectionLocked(kbID)
+	c, err := f.collectionLocked(collectionKey)
 	if err != nil {
 		return err
 	}
@@ -150,7 +150,7 @@ func (f *Fake) DeleteDoc(ctx context.Context, kbID, docID string) error {
 	return nil
 }
 
-func (f *Fake) DropCollection(ctx context.Context, kbID string) error {
+func (f *Fake) DropCollection(ctx context.Context, collectionKey CollectionKey) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -160,11 +160,11 @@ func (f *Fake) DropCollection(ctx context.Context, kbID string) error {
 	// Collection cleanup is an idempotent lifecycle operation. A retry after a
 	// later object/catalog failure must not get stuck merely because the first
 	// attempt already removed the in-memory collection.
-	delete(f.collections, kbID)
+	delete(f.collections, collectionKey)
 	return nil
 }
 
-func (f *Fake) HybridSearch(ctx context.Context, kbID string, query SearchQuery, topK int) ([]SearchHit, error) {
+func (f *Fake) HybridSearch(ctx context.Context, collectionKey CollectionKey, query SearchQuery, topK int) ([]SearchHit, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -173,21 +173,21 @@ func (f *Fake) HybridSearch(ctx context.Context, kbID string, query SearchQuery,
 	}
 
 	f.mu.RLock()
-	c, err := f.collectionLocked(kbID)
+	c, err := f.collectionLocked(collectionKey)
 	if err != nil {
 		f.mu.RUnlock()
 		return nil, err
 	}
 	if len(query.Dense) == 0 {
 		f.mu.RUnlock()
-		return nil, fmt.Errorf("collection %s: 查询向量不能为空", kbID)
+		return nil, fmt.Errorf("collection %s: 查询向量不能为空", collectionKey)
 	}
 	for index, queryVec := range query.Dense {
 		if len(queryVec) == c.dims {
 			continue
 		}
 		f.mu.RUnlock()
-		return nil, fmt.Errorf("collection %s: 查询向量 %d 的维度为 %d，期望 %d", kbID, index, len(queryVec), c.dims)
+		return nil, fmt.Errorf("collection %s: 查询向量 %d 的维度为 %d，期望 %d", collectionKey, index, len(queryVec), c.dims)
 	}
 	entries := make([]fakeRankedChunk, 0, len(c.entries))
 	for key, chunk := range c.entries {
@@ -244,43 +244,43 @@ func (f *Fake) HybridSearch(ctx context.Context, kbID string, query SearchQuery,
 	return hits, nil
 }
 
-// HasCollection reports whether kbID has been ensured. It is a test helper for
+// HasCollection reports whether collectionKey has been ensured. It is a test helper for
 // service-level lifecycle assertions.
-func (f *Fake) HasCollection(kbID string) bool {
+func (f *Fake) HasCollection(collectionKey CollectionKey) bool {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	_, ok := f.collections[kbID]
+	_, ok := f.collections[collectionKey]
 	return ok
 }
 
-// Count returns the number of indexed entities in kbID. Missing collections
+// Count returns the number of indexed entities in collectionKey. Missing collections
 // count as zero so test cleanup assertions remain concise.
-func (f *Fake) Count(kbID string) int {
+func (f *Fake) Count(collectionKey CollectionKey) int {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	c, ok := f.collections[kbID]
+	c, ok := f.collections[collectionKey]
 	if !ok {
 		return 0
 	}
 	return len(c.entries)
 }
 
-// Ops returns a copy of the write-order log for kbID. Upserts are recorded as
+// Ops returns a copy of the write-order log for collectionKey. Upserts are recorded as
 // "upsert_vN" and exact cleanup as "delete_vN".
-func (f *Fake) Ops(kbID string) []string {
+func (f *Fake) Ops(collectionKey CollectionKey) []string {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	c, ok := f.collections[kbID]
+	c, ok := f.collections[collectionKey]
 	if !ok {
 		return nil
 	}
 	return append([]string(nil), c.ops...)
 }
 
-func (f *Fake) collectionLocked(kbID string) (*fakeCollection, error) {
-	c, ok := f.collections[kbID]
+func (f *Fake) collectionLocked(collectionKey CollectionKey) (*fakeCollection, error) {
+	c, ok := f.collections[collectionKey]
 	if !ok {
-		return nil, fmt.Errorf("collection %s 不存在", kbID)
+		return nil, fmt.Errorf("collection %s 不存在", collectionKey)
 	}
 	return c, nil
 }

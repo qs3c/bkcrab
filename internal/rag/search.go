@@ -257,8 +257,9 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		topN = 100
 	}
 	type target struct {
-		kb    *store.RAGKBRecord
-		dense [][]float32
+		kb            *store.RAGKBRecord
+		collectionKey vector.CollectionKey
+		dense         [][]float32
 	}
 	kbs := make([]*store.RAGKBRecord, 0, len(kbIDs))
 	seenKB := make(map[string]struct{}, len(kbIDs))
@@ -339,6 +340,10 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 	targets := make([]target, 0, len(kbs))
 	vectorCache := make(map[string][][]float32)
 	for _, kb := range kbs {
+		collectionKey, err := s.resolveCollection(ctx, kb.ID)
+		if err != nil {
+			return nil, err
+		}
 		embeddingCfg, err := s.embeddingConfigForKB(ctx, kb)
 		if err != nil {
 			return nil, err
@@ -361,7 +366,7 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 			queryVectors = vectors
 			vectorCache[cacheKey] = queryVectors
 		}
-		targets = append(targets, target{kb: kb, dense: queryVectors})
+		targets = append(targets, target{kb: kb, collectionKey: collectionKey, dense: queryVectors})
 	}
 
 	candidateTopK := runtimePolicy.CandidateTopK
@@ -389,10 +394,10 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		if len(activeVersions) == 0 {
 			continue
 		}
-		if err := s.vec.EnsureCollection(ctx, target.kb.ID, target.kb.EmbedDims); err != nil {
+		if err := s.vec.EnsureCollection(ctx, target.collectionKey, target.kb.EmbedDims); err != nil {
 			return nil, fmt.Errorf("准备检索 %s: %w", target.kb.Name, err)
 		}
-		vectorHits, err := s.vec.HybridSearch(ctx, target.kb.ID, vector.SearchQuery{
+		vectorHits, err := s.vec.HybridSearch(ctx, target.collectionKey, vector.SearchQuery{
 			Dense: target.dense, Text: plan.RewrittenQuery,
 			ActiveVersions: activeVersions, MaxFilterBytes: s.cfg.Limits.MaxMilvusFilterBytes,
 		}, candidateTopK)

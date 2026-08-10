@@ -43,12 +43,12 @@ func (s *searchUserLookupStore) GetUser(ctx context.Context, userID string) (*st
 	return s.Store.GetUser(ctx, userID)
 }
 
-func (v *searchCountingVector) EnsureCollection(ctx context.Context, kbID string, dims int) error {
+func (v *searchCountingVector) EnsureCollection(ctx context.Context, kbID vector.CollectionKey, dims int) error {
 	v.ensureCalls++
 	return v.Fake.EnsureCollection(ctx, kbID, dims)
 }
 
-func (v *searchCountingVector) HybridSearch(ctx context.Context, kbID string, query vector.SearchQuery, topK int) ([]vector.SearchHit, error) {
+func (v *searchCountingVector) HybridSearch(ctx context.Context, kbID vector.CollectionKey, query vector.SearchQuery, topK int) ([]vector.SearchHit, error) {
 	v.searchCalls++
 	return v.Fake.HybridSearch(ctx, kbID, query, topK)
 }
@@ -112,7 +112,7 @@ func (s *assetBatchStore) ListRAGAttachmentsByIDs(_ context.Context, ids []strin
 	return records, nil
 }
 
-func (v *activeMapRetryVector) HybridSearch(_ context.Context, _ string, query vector.SearchQuery, _ int) ([]vector.SearchHit, error) {
+func (v *activeMapRetryVector) HybridSearch(_ context.Context, _ vector.CollectionKey, query vector.SearchQuery, _ int) ([]vector.SearchHit, error) {
 	v.searchCalls++
 	version := query.ActiveVersions["doc_retry_once"]
 	return []vector.SearchHit{{
@@ -151,7 +151,7 @@ func newRAGSearchOptionsFixture(t *testing.T) (*Service, *vector.Fake, string) {
 		}}); err != nil {
 			t.Fatal(err)
 		}
-		if err := fake.UpsertChunks(ctx, kb.ID, []vector.ChunkData{{
+		if err := fake.UpsertChunks(ctx, vector.CollectionKey(kb.ID), []vector.ChunkData{{
 			DocID: docID, Index: 0, DocVersion: 1, Content: content,
 			SearchContent: content, Vector: []float32{1, 0, 0, 0},
 		}}); err != nil {
@@ -488,7 +488,7 @@ func TestSearchCrossKBMergeFiltersStagingAndOrphanVectors(t *testing.T) {
 		}}); err != nil {
 			t.Fatal(err)
 		}
-		if err := fake.UpsertChunks(ctx, kb.ID, []vector.ChunkData{
+		if err := fake.UpsertChunks(ctx, vector.CollectionKey(kb.ID), []vector.ChunkData{
 			{DocID: docID, Index: 0, DocVersion: 1, Content: "active", SearchContent: "active", Vector: []float32{0, 1, 0, 0}},
 			{DocID: docID, Index: 0, DocVersion: 2, Content: "staging", SearchContent: "staging", Vector: []float32{0, 1, 0, 0}},
 			{DocID: "doc_orphan", Index: 0, DocVersion: 1, Content: "orphan", SearchContent: "orphan", Vector: []float32{0, 1, 0, 0}},
@@ -532,7 +532,7 @@ func TestSearchExcludesDeletingDocumentImmediately(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := fake.UpsertChunks(ctx, kb.ID, []vector.ChunkData{{
+	if err := fake.UpsertChunks(ctx, vector.CollectionKey(kb.ID), []vector.ChunkData{{
 		DocID: doc.ID, Index: 0, DocVersion: 1, Content: "must be revoked",
 		SearchContent: "must be revoked", Vector: []float32{0, 1, 0, 0},
 	}}); err != nil {
@@ -574,7 +574,7 @@ func TestSearchExcludesDeletingUserImmediately(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := fake.UpsertChunks(ctx, kb.ID, []vector.ChunkData{{
+	if err := fake.UpsertChunks(ctx, vector.CollectionKey(kb.ID), []vector.ChunkData{{
 		DocID: doc.ID, Index: 0, DocVersion: 1, Content: "must be revoked",
 		SearchContent: "must be revoked", Vector: []float32{0, 1, 0, 0},
 	}}); err != nil {
@@ -661,7 +661,7 @@ func TestSearchAdminPathsExcludeDeletingActualKBOwner(t *testing.T) {
 			}}); err != nil {
 				t.Fatal(err)
 			}
-			if err := vec.UpsertChunks(ctx, first.ID, []vector.ChunkData{{
+			if err := vec.UpsertChunks(ctx, vector.CollectionKey(first.ID), []vector.ChunkData{{
 				DocID: doc.ID, Index: 0, DocVersion: 1, Content: "must be revoked",
 				SearchContent: "must be revoked", Vector: []float32{0, 1, 0, 0},
 			}}); err != nil {
@@ -756,7 +756,7 @@ func TestSearchHydratesCatalogForRerankAndLoadsReadyAssets(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := fake.UpsertChunks(ctx, kb.ID, []vector.ChunkData{
+	if err := fake.UpsertChunks(ctx, vector.CollectionKey(kb.ID), []vector.ChunkData{
 		{DocID: doc.ID, Index: 0, DocVersion: 1, Content: "不得作为新格式正文", SearchContent: "vector search payload", Vector: []float32{1, 0, 0, 0}},
 		{DocID: doc.ID, Index: 0, DocVersion: 2, Content: "未激活高分版本", SearchContent: "staging", Vector: []float32{1, 0, 0, 0}},
 	}); err != nil {

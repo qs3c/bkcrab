@@ -136,7 +136,7 @@ func addActiveSearchDocument(t *testing.T, service *Service, kbID, docID string)
 	}
 }
 
-func (v *queryCaptureVector) HybridSearch(ctx context.Context, kbID string, query vector.SearchQuery, topK int) ([]vector.SearchHit, error) {
+func (v *queryCaptureVector) HybridSearch(ctx context.Context, kbID vector.CollectionKey, query vector.SearchQuery, topK int) ([]vector.SearchHit, error) {
 	v.mu.Lock()
 	v.queryText = append(v.queryText, query.Text)
 	v.dense = append(v.dense, len(query.Dense))

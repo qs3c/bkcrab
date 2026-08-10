@@ -355,12 +355,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先写同一逻辑 KB 两个 collection key、不同 dims、互不污染的 fake tests。
-- [ ] 改参数名/类型时保持窄接口；禁止 handler/API 接收 collection key。
-- [ ] Milvus physical name derivation 必须 bounded、合法、无用户原文；generation ID 进入名字。
-- [ ] legacy adapter 确保现有 collection 无需重建即可读写。
-- [ ] 所有 delete/drop 调用使用已鉴权、已持久化的 physical key，不能字符串猜测。
-- [ ] 运行 `go test ./internal/rag/vector ./internal/rag/...`。
+- [x] 先写同一逻辑 KB 两个 collection key、不同 dims、互不污染的 fake tests。
+- [x] 改参数名/类型时保持窄接口；禁止 handler/API 接收 collection key。
+- [x] Milvus physical name derivation 必须 bounded、合法、无用户原文；generation ID 进入名字。
+- [x] legacy adapter 确保现有 collection 无需重建即可读写。
+- [x] 所有 delete/drop 调用使用已鉴权、已持久化的 physical key，不能字符串猜测。
+- [x] 运行 `go test ./internal/rag/vector ./internal/rag/...`。
 
 ### Task 9：Legacy KB generation backfill 与双读校验
 

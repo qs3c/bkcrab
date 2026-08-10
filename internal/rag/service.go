@@ -40,6 +40,18 @@ type UserEmbedCfgFn func(ctx context.Context, userID string) (config.RAGEmbeddin
 // owns the prompt, output validation, and fallback behavior.
 type QueryLLMFn func(ctx context.Context, userID, systemPrompt, userPrompt string) (string, error)
 
+// CollectionResolver is the only boundary allowed to translate an authorized
+// logical KB identity into an opaque vector target.
+type CollectionResolver interface {
+	ResolveCollection(ctx context.Context, kbID string) (vector.CollectionKey, error)
+}
+
+type LegacyCollectionResolver struct{}
+
+func (LegacyCollectionResolver) ResolveCollection(_ context.Context, kbID string) (vector.CollectionKey, error) {
+	return vector.LegacyCollectionKey(kbID)
+}
+
 type Deps struct {
 	Store         store.Store
 	Vector        vector.Store
@@ -48,6 +60,7 @@ type Deps struct {
 	UserEmbedCfg  UserEmbedCfgFn
 	QueryLLM      QueryLLMFn
 	RuntimePolicy RuntimePolicyProvider
+	Collections   CollectionResolver
 	Reranker      rerank.Reranker
 	Parser        parse.Parser
 	Primitives    parse.PrimitiveExtractor
@@ -72,6 +85,7 @@ type Service struct {
 	userCfg         UserEmbedCfgFn
 	queryLLM        QueryLLMFn
 	runtimePolicy   RuntimePolicyProvider
+	collections     CollectionResolver
 	reranker        rerank.Reranker
 	parser          parse.Parser
 	primitives      parse.PrimitiveExtractor
@@ -106,6 +120,9 @@ func New(d Deps) *Service {
 	d.Cfg.ApplyDefaults()
 	if d.RuntimePolicy == nil {
 		d.RuntimePolicy, _ = NewRuntimePolicySnapshot(DefaultRuntimePolicy(d.Cfg))
+	}
+	if d.Collections == nil {
+		d.Collections = LegacyCollectionResolver{}
 	}
 	recorder := d.Telemetry
 	if recorder == nil {
@@ -167,6 +184,7 @@ func New(d Deps) *Service {
 		userCfg:                         d.UserEmbedCfg,
 		queryLLM:                        d.QueryLLM,
 		runtimePolicy:                   d.RuntimePolicy,
+		collections:                     d.Collections,
 		reranker:                        d.Reranker,
 		parser:                          d.Parser,
 		primitives:                      d.Primitives,
@@ -186,6 +204,13 @@ func New(d Deps) *Service {
 		stagingArtifactTTL:              time.Duration(d.Cfg.Limits.StagingArtifactTTL) * time.Second,
 		maxCacheFingerprintsPerDocument: d.Cfg.Limits.MaxCacheFingerprintsPerDocument,
 	}
+}
+
+func (s *Service) resolveCollection(ctx context.Context, kbID string) (vector.CollectionKey, error) {
+	if s == nil || s.collections == nil {
+		return "", errors.New("rag collection resolver unavailable")
+	}
+	return s.collections.ResolveCollection(ctx, kbID)
 }
 
 // newTaskDocumentAIBudget binds one immutable version snapshot and claim fence

@@ -1075,7 +1075,11 @@ func (s *Service) embedChunks(
 	}); err != nil {
 		return nil, 0, err
 	}
-	if err := s.vec.EnsureCollection(ctx, kbID, version.EmbeddingDimensions); err != nil {
+	collectionKey, err := s.resolveCollection(ctx, kbID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("resolve vector collection: %w", err)
+	}
+	if err := s.vec.EnsureCollection(ctx, collectionKey, version.EmbeddingDimensions); err != nil {
 		return nil, 0, fmt.Errorf("准备向量 collection: %w", err)
 	}
 	embedder := embed.New(binding.Endpoint, binding.APIKey,
@@ -1183,6 +1187,10 @@ func (s *Service) upsertIndexVersion(
 	kbID string,
 	chunks []vector.ChunkData,
 ) error {
+	collectionKey, err := s.resolveCollection(ctx, kbID)
+	if err != nil {
+		return fmt.Errorf("resolve vector collection: %w", err)
+	}
 	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{
 		Stage: "indexing", Current: 0, Total: len(chunks), Unit: "chunks",
 	}); err != nil {
@@ -1197,7 +1205,7 @@ func (s *Service) upsertIndexVersion(
 			return errIndexFenceLost
 		}
 		end := min(start+pipelineStageBatchSize, len(chunks))
-		if err := s.vec.UpsertChunks(ctx, kbID, chunks[start:end]); err != nil {
+		if err := s.vec.UpsertChunks(ctx, collectionKey, chunks[start:end]); err != nil {
 			return fmt.Errorf("写入向量库: %w", err)
 		}
 	}

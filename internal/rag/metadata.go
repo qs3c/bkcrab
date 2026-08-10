@@ -65,7 +65,11 @@ func (s *Service) BuildMetadataSource(ctx context.Context, ownerID, kbID string)
 			})
 		}
 	}
-	chunks, err := s.vec.GetChunks(ctx, kbID, refs)
+	collectionKey, err := s.resolveCollection(ctx, kbID)
+	if err != nil {
+		return nil, fmt.Errorf("解析知识库 collection: %w", err)
+	}
+	chunks, err := s.vec.GetChunks(ctx, collectionKey, refs)
 	if err != nil {
 		return nil, fmt.Errorf("读取知识库分块: %w", err)
 	}

@@ -4,8 +4,79 @@ import (
 	"context"
 	"math"
 	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 )
+
+func TestFakeCollectionKeysIsolateGenerationsAndDimensions(t *testing.T) {
+	ctx := context.Background()
+	fake := NewFake()
+	first, err := GenerationCollectionKey("kb_same", "gen_one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := GenerationCollectionKey("kb_same", "gen_two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || !strings.Contains(ragCollectionName(first), "gen_one") || !strings.Contains(ragCollectionName(second), "gen_two") {
+		t.Fatalf("generation keys/names = %q/%q -> %q/%q", first, second, ragCollectionName(first), ragCollectionName(second))
+	}
+	if err := fake.EnsureCollection(ctx, first, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := fake.EnsureCollection(ctx, second, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := fake.UpsertChunks(ctx, first, []ChunkData{{DocID: "doc", Index: 0, DocVersion: 1, Content: "first", Vector: []float32{1, 0}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fake.UpsertChunks(ctx, second, []ChunkData{{DocID: "doc", Index: 0, DocVersion: 1, Content: "second", Vector: []float32{0, 1, 0}}}); err != nil {
+		t.Fatal(err)
+	}
+	active := map[string]int64{"doc": 1}
+	firstHits, err := fake.HybridSearch(ctx, first, SearchQuery{Dense: [][]float32{{1, 0}}, ActiveVersions: active}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondHits, err := fake.HybridSearch(ctx, second, SearchQuery{Dense: [][]float32{{0, 1, 0}}, ActiveVersions: active}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstHits) != 1 || firstHits[0].Content != "first" || len(secondHits) != 1 || secondHits[0].Content != "second" {
+		t.Fatalf("generation contamination: first=%+v second=%+v", firstHits, secondHits)
+	}
+	if err := fake.DropCollection(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if !fake.HasCollection(first) || fake.HasCollection(second) || fake.Count(first) != 1 {
+		t.Fatalf("generation drop contaminated sibling: first=%v second=%v count=%d", fake.HasCollection(first), fake.HasCollection(second), fake.Count(first))
+	}
+}
+
+func TestCollectionKeyPhysicalNamesAreBoundedAndLegacyCompatible(t *testing.T) {
+	legacy, err := LegacyCollectionKey("kb_existing-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ragCollectionName(legacy); got != "rag_kb_existing_01" {
+		t.Fatalf("legacy physical name drifted: %q", got)
+	}
+	generated, err := GenerationCollectionKey(strings.Repeat("logical", 20), "gen_20260810_001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	physical := ragCollectionName(generated)
+	if len(physical) > 120 || !regexp.MustCompile(`^[A-Za-z0-9_]+$`).MatchString(physical) || !strings.Contains(physical, "gen_20260810_001") || strings.Contains(physical, "logical") {
+		t.Fatalf("unsafe generation physical name: %q", physical)
+	}
+	for _, generationID := range []string{"client supplied", "路径", "gen/escape"} {
+		if _, err := GenerationCollectionKey("kb", generationID); err == nil {
+			t.Fatalf("GenerationCollectionKey accepted unsafe generation ID %q", generationID)
+		}
+	}
+}
 
 func mkChunk(docID string, idx int, version int64, content string, vec []float32) ChunkData {
 	return ChunkData{DocID: docID, Index: idx, Content: content, DocVersion: version, Vector: vec}

@@ -61,7 +61,10 @@ func (s *Service) ensureProvisionedKBCollection(
 		}
 	}()
 
-	err := s.vec.EnsureCollection(workCtx, kb.ID, kb.EmbedDims)
+	collectionKey, err := s.resolveCollection(workCtx, kb.ID)
+	if err == nil {
+		err = s.vec.EnsureCollection(workCtx, collectionKey, kb.EmbedDims)
+	}
 	close(stop)
 	<-done
 	select {

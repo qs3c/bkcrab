@@ -13,7 +13,7 @@ import (
 
 // GetChunks returns exact current-version chunks from the in-memory test
 // store. The returned order is stable across both Store implementations.
-func (f *Fake) GetChunks(ctx context.Context, kbID string, refs []ChunkRef) ([]ChunkData, error) {
+func (f *Fake) GetChunks(ctx context.Context, collectionKey CollectionKey, refs []ChunkRef) ([]ChunkData, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -22,7 +22,7 @@ func (f *Fake) GetChunks(ctx context.Context, kbID string, refs []ChunkRef) ([]C
 	}
 
 	f.mu.RLock()
-	c, err := f.collectionLocked(kbID)
+	c, err := f.collectionLocked(collectionKey)
 	if err != nil {
 		f.mu.RUnlock()
 		return nil, err
@@ -42,7 +42,7 @@ func (f *Fake) GetChunks(ctx context.Context, kbID string, refs []ChunkRef) ([]C
 // GetChunks retrieves exact primary keys rather than issuing an ANN search.
 // milvusChunkID includes document version, so a reindex racing this request
 // cannot silently substitute stale or newer content.
-func (m *Milvus) GetChunks(ctx context.Context, kbID string, refs []ChunkRef) ([]ChunkData, error) {
+func (m *Milvus) GetChunks(ctx context.Context, collectionKey CollectionKey, refs []ChunkRef) ([]ChunkData, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -56,7 +56,7 @@ func (m *Milvus) GetChunks(ctx context.Context, kbID string, refs []ChunkRef) ([
 			DocID: ref.DocID, Index: ref.Index, DocVersion: ref.DocVersion,
 		}))
 	}
-	name := ragCollectionName(kbID)
+	name := ragCollectionName(collectionKey)
 	result, err := m.client.Query(ctx, milvusclient.NewQueryOption(name).
 		WithIDs(column.NewColumnVarChar(milvusFieldID, ids)).
 		WithOutputFields(

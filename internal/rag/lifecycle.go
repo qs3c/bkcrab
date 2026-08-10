@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/qs3c/bkcrab/internal/rag/telemetry"
+	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
@@ -104,7 +105,11 @@ func (s *Service) cleanupDeletingKB(ctx context.Context, kb *store.RAGKBRecord) 
 			return cleanupPending(errRAGWorkerQuiescing)
 		}
 	}
-	if err := s.vec.DropCollection(ctx, kb.ID); err != nil {
+	collectionKey, err := s.resolveCollection(ctx, kb.ID)
+	if err != nil {
+		return cleanupPending(err)
+	}
+	if err := s.vec.DropCollection(ctx, collectionKey); err != nil {
 		return cleanupPending(err)
 	}
 	if err := s.obj.DeletePrefix(ctx, fmt.Sprintf("rag/%s/%s/", kb.UserID, kb.ID)); err != nil {
@@ -128,7 +133,11 @@ func (s *Service) cleanupDeletingDocument(ctx context.Context, doc *store.RAGDoc
 	if !ready {
 		return cleanupPending(errRAGWorkerQuiescing)
 	}
-	if err := s.vec.DeleteDoc(ctx, doc.KBID, doc.ID); err != nil {
+	collectionKey, err := s.resolveCollection(ctx, doc.KBID)
+	if err != nil {
+		return cleanupPending(err)
+	}
+	if err := s.vec.DeleteDoc(ctx, collectionKey, doc.ID); err != nil {
 		return cleanupPending(err)
 	}
 	documentPrefix := path.Dir(strings.ReplaceAll(doc.ObjectKey, "\\", "/")) + "/"
@@ -327,7 +336,11 @@ func (s *Service) runGCClaim(parent context.Context, claim *store.RAGIndexGCClai
 		valid, err = s.st.CheckRAGDocumentMaintenance(workCtx, *maintenance)
 	}
 	if err == nil && valid {
-		err = s.vec.DeleteDocVersion(workCtx, claim.KBID, claim.Fence.DocID, claim.Fence.RetiredVersion)
+		var collectionKey vector.CollectionKey
+		collectionKey, err = s.resolveCollection(workCtx, claim.KBID)
+		if err == nil {
+			err = s.vec.DeleteDocVersion(workCtx, collectionKey, claim.Fence.DocID, claim.Fence.RetiredVersion)
+		}
 	}
 	stopAndWait()
 	if leaseLost.Load() || parent.Err() != nil {
@@ -521,7 +534,11 @@ func (s *Service) sweepOrphanVersions(ctx context.Context) {
 			if err := s.checkDocumentMaintenance(workCtx, *maintenance); err != nil {
 				return "check_document_maintenance", err
 			}
-			if err := s.vec.DeleteDocVersion(workCtx, candidate.KBID, candidate.DocID, candidate.DocVersion); err != nil {
+			collectionKey, err := s.resolveCollection(workCtx, candidate.KBID)
+			if err != nil {
+				return "resolve_orphan_collection", err
+			}
+			if err := s.vec.DeleteDocVersion(workCtx, collectionKey, candidate.DocID, candidate.DocVersion); err != nil {
 				return "sweep_orphan_version", err
 			}
 			if err := s.checkDocumentMaintenance(workCtx, *maintenance); err != nil {

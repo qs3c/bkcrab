@@ -114,7 +114,7 @@ type pipelineVector struct {
 	onUpsert  func([]vector.ChunkData)
 }
 
-func (v *pipelineVector) UpsertChunks(ctx context.Context, kbID string, chunks []vector.ChunkData) error {
+func (v *pipelineVector) UpsertChunks(ctx context.Context, kbID vector.CollectionKey, chunks []vector.ChunkData) error {
 	v.mu.Lock()
 	err := v.upsertErr
 	v.mu.Unlock()
