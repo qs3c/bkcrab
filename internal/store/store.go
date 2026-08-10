@@ -335,6 +335,31 @@ type Store interface {
 	ReleaseRAGDocumentAIUsage(ctx context.Context, idempotencyKey string) (bool, error)
 	ReconcileRAGDocumentAIUsage(ctx context.Context, reservedBefore, sentBefore time.Time, limit int) (int, error)
 
+	// --- RAG evaluation datasets and durable runs ---
+	CreateRAGEvalDataset(ctx context.Context, record *RAGEvalDatasetRecord) error
+	ListRAGEvalDatasets(ctx context.Context, cursor string, limit int) ([]RAGEvalDatasetRecord, error)
+	TombstoneRAGEvalDataset(ctx context.Context, id string) (bool, error)
+	CreateRAGEvalDatasetVersion(ctx context.Context, record *RAGEvalDatasetVersionRecord) error
+	GetRAGEvalDatasetVersion(ctx context.Context, id string) (*RAGEvalDatasetVersionRecord, error)
+	TransitionRAGEvalDatasetVersion(ctx context.Context, id, from, to, reportJSON string) (bool, error)
+	PutRAGEvalCorpusDocument(ctx context.Context, record *RAGEvalCorpusDocumentRecord) error
+	ListRAGEvalCorpusDocuments(ctx context.Context, datasetVersionID, cursor string, limit int) ([]RAGEvalCorpusDocumentRecord, error)
+	PutRAGEvalCase(ctx context.Context, record *RAGEvalCaseRecord) error
+	ListRAGEvalCases(ctx context.Context, datasetVersionID, cursor string, limit int) ([]RAGEvalCaseRecord, error)
+	CreateRAGEvalProfile(ctx context.Context, record *RAGEvalProfileRecord) error
+	ListRAGEvalProfiles(ctx context.Context, cursor string, limit int) ([]RAGEvalProfileRecord, error)
+	CreateRAGEvalRun(ctx context.Context, record *RAGEvalRunRecord) error
+	GetRAGEvalRun(ctx context.Context, id string) (*RAGEvalRunRecord, error)
+	ListRAGEvalRuns(ctx context.Context, cursor string, limit int) ([]RAGEvalRunRecord, error)
+	ClaimRAGEvalRun(ctx context.Context, runID, worker string, lease time.Duration) (*RAGEvalRunFence, bool, error)
+	HeartbeatRAGEvalRun(ctx context.Context, fence RAGEvalRunFence, lease time.Duration) (bool, error)
+	RequestCancelRAGEvalRun(ctx context.Context, id string) (bool, error)
+	FinishRAGEvalRun(ctx context.Context, fence RAGEvalRunFence, status, errorCode, errorMessage string) (bool, error)
+	TombstoneRAGEvalRun(ctx context.Context, id string) (bool, error)
+	PutRAGEvalCaseResult(ctx context.Context, fence RAGEvalRunFence, record RAGEvalCaseResultRecord) (bool, error)
+	PutRAGEvalMetricResult(ctx context.Context, fence RAGEvalRunFence, record RAGEvalMetricResultRecord) (bool, error)
+	RecordRAGEvalUsage(ctx context.Context, record *RAGEvalUsageRecord) (bool, error)
+
 	// --- Cron 任务（每个 agent）---
 	//
 	// Cron 行由 agent 拥有；执行身份是 agent 的 user_id。

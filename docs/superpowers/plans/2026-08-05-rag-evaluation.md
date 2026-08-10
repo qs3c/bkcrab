@@ -168,13 +168,13 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先写三方言建库/重复迁移测试和 SQLite CRUD/约束测试。
-- [ ] 用 closed status 常量与 scan helpers，不从任意字符串更新状态。
-- [ ] Dataset Version 从 DRAFT → VALIDATING → READY/FAILED 使用 CAS；READY 后 update 失败。
-- [ ] Run claim 必须返回 fence token；heartbeat 失败后旧 worker 写 case/result/finish 均返回 false。
-- [ ] `rag_eval_usage.idempotency_key` 唯一，重试不能重复计费。
-- [ ] 删除先 tombstone，不在请求事务中同步删除对象/collection。
-- [ ] 运行 `go test ./internal/store -run 'RAGEval|Eval'`。
+- [x] 先写三方言建库/重复迁移测试和 SQLite CRUD/约束测试。
+- [x] 用 closed status 常量与 scan helpers，不从任意字符串更新状态。
+- [x] Dataset Version 从 DRAFT → VALIDATING → READY/FAILED 使用 CAS；READY 后 update 失败。
+- [x] Run claim 必须返回 fence token；heartbeat 失败后旧 worker 写 case/result/finish 均返回 false。
+- [x] `rag_eval_usage.idempotency_key` 唯一，重试不能重复计费。
+- [x] 删除先 tombstone，不在请求事务中同步删除对象/collection。
+- [x] 运行 `go test ./internal/store -run 'RAGEval|Eval'`。
 
 **Gate:** migration 不回写或锁住现有大 RAG 表；feature flag 关闭时只是增加空表。
 
