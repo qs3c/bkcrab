@@ -16,6 +16,10 @@ class Settings:
     embedding_endpoint: str
     embedding_api_key: str
     embedding_model: str
+    max_total_context_bytes: int
+    max_reason_chars: int
+    metric_timeout_seconds: float
+    idempotency_cache_entries: int
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -30,6 +34,16 @@ class Settings:
             embedding_endpoint=os.getenv("RAG_EVALUATOR_EMBEDDING_ENDPOINT", ""),
             embedding_api_key=os.getenv("RAG_EVALUATOR_EMBEDDING_API_KEY", ""),
             embedding_model=os.getenv("RAG_EVALUATOR_EMBEDDING_MODEL", ""),
+            max_total_context_bytes=int(
+                os.getenv("RAG_EVALUATOR_MAX_TOTAL_CONTEXT_BYTES", "1048576")
+            ),
+            max_reason_chars=int(os.getenv("RAG_EVALUATOR_MAX_REASON_CHARS", "2048")),
+            metric_timeout_seconds=float(
+                os.getenv("RAG_EVALUATOR_METRIC_TIMEOUT_SECONDS", "120")
+            ),
+            idempotency_cache_entries=int(
+                os.getenv("RAG_EVALUATOR_IDEMPOTENCY_CACHE_ENTRIES", "1000")
+            ),
         )
 
     @property

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import html
+import math
 from collections.abc import Awaitable, Callable
 
 from .protocol import MetricResult, Sample
@@ -18,11 +21,32 @@ def missing_input(metric: str, sample: Sample) -> str | None:
     return None
 
 
+def _safe_reason(value: object, limit: int) -> str:
+    text = " ".join(str(value).split())
+    return text[: max(0, min(limit, 2048))]
+
+
+def _protect_contexts(sample: Sample) -> Sample:
+    protected = [
+        f'<UNTRUSTED_CONTEXT index="{index}">\n{html.escape(context)}\n</UNTRUSTED_CONTEXT>'
+        for index, context in enumerate(sample.retrievedContexts)
+    ]
+    return sample.model_copy(update={"retrievedContexts": protected})
+
+
 class MetricEngine:
     """Runs a fixed metric collection; no prompt or executable is accepted from requests."""
 
-    def __init__(self, score_fn: ScoreFn | None = None) -> None:
+    def __init__(
+        self,
+        score_fn: ScoreFn | None = None,
+        *,
+        timeout_seconds: float = 120,
+        reason_limit: int = 2048,
+    ) -> None:
         self._score_fn = score_fn
+        self._timeout_seconds = max(0.001, timeout_seconds)
+        self._reason_limit = max(0, min(reason_limit, 2048))
 
     async def evaluate(self, metric: str, sample: Sample) -> MetricResult:
         if reason := missing_input(metric, sample):
@@ -30,19 +54,22 @@ class MetricEngine:
         if self._score_fn is None:
             return MetricResult(status="error", reason="evaluator judge is not configured")
         try:
-            value = await self._score_fn(metric, sample)
-            return MetricResult(status="ok", value=max(0.0, min(1.0, float(value))))
+            value = float(
+                await asyncio.wait_for(
+                    self._score_fn(metric, _protect_contexts(sample)),
+                    timeout=self._timeout_seconds,
+                )
+            )
+            if not math.isfinite(value) or value < 0 or value > 1:
+                raise ValueError("metric returned a score outside [0,1]")
+            return MetricResult(status="ok", value=value)
+        except TimeoutError:
+            return MetricResult(status="error", reason="metric timeout")
         except Exception as exc:  # one judge failure must not erase sibling metrics
-            return MetricResult(status="error", reason=str(exc)[:2048])
+            return MetricResult(status="error", reason=_safe_reason(exc, self._reason_limit))
 
 
-def build_ragas_engine(settings: Settings) -> MetricEngine:
-    if not settings.judge_configured:
-        return MetricEngine()
-
-    from openai import AsyncOpenAI
-    from ragas.embeddings.base import embedding_factory
-    from ragas.llms.base import llm_factory
+def collection_metric_types() -> dict[str, type]:
     from ragas.metrics.collections import (
         AnswerRelevancy,
         ContextPrecisionWithReference,
@@ -50,6 +77,26 @@ def build_ragas_engine(settings: Settings) -> MetricEngine:
         FactualCorrectness,
         Faithfulness,
     )
+
+    return {
+        "context_precision": ContextPrecisionWithReference,
+        "context_recall": ContextRecall,
+        "faithfulness": Faithfulness,
+        "response_relevancy": AnswerRelevancy,
+        "factual_correctness": FactualCorrectness,
+    }
+
+
+def build_ragas_engine(settings: Settings) -> MetricEngine:
+    if not settings.judge_configured:
+        return MetricEngine(
+            timeout_seconds=settings.metric_timeout_seconds,
+            reason_limit=settings.max_reason_chars,
+        )
+
+    from openai import AsyncOpenAI
+    from ragas.embeddings.base import embedding_factory
+    from ragas.llms.base import llm_factory
 
     llm_client = AsyncOpenAI(api_key=settings.llm_api_key, base_url=settings.llm_endpoint)
     embedding_client = AsyncOpenAI(
@@ -59,12 +106,15 @@ def build_ragas_engine(settings: Settings) -> MetricEngine:
     embeddings = embedding_factory(
         "openai", model=settings.embedding_model, client=embedding_client, interface="modern"
     )
+    metric_types = collection_metric_types()
     metrics = {
-        "context_precision": ContextPrecisionWithReference(llm=llm),
-        "context_recall": ContextRecall(llm=llm),
-        "faithfulness": Faithfulness(llm=llm),
-        "response_relevancy": AnswerRelevancy(llm=llm, embeddings=embeddings),
-        "factual_correctness": FactualCorrectness(llm=llm),
+        "context_precision": metric_types["context_precision"](llm=llm),
+        "context_recall": metric_types["context_recall"](llm=llm),
+        "faithfulness": metric_types["faithfulness"](llm=llm),
+        "response_relevancy": metric_types["response_relevancy"](
+            llm=llm, embeddings=embeddings
+        ),
+        "factual_correctness": metric_types["factual_correctness"](llm=llm),
     }
 
     async def score_metric(name: str, sample: Sample) -> float:
@@ -84,4 +134,8 @@ def build_ragas_engine(settings: Settings) -> MetricEngine:
         result = await metrics[name].ascore(**{key: values[key] for key in keys})
         return float(result.value)
 
-    return MetricEngine(score_metric)
+    return MetricEngine(
+        score_metric,
+        timeout_seconds=settings.metric_timeout_seconds,
+        reason_limit=settings.max_reason_chars,
+    )

@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 METRIC_BUNDLE_VERSION = "rag-core-v1"
+PROTOCOL_VERSION = "rag-evaluator-v1"
 ALLOWED_METRICS = frozenset(
     {"context_precision", "context_recall", "faithfulness", "response_relevancy", "factual_correctness"}
 )
@@ -22,8 +23,11 @@ class Sample(BaseModel):
 
     @model_validator(mode="after")
     def bounded_contexts(self) -> Sample:
-        if any(len(value.encode("utf-8")) > 65_536 for value in self.retrievedContexts):
-            raise ValueError("retrieved context exceeds 65536 bytes")
+        contexts = [*self.retrievedContexts, *self.referenceContexts]
+        if any(len(value.encode("utf-8")) > 65_536 for value in contexts):
+            raise ValueError("context exceeds 65536 bytes")
+        if len(self.retrievedContextIds) != len(self.retrievedContexts):
+            raise ValueError("retrievedContextIds must match retrievedContexts")
         return self
 
 

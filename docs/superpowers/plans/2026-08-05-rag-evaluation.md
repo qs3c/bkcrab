@@ -419,13 +419,13 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 在 `pyproject.toml` 精确 pin 已验证 Ragas minor/patch 和关键 SDK；生成 frozen lock。
-- [ ] 先用 fake LLM/embeddings 写协议、skip、partial failure、idempotency、limit tests。
-- [ ] 使用 collections-based API；增加一个 smoke test 防止依赖升级回退 legacy API。
-- [ ] metric registry 是闭集，不接受模块名、Python 表达式或任意 prompt。
-- [ ] context 作为不可信数据包裹，加入 prompt injection golden tests。
-- [ ] reason 截断且不得进入默认 access log；Uvicorn 禁 access log。
-- [ ] 运行 `uv run pytest` 和 `uv run ruff check .`（目录 `services/rag-evaluator`）。
+- [x] 在 `pyproject.toml` 精确 pin 已验证 Ragas minor/patch 和关键 SDK；生成 frozen lock。
+- [x] 先用 fake LLM/embeddings 写协议、skip、partial failure、idempotency、limit tests。
+- [x] 使用 collections-based API；增加一个 smoke test 防止依赖升级回退 legacy API。
+- [x] metric registry 是闭集，不接受模块名、Python 表达式或任意 prompt。
+- [x] context 作为不可信数据包裹，加入 prompt injection golden tests。
+- [x] reason 截断且不得进入默认 access log；Uvicorn 禁 access log。
+- [x] 运行 `uv run pytest` 和 `uv run ruff check .`（目录 `services/rag-evaluator`）。
 
 **Decision gate:** 接真实 judge 前确认 evaluator LLM/embeddings、endpoint、数据外发和价格；默认测试继续 fake。
 
