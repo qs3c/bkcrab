@@ -143,3 +143,31 @@ func TestRuntimePromotionRejectsGateFailureUnknownAndUnpublishedDependencies(t *
 		}
 	})
 }
+
+func TestIngestionPromotionRequiresConfirmedFullPipelineAndStoresNoCredentials(t *testing.T) {
+	st, snapshot, runID := promotionStore(t)
+	run, err := st.GetRAGEvalRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.DB().Exec(`UPDATE rag_eval_runs SET mode=? WHERE id=?`, store.RAGEvalRunModeFullPipeline, runID); err != nil {
+		t.Fatal(err)
+	}
+	active := config.RAGIngestionPolicyData{Version: 1, ChunkSize: 256, ChunkOverlap: 32, ParseMode: config.ParseModeStandard, Embedding: config.RAGPolicyEmbeddingData{ContractFingerprint: "old-contract", Model: "embed", Dims: 8}}
+	raw, _ := json.Marshal(active)
+	fingerprint, _ := rageval.Fingerprint(active)
+	if err = st.CreateRAGPolicy(context.Background(), &store.RAGPolicyRecord{Kind: store.RAGPolicyIngestion, Version: 1, PolicyJSON: string(raw), Fingerprint: fingerprint, CreatedBy: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, activateErr := st.ActivateRAGPolicy(context.Background(), store.RAGPolicyIngestion, 0, 1, "admin", "", "bootstrap", store.RAGPolicyAuditPublish); activateErr != nil || !ok {
+		t.Fatalf("activate=%v err=%v", ok, activateErr)
+	}
+	service := &PolicyPromotionService{Store: st, Snapshot: snapshot, Gates: PromotionGates{MinimumMetricMean: map[string]float64{"faithfulness": .8}, MinimumScoredCases: 1, MaximumP95LatencyMS: 100}}
+	result, err := service.PromoteIngestion(context.Background(), IngestionPromotionRequest{RunID: run.ID, ProfileID: "profile", ConfirmationRunID: run.ID, ActorID: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Revision.Version != 2 || strings.Contains(strings.ToLower(result.Revision.PolicyJSON), "apikey") || strings.Contains(result.Revision.PolicyJSON, "http://") {
+		t.Fatalf("unsafe ingestion revision=%+v", result.Revision)
+	}
+}

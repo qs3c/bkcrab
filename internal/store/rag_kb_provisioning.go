@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+func nullableRAGPolicyVersion(value sql.NullInt64) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.Int64
+}
+
 func validRAGKBProvisionFence(fence RAGKBProvisionFence) bool {
 	return strings.TrimSpace(fence.KBID) != "" &&
 		strings.TrimSpace(fence.UserID) != "" &&
@@ -69,18 +76,37 @@ func (d *DBStore) BeginRAGKBProvisioning(
 	kb.Status = RAGKBStatusProvisioning
 	const generation int64 = 1
 	leaseUntil := now.Add(leaseDuration)
+	if kb.PinnedPolicyVersion.Valid != kb.ActiveGenerationID.Valid ||
+		(kb.PinnedPolicyVersion.Valid && (kb.PinnedPolicyVersion.Int64 <= 0 || strings.TrimSpace(kb.ActiveGenerationID.String) == "" || strings.TrimSpace(kb.ProvisioningCollectionKey) == "")) {
+		return nil, errors.New("store: pinned policy and initial generation must be supplied together")
+	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_kbs
 		(id, user_id, name, description, embed_provider, embed_model, embed_dims,
 		 chunk_size, chunk_overlap, parse_mode, enrichment_enabled, status,
 		 provisioning_generation, provisioning_lease_owner, provisioning_lease_until,
-		 created_at, updated_at)
-		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)`,
+		 pinned_policy_version, active_generation_id, created_at, updated_at)
+		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)`,
 		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9),
-		d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14), d.ph(15), d.ph(16), d.ph(17)),
+		d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14), d.ph(15), d.ph(16), d.ph(17), d.ph(18), d.ph(19)),
 		kb.ID, kb.UserID, kb.Name, kb.Description, kb.EmbedProvider, kb.EmbedModel,
 		kb.EmbedDims, kb.ChunkSize, kb.ChunkOverlap, kb.ParseMode, kb.EnrichmentEnabled,
-		kb.Status, generation, leaseOwner, leaseUntil, kb.CreatedAt, kb.UpdatedAt); err != nil {
+		kb.Status, generation, leaseOwner, leaseUntil, nullableRAGPolicyVersion(kb.PinnedPolicyVersion),
+		nullString(kb.ActiveGenerationID.String), kb.CreatedAt, kb.UpdatedAt); err != nil {
 		return nil, err
+	}
+	if kb.PinnedPolicyVersion.Valid {
+		collectionKey := strings.TrimSpace(kb.ProvisioningCollectionKey)
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_kb_index_generations
+			(id,kb_id,policy_version,collection_key,embedding_model,embedding_dims,status,
+			 document_count,chunk_count,error_code,error_message,created_by,created_at,lease_owner)
+			VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7),
+			d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14)),
+			kb.ActiveGenerationID.String, kb.ID, kb.PinnedPolicyVersion.Int64, collectionKey,
+			kb.EmbedModel, kb.EmbedDims, RAGGenerationBuilding, 0, 0, "", "", kb.UserID,
+			now, leaseOwner); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -189,6 +215,21 @@ func (d *DBStore) ActivateRAGKBProvisioning(
 	updated, err := ragRowsAffected(result)
 	if err != nil || !updated {
 		return nil, false, err
+	}
+	if kb.ActiveGenerationID.Valid {
+		result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kb_index_generations SET
+			status=%s,activated_at=%s,lease_owner='',lease_until=NULL
+			WHERE id=%s AND kb_id=%s AND policy_version=%s AND status=%s AND lease_owner=%s`,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7)),
+			RAGGenerationActive, now, kb.ActiveGenerationID.String, kb.ID,
+			kb.PinnedPolicyVersion.Int64, RAGGenerationBuilding, fence.LeaseOwner)
+		if err != nil {
+			return nil, false, err
+		}
+		generationActivated, rowsErr := ragRowsAffected(result)
+		if rowsErr != nil || !generationActivated {
+			return nil, false, rowsErr
+		}
 	}
 	active, err := ragKBInTxWithoutLock(ctx, d, tx, fence.KBID)
 	if err != nil {

@@ -643,12 +643,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先写发布新版后“新 KB 用新版、旧 KB 不变、旧 KB 新上传仍走旧策略”的测试。
-- [ ] policy 保存 prompt/model contract version，不保存明文 API key。
-- [ ] 新 KB provisioning 与 policy pin/collection dims 在一个可恢复流程中完成。
-- [ ] 旧 KB 的普通单文档 reindex 必须继续使用 KB pinned policy，而不是 platform latest。
-- [ ] drift 是 `pinned != latest`，不改变 health/status，也不阻塞查询。
-- [ ] diff DTO 屏蔽 endpoint/key，Embedding 变化明确标记 full collection rebuild。
+- [x] 先写发布新版后“新 KB 用新版、旧 KB 不变、旧 KB 新上传仍走旧策略”的测试。
+- [x] policy 保存 prompt/model contract version，不保存明文 API key。
+- [x] 新 KB provisioning 与 policy pin/collection dims 在一个可恢复流程中完成。
+- [x] 旧 KB 的普通单文档 reindex 必须继续使用 KB pinned policy，而不是 platform latest。
+- [x] drift 是 `pinned != latest`，不改变 health/status，也不阻塞查询。
+- [x] diff DTO 屏蔽 endpoint/key，Embedding 变化明确标记 full collection rebuild。
 
 ### Task 19：整库 Policy Sync、原子 generation 切换与 rollback
 

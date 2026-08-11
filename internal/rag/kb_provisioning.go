@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
@@ -61,7 +62,13 @@ func (s *Service) ensureProvisionedKBCollection(
 		}
 	}()
 
-	collectionKey, err := s.resolveCollection(workCtx, kb.ID)
+	var collectionKey vector.CollectionKey
+	var err error
+	if kb.ProvisioningCollectionKey != "" {
+		collectionKey, err = vector.CollectionKeyFromPersistence(kb.ProvisioningCollectionKey)
+	} else {
+		collectionKey, err = s.resolveCollection(workCtx, kb.ID)
+	}
 	if err == nil {
 		err = s.vec.EnsureCollection(workCtx, collectionKey, kb.EmbedDims)
 	}

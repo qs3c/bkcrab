@@ -572,6 +572,10 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 				ragPolicyRefresher = &rag.RuntimePolicyRefresher{Store: st, Snapshot: runtimeSnapshot, Interval: 5 * time.Second}
 			}
 		}
+		if bootstrapErr := rag.BootstrapIngestionPolicy(context.Background(), st, rag.DefaultIngestionPolicy(ragCfg)); bootstrapErr != nil {
+			slog.Error("rag policy: ingestion bootstrap unavailable", "error", bootstrapErr)
+			ragPolicyPromotion = nil
+		}
 	}
 
 	g := &Gateway{

@@ -105,7 +105,16 @@ func (s *Service) cleanupDeletingKB(ctx context.Context, kb *store.RAGKBRecord) 
 			return cleanupPending(errRAGWorkerQuiescing)
 		}
 	}
-	collectionKey, err := s.resolveCollection(ctx, kb.ID)
+	var collectionKey vector.CollectionKey
+	if kb.ActiveGenerationID.Valid {
+		generation, generationErr := s.st.GetRAGKBGeneration(ctx, kb.ActiveGenerationID.String)
+		if generationErr != nil {
+			return cleanupPending(generationErr)
+		}
+		collectionKey, err = vector.CollectionKeyFromPersistence(generation.CollectionKey)
+	} else {
+		collectionKey, err = s.resolveCollection(ctx, kb.ID)
+	}
 	if err != nil {
 		return cleanupPending(err)
 	}

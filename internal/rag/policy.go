@@ -67,6 +67,26 @@ func DefaultRuntimePolicy(cfg config.RAGCfg) config.RAGRuntimePolicyData {
 	return config.RAGRuntimePolicyData{Version: 1, TopN: 5, CandidateTopK: candidateTopK, MinScore: cfg.Reranker.MinScore, Temperature: .2, MaxTokens: 4096, RAGPromptBundleVersion: RAGAnswerPromptBundleV1}
 }
 
+// DefaultIngestionPolicy converts executable provider configuration into a
+// credential-free bootstrap revision. Endpoints participate only in the
+// opaque contract fingerprint and are never persisted in policy JSON.
+func DefaultIngestionPolicy(cfg config.RAGCfg) config.RAGIngestionPolicyData {
+	cfg.ApplyDefaults()
+	return config.RAGIngestionPolicyData{
+		Version: 1, ChunkSize: 512, ChunkOverlap: 64, ParseMode: config.ParseModeStandard,
+		DocumentAI: config.RAGPolicyDocumentAIData{
+			VisionModel:             strings.TrimSpace(cfg.DocumentAI.VisionModel),
+			TextModel:               strings.TrimSpace(cfg.DocumentAI.TextModel),
+			VisionPromptVersion:     strings.TrimSpace(cfg.DocumentAI.VisionPromptVersion),
+			EnrichmentPromptVersion: strings.TrimSpace(cfg.DocumentAI.EnrichmentPromptVersion),
+		},
+		Embedding: config.RAGPolicyEmbeddingData{
+			ContractFingerprint: embeddingContractFingerprint("system", cfg.Embedding, cfg.Embedding.Model, cfg.Embedding.Dims),
+			Model:               strings.TrimSpace(cfg.Embedding.Model), Dims: cfg.Embedding.Dims,
+		},
+	}
+}
+
 type runtimePolicyContextKey struct{}
 
 // CaptureRuntimePolicy attaches one immutable value snapshot to ctx. Repeated

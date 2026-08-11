@@ -293,6 +293,7 @@ func (s *Server) registerRAGRoutes(mux *http.ServeMux, auth func(http.HandlerFun
 	mux.HandleFunc("GET /api/rag/kbs", auth(s.handleListRAGKBs))
 	mux.HandleFunc("POST /api/rag/kbs", auth(s.handleCreateRAGKB))
 	mux.HandleFunc("GET /api/rag/kbs/{id}", auth(s.handleGetRAGKB))
+	mux.HandleFunc("GET /api/rag/kbs/{id}/policy", auth(s.handleGetRAGKBPolicy))
 	mux.HandleFunc("PATCH /api/rag/kbs/{id}", auth(s.handleUpdateRAGKB))
 	mux.HandleFunc("DELETE /api/rag/kbs/{id}", auth(s.handleDeleteRAGKB))
 	mux.HandleFunc("POST /api/rag/kbs/{id}/generate-metadata", auth(s.handleGenerateRAGKBMetadata))

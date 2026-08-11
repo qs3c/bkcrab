@@ -225,8 +225,12 @@ type RAGKBRecord struct {
 	Status              string
 	PinnedPolicyVersion sql.NullInt64
 	ActiveGenerationID  sql.NullString
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	// ProvisioningCollectionKey is transient input used only while atomically
+	// creating a pinned KB and its initial generation. It is never scanned from
+	// or written back to rag_kbs.
+	ProvisioningCollectionKey string
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
 }
 
 // RAGDocumentRecord tracks an uploaded source document, its newest target

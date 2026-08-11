@@ -68,6 +68,13 @@ type RuntimePromotionResult struct {
 	Revision   *store.RAGPolicyRecord
 	GateReport PromotionGateReport
 }
+type IngestionPromotionRequest struct {
+	RunID, ProfileID, ConfirmationRunID, ActorID, Note string
+}
+type IngestionPromotionResult struct {
+	Revision   *store.RAGPolicyRecord
+	GateReport PromotionGateReport
+}
 type PromotionGateReport struct {
 	Passed        bool               `json:"passed"`
 	Reasons       []string           `json:"reasons,omitempty"`
@@ -210,6 +217,69 @@ func (s *PolicyPromotionService) RollbackRuntime(ctx context.Context, expected, 
 		return s.Snapshot.Publish(data)
 	}
 	return nil
+}
+
+// PromoteIngestion publishes the complete immutable ingestion contract from a
+// confirmed FULL_PIPELINE experiment. The caller supplies references only;
+// publish-time configuration overrides are deliberately impossible.
+func (s *PolicyPromotionService) PromoteIngestion(ctx context.Context, request IngestionPromotionRequest) (IngestionPromotionResult, error) {
+	if s == nil || s.Store == nil || strings.TrimSpace(request.ActorID) == "" || strings.TrimSpace(request.RunID) == "" || strings.TrimSpace(request.ProfileID) == "" || strings.TrimSpace(request.ConfirmationRunID) == "" {
+		return IngestionPromotionResult{}, errors.New("complete ingestion promotion references are required")
+	}
+	if err := s.Gates.Validate(); err != nil {
+		return IngestionPromotionResult{}, err
+	}
+	source, sourceSnapshot, err := s.loadSuccessfulRun(ctx, request.RunID, request.ProfileID)
+	if err != nil {
+		return IngestionPromotionResult{}, err
+	}
+	confirmation, confirmationSnapshot, err := s.loadSuccessfulRun(ctx, request.ConfirmationRunID, request.ProfileID)
+	if err != nil {
+		return IngestionPromotionResult{}, err
+	}
+	if source.Mode != store.RAGEvalRunModeFullPipeline || confirmation.Mode != store.RAGEvalRunModeFullPipeline || source.DatasetVersionID != confirmation.DatasetVersionID || strings.TrimSpace(confirmation.IndexGenerationID) == "" {
+		return IngestionPromotionResult{}, errors.New("ingestion confirmation must use the same dataset in FULL_PIPELINE mode")
+	}
+	candidate := sourceSnapshot.Profile.Ingestion
+	confirmed := confirmationSnapshot.Profile.Ingestion
+	candidate.Version, confirmed.Version = 0, 0
+	if candidate != confirmed {
+		return IngestionPromotionResult{}, errors.New("confirmation run does not match the complete ingestion policy")
+	}
+	report, err := s.evaluateGates(ctx, confirmation.ID)
+	if err != nil {
+		return IngestionPromotionResult{GateReport: report}, err
+	}
+	if !report.Passed {
+		return IngestionPromotionResult{GateReport: report}, fmt.Errorf("%w: %s", ErrPromotionGateFailed, strings.Join(report.Reasons, "; "))
+	}
+	active, err := s.Store.ActiveRAGPolicy(ctx, store.RAGPolicyIngestion)
+	if err != nil {
+		return IngestionPromotionResult{}, err
+	}
+	next := sourceSnapshot.Profile.Ingestion
+	next.Version = active.Version + 1
+	if err = next.Validate(); err != nil {
+		return IngestionPromotionResult{}, err
+	}
+	encoded, _ := jsonMarshal(next)
+	fingerprint, err := rageval.Fingerprint(next)
+	if err != nil {
+		return IngestionPromotionResult{}, err
+	}
+	revision := &store.RAGPolicyRecord{Kind: store.RAGPolicyIngestion, Version: next.Version, PolicyJSON: string(encoded), Fingerprint: fingerprint, SourceEvalRunID: confirmation.ID, CreatedBy: request.ActorID, Note: request.Note}
+	if err = s.Store.CreateRAGPolicy(ctx, revision); err != nil {
+		return IngestionPromotionResult{}, err
+	}
+	activated, err := s.Store.ActivateRAGPolicy(ctx, store.RAGPolicyIngestion, active.Version, revision.Version, request.ActorID, confirmation.ID, request.Note, store.RAGPolicyAuditPublish)
+	if err != nil {
+		return IngestionPromotionResult{}, err
+	}
+	if !activated {
+		return IngestionPromotionResult{}, ErrPolicyActivationConflict
+	}
+	revision.Status = store.RAGPolicyActive
+	return IngestionPromotionResult{Revision: revision, GateReport: report}, nil
 }
 
 func (s *PolicyPromotionService) loadSuccessfulRun(ctx context.Context, runID, profileID string) (*store.RAGEvalRunRecord, rageval.ExecutionSnapshot, error) {
@@ -443,6 +513,52 @@ func BootstrapRuntimePolicy(ctx context.Context, st RuntimePromotionStore, snaps
 		return ErrPolicyActivationConflict
 	}
 	return snapshot.Publish(initial)
+}
+
+func BootstrapIngestionPolicy(ctx context.Context, st RuntimePromotionStore, initial config.RAGIngestionPolicyData) error {
+	if st == nil {
+		return errors.New("ingestion policy bootstrap store is incomplete")
+	}
+	validate := func(record *store.RAGPolicyRecord) error {
+		data, err := config.DecodeRAGIngestionPolicy([]byte(record.PolicyJSON))
+		if err != nil {
+			return err
+		}
+		fingerprint, _ := rageval.Fingerprint(data)
+		if data.Version != record.Version || fingerprint != record.Fingerprint {
+			return errors.New("active ingestion policy failed bootstrap validation")
+		}
+		return nil
+	}
+	active, err := st.ActiveRAGPolicy(ctx, store.RAGPolicyIngestion)
+	if err == nil {
+		return validate(active)
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	initial.Version = 1
+	if err = initial.Validate(); err != nil {
+		return err
+	}
+	encoded, _ := json.Marshal(initial)
+	fingerprint, _ := rageval.Fingerprint(initial)
+	record := &store.RAGPolicyRecord{Kind: store.RAGPolicyIngestion, Version: 1, PolicyJSON: string(encoded), Fingerprint: fingerprint, CreatedBy: "system:ingestion-policy-bootstrap", Note: "production defaults before ingestion policy promotion"}
+	if err = st.CreateRAGPolicy(ctx, record); err != nil {
+		active, reloadErr := st.ActiveRAGPolicy(ctx, store.RAGPolicyIngestion)
+		if reloadErr != nil {
+			return err
+		}
+		return validate(active)
+	}
+	ok, err := st.ActivateRAGPolicy(ctx, store.RAGPolicyIngestion, 0, 1, record.CreatedBy, "", record.Note, store.RAGPolicyAuditPublish)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrPolicyActivationConflict
+	}
+	return nil
 }
 
 // Small wrappers keep the policy file's dependency surface explicit.

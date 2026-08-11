@@ -5,6 +5,7 @@ package rag
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -426,6 +427,24 @@ func (s *Service) CreateKBWithOptions(
 		return nil, fmt.Errorf("%w: 每用户最多 %d 个知识库", ErrQuota, s.cfg.Limits.MaxKBsPerUser)
 	}
 	embedCfg, provider := s.resolveEmbedding(ctx, userID)
+	var pinnedPolicy *config.RAGIngestionPolicyData
+	if record, policyErr := s.st.ActiveRAGPolicy(ctx, store.RAGPolicyIngestion); policyErr == nil {
+		policy, decodeErr := config.DecodeRAGIngestionPolicy([]byte(record.PolicyJSON))
+		if decodeErr != nil || policy.Version != record.Version {
+			return nil, errors.New("平台 ingestion policy 不可用")
+		}
+		// Published ingestion contracts are platform defaults. Credentials and
+		// endpoints remain in runtime config and must match the opaque contract.
+		embedCfg, provider = s.cfg.Embedding, "system"
+		if embeddingContractFingerprint(provider, embedCfg, policy.Embedding.Model, policy.Embedding.Dims) != policy.Embedding.ContractFingerprint {
+			return nil, errors.New("平台 ingestion policy 的 embedding contract 当前不可执行")
+		}
+		chunkSize, chunkOverlap = policy.ChunkSize, policy.ChunkOverlap
+		options.ParseMode, options.EnrichmentEnabled = policy.ParseMode, policy.EnrichmentEnabled
+		pinnedPolicy = &policy
+	} else if !errors.Is(policyErr, store.ErrNotFound) {
+		return nil, policyErr
+	}
 	if embedCfg.Endpoint == "" || embedCfg.Model == "" || embedCfg.Dims <= 0 {
 		return nil, errors.New("embedding 未配置，请先在系统或用户设置中配置")
 	}
@@ -452,6 +471,17 @@ func (s *Service) CreateKBWithOptions(
 		ParseMode:         string(options.ParseMode),
 		EnrichmentEnabled: options.EnrichmentEnabled,
 		Status:            store.RAGKBStatusProvisioning,
+	}
+	if pinnedPolicy != nil {
+		kb.EmbedModel, kb.EmbedDims = pinnedPolicy.Embedding.Model, pinnedPolicy.Embedding.Dims
+		generationID := "rkg_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		collectionKey, keyErr := vector.GenerationCollectionKey(kb.ID, generationID)
+		if keyErr != nil {
+			return nil, keyErr
+		}
+		kb.PinnedPolicyVersion = sql.NullInt64{Int64: pinnedPolicy.Version, Valid: true}
+		kb.ActiveGenerationID = sql.NullString{String: generationID, Valid: true}
+		kb.ProvisioningCollectionKey = string(collectionKey)
 	}
 	kbLock := s.kbMutex(kb.ID)
 	kbLock.Lock()
@@ -542,6 +572,10 @@ func (s *Service) updateKB(
 	}
 	if !strings.EqualFold(kb.Status, "active") {
 		return nil, errors.New("知识库正在删除中")
+	}
+	if kb.PinnedPolicyVersion.Valid && (chunkSize != kb.ChunkSize || chunkOverlap != kb.ChunkOverlap ||
+		(options != nil && (string(options.ParseMode) != kb.ParseMode || options.EnrichmentEnabled != kb.EnrichmentEnabled))) {
+		return nil, errors.New("已固定 ingestion policy 的知识库不能逐项修改索引策略，请使用整库策略同步")
 	}
 	if strings.TrimSpace(name) != "" {
 		kb.Name = strings.TrimSpace(name)

@@ -72,20 +72,22 @@ type ragDocumentAIBudgetDTO struct {
 }
 
 type ragKBResponseDTO struct {
-	ID                string           `json:"id"`
-	UserID            string           `json:"userId"`
-	Name              string           `json:"name"`
-	Description       string           `json:"description"`
-	EmbedProvider     string           `json:"embedProvider"`
-	EmbedModel        string           `json:"embedModel"`
-	EmbedDims         int              `json:"embedDims"`
-	ChunkSize         int              `json:"chunkSize"`
-	ChunkOverlap      int              `json:"chunkOverlap"`
-	ParseMode         config.ParseMode `json:"parseMode"`
-	EnrichmentEnabled bool             `json:"enrichmentEnabled"`
-	Status            string           `json:"status"`
-	CreatedAt         time.Time        `json:"createdAt"`
-	UpdatedAt         time.Time        `json:"updatedAt"`
+	ID                  string           `json:"id"`
+	UserID              string           `json:"userId"`
+	Name                string           `json:"name"`
+	Description         string           `json:"description"`
+	EmbedProvider       string           `json:"embedProvider"`
+	EmbedModel          string           `json:"embedModel"`
+	EmbedDims           int              `json:"embedDims"`
+	ChunkSize           int              `json:"chunkSize"`
+	ChunkOverlap        int              `json:"chunkOverlap"`
+	ParseMode           config.ParseMode `json:"parseMode"`
+	EnrichmentEnabled   bool             `json:"enrichmentEnabled"`
+	Status              string           `json:"status"`
+	PinnedPolicyVersion *int64           `json:"pinnedPolicyVersion,omitempty"`
+	ActiveGenerationID  string           `json:"activeGenerationId,omitempty"`
+	CreatedAt           time.Time        `json:"createdAt"`
+	UpdatedAt           time.Time        `json:"updatedAt"`
 }
 
 type ragDocumentProgressDTO struct {
@@ -131,7 +133,7 @@ func ragKBResponse(record *store.RAGKBRecord) ragKBResponseDTO {
 	if record == nil {
 		return ragKBResponseDTO{}
 	}
-	return ragKBResponseDTO{
+	response := ragKBResponseDTO{
 		ID: record.ID, UserID: record.UserID, Name: record.Name, Description: record.Description,
 		EmbedProvider: record.EmbedProvider, EmbedModel: record.EmbedModel, EmbedDims: record.EmbedDims,
 		ChunkSize: record.ChunkSize, ChunkOverlap: record.ChunkOverlap,
@@ -139,6 +141,14 @@ func ragKBResponse(record *store.RAGKBRecord) ragKBResponseDTO {
 		Status:    record.Status,
 		CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
 	}
+	if record.PinnedPolicyVersion.Valid {
+		version := record.PinnedPolicyVersion.Int64
+		response.PinnedPolicyVersion = &version
+	}
+	if record.ActiveGenerationID.Valid {
+		response.ActiveGenerationID = record.ActiveGenerationID.String
+	}
+	return response
 }
 
 func ragKBResponses(records []store.RAGKBRecord) []ragKBResponseDTO {
@@ -452,6 +462,23 @@ func (s *Server) handleGetRAGKB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, http.StatusOK, ragKBResponse(kb))
+}
+
+func (s *Server) handleGetRAGKBPolicy(w http.ResponseWriter, r *http.Request) {
+	if !s.requireRAG(w) {
+		return
+	}
+	identity, ok := ragIdentity(r)
+	if !ok {
+		jsonResponse(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "unauthorized"})
+		return
+	}
+	status, err := s.rag.GetKBIngestionPolicyStatus(r.Context(), ragOwnerID(identity), r.PathValue("id"))
+	if err != nil {
+		writeRAGError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, status)
 }
 
 func (s *Server) handleUpdateRAGKB(w http.ResponseWriter, r *http.Request) {

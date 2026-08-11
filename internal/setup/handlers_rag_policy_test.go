@@ -36,3 +36,15 @@ func TestRAGPolicyRoutesRemainUnavailableWithoutPromotionService(t *testing.T) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestRAGIngestionPolicyRouteRejectsArbitraryPolicyBody(t *testing.T) {
+	server := NewServer(0)
+	mux := http.NewServeMux()
+	server.registerRAGPolicyRoutes(mux, func(next http.HandlerFunc) http.HandlerFunc { return next })
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/rag-policies/ingestion/promotions", strings.NewReader(`{"runId":"run","profileId":"profile","confirmationRunId":"confirmation","policy":{"apiKey":"secret"}}`))
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
