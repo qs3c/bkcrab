@@ -104,13 +104,27 @@ func (s *Service) Execute(ctx context.Context, request rageval.CaseExecutionRequ
 		citations[i] = fmt.Sprint(citation.Number)
 	}
 	providerName, modelName := provider.SplitProviderModel(request.Profile.AnswerModel)
-	result := rageval.CaseExecutionResult{Response: answer.Response, Contexts: contexts, ContextIDs: ids, Citations: citations, SearchTrace: trace, AnswerTrace: answer, Latency: time.Since(started),
+	savedHits := make([]evaluationTraceHit, len(hits))
+	for index, hit := range hits {
+		savedHits[index] = evaluationTraceHit{ContextID: ids[index], RecallScore: hit.RecallScore, RerankScore: hit.RerankScore}
+	}
+	result := rageval.CaseExecutionResult{Response: answer.Response, Contexts: contexts, ContextIDs: ids, Citations: citations, SearchTrace: evaluationSearchTrace{Trace: trace, Hits: savedHits}, AnswerTrace: answer, Latency: time.Since(started),
 		Usage: rageval.Usage{Stage: "answer", Provider: providerName, Model: modelName, InputTokens: int64(answer.Usage.InputTokens), OutputTokens: int64(answer.Usage.OutputTokens)}}
 	if err != nil {
 		result.ErrorCode = AnswerErrorCode(err)
 		result.ErrorMessage = err.Error()
 	}
 	return result, err
+}
+
+type evaluationTraceHit struct {
+	ContextID   string   `json:"contextId"`
+	RecallScore float64  `json:"recallScore"`
+	RerankScore *float64 `json:"rerankScore,omitempty"`
+}
+type evaluationSearchTrace struct {
+	Trace SearchTrace          `json:"trace"`
+	Hits  []evaluationTraceHit `json:"hits"`
 }
 
 // SearchEvaluationWithOptions shares query planning, embedding, Milvus hybrid

@@ -585,12 +585,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先写 skipped/error 不进入 scored 分母、小样本、全 skipped、paired case 缺失测试。
-- [ ] baseline compare 只接受同 dataset version；online-only compare 还要求同 generation。
-- [ ] 非 paired case 明确列出，不静默丢弃。
-- [ ] threshold curve 基于保存的 rerank score + relevance label 计算；没有 label 时不伪造 precision/recall。
-- [ ] 切片 key/value 做白名单、长度和基数上限，防止高基数拖垮 DB/UI。
-- [ ] 导出重新鉴权并流式输出，大 trace 用受控对象引用。
+- [x] 先写 skipped/error 不进入 scored 分母、小样本、全 skipped、paired case 缺失测试。
+- [x] baseline compare 只接受同 dataset version；online-only compare 还要求同 generation。
+- [x] 非 paired case 明确列出，不静默丢弃。
+- [x] threshold curve 基于保存的 rerank score + relevance label 计算；没有 label 时不伪造 precision/recall。
+- [x] 切片 key/value 做白名单、长度和基数上限，防止高基数拖垮 DB/UI。
+- [x] 导出重新鉴权并流式输出，大 trace 用受控对象引用。
 
 ---
 
