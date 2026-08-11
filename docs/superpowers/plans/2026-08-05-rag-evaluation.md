@@ -845,12 +845,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] compose config 验证 evaluator 无 host port、只有 internal network、read_only/non-root/limits。
-- [ ] 文档说明 evaluator 会接收 question/response/context，部署者必须选择允许的数据边界。
-- [ ] 文档说明 policy publish 与 KB sync 的成本和回滚语义。
-- [ ] 构建主镜像和 evaluator 镜像；默认 enabled=false 时 bkcrab 可不依赖 sidecar 启动。
-- [ ] enabled=true 且 sidecar unhealthy 时生产 RAG 正常、eval capabilities 不可用。
-- [ ] 不在本任务自动部署到服务器；部署需作为单独授权步骤执行。
+- [x] compose config 验证 evaluator 无 host port、只有 internal network、read_only/non-root/limits。
+- [x] 文档说明 evaluator 会接收 question/response/context，部署者必须选择允许的数据边界。
+- [x] 文档说明 policy publish 与 KB sync 的成本和回滚语义。
+- [x] 构建主镜像和 evaluator 镜像；默认 enabled=false 时 bkcrab 可不依赖 sidecar 启动。
+- [x] enabled=true 且 sidecar unhealthy 时生产 RAG 正常、eval capabilities 不可用。
+- [x] 不在本任务自动部署到服务器；部署需作为单独授权步骤执行。
 
 ### Task 26：E2E 黄金集、迁移演练与发布闸门
 

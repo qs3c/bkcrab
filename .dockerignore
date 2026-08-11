@@ -22,6 +22,14 @@ tmp/
 internal/setup/web/
 node_modules/
 **/node_modules/
+.pnpm-store/
+.tmp/
+**/.venv/
+**/.pytest_cache/
+**/.ruff_cache/
+**/__pycache__/
+**/*.pyc
+**/.git/
 web/.next/
 web/out/
 vendor/

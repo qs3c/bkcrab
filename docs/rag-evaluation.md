@@ -16,6 +16,12 @@ RAG 测评是默认关闭的超级管理员能力，用固定 corpus/cases 对 b
 - `skipped_missing_input` 与 `error` 不计入评分分母，也不会转换为 0 分。
 - Dataset Version、Experiment Profile 和 Policy revision 发布后不可原地编辑。物理 collection key 不暴露给普通用户。
 
+### 数据外发与网络
+
+一次 judge 请求包含 `question`、bkcrab 生成的 `response`、命中的 `context`，并可能包含 reference answer/context；这四类内容都必须按原文外发处理。管理员必须在启用前确认数据分类、地域、供应商留存/训练条款和密钥归属，不能因为 evaluator 与生产链路隔离就默认允许外发。
+
+默认 Compose 只把 evaluator 连接到 `rag-evaluator-internal`，因此不会直接访问互联网。推荐把获批的私有 judge/embedding 服务接入该 internal network；如必须访问外部供应商，应由部署者增加一个受审计、域名 allow-list、TLS 校验和请求日志脱敏的 egress proxy，再让 evaluator 只访问该 proxy。不要为解决出网问题把 evaluator 直接挂到所有业务网络或映射宿主端口。
+
 ## Docker 启用
 
 在 `deploy/docker/.env` 中至少配置：
@@ -42,6 +48,8 @@ docker compose \
 
 不启用该 profile 或保持 `RAG_EVAL_ENABLED=false` 时，bkcrab 不依赖 evaluator 启动。不要给 evaluator 增加宿主机端口映射。
 
+在 `/home/csb` 部署时，源码、`.env` 与 Compose 文件均放在该目录下，并从该目录执行 Compose。开发任务只生成镜像/配置和 smoke 结果，不会自动连接服务器、停止现有实例或替换 `/home/csb`；实际切换必须作为单独授权步骤执行。
+
 ## Generation 迁移门禁
 
 启动迁移会为存量 KB 合成 immutable legacy ingestion policy 与 active generation mapping，只引用现有 Milvus collection，不复制或重建向量。发布时按以下顺序推进：
@@ -66,6 +74,22 @@ docker compose \
 - run/dataset/generation retention：分别默认 90/365/30 天。
 
 凭据不会进入 capabilities DTO、指纹、validation report 或结构化日志。回答模型与 evaluator judge/embedding 是三个明确角色，不能把 evaluator key 放入任务 payload。
+
+## 容量、费用与策略发布
+
+- 创建 run 前按 cases、token 和配置上限给出预算；到达 case/token/cost/duration 任一上限后不再发起新的昂贵调用。
+- evaluator CPU、内存、pids、tmpfs、batch 和 context bytes 都有硬上限。扩容时优先保守提高单项限制并观察 p95/错误率，不要同时提高 concurrency、batch 和 context。
+- RuntimePolicy publish/rollback 只切换版本化指针，不重建向量；成本主要来自发布前 eval。
+- IngestionPolicy publish 只影响此后创建的新 KB，不会静默重建旧 KB。旧 KB 的 opt-in sync 会重新 parse/enrich/embed 并写一个完整新 collection，成本与整库大小相关；切换前查询仍使用旧 generation。
+- sync 失败或取消会保留旧 active generation。成功切换后，旧 generation 在 30 天开发基线 rollback window 内保留；回滚是 fenced CAS，窗口到期且无引用后才 GC。回滚不会退还已发生的模型费用。
+
+## 备份与恢复
+
+需要作为一个恢复点共同保护：MySQL（dataset/run/result/policy/active pointer）、MinIO（corpus、manifest、generation artifacts）和 Milvus/etcd（评测与生产 collection）。`rag-evaluator` 容器和 `/tmp` 不含权威状态，无需备份。
+
+一致性备份建议先停止新 run、KB sync 和索引写入，等待 RUNNING 任务结束或取消，然后依次保存 MySQL 逻辑备份、MinIO bucket 副本，以及 `milvus-data`/`milvus-etcd-data` 的同一时间点快照。仅备份其中一个数据面不能保证恢复后的 SQL pointer 与物理 collection 一致。
+
+恢复顺序为 MySQL/MinIO/Milvus-etcd/Milvus 数据，再启动 bkcrab，保持 `RAG_EVAL_ENABLED=false` 验证 `/readyz`、对象读取和生产 RAG；之后启用 evaluator profile，检查 `/healthz` 与 capabilities。若 SQL 指向的 generation 缺失，保持 eval 关闭并从备份恢复，不得创建同名空 collection 伪装修复。
 
 ## 指标语义
 
@@ -106,6 +130,20 @@ pnpm --dir web build
 
 docker compose -f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.rag.yml config
 ```
+
+离线 Docker smoke（不会调用真实 judge）还应执行：
+
+```powershell
+docker compose --env-file deploy/docker/.env.example `
+  -f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.rag.yml config --quiet
+docker compose --env-file deploy/docker/.env.example `
+  -f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.rag.yml `
+  --profile rag-evaluation config --quiet
+docker build -t bkcrab/bkcrab:phase-h .
+docker build -t bkcrab/rag-evaluator:phase-h services/rag-evaluator
+```
+
+启动后先保持 `RAG_EVAL_ENABLED=false`，确认 `bkcrab /readyz` 正常且 evaluator profile 未启动。随后启用 profile，使用 `docker compose exec bkcrab wget -qO- http://rag-evaluator:8080/healthz` 验证内部健康；在已登录的 super-admin UI 检查 capabilities。再停止 `rag-evaluator`，确认 `/readyz` 和生产 RAG 仍正常、capabilities 变为 unavailable。健康检查不会调用 judge；真实 provider smoke 留给受控发布闸门。
 
 任何涉及真实 judge、Embedding 或大 KB shadow rebuild 的 smoke 都应使用受控数据集和明确费用预算。部署到 `/home/csb` 是独立授权步骤；开发与测试不会自动连接或修改服务器。
 
