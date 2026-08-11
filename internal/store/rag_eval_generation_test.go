@@ -123,3 +123,51 @@ func TestRAGEvalGenerationFailureNeverBecomesReady(t *testing.T) {
 		t.Fatalf("generation=%+v err=%v", got, err)
 	}
 }
+
+func TestRAGEvalRunPurgeKeepsSharedGenerationUntilLastReference(t *testing.T) {
+	st := openTestDB(t)
+	defer st.Close()
+	ctx := context.Background()
+	version, firstRun := seedReadyEvalVersionAndRun(t, st, "purge-first")
+	_, secondRun := seedReadyEvalVersionAndRun(t, st, "purge-second")
+	if _, err := st.DB().ExecContext(ctx, `UPDATE rag_eval_runs SET dataset_version_id=? WHERE id=?`, version.ID, secondRun.ID); err != nil {
+		t.Fatal(err)
+	}
+	first, err := st.AcquireRAGEvalGenerationForRun(ctx, evalGenerationAcquireRequest(firstRun.ID, version.ID, "fingerprint-purge", "reg_purge", "worker-a"))
+	if err != nil || first.Fence == nil {
+		t.Fatalf("first acquire=%+v err=%v", first, err)
+	}
+	if ready, err := st.MarkRAGEvalGenerationReady(ctx, *first.Fence, 1, 1, time.Hour); err != nil || !ready {
+		t.Fatalf("ready=%v err=%v", ready, err)
+	}
+	second, err := st.AcquireRAGEvalGenerationForRun(ctx, evalGenerationAcquireRequest(secondRun.ID, version.ID, "fingerprint-purge", "reg_unused", "worker-b"))
+	if err != nil || !second.Reused {
+		t.Fatalf("second acquire=%+v err=%v", second, err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `UPDATE rag_eval_runs SET status=?,finished_at=? WHERE id IN (?,?)`, RAGEvalRunSucceeded, time.Now().UTC(), firstRun.ID, secondRun.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, runID := range []string{firstRun.ID, secondRun.ID} {
+		if changed, err := st.TombstoneRAGEvalRun(ctx, runID); err != nil || !changed {
+			t.Fatalf("tombstone %s=%v err=%v", runID, changed, err)
+		}
+	}
+	candidates, err := st.ListRAGEvalRunGCCandidates(ctx, time.Now().Add(time.Minute), 10)
+	if err != nil || len(candidates) != 2 {
+		t.Fatalf("candidates=%v err=%v", candidates, err)
+	}
+	if purged, err := st.PurgeRAGEvalRun(ctx, firstRun.ID); err != nil || !purged {
+		t.Fatalf("purge first=%v err=%v", purged, err)
+	}
+	generation, err := st.GetRAGEvalGeneration(ctx, first.Generation.ID)
+	if err != nil || generation.RefCount != 1 {
+		t.Fatalf("shared generation=%+v err=%v", generation, err)
+	}
+	if purged, err := st.PurgeRAGEvalRun(ctx, secondRun.ID); err != nil || !purged {
+		t.Fatalf("purge second=%v err=%v", purged, err)
+	}
+	generation, err = st.GetRAGEvalGeneration(ctx, first.Generation.ID)
+	if err != nil || generation.RefCount != 0 {
+		t.Fatalf("released generation=%+v err=%v", generation, err)
+	}
+}

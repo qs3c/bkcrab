@@ -22,6 +22,19 @@ type probeReader struct {
 	maxRead   int
 }
 
+type failOnceDeletePrefixStore struct {
+	objects.Store
+	failed bool
+}
+
+func (s *failOnceDeletePrefixStore) DeletePrefix(ctx context.Context, prefix string) error {
+	if !s.failed {
+		s.failed = true
+		return errors.New("injected object deletion interruption")
+	}
+	return s.Store.DeletePrefix(ctx, prefix)
+}
+
 func (r *probeReader) Read(buffer []byte) (int, error) {
 	if len(buffer) > r.maxRead {
 		return 0, errors.New("consumer requested an unbounded read buffer")
@@ -300,5 +313,25 @@ func TestDatasetServiceTTLStagingCleanupAndTombstoneGC(t *testing.T) {
 	}
 	if _, err := objectStore.Get(ctx, "rag-eval/datasets/dataset-1/versions/1/manifest.json"); err == nil {
 		t.Fatal("tombstoned dataset object survived GC")
+	}
+}
+
+func TestDatasetGCInterruptionKeepsSQLTombstoneForRetry(t *testing.T) {
+	ctx := context.Background()
+	datasetStore := newMemoryDatasetStore()
+	inner := objects.NewLocalFS(t.TempDir())
+	objectStore := &failOnceDeletePrefixStore{Store: inner}
+	service, _ := NewDatasetService(datasetStore, objectStore)
+	if err := inner.Put(ctx, "rag-eval/datasets/dataset-retry/versions/1/manifest.json", strings.NewReader("{}"), 2, "application/json"); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := service.Tombstone(ctx, "dataset-retry"); err != nil || !changed {
+		t.Fatalf("tombstone=%v err=%v", changed, err)
+	}
+	if cleaned, err := service.GarbageCollect(ctx, time.Now(), 10); err == nil || cleaned != 0 || !datasetStore.tombstoned["dataset-retry"] {
+		t.Fatalf("interrupted GC cleaned=%d tombstone=%v err=%v", cleaned, datasetStore.tombstoned["dataset-retry"], err)
+	}
+	if cleaned, err := service.GarbageCollect(ctx, time.Now(), 10); err != nil || cleaned != 1 || datasetStore.tombstoned["dataset-retry"] {
+		t.Fatalf("retry GC cleaned=%d tombstone=%v err=%v", cleaned, datasetStore.tombstoned["dataset-retry"], err)
 	}
 }

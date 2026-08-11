@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/qs3c/bkcrab/internal/rag/telemetry"
 )
 
 func ragasRequest(metrics ...string) EvaluateRequest {
@@ -46,6 +48,22 @@ func TestRagasAcceptsPartialMetricStatuses(t *testing.T) {
 	response, err := client.Evaluate(context.Background(), ragasRequest("faithfulness", "response_relevancy"))
 	if err != nil || response.Results[0].Metrics["response_relevancy"].Status != MetricError {
 		t.Fatalf("partial metric response rejected: response=%+v err=%v", response, err)
+	}
+}
+
+func TestRagasTelemetryIsBoundedAndSeparatesSidecarFromJudge(t *testing.T) {
+	client, server := clientForServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(ragasResponse(`{"faithfulness":{"status":"ok","value":1,"reason":""}}`)))
+	}), time.Second)
+	defer server.Close()
+	var events []telemetry.Event
+	client.SetRecorder(telemetry.RecorderFunc(func(_ context.Context, event telemetry.Event) { events = append(events, event) }))
+	if _, err := client.Evaluate(context.Background(), ragasRequest("faithfulness")); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Name != telemetry.EventEvalStage || events[0].Fields.Operation != "eval_sidecar" ||
+		events[1].Fields.Operation != "eval_judge" || events[0].Fields.RunID != "request-1" || events[0].Fields.ItemCount != 1 {
+		t.Fatalf("events=%+v", events)
 	}
 }
 

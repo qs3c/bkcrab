@@ -175,6 +175,7 @@ type Gateway struct {
 	ragEvaluator       *rageval.RagasClient
 	ragEvalRunner      *rageval.Runner
 	ragEvalDatasets    *rageval.DatasetService
+	ragEvalCleanup     *rageval.CleanupCoordinator
 	ragPolicyPromotion *rag.PolicyPromotionService
 	ragPolicyRefresher *rag.RuntimePolicyRefresher
 	envCfg             *config.EnvConfig
@@ -564,6 +565,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	}
 
 	var ragEvalRunner *rageval.Runner
+	var ragEvalCleanup *rageval.CleanupCoordinator
 	var ragPolicyPromotion *rag.PolicyPromotionService
 	var ragPolicyRefresher *rag.RuntimePolicyRefresher
 	if ragCfg.Evaluation.Enabled && ragSvc != nil && ragEvaluatorClient != nil {
@@ -576,6 +578,13 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 			if buildErr != nil {
 				slog.Error("rag eval: runner unavailable", "error", buildErr)
 				ragEvalRunner = nil
+			}
+			if ragEvalDatasets != nil {
+				ragEvalCleanup, buildErr = rageval.NewCleanupCoordinator(st, ragEvalDatasets, generationBuilder, ragCfg.Evaluation, nil)
+				if buildErr != nil {
+					slog.Error("rag eval: cleanup coordinator unavailable", "error", buildErr)
+					ragEvalCleanup = nil
+				}
 			}
 		}
 		if runtimeSnapshot, ok := ragSvc.RuntimePolicyProvider().(*rag.RuntimePolicySnapshot); ok && runtimeSnapshot != nil {
@@ -613,6 +622,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		ragEvaluator:       ragEvaluatorClient,
 		ragEvalRunner:      ragEvalRunner,
 		ragEvalDatasets:    ragEvalDatasets,
+		ragEvalCleanup:     ragEvalCleanup,
 		ragPolicyPromotion: ragPolicyPromotion,
 		ragPolicyRefresher: ragPolicyRefresher,
 		envCfg:             env,
@@ -763,6 +773,9 @@ func (g *Gateway) Run() error {
 	}
 	if g.ragEvalRunner != nil {
 		g.ragEvalRunner.Start(ctx)
+	}
+	if g.ragEvalCleanup != nil {
+		g.ragEvalCleanup.Start(ctx)
 	}
 	if g.ragPolicyRefresher != nil {
 		g.ragPolicyRefresher.Start(ctx)

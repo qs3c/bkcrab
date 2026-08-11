@@ -364,6 +364,8 @@ type Store interface {
 	RequestCancelRAGEvalRun(ctx context.Context, id string) (bool, error)
 	FinishRAGEvalRun(ctx context.Context, fence RAGEvalRunFence, status, errorCode, errorMessage string) (bool, error)
 	TombstoneRAGEvalRun(ctx context.Context, id string) (bool, error)
+	ListRAGEvalRunGCCandidates(ctx context.Context, before time.Time, limit int) ([]string, error)
+	PurgeRAGEvalRun(ctx context.Context, id string) (bool, error)
 	PutRAGEvalCaseResult(ctx context.Context, fence RAGEvalRunFence, record RAGEvalCaseResultRecord) (bool, error)
 	GetRAGEvalCaseResult(ctx context.Context, runID, caseID string) (*RAGEvalCaseResultRecord, error)
 	ListRAGEvalCaseResults(ctx context.Context, runID, cursor string, limit int) ([]RAGEvalCaseResultRecord, error)

@@ -16,6 +16,7 @@ import (
 	rageval "github.com/qs3c/bkcrab/internal/rag/eval"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/parse"
+	"github.com/qs3c/bkcrab/internal/rag/telemetry"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 )
 
@@ -58,7 +59,12 @@ func TestRealEvaluationPipelineUsesIsolatedTargetAndParseArtifactReuse(t *testin
 	objectStore := objects.NewLocalFS(t.TempDir())
 	vectorStore := vector.NewFake()
 	parser := &countingEvaluationParser{inner: parse.NewLocalParser(nil, 100, 10<<20)}
-	service := New(Deps{Vector: vectorStore, Objects: objectStore, Parser: parser, Cfg: config.RAGCfg{}})
+	var stageEvents []telemetry.Event
+	service := New(Deps{Vector: vectorStore, Objects: objectStore, Parser: parser, Cfg: config.RAGCfg{}, Telemetry: telemetry.RecorderFunc(func(_ context.Context, event telemetry.Event) {
+		if event.Name == telemetry.EventEvalStage {
+			stageEvents = append(stageEvents, event)
+		}
+	})})
 	const sourceText = "# Evaluation\n\nThe isolated pipeline uses the real parser, splitter and vector store."
 	digest := sha256.Sum256([]byte(sourceText))
 	sha := hex.EncodeToString(digest[:])
@@ -94,5 +100,17 @@ func TestRealEvaluationPipelineUsesIsolatedTargetAndParseArtifactReuse(t *testin
 	}
 	if vectorStore.HasCollection(firstTarget.CollectionKey) || !vectorStore.HasCollection(secondTarget.CollectionKey) {
 		t.Fatal("evaluation generation drop crossed collection namespace")
+	}
+	seen := map[string]bool{}
+	for _, event := range stageEvents {
+		seen[event.Fields.Operation] = true
+		if event.Fields.RunID == "" || event.Fields.Outcome != "ok" {
+			t.Fatalf("unbounded/failed stage telemetry: %+v", event)
+		}
+	}
+	for _, operation := range []string{"eval_parser", "eval_embedding", "eval_milvus"} {
+		if !seen[operation] {
+			t.Fatalf("missing %s telemetry: %+v", operation, stageEvents)
+		}
 	}
 }

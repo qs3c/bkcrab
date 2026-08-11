@@ -19,8 +19,12 @@ func TestEmitDropsUnknownEventsAndSanitizesDimensions(t *testing.T) {
 		ErrorCode: "provider_error\nsecret=sk-live", TaskID: -1, Duration: -time.Second,
 		InputTokens: -4, OutputTokens: 7,
 	})
-	if len(events) != 1 {
-		t.Fatalf("events=%d want=1", len(events))
+	Emit(context.Background(), recorder, EventEvalStage, Fields{
+		RunID: "run-safe", CaseID: "case-safe", Operation: "eval_judge", Outcome: "ok",
+		Provider: "provider-safe", Model: "model-safe", ItemCount: 2, CostMicroUSD: 7,
+	})
+	if len(events) != 2 {
+		t.Fatalf("events=%d want=2", len(events))
 	}
 	got := events[0].Fields
 	if got.DocID != "doc-safe" || got.Operation != "vision_page" || got.Outcome != "ok" {
@@ -28,6 +32,10 @@ func TestEmitDropsUnknownEventsAndSanitizesDimensions(t *testing.T) {
 	}
 	if got.ErrorCode != "" || got.TaskID != 0 || got.Duration != 0 || got.InputTokens != 0 || got.OutputTokens != 7 {
 		t.Fatalf("unsafe/negative fields not sanitized: %+v", got)
+	}
+	evalFields := events[1].Fields
+	if evalFields.RunID != "run-safe" || evalFields.CaseID != "case-safe" || evalFields.ItemCount != 2 || evalFields.CostMicroUSD != 7 {
+		t.Fatalf("eval telemetry fields changed: %+v", evalFields)
 	}
 }
 

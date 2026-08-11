@@ -40,7 +40,7 @@ const (
 var (
 	ErrRAGEvalImmutable  = errors.New("store: immutable RAG evaluation record")
 	ErrRAGEvalFenceLost  = errors.New("store: RAG evaluation fence lost")
-	ErrRAGEvalReferenced = errors.New("store: RAG evaluation dataset is referenced by a run")
+	ErrRAGEvalReferenced = errors.New("store: RAG evaluation resource is referenced by a retained run")
 )
 
 type RAGEvalDatasetRecord struct {
@@ -752,6 +752,97 @@ func (d *DBStore) TombstoneRAGEvalRun(ctx context.Context, id string) (bool, err
 	}
 	n, err := result.RowsAffected()
 	return n == 1, err
+}
+
+// ListRAGEvalRunGCCandidates returns only explicitly tombstoned terminal runs.
+// A retained candidate run may still name an older run as its baseline, so a
+// referenced baseline is not eligible until that candidate is also removed.
+func (d *DBStore) ListRAGEvalRunGCCandidates(ctx context.Context, before time.Time, limit int) ([]string, error) {
+	limit = boundedRAGEvalListLimit(limit)
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT r.id FROM rag_eval_runs r WHERE r.deleted_at IS NOT NULL AND r.deleted_at<=%s AND NOT EXISTS (
+		SELECT 1 FROM rag_eval_runs candidate WHERE candidate.baseline_run_id=r.id AND candidate.deleted_at IS NULL
+	) ORDER BY r.deleted_at,r.id LIMIT %s`, d.ph(1), d.ph(2)), before.UTC(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// PurgeRAGEvalRun atomically releases its generation reference and deletes all
+// SQL-owned results. Physical generation deletion is deliberately separate and
+// remains protected by the generation GC fence.
+func (d *DBStore) PurgeRAGEvalRun(ctx context.Context, id string) (bool, error) {
+	if strings.TrimSpace(id) == "" {
+		return false, errors.New("run id is required")
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var deletedAt sql.NullTime
+	if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT deleted_at FROM rag_eval_runs WHERE id=%s`, d.ph(1)), id).Scan(&deletedAt); errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	if !deletedAt.Valid {
+		return false, ErrRAGEvalReferenced
+	}
+	var retainedBaselineRefs int
+	if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM rag_eval_runs WHERE baseline_run_id=%s AND deleted_at IS NULL`, d.ph(1)), id).Scan(&retainedBaselineRefs); err != nil {
+		return false, err
+	}
+	if retainedBaselineRefs != 0 {
+		return false, ErrRAGEvalReferenced
+	}
+	var generationID string
+	var released sql.NullTime
+	refErr := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT generation_id,released_at FROM rag_eval_generation_refs WHERE run_id=%s`, d.ph(1)), id).Scan(&generationID, &released)
+	if refErr != nil && !errors.Is(refErr, sql.ErrNoRows) {
+		return false, refErr
+	}
+	if refErr == nil && !released.Valid {
+		result, updateErr := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_eval_index_generations SET ref_count=ref_count-1 WHERE id=%s AND ref_count>0`, d.ph(1)), generationID)
+		if updateErr != nil {
+			return false, updateErr
+		}
+		if rows, _ := result.RowsAffected(); rows != 1 {
+			return false, ErrRAGEvalReferenced
+		}
+	}
+	for _, statement := range []string{
+		`DELETE FROM rag_eval_run_aggregates WHERE run_id=%s`,
+		`DELETE FROM rag_eval_metric_results WHERE run_id=%s`,
+		`DELETE FROM rag_eval_case_results WHERE run_id=%s`,
+		`DELETE FROM rag_eval_usage WHERE run_id=%s`,
+		`DELETE FROM rag_eval_generation_refs WHERE run_id=%s`,
+	} {
+		if _, err = tx.ExecContext(ctx, fmt.Sprintf(statement, d.ph(1)), id); err != nil {
+			return false, err
+		}
+	}
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_eval_runs WHERE id=%s AND deleted_at IS NOT NULL`, d.ph(1)), id)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows != 1 {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (d *DBStore) PutRAGEvalCaseResult(ctx context.Context, fence RAGEvalRunFence, record RAGEvalCaseResultRecord) (bool, error) {

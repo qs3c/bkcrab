@@ -24,6 +24,7 @@ func (s *Server) registerRAGEvaluationRoutes(mux *http.ServeMux, gate func(http.
 	mux.HandleFunc("GET /api/admin/rag-evals/datasets", gate(s.handleListRAGEvalDatasets))
 	mux.HandleFunc("POST /api/admin/rag-evals/datasets", gate(s.handleCreateRAGEvalDataset))
 	mux.HandleFunc("GET /api/admin/rag-evals/datasets/{id}", gate(s.handleGetRAGEvalDataset))
+	mux.HandleFunc("DELETE /api/admin/rag-evals/datasets/{id}", gate(s.handleDeleteRAGEvalDataset))
 	mux.HandleFunc("POST /api/admin/rag-evals/datasets/{id}/versions", gate(s.handleCreateRAGEvalDatasetVersion))
 	mux.HandleFunc("POST /api/admin/rag-evals/dataset-versions/{id}/validate", gate(s.handleValidateRAGEvalDatasetVersion))
 	mux.HandleFunc("GET /api/admin/rag-evals/dataset-versions/{id}/validation", gate(s.handleRAGEvalDatasetValidation))
@@ -32,6 +33,7 @@ func (s *Server) registerRAGEvaluationRoutes(mux *http.ServeMux, gate func(http.
 	mux.HandleFunc("GET /api/admin/rag-evals/runs", gate(s.handleListRAGEvalRuns))
 	mux.HandleFunc("POST /api/admin/rag-evals/runs", gate(s.handleCreateRAGEvalRun))
 	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}", gate(s.handleGetRAGEvalRun))
+	mux.HandleFunc("DELETE /api/admin/rag-evals/runs/{id}", gate(s.handleDeleteRAGEvalRun))
 	mux.HandleFunc("POST /api/admin/rag-evals/runs/{id}/cancel", gate(s.handleCancelRAGEvalRun))
 	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}/cases", gate(s.handleListRAGEvalRunCases))
 	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}/compare/{baselineId}", gate(s.handleCompareRAGEvalRuns))
@@ -199,6 +201,23 @@ func (s *Server) handleGetRAGEvalDataset(w http.ResponseWriter, r *http.Request)
 		next = versions[len(versions)-1].ID
 	}
 	jsonResponse(w, 200, map[string]any{"dataset": dataset, "versions": maskEvalDatasetVersions(versions), "nextVersionCursor": next})
+}
+
+func (s *Server) handleDeleteRAGEvalDataset(w http.ResponseWriter, r *http.Request) {
+	if s.ragEvalDatasets == nil {
+		writeEvalError(w, http.StatusServiceUnavailable, "eval_unavailable", "RAG evaluation dataset service is unavailable")
+		return
+	}
+	changed, err := s.ragEvalDatasets.Tombstone(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeEvalServiceError(w, err)
+		return
+	}
+	if !changed {
+		writeEvalError(w, http.StatusNotFound, "not_found", "evaluation dataset not found or already deleted")
+		return
+	}
+	jsonResponse(w, http.StatusAccepted, map[string]any{"ok": true, "status": "tombstoned"})
 }
 
 type inlineEvalDocument struct {
@@ -440,6 +459,23 @@ func (s *Server) handleGetRAGEvalRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	jsonResponse(w, 200, map[string]any{"run": record, "aggregates": aggregates})
+}
+
+func (s *Server) handleDeleteRAGEvalRun(w http.ResponseWriter, r *http.Request) {
+	service, ok := s.evalService(w)
+	if !ok {
+		return
+	}
+	changed, err := service.DeleteRun(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeEvalServiceError(w, err)
+		return
+	}
+	if !changed {
+		writeEvalError(w, http.StatusConflict, "run_not_terminal", "only a terminal evaluation run can be deleted")
+		return
+	}
+	jsonResponse(w, http.StatusAccepted, map[string]any{"ok": true, "status": "tombstoned"})
 }
 
 func (s *Server) handleCancelRAGEvalRun(w http.ResponseWriter, r *http.Request) {

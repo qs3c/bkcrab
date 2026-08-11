@@ -818,7 +818,7 @@ POST /api/rag/kbs/{id}/index-policy/rollback
 - 生产查询与 KB sync 使用独立 collection；同步不得降低旧索引的读可用性；
 - sidecar 和 runner 都设置 CPU、内存、pids、body、timeout 和 cancellation 限制。
 
-默认并发、预算和 retention 数值仍待压测后确定。
+Phase H 的开发/单机部署基线采用：eval worker 并发 1、单 run 最多 1,000 cases / 2,000,000 tokens / 25 USD / 6 小时，run retention 90 天、dataset/result retention 365 天、generation rollback retention 30 天。所有数值均为可配置上限；生产放量前仍须按实际模型单价、数据规模和压测结果复核，不能把这组开发基线视为无限容量承诺。
 
 ## 16. 可复现性与审计
 
@@ -950,8 +950,8 @@ Ragas/LLM judge 可能有随机性。默认使用可用的最低 temperature；�
 2. corpus 与 cases 的外部文件布局、字段映射和错误修复体验；
 3. 专用 evaluator LLM/embeddings 的模型、endpoint、数据外发政策和费用单价；
 4. 默认 metric bundle、业务 rubric 和发布门禁阈值；
-5. run/index/result 的默认 retention 和导出格式；
-6. 默认并发、单次 run 文档/case/token/cost 上限；
+5. 生产环境是否需要覆盖 Phase H 的 run 90 天、dataset/result 365 天、generation 30 天开发基线，以及除 JSON/CSV 外的导出格式；
+6. 生产放量是否需要覆盖 Phase H 的 worker=1、单 run 1,000 cases / 2,000,000 tokens / 25 USD / 6 小时开发基线；
 7. 首期是否展示置信区间、是否支持重复 judge 投票；
 8. 未来 CI 自动化需要的独立 API key scope；
 9. 是否以及何时开放 Ragas synthetic testset generation。

@@ -416,15 +416,15 @@ func (s *DatasetService) GarbageCollect(ctx context.Context, before time.Time, l
 	}
 	cleaned := 0
 	for _, datasetID := range candidates {
+		if err := s.objects.DeletePrefix(ctx, path.Join("rag-eval", "datasets", datasetID)+"/"); err != nil {
+			return cleaned, fmt.Errorf("delete dataset %s object prefix: %w", datasetID, err)
+		}
 		purged, err := lifecycle.PurgeRAGEvalDataset(ctx, datasetID)
 		if err != nil {
 			return cleaned, err
 		}
 		if !purged {
 			continue
-		}
-		if err := s.objects.DeletePrefix(ctx, path.Join("rag-eval", "datasets", datasetID)+"/"); err != nil {
-			return cleaned, fmt.Errorf("dataset %s SQL purged; object prefix cleanup required: %w", datasetID, err)
 		}
 		cleaned++
 	}

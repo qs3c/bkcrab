@@ -818,12 +818,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 决策 retention 默认值后写 fake-clock tests。
-- [ ] 删除 run 不删除被其它 run 复用的 generation；删除 dataset 不破坏保留 run。
-- [ ] orphan reconciler 只删除 SQL 明确标记且 fence 有效的 physical key。
-- [ ] telemetry 只记录 ID/hash/count/duration/status，不记录 question/context/response。
-- [ ] sidecar、judge、parser、embedding、Milvus 每阶段有 latency/error/cost counter。
-- [ ] 进程在任意 cleanup 中断后可幂等恢复。
+- [x] 决策 retention 默认值后写 fake-clock tests。
+- [x] 删除 run 不删除被其它 run 复用的 generation；删除 dataset 不破坏保留 run。
+- [x] orphan reconciler 只删除 SQL 明确标记且 fence 有效的 physical key。
+- [x] telemetry 只记录 ID/hash/count/duration/status，不记录 question/context/response。
+- [x] sidecar、judge、parser、embedding、Milvus 每阶段有 latency/error/cost counter。
+- [x] 进程在任意 cleanup 中断后可幂等恢复。
 
 ### Task 25：Docker、主镜像、部署说明与离线 smoke
 

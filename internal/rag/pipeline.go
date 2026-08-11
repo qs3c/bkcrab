@@ -122,19 +122,25 @@ func (s *Service) BuildEvaluationGeneration(ctx context.Context, request Evaluat
 		request.Ingestion.DocumentAI.TextModel != strings.TrimSpace(s.cfg.DocumentAI.TextModel)) {
 		return EvaluationPipelineResult{}, errors.New("evaluation enrichment model is not available in the resolved service contract")
 	}
+	stageStarted := time.Now()
 	if err := s.vec.EnsureCollection(ctx, request.Target.CollectionKey, request.Ingestion.Embedding.Dims); err != nil {
+		telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, Operation: "eval_milvus", Outcome: "error", Duration: time.Since(stageStarted)})
 		return EvaluationPipelineResult{}, fmt.Errorf("prepare evaluation collection: %w", err)
 	}
+	telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, Operation: "eval_milvus", Outcome: "ok", Duration: time.Since(stageStarted)})
 	embedder := embed.New(request.Embedding.Endpoint, request.Embedding.APIKey, request.Embedding.Model, request.Embedding.Dims)
 	result := EvaluationPipelineResult{}
 	for _, sourceDocument := range request.Documents {
 		if strings.TrimSpace(sourceDocument.ID) == "" || strings.TrimSpace(sourceDocument.ObjectKey) == "" || sourceDocument.SizeBytes < 0 {
 			return result, errors.New("evaluation pipeline document is invalid")
 		}
+		stageStarted = time.Now()
 		artifact, artifactErr := s.loadOrBuildEvaluationArtifact(ctx, request, sourceDocument)
 		if artifactErr != nil {
+			telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, DocID: sourceDocument.ID, Operation: "eval_parser", Outcome: "error", Duration: time.Since(stageStarted)})
 			return result, artifactErr
 		}
+		telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, DocID: sourceDocument.ID, Operation: "eval_parser", Outcome: "ok", Duration: time.Since(stageStarted), ItemCount: 1})
 		chunks, _, artifactErr := s.buildSearchChunks(ctx, artifact, searchChunkBuildOptions{
 			ChunkSize: request.Ingestion.ChunkSize, ChunkOverlap: request.Ingestion.ChunkOverlap,
 			EnrichmentEnabled: request.Ingestion.EnrichmentEnabled, TextModel: request.Ingestion.DocumentAI.TextModel,
@@ -149,10 +155,13 @@ func (s *Service) BuildEvaluationGeneration(ctx context.Context, request Evaluat
 		for index := range chunks {
 			texts[index] = chunks[index].SearchContent
 		}
+		stageStarted = time.Now()
 		vectors, artifactErr := embedder.Embed(ctx, texts)
 		if artifactErr != nil {
+			telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, DocID: sourceDocument.ID, Operation: "eval_embedding", Outcome: "error", Duration: time.Since(stageStarted), ItemCount: len(texts), Model: request.Embedding.Model})
 			return result, fmt.Errorf("embed evaluation document %s: %w", sourceDocument.ID, artifactErr)
 		}
+		telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, DocID: sourceDocument.ID, Operation: "eval_embedding", Outcome: "ok", Duration: time.Since(stageStarted), ItemCount: len(texts), Model: request.Embedding.Model})
 		if len(vectors) != len(chunks) {
 			return result, fmt.Errorf("evaluation embedding vector count mismatch for %s", sourceDocument.ID)
 		}
@@ -168,12 +177,15 @@ func (s *Service) BuildEvaluationGeneration(ctx context.Context, request Evaluat
 				DocVersion: 1, Vector: vectors[index],
 			}
 		}
+		stageStarted = time.Now()
 		for start := 0; start < len(vectorChunks); start += pipelineStageBatchSize {
 			end := min(start+pipelineStageBatchSize, len(vectorChunks))
 			if err := s.vec.UpsertChunks(ctx, request.Target.CollectionKey, vectorChunks[start:end]); err != nil {
+				telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, DocID: sourceDocument.ID, Operation: "eval_milvus", Outcome: "error", Duration: time.Since(stageStarted), ItemCount: len(vectorChunks)})
 				return result, fmt.Errorf("index evaluation document %s: %w", sourceDocument.ID, err)
 			}
 		}
+		telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, DocID: sourceDocument.ID, Operation: "eval_milvus", Outcome: "ok", Duration: time.Since(stageStarted), ItemCount: len(vectorChunks)})
 		result.DocumentCount++
 		result.ChunkCount += int64(len(chunks))
 	}

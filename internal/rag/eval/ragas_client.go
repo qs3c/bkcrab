@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/rag/telemetry"
 )
 
 var RagasMetricRequiredFields = map[string][]string{
@@ -71,6 +72,7 @@ type RagasClient struct {
 	health                                 config.RAGEvaluatorHealthSnapshot
 	probeMu                                sync.Mutex
 	startOnce                              sync.Once
+	recorder                               telemetry.Recorder
 }
 
 func NewRagasClient(endpoint, apiKey string, timeout time.Duration, maxBatch, maxContexts, maxContextBytes int) (*RagasClient, error) {
@@ -88,7 +90,18 @@ func NewRagasClient(endpoint, apiKey string, timeout time.Duration, maxBatch, ma
 		endpoint: endpoint, apiKey: apiKey, maxBatch: maxBatch, maxContexts: maxContexts,
 		maxContextBytes: maxContextBytes, client: client, healthTTL: 30 * time.Second,
 		healthProbeInterval: 15 * time.Second, now: time.Now,
+		recorder: telemetry.NewSlogRecorder(nil),
 	}, nil
+}
+
+func (c *RagasClient) SetRecorder(recorder telemetry.Recorder) {
+	if c == nil {
+		return
+	}
+	if recorder == nil {
+		recorder = telemetry.NopRecorder()
+	}
+	c.recorder = recorder
 }
 
 type evaluatorHealth struct {
@@ -420,10 +433,21 @@ func validateWireResponse(request EvaluateRequest, wire wireEvaluateResponse) (E
 	return response, nil
 }
 
-func (c *RagasClient) Evaluate(ctx context.Context, request EvaluateRequest) (EvaluateResponse, error) {
+func (c *RagasClient) Evaluate(ctx context.Context, request EvaluateRequest) (response EvaluateResponse, resultErr error) {
 	if c == nil {
 		return EvaluateResponse{}, errors.New("evaluator client is not configured")
 	}
+	started := time.Now()
+	defer func() {
+		outcome := "ok"
+		if resultErr != nil {
+			outcome = "error"
+		}
+		fields := telemetry.Fields{RunID: request.RequestID, Operation: "eval_sidecar", Outcome: outcome, Duration: time.Since(started), RequestCount: 1, ItemCount: len(request.Samples)}
+		telemetry.Emit(ctx, c.recorder, telemetry.EventEvalStage, fields)
+		fields.Operation = "eval_judge"
+		telemetry.Emit(ctx, c.recorder, telemetry.EventEvalStage, fields)
+	}()
 	if err := c.validateEvaluateRequest(&request); err != nil {
 		return EvaluateResponse{}, err
 	}
