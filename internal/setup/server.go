@@ -19,6 +19,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
 	"github.com/qs3c/bkcrab/internal/rag"
+	rageval "github.com/qs3c/bkcrab/internal/rag/eval"
 	"github.com/qs3c/bkcrab/internal/session"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/taskqueue"
@@ -91,6 +92,7 @@ type Server struct {
 	ragEvalHealthMu       sync.RWMutex
 	ragEvalHealth         config.RAGEvaluatorHealthSnapshot
 	ragEvalHealthProvider RAGEvaluatorHealthProvider
+	ragEvalRunner         *rageval.Runner
 	startedAt             time.Time
 }
 
@@ -232,6 +234,8 @@ func (s *Server) SetRAGEvaluatorHealthProvider(provider RAGEvaluatorHealthProvid
 	s.ragEvalHealthProvider = provider
 	s.ragEvalHealthMu.Unlock()
 }
+
+func (s *Server) SetRAGEvaluationRunner(runner *rageval.Runner) { s.ragEvalRunner = runner }
 
 func (s *Server) ragEvaluatorHealthSnapshot() config.RAGEvaluatorHealthSnapshot {
 	s.ragEvalHealthMu.RLock()

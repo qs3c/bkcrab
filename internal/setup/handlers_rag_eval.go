@@ -19,7 +19,6 @@ type ragEvaluationStore interface {
 	ListRAGEvalDatasets(context.Context, string, int) ([]store.RAGEvalDatasetRecord, error)
 	CreateRAGEvalProfile(context.Context, *store.RAGEvalProfileRecord) error
 	ListRAGEvalProfiles(context.Context, string, int) ([]store.RAGEvalProfileRecord, error)
-	CreateRAGEvalRun(context.Context, *store.RAGEvalRunRecord) error
 	ListRAGEvalRuns(context.Context, string, int) ([]store.RAGEvalRunRecord, error)
 	GetRAGEvalRun(context.Context, string) (*store.RAGEvalRunRecord, error)
 	RequestCancelRAGEvalRun(context.Context, string) (bool, error)
@@ -196,8 +195,8 @@ func (s *Server) handleCreateRAGEvalRun(w http.ResponseWriter, r *http.Request) 
 		jsonResponse(w, 503, map[string]any{"ok": false, "error": "RAG evaluation is disabled"})
 		return
 	}
-	st, ok := s.evalStore(w)
-	if !ok {
+	if s.ragEvalRunner == nil {
+		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "RAG evaluation runner is unavailable"})
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
@@ -215,9 +214,9 @@ func (s *Server) handleCreateRAGEvalRun(w http.ResponseWriter, r *http.Request) 
 		jsonResponse(w, 400, map[string]any{"ok": false, "error": "invalid run"})
 		return
 	}
-	metrics, _ := json.Marshal(request.Metrics)
-	record := &store.RAGEvalRunRecord{DatasetVersionID: request.DatasetVersionID, BaselineRunID: request.BaselineRunID, Mode: request.Mode, ProfileID: request.ProfileID, IndexGenerationID: request.IndexGenerationID, RequestedMetricsJSON: string(metrics), ExecutionSnapshotJSON: "{}", CreatedBy: evalIdentity(r)}
-	if err := st.CreateRAGEvalRun(r.Context(), record); err != nil {
+	record, err := s.ragEvalRunner.CreateRun(r.Context(), eval.CreateRunRequest{DatasetVersionID: request.DatasetVersionID, BaselineRunID: request.BaselineRunID,
+		Mode: eval.RunMode(request.Mode), ProfileID: request.ProfileID, IndexGenerationID: request.IndexGenerationID, Metrics: request.Metrics, CreatedBy: evalIdentity(r)})
+	if err != nil {
 		jsonResponse(w, 400, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}

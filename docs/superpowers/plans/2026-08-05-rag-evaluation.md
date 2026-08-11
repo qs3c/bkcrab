@@ -556,14 +556,14 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先写状态机、重启重领、lease lost、取消、case partial failure 测试。
-- [ ] run 创建时冻结 dataset/profile/metric/execution snapshot，运行中不得读取 draft profile。
-- [ ] Full 模式建立/引用 generation；Online-only 必须显式引用 READY generation。
-- [ ] 每个 case 先保存 pipeline result，再异步/batch score；重试评分不重复执行昂贵 answer，除非 result 不完整。
-- [ ] evaluation answer 不写聊天记录；usage 写 eval ledger。
-- [ ] 达到 cost/token/time budget 后停止新 case，保留已完成结果并给出明确状态。
-- [ ] 使用独立 worker concurrency，不复用普通 index worker channel。
-- [ ] 运行 `go test -race ./internal/rag/eval ./internal/rag/...`。
+- [x] 先写状态机、重启重领、lease lost、取消、case partial failure 测试。
+- [x] run 创建时冻结 dataset/profile/metric/execution snapshot，运行中不得读取 draft profile。
+- [x] Full 模式建立/引用 generation；Online-only 必须显式引用 READY generation。
+- [x] 每个 case 先保存 pipeline result，再异步/batch score；重试评分不重复执行昂贵 answer，除非 result 不完整。
+- [x] evaluation answer 不写聊天记录；usage 写 eval ledger。
+- [x] 达到 cost/token/time budget 后停止新 case，保留已完成结果并给出明确状态。
+- [x] 使用独立 worker concurrency，不复用普通 index worker channel。
+- [x] 运行 `go test -race ./internal/rag/eval ./internal/rag/...`。
 
 ### Task 16：聚合、切片、比较、阈值曲线与导出 service
 

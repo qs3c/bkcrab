@@ -155,25 +155,26 @@ func buildToolChainFromResolved(resolved config.ResolvedAgent, category string) 
 // `sandboxPool` 是网关范围的执行器池。从系统作用域沙箱配置构建一次，由每个 UserSpace 共享。
 // 每个 UserSpace 的 `SandboxPool` 字段只是一个借用的引用；关闭时只关闭这一个池。
 type Gateway struct {
-	bus          *bus.MessageBus
-	users        *userSpaceRegistry
-	chanMgr      *channels.Manager
-	webChan      *channels.WebChannel
-	scheduler    *cron.Scheduler
-	webhookSrv   *webhook.Server
-	pluginMgr    *plugin.Manager
-	taskQueue    *taskqueue.Queue
-	store        store.Store
-	accounts     *users.Accounts
-	workspace    workspace.Store
-	sandboxPool  sandbox.ExecutorPool
-	mcpRuntime   *mcpruntime.Service
-	usage        usage.Meter
-	ragSvc       *rag.Service
-	ragCfg       config.RAGCfg
-	ragParser    *sidecar.Client
-	ragEvaluator *rageval.RagasClient
-	envCfg       *config.EnvConfig
+	bus           *bus.MessageBus
+	users         *userSpaceRegistry
+	chanMgr       *channels.Manager
+	webChan       *channels.WebChannel
+	scheduler     *cron.Scheduler
+	webhookSrv    *webhook.Server
+	pluginMgr     *plugin.Manager
+	taskQueue     *taskqueue.Queue
+	store         store.Store
+	accounts      *users.Accounts
+	workspace     workspace.Store
+	sandboxPool   sandbox.ExecutorPool
+	mcpRuntime    *mcpruntime.Service
+	usage         usage.Meter
+	ragSvc        *rag.Service
+	ragCfg        config.RAGCfg
+	ragParser     *sidecar.Client
+	ragEvaluator  *rageval.RagasClient
+	ragEvalRunner *rageval.Runner
+	envCfg        *config.EnvConfig
 	// chatEvents 设置后，允许总线触发的 web 轮次（cron/目标延续/心跳/子代理）
 	// 通过用户输入的 POST /api/chat 轮次使用的同一个 SSE hub 流式传输。
 	// 安全地为 nil：未设置时保留传统的 bus.Outbound → WebChannel 异步气泡路径。
@@ -220,6 +221,13 @@ func (g *Gateway) RAGEvaluatorHealthSnapshot() config.RAGEvaluatorHealthSnapshot
 		return config.RAGEvaluatorHealthSnapshot{}
 	}
 	return g.ragEvaluator.HealthSnapshot()
+}
+
+func (g *Gateway) RAGEvaluationRunner() *rageval.Runner {
+	if g == nil {
+		return nil
+	}
+	return g.ragEvalRunner
 }
 
 // Store 返回网关的存储后端。
@@ -434,6 +442,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					RuntimePolicy:   runtimePolicy,
 					Collections:     collectionResolver,
 					QueryLLM:        userRAGQueryLLM(st, meter),
+					AnswerModel:     userRAGAnswerModel(st),
 					Reranker:        ranker,
 					Parser:          documentParser,
 					Primitives:      primitives,
@@ -531,25 +540,41 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		return nil, fmt.Errorf("init accounts: %w", err)
 	}
 
+	var ragEvalRunner *rageval.Runner
+	if ragCfg.Evaluation.Enabled && ragSvc != nil && ragEvaluatorClient != nil {
+		generationBuilder, buildErr := rag.NewEvaluationGenerationBuilder(st, ragSvc, "eval-generation-"+uuid.NewString(), 45*time.Second, time.Duration(ragCfg.Evaluation.GenerationRetentionDays)*24*time.Hour)
+		if buildErr != nil {
+			slog.Error("rag eval: generation builder unavailable", "error", buildErr)
+		} else {
+			generationProvider := &rag.EvaluationRunnerGenerationProvider{Store: st, Builder: generationBuilder, Embedding: ragCfg.Embedding, Contract: rag.DefaultEvaluationGenerationContract()}
+			ragEvalRunner, buildErr = rageval.NewRunner(st, generationProvider, ragSvc, ragEvaluatorClient, ragCfg.Evaluation, "eval-runner-"+uuid.NewString())
+			if buildErr != nil {
+				slog.Error("rag eval: runner unavailable", "error", buildErr)
+				ragEvalRunner = nil
+			}
+		}
+	}
+
 	g := &Gateway{
-		bus:          mb,
-		store:        st,
-		accounts:     accts,
-		workspace:    ws,
-		usage:        meter,
-		sandboxPool:  systemSandboxPool,
-		mcpRuntime:   mcpRuntime,
-		users:        newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, mcpRuntime, pluginMgr, ragSvc),
-		chanMgr:      chanMgr,
-		webChan:      webChan,
-		scheduler:    scheduler,
-		webhookSrv:   webhookSrv,
-		pluginMgr:    pluginMgr,
-		ragSvc:       ragSvc,
-		ragCfg:       ragCfg,
-		ragParser:    ragParserClient,
-		ragEvaluator: ragEvaluatorClient,
-		envCfg:       env,
+		bus:           mb,
+		store:         st,
+		accounts:      accts,
+		workspace:     ws,
+		usage:         meter,
+		sandboxPool:   systemSandboxPool,
+		mcpRuntime:    mcpRuntime,
+		users:         newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, mcpRuntime, pluginMgr, ragSvc),
+		chanMgr:       chanMgr,
+		webChan:       webChan,
+		scheduler:     scheduler,
+		webhookSrv:    webhookSrv,
+		pluginMgr:     pluginMgr,
+		ragSvc:        ragSvc,
+		ragCfg:        ragCfg,
+		ragParser:     ragParserClient,
+		ragEvaluator:  ragEvaluatorClient,
+		ragEvalRunner: ragEvalRunner,
+		envCfg:        env,
 	}
 
 	if webhookSrv != nil {
@@ -694,6 +719,9 @@ func (g *Gateway) Run() error {
 	}
 	if g.ragEvaluator != nil {
 		g.ragEvaluator.StartHealthProbe(ctx)
+	}
+	if g.ragEvalRunner != nil {
+		g.ragEvalRunner.Start(ctx)
 	}
 	if g.ragSvc != nil {
 		g.ragSvc.Start(ctx)
@@ -956,6 +984,29 @@ func userRAGQueryLLM(st store.Store, meter usage.Meter) rag.QueryLLMFn {
 			}
 		}
 		return strings.TrimSpace(response.Content), nil
+	}
+}
+
+func userRAGAnswerModel(st store.Store) rag.AnswerModelResolver {
+	return func(ctx context.Context, userID, model string) (rag.AnswerModel, error) {
+		if st == nil || strings.TrimSpace(userID) == "" {
+			return nil, errors.New("evaluation answer owner is unavailable")
+		}
+		cfg, err := assembleConfig(ctx, st, userID, "")
+		if err != nil {
+			return nil, fmt.Errorf("assemble evaluation answer config: %w", err)
+		}
+		config.LoadEnv().ApplyToConfig(cfg)
+		config.ApplyDefaults(cfg)
+		providerName, modelName := provider.SplitProviderModel(strings.TrimSpace(model))
+		if providerName == "" || modelName == "" {
+			return nil, errors.New("evaluation answer model must use provider/model")
+		}
+		providerCfg, ok := cfg.Providers[providerName]
+		if !ok || strings.TrimSpace(providerCfg.APIBase) == "" || strings.TrimSpace(providerCfg.APIKey) == "" {
+			return nil, fmt.Errorf("evaluation answer provider %q is incomplete", providerName)
+		}
+		return provider.NewProvider(providerCfg.APIKey, providerCfg.APIBase, providerCfg.APIType), nil
 	}
 }
 

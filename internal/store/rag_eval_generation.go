@@ -66,6 +66,52 @@ func (d *DBStore) GetRAGEvalGeneration(ctx context.Context, id string) (*RAGEval
 	return item, err
 }
 
+// AttachReadyRAGEvalGenerationForRun binds an ONLINE_ONLY run to one explicit
+// READY generation. Dataset identity, run state, generation state and the
+// refcount update are checked in the same transaction.
+func (d *DBStore) AttachReadyRAGEvalGenerationForRun(ctx context.Context, runID, generationID string) (*RAGEvalGenerationRecord, error) {
+	if strings.TrimSpace(runID) == "" || strings.TrimSpace(generationID) == "" {
+		return nil, errors.New("run and generation are required")
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	runQuery := fmt.Sprintf(`SELECT dataset_version_id,mode,status,index_generation_id FROM rag_eval_runs WHERE id=%s AND deleted_at IS NULL`, d.ph(1))
+	if d.dialect != "sqlite" {
+		runQuery += " FOR UPDATE"
+	}
+	var datasetID, mode, status string
+	var current sql.NullString
+	if err = tx.QueryRowContext(ctx, runQuery, runID).Scan(&datasetID, &mode, &status, &current); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	if mode != RAGEvalRunModeOnlineOnly || (status != RAGEvalRunQueued && status != RAGEvalRunRunning) || (current.Valid && current.String != generationID) {
+		return nil, ErrRAGEvalGenerationConflict
+	}
+	generation, err := scanRAGEvalGeneration(tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_eval_index_generations WHERE id=%s`, ragEvalGenerationColumns, d.ph(1)), generationID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if generation.DatasetVersionID != datasetID || generation.Status != RAGEvalGenerationReady {
+		return nil, ErrRAGEvalGenerationConflict
+	}
+	if err = d.attachRAGEvalGenerationRefTx(ctx, tx, runID, generationID, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	generation.RefCount++
+	return generation, nil
+}
+
 func validateRAGEvalGenerationAcquire(request RAGEvalGenerationAcquireRequest) error {
 	for _, value := range []string{request.RunID, request.DatasetVersionID, request.Fingerprint, request.CorpusFingerprint,
 		request.IngestionFingerprint, request.NewGenerationID, request.CollectionKey, request.ObjectPrefix,

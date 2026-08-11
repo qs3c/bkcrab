@@ -529,6 +529,16 @@ func (d *DBStore) ListRAGEvalProfiles(ctx context.Context, cursor string, limit 
 	return out, rows.Err()
 }
 
+func (d *DBStore) GetRAGEvalProfile(ctx context.Context, id string) (*RAGEvalProfileRecord, error) {
+	var item RAGEvalProfileRecord
+	err := d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT id,name,profile_json,fingerprint,created_by,created_at FROM rag_eval_profiles WHERE id=%s`, d.ph(1)), id).
+		Scan(&item.ID, &item.Name, &item.ProfileJSON, &item.Fingerprint, &item.CreatedBy, &item.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &item, err
+}
+
 func (d *DBStore) CreateRAGEvalRun(ctx context.Context, record *RAGEvalRunRecord) error {
 	if record == nil || record.DatasetVersionID == "" || record.ProfileID == "" || !validRAGEvalRunMode(record.Mode) || strings.TrimSpace(record.CreatedBy) == "" {
 		return errors.New("valid dataset, profile, and mode are required")
@@ -591,6 +601,27 @@ func (d *DBStore) ListRAGEvalRuns(ctx context.Context, cursor string, limit int)
 	return out, rows.Err()
 }
 
+// ClaimNextRAGEvalRun finds a durable candidate and delegates to the fenced
+// claim operation. A competing worker may win between the two statements; in
+// that case callers simply poll again.
+func (d *DBStore) ClaimNextRAGEvalRun(ctx context.Context, worker string, lease time.Duration) (*RAGEvalRunFence, bool, error) {
+	if strings.TrimSpace(worker) == "" || lease <= 0 {
+		return nil, false, errors.New("worker and lease are required")
+	}
+	var id string
+	now := time.Now().UTC()
+	err := d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT id FROM rag_eval_runs WHERE deleted_at IS NULL AND
+		(status=%s OR (status=%s AND (lease_until IS NULL OR lease_until<=%s)))
+		ORDER BY created_at,id LIMIT 1`, d.ph(1), d.ph(2), d.ph(3)), RAGEvalRunQueued, RAGEvalRunRunning, now).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return d.ClaimRAGEvalRun(ctx, id, worker, lease)
+}
+
 func (d *DBStore) ClaimRAGEvalRun(ctx context.Context, runID, worker string, lease time.Duration) (*RAGEvalRunFence, bool, error) {
 	if worker == "" || lease <= 0 {
 		return nil, false, errors.New("worker and lease are required")
@@ -639,6 +670,22 @@ func (d *DBStore) HeartbeatRAGEvalRun(ctx context.Context, fence RAGEvalRunFence
 	}
 	now := time.Now().UTC()
 	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_eval_runs SET lease_until=%s WHERE id=%s AND status=%s AND lease_owner=%s AND fence_token=%s AND lease_until>%s`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6)), now.Add(lease), fence.RunID, RAGEvalRunRunning, fence.LeaseOwner, fence.FenceToken, now)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
+}
+
+func (d *DBStore) UpdateRAGEvalRunProgress(ctx context.Context, fence RAGEvalRunFence, stage, progressJSON string) (bool, error) {
+	stage = truncateRAGEvalText(strings.TrimSpace(stage), 64)
+	if stage == "" || !json.Valid([]byte(emptyJSON(progressJSON))) {
+		return false, errors.New("valid run stage and progress are required")
+	}
+	now := time.Now().UTC()
+	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_eval_runs SET stage=%s,progress_json=%s WHERE id=%s AND status=%s AND lease_owner=%s AND fence_token=%s AND lease_until>%s`,
+		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7)), stage, emptyJSON(progressJSON), fence.RunID,
+		RAGEvalRunRunning, fence.LeaseOwner, fence.FenceToken, now)
 	if err != nil {
 		return false, err
 	}
@@ -709,6 +756,34 @@ func (d *DBStore) PutRAGEvalCaseResult(ctx context.Context, fence RAGEvalRunFenc
 	return true, nil
 }
 
+func (d *DBStore) GetRAGEvalCaseResult(ctx context.Context, runID, caseID string) (*RAGEvalCaseResultRecord, error) {
+	var item RAGEvalCaseResultRecord
+	err := d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT run_id,case_id,response,contexts_json,citations_json,search_trace_json,answer_trace_json,status,error_code,error_message,latency_ms,usage_json FROM rag_eval_case_results WHERE run_id=%s AND case_id=%s`, d.ph(1), d.ph(2)), runID, caseID).
+		Scan(&item.RunID, &item.CaseID, &item.Response, &item.ContextsJSON, &item.CitationsJSON, &item.SearchTraceJSON, &item.AnswerTraceJSON, &item.Status, &item.ErrorCode, &item.ErrorMessage, &item.LatencyMS, &item.UsageJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &item, err
+}
+
+func (d *DBStore) ListRAGEvalCaseResults(ctx context.Context, runID, cursor string, limit int) ([]RAGEvalCaseResultRecord, error) {
+	limit = boundedRAGEvalListLimit(limit)
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT run_id,case_id,response,contexts_json,citations_json,search_trace_json,answer_trace_json,status,error_code,error_message,latency_ms,usage_json FROM rag_eval_case_results WHERE run_id=%s AND case_id>%s ORDER BY case_id LIMIT %s`, d.ph(1), d.ph(2), d.ph(3)), runID, cursor, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RAGEvalCaseResultRecord{}
+	for rows.Next() {
+		var item RAGEvalCaseResultRecord
+		if err := rows.Scan(&item.RunID, &item.CaseID, &item.Response, &item.ContextsJSON, &item.CitationsJSON, &item.SearchTraceJSON, &item.AnswerTraceJSON, &item.Status, &item.ErrorCode, &item.ErrorMessage, &item.LatencyMS, &item.UsageJSON); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (d *DBStore) PutRAGEvalMetricResult(ctx context.Context, fence RAGEvalRunFence, record RAGEvalMetricResultRecord) (bool, error) {
 	if record.RunID != fence.RunID || record.CaseID == "" || record.MetricName == "" || record.MetricVersion == "" || !validRAGEvalMetricStatus(record.Status) {
 		return false, errors.New("metric result identity is incomplete")
@@ -745,6 +820,70 @@ func (d *DBStore) PutRAGEvalMetricResult(ctx context.Context, fence RAGEvalRunFe
 		return false, err
 	}
 	return true, nil
+}
+
+func (d *DBStore) ListRAGEvalMetricResults(ctx context.Context, runID, cursor string, limit int) ([]RAGEvalMetricResultRecord, error) {
+	limit = boundedRAGEvalListLimit(limit)
+	cursorCase, cursorMetric, _ := strings.Cut(cursor, ":")
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT run_id,case_id,metric_name,metric_version,status,value,reason,details_json FROM rag_eval_metric_results WHERE run_id=%s AND (case_id>%s OR (case_id=%s AND metric_name>%s)) ORDER BY case_id,metric_name LIMIT %s`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)), runID, cursorCase, cursorCase, cursorMetric, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RAGEvalMetricResultRecord{}
+	for rows.Next() {
+		var item RAGEvalMetricResultRecord
+		if err := rows.Scan(&item.RunID, &item.CaseID, &item.MetricName, &item.MetricVersion, &item.Status, &item.Value, &item.Reason, &item.DetailsJSON); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (d *DBStore) RAGEvalUsageTotals(ctx context.Context, runID string) (tokens int64, cost float64, err error) {
+	err = d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT COALESCE(SUM(input_tokens+output_tokens),0),COALESCE(SUM(CASE WHEN actual_cost_usd>0 THEN actual_cost_usd ELSE estimated_cost_usd END),0) FROM rag_eval_usage WHERE run_id=%s`, d.ph(1)), runID).Scan(&tokens, &cost)
+	return
+}
+
+func (d *DBStore) RecordRAGEvalUsageFenced(ctx context.Context, fence RAGEvalRunFence, record *RAGEvalUsageRecord) (bool, error) {
+	if record == nil || record.RunID != fence.RunID || strings.TrimSpace(record.IdempotencyKey) == "" || len(record.IdempotencyKey) > 255 {
+		return false, errors.New("usage run and idempotency key are required")
+	}
+	if record.InputTokens < 0 || record.OutputTokens < 0 || math.IsNaN(record.EstimatedCostUSD) || math.IsInf(record.EstimatedCostUSD, 0) || record.EstimatedCostUSD < 0 || math.IsNaN(record.ActualCostUSD) || math.IsInf(record.ActualCostUSD, 0) || record.ActualCostUSD < 0 {
+		return false, errors.New("usage tokens and costs must be finite and non-negative")
+	}
+	record.Stage = truncateRAGEvalText(strings.TrimSpace(record.Stage), 64)
+	record.Provider = truncateRAGEvalText(strings.TrimSpace(record.Provider), 128)
+	record.Model = truncateRAGEvalText(strings.TrimSpace(record.Model), 255)
+	record.IdempotencyKey = strings.TrimSpace(record.IdempotencyKey)
+	if record.ID == "" {
+		record.ID = "reu_" + uuid.NewString()
+	}
+	record.CreatedAt = time.Now().UTC()
+	tx, valid, err := d.beginRAGEvalFenceWrite(ctx, fence)
+	if err != nil || !valid {
+		return false, err
+	}
+	defer tx.Rollback()
+	query := fmt.Sprintf(`INSERT INTO rag_eval_usage(id,run_id,case_id,stage,provider,model,input_tokens,output_tokens,estimated_cost_usd,actual_cost_usd,idempotency_key,created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12))
+	if d.dialect == mysqlDialect {
+		query = "INSERT IGNORE" + strings.TrimPrefix(query, "INSERT")
+	} else {
+		query += " ON CONFLICT(idempotency_key) DO NOTHING"
+	}
+	result, err := tx.ExecContext(ctx, query, record.ID, record.RunID, record.CaseID, record.Stage, record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.EstimatedCostUSD, record.ActualCostUSD, record.IdempotencyKey, record.CreatedAt)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 func (d *DBStore) RecordRAGEvalUsage(ctx context.Context, record *RAGEvalUsageRecord) (bool, error) {

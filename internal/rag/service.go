@@ -40,6 +40,10 @@ type UserEmbedCfgFn func(ctx context.Context, userID string) (config.RAGEmbeddin
 // owns the prompt, output validation, and fallback behavior.
 type QueryLLMFn func(ctx context.Context, userID, systemPrompt, userPrompt string) (string, error)
 
+// AnswerModelResolver resolves a frozen evaluation model for one run owner.
+// It is injected by the gateway so provider credentials never enter snapshots.
+type AnswerModelResolver func(ctx context.Context, userID, model string) (AnswerModel, error)
+
 // CollectionResolver is the only boundary allowed to translate an authorized
 // logical KB identity into an opaque vector target.
 type CollectionResolver interface {
@@ -63,6 +67,7 @@ type Deps struct {
 	Cfg           config.RAGCfg
 	UserEmbedCfg  UserEmbedCfgFn
 	QueryLLM      QueryLLMFn
+	AnswerModel   AnswerModelResolver
 	RuntimePolicy RuntimePolicyProvider
 	Collections   CollectionResolver
 	Reranker      rerank.Reranker
@@ -88,6 +93,7 @@ type Service struct {
 	cfg             config.RAGCfg
 	userCfg         UserEmbedCfgFn
 	queryLLM        QueryLLMFn
+	answerModel     AnswerModelResolver
 	runtimePolicy   RuntimePolicyProvider
 	collections     CollectionResolver
 	reranker        rerank.Reranker
@@ -187,6 +193,7 @@ func New(d Deps) *Service {
 		cfg:                             d.Cfg,
 		userCfg:                         d.UserEmbedCfg,
 		queryLLM:                        d.QueryLLM,
+		answerModel:                     d.AnswerModel,
 		runtimePolicy:                   d.RuntimePolicy,
 		collections:                     d.Collections,
 		reranker:                        d.Reranker,
