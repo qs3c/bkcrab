@@ -1578,6 +1578,8 @@ export interface KnowledgeBase {
   parseMode: RAGParseMode;
   enrichmentEnabled: boolean;
   status: string;
+  pinnedPolicyVersion?: number;
+  activeGenerationId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -1671,6 +1673,8 @@ function normalizeKnowledgeBase(row: KnowledgeBaseWire): KnowledgeBase {
     parseMode: wireValue(row, "parseMode", "ParseMode", "standard"),
     enrichmentEnabled: wireValue(row, "enrichmentEnabled", "EnrichmentEnabled", false),
     status: wireValue(row, "status", "Status", ""),
+    pinnedPolicyVersion: wireValue<number | undefined>(row, "pinnedPolicyVersion", "PinnedPolicyVersion", undefined),
+    activeGenerationId: wireValue<string | undefined>(row, "activeGenerationId", "ActiveGenerationID", undefined),
     createdAt: wireValue(row, "createdAt", "CreatedAt", ""),
     updatedAt: wireValue(row, "updatedAt", "UpdatedAt", ""),
   };
@@ -1709,11 +1713,15 @@ function normalizeKnowledgeDocument(row: KnowledgeBaseWire): KnowledgeDocument {
   };
 }
 
+export class RAGRequestError extends Error {
+  constructor(message: string, public status: number) { super(message); }
+}
+
 async function ragJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await apiFetch(url, init);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data?.error || data?.message || `知识库请求失败 (${res.status})`);
+    throw new RAGRequestError(data?.error || data?.message || `知识库请求失败 (${res.status})`, res.status);
   }
   return data as T;
 }
@@ -2454,6 +2462,51 @@ export async function getAgentTokenUsage(
     `/api/agents/${agentId}/usage?range=${range}&limit=${limit}`,
   );
   return res.json();
+}
+
+export interface RAGKBPolicyStatus {
+  pinnedVersion: number;
+  latestVersion: number;
+  drift: boolean;
+  fullCollectionRebuild: boolean;
+  differences: Array<{ field: string; from?: unknown; to?: unknown }>;
+  estimate: { documentCount: number; sourceBytes: number; temporaryBytesMax: number; pageCountEstimate?: number; durationSecEstimate?: number; costUsdEstimate?: number };
+  syncTask?: { id: string; status: string; progressJson: string; estimateJson: string; sourceGenerationId?: string; targetGenerationId?: string; targetPolicyVersion: number; cancelRequested: boolean; rollbackAllowed: boolean; errorCode?: string; createdAt: string };
+}
+
+export interface RAGPolicySyncTask {
+  id: string;
+  kbId: string;
+  sourceGenerationId?: string;
+  targetGenerationId?: string;
+  targetPolicyVersion: number;
+  status: string;
+  progress: Record<string, unknown>;
+  estimate: Record<string, unknown>;
+  cancelRequested: boolean;
+  errorCode?: string;
+  errorMessage?: string;
+  createdAt: string;
+}
+
+export async function getKnowledgeBasePolicy(kbId: string): Promise<RAGKBPolicyStatus> {
+  return ragJSON(`/api/rag/kbs/${encodeURIComponent(kbId)}/policy`);
+}
+
+export async function startKnowledgeBasePolicySync(kbId: string, targetPolicyVersion: number): Promise<RAGPolicySyncTask> {
+  return ragJSON(`/api/rag/kbs/${encodeURIComponent(kbId)}/policy-syncs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ targetPolicyVersion, confirm: true }) });
+}
+
+export async function getKnowledgeBasePolicySync(kbId: string, taskId: string): Promise<RAGPolicySyncTask> {
+  return ragJSON(`/api/rag/kbs/${encodeURIComponent(kbId)}/policy-syncs/${encodeURIComponent(taskId)}`);
+}
+
+export async function cancelKnowledgeBasePolicySync(kbId: string, taskId: string): Promise<void> {
+  await ragJSON(`/api/rag/kbs/${encodeURIComponent(kbId)}/policy-syncs/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+}
+
+export async function rollbackKnowledgeBasePolicy(kbId: string, input: { targetGenerationId: string; expectedGenerationId: string; note: string }): Promise<void> {
+  await ragJSON(`/api/rag/kbs/${encodeURIComponent(kbId)}/policy-rollbacks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
 }
 
 // ---------- 超级管理员：RAG 测评 ----------

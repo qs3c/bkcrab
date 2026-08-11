@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -15,9 +16,26 @@ type IngestionPolicyDifference struct {
 }
 
 type IngestionPolicyEstimate struct {
-	DocumentCount     int   `json:"documentCount"`
-	SourceBytes       int64 `json:"sourceBytes"`
-	TemporaryBytesMax int64 `json:"temporaryBytesMax"`
+	DocumentCount       int      `json:"documentCount"`
+	SourceBytes         int64    `json:"sourceBytes"`
+	TemporaryBytesMax   int64    `json:"temporaryBytesMax"`
+	PageCountEstimate   *int     `json:"pageCountEstimate,omitempty"`
+	DurationSecEstimate *int     `json:"durationSecEstimate,omitempty"`
+	CostUSDEstimate     *float64 `json:"costUsdEstimate,omitempty"`
+}
+
+type KBPolicySyncStatus struct {
+	ID                  string    `json:"id"`
+	Status              string    `json:"status"`
+	ProgressJSON        string    `json:"progressJson"`
+	EstimateJSON        string    `json:"estimateJson"`
+	SourceGenerationID  string    `json:"sourceGenerationId,omitempty"`
+	TargetGenerationID  string    `json:"targetGenerationId,omitempty"`
+	ErrorCode           string    `json:"errorCode,omitempty"`
+	TargetPolicyVersion int64     `json:"targetPolicyVersion"`
+	CancelRequested     bool      `json:"cancelRequested"`
+	RollbackAllowed     bool      `json:"rollbackAllowed"`
+	CreatedAt           time.Time `json:"createdAt"`
 }
 
 type KBIngestionPolicyStatus struct {
@@ -27,6 +45,7 @@ type KBIngestionPolicyStatus struct {
 	FullCollectionRebuild bool                        `json:"fullCollectionRebuild"`
 	Differences           []IngestionPolicyDifference `json:"differences"`
 	Estimate              IngestionPolicyEstimate     `json:"estimate"`
+	SyncTask              *KBPolicySyncStatus         `json:"syncTask,omitempty"`
 }
 
 // GetKBIngestionPolicyStatus is deliberately read-only. Drift never changes a
@@ -72,13 +91,25 @@ func (s *Service) GetKBIngestionPolicyStatus(ctx context.Context, ownerID, kbID 
 	for _, document := range documents {
 		bytes += document.FileSize
 	}
-	return KBIngestionPolicyStatus{
+	status := KBIngestionPolicyStatus{
 		PinnedVersion: kb.PinnedPolicyVersion.Int64, LatestVersion: latestRecord.Version,
 		Drift:                 kb.PinnedPolicyVersion.Int64 != latestRecord.Version,
 		FullCollectionRebuild: pinned.Embedding != latest.Embedding,
 		Differences:           differences,
 		Estimate:              IngestionPolicyEstimate{DocumentCount: len(documents), SourceBytes: bytes, TemporaryBytesMax: bytes * 2},
-	}, nil
+	}
+	if task, taskErr := s.st.LatestRAGPolicySyncTaskForKB(ctx, kb.ID); taskErr == nil {
+		syncStatus := &KBPolicySyncStatus{ID: task.ID, Status: task.Status, ProgressJSON: task.ProgressJSON, EstimateJSON: task.EstimateJSON, SourceGenerationID: task.SourceGenerationID, TargetGenerationID: task.TargetGenerationID, TargetPolicyVersion: task.TargetPolicyVersion, CancelRequested: task.CancelRequestedAt.Valid, ErrorCode: task.ErrorCode, CreatedAt: task.CreatedAt}
+		if task.Status == store.RAGPolicySyncSucceeded && task.SourceGenerationID != "" {
+			if generation, generationErr := s.st.GetRAGKBGeneration(ctx, task.SourceGenerationID); generationErr == nil {
+				syncStatus.RollbackAllowed = generation.RollbackUntil.Valid && time.Now().UTC().Before(generation.RollbackUntil.Time)
+			}
+		}
+		status.SyncTask = syncStatus
+	} else if !errors.Is(taskErr, store.ErrNotFound) {
+		return KBIngestionPolicyStatus{}, taskErr
+	}
+	return status, nil
 }
 
 func ingestionPolicyDifferences(from, to config.RAGIngestionPolicyData) []IngestionPolicyDifference {

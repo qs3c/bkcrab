@@ -112,6 +112,10 @@ func TestRAGGenerationSyncFenceActivationRollbackAndCleanup(t *testing.T) {
 	if ok, err := st.FinishRAGPolicySyncTask(ctx, fence4, RAGPolicySyncFailed, "build_failed", "failed"); err != nil || !ok {
 		t.Fatalf("finish failed=%v %v", ok, err)
 	}
+	latestTask, err := st.LatestRAGPolicySyncTaskForKB(ctx, kb.ID)
+	if err != nil || latestTask.ID != task4.ID || latestTask.Status != RAGPolicySyncFailed {
+		t.Fatalf("latest policy sync task=%+v err=%v", latestTask, err)
+	}
 	assertActiveRAGGeneration(t, st, kb.ID, gen1.ID, 1)
 	candidates, err := st.ListRAGKBGenerationGCCandidates(ctx, 10)
 	if err != nil {

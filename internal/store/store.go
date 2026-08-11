@@ -394,6 +394,7 @@ type Store interface {
 	ResolveActiveRAGKBGeneration(ctx context.Context, kbID string) (*RAGKBGenerationRecord, []RAGGenerationDocumentRecord, error)
 	CreateRAGPolicySyncTask(ctx context.Context, record *RAGPolicySyncTaskRecord) error
 	GetRAGPolicySyncTask(ctx context.Context, id string) (*RAGPolicySyncTaskRecord, error)
+	LatestRAGPolicySyncTaskForKB(ctx context.Context, kbID string) (*RAGPolicySyncTaskRecord, error)
 	IsRAGKBPolicySyncActive(ctx context.Context, kbID string) (bool, error)
 	ClaimNextRAGPolicySyncTask(ctx context.Context, worker string, lease time.Duration) (*RAGPolicySyncFence, bool, error)
 	ClaimRAGPolicySyncTask(ctx context.Context, taskID, worker string, lease time.Duration) (*RAGPolicySyncFence, bool, error)

@@ -789,12 +789,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 测试旧 KB 只出现非阻断提示，新 KB/latest 不出现噪音。
-- [ ] 确认框展示 docs/bytes/pages/time/cost/temp storage；超大 KB 要求输入名称。
-- [ ] 文案明确“重新索引整个知识库，期间旧索引继续回答”。
-- [ ] Embedding 变化单独高亮“将创建新向量 collection”。
-- [ ] 同步失败明确“旧索引仍正常”，错误文案不泄漏内部对象键/endpoint。
-- [ ] 同步时上传/删除/reindex 控件 disabled，并处理服务端并发 409/423。
+- [x] 测试旧 KB 只出现非阻断提示，新 KB/latest 不出现噪音。
+- [x] 确认框展示 docs/bytes/pages/time/cost/temp storage；超大 KB 要求输入名称。
+- [x] 文案明确“重新索引整个知识库，期间旧索引继续回答”。
+- [x] Embedding 变化单独高亮“将创建新向量 collection”。
+- [x] 同步失败明确“旧索引仍正常”，错误文案不泄漏内部对象键/endpoint。
+- [x] 同步时上传/删除/reindex 控件 disabled，并处理服务端并发 409/423。
 
 ---
 

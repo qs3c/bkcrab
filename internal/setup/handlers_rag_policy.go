@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/qs3c/bkcrab/internal/rag"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 func (s *Server) registerRAGPolicyRoutes(mux *http.ServeMux, gate func(http.HandlerFunc) http.HandlerFunc) {
@@ -134,7 +135,7 @@ func (s *Server) handleStartRAGKBPolicySync(w http.ResponseWriter, r *http.Reque
 		writeRAGError(w, err)
 		return
 	}
-	jsonResponse(w, http.StatusAccepted, task)
+	jsonResponse(w, http.StatusAccepted, ragPolicySyncResponse(task))
 }
 
 func (s *Server) handleGetRAGKBPolicySync(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +152,26 @@ func (s *Server) handleGetRAGKBPolicySync(w http.ResponseWriter, r *http.Request
 		writeRAGError(w, err)
 		return
 	}
-	jsonResponse(w, http.StatusOK, task)
+	jsonResponse(w, http.StatusOK, ragPolicySyncResponse(task))
+}
+
+func ragPolicySyncResponse(task *store.RAGPolicySyncTaskRecord) map[string]any {
+	if task == nil {
+		return map[string]any{}
+	}
+	var progress, estimate any = map[string]any{}, map[string]any{}
+	if json.Valid([]byte(task.ProgressJSON)) {
+		_ = json.Unmarshal([]byte(task.ProgressJSON), &progress)
+	}
+	if json.Valid([]byte(task.EstimateJSON)) {
+		_ = json.Unmarshal([]byte(task.EstimateJSON), &estimate)
+	}
+	return map[string]any{"id": task.ID, "kbId": task.KBID, "sourceGenerationId": task.SourceGenerationID, "targetGenerationId": task.TargetGenerationID, "targetPolicyVersion": task.TargetPolicyVersion, "status": task.Status, "progress": progress, "estimate": estimate, "cancelRequested": task.CancelRequestedAt.Valid, "errorCode": task.ErrorCode, "errorMessage": func() string {
+		if task.Status == store.RAGPolicySyncFailed {
+			return "策略同步失败；旧索引仍正常"
+		}
+		return ""
+	}(), "createdAt": task.CreatedAt, "startedAt": task.StartedAt, "finishedAt": task.FinishedAt}
 }
 
 func (s *Server) handleCancelRAGKBPolicySync(w http.ResponseWriter, r *http.Request) {

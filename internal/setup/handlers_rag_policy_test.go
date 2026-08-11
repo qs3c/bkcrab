@@ -2,12 +2,14 @@ package setup
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/qs3c/bkcrab/internal/auth"
+	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/users"
 )
 
@@ -23,6 +25,21 @@ func TestRAGPolicyPromotionUsesStrictSessionIdentityGate(t *testing.T) {
 				t.Fatalf("allowed=%v want %v", got, test.allowed)
 			}
 		})
+	}
+}
+
+func TestRAGPolicySyncResponseMasksInternalFailureDetails(t *testing.T) {
+	response := ragPolicySyncResponse(&store.RAGPolicySyncTaskRecord{ID: "sync-1", Status: store.RAGPolicySyncFailed, ErrorCode: "build_failed", ErrorMessage: "s3://secret-bucket/object endpoint=https://internal"})
+	raw, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "secret-bucket") || strings.Contains(text, "internal") {
+		t.Fatalf("internal failure detail leaked: %s", text)
+	}
+	if !strings.Contains(text, "旧索引仍正常") {
+		t.Fatalf("safe failure reassurance missing: %s", text)
 	}
 }
 
