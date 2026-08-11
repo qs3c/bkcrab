@@ -52,20 +52,29 @@ func DecodeRAGEvalProfile(data []byte) (RAGEvalProfileData, error) {
 // RAGEvaluationCfg controls the optional, super-admin-only evaluation plane.
 // It is disabled by default and is deliberately separate from production RAG.
 type RAGEvaluationCfg struct {
-	Enabled                 bool            `json:"enabled,omitempty"`
-	Sidecar                 RAGEvaluatorCfg `json:"sidecar,omitempty"`
-	WorkerConcurrency       int             `json:"workerConcurrency,omitempty"`
-	MaxBatchSize            int             `json:"maxBatchSize,omitempty"`
-	MaxContextsPerSample    int             `json:"maxContextsPerSample,omitempty"`
-	MaxContextBytes         int             `json:"maxContextBytes,omitempty"`
-	MaxRequestBytes         int64           `json:"maxRequestBytes,omitempty"`
-	MaxRunCases             int             `json:"maxRunCases,omitempty"`
-	MaxRunTokens            int64           `json:"maxRunTokens,omitempty"`
-	MaxRunCostUSD           float64         `json:"maxRunCostUSD,omitempty"`
-	MaxRunDurationSec       int             `json:"maxRunDurationSec,omitempty"`
-	RunRetentionDays        int             `json:"runRetentionDays,omitempty"`
-	DatasetRetentionDays    int             `json:"datasetRetentionDays,omitempty"`
-	GenerationRetentionDays int             `json:"generationRetentionDays,omitempty"`
+	Enabled                 bool                 `json:"enabled,omitempty"`
+	Sidecar                 RAGEvaluatorCfg      `json:"sidecar,omitempty"`
+	WorkerConcurrency       int                  `json:"workerConcurrency,omitempty"`
+	MaxBatchSize            int                  `json:"maxBatchSize,omitempty"`
+	MaxContextsPerSample    int                  `json:"maxContextsPerSample,omitempty"`
+	MaxContextBytes         int                  `json:"maxContextBytes,omitempty"`
+	MaxRequestBytes         int64                `json:"maxRequestBytes,omitempty"`
+	MaxRunCases             int                  `json:"maxRunCases,omitempty"`
+	MaxRunTokens            int64                `json:"maxRunTokens,omitempty"`
+	MaxRunCostUSD           float64              `json:"maxRunCostUSD,omitempty"`
+	MaxRunDurationSec       int                  `json:"maxRunDurationSec,omitempty"`
+	RunRetentionDays        int                  `json:"runRetentionDays,omitempty"`
+	DatasetRetentionDays    int                  `json:"datasetRetentionDays,omitempty"`
+	GenerationRetentionDays int                  `json:"generationRetentionDays,omitempty"`
+	PromotionGates          RAGPromotionGatesCfg `json:"promotionGates,omitempty"`
+}
+
+type RAGPromotionGatesCfg struct {
+	MinimumMetricMean    map[string]float64 `json:"minimumMetricMean,omitempty"`
+	MinimumScoredCases   int                `json:"minimumScoredCases,omitempty"`
+	MaximumCaseErrorRate float64            `json:"maximumCaseErrorRate,omitempty"`
+	MaximumP95LatencyMS  int64              `json:"maximumP95LatencyMs,omitempty"`
+	MaximumCostUSD       float64            `json:"maximumCostUsd,omitempty"`
 }
 
 type RAGEvaluatorCfg struct {
@@ -188,6 +197,14 @@ func (c RAGEvaluationCfg) Validate() error {
 	}
 	if math.IsNaN(c.MaxRunCostUSD) || math.IsInf(c.MaxRunCostUSD, 0) || c.MaxRunCostUSD < 0 || c.MaxRunCostUSD > ragEvalMaxRunCostUSD {
 		return fmt.Errorf("rag.evaluation.maxRunCostUSD must be finite and between 0 and %.0f", ragEvalMaxRunCostUSD)
+	}
+	if c.PromotionGates.MinimumScoredCases < 0 || c.PromotionGates.MaximumP95LatencyMS < 0 || math.IsNaN(c.PromotionGates.MaximumCaseErrorRate) || math.IsInf(c.PromotionGates.MaximumCaseErrorRate, 0) || c.PromotionGates.MaximumCaseErrorRate < 0 || c.PromotionGates.MaximumCaseErrorRate > 1 || math.IsNaN(c.PromotionGates.MaximumCostUSD) || math.IsInf(c.PromotionGates.MaximumCostUSD, 0) || c.PromotionGates.MaximumCostUSD < 0 {
+		return errors.New("rag.evaluation.promotionGates contains an invalid limit")
+	}
+	for metric, value := range c.PromotionGates.MinimumMetricMean {
+		if strings.TrimSpace(metric) == "" || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 1 {
+			return errors.New("rag.evaluation.promotionGates contains an invalid quality threshold")
+		}
 	}
 	if v := strings.TrimSpace(c.Sidecar.MetricBundleVersion); v != "" && v != "rag-core-v1" {
 		return fmt.Errorf("rag.evaluation.sidecar.metricBundleVersion %q is unsupported", v)

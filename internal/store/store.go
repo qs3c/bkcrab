@@ -384,6 +384,8 @@ type Store interface {
 	CreateRAGPolicy(ctx context.Context, record *RAGPolicyRecord) error
 	ActivateRAGPolicy(ctx context.Context, kind string, expected, current int64, actor, sourceRun, note, action string) (bool, error)
 	ActiveRAGPolicy(ctx context.Context, kind string) (*RAGPolicyRecord, error)
+	GetRAGPolicy(ctx context.Context, kind string, version int64) (*RAGPolicyRecord, error)
+	ListRAGPolicyAudits(ctx context.Context, kind string, limit int) ([]RAGPolicyAuditRecord, error)
 	CreateRAGKBGeneration(ctx context.Context, record *RAGKBGenerationRecord, documents []RAGGenerationDocumentRecord) error
 	GetRAGKBGeneration(ctx context.Context, id string) (*RAGKBGenerationRecord, error)
 	ListRAGKBGenerationDocuments(ctx context.Context, generationID string) ([]RAGGenerationDocumentRecord, error)

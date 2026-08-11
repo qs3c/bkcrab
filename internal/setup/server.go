@@ -93,6 +93,7 @@ type Server struct {
 	ragEvalHealth         config.RAGEvaluatorHealthSnapshot
 	ragEvalHealthProvider RAGEvaluatorHealthProvider
 	ragEvalRunner         *rageval.Runner
+	ragPolicyPromotion    *rag.PolicyPromotionService
 	startedAt             time.Time
 }
 
@@ -236,6 +237,9 @@ func (s *Server) SetRAGEvaluatorHealthProvider(provider RAGEvaluatorHealthProvid
 }
 
 func (s *Server) SetRAGEvaluationRunner(runner *rageval.Runner) { s.ragEvalRunner = runner }
+func (s *Server) SetRAGPolicyPromotionService(service *rag.PolicyPromotionService) {
+	s.ragPolicyPromotion = service
+}
 
 func (s *Server) ragEvaluatorHealthSnapshot() config.RAGEvaluatorHealthSnapshot {
 	s.ragEvalHealthMu.RLock()
@@ -378,6 +382,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("PUT /api/admin/registration", admin(s.handleSetRegistration))
 	mux.HandleFunc("GET /api/admin/chats", admin(s.handleAdminChats))
 	s.registerRAGEvaluationRoutes(mux, evalAdmin)
+	s.registerRAGPolicyRoutes(mux, evalAdmin)
 
 	// 按用户配置（system_settings + 作用域内的 providers/channels）。
 	mux.HandleFunc("GET /api/config", auth(s.handleGetConfig))

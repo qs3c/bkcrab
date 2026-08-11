@@ -50,6 +50,11 @@ type RAGPolicyRecord struct {
 	CreatedAt                                                         time.Time
 	ActivatedAt                                                       sql.NullTime
 }
+type RAGPolicyAuditRecord struct {
+	ID, PolicyKind, Action, ActorID, SourceEvalRunID, TargetKBID, Note string
+	FromVersion, ToVersion                                             int64
+	CreatedAt                                                          time.Time
+}
 type RAGKBGenerationRecord struct {
 	ID, KBID                                          string
 	PolicyVersion                                     int64
@@ -288,6 +293,49 @@ func (d *DBStore) ActiveRAGPolicy(ctx context.Context, kind string) (*RAGPolicyR
 		return nil, fmt.Errorf("active RAG policy pointer references status %q", item.Status)
 	}
 	return item, nil
+}
+
+func (d *DBStore) GetRAGPolicy(ctx context.Context, kind string, version int64) (*RAGPolicyRecord, error) {
+	table, err := policyTable(kind)
+	if err != nil {
+		return nil, err
+	}
+	if version <= 0 {
+		return nil, errors.New("policy version must be positive")
+	}
+	item := &RAGPolicyRecord{Kind: kind}
+	err = d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT version,policy_json,fingerprint,status,COALESCE(source_eval_run_id,''),created_by,note,created_at,activated_at FROM %s WHERE version=%s`, table, d.ph(1)), version).Scan(&item.Version, &item.PolicyJSON, &item.Fingerprint, &item.Status, &item.SourceEvalRunID, &item.CreatedBy, &item.Note, &item.CreatedAt, &item.ActivatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !validRAGPolicyStatus(item.Status) {
+		return nil, fmt.Errorf("invalid stored RAG policy status %q", item.Status)
+	}
+	return item, nil
+}
+
+func (d *DBStore) ListRAGPolicyAudits(ctx context.Context, kind string, limit int) ([]RAGPolicyAuditRecord, error) {
+	if _, err := policyTable(kind); err != nil {
+		return nil, err
+	}
+	limit = boundedRAGEvalListLimit(limit)
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT id,policy_kind,from_version,to_version,action,actor_id,COALESCE(source_eval_run_id,''),COALESCE(target_kb_id,''),note,created_at FROM rag_policy_audit_log WHERE policy_kind=%s ORDER BY created_at DESC,id DESC LIMIT %s`, d.ph(1), d.ph(2)), kind, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RAGPolicyAuditRecord{}
+	for rows.Next() {
+		var item RAGPolicyAuditRecord
+		if err := rows.Scan(&item.ID, &item.PolicyKind, &item.FromVersion, &item.ToVersion, &item.Action, &item.ActorID, &item.SourceEvalRunID, &item.TargetKBID, &item.Note, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 func (d *DBStore) CreateRAGKBGeneration(ctx context.Context, record *RAGKBGenerationRecord, documents []RAGGenerationDocumentRecord) error {

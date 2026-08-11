@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"sync"
 	"testing"
 )
 
@@ -38,6 +39,48 @@ func TestRAGPolicyImmutableCASAndSingleActive(t *testing.T) {
 	}
 	if audits != 3 {
 		t.Fatalf("policy audit count=%d, want 3", audits)
+	}
+}
+
+func TestRAGPolicyConcurrentPublishCASHasOneWinner(t *testing.T) {
+	st := openTestDB(t)
+	defer st.Close()
+	ctx := context.Background()
+	for version := int64(1); version <= 3; version++ {
+		if err := st.CreateRAGPolicy(ctx, &RAGPolicyRecord{Kind: RAGPolicyRuntime, Version: version, PolicyJSON: `{}`, Fingerprint: "fingerprint", CreatedBy: "admin"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ok, err := st.ActivateRAGPolicy(ctx, RAGPolicyRuntime, 0, 1, "admin", "", "initial", RAGPolicyAuditPublish); err != nil || !ok {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	results := make(chan bool, 2)
+	for _, target := range []int64{2, 3} {
+		wg.Add(1)
+		go func(version int64) {
+			defer wg.Done()
+			ok, _ := st.ActivateRAGPolicy(context.Background(), RAGPolicyRuntime, 1, version, "admin", "", "concurrent", RAGPolicyAuditPublish)
+			results <- ok
+		}(target)
+	}
+	wg.Wait()
+	close(results)
+	winners := 0
+	for won := range results {
+		if won {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("winners=%d", winners)
+	}
+	var active int64
+	if err := st.DB().QueryRow(`SELECT active_version FROM rag_policy_active_pointers WHERE policy_kind=?`, RAGPolicyRuntime).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active != 2 && active != 3 {
+		t.Fatalf("active=%d", active)
 	}
 }
 

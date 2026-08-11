@@ -616,12 +616,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先写普通用户/admin key/actAs 拒绝、未通过门禁、未知参数、并发 publish CAS、rollback 测试。
-- [ ] promotion body 只引用 run/profile + 允许发布字段，不接收任意完整配置覆盖。
-- [ ] 若候选收益依赖未发布参数，要求 confirmation run 或显式阻断状态。
-- [ ] 发布事务先写 revision/audit，再 CAS pointer；失败不得产生半 active 状态。
-- [ ] pod 刷新校验完整 revision 后 atomic swap；校验失败继续旧 snapshot 并报警。
-- [ ] rollback 创建 audit，恢复旧 revision pointer，不原地编辑。
+- [x] 先写普通用户/admin key/actAs 拒绝、未通过门禁、未知参数、并发 publish CAS、rollback 测试。
+- [x] promotion body 只引用 run/profile + 允许发布字段，不接收任意完整配置覆盖。
+- [x] 若候选收益依赖未发布参数，要求 confirmation run 或显式阻断状态。
+- [x] 发布事务先写 revision/audit，再 CAS pointer；失败不得产生半 active 状态。
+- [x] pod 刷新校验完整 revision 后 atomic swap；校验失败继续旧 snapshot 并报警。
+- [x] rollback 创建 audit，恢复旧 revision pointer，不原地编辑。
 
 ### Task 18：IngestionPolicy promotion、新 KB pin 与 drift
 
