@@ -64,3 +64,113 @@ func TestIngestionAndProfileFingerprintsValidateClosedInputs(t *testing.T) {
 		t.Fatal("invalid ingestion policy was fingerprinted")
 	}
 }
+
+func TestGenerationFingerprintChangesForEveryIndexContract(t *testing.T) {
+	policy := config.RAGIngestionPolicyData{
+		Version: 1, ChunkSize: 512, ChunkOverlap: 64, ParseMode: config.ParseModeStandard,
+		DocumentAI:        config.RAGPolicyDocumentAIData{VisionModel: "vision", TextModel: "text", VisionPromptVersion: "vp1", EnrichmentPromptVersion: "ep1"},
+		EnrichmentEnabled: true,
+		Embedding:         config.RAGPolicyEmbeddingData{ContractFingerprint: "contract", Model: "embed", Dims: 1024},
+	}
+	contract := GenerationContract{ParserProtocolVersion: "protocol-v1", ParserEngineVersion: "engine-v1", TokenizerVersion: "token-v1", SplitterVersion: "split-v1", ArtifactSchemaVersion: 1, VectorSchemaVersion: "vector-v1", IndexFormatVersion: 1}
+	documents := []GenerationDocumentFingerprint{{ID: "doc", FileName: "doc.md", MediaType: "text/markdown", SHA256: strings.Repeat("a", 64), SizeBytes: 10}}
+	baseline, err := GenerationFingerprint("version", "corpus", documents, policy, contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutations := map[string]func(*config.RAGIngestionPolicyData, *GenerationContract, *[]GenerationDocumentFingerprint){
+		"source sha": func(_ *config.RAGIngestionPolicyData, _ *GenerationContract, docs *[]GenerationDocumentFingerprint) {
+			(*docs)[0].SHA256 = strings.Repeat("b", 64)
+		},
+		"source filename": func(_ *config.RAGIngestionPolicyData, _ *GenerationContract, docs *[]GenerationDocumentFingerprint) {
+			(*docs)[0].FileName = "doc.txt"
+		},
+		"source media type": func(_ *config.RAGIngestionPolicyData, _ *GenerationContract, docs *[]GenerationDocumentFingerprint) {
+			(*docs)[0].MediaType = "text/plain"
+		},
+		"source size": func(_ *config.RAGIngestionPolicyData, _ *GenerationContract, docs *[]GenerationDocumentFingerprint) {
+			(*docs)[0].SizeBytes++
+		},
+		"parse mode": func(p *config.RAGIngestionPolicyData, _ *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			p.ParseMode = config.ParseModeAuto
+		},
+		"vision prompt": func(p *config.RAGIngestionPolicyData, _ *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			p.DocumentAI.VisionPromptVersion = "vp2"
+		},
+		"enrichment prompt": func(p *config.RAGIngestionPolicyData, _ *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			p.DocumentAI.EnrichmentPromptVersion = "ep2"
+		},
+		"chunk size": func(p *config.RAGIngestionPolicyData, _ *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			p.ChunkSize++
+		},
+		"chunk overlap": func(p *config.RAGIngestionPolicyData, _ *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			p.ChunkOverlap++
+		},
+		"embedding contract": func(p *config.RAGIngestionPolicyData, _ *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			p.Embedding.ContractFingerprint = "contract-2"
+		},
+		"embedding model": func(p *config.RAGIngestionPolicyData, _ *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			p.Embedding.Model = "embed-2"
+		},
+		"embedding dims": func(p *config.RAGIngestionPolicyData, _ *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			p.Embedding.Dims++
+		},
+		"parser protocol": func(_ *config.RAGIngestionPolicyData, c *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			c.ParserProtocolVersion = "protocol-v2"
+		},
+		"parser engine": func(_ *config.RAGIngestionPolicyData, c *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			c.ParserEngineVersion = "engine-v2"
+		},
+		"tokenizer": func(_ *config.RAGIngestionPolicyData, c *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			c.TokenizerVersion = "token-v2"
+		},
+		"splitter": func(_ *config.RAGIngestionPolicyData, c *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			c.SplitterVersion = "split-v2"
+		},
+		"artifact schema": func(_ *config.RAGIngestionPolicyData, c *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			c.ArtifactSchemaVersion++
+		},
+		"vector schema": func(_ *config.RAGIngestionPolicyData, c *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			c.VectorSchemaVersion = "vector-v2"
+		},
+		"index format version": func(_ *config.RAGIngestionPolicyData, c *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			c.IndexFormatVersion++
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			candidatePolicy, candidateContract := policy, contract
+			candidateDocuments := append([]GenerationDocumentFingerprint(nil), documents...)
+			mutate(&candidatePolicy, &candidateContract, &candidateDocuments)
+			fingerprint, err := GenerationFingerprint("version", "corpus", candidateDocuments, candidatePolicy, candidateContract)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fingerprint == baseline {
+				t.Fatal("critical generation contract change reused fingerprint")
+			}
+		})
+	}
+}
+
+func TestCorpusArtifactFingerprintIgnoresChunkAndEmbeddingOnlyChanges(t *testing.T) {
+	document := GenerationDocumentFingerprint{ID: "doc", FileName: "doc.md", MediaType: "text/markdown", SHA256: strings.Repeat("a", 64), SizeBytes: 10}
+	policy := config.RAGIngestionPolicyData{Version: 1, ChunkSize: 512, ChunkOverlap: 64, ParseMode: config.ParseModeStandard,
+		Embedding: config.RAGPolicyEmbeddingData{ContractFingerprint: "one", Model: "embed-one", Dims: 1024}}
+	contract := GenerationContract{ParserProtocolVersion: "protocol-v1", ParserEngineVersion: "engine-v1", TokenizerVersion: "token-v1", SplitterVersion: "split-v1", ArtifactSchemaVersion: 1, VectorSchemaVersion: "vector-v1", IndexFormatVersion: 1}
+	first, err := CorpusArtifactFingerprint(document, policy, contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.ChunkSize, policy.ChunkOverlap = 768, 96
+	policy.Embedding = config.RAGPolicyEmbeddingData{ContractFingerprint: "two", Model: "embed-two", Dims: 2048}
+	second, err := CorpusArtifactFingerprint(document, policy, contract)
+	if err != nil || second != first {
+		t.Fatalf("chunk/vector-only changes invalidated parse artifact: %q/%q err=%v", first, second, err)
+	}
+	contract.ParserEngineVersion = "engine-v2"
+	third, err := CorpusArtifactFingerprint(document, policy, contract)
+	if err != nil || third == first {
+		t.Fatalf("parser change reused parse artifact: %q/%q err=%v", first, third, err)
+	}
+}

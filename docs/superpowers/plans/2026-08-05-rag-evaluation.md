@@ -529,12 +529,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先用 fake components 证明同 fingerprint 复用、任一关键参数变化新建、失败不 READY。
-- [ ] pipeline target 明确 owner/run/dataset/generation，不伪造生产 KB ID 绕过权限。
-- [ ] corpus artifact 可按安全 fingerprint 复用，但 chunk/vector generation 仍按完整 fingerprint。
-- [ ] BUILDING 单飞由 SQL claim 决定，多 pod 不重复支付。
-- [ ] generation refcount 与 run transaction 绑定，runner 失败也最终释放。
-- [ ] 删除 eval generation 不能调用生产 KB drop 路径。
+- [x] 先用 fake components 证明同 fingerprint 复用、任一关键参数变化新建、失败不 READY。
+- [x] pipeline target 明确 owner/run/dataset/generation，不伪造生产 KB ID 绕过权限。
+- [x] corpus artifact 可按安全 fingerprint 复用，但 chunk/vector generation 仍按完整 fingerprint。
+- [x] BUILDING 单飞由 SQL claim 决定，多 pod 不重复支付。
+- [x] generation refcount 与 run transaction 绑定，runner 失败也最终释放。
+- [x] 删除 eval generation 不能调用生产 KB drop 路径。
 
 ### Task 15：Durable Evaluation Runner（Full + Online-only）
 

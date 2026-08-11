@@ -54,6 +54,26 @@ func GenerationCollectionKey(logicalKBID, generationID string) (CollectionKey, e
 	return CollectionKey(fmt.Sprintf("kb_%x_g_%s", hash[:8], generationID)), nil
 }
 
+// EvaluationGenerationCollectionKey derives an isolated physical collection
+// for an evaluation dataset generation. Dataset IDs are hashed and the
+// server-generated generation ID is validated, so neither user text nor a
+// production KB identity crosses the vector boundary.
+func EvaluationGenerationCollectionKey(datasetVersionID, generationID string) (CollectionKey, error) {
+	datasetVersionID = strings.TrimSpace(datasetVersionID)
+	generationID = strings.TrimSpace(generationID)
+	if datasetVersionID == "" || generationID == "" || len(datasetVersionID) > 255 || len(generationID) > 120 {
+		return "", errors.New("invalid evaluation generation collection identity")
+	}
+	for _, char := range generationID {
+		if char == '_' || char == '-' || char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' {
+			continue
+		}
+		return "", errors.New("invalid evaluation generation id")
+	}
+	hash := sha256.Sum256([]byte(datasetVersionID))
+	return CollectionKey(fmt.Sprintf("eval_%x_g_%s", hash[:8], generationID)), nil
+}
+
 // ChunkData is one indexed document chunk.
 type ChunkData struct {
 	DocID         string

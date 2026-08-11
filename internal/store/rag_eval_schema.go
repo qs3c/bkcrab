@@ -42,6 +42,16 @@ func (d *DBStore) migrateRAGEvaluationSchema(ctx context.Context) error {
 			error_code VARCHAR(128) NOT NULL,error_message %s NOT NULL,created_by %s NOT NULL,created_at TIMESTAMP NOT NULL,
 			started_at TIMESTAMP NULL,finished_at TIMESTAMP NULL,lease_owner VARCHAR(255) NOT NULL,lease_until TIMESTAMP NULL,
 			fence_token BIGINT NOT NULL DEFAULT 0,cancel_requested_at TIMESTAMP NULL,deleted_at TIMESTAMP NULL)`, id, id, id, id, text, text, id, text, text, id),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_eval_index_generations (
+			id %s PRIMARY KEY,dataset_version_id %s NOT NULL,fingerprint VARCHAR(64) NOT NULL UNIQUE,
+			corpus_fingerprint VARCHAR(64) NOT NULL,ingestion_fingerprint VARCHAR(64) NOT NULL,collection_key VARCHAR(255) NOT NULL UNIQUE,
+			object_prefix %s NOT NULL,embedding_model VARCHAR(255) NOT NULL,embedding_dims BIGINT NOT NULL,status VARCHAR(32) NOT NULL,
+			document_count BIGINT NOT NULL DEFAULT 0,chunk_count BIGINT NOT NULL DEFAULT 0,ref_count BIGINT NOT NULL DEFAULT 0,
+			error_code VARCHAR(128) NOT NULL,error_message %s NOT NULL,owner_run_id %s NOT NULL,created_at TIMESTAMP NOT NULL,
+			ready_at TIMESTAMP NULL,expires_at TIMESTAMP NOT NULL,lease_owner VARCHAR(255) NOT NULL,lease_until TIMESTAMP NULL,
+			fence_token BIGINT NOT NULL DEFAULT 0)`, id, id, text, text, id),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_eval_generation_refs (
+			run_id %s PRIMARY KEY,generation_id %s NOT NULL,created_at TIMESTAMP NOT NULL,released_at TIMESTAMP NULL)`, id, id),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_eval_case_results (
 			run_id %s NOT NULL,case_id %s NOT NULL,response %s NOT NULL,contexts_json %s NOT NULL,citations_json %s NOT NULL,
 			search_trace_json %s NOT NULL,answer_trace_json %s NOT NULL,status VARCHAR(32) NOT NULL,error_code VARCHAR(128) NOT NULL,

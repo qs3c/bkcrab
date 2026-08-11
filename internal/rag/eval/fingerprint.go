@@ -6,9 +6,110 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/qs3c/bkcrab/internal/config"
 )
+
+type GenerationDocumentFingerprint struct {
+	ID        string `json:"id"`
+	FileName  string `json:"fileName"`
+	MediaType string `json:"mediaType,omitempty"`
+	SHA256    string `json:"sha256"`
+	SizeBytes int64  `json:"sizeBytes"`
+}
+
+// GenerationContract names the code and storage contracts that are not
+// represented by a user-selectable ingestion profile but still affect parse,
+// chunk or vector output.
+type GenerationContract struct {
+	ParserProtocolVersion string `json:"parserProtocolVersion"`
+	ParserEngineVersion   string `json:"parserEngineVersion"`
+	TokenizerVersion      string `json:"tokenizerVersion"`
+	SplitterVersion       string `json:"splitterVersion"`
+	ArtifactSchemaVersion int    `json:"artifactSchemaVersion"`
+	VectorSchemaVersion   string `json:"vectorSchemaVersion"`
+	IndexFormatVersion    int    `json:"indexFormatVersion"`
+}
+
+func (c GenerationContract) Validate() error {
+	if strings.TrimSpace(c.ParserProtocolVersion) == "" || strings.TrimSpace(c.ParserEngineVersion) == "" ||
+		strings.TrimSpace(c.TokenizerVersion) == "" || strings.TrimSpace(c.SplitterVersion) == "" ||
+		strings.TrimSpace(c.VectorSchemaVersion) == "" || c.ArtifactSchemaVersion < 1 || c.IndexFormatVersion < 1 {
+		return fmt.Errorf("generation code contract is incomplete")
+	}
+	return nil
+}
+
+// GenerationFingerprint binds an immutable corpus version to every ingestion
+// and code contract that can affect searchable chunks or vectors. Credentials
+// are absent; provider compatibility is represented only by the policy's
+// irreversible contract fingerprint.
+func GenerationFingerprint(datasetVersionID, corpusFingerprint string, documents []GenerationDocumentFingerprint, policy config.RAGIngestionPolicyData, contract GenerationContract) (string, error) {
+	if strings.TrimSpace(datasetVersionID) == "" || strings.TrimSpace(corpusFingerprint) == "" {
+		return "", fmt.Errorf("dataset version and corpus fingerprint are required")
+	}
+	if err := policy.Validate(); err != nil {
+		return "", fmt.Errorf("invalid ingestion policy: %w", err)
+	}
+	if err := contract.Validate(); err != nil {
+		return "", err
+	}
+	documents = append([]GenerationDocumentFingerprint(nil), documents...)
+	for index := range documents {
+		documents[index].ID = strings.TrimSpace(documents[index].ID)
+		documents[index].FileName = strings.TrimSpace(documents[index].FileName)
+		documents[index].MediaType = strings.TrimSpace(documents[index].MediaType)
+		documents[index].SHA256 = strings.ToLower(strings.TrimSpace(documents[index].SHA256))
+		decoded, err := hex.DecodeString(documents[index].SHA256)
+		if documents[index].ID == "" || documents[index].FileName == "" || strings.ContainsAny(documents[index].FileName, `/\\`) ||
+			documents[index].SizeBytes < 0 || err != nil || len(decoded) != sha256.Size {
+			return "", fmt.Errorf("invalid generation document fingerprint at index %d", index)
+		}
+	}
+	sort.Slice(documents, func(i, j int) bool { return documents[i].ID < documents[j].ID })
+	for index := 1; index < len(documents); index++ {
+		if documents[index-1].ID == documents[index].ID {
+			return "", fmt.Errorf("duplicate generation document %q", documents[index].ID)
+		}
+	}
+	return Fingerprint(struct {
+		DatasetVersionID string                          `json:"datasetVersionId"`
+		Corpus           string                          `json:"corpusFingerprint"`
+		Documents        []GenerationDocumentFingerprint `json:"documents"`
+		Ingestion        config.RAGIngestionPolicyData   `json:"ingestion"`
+		Contract         GenerationContract              `json:"contract"`
+	}{strings.TrimSpace(datasetVersionID), strings.TrimSpace(corpusFingerprint), documents, policy, contract})
+}
+
+// CorpusArtifactFingerprint contains parse-only inputs. It can therefore be
+// reused across generations whose chunk or embedding settings differ, while
+// the full GenerationFingerprint still protects chunk/vector reuse.
+func CorpusArtifactFingerprint(document GenerationDocumentFingerprint, policy config.RAGIngestionPolicyData, contract GenerationContract) (string, error) {
+	if err := policy.Validate(); err != nil {
+		return "", fmt.Errorf("invalid ingestion policy: %w", err)
+	}
+	if err := contract.Validate(); err != nil {
+		return "", err
+	}
+	document.ID = strings.TrimSpace(document.ID)
+	document.FileName = strings.TrimSpace(document.FileName)
+	document.MediaType = strings.TrimSpace(document.MediaType)
+	document.SHA256 = strings.ToLower(strings.TrimSpace(document.SHA256))
+	decoded, err := hex.DecodeString(document.SHA256)
+	if document.ID == "" || document.FileName == "" || strings.ContainsAny(document.FileName, `/\\`) ||
+		document.SizeBytes < 0 || err != nil || len(decoded) != sha256.Size {
+		return "", fmt.Errorf("invalid corpus artifact document fingerprint")
+	}
+	return Fingerprint(struct {
+		Document       GenerationDocumentFingerprint  `json:"document"`
+		ParseMode      config.ParseMode               `json:"parseMode"`
+		DocumentAI     config.RAGPolicyDocumentAIData `json:"documentAI"`
+		ParserProtocol string                         `json:"parserProtocolVersion"`
+		ParserEngine   string                         `json:"parserEngineVersion"`
+		ArtifactSchema int                            `json:"artifactSchemaVersion"`
+	}{document, policy.ParseMode, policy.DocumentAI, contract.ParserProtocolVersion, contract.ParserEngineVersion, contract.ArtifactSchemaVersion})
+}
 
 func Fingerprint(value any) (string, error) {
 	b, err := json.Marshal(value)

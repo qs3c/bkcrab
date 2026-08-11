@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"mime"
 	"net"
@@ -27,6 +29,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/embed"
 	"github.com/qs3c/bkcrab/internal/rag/enrich"
+	rageval "github.com/qs3c/bkcrab/internal/rag/eval"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/parse"
 	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
@@ -44,6 +47,227 @@ const (
 	indexTaskReindexRateLimitCode   = "reindex_rate_limit"
 	indexTaskRejectedTelemetryState = "rejected"
 )
+
+type PipelineTargetKind string
+
+const PipelineTargetEvaluation PipelineTargetKind = "evaluation"
+
+// PipelineTarget is the explicit authorization and isolation boundary for a
+// non-production indexing execution. It never carries a synthetic KB ID.
+type PipelineTarget struct {
+	Kind             PipelineTargetKind
+	OwnerID          string
+	RunID            string
+	DatasetVersionID string
+	GenerationID     string
+	CollectionKey    vector.CollectionKey
+	ObjectPrefix     string
+}
+
+func NewEvaluationPipelineTarget(ownerID, runID, datasetVersionID, generationID string) (PipelineTarget, error) {
+	for _, value := range []string{ownerID, runID, datasetVersionID, generationID} {
+		if strings.TrimSpace(value) == "" || value != strings.TrimSpace(value) || strings.ContainsAny(value, `/\\`) || len(value) > 255 {
+			return PipelineTarget{}, errors.New("invalid evaluation pipeline target identity")
+		}
+	}
+	collectionKey, err := vector.EvaluationGenerationCollectionKey(datasetVersionID, generationID)
+	if err != nil {
+		return PipelineTarget{}, err
+	}
+	return PipelineTarget{
+		Kind: PipelineTargetEvaluation, OwnerID: ownerID, RunID: runID, DatasetVersionID: datasetVersionID,
+		GenerationID: generationID, CollectionKey: collectionKey,
+		ObjectPrefix: path.Join("rag-eval", "generations", generationID),
+	}, nil
+}
+
+func (t PipelineTarget) ValidateEvaluation() error {
+	if t.Kind != PipelineTargetEvaluation {
+		return errors.New("pipeline target is not an evaluation target")
+	}
+	expected, err := NewEvaluationPipelineTarget(t.OwnerID, t.RunID, t.DatasetVersionID, t.GenerationID)
+	if err != nil {
+		return err
+	}
+	if t.CollectionKey != expected.CollectionKey || t.ObjectPrefix != expected.ObjectPrefix {
+		return errors.New("evaluation pipeline target physical namespace mismatch")
+	}
+	return nil
+}
+
+// BuildEvaluationGeneration runs the same concrete parser, splitter,
+// enrichment, embedding and vector components owned by the production RAG
+// service, but writes only to the explicit evaluation target.
+func (s *Service) BuildEvaluationGeneration(ctx context.Context, request EvaluationPipelineRequest) (EvaluationPipelineResult, error) {
+	if s == nil || s.parser == nil || s.vec == nil || s.obj == nil {
+		return EvaluationPipelineResult{}, errors.New("evaluation pipeline dependencies are unavailable")
+	}
+	if err := request.Target.ValidateEvaluation(); err != nil {
+		return EvaluationPipelineResult{}, err
+	}
+	if err := request.Ingestion.Validate(); err != nil {
+		return EvaluationPipelineResult{}, err
+	}
+	if err := request.Contract.Validate(); err != nil {
+		return EvaluationPipelineResult{}, err
+	}
+	if strings.TrimSpace(request.Embedding.Endpoint) == "" || request.Embedding.Model != request.Ingestion.Embedding.Model ||
+		request.Embedding.Dims != request.Ingestion.Embedding.Dims {
+		return EvaluationPipelineResult{}, errors.New("evaluation embedding binding does not match ingestion profile")
+	}
+	if request.Ingestion.DocumentAI.VisionModel != "" && request.Ingestion.DocumentAI.VisionModel != strings.TrimSpace(s.cfg.DocumentAI.VisionModel) {
+		return EvaluationPipelineResult{}, errors.New("evaluation vision model is not available in the resolved service contract")
+	}
+	if request.Ingestion.EnrichmentEnabled && (request.Ingestion.DocumentAI.TextModel == "" ||
+		request.Ingestion.DocumentAI.TextModel != strings.TrimSpace(s.cfg.DocumentAI.TextModel)) {
+		return EvaluationPipelineResult{}, errors.New("evaluation enrichment model is not available in the resolved service contract")
+	}
+	if err := s.vec.EnsureCollection(ctx, request.Target.CollectionKey, request.Ingestion.Embedding.Dims); err != nil {
+		return EvaluationPipelineResult{}, fmt.Errorf("prepare evaluation collection: %w", err)
+	}
+	embedder := embed.New(request.Embedding.Endpoint, request.Embedding.APIKey, request.Embedding.Model, request.Embedding.Dims)
+	result := EvaluationPipelineResult{}
+	for _, sourceDocument := range request.Documents {
+		if strings.TrimSpace(sourceDocument.ID) == "" || strings.TrimSpace(sourceDocument.ObjectKey) == "" || sourceDocument.SizeBytes < 0 {
+			return result, errors.New("evaluation pipeline document is invalid")
+		}
+		artifact, artifactErr := s.loadOrBuildEvaluationArtifact(ctx, request, sourceDocument)
+		if artifactErr != nil {
+			return result, artifactErr
+		}
+		chunks, _, artifactErr := s.buildSearchChunks(ctx, artifact, searchChunkBuildOptions{
+			ChunkSize: request.Ingestion.ChunkSize, ChunkOverlap: request.Ingestion.ChunkOverlap,
+			EnrichmentEnabled: request.Ingestion.EnrichmentEnabled, TextModel: request.Ingestion.DocumentAI.TextModel,
+			Scope: enrich.CacheScope{UserID: request.Target.OwnerID, KBID: "eval_" + request.Target.GenerationID,
+				DocID: sourceDocument.ID, IndexFingerprint: request.Target.GenerationID},
+			Budget: request.DocumentAIBudget,
+		})
+		if artifactErr != nil {
+			return result, fmt.Errorf("build evaluation document %s chunks: %w", sourceDocument.ID, artifactErr)
+		}
+		texts := make([]string, len(chunks))
+		for index := range chunks {
+			texts[index] = chunks[index].SearchContent
+		}
+		vectors, artifactErr := embedder.Embed(ctx, texts)
+		if artifactErr != nil {
+			return result, fmt.Errorf("embed evaluation document %s: %w", sourceDocument.ID, artifactErr)
+		}
+		if len(vectors) != len(chunks) {
+			return result, fmt.Errorf("evaluation embedding vector count mismatch for %s", sourceDocument.ID)
+		}
+		vectorChunks := make([]vector.ChunkData, len(chunks))
+		for index, chunk := range chunks {
+			pageNum := 0
+			if chunk.Location.Kind == document.LocationPage {
+				pageNum = chunk.Location.Index
+			}
+			vectorChunks[index] = vector.ChunkData{
+				DocID: sourceDocument.ID, Index: chunk.Index, Content: chunk.RawContent,
+				SearchContent: chunk.SearchContent, SectionTitle: chunk.SectionTitle, PageNum: pageNum,
+				DocVersion: 1, Vector: vectors[index],
+			}
+		}
+		for start := 0; start < len(vectorChunks); start += pipelineStageBatchSize {
+			end := min(start+pipelineStageBatchSize, len(vectorChunks))
+			if err := s.vec.UpsertChunks(ctx, request.Target.CollectionKey, vectorChunks[start:end]); err != nil {
+				return result, fmt.Errorf("index evaluation document %s: %w", sourceDocument.ID, err)
+			}
+		}
+		result.DocumentCount++
+		result.ChunkCount += int64(len(chunks))
+	}
+	manifest, err := json.Marshal(struct {
+		GenerationID string `json:"generationId"`
+		Documents    int64  `json:"documents"`
+		Chunks       int64  `json:"chunks"`
+	}{request.Target.GenerationID, result.DocumentCount, result.ChunkCount})
+	if err != nil {
+		return result, err
+	}
+	manifestKey := path.Join(request.Target.ObjectPrefix, "manifest.json")
+	if err := s.obj.Put(ctx, manifestKey, bytes.NewReader(manifest), int64(len(manifest)), "application/json"); err != nil {
+		return result, fmt.Errorf("write evaluation generation manifest: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Service) loadOrBuildEvaluationArtifact(ctx context.Context, request EvaluationPipelineRequest, sourceDocument EvaluationPipelineDocument) (*document.ParsedArtifact, error) {
+	fingerprint, err := rageval.CorpusArtifactFingerprint(rageval.GenerationDocumentFingerprint{
+		ID: sourceDocument.ID, FileName: sourceDocument.FileName, MediaType: sourceDocument.MediaType,
+		SHA256: sourceDocument.SHA256, SizeBytes: sourceDocument.SizeBytes,
+	}, request.Ingestion, request.Contract)
+	if err != nil {
+		return nil, err
+	}
+	artifactKey := path.Join("rag-eval", "artifacts", fingerprint+".json")
+	reader, err := s.obj.Get(ctx, artifactKey)
+	if err == nil {
+		artifact, decodeErr := document.DecodeArtifact(reader, int64(max(1, s.cfg.Limits.MaxExtractedBytes)))
+		closeErr := reader.Close()
+		if decodeErr != nil || closeErr != nil {
+			return nil, errors.Join(decodeErr, closeErr)
+		}
+		if artifact.Source.DocID != sourceDocument.ID || artifact.Source.SHA256 != strings.ToLower(sourceDocument.SHA256) || artifact.Source.FileName != sourceDocument.FileName {
+			return nil, errors.New("cached evaluation artifact source mismatch")
+		}
+		return artifact, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("read evaluation artifact cache: %w", err)
+	}
+	format := strings.TrimPrefix(strings.ToLower(path.Ext(sourceDocument.FileName)), ".")
+	source := document.Source{
+		DocID: sourceDocument.ID, FileName: sourceDocument.FileName, Format: format,
+		Size: sourceDocument.SizeBytes, SHA256: strings.ToLower(sourceDocument.SHA256),
+		Open: func(openCtx context.Context) (io.ReadCloser, error) {
+			return s.obj.Get(openCtx, sourceDocument.ObjectKey)
+		},
+	}
+	parsed, err := s.parser.Parse(ctx, source, parse.ParseOptions{
+		Mode: request.Ingestion.ParseMode, ParserVersion: request.Contract.ParserEngineVersion,
+		PageTranscriber: s.pageVision, ImageTranscriber: s.imageVision, DocumentAIBudget: request.DocumentAIBudget,
+		VisionScope: vision.CacheScope{UserID: request.Target.OwnerID, KBID: "eval_" + request.Target.GenerationID,
+			DocID: sourceDocument.ID, ParseFingerprint: fingerprint},
+	})
+	if err != nil {
+		if parsed != nil {
+			err = errors.Join(err, parsed.Close())
+		}
+		return nil, err
+	}
+	if parsed == nil {
+		return nil, errors.New("evaluation parser returned nil document")
+	}
+	defer parsed.Close()
+	if err := normalizeParsedDocument(parsed); err != nil {
+		return nil, err
+	}
+	artifact, err := document.Canonicalize(parsed, "图片（未进行视觉识别）")
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := document.EncodeArtifact(artifact, int64(max(1, s.cfg.Limits.MaxExtractedBytes)))
+	if err != nil {
+		return nil, err
+	}
+	if err := s.obj.Put(ctx, artifactKey, bytes.NewReader(encoded), int64(len(encoded)), "application/json"); err != nil {
+		return nil, fmt.Errorf("write evaluation artifact cache: %w", err)
+	}
+	return artifact, nil
+}
+
+func (s *Service) DropEvaluationGeneration(ctx context.Context, target PipelineTarget) error {
+	if s == nil || s.vec == nil || s.obj == nil || target.Kind != PipelineTargetEvaluation ||
+		!strings.HasPrefix(string(target.CollectionKey), "eval_") || target.GenerationID == "" ||
+		target.ObjectPrefix != path.Join("rag-eval", "generations", target.GenerationID) {
+		return errors.New("unsafe evaluation generation drop target")
+	}
+	if err := s.vec.DropCollection(ctx, target.CollectionKey); err != nil {
+		return err
+	}
+	return s.obj.DeletePrefix(ctx, target.ObjectPrefix+"/")
+}
 
 // Start launches bounded durable workers. The in-process channel only reduces
 // latency; every wake makes a SQL claim, and the periodic pump makes a dropped
@@ -704,38 +928,17 @@ func (s *Service) indexClaim(
 	if err != nil {
 		return activation, err
 	}
-	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{Stage: "chunking"}); err != nil {
-		return activation, err
-	}
-	chunks := split.SplitArtifact(artifact, split.Config{
+	chunks, enrichmentWarnings, err := s.buildSearchChunks(ctx, artifact, searchChunkBuildOptions{
 		ChunkSize: version.ChunkSize, ChunkOverlap: version.ChunkOverlap,
-		EnhancementReserveTokens: func() int {
-			if version.EnrichmentEnabled {
-				return version.ChunkSize / 5
-			}
-			return 0
-		}(),
+		EnrichmentEnabled: version.EnrichmentEnabled, TextModel: version.TextModel,
+		Scope:  enrich.CacheScope{UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID, IndexFingerprint: version.IndexFingerprint},
+		Budget: budget,
+		Progress: func(progressCtx context.Context, progress store.RAGIndexProgress) error {
+			return s.fencedProgress(progressCtx, fence, progress)
+		},
 	})
-	if len(chunks) == 0 {
-		return activation, errors.New("分块结果为空")
-	}
-
-	finalizeConfig := enrich.FinalizeConfig{
-		ChunkSize: version.ChunkSize, MaxSearchContentBytes: s.cfg.Limits.MaxSearchContentBytes,
-		CollectionMaxLength: config.RAGMilvusContentMaxLength, ProviderTokenizer: s.tokenizer,
-	}
-	chunks, enrichmentWarnings, err := s.splitAndEnrich(
-		ctx, fence, version, kb, doc, chunks, finalizeConfig, budget,
-	)
 	if err != nil {
 		return activation, err
-	}
-	chunks, err = enrich.FinalizeChunks(ctx, chunks, finalizeConfig)
-	if err != nil {
-		return activation, fmt.Errorf("finalize searchable chunks: %w", err)
-	}
-	if len(chunks) == 0 {
-		return activation, errors.New("分块结果为空")
 	}
 
 	warningCount := len(artifact.Warnings) + len(enrichmentWarnings)
@@ -1011,42 +1214,71 @@ func normalizeParsedDocument(parsed *document.ParsedDocument) error {
 	return nil
 }
 
-func (s *Service) splitAndEnrich(
-	ctx context.Context,
-	fence store.IndexFence,
-	version *store.RAGDocumentVersionRecord,
-	kb *store.RAGKBRecord,
-	doc *store.RAGDocumentRecord,
-	chunks []split.Chunk,
-	finalizeConfig enrich.FinalizeConfig,
-	budget *vision.TaskDocumentAIBudget,
-) ([]split.Chunk, []enrich.Warning, error) {
-	if !version.EnrichmentEnabled {
-		return chunks, nil, nil
+type searchChunkBuildOptions struct {
+	ChunkSize, ChunkOverlap int
+	EnrichmentEnabled       bool
+	TextModel               string
+	Scope                   enrich.CacheScope
+	Budget                  *vision.TaskDocumentAIBudget
+	Progress                func(context.Context, store.RAGIndexProgress) error
+}
+
+// buildSearchChunks is shared by production and evaluation indexing. It is
+// the single split/enrich/finalize implementation, with only target-specific
+// progress and cache scopes injected by the caller.
+func (s *Service) buildSearchChunks(ctx context.Context, artifact *document.ParsedArtifact, options searchChunkBuildOptions) ([]split.Chunk, []enrich.Warning, error) {
+	if options.Progress != nil {
+		if err := options.Progress(ctx, store.RAGIndexProgress{Stage: "chunking"}); err != nil {
+			return nil, nil, err
+		}
 	}
-	if err := s.fencedProgress(ctx, fence, store.RAGIndexProgress{
-		Stage: "enriching", Current: 0, Total: len(chunks), Unit: "chunks",
-	}); err != nil {
-		return nil, nil, err
+	chunks := split.SplitArtifact(artifact, split.Config{
+		ChunkSize: options.ChunkSize, ChunkOverlap: options.ChunkOverlap,
+		EnhancementReserveTokens: func() int {
+			if options.EnrichmentEnabled {
+				return options.ChunkSize / 5
+			}
+			return 0
+		}(),
+	})
+	if len(chunks) == 0 {
+		return nil, nil, errors.New("分块结果为空")
 	}
-	if s.enricher == nil || !s.cfg.Features.TextEnrichmentEnabled || strings.TrimSpace(version.TextModel) == "" {
-		return chunks, []enrich.Warning{{ChunkIndex: -1, Code: "enrichment_unavailable",
-			Message: "text enrichment was unavailable; source text retained"}}, nil
+	finalizeConfig := enrich.FinalizeConfig{
+		ChunkSize: options.ChunkSize, MaxSearchContentBytes: s.cfg.Limits.MaxSearchContentBytes,
+		CollectionMaxLength: config.RAGMilvusContentMaxLength, ProviderTokenizer: s.tokenizer,
 	}
-	processor := enrich.NewProcessor(s.enricher)
-	processor.SetRecorder(s.telemetry)
-	enriched, warnings := processor.EnrichChunks(ctx, chunks, enrich.ProcessConfig{
-		SystemEnabled: true, TextModel: version.TextModel, KBEnabled: true,
-		MaxBlocks: s.cfg.Limits.MaxEnrichmentBlocksPerDocument, Finalize: finalizeConfig,
-		Scope: enrich.CacheScope{
-			UserID: kb.UserID, KBID: kb.ID, DocID: doc.ID,
-			IndexFingerprint: version.IndexFingerprint,
-		},
-	}, budget)
-	if err := ctx.Err(); err != nil {
-		return nil, nil, err
+	warnings := []enrich.Warning(nil)
+	if options.EnrichmentEnabled {
+		if options.Progress != nil {
+			if err := options.Progress(ctx, store.RAGIndexProgress{Stage: "enriching", Current: 0, Total: len(chunks), Unit: "chunks"}); err != nil {
+				return nil, nil, err
+			}
+		}
+		if s.enricher == nil || !s.cfg.Features.TextEnrichmentEnabled || strings.TrimSpace(options.TextModel) == "" {
+			warnings = append(warnings, enrich.Warning{ChunkIndex: -1, Code: "enrichment_unavailable",
+				Message: "text enrichment was unavailable; source text retained"})
+		} else {
+			processor := enrich.NewProcessor(s.enricher)
+			processor.SetRecorder(s.telemetry)
+			chunks, warnings = processor.EnrichChunks(ctx, chunks, enrich.ProcessConfig{
+				SystemEnabled: true, TextModel: options.TextModel, KBEnabled: true,
+				MaxBlocks: s.cfg.Limits.MaxEnrichmentBlocksPerDocument, Finalize: finalizeConfig,
+				Scope: options.Scope,
+			}, options.Budget)
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+		}
 	}
-	return enriched, warnings, nil
+	chunks, err := enrich.FinalizeChunks(ctx, chunks, finalizeConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("finalize searchable chunks: %w", err)
+	}
+	if len(chunks) == 0 {
+		return nil, nil, errors.New("分块结果为空")
+	}
+	return chunks, warnings, nil
 }
 
 func (s *Service) embedChunks(

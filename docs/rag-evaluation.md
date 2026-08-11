@@ -81,6 +81,12 @@ Ragas 固定指标为 Context Precision、Context Recall、Faithfulness、Respon
 
 版本按 `DRAFT → VALIDATING → READY` 发布，校验或对象提交失败进入 `FAILED`。只有 READY 版本可供后续 run 使用，READY 后 case/document 不可覆写；修改数据必须创建更高版本。DRAFT/FAILED 以及 READY 后遗留的 staging 可按 TTL 清理。删除 dataset 先 tombstone；仍被 run 引用时禁止物理清理，retention 到期且引用为零后才删除 SQL 与版本对象前缀。
 
+## Eval shadow generation
+
+Full Pipeline 使用显式的 `owner/run/dataset-version/generation` target 调用生产共用的 parser、splitter、enrichment、embedding 和 vector 组件，不创建或伪造生产 KB。评测 collection 使用 `eval_…` 物理前缀，对象只写入 `rag-eval/generations/<generation-id>/`；删除也只能经过 eval 专用 drop 边界。
+
+generation fingerprint 覆盖 corpus version、原件文件契约与 SHA-256、完整 ingestion profile、parser/tokenizer/splitter/artifact/vector/index contract。只有精确 fingerprint 的 READY generation 可复用；parse-only artifact 可在解析契约相同时跨 chunk/embedding generation 复用。BUILDING 由 SQL lease/fence 单飞，run 引用与 refcount 在同一事务绑定；过期且无活动引用、无保留 run 引用时，先 fenced 标记 DELETING，再清理 eval collection 和对象前缀。
+
 `minScore` 在 UI 和文档中称为“最低 reranker 分数”；它不是概率。reranker 失败时的 RRF fallback 必须保留在 trace 中。
 
 ## 验证

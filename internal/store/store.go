@@ -362,6 +362,14 @@ type Store interface {
 	PutRAGEvalCaseResult(ctx context.Context, fence RAGEvalRunFence, record RAGEvalCaseResultRecord) (bool, error)
 	PutRAGEvalMetricResult(ctx context.Context, fence RAGEvalRunFence, record RAGEvalMetricResultRecord) (bool, error)
 	RecordRAGEvalUsage(ctx context.Context, record *RAGEvalUsageRecord) (bool, error)
+	AcquireRAGEvalGenerationForRun(ctx context.Context, request RAGEvalGenerationAcquireRequest) (*RAGEvalGenerationAcquireResult, error)
+	GetRAGEvalGeneration(ctx context.Context, id string) (*RAGEvalGenerationRecord, error)
+	HeartbeatRAGEvalGeneration(ctx context.Context, fence RAGEvalGenerationFence, lease time.Duration) (bool, error)
+	MarkRAGEvalGenerationReady(ctx context.Context, fence RAGEvalGenerationFence, documentCount, chunkCount int64, ttl time.Duration) (bool, error)
+	MarkRAGEvalGenerationFailed(ctx context.Context, fence RAGEvalGenerationFence, code, message string, ttl time.Duration) (bool, error)
+	ReleaseRAGEvalGenerationForRun(ctx context.Context, runID string) (bool, error)
+	ClaimRAGEvalGenerationGC(ctx context.Context, before time.Time, worker string, lease time.Duration) (*RAGEvalGenerationFence, bool, error)
+	FinishRAGEvalGenerationGC(ctx context.Context, fence RAGEvalGenerationFence) (bool, error)
 
 	// --- RAG policies, immutable index generations, and policy sync ---
 	CreateRAGPolicy(ctx context.Context, record *RAGPolicyRecord) error

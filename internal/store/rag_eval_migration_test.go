@@ -17,6 +17,8 @@ var ragEvalTask2Tables = []string{
 	"rag_eval_cases",
 	"rag_eval_profiles",
 	"rag_eval_runs",
+	"rag_eval_index_generations",
+	"rag_eval_generation_refs",
 	"rag_eval_case_results",
 	"rag_eval_metric_results",
 	"rag_eval_run_aggregates",
