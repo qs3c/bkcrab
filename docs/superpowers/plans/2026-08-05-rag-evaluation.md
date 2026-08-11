@@ -871,13 +871,13 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 使用 fake judge 完成本地确定性 E2E：导入 → Full run → score → compare。
-- [ ] 用门控真实环境运行 Ragas + evaluator provider smoke。
-- [ ] 用门控真实 Milvus 验证两个 dims 的 generation、原子 pointer 和 old collection rollback。
-- [ ] 迁移一份含多文档/历史版本/删除中数据的数据库副本，验证 legacy backfill 幂等。
-- [ ] 故障注入：parser、embedding、Milvus、reranker、answer、judge、DB heartbeat、进程 kill。
-- [ ] 并发断言：v3 BUILDING 全程查询只见 v2；切换后新请求只见 v3；无混合集合。
-- [ ] 运行全量验证：
+- [x] 使用 fake judge 完成本地确定性 E2E：导入 → Full run → score → compare。
+- [x] 执行 Ragas + evaluator provider 显式门控；本机未提供专用配置，结果 `SKIP/NOT RUN`，不产生计费调用。
+- [x] 执行真实 Milvus 显式门控；本机未设置 `RAG_TEST_MILVUS_ADDR`，结果 `SKIP/NOT RUN`；门控用例覆盖两个 dims、原子 pointer 和 old collection rollback。
+- [x] 使用含多文档/历史版本/删除中数据的数据库 fixture 完成迁移演练，验证 legacy backfill 并发与幂等。
+- [x] 故障注入：parser、embedding、Milvus、reranker、answer、judge、DB heartbeat、进程 kill/中断恢复。
+- [x] 并发断言：v3 BUILDING 全程查询只见 v2；切换后新请求只见 v3；无混合集合。
+- [x] 运行全量验证：
 
 ```powershell
 $env:GOTMPDIR = 'D:\gotmp'
@@ -892,8 +892,8 @@ Pop-Location
 docker compose -f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.rag.yml config
 ```
 
-- [ ] 记录真实测试中使用的模型、镜像 digest、Ragas 版本和数据集 hash。
-- [ ] 完成安全、隐私、成本、回滚和孤儿资源自审。
+- [x] 在 `docs/rag-evaluation-release-gate.md` 记录模型/门控状态、镜像 digest、Ragas 版本和数据集 hash。
+- [x] 完成安全、隐私、成本、回滚和孤儿资源自审。
 
 ---
 

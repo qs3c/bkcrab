@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,8 @@ func TestLegacyGenerationBackfillEmptyPartialDeletingIdempotentAndConcurrent(t *
 	empty := seedLegacyGenerationKB(t, st, "kb_legacy_empty")
 	partial := seedLegacyGenerationKB(t, st, "kb_legacy_partial")
 	seedLegacyGenerationDocument(t, st, partial.ID, "doc_active", "DONE", 3, 7)
+	seedLegacyGenerationDocument(t, st, partial.ID, "doc_active_two", "DONE", 2, 5)
+	seedLegacyGenerationVersionHistory(t, st, "doc_active_two", 1, 2)
 	seedLegacyGenerationDocument(t, st, partial.ID, "doc_pending", "PENDING", 0, 0)
 	seedLegacyGenerationDocument(t, st, partial.ID, "doc_deleting", store.RAGDocumentStatusDeleting, 4, 11)
 
@@ -53,9 +56,14 @@ func TestLegacyGenerationBackfillEmptyPartialDeletingIdempotentAndConcurrent(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if partialGeneration.CollectionKey != partial.ID || partialGeneration.DocumentCount != 1 || len(documents) != 1 ||
-		documents[0].DocID != "doc_active" || documents[0].DocVersion != 3 || documents[0].Status != store.RAGGenerationDocumentReady {
+	if partialGeneration.CollectionKey != partial.ID || partialGeneration.DocumentCount != 2 || len(documents) != 2 ||
+		documents[0].DocID != "doc_active" || documents[0].DocVersion != 3 || documents[0].Status != store.RAGGenerationDocumentReady ||
+		documents[1].DocID != "doc_active_two" || documents[1].DocVersion != 2 || documents[1].Status != store.RAGGenerationDocumentReady {
 		t.Fatalf("partial generation=%+v documents=%+v", partialGeneration, documents)
+	}
+	versions, err := st.ListRAGDocumentVersions(ctx, "doc_active_two")
+	if err != nil || len(versions) != 2 || versions[0].DocVersion != 1 || versions[1].DocVersion != 2 {
+		t.Fatalf("document history changed during generation backfill: versions=%+v err=%v", versions, err)
 	}
 
 	var generationCount, policyCount int
@@ -156,5 +164,26 @@ func seedLegacyGenerationDocument(t *testing.T, st *store.DBStore, kbID, docID, 
 	}
 	if err := st.CreateRAGDocument(context.Background(), doc); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func seedLegacyGenerationVersionHistory(t *testing.T, st *store.DBStore, docID string, versions ...int64) {
+	t.Helper()
+	for _, version := range versions {
+		record := &store.RAGDocumentVersionRecord{
+			DocID: docID, DocVersion: version,
+			SourceSHA256: strings.Repeat("a", 64), ParseMode: store.RAGParseModeStandard,
+			ChunkSize: 512, ChunkOverlap: 64, ParserVersion: "legacy-parser", SplitterVersion: "legacy-splitter",
+			ParseFingerprint: strings.Repeat("b", 64), IndexFingerprint: strings.Repeat("c", 64),
+			EmbeddingProvider: "system", EmbeddingModel: "embed-v1", EmbeddingDimensions: 4,
+			EmbeddingContractFingerprint: strings.Repeat("d", 64),
+			MaxDocumentAIRequests:        20, MaxDocumentAITokens: 10_000, MaxDocumentAICostMicroUSD: 50_000,
+		}
+		if err := st.CreateRAGDocumentVersion(context.Background(), record); err != nil {
+			t.Fatalf("create historical version %s/%d: %v", docID, version, err)
+		}
+		if _, err := st.DB().ExecContext(context.Background(), `UPDATE rag_document_versions SET status='DONE' WHERE doc_id=? AND doc_version=?`, docID, version); err != nil {
+			t.Fatalf("complete historical version %s/%d: %v", docID, version, err)
+		}
 	}
 }
