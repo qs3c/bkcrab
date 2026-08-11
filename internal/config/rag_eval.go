@@ -319,15 +319,21 @@ func (p RAGEvalProfileData) Validate() error {
 }
 
 type RAGEvaluationCapabilities struct {
-	Enabled             bool     `json:"enabled"`
-	SidecarConfigured   bool     `json:"sidecarConfigured"`
-	SidecarHealthy      bool     `json:"sidecarHealthy"`
-	Reason              string   `json:"reason,omitempty"`
-	MetricBundleVersion string   `json:"metricBundleVersion"`
-	Metrics             []string `json:"metrics"`
-	Importers           []string `json:"importers"`
-	MaxBatchSize        int      `json:"maxBatchSize"`
-	MaxRunCases         int      `json:"maxRunCases"`
+	Enabled              bool     `json:"enabled"`
+	SidecarConfigured    bool     `json:"sidecarConfigured"`
+	SidecarHealthy       bool     `json:"sidecarHealthy"`
+	Reason               string   `json:"reason,omitempty"`
+	MetricBundleVersion  string   `json:"metricBundleVersion"`
+	Metrics              []string `json:"metrics"`
+	Importers            []string `json:"importers"`
+	MaxBatchSize         int      `json:"maxBatchSize"`
+	MaxRunCases          int      `json:"maxRunCases"`
+	MaxRunTokens         int64    `json:"maxRunTokens"`
+	MaxRunCostUSD        float64  `json:"maxRunCostUsd"`
+	MaxRunDurationSec    int      `json:"maxRunDurationSec"`
+	MaxRequestBytes      int64    `json:"maxRequestBytes"`
+	MaxContextsPerSample int      `json:"maxContextsPerSample"`
+	MaxContextBytes      int      `json:"maxContextBytes"`
 }
 
 func (c RAGEvaluationCfg) Capabilities(healthy bool, reason string) RAGEvaluationCapabilities {
@@ -336,5 +342,7 @@ func (c RAGEvaluationCfg) Capabilities(healthy bool, reason string) RAGEvaluatio
 		SidecarHealthy: c.Enabled && healthy, Reason: reason, MetricBundleVersion: c.Sidecar.MetricBundleVersion,
 		Metrics:   []string{"context_precision", "context_recall", "faithfulness", "response_relevancy", "factual_correctness", "hit_at_k", "recall_at_k", "mrr", "ndcg", "citation_precision", "citation_coverage", "abstention_accuracy"},
 		Importers: []string{"canonical-json"}, MaxBatchSize: c.MaxBatchSize, MaxRunCases: c.MaxRunCases,
+		MaxRunTokens: c.MaxRunTokens, MaxRunCostUSD: c.MaxRunCostUSD, MaxRunDurationSec: c.MaxRunDurationSec,
+		MaxRequestBytes: c.MaxRequestBytes, MaxContextsPerSample: c.MaxContextsPerSample, MaxContextBytes: c.MaxContextBytes,
 	}
 }

@@ -2468,6 +2468,12 @@ export interface RAGEvalCapabilities {
   importers: string[];
   maxBatchSize: number;
   maxRunCases: number;
+  maxRunTokens: number;
+  maxRunCostUsd: number;
+  maxRunDurationSec: number;
+  maxRequestBytes: number;
+  maxContextsPerSample: number;
+  maxContextBytes: number;
 }
 
 export interface RAGEvalDataset {
@@ -2477,6 +2483,33 @@ export interface RAGEvalDataset {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RAGEvalDatasetVersion {
+  ID: string;
+  DatasetID: string;
+  Status: "DRAFT" | "VALIDATING" | "READY" | "FAILED";
+  SourceType: string;
+  CorpusSHA256: string;
+  Version: number;
+  CaseCount: number;
+  DocumentCount: number;
+  TotalBytes: number;
+  CreatedAt: string;
+}
+
+export interface RAGEvalProfile {
+  id: string;
+  name: string;
+  profileJson: string;
+  fingerprint: string;
+  createdAt: string;
+}
+
+export interface RAGEvalValidationReport {
+  valid?: boolean;
+  errors?: Array<{ path?: string; code?: string; message?: string }>;
+  warnings?: Array<{ path?: string; code?: string; message?: string }>;
 }
 
 export interface RAGEvalRun {
@@ -2493,28 +2526,85 @@ export interface RAGEvalRun {
   createdAt: string;
 }
 
+async function ragEvalJSON<T>(response: Response): Promise<T> {
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload?.error?.message || payload?.error || `请求失败 (${response.status})`;
+    throw new Error(String(message));
+  }
+  return payload as T;
+}
+
+function ragEvalIdempotencyKey(): string {
+  return `ui-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export async function getRAGEvalCapabilities(): Promise<RAGEvalCapabilities> {
-  return (await apiFetch("/api/admin/rag-evals/capabilities")).json();
+  return ragEvalJSON(await apiFetch("/api/admin/rag-evals/capabilities"));
 }
 
 export async function listRAGEvalDatasets(): Promise<RAGEvalDataset[]> {
-  const result = await (await apiFetch("/api/admin/rag-evals/datasets?limit=100")).json();
+  const result = await ragEvalJSON<{ items: RAGEvalDataset[] }>(await apiFetch("/api/admin/rag-evals/datasets?limit=100"));
   return result.items ?? [];
 }
 
 export async function createRAGEvalDataset(name: string, description: string): Promise<RAGEvalDataset> {
-  return (await apiFetch("/api/admin/rag-evals/datasets", {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-evals/datasets", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() },
     body: JSON.stringify({ name, description }),
-  })).json();
+  }));
 }
 
-export async function listRAGEvalRuns(): Promise<RAGEvalRun[]> {
-  const result = await (await apiFetch("/api/admin/rag-evals/runs?limit=100")).json();
+export async function getRAGEvalDataset(id: string): Promise<{ dataset: RAGEvalDataset; versions: RAGEvalDatasetVersion[] }> {
+  return ragEvalJSON(await apiFetch(`/api/admin/rag-evals/datasets/${encodeURIComponent(id)}?limit=200`));
+}
+
+export async function importRAGEvalDatasetVersion(input: {
+  datasetId: string;
+  version: number;
+  manifest: unknown;
+  documents: Array<{ externalId: string; fileName: string; mediaType: string; contentBase64: string }>;
+}): Promise<{ version: RAGEvalDatasetVersion; report: RAGEvalValidationReport }> {
+  return ragEvalJSON(await apiFetch(`/api/admin/rag-evals/datasets/${encodeURIComponent(input.datasetId)}/versions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() },
+    body: JSON.stringify({ version: input.version, manifest: input.manifest, documents: input.documents }),
+  }));
+}
+
+export async function getRAGEvalDatasetValidation(id: string): Promise<{ versionId: string; status: string; report: RAGEvalValidationReport }> {
+  return ragEvalJSON(await apiFetch(`/api/admin/rag-evals/dataset-versions/${encodeURIComponent(id)}/validation`));
+}
+
+export async function listRAGEvalProfiles(): Promise<RAGEvalProfile[]> {
+  const result = await ragEvalJSON<{ items: RAGEvalProfile[] }>(await apiFetch("/api/admin/rag-evals/profiles?limit=100"));
   return result.items ?? [];
 }
 
+export async function listRAGEvalRuns(): Promise<RAGEvalRun[]> {
+  const result = await ragEvalJSON<{ items: RAGEvalRun[] }>(await apiFetch("/api/admin/rag-evals/runs?limit=100"));
+  return result.items ?? [];
+}
+
+export async function createRAGEvalRun(input: {
+  datasetVersionId: string;
+  baselineRunId?: string;
+  mode: "FULL_PIPELINE" | "ONLINE_ONLY";
+  profileId: string;
+  indexGenerationId?: string;
+  metrics: string[];
+}): Promise<RAGEvalRun> {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-evals/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() },
+    body: JSON.stringify(input),
+  }));
+}
+
 export async function cancelRAGEvalRun(id: string): Promise<void> {
-  await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+  await ragEvalJSON(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    headers: { "Idempotency-Key": ragEvalIdempotencyKey() },
+  }));
 }

@@ -736,12 +736,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先写导航角色、run form state、validation error mapping 的 node tests。
-- [ ] `/admin/rag-evals/` 使用现有 AuthGuard 路径门禁，但不把它当服务端安全边界。
-- [ ] capabilities 驱动可用 metrics/importers；sidecar 不健康时解释并禁启动。
-- [ ] run 创建前展示文档/case/外部调用/费用粗估和不可复现风险。
-- [ ] 进度使用有界轮询、页面隐藏时降频、完成/取消停止。
-- [ ] 不把完整 contexts/reasons 一次加载到列表首屏。
+- [x] 先写导航角色、run form state、validation error mapping 的 node tests。
+- [x] `/admin/rag-evals/` 使用现有 AuthGuard 路径门禁，但不把它当服务端安全边界。
+- [x] capabilities 驱动可用 metrics/importers；sidecar 不健康时解释并禁启动。
+- [x] run 创建前展示文档/case/外部调用/费用粗估和不可复现风险。
+- [x] 进度使用有界轮询、页面隐藏时降频、完成/取消停止。
+- [x] 不把完整 contexts/reasons 一次加载到列表首屏。
 
 ### Task 22：结果分析与参数 promotion UI
 
