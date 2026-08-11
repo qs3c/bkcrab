@@ -19,6 +19,8 @@ import {
 import { DatasetsPanel } from "./components/datasets-panel";
 import { RunList } from "./components/run-list";
 import { RunWizard } from "./components/run-wizard";
+import { ResultsPanel } from "./components/results-panel";
+import { ProfilePolicyPanel } from "./components/profile-policy-panel";
 import { nextRunPollDelay } from "./rag-eval-state";
 
 export default function RAGEvaluationsPage() {
@@ -66,6 +68,8 @@ export default function RAGEvaluationsPage() {
     <DatasetsPanel capabilities={capabilities} datasets={datasets} onChanged={refreshCatalog} />
     <RunWizard capabilities={capabilities} versions={versions} profiles={profiles} runs={runs} onCreated={refreshRuns} />
     <RunList runs={runs} onChanged={refreshRuns} />
+    <ResultsPanel runs={runs} />
+    <ProfilePolicyPanel profiles={profiles} runs={runs} onProfileChanged={refreshCatalog} />
   </div>;
 }
 

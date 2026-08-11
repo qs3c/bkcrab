@@ -2526,6 +2526,61 @@ export interface RAGEvalRun {
   createdAt: string;
 }
 
+export interface RAGEvalAggregate {
+  count: number;
+  scoredCount: number;
+  skippedCount: number;
+  errorCount: number;
+  mean?: number;
+  median?: number;
+  p50?: number;
+  p95?: number;
+}
+
+export interface RAGEvalCaseResult {
+  caseId: string;
+  response?: string;
+  contexts: unknown[];
+  citations: unknown[];
+  status: string;
+  errorCode?: string;
+  latencyMs: number;
+  usage: Record<string, unknown>;
+  metrics: Array<{ Name: string; Version: string; Status: string; Reason: string; Value?: number; Details?: Record<string, unknown> }>;
+}
+
+export interface RAGEvalPairedDelta {
+  pairs: number;
+  missingBaseline: string[];
+  missingCandidate: string[];
+  baseline: RAGEvalAggregate;
+  candidate: RAGEvalAggregate;
+  absoluteDelta?: number;
+  relativeDelta?: number;
+}
+
+export interface RAGPolicyRecordDTO {
+  Kind: string;
+  Version: number;
+  PolicyJSON: string;
+  Fingerprint: string;
+  Status: string;
+  SourceEvalRunID: string;
+  Note: string;
+  CreatedAt: string;
+}
+
+export interface RAGPolicyAuditDTO {
+  ID: string;
+  Action: string;
+  ActorID: string;
+  FromVersion: number;
+  ToVersion: number;
+  SourceEvalRunID: string;
+  Note: string;
+  CreatedAt: string;
+}
+
 async function ragEvalJSON<T>(response: Response): Promise<T> {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -2582,6 +2637,14 @@ export async function listRAGEvalProfiles(): Promise<RAGEvalProfile[]> {
   return result.items ?? [];
 }
 
+export async function createRAGEvalProfile(name: string, profile: unknown): Promise<RAGEvalProfile> {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-evals/profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() },
+    body: JSON.stringify({ name, profile }),
+  }));
+}
+
 export async function listRAGEvalRuns(): Promise<RAGEvalRun[]> {
   const result = await ragEvalJSON<{ items: RAGEvalRun[] }>(await apiFetch("/api/admin/rag-evals/runs?limit=100"));
   return result.items ?? [];
@@ -2600,6 +2663,35 @@ export async function createRAGEvalRun(input: {
     headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() },
     body: JSON.stringify(input),
   }));
+}
+
+export async function getRAGEvalRunAnalysis(id: string): Promise<{ run: RAGEvalRun; aggregates: Record<string, RAGEvalAggregate> }> {
+  return ragEvalJSON(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}`));
+}
+
+export async function listRAGEvalRunCases(id: string): Promise<RAGEvalCaseResult[]> {
+  const result = await ragEvalJSON<{ items: RAGEvalCaseResult[] }>(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}/cases?limit=100`));
+  return result.items ?? [];
+}
+
+export async function compareRAGEvalRuns(candidateId: string, baselineId: string, metric: string): Promise<RAGEvalPairedDelta> {
+  return ragEvalJSON(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(candidateId)}/compare/${encodeURIComponent(baselineId)}?metric=${encodeURIComponent(metric)}`));
+}
+
+export async function getRAGPolicies(): Promise<Record<"runtime" | "ingestion", { active?: RAGPolicyRecordDTO; audit: RAGPolicyAuditDTO[] }>> {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-policies?limit=100"));
+}
+
+export async function promoteRAGRuntimePolicy(input: { runId: string; profileId: string; confirmationRunId: string; fields: string[]; note: string }) {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-policies/runtime/promotions", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() }, body: JSON.stringify(input) }));
+}
+
+export async function promoteRAGIngestionPolicy(input: { runId: string; profileId: string; confirmationRunId: string; note: string }) {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-policies/ingestion/promotions", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() }, body: JSON.stringify(input) }));
+}
+
+export async function rollbackRAGRuntimePolicy(input: { expectedVersion: number; targetVersion: number; note: string }) {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-policies/runtime/rollback", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() }, body: JSON.stringify(input) }));
 }
 
 export async function cancelRAGEvalRun(id: string): Promise<void> {

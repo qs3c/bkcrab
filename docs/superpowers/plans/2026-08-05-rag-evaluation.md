@@ -762,12 +762,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 测试 skipped/error 分母展示，禁止只渲染漂亮平均值。
-- [ ] delta 使用方向语义：latency/cost 下降是改善，error/quality 方向不同。
-- [ ] case contexts 默认折叠，显示 raw recall/rerank score 和过滤原因。
-- [ ] `minScore` 标签使用“最低 reranker 分数”，显示 reranker fallback rate。
-- [ ] 完整索引参数可编辑用于实验；发布面只列白名单并标注未发布差异。
-- [ ] 所有 publish/rollback 二次确认并要求备注。
+- [x] 测试 skipped/error 分母展示，禁止只渲染漂亮平均值。
+- [x] delta 使用方向语义：latency/cost 下降是改善，error/quality 方向不同。
+- [x] case contexts 默认折叠，显示 raw recall/rerank score 和过滤原因。
+- [x] `minScore` 标签使用“最低 reranker 分数”，显示 reranker fallback rate。
+- [x] 完整索引参数可编辑用于实验；发布面只列白名单并标注未发布差异。
+- [x] 所有 publish/rollback 二次确认并要求备注。
 
 ### Task 23：KB policy drift、同步确认、进度和回滚 UI
 

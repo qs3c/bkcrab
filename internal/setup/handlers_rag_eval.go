@@ -431,7 +431,15 @@ func (s *Server) handleGetRAGEvalRun(w http.ResponseWriter, r *http.Request) {
 		writeEvalServiceError(w, err)
 		return
 	}
-	jsonResponse(w, 200, record)
+	var metrics []string
+	_ = json.Unmarshal([]byte(record.RequestedMetricsJSON), &metrics)
+	aggregates := map[string]eval.Aggregate{}
+	for _, metric := range metrics {
+		if aggregate, aggregateErr := st.Aggregate(r.Context(), record.ID, metric); aggregateErr == nil {
+			aggregates[metric] = aggregate
+		}
+	}
+	jsonResponse(w, 200, map[string]any{"run": record, "aggregates": aggregates})
 }
 
 func (s *Server) handleCancelRAGEvalRun(w http.ResponseWriter, r *http.Request) {
@@ -473,6 +481,13 @@ type evalCaseDTO struct {
 	Usage       json.RawMessage `json:"usage"`
 	SearchTrace json.RawMessage `json:"searchTrace,omitempty"`
 	AnswerTrace json.RawMessage `json:"answerTrace,omitempty"`
+	Metrics     []evalMetricDTO `json:"metrics"`
+}
+
+type evalMetricDTO struct {
+	Name, Version, Status, Reason string
+	Value                         *float64
+	Details                       json.RawMessage
 }
 
 func rawEvalJSON(value, fallback string) json.RawMessage {
@@ -498,12 +513,26 @@ func (s *Server) handleListRAGEvalRunCases(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	includeTraces := r.URL.Query().Get("includeTraces") == "true"
+	metricItems, metricErr := st.ListMetricResults(r.Context(), r.PathValue("id"), "", 200)
+	if metricErr != nil {
+		writeEvalError(w, 500, "list_failed", "could not list case metrics")
+		return
+	}
+	metricsByCase := map[string][]evalMetricDTO{}
+	for _, metric := range metricItems {
+		item := evalMetricDTO{Name: metric.MetricName, Version: metric.MetricVersion, Status: metric.Status, Reason: metric.Reason, Details: rawEvalJSON(metric.DetailsJSON, "{}")}
+		if metric.Value.Valid {
+			value := metric.Value.Float64
+			item.Value = &value
+		}
+		metricsByCase[metric.CaseID] = append(metricsByCase[metric.CaseID], item)
+	}
 	out := make([]evalCaseDTO, 0, len(items))
 	for _, item := range items {
 		if status != "" && item.Status != status {
 			continue
 		}
-		dto := evalCaseDTO{CaseID: item.CaseID, Response: item.Response, Contexts: rawEvalJSON(item.ContextsJSON, "[]"), Citations: rawEvalJSON(item.CitationsJSON, "[]"), Status: item.Status, ErrorCode: item.ErrorCode, LatencyMS: item.LatencyMS, Usage: rawEvalJSON(item.UsageJSON, "{}")}
+		dto := evalCaseDTO{CaseID: item.CaseID, Response: item.Response, Contexts: rawEvalJSON(item.ContextsJSON, "[]"), Citations: rawEvalJSON(item.CitationsJSON, "[]"), Status: item.Status, ErrorCode: item.ErrorCode, LatencyMS: item.LatencyMS, Usage: rawEvalJSON(item.UsageJSON, "{}"), Metrics: metricsByCase[item.CaseID]}
 		if includeTraces {
 			dto.SearchTrace = rawEvalJSON(item.SearchTraceJSON, "{}")
 			dto.AnswerTrace = rawEvalJSON(item.AnswerTraceJSON, "{}")

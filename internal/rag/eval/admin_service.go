@@ -72,6 +72,12 @@ func (s *AdminService) CancelRun(ctx context.Context, id string) (bool, error) {
 func (s *AdminService) ListCaseResults(ctx context.Context, runID, cursor string, limit int) ([]store.RAGEvalCaseResultRecord, error) {
 	return s.store.ListRAGEvalCaseResults(ctx, runID, cursor, limit)
 }
+func (s *AdminService) ListMetricResults(ctx context.Context, runID, cursor string, limit int) ([]store.RAGEvalMetricResultRecord, error) {
+	return s.store.ListRAGEvalMetricResults(ctx, runID, cursor, limit)
+}
+func (s *AdminService) Aggregate(ctx context.Context, runID, metric string) (Aggregate, error) {
+	return (AnalysisService{Store: s.store}).AggregateRunMetric(ctx, runID, metric)
+}
 func (s *AdminService) Compare(ctx context.Context, baselineID, candidateID, metric string) (PairedDelta, error) {
 	return (AnalysisService{Store: s.store}).CompareRunMetric(ctx, baselineID, candidateID, metric)
 }
