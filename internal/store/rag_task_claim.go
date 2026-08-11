@@ -244,6 +244,8 @@ func (d *DBStore) claimOneRAGIndexTask(
 			(status='RUNNING' AND (lease_until IS NULL OR lease_until <= %s)))
 		AND NOT EXISTS (SELECT 1 FROM rag_document_maintenance_leases m
 			WHERE m.doc_id=t.doc_id AND m.lease_until IS NOT NULL AND m.lease_until>%s)
+		AND NOT EXISTS (SELECT 1 FROM rag_documents d JOIN rag_kb_policy_sync_tasks s ON s.kb_id=d.kb_id
+			WHERE d.id=t.doc_id AND s.status IN ('QUEUED','RUNNING'))
 		ORDER BY created_at,id LIMIT 1`, nowExpr, nowExpr, nowExpr)).Scan(&taskID, &docID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
@@ -925,6 +927,35 @@ func (d *DBStore) ActivateAndFinishRAGIndexTask(
 		return false, err
 	}
 
+	// A same-policy document mutation updates the active generation mapping in
+	// the same transaction as rag_documents.active_version. This preserves one
+	// exact corpus view after a KB has switched to authoritative generations.
+	var activeGenerationID string
+	generationErr := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT g.id FROM rag_kbs k
+		JOIN rag_kb_index_generations g ON g.id=k.active_generation_id AND g.kb_id=k.id
+		WHERE k.id=%s AND g.status=%s AND k.pinned_policy_version=g.policy_version`, d.ph(1), d.ph(2)), locked.doc.KBID, RAGGenerationActive).Scan(&activeGenerationID)
+	if generationErr != nil && !errors.Is(generationErr, sql.ErrNoRows) {
+		return false, generationErr
+	}
+	if generationErr == nil {
+		mappingResult, mapErr := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kb_generation_documents SET doc_version=%s,status=%s,error_code='',error_message='' WHERE generation_id=%s AND doc_id=%s`, d.ph(1), d.ph(2), d.ph(3), d.ph(4)), fence.DocVersion, RAGGenerationDocumentReady, activeGenerationID, fence.DocID)
+		if mapErr != nil {
+			return false, mapErr
+		}
+		mapped, _ := mappingResult.RowsAffected()
+		if mapped == 0 {
+			if _, mapErr = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_kb_generation_documents(generation_id,doc_id,doc_version,status,error_code,error_message) VALUES(%s,%s,%s,%s,'','')`, d.ph(1), d.ph(2), d.ph(3), d.ph(4)), activeGenerationID, fence.DocID, fence.DocVersion, RAGGenerationDocumentReady); mapErr != nil {
+				return false, mapErr
+			}
+		}
+		if _, mapErr = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kb_index_generations SET
+			document_count=(SELECT COUNT(*) FROM rag_kb_generation_documents WHERE generation_id=%s),
+			chunk_count=CASE WHEN chunk_count-%s+%s<0 THEN %s ELSE chunk_count-%s+%s END
+			WHERE id=%s AND status=%s`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8)), activeGenerationID, locked.doc.ChunkCount, activation.ChunkCount, activation.ChunkCount, locked.doc.ChunkCount, activation.ChunkCount, activeGenerationID, RAGGenerationActive); mapErr != nil {
+			return false, mapErr
+		}
+	}
+
 	if previousActive > 0 && previousActive != fence.DocVersion {
 		result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET
 			status='RETIRED',updated_at=%s WHERE doc_id=%s AND doc_version=%s
@@ -1018,6 +1049,9 @@ func (d *DBStore) advanceDocumentVersionAndCreateTask(
 		expectedOwner = policy.UserID
 	}
 	if _, err := d.lockActiveRAGKBOwnerTx(ctx, tx, preflightDoc.KBID, expectedOwner); err != nil {
+		return nil, err
+	}
+	if err := d.rejectActiveRAGKBPolicySyncTx(ctx, tx, preflightDoc.KBID); err != nil {
 		return nil, err
 	}
 	doc, err := d.ragDocumentInTx(ctx, tx, snapshot.DocID)

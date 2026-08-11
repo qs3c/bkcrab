@@ -673,16 +673,16 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 先写 v2 active/v3 building 期间每次查询只见 v2 的并发测试。
-- [ ] 同一 KB 同时只允许一个 sync；同步和 KB delete/单 doc update/upload/delete 互斥。
-- [ ] 一期同步时拒绝或暂停文档写操作，返回明确 409/423 业务错误；查询不阻塞。
-- [ ] 对每个 corpus doc 创建目标 policy snapshot/version，但在 target generation 完成前不改变可见 mapping。
-- [ ] 校验 document membership、chunk count、dims、SQL chunk refs、Milvus entity 抽样和 retrieval smoke。
-- [ ] 激活使用 store Task 3 的单事务/CAS；切换后 Search 新请求只见 v3。
-- [ ] 失败/取消 drop target collection 并恢复写；旧 generation/policy 不变。
-- [ ] rollback 只在 old generation 完整且窗口内；GC 必须检查 active/ref/rollback。
-- [ ] 覆盖同步中平台发布 v4：任务仍固定 v3，结束后显示 v4 drift。
-- [ ] 运行 `go test -race ./internal/rag/... ./internal/store ./internal/setup -run 'Generation|PolicySync|RAGSearch'`。
+- [x] 先写 v2 active/v3 building 期间每次查询只见 v2 的并发测试。
+- [x] 同一 KB 同时只允许一个 sync；同步和 KB delete/单 doc update/upload/delete 互斥。
+- [x] 一期同步时拒绝或暂停文档写操作，返回明确 409/423 业务错误；查询不阻塞。
+- [x] 对每个 corpus doc 创建目标 policy snapshot/version，但在 target generation 完成前不改变可见 mapping。
+- [x] 校验 document membership、chunk count、dims、SQL chunk refs、Milvus entity 抽样和 retrieval smoke。
+- [x] 激活使用 store Task 3 的单事务/CAS；切换后 Search 新请求只见 v3。
+- [x] 失败/取消 drop target collection 并恢复写；旧 generation/policy 不变。
+- [x] rollback 只在 old generation 完整且窗口内；GC 必须检查 active/ref/rollback。
+- [x] 覆盖同步中平台发布 v4：任务仍固定 v3，结束后显示 v4 drift。
+- [x] 运行 `go test -race ./internal/rag/... ./internal/store ./internal/setup -run 'Generation|PolicySync|RAGSearch'`。
 
 **Release gate:** 在真实大 KB shadow rebuild、失败注入、进程重启和回滚演练完成前，不向普通用户显示同步按钮。
 

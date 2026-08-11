@@ -887,6 +887,9 @@ func (d *DBStore) UpdateRAGKB(ctx context.Context, kb *RAGKBRecord) error {
 	if err != nil {
 		return err
 	}
+	if err := d.rejectActiveRAGKBPolicySyncTx(ctx, tx, kb.ID); err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kbs SET
 		name=%s, description=%s, chunk_size=%s, chunk_overlap=%s, parse_mode=%s,
 		enrichment_enabled=%s, updated_at=%s WHERE id=%s AND user_id=%s AND LOWER(status)='active'`,
@@ -1320,6 +1323,9 @@ func (d *DBStore) createRAGDocumentWithVersionAndIndexTask(
 		expectedOwner = policy.UserID
 	}
 	if _, err := d.lockActiveRAGKBOwnerTx(ctx, tx, doc.KBID, expectedOwner); err != nil {
+		return 0, err
+	}
+	if err := d.rejectActiveRAGKBPolicySyncTx(ctx, tx, doc.KBID); err != nil {
 		return 0, err
 	}
 	if err := d.enforceRAGAdvancedEnqueuePolicyTx(ctx, tx, doc.KBID, doc.ID, version, policy, false); err != nil {

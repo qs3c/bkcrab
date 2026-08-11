@@ -359,6 +359,8 @@ func writeRAGError(w http.ResponseWriter, err error) {
 		status = http.StatusServiceUnavailable
 	case errors.Is(err, rag.ErrNoReadyDocuments):
 		status = http.StatusConflict
+	case errors.Is(err, rag.ErrPolicySyncActive), errors.Is(err, store.ErrRAGKBPolicySyncActive):
+		status = http.StatusLocked
 	case strings.Contains(err.Error(), "不支持的文件类型"),
 		strings.Contains(err.Error(), "不能为空"),
 		strings.Contains(err.Error(), "必须小于"),

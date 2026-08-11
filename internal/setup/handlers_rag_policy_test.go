@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,6 +46,19 @@ func TestRAGIngestionPolicyRouteRejectsArbitraryPolicyBody(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRAGKBPolicySyncRequiresExplicitConfirmation(t *testing.T) {
+	server, resolver, _, regular, service := newRAGAPITestServer(t)
+	kb, err := service.CreateKB(context.Background(), regular.ID, "sync-confirm", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ragJSONRequest(t, resolver, http.MethodPost, "/api/rag/kbs/"+kb.ID+"/policy-syncs", regular.ID, `{"targetPolicyVersion":2,"confirm":false}`)
+	recorder := callRAGHandler(t, server, server.handleStartRAGKBPolicySync, request, map[string]string{"id": kb.ID})
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "confirmation") {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

@@ -570,6 +570,9 @@ func (s *Service) updateKB(
 	if err := s.requireActiveUser(ctx, kb.UserID); err != nil {
 		return nil, err
 	}
+	if err := s.ensureNoPolicySync(ctx, kbID); err != nil {
+		return nil, err
+	}
 	if !strings.EqualFold(kb.Status, "active") {
 		return nil, errors.New("知识库正在删除中")
 	}
@@ -603,6 +606,9 @@ func (s *Service) updateKB(
 func (s *Service) DeleteKB(ctx context.Context, ownerID, kbID string) error {
 	kb, err := s.GetKB(ctx, ownerID, kbID)
 	if err != nil {
+		return err
+	}
+	if err := s.ensureNoPolicySync(ctx, kbID); err != nil {
 		return err
 	}
 	return s.deleteKBRecord(ctx, kb)

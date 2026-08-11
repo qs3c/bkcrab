@@ -90,6 +90,7 @@ type RAGPolicySyncFence struct {
 }
 
 var ErrRAGLegacyGenerationConflict = errors.New("store: legacy RAG generation snapshot conflict")
+var ErrRAGKBPolicySyncActive = errors.New("store: RAG knowledge base policy sync is active")
 
 type legacyIngestionPolicySnapshot struct {
 	SchemaVersion string                         `json:"schemaVersion"`
@@ -742,6 +743,13 @@ func (d *DBStore) CreateRAGPolicySyncTask(ctx context.Context, record *RAGPolicy
 	if activeTasks != 0 {
 		return errors.New("policy sync already active for knowledge base")
 	}
+	var indexTasks int
+	if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM rag_index_tasks t JOIN rag_documents d ON d.id=t.doc_id WHERE d.kb_id=%s AND t.status IN ('PENDING','RUNNING')`, d.ph(1)), record.KBID).Scan(&indexTasks); err != nil {
+		return err
+	}
+	if indexTasks != 0 {
+		return errors.New("knowledge base has active document mutations")
+	}
 	if record.SourceGenerationID == "" {
 		record.SourceGenerationID = active.String
 	}
@@ -797,7 +805,19 @@ func (d *DBStore) HeartbeatRAGPolicySyncTask(ctx context.Context, fence RAGPolic
 		return false, errors.New("positive lease is required")
 	}
 	now := time.Now().UTC()
-	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kb_policy_sync_tasks SET lease_until=%s WHERE id=%s AND status=%s AND lease_owner=%s AND fence_token=%s AND lease_until>%s`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6)), now.Add(lease), fence.TaskID, RAGPolicySyncRunning, fence.LeaseOwner, fence.FenceToken, now)
+	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kb_policy_sync_tasks SET lease_until=%s WHERE id=%s AND status=%s AND lease_owner=%s AND fence_token=%s AND lease_until>%s AND cancel_requested_at IS NULL`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6)), now.Add(lease), fence.TaskID, RAGPolicySyncRunning, fence.LeaseOwner, fence.FenceToken, now)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	return changed == 1, err
+}
+
+func (d *DBStore) UpdateRAGPolicySyncProgress(ctx context.Context, fence RAGPolicySyncFence, progressJSON string) (bool, error) {
+	if !json.Valid([]byte(progressJSON)) {
+		return false, errors.New("policy sync progress JSON is invalid")
+	}
+	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kb_policy_sync_tasks SET progress_json=%s WHERE id=%s AND status=%s AND lease_owner=%s AND fence_token=%s AND lease_until>%s AND cancel_requested_at IS NULL`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6)), progressJSON, fence.TaskID, RAGPolicySyncRunning, fence.LeaseOwner, fence.FenceToken, time.Now().UTC())
 	if err != nil {
 		return false, err
 	}
@@ -858,6 +878,282 @@ const ragPolicySyncTaskColumns = `id,kb_id,source_generation_id,target_generatio
 
 func (d *DBStore) GetRAGPolicySyncTask(ctx context.Context, id string) (*RAGPolicySyncTaskRecord, error) {
 	return scanRAGPolicySyncTask(d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_kb_policy_sync_tasks WHERE id=%s`, ragPolicySyncTaskColumns, d.ph(1)), id))
+}
+
+func (d *DBStore) IsRAGKBPolicySyncActive(ctx context.Context, kbID string) (bool, error) {
+	var count int
+	err := d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM rag_kb_policy_sync_tasks WHERE kb_id=%s AND status IN (%s,%s)`, d.ph(1), d.ph(2), d.ph(3)), kbID, RAGPolicySyncQueued, RAGPolicySyncRunning).Scan(&count)
+	return count > 0, err
+}
+
+func (d *DBStore) rejectActiveRAGKBPolicySyncTx(ctx context.Context, tx *sql.Tx, kbID string) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM rag_kb_policy_sync_tasks WHERE kb_id=%s AND status IN (%s,%s)`, d.ph(1), d.ph(2), d.ph(3)), kbID, RAGPolicySyncQueued, RAGPolicySyncRunning).Scan(&count); err != nil {
+		return err
+	}
+	if count != 0 {
+		return ErrRAGKBPolicySyncActive
+	}
+	return nil
+}
+
+func (d *DBStore) ClaimNextRAGPolicySyncTask(ctx context.Context, worker string, lease time.Duration) (*RAGPolicySyncFence, bool, error) {
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT id FROM rag_kb_policy_sync_tasks WHERE status=%s OR (status=%s AND (lease_until IS NULL OR lease_until<=%s)) ORDER BY created_at,id LIMIT 16`, d.ph(1), d.ph(2), d.ragNowExpr()), RAGPolicySyncQueued, RAGPolicySyncRunning)
+	if err != nil {
+		return nil, false, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, false, err
+		}
+		ids = append(ids, id)
+	}
+	if err = rows.Close(); err != nil {
+		return nil, false, err
+	}
+	for _, id := range ids {
+		fence, claimed, claimErr := d.ClaimRAGPolicySyncTask(ctx, id, worker, lease)
+		if claimErr != nil || claimed {
+			return fence, claimed, claimErr
+		}
+	}
+	return nil, false, nil
+}
+
+// CreateRAGGenerationDocumentVersion persists a target-policy snapshot without
+// changing rag_documents.version or active_version. The sync fence and exact
+// generation mapping authorize this otherwise invisible version.
+func (d *DBStore) CreateRAGGenerationDocumentVersion(ctx context.Context, fence RAGPolicySyncFence, version *RAGDocumentVersionRecord) (bool, error) {
+	if err := validateRunnableRAGVersionSnapshot(version); err != nil {
+		return false, err
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	_, valid, err := d.lockRAGPolicySyncFenceTx(ctx, tx, fence)
+	if err != nil || !valid {
+		return false, err
+	}
+	var mappedVersion int64
+	if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT doc_version FROM rag_kb_generation_documents WHERE generation_id=%s AND doc_id=%s AND status=%s`, d.ph(1), d.ph(2), d.ph(3)), fence.TargetGenerationID, version.DocID, RAGGenerationDocumentPending).Scan(&mappedVersion); err != nil {
+		return false, scanErr(err)
+	}
+	if mappedVersion != version.DocVersion {
+		return false, nil
+	}
+	var kbID string
+	if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT kb_id FROM rag_documents WHERE id=%s`, d.ph(1)), version.DocID).Scan(&kbID); err != nil {
+		return false, scanErr(err)
+	}
+	if kbID != fence.KBID {
+		return false, nil
+	}
+	var existingFingerprint, existingStatus string
+	existingErr := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT index_fingerprint,status FROM rag_document_versions WHERE doc_id=%s AND doc_version=%s`, d.ph(1), d.ph(2)), version.DocID, version.DocVersion).Scan(&existingFingerprint, &existingStatus)
+	if existingErr == nil {
+		if existingFingerprint != version.IndexFingerprint || (existingStatus != RAGDocumentVersionPending && existingStatus != RAGDocumentVersionDone) {
+			return false, ErrRAGDocumentVersionConflict
+		}
+		return true, tx.Commit()
+	}
+	if !errors.Is(existingErr, sql.ErrNoRows) {
+		return false, existingErr
+	}
+	prepareNewRAGDocumentVersion(version)
+	if err = d.createRAGDocumentVersion(ctx, tx, version); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+func (d *DBStore) CompleteRAGGenerationDocument(ctx context.Context, fence RAGPolicySyncFence, docID string, chunkCount int) (bool, error) {
+	if strings.TrimSpace(docID) == "" || chunkCount < 0 {
+		return false, errors.New("invalid generation document completion")
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	_, valid, err := d.lockRAGPolicySyncFenceTx(ctx, tx, fence)
+	if err != nil || !valid {
+		return false, err
+	}
+	var docVersion int64
+	if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT doc_version FROM rag_kb_generation_documents WHERE generation_id=%s AND doc_id=%s AND status=%s`, d.ph(1), d.ph(2), d.ph(3)), fence.TargetGenerationID, docID, RAGGenerationDocumentPending).Scan(&docVersion); err != nil {
+		return false, scanErr(err)
+	}
+	var storedChunks int
+	if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM rag_chunks WHERE doc_id=%s AND doc_version=%s`, d.ph(1), d.ph(2)), docID, docVersion).Scan(&storedChunks); err != nil {
+		return false, err
+	}
+	if storedChunks != chunkCount {
+		return false, errors.New("generation SQL chunk validation failed")
+	}
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_versions SET status=%s,updated_at=%s WHERE doc_id=%s AND doc_version=%s AND status=%s`, d.ph(1), d.ragNowExpr(), d.ph(2), d.ph(3), d.ph(4)), RAGDocumentVersionDone, docID, docVersion, RAGDocumentVersionPending)
+	if err != nil {
+		return false, err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return false, nil
+	}
+	result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kb_generation_documents SET status=%s,error_code='',error_message='' WHERE generation_id=%s AND doc_id=%s AND status=%s`, d.ph(1), d.ph(2), d.ph(3), d.ph(4)), RAGGenerationDocumentReady, fence.TargetGenerationID, docID, RAGGenerationDocumentPending)
+	if err != nil {
+		return false, err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return false, nil
+	}
+	return true, tx.Commit()
+}
+
+func (d *DBStore) MarkRAGKBGenerationFailed(ctx context.Context, fence RAGPolicySyncFence, code, message string) (bool, error) {
+	code, message = sanitizeRAGEvalError(code, message)
+	query := fmt.Sprintf(`UPDATE rag_kb_index_generations SET status=%s,error_code=%s,error_message=%s,lease_owner='',lease_until=NULL WHERE id=%s AND kb_id=%s AND policy_version=%s AND status IN (%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8))
+	args := []any{RAGGenerationFailed, code, message, fence.TargetGenerationID, fence.KBID, fence.TargetPolicyVersion, RAGGenerationBuilding, RAGGenerationReady}
+	if fence.LeaseOwner != "" {
+		query += fmt.Sprintf(` AND EXISTS (SELECT 1 FROM rag_kb_policy_sync_tasks t WHERE t.id=%s AND t.target_generation_id=rag_kb_index_generations.id AND t.status=%s AND t.lease_owner=%s AND t.fence_token=%s AND t.lease_until>%s)`, d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ragNowExpr())
+		args = append(args, fence.TaskID, RAGPolicySyncRunning, fence.LeaseOwner, fence.FenceToken)
+	} else {
+		query += fmt.Sprintf(` AND EXISTS (SELECT 1 FROM rag_kb_policy_sync_tasks t WHERE t.id=%s AND t.target_generation_id=rag_kb_index_generations.id AND t.status=%s)`, d.ph(9), d.ph(10))
+		args = append(args, fence.TaskID, RAGPolicySyncCancelled)
+	}
+	result, err := d.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	return changed == 1, err
+}
+
+func (d *DBStore) ListRAGKBGenerationGCCandidates(ctx context.Context, limit int) ([]RAGKBGenerationRecord, error) {
+	limit = boundedRAGEvalListLimit(limit)
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_kb_index_generations g
+		WHERE (g.status=%s OR (g.status=%s AND g.rollback_until IS NOT NULL AND g.rollback_until<=%s))
+		AND NOT EXISTS (SELECT 1 FROM rag_kbs k WHERE k.active_generation_id=g.id)
+		AND NOT EXISTS (SELECT 1 FROM rag_kb_policy_sync_tasks t WHERE t.status IN (%s,%s) AND (t.source_generation_id=g.id OR t.target_generation_id=g.id))
+		ORDER BY g.created_at,g.id LIMIT %s`, "g."+strings.ReplaceAll(ragKBGenerationColumns, ",", ",g."), d.ph(1), d.ph(2), d.ragNowExpr(), d.ph(3), d.ph(4), d.ph(5)), RAGGenerationFailed, RAGGenerationRetired, RAGPolicySyncQueued, RAGPolicySyncRunning, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RAGKBGenerationRecord
+	for rows.Next() {
+		item, scanErr := scanRAGKBGeneration(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, *item)
+	}
+	return out, rows.Err()
+}
+
+func (d *DBStore) DeleteRAGKBGenerationIfCollectible(ctx context.Context, generationID string) (bool, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	query := fmt.Sprintf(`SELECT %s FROM rag_kb_index_generations WHERE id=%s`, ragKBGenerationColumns, d.ph(1))
+	if d.dialect != "sqlite" {
+		query += " FOR UPDATE"
+	}
+	generation, err := scanRAGKBGeneration(tx.QueryRowContext(ctx, query, generationID))
+	if errors.Is(err, ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	now := time.Now().UTC()
+	collectible := generation.Status == RAGGenerationFailed || (generation.Status == RAGGenerationRetired && generation.RollbackUntil.Valid && !generation.RollbackUntil.Time.After(now))
+	if !collectible {
+		return false, nil
+	}
+	var refs int
+	if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT
+		(SELECT COUNT(*) FROM rag_kbs WHERE active_generation_id=%s)+
+		(SELECT COUNT(*) FROM rag_kb_policy_sync_tasks WHERE status IN (%s,%s) AND (source_generation_id=%s OR target_generation_id=%s))`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)), generationID, RAGPolicySyncQueued, RAGPolicySyncRunning, generationID, generationID).Scan(&refs); err != nil || refs != 0 {
+		return false, err
+	}
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT generation_id,doc_id,doc_version,status,error_code,error_message FROM rag_kb_generation_documents WHERE generation_id=%s ORDER BY doc_id`, d.ph(1)), generationID)
+	if err != nil {
+		return false, err
+	}
+	var documents []RAGGenerationDocumentRecord
+	for rows.Next() {
+		var document RAGGenerationDocumentRecord
+		if err = rows.Scan(&document.GenerationID, &document.DocID, &document.DocVersion, &document.Status, &document.ErrorCode, &document.ErrorMessage); err != nil {
+			rows.Close()
+			return false, err
+		}
+		documents = append(documents, document)
+	}
+	if err = rows.Close(); err != nil {
+		return false, err
+	}
+	for _, document := range documents {
+		var otherRefs int
+		if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM rag_kb_generation_documents WHERE doc_id=%s AND doc_version=%s AND generation_id<>%s`, d.ph(1), d.ph(2), d.ph(3)), document.DocID, document.DocVersion, generationID).Scan(&otherRefs); err != nil {
+			return false, err
+		}
+		if otherRefs == 0 {
+			if _, err = tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_chunks WHERE doc_id=%s AND doc_version=%s AND NOT EXISTS (SELECT 1 FROM rag_documents d WHERE d.id=%s AND d.active_version=%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4)), document.DocID, document.DocVersion, document.DocID, document.DocVersion); err != nil {
+				return false, err
+			}
+			if _, err = tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_document_versions WHERE doc_id=%s AND doc_version=%s AND NOT EXISTS (SELECT 1 FROM rag_documents d WHERE d.id=%s AND d.active_version=%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4)), document.DocID, document.DocVersion, document.DocID, document.DocVersion); err != nil {
+				return false, err
+			}
+		}
+	}
+	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_kb_generation_documents WHERE generation_id=%s`, d.ph(1)), generationID); err != nil {
+		return false, err
+	}
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_kb_index_generations WHERE id=%s`, d.ph(1)), generationID)
+	if err != nil {
+		return false, err
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return false, nil
+	}
+	return true, tx.Commit()
+}
+
+func (d *DBStore) AbandonUnreferencedRAGKBGeneration(ctx context.Context, generationID string) (bool, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var status string
+	if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT status FROM rag_kb_index_generations WHERE id=%s`, d.ph(1)), generationID).Scan(&status); errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil || status != RAGGenerationBuilding {
+		return false, err
+	}
+	var refs int
+	if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM rag_kb_policy_sync_tasks WHERE target_generation_id=%s`, d.ph(1)), generationID).Scan(&refs); err != nil || refs != 0 {
+		return false, err
+	}
+	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_kb_generation_documents WHERE generation_id=%s`, d.ph(1)), generationID); err != nil {
+		return false, err
+	}
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_kb_index_generations WHERE id=%s AND status=%s`, d.ph(1), d.ph(2)), generationID, RAGGenerationBuilding)
+	if err != nil {
+		return false, err
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return false, nil
+	}
+	return true, tx.Commit()
 }
 
 func (d *DBStore) lockRAGPolicySyncFenceTx(ctx context.Context, tx *sql.Tx, fence RAGPolicySyncFence) (*RAGPolicySyncTaskRecord, bool, error) {

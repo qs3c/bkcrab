@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -103,12 +104,34 @@ func TestRAGGenerationSyncFenceActivationRollbackAndCleanup(t *testing.T) {
 	}
 	assertActiveRAGGeneration(t, st, kb.ID, gen1.ID, 1)
 
-	_, task4 := createRAGGenerationSyncFixture(t, st, kb.ID, 4, "four", nil)
+	gen4, task4 := createRAGGenerationSyncFixture(t, st, kb.ID, 4, "four", nil)
 	fence4 := claimRAGPolicySyncFixture(t, st, task4.ID, "worker-fail")
+	if ok, err := st.MarkRAGKBGenerationFailed(ctx, fence4, "build_failed", "failed"); err != nil || !ok {
+		t.Fatalf("mark generation failed=%v %v", ok, err)
+	}
 	if ok, err := st.FinishRAGPolicySyncTask(ctx, fence4, RAGPolicySyncFailed, "build_failed", "failed"); err != nil || !ok {
 		t.Fatalf("finish failed=%v %v", ok, err)
 	}
 	assertActiveRAGGeneration(t, st, kb.ID, gen1.ID, 1)
+	candidates, err := st.ListRAGKBGenerationGCCandidates(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundFailed := false
+	for _, candidate := range candidates {
+		if candidate.ID == gen4.ID {
+			foundFailed = true
+		}
+	}
+	if !foundFailed {
+		t.Fatalf("failed generation missing from GC candidates: %+v", candidates)
+	}
+	if ok, err := st.DeleteRAGKBGenerationIfCollectible(ctx, gen4.ID); err != nil || !ok {
+		t.Fatalf("collect failed generation=%v err=%v", ok, err)
+	}
+	if _, err := st.GetRAGKBGeneration(ctx, gen4.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("failed generation remained after GC: %v", err)
+	}
 
 	_, queuedTask := createRAGGenerationSyncFixture(t, st, kb.ID, 5, "five", nil)
 	if ok, err := st.RequestCancelRAGPolicySyncTask(ctx, queuedTask.ID); err != nil || !ok {

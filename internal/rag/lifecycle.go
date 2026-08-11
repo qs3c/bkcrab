@@ -183,6 +183,7 @@ func (s *Service) runLifecyclePass(ctx context.Context) {
 		return
 	}
 	s.runAvailableGCTasks(ctx)
+	s.sweepPolicySyncGenerations(ctx)
 	s.expireStaleKBProvisions(ctx)
 	s.retryDeletingResources(ctx)
 	s.sweepObjectWriteStaging(ctx)
@@ -190,6 +191,33 @@ func (s *Service) runLifecyclePass(ctx context.Context) {
 	s.sweepStagingAssets(ctx)
 	s.sweepStagingAttachments(ctx)
 	s.sweepCacheObjects(ctx)
+}
+
+func (s *Service) sweepPolicySyncGenerations(ctx context.Context) {
+	candidates, err := s.st.ListRAGKBGenerationGCCandidates(ctx, lifecycleBatchSize)
+	if err != nil {
+		logLifecycleFailure("list_policy_generation_gc", "", err)
+		return
+	}
+	for _, generation := range candidates {
+		key, keyErr := vector.CollectionKeyFromPersistence(generation.CollectionKey)
+		if keyErr != nil {
+			logLifecycleFailure("validate_policy_generation_gc", generation.ID, keyErr)
+			continue
+		}
+		if err = s.vec.DropCollection(ctx, key); err != nil {
+			logLifecycleFailure("drop_policy_generation_gc", generation.ID, err)
+			continue
+		}
+		if ok, deleteErr := s.st.DeleteRAGKBGenerationIfCollectible(ctx, generation.ID); deleteErr != nil || !ok {
+			logLifecycleFailure("delete_policy_generation_gc", generation.ID, errors.Join(deleteErr, func() error {
+				if !ok {
+					return errors.New("generation is still referenced")
+				}
+				return nil
+			}()))
+		}
+	}
 }
 
 func (s *Service) sweepObjectWriteStaging(ctx context.Context) {

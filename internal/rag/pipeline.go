@@ -280,6 +280,7 @@ func (s *Service) Start(ctx context.Context) {
 		go s.taskPump(ctx)
 		go s.documentAIReconcileLoop(ctx)
 		go s.lifecycleLoop(ctx)
+		go s.policySyncLoop(ctx)
 		s.wakeWorkers()
 	})
 }
@@ -353,6 +354,9 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName st
 		return nil, err
 	}
 	if err := s.requireActiveUser(ctx, kb.UserID); err != nil {
+		return nil, err
+	}
+	if err := s.ensureNoPolicySync(ctx, kbID); err != nil {
 		return nil, err
 	}
 	if kb.Status != "active" {
@@ -455,6 +459,9 @@ func (s *Service) ReindexDocument(ctx context.Context, ownerID, kbID, docID stri
 	if err := s.requireActiveUser(ctx, kb.UserID); err != nil {
 		return err
 	}
+	if err := s.ensureNoPolicySync(ctx, kbID); err != nil {
+		return err
+	}
 	if kb.Status != "active" {
 		return errors.New("知识库正在删除中")
 	}
@@ -508,6 +515,9 @@ func (s *Service) DeleteDocument(ctx context.Context, ownerID, kbID, docID strin
 	defer kbLock.RUnlock()
 
 	if _, err := s.GetKB(ctx, ownerID, kbID); err != nil {
+		return err
+	}
+	if err := s.ensureNoPolicySync(ctx, kbID); err != nil {
 		return err
 	}
 	if _, err := s.GetDocument(ctx, ownerID, kbID, docID); err != nil {

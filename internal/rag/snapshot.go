@@ -62,6 +62,14 @@ func (s *Service) buildVersionSnapshotAndBinding(
 	ctx context.Context,
 	doc *store.RAGDocumentRecord,
 ) (*store.RAGDocumentVersionRecord, config.RAGEmbeddingCfg, error) {
+	return s.buildVersionSnapshotAndBindingForPolicy(ctx, doc, nil)
+}
+
+func (s *Service) buildVersionSnapshotAndBindingForPolicy(
+	ctx context.Context,
+	doc *store.RAGDocumentRecord,
+	override *config.RAGIngestionPolicyData,
+) (*store.RAGDocumentVersionRecord, config.RAGEmbeddingCfg, error) {
 	if doc == nil || strings.TrimSpace(doc.ID) == "" {
 		return nil, config.RAGEmbeddingCfg{}, errors.New("RAG snapshot requires a document")
 	}
@@ -86,7 +94,15 @@ func (s *Service) buildVersionSnapshotAndBinding(
 	visionPromptVersion := strings.TrimSpace(s.cfg.DocumentAI.VisionPromptVersion)
 	enrichmentPromptVersion := strings.TrimSpace(s.cfg.DocumentAI.EnrichmentPromptVersion)
 	var pinnedPolicy *config.RAGIngestionPolicyData
-	if kb.PinnedPolicyVersion.Valid {
+	if override != nil {
+		policy := *override
+		pinnedPolicy = &policy
+		chunkSize, chunkOverlap = policy.ChunkSize, policy.ChunkOverlap
+		parseMode, enrichmentEnabled = policy.ParseMode, policy.EnrichmentEnabled
+		visionModel, textModel = policy.DocumentAI.VisionModel, policy.DocumentAI.TextModel
+		visionPromptVersion = policy.DocumentAI.VisionPromptVersion
+		enrichmentPromptVersion = policy.DocumentAI.EnrichmentPromptVersion
+	} else if kb.PinnedPolicyVersion.Valid {
 		record, policyErr := s.st.GetRAGPolicy(ctx, store.RAGPolicyIngestion, kb.PinnedPolicyVersion.Int64)
 		if policyErr != nil {
 			return nil, config.RAGEmbeddingCfg{}, fmt.Errorf("load pinned ingestion policy: %w", policyErr)
@@ -112,9 +128,15 @@ func (s *Service) buildVersionSnapshotAndBinding(
 	}
 
 	documentAIProviderFingerprint := vision.ProviderFingerprint(s.cfg.DocumentAI)
-	embeddingContractFingerprint := embeddingContractFingerprintForKB(kb, embeddingCfg)
+	embeddingContractID := embeddingContractFingerprintForKB(kb, embeddingCfg)
+	embeddingProvider, embeddingModel, embeddingDimensions := kb.EmbedProvider, kb.EmbedModel, kb.EmbedDims
 	if pinnedPolicy != nil {
-		if kb.EmbedModel != pinnedPolicy.Embedding.Model || kb.EmbedDims != pinnedPolicy.Embedding.Dims || embeddingContractFingerprint != pinnedPolicy.Embedding.ContractFingerprint {
+		if override != nil {
+			embeddingCfg = s.cfg.Embedding
+			embeddingContractID = embeddingContractFingerprint("system", embeddingCfg, pinnedPolicy.Embedding.Model, pinnedPolicy.Embedding.Dims)
+			embeddingProvider, embeddingModel, embeddingDimensions = "system", pinnedPolicy.Embedding.Model, pinnedPolicy.Embedding.Dims
+		}
+		if embeddingContractID != pinnedPolicy.Embedding.ContractFingerprint {
 			return nil, config.RAGEmbeddingCfg{}, errors.New("pinned ingestion embedding contract is unavailable")
 		}
 	}
@@ -151,9 +173,9 @@ func (s *Service) buildVersionSnapshotAndBinding(
 		ChunkSize:             chunkSize,
 		ChunkOverlap:          chunkOverlap,
 		SplitterSchemaVersion: splitterSchemaVersion,
-		EmbeddingModel:        kb.EmbedModel,
-		EmbeddingDimensions:   kb.EmbedDims,
-		EmbeddingContract:     embeddingContractFingerprint,
+		EmbeddingModel:        embeddingModel,
+		EmbeddingDimensions:   embeddingDimensions,
+		EmbeddingContract:     embeddingContractID,
 		EnrichmentEnabled:     enrichmentEnabled,
 		TextProviderFingerprint: func() string {
 			if enrichmentEnabled {
@@ -203,10 +225,10 @@ func (s *Service) buildVersionSnapshotAndBinding(
 		MaxDocumentAIRequests:        s.cfg.Limits.MaxDocumentAIRequests,
 		MaxDocumentAITokens:          s.cfg.Limits.MaxDocumentAITokens,
 		MaxDocumentAICostMicroUSD:    microUSD(s.cfg.Limits.MaxEstimatedDocumentAICostUSD),
-		EmbeddingProvider:            kb.EmbedProvider,
-		EmbeddingModel:               kb.EmbedModel,
-		EmbeddingDimensions:          kb.EmbedDims,
-		EmbeddingContractFingerprint: embeddingContractFingerprint,
+		EmbeddingProvider:            embeddingProvider,
+		EmbeddingModel:               embeddingModel,
+		EmbeddingDimensions:          embeddingDimensions,
+		EmbeddingContractFingerprint: embeddingContractID,
 	}, embeddingCfg, nil
 }
 

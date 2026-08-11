@@ -3,8 +3,10 @@ package rag
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qs3c/bkcrab/internal/config"
 	rageval "github.com/qs3c/bkcrab/internal/rag/eval"
@@ -87,5 +89,101 @@ func TestIngestionPolicyDiffMarksEmbeddingChangeAsFullCollectionRebuild(t *testi
 	diffs := ingestionPolicyDifferences(from, to)
 	if len(diffs) != 3 {
 		t.Fatalf("embedding diffs=%+v", diffs)
+	}
+}
+
+func TestPolicySyncKeepsOldGenerationVisibleThenAtomicallyActivatesPinnedTarget(t *testing.T) {
+	embedding := newEmbeddingServer(t)
+	cfg := config.RAGCfg{Milvus: config.MilvusCfg{Address: "fake"}, Embedding: config.RAGEmbeddingCfg{Endpoint: embedding.URL, Model: "embed-test", Dims: 4}}
+	st := newRAGTestStore(t)
+	vec := vector.NewFake()
+	resolver := NewGenerationResolver(st, GenerationResolutionAuthoritative, nil)
+	service := New(Deps{Store: st, Vector: vec, Objects: objects.NewLocalFS(t.TempDir()), Cfg: cfg, Collections: resolver, Workers: 1})
+	service.pollInterval = 10 * time.Millisecond
+	service.leaseDuration = time.Minute
+	v1 := DefaultIngestionPolicy(cfg)
+	v1.ChunkSize, v1.ChunkOverlap = 256, 32
+	publishIngestionRevision(t, st, 0, v1)
+	kb, err := service.CreateKB(context.Background(), "u1", "sync", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	service.Start(ctx)
+	payload := strings.Repeat("policy sync source text ", 30)
+	doc, err := service.UploadDocument(context.Background(), "u1", kb.ID, "sync.txt", strings.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDocumentStatus(t, service, doc.ID, "DONE")
+	oldActive, _, err := st.ResolveActiveRAGKBGeneration(context.Background(), kb.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v2 := v1
+	v2.Version, v2.ChunkSize, v2.ChunkOverlap = 2, 128, 16
+	publishIngestionRevision(t, st, 1, v2)
+	task, err := service.StartKBPolicySync(context.Background(), "u1", kb.ID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeDuringBuild, _, err := st.ResolveActiveRAGKBGeneration(context.Background(), kb.ID)
+	if err != nil || activeDuringBuild.ID != oldActive.ID {
+		t.Fatalf("building target leaked into reads: active=%+v old=%+v err=%v", activeDuringBuild, oldActive, err)
+	}
+	if _, err := service.UploadDocument(context.Background(), "u1", kb.ID, "locked.txt", strings.NewReader("x"), 1); !errors.Is(err, ErrPolicySyncActive) {
+		t.Fatalf("upload crossed policy maintenance fence: %v", err)
+	}
+
+	v3 := v2
+	v3.Version, v3.ChunkSize = 3, 192
+	publishIngestionRevision(t, st, 2, v3)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		stored, getErr := st.GetRAGPolicySyncTask(context.Background(), task.ID)
+		if getErr == nil && stored.Status == store.RAGPolicySyncSucceeded {
+			break
+		}
+		if getErr == nil && (stored.Status == store.RAGPolicySyncFailed || stored.Status == store.RAGPolicySyncCancelled) {
+			t.Fatalf("sync terminal failure: %+v", stored)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	storedTask, err := st.GetRAGPolicySyncTask(context.Background(), task.ID)
+	if err != nil || storedTask.Status != store.RAGPolicySyncSucceeded {
+		t.Fatalf("sync did not succeed: %+v err=%v", storedTask, err)
+	}
+	active, mapped, err := st.ResolveActiveRAGKBGeneration(context.Background(), kb.ID)
+	if err != nil || active.PolicyVersion != 2 || active.ID != task.TargetGenerationID || len(mapped) != 1 || mapped[0].DocVersion <= doc.ActiveVersion {
+		t.Fatalf("active=%+v mapped=%+v doc=%+v err=%v", active, mapped, doc, err)
+	}
+	status, err := service.GetKBIngestionPolicyStatus(context.Background(), "u1", kb.ID)
+	if err != nil || !status.Drift || status.PinnedVersion != 2 || status.LatestVersion != 3 {
+		t.Fatalf("v4-style drift after pinned sync=%+v err=%v", status, err)
+	}
+	if err = service.ReindexDocument(context.Background(), "u1", kb.ID, doc.ID); err != nil {
+		t.Fatal(err)
+	}
+	reindexDeadline := time.Now().Add(8 * time.Second)
+	var reindexed *store.RAGDocumentRecord
+	for time.Now().Before(reindexDeadline) {
+		reindexed, _ = st.GetRAGDocument(context.Background(), doc.ID)
+		if reindexed != nil && reindexed.Version > doc.Version && reindexed.ActiveVersion == reindexed.Version && reindexed.Status == "DONE" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_, remapped, err := st.ResolveActiveRAGKBGeneration(context.Background(), kb.ID)
+	if err != nil || reindexed == nil || reindexed.ActiveVersion != reindexed.Version || len(remapped) != 1 || remapped[0].DocVersion != reindexed.ActiveVersion {
+		t.Fatalf("same-policy reindex did not atomically update active generation: doc=%+v mapped=%+v err=%v", reindexed, remapped, err)
+	}
+	if err = service.RollbackKBPolicy(context.Background(), "u1", kb.ID, oldActive.ID, active.ID, "rollback test"); err != nil {
+		t.Fatal(err)
+	}
+	rolledBack, _, err := st.ResolveActiveRAGKBGeneration(context.Background(), kb.ID)
+	if err != nil || rolledBack.ID != oldActive.ID || rolledBack.PolicyVersion != 1 {
+		t.Fatalf("rolled back=%+v err=%v", rolledBack, err)
 	}
 }
