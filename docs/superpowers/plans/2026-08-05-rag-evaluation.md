@@ -707,12 +707,12 @@ docs/rag-evaluation.md
 
 **Steps:**
 
-- [ ] 权限测试覆盖匿名、普通 user、super_admin、actAs read-only、type=admin API key。
-- [ ] 一期只有未 actAs 的 super_admin session 通过；后续 automation 不复用本门禁。
-- [ ] handler 只调用 eval service，不直接拼 SQL、对象键或 sidecar payload。
-- [ ] 上传端点使用 MaxBytesReader/stream；list/case/result 有 bounded filters。
-- [ ] capabilities 返回 feature/sidecar/metrics/importers/limits，不返回 evaluator secret。
-- [ ] export、trace、validation report 每次请求重新鉴权。
+- [x] 权限测试覆盖匿名、普通 user、super_admin、actAs read-only、type=admin API key。
+- [x] 一期只有未 actAs 的 super_admin session 通过；后续 automation 不复用本门禁。
+- [x] handler 只调用 eval service，不直接拼 SQL、对象键或 sidecar payload。
+- [x] 上传端点使用 MaxBytesReader/stream；list/case/result 有 bounded filters。
+- [x] capabilities 返回 feature/sidecar/metrics/importers/limits，不返回 evaluator secret。
+- [x] export、trace、validation report 每次请求重新鉴权。
 
 ### Task 21：管理员导航、数据集与运行 UI
 

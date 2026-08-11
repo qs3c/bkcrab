@@ -174,6 +174,7 @@ type Gateway struct {
 	ragParser          *sidecar.Client
 	ragEvaluator       *rageval.RagasClient
 	ragEvalRunner      *rageval.Runner
+	ragEvalDatasets    *rageval.DatasetService
 	ragPolicyPromotion *rag.PolicyPromotionService
 	ragPolicyRefresher *rag.RuntimePolicyRefresher
 	envCfg             *config.EnvConfig
@@ -230,6 +231,13 @@ func (g *Gateway) RAGEvaluationRunner() *rageval.Runner {
 		return nil
 	}
 	return g.ragEvalRunner
+}
+
+func (g *Gateway) RAGEvaluationDatasetService() *rageval.DatasetService {
+	if g == nil {
+		return nil
+	}
+	return g.ragEvalDatasets
 }
 func (g *Gateway) RAGPolicyPromotionService() *rag.PolicyPromotionService {
 	if g == nil {
@@ -304,6 +312,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	ws := wsInner
 
 	var ragSvc *rag.Service
+	var ragEvalDatasets *rageval.DatasetService
 	var legacySnapshotBuilder store.RAGLegacyTaskSnapshotBuilder
 	ragCfg := readSystemRAGCfg(st, env)
 	if err := ragCfg.Validate(); err != nil {
@@ -362,6 +371,12 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		if objectErr != nil {
 			slog.Error("rag: original object store initialization failed; RAG disabled", "error", objectErr)
 		} else {
+			if ragCfg.Evaluation.Enabled {
+				ragEvalDatasets, objectErr = rageval.NewDatasetService(st, ragObjects)
+				if objectErr != nil {
+					slog.Error("rag eval: dataset import service unavailable", "error", objectErr)
+				}
+			}
 			var pageVision ragvision.PageTranscriber
 			var imageVision ragvision.ImageTranscriber
 			var textEnricher ragenrich.Enricher
@@ -597,6 +612,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		ragParser:          ragParserClient,
 		ragEvaluator:       ragEvaluatorClient,
 		ragEvalRunner:      ragEvalRunner,
+		ragEvalDatasets:    ragEvalDatasets,
 		ragPolicyPromotion: ragPolicyPromotion,
 		ragPolicyRefresher: ragPolicyRefresher,
 		envCfg:             env,

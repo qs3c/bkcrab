@@ -338,6 +338,8 @@ type Store interface {
 	// --- RAG evaluation datasets and durable runs ---
 	CreateRAGEvalDataset(ctx context.Context, record *RAGEvalDatasetRecord) error
 	ListRAGEvalDatasets(ctx context.Context, cursor string, limit int) ([]RAGEvalDatasetRecord, error)
+	GetRAGEvalDataset(ctx context.Context, id string) (*RAGEvalDatasetRecord, error)
+	ListRAGEvalDatasetVersions(ctx context.Context, datasetID, cursor string, limit int) ([]RAGEvalDatasetVersionRecord, error)
 	TombstoneRAGEvalDataset(ctx context.Context, id string) (bool, error)
 	ListRAGEvalDatasetStagingCandidates(ctx context.Context, before time.Time, limit int) ([]RAGEvalDatasetVersionRecord, error)
 	ListRAGEvalDatasetGCCandidates(ctx context.Context, before time.Time, limit int) ([]string, error)

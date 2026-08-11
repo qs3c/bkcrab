@@ -93,6 +93,8 @@ type Server struct {
 	ragEvalHealth         config.RAGEvaluatorHealthSnapshot
 	ragEvalHealthProvider RAGEvaluatorHealthProvider
 	ragEvalRunner         *rageval.Runner
+	ragEvalDatasets       *rageval.DatasetService
+	ragEvalAdmin          *rageval.AdminService
 	ragPolicyPromotion    *rag.PolicyPromotionService
 	startedAt             time.Time
 }
@@ -144,6 +146,7 @@ func (s *Server) SetUserResolver(resolver api.UserResolver) {
 // SetStore 设置存储后端。
 func (s *Server) SetStore(st store.Store) {
 	s.dataStore = st
+	s.ragEvalAdmin = rageval.NewAdminService(st)
 	if st != nil {
 		s.accounts, _ = users.NewAccounts(st)
 		s.accounts.SetRAGUserCleaner(s.ragUserCleaner)
@@ -237,6 +240,9 @@ func (s *Server) SetRAGEvaluatorHealthProvider(provider RAGEvaluatorHealthProvid
 }
 
 func (s *Server) SetRAGEvaluationRunner(runner *rageval.Runner) { s.ragEvalRunner = runner }
+func (s *Server) SetRAGEvaluationDatasetService(service *rageval.DatasetService) {
+	s.ragEvalDatasets = service
+}
 func (s *Server) SetRAGPolicyPromotionService(service *rag.PolicyPromotionService) {
 	s.ragPolicyPromotion = service
 }

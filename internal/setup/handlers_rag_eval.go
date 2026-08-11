@@ -1,8 +1,13 @@
 package setup
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,35 +19,50 @@ import (
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
-type ragEvaluationStore interface {
-	CreateRAGEvalDataset(context.Context, *store.RAGEvalDatasetRecord) error
-	ListRAGEvalDatasets(context.Context, string, int) ([]store.RAGEvalDatasetRecord, error)
-	CreateRAGEvalProfile(context.Context, *store.RAGEvalProfileRecord) error
-	ListRAGEvalProfiles(context.Context, string, int) ([]store.RAGEvalProfileRecord, error)
-	ListRAGEvalRuns(context.Context, string, int) ([]store.RAGEvalRunRecord, error)
-	GetRAGEvalRun(context.Context, string) (*store.RAGEvalRunRecord, error)
-	RequestCancelRAGEvalRun(context.Context, string) (bool, error)
-}
-
 func (s *Server) registerRAGEvaluationRoutes(mux *http.ServeMux, gate func(http.HandlerFunc) http.HandlerFunc) {
 	mux.HandleFunc("GET /api/admin/rag-evals/capabilities", gate(s.handleRAGEvalCapabilities))
 	mux.HandleFunc("GET /api/admin/rag-evals/datasets", gate(s.handleListRAGEvalDatasets))
 	mux.HandleFunc("POST /api/admin/rag-evals/datasets", gate(s.handleCreateRAGEvalDataset))
+	mux.HandleFunc("GET /api/admin/rag-evals/datasets/{id}", gate(s.handleGetRAGEvalDataset))
+	mux.HandleFunc("POST /api/admin/rag-evals/datasets/{id}/versions", gate(s.handleCreateRAGEvalDatasetVersion))
+	mux.HandleFunc("POST /api/admin/rag-evals/dataset-versions/{id}/validate", gate(s.handleValidateRAGEvalDatasetVersion))
+	mux.HandleFunc("GET /api/admin/rag-evals/dataset-versions/{id}/validation", gate(s.handleRAGEvalDatasetValidation))
 	mux.HandleFunc("GET /api/admin/rag-evals/profiles", gate(s.handleListRAGEvalProfiles))
 	mux.HandleFunc("POST /api/admin/rag-evals/profiles", gate(s.handleCreateRAGEvalProfile))
 	mux.HandleFunc("GET /api/admin/rag-evals/runs", gate(s.handleListRAGEvalRuns))
 	mux.HandleFunc("POST /api/admin/rag-evals/runs", gate(s.handleCreateRAGEvalRun))
 	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}", gate(s.handleGetRAGEvalRun))
 	mux.HandleFunc("POST /api/admin/rag-evals/runs/{id}/cancel", gate(s.handleCancelRAGEvalRun))
+	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}/cases", gate(s.handleListRAGEvalRunCases))
+	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}/compare/{baselineId}", gate(s.handleCompareRAGEvalRuns))
+	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}/export", gate(s.handleExportRAGEvalRun))
+	mux.HandleFunc("GET /api/admin/rag-policies", gate(s.handleListRAGPolicies))
 }
 
-func (s *Server) evalStore(w http.ResponseWriter) (ragEvaluationStore, bool) {
-	value, ok := s.dataStore.(ragEvaluationStore)
-	if !ok {
-		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "RAG evaluation store is unavailable"})
+func (s *Server) evalService(w http.ResponseWriter) (*eval.AdminService, bool) {
+	value := s.ragEvalAdmin
+	if value == nil {
+		writeEvalError(w, http.StatusServiceUnavailable, "eval_unavailable", "RAG evaluation service is unavailable")
+		return nil, false
 	}
-	return value, ok
+	return value, true
 }
+
+func writeEvalError(w http.ResponseWriter, status int, code, message string) {
+	jsonResponse(w, status, map[string]any{"ok": false, "error": map[string]string{"code": code, "message": message}})
+}
+
+func writeEvalServiceError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeEvalError(w, http.StatusNotFound, "not_found", "evaluation resource not found")
+	case errors.Is(err, eval.ErrDatasetValidation):
+		writeEvalError(w, http.StatusUnprocessableEntity, "dataset_validation_failed", "dataset validation failed")
+	default:
+		writeEvalError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	}
+}
+
 func evalListParams(r *http.Request) (string, int) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 {
@@ -51,11 +71,38 @@ func evalListParams(r *http.Request) (string, int) {
 	if limit > 200 {
 		limit = 200
 	}
-	return r.URL.Query().Get("cursor"), limit
+	return strings.TrimSpace(r.URL.Query().Get("cursor")), limit
 }
+
 func evalIdentity(r *http.Request) string {
 	identity, _ := auth.FromContext(r.Context())
 	return identity.UserID
+}
+
+func decodeEvalJSON(w http.ResponseWriter, r *http.Request, max int64, target any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, max)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		writeEvalError(w, http.StatusBadRequest, "invalid_json", "request body is invalid")
+		return false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err == nil {
+		writeEvalError(w, http.StatusBadRequest, "invalid_json", "request body contains trailing JSON")
+		return false
+	}
+	return true
+}
+
+func evalIdempotencyKey(r *http.Request) (string, bool) {
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	return key, key == "" || (len(key) >= 8 && len(key) <= 128)
+}
+
+func evalDeterministicID(prefix, actor, key string) string {
+	digest := sha256.Sum256([]byte(actor + "\x00" + key))
+	return prefix + hex.EncodeToString(digest[:16])
 }
 
 func (s *Server) handleRAGEvalCapabilities(w http.ResponseWriter, _ *http.Request) {
@@ -70,136 +117,278 @@ func (s *Server) handleRAGEvalCapabilities(w http.ResponseWriter, _ *http.Reques
 	}
 	jsonResponse(w, http.StatusOK, s.ragCfg.Evaluation.Capabilities(healthy, reason))
 }
+
 func (s *Server) handleListRAGEvalDatasets(w http.ResponseWriter, r *http.Request) {
-	st, ok := s.evalStore(w)
+	st, ok := s.evalService(w)
 	if !ok {
 		return
 	}
 	cursor, limit := evalListParams(r)
-	items, err := st.ListRAGEvalDatasets(r.Context(), cursor, limit)
+	items, err := st.ListDatasets(r.Context(), cursor, limit)
 	if err != nil {
-		jsonResponse(w, 500, map[string]any{"ok": false, "error": "list datasets failed"})
+		writeEvalError(w, 500, "list_failed", "could not list datasets")
 		return
 	}
-	jsonResponse(w, 200, map[string]any{"items": items, "nextCursor": nextDatasetCursor(items)})
-}
-func nextDatasetCursor(items []store.RAGEvalDatasetRecord) string {
-	if len(items) == 0 {
-		return ""
+	next := ""
+	if len(items) == limit {
+		next = items[len(items)-1].ID
 	}
-	return items[len(items)-1].ID
+	jsonResponse(w, 200, map[string]any{"items": items, "nextCursor": next})
 }
+
 func (s *Server) handleCreateRAGEvalDataset(w http.ResponseWriter, r *http.Request) {
 	if !s.ragCfg.Evaluation.Enabled {
-		jsonResponse(w, 503, map[string]any{"ok": false, "error": "RAG evaluation is disabled"})
+		writeEvalError(w, 503, "eval_disabled", "RAG evaluation is disabled")
 		return
 	}
-	st, ok := s.evalStore(w)
+	st, ok := s.evalService(w)
 	if !ok {
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	key, valid := evalIdempotencyKey(r)
+	if !valid {
+		writeEvalError(w, 400, "invalid_idempotency_key", "Idempotency-Key must contain 8 to 128 characters")
+		return
+	}
 	var request struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 	}
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&request) != nil || strings.TrimSpace(request.Name) == "" {
-		jsonResponse(w, 400, map[string]any{"ok": false, "error": "invalid dataset"})
+	if !decodeEvalJSON(w, r, 64<<10, &request) {
+		return
+	}
+	if strings.TrimSpace(request.Name) == "" {
+		writeEvalError(w, 400, "name_required", "dataset name is required")
 		return
 	}
 	record := &store.RAGEvalDatasetRecord{Name: strings.TrimSpace(request.Name), Description: request.Description, CreatedBy: evalIdentity(r)}
-	if err := st.CreateRAGEvalDataset(r.Context(), record); err != nil {
-		jsonResponse(w, 500, map[string]any{"ok": false, "error": "create dataset failed"})
+	if key != "" {
+		record.ID = evalDeterministicID("rds_", record.CreatedBy, key)
+	}
+	if err := st.CreateDataset(r.Context(), record); err != nil {
+		if key != "" {
+			if existing, getErr := st.GetDataset(r.Context(), record.ID); getErr == nil {
+				jsonResponse(w, 200, existing)
+				return
+			}
+		}
+		writeEvalError(w, 500, "create_failed", "could not create dataset")
 		return
 	}
 	jsonResponse(w, 201, record)
 }
 
+func (s *Server) handleGetRAGEvalDataset(w http.ResponseWriter, r *http.Request) {
+	st, ok := s.evalService(w)
+	if !ok {
+		return
+	}
+	dataset, err := st.GetDataset(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeEvalServiceError(w, err)
+		return
+	}
+	_, limit := evalListParams(r)
+	versions, err := st.ListDatasetVersions(r.Context(), dataset.ID, r.URL.Query().Get("versionCursor"), limit)
+	if err != nil {
+		writeEvalError(w, 500, "list_failed", "could not list dataset versions")
+		return
+	}
+	next := ""
+	if len(versions) == limit {
+		next = versions[len(versions)-1].ID
+	}
+	jsonResponse(w, 200, map[string]any{"dataset": dataset, "versions": maskEvalDatasetVersions(versions), "nextVersionCursor": next})
+}
+
+type inlineEvalDocument struct {
+	ExternalID    string `json:"externalId"`
+	FileName      string `json:"fileName"`
+	MediaType     string `json:"mediaType"`
+	ContentBase64 string `json:"contentBase64"`
+}
+
+type evalDatasetVersionDTO struct {
+	ID, DatasetID, Status, SourceType, CorpusSHA256 string
+	Version, CaseCount, DocumentCount, TotalBytes   int64
+	CreatedBy                                       string
+	CreatedAt                                       time.Time
+}
+
+func maskEvalDatasetVersions(items []store.RAGEvalDatasetVersionRecord) []evalDatasetVersionDTO {
+	out := make([]evalDatasetVersionDTO, 0, len(items))
+	for _, item := range items {
+		out = append(out, evalDatasetVersionDTO{ID: item.ID, DatasetID: item.DatasetID, Status: item.Status, SourceType: item.SourceType, CorpusSHA256: item.CorpusSHA256, Version: item.Version, CaseCount: item.CaseCount, DocumentCount: item.DocumentCount, TotalBytes: item.TotalBytes, CreatedBy: item.CreatedBy, CreatedAt: item.CreatedAt})
+	}
+	return out
+}
+
+func (s *Server) handleCreateRAGEvalDatasetVersion(w http.ResponseWriter, r *http.Request) {
+	if s.ragEvalDatasets == nil {
+		writeEvalError(w, 503, "dataset_import_unavailable", "dataset import service is unavailable")
+		return
+	}
+	var request struct {
+		Version   int64                `json:"version"`
+		Manifest  json.RawMessage      `json:"manifest"`
+		Documents []inlineEvalDocument `json:"documents"`
+	}
+	if !decodeEvalJSON(w, r, 64<<20, &request) {
+		return
+	}
+	uploads := make([]eval.DatasetDocumentUpload, 0, len(request.Documents))
+	for _, document := range request.Documents {
+		content, err := base64.StdEncoding.DecodeString(document.ContentBase64)
+		if err != nil {
+			writeEvalError(w, 400, "invalid_document", "document contentBase64 is invalid")
+			return
+		}
+		uploads = append(uploads, eval.DatasetDocumentUpload{ExternalID: document.ExternalID, FileName: document.FileName, MediaType: document.MediaType, SizeBytes: int64(len(content)), Reader: bytes.NewReader(content)})
+	}
+	result, err := s.ragEvalDatasets.ImportCanonical(r.Context(), eval.DatasetImportRequest{DatasetID: r.PathValue("id"), Version: request.Version, CreatedBy: evalIdentity(r), Manifest: bytes.NewReader(request.Manifest), Documents: uploads})
+	if err != nil {
+		writeEvalServiceError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusCreated, result)
+}
+
+func (s *Server) handleValidateRAGEvalDatasetVersion(w http.ResponseWriter, r *http.Request) {
+	s.handleRAGEvalDatasetValidation(w, r)
+}
+func (s *Server) handleRAGEvalDatasetValidation(w http.ResponseWriter, r *http.Request) {
+	st, ok := s.evalService(w)
+	if !ok {
+		return
+	}
+	version, err := st.GetDatasetVersion(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeEvalServiceError(w, err)
+		return
+	}
+	if !json.Valid([]byte(version.ValidationReportJSON)) {
+		writeEvalError(w, 500, "invalid_validation_report", "stored validation report is invalid")
+		return
+	}
+	var report any
+	_ = json.Unmarshal([]byte(version.ValidationReportJSON), &report)
+	jsonResponse(w, 200, map[string]any{"versionId": version.ID, "status": version.Status, "report": report})
+}
+
 func (s *Server) handleListRAGEvalProfiles(w http.ResponseWriter, r *http.Request) {
-	st, ok := s.evalStore(w)
+	st, ok := s.evalService(w)
 	if !ok {
 		return
 	}
 	cursor, limit := evalListParams(r)
-	items, err := st.ListRAGEvalProfiles(r.Context(), cursor, limit)
+	items, err := st.ListProfiles(r.Context(), cursor, limit)
 	if err != nil {
-		jsonResponse(w, 500, map[string]any{"ok": false, "error": "list profiles failed"})
+		writeEvalError(w, 500, "list_failed", "could not list profiles")
 		return
 	}
 	next := ""
-	if len(items) > 0 {
+	if len(items) == limit {
 		next = items[len(items)-1].ID
 	}
 	jsonResponse(w, 200, map[string]any{"items": items, "nextCursor": next})
 }
+
 func (s *Server) handleCreateRAGEvalProfile(w http.ResponseWriter, r *http.Request) {
 	if !s.ragCfg.Evaluation.Enabled {
-		jsonResponse(w, 503, map[string]any{"ok": false, "error": "RAG evaluation is disabled"})
+		writeEvalError(w, 503, "eval_disabled", "RAG evaluation is disabled")
 		return
 	}
-	st, ok := s.evalStore(w)
+	st, ok := s.evalService(w)
 	if !ok {
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	key, valid := evalIdempotencyKey(r)
+	if !valid {
+		writeEvalError(w, 400, "invalid_idempotency_key", "Idempotency-Key must contain 8 to 128 characters")
+		return
+	}
 	var request struct {
 		Name    string          `json:"name"`
 		Profile json.RawMessage `json:"profile"`
 	}
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&request) != nil {
-		jsonResponse(w, 400, map[string]any{"ok": false, "error": "invalid profile"})
+	if !decodeEvalJSON(w, r, 1<<20, &request) {
 		return
 	}
 	data, err := config.DecodeRAGEvalProfile(request.Profile)
 	if err != nil {
-		jsonResponse(w, 400, map[string]any{"ok": false, "error": err.Error()})
+		writeEvalError(w, 400, "invalid_profile", err.Error())
 		return
 	}
 	fingerprint, err := eval.ProfileFingerprint(eval.Profile{Name: request.Name, Data: data})
 	if err != nil {
-		jsonResponse(w, 400, map[string]any{"ok": false, "error": err.Error()})
+		writeEvalError(w, 400, "invalid_profile", err.Error())
 		return
 	}
 	canonical, _ := json.Marshal(data)
 	record := &store.RAGEvalProfileRecord{Name: strings.TrimSpace(request.Name), ProfileJSON: string(canonical), Fingerprint: fingerprint, CreatedBy: evalIdentity(r)}
-	if err = st.CreateRAGEvalProfile(r.Context(), record); err != nil {
-		jsonResponse(w, 500, map[string]any{"ok": false, "error": "create profile failed"})
+	if key != "" {
+		record.ID = evalDeterministicID("rep_", record.CreatedBy, key)
+	}
+	if err = st.CreateProfile(r.Context(), record); err != nil {
+		if key != "" {
+			if existing, getErr := st.GetProfile(r.Context(), record.ID); getErr == nil {
+				jsonResponse(w, 200, existing)
+				return
+			}
+		}
+		writeEvalError(w, 500, "create_failed", "could not create profile")
 		return
 	}
 	jsonResponse(w, 201, record)
 }
 
 func (s *Server) handleListRAGEvalRuns(w http.ResponseWriter, r *http.Request) {
-	st, ok := s.evalStore(w)
+	st, ok := s.evalService(w)
 	if !ok {
 		return
 	}
 	cursor, limit := evalListParams(r)
-	items, err := st.ListRAGEvalRuns(r.Context(), cursor, limit)
+	items, err := st.ListRuns(r.Context(), cursor, limit)
 	if err != nil {
-		jsonResponse(w, 500, map[string]any{"ok": false, "error": "list runs failed"})
+		writeEvalError(w, 500, "list_failed", "could not list runs")
 		return
 	}
+	status := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("status")))
+	if status != "" {
+		allowed := map[string]bool{store.RAGEvalRunQueued: true, store.RAGEvalRunRunning: true, store.RAGEvalRunSucceeded: true, store.RAGEvalRunFailed: true, store.RAGEvalRunCancelled: true, store.RAGEvalRunBudgetExceeded: true}
+		if !allowed[status] {
+			writeEvalError(w, 400, "invalid_filter", "unsupported run status filter")
+			return
+		}
+		filtered := items[:0]
+		for _, item := range items {
+			if item.Status == status {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
 	next := ""
-	if len(items) > 0 {
+	if len(items) == limit {
 		next = items[len(items)-1].ID
 	}
 	jsonResponse(w, 200, map[string]any{"items": items, "nextCursor": next})
 }
+
 func (s *Server) handleCreateRAGEvalRun(w http.ResponseWriter, r *http.Request) {
 	if !s.ragCfg.Evaluation.Enabled {
-		jsonResponse(w, 503, map[string]any{"ok": false, "error": "RAG evaluation is disabled"})
+		writeEvalError(w, 503, "eval_disabled", "RAG evaluation is disabled")
 		return
 	}
 	if s.ragEvalRunner == nil {
-		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "RAG evaluation runner is unavailable"})
+		writeEvalError(w, 503, "runner_unavailable", "RAG evaluation runner is unavailable")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
+	key, valid := evalIdempotencyKey(r)
+	if !valid {
+		writeEvalError(w, 400, "invalid_idempotency_key", "Idempotency-Key must contain 8 to 128 characters")
+		return
+	}
 	var request struct {
 		DatasetVersionID  string   `json:"datasetVersionId"`
 		BaselineRunID     string   `json:"baselineRunId"`
@@ -208,45 +397,204 @@ func (s *Server) handleCreateRAGEvalRun(w http.ResponseWriter, r *http.Request) 
 		IndexGenerationID string   `json:"indexGenerationId"`
 		Metrics           []string `json:"metrics"`
 	}
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&request) != nil {
-		jsonResponse(w, 400, map[string]any{"ok": false, "error": "invalid run"})
+	if !decodeEvalJSON(w, r, 256<<10, &request) {
 		return
 	}
-	record, err := s.ragEvalRunner.CreateRun(r.Context(), eval.CreateRunRequest{DatasetVersionID: request.DatasetVersionID, BaselineRunID: request.BaselineRunID,
-		Mode: eval.RunMode(request.Mode), ProfileID: request.ProfileID, IndexGenerationID: request.IndexGenerationID, Metrics: request.Metrics, CreatedBy: evalIdentity(r)})
+	actor := evalIdentity(r)
+	id := ""
+	if key != "" {
+		id = evalDeterministicID("rer_", actor, key)
+	}
+	record, err := s.ragEvalRunner.CreateRun(r.Context(), eval.CreateRunRequest{ID: id, DatasetVersionID: request.DatasetVersionID, BaselineRunID: request.BaselineRunID, Mode: eval.RunMode(request.Mode), ProfileID: request.ProfileID, IndexGenerationID: request.IndexGenerationID, Metrics: request.Metrics, CreatedBy: actor})
 	if err != nil {
-		jsonResponse(w, 400, map[string]any{"ok": false, "error": err.Error()})
+		if key != "" {
+			if st, ok := s.evalService(w); ok {
+				if existing, getErr := st.GetRun(r.Context(), id); getErr == nil {
+					jsonResponse(w, 200, existing)
+					return
+				}
+			}
+		}
+		writeEvalServiceError(w, err)
 		return
 	}
 	jsonResponse(w, 201, record)
 }
+
 func (s *Server) handleGetRAGEvalRun(w http.ResponseWriter, r *http.Request) {
-	st, ok := s.evalStore(w)
+	st, ok := s.evalService(w)
 	if !ok {
 		return
 	}
-	record, err := st.GetRAGEvalRun(r.Context(), r.PathValue("id"))
+	record, err := st.GetRun(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeRAGError(w, err)
+		writeEvalServiceError(w, err)
 		return
 	}
 	jsonResponse(w, 200, record)
 }
+
 func (s *Server) handleCancelRAGEvalRun(w http.ResponseWriter, r *http.Request) {
-	st, ok := s.evalStore(w)
+	st, ok := s.evalService(w)
 	if !ok {
 		return
 	}
-	changed, err := st.RequestCancelRAGEvalRun(r.Context(), r.PathValue("id"))
+	if _, valid := evalIdempotencyKey(r); !valid {
+		writeEvalError(w, 400, "invalid_idempotency_key", "Idempotency-Key must contain 8 to 128 characters")
+		return
+	}
+	changed, err := st.CancelRun(r.Context(), r.PathValue("id"))
 	if err != nil {
-		jsonResponse(w, 500, map[string]any{"ok": false, "error": "cancel failed"})
+		writeEvalError(w, 500, "cancel_failed", "could not cancel run")
 		return
 	}
 	if !changed {
-		jsonResponse(w, 409, map[string]any{"ok": false, "error": "run is not cancellable"})
-		return
+		run, getErr := st.GetRun(r.Context(), r.PathValue("id"))
+		if getErr != nil {
+			writeEvalServiceError(w, getErr)
+			return
+		}
+		if !run.CancelRequestedAt.Valid && (run.Status == store.RAGEvalRunQueued || run.Status == store.RAGEvalRunRunning) {
+			writeEvalError(w, 409, "run_not_cancellable", "run is not cancellable")
+			return
+		}
 	}
 	jsonResponse(w, 202, map[string]any{"ok": true})
+}
+
+type evalCaseDTO struct {
+	CaseID      string          `json:"caseId"`
+	Response    string          `json:"response,omitempty"`
+	Contexts    json.RawMessage `json:"contexts"`
+	Citations   json.RawMessage `json:"citations"`
+	Status      string          `json:"status"`
+	ErrorCode   string          `json:"errorCode,omitempty"`
+	LatencyMS   int64           `json:"latencyMs"`
+	Usage       json.RawMessage `json:"usage"`
+	SearchTrace json.RawMessage `json:"searchTrace,omitempty"`
+	AnswerTrace json.RawMessage `json:"answerTrace,omitempty"`
+}
+
+func rawEvalJSON(value, fallback string) json.RawMessage {
+	if json.Valid([]byte(value)) {
+		return json.RawMessage(value)
+	}
+	return json.RawMessage(fallback)
+}
+func (s *Server) handleListRAGEvalRunCases(w http.ResponseWriter, r *http.Request) {
+	st, ok := s.evalService(w)
+	if !ok {
+		return
+	}
+	cursor, limit := evalListParams(r)
+	items, err := st.ListCaseResults(r.Context(), r.PathValue("id"), cursor, limit)
+	if err != nil {
+		writeEvalError(w, 500, "list_failed", "could not list run cases")
+		return
+	}
+	status := r.URL.Query().Get("status")
+	if status != "" && status != store.RAGEvalCaseOK && status != store.RAGEvalCaseError {
+		writeEvalError(w, 400, "invalid_filter", "unsupported case status filter")
+		return
+	}
+	includeTraces := r.URL.Query().Get("includeTraces") == "true"
+	out := make([]evalCaseDTO, 0, len(items))
+	for _, item := range items {
+		if status != "" && item.Status != status {
+			continue
+		}
+		dto := evalCaseDTO{CaseID: item.CaseID, Response: item.Response, Contexts: rawEvalJSON(item.ContextsJSON, "[]"), Citations: rawEvalJSON(item.CitationsJSON, "[]"), Status: item.Status, ErrorCode: item.ErrorCode, LatencyMS: item.LatencyMS, Usage: rawEvalJSON(item.UsageJSON, "{}")}
+		if includeTraces {
+			dto.SearchTrace = rawEvalJSON(item.SearchTraceJSON, "{}")
+			dto.AnswerTrace = rawEvalJSON(item.AnswerTraceJSON, "{}")
+		}
+		out = append(out, dto)
+	}
+	next := ""
+	if len(items) == limit {
+		next = items[len(items)-1].CaseID
+	}
+	jsonResponse(w, 200, map[string]any{"items": out, "nextCursor": next})
+}
+
+func (s *Server) handleCompareRAGEvalRuns(w http.ResponseWriter, r *http.Request) {
+	metric := strings.TrimSpace(r.URL.Query().Get("metric"))
+	if metric == "" || len(metric) > 64 {
+		writeEvalError(w, 400, "metric_required", "bounded metric query parameter is required")
+		return
+	}
+	st, ok := s.evalService(w)
+	if !ok {
+		return
+	}
+	result, err := st.Compare(r.Context(), r.PathValue("baselineId"), r.PathValue("id"), metric)
+	if err != nil {
+		writeEvalServiceError(w, err)
+		return
+	}
+	jsonResponse(w, 200, result)
+}
+
+type evalExportAuthorizer struct{}
+
+func (evalExportAuthorizer) AuthorizeRAGEvalExport(_ context.Context, actor string, _ *store.RAGEvalRunRecord) error {
+	if strings.TrimSpace(actor) == "" {
+		return errors.New("reauthorization required")
+	}
+	return nil
+}
+func (s *Server) handleExportRAGEvalRun(w http.ResponseWriter, r *http.Request) {
+	st, ok := s.evalService(w)
+	if !ok {
+		return
+	}
+	format := eval.ExportFormat(r.URL.Query().Get("format"))
+	if format == "" {
+		format = eval.ExportJSON
+	}
+	if format != eval.ExportJSON && format != eval.ExportCSV {
+		writeEvalError(w, 400, "invalid_format", "format must be json or csv")
+		return
+	}
+	if format == eval.ExportCSV {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.Header().Set("Content-Disposition", "attachment; filename=rag-eval-"+r.PathValue("id")+"."+string(format))
+	_ = st.Export(r.Context(), evalIdentity(r), r.PathValue("id"), format, r.URL.Query().Get("includeTraces") == "true", w, evalExportAuthorizer{})
+}
+
+func (s *Server) handleListRAGPolicies(w http.ResponseWriter, r *http.Request) {
+	st, ok := s.evalService(w)
+	if !ok {
+		return
+	}
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			limit = parsed
+		}
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	response := map[string]any{}
+	for _, kind := range []string{store.RAGPolicyRuntime, store.RAGPolicyIngestion} {
+		active, err := st.ActivePolicy(r.Context(), kind)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			writeEvalError(w, 500, "list_failed", "could not list policies")
+			return
+		}
+		audits, auditErr := st.PolicyAudits(r.Context(), kind, limit)
+		if auditErr != nil {
+			writeEvalError(w, 500, "list_failed", "could not list policy audit")
+			return
+		}
+		response[kind] = map[string]any{"active": active, "audit": audits}
+	}
+	jsonResponse(w, 200, response)
 }

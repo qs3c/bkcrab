@@ -174,6 +174,7 @@ func runGateway(port int) error {
 	webSrv.SetRAGParserHealthProvider(gw)
 	webSrv.SetRAGEvaluatorHealthProvider(gw)
 	webSrv.SetRAGEvaluationRunner(gw.RAGEvaluationRunner())
+	webSrv.SetRAGEvaluationDatasetService(gw.RAGEvaluationDatasetService())
 	webSrv.SetRAGPolicyPromotionService(gw.RAGPolicyPromotionService())
 	webSrv.SetAuth(authResolver)
 	webSrv.SetWebChannel(gw.WebChannel())

@@ -199,6 +199,34 @@ func (d *DBStore) ListRAGEvalDatasets(ctx context.Context, cursor string, limit 
 	return out, rows.Err()
 }
 
+func (d *DBStore) GetRAGEvalDataset(ctx context.Context, id string) (*RAGEvalDatasetRecord, error) {
+	var item RAGEvalDatasetRecord
+	err := d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT id,name,description,created_by,created_at,updated_at,deleted_at FROM rag_eval_datasets WHERE id=%s AND deleted_at IS NULL`, d.ph(1)), id).
+		Scan(&item.ID, &item.Name, &item.Description, &item.CreatedBy, &item.CreatedAt, &item.UpdatedAt, &item.DeletedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &item, err
+}
+
+func (d *DBStore) ListRAGEvalDatasetVersions(ctx context.Context, datasetID, cursor string, limit int) ([]RAGEvalDatasetVersionRecord, error) {
+	limit = boundedRAGEvalListLimit(limit)
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_eval_dataset_versions WHERE dataset_id=%s AND id>%s ORDER BY id LIMIT %s`, ragEvalDatasetVersionColumns, d.ph(1), d.ph(2), d.ph(3)), datasetID, cursor, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RAGEvalDatasetVersionRecord{}
+	for rows.Next() {
+		item, scanErr := scanRAGEvalDatasetVersion(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, *item)
+	}
+	return items, rows.Err()
+}
+
 // TombstoneRAGEvalDataset makes the logical dataset invisible without deleting
 // version rows or object-store artifacts in the request transaction.
 func (d *DBStore) TombstoneRAGEvalDataset(ctx context.Context, id string) (bool, error) {

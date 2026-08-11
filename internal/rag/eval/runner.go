@@ -97,9 +97,9 @@ type ExecutionSnapshot struct {
 }
 
 type CreateRunRequest struct {
-	DatasetVersionID, BaselineRunID, ProfileID, IndexGenerationID, CreatedBy string
-	Mode                                                                     RunMode
-	Metrics                                                                  []string
+	ID, DatasetVersionID, BaselineRunID, ProfileID, IndexGenerationID, CreatedBy string
+	Mode                                                                         RunMode
+	Metrics                                                                      []string
 }
 
 type Progress struct {
@@ -210,7 +210,7 @@ func (r *Runner) CreateRun(ctx context.Context, request CreateRunRequest) (*stor
 		}}
 	snapshotJSON, _ := json.Marshal(snapshot)
 	metricsJSON, _ := json.Marshal(metrics)
-	record := &store.RAGEvalRunRecord{DatasetVersionID: dataset.ID, BaselineRunID: request.BaselineRunID, Mode: mode,
+	record := &store.RAGEvalRunRecord{ID: request.ID, DatasetVersionID: dataset.ID, BaselineRunID: request.BaselineRunID, Mode: mode,
 		ProfileID: profileRecord.ID, RequestedMetricsJSON: string(metricsJSON), ExecutionSnapshotJSON: string(snapshotJSON), CreatedBy: strings.TrimSpace(request.CreatedBy)}
 	if err := r.store.CreateRAGEvalRun(ctx, record); err != nil {
 		return nil, err
