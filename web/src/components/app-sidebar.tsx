@@ -22,6 +22,7 @@ import {
   BotIcon,
   BrainIcon,
   CableIcon,
+  ChartNoAxesCombinedIcon,
   CoinsIcon,
   DatabaseIcon,
   KeyRoundIcon,
@@ -100,6 +101,7 @@ const ADMIN_USER_GROUP: NavItem[] = [
   { title: "用户", url: "/admin/users/", icon: UsersIcon },
   { title: "对话", url: "/admin/chats/", icon: MessagesSquareIcon },
   { title: "令牌用量", url: "/admin/usage/", icon: CoinsIcon },
+  { title: "公平队列", url: "/admin/fairqueue/", icon: ChartNoAxesCombinedIcon },
   { title: "API 密钥", url: "/apikeys/", icon: KeyRoundIcon },
 ];
 
