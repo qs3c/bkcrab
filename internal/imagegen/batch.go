@@ -69,6 +69,7 @@ type BatchServiceOptions struct {
 	PromptMaxRunes    int
 	WaitMaxSeconds    int
 	MaxRetries        int
+	MaxBatchBytes     int64
 	PollInterval      time.Duration
 }
 
@@ -177,6 +178,9 @@ func NewBatchService(options BatchServiceOptions) *BatchService {
 	if options.MaxRetries <= 0 {
 		options.MaxRetries = 3
 	}
+	if options.MaxBatchBytes <= 0 {
+		options.MaxBatchBytes = 128 << 20
+	}
 	if options.PollInterval <= 0 {
 		options.PollInterval = time.Second
 	}
@@ -227,7 +231,8 @@ func (s *BatchService) Create(ctx context.Context, identity ExecutionIdentity, r
 		AgentOwnerUserID: identity.AgentOwnerUserID, AgentID: identity.AgentID,
 		WorkspaceProjectID: identity.WorkspaceProjectID, WorkspaceSessionID: identity.WorkspaceSessionID,
 		RequestJSON: requestJSON, ProviderPlanJSON: planJSON, RequestedCount: normalizedImageCount(request),
-		MaxRetries: s.options.MaxRetries, Tasks: make([]store.CreateImageGenerationTaskRequest, 0, len(planned)),
+		ArtifactByteLimit: s.options.MaxBatchBytes,
+		MaxRetries:        s.options.MaxRetries, Tasks: make([]store.CreateImageGenerationTaskRequest, 0, len(planned)),
 	}
 	for index, task := range planned {
 		taskID := s.options.IDGenerator("task", index)

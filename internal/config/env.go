@@ -466,6 +466,7 @@ func applyImagegenBatchEnv(cfg *ImagegenBatchCfg) {
 	setInt("BKCRAB_IMAGEGEN_RECONCILE_PAGE_SIZE", &cfg.ReconcilePageSize)
 	setInt("BKCRAB_IMAGEGEN_MAX_RETRIES", &cfg.MaxRetries)
 	setDuration("BKCRAB_IMAGEGEN_PROVIDER_CALL_TIMEOUT", &cfg.ProviderCallTimeout)
+	setDuration("BKCRAB_IMAGEGEN_ARTIFACT_DOWNLOAD_TIMEOUT", &cfg.ArtifactDownloadTimeout)
 	setInt("BKCRAB_IMAGEGEN_PROVIDER_CONCURRENCY_DEFAULT", &cfg.ProviderConcurrencyDefault)
 }
 

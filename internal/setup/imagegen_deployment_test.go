@@ -7,8 +7,8 @@ import (
 )
 
 func TestImagegenDeploymentManifestsCarrySafetyContract(t *testing.T) {
-	files := []string{
-		"../../deploy/docker/docker-compose.yml", "../../deploy/multi-pod/docker-compose.yaml",
+	baseFiles := []string{
+		"../../deploy/multi-pod/docker-compose.yaml",
 		"../../deploy/helm/bkcrab/templates/configmap.yaml", "../../deploy/k8s/bkcrab.yaml",
 	}
 	required := []string{
@@ -16,9 +16,10 @@ func TestImagegenDeploymentManifestsCarrySafetyContract(t *testing.T) {
 		"BKCRAB_IMAGEGEN_GLOBAL_CONCURRENCY", "BKCRAB_IMAGEGEN_PER_USER_BASE_CONCURRENCY", "BKCRAB_IMAGEGEN_PER_USER_BURST_CONCURRENCY",
 		"BKCRAB_IMAGEGEN_TASK_LEASE", "BKCRAB_IMAGEGEN_TASK_HEARTBEAT", "BKCRAB_IMAGEGEN_RESERVATION_TTL",
 		"BKCRAB_IMAGEGEN_RESERVATION_HEARTBEAT", "BKCRAB_IMAGEGEN_PROVIDER_CALL_TIMEOUT", "BKCRAB_IMAGEGEN_PROVIDER_CONCURRENCY_DEFAULT",
+		"BKCRAB_IMAGEGEN_ARTIFACT_DOWNLOAD_TIMEOUT",
 		"BKCRAB_FAIR_QUEUE_REDIS_MODE", "standalone", "BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY", "single",
 	}
-	for _, filename := range files {
+	for _, filename := range baseFiles {
 		data, err := os.ReadFile(filename)
 		if err != nil {
 			t.Fatal(err)
@@ -28,6 +29,29 @@ func TestImagegenDeploymentManifestsCarrySafetyContract(t *testing.T) {
 			if !strings.Contains(text, token) {
 				t.Errorf("%s missing %s", filename, token)
 			}
+		}
+	}
+	compose, err := os.ReadFile("../../deploy/docker/docker-compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range required[:len(required)-4] {
+		if !strings.Contains(string(compose), token) {
+			t.Errorf("docker-compose.yml missing %s", token)
+		}
+	}
+	fairOverlay, err := os.ReadFile("../../deploy/docker/docker-compose.fairqueue.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range required[len(required)-4:] {
+		if !strings.Contains(string(fairOverlay), token) {
+			t.Errorf("docker-compose.fairqueue.yml missing %s", token)
+		}
+	}
+	for _, forbidden := range []string{"BKCRAB_RAG_INDEX_WORKER_MODE", "BKCRAB_IMAGEGEN_BATCH_MODE"} {
+		if strings.Contains(string(fairOverlay), forbidden) {
+			t.Errorf("shared fairqueue overlay unexpectedly promotes %s", forbidden)
 		}
 	}
 }

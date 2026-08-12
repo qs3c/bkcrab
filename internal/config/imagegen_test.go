@@ -48,6 +48,7 @@ func TestImagegenBatchValidation(t *testing.T) {
 		{name: "prepare reaches provisional", storage: "mysql", mutate: func(c *ImagegenBatchCfg, _ *FairQueueCfg) { c.PrepareTimeout = c.ProvisionalTTL }},
 		{name: "publish timeout reaches recovery drain", storage: "mysql", mutate: func(c *ImagegenBatchCfg, _ *FairQueueCfg) { c.PublishAttemptTimeout = c.RecoveryDrainTimeout }},
 		{name: "duration above deployment limit", storage: "mysql", mutate: func(c *ImagegenBatchCfg, _ *FairQueueCfg) { c.TaskLease = FairQueueMaxDuration + time.Nanosecond }},
+		{name: "zero artifact download timeout", storage: "mysql", mutate: func(c *ImagegenBatchCfg, _ *FairQueueCfg) { c.ArtifactDownloadTimeout = 0 }},
 		{name: "page above deployment limit", storage: "mysql", mutate: func(c *ImagegenBatchCfg, _ *FairQueueCfg) { c.ReconcilePageSize = FairQueueMaxReconcilePageSize + 1 }},
 		{name: "fair on sqlite", storage: "sqlite", mutate: func(*ImagegenBatchCfg, *FairQueueCfg) {}},
 		{name: "drain on sqlite", storage: "sqlite", mutate: func(c *ImagegenBatchCfg, _ *FairQueueCfg) { c.Mode = ImagegenBatchModeDrain }},
@@ -95,6 +96,7 @@ func TestImagegenBatchEnvironmentOverlay(t *testing.T) {
 	t.Setenv("BKCRAB_IMAGEGEN_RECONCILE_PAGE_SIZE", "350")
 	t.Setenv("BKCRAB_IMAGEGEN_MAX_RETRIES", "5")
 	t.Setenv("BKCRAB_IMAGEGEN_PROVIDER_CALL_TIMEOUT", "100s")
+	t.Setenv("BKCRAB_IMAGEGEN_ARTIFACT_DOWNLOAD_TIMEOUT", "50s")
 	t.Setenv("BKCRAB_IMAGEGEN_PROVIDER_CONCURRENCY_DEFAULT", "7")
 
 	cfg := LoadEnv().ImagegenBatch
@@ -111,7 +113,7 @@ func TestImagegenBatchEnvironmentOverlay(t *testing.T) {
 		cfg.RecoveryDrainTimeout != 5*time.Minute || cfg.DispatchInterval != 2*time.Second ||
 		cfg.ReconcileInterval != 45*time.Second || cfg.ExpiredSweepInterval != 20*time.Second ||
 		cfg.ReconcilePageSize != 350 || cfg.MaxRetries != 5 ||
-		cfg.ProviderCallTimeout != 100*time.Second || cfg.ProviderConcurrencyDefault != 7 {
+		cfg.ProviderCallTimeout != 100*time.Second || cfg.ArtifactDownloadTimeout != 50*time.Second || cfg.ProviderConcurrencyDefault != 7 {
 		t.Fatalf("imagegen environment overlay = %+v", cfg)
 	}
 }

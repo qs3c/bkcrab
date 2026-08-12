@@ -116,6 +116,7 @@ func mysqlMigrationSQL() []string {
 			provider_plan_json JSON NOT NULL,
 			status VARCHAR(32) NOT NULL,
 			requested_count INTEGER NOT NULL,
+			artifact_byte_limit BIGINT NOT NULL DEFAULT 134217728,
 			succeeded_count INTEGER NOT NULL DEFAULT 0,
 			failed_count INTEGER NOT NULL DEFAULT 0,
 			canceled_count INTEGER NOT NULL DEFAULT 0,

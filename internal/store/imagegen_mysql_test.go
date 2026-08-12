@@ -95,7 +95,7 @@ func TestImageGenerationMySQLCreateReadAuthorizationAndRollback(t *testing.T) {
 func TestImageGenerationMySQLSchemaShape(t *testing.T) {
 	st := openImagegenMySQLTestStore(t)
 	ctx := context.Background()
-	for table, wantColumns := range map[string]int{"image_generation_batches": 20, "image_generation_tasks": 31} {
+	for table, wantColumns := range map[string]int{"image_generation_batches": 21, "image_generation_tasks": 31} {
 		var columns int
 		if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=?`, table).Scan(&columns); err != nil {
 			t.Fatal(err)
@@ -246,14 +246,16 @@ func TestImageGenerationMySQLFinalizeAggregateAndCancelIdempotent(t *testing.T) 
 	runningTask := imagegenTestID(t, "imgt_")
 	t.Cleanup(func() { cleanupImageBatch(t, st, partialBatch, cancelBatch) })
 
-	_, _, err := st.CreateImageGenerationBatch(ctx, testCreateImageBatchRequest(partialBatch, doneTask, failedTask))
+	partialRequest := testCreateImageBatchRequest(partialBatch, doneTask, failedTask)
+	partialRequest.ArtifactByteLimit = 4
+	_, _, err := st.CreateImageGenerationBatch(ctx, partialRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, changed, err := st.FinalizeImageTaskDone(ctx, doneTask, ImageTaskDoneResult{Provider: "openai", Model: "gpt-image", ManifestKey: "imagegen/manifest.json", ArtifactsJSON: jsonRaw(`[{"path":"imagegen/only-one.png"}]`)}); err == nil || changed {
+	if _, changed, err := st.FinalizeImageTaskDone(ctx, doneTask, ImageTaskDoneResult{Provider: "openai", Model: "gpt-image", ManifestKey: "imagegen/manifest.json", ArtifactsJSON: jsonRaw(`[{"path":"imagegen/only-one.png","size":1}]`)}); err == nil || changed {
 		t.Fatalf("incomplete artifact finalize = %v, %v", changed, err)
 	}
-	artifacts := jsonRaw(`[{"path":"imagegen/0.png"},{"path":"imagegen/1.png"},{"path":"imagegen/2.png"},{"path":"imagegen/3.png"}]`)
+	artifacts := jsonRaw(`[{"path":"imagegen/0.png","size":1},{"path":"imagegen/1.png","size":1},{"path":"imagegen/2.png","size":1},{"path":"imagegen/3.png","size":1}]`)
 	if _, changed, err := st.FinalizeImageTaskDone(ctx, doneTask, ImageTaskDoneResult{Provider: "openai", Model: "gpt-image", ManifestKey: "imagegen/manifest.json", ArtifactsJSON: artifacts}); err != nil || !changed {
 		t.Fatalf("finalize done = %v, %v", changed, err)
 	}
@@ -294,6 +296,34 @@ func TestImageGenerationMySQLFinalizeAggregateAndCancelIdempotent(t *testing.T) 
 	}
 	if _, _, err := st.RequestImageBatchCancel(ctx, "other", "agent-a", cancelBatch); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unauthorized cancel error = %v", err)
+	}
+}
+
+func TestImageGenerationMySQLBatchArtifactLimitIsAtomicAcrossTasks(t *testing.T) {
+	st := openImagegenMySQLTestStore(t)
+	ctx := context.Background()
+	batchID := imagegenTestID(t, "imgb_")
+	firstTask := imagegenTestID(t, "imgt_")
+	secondTask := imagegenTestID(t, "imgt_")
+	t.Cleanup(func() { cleanupImageBatch(t, st, batchID) })
+	request := testCreateImageBatchRequest(batchID, firstTask, secondTask)
+	request.ArtifactByteLimit = 5
+	if _, _, err := st.CreateImageGenerationBatch(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	first := jsonRaw(`[{"size":1},{"size":1},{"size":1},{"size":1}]`)
+	if _, changed, err := st.FinalizeImageTaskDone(ctx, firstTask, ImageTaskDoneResult{ManifestKey: "imagegen/first.json", ArtifactsJSON: first}); err != nil || !changed {
+		t.Fatalf("first finalize changed=%t err=%v", changed, err)
+	}
+	second := jsonRaw(`[{"size":2}]`)
+	batch, changed, err := st.FinalizeImageTaskDone(ctx, secondTask, ImageTaskDoneResult{ManifestKey: "imagegen/second.json", ArtifactsJSON: second})
+	if !errors.Is(err, ErrImageGenerationBatchArtifactLimit) || !changed || batch == nil ||
+		batch.Status != ImageGenerationBatchPartial || batch.SucceededCount != 4 || batch.FailedCount != 1 {
+		t.Fatalf("limited finalize batch=%+v changed=%t err=%v", batch, changed, err)
+	}
+	task, err := st.GetImageGenerationTask(ctx, secondTask)
+	if err != nil || task.Status != ImageGenerationTaskFailed || task.ErrorCode != "ARTIFACT_BATCH_LIMIT" || len(task.ArtifactsJSON) != 0 {
+		t.Fatalf("limited task=%+v err=%v", task, err)
 	}
 }
 

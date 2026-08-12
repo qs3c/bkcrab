@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -40,6 +41,8 @@ var (
 	lowerHex64ImagePattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
+var ErrImageGenerationBatchArtifactLimit = errors.New("store: image generation batch artifact byte limit exceeded")
+
 type ImageGenerationBatchRecord struct {
 	ID                 string
 	UserID             string
@@ -52,6 +55,7 @@ type ImageGenerationBatchRecord struct {
 	ProviderPlanJSON   json.RawMessage
 	Status             ImageGenerationBatchStatus
 	RequestedCount     int
+	ArtifactByteLimit  int64
 	SucceededCount     int
 	FailedCount        int
 	CanceledCount      int
@@ -120,6 +124,7 @@ type CreateImageGenerationBatchRequest struct {
 	RequestJSON        json.RawMessage
 	ProviderPlanJSON   json.RawMessage
 	RequestedCount     int
+	ArtifactByteLimit  int64
 	MaxRetries         int
 	Tasks              []CreateImageGenerationTaskRequest
 }
@@ -140,7 +145,7 @@ type imageBatchAggregate struct {
 
 const imageBatchColumns = `id,user_id,config_user_id,agent_owner_user_id,agent_id,
 	workspace_project_id,workspace_session_id,request_json,provider_plan_json,status,
-	requested_count,succeeded_count,failed_count,canceled_count,cancel_requested,error_msg,
+	requested_count,artifact_byte_limit,succeeded_count,failed_count,canceled_count,cancel_requested,error_msg,
 	created_at,started_at,finished_at,updated_at`
 
 const imageTaskColumns = `id,sequence_id,batch_id,user_id,item_index,chunk_index,label,prompt,size,
@@ -174,7 +179,8 @@ func validateCreateImageGenerationBatch(request CreateImageGenerationBatchReques
 	if imageJSONContainsSecret(request.ProviderPlanJSON) {
 		return errors.New("store: image provider plan contains secret material")
 	}
-	if request.RequestedCount < 1 || request.RequestedCount > 16 || len(request.Tasks) < 1 || len(request.Tasks) > 16 || request.MaxRetries < 0 {
+	if request.RequestedCount < 1 || request.RequestedCount > 16 || request.ArtifactByteLimit <= 0 ||
+		len(request.Tasks) < 1 || len(request.Tasks) > 16 || request.MaxRetries < 0 {
 		return errors.New("store: invalid image batch count, task count, or retry limit")
 	}
 	ids := make(map[string]struct{}, len(request.Tasks))
@@ -291,12 +297,12 @@ func (d *DBStore) createImageGenerationBatchTx(ctx context.Context, tx *sql.Tx, 
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO image_generation_batches
 		(id,user_id,config_user_id,agent_owner_user_id,agent_id,workspace_project_id,
-		 workspace_session_id,request_json,provider_plan_json,status,requested_count,
+		 workspace_session_id,request_json,provider_plan_json,status,requested_count,artifact_byte_limit,
 		 created_at,updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, request.BatchID, request.UserID, request.ConfigUserID,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, request.BatchID, request.UserID, request.ConfigUserID,
 		request.AgentOwnerUserID, request.AgentID, request.WorkspaceProjectID,
 		request.WorkspaceSessionID, []byte(request.RequestJSON), []byte(request.ProviderPlanJSON),
-		ImageGenerationBatchPending, request.RequestedCount, now, now)
+		ImageGenerationBatchPending, request.RequestedCount, request.ArtifactByteLimit, now, now)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -332,7 +338,8 @@ func (d *DBStore) createImageGenerationBatchTx(ctx context.Context, tx *sql.Tx, 
 		RequestJSON:      append(json.RawMessage(nil), request.RequestJSON...),
 		ProviderPlanJSON: append(json.RawMessage(nil), request.ProviderPlanJSON...),
 		Status:           ImageGenerationBatchPending, RequestedCount: request.RequestedCount,
-		CreatedAt: now, UpdatedAt: now,
+		ArtifactByteLimit: request.ArtifactByteLimit,
+		CreatedAt:         now, UpdatedAt: now,
 	}
 	return batch, tasks, nil
 }
@@ -346,7 +353,7 @@ func scanImageBatch(scanner imageBatchScanner) (*ImageGenerationBatchRecord, err
 	var startedAt, finishedAt sql.NullTime
 	err := scanner.Scan(&record.ID, &record.UserID, &record.ConfigUserID, &record.AgentOwnerUserID,
 		&record.AgentID, &record.WorkspaceProjectID, &record.WorkspaceSessionID, &requestJSON,
-		&planJSON, &record.Status, &record.RequestedCount, &record.SucceededCount,
+		&planJSON, &record.Status, &record.RequestedCount, &record.ArtifactByteLimit, &record.SucceededCount,
 		&record.FailedCount, &record.CanceledCount, &record.CancelRequested, &errorMessage,
 		&record.CreatedAt, &startedAt, &finishedAt, &record.UpdatedAt)
 	if err != nil {
@@ -598,13 +605,24 @@ func (d *DBStore) finalizeImageTask(ctx context.Context, taskID string, kind ima
 	if err != nil {
 		return nil, false, err
 	}
+	changed := !imageTaskTerminal(task.Status)
+	limitExceeded := false
 	if kind == imageFinalizeDone {
-		artifactCount, valid := imageArtifactCount(done.ArtifactsJSON)
+		artifactCount, artifactBytes, valid := imageArtifactSummary(done.ArtifactsJSON)
 		if !valid || artifactCount != task.RequestedCount {
 			return nil, false, fmt.Errorf("store: DONE image task requires exactly %d artifacts, got %d", task.RequestedCount, artifactCount)
 		}
+		if changed {
+			committedBytes, sumErr := imageBatchArtifactBytesOn(ctx, tx, batch.ID)
+			if sumErr != nil {
+				return nil, false, sumErr
+			}
+			if artifactBytes > batch.ArtifactByteLimit || committedBytes > batch.ArtifactByteLimit-artifactBytes {
+				kind, errorCode, errorMessage = imageFinalizeFailed, "ARTIFACT_BATCH_LIMIT", ""
+				limitExceeded = true
+			}
+		}
 	}
-	changed := !imageTaskTerminal(task.Status)
 	if changed {
 		switch kind {
 		case imageFinalizeDone:
@@ -625,6 +643,9 @@ func (d *DBStore) finalizeImageTask(ctx context.Context, taskID string, kind ima
 	if err := tx.Commit(); err != nil {
 		return nil, false, err
 	}
+	if limitExceeded {
+		return batch, changed, ErrImageGenerationBatchArtifactLimit
+	}
 	return batch, changed, nil
 }
 
@@ -633,14 +654,49 @@ func validJSONValue(raw json.RawMessage) bool {
 }
 
 func imageArtifactCount(raw json.RawMessage) (int, bool) {
+	count, _, valid := imageArtifactSummary(raw)
+	return count, valid
+}
+
+func imageArtifactSummary(raw json.RawMessage) (int, int64, bool) {
 	if !validJSONValue(raw) {
-		return 0, false
+		return 0, 0, false
 	}
-	var artifacts []json.RawMessage
+	var artifacts []struct {
+		Size int64 `json:"size"`
+	}
 	if err := json.Unmarshal(raw, &artifacts); err != nil || artifacts == nil {
-		return 0, false
+		return 0, 0, false
 	}
-	return len(artifacts), true
+	var total int64
+	for _, artifact := range artifacts {
+		if artifact.Size <= 0 || total > math.MaxInt64-artifact.Size {
+			return 0, 0, false
+		}
+		total += artifact.Size
+	}
+	return len(artifacts), total, true
+}
+
+func imageBatchArtifactBytesOn(ctx context.Context, tx *sql.Tx, batchID string) (int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT artifacts_json FROM image_generation_tasks WHERE batch_id=? AND status='DONE'`, batchID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var total int64
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return 0, err
+		}
+		_, bytes, valid := imageArtifactSummary(raw)
+		if !valid || total > math.MaxInt64-bytes {
+			return 0, errors.New("store: invalid committed image artifact accounting")
+		}
+		total += bytes
+	}
+	return total, rows.Err()
 }
 
 func boundedImageError(value string, max int) string {

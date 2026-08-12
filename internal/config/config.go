@@ -174,6 +174,7 @@ type ImagegenBatchCfg struct {
 	ReconcilePageSize          int
 	MaxRetries                 int
 	ProviderCallTimeout        time.Duration
+	ArtifactDownloadTimeout    time.Duration
 	ProviderConcurrencyDefault int
 	ProviderConcurrency        map[string]int
 
@@ -211,6 +212,7 @@ func DefaultImagegenBatchCfg() ImagegenBatchCfg {
 		ReconcilePageSize:          200,
 		MaxRetries:                 3,
 		ProviderCallTimeout:        120 * time.Second,
+		ArtifactDownloadTimeout:    60 * time.Second,
 		ProviderConcurrencyDefault: 4,
 		ProviderConcurrency:        make(map[string]int),
 	}
@@ -258,6 +260,7 @@ func (c ImagegenBatchCfg) Validate(storageType string, fairQueue FairQueueCfg) e
 		{"reconcileInterval", c.ReconcileInterval},
 		{"expiredSweepInterval", c.ExpiredSweepInterval},
 		{"providerCallTimeout", c.ProviderCallTimeout},
+		{"artifactDownloadTimeout", c.ArtifactDownloadTimeout},
 	}
 	for _, duration := range durations {
 		if duration.value <= 0 || duration.value > FairQueueMaxDuration {

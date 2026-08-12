@@ -1,6 +1,6 @@
 # Docker Compose 部署
 
-`docker-compose.yml` 是基础部署，包含 BkCrab、MySQL、MinIO 和 agent 沙箱。RAG 是可选能力；启用时再叠加 `docker-compose.rag.yml`。该 overlay 新增 Milvus Standalone 和 etcd，并复用基础部署已有的 MinIO。公平队列依赖位于独立的 `docker-compose.fairqueue.yml`，只在完成 contract 和 paused 排空后叠加。
+`docker-compose.yml` 是基础部署，包含 BkCrab、MySQL、MinIO 和 agent 沙箱。RAG 是可选能力；启用时再叠加 `docker-compose.rag.yml`。该 overlay 新增 Milvus Standalone 和 etcd，并复用基础部署已有的 MinIO。公平队列依赖位于独立的 `docker-compose.fairqueue.yml`；该共享 overlay 不会自动启用 RAG 或 imagegen，资源模式由各自 rollout 独立决定。
 
 ## 基础部署
 
@@ -194,8 +194,9 @@ RAG_TEST_MILVUS_ADDR=127.0.0.1:19530 \
 
 基础 Compose 与普通 RAG overlay 都保持
 `FAIR_QUEUE_ENABLED=false`、`RAG_INDEX_WORKER_MODE=legacy`，不会要求 Redis /
-RabbitMQ 凭据。最终的 `docker-compose.fairqueue.yml` overlay 才会启用 fair
-claimant，并提供持久化 Redis（AOF）和 RabbitMQ management；management 只绑定
+RabbitMQ 凭据。`docker-compose.fairqueue.yml` 提供持久化 Redis（AOF）和
+RabbitMQ management 并启用共享协议，但不改变任何资源的 worker mode；RAG
+最终阶段还必须叠加 `docker-compose.rag-fair.yml`。management 只绑定
 `127.0.0.1`。使用该 overlay 前，在 `.env` 中为 `REDIS_PASSWORD` 和
 `RABBITMQ_PASSWORD` 生成独立随机值，Rabbit 密码必须是 URL-safe。
 
@@ -216,8 +217,9 @@ claimant，并提供持久化 Redis（AOF）和 RabbitMQ management；management
 2. 全量设置 `RAG_INDEX_WORKER_MODE=paused`，仍保持
    `FAIR_QUEUE_ENABLED=false`。等待旧容器归零、heartbeat 静止且所有旧
    claimant 退出；无法证明时保持 paused。
-3. 第二次全量部署显式叠加 fairqueue overlay；它固定 enabled=true、
-   worker mode=fair 和 writer topology=single，并启动 Redis/RabbitMQ：
+3. 第二次全量部署显式叠加共享 fairqueue overlay 和 RAG fair overlay；前者固定
+   enabled=true、writer topology=single 并启动 Redis/RabbitMQ，后者只固定
+   RAG worker mode=fair：
 
    ```bash
    docker compose \
@@ -225,6 +227,7 @@ claimant，并提供持久化 Redis（AOF）和 RabbitMQ management；management
      -f deploy/docker/docker-compose.yml \
      -f deploy/docker/docker-compose.rag.yml \
      -f deploy/docker/docker-compose.fairqueue.yml \
+     -f deploy/docker/docker-compose.rag-fair.yml \
      up -d --build
    ```
 
@@ -242,6 +245,18 @@ claimant，并提供持久化 Redis（AOF）和 RabbitMQ management；management
 rollout：先 `legacy -> drain`，确认所有旧 ReplicaSet/容器和同步 `image_gen`
 调用归零；再 `drain -> fair`。禁止 legacy/fair canary。回滚按
 `fair -> drain`，等待所有非终态 batch 排空后才能 `drain -> legacy`。
+
+`drain` 和 `fair` 都必须叠加同一个共享基础设施 overlay；只修改
+`IMAGEGEN_BATCH_MODE`，不要叠加 `docker-compose.rag-fair.yml`，除非 RAG 也已完成
+自己的 paused rollout。例如最终 imagegen fair 部署为：
+
+```bash
+IMAGEGEN_BATCH_MODE=fair docker compose \
+  --env-file deploy/docker/.env \
+  -f deploy/docker/docker-compose.yml \
+  -f deploy/docker/docker-compose.fairqueue.yml \
+  up -d --build
+```
 
 Compose 默认使用 MinIO（S3-compatible）作为共享 workspace，因此 fair/drain
 worker 可以跨实例恢复 artifact。若改为 LocalFS，只允许一个 gateway/worker

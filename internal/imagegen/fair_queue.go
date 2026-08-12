@@ -549,19 +549,7 @@ func (a *FairQueueAdapter) runClaim(ctx context.Context, claim *store.ImageGener
 		return errors.Join(errors.New("imagegen: stored provider plan is invalid"), finishErr)
 	}
 	scope := ArtifactScope{AgentID: identity.AgentID, ProjectID: identity.WorkspaceProjectID, SessionID: identity.WorkspaceSessionID}
-	if salvaged, ok, err := a.options.Artifacts.Salvage(ctx, ArtifactSalvageRequest{
-		Scope: scope, BatchID: claim.Batch.ID, TaskID: claim.Task.ID,
-		PreviousClaimGeneration: claim.PreviousClaimGeneration,
-		RequestFingerprint:      claim.Task.RequestFingerprint, ExpectedCount: claim.Task.RequestedCount,
-		CancelRequested: claim.Batch.CancelRequested,
-	}); err != nil {
-		return a.retryClaim(ctx, claim.Fence, "ARTIFACT_SALVAGE", err)
-	} else if ok {
-		return a.finishManifest(ctx, claim, salvaged)
-	}
-
 	runCtx, cancel := context.WithCancel(ctx)
-	stopHeartbeat := make(chan struct{})
 	heartbeatDone := make(chan struct{})
 	heartbeatOutcome := make(chan imageHeartbeatOutcome, 1)
 	interval := a.options.TaskHeartbeat
@@ -577,8 +565,6 @@ func (a *FairQueueAdapter) runClaim(ctx context.Context, claim *store.ImageGener
 		defer ticker.Stop()
 		for {
 			select {
-			case <-stopHeartbeat:
-				return
 			case <-runCtx.Done():
 				return
 			case <-ticker.C:
@@ -593,25 +579,47 @@ func (a *FairQueueAdapter) runClaim(ctx context.Context, claim *store.ImageGener
 	}()
 	stop := func() {
 		cancel()
-		close(stopHeartbeat)
 		<-heartbeatDone
+	}
+	defer stop()
+	checkHeartbeat := func() (bool, error) {
+		select {
+		case outcome := <-heartbeatOutcome:
+			if outcome.disposition == store.ImageGenerationHeartbeatCanceled {
+				_, finishErr := a.options.Store.FinishImageGenerationTaskCanceled(context.WithoutCancel(ctx), claim.Fence)
+				return true, finishErr
+			}
+			if outcome.err != nil {
+				return true, outcome.err
+			}
+			return true, fairqueue.ErrAuthoritativeStateCorrupt
+		default:
+			return false, nil
+		}
+	}
+
+	if salvaged, ok, err := a.options.Artifacts.Salvage(runCtx, ArtifactSalvageRequest{
+		Scope: scope, BatchID: claim.Batch.ID, TaskID: claim.Task.ID,
+		PreviousClaimGeneration: claim.PreviousClaimGeneration,
+		RequestFingerprint:      claim.Task.RequestFingerprint, ExpectedCount: claim.Task.RequestedCount,
+		CancelRequested: claim.Batch.CancelRequested,
+	}); err != nil {
+		if stopped, heartbeatErr := checkHeartbeat(); stopped {
+			return heartbeatErr
+		}
+		return a.retryClaim(ctx, claim.Fence, "ARTIFACT_SALVAGE", err)
+	} else if ok {
+		if stopped, heartbeatErr := checkHeartbeat(); stopped {
+			return heartbeatErr
+		}
+		return a.finishManifest(ctx, claim, salvaged)
 	}
 
 	providerResult, generateErr := a.options.Generation.Generate(runCtx, identity, plan, GenerateRequest{
 		Prompt: claim.Task.Prompt, Size: claim.Task.Size, Count: claim.Task.RequestedCount,
 	})
-	stop()
-	select {
-	case outcome := <-heartbeatOutcome:
-		if outcome.disposition == store.ImageGenerationHeartbeatCanceled {
-			_, finishErr := a.options.Store.FinishImageGenerationTaskCanceled(context.WithoutCancel(ctx), claim.Fence)
-			return finishErr
-		}
-		if outcome.err != nil {
-			return outcome.err
-		}
-		return fairqueue.ErrAuthoritativeStateCorrupt
-	default:
+	if stopped, heartbeatErr := checkHeartbeat(); stopped {
+		return heartbeatErr
 	}
 	if generateErr != nil {
 		kind := ProviderErrorKind(generateErr)
@@ -623,14 +631,20 @@ func (a *FairQueueAdapter) runClaim(ctx context.Context, claim *store.ImageGener
 			return a.retryClaim(ctx, claim.Fence, string(kind), generateErr)
 		}
 	}
-	manifest, err := a.options.Artifacts.Publish(ctx, ArtifactPublishRequest{
+	manifest, err := a.options.Artifacts.Publish(runCtx, ArtifactPublishRequest{
 		Scope: scope, BatchID: claim.Batch.ID, TaskID: claim.Task.ID,
 		ClaimGeneration: claim.Fence.ClaimGeneration, RequestFingerprint: claim.Task.RequestFingerprint,
 		Provider: providerResult.Provider, Model: providerResult.Model,
 		ExpectedCount: claim.Task.RequestedCount, Images: providerResult.Images,
 	})
 	if err != nil {
+		if stopped, heartbeatErr := checkHeartbeat(); stopped {
+			return heartbeatErr
+		}
 		return a.retryClaim(ctx, claim.Fence, "ARTIFACT_PUBLISH", err)
+	}
+	if stopped, heartbeatErr := checkHeartbeat(); stopped {
+		return heartbeatErr
 	}
 	return a.finishManifest(ctx, claim, manifest)
 }
@@ -660,6 +674,10 @@ func (a *FairQueueAdapter) finishManifest(ctx context.Context, claim *store.Imag
 	})
 	if err == nil && changed {
 		return nil
+	}
+	if changed && errors.Is(err, store.ErrImageGenerationBatchArtifactLimit) {
+		deleteErr := a.options.Artifacts.DeleteClaimArtifacts(cleanupCtx, manifest)
+		return errors.Join(err, deleteErr)
 	}
 	if !changed {
 		_ = a.options.Artifacts.DeleteClaimArtifacts(cleanupCtx, manifest)

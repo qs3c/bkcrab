@@ -125,7 +125,7 @@ func buildImageFairQueueAssembly(ctx context.Context, env *config.EnvConfig, st 
 	generation := imagegendomain.NewGenerationService(resolver, toolProviderRegistry, limiter, env.ImagegenBatch.ProviderCallTimeout).
 		ConfigureProviderLimits(env.ImagegenBatch.ProviderConcurrencyDefault, env.ImagegenBatch.ProviderConcurrency, env.ImagegenBatch.ReservationTTL)
 	artifacts, err := imagegendomain.NewArtifactPublisher(imagegendomain.ArtifactPublisherOptions{
-		Store:  ws,
+		Store: ws, DownloadTimeout: env.ImagegenBatch.ArtifactDownloadTimeout,
 		Limits: imagegendomain.ArtifactLimits{MaxImageBytes: env.ImagegenBatch.ImageMaxBytes, MaxBatchBytes: env.ImagegenBatch.BatchMaxBytes},
 	})
 	if err != nil {
@@ -203,7 +203,8 @@ func buildImageFairQueueAssembly(ctx context.Context, env *config.EnvConfig, st 
 		Store: fairStore, ProviderPlans: resolver, Dispatcher: notifier,
 		MaxImagesPerBatch: env.ImagegenBatch.MaxImagesPerBatch, MaxImagesPerTask: env.ImagegenBatch.MaxImagesPerTask,
 		MaxItems: 16, PromptMaxRunes: env.ImagegenBatch.PromptMaxRunes, WaitMaxSeconds: int(env.ImagegenBatch.ToolWaitMax.Seconds()),
-		MaxRetries: env.ImagegenBatch.MaxRetries, PollInterval: env.ImagegenBatch.DispatchInterval,
+		MaxRetries: env.ImagegenBatch.MaxRetries, MaxBatchBytes: env.ImagegenBatch.BatchMaxBytes,
+		PollInterval: env.ImagegenBatch.DispatchInterval,
 	})
 	closeAdmin, closeLimiter = false, false
 	return &imageFairQueueAssembly{mainStore: dbStore, fairStore: fairStore, adminStore: adminStore, supervisor: supervisor,

@@ -132,11 +132,12 @@ type ArtifactSalvageRequest struct {
 }
 
 type ArtifactPublisherOptions struct {
-	Store          workspace.Store
-	HTTPClient     *http.Client
-	TrustedOrigins []string
-	Limits         ArtifactLimits
-	Now            func() time.Time
+	Store           workspace.Store
+	HTTPClient      *http.Client
+	DownloadTimeout time.Duration
+	TrustedOrigins  []string
+	Limits          ArtifactLimits
+	Now             func() time.Time
 }
 
 type ArtifactPublisher struct {
@@ -164,6 +165,13 @@ func NewArtifactPublisher(options ArtifactPublisherOptions) (*ArtifactPublisher,
 		client = options.HTTPClient
 	}
 	copyClient := *client
+	downloadTimeout := options.DownloadTimeout
+	if downloadTimeout <= 0 {
+		downloadTimeout = 60 * time.Second
+	}
+	if copyClient.Timeout <= 0 || copyClient.Timeout > downloadTimeout {
+		copyClient.Timeout = downloadTimeout
+	}
 	redirectLimit := options.Limits.withDefaults().RedirectLimit
 	copyClient.CheckRedirect = func(request *http.Request, via []*http.Request) error {
 		if len(via) > redirectLimit {

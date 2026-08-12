@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,11 +16,13 @@ import (
 )
 
 type imageFairQueueStoreFake struct {
-	candidates  []store.ImageTaskDispatchCandidate
-	claimResult store.ImageGenerationClaimResult
-	claimErr    error
-	marked      bool
-	finished    string
+	candidates    []store.ImageTaskDispatchCandidate
+	claimResult   store.ImageGenerationClaimResult
+	claimErr      error
+	marked        bool
+	finished      string
+	finishDoneErr error
+	heartbeats    atomic.Int64
 }
 
 type imageFairGeneratorFake struct{ calls *[]string }
@@ -68,11 +71,37 @@ func (f *imageFairQueueStoreFake) RepairPoisonImageCandidate(context.Context, st
 	return nil, store.ImagePoisonRepairStale, nil
 }
 func (f *imageFairQueueStoreFake) HeartbeatImageGenerationTask(context.Context, store.ImageGenerationFence, time.Duration) (store.ImageGenerationHeartbeatDisposition, error) {
+	f.heartbeats.Add(1)
 	return store.ImageGenerationHeartbeatExtended, nil
 }
 func (f *imageFairQueueStoreFake) FinishImageGenerationTaskDone(context.Context, store.ImageGenerationFence, store.ImageTaskDoneResult) (*store.ImageGenerationBatchRecord, bool, error) {
 	f.finished = "done"
-	return &store.ImageGenerationBatchRecord{}, true, nil
+	return &store.ImageGenerationBatchRecord{}, true, f.finishDoneErr
+}
+
+type imageSlowArtifactsFake struct {
+	delay   time.Duration
+	deleted atomic.Int64
+}
+
+func (f *imageSlowArtifactsFake) Salvage(context.Context, ArtifactSalvageRequest) (ArtifactManifest, bool, error) {
+	return ArtifactManifest{}, false, nil
+}
+
+func (f *imageSlowArtifactsFake) Publish(ctx context.Context, request ArtifactPublishRequest) (ArtifactManifest, error) {
+	timer := time.NewTimer(f.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ArtifactManifest{}, ctx.Err()
+	case <-timer.C:
+	}
+	return ArtifactManifest{Provider: request.Provider, Model: request.Model, ManifestKey: "imagegen/manifest.json", Artifacts: []ImageArtifact{{Index: 0, Key: "imagegen/image.png", Size: 3}}}, nil
+}
+
+func (f *imageSlowArtifactsFake) DeleteClaimArtifacts(context.Context, ArtifactManifest) error {
+	f.deleted.Add(1)
+	return nil
 }
 func (f *imageFairQueueStoreFake) FinishImageGenerationTaskRetry(context.Context, store.ImageGenerationFence, string, time.Time) (bool, error) {
 	f.finished = "retry"
@@ -90,6 +119,19 @@ func (f *imageFairQueueStoreFake) FinishImageGenerationTaskCanceled(context.Cont
 func imageFairCandidate() store.ImageTaskDispatchCandidate {
 	task := store.ImageTaskDispatchRecord{ID: "imgt_1111111111111111", SequenceID: 1, BatchID: "imgb_1111111111111111", UserID: "user-a", Status: store.ImageGenerationTaskPending, DispatchGeneration: 3}
 	return store.ImageTaskDispatchCandidate{Task: task, Guard: store.ImageTaskDispatchGuard{TaskID: task.ID, SequenceID: 1, BatchID: task.BatchID, UserID: task.UserID, Status: task.Status, DispatchGeneration: 3}}
+}
+
+func imageFairExecutionClaim(t *testing.T) *store.ImageGenerationTaskClaim {
+	t.Helper()
+	plan, err := json.Marshal(SafeProviderPlan{Version: ProviderPlanSchemaVersion, ConfigUserID: "config-a", AgentOwnerUserID: "owner-a", AgentID: "agent-a", Candidates: []ProviderCandidateRef{{Provider: "openai", Model: "gpt-image-1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &store.ImageGenerationTaskClaim{
+		Task:  store.ImageGenerationTaskRecord{ID: "imgt_1111111111111111", BatchID: "imgb_1111111111111111", UserID: "user-a", Prompt: "prompt", Size: SizeSquare, RequestedCount: 1, RequestFingerprint: strings.Repeat("a", 64), Status: store.ImageGenerationTaskRunning, ClaimGeneration: 7, DispatchGeneration: 7},
+		Batch: store.ImageGenerationBatchRecord{ID: "imgb_1111111111111111", UserID: "user-a", ConfigUserID: "config-a", AgentOwnerUserID: "owner-a", AgentID: "agent-a", ProviderPlanJSON: plan, ArtifactByteLimit: 128 << 20},
+		Fence: store.ImageGenerationFence{TaskID: "imgt_1111111111111111", BatchID: "imgb_1111111111111111", UserID: "user-a", ClaimGeneration: 7, LeaseOwner: "worker-a", ExpectedWriterFingerprint: strings.Repeat("a", 64)},
+	}
 }
 
 func imageExecutablePrepareRequest(t *testing.T, message fairqueue.Message) fairqueue.PrepareRequest {
@@ -203,5 +245,37 @@ func TestFairQueuePreparedTaskUsesPreviousGenerationThenPublishesAndFencedFinish
 	}
 	if strings.Join(calls, ",") != "salvage:3,generate,publish:7" || fake.finished != "done" {
 		t.Fatalf("execution order=%v finished=%q", calls, fake.finished)
+	}
+}
+
+func TestFairQueueClaimHeartbeatCoversArtifactPublish(t *testing.T) {
+	fake := &imageFairQueueStoreFake{}
+	artifacts := &imageSlowArtifactsFake{delay: 35 * time.Millisecond}
+	var calls []string
+	adapter := NewFairQueueAdapter(FairQueueAdapterOptions{
+		Store: fake, WorkerID: "worker-a", TaskLease: time.Second, TaskHeartbeat: 5 * time.Millisecond,
+		ClaimLimits: store.ImageGenerationClaimLimits{GlobalConcurrency: 1, PerUserBurstConcurrency: 1, AdvisoryLockTimeout: time.Second},
+		Generation:  imageFairGeneratorFake{calls: &calls}, Artifacts: artifacts,
+	})
+	if err := adapter.runClaim(context.Background(), imageFairExecutionClaim(t)); err != nil {
+		t.Fatal(err)
+	}
+	if heartbeats := fake.heartbeats.Load(); heartbeats < 2 {
+		t.Fatalf("artifact publish was not lease-protected, heartbeats=%d", heartbeats)
+	}
+}
+
+func TestFairQueueBatchArtifactLimitDeletesRejectedClaimArtifacts(t *testing.T) {
+	fake := &imageFairQueueStoreFake{finishDoneErr: store.ErrImageGenerationBatchArtifactLimit}
+	artifacts := &imageSlowArtifactsFake{}
+	var calls []string
+	adapter := NewFairQueueAdapter(FairQueueAdapterOptions{
+		Store: fake, WorkerID: "worker-a", TaskLease: time.Second, TaskHeartbeat: 50 * time.Millisecond,
+		ClaimLimits: store.ImageGenerationClaimLimits{GlobalConcurrency: 1, PerUserBurstConcurrency: 1, AdvisoryLockTimeout: time.Second},
+		Generation:  imageFairGeneratorFake{calls: &calls}, Artifacts: artifacts,
+	})
+	err := adapter.runClaim(context.Background(), imageFairExecutionClaim(t))
+	if !errors.Is(err, store.ErrImageGenerationBatchArtifactLimit) || artifacts.deleted.Load() != 1 || fake.finished != "done" {
+		t.Fatalf("limit cleanup err=%v deleted=%d finished=%q", err, artifacts.deleted.Load(), fake.finished)
 	}
 }

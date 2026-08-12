@@ -215,6 +215,28 @@ func TestArtifactDownloaderAllowsExplicitTrustedHTTPSAndUsesMagic(t *testing.T) 
 	}
 }
 
+func TestArtifactDownloaderEnforcesTotalTimeout(t *testing.T) {
+	pngBytes := artifactPNG(t, 1, 1)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(80 * time.Millisecond)
+		_, _ = w.Write(pngBytes)
+	}))
+	defer server.Close()
+	publisher, err := NewArtifactPublisher(ArtifactPublisherOptions{
+		Store: workspace.NewLocalFS(t.TempDir()), HTTPClient: server.Client(), TrustedOrigins: []string{server.URL},
+		DownloadTimeout: 15 * time.Millisecond,
+		Limits:          ArtifactLimits{MaxImageBytes: 1 << 20, MaxBatchBytes: 2 << 20, MaxPixels: 1_000_000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, err = publisher.Publish(context.Background(), validArtifactPublishRequest([]GeneratedImage{{SourceURL: server.URL + "/slow"}}))
+	if err == nil || time.Since(started) >= 70*time.Millisecond {
+		t.Fatalf("download total timeout was not enforced: elapsed=%s err=%v", time.Since(started), err)
+	}
+}
+
 func TestArtifactSalvageUsesOnlyExplicitPreviousClaimAndVerifiesObjects(t *testing.T) {
 	publisher, _ := artifactTestPublisher(t, ArtifactLimits{MaxImageBytes: 1 << 20, MaxBatchBytes: 2 << 20, MaxPixels: 1_000_000})
 	request := validArtifactPublishRequest([]GeneratedImage{{Bytes: artifactPNG(t, 2, 2)}})

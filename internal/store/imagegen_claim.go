@@ -114,7 +114,7 @@ func (s *ImageFairQueueStore) CheckImageGenerationSchema(ctx context.Context) er
 	}
 	return s.store.withFairQueueExpectedWriterConn(ctx, s.expectedWriter, func(conn *sql.Conn, _ fairQueueMySQLIdentity) error {
 		rows, err := conn.QueryContext(ctx, `SELECT id,user_id,config_user_id,agent_owner_user_id,agent_id,workspace_project_id,workspace_session_id,
-			request_json,provider_plan_json,status,requested_count,succeeded_count,failed_count,canceled_count,cancel_requested,error_msg,
+			request_json,provider_plan_json,status,requested_count,artifact_byte_limit,succeeded_count,failed_count,canceled_count,cancel_requested,error_msg,
 			created_at,started_at,finished_at,updated_at FROM image_generation_batches LIMIT 0`)
 		if err != nil {
 			return err
@@ -861,9 +861,16 @@ func (d *DBStore) FinishImageGenerationTaskRetry(ctx context.Context, fence Imag
 
 func (d *DBStore) finishLiveImageGenerationTaskTx(ctx context.Context, tx *sql.Tx, batch *ImageGenerationBatchRecord, task *ImageGenerationTaskRecord, kind imageTaskFinalizeKind, done ImageTaskDoneResult, errorCode string) (bool, error) {
 	if kind == imageFinalizeDone {
-		count, valid := imageArtifactCount(done.ArtifactsJSON)
+		count, artifactBytes, valid := imageArtifactSummary(done.ArtifactsJSON)
 		if !valid || count != task.RequestedCount || strings.TrimSpace(done.ManifestKey) == "" {
 			return false, fmt.Errorf("store: DONE image task requires exactly %d artifacts and a manifest", task.RequestedCount)
+		}
+		committedBytes, err := imageBatchArtifactBytesOn(ctx, tx, batch.ID)
+		if err != nil {
+			return false, err
+		}
+		if artifactBytes > batch.ArtifactByteLimit || committedBytes > batch.ArtifactByteLimit-artifactBytes {
+			return false, ErrImageGenerationBatchArtifactLimit
 		}
 	}
 	var err error
@@ -884,14 +891,22 @@ func (d *DBStore) finishLiveImageGenerationTaskTx(ctx context.Context, tx *sql.T
 
 func (d *DBStore) FinishImageGenerationTaskDone(ctx context.Context, fence ImageGenerationFence, done ImageTaskDoneResult) (*ImageGenerationBatchRecord, bool, error) {
 	var output *ImageGenerationBatchRecord
+	limitExceeded := false
 	changed, err := d.withLiveImageGenerationFenceTx(ctx, fence, 5*time.Second,
 		func(tx *sql.Tx, batch *ImageGenerationBatchRecord, task *ImageGenerationTaskRecord, _ time.Time) (bool, error) {
 			changed, finishErr := d.finishLiveImageGenerationTaskTx(ctx, tx, batch, task, imageFinalizeDone, done, "")
+			if errors.Is(finishErr, ErrImageGenerationBatchArtifactLimit) {
+				changed, finishErr = d.finishLiveImageGenerationTaskTx(ctx, tx, batch, task, imageFinalizeFailed, ImageTaskDoneResult{}, "ARTIFACT_BATCH_LIMIT")
+				limitExceeded = changed && finishErr == nil
+			}
 			if finishErr == nil && changed {
 				output, finishErr = d.getImageGenerationBatch(ctx, tx, batch.ID, false)
 			}
 			return changed, finishErr
 		})
+	if err == nil && limitExceeded {
+		err = ErrImageGenerationBatchArtifactLimit
+	}
 	return output, changed, err
 }
 

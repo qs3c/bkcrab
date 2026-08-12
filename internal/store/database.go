@@ -238,6 +238,9 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate: %w\nSQL: %s", err, stmt)
 		}
 	}
+	if err := d.migrateImageGenerationBatchLimits(ctx); err != nil {
+		return fmt.Errorf("migrate image generation batch limits: %w", err)
+	}
 	if err := d.migrateRAGMultimodalSchema(ctx); err != nil {
 		return fmt.Errorf("migrate RAG multimodal schema: %w", err)
 	}
@@ -311,6 +314,23 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate sessions chatter_user_id: %w", err)
 	}
 	return nil
+}
+
+func (d *DBStore) migrateImageGenerationBatchLimits(ctx context.Context) error {
+	if d.dialect != mysqlDialect {
+		return nil
+	}
+	exists, err := d.tableExists(ctx, "image_generation_batches")
+	if err != nil || !exists {
+		return err
+	}
+	has, err := d.tableHasColumn(ctx, "image_generation_batches", "artifact_byte_limit")
+	if err != nil || has {
+		return err
+	}
+	_, err = d.db.ExecContext(ctx, `ALTER TABLE image_generation_batches
+		ADD COLUMN artifact_byte_limit BIGINT NOT NULL DEFAULT 134217728 AFTER requested_count`)
+	return err
 }
 
 func isDeferredRAGIndexTaskDDL(statement string) bool {

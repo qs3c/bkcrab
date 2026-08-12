@@ -60,6 +60,15 @@ without another provider charge. Salvage uses the claim's explicit
 jump. Cancellation disables salvage and stale workers cannot publish into or
 finalize a newer claim.
 
+The deployment-level batch byte limit is snapshotted into MySQL when a batch
+is created. Each task is checked again while the batch row is locked, so
+concurrent task completions cannot collectively exceed that logical-batch
+budget. A rejected task is terminalized with `ARTIFACT_BATCH_LIMIT` and its
+claim objects are deleted. Remote downloads also have an end-to-end timeout
+(`BKCRAB_IMAGEGEN_ARTIFACT_DOWNLOAD_TIMEOUT`, default `60s`), and the MySQL
+claim heartbeat remains active through salvage, download, workspace writes,
+and final commit.
+
 Use LocalFS only when exactly one bkcrab instance can execute and serve image
 batches. Every multi-instance deployment must use the same S3 or compatible
 workspace backend and credentials; otherwise a status request handled by a

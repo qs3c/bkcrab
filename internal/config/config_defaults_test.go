@@ -75,7 +75,8 @@ func TestImagegenBatchDefaults(t *testing.T) {
 		cfg.ProcessingTurnTTL != 15*time.Second || cfg.PublishAttemptTimeout != 15*time.Second ||
 		cfg.RecoveryDrainTimeout != 2*time.Minute || cfg.DispatchInterval != time.Second ||
 		cfg.ReconcileInterval != 30*time.Second || cfg.ExpiredSweepInterval != 15*time.Second ||
-		cfg.ReconcilePageSize != 200 || cfg.ProviderCallTimeout != 120*time.Second {
+		cfg.ReconcilePageSize != 200 || cfg.ProviderCallTimeout != 120*time.Second ||
+		cfg.ArtifactDownloadTimeout != 60*time.Second {
 		t.Fatalf("imagegen timing defaults = %+v", cfg)
 	}
 	if _, ok := reflect.TypeOf(EnvConfig{}).FieldByName("ImagegenBatch"); !ok {

@@ -33,6 +33,7 @@ func TestImageGenerationCanonicalMySQLDDL(t *testing.T) {
 		"create table if not exists image_generation_batches",
 		"request_json json not null",
 		"provider_plan_json json not null",
+		"artifact_byte_limit bigint not null default 134217728",
 		"key idx_image_generation_batches_owner (user_id, created_at, id)",
 		"create table if not exists image_generation_tasks",
 		"sequence_id bigint not null auto_increment",
@@ -74,6 +75,7 @@ func TestValidateCreateImageGenerationBatch(t *testing.T) {
 		{name: "task count zero", mutate: func(r *CreateImageGenerationBatchRequest) { r.Tasks[0].RequestedCount = 0 }},
 		{name: "task count above four", mutate: func(r *CreateImageGenerationBatchRequest) { r.Tasks[0].RequestedCount = 5 }},
 		{name: "requested total mismatch", mutate: func(r *CreateImageGenerationBatchRequest) { r.RequestedCount++ }},
+		{name: "zero artifact byte limit", mutate: func(r *CreateImageGenerationBatchRequest) { r.ArtifactByteLimit = 0 }},
 		{name: "duplicate task id", mutate: func(r *CreateImageGenerationBatchRequest) { r.Tasks[1].ID = r.Tasks[0].ID }},
 		{name: "duplicate chunk", mutate: func(r *CreateImageGenerationBatchRequest) {
 			r.Tasks[1].ItemIndex, r.Tasks[1].ChunkIndex = r.Tasks[0].ItemIndex, r.Tasks[0].ChunkIndex
@@ -142,5 +144,18 @@ func testCreateImageBatchRequest(batchID string, taskIDs ...string) CreateImageG
 		RequestJSON:      json.RawMessage(`{"version":1,"items":[]}`),
 		ProviderPlanJSON: json.RawMessage(`{"version":1,"providers":[]}`),
 		RequestedCount:   total, MaxRetries: 3, Tasks: tasks,
+		ArtifactByteLimit: 128 << 20,
+	}
+}
+
+func TestImageArtifactSummaryRequiresPositiveBoundedSizes(t *testing.T) {
+	count, total, ok := imageArtifactSummary(json.RawMessage(`[{"size":2},{"size":3}]`))
+	if !ok || count != 2 || total != 5 {
+		t.Fatalf("summary count=%d total=%d ok=%t", count, total, ok)
+	}
+	for _, raw := range []string{`[{"size":0}]`, `[{"size":-1}]`, `[{}]`} {
+		if _, _, ok := imageArtifactSummary(json.RawMessage(raw)); ok {
+			t.Fatalf("invalid artifact sizes accepted: %s", raw)
+		}
 	}
 }

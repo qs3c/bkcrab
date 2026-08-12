@@ -234,7 +234,7 @@ func TestBatchServiceCreatePersistsTrustedScopePlanAndDeterministicTasks(t *test
 	storeFake := &batchServiceStore{}
 	resolver := &batchServicePlanResolver{}
 	dispatcher := &batchServiceDispatcher{err: errors.New("rabbit unavailable")}
-	service := newBatchServiceForTest(storeFake, resolver, dispatcher, BatchServiceOptions{MaxImagesPerTask: 4, MaxRetries: 3})
+	service := newBatchServiceForTest(storeFake, resolver, dispatcher, BatchServiceOptions{MaxImagesPerTask: 4, MaxRetries: 3, MaxBatchBytes: 64 << 20})
 	result, err := service.Create(context.Background(), batchIdentity(), batchCreateRequest(16, 0))
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -247,7 +247,7 @@ func TestBatchServiceCreatePersistsTrustedScopePlanAndDeterministicTasks(t *test
 	if request.UserID != identity.UserID || request.ConfigUserID != identity.ConfigUserID || request.AgentOwnerUserID != identity.AgentOwnerUserID || request.AgentID != identity.AgentID || request.WorkspaceProjectID != identity.WorkspaceProjectID || request.WorkspaceSessionID != identity.WorkspaceSessionID {
 		t.Fatalf("untrusted or missing persisted scope: %#v", request)
 	}
-	if request.RequestedCount != 16 || len(request.Tasks) != 4 || request.Tasks[0].RequestedCount != 4 || request.Tasks[3].ChunkIndex != 3 {
+	if request.RequestedCount != 16 || request.ArtifactByteLimit != 64<<20 || len(request.Tasks) != 4 || request.Tasks[0].RequestedCount != 4 || request.Tasks[3].ChunkIndex != 3 {
 		t.Fatalf("task planning/order: %#v", request.Tasks)
 	}
 	for index, task := range request.Tasks {

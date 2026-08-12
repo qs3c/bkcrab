@@ -155,6 +155,7 @@ imagegenBatch:
   reconcilePageSize: 200
   maxRetries: 3
   providerCallTimeout: 120s
+  artifactDownloadTimeout: 60s
   providerConcurrencyDefault: 4
 
 redis:
