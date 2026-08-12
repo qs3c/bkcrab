@@ -304,8 +304,9 @@ func TestRAGFairQueueDeploymentComposeWiresDurableDependencies(t *testing.T) {
 	root := deploymentRepoRoot(t)
 	base := deploymentRead(t, filepath.Join(root, "deploy", "docker", "docker-compose.yml"))
 	ragOverlay := deploymentRead(t, filepath.Join(root, "deploy", "docker", "docker-compose.rag.yml"))
+	fairOverlay := deploymentRead(t, filepath.Join(root, "deploy", "docker", "docker-compose.fairqueue.yml"))
 	multi := deploymentRead(t, filepath.Join(root, "deploy", "multi-pod", "docker-compose.yaml"))
-	for name, raw := range map[string][]byte{"docker": base, "multi-pod": multi} {
+	for name, raw := range map[string][]byte{"docker-fair-overlay": fairOverlay, "multi-pod": multi} {
 		var document map[string]any
 		if err := yaml.Unmarshal(raw, &document); err != nil {
 			t.Fatalf("decode %s compose: %v", name, err)
@@ -324,13 +325,23 @@ func TestRAGFairQueueDeploymentComposeWiresDurableDependencies(t *testing.T) {
 	deploymentRequireContains(t, base,
 		`BKCRAB_FAIR_QUEUE_ENABLED: "${FAIR_QUEUE_ENABLED:-false}"`,
 		`BKCRAB_RAG_INDEX_WORKER_MODE: "${RAG_INDEX_WORKER_MODE:-legacy}"`,
-		`127.0.0.1:${REDIS_PORT:-6379}:6379`,
-		`127.0.0.1:${RABBITMQ_PORT:-5672}:5672`,
 	)
-	deploymentRequireContains(t, ragOverlay,
+	for _, forbidden := range []string{"REDIS_PASSWORD", "RABBITMQ_PASSWORD", "redis:", "rabbitmq:"} {
+		if bytes.Contains(base, []byte(forbidden)) {
+			t.Fatalf("base Compose must not require optional fairqueue dependency %q", forbidden)
+		}
+	}
+	for _, forced := range []string{"BKCRAB_FAIR_QUEUE_ENABLED", "BKCRAB_RAG_INDEX_WORKER_MODE"} {
+		if bytes.Contains(ragOverlay, []byte(forced)) {
+			t.Fatalf("RAG overlay must not force fair rollout setting %q", forced)
+		}
+	}
+	deploymentRequireContains(t, fairOverlay,
 		`BKCRAB_FAIR_QUEUE_ENABLED: "true"`,
 		`BKCRAB_RAG_INDEX_WORKER_MODE: fair`,
 		`BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY: single`,
+		`127.0.0.1:${REDIS_PORT:-6379}:6379`,
+		`127.0.0.1:${RABBITMQ_PORT:-5672}:5672`,
 	)
 	deploymentRequireContains(t, multi, `127.0.0.1:6379:6379`, `127.0.0.1:5672:5672`)
 	for _, pod := range []string{"pod-a", "pod-b"} {

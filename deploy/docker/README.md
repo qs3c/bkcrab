@@ -1,6 +1,6 @@
 # Docker Compose 部署
 
-`docker-compose.yml` 是基础部署，包含 BkCrab、MySQL、MinIO 和 agent 沙箱。RAG 是可选能力；启用时再叠加 `docker-compose.rag.yml`。该 overlay 新增 Milvus Standalone 和 etcd，并复用基础部署已有的 MinIO。
+`docker-compose.yml` 是基础部署，包含 BkCrab、MySQL、MinIO 和 agent 沙箱。RAG 是可选能力；启用时再叠加 `docker-compose.rag.yml`。该 overlay 新增 Milvus Standalone 和 etcd，并复用基础部署已有的 MinIO。公平队列依赖位于独立的 `docker-compose.fairqueue.yml`，只在完成 contract 和 paused 排空后叠加。
 
 ## 基础部署
 
@@ -192,23 +192,44 @@ RAG_TEST_MILVUS_ADDR=127.0.0.1:19530 \
 
 ## RAG fairqueue 依赖与两阶段切换
 
-基础 Compose 同时提供持久化 Redis（AOF）和 RabbitMQ management；management
-只绑定 `127.0.0.1`。在 `.env` 中为 `REDIS_PASSWORD` 和
-`RABBITMQ_PASSWORD` 生成独立随机值，Rabbit 密码必须是 URL-safe。开发默认
-仍为 `FAIR_QUEUE_ENABLED=false`、`RAG_INDEX_WORKER_MODE=legacy`。
+基础 Compose 与普通 RAG overlay 都保持
+`FAIR_QUEUE_ENABLED=false`、`RAG_INDEX_WORKER_MODE=legacy`，不会要求 Redis /
+RabbitMQ 凭据。最终的 `docker-compose.fairqueue.yml` overlay 才会启用 fair
+claimant，并提供持久化 Redis（AOF）和 RabbitMQ management；management 只绑定
+`127.0.0.1`。使用该 overlay 前，在 `.env` 中为 `REDIS_PASSWORD` 和
+`RABBITMQ_PASSWORD` 生成独立随机值，Rabbit 密码必须是 URL-safe。
 
 正式切换不能做 legacy/fair canary，必须是两个独立的全量部署：
 
-1. 先部署兼容 dual-write 镜像，执行
-   `bkcrab admin fairqueue contract-migrate` dry-run；确认所有旧 writer 已归零
-   后用 `--apply --confirm-all-writers-dual-write` 完成 contract。
+1. 先只用基础 Compose（需要 RAG 时再叠加普通 RAG overlay）部署兼容
+   dual-write 镜像。执行以下 dry-run；确认所有旧 writer 已归零后，追加
+   `--apply --confirm-all-writers-dual-write` 完成 contract：
+
+   ```bash
+   docker compose \
+     --env-file deploy/docker/.env \
+     -f deploy/docker/docker-compose.yml \
+     -f deploy/docker/docker-compose.rag.yml \
+     run --rm bkcrab admin fairqueue contract-migrate
+   ```
+
 2. 全量设置 `RAG_INDEX_WORKER_MODE=paused`，仍保持
    `FAIR_QUEUE_ENABLED=false`。等待旧容器归零、heartbeat 静止且所有旧
    claimant 退出；无法证明时保持 paused。
-3. 第二次全量部署设置 `FAIR_QUEUE_ENABLED=true`、
-   `RAG_INDEX_WORKER_MODE=fair`、writer topology `single`。检查 Redis、Rabbit
-   health 和 `/readyz`；Rabbit/Redis 暂时 degraded 不应使 API Pod 失活，但
-   scheduler 会停止新 claim。
+3. 第二次全量部署显式叠加 fairqueue overlay；它固定 enabled=true、
+   worker mode=fair 和 writer topology=single，并启动 Redis/RabbitMQ：
+
+   ```bash
+   docker compose \
+     --env-file deploy/docker/.env \
+     -f deploy/docker/docker-compose.yml \
+     -f deploy/docker/docker-compose.rag.yml \
+     -f deploy/docker/docker-compose.fairqueue.yml \
+     up -d --build
+   ```
+
+   检查 Redis、Rabbit health 和 `/readyz`；Rabbit/Redis 暂时 degraded 不应使
+   API Pod 失活，但 scheduler 会停止新 claim。
 4. 回滚按 `fair -> paused`，排空非终态任务后再到兼容 dual-write 的
    `legacy`。contract 后禁止回到 pre-expand 镜像。
 
@@ -239,6 +260,9 @@ docker compose \
   -f deploy/docker/docker-compose.rag.yml \
   down
 ```
+
+如果当前启用了 fairqueue，停止或更新时也必须传入
+`-f deploy/docker/docker-compose.fairqueue.yml`，避免遗漏 Redis/RabbitMQ 服务。
 
 `down -v` 会永久删除 MySQL、MinIO、Milvus 和 etcd 数据，只应在明确需要清空环境时使用。
 

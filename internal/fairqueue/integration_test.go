@@ -108,7 +108,7 @@ func TestIntegrationDependencies(t *testing.T) {
 	}
 
 	redisClient := redislib.NewClient(&redislib.Options{Addr: redisAddr, Password: os.Getenv("BKCRAB_TEST_REDIS_PASSWORD"), ContextTimeoutEnabled: true})
-	defer redisClient.Close()
+	t.Cleanup(func() { _ = redisClient.Close() })
 	redisKey := namespace + ":probe"
 	if err := redisClient.Set(ctx, redisKey, "1", time.Minute).Err(); err != nil {
 		t.Fatalf("write Redis namespace: %v", err)
@@ -123,12 +123,12 @@ func TestIntegrationDependencies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial RabbitMQ: %v", err)
 	}
-	defer connection.Close()
+	t.Cleanup(func() { _ = connection.Close() })
 	channel, err := connection.Channel()
 	if err != nil {
 		t.Fatalf("open RabbitMQ channel: %v", err)
 	}
-	defer channel.Close()
+	t.Cleanup(func() { _ = channel.Close() })
 	exchange := namespace + ".exchange"
 	queue := namespace + ".queue"
 	if err := channel.ExchangeDeclare(exchange, "direct", true, false, false, false, nil); err != nil {

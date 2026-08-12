@@ -6,11 +6,6 @@ services:
       - default
       - rag-parser-internal
     environment:
-      # This developer overlay is the explicit fair profile. Production must
-      # still perform legacy -> paused -> fair as two separate rollouts.
-      BKCRAB_FAIR_QUEUE_ENABLED: "true"
-      BKCRAB_RAG_INDEX_WORKER_MODE: fair
-      BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY: single
       BKCRAB_RAG_MILVUS_ADDRESS: milvus-standalone:19530
       BKCRAB_RAG_MILVUS_USERNAME: "${MILVUS_USERNAME:-}"
       BKCRAB_RAG_MILVUS_PASSWORD: "${MILVUS_PASSWORD:-}"
