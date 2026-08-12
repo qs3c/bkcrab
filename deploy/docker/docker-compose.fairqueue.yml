@@ -1,0 +1,61 @@
+# Optional final-stage fairqueue overlay. Apply this only after the compatible
+# legacy deployment has completed contract-migrate and a separate paused
+# rollout has drained every legacy claimant.
+services:
+  bkcrab:
+    environment:
+      BKCRAB_FAIR_QUEUE_ENABLED: "true"
+      BKCRAB_FAIR_QUEUE_REDIS_ADDR: redis:6379
+      BKCRAB_FAIR_QUEUE_REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD in deploy/docker/.env}"
+      BKCRAB_FAIR_QUEUE_REDIS_DB: "0"
+      BKCRAB_FAIR_QUEUE_REDIS_MODE: standalone
+      BKCRAB_FAIR_QUEUE_RABBITMQ_URL: "amqp://bkcrab:${RABBITMQ_PASSWORD:?set a URL-safe RABBITMQ_PASSWORD in deploy/docker/.env}@rabbitmq:5672/bkcrab"
+      BKCRAB_FAIR_QUEUE_EXCHANGE: bkcrab.fair.task
+      BKCRAB_FAIR_QUEUE_DEAD_LETTER_EXCHANGE: bkcrab.fair.dlx
+      BKCRAB_FAIR_QUEUE_KEY_PREFIX: "bkcrab:"
+      BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY: single
+      BKCRAB_RAG_INDEX_WORKER_MODE: fair
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in deploy/docker/.env}"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD in deploy/docker/.env}"
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    restart: unless-stopped
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: bkcrab
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in deploy/docker/.env}"
+      RABBITMQ_DEFAULT_VHOST: bkcrab
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  redis-data:
+  rabbitmq-data:

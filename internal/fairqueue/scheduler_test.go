@@ -698,8 +698,11 @@ func TestSchedulerRunTreatsUnsupportedTopologyAsResourceLocal(t *testing.T) {
 		t.Fatalf("Run returned resource-local unsupported topology as terminal: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
-	if admission.calls < 2 {
-		t.Fatalf("admission calls = %d, scheduler did not remain alive and idle after gate closure", admission.calls)
+	admission.mu.Lock()
+	admissionCalls := admission.calls
+	admission.mu.Unlock()
+	if admissionCalls < 2 {
+		t.Fatalf("admission calls = %d, scheduler did not remain alive and idle after gate closure", admissionCalls)
 	}
 	cancel()
 	select {
