@@ -145,6 +145,19 @@ Compare `SELECT @@server_uuid, DATABASE()` through both Pod configurations.
 The derived writer fingerprint must match. A mismatch is fatal and must close
 claim/publish gates before any new work.
 
+### 9. Imagegen batch failover and rollout
+
+Both Pods set `BKCRAB_IMAGEGEN_BATCH_MODE=fair` and use the same MySQL writer,
+standalone Redis, RabbitMQ, and MinIO S3 workspace. Create a 16-image batch,
+stop the Pod owning a lease, and verify the other Pod salvages/reclaims it only
+after the MySQL lease expires; status/cancel must work throughout.
+
+Production must reach this state through two complete rollouts:
+`legacy -> drain`, prove every legacy ReplicaSet and synchronous `image_gen`
+caller is gone, then `drain -> fair`. Roll back `fair -> drain`, drain all
+non-terminal batches, then `drain -> legacy`. LocalFS is single-instance only
+and is never a valid substitute for the shared S3-compatible workspace here.
+
 ## What this does NOT verify yet
 
 - **Sandbox lifecycle** — lazy creation + idle eviction + flush is in code

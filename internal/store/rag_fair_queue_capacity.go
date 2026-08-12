@@ -26,70 +26,15 @@ func (d *DBStore) withRAGFairQueueCapacityLock(
 	if timeout <= 0 {
 		return errors.New("store: RAG fair queue capacity lock timeout must be positive")
 	}
-	return d.withFairQueueExpectedWriterConn(ctx, expectedWriter,
-		func(conn *sql.Conn, identity fairQueueMySQLIdentity) (callbackErr error) {
-			lockName := fairQueueCapacityLockName(identity.database, "rag.index")
-			timeoutSeconds := timeout.Seconds()
-			if deadline, ok := ctx.Deadline(); ok {
-				remaining := time.Until(deadline).Seconds()
-				if remaining <= 0 {
-					return context.DeadlineExceeded
-				}
-				if remaining < timeoutSeconds {
-					timeoutSeconds = remaining
-				}
-			}
-
-			var acquired sql.NullInt64
-			if err := conn.QueryRowContext(ctx, `SELECT GET_LOCK(?, ?)`, lockName, timeoutSeconds).
-				Scan(&acquired); err != nil {
-				return errors.Join(
-					ErrRAGFairQueueCapacityLockUnavailable,
-					ErrFairQueueUnsafeConnection,
-					err,
-				)
-			}
-			if !acquired.Valid {
-				return errors.Join(
-					ErrRAGFairQueueCapacityLockUnavailable,
-					ErrFairQueueUnsafeConnection,
-				)
-			}
-			if acquired.Int64 != 1 {
-				return ErrRAGFairQueueCapacityLockUnavailable
-			}
-
-			lockHeld := true
-			defer func() {
-				if !lockHeld {
-					return
-				}
-				cleanupCtx, cancel := context.WithTimeout(
-					context.Background(), fairQueueOperationCleanupTimeout,
-				)
-				defer cancel()
-				var released sql.NullInt64
-				releaseErr := conn.QueryRowContext(
-					cleanupCtx, `SELECT RELEASE_LOCK(?)`, lockName,
-				).Scan(&released)
-				lockHeld = false
-				if releaseErr != nil || !released.Valid || released.Int64 != 1 {
-					callbackErr = errors.Join(
-						callbackErr, ErrFairQueueUnsafeConnection, releaseErr,
-					)
-				}
-			}()
-
-			if err := verifyFairQueueMySQLSession(ctx, conn, identity, lockName); err != nil {
-				// Releasing through a switched/unknown session is not authoritative.
-				// The outer expected-writer fence will physically discard it.
-				lockHeld = false
-				return err
-			}
-			return fn(ragFairQueueCapacitySession{
-				conn: conn, identity: identity, lockName: lockName,
-			})
+	err := d.withFairQueueResourceLock(ctx, expectedWriter, "rag.index", timeout,
+		func(conn *sql.Conn, identity fairQueueMySQLIdentity) error {
+			return fn(ragFairQueueCapacitySession{conn: conn, identity: identity,
+				lockName: fairQueueCapacityLockName(identity.database, "rag.index")})
 		})
+	if errors.Is(err, ErrFairQueueStartLockUnavailable) {
+		return errors.Join(ErrRAGFairQueueCapacityLockUnavailable, err)
+	}
+	return err
 }
 
 func (s *RAGFairQueueStore) withRAGFairQueueCapacityTx(

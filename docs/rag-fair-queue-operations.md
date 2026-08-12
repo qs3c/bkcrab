@@ -1,9 +1,24 @@
 # RAG fairqueue operations
 
-This runbook covers the `rag.index` resource. Redis coordinates fairness;
-MySQL is the canonical recovery and execution authority; RabbitMQ carries only
-bounded task identity. Never restore service by starting an unfenced fallback
-worker.
+This runbook describes the generic fairqueue safety protocol and the
+`rag.index` resource. Redis coordinates fairness; MySQL is the canonical
+recovery and execution authority; RabbitMQ carries only bounded task identity.
+Never restore service by starting an unfenced fallback worker.
+
+## Registered resources
+
+Unknown resources are rejected before an administrative command connects or
+mutates state.
+
+| Resource | Work | Resource-specific runbook |
+|---|---|---|
+| `rag.index` | Durable RAG document indexing | This document |
+| `image.generate` | Durable image batch tasks | [Image generation batch operations](imagegen-batch-operations.md) |
+
+The resources have independent Rabbit routing, Redis namespaces, recovery
+state, and concurrency pools. The three generic special operations—Rabbit
+disaster repair, writer rebind, and Redis force rebuild—are registered for
+both resources. Always pass the exact resource being repaired.
 
 ## Normal health and capacity
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/fairqueue"
+	"github.com/qs3c/bkcrab/internal/imagegen"
 	"github.com/qs3c/bkcrab/internal/rag"
 	"github.com/qs3c/bkcrab/internal/store"
 )
@@ -180,7 +181,7 @@ func validateFairQueueCLIResource(resource string) error {
 	if resource == "" {
 		return errors.New("--resource is required")
 	}
-	if resource != rag.RAGFairQueueResource {
+	if resource != rag.RAGFairQueueResource && resource != store.ImageGenerationResource {
 		return fmt.Errorf("unknown fairqueue resource %q", resource)
 	}
 	return nil
@@ -211,7 +212,10 @@ func (productionFairQueueAdminRunner) Contract(ctx context.Context, apply, confi
 type fairQueueAdminDependencies struct {
 	config       fairqueue.ResourceConfig
 	writer       string
-	adapter      *rag.RAGFairQueueAdapter
+	recoverySrc  fairqueue.RecoverySource
+	brokerSrc    fairqueue.BrokerRepairSource
+	rebindSrc    fairqueue.WriterRebindSource
+	journal      fairqueue.OperationJournal
 	recovery     *fairqueue.RecoveryCoordinator
 	operators    *fairqueue.RecoveryOperators
 	rabbitRepair *fairqueue.RabbitDisasterRepair
@@ -251,13 +255,16 @@ func (adminStoppedRecoveryRuntime) CloseResource(string) error                  
 func (adminStoppedRecoveryRuntime) WaitForAttemptDrain(context.Context, string) error  { return nil }
 func (adminStoppedRecoveryRuntime) OpenResource(string, fairqueue.ResourceFence) error { return nil }
 
-type adminCurrentWriterVerifier struct{ adapter *rag.RAGFairQueueAdapter }
+type adminCurrentWriterVerifier struct {
+	resource string
+	source   fairqueue.WriterRebindSource
+}
 
 func (v adminCurrentWriterVerifier) VerifyCurrentWriter(ctx context.Context, resource string) (fairqueue.WriterIdentity, bool, error) {
-	if resource != rag.RAGFairQueueResource || v.adapter == nil {
+	if resource != v.resource || v.source == nil {
 		return fairqueue.WriterIdentity{}, false, fairqueue.ErrInvalidModel
 	}
-	identity, err := v.adapter.ReadWriterIdentity(ctx)
+	identity, err := v.source.ReadWriterIdentity(ctx)
 	return identity, err == nil, err
 }
 
@@ -292,10 +299,6 @@ func openFairQueueAdminDependencies(ctx context.Context, resource string) (*fair
 		return nil, err
 	}
 	d.writer = identity.Fingerprint
-	live, err := db.BindRAGFairQueueWriter(d.writer)
-	if err != nil {
-		return nil, err
-	}
 	d.admin, err = store.OpenFairQueueAdminStore(store.StorageConfig{Type: store.StorageMySQL, DSN: env.Storage.DSN, AutoMigrate: false})
 	if err != nil {
 		return nil, err
@@ -311,13 +314,38 @@ func openFairQueueAdminDependencies(ctx context.Context, resource string) (*fair
 	if err != nil {
 		return nil, err
 	}
-	d.config = fairQueueCLIResourceConfig(env.FairQueue.RAGIndex)
-	d.adapter, err = rag.NewRAGFairQueueAdapter(live, adminNoopRAGRunner{}, adminSource, journalStore, rag.RAGFairQueueAdapterOptions{
-		WorkerID: "rag-fair-admin", LeaseDuration: d.config.ReservationTTL,
-		ClaimLimits: store.RAGFairQueueClaimLimits{GlobalConcurrency: d.config.GlobalConcurrency, PerUserBurstConcurrency: d.config.PerUserBurstConcurrency, AdvisoryLockTimeout: time.Second, MaintenanceRetryDelay: d.config.DispatchInterval},
-	})
+	d.journal, err = rag.NewRAGFairQueueOperationJournal(journalStore)
 	if err != nil {
 		return nil, err
+	}
+	switch resource {
+	case rag.RAGFairQueueResource:
+		d.config = fairQueueCLIResourceConfig(env.FairQueue.RAGIndex)
+		live, bindErr := db.BindRAGFairQueueWriter(d.writer)
+		if bindErr != nil {
+			return nil, bindErr
+		}
+		adapter, adapterErr := rag.NewRAGFairQueueAdapter(live, adminNoopRAGRunner{}, adminSource, journalStore, rag.RAGFairQueueAdapterOptions{
+			WorkerID: "rag-fair-admin", LeaseDuration: d.config.ReservationTTL,
+			ClaimLimits: store.RAGFairQueueClaimLimits{GlobalConcurrency: d.config.GlobalConcurrency, PerUserBurstConcurrency: d.config.PerUserBurstConcurrency, AdvisoryLockTimeout: time.Second, MaintenanceRetryDelay: d.config.DispatchInterval},
+		})
+		if adapterErr != nil {
+			return nil, adapterErr
+		}
+		d.recoverySrc, d.brokerSrc, d.rebindSrc = adapter, adapter, adapter
+	case store.ImageGenerationResource:
+		d.config = imagegen.ImageFairQueueResourceConfig(env.ImagegenBatch)
+		live, bindErr := db.BindImageFairQueueWriter(d.writer)
+		if bindErr != nil {
+			return nil, bindErr
+		}
+		adapter := imagegen.NewFairQueueAdapter(imagegen.FairQueueAdapterOptions{
+			Store: live, WorkerID: "image-fair-admin", TaskLease: env.ImagegenBatch.TaskLease,
+			ClaimLimits: store.ImageGenerationClaimLimits{GlobalConcurrency: d.config.GlobalConcurrency, PerUserBurstConcurrency: d.config.PerUserBurstConcurrency, AdvisoryLockTimeout: time.Second},
+		})
+		d.recoverySrc, d.brokerSrc, d.rebindSrc = adapter, adapter, adapter
+	default:
+		return nil, fairqueue.ErrInvalidModel
 	}
 	registry, err := fairqueue.NewRegistry(d.config)
 	if err != nil {
@@ -335,14 +363,14 @@ func openFairQueueAdminDependencies(ctx context.Context, resource string) (*fair
 	if err != nil {
 		return nil, err
 	}
-	d.operators, err = fairqueue.NewRecoveryOperators(d.redis, d.recovery, d.adapter.OperationJournal(), d.redis,
-		adminCurrentWriterVerifier{d.adapter}, adminRabbitTruthVerifier{d.rabbit}, fairqueue.RecoveryOperatorOptions{
+	d.operators, err = fairqueue.NewRecoveryOperators(d.redis, d.recovery, d.journal, d.redis,
+		adminCurrentWriterVerifier{resource: resource, source: d.rebindSrc}, adminRabbitTruthVerifier{d.rabbit}, fairqueue.RecoveryOperatorOptions{
 			ResourceConfig: d.config, RecoveryLockTTL: 30 * time.Second, RecoveryLockRenewInterval: 10 * time.Second, ForceRebuildMinimumDelay: d.config.RecoveryDrainTimeout,
 		})
 	if err != nil {
 		return nil, err
 	}
-	d.rabbitRepair, err = fairqueue.NewRabbitDisasterRepair(d.config, fairqueue.WriterIdentity{Fingerprint: d.writer}, d.adapter, d.adapter, d.adapter.OperationJournal(), d.redis, d.recovery, fairqueue.RabbitDisasterRepairOptions{})
+	d.rabbitRepair, err = fairqueue.NewRabbitDisasterRepair(d.config, fairqueue.WriterIdentity{Fingerprint: d.writer}, d.brokerSrc, d.recoverySrc, d.journal, d.redis, d.recovery, fairqueue.RabbitDisasterRepairOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -385,14 +413,14 @@ func (productionFairQueueAdminRunner) WriterRebind(ctx context.Context, resource
 		return fairqueue.WriterRebindReport{}, err
 	}
 	defer d.Close()
-	report, err := d.operators.CheckWriterRebind(ctx, resource, expectedOld, d.adapter)
+	report, err := d.operators.CheckWriterRebind(ctx, resource, expectedOld, d.rebindSrc)
 	if err != nil || !apply {
 		return report, err
 	}
-	if err := d.operators.ApplyWriterRebind(ctx, resource, expectedOld, attestation, d.adapter); err != nil {
+	if err := d.operators.ApplyWriterRebind(ctx, resource, expectedOld, attestation, d.rebindSrc); err != nil {
 		return fairqueue.WriterRebindReport{}, err
 	}
-	return d.operators.CheckWriterRebind(ctx, resource, expectedOld, d.adapter)
+	return d.operators.CheckWriterRebind(ctx, resource, expectedOld, d.rebindSrc)
 }
 
 func (productionFairQueueAdminRunner) RedisForceRebuild(ctx context.Context, resource string, apply bool, attestation fairqueue.ForceRebuildAttestation) (fairqueue.ForceRebuildReport, error) {
@@ -401,12 +429,12 @@ func (productionFairQueueAdminRunner) RedisForceRebuild(ctx context.Context, res
 		return fairqueue.ForceRebuildReport{}, err
 	}
 	defer d.Close()
-	report, err := d.operators.CheckRedisForceRebuild(ctx, resource, d.adapter)
+	report, err := d.operators.CheckRedisForceRebuild(ctx, resource, d.recoverySrc)
 	if err != nil || !apply {
 		return report, err
 	}
-	if err := d.operators.ApplyRedisForceRebuild(ctx, resource, attestation, d.adapter); err != nil {
+	if err := d.operators.ApplyRedisForceRebuild(ctx, resource, attestation, d.recoverySrc); err != nil {
 		return fairqueue.ForceRebuildReport{}, err
 	}
-	return d.operators.CheckRedisForceRebuild(ctx, resource, d.adapter)
+	return d.operators.CheckRedisForceRebuild(ctx, resource, d.recoverySrc)
 }

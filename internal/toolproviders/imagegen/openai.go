@@ -1,114 +1,117 @@
 package imagegen
 
 import (
-	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
-	"fmt"
-	"io"
+	"errors"
 	"net/http"
 	"time"
 
+	domain "github.com/qs3c/bkcrab/internal/imagegen"
 	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
-// OpenAI 通过 POST /v1/images/generations 生成图像。
-// Model（"openai/<model>" 中的后缀）默认为 "gpt-image-1"，返回 base64；
-// 较旧的 dall-e-3 返回 URL。两种路径都被透明处理。
 type OpenAI struct{}
 
 func (OpenAI) Category() string { return Category }
 func (OpenAI) Name() string     { return "openai" }
 
-func (o *OpenAI) Execute(ctx context.Context, req toolproviders.Request) (toolproviders.Response, error) {
-	a, err := parseArgs(req.Args)
-	if err != nil {
-		return toolproviders.Response{}, err
+func (o *OpenAI) Capability(model string) domain.Capability {
+	maxImages := 4
+	if model == "dall-e-3" {
+		maxImages = 1
 	}
-	if req.Config.APIKey == "" {
-		return toolproviders.Response{}, fmt.Errorf("openai: missing api key")
-	}
-	model := req.Config.Model
-	if model == "" {
-		model = "gpt-image-1"
-	}
-	size := a.Size
-	if size == "" {
-		size = "1024x1024"
-	}
+	return domain.Capability{MaxImagesPerCall: maxImages, SupportedSizes: canonicalSizes()}
+}
 
-	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
-	defer cancel()
-
-	body := map[string]any{
-		"model":  model,
-		"prompt": a.Prompt,
-		"n":      a.N,
-		"size":   size,
+func (o *OpenAI) Generate(ctx context.Context, cfg domain.ResolvedProviderConfig, req domain.GenerateRequest) (domain.ProviderResult, error) {
+	if err := validateAdapterRequest(o.Name(), req); err != nil {
+		return domain.ProviderResult{}, err
 	}
-	endpoint := "https://api.openai.com/v1/images/generations"
-	if req.Config.Endpoint != "" {
-		endpoint = req.Config.Endpoint
+	if cfg.APIKey == "" {
+		return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorAuthConfig, o.Name(), 0, errors.New("missing credential"))
 	}
-	buf, _ := json.Marshal(body)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
+	model := cfgModel(cfg, "gpt-image-1")
+	body := map[string]any{"model": model, "prompt": req.Prompt, "n": req.Count, "size": openAISize(req.Size)}
+	endpoint := cfg.Endpoint
+	if endpoint == "" {
+		endpoint = "https://api.openai.com/v1/images/generations"
+	}
+	response, err := postJSON(ctx, endpoint, body, map[string]string{"Authorization": "Bearer " + cfg.APIKey})
 	if err != nil {
-		return toolproviders.Response{}, err
+		return domain.ProviderResult{}, typedTransportError(o.Name(), err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+req.Config.APIKey)
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return toolproviders.Response{}, toolproviders.Retry(fmt.Errorf("openai image request: %w", err))
+	defer response.Body.Close()
+	if err := classifyHTTPResponse(o.Name(), response, http.StatusOK); err != nil {
+		return domain.ProviderResult{}, err
 	}
-	defer resp.Body.Close()
-	if err := retriableHTTP("openai", resp); err != nil {
-		return toolproviders.Response{}, err
-	}
-	var out struct {
+	var payload struct {
 		Data []struct {
 			URL     string `json:"url"`
 			B64JSON string `json:"b64_json"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return toolproviders.Response{}, fmt.Errorf("openai decode: %w", err)
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorMalformedResult, o.Name(), response.StatusCode, err)
 	}
-	if len(out.Data) == 0 {
-		return toolproviders.Response{}, toolproviders.ErrNoResults
+	if len(payload.Data) == 0 {
+		return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorEmptyResult, o.Name(), response.StatusCode, errors.New("empty data"))
 	}
-	// 优先使用 URL（如果存在）；否则内联嵌入 b64。
-	urls := make([]string, 0, len(out.Data))
-	b64s := make([]string, 0, len(out.Data))
-	for _, d := range out.Data {
-		if d.URL != "" {
-			urls = append(urls, d.URL)
-		} else if d.B64JSON != "" {
-			b64s = append(b64s, d.B64JSON)
+	if len(payload.Data) != req.Count {
+		return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorIncompleteResult, o.Name(), response.StatusCode, errors.New("unexpected image count"))
+	}
+	result := domain.ProviderResult{Provider: o.Name(), Model: model, Images: make([]domain.GeneratedImage, 0, len(payload.Data))}
+	for _, item := range payload.Data {
+		switch {
+		case item.URL != "":
+			if !validSourceURL(item.URL) {
+				return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorMalformedResult, o.Name(), response.StatusCode, errors.New("invalid source URL"))
+			}
+			result.Images = append(result.Images, domain.GeneratedImage{SourceURL: item.URL})
+		case item.B64JSON != "":
+			data, err := base64.StdEncoding.DecodeString(item.B64JSON)
+			if err != nil {
+				return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorMalformedResult, o.Name(), response.StatusCode, err)
+			}
+			mimeType, ok := imageMIME(data)
+			if !ok {
+				return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorMalformedResult, o.Name(), response.StatusCode, errors.New("decoded payload is not an image"))
+			}
+			result.Images = append(result.Images, domain.GeneratedImage{Bytes: data, MIMEType: mimeType})
+		default:
+			return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorMalformedResult, o.Name(), response.StatusCode, errors.New("image has no source"))
 		}
 	}
-	if len(urls) > 0 {
-		return toolproviders.Response{Text: renderURLs(a.Prompt, urls)}, nil
-	}
-	if len(b64s) > 0 {
-		return toolproviders.Response{Text: renderB64(a.Prompt, b64s)}, nil
-	}
-	return toolproviders.Response{}, toolproviders.ErrNoResults
+	return result, nil
 }
 
-func retriableHTTP(name string, resp *http.Response) error {
-	if resp.StatusCode == http.StatusOK {
-		return nil
+func (o *OpenAI) Execute(ctx context.Context, request toolproviders.Request) (toolproviders.Response, error) {
+	parsed, err := parseArgs(request.Args)
+	if err != nil {
+		return toolproviders.Response{}, err
 	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-	err := fmt.Errorf("%s HTTP %d: %s", name, resp.StatusCode, string(body))
-	switch {
-	case resp.StatusCode == http.StatusTooManyRequests,
-		resp.StatusCode == http.StatusRequestTimeout,
-		resp.StatusCode >= 500:
-		return toolproviders.Retry(err)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	result, err := o.Generate(ctx, domain.ResolvedProviderConfig{
+		APIKey: request.Config.APIKey, Endpoint: request.Config.Endpoint,
+		Options: request.Config.Options, Model: request.Config.Model,
+	}, domain.GenerateRequest{Prompt: parsed.Prompt, Size: canonicalLegacySize(parsed.Size), Count: parsed.N})
+	if err != nil {
+		return toolproviders.Response{}, legacyProviderError(err)
+	}
+	return legacyProviderResponse(parsed.Prompt, result), nil
+}
+
+func openAISize(size string) string {
+	switch size {
+	case "", domain.SizeSquare:
+		return "1024x1024"
+	case domain.SizeLandscape:
+		return "1536x1024"
+	case domain.SizePortrait:
+		return "1024x1536"
 	default:
-		return err
+		return size
 	}
 }

@@ -1,125 +1,142 @@
 package imagegen
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
+	domain "github.com/qs3c/bkcrab/internal/imagegen"
 	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
-// Replicate 向 https://api.replicate.com/v1/models/<owner>/<name>/predictions
-// 发送请求，使用 `Prefer: wait` 获取同步响应（最长 60 秒），而不是轮询预测 URL。
-// 认证方式为 `Authorization: Bearer <token>`
-//（Replicate 也接受旧的 `Token <token>` 格式；我们使用 Bearer 以与目录其余部分保持一致）。
 type Replicate struct{}
 
 func (Replicate) Category() string { return Category }
 func (Replicate) Name() string     { return "replicate" }
 
-// replicateModelRoutes 将短模型键（"replicate/" 后的所有内容）
-// 映射到 Replicate 上的 "<owner>/<name>" 路径。调用方也可以传递原始的
-// owner/name 对（例如 "replicate/black-forest-labs/flux-schnell"），
-// 我们会原样路由。
 var replicateModelRoutes = map[string]string{
-	"flux-schnell": "black-forest-labs/flux-schnell",
-	"flux-dev":     "black-forest-labs/flux-dev",
-	"flux-pro":     "black-forest-labs/flux-1.1-pro",
-	"sdxl":         "stability-ai/sdxl",
-	"ideogram":     "ideogram-ai/ideogram-v2",
+	"flux-schnell": "black-forest-labs/flux-schnell", "flux-dev": "black-forest-labs/flux-dev",
+	"flux-pro": "black-forest-labs/flux-1.1-pro", "sdxl": "stability-ai/sdxl", "ideogram": "ideogram-ai/ideogram-v2",
 }
 
-func (r *Replicate) Execute(ctx context.Context, req toolproviders.Request) (toolproviders.Response, error) {
-	a, err := parseArgs(req.Args)
+func (r *Replicate) Capability(string) domain.Capability {
+	return domain.Capability{MaxImagesPerCall: 4, SupportedSizes: canonicalSizes()}
+}
+
+func (r *Replicate) Generate(ctx context.Context, cfg domain.ResolvedProviderConfig, req domain.GenerateRequest) (domain.ProviderResult, error) {
+	if err := validateAdapterRequest(r.Name(), req); err != nil {
+		return domain.ProviderResult{}, err
+	}
+	if cfg.APIKey == "" {
+		return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorAuthConfig, r.Name(), 0, errors.New("missing credential"))
+	}
+	model := cfgModel(cfg, "flux-schnell")
+	path := replicateModelRoutes[model]
+	if path == "" {
+		path = model
+	}
+	endpoint := cfg.Endpoint
+	if endpoint == "" {
+		endpoint = "https://api.replicate.com/v1/models/" + strings.Trim(path, "/") + "/predictions"
+	}
+	body := map[string]any{"input": map[string]any{
+		"prompt": req.Prompt, "num_outputs": req.Count, "aspect_ratio": replicateSize(req.Size),
+	}}
+	response, err := postJSON(ctx, endpoint, body, map[string]string{
+		"Authorization": "Bearer " + cfg.APIKey, "Prefer": "wait",
+	})
 	if err != nil {
-		return toolproviders.Response{}, err
+		return domain.ProviderResult{}, typedTransportError(r.Name(), err)
 	}
-	if req.Config.APIKey == "" {
-		return toolproviders.Response{}, fmt.Errorf("replicate: missing api key")
+	defer response.Body.Close()
+	if err := classifyHTTPResponse(r.Name(), response, http.StatusOK, http.StatusCreated); err != nil {
+		return domain.ProviderResult{}, err
 	}
-	modelKey := req.Config.Model
-	if modelKey == "" {
-		modelKey = "flux-schnell"
-	}
-	path, ok := replicateModelRoutes[modelKey]
-	if !ok {
-		path = modelKey
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
-	defer cancel()
-
-	input := map[string]any{
-		"prompt":      a.Prompt,
-		"num_outputs": a.N,
-	}
-	if a.Size != "" {
-		// Replicate flux 模型使用 aspect_ratio（如 "1:1"）；width/height
-		// 已从架构中移除。接受两者并透传——调用方的工具描述会告诉 LLM 发送什么。
-		input["aspect_ratio"] = a.Size
-	}
-	buf, _ := json.Marshal(map[string]any{"input": input})
-
-	url := "https://api.replicate.com/v1/models/" + path + "/predictions"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
-	if err != nil {
-		return toolproviders.Response{}, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+req.Config.APIKey)
-	// Prefer: wait 使 Replicate 保持连接打开，直到预测完成（或 60 秒超时），
-	// 因此我们不需要在此实现轮询循环。超过 60 秒后，响应返回 status="processing"，
-	// 我们将其作为 ErrNoResults 暴露，以便链可以回退。
-	httpReq.Header.Set("Prefer", "wait")
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return toolproviders.Response{}, toolproviders.Retry(fmt.Errorf("replicate request: %w", err))
-	}
-	defer resp.Body.Close()
-	// 即使 Prefer:wait 等待完成，Replicate 对已接受的预测仍返回 201 Created，
-	// 因此将 200 和 201 都视为成功。
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return toolproviders.Response{}, retriableHTTP("replicate", resp)
-	}
-	var out struct {
-		Status string          `json:"status"` // "succeeded" / "failed" / "processing" / ...
-		Error  string          `json:"error,omitempty"`
+	var payload struct {
+		Status string          `json:"status"`
+		Error  string          `json:"error"`
 		Output json.RawMessage `json:"output"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return toolproviders.Response{}, fmt.Errorf("replicate decode: %w", err)
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorMalformedResult, r.Name(), response.StatusCode, err)
 	}
-	if out.Status == "failed" {
-		return toolproviders.Response{}, fmt.Errorf("replicate failed: %s", out.Error)
+	if payload.Status == "failed" {
+		kind := domain.ErrorUpstreamTransient
+		lower := strings.ToLower(payload.Error)
+		if strings.Contains(lower, "safety") || strings.Contains(lower, "content policy") {
+			kind = domain.ErrorSafetyRejected
+		}
+		return domain.ProviderResult{}, domain.NewProviderError(kind, r.Name(), response.StatusCode, errors.New("prediction failed"))
 	}
-	if out.Status != "succeeded" {
-		// "starting" / "processing" / "canceled" —— 视为可重试，以便链中的下一个提供商有机会。
-		return toolproviders.Response{}, toolproviders.Retry(fmt.Errorf("replicate status %q", out.Status))
+	if payload.Status != "succeeded" {
+		return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorUpstreamTransient, r.Name(), response.StatusCode, errors.New("prediction incomplete"))
 	}
-	urls := decodeReplicateOutput(out.Output)
+	urls, valid := decodeReplicateOutput(payload.Output)
+	if !valid {
+		return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorMalformedResult, r.Name(), response.StatusCode, errors.New("invalid output shape"))
+	}
 	if len(urls) == 0 {
-		return toolproviders.Response{}, toolproviders.ErrNoResults
+		return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorEmptyResult, r.Name(), response.StatusCode, errors.New("empty output"))
 	}
-	return toolproviders.Response{Text: renderURLs(a.Prompt, urls)}, nil
+	if len(urls) != req.Count {
+		return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorIncompleteResult, r.Name(), response.StatusCode, errors.New("unexpected image count"))
+	}
+	result := domain.ProviderResult{Provider: r.Name(), Model: model, Images: make([]domain.GeneratedImage, 0, len(urls))}
+	for _, sourceURL := range urls {
+		if !validSourceURL(sourceURL) {
+			return domain.ProviderResult{}, domain.NewProviderError(domain.ErrorMalformedResult, r.Name(), response.StatusCode, errors.New("invalid source URL"))
+		}
+		result.Images = append(result.Images, domain.GeneratedImage{SourceURL: sourceURL})
+	}
+	return result, nil
 }
 
-// decodeReplicateOutput 接受数组形式（flux: ["url1", "url2"]）
-// 和单字符串形式（一些较旧的模型返回一个 URL），并返回扁平切片。
-func decodeReplicateOutput(raw json.RawMessage) []string {
-	if len(raw) == 0 {
-		return nil
+func (r *Replicate) Execute(ctx context.Context, request toolproviders.Request) (toolproviders.Response, error) {
+	parsed, err := parseArgs(request.Args)
+	if err != nil {
+		return toolproviders.Response{}, err
 	}
-	var arr []string
-	if err := json.Unmarshal(raw, &arr); err == nil {
-		return arr
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	result, err := r.Generate(ctx, domain.ResolvedProviderConfig{
+		APIKey: request.Config.APIKey, Endpoint: request.Config.Endpoint, Options: request.Config.Options, Model: request.Config.Model,
+	}, domain.GenerateRequest{Prompt: parsed.Prompt, Size: canonicalLegacySize(parsed.Size), Count: parsed.N})
+	if err != nil {
+		return toolproviders.Response{}, legacyProviderError(err)
 	}
-	var single string
-	if err := json.Unmarshal(raw, &single); err == nil && single != "" {
-		return []string{single}
+	return legacyProviderResponse(parsed.Prompt, result), nil
+}
+
+func replicateSize(size string) string {
+	switch size {
+	case "", domain.SizeSquare:
+		return "1:1"
+	case domain.SizeLandscape:
+		return "4:3"
+	case domain.SizePortrait:
+		return "3:4"
+	default:
+		return size
 	}
-	return nil
+}
+
+func decodeReplicateOutput(raw json.RawMessage) ([]string, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, true
+	}
+	var many []string
+	if err := json.Unmarshal(raw, &many); err == nil {
+		return many, true
+	}
+	var one string
+	if err := json.Unmarshal(raw, &one); err == nil {
+		if one == "" {
+			return nil, true
+		}
+		return []string{one}, true
+	}
+	return nil, false
 }

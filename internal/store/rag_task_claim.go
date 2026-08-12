@@ -2,9 +2,7 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -119,11 +117,6 @@ func (d *DBStore) commitRAGIndexClaimTx(
 		return err
 	}
 	return nil
-}
-
-func fairQueueCapacityLockName(database, resource string) string {
-	digest := sha256.Sum256([]byte(database + "\x00" + resource))
-	return "bkcrab:fq:" + hex.EncodeToString(digest[:])[:48]
 }
 
 func (s *RAGFairQueueStore) ClaimRAGIndexTaskByID(

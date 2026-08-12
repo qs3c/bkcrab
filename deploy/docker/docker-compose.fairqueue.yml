@@ -1,6 +1,6 @@
-# Optional final-stage fairqueue overlay. Apply this only after the compatible
-# legacy deployment has completed contract-migrate and a separate paused
-# rollout has drained every legacy claimant.
+# Shared fairqueue infrastructure overlay. This supplies Redis/RabbitMQ and
+# enables the common protocol, but deliberately does not promote any resource
+# worker mode. Combine it with an explicit resource rollout decision.
 services:
   bkcrab:
     environment:
@@ -14,7 +14,6 @@ services:
       BKCRAB_FAIR_QUEUE_DEAD_LETTER_EXCHANGE: bkcrab.fair.dlx
       BKCRAB_FAIR_QUEUE_KEY_PREFIX: "bkcrab:"
       BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY: single
-      BKCRAB_RAG_INDEX_WORKER_MODE: fair
     depends_on:
       redis:
         condition: service_healthy

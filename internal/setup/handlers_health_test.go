@@ -68,6 +68,19 @@ func TestFairQueueReadinessUsesOnlyAPIAndMySQLSafety(t *testing.T) {
 		{name: "fair runtime failure does not withdraw a mysql-ready API", provider: true, mutate: func(snapshot *fairqueue.HealthSnapshot) {
 			snapshot.FairQueue.Status = fairqueue.HealthStatusFailed
 		}, want: http.StatusOK},
+		{name: "image drain requires verified writer session", provider: true, mutate: func(snapshot *fairqueue.HealthSnapshot) {
+			snapshot.FairQueue.Resources = map[string]fairqueue.FairQueueHealthSnapshot{"image.generate": snapshot.FairQueue}
+			image := snapshot.FairQueue.Resources["image.generate"]
+			image.Mode = "drain"
+			image.MySQL.SessionAffinity = fairqueue.SessionAffinityUnknown
+			snapshot.FairQueue.Resources["image.generate"] = image
+		}, want: http.StatusServiceUnavailable},
+		{name: "image redis recovery keeps API ready", provider: true, mutate: func(snapshot *fairqueue.HealthSnapshot) {
+			image := snapshot.FairQueue
+			image.Mode = "fair"
+			image.Redis.Status = fairqueue.DependencyStatusRecovering
+			snapshot.FairQueue.Resources = map[string]fairqueue.FairQueueHealthSnapshot{"image.generate": image}
+		}, want: http.StatusOK},
 	}
 
 	for _, test := range tests {

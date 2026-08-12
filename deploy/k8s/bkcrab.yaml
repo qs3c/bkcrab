@@ -23,6 +23,11 @@
 #
 # 配置完全由 BKCRAB_* 环境变量驱动 — 没有配置文件。
 # 用户/agent/提供者/渠道都存储在 MySQL 中。
+#
+# Imagegen 发布闸门：必须用两个独立全量 rollout 完成 legacy -> drain -> fair，
+# 每一步确认旧 ReplicaSet=0；回滚 fair -> drain，排空后再 drain -> legacy。
+# 多副本必须使用共享 S3-compatible workspace。LocalFS 仅允许单副本，不能
+# 让不同 Pod 恢复或读取彼此生成的图片。
 
 ---
 apiVersion: v1
@@ -209,6 +214,40 @@ data:
   BKCRAB_RAG_INDEX_PER_USER_BURST_CONCURRENCY: "4"
   BKCRAB_RAG_INDEX_BORROW_ENABLED: "true"
 
+  # Imagegen starts legacy. Promote with two complete rollouts only:
+  # legacy -> drain (prove the previous ReplicaSet is zero) -> fair.
+  BKCRAB_IMAGEGEN_BATCH_MODE: "legacy"
+  BKCRAB_IMAGEGEN_MAX_IMAGES_PER_BATCH: "16"
+  BKCRAB_IMAGEGEN_MAX_IMAGES_PER_TASK: "4"
+  BKCRAB_IMAGEGEN_TOOL_WAIT_DEFAULT: "180s"
+  BKCRAB_IMAGEGEN_TOOL_WAIT_MAX: "240s"
+  BKCRAB_IMAGEGEN_PROMPT_MAX_RUNES: "8000"
+  BKCRAB_IMAGEGEN_REQUEST_MAX_BYTES: "131072"
+  BKCRAB_IMAGEGEN_IMAGE_MAX_BYTES: "20971520"
+  BKCRAB_IMAGEGEN_BATCH_MAX_BYTES: "134217728"
+  BKCRAB_IMAGEGEN_LOCAL_WORKERS: "4"
+  BKCRAB_IMAGEGEN_GLOBAL_CONCURRENCY: "4"
+  BKCRAB_IMAGEGEN_PER_USER_BASE_CONCURRENCY: "2"
+  BKCRAB_IMAGEGEN_PER_USER_BURST_CONCURRENCY: "4"
+  BKCRAB_IMAGEGEN_BORROW_ENABLED: "true"
+  BKCRAB_IMAGEGEN_TASK_LEASE: "180s"
+  BKCRAB_IMAGEGEN_TASK_HEARTBEAT: "30s"
+  BKCRAB_IMAGEGEN_RESERVATION_TTL: "180s"
+  BKCRAB_IMAGEGEN_RESERVATION_HEARTBEAT: "30s"
+  BKCRAB_IMAGEGEN_PREPARE_TIMEOUT: "10s"
+  BKCRAB_IMAGEGEN_PROVISIONAL_TTL: "15s"
+  BKCRAB_IMAGEGEN_PROCESSING_TTL: "15s"
+  BKCRAB_IMAGEGEN_PUBLISH_ATTEMPT_TIMEOUT: "15s"
+  BKCRAB_IMAGEGEN_RECOVERY_DRAIN_TIMEOUT: "120s"
+  BKCRAB_IMAGEGEN_DISPATCH_INTERVAL: "1s"
+  BKCRAB_IMAGEGEN_RECONCILE_INTERVAL: "30s"
+  BKCRAB_IMAGEGEN_EXPIRED_SWEEP_INTERVAL: "15s"
+  BKCRAB_IMAGEGEN_RECONCILE_PAGE_SIZE: "200"
+  BKCRAB_IMAGEGEN_MAX_RETRIES: "3"
+  BKCRAB_IMAGEGEN_PROVIDER_CALL_TIMEOUT: "120s"
+  BKCRAB_IMAGEGEN_ARTIFACT_DOWNLOAD_TIMEOUT: "60s"
+  BKCRAB_IMAGEGEN_PROVIDER_CONCURRENCY_DEFAULT: "4"
+
   # ─── 多模态文档 RAG（默认关闭发布开关）───
   # parser 只在集群内部暴露；主服务异步探测 /healthz。
   BKCRAB_RAG_ADVANCED_ENABLED: "false"
@@ -354,7 +393,7 @@ spec:
             # terminationGracePeriod=30s；preStop 休眠 15s，剩余时间留给 Go 的优雅关闭。
             preStop:
               exec: { command: ["sh", "-c", "sleep 15"] }
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: 150
       volumes:
         # /data/.bkcrab 仅保存 Pod 本地临时状态（沙箱缓存等）。
         # 工作区工件进入对象存储（BKCRAB_OBJECT_STORE_*），

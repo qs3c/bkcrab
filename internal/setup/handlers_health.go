@@ -37,7 +37,10 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 }
 
 func fairQueueAPIReady(snapshot fairqueue.HealthSnapshot) bool {
-	health := snapshot.FairQueue
+	return fairQueueResourceAPIReady(snapshot.FairQueue)
+}
+
+func fairQueueResourceAPIReady(health fairqueue.FairQueueHealthSnapshot) bool {
 	if health.Status == "" {
 		return false
 	}
@@ -50,8 +53,13 @@ func fairQueueAPIReady(snapshot fairqueue.HealthSnapshot) bool {
 	// Fair mode cannot safely claim or mutate authoritative state before the
 	// cached writer/session check has succeeded. Legacy and paused modes do not
 	// require that fair-only identity fence.
-	if health.Mode == "fair" && health.MySQL.SessionAffinity != fairqueue.SessionAffinityVerified {
+	if (health.Mode == "fair" || health.Mode == "drain") && health.MySQL.SessionAffinity != fairqueue.SessionAffinityVerified {
 		return false
+	}
+	for _, resource := range health.Resources {
+		if !fairQueueResourceAPIReady(resource) {
+			return false
+		}
 	}
 	return true
 }

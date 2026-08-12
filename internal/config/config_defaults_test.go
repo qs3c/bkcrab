@@ -53,3 +53,36 @@ func TestFairQueueDeploymentScope(t *testing.T) {
 		t.Fatal("FairQueue must not enter database-backed user/agent Config")
 	}
 }
+
+func TestImagegenBatchDefaults(t *testing.T) {
+	cfg := DefaultImagegenBatchCfg()
+	if cfg.Mode != ImagegenBatchModeLegacy || cfg.MaxImagesPerBatch != 16 ||
+		cfg.MaxImagesPerTask != 4 || cfg.ToolWaitDefault != 180*time.Second ||
+		cfg.ToolWaitMax != 240*time.Second || cfg.PromptMaxRunes != 8000 ||
+		cfg.RequestMaxBytes != 128*1024 || cfg.ImageMaxBytes != 20*1024*1024 ||
+		cfg.BatchMaxBytes != 128*1024*1024 {
+		t.Fatalf("imagegen request defaults = %+v", cfg)
+	}
+	if cfg.LocalWorkers != 4 || cfg.GlobalConcurrency != 4 ||
+		cfg.PerUserBaseConcurrency != 2 || cfg.PerUserBurstConcurrency != 4 ||
+		!cfg.BorrowEnabled || cfg.MaxRetries != 3 ||
+		cfg.ProviderConcurrencyDefault != 4 {
+		t.Fatalf("imagegen concurrency defaults = %+v", cfg)
+	}
+	if cfg.TaskLease != 180*time.Second || cfg.TaskHeartbeat != 30*time.Second ||
+		cfg.ReservationTTL != 180*time.Second || cfg.ReservationHeartbeat != 30*time.Second ||
+		cfg.PrepareTimeout != 10*time.Second || cfg.ProvisionalTTL != 15*time.Second ||
+		cfg.ProcessingTurnTTL != 15*time.Second || cfg.PublishAttemptTimeout != 15*time.Second ||
+		cfg.RecoveryDrainTimeout != 2*time.Minute || cfg.DispatchInterval != time.Second ||
+		cfg.ReconcileInterval != 30*time.Second || cfg.ExpiredSweepInterval != 15*time.Second ||
+		cfg.ReconcilePageSize != 200 || cfg.ProviderCallTimeout != 120*time.Second ||
+		cfg.ArtifactDownloadTimeout != 60*time.Second {
+		t.Fatalf("imagegen timing defaults = %+v", cfg)
+	}
+	if _, ok := reflect.TypeOf(EnvConfig{}).FieldByName("ImagegenBatch"); !ok {
+		t.Fatal("deployment EnvConfig is missing ImagegenBatch")
+	}
+	if _, ok := reflect.TypeOf(Config{}).FieldByName("ImagegenBatch"); ok {
+		t.Fatal("ImagegenBatch must not enter database-backed user/agent Config")
+	}
+}

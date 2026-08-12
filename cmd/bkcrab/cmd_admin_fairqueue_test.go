@@ -15,6 +15,15 @@ type fakeFairQueueAdminRunner struct {
 	lastApply                         bool
 }
 
+type fakeAdminWriterSource struct {
+	fairqueue.WriterRebindSource
+	identity fairqueue.WriterIdentity
+}
+
+func (f fakeAdminWriterSource) ReadWriterIdentity(context.Context) (fairqueue.WriterIdentity, error) {
+	return f.identity, nil
+}
+
 func (f *fakeFairQueueAdminRunner) Contract(_ context.Context, apply, _ bool) (store.RAGFairQueueContractReport, error) {
 	f.contract++
 	f.lastApply = apply
@@ -56,7 +65,6 @@ func TestAdminFairQueueDefaultsToDryRunAndRejectsUnknownResourceBeforeRunner(t *
 	for _, args := range [][]string{
 		{"rabbit-disaster-repair"},
 		{"rabbit-disaster-repair", "--resource", "unknown.resource"},
-		{"redis-force-rebuild", "--resource", "image.generate"},
 	} {
 		if _, err := executeFairQueueAdmin(t, runner, args...); err == nil {
 			t.Fatalf("args %v accepted", args)
@@ -64,6 +72,35 @@ func TestAdminFairQueueDefaultsToDryRunAndRejectsUnknownResourceBeforeRunner(t *
 	}
 	if runner.rabbit != 0 || runner.rebuild != 0 {
 		t.Fatalf("invalid resource reached runner: %+v", runner)
+	}
+}
+
+func TestAdminFairQueueAcceptsImageResourceBeforeRunner(t *testing.T) {
+	runner := &fakeFairQueueAdminRunner{}
+	old := strings.Repeat("a", 64)
+	for _, args := range [][]string{
+		{"rabbit-disaster-repair", "--resource", "image.generate"},
+		{"rebind-writer", "--resource", "image.generate", "--expected-old-writer-fingerprint", old},
+		{"redis-force-rebuild", "--resource", "image.generate"},
+	} {
+		if _, err := executeFairQueueAdmin(t, runner, args...); err != nil {
+			t.Fatalf("args %v rejected: %v", args, err)
+		}
+	}
+	if runner.rabbit != 1 || runner.rebind != 1 || runner.rebuild != 1 {
+		t.Fatalf("image resource did not reach runner: %+v", runner)
+	}
+}
+
+func TestAdminCurrentWriterVerifierIsResourceScopedForImage(t *testing.T) {
+	identity := fairqueue.WriterIdentity{Fingerprint: strings.Repeat("a", 64)}
+	verifier := adminCurrentWriterVerifier{resource: store.ImageGenerationResource, source: fakeAdminWriterSource{identity: identity}}
+	got, verified, err := verifier.VerifyCurrentWriter(context.Background(), store.ImageGenerationResource)
+	if err != nil || !verified || got != identity {
+		t.Fatalf("image writer verification got=%+v verified=%t err=%v", got, verified, err)
+	}
+	if _, verified, err := verifier.VerifyCurrentWriter(context.Background(), "rag.index"); err == nil || verified {
+		t.Fatalf("cross-resource verification verified=%t err=%v", verified, err)
 	}
 }
 

@@ -305,6 +305,7 @@ func TestRAGFairQueueDeploymentComposeWiresDurableDependencies(t *testing.T) {
 	base := deploymentRead(t, filepath.Join(root, "deploy", "docker", "docker-compose.yml"))
 	ragOverlay := deploymentRead(t, filepath.Join(root, "deploy", "docker", "docker-compose.rag.yml"))
 	fairOverlay := deploymentRead(t, filepath.Join(root, "deploy", "docker", "docker-compose.fairqueue.yml"))
+	ragFairOverlay := deploymentRead(t, filepath.Join(root, "deploy", "docker", "docker-compose.rag-fair.yml"))
 	multi := deploymentRead(t, filepath.Join(root, "deploy", "multi-pod", "docker-compose.yaml"))
 	for name, raw := range map[string][]byte{"docker-fair-overlay": fairOverlay, "multi-pod": multi} {
 		var document map[string]any
@@ -338,11 +339,16 @@ func TestRAGFairQueueDeploymentComposeWiresDurableDependencies(t *testing.T) {
 	}
 	deploymentRequireContains(t, fairOverlay,
 		`BKCRAB_FAIR_QUEUE_ENABLED: "true"`,
-		`BKCRAB_RAG_INDEX_WORKER_MODE: fair`,
 		`BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY: single`,
 		`127.0.0.1:${REDIS_PORT:-6379}:6379`,
 		`127.0.0.1:${RABBITMQ_PORT:-5672}:5672`,
 	)
+	for _, forbidden := range []string{"BKCRAB_RAG_INDEX_WORKER_MODE", "BKCRAB_IMAGEGEN_BATCH_MODE"} {
+		if bytes.Contains(fairOverlay, []byte(forbidden)) {
+			t.Fatalf("shared fairqueue overlay must not promote resource mode %q", forbidden)
+		}
+	}
+	deploymentRequireContains(t, ragFairOverlay, `BKCRAB_RAG_INDEX_WORKER_MODE: fair`)
 	deploymentRequireContains(t, multi, `127.0.0.1:6379:6379`, `127.0.0.1:5672:5672`)
 	for _, pod := range []string{"pod-a", "pod-b"} {
 		if !bytes.Contains(multi, []byte(pod+":")) {

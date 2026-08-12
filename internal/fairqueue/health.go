@@ -52,6 +52,10 @@ type FairQueueHealthSnapshot struct {
 	Redis        RedisHealthSnapshot    `json:"redis"`
 	Recovery     RecoveryHealthSnapshot `json:"recovery"`
 	Loops        LoopHealthSnapshots    `json:"loops"`
+	// Resources carries additional registered-resource snapshots when one
+	// process runs more than one fair workload. The primary fields remain the
+	// backward-compatible RAG (or sole resource) view.
+	Resources map[string]FairQueueHealthSnapshot `json:"resources,omitempty"`
 }
 
 type MySQLHealthSnapshot struct {

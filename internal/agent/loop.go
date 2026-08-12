@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -1255,6 +1256,12 @@ func (a *Agent) RegisterImageGenChain(chain *toolproviders.Chain) {
 	tools.RegisterImageGenChain(a.registry, chain)
 }
 
+// RegisterImageGeneration switches the model-facing image tool catalog using
+// the deployment-scoped batch mode.
+func (a *Agent) RegisterImageGeneration(cfg config.ImagegenBatchCfg, chain *toolproviders.Chain, batches tools.ImagegenBatchService) {
+	tools.RegisterImageGenerationTools(a.registry, cfg, chain, batches)
+}
+
 // RegisterWebFetchChain 将代理的 web_fetch 后端替换为
 // 供应商链（例如直接 → jina → firecrawl）。传递 nil 来保留
 // 遗留的仅直接获取器已经在代理构建期间连接。
@@ -2263,6 +2270,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 对其进行拆分 (AllowSplit=true) 或折叠为换行符。
 	var replyParts []string
 	ragResources := newTurnRAGResources(msg.Channel)
+	imageArtifacts := newTurnImageArtifacts()
 
 	// lastUsage 保存本轮最近一次 LLM 调用报告的 token 用量，
 	// 用于在 "done" 事件上向前端汇报上下文占用百分比。仅在
@@ -2354,6 +2362,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				asst.Metadata = loopGuardMetadata(loopGuardTool)
 			}
 			asst.Metadata = ragResources.merge(asst.Metadata)
+			asst.Metadata = imageArtifacts.merge(asst.Metadata)
 			sess.Append(asst)
 			emitEvent(ctx, assistantContentEvent(resp.Content, asst.Metadata))
 			if resp.Content != "" {
@@ -2524,6 +2533,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			totalToolCalls++
 			tc := resp.ToolCalls[idx]
 			ragResources.add(r.toolName, r.err, r.metadata)
+			imageArtifacts.add(r.toolName, r.err, r.metadata)
 			resultContent, meta := extractToolMeta(reg, r.toolName, r.result)
 
 			// 挂钩：AfterToolCall
@@ -2641,6 +2651,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		finalContent = fmt.Sprintf("I've reached the maximum number of tool iterations (%d) and couldn't synthesize a final response. The work above represents what I gathered before hitting the limit.", a.maxToolIterations)
 	}
 	capMeta := ragResources.merge(iterationCapMetadata(a.maxToolIterations))
+	capMeta = imageArtifacts.merge(capMeta)
 	finalMsg := provider.Message{
 		Role:      "assistant",
 		Content:   finalContent,
@@ -2794,6 +2805,72 @@ func (resources *turnRAGResources) merge(metadata map[string]any) map[string]any
 		merged[key] = value
 	}
 	merged[tools.RAGResourcesMetadataKey] = append([]rag.RAGResourceRef(nil), resources.refs...)
+	return merged
+}
+
+// turnImageArtifacts accumulates only registry-validated results. It is
+// channel-independent: web consumes assistant metadata directly while IM
+// delivery converts the same trusted refs to media items at the gateway edge.
+type turnImageArtifacts struct {
+	seen map[string]struct{}
+	refs []tools.ImageArtifactRef
+}
+
+func newTurnImageArtifacts() *turnImageArtifacts { return &turnImageArtifacts{} }
+
+func (artifacts *turnImageArtifacts) add(toolName string, resultErr error, metadata tools.ResultMetadata) {
+	if artifacts == nil || resultErr != nil || toolName != "image_gen_batch" || len(metadata) == 0 {
+		return
+	}
+	raw := metadata[tools.ImageArtifactsMetadataKey]
+	if len(raw) == 0 {
+		return
+	}
+	var refs []tools.ImageArtifactRef
+	if err := json.Unmarshal(raw, &refs); err != nil {
+		slog.Warn("image_gen_batch metadata decode failed", "error", err)
+		return
+	}
+	if artifacts.seen == nil {
+		artifacts.seen = make(map[string]struct{}, len(refs))
+	}
+	for _, ref := range refs {
+		key := ref.BatchID + "\x00" + ref.TaskID + "\x00" + ref.Path
+		if _, exists := artifacts.seen[key]; exists || len(artifacts.refs) >= maxImageArtifactsPerTurn {
+			continue
+		}
+		artifacts.seen[key] = struct{}{}
+		artifacts.refs = append(artifacts.refs, ref)
+	}
+}
+
+const maxImageArtifactsPerTurn = 16
+
+func (artifacts *turnImageArtifacts) merge(metadata map[string]any) map[string]any {
+	if artifacts == nil || len(artifacts.refs) == 0 {
+		return metadata
+	}
+	refs := append([]tools.ImageArtifactRef(nil), artifacts.refs...)
+	sort.SliceStable(refs, func(i, j int) bool {
+		if refs[i].ItemIndex != refs[j].ItemIndex {
+			return refs[i].ItemIndex < refs[j].ItemIndex
+		}
+		if refs[i].ChunkIndex != refs[j].ChunkIndex {
+			return refs[i].ChunkIndex < refs[j].ChunkIndex
+		}
+		if refs[i].Index != refs[j].Index {
+			return refs[i].Index < refs[j].Index
+		}
+		if refs[i].TaskID != refs[j].TaskID {
+			return refs[i].TaskID < refs[j].TaskID
+		}
+		return refs[i].Path < refs[j].Path
+	})
+	merged := make(map[string]any, len(metadata)+1)
+	for key, value := range metadata {
+		merged[key] = value
+	}
+	merged[tools.ImageArtifactsMetadataKey] = refs
 	return merged
 }
 
@@ -3223,6 +3300,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	toolsDisabledByLoop := false
 	loopGuardTool := ""
 	ragResources := newTurnRAGResources(msg.Channel)
+	imageArtifacts := newTurnImageArtifacts()
 
 	// ReAct 循环 - 使用 Chat 进行工具迭代
 	for i := 0; i < a.maxToolIterations; i++ {
@@ -3263,6 +3341,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 				finalMetadata = loopGuardMetadata(loopGuardTool)
 			}
 			finalMetadata = ragResources.merge(finalMetadata)
+			finalMetadata = imageArtifacts.merge(finalMetadata)
 			sr, err := a.provider.ChatStream(ctx, providerRequestMessages(messages), finalTools, a.model, a.maxTokens, a.temperature)
 			if err != nil {
 				slog.Error("LLM stream failed, falling back", "agent", a.name, "error", err)
@@ -3399,6 +3478,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		for idx, r := range results {
 			tc := resp.ToolCalls[idx]
 			ragResources.add(r.toolName, r.err, r.metadata)
+			imageArtifacts.add(r.toolName, r.err, r.metadata)
 			resultContent, meta := extractToolMeta(reg, r.toolName, r.result)
 			a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterToolCall, ToolName: r.toolName, ToolResult: resultContent, Error: r.err, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID, GoalSessionKey: reg.GoalSessionKey(), IsPlanMode: isPlanMode(msg.Params), Source: msg.Source})
 
@@ -3417,7 +3497,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	}
 
 	slog.Warn("max tool iterations reached — streaming forced final delivery", "agent", a.name, "max", a.maxToolIterations)
-	return a.streamFinalDeliveryAfterCap(ctx, msg, messages, sess, totalToolCalls, chatterMem, anchor, ragResources)
+	return a.streamFinalDeliveryAfterCap(ctx, msg, messages, sess, totalToolCalls, chatterMem, anchor, ragResources, imageArtifacts)
 }
 
 // StreamFinalDeliveryAfterCap 使用工具运行一个额外的 ChatStream
@@ -3425,8 +3505,9 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 // 使用迭代上限元数据，以便聊天 UI 可以标记气泡。
 // 返回的 StreamReader 与正常的”最终
 // 上面的响应”分支，因此调用者不需要特殊情况。
-func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.InboundMessage, messages []provider.Message, sess *session.Session, toolCallCount int, chatterMem *Memory, anchor *turnAnchor, ragResources *turnRAGResources) *provider.StreamReader {
+func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.InboundMessage, messages []provider.Message, sess *session.Session, toolCallCount int, chatterMem *Memory, anchor *turnAnchor, ragResources *turnRAGResources, imageArtifacts *turnImageArtifacts) *provider.StreamReader {
 	capMeta := ragResources.merge(iterationCapMetadata(a.maxToolIterations))
+	capMeta = imageArtifacts.merge(capMeta)
 	finalMessages := append(messages, capReachedNudge(a.maxToolIterations))
 	sr, err := a.provider.ChatStream(ctx, providerRequestMessages(finalMessages), nil, a.model, a.maxTokens, a.temperature)
 	if err != nil {
