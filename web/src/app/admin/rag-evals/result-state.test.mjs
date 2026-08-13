@@ -1,0 +1,33 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+const { denominatorSummary, directionalDelta, metricDistribution, promotionGateReasons, thresholdCurve } = await import(new URL("./result-state.ts", import.meta.url));
+
+test("metric summary always exposes scored, skipped, error and total denominators", () => {
+  assert.equal(denominatorSummary({ count: 20, scoredCount: 15, skippedCount: 3, errorCount: 2, mean: .8 }), "15/20 已评分 · 3 skipped · 2 error");
+});
+
+test("paired delta applies opposite direction semantics to quality and latency/cost", () => {
+  assert.deepEqual(directionalDelta("faithfulness", .1), { improved: true, label: "+0.1000 · 改善" });
+  assert.deepEqual(directionalDelta("latency_ms", -25), { improved: true, label: "-25.0000 · 改善" });
+  assert.equal(directionalDelta("cost_usd", .2).improved, false);
+});
+
+test("distribution includes only successfully scored metric values", () => {
+  const cases = [{ contexts: [], usage: {}, latencyMs: 1, metrics: [
+    { Name: "faithfulness", Status: "ok", Value: .1 },
+    { Name: "faithfulness", Status: "error", Value: .9 },
+  ] }];
+  assert.deepEqual(metricDistribution(cases, "faithfulness"), [1, 0, 0, 0]);
+});
+
+test("threshold curve never treats missing relevance labels as false", () => {
+  const curve = thresholdCurve([{ contexts: [{ rerankScore: .9 }, { rerankScore: .8, relevant: true }], usage: {}, metrics: [], latencyMs: 1 }]);
+  assert.equal(curve.find((point) => point.threshold === .75).recall, 1);
+});
+
+test("promotion requires success, independent confirmation and audit note", () => {
+  assert.deepEqual(promotionGateReasons({ runStatus: "RUNNING", runId: "r1", confirmationRunId: "r1", note: "" }), [
+    "候选运行尚未成功完成", "confirmation run 不能与候选运行相同", "发布或回滚必须填写审计备注",
+  ]);
+});

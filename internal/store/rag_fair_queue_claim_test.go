@@ -163,6 +163,28 @@ func TestRAGFairQueueExactClaimRepairsActiveMaintenanceDurably(t *testing.T) {
 	}
 }
 
+func TestRAGFairQueueExactClaimDefersDuringPolicySync(t *testing.T) {
+	st := openRAGTaskClaimStore(t)
+	doc, taskID := seedRAGTaskDocument(t, st, "doc_exact_policy_sync", 2)
+	now := time.Now().UTC()
+	if _, err := st.db.ExecContext(context.Background(), `INSERT INTO rag_kb_policy_sync_tasks
+		(id,kb_id,source_generation_id,target_generation_id,target_policy_version,status,progress_json,estimate_json,requested_by,lease_owner,error_code,error_message,created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, "sync_exact_claim", doc.KBID, nil, "generation", 1,
+		RAGPolicySyncQueued, `{}`, `{}`, "admin", "", "", "", now); err != nil {
+		t.Fatal(err)
+	}
+	result := claimRAGFairQueueCoreForTest(t, st, taskID, "u_claim", 1, "fair-worker", RAGFairQueueClaimLimits{
+		GlobalConcurrency: 4, PerUserBurstConcurrency: 4,
+	})
+	if result.Disposition != RAGFairQueueClaimCapacityDeferred || result.Claim != nil {
+		t.Fatalf("policy sync claim result=%+v", result)
+	}
+	task, err := st.GetRAGIndexTask(context.Background(), taskID)
+	if err != nil || task.Status != "PENDING" || task.ClaimGeneration != 0 || task.DispatchGeneration != 1 {
+		t.Fatalf("policy sync mutated task=%+v err=%v", task, err)
+	}
+}
+
 func TestRAGFairQueueExactClaimRejectsTenantPoisonWithoutMutation(t *testing.T) {
 	st := openRAGTaskClaimStore(t)
 	_, taskID := seedRAGTaskDocument(t, st, "doc_exact_poison", 2)

@@ -2,11 +2,36 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 )
+
+func TestRAGKBPinnedProvisioningActivatesInitialGenerationAtomically(t *testing.T) {
+	st := openRAGTaskClaimStore(t)
+	ensureRAGLifecycleUser(t, st, "u_kb_pinned", "active")
+	kb := testRAGProvisioningKB("u_kb_pinned", "kb_pinned")
+	kb.PinnedPolicyVersion = sql.NullInt64{Int64: 3, Valid: true}
+	kb.ActiveGenerationID = sql.NullString{String: "rkg_initial", Valid: true}
+	kb.ProvisioningCollectionKey = "physical_initial"
+	fence, err := st.BeginRAGKBProvisioning(context.Background(), kb, "pinned-worker", time.Minute, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.ResolveActiveRAGKBGeneration(context.Background(), kb.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("building generation became visible early: %v", err)
+	}
+	active, ok, err := st.ActivateRAGKBProvisioning(context.Background(), *fence)
+	if err != nil || !ok || active.PinnedPolicyVersion.Int64 != 3 || active.ActiveGenerationID.String != "rkg_initial" {
+		t.Fatalf("active=%+v ok=%v err=%v", active, ok, err)
+	}
+	generation, docs, err := st.ResolveActiveRAGKBGeneration(context.Background(), kb.ID)
+	if err != nil || generation.Status != RAGGenerationActive || generation.CollectionKey != "physical_initial" || len(docs) != 0 {
+		t.Fatalf("generation=%+v docs=%+v err=%v", generation, docs, err)
+	}
+}
 
 func testRAGProvisioningKB(userID, kbID string) *RAGKBRecord {
 	return &RAGKBRecord{

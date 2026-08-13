@@ -84,7 +84,7 @@ func TestBuildMetadataSourceUsesOnlyActiveDocumentVersion(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := fake.UpsertChunks(ctx, kb.ID, []vector.ChunkData{
+	if err := fake.UpsertChunks(ctx, vector.CollectionKey(kb.ID), []vector.ChunkData{
 		{DocID: ready.ID, Index: 0, DocVersion: 2, Content: "BEGIN installation guide", Vector: []float32{1, 0, 0, 0}},
 		{DocID: ready.ID, Index: 2, DocVersion: 2, Content: "MIDDLE troubleshooting", Vector: []float32{1, 0, 0, 0}},
 		{DocID: ready.ID, Index: 4, DocVersion: 2, Content: "END support workflow", Vector: []float32{1, 0, 0, 0}},

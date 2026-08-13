@@ -478,6 +478,9 @@ func (d *DBStore) markRAGDocumentDeletingInTx(
 	if err != nil {
 		return nil, err
 	}
+	if err := d.rejectActiveRAGKBPolicySyncTx(ctx, tx, doc.KBID); err != nil {
+		return nil, err
+	}
 	if err := d.supersedeRunnableRAGTasksInTx(ctx, tx, doc.ID); err != nil {
 		return nil, err
 	}
@@ -535,6 +538,9 @@ func (d *DBStore) markRAGKBDeletingInTx(
 		return nil, ErrNotFound
 	}
 	if err != nil {
+		return nil, err
+	}
+	if err := d.rejectActiveRAGKBPolicySyncTx(ctx, tx, kb.ID); err != nil {
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kbs SET status=%s,

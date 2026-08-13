@@ -313,6 +313,12 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 	if err := d.migrateSessionsAddChatterUserID(ctx); err != nil {
 		return fmt.Errorf("migrate sessions chatter_user_id: %w", err)
 	}
+	if err := d.migrateRAGEvaluationSchema(ctx); err != nil {
+		return fmt.Errorf("migrate RAG evaluation schema: %w", err)
+	}
+	if err := d.BackfillLegacyRAGGenerations(ctx); err != nil {
+		return fmt.Errorf("backfill legacy RAG generations: %w", err)
+	}
 	return nil
 }
 
@@ -3216,6 +3222,21 @@ func (d *DBStore) DeleteUser(ctx context.Context, id string) error {
 	}
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM apikey_agents WHERE apikey_id NOT IN (SELECT id FROM apikeys)`); err != nil {
+		return err
+	}
+	// Account deletion may run after KB tombstones but before their finalizers.
+	// Remove policy-sync children in dependency order while the owned KB rows
+	// are still available for the ownership subquery.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_kb_generation_documents WHERE generation_id IN (SELECT g.id FROM rag_kb_index_generations g JOIN rag_kbs k ON k.id=g.kb_id WHERE k.user_id=%s)`, d.ph(1)), id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_kb_policy_sync_tasks WHERE kb_id IN (SELECT id FROM rag_kbs WHERE user_id=%s)`, d.ph(1)), id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_policy_audit_log WHERE actor_id=%s OR target_kb_id IN (SELECT id FROM rag_kbs WHERE user_id=%s)`, d.ph(1), d.ph(2)), id, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_kb_index_generations WHERE kb_id IN (SELECT id FROM rag_kbs WHERE user_id=%s)`, d.ph(1)), id); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,

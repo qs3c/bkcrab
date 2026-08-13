@@ -1652,6 +1652,8 @@ export interface KnowledgeBase {
   parseMode: RAGParseMode;
   enrichmentEnabled: boolean;
   status: string;
+  pinnedPolicyVersion?: number;
+  activeGenerationId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -1745,6 +1747,8 @@ function normalizeKnowledgeBase(row: KnowledgeBaseWire): KnowledgeBase {
     parseMode: wireValue(row, "parseMode", "ParseMode", "standard"),
     enrichmentEnabled: wireValue(row, "enrichmentEnabled", "EnrichmentEnabled", false),
     status: wireValue(row, "status", "Status", ""),
+    pinnedPolicyVersion: wireValue<number | undefined>(row, "pinnedPolicyVersion", "PinnedPolicyVersion", undefined),
+    activeGenerationId: wireValue<string | undefined>(row, "activeGenerationId", "ActiveGenerationID", undefined),
     createdAt: wireValue(row, "createdAt", "CreatedAt", ""),
     updatedAt: wireValue(row, "updatedAt", "UpdatedAt", ""),
   };
@@ -1783,11 +1787,15 @@ function normalizeKnowledgeDocument(row: KnowledgeBaseWire): KnowledgeDocument {
   };
 }
 
+export class RAGRequestError extends Error {
+  constructor(message: string, public status: number) { super(message); }
+}
+
 async function ragJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await apiFetch(url, init);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data?.error || data?.message || `知识库请求失败 (${res.status})`);
+    throw new RAGRequestError(data?.error || data?.message || `知识库请求失败 (${res.status})`, res.status);
   }
   return data as T;
 }
@@ -2528,4 +2536,294 @@ export async function getAgentTokenUsage(
     `/api/agents/${agentId}/usage?range=${range}&limit=${limit}`,
   );
   return res.json();
+}
+
+export interface RAGKBPolicyStatus {
+  pinnedVersion: number;
+  latestVersion: number;
+  drift: boolean;
+  fullCollectionRebuild: boolean;
+  differences: Array<{ field: string; from?: unknown; to?: unknown }>;
+  estimate: { documentCount: number; sourceBytes: number; temporaryBytesMax: number; pageCountEstimate?: number; durationSecEstimate?: number; costUsdEstimate?: number };
+  syncTask?: { id: string; status: string; progressJson: string; estimateJson: string; sourceGenerationId?: string; targetGenerationId?: string; targetPolicyVersion: number; cancelRequested: boolean; rollbackAllowed: boolean; errorCode?: string; createdAt: string };
+}
+
+export interface RAGPolicySyncTask {
+  id: string;
+  kbId: string;
+  sourceGenerationId?: string;
+  targetGenerationId?: string;
+  targetPolicyVersion: number;
+  status: string;
+  progress: Record<string, unknown>;
+  estimate: Record<string, unknown>;
+  cancelRequested: boolean;
+  errorCode?: string;
+  errorMessage?: string;
+  createdAt: string;
+}
+
+export async function getKnowledgeBasePolicy(kbId: string): Promise<RAGKBPolicyStatus> {
+  return ragJSON(`/api/rag/kbs/${encodeURIComponent(kbId)}/policy`);
+}
+
+export async function startKnowledgeBasePolicySync(kbId: string, targetPolicyVersion: number): Promise<RAGPolicySyncTask> {
+  return ragJSON(`/api/rag/kbs/${encodeURIComponent(kbId)}/policy-syncs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ targetPolicyVersion, confirm: true }) });
+}
+
+export async function getKnowledgeBasePolicySync(kbId: string, taskId: string): Promise<RAGPolicySyncTask> {
+  return ragJSON(`/api/rag/kbs/${encodeURIComponent(kbId)}/policy-syncs/${encodeURIComponent(taskId)}`);
+}
+
+export async function cancelKnowledgeBasePolicySync(kbId: string, taskId: string): Promise<void> {
+  await ragJSON(`/api/rag/kbs/${encodeURIComponent(kbId)}/policy-syncs/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+}
+
+export async function rollbackKnowledgeBasePolicy(kbId: string, input: { targetGenerationId: string; expectedGenerationId: string; note: string }): Promise<void> {
+  await ragJSON(`/api/rag/kbs/${encodeURIComponent(kbId)}/policy-rollbacks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+}
+
+// ---------- 超级管理员：RAG 测评 ----------
+
+export interface RAGEvalCapabilities {
+  enabled: boolean;
+  sidecarConfigured: boolean;
+  sidecarHealthy: boolean;
+  reason?: string;
+  metricBundleVersion: string;
+  metrics: string[];
+  importers: string[];
+  maxBatchSize: number;
+  maxRunCases: number;
+  maxRunTokens: number;
+  maxRunCostUsd: number;
+  maxRunDurationSec: number;
+  maxRequestBytes: number;
+  maxContextsPerSample: number;
+  maxContextBytes: number;
+}
+
+export interface RAGEvalDataset {
+  id: string;
+  name: string;
+  description: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RAGEvalDatasetVersion {
+  ID: string;
+  DatasetID: string;
+  Status: "DRAFT" | "VALIDATING" | "READY" | "FAILED";
+  SourceType: string;
+  CorpusSHA256: string;
+  Version: number;
+  CaseCount: number;
+  DocumentCount: number;
+  TotalBytes: number;
+  CreatedAt: string;
+}
+
+export interface RAGEvalProfile {
+  id: string;
+  name: string;
+  profileJson: string;
+  fingerprint: string;
+  createdAt: string;
+}
+
+export interface RAGEvalValidationReport {
+  valid?: boolean;
+  errors?: Array<{ path?: string; code?: string; message?: string }>;
+  warnings?: Array<{ path?: string; code?: string; message?: string }>;
+}
+
+export interface RAGEvalRun {
+  id: string;
+  datasetVersionId: string;
+  baselineRunId?: string;
+  mode: "FULL_PIPELINE" | "ONLINE_ONLY";
+  profileId: string;
+  status: string;
+  stage: string;
+  progressJson: string;
+  errorCode?: string;
+  errorMessage?: string;
+  createdAt: string;
+}
+
+export interface RAGEvalAggregate {
+  count: number;
+  scoredCount: number;
+  skippedCount: number;
+  errorCount: number;
+  mean?: number;
+  median?: number;
+  p50?: number;
+  p95?: number;
+}
+
+export interface RAGEvalCaseResult {
+  caseId: string;
+  response?: string;
+  contexts: unknown[];
+  citations: unknown[];
+  status: string;
+  errorCode?: string;
+  latencyMs: number;
+  usage: Record<string, unknown>;
+  metrics: Array<{ Name: string; Version: string; Status: string; Reason: string; Value?: number; Details?: Record<string, unknown> }>;
+}
+
+export interface RAGEvalPairedDelta {
+  pairs: number;
+  missingBaseline: string[];
+  missingCandidate: string[];
+  baseline: RAGEvalAggregate;
+  candidate: RAGEvalAggregate;
+  absoluteDelta?: number;
+  relativeDelta?: number;
+}
+
+export interface RAGPolicyRecordDTO {
+  Kind: string;
+  Version: number;
+  PolicyJSON: string;
+  Fingerprint: string;
+  Status: string;
+  SourceEvalRunID: string;
+  Note: string;
+  CreatedAt: string;
+}
+
+export interface RAGPolicyAuditDTO {
+  ID: string;
+  Action: string;
+  ActorID: string;
+  FromVersion: number;
+  ToVersion: number;
+  SourceEvalRunID: string;
+  Note: string;
+  CreatedAt: string;
+}
+
+async function ragEvalJSON<T>(response: Response): Promise<T> {
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload?.error?.message || payload?.error || `请求失败 (${response.status})`;
+    throw new Error(String(message));
+  }
+  return payload as T;
+}
+
+function ragEvalIdempotencyKey(): string {
+  return `ui-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+export async function getRAGEvalCapabilities(): Promise<RAGEvalCapabilities> {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-evals/capabilities"));
+}
+
+export async function listRAGEvalDatasets(): Promise<RAGEvalDataset[]> {
+  const result = await ragEvalJSON<{ items: RAGEvalDataset[] }>(await apiFetch("/api/admin/rag-evals/datasets?limit=100"));
+  return result.items ?? [];
+}
+
+export async function createRAGEvalDataset(name: string, description: string): Promise<RAGEvalDataset> {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-evals/datasets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() },
+    body: JSON.stringify({ name, description }),
+  }));
+}
+
+export async function getRAGEvalDataset(id: string): Promise<{ dataset: RAGEvalDataset; versions: RAGEvalDatasetVersion[] }> {
+  return ragEvalJSON(await apiFetch(`/api/admin/rag-evals/datasets/${encodeURIComponent(id)}?limit=200`));
+}
+
+export async function importRAGEvalDatasetVersion(input: {
+  datasetId: string;
+  version: number;
+  manifest: unknown;
+  documents: Array<{ externalId: string; fileName: string; mediaType: string; contentBase64: string }>;
+}): Promise<{ version: RAGEvalDatasetVersion; report: RAGEvalValidationReport }> {
+  return ragEvalJSON(await apiFetch(`/api/admin/rag-evals/datasets/${encodeURIComponent(input.datasetId)}/versions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() },
+    body: JSON.stringify({ version: input.version, manifest: input.manifest, documents: input.documents }),
+  }));
+}
+
+export async function getRAGEvalDatasetValidation(id: string): Promise<{ versionId: string; status: string; report: RAGEvalValidationReport }> {
+  return ragEvalJSON(await apiFetch(`/api/admin/rag-evals/dataset-versions/${encodeURIComponent(id)}/validation`));
+}
+
+export async function listRAGEvalProfiles(): Promise<RAGEvalProfile[]> {
+  const result = await ragEvalJSON<{ items: RAGEvalProfile[] }>(await apiFetch("/api/admin/rag-evals/profiles?limit=100"));
+  return result.items ?? [];
+}
+
+export async function createRAGEvalProfile(name: string, profile: unknown): Promise<RAGEvalProfile> {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-evals/profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() },
+    body: JSON.stringify({ name, profile }),
+  }));
+}
+
+export async function listRAGEvalRuns(): Promise<RAGEvalRun[]> {
+  const result = await ragEvalJSON<{ items: RAGEvalRun[] }>(await apiFetch("/api/admin/rag-evals/runs?limit=100"));
+  return result.items ?? [];
+}
+
+export async function createRAGEvalRun(input: {
+  datasetVersionId: string;
+  baselineRunId?: string;
+  mode: "FULL_PIPELINE" | "ONLINE_ONLY";
+  profileId: string;
+  indexGenerationId?: string;
+  metrics: string[];
+}): Promise<RAGEvalRun> {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-evals/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() },
+    body: JSON.stringify(input),
+  }));
+}
+
+export async function getRAGEvalRunAnalysis(id: string): Promise<{ run: RAGEvalRun; aggregates: Record<string, RAGEvalAggregate> }> {
+  return ragEvalJSON(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}`));
+}
+
+export async function listRAGEvalRunCases(id: string): Promise<RAGEvalCaseResult[]> {
+  const result = await ragEvalJSON<{ items: RAGEvalCaseResult[] }>(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}/cases?limit=100`));
+  return result.items ?? [];
+}
+
+export async function compareRAGEvalRuns(candidateId: string, baselineId: string, metric: string): Promise<RAGEvalPairedDelta> {
+  return ragEvalJSON(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(candidateId)}/compare/${encodeURIComponent(baselineId)}?metric=${encodeURIComponent(metric)}`));
+}
+
+export async function getRAGPolicies(): Promise<Record<"runtime" | "ingestion", { active?: RAGPolicyRecordDTO; audit: RAGPolicyAuditDTO[] }>> {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-policies?limit=100"));
+}
+
+export async function promoteRAGRuntimePolicy(input: { runId: string; profileId: string; confirmationRunId: string; fields: string[]; note: string }) {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-policies/runtime/promotions", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() }, body: JSON.stringify(input) }));
+}
+
+export async function promoteRAGIngestionPolicy(input: { runId: string; profileId: string; confirmationRunId: string; note: string }) {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-policies/ingestion/promotions", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() }, body: JSON.stringify(input) }));
+}
+
+export async function rollbackRAGRuntimePolicy(input: { expectedVersion: number; targetVersion: number; note: string }) {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-policies/runtime/rollback", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() }, body: JSON.stringify(input) }));
+}
+
+export async function cancelRAGEvalRun(id: string): Promise<void> {
+  await ragEvalJSON(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    headers: { "Idempotency-Key": ragEvalIdempotencyKey() },
+  }));
 }

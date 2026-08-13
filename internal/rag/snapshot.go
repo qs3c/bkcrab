@@ -62,6 +62,14 @@ func (s *Service) buildVersionSnapshotAndBinding(
 	ctx context.Context,
 	doc *store.RAGDocumentRecord,
 ) (*store.RAGDocumentVersionRecord, config.RAGEmbeddingCfg, error) {
+	return s.buildVersionSnapshotAndBindingForPolicy(ctx, doc, nil)
+}
+
+func (s *Service) buildVersionSnapshotAndBindingForPolicy(
+	ctx context.Context,
+	doc *store.RAGDocumentRecord,
+	override *config.RAGIngestionPolicyData,
+) (*store.RAGDocumentVersionRecord, config.RAGEmbeddingCfg, error) {
 	if doc == nil || strings.TrimSpace(doc.ID) == "" {
 		return nil, config.RAGEmbeddingCfg{}, errors.New("RAG snapshot requires a document")
 	}
@@ -78,7 +86,39 @@ func (s *Service) buildVersionSnapshotAndBinding(
 		}
 	}
 
+	chunkSize, chunkOverlap := kb.ChunkSize, kb.ChunkOverlap
 	parseMode := config.ParseMode(kb.ParseMode)
+	enrichmentEnabled := kb.EnrichmentEnabled
+	visionModel := strings.TrimSpace(s.cfg.DocumentAI.VisionModel)
+	textModel := strings.TrimSpace(s.cfg.DocumentAI.TextModel)
+	visionPromptVersion := strings.TrimSpace(s.cfg.DocumentAI.VisionPromptVersion)
+	enrichmentPromptVersion := strings.TrimSpace(s.cfg.DocumentAI.EnrichmentPromptVersion)
+	var pinnedPolicy *config.RAGIngestionPolicyData
+	if override != nil {
+		policy := *override
+		pinnedPolicy = &policy
+		chunkSize, chunkOverlap = policy.ChunkSize, policy.ChunkOverlap
+		parseMode, enrichmentEnabled = policy.ParseMode, policy.EnrichmentEnabled
+		visionModel, textModel = policy.DocumentAI.VisionModel, policy.DocumentAI.TextModel
+		visionPromptVersion = policy.DocumentAI.VisionPromptVersion
+		enrichmentPromptVersion = policy.DocumentAI.EnrichmentPromptVersion
+	} else if kb.PinnedPolicyVersion.Valid {
+		record, policyErr := s.st.GetRAGPolicy(ctx, store.RAGPolicyIngestion, kb.PinnedPolicyVersion.Int64)
+		if policyErr != nil {
+			return nil, config.RAGEmbeddingCfg{}, fmt.Errorf("load pinned ingestion policy: %w", policyErr)
+		}
+		if policy, decodeErr := config.DecodeRAGIngestionPolicy([]byte(record.PolicyJSON)); decodeErr == nil {
+			if policy.Version != kb.PinnedPolicyVersion.Int64 {
+				return nil, config.RAGEmbeddingCfg{}, errors.New("pinned ingestion policy version mismatch")
+			}
+			pinnedPolicy = &policy
+			chunkSize, chunkOverlap = policy.ChunkSize, policy.ChunkOverlap
+			parseMode, enrichmentEnabled = policy.ParseMode, policy.EnrichmentEnabled
+			visionModel, textModel = policy.DocumentAI.VisionModel, policy.DocumentAI.TextModel
+			visionPromptVersion = policy.DocumentAI.VisionPromptVersion
+			enrichmentPromptVersion = policy.DocumentAI.EnrichmentPromptVersion
+		}
+	}
 	if !parseMode.Valid() {
 		return nil, config.RAGEmbeddingCfg{}, fmt.Errorf("invalid knowledge-base parse mode %q", kb.ParseMode)
 	}
@@ -88,7 +128,18 @@ func (s *Service) buildVersionSnapshotAndBinding(
 	}
 
 	documentAIProviderFingerprint := vision.ProviderFingerprint(s.cfg.DocumentAI)
-	embeddingContractFingerprint := embeddingContractFingerprintForKB(kb, embeddingCfg)
+	embeddingContractID := embeddingContractFingerprintForKB(kb, embeddingCfg)
+	embeddingProvider, embeddingModel, embeddingDimensions := kb.EmbedProvider, kb.EmbedModel, kb.EmbedDims
+	if pinnedPolicy != nil {
+		if override != nil {
+			embeddingCfg = s.cfg.Embedding
+			embeddingContractID = embeddingContractFingerprint("system", embeddingCfg, pinnedPolicy.Embedding.Model, pinnedPolicy.Embedding.Dims)
+			embeddingProvider, embeddingModel, embeddingDimensions = "system", pinnedPolicy.Embedding.Model, pinnedPolicy.Embedding.Dims
+		}
+		if embeddingContractID != pinnedPolicy.Embedding.ContractFingerprint {
+			return nil, config.RAGEmbeddingCfg{}, errors.New("pinned ingestion embedding contract is unavailable")
+		}
+	}
 	parserVersion, markItDownVersion := parseContractVersions(doc.FileType)
 
 	parseFingerprint, err := document.ParseFingerprint(document.ParseFingerprintInput{
@@ -109,8 +160,8 @@ func (s *Service) buildVersionSnapshotAndBinding(
 		DisplayMaxEdge:            s.cfg.Limits.DisplayMaxEdge,
 		ThumbnailMaxEdge:          s.cfg.Limits.ThumbnailMaxEdge,
 		VisionProviderFingerprint: documentAIProviderFingerprint,
-		VisionModel:               strings.TrimSpace(s.cfg.DocumentAI.VisionModel),
-		VisionPromptVersion:       strings.TrimSpace(s.cfg.DocumentAI.VisionPromptVersion),
+		VisionModel:               visionModel,
+		VisionPromptVersion:       visionPromptVersion,
 		PageSchemaVersion:         vision.PageSchemaVersion,
 		ImageSchemaVersion:        vision.ImageDescriptionSchemaVersion,
 	})
@@ -119,33 +170,33 @@ func (s *Service) buildVersionSnapshotAndBinding(
 	}
 	indexFingerprint := buildIndexFingerprint(indexFingerprintInput{
 		ParseFingerprint:      parseFingerprint,
-		ChunkSize:             kb.ChunkSize,
-		ChunkOverlap:          kb.ChunkOverlap,
+		ChunkSize:             chunkSize,
+		ChunkOverlap:          chunkOverlap,
 		SplitterSchemaVersion: splitterSchemaVersion,
-		EmbeddingModel:        kb.EmbedModel,
-		EmbeddingDimensions:   kb.EmbedDims,
-		EmbeddingContract:     embeddingContractFingerprint,
-		EnrichmentEnabled:     kb.EnrichmentEnabled,
+		EmbeddingModel:        embeddingModel,
+		EmbeddingDimensions:   embeddingDimensions,
+		EmbeddingContract:     embeddingContractID,
+		EnrichmentEnabled:     enrichmentEnabled,
 		TextProviderFingerprint: func() string {
-			if kb.EnrichmentEnabled {
+			if enrichmentEnabled {
 				return documentAIProviderFingerprint
 			}
 			return ""
 		}(),
 		TextModel: func() string {
-			if kb.EnrichmentEnabled {
-				return strings.TrimSpace(s.cfg.DocumentAI.TextModel)
+			if enrichmentEnabled {
+				return textModel
 			}
 			return ""
 		}(),
 		EnrichmentPromptVersion: func() string {
-			if kb.EnrichmentEnabled {
-				return strings.TrimSpace(s.cfg.DocumentAI.EnrichmentPromptVersion)
+			if enrichmentEnabled {
+				return enrichmentPromptVersion
 			}
 			return ""
 		}(),
 		EnrichmentSchemaVersion: func() string {
-			if kb.EnrichmentEnabled {
+			if enrichmentEnabled {
 				return enrich.EnrichmentSchemaVersion
 			}
 			return ""
@@ -158,26 +209,26 @@ func (s *Service) buildVersionSnapshotAndBinding(
 		Status:                       store.RAGDocumentVersionPending,
 		SourceSHA256:                 sourceSHA256,
 		ParseMode:                    string(parseMode),
-		ChunkSize:                    kb.ChunkSize,
-		ChunkOverlap:                 kb.ChunkOverlap,
+		ChunkSize:                    chunkSize,
+		ChunkOverlap:                 chunkOverlap,
 		ParserVersion:                parserVersion,
 		SplitterVersion:              splitterSchemaVersion,
 		ParseFingerprint:             parseFingerprint,
 		IndexFingerprint:             indexFingerprint,
-		VisionModel:                  strings.TrimSpace(s.cfg.DocumentAI.VisionModel),
+		VisionModel:                  visionModel,
 		VisionProviderFingerprint:    documentAIProviderFingerprint,
-		VisionPromptVersion:          strings.TrimSpace(s.cfg.DocumentAI.VisionPromptVersion),
-		TextModel:                    strings.TrimSpace(s.cfg.DocumentAI.TextModel),
+		VisionPromptVersion:          visionPromptVersion,
+		TextModel:                    textModel,
 		TextProviderFingerprint:      documentAIProviderFingerprint,
-		EnrichmentPromptVersion:      strings.TrimSpace(s.cfg.DocumentAI.EnrichmentPromptVersion),
-		EnrichmentEnabled:            kb.EnrichmentEnabled,
+		EnrichmentPromptVersion:      enrichmentPromptVersion,
+		EnrichmentEnabled:            enrichmentEnabled,
 		MaxDocumentAIRequests:        s.cfg.Limits.MaxDocumentAIRequests,
 		MaxDocumentAITokens:          s.cfg.Limits.MaxDocumentAITokens,
 		MaxDocumentAICostMicroUSD:    microUSD(s.cfg.Limits.MaxEstimatedDocumentAICostUSD),
-		EmbeddingProvider:            kb.EmbedProvider,
-		EmbeddingModel:               kb.EmbedModel,
-		EmbeddingDimensions:          kb.EmbedDims,
-		EmbeddingContractFingerprint: embeddingContractFingerprint,
+		EmbeddingProvider:            embeddingProvider,
+		EmbeddingModel:               embeddingModel,
+		EmbeddingDimensions:          embeddingDimensions,
+		EmbeddingContractFingerprint: embeddingContractID,
 	}, embeddingCfg, nil
 }
 
@@ -195,16 +246,20 @@ func parseContractVersions(fileType string) (parserVersion, markItDownVersion st
 // vectors are shared only when provider routing, endpoint, model, and
 // dimensions are all identical.
 func embeddingContractFingerprintForKB(kb *store.RAGKBRecord, cfg config.RAGEmbeddingCfg) string {
+	return embeddingContractFingerprint(kb.EmbedProvider, cfg, kb.EmbedModel, kb.EmbedDims)
+}
+
+func embeddingContractFingerprint(provider string, cfg config.RAGEmbeddingCfg, model string, dims int) string {
 	return fingerprint(struct {
 		Provider string `json:"provider"`
 		Endpoint string `json:"endpoint"`
 		Model    string `json:"model"`
 		Dims     int    `json:"dims"`
 	}{
-		Provider: kb.EmbedProvider,
+		Provider: provider,
 		Endpoint: canonicalEndpoint(cfg.Endpoint),
-		Model:    kb.EmbedModel,
-		Dims:     kb.EmbedDims,
+		Model:    model,
+		Dims:     dims,
 	})
 }
 

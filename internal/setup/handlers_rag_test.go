@@ -618,6 +618,8 @@ func TestRAGChatUsesQuestionOnlyHistoryAndReturnsSources(t *testing.T) {
 	var callCount int
 	var receivedUserPrompt string
 	var receivedTools bool
+	var receivedMaxTokens int
+	var receivedTemperature float64
 	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		var raw map[string]json.RawMessage
@@ -625,6 +627,8 @@ func TestRAGChatUsesQuestionOnlyHistoryAndReturnsSources(t *testing.T) {
 			t.Errorf("decode LLM request: %v", err)
 		}
 		_, receivedTools = raw["tools"]
+		_ = json.Unmarshal(raw["max_tokens"], &receivedMaxTokens)
+		_ = json.Unmarshal(raw["temperature"], &receivedTemperature)
 		var messages []struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
@@ -653,6 +657,17 @@ func TestRAGChatUsesQuestionOnlyHistoryAndReturnsSources(t *testing.T) {
 	if err := scope.SaveProvider(ctx, server.dataStore, regular.ID, "", "test", config.ProviderConfig{
 		APIKey: "test-key", APIBase: llmServer.URL, APIType: "openai-chat",
 	}); err != nil {
+		t.Fatal(err)
+	}
+	runtimePolicy, ok := service.RuntimePolicyProvider().(*rag.RuntimePolicySnapshot)
+	if !ok {
+		t.Fatalf("runtime policy provider = %T", service.RuntimePolicyProvider())
+	}
+	policy := runtimePolicy.Current()
+	policy.Version = 2
+	policy.Temperature = 0.7
+	policy.MaxTokens = 321
+	if err := runtimePolicy.Publish(policy); err != nil {
 		t.Fatal(err)
 	}
 
@@ -711,6 +726,9 @@ func TestRAGChatUsesQuestionOnlyHistoryAndReturnsSources(t *testing.T) {
 	}
 	if receivedTools {
 		t.Fatal("knowledge-base answer request unexpectedly included tools")
+	}
+	if receivedMaxTokens != 321 || receivedTemperature != 0.7 {
+		t.Fatalf("runtime answer policy not applied: maxTokens=%d temperature=%v", receivedMaxTokens, receivedTemperature)
 	}
 	if strings.Contains(receivedUserPrompt, "history-00") || strings.Contains(receivedUserPrompt, "history-01") {
 		t.Fatalf("prompt retained history older than 20 questions: %q", receivedUserPrompt)

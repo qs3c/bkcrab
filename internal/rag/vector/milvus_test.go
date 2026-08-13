@@ -124,7 +124,7 @@ func TestMilvusRoundTrip(t *testing.T) {
 		}
 	})
 
-	kbID := fmt.Sprintf("test_roundtrip_%d", time.Now().UnixNano())
+	kbID := CollectionKey(fmt.Sprintf("test_roundtrip_%d", time.Now().UnixNano()))
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
@@ -220,7 +220,7 @@ func TestMilvusActiveVersionFilter(t *testing.T) {
 			t.Logf("close Milvus client: %v", err)
 		}
 	})
-	kbID := fmt.Sprintf("test_active_filter_%d", time.Now().UnixNano())
+	kbID := CollectionKey(fmt.Sprintf("test_active_filter_%d", time.Now().UnixNano()))
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()

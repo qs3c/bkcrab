@@ -43,8 +43,21 @@ const queryPlannerSystemPrompt = `你是 RAG 检索查询规划器。请严格�
 // call. HypotheticalDocument is used only for dense retrieval and is never
 // returned as evidence or passed to the answer model.
 type QueryPlan struct {
-	RewrittenQuery       string `json:"rewritten_query"`
-	HypotheticalDocument string `json:"hypothetical_document"`
+	RewrittenQuery       string             `json:"rewritten_query"`
+	HypotheticalDocument string             `json:"hypothetical_document"`
+	Route                QueryRouteMetadata `json:"-"`
+}
+
+// QueryRouteMetadata describes which bounded query-planning routes were
+// actually used. It intentionally contains no query or generated document
+// text, so it is safe to copy into evaluation traces.
+type QueryRouteMetadata struct {
+	PlannerAttempted bool   `json:"plannerAttempted"`
+	RewriteApplied   bool   `json:"rewriteApplied"`
+	HyDEApplied      bool   `json:"hydeApplied"`
+	Fallback         bool   `json:"fallback"`
+	FallbackReason   string `json:"fallbackReason,omitempty"`
+	DurationMS       int64  `json:"durationMs"`
 }
 
 // planQuery returns the original query for both routes whenever query
@@ -55,9 +68,14 @@ func (s *Service) planQuery(ctx context.Context, retrievalID, userID string, inp
 	fallback := QueryPlan{
 		RewrittenQuery:       strings.TrimSpace(input.Query),
 		HypotheticalDocument: strings.TrimSpace(input.Query),
+		Route: QueryRouteMetadata{
+			Fallback: true,
+		},
 	}
 	history := plannerHistory(input.History)
 	if s.queryLLM == nil {
+		fallback.Route.FallbackReason = "planner_unavailable"
+		fallback.Route.DurationMS = time.Since(started).Milliseconds()
 		slog.Info("rag: query planner unavailable; using original query",
 			"retrieval_id", retrievalID,
 			"user", userID,
@@ -75,6 +93,9 @@ func (s *Service) planQuery(ctx context.Context, retrievalID, userID string, inp
 		CurrentQuery:     fallback.RewrittenQuery,
 	})
 	if err != nil {
+		fallback.Route.PlannerAttempted = true
+		fallback.Route.FallbackReason = "input_encoding_failed"
+		fallback.Route.DurationMS = time.Since(started).Milliseconds()
 		slog.Warn("rag: query planner input encoding failed; using original query",
 			"retrieval_id", retrievalID,
 			"user", userID,
@@ -88,6 +109,9 @@ func (s *Service) planQuery(ctx context.Context, retrievalID, userID string, inp
 	raw, err := s.queryLLM(plannerCtx, userID, queryPlannerSystemPrompt,
 		"请处理下面的 JSON 数据：\n"+string(payload))
 	if err != nil {
+		fallback.Route.PlannerAttempted = true
+		fallback.Route.FallbackReason = "provider_error"
+		fallback.Route.DurationMS = time.Since(started).Milliseconds()
 		slog.Warn("rag: query planner failed; using original query",
 			"retrieval_id", retrievalID,
 			"user", userID,
@@ -100,6 +124,9 @@ func (s *Service) planQuery(ctx context.Context, retrievalID, userID string, inp
 	}
 	plan, err := parseQueryPlan(raw)
 	if err != nil {
+		fallback.Route.PlannerAttempted = true
+		fallback.Route.FallbackReason = "invalid_output"
+		fallback.Route.DurationMS = time.Since(started).Milliseconds()
 		slog.Warn("rag: invalid query planner output; using original query",
 			"retrieval_id", retrievalID,
 			"user", userID,
@@ -109,6 +136,12 @@ func (s *Service) planQuery(ctx context.Context, retrievalID, userID string, inp
 			"error", err,
 		)
 		return fallback
+	}
+	plan.Route = QueryRouteMetadata{
+		PlannerAttempted: true,
+		RewriteApplied:   plan.RewrittenQuery != fallback.RewrittenQuery,
+		HyDEApplied:      plan.HypotheticalDocument != plan.RewrittenQuery,
+		DurationMS:       time.Since(started).Milliseconds(),
 	}
 	slog.Info("rag: query planner applied",
 		"retrieval_id", retrievalID,

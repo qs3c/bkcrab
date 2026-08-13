@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag/chunktext"
 	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/embed"
@@ -90,6 +91,132 @@ type SearchContext struct {
 	History []string
 }
 
+// SearchOptions is an immutable per-request override used by evaluation runs.
+// Nil booleans preserve production behavior; explicit false disables a stage.
+type SearchOptions struct {
+	TopN                  int                             `json:"topN,omitempty"`
+	CandidateTopK         int                             `json:"candidateTopK,omitempty"`
+	MinScore              *float64                        `json:"minScore,omitempty"`
+	Rewrite               *bool                           `json:"rewrite,omitempty"`
+	HyDE                  *bool                           `json:"hyde,omitempty"`
+	Reranker              *bool                           `json:"reranker,omitempty"`
+	RerankerFailurePolicy config.RAGRerankerFailurePolicy `json:"rerankerFailurePolicy,omitempty"`
+	RuntimePolicyVersion  int64                           `json:"runtimePolicyVersion,omitempty"`
+}
+
+type SearchTrace struct {
+	RetrievalID           string                          `json:"retrievalId"`
+	DurationMS            int64                           `json:"durationMs"`
+	PlannerDurationMS     int64                           `json:"plannerDurationMs"`
+	RetrievalDurationMS   int64                           `json:"retrievalDurationMs"`
+	RerankerDurationMS    int64                           `json:"rerankerDurationMs"`
+	HydrationDurationMS   int64                           `json:"hydrationDurationMs"`
+	KnowledgeBaseCount    int                             `json:"knowledgeBaseCount"`
+	DenseRouteCount       int                             `json:"denseRouteCount"`
+	CandidateCount        int                             `json:"candidateCount"`
+	RerankerRankedCount   int                             `json:"rerankerRankedCount"`
+	RerankerFilteredCount int                             `json:"rerankerFilteredCount"`
+	ReturnedCount         int                             `json:"returnedCount"`
+	RewriteEnabled        bool                            `json:"rewriteEnabled"`
+	HyDEEnabled           bool                            `json:"hydeEnabled"`
+	PlannerAttempted      bool                            `json:"plannerAttempted"`
+	RewriteApplied        bool                            `json:"rewriteApplied"`
+	HyDEApplied           bool                            `json:"hydeApplied"`
+	PlannerFallback       bool                            `json:"plannerFallback"`
+	PlannerFallbackReason string                          `json:"plannerFallbackReason,omitempty"`
+	RerankerRequested     bool                            `json:"rerankerRequested"`
+	RerankerConfigured    bool                            `json:"rerankerConfigured"`
+	RerankerEnabled       bool                            `json:"rerankerEnabled"`
+	RerankerAttempted     bool                            `json:"rerankerAttempted"`
+	RerankerSucceeded     bool                            `json:"rerankerSucceeded"`
+	RerankerFallback      bool                            `json:"rerankerFallback"`
+	RerankerFailureCode   string                          `json:"rerankerFailureCode,omitempty"`
+	RerankerFailurePolicy config.RAGRerankerFailurePolicy `json:"rerankerFailurePolicy"`
+	RuntimePolicyVersion  int64                           `json:"runtimePolicyVersion"`
+	Degraded              bool                            `json:"degraded"`
+	MinScore              float64                         `json:"minScore"`
+	TopN                  int                             `json:"topN"`
+	CandidateTopK         int                             `json:"candidateTopK"`
+	RecallScoreMin        *float64                        `json:"recallScoreMin,omitempty"`
+	RecallScoreMax        *float64                        `json:"recallScoreMax,omitempty"`
+	RerankScoreMin        *float64                        `json:"rerankScoreMin,omitempty"`
+	RerankScoreMax        *float64                        `json:"rerankScoreMax,omitempty"`
+}
+
+type searchOptionsKey struct{}
+type searchTraceKey struct{}
+
+// SearchWithOptions runs the same production retrieval implementation while
+// injecting a bounded immutable option snapshot and returning a secret-free
+// trace. It never mutates Service configuration.
+func (s *Service) SearchWithOptions(ctx context.Context, ownerID string, kbIDs []string, input SearchContext, options SearchOptions) ([]Hit, SearchTrace, error) {
+	ctx, runtimePolicy := s.CaptureRuntimePolicy(ctx)
+	if options.TopN < 0 || options.TopN > 100 {
+		return nil, SearchTrace{}, errors.New("topN must be zero or between 1 and 100")
+	}
+	if options.TopN == 0 {
+		options.TopN = runtimePolicy.TopN
+	}
+	if options.CandidateTopK < 0 || options.CandidateTopK > 500 {
+		return nil, SearchTrace{}, errors.New("candidateTopK must be zero or between 1 and 500")
+	}
+	if options.CandidateTopK > 0 && options.CandidateTopK < options.TopN {
+		return nil, SearchTrace{}, errors.New("candidateTopK must be greater than or equal to topN")
+	}
+	if options.MinScore != nil && (*options.MinScore < 0 || *options.MinScore > 1 || math.IsNaN(*options.MinScore) || math.IsInf(*options.MinScore, 0)) {
+		return nil, SearchTrace{}, errors.New("minScore must be between 0 and 1")
+	}
+	if !options.RerankerFailurePolicy.Valid() {
+		return nil, SearchTrace{}, errors.New("unknown reranker failure policy")
+	}
+	if options.RerankerFailurePolicy == "" {
+		options.RerankerFailurePolicy = config.RAGRerankerFallbackRRF
+	}
+	candidateTopK := options.CandidateTopK
+	if candidateTopK == 0 {
+		candidateTopK = runtimePolicy.CandidateTopK
+	}
+	if candidateTopK < options.TopN {
+		candidateTopK = options.TopN
+	}
+	options.CandidateTopK = candidateTopK
+	minScore := runtimePolicy.MinScore
+	if options.MinScore != nil {
+		minScore = *options.MinScore
+	}
+	rewrite, hyde := true, true
+	if options.Rewrite != nil {
+		rewrite = *options.Rewrite
+	}
+	if options.HyDE != nil {
+		hyde = *options.HyDE
+	}
+	rerankerRequested := s.reranker != nil
+	if options.Reranker != nil {
+		rerankerRequested = *options.Reranker
+	}
+	policyVersion := options.RuntimePolicyVersion
+	if policyVersion == 0 {
+		policyVersion = runtimePolicy.Version
+	}
+	retrievalID := uuid.NewString()
+	started := time.Now()
+	trace := SearchTrace{
+		RetrievalID: retrievalID, RewriteEnabled: rewrite, HyDEEnabled: hyde,
+		RerankerRequested: rerankerRequested, RerankerConfigured: s.reranker != nil,
+		RerankerEnabled:       rerankerRequested && s.reranker != nil,
+		RerankerFailurePolicy: options.RerankerFailurePolicy,
+		RuntimePolicyVersion:  policyVersion,
+		MinScore:              minScore, TopN: options.TopN, CandidateTopK: candidateTopK,
+	}
+	ctx = context.WithValue(ctx, searchOptionsKey{}, options)
+	ctx = context.WithValue(ctx, searchTraceKey{}, &trace)
+	hits, err := s.SearchWithContext(ctx, ownerID, kbIDs, input, options.TopN)
+	trace.DurationMS = time.Since(started).Milliseconds()
+	trace.ReturnedCount = len(hits)
+	return hits, trace, err
+}
+
 // Search performs hybrid retrieval across authorized KBs and merges their
 // results by score. Every target is ownership-checked before any query runs.
 func (s *Service) Search(ctx context.Context, ownerID string, kbIDs []string, query string, topN int) ([]Hit, error) {
@@ -102,25 +229,39 @@ func (s *Service) Search(ctx context.Context, ownerID string, kbIDs []string, qu
 // BM25 and one dense route; HyDE drives a second dense route. If planning fails
 // or omits HyDE, the identical dense inputs are deduplicated.
 func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs []string, input SearchContext, topN int) ([]Hit, error) {
+	ctx, _ = s.CaptureRuntimePolicy(ctx)
 	return s.searchWithContext(ctx, ownerID, kbIDs, input, topN, false)
 }
 
 func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs []string, input SearchContext, topN int, retried bool) ([]Hit, error) {
 	retrievalID := uuid.NewString()
+	trace, _ := ctx.Value(searchTraceKey{}).(*SearchTrace)
+	if trace != nil {
+		retrievalID = trace.RetrievalID
+		resetSearchExecutionTrace(trace)
+	}
 	started := time.Now()
+	options, hasOptions := ctx.Value(searchOptionsKey{}).(SearchOptions)
 	query := strings.TrimSpace(input.Query)
 	if query == "" {
 		return nil, fmt.Errorf("query 不能为空")
 	}
 	if topN <= 0 {
-		topN = 5
+		_, runtimePolicy := s.CaptureRuntimePolicy(ctx)
+		topN = runtimePolicy.TopN
 	}
-	if topN > 20 {
+	if topN > 20 && !hasOptions {
 		topN = 20
 	}
+	if topN > 100 {
+		topN = 100
+	}
 	type target struct {
-		kb    *store.RAGKBRecord
-		dense [][]float32
+		kb             *store.RAGKBRecord
+		collectionKey  vector.CollectionKey
+		dense          [][]float32
+		documents      map[string]store.RAGDocumentRecord
+		activeVersions map[string]int64
 	}
 	kbs := make([]*store.RAGKBRecord, 0, len(kbIDs))
 	seenKB := make(map[string]struct{}, len(kbIDs))
@@ -162,11 +303,65 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 	if len(kbs) == 0 {
 		return []Hit{}, nil
 	}
+	if trace != nil {
+		trace.KnowledgeBaseCount = len(kbs)
+	}
 
-	plan := s.planQuery(ctx, retrievalID, kbs[0].UserID, SearchContext{Query: query, History: input.History})
+	_, runtimePolicy := s.CaptureRuntimePolicy(ctx)
+	rewriteEnabled, hydeEnabled := true, true
+	if hasOptions && options.Rewrite != nil {
+		rewriteEnabled = *options.Rewrite
+	}
+	if hasOptions && options.HyDE != nil {
+		hydeEnabled = *options.HyDE
+	}
+	plan := QueryPlan{RewrittenQuery: query, HypotheticalDocument: query}
+	if rewriteEnabled || hydeEnabled {
+		plan = s.planQuery(ctx, retrievalID, kbs[0].UserID, SearchContext{Query: query, History: input.History})
+	}
+	if !rewriteEnabled {
+		plan.RewrittenQuery = query
+		plan.Route.RewriteApplied = false
+	}
+	if !hydeEnabled {
+		plan.HypotheticalDocument = plan.RewrittenQuery
+		plan.Route.HyDEApplied = false
+	}
+	if trace != nil {
+		trace.PlannerAttempted = plan.Route.PlannerAttempted
+		trace.RewriteApplied = plan.Route.RewriteApplied
+		trace.HyDEApplied = plan.Route.HyDEApplied
+		trace.PlannerFallback = plan.Route.Fallback
+		trace.PlannerFallbackReason = plan.Route.FallbackReason
+		trace.PlannerDurationMS = plan.Route.DurationMS
+		if plan.Route.Fallback {
+			trace.Degraded = true
+		}
+	}
+	retrievalStarted := time.Now()
 	targets := make([]target, 0, len(kbs))
 	vectorCache := make(map[string][][]float32)
 	for _, kb := range kbs {
+		docs, err := s.st.ListRAGDocumentsByKB(ctx, kb.ID)
+		if err != nil {
+			return nil, err
+		}
+		documents := make(map[string]store.RAGDocumentRecord, len(docs))
+		activeVersions := make(map[string]int64, len(docs))
+		for _, doc := range docs {
+			if doc.ActiveVersion <= 0 || strings.EqualFold(doc.Status, store.RAGDocumentStatusDeleting) {
+				continue
+			}
+			documents[doc.ID] = doc
+			activeVersions[doc.ID] = doc.ActiveVersion
+		}
+		if len(activeVersions) == 0 {
+			continue
+		}
+		collectionKey, err := s.resolveSearchCollection(ctx, kb.ID, activeVersions)
+		if err != nil {
+			return nil, err
+		}
 		embeddingCfg, err := s.embeddingConfigForKB(ctx, kb)
 		if err != nil {
 			return nil, err
@@ -189,37 +384,27 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 			queryVectors = vectors
 			vectorCache[cacheKey] = queryVectors
 		}
-		targets = append(targets, target{kb: kb, dense: queryVectors})
+		targets = append(targets, target{
+			kb: kb, collectionKey: collectionKey, dense: queryVectors,
+			documents: documents, activeVersions: activeVersions,
+		})
 	}
 
-	candidateTopK := s.cfg.Reranker.CandidateTopK
+	candidateTopK := runtimePolicy.CandidateTopK
+	if hasOptions && options.CandidateTopK > 0 {
+		candidateTopK = options.CandidateTopK
+	}
 	if candidateTopK < topN {
 		candidateTopK = topN
 	}
 	results := make([]Hit, 0, len(targets)*candidateTopK)
 	for _, target := range targets {
-		docs, err := s.st.ListRAGDocumentsByKB(ctx, target.kb.ID)
-		if err != nil {
-			return nil, err
-		}
-		docByID := make(map[string]store.RAGDocumentRecord, len(docs))
-		activeVersions := make(map[string]int64, len(docs))
-		for _, doc := range docs {
-			if doc.ActiveVersion <= 0 || strings.EqualFold(doc.Status, "deleting") {
-				continue
-			}
-			docByID[doc.ID] = doc
-			activeVersions[doc.ID] = doc.ActiveVersion
-		}
-		if len(activeVersions) == 0 {
-			continue
-		}
-		if err := s.vec.EnsureCollection(ctx, target.kb.ID, target.kb.EmbedDims); err != nil {
+		if err := s.vec.EnsureCollection(ctx, target.collectionKey, target.kb.EmbedDims); err != nil {
 			return nil, fmt.Errorf("准备检索 %s: %w", target.kb.Name, err)
 		}
-		vectorHits, err := s.vec.HybridSearch(ctx, target.kb.ID, vector.SearchQuery{
+		vectorHits, err := s.vec.HybridSearch(ctx, target.collectionKey, vector.SearchQuery{
 			Dense: target.dense, Text: plan.RewrittenQuery,
-			ActiveVersions: activeVersions, MaxFilterBytes: s.cfg.Limits.MaxMilvusFilterBytes,
+			ActiveVersions: target.activeVersions, MaxFilterBytes: s.cfg.Limits.MaxMilvusFilterBytes,
 		}, candidateTopK)
 		if err != nil {
 			return nil, fmt.Errorf("检索 %s: %w", target.kb.Name, err)
@@ -227,7 +412,7 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		refs := make([]store.RAGChunkRef, 0, len(vectorHits))
 		filteredVectorHits := make([]vector.SearchHit, 0, len(vectorHits))
 		for _, hit := range vectorHits {
-			doc, exists := docByID[hit.DocID]
+			doc, exists := target.documents[hit.DocID]
 			if !exists || doc.ActiveVersion != hit.DocVersion {
 				continue
 			}
@@ -244,7 +429,7 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		}
 		activeChanged := false
 		for _, hit := range filteredVectorHits {
-			doc := docByID[hit.DocID]
+			doc := target.documents[hit.DocID]
 			chunk, exists := catalogByRef[ragChunkKey(hit.DocID, hit.DocVersion, hit.ChunkIndex)]
 			if !exists && doc.IndexFormatVersion != 0 {
 				current, lookupErr := s.st.GetRAGDocument(ctx, hit.DocID)
@@ -307,23 +492,75 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		results = results[:candidateTopK]
 	}
 	candidateCount := len(results)
-	if s.reranker != nil && len(results) > 0 {
-		reranked, err := s.rerankHits(ctx, retrievalID, plan.RewrittenQuery, results, topN)
+	denseRouteCount := 0
+	if len(targets) > 0 {
+		denseRouteCount = len(targets[0].dense)
+	}
+	if trace != nil {
+		trace.RetrievalDurationMS = time.Since(retrievalStarted).Milliseconds()
+		trace.CandidateCount = candidateCount
+		trace.DenseRouteCount = denseRouteCount
+		setRecallScoreRange(trace, results)
+	}
+	rerankerRequested := s.reranker != nil
+	if hasOptions && options.Reranker != nil {
+		rerankerRequested = *options.Reranker
+	}
+	rerankerEnabled := rerankerRequested && s.reranker != nil
+	if hasOptions && rerankerRequested && s.reranker == nil {
+		if trace != nil {
+			trace.RerankerFallback = true
+			trace.RerankerFailureCode = "reranker_unavailable"
+			trace.Degraded = true
+		}
+		if options.RerankerFailurePolicy == config.RAGRerankerFailClosed {
+			return nil, errors.New("reranker unavailable")
+		}
+	}
+	if rerankerEnabled && len(results) > 0 {
+		minScore := runtimePolicy.MinScore
+		if hasOptions && options.MinScore != nil {
+			minScore = *options.MinScore
+		}
+		if trace != nil {
+			trace.RerankerAttempted = true
+		}
+		reranked, stats, err := s.rerankHitsWithStats(ctx, retrievalID, plan.RewrittenQuery, results, topN, minScore)
+		if trace != nil {
+			trace.RerankerDurationMS = stats.durationMS
+			trace.RerankerRankedCount = stats.rankedCount
+			trace.RerankerFilteredCount = stats.filteredCount
+			trace.RerankScoreMin = stats.scoreMin
+			trace.RerankScoreMax = stats.scoreMax
+		}
 		if err == nil {
+			if trace != nil {
+				trace.RerankerSucceeded = true
+			}
 			slog.Info("rag: retrieval completed",
 				"retrieval_id", retrievalID,
 				"owner", ownerID,
 				"knowledge_bases", len(kbs),
-				"dense_routes", len(targets[0].dense),
+				"dense_routes", denseRouteCount,
 				"candidates", candidateCount,
 				"returned", len(reranked),
 				"reranked", true,
 				"duration_ms", time.Since(started).Milliseconds(),
 			)
-			return s.hydrateHitAssets(ctx, reranked)
+			return s.hydrateSearchHits(ctx, reranked, trace)
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		if trace != nil {
+			trace.RerankerFailureCode = "reranker_error"
+			trace.Degraded = true
+		}
+		if hasOptions && options.RerankerFailurePolicy == config.RAGRerankerFailClosed {
+			return nil, fmt.Errorf("reranker failed: %w", err)
+		}
+		if trace != nil {
+			trace.RerankerFallback = true
 		}
 		slog.Warn("rag: reranker failed; using RRF candidates",
 			"retrieval_id", retrievalID,
@@ -338,14 +575,63 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		"retrieval_id", retrievalID,
 		"owner", ownerID,
 		"knowledge_bases", len(kbs),
-		"dense_routes", len(targets[0].dense),
+		"dense_routes", denseRouteCount,
 		"candidates", candidateCount,
 		"returned", len(results),
 		"reranked", false,
 		"reranker_configured", s.reranker != nil,
 		"duration_ms", time.Since(started).Milliseconds(),
 	)
-	return s.hydrateHitAssets(ctx, results)
+	return s.hydrateSearchHits(ctx, results, trace)
+}
+
+func resetSearchExecutionTrace(trace *SearchTrace) {
+	trace.PlannerDurationMS = 0
+	trace.RetrievalDurationMS = 0
+	trace.RerankerDurationMS = 0
+	trace.HydrationDurationMS = 0
+	trace.KnowledgeBaseCount = 0
+	trace.DenseRouteCount = 0
+	trace.CandidateCount = 0
+	trace.RerankerRankedCount = 0
+	trace.RerankerFilteredCount = 0
+	trace.ReturnedCount = 0
+	trace.PlannerAttempted = false
+	trace.RewriteApplied = false
+	trace.HyDEApplied = false
+	trace.PlannerFallback = false
+	trace.PlannerFallbackReason = ""
+	trace.RerankerAttempted = false
+	trace.RerankerSucceeded = false
+	trace.RerankerFallback = false
+	trace.RerankerFailureCode = ""
+	trace.Degraded = false
+	trace.RecallScoreMin = nil
+	trace.RecallScoreMax = nil
+	trace.RerankScoreMin = nil
+	trace.RerankScoreMax = nil
+}
+
+func setRecallScoreRange(trace *SearchTrace, hits []Hit) {
+	if len(hits) == 0 {
+		return
+	}
+	minimum, maximum := hits[0].RecallScore, hits[0].RecallScore
+	for _, hit := range hits[1:] {
+		minimum = math.Min(minimum, hit.RecallScore)
+		maximum = math.Max(maximum, hit.RecallScore)
+	}
+	trace.RecallScoreMin = &minimum
+	trace.RecallScoreMax = &maximum
+}
+
+func (s *Service) hydrateSearchHits(ctx context.Context, hits []Hit, trace *SearchTrace) ([]Hit, error) {
+	started := time.Now()
+	hydrated, err := s.hydrateHitAssets(ctx, hits)
+	if trace != nil {
+		trace.HydrationDurationMS = time.Since(started).Milliseconds()
+	}
+	return hydrated, err
 }
 
 // rerankHits replaces the public score with the normalized semantic score and
@@ -353,7 +639,25 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 // service or response error is returned to SearchWithContext, which falls back
 // to the untouched RRF ordering without applying this threshold.
 func (s *Service) rerankHits(ctx context.Context, retrievalID, query string, candidates []Hit, topN int) ([]Hit, error) {
+	return s.rerankHitsWithMinScore(ctx, retrievalID, query, candidates, topN, s.cfg.Reranker.MinScore)
+}
+
+func (s *Service) rerankHitsWithMinScore(ctx context.Context, retrievalID, query string, candidates []Hit, topN int, minScore float64) ([]Hit, error) {
+	hits, _, err := s.rerankHitsWithStats(ctx, retrievalID, query, candidates, topN, minScore)
+	return hits, err
+}
+
+type rerankStats struct {
+	durationMS    int64
+	rankedCount   int
+	filteredCount int
+	scoreMin      *float64
+	scoreMax      *float64
+}
+
+func (s *Service) rerankHitsWithStats(ctx context.Context, retrievalID, query string, candidates []Hit, topN int, minScore float64) ([]Hit, rerankStats, error) {
 	started := time.Now()
+	stats := rerankStats{}
 	documents := make([]string, len(candidates))
 	for index := range candidates {
 		documents[index] = candidates[index].SearchContent
@@ -363,22 +667,27 @@ func (s *Service) rerankHits(ctx context.Context, retrievalID, query string, can
 	}
 	ranked, err := s.reranker.Rerank(ctx, query, documents, topN)
 	if err != nil {
-		return nil, err
+		stats.durationMS = time.Since(started).Milliseconds()
+		return nil, stats, err
 	}
 	if len(ranked) == 0 {
-		return nil, fmt.Errorf("reranker 返回空结果")
+		stats.durationMS = time.Since(started).Milliseconds()
+		return nil, stats, fmt.Errorf("reranker 返回空结果")
 	}
 
 	seen := make(map[int]struct{}, len(ranked))
 	for _, item := range ranked {
 		if item.Index < 0 || item.Index >= len(candidates) {
-			return nil, fmt.Errorf("reranker 返回非法 index %d", item.Index)
+			stats.durationMS = time.Since(started).Milliseconds()
+			return nil, stats, fmt.Errorf("reranker 返回非法 index %d", item.Index)
 		}
 		if _, exists := seen[item.Index]; exists {
-			return nil, fmt.Errorf("reranker 返回重复 index %d", item.Index)
+			stats.durationMS = time.Since(started).Milliseconds()
+			return nil, stats, fmt.Errorf("reranker 返回重复 index %d", item.Index)
 		}
 		if math.IsNaN(item.Score) || math.IsInf(item.Score, 0) || item.Score < 0 || item.Score > 1 {
-			return nil, fmt.Errorf("reranker 返回非法分数 %v", item.Score)
+			stats.durationMS = time.Since(started).Milliseconds()
+			return nil, stats, fmt.Errorf("reranker 返回非法分数 %v", item.Score)
 		}
 		seen[item.Index] = struct{}{}
 	}
@@ -391,10 +700,20 @@ func (s *Service) rerankHits(ctx context.Context, retrievalID, query string, can
 	if len(ranked) > topN {
 		ranked = ranked[:topN]
 	}
+	stats.rankedCount = len(ranked)
+	if len(ranked) > 0 {
+		minimum, maximum := ranked[0].Score, ranked[0].Score
+		for _, item := range ranked[1:] {
+			minimum = math.Min(minimum, item.Score)
+			maximum = math.Max(maximum, item.Score)
+		}
+		stats.scoreMin = &minimum
+		stats.scoreMax = &maximum
+	}
 
 	filtered := make([]Hit, 0, len(ranked))
 	for _, item := range ranked {
-		if item.Score < s.cfg.Reranker.MinScore {
+		if item.Score < minScore {
 			continue
 		}
 		hit := candidates[item.Index]
@@ -403,6 +722,7 @@ func (s *Service) rerankHits(ctx context.Context, retrievalID, query string, can
 		hit.RerankScore = &score
 		filtered = append(filtered, hit)
 	}
+	stats.filteredCount = len(ranked) - len(filtered)
 	topScore := ranked[0].Score
 	lowestReturnedScore := float64(0)
 	if len(filtered) > 0 && filtered[len(filtered)-1].RerankScore != nil {
@@ -416,12 +736,13 @@ func (s *Service) rerankHits(ctx context.Context, retrievalID, query string, can
 		"ranked", len(ranked),
 		"returned", len(filtered),
 		"filtered", len(ranked)-len(filtered),
-		"min_score", s.cfg.Reranker.MinScore,
+		"min_score", minScore,
 		"top_score", topScore,
 		"lowest_returned_score", lowestReturnedScore,
 		"duration_ms", time.Since(started).Milliseconds(),
 	)
-	return filtered, nil
+	stats.durationMS = time.Since(started).Milliseconds()
+	return filtered, stats, nil
 }
 
 // FormatHits renders search results for the rag_search tool with an explicit

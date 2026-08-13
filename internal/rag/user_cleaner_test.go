@@ -60,7 +60,7 @@ func TestRAGUserCleanupRetainsDeletingUserUntilExternalCleanupRetrySucceeds(t *t
 	if _, err := st.GetRAGKB(ctx, kb.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("RAG KB remained after complete cleanup: %v", err)
 	}
-	if vec.HasCollection(kb.ID) {
+	if vec.HasCollection(vector.CollectionKey(kb.ID)) {
 		t.Fatal("vector collection remained after complete user cleanup")
 	}
 }

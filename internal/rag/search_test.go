@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,12 +43,12 @@ func (s *searchUserLookupStore) GetUser(ctx context.Context, userID string) (*st
 	return s.Store.GetUser(ctx, userID)
 }
 
-func (v *searchCountingVector) EnsureCollection(ctx context.Context, kbID string, dims int) error {
+func (v *searchCountingVector) EnsureCollection(ctx context.Context, kbID vector.CollectionKey, dims int) error {
 	v.ensureCalls++
 	return v.Fake.EnsureCollection(ctx, kbID, dims)
 }
 
-func (v *searchCountingVector) HybridSearch(ctx context.Context, kbID string, query vector.SearchQuery, topK int) ([]vector.SearchHit, error) {
+func (v *searchCountingVector) HybridSearch(ctx context.Context, kbID vector.CollectionKey, query vector.SearchQuery, topK int) ([]vector.SearchHit, error) {
 	v.searchCalls++
 	return v.Fake.HybridSearch(ctx, kbID, query, topK)
 }
@@ -80,10 +83,10 @@ type activeMapRetryVector struct {
 
 type assetBatchStore struct {
 	store.Store
-	mappings       []store.RAGChunkAssetRecord
-	assets         map[string]store.RAGAssetRecord
-	attachments    map[string]store.RAGAttachmentRecord
-	batchSize      []int
+	mappings        []store.RAGChunkAssetRecord
+	assets          map[string]store.RAGAssetRecord
+	attachments     map[string]store.RAGAttachmentRecord
+	batchSize       []int
 	attachmentBatch []int
 }
 
@@ -109,7 +112,7 @@ func (s *assetBatchStore) ListRAGAttachmentsByIDs(_ context.Context, ids []strin
 	return records, nil
 }
 
-func (v *activeMapRetryVector) HybridSearch(_ context.Context, _ string, query vector.SearchQuery, _ int) ([]vector.SearchHit, error) {
+func (v *activeMapRetryVector) HybridSearch(_ context.Context, _ vector.CollectionKey, query vector.SearchQuery, _ int) ([]vector.SearchHit, error) {
 	v.searchCalls++
 	version := query.ActiveVersions["doc_retry_once"]
 	return []vector.SearchHit{{
@@ -123,6 +126,195 @@ func (r *stubReranker) Rerank(_ context.Context, query string, documents []strin
 	r.documents = append([]string(nil), documents...)
 	r.topN = topN
 	return append([]rerank.Result(nil), r.results...), r.err
+}
+
+func newRAGSearchOptionsFixture(t *testing.T) (*Service, *vector.Fake, string) {
+	t.Helper()
+	service, fake := newTestService(t, false)
+	ctx := context.Background()
+	kb, err := service.CreateKB(ctx, "u1", "evaluation fixture", "", 512, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 2; index++ {
+		docID := fmt.Sprintf("doc_eval_%d", index)
+		if err := service.st.CreateRAGDocument(ctx, &store.RAGDocumentRecord{
+			ID: docID, KBID: kb.ID, FileName: docID + ".md", FileType: "md",
+			Status: "DONE", Version: 1, ActiveVersion: 1, IndexFormatVersion: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		content := fmt.Sprintf("installation permission passage %d", index)
+		if err := service.st.PutRAGChunks(ctx, []store.RAGChunkRecord{{
+			KBID: kb.ID, DocID: docID, DocVersion: 1, ChunkIndex: 0,
+			RawContent: content, SearchContent: content, TokenCount: 4,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := fake.UpsertChunks(ctx, vector.CollectionKey(kb.ID), []vector.ChunkData{{
+			DocID: docID, Index: 0, DocVersion: 1, Content: content,
+			SearchContent: content, Vector: []float32{1, 0, 0, 0},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return service, fake, kb.ID
+}
+
+func boolPointer(value bool) *bool { return &value }
+
+func TestRAGSearchCompatibilityWrapperMatchesOptionsDefaults(t *testing.T) {
+	service, _, kbID := newRAGSearchOptionsFixture(t)
+	ctx := context.Background()
+	input := SearchContext{Query: "安装权限"}
+	wrapperHits, err := service.SearchWithContext(ctx, "u1", []string{kbID}, input, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	optionHits, trace, err := service.SearchWithOptions(ctx, "u1", []string{kbID}, input, SearchOptions{TopN: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(wrapperHits, optionHits) {
+		t.Fatalf("compatibility wrapper drifted:\nwrapper=%+v\noptions=%+v", wrapperHits, optionHits)
+	}
+	if len(optionHits) != 2 || optionHits[0].Score != optionHits[0].RecallScore || optionHits[0].RerankScore != nil {
+		t.Fatalf("default hit order/score provenance drifted: %+v", optionHits)
+	}
+	if trace.CandidateCount != 2 || trace.ReturnedCount != 2 || trace.DenseRouteCount != 1 ||
+		trace.TopN != 2 || trace.CandidateTopK != service.cfg.Reranker.CandidateTopK {
+		t.Fatalf("default trace counts = %+v", trace)
+	}
+	encoded, err := json.Marshal(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), input.Query) || strings.Contains(string(encoded), "installation permission passage") {
+		t.Fatalf("trace leaked unbounded retrieval text: %s", encoded)
+	}
+}
+
+func TestRAGSearchOptionsValidation(t *testing.T) {
+	invalidMinScore := math.NaN()
+	tests := []struct {
+		name    string
+		options SearchOptions
+	}{
+		{name: "candidate below topN", options: SearchOptions{TopN: 5, CandidateTopK: 4}},
+		{name: "invalid minScore", options: SearchOptions{MinScore: &invalidMinScore}},
+		{name: "unknown failure policy", options: SearchOptions{RerankerFailurePolicy: config.RAGRerankerFailurePolicy("best_effort")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, _, err := (&Service{}).SearchWithOptions(context.Background(), "u1", nil, SearchContext{Query: "q"}, tt.options); err == nil {
+				t.Fatal("expected options validation error")
+			}
+		})
+	}
+}
+
+func TestRAGSearchOptionsDisableRewriteAndHyDEUsesOriginalQuery(t *testing.T) {
+	service, fake, kbID := newRAGSearchOptionsFixture(t)
+	capture := &queryCaptureVector{Fake: fake}
+	service.vec = capture
+	var plannerCalls atomic.Int32
+	service.queryLLM = func(context.Context, string, string, string) (string, error) {
+		plannerCalls.Add(1)
+		return `{"rewritten_query":"rewritten","hypothetical_document":"hypothetical"}`, nil
+	}
+	const original = "安装权限"
+	_, trace, err := service.SearchWithOptions(context.Background(), "u1", []string{kbID}, SearchContext{Query: original}, SearchOptions{
+		TopN: 2, CandidateTopK: 2, Rewrite: boolPointer(false), HyDE: boolPointer(false), Reranker: boolPointer(false),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plannerCalls.Load() != 0 || trace.PlannerAttempted || trace.RewriteApplied || trace.HyDEApplied || trace.PlannerFallback {
+		t.Fatalf("disabled planner routes were not explicit: calls=%d trace=%+v", plannerCalls.Load(), trace)
+	}
+	if texts := capture.texts(); len(texts) != 1 || texts[0] != original {
+		t.Fatalf("BM25 route did not use original query: %#v", texts)
+	}
+	if dense, _ := capture.routes(); len(dense) != 1 || dense[0] != 1 || trace.DenseRouteCount != 1 {
+		t.Fatalf("dense route did not use one original-query route: captured=%v trace=%+v", dense, trace)
+	}
+}
+
+func TestRAGSearchTraceRecordsRerankSuccessAndMinScoreFiltering(t *testing.T) {
+	service, _, kbID := newRAGSearchOptionsFixture(t)
+	service.reranker = &stubReranker{results: []rerank.Result{{Index: 1, Score: 0.4}, {Index: 0, Score: 0.9}}}
+	minScore := 0.5
+	hits, trace, err := service.SearchWithOptions(context.Background(), "u1", []string{kbID}, SearchContext{Query: "安装权限"}, SearchOptions{
+		TopN: 2, CandidateTopK: 2, MinScore: &minScore, Reranker: boolPointer(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].RerankScore == nil || *hits[0].RerankScore != 0.9 {
+		t.Fatalf("reranked hits = %+v", hits)
+	}
+	if !trace.RerankerAttempted || !trace.RerankerSucceeded || trace.RerankerFallback ||
+		trace.CandidateCount != 2 || trace.RerankerRankedCount != 2 || trace.RerankerFilteredCount != 1 || trace.ReturnedCount != 1 {
+		t.Fatalf("reranker success trace = %+v", trace)
+	}
+	if trace.RerankScoreMin == nil || *trace.RerankScoreMin != 0.4 || trace.RerankScoreMax == nil || *trace.RerankScoreMax != 0.9 {
+		t.Fatalf("rerank score range = %+v", trace)
+	}
+}
+
+func TestRAGSearchTraceRecordsFallbackAndFailClosed(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		policy       config.RAGRerankerFailurePolicy
+		wantError    bool
+		wantFallback bool
+	}{
+		{name: "fallback RRF", policy: config.RAGRerankerFallbackRRF, wantFallback: true},
+		{name: "fail closed", policy: config.RAGRerankerFailClosed, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			service, _, kbID := newRAGSearchOptionsFixture(t)
+			service.reranker = &stubReranker{err: errors.New("reranker unavailable: credential-shaped-value")}
+			hits, trace, err := service.SearchWithOptions(context.Background(), "u1", []string{kbID}, SearchContext{Query: "安装权限"}, SearchOptions{
+				TopN: 2, CandidateTopK: 2, Reranker: boolPointer(true), RerankerFailurePolicy: tt.policy,
+			})
+			if (err != nil) != tt.wantError {
+				t.Fatalf("error=%v, wantError=%v", err, tt.wantError)
+			}
+			if trace.RerankerFallback != tt.wantFallback || !trace.RerankerAttempted || trace.RerankerSucceeded ||
+				!trace.Degraded || trace.RerankerFailureCode != "reranker_error" {
+				t.Fatalf("reranker failure trace = %+v", trace)
+			}
+			if tt.wantFallback {
+				if len(hits) != 2 || hits[0].RerankScore != nil || hits[0].Score != hits[0].RecallScore {
+					t.Fatalf("RRF fallback hits = %+v", hits)
+				}
+			} else if len(hits) != 0 {
+				t.Fatalf("fail-closed returned hits: %+v", hits)
+			}
+			encoded, marshalErr := json.Marshal(trace)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if strings.Contains(string(encoded), "credential-shaped-value") {
+				t.Fatalf("trace leaked reranker error detail: %s", encoded)
+			}
+		})
+	}
+}
+
+func TestRAGSearchMinScoreDoesNotFilterRRFWhenRerankerDisabled(t *testing.T) {
+	service, _, kbID := newRAGSearchOptionsFixture(t)
+	minScore := 1.0
+	hits, trace, err := service.SearchWithOptions(context.Background(), "u1", []string{kbID}, SearchContext{Query: "安装权限"}, SearchOptions{
+		TopN: 2, CandidateTopK: 2, MinScore: &minScore, Reranker: boolPointer(false),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 2 || trace.RerankerAttempted || trace.RerankerFilteredCount != 0 {
+		t.Fatalf("minScore incorrectly filtered RRF candidates: hits=%+v trace=%+v", hits, trace)
+	}
 }
 
 func TestRerankHitsSortsFiltersAndPreservesRecallScore(t *testing.T) {
@@ -296,7 +488,7 @@ func TestSearchCrossKBMergeFiltersStagingAndOrphanVectors(t *testing.T) {
 		}}); err != nil {
 			t.Fatal(err)
 		}
-		if err := fake.UpsertChunks(ctx, kb.ID, []vector.ChunkData{
+		if err := fake.UpsertChunks(ctx, vector.CollectionKey(kb.ID), []vector.ChunkData{
 			{DocID: docID, Index: 0, DocVersion: 1, Content: "active", SearchContent: "active", Vector: []float32{0, 1, 0, 0}},
 			{DocID: docID, Index: 0, DocVersion: 2, Content: "staging", SearchContent: "staging", Vector: []float32{0, 1, 0, 0}},
 			{DocID: "doc_orphan", Index: 0, DocVersion: 1, Content: "orphan", SearchContent: "orphan", Vector: []float32{0, 1, 0, 0}},
@@ -340,7 +532,7 @@ func TestSearchExcludesDeletingDocumentImmediately(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := fake.UpsertChunks(ctx, kb.ID, []vector.ChunkData{{
+	if err := fake.UpsertChunks(ctx, vector.CollectionKey(kb.ID), []vector.ChunkData{{
 		DocID: doc.ID, Index: 0, DocVersion: 1, Content: "must be revoked",
 		SearchContent: "must be revoked", Vector: []float32{0, 1, 0, 0},
 	}}); err != nil {
@@ -382,7 +574,7 @@ func TestSearchExcludesDeletingUserImmediately(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := fake.UpsertChunks(ctx, kb.ID, []vector.ChunkData{{
+	if err := fake.UpsertChunks(ctx, vector.CollectionKey(kb.ID), []vector.ChunkData{{
 		DocID: doc.ID, Index: 0, DocVersion: 1, Content: "must be revoked",
 		SearchContent: "must be revoked", Vector: []float32{0, 1, 0, 0},
 	}}); err != nil {
@@ -469,7 +661,7 @@ func TestSearchAdminPathsExcludeDeletingActualKBOwner(t *testing.T) {
 			}}); err != nil {
 				t.Fatal(err)
 			}
-			if err := vec.UpsertChunks(ctx, first.ID, []vector.ChunkData{{
+			if err := vec.UpsertChunks(ctx, vector.CollectionKey(first.ID), []vector.ChunkData{{
 				DocID: doc.ID, Index: 0, DocVersion: 1, Content: "must be revoked",
 				SearchContent: "must be revoked", Vector: []float32{0, 1, 0, 0},
 			}}); err != nil {
@@ -564,7 +756,7 @@ func TestSearchHydratesCatalogForRerankAndLoadsReadyAssets(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := fake.UpsertChunks(ctx, kb.ID, []vector.ChunkData{
+	if err := fake.UpsertChunks(ctx, vector.CollectionKey(kb.ID), []vector.ChunkData{
 		{DocID: doc.ID, Index: 0, DocVersion: 1, Content: "不得作为新格式正文", SearchContent: "vector search payload", Vector: []float32{1, 0, 0, 0}},
 		{DocID: doc.ID, Index: 0, DocVersion: 2, Content: "未激活高分版本", SearchContent: "staging", Vector: []float32{1, 0, 0, 0}},
 	}); err != nil {

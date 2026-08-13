@@ -17,7 +17,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
-func TestPlanQueryUsesQuestionHistoryAndSingleLLMCall(t *testing.T) {
+func TestQueryPlanUsesQuestionHistoryAndSingleLLMCall(t *testing.T) {
 	var calls atomic.Int32
 	var gotSystem, gotUser string
 	service := &Service{queryLLM: func(_ context.Context, userID, systemPrompt, userPrompt string) (string, error) {
@@ -39,6 +39,9 @@ func TestPlanQueryUsesQuestionHistoryAndSingleLLMCall(t *testing.T) {
 	if plan.RewrittenQuery != "Windows 系统如何安装 bkcrab？" ||
 		plan.HypotheticalDocument != "在 Windows 系统中安装 bkcrab 时，需要准备 Docker 环境。" {
 		t.Fatalf("query plan = %+v", plan)
+	}
+	if !plan.Route.PlannerAttempted || !plan.Route.RewriteApplied || !plan.Route.HyDEApplied || plan.Route.Fallback {
+		t.Fatalf("query route metadata = %+v", plan.Route)
 	}
 	if !strings.Contains(gotSystem, "历史提问") || !strings.Contains(gotSystem, "口语化") {
 		t.Fatalf("planner system prompt is missing rewrite requirements: %q", gotSystem)
@@ -63,7 +66,7 @@ func TestPlanQueryUsesQuestionHistoryAndSingleLLMCall(t *testing.T) {
 	}
 }
 
-func TestPlanQueryFallsBackAndSupportsRewriteOnly(t *testing.T) {
+func TestQueryPlanFallsBackAndSupportsRewriteOnly(t *testing.T) {
 	input := SearchContext{Query: "  原始问题  "}
 	tests := []struct {
 		name string
@@ -72,28 +75,36 @@ func TestPlanQueryFallsBackAndSupportsRewriteOnly(t *testing.T) {
 	}{
 		{
 			name: "planner unavailable",
-			want: QueryPlan{RewrittenQuery: "原始问题", HypotheticalDocument: "原始问题"},
+			want: QueryPlan{RewrittenQuery: "原始问题", HypotheticalDocument: "原始问题", Route: QueryRouteMetadata{
+				Fallback: true, FallbackReason: "planner_unavailable",
+			}},
 		},
 		{
 			name: "planner error",
 			llm: func(context.Context, string, string, string) (string, error) {
 				return "", errors.New("upstream unavailable")
 			},
-			want: QueryPlan{RewrittenQuery: "原始问题", HypotheticalDocument: "原始问题"},
+			want: QueryPlan{RewrittenQuery: "原始问题", HypotheticalDocument: "原始问题", Route: QueryRouteMetadata{
+				PlannerAttempted: true, Fallback: true, FallbackReason: "provider_error",
+			}},
 		},
 		{
 			name: "invalid output",
 			llm: func(context.Context, string, string, string) (string, error) {
 				return "not-json", nil
 			},
-			want: QueryPlan{RewrittenQuery: "原始问题", HypotheticalDocument: "原始问题"},
+			want: QueryPlan{RewrittenQuery: "原始问题", HypotheticalDocument: "原始问题", Route: QueryRouteMetadata{
+				PlannerAttempted: true, Fallback: true, FallbackReason: "invalid_output",
+			}},
 		},
 		{
 			name: "rewrite only",
 			llm: func(context.Context, string, string, string) (string, error) {
 				return `{"rewritten_query":"规范问题","hypothetical_document":""}`, nil
 			},
-			want: QueryPlan{RewrittenQuery: "规范问题", HypotheticalDocument: "规范问题"},
+			want: QueryPlan{RewrittenQuery: "规范问题", HypotheticalDocument: "规范问题", Route: QueryRouteMetadata{
+				PlannerAttempted: true, RewriteApplied: true,
+			}},
 		},
 	}
 	for _, tt := range tests {
@@ -125,7 +136,7 @@ func addActiveSearchDocument(t *testing.T, service *Service, kbID, docID string)
 	}
 }
 
-func (v *queryCaptureVector) HybridSearch(ctx context.Context, kbID string, query vector.SearchQuery, topK int) ([]vector.SearchHit, error) {
+func (v *queryCaptureVector) HybridSearch(ctx context.Context, kbID vector.CollectionKey, query vector.SearchQuery, topK int) ([]vector.SearchHit, error) {
 	v.mu.Lock()
 	v.queryText = append(v.queryText, query.Text)
 	v.dense = append(v.dense, len(query.Dense))

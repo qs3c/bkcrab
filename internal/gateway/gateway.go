@@ -36,6 +36,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/rag"
 	ragenrich "github.com/qs3c/bkcrab/internal/rag/enrich"
+	rageval "github.com/qs3c/bkcrab/internal/rag/eval"
 	ragobjects "github.com/qs3c/bkcrab/internal/rag/objects"
 	ragparse "github.com/qs3c/bkcrab/internal/rag/parse"
 	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
@@ -175,28 +176,34 @@ func buildToolChainFromResolved(resolved config.ResolvedAgent, category string) 
 // `sandboxPool` 是网关范围的执行器池。从系统作用域沙箱配置构建一次，由每个 UserSpace 共享。
 // 每个 UserSpace 的 `SandboxPool` 字段只是一个借用的引用；关闭时只关闭这一个池。
 type Gateway struct {
-	bus              *bus.MessageBus
-	users            *userSpaceRegistry
-	chanMgr          *channels.Manager
-	webChan          *channels.WebChannel
-	scheduler        *cron.Scheduler
-	webhookSrv       *webhook.Server
-	pluginMgr        *plugin.Manager
-	taskQueue        *taskqueue.Queue
-	store            store.Store
-	accounts         *users.Accounts
-	workspace        workspace.Store
-	sandboxPool      sandbox.ExecutorPool
-	mcpRuntime       *mcpruntime.Service
-	usage            usage.Meter
-	ragSvc           *rag.Service
-	ragCfg           config.RAGCfg
-	ragParser        *sidecar.Client
-	ragFairQueue     *ragFairQueueAssembly
-	imageFairQueue   *imageFairQueueAssembly
-	fairQueueHealth  *ragFairQueueHealthState
-	imagegenResolver imagegendomain.ProviderPlanResolver
-	envCfg           *config.EnvConfig
+	bus                *bus.MessageBus
+	users              *userSpaceRegistry
+	chanMgr            *channels.Manager
+	webChan            *channels.WebChannel
+	scheduler          *cron.Scheduler
+	webhookSrv         *webhook.Server
+	pluginMgr          *plugin.Manager
+	taskQueue          *taskqueue.Queue
+	store              store.Store
+	accounts           *users.Accounts
+	workspace          workspace.Store
+	sandboxPool        sandbox.ExecutorPool
+	mcpRuntime         *mcpruntime.Service
+	usage              usage.Meter
+	ragSvc             *rag.Service
+	ragCfg             config.RAGCfg
+	ragParser          *sidecar.Client
+	ragEvaluator       *rageval.RagasClient
+	ragEvalRunner      *rageval.Runner
+	ragEvalDatasets    *rageval.DatasetService
+	ragEvalCleanup     *rageval.CleanupCoordinator
+	ragPolicyPromotion *rag.PolicyPromotionService
+	ragPolicyRefresher *rag.RuntimePolicyRefresher
+	ragFairQueue       *ragFairQueueAssembly
+	imageFairQueue     *imageFairQueueAssembly
+	fairQueueHealth    *ragFairQueueHealthState
+	imagegenResolver   imagegendomain.ProviderPlanResolver
+	envCfg             *config.EnvConfig
 	// chatEvents 设置后，允许总线触发的 web 轮次（cron/目标延续/心跳/子代理）
 	// 通过用户输入的 POST /api/chat 轮次使用的同一个 SSE hub 流式传输。
 	// 安全地为 nil：未设置时保留传统的 bus.Outbound → WebChannel 异步气泡路径。
@@ -235,6 +242,34 @@ func (g *Gateway) RAGParserHealthSnapshot() config.RAGParserHealthSnapshot {
 		return config.RAGParserHealthSnapshot{}
 	}
 	return g.ragParser.HealthSnapshot()
+}
+
+// RAGEvaluatorHealthSnapshot returns only the last background-probed value.
+func (g *Gateway) RAGEvaluatorHealthSnapshot() config.RAGEvaluatorHealthSnapshot {
+	if g == nil || g.ragEvaluator == nil {
+		return config.RAGEvaluatorHealthSnapshot{}
+	}
+	return g.ragEvaluator.HealthSnapshot()
+}
+
+func (g *Gateway) RAGEvaluationRunner() *rageval.Runner {
+	if g == nil {
+		return nil
+	}
+	return g.ragEvalRunner
+}
+
+func (g *Gateway) RAGEvaluationDatasetService() *rageval.DatasetService {
+	if g == nil {
+		return nil
+	}
+	return g.ragEvalDatasets
+}
+func (g *Gateway) RAGPolicyPromotionService() *rag.PolicyPromotionService {
+	if g == nil {
+		return nil
+	}
+	return g.ragPolicyPromotion
 }
 
 // FairQueueHealthSnapshot returns only cached, serialization-safe facts. It
@@ -362,11 +397,21 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	ws := wsInner
 
 	var ragSvc *rag.Service
+	var ragEvalDatasets *rageval.DatasetService
 	var legacySnapshotBuilder store.RAGLegacyTaskSnapshotBuilder
 	ragCfg := readSystemRAGCfg(st, env)
 	if err := ragCfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid RAG configuration: %w", err)
 	}
+	generationMode := rag.GenerationResolutionLegacy
+	if ragCfg.Features.GenerationShadowReadEnabled {
+		generationMode = rag.GenerationResolutionShadow
+	}
+	if ragCfg.Features.GenerationResolverAuthoritative {
+		generationMode = rag.GenerationResolutionAuthoritative
+	}
+	collectionResolver := rag.NewGenerationResolver(st, generationMode, nil)
+
 	if fairPlan.StartFairClaimant && env.RAGLegacyTaskMigrationMode != "" {
 		return nil, errors.New("fair RAG worker mode cannot run the offline legacy task migration")
 	}
@@ -390,6 +435,19 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		// endpoint disables only sidecar-backed routes; base RAG still starts.
 		slog.Error("rag: parser sidecar configuration invalid; sidecar routes disabled", "error", parserErr)
 		ragParserClient = nil
+	}
+	var ragEvaluatorClient *rageval.RagasClient
+	if ragCfg.Evaluation.Enabled {
+		ragEvaluatorClient, err = rageval.NewRagasClient(
+			ragCfg.Evaluation.Sidecar.Endpoint, ragCfg.Evaluation.Sidecar.APIKey,
+			time.Duration(ragCfg.Evaluation.Sidecar.TimeoutMS)*time.Millisecond,
+			ragCfg.Evaluation.MaxBatchSize, ragCfg.Evaluation.MaxContextsPerSample,
+			ragCfg.Evaluation.MaxContextBytes,
+		)
+		if err != nil {
+			slog.Error("rag: evaluator sidecar configuration invalid; evaluation unavailable", "error", err)
+			ragEvaluatorClient = nil
+		}
 	}
 	var primitives ragparse.PrimitiveExtractor
 	if ragParserClient != nil {
@@ -419,6 +477,13 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 			}
 			slog.Error("rag: original object store initialization failed; RAG disabled", "error", objectErr)
 		} else {
+			if ragCfg.Evaluation.Enabled {
+				ragEvalDatasets, objectErr = rageval.NewDatasetService(st, ragObjects)
+				if objectErr != nil {
+					slog.Error("rag eval: dataset import service unavailable", "error", objectErr)
+				}
+			}
+
 			var cacheCatalog store.RAGCacheCatalog = st
 			if ragFairQueue != nil {
 				cacheCatalog = rag.NewFairExecutionCacheCatalog(st, ragFairQueue.mainStore, fairPlan.Mode)
@@ -451,6 +516,11 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					textEnricher = enrichmentClient
 				}
 			}
+			runtimePolicy, runtimePolicyErr := rag.NewRuntimePolicySnapshot(rag.DefaultRuntimePolicy(ragCfg))
+			if runtimePolicyErr != nil {
+				slog.Error("rag: default runtime policy invalid; using service fallback", "error", runtimePolicyErr)
+				runtimePolicy = nil
+			}
 			// Legacy snapshot construction only needs SQL, the original object
 			// store and provider configuration. Assemble it before connecting to
 			// Milvus so a temporary vector outage cannot turn runnable legacy work
@@ -460,6 +530,8 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 				Objects:         ragObjects,
 				Cfg:             ragCfg,
 				UserEmbedCfg:    userEmbeddingCfgLookup(st),
+				RuntimePolicy:   runtimePolicy,
+				Collections:     collectionResolver,
 				Parser:          documentParser,
 				Primitives:      primitives,
 				OfficeAvailable: officeAvailable,
@@ -504,7 +576,10 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					Objects:         ragObjects,
 					Cfg:             ragCfg,
 					UserEmbedCfg:    userEmbeddingCfgLookup(st),
+					RuntimePolicy:   runtimePolicy,
+					Collections:     collectionResolver,
 					QueryLLM:        userRAGQueryLLM(st, meter),
+					AnswerModel:     userRAGAnswerModel(st),
 					Reranker:        ranker,
 					Parser:          documentParser,
 					Primitives:      primitives,
@@ -641,6 +716,44 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		fairQueueHealth = ragFairQueue.health
 	}
 
+	var ragEvalRunner *rageval.Runner
+	var ragEvalCleanup *rageval.CleanupCoordinator
+	var ragPolicyPromotion *rag.PolicyPromotionService
+	var ragPolicyRefresher *rag.RuntimePolicyRefresher
+	if ragCfg.Evaluation.Enabled && ragSvc != nil && ragEvaluatorClient != nil {
+		generationBuilder, buildErr := rag.NewEvaluationGenerationBuilder(st, ragSvc, "eval-generation-"+uuid.NewString(), 45*time.Second, time.Duration(ragCfg.Evaluation.GenerationRetentionDays)*24*time.Hour)
+		if buildErr != nil {
+			slog.Error("rag eval: generation builder unavailable", "error", buildErr)
+		} else {
+			generationProvider := &rag.EvaluationRunnerGenerationProvider{Store: st, Builder: generationBuilder, Embedding: ragCfg.Embedding, Contract: rag.DefaultEvaluationGenerationContract()}
+			ragEvalRunner, buildErr = rageval.NewRunner(st, generationProvider, ragSvc, ragEvaluatorClient, ragCfg.Evaluation, "eval-runner-"+uuid.NewString())
+			if buildErr != nil {
+				slog.Error("rag eval: runner unavailable", "error", buildErr)
+				ragEvalRunner = nil
+			}
+			if ragEvalDatasets != nil {
+				ragEvalCleanup, buildErr = rageval.NewCleanupCoordinator(st, ragEvalDatasets, generationBuilder, ragCfg.Evaluation, nil)
+				if buildErr != nil {
+					slog.Error("rag eval: cleanup coordinator unavailable", "error", buildErr)
+					ragEvalCleanup = nil
+				}
+			}
+		}
+		if runtimeSnapshot, ok := ragSvc.RuntimePolicyProvider().(*rag.RuntimePolicySnapshot); ok && runtimeSnapshot != nil {
+			if bootstrapErr := rag.BootstrapRuntimePolicy(context.Background(), st, runtimeSnapshot, rag.DefaultRuntimePolicy(ragCfg)); bootstrapErr != nil {
+				slog.Error("rag policy: runtime bootstrap unavailable", "error", bootstrapErr)
+			} else {
+				gates := ragCfg.Evaluation.PromotionGates
+				ragPolicyPromotion = &rag.PolicyPromotionService{Store: st, Snapshot: runtimeSnapshot, Gates: rag.PromotionGates{MinimumMetricMean: gates.MinimumMetricMean, MinimumScoredCases: gates.MinimumScoredCases, MaximumCaseErrorRate: gates.MaximumCaseErrorRate, MaximumP95LatencyMS: gates.MaximumP95LatencyMS, MaximumCostUSD: gates.MaximumCostUSD}, ResolveEnvironment: runtimePromotionEnvironment(st, ragCfg)}
+				ragPolicyRefresher = &rag.RuntimePolicyRefresher{Store: st, Snapshot: runtimeSnapshot, Interval: 5 * time.Second}
+			}
+		}
+		if bootstrapErr := rag.BootstrapIngestionPolicy(context.Background(), st, rag.DefaultIngestionPolicy(ragCfg)); bootstrapErr != nil {
+			slog.Error("rag policy: ingestion bootstrap unavailable", "error", bootstrapErr)
+			ragPolicyPromotion = nil
+		}
+	}
+
 	g := &Gateway{
 		bus:         mb,
 		store:       st,
@@ -655,19 +768,25 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 			}
 			return nil
 		}()),
-		chanMgr:          chanMgr,
-		webChan:          webChan,
-		scheduler:        scheduler,
-		webhookSrv:       webhookSrv,
-		pluginMgr:        pluginMgr,
-		ragSvc:           ragSvc,
-		ragCfg:           ragCfg,
-		ragParser:        ragParserClient,
-		ragFairQueue:     ragFairQueue,
-		imageFairQueue:   imageFairQueue,
-		fairQueueHealth:  fairQueueHealth,
-		imagegenResolver: imagegenResolver,
-		envCfg:           env,
+		chanMgr:            chanMgr,
+		webChan:            webChan,
+		scheduler:          scheduler,
+		webhookSrv:         webhookSrv,
+		pluginMgr:          pluginMgr,
+		ragSvc:             ragSvc,
+		ragCfg:             ragCfg,
+		ragParser:          ragParserClient,
+		ragEvaluator:       ragEvaluatorClient,
+		ragEvalRunner:      ragEvalRunner,
+		ragEvalDatasets:    ragEvalDatasets,
+		ragEvalCleanup:     ragEvalCleanup,
+		ragPolicyPromotion: ragPolicyPromotion,
+		ragPolicyRefresher: ragPolicyRefresher,
+		ragFairQueue:       ragFairQueue,
+		imageFairQueue:     imageFairQueue,
+		fairQueueHealth:    fairQueueHealth,
+		imagegenResolver:   imagegenResolver,
+		envCfg:             env,
 	}
 
 	if webhookSrv != nil {
@@ -850,6 +969,18 @@ func (g *Gateway) RunContext(ctx context.Context) error {
 	}
 	if g.ragParser != nil {
 		g.ragParser.StartHealthProbe(ctx)
+	}
+	if g.ragEvaluator != nil {
+		g.ragEvaluator.StartHealthProbe(ctx)
+	}
+	if g.ragEvalRunner != nil {
+		g.ragEvalRunner.Start(ctx)
+	}
+	if g.ragEvalCleanup != nil {
+		g.ragEvalCleanup.Start(ctx)
+	}
+	if g.ragPolicyRefresher != nil {
+		g.ragPolicyRefresher.Start(ctx)
 	}
 	if g.ragSvc != nil {
 		g.ragSvc.Start(ctx)
@@ -1158,6 +1289,45 @@ func userRAGQueryLLM(st store.Store, meter usage.Meter) rag.QueryLLMFn {
 			}
 		}
 		return strings.TrimSpace(response.Content), nil
+	}
+}
+
+func userRAGAnswerModel(st store.Store) rag.AnswerModelResolver {
+	return func(ctx context.Context, userID, model string) (rag.AnswerModel, error) {
+		if st == nil || strings.TrimSpace(userID) == "" {
+			return nil, errors.New("evaluation answer owner is unavailable")
+		}
+		cfg, err := assembleConfig(ctx, st, userID, "")
+		if err != nil {
+			return nil, fmt.Errorf("assemble evaluation answer config: %w", err)
+		}
+		config.LoadEnv().ApplyToConfig(cfg)
+		config.ApplyDefaults(cfg)
+		providerName, modelName := provider.SplitProviderModel(strings.TrimSpace(model))
+		if providerName == "" || modelName == "" {
+			return nil, errors.New("evaluation answer model must use provider/model")
+		}
+		providerCfg, ok := cfg.Providers[providerName]
+		if !ok || strings.TrimSpace(providerCfg.APIBase) == "" || strings.TrimSpace(providerCfg.APIKey) == "" {
+			return nil, fmt.Errorf("evaluation answer provider %q is incomplete", providerName)
+		}
+		return provider.NewProvider(providerCfg.APIKey, providerCfg.APIBase, providerCfg.APIType), nil
+	}
+}
+
+func runtimePromotionEnvironment(st store.Store, ragCfg config.RAGCfg) func(context.Context, string) (rag.RuntimePromotionEnvironment, error) {
+	return func(ctx context.Context, userID string) (rag.RuntimePromotionEnvironment, error) {
+		cfg, err := assembleConfig(ctx, st, userID, "")
+		if err != nil {
+			return rag.RuntimePromotionEnvironment{}, err
+		}
+		config.LoadEnv().ApplyToConfig(cfg)
+		config.ApplyDefaults(cfg)
+		model := strings.TrimSpace(cfg.Agents.Defaults.Model)
+		if model == "" {
+			return rag.RuntimePromotionEnvironment{}, errors.New("production answer model is not configured")
+		}
+		return rag.RuntimePromotionEnvironment{RewriteEnabled: true, HyDEEnabled: true, RerankerEnabled: ragCfg.Reranker.Available(), AnswerModel: model}, nil
 	}
 }
 

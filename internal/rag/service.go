@@ -5,6 +5,7 @@ package rag
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,26 @@ type UserEmbedCfgFn func(ctx context.Context, userID string) (config.RAGEmbeddin
 // The gateway resolves the effective user model and provider; the RAG package
 // owns the prompt, output validation, and fallback behavior.
 type QueryLLMFn func(ctx context.Context, userID, systemPrompt, userPrompt string) (string, error)
+
+// AnswerModelResolver resolves a frozen evaluation model for one run owner.
+// It is injected by the gateway so provider credentials never enter snapshots.
+type AnswerModelResolver func(ctx context.Context, userID, model string) (AnswerModel, error)
+
+// CollectionResolver is the only boundary allowed to translate an authorized
+// logical KB identity into an opaque vector target.
+type CollectionResolver interface {
+	ResolveCollection(ctx context.Context, kbID string) (vector.CollectionKey, error)
+}
+
+type SearchCollectionResolver interface {
+	ResolveSearchCollection(ctx context.Context, kbID string, activeVersions map[string]int64) (vector.CollectionKey, error)
+}
+
+type LegacyCollectionResolver struct{}
+
+func (LegacyCollectionResolver) ResolveCollection(_ context.Context, kbID string) (vector.CollectionKey, error) {
+	return vector.LegacyCollectionKey(kbID)
+}
 
 // WorkerMode is an immutable startup choice. Dependency outages never change
 // it at runtime: a fair or paused service must not fall back to legacy claims.
@@ -827,6 +848,9 @@ type Deps struct {
 	Cfg           config.RAGCfg
 	UserEmbedCfg  UserEmbedCfgFn
 	QueryLLM      QueryLLMFn
+	AnswerModel   AnswerModelResolver
+	RuntimePolicy RuntimePolicyProvider
+	Collections   CollectionResolver
 	Reranker      rerank.Reranker
 	Parser        parse.Parser
 	Primitives    parse.PrimitiveExtractor
@@ -856,6 +880,9 @@ type Service struct {
 	cfg             config.RAGCfg
 	userCfg         UserEmbedCfgFn
 	queryLLM        QueryLLMFn
+	answerModel     AnswerModelResolver
+	runtimePolicy   RuntimePolicyProvider
+	collections     CollectionResolver
 	reranker        rerank.Reranker
 	parser          parse.Parser
 	primitives      parse.PrimitiveExtractor
@@ -892,6 +919,12 @@ type Service struct {
 
 func New(d Deps) *Service {
 	d.Cfg.ApplyDefaults()
+	if d.RuntimePolicy == nil {
+		d.RuntimePolicy, _ = NewRuntimePolicySnapshot(DefaultRuntimePolicy(d.Cfg))
+	}
+	if d.Collections == nil {
+		d.Collections = LegacyCollectionResolver{}
+	}
 	recorder := d.Telemetry
 	if recorder == nil {
 		recorder = telemetry.NewSlogRecorder(nil)
@@ -969,6 +1002,9 @@ func New(d Deps) *Service {
 		cfg:                             d.Cfg,
 		userCfg:                         d.UserEmbedCfg,
 		queryLLM:                        d.QueryLLM,
+		answerModel:                     d.AnswerModel,
+		runtimePolicy:                   d.RuntimePolicy,
+		collections:                     d.Collections,
 		reranker:                        d.Reranker,
 		parser:                          d.Parser,
 		primitives:                      d.Primitives,
@@ -992,6 +1028,20 @@ func New(d Deps) *Service {
 		stagingArtifactTTL:              time.Duration(d.Cfg.Limits.StagingArtifactTTL) * time.Second,
 		maxCacheFingerprintsPerDocument: d.Cfg.Limits.MaxCacheFingerprintsPerDocument,
 	}
+}
+
+func (s *Service) resolveCollection(ctx context.Context, kbID string) (vector.CollectionKey, error) {
+	if s == nil || s.collections == nil {
+		return "", errors.New("rag collection resolver unavailable")
+	}
+	return s.collections.ResolveCollection(ctx, kbID)
+}
+
+func (s *Service) resolveSearchCollection(ctx context.Context, kbID string, activeVersions map[string]int64) (vector.CollectionKey, error) {
+	if resolver, ok := s.collections.(SearchCollectionResolver); ok {
+		return resolver.ResolveSearchCollection(ctx, kbID, activeVersions)
+	}
+	return s.resolveCollection(ctx, kbID)
 }
 
 // WorkerMode returns the immutable startup mode selected for this service.
@@ -1263,6 +1313,24 @@ func (s *Service) CreateKBWithOptions(
 		return nil, fmt.Errorf("%w: 每用户最多 %d 个知识库", ErrQuota, s.cfg.Limits.MaxKBsPerUser)
 	}
 	embedCfg, provider := s.resolveEmbedding(ctx, userID)
+	var pinnedPolicy *config.RAGIngestionPolicyData
+	if record, policyErr := s.st.ActiveRAGPolicy(ctx, store.RAGPolicyIngestion); policyErr == nil {
+		policy, decodeErr := config.DecodeRAGIngestionPolicy([]byte(record.PolicyJSON))
+		if decodeErr != nil || policy.Version != record.Version {
+			return nil, errors.New("平台 ingestion policy 不可用")
+		}
+		// Published ingestion contracts are platform defaults. Credentials and
+		// endpoints remain in runtime config and must match the opaque contract.
+		embedCfg, provider = s.cfg.Embedding, "system"
+		if embeddingContractFingerprint(provider, embedCfg, policy.Embedding.Model, policy.Embedding.Dims) != policy.Embedding.ContractFingerprint {
+			return nil, errors.New("平台 ingestion policy 的 embedding contract 当前不可执行")
+		}
+		chunkSize, chunkOverlap = policy.ChunkSize, policy.ChunkOverlap
+		options.ParseMode, options.EnrichmentEnabled = policy.ParseMode, policy.EnrichmentEnabled
+		pinnedPolicy = &policy
+	} else if !errors.Is(policyErr, store.ErrNotFound) {
+		return nil, policyErr
+	}
 	if embedCfg.Endpoint == "" || embedCfg.Model == "" || embedCfg.Dims <= 0 {
 		return nil, errors.New("embedding 未配置，请先在系统或用户设置中配置")
 	}
@@ -1289,6 +1357,17 @@ func (s *Service) CreateKBWithOptions(
 		ParseMode:         string(options.ParseMode),
 		EnrichmentEnabled: options.EnrichmentEnabled,
 		Status:            store.RAGKBStatusProvisioning,
+	}
+	if pinnedPolicy != nil {
+		kb.EmbedModel, kb.EmbedDims = pinnedPolicy.Embedding.Model, pinnedPolicy.Embedding.Dims
+		generationID := "rkg_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		collectionKey, keyErr := vector.GenerationCollectionKey(kb.ID, generationID)
+		if keyErr != nil {
+			return nil, keyErr
+		}
+		kb.PinnedPolicyVersion = sql.NullInt64{Int64: pinnedPolicy.Version, Valid: true}
+		kb.ActiveGenerationID = sql.NullString{String: generationID, Valid: true}
+		kb.ProvisioningCollectionKey = string(collectionKey)
 	}
 	kbLock := s.kbMutex(kb.ID)
 	kbLock.Lock()
@@ -1377,8 +1456,15 @@ func (s *Service) updateKB(
 	if err := s.requireActiveUser(ctx, kb.UserID); err != nil {
 		return nil, err
 	}
+	if err := s.ensureNoPolicySync(ctx, kbID); err != nil {
+		return nil, err
+	}
 	if !strings.EqualFold(kb.Status, "active") {
 		return nil, errors.New("知识库正在删除中")
+	}
+	if kb.PinnedPolicyVersion.Valid && (chunkSize != kb.ChunkSize || chunkOverlap != kb.ChunkOverlap ||
+		(options != nil && (string(options.ParseMode) != kb.ParseMode || options.EnrichmentEnabled != kb.EnrichmentEnabled))) {
+		return nil, errors.New("已固定 ingestion policy 的知识库不能逐项修改索引策略，请使用整库策略同步")
 	}
 	if strings.TrimSpace(name) != "" {
 		kb.Name = strings.TrimSpace(name)
@@ -1406,6 +1492,9 @@ func (s *Service) updateKB(
 func (s *Service) DeleteKB(ctx context.Context, ownerID, kbID string) error {
 	kb, err := s.GetKB(ctx, ownerID, kbID)
 	if err != nil {
+		return err
+	}
+	if err := s.ensureNoPolicySync(ctx, kbID); err != nil {
 		return err
 	}
 	return s.deleteKBRecord(ctx, kb)

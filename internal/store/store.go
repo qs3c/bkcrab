@@ -374,6 +374,86 @@ type Store interface {
 	ReleaseRAGDocumentAIUsage(ctx context.Context, idempotencyKey string) (bool, error)
 	ReconcileRAGDocumentAIUsage(ctx context.Context, reservedBefore, sentBefore time.Time, limit int) (int, error)
 
+	// --- RAG evaluation datasets and durable runs ---
+	CreateRAGEvalDataset(ctx context.Context, record *RAGEvalDatasetRecord) error
+	ListRAGEvalDatasets(ctx context.Context, cursor string, limit int) ([]RAGEvalDatasetRecord, error)
+	GetRAGEvalDataset(ctx context.Context, id string) (*RAGEvalDatasetRecord, error)
+	ListRAGEvalDatasetVersions(ctx context.Context, datasetID, cursor string, limit int) ([]RAGEvalDatasetVersionRecord, error)
+	TombstoneRAGEvalDataset(ctx context.Context, id string) (bool, error)
+	ListRAGEvalDatasetStagingCandidates(ctx context.Context, before time.Time, limit int) ([]RAGEvalDatasetVersionRecord, error)
+	ListRAGEvalDatasetGCCandidates(ctx context.Context, before time.Time, limit int) ([]string, error)
+	PurgeRAGEvalDataset(ctx context.Context, id string) (bool, error)
+	CreateRAGEvalDatasetVersion(ctx context.Context, record *RAGEvalDatasetVersionRecord) error
+	GetRAGEvalDatasetVersion(ctx context.Context, id string) (*RAGEvalDatasetVersionRecord, error)
+	TransitionRAGEvalDatasetVersion(ctx context.Context, id, from, to, reportJSON string) (bool, error)
+	PutRAGEvalCorpusDocument(ctx context.Context, record *RAGEvalCorpusDocumentRecord) error
+	ListRAGEvalCorpusDocuments(ctx context.Context, datasetVersionID, cursor string, limit int) ([]RAGEvalCorpusDocumentRecord, error)
+	PutRAGEvalCase(ctx context.Context, record *RAGEvalCaseRecord) error
+	ListRAGEvalCases(ctx context.Context, datasetVersionID, cursor string, limit int) ([]RAGEvalCaseRecord, error)
+	CreateRAGEvalProfile(ctx context.Context, record *RAGEvalProfileRecord) error
+	GetRAGEvalProfile(ctx context.Context, id string) (*RAGEvalProfileRecord, error)
+	ListRAGEvalProfiles(ctx context.Context, cursor string, limit int) ([]RAGEvalProfileRecord, error)
+	CreateRAGEvalRun(ctx context.Context, record *RAGEvalRunRecord) error
+	GetRAGEvalRun(ctx context.Context, id string) (*RAGEvalRunRecord, error)
+	ListRAGEvalRuns(ctx context.Context, cursor string, limit int) ([]RAGEvalRunRecord, error)
+	ClaimRAGEvalRun(ctx context.Context, runID, worker string, lease time.Duration) (*RAGEvalRunFence, bool, error)
+	ClaimNextRAGEvalRun(ctx context.Context, worker string, lease time.Duration) (*RAGEvalRunFence, bool, error)
+	HeartbeatRAGEvalRun(ctx context.Context, fence RAGEvalRunFence, lease time.Duration) (bool, error)
+	UpdateRAGEvalRunProgress(ctx context.Context, fence RAGEvalRunFence, stage, progressJSON string) (bool, error)
+	RequestCancelRAGEvalRun(ctx context.Context, id string) (bool, error)
+	FinishRAGEvalRun(ctx context.Context, fence RAGEvalRunFence, status, errorCode, errorMessage string) (bool, error)
+	TombstoneRAGEvalRun(ctx context.Context, id string) (bool, error)
+	ListRAGEvalRunGCCandidates(ctx context.Context, before time.Time, limit int) ([]string, error)
+	PurgeRAGEvalRun(ctx context.Context, id string) (bool, error)
+	PutRAGEvalCaseResult(ctx context.Context, fence RAGEvalRunFence, record RAGEvalCaseResultRecord) (bool, error)
+	GetRAGEvalCaseResult(ctx context.Context, runID, caseID string) (*RAGEvalCaseResultRecord, error)
+	ListRAGEvalCaseResults(ctx context.Context, runID, cursor string, limit int) ([]RAGEvalCaseResultRecord, error)
+	PutRAGEvalMetricResult(ctx context.Context, fence RAGEvalRunFence, record RAGEvalMetricResultRecord) (bool, error)
+	ListRAGEvalMetricResults(ctx context.Context, runID, cursor string, limit int) ([]RAGEvalMetricResultRecord, error)
+	RecordRAGEvalUsage(ctx context.Context, record *RAGEvalUsageRecord) (bool, error)
+	RecordRAGEvalUsageFenced(ctx context.Context, fence RAGEvalRunFence, record *RAGEvalUsageRecord) (bool, error)
+	RAGEvalUsageTotals(ctx context.Context, runID string) (int64, float64, error)
+	AcquireRAGEvalGenerationForRun(ctx context.Context, request RAGEvalGenerationAcquireRequest) (*RAGEvalGenerationAcquireResult, error)
+	GetRAGEvalGeneration(ctx context.Context, id string) (*RAGEvalGenerationRecord, error)
+	AttachReadyRAGEvalGenerationForRun(ctx context.Context, runID, generationID string) (*RAGEvalGenerationRecord, error)
+	HeartbeatRAGEvalGeneration(ctx context.Context, fence RAGEvalGenerationFence, lease time.Duration) (bool, error)
+	MarkRAGEvalGenerationReady(ctx context.Context, fence RAGEvalGenerationFence, documentCount, chunkCount int64, ttl time.Duration) (bool, error)
+	MarkRAGEvalGenerationFailed(ctx context.Context, fence RAGEvalGenerationFence, code, message string, ttl time.Duration) (bool, error)
+	ReleaseRAGEvalGenerationForRun(ctx context.Context, runID string) (bool, error)
+	ClaimRAGEvalGenerationGC(ctx context.Context, before time.Time, worker string, lease time.Duration) (*RAGEvalGenerationFence, bool, error)
+	FinishRAGEvalGenerationGC(ctx context.Context, fence RAGEvalGenerationFence) (bool, error)
+
+	// --- RAG policies, immutable index generations, and policy sync ---
+	CreateRAGPolicy(ctx context.Context, record *RAGPolicyRecord) error
+	ActivateRAGPolicy(ctx context.Context, kind string, expected, current int64, actor, sourceRun, note, action string) (bool, error)
+	ActiveRAGPolicy(ctx context.Context, kind string) (*RAGPolicyRecord, error)
+	GetRAGPolicy(ctx context.Context, kind string, version int64) (*RAGPolicyRecord, error)
+	ListRAGPolicyAudits(ctx context.Context, kind string, limit int) ([]RAGPolicyAuditRecord, error)
+	CreateRAGKBGeneration(ctx context.Context, record *RAGKBGenerationRecord, documents []RAGGenerationDocumentRecord) error
+	GetRAGKBGeneration(ctx context.Context, id string) (*RAGKBGenerationRecord, error)
+	ListRAGKBGenerationDocuments(ctx context.Context, generationID string) ([]RAGGenerationDocumentRecord, error)
+	ResolveActiveRAGKBGeneration(ctx context.Context, kbID string) (*RAGKBGenerationRecord, []RAGGenerationDocumentRecord, error)
+	CreateRAGPolicySyncTask(ctx context.Context, record *RAGPolicySyncTaskRecord) error
+	GetRAGPolicySyncTask(ctx context.Context, id string) (*RAGPolicySyncTaskRecord, error)
+	LatestRAGPolicySyncTaskForKB(ctx context.Context, kbID string) (*RAGPolicySyncTaskRecord, error)
+	IsRAGKBPolicySyncActive(ctx context.Context, kbID string) (bool, error)
+	ClaimNextRAGPolicySyncTask(ctx context.Context, worker string, lease time.Duration) (*RAGPolicySyncFence, bool, error)
+	ClaimRAGPolicySyncTask(ctx context.Context, taskID, worker string, lease time.Duration) (*RAGPolicySyncFence, bool, error)
+	HeartbeatRAGPolicySyncTask(ctx context.Context, fence RAGPolicySyncFence, lease time.Duration) (bool, error)
+	UpdateRAGPolicySyncProgress(ctx context.Context, fence RAGPolicySyncFence, progressJSON string) (bool, error)
+	RequestCancelRAGPolicySyncTask(ctx context.Context, id string) (bool, error)
+	FinishRAGPolicySyncTask(ctx context.Context, fence RAGPolicySyncFence, status, errorCode, errorMessage string) (bool, error)
+	UpdateRAGGenerationDocument(ctx context.Context, fence RAGPolicySyncFence, docID, status, errorCode, errorMessage string) (bool, error)
+	CreateRAGGenerationDocumentVersion(ctx context.Context, fence RAGPolicySyncFence, version *RAGDocumentVersionRecord) (bool, error)
+	CompleteRAGGenerationDocument(ctx context.Context, fence RAGPolicySyncFence, docID string, chunkCount int) (bool, error)
+	MarkRAGKBGenerationFailed(ctx context.Context, fence RAGPolicySyncFence, code, message string) (bool, error)
+	ListRAGKBGenerationGCCandidates(ctx context.Context, limit int) ([]RAGKBGenerationRecord, error)
+	DeleteRAGKBGenerationIfCollectible(ctx context.Context, generationID string) (bool, error)
+	AbandonUnreferencedRAGKBGeneration(ctx context.Context, generationID string) (bool, error)
+	MarkRAGKBGenerationReady(ctx context.Context, fence RAGPolicySyncFence, documentCount, chunkCount int64) (bool, error)
+	ActivateRAGKBGeneration(ctx context.Context, fence RAGPolicySyncFence, expectedActiveID, actor, note string, rollbackWindow time.Duration) (bool, error)
+	RollbackRAGKBGeneration(ctx context.Context, kbID, targetRetiredID, expectedActiveID, actor, note string, rollbackWindow time.Duration) (bool, error)
+
 	// --- Cron 任务（每个 agent）---
 	//
 	// Cron 行由 agent 拥有；执行身份是 agent 的 user_id。

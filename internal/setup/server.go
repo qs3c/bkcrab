@@ -21,6 +21,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/fairqueue"
 	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
 	"github.com/qs3c/bkcrab/internal/rag"
+	rageval "github.com/qs3c/bkcrab/internal/rag/eval"
 	"github.com/qs3c/bkcrab/internal/session"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/taskqueue"
@@ -81,17 +82,25 @@ type Server struct {
 	mcpRuntime     *mcpruntime.Service
 	// chatEvents 将实时的 agent 聊天事件分发到跨浏览器标签页的已订阅 SSE 客户端。
 	// 首次使用时延迟初始化，以便没有显式连接它的旧调用者仍然可以工作。
-	chatEvents         *agent.EventHub
-	usage              usage.Meter
-	rag                *rag.Service
-	ragUserCleaner     users.RAGUserCleaner
-	ragCfg             config.RAGCfg
-	ragHealthMu        sync.RWMutex
-	ragHealth          config.RAGParserHealthSnapshot
-	ragHealthProvider  RAGParserHealthProvider
-	fairHealthMu       sync.RWMutex
-	fairHealthProvider FairQueueHealthProvider
-	startedAt          time.Time
+	chatEvents            *agent.EventHub
+	usage                 usage.Meter
+	rag                   *rag.Service
+	ragRuntimePolicy      rag.RuntimePolicyProvider
+	ragUserCleaner        users.RAGUserCleaner
+	ragCfg                config.RAGCfg
+	ragHealthMu           sync.RWMutex
+	ragHealth             config.RAGParserHealthSnapshot
+	ragHealthProvider     RAGParserHealthProvider
+	ragEvalHealthMu       sync.RWMutex
+	ragEvalHealth         config.RAGEvaluatorHealthSnapshot
+	ragEvalHealthProvider RAGEvaluatorHealthProvider
+	ragEvalRunner         *rageval.Runner
+	ragEvalDatasets       *rageval.DatasetService
+	ragEvalAdmin          *rageval.AdminService
+	ragPolicyPromotion    *rag.PolicyPromotionService
+	fairHealthMu          sync.RWMutex
+	fairHealthProvider    FairQueueHealthProvider
+	startedAt             time.Time
 }
 
 // RAGParserHealthProvider exposes an in-memory snapshot populated by a
@@ -99,6 +108,10 @@ type Server struct {
 // method because capability handlers call it on the request path.
 type RAGParserHealthProvider interface {
 	RAGParserHealthSnapshot() config.RAGParserHealthSnapshot
+}
+
+type RAGEvaluatorHealthProvider interface {
+	RAGEvaluatorHealthSnapshot() config.RAGEvaluatorHealthSnapshot
 }
 
 // FairQueueHealthProvider exposes a cached, serialization-safe runtime
@@ -144,6 +157,7 @@ func (s *Server) SetUserResolver(resolver api.UserResolver) {
 // SetStore 设置存储后端。
 func (s *Server) SetStore(st store.Store) {
 	s.dataStore = st
+	s.ragEvalAdmin = rageval.NewAdminService(st)
 	if st != nil {
 		s.accounts, _ = users.NewAccounts(st)
 		s.accounts.SetRAGUserCleaner(s.ragUserCleaner)
@@ -165,9 +179,11 @@ func (s *Server) SetUsageMeter(m usage.Meter) {
 // Leaving it nil keeps the routes present but makes them return 503.
 func (s *Server) SetRAGService(service *rag.Service) {
 	s.rag = service
+	s.ragRuntimePolicy = nil
 	var cleaner users.RAGUserCleaner
 	if service != nil {
 		cleaner = service
+		s.ragRuntimePolicy = service.RuntimePolicyProvider()
 	}
 	s.setRAGUserCleaner(cleaner)
 	if service != nil {
@@ -219,6 +235,36 @@ func (s *Server) ragParserHealthSnapshot() config.RAGParserHealthSnapshot {
 		snapshot = provider.RAGParserHealthSnapshot()
 	}
 	snapshot.Office.Formats = append([]string(nil), snapshot.Office.Formats...)
+	return snapshot
+}
+
+func (s *Server) SetRAGEvaluatorHealthSnapshot(snapshot config.RAGEvaluatorHealthSnapshot) {
+	s.ragEvalHealthMu.Lock()
+	s.ragEvalHealth = snapshot
+	s.ragEvalHealthMu.Unlock()
+}
+
+func (s *Server) SetRAGEvaluatorHealthProvider(provider RAGEvaluatorHealthProvider) {
+	s.ragEvalHealthMu.Lock()
+	s.ragEvalHealthProvider = provider
+	s.ragEvalHealthMu.Unlock()
+}
+
+func (s *Server) SetRAGEvaluationRunner(runner *rageval.Runner) { s.ragEvalRunner = runner }
+func (s *Server) SetRAGEvaluationDatasetService(service *rageval.DatasetService) {
+	s.ragEvalDatasets = service
+}
+func (s *Server) SetRAGPolicyPromotionService(service *rag.PolicyPromotionService) {
+	s.ragPolicyPromotion = service
+}
+
+func (s *Server) ragEvaluatorHealthSnapshot() config.RAGEvaluatorHealthSnapshot {
+	s.ragEvalHealthMu.RLock()
+	snapshot, provider := s.ragEvalHealth, s.ragEvalHealthProvider
+	s.ragEvalHealthMu.RUnlock()
+	if provider != nil {
+		snapshot = provider.RAGEvaluatorHealthSnapshot()
+	}
 	return snapshot
 }
 
@@ -283,6 +329,11 @@ func (s *Server) registerRAGRoutes(mux *http.ServeMux, auth func(http.HandlerFun
 	mux.HandleFunc("GET /api/rag/kbs", auth(s.handleListRAGKBs))
 	mux.HandleFunc("POST /api/rag/kbs", auth(s.handleCreateRAGKB))
 	mux.HandleFunc("GET /api/rag/kbs/{id}", auth(s.handleGetRAGKB))
+	mux.HandleFunc("GET /api/rag/kbs/{id}/policy", auth(s.handleGetRAGKBPolicy))
+	mux.HandleFunc("POST /api/rag/kbs/{id}/policy-syncs", auth(s.handleStartRAGKBPolicySync))
+	mux.HandleFunc("GET /api/rag/kbs/{id}/policy-syncs/{taskId}", auth(s.handleGetRAGKBPolicySync))
+	mux.HandleFunc("DELETE /api/rag/kbs/{id}/policy-syncs/{taskId}", auth(s.handleCancelRAGKBPolicySync))
+	mux.HandleFunc("POST /api/rag/kbs/{id}/policy-rollbacks", auth(s.handleRollbackRAGKBPolicy))
 	mux.HandleFunc("PATCH /api/rag/kbs/{id}", auth(s.handleUpdateRAGKB))
 	mux.HandleFunc("DELETE /api/rag/kbs/{id}", auth(s.handleDeleteRAGKB))
 	mux.HandleFunc("POST /api/rag/kbs/{id}/generate-metadata", auth(s.handleGenerateRAGKBMetadata))
@@ -322,6 +373,24 @@ func (s *Server) requireSuperAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return s.authMiddleware(auth.RequirePlatformAdmin(next))
 }
 
+// requireSuperAdminSession is the stricter data-plane gate for evaluation
+// corpora, traces and policy promotion. Admin API keys and actAs sessions are
+// intentionally excluded until a dedicated rag_eval automation scope exists.
+func (s *Server) requireSuperAdminSession(next http.HandlerFunc) http.HandlerFunc {
+	return s.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := auth.FromContext(r.Context())
+		if !ok || !isRAGEvalAdminIdentity(identity) {
+			jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "super_admin session required"})
+			return
+		}
+		next(w, r)
+	})
+}
+
+func isRAGEvalAdminIdentity(identity auth.Identity) bool {
+	return identity.Role == users.RoleSuperAdmin && identity.AuthMethod == "session" && !identity.IsActingAs()
+}
+
 // Run 启动 HTTP 服务器并阻塞，直到上下文被取消。
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -336,6 +405,7 @@ func (s *Server) Run(ctx context.Context) error {
 	auth := s.authMiddleware
 	opt := s.optionalAuth
 	admin := s.requireSuperAdmin
+	evalAdmin := s.requireSuperAdminSession
 
 	// 引导 / 登录。
 	mux.HandleFunc("GET /api/status", opt(s.handleStatus))
@@ -350,6 +420,8 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/admin/registration", admin(s.handleGetRegistration))
 	mux.HandleFunc("PUT /api/admin/registration", admin(s.handleSetRegistration))
 	mux.HandleFunc("GET /api/admin/chats", admin(s.handleAdminChats))
+	s.registerRAGEvaluationRoutes(mux, evalAdmin)
+	s.registerRAGPolicyRoutes(mux, evalAdmin)
 	mux.HandleFunc("GET /api/admin/health/fairqueue", admin(s.handleFairQueueHealth))
 
 	// 按用户配置（system_settings + 作用域内的 providers/channels）。

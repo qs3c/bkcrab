@@ -28,6 +28,8 @@ import {
   deleteKnowledgeDocument,
   generateKnowledgeBaseMetadata,
   getRAGCapabilities,
+  getKnowledgeBase,
+  getKnowledgeBasePolicy,
   getMe,
   listKnowledgeBases,
   listKnowledgeDocuments,
@@ -40,7 +42,10 @@ import {
   type KnowledgeSearchHit,
   type RAGCapabilities,
   type RAGParseMode,
+  type RAGKBPolicyStatus,
 } from "@/lib/api";
+import { RAGPolicySyncDialog } from "@/components/rag-policy-sync-dialog";
+import { policySyncLocksWrites, policyVisualState, shouldShowPolicyDriftNotice } from "@/components/rag-policy-sync-state";
 import { RAGResourceGallery } from "@/components/rag-resource-gallery";
 import {
   appendActAs,
@@ -204,6 +209,8 @@ export default function KnowledgePage() {
   const [readOnly, setReadOnly] = React.useState(false);
   const [error, setError] = React.useState("");
   const [notice, setNotice] = React.useState("");
+  const [policyStatus, setPolicyStatus] = React.useState<RAGKBPolicyStatus | null>(null);
+  const [policyDialogOpen, setPolicyDialogOpen] = React.useState(false);
 
   const [formOpen, setFormOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<KnowledgeBase | null>(null);
@@ -231,6 +238,9 @@ export default function KnowledgePage() {
     () => knowledgeBases.find((kb) => kb.id === selectedId) ?? null,
     [knowledgeBases, selectedId],
   );
+  const policyState = policyVisualState(policyStatus);
+  const policyWriteLocked = policySyncLocksWrites(policyStatus);
+  const writeDisabled = readOnly || policyWriteLocked;
   const uploadExtensions = React.useMemo(
     () => availableUploadExtensions(capabilities),
     [capabilities],
@@ -315,6 +325,22 @@ export default function KnowledgePage() {
     }
   }, []);
 
+  const loadPolicyStatus = React.useCallback(async (kbId: string) => {
+    if (!kbId || selectedIdRef.current !== kbId) return;
+    try {
+      const [nextStatus, nextKB] = await Promise.all([getKnowledgeBasePolicy(kbId), getKnowledgeBase(kbId)]);
+      if (selectedIdRef.current !== kbId) return;
+      setPolicyStatus(nextStatus);
+      setKnowledgeBases((current) => current.map((item) => item.id === kbId ? nextKB : item));
+    } catch (err) {
+      if (selectedIdRef.current === kbId) setError(errorMessage(err, "读取知识库策略状态失败"));
+    }
+  }, []);
+
+  const refreshSelectedPolicy = React.useCallback(async () => {
+    if (selectedIdRef.current) await loadPolicyStatus(selectedIdRef.current);
+  }, [loadPolicyStatus]);
+
   React.useEffect(() => {
     void loadKnowledgeBases();
     void getRAGCapabilities()
@@ -330,11 +356,19 @@ export default function KnowledgePage() {
     setDocuments([]);
     setHits([]);
     setSearched(false);
+    setPolicyStatus(null);
     if (!selectedId) return;
     const controller = new AbortController();
     void loadDocuments(selectedId, false, controller.signal);
+    void loadPolicyStatus(selectedId);
     return () => controller.abort();
-  }, [selectedId, loadDocuments]);
+  }, [selectedId, loadDocuments, loadPolicyStatus]);
+
+  React.useEffect(() => {
+    if (!selectedId || policyState !== "syncing") return;
+    const timer = window.setTimeout(() => void loadPolicyStatus(selectedId), document.hidden ? 15_000 : 3_000);
+    return () => window.clearTimeout(timer);
+  }, [selectedId, policyState, policyStatus?.syncTask?.progressJson, loadPolicyStatus]);
 
   const indexing = shouldPollDocuments(documents);
   const readyDocumentCount = documents.filter((doc) =>
@@ -487,6 +521,7 @@ export default function KnowledgePage() {
 
   const uploadFiles = async (files: File[]) => {
     if (!selected || files.length === 0) return;
+    if (policyWriteLocked) { setError("整库策略同步期间上传已锁定；旧索引仍继续回答。"); return; }
     const invalid = files.find((file) => uploadLimitForFile(file.name, capabilities) <= 0);
     if (invalid) {
       setError(`${invalid.name} 的格式当前不可用；可上传 ${uploadExtensions.map((extension) => extension.slice(1).toUpperCase()).join("、") || "能力接口允许的格式"}`);
@@ -517,6 +552,7 @@ export default function KnowledgePage() {
 
   const removeDocument = async () => {
     if (!selected || !deleteDocTarget) return;
+    if (policyWriteLocked) { setError("整库策略同步期间删除已锁定；请等待同步完成或取消同步。"); return; }
     setSaving(true);
     try {
       await deleteKnowledgeDocument(selected.id, deleteDocTarget.id);
@@ -531,6 +567,7 @@ export default function KnowledgePage() {
 
   const reindexDocument = async (doc: KnowledgeDocument) => {
     if (!selected) return;
+    if (policyWriteLocked) { setError("整库策略同步期间单文档 reindex 已锁定。"); return; }
     setError("");
     try {
       await reindexKnowledgeDocument(selected.id, doc.id);
@@ -684,11 +721,13 @@ export default function KnowledgePage() {
                     <Badge variant="outline" className="border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">
                       {selected.status === "active" ? "可用" : selected.status}
                     </Badge>
+                    {policyStatus && <Badge variant="outline" className={cn(policyState === "latest" && "border-emerald-500/25 text-emerald-700", policyState === "outdated" && "border-amber-500/25 text-amber-700", policyState === "syncing" && "border-blue-500/25 text-blue-700", policyState === "failed" && "border-destructive/25 text-destructive")}>{policyState === "latest" ? `Policy latest · v${policyStatus.latestVersion}` : policyState === "outdated" ? `Policy outdated · v${policyStatus.pinnedVersion} → v${policyStatus.latestVersion}` : policyState === "syncing" ? "Policy syncing" : "Policy sync failed"}</Badge>}
                   </CardTitle>
                   <CardDescription>
                     {selected.description || "未填写描述"}
                   </CardDescription>
                   <CardAction className="flex gap-1">
+                    {policyStatus && policyState !== "latest" && <Button variant="outline" size="sm" onClick={() => setPolicyDialogOpen(true)}>{policyState === "outdated" ? "查看并同步" : policyState === "syncing" ? "查看进度" : "查看失败详情"}</Button>}
                     <Button
                       variant="outline"
                       size="sm"
@@ -699,10 +738,10 @@ export default function KnowledgePage() {
                       {generatingMetadata ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
                       {generatingMetadata ? "生成中" : "AI 生成"}
                     </Button>
-                    <Button variant="ghost" size="icon" onClick={() => openEdit(selected)} disabled={readOnly} aria-label="编辑知识库">
+                    <Button variant="ghost" size="icon" onClick={() => openEdit(selected)} disabled={writeDisabled} title={policyWriteLocked ? "策略同步期间不能修改知识库" : "编辑知识库"} aria-label="编辑知识库">
                       <Pencil className="size-4" />
                     </Button>
-                    <Button variant="ghost" size="icon" onClick={() => setDeleteKBTarget(selected)} disabled={readOnly} aria-label="删除知识库" className="text-muted-foreground hover:text-destructive">
+                    <Button variant="ghost" size="icon" onClick={() => setDeleteKBTarget(selected)} disabled={writeDisabled} title={policyWriteLocked ? "策略同步期间不能删除知识库" : "删除知识库"} aria-label="删除知识库" className="text-muted-foreground hover:text-destructive">
                       <Trash2 className="size-4" />
                     </Button>
                   </CardAction>
@@ -717,6 +756,9 @@ export default function KnowledgePage() {
                 </CardContent>
               </Card>
 
+              {shouldShowPolicyDriftNotice(policyStatus) && <Message tone="warning">此知识库仍固定在 IngestionPolicy v{policyStatus?.pinnedVersion}；查询和写入不受影响。可在确认影响与估算后主动同步到 v{policyStatus?.latestVersion}。</Message>}
+              {policyWriteLocked && <Message tone="warning">正在重新索引整个知识库；旧索引继续回答。同步完成或取消前，上传、删除和单文档 reindex 已停用。</Message>}
+
               <Card>
                 <CardHeader className="border-b">
                   <CardTitle>文档</CardTitle>
@@ -730,7 +772,7 @@ export default function KnowledgePage() {
                       multiple
                       onChange={(event) => void uploadFiles(Array.from(event.target.files || []))}
                     />
-                    <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} disabled={readOnly || uploading || uploadExtensions.length === 0}>
+                    <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} disabled={writeDisabled || uploading || uploadExtensions.length === 0} title={policyWriteLocked ? "整库同步期间上传已锁定" : undefined}>
                       {uploading ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
                       {uploading ? "上传中" : "上传文档"}
                     </Button>
@@ -744,7 +786,7 @@ export default function KnowledgePage() {
                   )}
                   <button
                     type="button"
-                    disabled={readOnly || uploading || uploadExtensions.length === 0}
+                    disabled={writeDisabled || uploading || uploadExtensions.length === 0}
                     onClick={() => fileInputRef.current?.click()}
                     onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
                     onDragOver={(event) => event.preventDefault()}
@@ -757,7 +799,7 @@ export default function KnowledgePage() {
                     className={cn(
                       "flex w-full flex-col items-center justify-center rounded-xl border border-dashed px-4 py-7 text-center transition-colors",
                       dragging ? "border-primary bg-primary/5" : "border-border hover:bg-muted/40",
-                      (readOnly || uploading || uploadExtensions.length === 0) && "cursor-not-allowed opacity-60",
+                      (writeDisabled || uploading || uploadExtensions.length === 0) && "cursor-not-allowed opacity-60",
                     )}
                   >
                     {uploading ? <Loader2 className="mb-2 size-6 animate-spin text-primary" /> : <Upload className="mb-2 size-6 text-muted-foreground" />}
@@ -837,12 +879,12 @@ export default function KnowledgePage() {
                                       aria-label={documentActionLabel(doc)}
                                       title={documentActionLabel(doc)}
                                       onClick={() => void reindexDocument(doc)}
-                                      disabled={readOnly || !isTerminalDocument(doc)}
+                                      disabled={writeDisabled || !isTerminalDocument(doc)}
                                     >
                                       <RefreshCw className="size-4" />
                                       {needsLabel && documentActionLabel(doc)}
                                     </Button>
-                                    <Button variant="ghost" size="icon" aria-label="删除文档" title="删除文档" onClick={() => setDeleteDocTarget(doc)} disabled={readOnly} className="text-muted-foreground hover:text-destructive">
+                                    <Button variant="ghost" size="icon" aria-label="删除文档" title={policyWriteLocked ? "整库同步期间删除已锁定" : "删除文档"} onClick={() => setDeleteDocTarget(doc)} disabled={writeDisabled} className="text-muted-foreground hover:text-destructive">
                                       <Trash2 className="size-4" />
                                     </Button>
                                   </div>
@@ -1037,6 +1079,8 @@ export default function KnowledgePage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <RAGPolicySyncDialog open={policyDialogOpen} onOpenChange={setPolicyDialogOpen} kb={selected} status={policyStatus} readOnly={readOnly} onRefresh={refreshSelectedPolicy} />
 
       <AlertDialog open={pendingOptIn !== null} onOpenChange={(open) => !open && setPendingOptIn(null)}>
         <AlertDialogContent>

@@ -31,6 +31,7 @@ const (
 	EventIndexTask           EventName = "rag.index_task"
 	EventActiveVersionSwitch EventName = "rag.active_version_switch"
 	EventLifecycleGC         EventName = "rag.lifecycle.gc"
+	EventEvalStage           EventName = "rag.eval.stage"
 	EventFairQueue           EventName = "rag.fairqueue"
 )
 
@@ -38,6 +39,7 @@ var allowedEvents = map[EventName]struct{}{
 	EventParserDocument: {}, EventParserPages: {}, EventParserSidecarCall: {},
 	EventResultCache: {}, EventDocumentAIBudget: {}, EventDocumentAICall: {},
 	EventEnrichmentBatch: {}, EventIndexTask: {}, EventActiveVersionSwitch: {}, EventLifecycleGC: {},
+	EventEvalStage: {},
 	EventFairQueue: {},
 }
 
@@ -46,6 +48,8 @@ var allowedEvents = map[EventName]struct{}{
 // bodies, response bodies, captions, OCR, Markdown, or object-store keys.
 type Fields struct {
 	DocID           string
+	RunID           string
+	CaseID          string
 	TaskID          int64
 	DocVersion      int64
 	PreviousVersion int64
@@ -65,6 +69,8 @@ type Fields struct {
 	Metric          string
 	Dependency      string
 	ReservationKind string
+	Provider        string
+	Model           string
 
 	Attempt       int
 	RetryCount    int
@@ -80,6 +86,7 @@ type Fields struct {
 	RequestCount  int
 	BlockCount    int
 	SuccessCount  int
+	ItemCount     int
 	Value         int64
 
 	InputTokens  int64
@@ -149,6 +156,8 @@ var (
 	allowedOperations = enumSet{
 		"vision_page": {}, "vision_page_repair": {}, "vision_image": {}, "vision_image_repair": {},
 		"enrichment": {}, "office-convert": {}, "pdf-analyze": {}, "pdf-render": {}, "usage_reconcile": {},
+		"eval_sidecar": {}, "eval_judge": {}, "eval_parser": {}, "eval_embedding": {}, "eval_milvus": {},
+		"eval_reranker": {}, "eval_answer": {}, "eval_cleanup": {},
 	}
 	allowedTransitions = enumSet{
 		"enqueue": {}, "reindex": {}, "claim": {}, "supersede": {}, "heartbeat": {}, "retry": {}, "finish": {}, "activate": {},
@@ -181,6 +190,8 @@ var (
 
 func sanitize(fields Fields) Fields {
 	fields.DocID = sanitizeStableToken(fields.DocID)
+	fields.RunID = sanitizeStableToken(fields.RunID)
+	fields.CaseID = sanitizeStableToken(fields.CaseID)
 	fields.Format = sanitizeEnum(fields.Format, allowedFormats)
 	fields.ParseMode = sanitizeEnum(fields.ParseMode, allowedParseModes)
 	fields.ParserVersion = sanitizeStableToken(fields.ParserVersion)
@@ -190,6 +201,8 @@ func sanitize(fields Fields) Fields {
 	fields.ErrorCode = sanitizeEnum(fields.ErrorCode, allowedErrorCodes)
 	fields.CacheKind = sanitizeEnum(fields.CacheKind, allowedCacheKinds)
 	fields.CacheStatus = sanitizeEnum(fields.CacheStatus, allowedCacheStatuses)
+	fields.Provider = sanitizeStableToken(fields.Provider)
+	fields.Model = sanitizeStableToken(fields.Model)
 	if fairqueue.ValidateResource(fields.Resource) != nil {
 		fields.Resource = ""
 	}
@@ -218,6 +231,7 @@ func sanitize(fields Fields) Fields {
 	fields.RequestCount = nonNegative(fields.RequestCount)
 	fields.BlockCount = nonNegative(fields.BlockCount)
 	fields.SuccessCount = nonNegative(fields.SuccessCount)
+	fields.ItemCount = nonNegative(fields.ItemCount)
 	fields.Value = nonNegative64(fields.Value)
 	fields.InputTokens = nonNegative64(fields.InputTokens)
 	fields.OutputTokens = nonNegative64(fields.OutputTokens)
@@ -336,7 +350,7 @@ func eventLevel(event Event) slog.Level {
 	}
 	switch event.Name {
 	case EventParserDocument, EventParserPages, EventParserSidecarCall, EventResultCache,
-		EventDocumentAIBudget, EventDocumentAICall, EventEnrichmentBatch, EventActiveVersionSwitch:
+		EventDocumentAIBudget, EventDocumentAICall, EventEnrichmentBatch, EventActiveVersionSwitch, EventEvalStage:
 		// Cost and durable quota transitions are release-gate signals. They are
 		// visible at the default info level, as are the bounded parser/cache
 		// aggregates needed to interpret those costs. Payload-bearing data is
@@ -380,6 +394,8 @@ func eventAttrs(fields Fields) []slog.Attr {
 		}
 	}
 	addString("doc_id", fields.DocID)
+	addString("run_id", fields.RunID)
+	addString("case_id", fields.CaseID)
 	addInt64("task_id", fields.TaskID)
 	addInt64("doc_version", fields.DocVersion)
 	addInt64("previous_version", fields.PreviousVersion)
@@ -394,6 +410,8 @@ func eventAttrs(fields Fields) []slog.Attr {
 	addString("error_code", fields.ErrorCode)
 	addString("cache_kind", fields.CacheKind)
 	addString("cache_status", fields.CacheStatus)
+	addString("provider", fields.Provider)
+	addString("model", fields.Model)
 	addString("resource", fields.Resource)
 	addString("metric", fields.Metric)
 	addString("dependency", fields.Dependency)
@@ -414,6 +432,7 @@ func eventAttrs(fields Fields) []slog.Attr {
 	addInt("request_count", fields.RequestCount)
 	addInt("block_count", fields.BlockCount)
 	addInt("success_count", fields.SuccessCount)
+	addInt("item_count", fields.ItemCount)
 	addInt64("value", fields.Value)
 	addInt64("input_tokens", fields.InputTokens)
 	addInt64("output_tokens", fields.OutputTokens)

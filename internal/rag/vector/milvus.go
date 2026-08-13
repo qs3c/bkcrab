@@ -2,6 +2,7 @@ package vector
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"regexp"
 	"sort"
@@ -73,7 +74,8 @@ func (m *Milvus) Close(ctx context.Context) error {
 	return m.client.Close(ctx)
 }
 
-func (m *Milvus) EnsureCollection(ctx context.Context, kbID string, dims int) error {
+func (m *Milvus) EnsureCollection(ctx context.Context, collectionKey CollectionKey, dims int) error {
+	kbID := collectionKey
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -158,7 +160,8 @@ func (m *Milvus) createIndex(ctx context.Context, collectionName, fieldName stri
 // idempotent; a mid-document failure is retried by the durable index task.
 const milvusUpsertBatch = 1000
 
-func (m *Milvus) UpsertChunks(ctx context.Context, kbID string, chunks []ChunkData) error {
+func (m *Milvus) UpsertChunks(ctx context.Context, collectionKey CollectionKey, chunks []ChunkData) error {
+	kbID := collectionKey
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -183,7 +186,7 @@ func (m *Milvus) UpsertChunks(ctx context.Context, kbID string, chunks []ChunkDa
 	return nil
 }
 
-func (m *Milvus) upsertBatch(ctx context.Context, kbID string, chunks []ChunkData, dims int) error {
+func (m *Milvus) upsertBatch(ctx context.Context, kbID CollectionKey, chunks []ChunkData, dims int) error {
 	ids := make([]string, 0, len(chunks))
 	docIDs := make([]string, 0, len(chunks))
 	chunkIndexes := make([]int64, 0, len(chunks))
@@ -221,7 +224,7 @@ func (m *Milvus) upsertBatch(ctx context.Context, kbID string, chunks []ChunkDat
 	return nil
 }
 
-func (m *Milvus) DeleteDocVersion(ctx context.Context, kbID, docID string, version int64) error {
+func (m *Milvus) DeleteDocVersion(ctx context.Context, kbID CollectionKey, docID string, version int64) error {
 	return m.deleteByExpr(ctx, kbID, milvusDocVersionExpr(docID, version))
 }
 
@@ -230,12 +233,12 @@ func milvusDocVersionExpr(docID string, version int64) string {
 		milvusFieldDocID, escapeMilvusExprString(docID), milvusFieldDocVersion, version)
 }
 
-func (m *Milvus) DeleteDoc(ctx context.Context, kbID, docID string) error {
+func (m *Milvus) DeleteDoc(ctx context.Context, kbID CollectionKey, docID string) error {
 	expr := fmt.Sprintf(`%s == "%s"`, milvusFieldDocID, escapeMilvusExprString(docID))
 	return m.deleteByExpr(ctx, kbID, expr)
 }
 
-func (m *Milvus) deleteByExpr(ctx context.Context, kbID, expr string) error {
+func (m *Milvus) deleteByExpr(ctx context.Context, kbID CollectionKey, expr string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -246,7 +249,7 @@ func (m *Milvus) deleteByExpr(ctx context.Context, kbID, expr string) error {
 	return nil
 }
 
-func (m *Milvus) DropCollection(ctx context.Context, kbID string) error {
+func (m *Milvus) DropCollection(ctx context.Context, kbID CollectionKey) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -271,7 +274,7 @@ func (m *Milvus) DropCollection(ctx context.Context, kbID string) error {
 	return nil
 }
 
-func (m *Milvus) HybridSearch(ctx context.Context, kbID string, query SearchQuery, topK int) ([]SearchHit, error) {
+func (m *Milvus) HybridSearch(ctx context.Context, kbID CollectionKey, query SearchQuery, topK int) ([]SearchHit, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -493,7 +496,7 @@ func ragMilvusSchema(dims int) *entity.Schema {
 			WithType(entity.FunctionTypeBM25))
 }
 
-func ragCollectionName(kbID string) string {
+func ragCollectionName(kbID CollectionKey) string {
 	var b strings.Builder
 	b.Grow(len(kbID) + len("rag_"))
 	b.WriteString("rag_")
@@ -504,7 +507,13 @@ func ragCollectionName(kbID string) string {
 			b.WriteByte('_')
 		}
 	}
-	return b.String()
+	name := b.String()
+	const maxCollectionNameBytes = 120
+	if len(name) <= maxCollectionNameBytes {
+		return name
+	}
+	hash := sha256.Sum256([]byte(name))
+	return fmt.Sprintf("%s_%x", name[:maxCollectionNameBytes-17], hash[:8])
 }
 
 func milvusChunkID(chunk ChunkData) string {
