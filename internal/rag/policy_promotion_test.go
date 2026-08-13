@@ -42,6 +42,11 @@ func promotionStore(t *testing.T) (*store.DBStore, *RuntimePolicySnapshot, strin
 	execution := rageval.ExecutionSnapshot{Version: 1, Profile: profile, CreatedAt: nowUTC()}
 	executionJSON, _ := json.Marshal(execution)
 	metricsJSON := `["faithfulness"]`
+	if _, err = st.DB().ExecContext(ctx, `INSERT INTO rag_eval_index_generations
+		(id,dataset_version_id,fingerprint,corpus_fingerprint,ingestion_fingerprint,collection_key,object_prefix,embedding_model,embedding_dims,status,document_count,chunk_count,ref_count,error_code,error_message,owner_run_id,created_at,ready_at,expires_at,lease_owner,fence_token)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "generation", "dataset", strings.Repeat("d", 64), strings.Repeat("e", 64), strings.Repeat("f", 64), "eval_promotion_generation", "rag-eval/generations/promotion", "embed", 8, store.RAGEvalGenerationReady, 1, 1, 0, "", "", "builder", nowUTC(), nowUTC(), nowUTC().Add(time.Hour), "", 1); err != nil {
+		t.Fatal(err)
+	}
 	run := &store.RAGEvalRunRecord{DatasetVersionID: "dataset", Mode: store.RAGEvalRunModeOnlineOnly, ProfileID: "profile", IndexGenerationID: "generation", RequestedMetricsJSON: metricsJSON, ExecutionSnapshotJSON: string(executionJSON), CreatedBy: "admin"}
 	if err = st.CreateRAGEvalRun(ctx, run); err != nil {
 		t.Fatal(err)

@@ -571,6 +571,12 @@ func (d *DBStore) CreateRAGEvalRun(ctx context.Context, record *RAGEvalRunRecord
 	if record == nil || record.DatasetVersionID == "" || record.ProfileID == "" || !validRAGEvalRunMode(record.Mode) || strings.TrimSpace(record.CreatedBy) == "" {
 		return errors.New("valid dataset, profile, and mode are required")
 	}
+	if record.Mode == RAGEvalRunModeOnlineOnly && strings.TrimSpace(record.IndexGenerationID) == "" {
+		return errors.New("online-only run requires a generation")
+	}
+	if record.Mode == RAGEvalRunModeFullPipeline && strings.TrimSpace(record.IndexGenerationID) != "" {
+		return errors.New("full pipeline run cannot select a generation")
+	}
 	for _, value := range []string{record.ProgressJSON, record.ExecutionSnapshotJSON, record.RequestedMetricsJSON} {
 		if !json.Valid([]byte(emptyJSON(value))) {
 			return errors.New("run JSON payload is invalid")
@@ -584,8 +590,35 @@ func (d *DBStore) CreateRAGEvalRun(ctx context.Context, record *RAGEvalRunRecord
 		record.Stage = "queued"
 	}
 	record.CreatedAt = time.Now().UTC()
-	_, err := d.db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_eval_runs(id,dataset_version_id,baseline_run_id,mode,profile_id,status,stage,progress_json,execution_snapshot_json,index_generation_id,requested_metrics_json,error_code,error_message,created_by,created_at,lease_owner) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14), d.ph(15), d.ph(16)), record.ID, record.DatasetVersionID, nullString(record.BaselineRunID), record.Mode, record.ProfileID, record.Status, record.Stage, emptyJSON(record.ProgressJSON), emptyJSON(record.ExecutionSnapshotJSON), nullString(record.IndexGenerationID), emptyJSON(record.RequestedMetricsJSON), "", "", record.CreatedBy, record.CreatedAt, "")
-	return err
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if record.Mode == RAGEvalRunModeOnlineOnly {
+		generationQuery := fmt.Sprintf(`SELECT dataset_version_id,status FROM rag_eval_index_generations WHERE id=%s`, d.ph(1))
+		if d.dialect != "sqlite" {
+			generationQuery += " FOR UPDATE"
+		}
+		var datasetID, status string
+		if err = tx.QueryRowContext(ctx, generationQuery, record.IndexGenerationID).Scan(&datasetID, &status); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if datasetID != record.DatasetVersionID || status != RAGEvalGenerationReady {
+			return ErrRAGEvalGenerationConflict
+		}
+	}
+	if _, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_eval_runs(id,dataset_version_id,baseline_run_id,mode,profile_id,status,stage,progress_json,execution_snapshot_json,index_generation_id,requested_metrics_json,error_code,error_message,created_by,created_at,lease_owner) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14), d.ph(15), d.ph(16)), record.ID, record.DatasetVersionID, nullString(record.BaselineRunID), record.Mode, record.ProfileID, record.Status, record.Stage, emptyJSON(record.ProgressJSON), emptyJSON(record.ExecutionSnapshotJSON), nullString(record.IndexGenerationID), emptyJSON(record.RequestedMetricsJSON), "", "", record.CreatedBy, record.CreatedAt, ""); err != nil {
+		return err
+	}
+	if record.Mode == RAGEvalRunModeOnlineOnly {
+		if err = d.attachRAGEvalGenerationRefTx(ctx, tx, record.ID, record.IndexGenerationID, record.CreatedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func scanRAGEvalRun(scanner interface{ Scan(...any) error }) (*RAGEvalRunRecord, error) {
@@ -943,8 +976,18 @@ func (d *DBStore) PutRAGEvalMetricResult(ctx context.Context, fence RAGEvalRunFe
 
 func (d *DBStore) ListRAGEvalMetricResults(ctx context.Context, runID, cursor string, limit int) ([]RAGEvalMetricResultRecord, error) {
 	limit = boundedRAGEvalListLimit(limit)
-	cursorCase, cursorMetric, _ := strings.Cut(cursor, ":")
-	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT run_id,case_id,metric_name,metric_version,status,value,reason,details_json FROM rag_eval_metric_results WHERE run_id=%s AND (case_id>%s OR (case_id=%s AND metric_name>%s)) ORDER BY case_id,metric_name LIMIT %s`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)), runID, cursorCase, cursorCase, cursorMetric, limit)
+	cursorParts := strings.SplitN(cursor, ":", 3)
+	cursorCase, cursorMetric, cursorVersion := "", "", ""
+	if len(cursorParts) > 0 {
+		cursorCase = cursorParts[0]
+	}
+	if len(cursorParts) > 1 {
+		cursorMetric = cursorParts[1]
+	}
+	if len(cursorParts) > 2 {
+		cursorVersion = cursorParts[2]
+	}
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT run_id,case_id,metric_name,metric_version,status,value,reason,details_json FROM rag_eval_metric_results WHERE run_id=%s AND (case_id>%s OR (case_id=%s AND (metric_name>%s OR (metric_name=%s AND metric_version>%s)))) ORDER BY case_id,metric_name,metric_version LIMIT %s`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7)), runID, cursorCase, cursorCase, cursorMetric, cursorMetric, cursorVersion, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -958,6 +1001,10 @@ func (d *DBStore) ListRAGEvalMetricResults(ctx context.Context, runID, cursor st
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func RAGEvalMetricCursor(record RAGEvalMetricResultRecord) string {
+	return record.CaseID + ":" + record.MetricName + ":" + record.MetricVersion
 }
 
 func (d *DBStore) RAGEvalUsageTotals(ctx context.Context, runID string) (tokens int64, cost float64, err error) {

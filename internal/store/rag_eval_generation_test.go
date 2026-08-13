@@ -104,6 +104,48 @@ func TestRAGEvalGenerationSQLSingleflightReuseRefAndFencedGC(t *testing.T) {
 	}
 }
 
+func TestCreateOnlineRAGEvalRunAtomicallyAttachesReadyGeneration(t *testing.T) {
+	st := openTestDB(t)
+	defer st.Close()
+	ctx := context.Background()
+	version, builderRun := seedReadyEvalVersionAndRun(t, st, "atomic-online")
+	acquired, err := st.AcquireRAGEvalGenerationForRun(ctx, evalGenerationAcquireRequest(builderRun.ID, version.ID, "fingerprint-atomic", "reg_atomic", "worker"))
+	if err != nil || acquired.Fence == nil {
+		t.Fatalf("acquire=%+v err=%v", acquired, err)
+	}
+	if ready, err := st.MarkRAGEvalGenerationReady(ctx, *acquired.Fence, 2, 7, time.Hour); err != nil || !ready {
+		t.Fatalf("ready=%v err=%v", ready, err)
+	}
+	if released, err := st.ReleaseRAGEvalGenerationForRun(ctx, builderRun.ID); err != nil || !released {
+		t.Fatalf("release builder=%v err=%v", released, err)
+	}
+
+	online := &RAGEvalRunRecord{ID: "rer_atomic_online", DatasetVersionID: version.ID, ProfileID: "profile", Mode: RAGEvalRunModeOnlineOnly, IndexGenerationID: acquired.Generation.ID, CreatedBy: "admin"}
+	if err := st.CreateRAGEvalRun(ctx, online); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := st.GetRAGEvalRun(ctx, online.ID)
+	if err != nil || stored.IndexGenerationID != acquired.Generation.ID {
+		t.Fatalf("stored=%+v err=%v", stored, err)
+	}
+	generation, err := st.GetRAGEvalGeneration(ctx, acquired.Generation.ID)
+	if err != nil || generation.RefCount != 1 {
+		t.Fatalf("generation=%+v err=%v", generation, err)
+	}
+	var refs int
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM rag_eval_generation_refs WHERE run_id=? AND generation_id=? AND released_at IS NULL`, online.ID, acquired.Generation.ID).Scan(&refs); err != nil || refs != 1 {
+		t.Fatalf("refs=%d err=%v", refs, err)
+	}
+
+	bad := &RAGEvalRunRecord{ID: "rer_atomic_bad", DatasetVersionID: "wrong-version", ProfileID: "profile", Mode: RAGEvalRunModeOnlineOnly, IndexGenerationID: acquired.Generation.ID, CreatedBy: "admin"}
+	if err := st.CreateRAGEvalRun(ctx, bad); !errors.Is(err, ErrRAGEvalGenerationConflict) {
+		t.Fatalf("bad create err=%v", err)
+	}
+	if _, err := st.GetRAGEvalRun(ctx, bad.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("invalid online run was persisted: %v", err)
+	}
+}
+
 func TestRAGEvalGenerationFailureNeverBecomesReady(t *testing.T) {
 	st := openTestDB(t)
 	defer st.Close()

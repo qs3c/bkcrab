@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -176,6 +179,7 @@ func runGateway(port int) error {
 	webSrv.SetRAGEvaluationRunner(gw.RAGEvaluationRunner())
 	webSrv.SetRAGEvaluationDatasetService(gw.RAGEvaluationDatasetService())
 	webSrv.SetRAGPolicyPromotionService(gw.RAGPolicyPromotionService())
+	webSrv.SetFairQueueHealthProvider(gw)
 	webSrv.SetAuth(authResolver)
 	webSrv.SetWebChannel(gw.WebChannel())
 	webSrv.SetMCPRuntime(gw.MCPRuntime())
@@ -193,14 +197,6 @@ func runGateway(port int) error {
 	}
 	slog.Info("gateway starting", "port", port, "bind", bindMode)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		if err := webSrv.Run(ctx); err != nil {
-			slog.Error("web server error", "error", err)
-		}
-	}()
-
 	url := fmt.Sprintf("http://localhost:%d", port)
 	slog.Info("web UI available", "url", url)
 	// 在看起来是全新安装时自动打开浏览器。
@@ -208,7 +204,69 @@ func runGateway(port int) error {
 		go openBrowser(url)
 	}
 
-	return gw.Run()
+	processCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runGatewayProcesses(processCtx, webSrv.Run, gw.RunContext)
+}
+
+type gatewayProcessResult struct {
+	name string
+	err  error
+}
+
+// runGatewayProcesses owns the process shutdown ordering. On normal signal
+// cancellation it first closes HTTP admission and waits for active handlers,
+// then cancels the gateway so fair workers drain before their clients/stores
+// close. An unexpected runner exit cancels and joins its peer.
+func runGatewayProcesses(
+	parent context.Context,
+	webRun func(context.Context) error,
+	gatewayRun func(context.Context) error,
+) error {
+	if parent == nil || webRun == nil || gatewayRun == nil {
+		return errors.New("gateway process lifecycle requires parent, HTTP, and gateway runners")
+	}
+	base := context.WithoutCancel(parent)
+	webCtx, cancelWeb := context.WithCancel(base)
+	gatewayCtx, cancelGateway := context.WithCancel(base)
+	defer cancelWeb()
+	defer cancelGateway()
+
+	results := make(chan gatewayProcessResult, 2)
+	go func() { results <- gatewayProcessResult{name: "http", err: webRun(webCtx)} }()
+	go func() { results <- gatewayProcessResult{name: "gateway", err: gatewayRun(gatewayCtx)} }()
+
+	select {
+	case <-parent.Done():
+		cancelWeb()
+		webResult := <-results
+		if webResult.name != "http" {
+			// The gateway happened to exit at the same time as process
+			// cancellation. HTTP still owns admission and must be joined.
+			cancelGateway()
+			peer := <-results
+			return errors.Join(expectedGatewayProcessError(webResult.err), expectedGatewayProcessError(peer.err))
+		}
+		cancelGateway()
+		gatewayResult := <-results
+		return errors.Join(expectedGatewayProcessError(webResult.err), expectedGatewayProcessError(gatewayResult.err))
+	case first := <-results:
+		cancelWeb()
+		cancelGateway()
+		second := <-results
+		firstErr := first.err
+		if firstErr == nil {
+			firstErr = fmt.Errorf("%s process stopped unexpectedly", first.name)
+		}
+		return errors.Join(firstErr, expectedGatewayProcessError(second.err))
+	}
+}
+
+func expectedGatewayProcessError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 func countUsersSafe(gw *gateway.Gateway) (int, error) {

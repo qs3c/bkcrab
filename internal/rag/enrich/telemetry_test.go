@@ -68,11 +68,14 @@ func TestEnrichmentTelemetryRecordsProviderUsageCacheAndBatchCounts(t *testing.T
 
 	processor := NewProcessor(&recordingEnricher{})
 	processor.SetRecorder(collector)
-	_, warnings := processor.EnrichChunks(context.Background(), processChunks(), ProcessConfig{
+	_, warnings, err := processor.EnrichChunks(context.Background(), processChunks(), ProcessConfig{
 		SystemEnabled: true, TextModel: "text-test", KBEnabled: true, MaxBlocks: 1,
 		Finalize: FinalizeConfig{ChunkSize: 256, MaxSearchContentBytes: 4096, CollectionMaxLength: 4096},
 		Scope:    CacheScope{UserID: "user-observe", KBID: "kb-observe", DocID: fence.DocID},
 	}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(warnings) != 1 {
 		t.Fatalf("warnings=%+v want one block-limit warning", warnings)
 	}

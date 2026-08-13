@@ -359,6 +359,102 @@ func callTestImage(t *testing.T, client *Client) (ImageDescription, error) {
 	return client.DescribeImage(context.Background(), input, newFakeTaskBudget(&fakeBudgetLedger{}))
 }
 
+func TestOpenAICallPreservesBudgetSettlementErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "provider unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	newClient := func(t *testing.T) *Client {
+		t.Helper()
+		client, err := NewOpenAICompatible(documentAIConfigForServer(t, server.URL), documentAILimits(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return client
+	}
+	call := func(ctx context.Context, client *Client, ledger *fakeBudgetLedger) error {
+		_, err := client.call(ctx, newFakeTaskBudget(ledger), "settlement", OperationImage, 0, []byte(`{}`), NormalizedImageInput{})
+		return err
+	}
+
+	t.Run("release joins cancellation", func(t *testing.T) {
+		client := newClient(t)
+		client.semaphore = make(chan struct{})
+		ledger := &fakeBudgetLedger{releaseErr: store.ErrFairQueueUnsafeConnection}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := call(ctx, client, ledger)
+		if !errors.Is(err, context.Canceled) || !errors.Is(err, store.ErrFairQueueUnsafeConnection) {
+			t.Fatalf("error = %v, want cancellation and settlement safety error", err)
+		}
+	})
+
+	t.Run("mark sent releases and joins failures", func(t *testing.T) {
+		markErr := errors.New("mark sent failed")
+		ledger := &fakeBudgetLedger{
+			markErr: markErr, releaseErr: store.ErrFairQueueWriterMismatch,
+		}
+		err := call(context.Background(), newClient(t), ledger)
+		if !errors.Is(err, markErr) || !errors.Is(err, store.ErrFairQueueWriterMismatch) {
+			t.Fatalf("error = %v, want mark and release errors", err)
+		}
+		ledger.mu.Lock()
+		releases := ledger.releases
+		ledger.mu.Unlock()
+		if releases != 1 {
+			t.Fatalf("release calls = %d, want 1", releases)
+		}
+	})
+
+	for _, settlementErr := range []error{
+		store.ErrFairQueueWriterMismatch,
+		store.ErrFairQueueUnsafeConnection,
+		store.ErrRAGDocumentAILedgerCorrupt,
+	} {
+		t.Run("commit estimated "+settlementErr.Error(), func(t *testing.T) {
+			err := call(context.Background(), newClient(t), &fakeBudgetLedger{commitErr: settlementErr})
+			var providerErr *Error
+			if !errors.As(err, &providerErr) || providerErr.Kind != ErrorUpstream ||
+				!errors.Is(err, settlementErr) {
+				t.Fatalf("error = %v, want upstream classification and settlement error", err)
+			}
+		})
+	}
+
+	t.Run("settlement safety error stops provider retries", func(t *testing.T) {
+		for _, settlementErr := range []error{
+			store.ErrFairQueueWriterMismatch,
+			store.ErrFairQueueUnsafeConnection,
+			store.ErrRAGDocumentAILedgerCorrupt,
+		} {
+			t.Run(settlementErr.Error(), func(t *testing.T) {
+				var calls atomic.Int32
+				retryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					calls.Add(1)
+					http.Error(w, "provider unavailable", http.StatusServiceUnavailable)
+				}))
+				defer retryServer.Close()
+				client, err := NewOpenAICompatible(documentAIConfigForServer(t, retryServer.URL), documentAILimits(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ledger := &fakeBudgetLedger{commitErr: settlementErr}
+				_, err = client.callWithTransientRetry(
+					context.Background(), newFakeTaskBudget(ledger), "settlement-retry",
+					OperationImage, []byte(`{}`), NormalizedImageInput{},
+				)
+				if !errors.Is(err, settlementErr) {
+					t.Fatalf("error = %v, want settlement safety error", err)
+				}
+				if calls.Load() != 1 {
+					t.Fatalf("provider calls = %d, want fail-closed single attempt", calls.Load())
+				}
+			})
+		}
+	})
+}
+
 func TestProviderErrorClassification(t *testing.T) {
 	for _, status := range []int{http.StatusTooManyRequests, http.StatusBadGateway} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {

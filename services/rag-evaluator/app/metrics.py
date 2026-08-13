@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 
 from .protocol import MetricResult, Sample
 from .settings import Settings
+from .usage import record_embedding_response, record_llm_response
 
 ScoreFn = Callable[[str, Sample], Awaitable[float]]
 
@@ -113,6 +114,21 @@ def build_ragas_engine(settings: Settings) -> MetricEngine:
     embedding_client = AsyncOpenAI(
         api_key=settings.embedding_api_key, base_url=settings.embedding_endpoint
     )
+    raw_llm_create = llm_client.chat.completions.create
+    raw_embedding_create = embedding_client.embeddings.create
+
+    async def metered_llm_create(*args, **kwargs):
+        response = await raw_llm_create(*args, **kwargs)
+        record_llm_response(response)
+        return response
+
+    async def metered_embedding_create(*args, **kwargs):
+        response = await raw_embedding_create(*args, **kwargs)
+        record_embedding_response(response)
+        return response
+
+    llm_client.chat.completions.create = metered_llm_create
+    embedding_client.embeddings.create = metered_embedding_create
     llm = llm_factory(settings.llm_model, provider="openai", client=llm_client)
     embeddings = embedding_factory(
         "openai", model=settings.embedding_model, client=embedding_client, interface="modern"

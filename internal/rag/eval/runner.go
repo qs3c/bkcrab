@@ -16,7 +16,10 @@ import (
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
-var ErrRunnerFenceLost = errors.New("evaluation runner lease lost")
+var (
+	ErrRunnerFenceLost  = errors.New("evaluation runner lease lost")
+	ErrRunBudgetReached = errors.New("evaluation run budget reached")
+)
 
 type RunStore interface {
 	CreateRAGEvalRun(context.Context, *store.RAGEvalRunRecord) error
@@ -103,9 +106,12 @@ type CreateRunRequest struct {
 }
 
 type Progress struct {
-	Total, Completed, Failed, Scored int     `json:"total"`
-	Tokens                           int64   `json:"tokens"`
-	CostUSD                          float64 `json:"costUsd"`
+	Total     int     `json:"total"`
+	Completed int     `json:"completed"`
+	Failed    int     `json:"failed"`
+	Scored    int     `json:"scored"`
+	Tokens    int64   `json:"tokens"`
+	CostUSD   float64 `json:"costUsd"`
 }
 
 type Runner struct {
@@ -211,16 +217,9 @@ func (r *Runner) CreateRun(ctx context.Context, request CreateRunRequest) (*stor
 	snapshotJSON, _ := json.Marshal(snapshot)
 	metricsJSON, _ := json.Marshal(metrics)
 	record := &store.RAGEvalRunRecord{ID: request.ID, DatasetVersionID: dataset.ID, BaselineRunID: request.BaselineRunID, Mode: mode,
-		ProfileID: profileRecord.ID, RequestedMetricsJSON: string(metricsJSON), ExecutionSnapshotJSON: string(snapshotJSON), CreatedBy: strings.TrimSpace(request.CreatedBy)}
+		ProfileID: profileRecord.ID, IndexGenerationID: request.IndexGenerationID, RequestedMetricsJSON: string(metricsJSON), ExecutionSnapshotJSON: string(snapshotJSON), CreatedBy: strings.TrimSpace(request.CreatedBy)}
 	if err := r.store.CreateRAGEvalRun(ctx, record); err != nil {
 		return nil, err
-	}
-	if mode == store.RAGEvalRunModeOnlineOnly {
-		generation, attachErr := r.store.AttachReadyRAGEvalGenerationForRun(ctx, record.ID, request.IndexGenerationID)
-		if attachErr != nil {
-			return nil, attachErr
-		}
-		record.IndexGenerationID = generation.ID
 	}
 	return record, nil
 }
@@ -412,8 +411,18 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 		if err = r.progress(ctx, fence, "answering", progress); err != nil {
 			return err
 		}
+		if exceeded, budgetErr := r.refreshBudget(ctx, run.ID, snapshot.Budgets, &progress); budgetErr != nil {
+			return budgetErr
+		} else if exceeded {
+			_ = r.progress(ctx, fence, "budget_exceeded", progress)
+			return r.finish(fence, store.RAGEvalRunBudgetExceeded, "budget_exceeded", "evaluation budget exceeded")
+		}
 	}
 	if err = r.score(ctx, fence, run.ID, snapshot, samples, caseByID, &progress); err != nil {
+		if errors.Is(err, ErrRunBudgetReached) {
+			_ = r.progress(ctx, fence, "budget_exceeded", progress)
+			return r.finish(fence, store.RAGEvalRunBudgetExceeded, "budget_exceeded", "evaluation budget exceeded")
+		}
 		// Pipeline results are already durable. Leave the run RUNNING so its
 		// expired lease can be reclaimed and scoring retried without answering
 		// completed cases again.
@@ -512,8 +521,12 @@ func (r *Runner) score(ctx context.Context, fence store.RAGEvalRunFence, runID s
 	}
 	for start := 0; start < len(samples) && len(requestedRagas) > 0; start += r.cfg.MaxBatchSize {
 		end := min(start+r.cfg.MaxBatchSize, len(samples))
-		response, err := r.scorer.Evaluate(ctx, EvaluateRequest{RequestID: runID + ":" + fmt.Sprint(start), MetricBundleVersion: snapshot.MetricBundleVersion, Metrics: requestedRagas, Samples: samples[start:end]})
+		requestID := runID + ":" + fmt.Sprint(start)
+		response, err := r.scorer.Evaluate(ctx, EvaluateRequest{RequestID: requestID, MetricBundleVersion: snapshot.MetricBundleVersion, Metrics: requestedRagas, Samples: samples[start:end]})
 		if err != nil {
+			return err
+		}
+		if err := r.recordEvaluatorUsage(ctx, fence, requestID, response.Usage); err != nil {
 			return err
 		}
 		for _, item := range response.Results {
@@ -527,8 +540,39 @@ func (r *Runner) score(ctx context.Context, fence store.RAGEvalRunFence, runID s
 		if err := r.progress(ctx, fence, "scoring", *progress); err != nil {
 			return err
 		}
+		if exceeded, budgetErr := r.refreshBudget(ctx, runID, snapshot.Budgets, progress); budgetErr != nil {
+			return budgetErr
+		} else if exceeded {
+			return ErrRunBudgetReached
+		}
 	}
 	return nil
+}
+
+func (r *Runner) recordEvaluatorUsage(ctx context.Context, fence store.RAGEvalRunFence, requestID string, usage EvaluatorUsage) error {
+	records := []store.RAGEvalUsageRecord{
+		{RunID: fence.RunID, Stage: "judge", Provider: r.cfg.Sidecar.LLMProvider, Model: r.cfg.Sidecar.LLMModel, InputTokens: usage.LLMInputTokens, OutputTokens: usage.LLMOutputTokens, EstimatedCostUSD: usage.LLMEstimatedCostUSD, IdempotencyKey: requestID + ":judge"},
+		{RunID: fence.RunID, Stage: "judge_embedding", Provider: r.cfg.Sidecar.EmbeddingProvider, Model: r.cfg.Sidecar.EmbeddingModel, InputTokens: usage.EmbeddingInputTokens, EstimatedCostUSD: usage.EmbeddingEstimatedCostUSD, IdempotencyKey: requestID + ":embedding"},
+	}
+	for i := range records {
+		record := &records[i]
+		if record.InputTokens == 0 && record.OutputTokens == 0 && record.EstimatedCostUSD == 0 {
+			continue
+		}
+		if _, err := r.store.RecordRAGEvalUsageFenced(ctx, fence, record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runner) refreshBudget(ctx context.Context, runID string, budgets RunBudgets, progress *Progress) (bool, error) {
+	tokens, cost, err := r.store.RAGEvalUsageTotals(ctx, runID)
+	if err != nil {
+		return false, err
+	}
+	progress.Tokens, progress.CostUSD = tokens, cost
+	return (budgets.MaxTokens > 0 && tokens >= budgets.MaxTokens) || (budgets.MaxCostUSD > 0 && cost >= budgets.MaxCostUSD), nil
 }
 
 func (r *Runner) putMetric(ctx context.Context, fence store.RAGEvalRunFence, caseID, metric string, result MetricResult) error {

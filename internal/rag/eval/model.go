@@ -9,7 +9,7 @@ import (
 
 const (
 	MetricBundleV1                   = "rag-core-v1"
-	ExpectedEvaluatorProtocolVersion = "rag-evaluator-v1"
+	ExpectedEvaluatorProtocolVersion = "rag-evaluator-v2"
 	ExpectedRagasVersion             = "0.3.9"
 )
 

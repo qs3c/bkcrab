@@ -1,6 +1,6 @@
 # Docker Compose 部署
 
-`docker-compose.yml` 是基础部署，包含 BkCrab、MySQL、MinIO 和 agent 沙箱。RAG 是可选能力；启用时再叠加 `docker-compose.rag.yml`。该 overlay 新增 Milvus Standalone 和 etcd，并复用基础部署已有的 MinIO。
+`docker-compose.yml` 是基础部署，包含 BkCrab、MySQL、MinIO 和 agent 沙箱。RAG 是可选能力；启用时再叠加 `docker-compose.rag.yml`。该 overlay 新增 Milvus Standalone 和 etcd，并复用基础部署已有的 MinIO。公平队列依赖位于独立的 `docker-compose.fairqueue.yml`；该共享 overlay 不会自动启用 RAG 或 imagegen，资源模式由各自 rollout 独立决定。
 
 ## 基础部署
 
@@ -190,6 +190,80 @@ RAG_TEST_MILVUS_ADDR=127.0.0.1:19530 \
   go test ./internal/rag/vector -run TestMilvusRoundTrip -v
 ```
 
+## RAG fairqueue 依赖与两阶段切换
+
+基础 Compose 与普通 RAG overlay 都保持
+`FAIR_QUEUE_ENABLED=false`、`RAG_INDEX_WORKER_MODE=legacy`，不会要求 Redis /
+RabbitMQ 凭据。`docker-compose.fairqueue.yml` 提供持久化 Redis（AOF）和
+RabbitMQ management 并启用共享协议，但不改变任何资源的 worker mode；RAG
+最终阶段还必须叠加 `docker-compose.rag-fair.yml`。management 只绑定
+`127.0.0.1`。使用该 overlay 前，在 `.env` 中为 `REDIS_PASSWORD` 和
+`RABBITMQ_PASSWORD` 生成独立随机值，Rabbit 密码必须是 URL-safe。
+
+正式切换不能做 legacy/fair canary，必须是两个独立的全量部署：
+
+1. 先只用基础 Compose（需要 RAG 时再叠加普通 RAG overlay）部署兼容
+   dual-write 镜像。执行以下 dry-run；确认所有旧 writer 已归零后，追加
+   `--apply --confirm-all-writers-dual-write` 完成 contract：
+
+   ```bash
+   docker compose \
+     --env-file deploy/docker/.env \
+     -f deploy/docker/docker-compose.yml \
+     -f deploy/docker/docker-compose.rag.yml \
+     run --rm bkcrab admin fairqueue contract-migrate
+   ```
+
+2. 全量设置 `RAG_INDEX_WORKER_MODE=paused`，仍保持
+   `FAIR_QUEUE_ENABLED=false`。等待旧容器归零、heartbeat 静止且所有旧
+   claimant 退出；无法证明时保持 paused。
+3. 第二次全量部署显式叠加共享 fairqueue overlay 和 RAG fair overlay；前者固定
+   enabled=true、writer topology=single 并启动 Redis/RabbitMQ，后者只固定
+   RAG worker mode=fair：
+
+   ```bash
+   docker compose \
+     --env-file deploy/docker/.env \
+     -f deploy/docker/docker-compose.yml \
+     -f deploy/docker/docker-compose.rag.yml \
+     -f deploy/docker/docker-compose.fairqueue.yml \
+     -f deploy/docker/docker-compose.rag-fair.yml \
+     up -d --build
+   ```
+
+   检查 Redis、Rabbit health 和 `/readyz`；Rabbit/Redis 暂时 degraded 不应使
+   API Pod 失活，但 scheduler 会停止新 claim。
+4. 回滚按 `fair -> paused`，排空非终态任务后再到兼容 dual-write 的
+   `legacy`。contract 后禁止回到 pre-expand 镜像。
+
+详细的 Redis/Rabbit 灾难恢复、writer rebind 和 journal 对账见
+[`docs/rag-fair-queue-operations.md`](../../docs/rag-fair-queue-operations.md)。
+
+### Imagegen batch rollout 与 workspace
+
+`IMAGEGEN_BATCH_MODE` 默认 `legacy`。Imagegen 的正向切换必须是两次独立全量
+rollout：先 `legacy -> drain`，确认所有旧 ReplicaSet/容器和同步 `image_gen`
+调用归零；再 `drain -> fair`。禁止 legacy/fair canary。回滚按
+`fair -> drain`，等待所有非终态 batch 排空后才能 `drain -> legacy`。
+
+`drain` 和 `fair` 都必须叠加同一个共享基础设施 overlay；只修改
+`IMAGEGEN_BATCH_MODE`，不要叠加 `docker-compose.rag-fair.yml`，除非 RAG 也已完成
+自己的 paused rollout。例如最终 imagegen fair 部署为：
+
+```bash
+IMAGEGEN_BATCH_MODE=fair docker compose \
+  --env-file deploy/docker/.env \
+  -f deploy/docker/docker-compose.yml \
+  -f deploy/docker/docker-compose.fairqueue.yml \
+  up -d --build
+```
+
+Compose 默认使用 MinIO（S3-compatible）作为共享 workspace，因此 fair/drain
+worker 可以跨实例恢复 artifact。若改为 LocalFS，只允许一个 gateway/worker
+实例；LocalFS 不能用于多副本。MySQL 必须是所有 Pod 看到相同
+`@@server_uuid + DATABASE()` 的 single writer，Redis 必须是 standalone，Rabbit
+和 Redis 暂时不可用时 create 仍先持久化到 MySQL，恢复后再 dispatch。
+
 ## 停止与升级
 
 停止服务但保留数据卷：
@@ -201,6 +275,9 @@ docker compose \
   -f deploy/docker/docker-compose.rag.yml \
   down
 ```
+
+如果当前启用了 fairqueue，停止或更新时也必须传入
+`-f deploy/docker/docker-compose.fairqueue.yml`，避免遗漏 Redis/RabbitMQ 服务。
 
 `down -v` 会永久删除 MySQL、MinIO、Milvus 和 etcd 数据，只应在明确需要清空环境时使用。
 

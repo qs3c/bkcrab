@@ -351,7 +351,7 @@ func (s *PolicyPromotionService) evaluateGates(ctx context.Context, runID string
 			caseSet[item.CaseID] = struct{}{}
 		}
 		last := items[len(items)-1]
-		cursor = last.CaseID + ":" + last.MetricName
+		cursor = store.RAGEvalMetricCursor(last)
 	}
 	report.ScoredCases = len(caseSet)
 	if report.ScoredCases < s.Gates.MinimumScoredCases {

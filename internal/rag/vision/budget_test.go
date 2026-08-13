@@ -2,6 +2,8 @@ package vision
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -10,18 +12,34 @@ import (
 )
 
 type fakeBudgetLedger struct {
-	mu           sync.Mutex
-	createCalls  int
-	reserve      *store.RAGDocumentAIUsageRecord
-	reserveFence store.IndexFence
-	markFence    store.IndexFence
-	commits      int
-	releases     int
+	mu            sync.Mutex
+	createCalls   int
+	fencedCreates int
+	createFence   store.IndexFence
+	reserve       *store.RAGDocumentAIUsageRecord
+	reserveFence  store.IndexFence
+	markFence     store.IndexFence
+	commits       int
+	releases      int
+	markErr       error
+	commitErr     error
+	releaseErr    error
 }
 
 func (f *fakeBudgetLedger) CreateRAGDocumentAITaskBudget(_ context.Context, _ *store.RAGDocumentAITaskBudgetRecord) error {
 	f.mu.Lock()
 	f.createCalls++
+	f.mu.Unlock()
+	return nil
+}
+func (f *fakeBudgetLedger) CreateRAGDocumentAITaskBudgetForIndex(
+	_ context.Context,
+	fence store.IndexFence,
+	_ *store.RAGDocumentAITaskBudgetRecord,
+) error {
+	f.mu.Lock()
+	f.fencedCreates++
+	f.createFence = fence
 	f.mu.Unlock()
 	return nil
 }
@@ -35,21 +53,21 @@ func (f *fakeBudgetLedger) ReserveRAGDocumentAIUsage(_ context.Context, fence st
 }
 func (f *fakeBudgetLedger) MarkSentRAGDocumentAIUsage(_ context.Context, _ string, fence store.IndexFence) (bool, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.markFence = fence
-	f.mu.Unlock()
-	return true, nil
+	return f.markErr == nil, f.markErr
 }
 func (f *fakeBudgetLedger) CommitRAGDocumentAIUsage(_ context.Context, _ string, _, _, _ int64, _ bool) (bool, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.commits++
-	f.mu.Unlock()
-	return true, nil
+	return f.commitErr == nil, f.commitErr
 }
 func (f *fakeBudgetLedger) ReleaseRAGDocumentAIUsage(_ context.Context, _ string) (bool, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.releases++
-	f.mu.Unlock()
-	return true, nil
+	return f.releaseErr == nil, f.releaseErr
 }
 func (f *fakeBudgetLedger) GetRAGDocumentAIUsage(context.Context, string) (*store.RAGDocumentAIUsageRecord, error) {
 	return nil, store.ErrNotFound
@@ -101,6 +119,50 @@ func TestTaskDocumentAIBudgetUsesFencedDurableTransitions(t *testing.T) {
 	if ledger.reserve.State != "" || ledger.reserve.PeriodStartUTC.Location() != time.UTC {
 		t.Fatalf("usage facade leaked state or non-UTC period: %+v", ledger.reserve)
 	}
+}
+
+type budgetLedgerWithoutFence struct{ BudgetLedger }
+
+func TestTaskDocumentAIBudgetFairCreateRequiresFencedLedger(t *testing.T) {
+	fence := store.IndexFence{
+		TaskID: 17, DocID: "doc_fair", DocVersion: 2, ClaimGeneration: 3,
+		LeaseOwner: "fair-worker", ExpectedWriterFingerprint: strings.Repeat("a", 64),
+	}
+	t.Run("uses live fence entry point", func(t *testing.T) {
+		ledger := &fakeBudgetLedger{}
+		budget := newFakeTaskBudgetForFence(ledger, fence)
+		if _, err := budget.Reserve(context.Background(), fence, AttemptRequest{
+			LogicalRequestKey: "fair-logical", Operation: OperationPage,
+			ProviderFingerprint: "provider", InputTokens: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		ledger.mu.Lock()
+		defer ledger.mu.Unlock()
+		if ledger.fencedCreates != 1 || ledger.createCalls != 0 || ledger.createFence != fence {
+			t.Fatalf("fenced=%d legacy=%d fence=%+v",
+				ledger.fencedCreates, ledger.createCalls, ledger.createFence)
+		}
+	})
+
+	t.Run("no legacy fallback", func(t *testing.T) {
+		underlying := &fakeBudgetLedger{}
+		ledger := &budgetLedgerWithoutFence{BudgetLedger: underlying}
+		budget := newFakeTaskBudgetForFence(ledger, fence)
+		reservation, err := budget.Reserve(context.Background(), fence, AttemptRequest{
+			LogicalRequestKey: "fair-no-fallback", Operation: OperationPage,
+			ProviderFingerprint: "provider", InputTokens: 1,
+		})
+		if reservation != nil || !errors.Is(err, store.ErrRAGDocumentAIInvalidFence) {
+			t.Fatalf("reservation=%+v err=%v", reservation, err)
+		}
+		underlying.mu.Lock()
+		defer underlying.mu.Unlock()
+		if underlying.createCalls != 0 || underlying.reserve != nil {
+			t.Fatalf("legacy fallback create=%d reserve=%+v",
+				underlying.createCalls, underlying.reserve)
+		}
+	})
 }
 
 func TestTaskDocumentAIBudgetReleaseBeforeSendAndAttemptKeysDiffer(t *testing.T) {

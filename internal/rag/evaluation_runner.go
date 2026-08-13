@@ -110,6 +110,7 @@ func (s *Service) Execute(ctx context.Context, request rageval.CaseExecutionRequ
 	}
 	result := rageval.CaseExecutionResult{Response: answer.Response, Contexts: contexts, ContextIDs: ids, Citations: citations, SearchTrace: evaluationSearchTrace{Trace: trace, Hits: savedHits}, AnswerTrace: answer, Latency: time.Since(started),
 		Usage: rageval.Usage{Stage: "answer", Provider: providerName, Model: modelName, InputTokens: int64(answer.Usage.InputTokens), OutputTokens: int64(answer.Usage.OutputTokens)}}
+	result.Usage.EstimatedCostUSD = (float64(result.Usage.InputTokens)*s.cfg.Evaluation.AnswerInputCostPerMUSD + float64(result.Usage.OutputTokens)*s.cfg.Evaluation.AnswerOutputCostPerMUSD) / 1_000_000
 	if err != nil {
 		result.ErrorCode = AnswerErrorCode(err)
 		result.ErrorMessage = err.Error()

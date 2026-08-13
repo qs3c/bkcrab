@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 
@@ -16,6 +17,9 @@ class Settings:
     embedding_endpoint: str
     embedding_api_key: str
     embedding_model: str
+    llm_input_cost_per_million_usd: float
+    llm_output_cost_per_million_usd: float
+    embedding_cost_per_million_usd: float
     max_total_context_bytes: int
     max_reason_chars: int
     metric_timeout_seconds: float
@@ -34,6 +38,15 @@ class Settings:
             embedding_endpoint=os.getenv("RAG_EVALUATOR_EMBEDDING_ENDPOINT", ""),
             embedding_api_key=os.getenv("RAG_EVALUATOR_EMBEDDING_API_KEY", ""),
             embedding_model=os.getenv("RAG_EVALUATOR_EMBEDDING_MODEL", ""),
+            llm_input_cost_per_million_usd=float(
+                os.getenv("RAG_EVALUATOR_LLM_INPUT_COST_USD_PER_MILLION", "0")
+            ),
+            llm_output_cost_per_million_usd=float(
+                os.getenv("RAG_EVALUATOR_LLM_OUTPUT_COST_USD_PER_MILLION", "0")
+            ),
+            embedding_cost_per_million_usd=float(
+                os.getenv("RAG_EVALUATOR_EMBEDDING_COST_USD_PER_MILLION", "0")
+            ),
             max_total_context_bytes=int(
                 os.getenv("RAG_EVALUATOR_MAX_TOTAL_CONTEXT_BYTES", "1048576")
             ),
@@ -58,3 +71,14 @@ class Settings:
                 self.embedding_model,
             )
         )
+
+    def validate(self) -> None:
+        prices = (
+            self.llm_input_cost_per_million_usd,
+            self.llm_output_cost_per_million_usd,
+            self.embedding_cost_per_million_usd,
+        )
+        if any(not math.isfinite(value) or value < 0 for value in prices):
+            raise ValueError("evaluator token prices must be finite and non-negative")
+        if self.judge_configured and any(value <= 0 for value in prices):
+            raise ValueError("configured evaluator judge requires explicit positive token prices")

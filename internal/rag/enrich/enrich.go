@@ -16,6 +16,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/rag/split"
 	"github.com/qs3c/bkcrab/internal/rag/telemetry"
 	"github.com/qs3c/bkcrab/internal/rag/vision"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 const EnrichmentSchemaVersion = "text-enrichment-v1"
@@ -291,14 +292,14 @@ func (p *Processor) SetRecorder(recorder telemetry.Recorder) {
 // EnrichChunks applies all three opt-in/configuration gates before scheduling
 // work. Parse mode is intentionally absent: standard and auto have identical
 // opt-in requirements.
-func (p *Processor) EnrichChunks(ctx context.Context, chunks []split.Chunk, cfg ProcessConfig, budget *vision.TaskDocumentAIBudget) ([]split.Chunk, []Warning) {
+func (p *Processor) EnrichChunks(ctx context.Context, chunks []split.Chunk, cfg ProcessConfig, budget *vision.TaskDocumentAIBudget) ([]split.Chunk, []Warning, error) {
 	result := append([]split.Chunk(nil), chunks...)
 	totalEligible := countEnrichableChunks(result)
 	if p == nil || p.enricher == nil || !cfg.SystemEnabled || strings.TrimSpace(cfg.TextModel) == "" || !cfg.KBEnabled {
 		if p != nil {
 			p.recordBatch(ctx, cfg.Scope.DocID, budget, "skipped", 0, totalEligible, totalEligible, 0)
 		}
-		return result, nil
+		return result, nil, nil
 	}
 	maxBlocks := cfg.MaxBlocks
 	if maxBlocks <= 0 {
@@ -309,6 +310,7 @@ func (p *Processor) EnrichChunks(ctx context.Context, chunks []split.Chunk, cfg 
 		index       int
 		enhancement string
 		warning     *Warning
+		err         error
 	}
 	eligible := 0
 	outcomes := make(chan outcome, len(result))
@@ -339,6 +341,10 @@ func (p *Processor) EnrichChunks(ctx context.Context, chunks []split.Chunk, cfg 
 		go func(index int, input EnrichableBlock) {
 			value, err := p.enricher.Enrich(ctx, input, budget)
 			if err != nil {
+				if isFairQueueSafetyError(err) {
+					outcomes <- outcome{index: index, err: err}
+					return
+				}
 				outcomes <- outcome{index: index, warning: &Warning{ChunkIndex: result[index].Index,
 					Code: "enrichment_failed", Message: "table/code enrichment failed; source text retained"}}
 				return
@@ -349,13 +355,21 @@ func (p *Processor) EnrichChunks(ctx context.Context, chunks []split.Chunk, cfg 
 	}
 
 	warnings := make([]Warning, 0)
+	var safetyErr error
 	for range eligible {
 		item := <-outcomes
+		if item.err != nil {
+			safetyErr = errors.Join(safetyErr, item.err)
+			continue
+		}
 		if item.warning != nil {
 			warnings = append(warnings, *item.warning)
 			continue
 		}
 		result[item.index].Enhancement = item.enhancement
+	}
+	if safetyErr != nil {
+		return append([]split.Chunk(nil), chunks...), nil, safetyErr
 	}
 	sort.SliceStable(warnings, func(i, j int) bool {
 		if warnings[i].ChunkIndex != warnings[j].ChunkIndex {
@@ -364,7 +378,13 @@ func (p *Processor) EnrichChunks(ctx context.Context, chunks []split.Chunk, cfg 
 		return warnings[i].Code < warnings[j].Code
 	})
 	p.recordBatch(ctx, cfg.Scope.DocID, budget, "ok", eligible-len(warnings), eligible, len(warnings), len(warnings))
-	return result, warnings
+	return result, warnings, nil
+}
+
+func isFairQueueSafetyError(err error) bool {
+	return errors.Is(err, store.ErrFairQueueWriterMismatch) ||
+		errors.Is(err, store.ErrFairQueueUnsafeConnection) ||
+		errors.Is(err, store.ErrRAGDocumentAILedgerCorrupt)
 }
 
 func countEnrichableChunks(chunks []split.Chunk) int {

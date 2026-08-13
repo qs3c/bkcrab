@@ -114,7 +114,7 @@ func TestRAGEvalDatasetGCBlocksReferencedVersion(t *testing.T) {
 	if err := st.CreateRAGEvalDatasetVersion(ctx, version); err != nil {
 		t.Fatal(err)
 	}
-	run := &RAGEvalRunRecord{DatasetVersionID: version.ID, ProfileID: "profile", Mode: RAGEvalRunModeOnlineOnly, CreatedBy: "admin"}
+	run := &RAGEvalRunRecord{DatasetVersionID: version.ID, ProfileID: "profile", Mode: RAGEvalRunModeFullPipeline, CreatedBy: "admin"}
 	if err := st.CreateRAGEvalRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestRAGEvalRunFenceAndUsageIdempotency(t *testing.T) {
 	st := openTestDB(t)
 	defer st.Close()
 	ctx := context.Background()
-	run := &RAGEvalRunRecord{DatasetVersionID: "dv", ProfileID: "p", Mode: RAGEvalRunModeOnlineOnly, CreatedBy: "admin"}
+	run := &RAGEvalRunRecord{DatasetVersionID: "dv", ProfileID: "p", Mode: RAGEvalRunModeFullPipeline, CreatedBy: "admin"}
 	if err := st.CreateRAGEvalRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestRAGEvalStoredStatusScanIsClosed(t *testing.T) {
 	st := openTestDB(t)
 	defer st.Close()
 	ctx := context.Background()
-	run := &RAGEvalRunRecord{DatasetVersionID: "dv", ProfileID: "p", Mode: RAGEvalRunModeOnlineOnly, CreatedBy: "admin"}
+	run := &RAGEvalRunRecord{DatasetVersionID: "dv", ProfileID: "p", Mode: RAGEvalRunModeFullPipeline, CreatedBy: "admin"}
 	if err := st.CreateRAGEvalRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}

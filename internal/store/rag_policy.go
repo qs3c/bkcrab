@@ -881,7 +881,7 @@ func (d *DBStore) GetRAGPolicySyncTask(ctx context.Context, id string) (*RAGPoli
 }
 
 func (d *DBStore) LatestRAGPolicySyncTaskForKB(ctx context.Context, kbID string) (*RAGPolicySyncTaskRecord, error) {
-	return scanRAGPolicySyncTask(d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_kb_policy_sync_tasks WHERE kb_id=%s ORDER BY created_at DESC,id DESC LIMIT 1`, ragPolicySyncTaskColumns, d.ph(1)), kbID))
+	return scanRAGPolicySyncTask(d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_kb_policy_sync_tasks WHERE kb_id=%s ORDER BY created_at DESC,target_policy_version DESC,id DESC LIMIT 1`, ragPolicySyncTaskColumns, d.ph(1)), kbID))
 }
 
 func (d *DBStore) IsRAGKBPolicySyncActive(ctx context.Context, kbID string) (bool, error) {

@@ -126,6 +126,371 @@ type StorageCfg struct {
 	AutoMigrate bool   `json:"autoMigrate,omitempty"`
 }
 
+const (
+	FairQueueRedisModeStandalone                         = "standalone"
+	FairQueueWorkerModeLegacy                            = "legacy"
+	FairQueueWorkerModePaused                            = "paused"
+	FairQueueWorkerModeFair                              = "fair"
+	FairQueueMySQLWriterTopologySingle                   = "single"
+	FairQueueMaxDuration                                 = 24 * time.Hour
+	FairQueueMaxReconcilePageSize                        = 10_000
+	ImagegenBatchModeLegacy            ImagegenBatchMode = "legacy"
+	ImagegenBatchModeDrain             ImagegenBatchMode = "drain"
+	ImagegenBatchModeFair              ImagegenBatchMode = "fair"
+)
+
+type ImagegenBatchMode string
+
+// ImagegenBatchCfg is deployment-scoped because its limits protect shared
+// scheduler, database, and provider capacity. User and agent config overlays
+// must not be able to change these values.
+type ImagegenBatchCfg struct {
+	Mode                       ImagegenBatchMode
+	MaxImagesPerBatch          int
+	MaxImagesPerTask           int
+	ToolWaitDefault            time.Duration
+	ToolWaitMax                time.Duration
+	PromptMaxRunes             int
+	RequestMaxBytes            int64
+	ImageMaxBytes              int64
+	BatchMaxBytes              int64
+	LocalWorkers               int
+	GlobalConcurrency          int
+	PerUserBaseConcurrency     int
+	PerUserBurstConcurrency    int
+	BorrowEnabled              bool
+	TaskLease                  time.Duration
+	TaskHeartbeat              time.Duration
+	ReservationTTL             time.Duration
+	ReservationHeartbeat       time.Duration
+	PrepareTimeout             time.Duration
+	ProvisionalTTL             time.Duration
+	ProcessingTurnTTL          time.Duration
+	PublishAttemptTimeout      time.Duration
+	RecoveryDrainTimeout       time.Duration
+	DispatchInterval           time.Duration
+	ReconcileInterval          time.Duration
+	ExpiredSweepInterval       time.Duration
+	ReconcilePageSize          int
+	MaxRetries                 int
+	ProviderCallTimeout        time.Duration
+	ArtifactDownloadTimeout    time.Duration
+	ProviderConcurrencyDefault int
+	ProviderConcurrency        map[string]int
+
+	envErrors []error
+}
+
+func DefaultImagegenBatchCfg() ImagegenBatchCfg {
+	return ImagegenBatchCfg{
+		Mode:                       ImagegenBatchModeLegacy,
+		MaxImagesPerBatch:          16,
+		MaxImagesPerTask:           4,
+		ToolWaitDefault:            180 * time.Second,
+		ToolWaitMax:                240 * time.Second,
+		PromptMaxRunes:             8000,
+		RequestMaxBytes:            128 * 1024,
+		ImageMaxBytes:              20 * 1024 * 1024,
+		BatchMaxBytes:              128 * 1024 * 1024,
+		LocalWorkers:               4,
+		GlobalConcurrency:          4,
+		PerUserBaseConcurrency:     2,
+		PerUserBurstConcurrency:    4,
+		BorrowEnabled:              true,
+		TaskLease:                  180 * time.Second,
+		TaskHeartbeat:              30 * time.Second,
+		ReservationTTL:             180 * time.Second,
+		ReservationHeartbeat:       30 * time.Second,
+		PrepareTimeout:             10 * time.Second,
+		ProvisionalTTL:             15 * time.Second,
+		ProcessingTurnTTL:          15 * time.Second,
+		PublishAttemptTimeout:      15 * time.Second,
+		RecoveryDrainTimeout:       2 * time.Minute,
+		DispatchInterval:           time.Second,
+		ReconcileInterval:          30 * time.Second,
+		ExpiredSweepInterval:       15 * time.Second,
+		ReconcilePageSize:          200,
+		MaxRetries:                 3,
+		ProviderCallTimeout:        120 * time.Second,
+		ArtifactDownloadTimeout:    60 * time.Second,
+		ProviderConcurrencyDefault: 4,
+		ProviderConcurrency:        make(map[string]int),
+	}
+}
+
+func (c ImagegenBatchCfg) Validate(storageType string, fairQueue FairQueueCfg) error {
+	if len(c.envErrors) > 0 {
+		return fmt.Errorf("invalid imagegen batch environment: %w", errors.Join(c.envErrors...))
+	}
+	switch c.Mode {
+	case ImagegenBatchModeLegacy, ImagegenBatchModeDrain, ImagegenBatchModeFair:
+	default:
+		return fmt.Errorf("imagegenBatch.mode %q is unsupported", c.Mode)
+	}
+	if c.MaxImagesPerBatch < 1 || c.MaxImagesPerBatch > 16 {
+		return fmt.Errorf("imagegenBatch.maxImagesPerBatch must be in [1,16], got %d", c.MaxImagesPerBatch)
+	}
+	if c.MaxImagesPerTask < 1 || c.MaxImagesPerTask > 4 {
+		return fmt.Errorf("imagegenBatch.maxImagesPerTask must be in [1,4], got %d", c.MaxImagesPerTask)
+	}
+	if c.ToolWaitDefault < 0 || c.ToolWaitMax <= 0 || c.ToolWaitDefault > c.ToolWaitMax || c.ToolWaitMax > 240*time.Second {
+		return fmt.Errorf("imagegenBatch tool waits must satisfy 0 <= default <= max <= 240s")
+	}
+	if c.PromptMaxRunes <= 0 || c.RequestMaxBytes <= 0 || c.ImageMaxBytes <= 0 || c.BatchMaxBytes < c.ImageMaxBytes {
+		return errors.New("imagegenBatch request and byte limits must be positive and batchMaxBytes >= imageMaxBytes")
+	}
+	if c.LocalWorkers <= 0 || c.GlobalConcurrency <= 0 || c.PerUserBaseConcurrency <= 0 ||
+		c.PerUserBaseConcurrency > c.PerUserBurstConcurrency || c.PerUserBurstConcurrency > c.GlobalConcurrency {
+		return fmt.Errorf("imagegenBatch concurrency must satisfy positive workers and base <= burst <= global, got %d <= %d <= %d", c.PerUserBaseConcurrency, c.PerUserBurstConcurrency, c.GlobalConcurrency)
+	}
+	durations := []struct {
+		name  string
+		value time.Duration
+	}{
+		{"taskLease", c.TaskLease},
+		{"taskHeartbeat", c.TaskHeartbeat},
+		{"reservationTTL", c.ReservationTTL},
+		{"reservationHeartbeat", c.ReservationHeartbeat},
+		{"prepareTimeout", c.PrepareTimeout},
+		{"provisionalTTL", c.ProvisionalTTL},
+		{"processingTurnTTL", c.ProcessingTurnTTL},
+		{"publishAttemptTimeout", c.PublishAttemptTimeout},
+		{"recoveryDrainTimeout", c.RecoveryDrainTimeout},
+		{"dispatchInterval", c.DispatchInterval},
+		{"reconcileInterval", c.ReconcileInterval},
+		{"expiredSweepInterval", c.ExpiredSweepInterval},
+		{"providerCallTimeout", c.ProviderCallTimeout},
+		{"artifactDownloadTimeout", c.ArtifactDownloadTimeout},
+	}
+	for _, duration := range durations {
+		if duration.value <= 0 || duration.value > FairQueueMaxDuration {
+			return fmt.Errorf("imagegenBatch.%s must be in (0,%s], got %s", duration.name, FairQueueMaxDuration, duration.value)
+		}
+	}
+	if c.TaskHeartbeat >= c.TaskLease {
+		return errors.New("imagegenBatch.taskHeartbeat must be less than taskLease")
+	}
+	if c.ReservationHeartbeat >= c.ReservationTTL {
+		return errors.New("imagegenBatch.reservationHeartbeat must be less than reservationTTL")
+	}
+	if c.PrepareTimeout >= c.ProvisionalTTL {
+		return errors.New("imagegenBatch.prepareTimeout must be less than provisionalTTL")
+	}
+	if c.ProvisionalTTL >= c.RecoveryDrainTimeout || c.ProcessingTurnTTL >= c.RecoveryDrainTimeout || c.PublishAttemptTimeout >= c.RecoveryDrainTimeout {
+		return errors.New("imagegenBatch provisional, processing, and publish timeouts must be less than recoveryDrainTimeout")
+	}
+	if c.ReconcilePageSize <= 0 || c.ReconcilePageSize > FairQueueMaxReconcilePageSize {
+		return fmt.Errorf("imagegenBatch.reconcilePageSize must be in [1,%d], got %d", FairQueueMaxReconcilePageSize, c.ReconcilePageSize)
+	}
+	if c.MaxRetries < 0 || c.ProviderConcurrencyDefault <= 0 {
+		return errors.New("imagegenBatch maxRetries must be non-negative and providerConcurrencyDefault must be positive")
+	}
+	for provider, limit := range c.ProviderConcurrency {
+		if strings.TrimSpace(provider) == "" || limit <= 0 {
+			return fmt.Errorf("imagegenBatch provider concurrency entry %q must have a positive limit", provider)
+		}
+	}
+	if c.Mode == ImagegenBatchModeFair || c.Mode == ImagegenBatchModeDrain {
+		if storageType != "mysql" {
+			return fmt.Errorf("imagegenBatch.mode=%s requires MySQL storage, got %q", c.Mode, storageType)
+		}
+		if !fairQueue.Enabled {
+			return fmt.Errorf("imagegenBatch.mode=%s requires fairQueue.enabled=true", c.Mode)
+		}
+		if fairQueue.MySQLWriterTopology != FairQueueMySQLWriterTopologySingle {
+			return fmt.Errorf("imagegenBatch.mode=%s requires fairQueue.mysqlWriterTopology=%q", c.Mode, FairQueueMySQLWriterTopologySingle)
+		}
+		if err := fairQueue.Validate(storageType); err != nil {
+			return fmt.Errorf("imagegenBatch shared fair queue config: %w", err)
+		}
+	}
+	return nil
+}
+
+// FairQueueCfg is deployment infrastructure configuration. It is held by
+// EnvConfig rather than Config so database-backed user and agent scopes cannot
+// override shared Redis/RabbitMQ safety settings.
+type FairQueueCfg struct {
+	Enabled             bool
+	RedisAddr           string
+	RedisPassword       string
+	RedisDB             int
+	RedisMode           string
+	RabbitMQURL         string
+	Exchange            string
+	DeadLetterExchange  string
+	KeyPrefix           string
+	MySQLWriterTopology string
+	RAGIndex            FairQueueResourceCfg
+
+	envErrors []error
+}
+
+type FairQueueResourceCfg struct {
+	WorkerMode                  string
+	LocalWorkers                int
+	GlobalConcurrency           int
+	PerUserBaseConcurrency      int
+	PerUserBurstConcurrency     int
+	BorrowEnabled               bool
+	ReconcileInterval           time.Duration
+	ExpiredRunningSweepInterval time.Duration
+	ReconcilePageSize           int
+	ReservationTTL              time.Duration
+	ReservationHeartbeat        time.Duration
+	PrepareTimeout              time.Duration
+	ProvisionalTTL              time.Duration
+	ProcessingTurnTTL           time.Duration
+	RecoveryDrainTimeout        time.Duration
+	DispatchInterval            time.Duration
+	PublishAttemptTimeout       time.Duration
+}
+
+func DefaultFairQueueCfg() FairQueueCfg {
+	return FairQueueCfg{
+		RedisMode:          FairQueueRedisModeStandalone,
+		Exchange:           "bkcrab.fair.task",
+		DeadLetterExchange: "bkcrab.fair.dlx",
+		KeyPrefix:          "bkcrab:",
+		RAGIndex: FairQueueResourceCfg{
+			WorkerMode:                  FairQueueWorkerModeLegacy,
+			LocalWorkers:                4,
+			GlobalConcurrency:           4,
+			PerUserBaseConcurrency:      2,
+			PerUserBurstConcurrency:     4,
+			BorrowEnabled:               true,
+			ReconcileInterval:           30 * time.Second,
+			ExpiredRunningSweepInterval: 15 * time.Second,
+			ReconcilePageSize:           200,
+			ReservationTTL:              60 * time.Second,
+			ReservationHeartbeat:        20 * time.Second,
+			PrepareTimeout:              10 * time.Second,
+			ProvisionalTTL:              15 * time.Second,
+			ProcessingTurnTTL:           15 * time.Second,
+			RecoveryDrainTimeout:        2 * time.Minute,
+			DispatchInterval:            time.Second,
+			PublishAttemptTimeout:       15 * time.Second,
+		},
+	}
+}
+
+// LogValue keeps deployment credentials out of structured logs while still
+// exposing the non-secret settings needed to diagnose rollout configuration.
+func (c FairQueueCfg) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Bool("enabled", c.Enabled),
+		slog.String("redisAddr", c.RedisAddr),
+		slog.Bool("redisPasswordConfigured", c.RedisPassword != ""),
+		slog.Int("redisDB", c.RedisDB),
+		slog.String("redisMode", c.RedisMode),
+		slog.Bool("rabbitMQConfigured", strings.TrimSpace(c.RabbitMQURL) != ""),
+		slog.String("exchange", c.Exchange),
+		slog.String("deadLetterExchange", c.DeadLetterExchange),
+		slog.String("keyPrefix", c.KeyPrefix),
+		slog.String("mysqlWriterTopology", c.MySQLWriterTopology),
+		slog.Any("ragIndex", c.RAGIndex),
+	)
+}
+
+func (c FairQueueCfg) Validate(storageType string) error {
+	if len(c.envErrors) > 0 {
+		return fmt.Errorf("invalid fair queue environment: %w", errors.Join(c.envErrors...))
+	}
+	if c.RedisMode != FairQueueRedisModeStandalone {
+		return fmt.Errorf("fairQueue.redisMode %q is unsupported; only %q is allowed", c.RedisMode, FairQueueRedisModeStandalone)
+	}
+	if c.RedisDB < 0 {
+		return fmt.Errorf("fairQueue.redisDB must be non-negative, got %d", c.RedisDB)
+	}
+
+	r := c.RAGIndex
+	switch r.WorkerMode {
+	case FairQueueWorkerModeLegacy, FairQueueWorkerModePaused, FairQueueWorkerModeFair:
+	default:
+		return fmt.Errorf("ragIndex.workerMode %q is unsupported", r.WorkerMode)
+	}
+	if r.LocalWorkers <= 0 {
+		return fmt.Errorf("ragIndex.localWorkers must be positive, got %d", r.LocalWorkers)
+	}
+	if r.PerUserBaseConcurrency <= 0 {
+		return fmt.Errorf("ragIndex.perUserBaseConcurrency must be positive, got %d", r.PerUserBaseConcurrency)
+	}
+	if r.PerUserBaseConcurrency > r.PerUserBurstConcurrency ||
+		r.PerUserBurstConcurrency > r.GlobalConcurrency {
+		return fmt.Errorf("ragIndex concurrency must satisfy base <= burst <= global, got %d <= %d <= %d",
+			r.PerUserBaseConcurrency, r.PerUserBurstConcurrency, r.GlobalConcurrency)
+	}
+
+	durations := []struct {
+		name  string
+		value time.Duration
+	}{
+		{"reconcileInterval", r.ReconcileInterval},
+		{"expiredRunningSweepInterval", r.ExpiredRunningSweepInterval},
+		{"reservationTTL", r.ReservationTTL},
+		{"reservationHeartbeat", r.ReservationHeartbeat},
+		{"prepareTimeout", r.PrepareTimeout},
+		{"provisionalTTL", r.ProvisionalTTL},
+		{"processingTurnTTL", r.ProcessingTurnTTL},
+		{"recoveryDrainTimeout", r.RecoveryDrainTimeout},
+		{"dispatchInterval", r.DispatchInterval},
+		{"publishAttemptTimeout", r.PublishAttemptTimeout},
+	}
+	for _, duration := range durations {
+		if duration.value <= 0 || duration.value > FairQueueMaxDuration {
+			return fmt.Errorf("ragIndex.%s must be in (0, %s], got %s", duration.name, FairQueueMaxDuration, duration.value)
+		}
+	}
+	if r.ReconcilePageSize <= 0 || r.ReconcilePageSize > FairQueueMaxReconcilePageSize {
+		return fmt.Errorf("ragIndex.reconcilePageSize must be in [1, %d], got %d", FairQueueMaxReconcilePageSize, r.ReconcilePageSize)
+	}
+	if r.ReservationHeartbeat >= r.ReservationTTL {
+		return fmt.Errorf("ragIndex.reservationHeartbeat must be less than reservationTTL")
+	}
+	if r.PrepareTimeout >= r.ProvisionalTTL {
+		return fmt.Errorf("ragIndex.prepareTimeout must be less than provisionalTTL")
+	}
+	if r.ProvisionalTTL >= r.RecoveryDrainTimeout {
+		return fmt.Errorf("ragIndex.provisionalTTL must be less than recoveryDrainTimeout")
+	}
+	if r.ProcessingTurnTTL >= r.RecoveryDrainTimeout {
+		return fmt.Errorf("ragIndex.processingTurnTTL must be less than recoveryDrainTimeout")
+	}
+	if r.PublishAttemptTimeout >= r.RecoveryDrainTimeout {
+		return fmt.Errorf("ragIndex.publishAttemptTimeout must be less than recoveryDrainTimeout")
+	}
+
+	if c.Enabled {
+		if strings.TrimSpace(c.RedisAddr) == "" {
+			return errors.New("fairQueue.redisAddr is required when fair queue infrastructure is enabled")
+		}
+		if strings.TrimSpace(c.RabbitMQURL) == "" {
+			return errors.New("fairQueue.rabbitMQURL is required when fair queue infrastructure is enabled")
+		}
+		if strings.TrimSpace(c.Exchange) == "" {
+			return errors.New("fairQueue.exchange is required when fair queue infrastructure is enabled")
+		}
+		if strings.TrimSpace(c.DeadLetterExchange) == "" {
+			return errors.New("fairQueue.deadLetterExchange is required when fair queue infrastructure is enabled")
+		}
+		if strings.TrimSpace(c.KeyPrefix) == "" {
+			return errors.New("fairQueue.keyPrefix is required when fair queue infrastructure is enabled")
+		}
+	}
+	if r.WorkerMode == FairQueueWorkerModeFair {
+		if !c.Enabled {
+			return errors.New("ragIndex.workerMode=fair requires fairQueue.enabled=true")
+		}
+		if storageType != "mysql" {
+			return fmt.Errorf("ragIndex.workerMode=fair requires MySQL storage, got %q", storageType)
+		}
+		if c.MySQLWriterTopology != FairQueueMySQLWriterTopologySingle {
+			return fmt.Errorf("ragIndex.workerMode=fair requires fairQueue.mysqlWriterTopology=%q", FairQueueMySQLWriterTopologySingle)
+		}
+	}
+	return nil
+}
+
 // ObjectStoreCfg 控制对象存储后端。
 type ObjectStoreCfg struct {
 	Type         string              `json:"type,omitempty"`

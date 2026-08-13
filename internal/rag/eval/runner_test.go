@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,23 @@ import (
 type fakeGenerationProvider struct {
 	generation store.RAGEvalGenerationRecord
 	releases   int
+}
+
+func TestProgressJSONKeepsIndependentCounters(t *testing.T) {
+	raw, err := json.Marshal(Progress{Total: 4, Completed: 3, Failed: 1, Scored: 2, Tokens: 9, CostUSD: 1.25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]float64{"total": 4, "completed": 3, "failed": 1, "scored": 2, "tokens": 9, "costUsd": 1.25}
+	for key, value := range want {
+		if got[key] != value {
+			t.Fatalf("progress %s=%v, want %v; json=%s", key, got[key], value, raw)
+		}
+	}
 }
 
 func (p *fakeGenerationProvider) Ensure(context.Context, *store.RAGEvalRunRecord, ExecutionSnapshot) (*store.RAGEvalGenerationRecord, error) {
@@ -44,6 +62,7 @@ type fakeBatchScorer struct {
 	mu       sync.Mutex
 	failures int
 	calls    int
+	usage    EvaluatorUsage
 }
 
 func (s *fakeBatchScorer) Evaluate(_ context.Context, request EvaluateRequest) (EvaluateResponse, error) {
@@ -54,7 +73,7 @@ func (s *fakeBatchScorer) Evaluate(_ context.Context, request EvaluateRequest) (
 		s.failures--
 		return EvaluateResponse{}, errors.New("judge unavailable")
 	}
-	response := EvaluateResponse{RequestID: request.RequestID, RagasVersion: ExpectedRagasVersion, MetricBundleVersion: MetricBundleV1}
+	response := EvaluateResponse{RequestID: request.RequestID, RagasVersion: ExpectedRagasVersion, MetricBundleVersion: MetricBundleV1, Usage: s.usage}
 	for _, sample := range request.Samples {
 		value := .8
 		response.Results = append(response.Results, CaseMetricResults{CaseID: sample.CaseID, Metrics: map[string]MetricResult{"faithfulness": {Status: MetricOK, Value: &value}}})
@@ -224,6 +243,27 @@ func TestRunnerCancellationAndBudgetStopNewCases(t *testing.T) {
 		}
 		if len(pipeline.calls) != 1 {
 			t.Fatalf("calls=%d", len(pipeline.calls))
+		}
+	})
+	t.Run("judge and embedding usage", func(t *testing.T) {
+		scorer := &fakeBatchScorer{usage: EvaluatorUsage{LLMInputTokens: 3, LLMOutputTokens: 2, LLMEstimatedCostUSD: .02, EmbeddingInputTokens: 4, EmbeddingEstimatedCostUSD: .01}}
+		runner, st, _, _, runID := runnerFixture(t, 1, scorer, nil)
+		run, _ := st.GetRAGEvalRun(context.Background(), runID)
+		var snapshot ExecutionSnapshot
+		_ = json.Unmarshal([]byte(run.ExecutionSnapshotJSON), &snapshot)
+		snapshot.Budgets.MaxTokens = 10
+		raw, _ := json.Marshal(snapshot)
+		_, _ = st.DB().Exec(`UPDATE rag_eval_runs SET execution_snapshot_json=? WHERE id=?`, string(raw), runID)
+		if err := runner.Run(context.Background(), runID); err != nil {
+			t.Fatal(err)
+		}
+		run, _ = st.GetRAGEvalRun(context.Background(), runID)
+		if run.Status != store.RAGEvalRunBudgetExceeded {
+			t.Fatalf("status=%s", run.Status)
+		}
+		tokens, cost, err := st.RAGEvalUsageTotals(context.Background(), runID)
+		if err != nil || tokens != 14 || math.Abs(cost-.03) > 1e-9 {
+			t.Fatalf("tokens=%d cost=%v err=%v", tokens, cost, err)
 		}
 	})
 }

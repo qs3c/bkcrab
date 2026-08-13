@@ -22,6 +22,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
 	"github.com/qs3c/bkcrab/internal/rag/vision"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 func primitiveWithText(text string) sidecar.PagePrimitive {
@@ -283,6 +284,43 @@ func TestPDFAutoVLMFailureRetainsEmbeddedOriginalOnNativeUnit(t *testing.T) {
 	}
 	if !strings.Contains(parsed.Units[0].Markdown, "rag-asset://") || !hasWarning(parsed.Warnings, "pdf_vision_page_failed") {
 		t.Fatalf("unit=%q warnings=%+v", parsed.Units[0].Markdown, parsed.Warnings)
+	}
+}
+
+func TestPDFAutoVisionSafetyFailuresAreNotDegraded(t *testing.T) {
+	for _, safetyErr := range []error{
+		store.ErrFairQueueWriterMismatch,
+		store.ErrFairQueueUnsafeConnection,
+		store.ErrRAGDocumentAILedgerCorrupt,
+	} {
+		t.Run(safetyErr.Error(), func(t *testing.T) {
+			source := fakePDFSource([]byte("%PDF fair queue safety failure"))
+			native := strings.Repeat("safetyanchor", 10)
+			primitive := primitiveWithText(native)
+			primitive.Page = 1
+			primitive.Signals.Table = true
+			extractor := &pdfFixtureExtractor{
+				t: t, source: source,
+				analyzePages: []analyzePageFixture{{status: sidecar.PageStatusOK, native: native, primitive: primitive}},
+				renderPages: map[int]renderPageFixture{1: {
+					status: sidecar.PageStatusOK, render: solidPNG(t, 40, 40, color.White),
+				}},
+			}
+			parser := NewLocalParser(extractor, 300)
+			parsed, err := parser.Parse(context.Background(), source, ParseOptions{
+				Mode: config.ParseModeAuto,
+				PageTranscriber: &fakePDFVision{
+					results: map[int]vision.PageTranscription{}, errors: map[int]error{1: safetyErr},
+				},
+				DocumentAIBudget: &vision.TaskDocumentAIBudget{},
+			})
+			if parsed != nil {
+				_ = parsed.Close()
+			}
+			if !errors.Is(err, safetyErr) {
+				t.Fatalf("Parse() error=%v, want safety error %v", err, safetyErr)
+			}
+		})
 	}
 }
 

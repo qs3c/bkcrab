@@ -90,3 +90,27 @@ func TestForTurnConcurrentWritesNoCrossTalk(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistryForTurnImagegenIdentity(t *testing.T) {
+	parent := NewRegistry("", "")
+	parent.SetWorkspaceStore(workspace.NewLocalFS(t.TempDir()), "agent-x")
+	parent.SetOwnerUserID("config-user")
+	parent.SetAgentOwnerUserID("agent-owner")
+
+	turn := parent.ForTurn()
+	turn.SetChatterUserID("tenant-user")
+	turn.SetProjectID("project-x")
+	turn.SetSessionID("session-x")
+	turn.SetMessageContext("web", "chat-x")
+
+	identity := turn.ImagegenExecutionIdentity()
+	if identity.UserID != "tenant-user" || identity.ConfigUserID != "config-user" ||
+		identity.AgentOwnerUserID != "agent-owner" || identity.AgentID != "agent-x" ||
+		identity.WorkspaceProjectID != "project-x" || identity.WorkspaceSessionID != "session-x" ||
+		identity.MessageChannel != "web" {
+		t.Fatalf("imagegen identity = %+v", identity)
+	}
+	if parent.ImagegenExecutionIdentity().WorkspaceSessionID != "" || parent.ImagegenExecutionIdentity().UserID != "config-user" {
+		t.Fatalf("turn identity leaked into parent: %+v", parent.ImagegenExecutionIdentity())
+	}
+}

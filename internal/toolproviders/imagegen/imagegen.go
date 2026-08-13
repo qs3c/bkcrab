@@ -4,9 +4,18 @@
 package imagegen
 
 import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
 
+	domain "github.com/qs3c/bkcrab/internal/imagegen"
 	"github.com/qs3c/bkcrab/internal/toolproviders"
 )
 
@@ -69,7 +78,7 @@ func renderURLs(prompt string, urls []string) string {
 }
 
 // renderB64 内联输出 base64 图像。当提供商返回原始字节时使用
-//（例如 gpt-image-1 使用 response_format=b64_json）。
+// （例如 gpt-image-1 使用 response_format=b64_json）。
 func renderB64(prompt string, b64s []string) string {
 	if len(b64s) == 0 {
 		return ""
@@ -80,4 +89,111 @@ func renderB64(prompt string, b64s []string) string {
 		fmt.Fprintf(&sb, "%d. ![image %d](data:image/png;base64,%s)\n", i+1, i+1, b)
 	}
 	return sb.String()
+}
+
+func canonicalSizes() []string {
+	return []string{domain.SizeSquare, domain.SizeLandscape, domain.SizePortrait}
+}
+
+func validateAdapterRequest(provider string, request domain.GenerateRequest) error {
+	if strings.TrimSpace(request.Prompt) == "" || request.Count < 1 || request.Count > 4 {
+		return domain.NewProviderError(domain.ErrorInvalidRequest, provider, 0, errors.New("invalid prompt or count"))
+	}
+	return nil
+}
+
+func cfgModel(cfg domain.ResolvedProviderConfig, fallback string) string {
+	if strings.TrimSpace(cfg.Model) != "" {
+		return strings.TrimSpace(cfg.Model)
+	}
+	return fallback
+}
+
+func postJSON(ctx context.Context, endpoint string, body any, headers map[string]string) (*http.Response, error) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encoded))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	return http.DefaultClient.Do(request)
+}
+
+func typedTransportError(provider string, err error) error {
+	return domain.NewProviderError(domain.ErrorUpstreamTransient, provider, 0, err)
+}
+
+func classifyHTTPResponse(provider string, response *http.Response, successful ...int) error {
+	for _, status := range successful {
+		if response.StatusCode == status {
+			return nil
+		}
+	}
+	body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+	lower := strings.ToLower(string(body))
+	kind := domain.ErrorInvalidRequest
+	switch {
+	case response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden:
+		kind = domain.ErrorAuthConfig
+	case response.StatusCode == http.StatusTooManyRequests:
+		kind = domain.ErrorRateLimited
+	case response.StatusCode == http.StatusNotFound:
+		kind = domain.ErrorModelUnavailable
+	case response.StatusCode == http.StatusRequestTimeout || response.StatusCode >= 500:
+		kind = domain.ErrorUpstreamTransient
+	case strings.Contains(lower, "safety") || strings.Contains(lower, "content_policy") || strings.Contains(lower, "content policy"):
+		kind = domain.ErrorSafetyRejected
+	}
+	return domain.NewProviderError(kind, provider, response.StatusCode, errors.New("provider rejected request"))
+}
+
+func validSourceURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && parsed.Host != "" && (parsed.Scheme == "http" || parsed.Scheme == "https")
+}
+
+func imageMIME(data []byte) (string, bool) {
+	mimeType := http.DetectContentType(data)
+	return mimeType, strings.HasPrefix(mimeType, "image/")
+}
+
+func canonicalLegacySize(size string) string {
+	if strings.TrimSpace(size) == "" {
+		return domain.SizeSquare
+	}
+	return size
+}
+
+func legacyProviderResponse(prompt string, result domain.ProviderResult) toolproviders.Response {
+	urls := make([]string, 0, len(result.Images))
+	for _, image := range result.Images {
+		if image.SourceURL != "" {
+			urls = append(urls, image.SourceURL)
+			continue
+		}
+		if len(image.Bytes) > 0 {
+			mimeType := image.MIMEType
+			if mimeType == "" {
+				mimeType = "image/png"
+			}
+			urls = append(urls, "data:"+mimeType+";base64,"+base64.StdEncoding.EncodeToString(image.Bytes))
+		}
+	}
+	return toolproviders.Response{Text: renderURLs(prompt, urls), Raw: result}
+}
+
+func legacyProviderError(err error) error {
+	switch domain.ProviderErrorKind(err) {
+	case domain.ErrorRateLimited, domain.ErrorUpstreamTransient, domain.ErrorModelUnavailable,
+		domain.ErrorEmptyResult, domain.ErrorIncompleteResult, domain.ErrorMalformedResult:
+		return toolproviders.Retry(err)
+	default:
+		return err
+	}
 }

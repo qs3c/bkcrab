@@ -26,7 +26,7 @@ type Provider interface {
 }
 
 // CredentialFree 是一个可选的 Provider 标记，用于那些无需任何租户配置即可工作的后端
-//（内置的 web_fetch direct 获取器是典型示例：它直接使用 http.DefaultClient）。
+// （内置的 web_fetch direct 获取器是典型示例：它直接使用 http.DefaultClient）。
 // 链的可用性/跳过规则将这些提供商视为始终可用，因此管理员可以在 UI 中选择它们，
 // 而无需输入虚假的 API 密钥。
 type CredentialFree interface {
@@ -68,6 +68,17 @@ type Registry struct {
 	providers map[string]Provider
 }
 
+// ResolvedProviderReference is an in-memory view of one durable provider/model
+// reference. Config may contain credentials and must never be persisted.
+type ResolvedProviderReference struct {
+	Reference  string
+	Name       string
+	Model      string
+	Provider   Provider
+	Config     ProviderConfig
+	Configured bool
+}
+
 // NewRegistry 返回一个空的 Registry。
 func NewRegistry() *Registry {
 	return &Registry{providers: make(map[string]Provider)}
@@ -100,6 +111,63 @@ func (r *Registry) Names(category string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// ResolveProviderReferences validates an ordered provider/model snapshot and
+// resolves the current configuration for each provider. It intentionally calls
+// getConfig on every invocation so credential rotation is visible to durable
+// work without changing the snapshotted order.
+func (r *Registry) ResolveProviderReferences(category string, refs []string, getConfig func(string) ProviderConfig) ([]ResolvedProviderReference, error) {
+	if r == nil {
+		return nil, errors.New("toolproviders: registry is required")
+	}
+	category = strings.TrimSpace(category)
+	if category == "" {
+		return nil, errors.New("toolproviders: category is required")
+	}
+	if len(refs) == 0 || len(refs) > 16 {
+		return nil, errors.New("toolproviders: provider reference count must be in [1,16]")
+	}
+	if getConfig == nil {
+		return nil, errors.New("toolproviders: config resolver is required")
+	}
+	seen := make(map[string]struct{}, len(refs))
+	out := make([]ResolvedProviderReference, 0, len(refs))
+	for index, raw := range refs {
+		ref := strings.TrimSpace(raw)
+		name, model := parseRef(ref)
+		hasModelSeparator := strings.ContainsRune(ref, '/')
+		if ref == "" || strings.TrimSpace(name) != name || name == "" || len(name) > 120 ||
+			strings.TrimSpace(model) != model || (hasModelSeparator && model == "") || len(model) > 240 || strings.ContainsAny(ref, "\r\n\x00") {
+			return nil, fmt.Errorf("toolproviders: invalid provider reference at index %d", index)
+		}
+		if _, exists := seen[ref]; exists {
+			return nil, fmt.Errorf("toolproviders: duplicate provider reference %q", ref)
+		}
+		seen[ref] = struct{}{}
+		provider := r.Get(category, name)
+		if provider == nil {
+			return nil, fmt.Errorf("toolproviders: provider %q is not registered for %q", name, category)
+		}
+		cfg := cloneProviderConfig(getConfig(name))
+		cfg.Model = model
+		out = append(out, ResolvedProviderReference{
+			Reference: ref, Name: name, Model: model, Provider: provider, Config: cfg,
+			Configured: cfg.APIKey != "" || cfg.Endpoint != "" || providerCredentialFree(provider),
+		})
+	}
+	return out, nil
+}
+
+func cloneProviderConfig(cfg ProviderConfig) ProviderConfig {
+	clone := cfg
+	if cfg.Options != nil {
+		clone.Options = make(map[string]string, len(cfg.Options))
+		for key, value := range cfg.Options {
+			clone.Options[key] = value
+		}
+	}
+	return clone
 }
 
 func key(category, name string) string { return category + "/" + name }
@@ -144,6 +212,7 @@ func (c *Chain) Available() bool {
 //   - 尚未注册
 //   - 其配置没有 APIKey 或 Endpoint
 //   - 返回可重试的错误（网络问题、超时、429、5xx、ErrNoResults）
+//
 // 任何其他错误都会终止链（以便配置错误快速暴露）。
 // 当 AutoFallback 为 false 时，只尝试第一个配置的提供商。
 func (c *Chain) Execute(ctx context.Context, args map[string]any) (Response, error) {

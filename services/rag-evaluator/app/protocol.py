@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 METRIC_BUNDLE_VERSION = "rag-core-v1"
-PROTOCOL_VERSION = "rag-evaluator-v1"
+PROTOCOL_VERSION = "rag-evaluator-v2"
 ALLOWED_METRICS = frozenset(
     {"context_precision", "context_recall", "faithfulness", "response_relevancy", "factual_correctness"}
 )
@@ -62,8 +62,17 @@ class CaseResult(BaseModel):
     metrics: dict[str, MetricResult]
 
 
+class EvaluationUsage(BaseModel):
+    llmInputTokens: int = Field(default=0, ge=0)
+    llmOutputTokens: int = Field(default=0, ge=0)
+    llmEstimatedCostUsd: float = Field(default=0, ge=0)
+    embeddingInputTokens: int = Field(default=0, ge=0)
+    embeddingEstimatedCostUsd: float = Field(default=0, ge=0)
+
+
 class EvaluateResponse(BaseModel):
     requestId: str
     ragasVersion: str
     metricBundleVersion: Literal["rag-core-v1"] = METRIC_BUNDLE_VERSION
     results: list[CaseResult]
+    usage: EvaluationUsage = Field(default_factory=EvaluationUsage)

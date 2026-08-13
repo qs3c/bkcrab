@@ -62,6 +62,8 @@ type RAGEvaluationCfg struct {
 	MaxRunCases             int                  `json:"maxRunCases,omitempty"`
 	MaxRunTokens            int64                `json:"maxRunTokens,omitempty"`
 	MaxRunCostUSD           float64              `json:"maxRunCostUSD,omitempty"`
+	AnswerInputCostPerMUSD  float64              `json:"answerInputCostPerMillionUsd,omitempty"`
+	AnswerOutputCostPerMUSD float64              `json:"answerOutputCostPerMillionUsd,omitempty"`
 	MaxRunDurationSec       int                  `json:"maxRunDurationSec,omitempty"`
 	RunRetentionDays        int                  `json:"runRetentionDays,omitempty"`
 	DatasetRetentionDays    int                  `json:"datasetRetentionDays,omitempty"`
@@ -78,14 +80,17 @@ type RAGPromotionGatesCfg struct {
 }
 
 type RAGEvaluatorCfg struct {
-	Endpoint            string `json:"endpoint,omitempty"`
-	APIKey              string `json:"-"`
-	TimeoutMS           int    `json:"timeoutMs,omitempty"`
-	MetricBundleVersion string `json:"metricBundleVersion,omitempty"`
-	LLMProvider         string `json:"llmProvider,omitempty"`
-	LLMModel            string `json:"llmModel,omitempty"`
-	EmbeddingProvider   string `json:"embeddingProvider,omitempty"`
-	EmbeddingModel      string `json:"embeddingModel,omitempty"`
+	Endpoint             string  `json:"endpoint,omitempty"`
+	APIKey               string  `json:"-"`
+	TimeoutMS            int     `json:"timeoutMs,omitempty"`
+	MetricBundleVersion  string  `json:"metricBundleVersion,omitempty"`
+	LLMProvider          string  `json:"llmProvider,omitempty"`
+	LLMModel             string  `json:"llmModel,omitempty"`
+	EmbeddingProvider    string  `json:"embeddingProvider,omitempty"`
+	EmbeddingModel       string  `json:"embeddingModel,omitempty"`
+	LLMInputCostPerMUSD  float64 `json:"llmInputCostPerMillionUsd,omitempty"`
+	LLMOutputCostPerMUSD float64 `json:"llmOutputCostPerMillionUsd,omitempty"`
+	EmbeddingCostPerMUSD float64 `json:"embeddingCostPerMillionUsd,omitempty"`
 }
 
 // RAGEvaluatorHealthSnapshot is written only by the evaluator's background
@@ -129,6 +134,9 @@ func (c RAGEvaluatorCfg) LogValue() slog.Value {
 		slog.String("llmModel", c.LLMModel),
 		slog.String("embeddingProvider", c.EmbeddingProvider),
 		slog.String("embeddingModel", c.EmbeddingModel),
+		slog.Float64("llmInputCostPerMillionUsd", c.LLMInputCostPerMUSD),
+		slog.Float64("llmOutputCostPerMillionUsd", c.LLMOutputCostPerMUSD),
+		slog.Float64("embeddingCostPerMillionUsd", c.EmbeddingCostPerMUSD),
 	)
 }
 
@@ -197,6 +205,19 @@ func (c RAGEvaluationCfg) Validate() error {
 	}
 	if math.IsNaN(c.MaxRunCostUSD) || math.IsInf(c.MaxRunCostUSD, 0) || c.MaxRunCostUSD < 0 || c.MaxRunCostUSD > ragEvalMaxRunCostUSD {
 		return fmt.Errorf("rag.evaluation.maxRunCostUSD must be finite and between 0 and %.0f", ragEvalMaxRunCostUSD)
+	}
+	prices := []float64{c.AnswerInputCostPerMUSD, c.AnswerOutputCostPerMUSD, c.Sidecar.LLMInputCostPerMUSD, c.Sidecar.LLMOutputCostPerMUSD, c.Sidecar.EmbeddingCostPerMUSD}
+	for _, price := range prices {
+		if math.IsNaN(price) || math.IsInf(price, 0) || price < 0 || price > ragEvalMaxRunCostUSD {
+			return fmt.Errorf("rag.evaluation token prices must be finite and between 0 and %.0f USD per million tokens", ragEvalMaxRunCostUSD)
+		}
+	}
+	if c.Enabled && c.MaxRunCostUSD > 0 {
+		for _, price := range prices {
+			if price <= 0 {
+				return errors.New("rag.evaluation requires explicit positive answer, judge, and embedding token prices when maxRunCostUSD is enabled")
+			}
+		}
 	}
 	if c.PromotionGates.MinimumScoredCases < 0 || c.PromotionGates.MaximumP95LatencyMS < 0 || math.IsNaN(c.PromotionGates.MaximumCaseErrorRate) || math.IsInf(c.PromotionGates.MaximumCaseErrorRate, 0) || c.PromotionGates.MaximumCaseErrorRate < 0 || c.PromotionGates.MaximumCaseErrorRate > 1 || math.IsNaN(c.PromotionGates.MaximumCostUSD) || math.IsInf(c.PromotionGates.MaximumCostUSD, 0) || c.PromotionGates.MaximumCostUSD < 0 {
 		return errors.New("rag.evaluation.promotionGates contains an invalid limit")

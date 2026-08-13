@@ -92,7 +92,7 @@ func (s AnalysisService) metricResults(ctx context.Context, runID, metricName st
 			}
 		}
 		last := items[len(items)-1]
-		cursor = last.CaseID + ":" + last.MetricName
+		cursor = store.RAGEvalMetricCursor(last)
 	}
 	return out, nil
 }

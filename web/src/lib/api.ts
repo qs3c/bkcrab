@@ -938,6 +938,80 @@ export async function adminListChats(): Promise<AdminChatSessionEntry[]> {
   return Array.isArray(data?.sessions) ? data.sessions : [];
 }
 
+export interface FairQueueLoopHealth {
+  lastSuccessAt?: string;
+  lagSeconds: number;
+}
+
+export interface FairQueueHealth {
+  enabled: boolean;
+  status: "healthy" | "degraded" | "failed" | string;
+  mode: string;
+  gateOpen: boolean;
+  fatal: boolean;
+  shuttingDown: boolean;
+  mysql: {
+    status: string;
+    schemaReady: boolean;
+    writerTopology: string;
+    writerFingerprint: string;
+    controlFingerprintMatch: boolean;
+    lastConnectionIdentityVerifiedAt?: string;
+    sessionAffinity: string;
+    operationJournal: {
+      phase: string;
+      kind: string;
+      operationIdFingerprint?: string;
+    };
+  };
+  rabbit: {
+    status: string;
+    readyDepthSample: number;
+    dlqDepthSample: number;
+    lastConfirmAt?: string;
+    lastReturnAt?: string;
+  };
+  redis: {
+    status: string;
+    mode: string;
+    clusterEnabled: boolean;
+    resourceState: string;
+    operationKind: string;
+    operatorRequired: boolean;
+    operationIdFingerprint?: string;
+    lastCompletedOperationIdFingerprint?: string;
+    epochFingerprint: string;
+    activeCount: number;
+    ringCount: number;
+    ringMemberCount: number;
+    globalInflight: number;
+    provisionalCount: number;
+    stableCount: number;
+    processingCount: number;
+  };
+  recovery: {
+    startup: string;
+    pagesCompleted: number;
+    converged: boolean;
+    operationPassComplete: boolean;
+  };
+  loops: {
+    scheduler: FairQueueLoopHealth & { state: string };
+    dispatcher: FairQueueLoopHealth;
+    sweeper: FairQueueLoopHealth;
+    reconciler: FairQueueLoopHealth;
+  };
+}
+
+export async function adminGetFairQueueHealth(): Promise<{ fairQueue: FairQueueHealth }> {
+  const res = await apiFetch("/api/admin/health/fairqueue");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || `公平队列状态请求失败 (${res.status})`);
+  }
+  return data as { fairQueue: FairQueueHealth };
+}
+
 export async function getChatSessions(agentId: string): Promise<ChatSessionEntry[]> {
   const res = await apiFetch(`/api/chat/sessions?agentId=${encodeURIComponent(agentId)}`);
   if (!res.ok) return [];

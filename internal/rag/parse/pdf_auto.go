@@ -19,6 +19,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
 	"github.com/qs3c/bkcrab/internal/rag/telemetry"
 	"github.com/qs3c/bkcrab/internal/rag/vision"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 const (
@@ -227,9 +228,12 @@ func (p *LocalParser) parseAutoPDF(
 				warnings = append(warnings, sidecarWarnings(render.Manifest.Warnings)...)
 				for current, pageNumber := range visionPages {
 					page := pages[pageNumber-1]
-					pageResult, pageWarnings := processPDFVisionPage(
+					pageResult, pageWarnings, pageErr := processPDFVisionPage(
 						ctx, page, render, derived, options, limits,
 					)
+					if pageErr != nil {
+						return nil, pageErr
+					}
 					if pageResult.unit == nil {
 						pageResult = pdfNativePageResult(markdownUnitForPage(page.descriptor, page.native))
 					}
@@ -479,21 +483,25 @@ func processPDFVisionPage(
 	derived *derivedPDFEntries,
 	options ParseOptions,
 	limits pdfAutoLimits,
-) (pdfPageResult, []document.ParseWarning) {
+) (pdfPageResult, []document.ParseWarning, error) {
 	pageNumber := page.descriptor.Page
+	fallback := func(code, message string) (pdfPageResult, []document.ParseWarning, error) {
+		result, warnings := pdfVisionFallbackPage(page, render, pageNumber, code, message)
+		return result, warnings, nil
+	}
 	renderPage, ok := findPDFPage(render.Manifest.Pages, pageNumber)
 	if !ok || renderPage.Status != sidecar.PageStatusOK {
 		return pdfPageResult{}, []document.ParseWarning{pageWarning(pageNumber, "pdf_render_page_failed",
-			"PDF page render failed; native text extraction was used")}
+			"PDF page render failed; native text extraction was used")}, nil
 	}
 	entry, ok := entryDescriptors(render.Manifest.Entries)[renderPage.RenderEntry]
 	if !ok {
 		return pdfPageResult{}, []document.ParseWarning{pageWarning(pageNumber, "pdf_render_page_failed",
-			"PDF page render was unavailable; native text extraction was used")}
+			"PDF page render was unavailable; native text extraction was used")}, nil
 	}
 	raw, err := readBoundedBundleEntry(ctx, render, renderPage.RenderEntry, minPositiveInt64(entry.ByteSize, limits.maxVisionInputBytes))
 	if err != nil {
-		return pdfVisionFallbackPage(page, render, pageNumber, "pdf_render_page_failed",
+		return fallback("pdf_render_page_failed",
 			"PDF page render could not be read; native text extraction was used")
 	}
 	normalized, err := vision.NormalizeImage(ctx, raw, entry.MIMEType, vision.ImageLimits{
@@ -502,7 +510,7 @@ func processPDFVisionPage(
 		MaxEdge: limits.visionImageMaxEdge,
 	})
 	if err != nil {
-		return pdfVisionFallbackPage(page, render, pageNumber, "pdf_vision_input_invalid",
+		return fallback("pdf_vision_input_invalid",
 			"PDF page could not be normalized for vision; native text extraction was used")
 	}
 	normalized.Format = "pdf"
@@ -510,23 +518,32 @@ func processPDFVisionPage(
 	normalized.Scope = options.VisionScope
 	transcription, err := options.PageTranscriber.TranscribePage(ctx, vision.PageInput{Image: normalized}, options.DocumentAIBudget)
 	if err != nil {
-		return pdfVisionFallbackPage(page, render, pageNumber, "pdf_vision_page_failed",
+		if isRAGFairQueueSafetyError(err) {
+			return pdfPageResult{}, nil, err
+		}
+		return fallback("pdf_vision_page_failed",
 			"PDF page vision failed; native text extraction was used")
 	}
 	if err := transcription.Validate(vision.DefaultSchemaLimits()); err != nil {
-		return pdfVisionFallbackPage(page, render, pageNumber, "pdf_vision_page_failed",
+		return fallback("pdf_vision_page_failed",
 			"PDF page vision response was invalid; native text extraction was used")
 	}
 	if err := validatePDFPageFidelity(page.primitive, transcription); err != nil {
-		return pdfVisionFallbackPage(page, render, pageNumber, "pdf_vision_fidelity_failed",
+		return fallback("pdf_vision_fidelity_failed",
 			"PDF page vision omitted or expanded native text; native text extraction was used")
 	}
 	result, err := bindPDFVisuals(ctx, page, transcription, raw, entry.MIMEType, render, derived, limits)
 	if err != nil {
-		return pdfVisionFallbackPage(page, render, pageNumber, "pdf_vision_asset_failed",
+		return fallback("pdf_vision_asset_failed",
 			"PDF visual resources could not be safely bound; native text extraction was used")
 	}
-	return result, nil
+	return result, nil, nil
+}
+
+func isRAGFairQueueSafetyError(err error) bool {
+	return errors.Is(err, store.ErrFairQueueWriterMismatch) ||
+		errors.Is(err, store.ErrFairQueueUnsafeConnection) ||
+		errors.Is(err, store.ErrRAGDocumentAILedgerCorrupt)
 }
 
 func bindPDFVisuals(

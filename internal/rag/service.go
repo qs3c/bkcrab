@@ -6,6 +6,7 @@ package rag
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -61,8 +62,787 @@ func (LegacyCollectionResolver) ResolveCollection(_ context.Context, kbID string
 	return vector.LegacyCollectionKey(kbID)
 }
 
+// WorkerMode is an immutable startup choice. Dependency outages never change
+// it at runtime: a fair or paused service must not fall back to legacy claims.
+type WorkerMode string
+
+const (
+	WorkerModeLegacy WorkerMode = "legacy"
+	WorkerModePaused WorkerMode = "paused"
+	WorkerModeFair   WorkerMode = "fair"
+)
+
+func (m WorkerMode) Valid() bool {
+	return m == WorkerModeLegacy || m == WorkerModePaused || m == WorkerModeFair
+}
+
+func normalizeWorkerMode(mode WorkerMode) WorkerMode {
+	if mode == "" {
+		return WorkerModeLegacy
+	}
+	if !mode.Valid() {
+		// New cannot return a configuration error. Treat an invalid value as the
+		// non-claiming state so a typo can never start an unsafe legacy worker.
+		return WorkerModePaused
+	}
+	return mode
+}
+
+// TaskNotifier is the best-effort low-latency handoff to the durable fair
+// dispatcher. A periodic MySQL scan remains authoritative after any error.
+type TaskNotifier interface {
+	TryDispatch(ctx context.Context, taskID int64) error
+}
+
+// FairStore is the expected-writer-bound facade used by API lifecycle writes
+// and DocumentAI accounting while fair execution is enabled.
+type FairStore interface {
+	ExpectedWriterFingerprint() string
+	GetConfigByName(context.Context, string, string, string, string) (*store.ConfigRecord, error)
+	GetRAGKBForLifecycle(context.Context, string) (*store.RAGKBRecord, error)
+	GetRAGDocumentForLifecycle(context.Context, string) (*store.RAGDocumentRecord, error)
+	ListRAGDocumentsByKBForLifecycle(context.Context, string) ([]store.RAGDocumentRecord, error)
+	GetUserForRAGLifecycle(context.Context, string) (*store.UserRecord, error)
+	BeginOriginalRAGObjectWrite(context.Context, store.RAGObjectWriteRequest) (*store.RAGObjectWriteFence, error)
+	MarkOriginalRAGObjectWriteReady(context.Context, store.RAGObjectWriteFence) (bool, error)
+	CreateRAGDocumentWithVersionAndIndexTask(context.Context, *store.RAGDocumentRecord, *store.RAGDocumentVersionRecord, int) (int64, error)
+	CreateRAGDocumentWithVersionAndIndexTaskPolicy(context.Context, *store.RAGDocumentRecord, *store.RAGDocumentVersionRecord, int, store.RAGAdvancedEnqueuePolicy) (int64, error)
+	AdvanceDocumentVersionAndCreateTask(context.Context, int64, *store.RAGDocumentVersionRecord) (*store.RAGIndexTaskRecord, error)
+	AdvanceDocumentVersionAndCreateTaskPolicy(context.Context, int64, *store.RAGDocumentVersionRecord, store.RAGAdvancedEnqueuePolicy) (*store.RAGIndexTaskRecord, error)
+	MarkRAGDocumentDeleting(context.Context, string) (*store.RAGDocumentRecord, error)
+	MarkRAGKBDeleting(context.Context, string) (*store.RAGKBRecord, error)
+	CreateRAGDocumentAITaskBudgetForIndex(context.Context, store.IndexFence, *store.RAGDocumentAITaskBudgetRecord) error
+	GetRAGDocumentAIUsage(context.Context, string) (*store.RAGDocumentAIUsageRecord, error)
+	ReserveRAGDocumentAIUsage(context.Context, store.IndexFence, *store.RAGDocumentAIUsageRecord, store.RAGDocumentAILimits) (bool, error)
+	MarkSentRAGDocumentAIUsage(context.Context, string, store.IndexFence) (bool, error)
+	CommitRAGDocumentAIUsage(context.Context, string, int64, int64, int64, bool) (bool, error)
+	ReleaseRAGDocumentAIUsage(context.Context, string) (bool, error)
+	ReconcileRAGDocumentAIUsage(context.Context, time.Time, time.Time, int) (int, error)
+}
+
+// FairExecutionStore is the Task 9 live-fence surface implemented by DBStore.
+// It is separate from FairStore because reads and catalog mutations validate a
+// claim fence on the raw store, while lifecycle/budget operations use the
+// expected-writer-bound facade.
+type FairExecutionStore interface {
+	GetRAGDocumentForIndex(context.Context, store.IndexFence) (*store.RAGDocumentRecord, error)
+	GetRAGKBForIndex(context.Context, store.IndexFence, string) (*store.RAGKBRecord, error)
+	GetRAGDocumentVersionForIndex(context.Context, store.IndexFence, string, int64) (*store.RAGDocumentVersionRecord, error)
+	ListRAGAssetsByIDsForIndex(context.Context, store.IndexFence, []string) ([]store.RAGAssetRecord, error)
+	ListRAGAttachmentsByIDsForIndex(context.Context, store.IndexFence, []string) ([]store.RAGAttachmentRecord, error)
+	PutRAGChunksForIndex(context.Context, store.IndexFence, []store.RAGChunkRecord) (bool, error)
+	PutRAGChunkAssetsForIndex(context.Context, store.IndexFence, []store.RAGChunkAssetRecord) (bool, error)
+	BeginRAGObjectWriteForIndex(context.Context, store.IndexFence, store.RAGObjectWriteRequest) (*store.RAGObjectWriteFence, error)
+	MarkRAGObjectWriteReadyForIndex(context.Context, store.IndexFence, store.RAGObjectWriteFence) (bool, error)
+	RegisterRAGCacheObjectForIndex(context.Context, store.IndexFence, store.RAGCacheObjectRecord) error
+	PublishRAGAssetsForIndex(context.Context, store.IndexFence, []store.RAGAssetRecord, []string) (bool, error)
+	PublishRAGAssetsAndAttachmentsForIndex(context.Context, store.IndexFence, []store.RAGAssetRecord, []string, []store.RAGAttachmentRecord, []string) (bool, error)
+}
+
+type fairIndexFenceContextKey struct{}
+
+func withFairIndexFence(ctx context.Context, fence store.IndexFence) context.Context {
+	return context.WithValue(ctx, fairIndexFenceContextKey{}, fence)
+}
+
+func fairIndexFenceFromContext(ctx context.Context) (store.IndexFence, bool) {
+	if ctx == nil {
+		return store.IndexFence{}, false
+	}
+	fence, ok := ctx.Value(fairIndexFenceContextKey{}).(store.IndexFence)
+	return fence, ok
+}
+
+type modeAwareRAGStore struct {
+	store.Store
+	mode          WorkerMode
+	fairStore     FairStore
+	fairExecution FairExecutionStore
+}
+
+func (s *modeAwareRAGStore) requireFairStore(fence *store.IndexFence) (FairStore, error) {
+	if s == nil || s.fairStore == nil {
+		return nil, store.ErrFairQueueMySQLRequired
+	}
+	if fence != nil && s.fairStore.ExpectedWriterFingerprint() != fence.ExpectedWriterFingerprint {
+		return nil, store.ErrFairQueueWriterMismatch
+	}
+	return s.fairStore, nil
+}
+
+func (s *modeAwareRAGStore) requireFairExecution() (FairExecutionStore, error) {
+	if s == nil || s.fairExecution == nil {
+		return nil, store.ErrFairQueueMySQLRequired
+	}
+	return s.fairExecution, nil
+}
+
+func (s *modeAwareRAGStore) CreateRAGDocumentWithVersionAndIndexTask(
+	ctx context.Context,
+	doc *store.RAGDocumentRecord,
+	version *store.RAGDocumentVersionRecord,
+	maxRetry int,
+) (int64, error) {
+	if s.mode != WorkerModeFair {
+		return s.Store.CreateRAGDocumentWithVersionAndIndexTask(ctx, doc, version, maxRetry)
+	}
+	fair, err := s.requireFairStore(nil)
+	if err != nil {
+		return 0, err
+	}
+	return fair.CreateRAGDocumentWithVersionAndIndexTask(ctx, doc, version, maxRetry)
+}
+
+func (s *modeAwareRAGStore) CreateRAGDocumentWithVersionAndIndexTaskPolicy(
+	ctx context.Context,
+	doc *store.RAGDocumentRecord,
+	version *store.RAGDocumentVersionRecord,
+	maxRetry int,
+	policy store.RAGAdvancedEnqueuePolicy,
+) (int64, error) {
+	if s.mode != WorkerModeFair {
+		return s.Store.CreateRAGDocumentWithVersionAndIndexTaskPolicy(ctx, doc, version, maxRetry, policy)
+	}
+	fair, err := s.requireFairStore(nil)
+	if err != nil {
+		return 0, err
+	}
+	return fair.CreateRAGDocumentWithVersionAndIndexTaskPolicy(ctx, doc, version, maxRetry, policy)
+}
+
+func (s *modeAwareRAGStore) AdvanceDocumentVersionAndCreateTask(
+	ctx context.Context,
+	expectedVersion int64,
+	snapshot *store.RAGDocumentVersionRecord,
+) (*store.RAGIndexTaskRecord, error) {
+	if s.mode != WorkerModeFair {
+		return s.Store.AdvanceDocumentVersionAndCreateTask(ctx, expectedVersion, snapshot)
+	}
+	fair, err := s.requireFairStore(nil)
+	if err != nil {
+		return nil, err
+	}
+	return fair.AdvanceDocumentVersionAndCreateTask(ctx, expectedVersion, snapshot)
+}
+
+func (s *modeAwareRAGStore) AdvanceDocumentVersionAndCreateTaskPolicy(
+	ctx context.Context,
+	expectedVersion int64,
+	snapshot *store.RAGDocumentVersionRecord,
+	policy store.RAGAdvancedEnqueuePolicy,
+) (*store.RAGIndexTaskRecord, error) {
+	if s.mode != WorkerModeFair {
+		return s.Store.AdvanceDocumentVersionAndCreateTaskPolicy(ctx, expectedVersion, snapshot, policy)
+	}
+	fair, err := s.requireFairStore(nil)
+	if err != nil {
+		return nil, err
+	}
+	return fair.AdvanceDocumentVersionAndCreateTaskPolicy(ctx, expectedVersion, snapshot, policy)
+}
+
+func (s *modeAwareRAGStore) MarkRAGDocumentDeleting(
+	ctx context.Context,
+	id string,
+) (*store.RAGDocumentRecord, error) {
+	if s.mode != WorkerModeFair {
+		return s.Store.MarkRAGDocumentDeleting(ctx, id)
+	}
+	fair, err := s.requireFairStore(nil)
+	if err != nil {
+		return nil, err
+	}
+	return fair.MarkRAGDocumentDeleting(ctx, id)
+}
+
+func (s *modeAwareRAGStore) MarkRAGKBDeleting(
+	ctx context.Context,
+	id string,
+) (*store.RAGKBRecord, error) {
+	if s.mode != WorkerModeFair {
+		return s.Store.MarkRAGKBDeleting(ctx, id)
+	}
+	fair, err := s.requireFairStore(nil)
+	if err != nil {
+		return nil, err
+	}
+	return fair.MarkRAGKBDeleting(ctx, id)
+}
+
+func (s *modeAwareRAGStore) GetRAGDocument(
+	ctx context.Context,
+	id string,
+) (*store.RAGDocumentRecord, error) {
+	fence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext {
+		if s.mode == WorkerModeFair {
+			fair, err := s.requireFairStore(nil)
+			if err != nil {
+				return nil, err
+			}
+			return fair.GetRAGDocumentForLifecycle(ctx, id)
+		}
+		return s.Store.GetRAGDocument(ctx, id)
+	}
+	if id == "" || id != fence.DocID {
+		return nil, store.ErrRAGDocumentVersionMismatch
+	}
+	fair, err := s.requireFairExecution()
+	if err != nil {
+		return nil, err
+	}
+	record, err := fair.GetRAGDocumentForIndex(ctx, fence)
+	if err == nil {
+		if record == nil {
+			return nil, errIndexFenceLost
+		}
+		if record.ID != id {
+			return nil, store.ErrRAGDocumentVersionMismatch
+		}
+	}
+	return record, err
+}
+
+func (s *modeAwareRAGStore) GetRAGKB(
+	ctx context.Context,
+	id string,
+) (*store.RAGKBRecord, error) {
+	fence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext {
+		if s.mode == WorkerModeFair {
+			fair, err := s.requireFairStore(nil)
+			if err != nil {
+				return nil, err
+			}
+			return fair.GetRAGKBForLifecycle(ctx, id)
+		}
+		return s.Store.GetRAGKB(ctx, id)
+	}
+	fair, err := s.requireFairExecution()
+	if err != nil {
+		return nil, err
+	}
+	record, err := fair.GetRAGKBForIndex(ctx, fence, id)
+	if err == nil && record == nil {
+		return nil, errIndexFenceLost
+	}
+	return record, err
+}
+
+func (s *modeAwareRAGStore) ListRAGDocumentsByKB(
+	ctx context.Context,
+	kbID string,
+) ([]store.RAGDocumentRecord, error) {
+	if s.mode != WorkerModeFair {
+		return s.Store.ListRAGDocumentsByKB(ctx, kbID)
+	}
+	fair, err := s.requireFairStore(nil)
+	if err != nil {
+		return nil, err
+	}
+	return fair.ListRAGDocumentsByKBForLifecycle(ctx, kbID)
+}
+
+func (s *modeAwareRAGStore) GetUser(
+	ctx context.Context,
+	id string,
+) (*store.UserRecord, error) {
+	if s.mode != WorkerModeFair {
+		return s.Store.GetUser(ctx, id)
+	}
+	fair, err := s.requireFairStore(nil)
+	if err != nil {
+		return nil, err
+	}
+	return fair.GetUserForRAGLifecycle(ctx, id)
+}
+
+func (s *modeAwareRAGStore) GetRAGDocumentVersion(
+	ctx context.Context,
+	docID string,
+	docVersion int64,
+) (*store.RAGDocumentVersionRecord, error) {
+	fence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext {
+		return s.Store.GetRAGDocumentVersion(ctx, docID, docVersion)
+	}
+	fair, err := s.requireFairExecution()
+	if err != nil {
+		return nil, err
+	}
+	record, err := fair.GetRAGDocumentVersionForIndex(ctx, fence, docID, docVersion)
+	if err == nil && record == nil {
+		return nil, errIndexFenceLost
+	}
+	return record, err
+}
+
+func (s *modeAwareRAGStore) ListRAGAssetsByIDs(
+	ctx context.Context,
+	ids []string,
+) ([]store.RAGAssetRecord, error) {
+	fence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext {
+		return s.Store.ListRAGAssetsByIDs(ctx, ids)
+	}
+	fair, err := s.requireFairExecution()
+	if err != nil {
+		return nil, err
+	}
+	records, err := fair.ListRAGAssetsByIDsForIndex(ctx, fence, ids)
+	if err == nil && records == nil {
+		return nil, errIndexFenceLost
+	}
+	return records, err
+}
+
+func (s *modeAwareRAGStore) ListRAGAttachmentsByIDs(
+	ctx context.Context,
+	ids []string,
+) ([]store.RAGAttachmentRecord, error) {
+	fence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext {
+		return s.Store.ListRAGAttachmentsByIDs(ctx, ids)
+	}
+	fair, err := s.requireFairExecution()
+	if err != nil {
+		return nil, err
+	}
+	records, err := fair.ListRAGAttachmentsByIDsForIndex(ctx, fence, ids)
+	if err == nil && records == nil {
+		return nil, errIndexFenceLost
+	}
+	return records, err
+}
+
+func (s *modeAwareRAGStore) PutRAGChunks(ctx context.Context, chunks []store.RAGChunkRecord) error {
+	fence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext {
+		if s.mode == WorkerModeFair {
+			return store.ErrRAGDocumentVersionMismatch
+		}
+		return s.Store.PutRAGChunks(ctx, chunks)
+	}
+	fair, err := s.requireFairExecution()
+	if err != nil {
+		return err
+	}
+	written, err := fair.PutRAGChunksForIndex(ctx, fence, chunks)
+	if err != nil {
+		return err
+	}
+	if !written {
+		return errIndexFenceLost
+	}
+	return nil
+}
+
+func (s *modeAwareRAGStore) PutRAGChunkAssets(
+	ctx context.Context,
+	mappings []store.RAGChunkAssetRecord,
+) error {
+	fence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext {
+		if s.mode == WorkerModeFair {
+			return store.ErrRAGDocumentVersionMismatch
+		}
+		return s.Store.PutRAGChunkAssets(ctx, mappings)
+	}
+	fair, err := s.requireFairExecution()
+	if err != nil {
+		return err
+	}
+	written, err := fair.PutRAGChunkAssetsForIndex(ctx, fence, mappings)
+	if err != nil {
+		return err
+	}
+	if !written {
+		return errIndexFenceLost
+	}
+	return nil
+}
+
+func (s *modeAwareRAGStore) BeginRAGObjectWrite(
+	ctx context.Context,
+	request store.RAGObjectWriteRequest,
+) (*store.RAGObjectWriteFence, error) {
+	fence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext {
+		if s.mode == WorkerModeFair {
+			if request.ObjectKind != store.RAGObjectKindOriginal {
+				return nil, store.ErrRAGDocumentVersionMismatch
+			}
+			fair, err := s.requireFairStore(nil)
+			if err != nil {
+				return nil, err
+			}
+			return fair.BeginOriginalRAGObjectWrite(ctx, request)
+		}
+		return s.Store.BeginRAGObjectWrite(ctx, request)
+	}
+	fair, err := s.requireFairExecution()
+	if err != nil {
+		return nil, err
+	}
+	return fair.BeginRAGObjectWriteForIndex(ctx, fence, request)
+}
+
+func (s *modeAwareRAGStore) MarkRAGObjectWriteReady(
+	ctx context.Context,
+	objectFence store.RAGObjectWriteFence,
+) (bool, error) {
+	fence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext {
+		if s.mode == WorkerModeFair {
+			if objectFence.ObjectKind != store.RAGObjectKindOriginal {
+				return false, store.ErrRAGDocumentVersionMismatch
+			}
+			fair, err := s.requireFairStore(nil)
+			if err != nil {
+				return false, err
+			}
+			return fair.MarkOriginalRAGObjectWriteReady(ctx, objectFence)
+		}
+		return s.Store.MarkRAGObjectWriteReady(ctx, objectFence)
+	}
+	fair, err := s.requireFairExecution()
+	if err != nil {
+		return false, err
+	}
+	return fair.MarkRAGObjectWriteReadyForIndex(ctx, fence, objectFence)
+}
+
+func (s *modeAwareRAGStore) RegisterRAGCacheObject(
+	ctx context.Context,
+	record store.RAGCacheObjectRecord,
+) error {
+	fence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext {
+		if s.mode == WorkerModeFair {
+			return store.ErrRAGDocumentVersionMismatch
+		}
+		return s.Store.RegisterRAGCacheObject(ctx, record)
+	}
+	fair, err := s.requireFairExecution()
+	if err != nil {
+		return err
+	}
+	return fair.RegisterRAGCacheObjectForIndex(ctx, fence, record)
+}
+
+func (s *modeAwareRAGStore) PublishRAGAssetsForIndex(
+	ctx context.Context,
+	fence store.IndexFence,
+	assets []store.RAGAssetRecord,
+	assetIDs []string,
+) (bool, error) {
+	if fence.ExpectedWriterFingerprint == "" {
+		return s.Store.PublishRAGAssetsForIndex(ctx, fence, assets, assetIDs)
+	}
+	contextFence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext || contextFence != fence {
+		return false, store.ErrRAGDocumentVersionMismatch
+	}
+	fair, err := s.requireFairExecution()
+	if err != nil {
+		return false, err
+	}
+	return fair.PublishRAGAssetsForIndex(ctx, fence, assets, assetIDs)
+}
+
+func (s *modeAwareRAGStore) PublishRAGAssetsAndAttachmentsForIndex(
+	ctx context.Context,
+	fence store.IndexFence,
+	assets []store.RAGAssetRecord,
+	assetIDs []string,
+	attachments []store.RAGAttachmentRecord,
+	attachmentIDs []string,
+) (bool, error) {
+	if fence.ExpectedWriterFingerprint == "" {
+		return s.Store.PublishRAGAssetsAndAttachmentsForIndex(
+			ctx, fence, assets, assetIDs, attachments, attachmentIDs,
+		)
+	}
+	contextFence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext || contextFence != fence {
+		return false, store.ErrRAGDocumentVersionMismatch
+	}
+	fair, err := s.requireFairExecution()
+	if err != nil {
+		return false, err
+	}
+	return fair.PublishRAGAssetsAndAttachmentsForIndex(
+		ctx, fence, assets, assetIDs, attachments, attachmentIDs,
+	)
+}
+
+func (s *modeAwareRAGStore) CreateRAGDocumentAITaskBudget(
+	ctx context.Context,
+	budget *store.RAGDocumentAITaskBudgetRecord,
+) error {
+	if _, fairContext := fairIndexFenceFromContext(ctx); fairContext {
+		return store.ErrRAGDocumentAIInvalidFence
+	}
+	return s.Store.CreateRAGDocumentAITaskBudget(ctx, budget)
+}
+
+func (s *modeAwareRAGStore) CreateRAGDocumentAITaskBudgetForIndex(
+	ctx context.Context,
+	fence store.IndexFence,
+	budget *store.RAGDocumentAITaskBudgetRecord,
+) error {
+	fair, err := s.requireFairStore(&fence)
+	if err != nil {
+		return err
+	}
+	return fair.CreateRAGDocumentAITaskBudgetForIndex(ctx, fence, budget)
+}
+
+func (s *modeAwareRAGStore) GetRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+) (*store.RAGDocumentAIUsageRecord, error) {
+	fence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext {
+		return s.Store.GetRAGDocumentAIUsage(ctx, idempotencyKey)
+	}
+	fair, err := s.requireFairStore(&fence)
+	if err != nil {
+		return nil, err
+	}
+	return fair.GetRAGDocumentAIUsage(ctx, idempotencyKey)
+}
+
+func (s *modeAwareRAGStore) ReserveRAGDocumentAIUsage(
+	ctx context.Context,
+	fence store.IndexFence,
+	usage *store.RAGDocumentAIUsageRecord,
+	limits store.RAGDocumentAILimits,
+) (bool, error) {
+	if fence.ExpectedWriterFingerprint == "" {
+		return s.Store.ReserveRAGDocumentAIUsage(ctx, fence, usage, limits)
+	}
+	fair, err := s.requireFairStore(&fence)
+	if err != nil {
+		return false, err
+	}
+	return fair.ReserveRAGDocumentAIUsage(ctx, fence, usage, limits)
+}
+
+func (s *modeAwareRAGStore) MarkSentRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+	fence store.IndexFence,
+) (bool, error) {
+	if fence.ExpectedWriterFingerprint == "" {
+		return s.Store.MarkSentRAGDocumentAIUsage(ctx, idempotencyKey, fence)
+	}
+	fair, err := s.requireFairStore(&fence)
+	if err != nil {
+		return false, err
+	}
+	return fair.MarkSentRAGDocumentAIUsage(ctx, idempotencyKey, fence)
+}
+
+func (s *modeAwareRAGStore) CommitRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+	inputTokens, outputTokens, costMicroUSD int64,
+	usageEstimated bool,
+) (bool, error) {
+	fence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext {
+		return s.Store.CommitRAGDocumentAIUsage(
+			ctx, idempotencyKey, inputTokens, outputTokens, costMicroUSD, usageEstimated,
+		)
+	}
+	fair, err := s.requireFairStore(&fence)
+	if err != nil {
+		return false, err
+	}
+	return fair.CommitRAGDocumentAIUsage(
+		ctx, idempotencyKey, inputTokens, outputTokens, costMicroUSD, usageEstimated,
+	)
+}
+
+func (s *modeAwareRAGStore) ReleaseRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+) (bool, error) {
+	fence, fairContext := fairIndexFenceFromContext(ctx)
+	if !fairContext {
+		return s.Store.ReleaseRAGDocumentAIUsage(ctx, idempotencyKey)
+	}
+	fair, err := s.requireFairStore(&fence)
+	if err != nil {
+		return false, err
+	}
+	return fair.ReleaseRAGDocumentAIUsage(ctx, idempotencyKey)
+}
+
+func (s *modeAwareRAGStore) ReconcileRAGDocumentAIUsage(
+	ctx context.Context,
+	reservedBefore, sentBefore time.Time,
+	limit int,
+) (int, error) {
+	if s.mode != WorkerModeFair {
+		return s.Store.ReconcileRAGDocumentAIUsage(ctx, reservedBefore, sentBefore, limit)
+	}
+	fair, err := s.requireFairStore(nil)
+	if err != nil {
+		return 0, err
+	}
+	return fair.ReconcileRAGDocumentAIUsage(ctx, reservedBefore, sentBefore, limit)
+}
+
+type fairExecutionCacheCatalog struct {
+	legacy store.RAGCacheCatalog
+	fair   FairExecutionStore
+	mode   WorkerMode
+}
+
+type fairTaskBudgetLedger struct {
+	fair  FairStore
+	fence store.IndexFence
+}
+
+func (l *fairTaskBudgetLedger) validate() error {
+	if l == nil || l.fair == nil || !validFairWriterFingerprint(l.fence.ExpectedWriterFingerprint) {
+		return store.ErrFairQueueWriterMismatch
+	}
+	if l.fair.ExpectedWriterFingerprint() != l.fence.ExpectedWriterFingerprint {
+		return store.ErrFairQueueWriterMismatch
+	}
+	return nil
+}
+
+func (l *fairTaskBudgetLedger) validateFence(fence store.IndexFence) error {
+	if fence != l.fence {
+		return store.ErrRAGDocumentAIInvalidFence
+	}
+	return l.validate()
+}
+
+func (l *fairTaskBudgetLedger) CreateRAGDocumentAITaskBudget(
+	context.Context,
+	*store.RAGDocumentAITaskBudgetRecord,
+) error {
+	return store.ErrRAGDocumentAIInvalidFence
+}
+
+func (l *fairTaskBudgetLedger) CreateRAGDocumentAITaskBudgetForIndex(
+	ctx context.Context,
+	fence store.IndexFence,
+	budget *store.RAGDocumentAITaskBudgetRecord,
+) error {
+	if err := l.validateFence(fence); err != nil {
+		return err
+	}
+	return l.fair.CreateRAGDocumentAITaskBudgetForIndex(ctx, fence, budget)
+}
+
+func (l *fairTaskBudgetLedger) GetRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+) (*store.RAGDocumentAIUsageRecord, error) {
+	if err := l.validate(); err != nil {
+		return nil, err
+	}
+	return l.fair.GetRAGDocumentAIUsage(ctx, idempotencyKey)
+}
+
+func (l *fairTaskBudgetLedger) ReserveRAGDocumentAIUsage(
+	ctx context.Context,
+	fence store.IndexFence,
+	usage *store.RAGDocumentAIUsageRecord,
+	limits store.RAGDocumentAILimits,
+) (bool, error) {
+	if err := l.validateFence(fence); err != nil {
+		return false, err
+	}
+	return l.fair.ReserveRAGDocumentAIUsage(ctx, fence, usage, limits)
+}
+
+func (l *fairTaskBudgetLedger) MarkSentRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+	fence store.IndexFence,
+) (bool, error) {
+	if err := l.validateFence(fence); err != nil {
+		return false, err
+	}
+	return l.fair.MarkSentRAGDocumentAIUsage(ctx, idempotencyKey, fence)
+}
+
+func (l *fairTaskBudgetLedger) CommitRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+	inputTokens, outputTokens, costMicroUSD int64,
+	estimated bool,
+) (bool, error) {
+	if err := l.validate(); err != nil {
+		return false, err
+	}
+	return l.fair.CommitRAGDocumentAIUsage(
+		ctx, idempotencyKey, inputTokens, outputTokens, costMicroUSD, estimated,
+	)
+}
+
+func (l *fairTaskBudgetLedger) ReleaseRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+) (bool, error) {
+	if err := l.validate(); err != nil {
+		return false, err
+	}
+	return l.fair.ReleaseRAGDocumentAIUsage(ctx, idempotencyKey)
+}
+
+// NewFairExecutionCacheCatalog permanently binds provider-cache writes to the
+// configured worker mode. Fair calls require the claim fence in context; a
+// lost marker can never select the legacy pool.
+func NewFairExecutionCacheCatalog(
+	legacy store.RAGCacheCatalog,
+	fair FairExecutionStore,
+	mode WorkerMode,
+) store.RAGCacheCatalog {
+	return &fairExecutionCacheCatalog{legacy: legacy, fair: fair, mode: mode}
+}
+
+func (c *fairExecutionCacheCatalog) RegisterRAGCacheObject(
+	ctx context.Context,
+	record store.RAGCacheObjectRecord,
+) error {
+	if c == nil {
+		return errors.New("rag: cache catalog is unavailable")
+	}
+	fence, fairContext := fairIndexFenceFromContext(ctx)
+	switch c.mode {
+	case WorkerModeFair:
+		if !fairContext {
+			return store.ErrRAGDocumentVersionMismatch
+		}
+		if c.fair == nil {
+			return store.ErrFairQueueMySQLRequired
+		}
+		return c.fair.RegisterRAGCacheObjectForIndex(ctx, fence, record)
+	case WorkerModeLegacy:
+		if fairContext {
+			return store.ErrRAGDocumentVersionMismatch
+		}
+		if c.legacy == nil {
+			return errors.New("rag: cache catalog is unavailable")
+		}
+		return c.legacy.RegisterRAGCacheObject(ctx, record)
+	default:
+		return store.ErrRAGDocumentVersionMismatch
+	}
+}
+
 type Deps struct {
 	Store         store.Store
+	FairStore     FairStore
+	FairExecution FairExecutionStore
 	Vector        vector.Store
 	Objects       objects.Store
 	Cfg           config.RAGCfg
@@ -85,6 +865,12 @@ type Deps struct {
 	// capability snapshot. Upload paths must not synchronously probe sidecar.
 	OfficeAvailable func() bool
 	Workers         int
+	WorkerMode      WorkerMode
+	Notifier        TaskNotifier
+	// LeaseDuration and HeartbeatInterval are the immutable fair-queue policy
+	// selected by the gateway. Zero preserves the legacy defaults.
+	LeaseDuration     time.Duration
+	HeartbeatInterval time.Duration
 }
 
 type Service struct {
@@ -109,6 +895,10 @@ type Service struct {
 	tasks           chan int64
 	workerCount     int
 	workerID        string
+	workerMode      WorkerMode
+	taskNotifier    TaskNotifier
+	fairStore       FairStore
+	fairExecution   FairExecutionStore
 
 	// The in-memory channel is only a latency hint. SQL claim/lease state is
 	// authoritative and pollInterval guarantees recovery after a dropped hint.
@@ -141,6 +931,12 @@ func New(d Deps) *Service {
 	}
 	if d.Workers <= 0 {
 		d.Workers = 2
+	}
+	if d.LeaseDuration <= 0 {
+		d.LeaseDuration = time.Minute
+	}
+	if d.HeartbeatInterval <= 0 {
+		d.HeartbeatInterval = 20 * time.Second
 	}
 	if d.Parser == nil {
 		d.Parser = parse.NewLocalParser(
@@ -187,8 +983,20 @@ func New(d Deps) *Service {
 			observable.SetRecorder(recorder)
 		}
 	}
+	mode := normalizeWorkerMode(d.WorkerMode)
+	fairExecution := d.FairExecution
+	if fairExecution == nil {
+		fairExecution, _ = d.Store.(FairExecutionStore)
+	}
+	serviceStore := d.Store
+	if serviceStore != nil && mode == WorkerModeFair {
+		serviceStore = &modeAwareRAGStore{
+			Store: serviceStore, mode: mode,
+			fairStore: d.FairStore, fairExecution: fairExecution,
+		}
+	}
 	return &Service{
-		st:                              d.Store,
+		st:                              serviceStore,
 		vec:                             d.Vector,
 		obj:                             d.Objects,
 		cfg:                             d.Cfg,
@@ -209,9 +1017,13 @@ func New(d Deps) *Service {
 		tasks:                           make(chan int64, 256),
 		workerCount:                     d.Workers,
 		workerID:                        "rag-" + uuid.NewString(),
+		workerMode:                      mode,
+		taskNotifier:                    d.Notifier,
+		fairStore:                       d.FairStore,
+		fairExecution:                   fairExecution,
 		pollInterval:                    time.Second,
-		leaseDuration:                   time.Minute,
-		heartbeatInterval:               20 * time.Second,
+		leaseDuration:                   d.LeaseDuration,
+		heartbeatInterval:               d.HeartbeatInterval,
 		gcGracePeriod:                   time.Duration(d.Cfg.Limits.IndexGCGracePeriod) * time.Second,
 		stagingArtifactTTL:              time.Duration(d.Cfg.Limits.StagingArtifactTTL) * time.Second,
 		maxCacheFingerprintsPerDocument: d.Cfg.Limits.MaxCacheFingerprintsPerDocument,
@@ -232,6 +1044,14 @@ func (s *Service) resolveSearchCollection(ctx context.Context, kbID string, acti
 	return s.resolveCollection(ctx, kbID)
 }
 
+// WorkerMode returns the immutable startup mode selected for this service.
+func (s *Service) WorkerMode() WorkerMode {
+	if s == nil {
+		return WorkerModePaused
+	}
+	return s.workerMode
+}
+
 // newTaskDocumentAIBudget binds one immutable version snapshot and claim fence
 // to the durable façade shared by page vision, Office image vision, repairs and
 // text enrichment. It owns no process-local spend counters.
@@ -242,8 +1062,21 @@ func (s *Service) newTaskDocumentAIBudget(
 	if s == nil || s.st == nil || claim == nil || strings.TrimSpace(userID) == "" {
 		return nil, errors.New("RAG DocumentAI budget requires store, claim, and user")
 	}
+	var ledger vision.BudgetLedger = s.st
+	if claim.Fence.ExpectedWriterFingerprint != "" {
+		if !validFairWriterFingerprint(claim.Fence.ExpectedWriterFingerprint) {
+			return nil, store.ErrFairQueueWriterMismatch
+		}
+		if s.fairStore == nil {
+			return nil, store.ErrFairQueueMySQLRequired
+		}
+		if s.fairStore.ExpectedWriterFingerprint() != claim.Fence.ExpectedWriterFingerprint {
+			return nil, store.ErrFairQueueWriterMismatch
+		}
+		ledger = &fairTaskBudgetLedger{fair: s.fairStore, fence: claim.Fence}
+	}
 	version := claim.Version
-	return vision.NewTaskDocumentAIBudget(s.st, vision.TaskBudgetConfig{
+	return vision.NewTaskDocumentAIBudget(ledger, vision.TaskBudgetConfig{
 		Fence: claim.Fence, UserID: userID,
 		TaskLimits: store.RAGDocumentAILimits{
 			MaxRequests:     int64(version.MaxDocumentAIRequests),
@@ -350,11 +1183,37 @@ func (s *Service) embeddingConfigForKB(ctx context.Context, kb *store.RAGKBRecor
 	var cfg config.RAGEmbeddingCfg
 	switch kb.EmbedProvider {
 	case "user":
-		if s.userCfg == nil {
-			return cfg, errors.New("KB 绑定的用户 embedding 配置不可用")
-		}
 		var ok bool
-		cfg, ok = s.userCfg(ctx, kb.UserID)
+		fence, fairContext := fairIndexFenceFromContext(ctx)
+		if s.workerMode == WorkerModeFair || fairContext {
+			if s.fairStore == nil {
+				return cfg, store.ErrFairQueueMySQLRequired
+			}
+			expectedWriter := s.fairStore.ExpectedWriterFingerprint()
+			if !validFairWriterFingerprint(expectedWriter) ||
+				(fairContext && (!validFairWriterFingerprint(fence.ExpectedWriterFingerprint) ||
+					expectedWriter != fence.ExpectedWriterFingerprint)) {
+				return cfg, store.ErrFairQueueWriterMismatch
+			}
+			record, err := s.fairStore.GetConfigByName(
+				ctx, store.KindSetting, kb.UserID, "", "rag",
+			)
+			if errors.Is(err, store.ErrNotFound) {
+				err = nil
+			}
+			if err != nil {
+				return cfg, err
+			}
+			cfg, ok, err = embeddingConfigFromRecord(record)
+			if err != nil {
+				return cfg, err
+			}
+		} else {
+			if s.userCfg == nil {
+				return cfg, errors.New("KB 绑定的用户 embedding 配置不可用")
+			}
+			cfg, ok = s.userCfg(ctx, kb.UserID)
+		}
 		if !ok {
 			return cfg, errors.New("KB 绑定的用户 embedding 配置不可用")
 		}
@@ -365,6 +1224,33 @@ func (s *Service) embeddingConfigForKB(ctx context.Context, kb *store.RAGKBRecor
 		return cfg, errors.New("KB 绑定的 embedding endpoint 不可用")
 	}
 	return cfg, nil
+}
+
+func embeddingConfigFromRecord(record *store.ConfigRecord) (config.RAGEmbeddingCfg, bool, error) {
+	if record == nil || len(record.Data) == 0 {
+		return config.RAGEmbeddingCfg{}, false, nil
+	}
+	blob, err := json.Marshal(record.Data)
+	if err != nil {
+		return config.RAGEmbeddingCfg{}, false, err
+	}
+	var wrapper struct {
+		Embedding config.RAGEmbeddingCfg `json:"embedding"`
+	}
+	if err := json.Unmarshal(blob, &wrapper); err != nil {
+		return config.RAGEmbeddingCfg{}, false, err
+	}
+	cfg := wrapper.Embedding
+	// Preserve the legacy API's direct embedding-object compatibility.
+	if cfg.Endpoint == "" && cfg.Model == "" && cfg.Dims == 0 {
+		if err := json.Unmarshal(blob, &cfg); err != nil {
+			return config.RAGEmbeddingCfg{}, false, err
+		}
+	}
+	if cfg.Endpoint == "" || cfg.Model == "" || cfg.Dims <= 0 {
+		return config.RAGEmbeddingCfg{}, false, nil
+	}
+	return cfg, true, nil
 }
 
 func (s *Service) embedderForKB(ctx context.Context, kb *store.RAGKBRecord) (*embed.Client, error) {

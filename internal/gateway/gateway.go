@@ -24,10 +24,13 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/qs3c/bkcrab/internal/agent"
+	agenttools "github.com/qs3c/bkcrab/internal/agent/tools"
 	"github.com/qs3c/bkcrab/internal/bus"
 	"github.com/qs3c/bkcrab/internal/channels"
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/cron"
+	"github.com/qs3c/bkcrab/internal/fairqueue"
+	imagegendomain "github.com/qs3c/bkcrab/internal/imagegen"
 	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
 	"github.com/qs3c/bkcrab/internal/plugin"
 	"github.com/qs3c/bkcrab/internal/provider"
@@ -67,12 +70,32 @@ var toolProviderRegistry = func() *toolproviders.Registry {
 // ToolProviderRegistry 为想要列出可用提供者的调用者（管理 API）暴露注册表。
 func ToolProviderRegistry() *toolproviders.Registry { return toolProviderRegistry }
 
-// registerAgentToolChains 使用合并的配置视图（解析器叠加的系统+用户+代理作用域）将每个提供者支持的工具类别挂接到给定的代理上。
-func registerAgentToolChains(cfg *config.Config, agents []*agent.Agent) {
+// registerAgentToolChains uses the same persistent scope resolver as durable
+// image work. This prevents synchronous registration and background execution
+// from disagreeing about owner sharing or viewer overrides.
+func registerAgentToolChains(ctx context.Context, st store.Store, configUserID string, resolved []config.ResolvedAgent, agents []*agent.Agent, imageCfg config.ImagegenBatchCfg, imageBatches agenttools.ImagegenBatchService) {
 	envSearxNG := strings.TrimSpace(os.Getenv("BKCRAB_SEARXNG_ENDPOINT"))
+	resolvedByID := make(map[string]config.ResolvedAgent, len(resolved))
+	for _, item := range resolved {
+		resolvedByID[item.ID] = item
+	}
 	for _, ag := range agents {
-		resolved := cfg.MergedAgentConfig(config.AgentEntry{ID: ag.Name()})
-		chain := buildToolChainFromResolved(resolved, "web_search")
+		item, ok := resolvedByID[ag.Name()]
+		if !ok {
+			slog.Warn("tool chain registration skipped: resolved agent missing", "agent", ag.Name())
+			continue
+		}
+		identity := imagegendomain.ExecutionIdentity{
+			UserID: configUserID, ConfigUserID: configUserID,
+			AgentOwnerUserID: item.UserID, AgentID: item.ID,
+		}
+		if effective, err := resolveEffectiveToolConfig(ctx, st, identity); err != nil {
+			slog.Warn("tool chain scope resolution failed", "agent", item.ID, "error", err)
+		} else {
+			item.ToolProviders = effective.Providers
+			item.Tools = effective.Tools
+		}
+		chain := buildToolChainFromResolved(item, "web_search")
 		// 回退：如果没有配置 web_search 链且环境中设置了 BKCRAB_SEARXNG_ENDPOINT，
 		// 合成一个指向该端点的单提供者链。一行设置（"docker run searxng …" + 环境变量）
 		// 是一个可以在第一次尝试就找到正确 URL 的代理与一个耗费 11 轮猜测的代理之间的区别 —
@@ -83,15 +106,13 @@ func registerAgentToolChains(cfg *config.Config, agents []*agent.Agent) {
 		if chain != nil {
 			ag.RegisterWebSearchChain(chain)
 		}
-		if chain := buildToolChainFromResolved(resolved, "image_gen"); chain != nil {
-			ag.RegisterImageGenChain(chain)
-		}
-		if chain := buildToolChainFromResolved(resolved, "tts"); chain != nil {
+		ag.RegisterImageGeneration(imageCfg, buildToolChainFromResolved(item, "image_gen"), imageBatches)
+		if chain := buildToolChainFromResolved(item, "tts"); chain != nil {
 			ag.RegisterTTSChain(chain)
 		}
 		// web_fetch：链优先，否则代理保留构建时已注册的内置直接获取器（loop.go 中的 RegisterWebFetch），
 		// 因此此调用仅在管理员实际配置了链时才交换后端。
-		if chain := buildToolChainFromResolved(resolved, "web_fetch"); chain != nil {
+		if chain := buildToolChainFromResolved(item, "web_fetch"); chain != nil {
 			ag.RegisterWebFetchChain(chain)
 		}
 	}
@@ -178,6 +199,10 @@ type Gateway struct {
 	ragEvalCleanup     *rageval.CleanupCoordinator
 	ragPolicyPromotion *rag.PolicyPromotionService
 	ragPolicyRefresher *rag.RuntimePolicyRefresher
+	ragFairQueue       *ragFairQueueAssembly
+	imageFairQueue     *imageFairQueueAssembly
+	fairQueueHealth    *ragFairQueueHealthState
+	imagegenResolver   imagegendomain.ProviderPlanResolver
 	envCfg             *config.EnvConfig
 	// chatEvents 设置后，允许总线触发的 web 轮次（cron/目标延续/心跳/子代理）
 	// 通过用户输入的 POST /api/chat 轮次使用的同一个 SSE hub 流式传输。
@@ -247,8 +272,57 @@ func (g *Gateway) RAGPolicyPromotionService() *rag.PolicyPromotionService {
 	return g.ragPolicyPromotion
 }
 
+// FairQueueHealthSnapshot returns only cached, serialization-safe facts. It
+// performs no dependency I/O and is safe for readiness/admin HTTP handlers.
+func (g *Gateway) FairQueueHealthSnapshot() fairqueue.HealthSnapshot {
+	if g == nil || g.fairQueueHealth == nil {
+		return fairqueue.HealthSnapshot{FairQueue: fairqueue.FairQueueHealthSnapshot{
+			Status: fairqueue.HealthStatusFailed,
+			MySQL: fairqueue.MySQLHealthSnapshot{
+				Status:          fairqueue.MySQLStatusUnavailable,
+				SessionAffinity: fairqueue.SessionAffinityUnknown,
+			},
+		}}
+	}
+	var runtimeSnapshot fairqueue.HealthSnapshot
+	status := fairQueueStatusDegraded
+	if g.ragFairQueue != nil && g.ragFairQueue.supervisor != nil {
+		status = g.ragFairQueue.supervisor.Status()
+		if current, ok := g.ragFairQueue.supervisor.RuntimeHealthSnapshot(rag.RAGFairQueueResource); ok {
+			runtimeSnapshot = current
+		}
+	}
+	if g.ragFairQueue == nil && g.imageFairQueue != nil && g.imageFairQueue.supervisor != nil {
+		status = g.imageFairQueue.supervisor.Status()
+		if current, ok := g.imageFairQueue.supervisor.RuntimeHealthSnapshot(store.ImageGenerationResource); ok {
+			runtimeSnapshot = current
+		}
+		return g.imageFairQueue.health.snapshot(runtimeSnapshot, status)
+	}
+	result := g.fairQueueHealth.snapshot(runtimeSnapshot, status)
+	if g.imageFairQueue != nil && g.imageFairQueue.supervisor != nil && g.imageFairQueue.health != nil {
+		imageStatus := g.imageFairQueue.supervisor.Status()
+		var imageRuntime fairqueue.HealthSnapshot
+		if current, ok := g.imageFairQueue.supervisor.RuntimeHealthSnapshot(store.ImageGenerationResource); ok {
+			imageRuntime = current
+		}
+		imageSnapshot := g.imageFairQueue.health.snapshot(imageRuntime, imageStatus).FairQueue
+		result.FairQueue.Resources = map[string]fairqueue.FairQueueHealthSnapshot{store.ImageGenerationResource: imageSnapshot}
+	}
+	return result
+}
+
 // Store 返回网关的存储后端。
 func (g *Gateway) Store() store.Store { return g.store }
+
+// ImagegenProviderPlanResolver exposes the secret-free snapshot/current-secret
+// resolver for later batch and worker assembly.
+func (g *Gateway) ImagegenProviderPlanResolver() imagegendomain.ProviderPlanResolver {
+	if g == nil {
+		return nil
+	}
+	return g.imagegenResolver
+}
 
 // TaskQueue 返回网关的任务队列。
 func (g *Gateway) TaskQueue() *taskqueue.Queue { return g.taskQueue }
@@ -263,7 +337,17 @@ func (g *Gateway) EnvConfig() *config.EnvConfig { return g.envCfg }
 // 但在认证请求到达用户之前不会加载任何代理。
 func New(env *config.EnvConfig) (*Gateway, error) {
 	if env == nil {
-		env = &config.EnvConfig{}
+		env = &config.EnvConfig{FairQueue: config.DefaultFairQueueCfg(), ImagegenBatch: config.DefaultImagegenBatchCfg()}
+	}
+	if env.ImagegenBatch.Mode == "" {
+		env.ImagegenBatch = config.DefaultImagegenBatchCfg()
+	}
+	if err := env.ImagegenBatch.Validate(env.Storage.Type, env.FairQueue); err != nil {
+		return nil, fmt.Errorf("invalid imagegen batch configuration: %w", err)
+	}
+	fairPlan, err := planRAGFairQueue(env.FairQueue, env.Storage.Type)
+	if err != nil {
+		return nil, err
 	}
 	mb := bus.New()
 
@@ -327,6 +411,24 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		generationMode = rag.GenerationResolutionAuthoritative
 	}
 	collectionResolver := rag.NewGenerationResolver(st, generationMode, nil)
+
+	if fairPlan.StartFairClaimant && env.RAGLegacyTaskMigrationMode != "" {
+		return nil, errors.New("fair RAG worker mode cannot run the offline legacy task migration")
+	}
+	var ragFairQueue *ragFairQueueAssembly
+	fairQueueOwned := false
+	if fairPlan.StartFairClaimant {
+		ragFairQueue, err = buildRAGFairQueueAssembly(context.Background(), env, st)
+		if err != nil {
+			return nil, err
+		}
+		fairQueueOwned = true
+		defer func() {
+			if fairQueueOwned {
+				_ = ragFairQueue.Close()
+			}
+		}()
+	}
 	ragParserClient, parserErr := newRAGParserClient(ragCfg)
 	if parserErr != nil {
 		// The parser is optional infrastructure. A malformed or unavailable
@@ -370,6 +472,9 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	if ragCfg.Available() {
 		ragObjects, objectErr := newRAGObjectStore(osCfg, homeDir)
 		if objectErr != nil {
+			if fairPlan.StartFairClaimant {
+				return nil, fmt.Errorf("rag: original object store required by fair workers: %w", objectErr)
+			}
 			slog.Error("rag: original object store initialization failed; RAG disabled", "error", objectErr)
 		} else {
 			if ragCfg.Evaluation.Enabled {
@@ -378,6 +483,11 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					slog.Error("rag eval: dataset import service unavailable", "error", objectErr)
 				}
 			}
+
+			var cacheCatalog store.RAGCacheCatalog = st
+			if ragFairQueue != nil {
+				cacheCatalog = rag.NewFairExecutionCacheCatalog(st, ragFairQueue.mainStore, fairPlan.Mode)
+			}
 			var pageVision ragvision.PageTranscriber
 			var imageVision ragvision.ImageTranscriber
 			var textEnricher ragenrich.Enricher
@@ -385,7 +495,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 				visionClient, visionErr := ragvision.NewOpenAICompatible(
 					ragCfg.DocumentAI,
 					ragCfg.Limits,
-					ragvision.NewObjectCache(ragObjects, ragvision.DefaultSchemaLimits(), st),
+					ragvision.NewObjectCache(ragObjects, ragvision.DefaultSchemaLimits(), cacheCatalog),
 				)
 				if visionErr != nil {
 					slog.Error("rag: DocumentAI vision configuration invalid; visual routes disabled", "error", visionErr)
@@ -398,7 +508,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 				enrichmentClient, enrichmentErr := ragenrich.NewOpenAICompatible(
 					ragCfg.DocumentAI,
 					ragCfg.Limits,
-					ragenrich.NewObjectCache(ragObjects, ragenrich.DefaultSchemaLimits(), st),
+					ragenrich.NewObjectCache(ragObjects, ragenrich.DefaultSchemaLimits(), cacheCatalog),
 				)
 				if enrichmentErr != nil {
 					slog.Error("rag: DocumentAI enrichment configuration invalid; enrichment disabled", "error", enrichmentErr)
@@ -441,6 +551,9 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 
 			vecStore, vecErr := vector.NewMilvus(context.Background(), ragCfg.Milvus.Address, ragCfg.Milvus.Username, ragCfg.Milvus.Password)
 			if vecErr != nil {
+				if fairPlan.StartFairClaimant {
+					return nil, fmt.Errorf("rag: vector store required by fair workers: %w", vecErr)
+				}
 				slog.Error("rag: Milvus connection failed; RAG disabled", "error", vecErr)
 			} else {
 				var ranker ragrerank.Reranker
@@ -457,7 +570,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 						ranker = client
 					}
 				}
-				ragSvc = rag.New(rag.Deps{
+				serviceDeps := rag.Deps{
 					Store:           st,
 					Vector:          vecStore,
 					Objects:         ragObjects,
@@ -474,19 +587,36 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					ImageVision:     imageVision,
 					Enricher:        textEnricher,
 					OfficeAvailable: officeAvailable,
-				})
+				}
+				applyRAGFairQueueServicePolicy(&serviceDeps, fairPlan, env.FairQueue.RAGIndex)
+				if ragFairQueue != nil {
+					serviceDeps.FairStore = ragFairQueue.fairStore
+					serviceDeps.FairExecution = ragFairQueue.mainStore
+					serviceDeps.Notifier = ragFairQueue.notifier
+				}
+				ragSvc = rag.New(serviceDeps)
+				if ragFairQueue != nil {
+					if err := ragFairQueue.BindService(ragSvc); err != nil {
+						return nil, err
+					}
+				}
 				slog.Info("rag service enabled", "milvus", ragCfg.Milvus.Address)
 			}
 		}
+	}
+	if fairPlan.StartFairClaimant && ragSvc == nil {
+		return nil, errors.New("rag: fair worker mode requires an available RAG service")
 	}
 	// Legacy runnable rows are contracted only after the runtime can build the
 	// same immutable, secret-free snapshot used by new uploads. If those
 	// dependencies are unavailable, the store returns an error without mutating
 	// a legacy survivor; canonical/no-legacy databases still start normally.
-	if err := st.MigrateLegacyRAGIndexTasks(
-		context.Background(), legacySnapshotBuilder, allowLegacyTaskMigration,
-	); err != nil {
-		return nil, fmt.Errorf("migrate legacy RAG index tasks: %w", err)
+	if !fairPlan.StartFairClaimant {
+		if err := st.MigrateLegacyRAGIndexTasks(
+			context.Background(), legacySnapshotBuilder, allowLegacyTaskMigration,
+		); err != nil {
+			return nil, fmt.Errorf("migrate legacy RAG index tasks: %w", err)
+		}
 	}
 
 	// holderID 是印记在 channel_leases.holder_id 中的每个进程标识符。
@@ -563,6 +693,28 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init accounts: %w", err)
 	}
+	imagegenResolver := NewImagegenProviderResolver(st, toolProviderRegistry)
+	var imageFairQueue *imageFairQueueAssembly
+	imageFairOwned := false
+	if imageBatchRuntimeEnabled(env.ImagegenBatch.Mode) {
+		imageFairQueue, err = buildImageFairQueueAssembly(context.Background(), env, st, ws, imagegenResolver)
+		if err != nil {
+			return nil, err
+		}
+		imageFairOwned = true
+		defer func() {
+			if imageFairOwned {
+				_ = imageFairQueue.Close()
+			}
+		}()
+	}
+	fairQueueHealth := newRAGFairQueueHealthState(ragFairQueueHealthOptions{
+		Enabled: env.FairQueue.Enabled, Mode: fairPlan.Mode,
+		WriterTopology: env.FairQueue.MySQLWriterTopology,
+	})
+	if ragFairQueue != nil && ragFairQueue.health != nil {
+		fairQueueHealth = ragFairQueue.health
+	}
 
 	var ragEvalRunner *rageval.Runner
 	var ragEvalCleanup *rageval.CleanupCoordinator
@@ -603,14 +755,19 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	}
 
 	g := &Gateway{
-		bus:                mb,
-		store:              st,
-		accounts:           accts,
-		workspace:          ws,
-		usage:              meter,
-		sandboxPool:        systemSandboxPool,
-		mcpRuntime:         mcpRuntime,
-		users:              newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, mcpRuntime, pluginMgr, ragSvc),
+		bus:         mb,
+		store:       st,
+		accounts:    accts,
+		workspace:   ws,
+		usage:       meter,
+		sandboxPool: systemSandboxPool,
+		mcpRuntime:  mcpRuntime,
+		users: newUserSpaceRegistry(mb, st, ws, meter, systemSandboxPool, mcpRuntime, pluginMgr, ragSvc, env.ImagegenBatch, func() agenttools.ImagegenBatchService {
+			if imageFairQueue != nil {
+				return imageFairQueue.batchService
+			}
+			return nil
+		}()),
 		chanMgr:            chanMgr,
 		webChan:            webChan,
 		scheduler:          scheduler,
@@ -625,6 +782,10 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		ragEvalCleanup:     ragEvalCleanup,
 		ragPolicyPromotion: ragPolicyPromotion,
 		ragPolicyRefresher: ragPolicyRefresher,
+		ragFairQueue:       ragFairQueue,
+		imageFairQueue:     imageFairQueue,
+		fairQueueHealth:    fairQueueHealth,
+		imagegenResolver:   imagegenResolver,
 		envCfg:             env,
 	}
 
@@ -690,6 +851,18 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		// 但 image-tool 已将真实文件保存到 /workspace 的情况。
 		// 按文件名去重，这样我们不会重复发送 splitMediaFromReply 已解决的任何内容。
 		items = appendRecentWorkspaceMedia(ctx, g.workspace, task.AgentID, task.Message.ProjectID, task.Message.ChatID, turnStart, items)
+		if task.Message.Channel != "web" {
+			if sess := ag.Sessions().Get(task.Message.Channel, task.Message.AccountID, task.Message.ChatID, task.Message.ProjectID); sess != nil {
+				messages := sess.GetMessages()
+				for i := len(messages) - 1; i >= 0; i-- {
+					if messages[i].Role != "assistant" {
+						continue
+					}
+					items = appendTrustedImageArtifacts(ctx, g.workspace, messages[i].Metadata, items)
+					break
+				}
+			}
+		}
 		// Web 流式轮次已通过中心传递了回复。当没有媒体时完全跳过出站推送；
 		// 有媒体时，推送空文本以便附件仍然流动，但聊天面板不会双重渲染文本。
 		if webStreamed && len(items) == 0 {
@@ -727,7 +900,14 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	if err := registerChannelsFromStore(st, mb, chanMgr); err != nil {
 		slog.Warn("registerChannelsFromStore", "error", err)
 	}
+	if imageFairQueue != nil {
+		imageFairQueue.InstallSafetyObserver(ragFairQueue)
+	} else if ragFairQueue != nil {
+		ragFairQueue.InstallSafetyObserver()
+	}
 
+	fairQueueOwned = false
+	imageFairOwned = false
 	return g, nil
 }
 
@@ -765,6 +945,28 @@ func (g *Gateway) IsCloudMode() bool { return true }
 func (g *Gateway) Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	stopCh := make(chan os.Signal, 1)
+	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(stopCh)
+	go func() {
+		select {
+		case sig := <-stopCh:
+			slog.Info("received signal, shutting down", "signal", sig)
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return g.RunContext(ctx)
+}
+
+// RunContext runs gateway-owned components until ctx is canceled. Process
+// entrypoints use it to stop HTTP admission and drain active handlers before
+// canceling fair-queue/runtime dependencies. Run remains the signal-owning
+// compatibility wrapper for other callers.
+func (g *Gateway) RunContext(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("gateway: nil run context")
+	}
 	if g.ragParser != nil {
 		g.ragParser.StartHealthProbe(ctx)
 	}
@@ -784,16 +986,9 @@ func (g *Gateway) Run() error {
 		g.ragSvc.Start(ctx)
 	}
 
-	stopCh := make(chan os.Signal, 1)
-	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-stopCh
-		slog.Info("received signal, shutting down", "signal", sig)
-		cancel()
-	}()
-
 	reloadCh := make(chan os.Signal, 1)
 	notifyReloadSignal(reloadCh)
+	defer signal.Stop(reloadCh)
 	go func() {
 		for {
 			select {
@@ -809,6 +1004,49 @@ func (g *Gateway) Run() error {
 	}()
 
 	var wg sync.WaitGroup
+	if dbStore, ok := g.store.(*store.DBStore); ok && g.fairQueueHealth != nil {
+		expectedWriter := ""
+		var onMismatch func(error)
+		if g.ragFairQueue != nil {
+			expectedWriter = g.ragFairQueue.writer
+			if g.ragFairQueue.supervisor != nil {
+				onMismatch = func(err error) {
+					if failErr := g.ragFairQueue.supervisor.FailAuthoritative(err); failErr != nil {
+						slog.Error("RAG fair queue writer safety failure", "error", failErr)
+					}
+				}
+			}
+		}
+		if g.ragFairQueue == nil && g.imageFairQueue != nil {
+			expectedWriter = g.imageFairQueue.writer
+			if g.imageFairQueue.supervisor != nil {
+				onMismatch = func(err error) { _ = g.imageFairQueue.supervisor.FailAuthoritative(err) }
+			}
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			g.fairQueueHealth.runMySQLProbe(ctx, dbStore, expectedWriter, onMismatch)
+		}()
+	}
+	if g.ragFairQueue != nil && g.ragFairQueue.supervisor != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := g.ragFairQueue.supervisor.Run(ctx); err != nil && ctx.Err() == nil {
+				slog.Error("RAG fair queue runtime stopped fail-closed", "error", err)
+			}
+		}()
+	}
+	if g.imageFairQueue != nil && g.imageFairQueue.supervisor != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := g.imageFairQueue.supervisor.Run(ctx); err != nil && ctx.Err() == nil {
+				slog.Error("image fair queue runtime stopped fail-closed", "error", err)
+			}
+		}()
+	}
 	if g.mcpRuntime != nil {
 		g.mcpRuntime.Start(ctx)
 	}
@@ -871,6 +1109,16 @@ func (g *Gateway) Run() error {
 			slog.Warn("rag service close failed", "error", err)
 		}
 		closeCancel()
+	}
+	if g.ragFairQueue != nil {
+		if err := g.ragFairQueue.Close(); err != nil {
+			slog.Warn("RAG fair queue admin store close failed", "error", err)
+		}
+	}
+	if g.imageFairQueue != nil {
+		if err := g.imageFairQueue.Close(); err != nil {
+			slog.Warn("image fair queue close failed", "error", err)
+		}
 	}
 	slog.Info("gateway stopped")
 	return nil
@@ -1210,6 +1458,42 @@ func allChannelRows(st store.Store) ([]store.ConfigRecord, error) {
 // imgRefRegex 匹配 markdown 图片引用 `![alt](path)`。我们为 alt 和 path 都保留捕获组，
 // 以便下面的辅助函数在构建 MediaItems 和从聊天正文剥离标记时可以重用它们。
 var imgRefRegex = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
+
+func appendTrustedImageArtifacts(ctx context.Context, ws workspace.Store, metadata map[string]any, existing []bus.MediaItem) []bus.MediaItem {
+	if ws == nil || len(metadata) == 0 {
+		return existing
+	}
+	refs, ok := metadata[agenttools.ImageArtifactsMetadataKey].([]agenttools.ImageArtifactRef)
+	if !ok || len(refs) == 0 {
+		return existing
+	}
+	seen := make(map[string]struct{}, len(existing)+len(refs))
+	for _, item := range existing {
+		seen[item.Filename] = struct{}{}
+	}
+	for _, ref := range refs {
+		if len(existing) >= 16 || ref.Path == "" || ref.Origin.AgentID == "" || !strings.HasPrefix(ref.MIMEType, "image/") {
+			continue
+		}
+		filename := filepath.Base(ref.Path)
+		if _, duplicate := seen[filename]; duplicate {
+			continue
+		}
+		rc, err := ws.Get(ctx, ref.Origin.AgentID, ref.Origin.ProjectID, ref.Origin.SessionID, ref.Path)
+		if err != nil {
+			slog.Warn("trusted image artifact read failed", "batch", ref.BatchID, "task", ref.TaskID, "error", err)
+			continue
+		}
+		data, readErr := io.ReadAll(io.LimitReader(rc, maxAttachmentBytes+1))
+		_ = rc.Close()
+		if readErr != nil || len(data) == 0 || len(data) > maxAttachmentBytes {
+			continue
+		}
+		seen[filename] = struct{}{}
+		existing = append(existing, bus.MediaItem{Filename: filename, ContentType: ref.MIMEType, Bytes: data})
+	}
+	return existing
+}
 
 // splitMediaFromReply 从 `reply` 中提取每个 `![alt](src)` 引用，
 // 并将其转换为 IM 通道可以直接上传的 MediaItem：

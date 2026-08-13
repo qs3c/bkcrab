@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +13,7 @@ import (
 type ragTaskMigrationColumnInfo struct {
 	columnType string
 	notNull    bool
+	defaultVal sql.NullString
 }
 
 func ragTaskMigrationColumn(t *testing.T, st *DBStore, table, column string) (ragTaskMigrationColumnInfo, bool) {
@@ -24,7 +26,7 @@ func ragTaskMigrationColumn(t *testing.T, st *DBStore, table, column string) (ra
 	for rows.Next() {
 		var cid, notNull, primaryKey int
 		var name, columnType string
-		var defaultValue any
+		var defaultValue sql.NullString
 		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
 			t.Fatalf("scan %s schema: %v", table, err)
 		}
@@ -32,6 +34,7 @@ func ragTaskMigrationColumn(t *testing.T, st *DBStore, table, column string) (ra
 			return ragTaskMigrationColumnInfo{
 				columnType: strings.ToUpper(columnType),
 				notNull:    notNull != 0,
+				defaultVal: defaultValue,
 			}, true
 		}
 	}
@@ -393,7 +396,8 @@ func TestRAGTaskMigrationExpandBackfillAndContractIsIdempotent(t *testing.T) {
 	}
 	for _, column := range []string{
 		"retry_count", "max_retry", "claim_generation", "lease_owner",
-		"lease_until", "heartbeat_at", "next_run_at",
+		"lease_until", "heartbeat_at", "next_run_at", "user_id",
+		"dispatched_at", "dispatch_generation",
 	} {
 		if _, exists := ragTaskMigrationColumn(t, st, "rag_index_tasks", column); !exists {
 			t.Errorf("expanded rag_index_tasks missing %s", column)
@@ -410,6 +414,28 @@ func TestRAGTaskMigrationExpandBackfillAndContractIsIdempotent(t *testing.T) {
 	}
 	if found, unique, columns := ragTaskMigrationIndex(t, st, "rag_index_tasks", "idx_rag_index_tasks_runnable"); !found || unique || strings.Join(columns, ",") != "status,next_run_at,lease_until,created_at" {
 		t.Fatalf("expanded runnable index = found=%v unique=%v columns=%v", found, unique, columns)
+	}
+	for name, want := range map[string]string{
+		"idx_rag_index_tasks_dispatch":     "status,dispatched_at,next_run_at,id",
+		"idx_rag_index_tasks_expired":      "status,lease_until,next_run_at,id",
+		"idx_rag_index_tasks_user_id":      "user_id,id",
+		"idx_rag_index_tasks_user_running": "user_id,status,lease_until",
+	} {
+		if found, unique, columns := ragTaskMigrationIndex(t, st, "rag_index_tasks", name); !found || unique || strings.Join(columns, ",") != want {
+			t.Errorf("expanded %s = found=%v unique=%v columns=%v; want %s", name, found, unique, columns, want)
+		}
+	}
+	userIDColumn, ok := ragTaskMigrationColumn(t, st, "rag_index_tasks", "user_id")
+	if !ok || userIDColumn.notNull {
+		t.Fatalf("expanded user_id = %+v, exists=%v; want nullable", userIDColumn, ok)
+	}
+	dispatchedAtColumn, ok := ragTaskMigrationColumn(t, st, "rag_index_tasks", "dispatched_at")
+	if !ok || dispatchedAtColumn.notNull {
+		t.Fatalf("expanded dispatched_at = %+v, exists=%v; want nullable", dispatchedAtColumn, ok)
+	}
+	dispatchGenerationColumn, ok := ragTaskMigrationColumn(t, st, "rag_index_tasks", "dispatch_generation")
+	if !ok || !dispatchGenerationColumn.notNull || !dispatchGenerationColumn.defaultVal.Valid || dispatchGenerationColumn.defaultVal.String != "1" {
+		t.Fatalf("expanded dispatch_generation = %+v, exists=%v; want NOT NULL DEFAULT 1", dispatchGenerationColumn, ok)
 	}
 
 	// Model partially migrated installations too: a known old physical version
@@ -519,7 +545,9 @@ func TestRAGTaskMigrationExpandBackfillAndContractIsIdempotent(t *testing.T) {
 		}
 		if task.DocVersion != want.version || task.Status != "PENDING" ||
 			task.RetryCount != want.retryCount || task.MaxRetry != want.maxRetry ||
-			task.ClaimGeneration != 0 || task.LeaseOwner != "" || task.LeaseUntil != nil {
+			task.UserID != "u_task_migration" || task.DispatchGeneration != 1 ||
+			task.ClaimGeneration != 0 || task.DispatchedAt != nil ||
+			task.LeaseOwner != "" || task.LeaseUntil != nil {
 			t.Errorf("survivor %s = %+v", docID, task)
 		}
 		version, err := st.GetRAGDocumentVersion(ctx, docID, want.version)
@@ -552,7 +580,9 @@ func TestRAGTaskMigrationExpandBackfillAndContractIsIdempotent(t *testing.T) {
 		t.Fatalf("snapshot failure document = %+v; want FAILED needs-reindex state", failureDoc)
 	}
 	failureTask, err := st.GetRAGIndexTask(ctx, survivorIDs["doc_task_snapshot_failure"])
-	if err != nil || failureTask.Status != "FAILED" || failureTask.ErrorMsg == "" {
+	if err != nil || failureTask.Status != "FAILED" || failureTask.ErrorMsg == "" ||
+		failureTask.UserID != "u_task_migration" || failureTask.DispatchGeneration != 1 ||
+		failureTask.ClaimGeneration != 0 || failureTask.DispatchedAt != nil {
 		t.Fatalf("snapshot failure task = %+v, %v; want retained FAILED audit row", failureTask, err)
 	}
 
@@ -606,10 +636,24 @@ func TestRAGTaskCanonicalSchemaAcrossDialects(t *testing.T) {
 				t.Fatal("canonical DDL has no rag_index_tasks table")
 			}
 			for _, token := range []string{
+				"create table if not exists fairqueue_resource_operations",
+				"resource", "operation_id", "kind", "phase",
+				"current_writer_fingerprint", "original_writer_fingerprint", "target_writer_fingerprint",
+				"repair_high_water", "repair_pass_complete", "force_not_before",
+				"force_delete_pass_complete", "version", "created_at", "updated_at",
+			} {
+				if !strings.Contains(allDDL, token) {
+					t.Errorf("fairqueue operation DDL missing %q", token)
+				}
+			}
+			for _, token := range []string{
 				"doc_version bigint not null",
+				"user_id",
 				"retry_count integer not null default 0",
 				"max_retry integer not null default 3",
+				"dispatch_generation bigint not null default 1",
 				"claim_generation bigint not null default 0",
+				"dispatched_at",
 				"lease_owner",
 				"lease_until",
 				"heartbeat_at",
@@ -625,6 +669,14 @@ func TestRAGTaskCanonicalSchemaAcrossDialects(t *testing.T) {
 			for _, token := range []string{
 				"idx_rag_index_tasks_runnable",
 				"status, next_run_at, lease_until, created_at",
+				"idx_rag_index_tasks_dispatch",
+				"status, dispatched_at, next_run_at, id",
+				"idx_rag_index_tasks_expired",
+				"status, lease_until, next_run_at, id",
+				"idx_rag_index_tasks_user_id",
+				"user_id, id",
+				"idx_rag_index_tasks_user_running",
+				"user_id, status, lease_until",
 				"idx_rag_index_gc_tasks_runnable",
 			} {
 				if !strings.Contains(allDDL, token) {

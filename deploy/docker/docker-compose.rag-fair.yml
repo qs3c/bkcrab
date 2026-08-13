@@ -1,0 +1,7 @@
+# RAG final-stage rollout overlay. Apply only after contract migration and a
+# separate full paused rollout have drained every legacy RAG claimant. The
+# shared docker-compose.fairqueue.yml overlay must be included with this file.
+services:
+  bkcrab:
+    environment:
+      BKCRAB_RAG_INDEX_WORKER_MODE: fair

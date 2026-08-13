@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/qs3c/bkcrab/internal/fairqueue"
 )
 
 func TestEmitDropsUnknownEventsAndSanitizesDimensions(t *testing.T) {
@@ -36,6 +38,28 @@ func TestEmitDropsUnknownEventsAndSanitizesDimensions(t *testing.T) {
 	evalFields := events[1].Fields
 	if evalFields.RunID != "run-safe" || evalFields.CaseID != "case-safe" || evalFields.ItemCount != 2 || evalFields.CostMicroUSD != 7 {
 		t.Fatalf("eval telemetry fields changed: %+v", evalFields)
+	}
+}
+
+func TestFairQueueSinkMapsOnlyClosedLowCardinalityFields(t *testing.T) {
+	var events []Event
+	recorder := RecorderFunc(func(_ context.Context, event Event) { events = append(events, event) })
+	sink := NewFairQueueSink(recorder)
+	sink.RecordFairQueue(context.Background(), fairqueue.TelemetryEvent{
+		Name: fairqueue.TelemetryDispatchPublish, Resource: "rag.index", Outcome: "confirmed",
+		Dependency: "rabbitmq", Value: 1, TaskID: "ragi_secret_user_task",
+		TenantHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	})
+	if len(events) != 1 {
+		t.Fatalf("events=%d, want 1", len(events))
+	}
+	got := events[0]
+	if got.Name != EventFairQueue || got.Fields.Resource != "rag.index" ||
+		got.Fields.Metric != "dispatch.publish" || got.Fields.Dependency != "rabbitmq" || got.Fields.Value != 1 {
+		t.Fatalf("event=%#v", got)
+	}
+	if got.Fields.TaskID != 0 || got.Fields.DocID != "" {
+		t.Fatalf("high-cardinality correlation escaped into RAG fields: %#v", got.Fields)
 	}
 }
 

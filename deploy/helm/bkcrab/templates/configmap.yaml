@@ -9,6 +9,62 @@ data:
   BKCRAB_BIND: "all"
   BKCRAB_STORAGE_TYPE: {{ include "bkcrab.storageType" . | quote }}
   BKCRAB_STORAGE_AUTO_MIGRATE: "true"
+
+  ## Fairqueue infrastructure and rollout state. Credentials/AMQP URL are in
+  ## Secret. Imagegen requires redisMode=standalone and
+  ## mysqlWriterTopology=single; neither Redis Cluster nor multi-writer is safe.
+  BKCRAB_FAIR_QUEUE_ENABLED: {{ .Values.fairQueue.enabled | quote }}
+  {{- if .Values.redis.enabled }}
+  BKCRAB_FAIR_QUEUE_REDIS_ADDR: {{ printf "%s-redis:6379" (include "bkcrab.fullname" .) | quote }}
+  {{- else }}
+  BKCRAB_FAIR_QUEUE_REDIS_ADDR: {{ .Values.redis.address | quote }}
+  {{- end }}
+  BKCRAB_FAIR_QUEUE_REDIS_DB: {{ .Values.fairQueue.redisDB | quote }}
+  BKCRAB_FAIR_QUEUE_REDIS_MODE: {{ .Values.fairQueue.redisMode | quote }}
+  BKCRAB_FAIR_QUEUE_EXCHANGE: {{ .Values.fairQueue.exchange | quote }}
+  BKCRAB_FAIR_QUEUE_DEAD_LETTER_EXCHANGE: {{ .Values.fairQueue.deadLetterExchange | quote }}
+  BKCRAB_FAIR_QUEUE_KEY_PREFIX: {{ .Values.fairQueue.keyPrefix | quote }}
+  BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY: {{ .Values.fairQueue.mysqlWriterTopology | quote }}
+  BKCRAB_RAG_INDEX_WORKER_MODE: {{ .Values.fairQueue.ragIndex.workerMode | quote }}
+  BKCRAB_RAG_INDEX_LOCAL_WORKERS: {{ .Values.fairQueue.ragIndex.localWorkers | quote }}
+  BKCRAB_RAG_INDEX_GLOBAL_CONCURRENCY: {{ .Values.fairQueue.ragIndex.globalConcurrency | quote }}
+  BKCRAB_RAG_INDEX_PER_USER_BASE_CONCURRENCY: {{ .Values.fairQueue.ragIndex.perUserBaseConcurrency | quote }}
+  BKCRAB_RAG_INDEX_PER_USER_BURST_CONCURRENCY: {{ .Values.fairQueue.ragIndex.perUserBurstConcurrency | quote }}
+  BKCRAB_RAG_INDEX_BORROW_ENABLED: {{ .Values.fairQueue.ragIndex.borrowEnabled | quote }}
+
+  ## Image generation uses the same shared fairqueue infrastructure but an
+  ## independent resource namespace and rollout mode.
+  BKCRAB_IMAGEGEN_BATCH_MODE: {{ .Values.imagegenBatch.mode | quote }}
+  BKCRAB_IMAGEGEN_MAX_IMAGES_PER_BATCH: {{ .Values.imagegenBatch.maxImagesPerBatch | quote }}
+  BKCRAB_IMAGEGEN_MAX_IMAGES_PER_TASK: {{ .Values.imagegenBatch.maxImagesPerTask | quote }}
+  BKCRAB_IMAGEGEN_TOOL_WAIT_DEFAULT: {{ .Values.imagegenBatch.toolWaitDefault | quote }}
+  BKCRAB_IMAGEGEN_TOOL_WAIT_MAX: {{ .Values.imagegenBatch.toolWaitMax | quote }}
+  BKCRAB_IMAGEGEN_PROMPT_MAX_RUNES: {{ .Values.imagegenBatch.promptMaxRunes | quote }}
+  BKCRAB_IMAGEGEN_REQUEST_MAX_BYTES: {{ .Values.imagegenBatch.requestMaxBytes | quote }}
+  BKCRAB_IMAGEGEN_IMAGE_MAX_BYTES: {{ .Values.imagegenBatch.imageMaxBytes | quote }}
+  BKCRAB_IMAGEGEN_BATCH_MAX_BYTES: {{ .Values.imagegenBatch.batchMaxBytes | quote }}
+  BKCRAB_IMAGEGEN_LOCAL_WORKERS: {{ .Values.imagegenBatch.localWorkers | quote }}
+  BKCRAB_IMAGEGEN_GLOBAL_CONCURRENCY: {{ .Values.imagegenBatch.globalConcurrency | quote }}
+  BKCRAB_IMAGEGEN_PER_USER_BASE_CONCURRENCY: {{ .Values.imagegenBatch.perUserBaseConcurrency | quote }}
+  BKCRAB_IMAGEGEN_PER_USER_BURST_CONCURRENCY: {{ .Values.imagegenBatch.perUserBurstConcurrency | quote }}
+  BKCRAB_IMAGEGEN_BORROW_ENABLED: {{ .Values.imagegenBatch.borrowEnabled | quote }}
+  BKCRAB_IMAGEGEN_TASK_LEASE: {{ .Values.imagegenBatch.taskLease | quote }}
+  BKCRAB_IMAGEGEN_TASK_HEARTBEAT: {{ .Values.imagegenBatch.taskHeartbeat | quote }}
+  BKCRAB_IMAGEGEN_RESERVATION_TTL: {{ .Values.imagegenBatch.reservationTTL | quote }}
+  BKCRAB_IMAGEGEN_RESERVATION_HEARTBEAT: {{ .Values.imagegenBatch.reservationHeartbeat | quote }}
+  BKCRAB_IMAGEGEN_PREPARE_TIMEOUT: {{ .Values.imagegenBatch.prepareTimeout | quote }}
+  BKCRAB_IMAGEGEN_PROVISIONAL_TTL: {{ .Values.imagegenBatch.provisionalTTL | quote }}
+  BKCRAB_IMAGEGEN_PROCESSING_TTL: {{ .Values.imagegenBatch.processingTTL | quote }}
+  BKCRAB_IMAGEGEN_PUBLISH_ATTEMPT_TIMEOUT: {{ .Values.imagegenBatch.publishAttemptTimeout | quote }}
+  BKCRAB_IMAGEGEN_RECOVERY_DRAIN_TIMEOUT: {{ .Values.imagegenBatch.recoveryDrainTimeout | quote }}
+  BKCRAB_IMAGEGEN_DISPATCH_INTERVAL: {{ .Values.imagegenBatch.dispatchInterval | quote }}
+  BKCRAB_IMAGEGEN_RECONCILE_INTERVAL: {{ .Values.imagegenBatch.reconcileInterval | quote }}
+  BKCRAB_IMAGEGEN_EXPIRED_SWEEP_INTERVAL: {{ .Values.imagegenBatch.expiredSweepInterval | quote }}
+  BKCRAB_IMAGEGEN_RECONCILE_PAGE_SIZE: {{ .Values.imagegenBatch.reconcilePageSize | quote }}
+  BKCRAB_IMAGEGEN_MAX_RETRIES: {{ .Values.imagegenBatch.maxRetries | quote }}
+  BKCRAB_IMAGEGEN_PROVIDER_CALL_TIMEOUT: {{ .Values.imagegenBatch.providerCallTimeout | quote }}
+  BKCRAB_IMAGEGEN_ARTIFACT_DOWNLOAD_TIMEOUT: {{ .Values.imagegenBatch.artifactDownloadTimeout | quote }}
+  BKCRAB_IMAGEGEN_PROVIDER_CONCURRENCY_DEFAULT: {{ .Values.imagegenBatch.providerConcurrencyDefault | quote }}
   {{- if .Values.rag.enabled }}
 
   ## RAG 基础服务与独立 feature gates

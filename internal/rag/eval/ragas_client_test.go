@@ -23,7 +23,7 @@ func ragasRequest(metrics ...string) EvaluateRequest {
 }
 
 func ragasResponse(metrics string) string {
-	return `{"requestId":"request-1","ragasVersion":"0.3.9","metricBundleVersion":"rag-core-v1","results":[{"caseId":"case-1","metrics":` + metrics + `}]}`
+	return `{"requestId":"request-1","ragasVersion":"0.3.9","metricBundleVersion":"rag-core-v1","results":[{"caseId":"case-1","metrics":` + metrics + `}],"usage":{"llmInputTokens":11,"llmOutputTokens":7,"llmEstimatedCostUsd":0.003,"embeddingInputTokens":5,"embeddingEstimatedCostUsd":0.0001}}`
 }
 
 func clientForServer(t *testing.T, handler http.Handler, timeout time.Duration) (*RagasClient, *httptest.Server) {
@@ -46,7 +46,7 @@ func TestRagasAcceptsPartialMetricStatuses(t *testing.T) {
 	}), time.Second)
 	defer server.Close()
 	response, err := client.Evaluate(context.Background(), ragasRequest("faithfulness", "response_relevancy"))
-	if err != nil || response.Results[0].Metrics["response_relevancy"].Status != MetricError {
+	if err != nil || response.Results[0].Metrics["response_relevancy"].Status != MetricError || response.Usage.LLMInputTokens != 11 || response.Usage.EmbeddingInputTokens != 5 {
 		t.Fatalf("partial metric response rejected: response=%+v err=%v", response, err)
 	}
 }

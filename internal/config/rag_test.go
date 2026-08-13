@@ -7,7 +7,186 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestFairQueueValidation(t *testing.T) {
+	validFair := func() FairQueueCfg {
+		cfg := DefaultFairQueueCfg()
+		cfg.Enabled = true
+		cfg.RedisAddr = "redis:6379"
+		cfg.RabbitMQURL = "amqp://rabbitmq:5672/"
+		cfg.MySQLWriterTopology = FairQueueMySQLWriterTopologySingle
+		cfg.RAGIndex.WorkerMode = FairQueueWorkerModeFair
+		return cfg
+	}
+
+	for _, mode := range []string{
+		FairQueueWorkerModeLegacy,
+		FairQueueWorkerModePaused,
+		FairQueueWorkerModeFair,
+	} {
+		cfg := validFair()
+		cfg.RAGIndex.WorkerMode = mode
+		if err := cfg.Validate("mysql"); err != nil {
+			t.Fatalf("valid worker mode %q rejected: %v", mode, err)
+		}
+	}
+	boundary := validFair()
+	boundary.RAGIndex.ReconcileInterval = FairQueueMaxDuration
+	boundary.RAGIndex.ReconcilePageSize = FairQueueMaxReconcilePageSize
+	if err := boundary.Validate("mysql"); err != nil {
+		t.Fatalf("inclusive deployment limits rejected: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		storage string
+		mutate  func(*FairQueueCfg)
+	}{
+		{name: "unknown worker mode", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.WorkerMode = "unknown" }},
+		{name: "fair mode while disabled", storage: "mysql", mutate: func(c *FairQueueCfg) { c.Enabled = false }},
+		{name: "zero local workers", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.LocalWorkers = 0 }},
+		{name: "zero base concurrency", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.PerUserBaseConcurrency = 0 }},
+		{name: "base above burst", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.PerUserBaseConcurrency = 5 }},
+		{name: "burst above global", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.GlobalConcurrency = 3 }},
+		{name: "zero reservation heartbeat", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.ReservationHeartbeat = 0 }},
+		{name: "heartbeat reaches reservation TTL", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.ReservationHeartbeat = c.RAGIndex.ReservationTTL }},
+		{name: "zero prepare timeout", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.PrepareTimeout = 0 }},
+		{name: "prepare reaches provisional TTL", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.PrepareTimeout = c.RAGIndex.ProvisionalTTL }},
+		{name: "provisional reaches recovery drain", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.ProvisionalTTL = c.RAGIndex.RecoveryDrainTimeout }},
+		{name: "processing reaches recovery drain", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.ProcessingTurnTTL = c.RAGIndex.RecoveryDrainTimeout }},
+		{name: "zero dispatch interval", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.DispatchInterval = 0 }},
+		{name: "duration above deployment limit", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.ReconcileInterval = FairQueueMaxDuration + time.Nanosecond }},
+		{name: "zero recovery page size", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.ReconcilePageSize = 0 }},
+		{name: "page size above deployment limit", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.ReconcilePageSize = FairQueueMaxReconcilePageSize + 1 }},
+		{name: "zero publish attempt timeout", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.PublishAttemptTimeout = 0 }},
+		{name: "publish attempt reaches recovery drain", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RAGIndex.PublishAttemptTimeout = c.RAGIndex.RecoveryDrainTimeout }},
+		{name: "enabled without Redis address", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RedisAddr = "" }},
+		{name: "enabled without RabbitMQ URL", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RabbitMQURL = "" }},
+		{name: "enabled without exchange", storage: "mysql", mutate: func(c *FairQueueCfg) { c.Exchange = "" }},
+		{name: "enabled without dead-letter exchange", storage: "mysql", mutate: func(c *FairQueueCfg) { c.DeadLetterExchange = "" }},
+		{name: "enabled without key prefix", storage: "mysql", mutate: func(c *FairQueueCfg) { c.KeyPrefix = "" }},
+		{name: "unsupported Redis mode", storage: "mysql", mutate: func(c *FairQueueCfg) { c.RedisMode = "cluster" }},
+		{name: "fair mode on non-MySQL storage", storage: "sqlite", mutate: func(*FairQueueCfg) {}},
+		{name: "fair mode without single writer declaration", storage: "mysql", mutate: func(c *FairQueueCfg) { c.MySQLWriterTopology = "" }},
+		{name: "fair mode with multi writer declaration", storage: "mysql", mutate: func(c *FairQueueCfg) { c.MySQLWriterTopology = "multi" }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFair()
+			tt.mutate(&cfg)
+			if err := cfg.Validate(tt.storage); err == nil {
+				t.Fatalf("invalid fair queue config accepted: %+v", cfg)
+			}
+		})
+	}
+
+	disabled := DefaultFairQueueCfg()
+	if err := disabled.Validate("sqlite"); err != nil {
+		t.Fatalf("disabled legacy config rejected: %v", err)
+	}
+}
+
+func TestFairQueueEnvironmentOverlay(t *testing.T) {
+	t.Setenv("BKCRAB_FAIR_QUEUE_ENABLED", "true")
+	t.Setenv("BKCRAB_FAIR_QUEUE_REDIS_ADDR", "redis.internal:6380")
+	t.Setenv("BKCRAB_FAIR_QUEUE_REDIS_PASSWORD", "redis-secret")
+	t.Setenv("BKCRAB_FAIR_QUEUE_REDIS_DB", "3")
+	t.Setenv("BKCRAB_FAIR_QUEUE_REDIS_MODE", "standalone")
+	t.Setenv("BKCRAB_FAIR_QUEUE_RABBITMQ_URL", "amqp://user:rabbit-secret@rabbit.internal:5672/vhost")
+	t.Setenv("BKCRAB_FAIR_QUEUE_EXCHANGE", "custom.task")
+	t.Setenv("BKCRAB_FAIR_QUEUE_DEAD_LETTER_EXCHANGE", "custom.dlx")
+	t.Setenv("BKCRAB_FAIR_QUEUE_KEY_PREFIX", "custom:")
+	t.Setenv("BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY", "single")
+	t.Setenv("BKCRAB_RAG_INDEX_WORKER_MODE", "paused")
+	t.Setenv("BKCRAB_RAG_INDEX_LOCAL_WORKERS", "8")
+	t.Setenv("BKCRAB_RAG_INDEX_GLOBAL_CONCURRENCY", "12")
+	t.Setenv("BKCRAB_RAG_INDEX_PER_USER_BASE_CONCURRENCY", "3")
+	t.Setenv("BKCRAB_RAG_INDEX_PER_USER_BURST_CONCURRENCY", "6")
+	t.Setenv("BKCRAB_RAG_INDEX_BORROW_ENABLED", "false")
+	t.Setenv("BKCRAB_RAG_INDEX_RECONCILE_INTERVAL", "45s")
+	t.Setenv("BKCRAB_RAG_INDEX_RESERVATION_TTL", "90s")
+	t.Setenv("BKCRAB_RAG_INDEX_RESERVATION_HEARTBEAT", "25s")
+	t.Setenv("BKCRAB_RAG_INDEX_PREPARE_TIMEOUT", "12s")
+	t.Setenv("BKCRAB_RAG_INDEX_PROVISIONAL_TTL", "20s")
+	t.Setenv("BKCRAB_RAG_INDEX_DISPATCH_INTERVAL", "2s")
+	t.Setenv("BKCRAB_RAG_INDEX_PUBLISH_ATTEMPT_TIMEOUT", "30s")
+	t.Setenv("BKCRAB_RAG_INDEX_EXPIRED_SWEEP_INTERVAL", "18s")
+	t.Setenv("BKCRAB_RAG_INDEX_PROCESSING_TTL", "22s")
+	t.Setenv("BKCRAB_RAG_INDEX_RECONCILE_PAGE_SIZE", "350")
+	t.Setenv("BKCRAB_RAG_INDEX_RECOVERY_DRAIN_TIMEOUT", "3m")
+
+	cfg := LoadEnv().FairQueue
+	if !cfg.Enabled || cfg.RedisAddr != "redis.internal:6380" ||
+		cfg.RedisPassword != "redis-secret" || cfg.RedisDB != 3 ||
+		cfg.RedisMode != FairQueueRedisModeStandalone ||
+		cfg.RabbitMQURL != "amqp://user:rabbit-secret@rabbit.internal:5672/vhost" ||
+		cfg.Exchange != "custom.task" || cfg.DeadLetterExchange != "custom.dlx" ||
+		cfg.KeyPrefix != "custom:" || cfg.MySQLWriterTopology != FairQueueMySQLWriterTopologySingle {
+		t.Fatalf("shared fair queue environment overlay = %+v", cfg)
+	}
+	rag := cfg.RAGIndex
+	if rag.WorkerMode != FairQueueWorkerModePaused || rag.LocalWorkers != 8 ||
+		rag.GlobalConcurrency != 12 || rag.PerUserBaseConcurrency != 3 ||
+		rag.PerUserBurstConcurrency != 6 || rag.BorrowEnabled ||
+		rag.ReconcileInterval != 45*time.Second || rag.ReservationTTL != 90*time.Second ||
+		rag.ReservationHeartbeat != 25*time.Second || rag.PrepareTimeout != 12*time.Second ||
+		rag.ProvisionalTTL != 20*time.Second || rag.DispatchInterval != 2*time.Second ||
+		rag.PublishAttemptTimeout != 30*time.Second || rag.ExpiredRunningSweepInterval != 18*time.Second ||
+		rag.ProcessingTurnTTL != 22*time.Second || rag.ReconcilePageSize != 350 ||
+		rag.RecoveryDrainTimeout != 3*time.Minute {
+		t.Fatalf("RAG fair queue environment overlay = %+v", rag)
+	}
+	if err := cfg.Validate("mysql"); err != nil {
+		t.Fatalf("environment-derived fair queue config rejected: %v", err)
+	}
+}
+
+func TestFairQueueInvalidEnvironmentDoesNotFallBackToDefaults(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "malformed bool", key: "BKCRAB_FAIR_QUEUE_ENABLED", value: "not-a-bool"},
+		{name: "malformed integer", key: "BKCRAB_RAG_INDEX_LOCAL_WORKERS", value: "many"},
+		{name: "malformed duration", key: "BKCRAB_RAG_INDEX_RECONCILE_INTERVAL", value: "soon"},
+		{name: "zero duration", key: "BKCRAB_RAG_INDEX_PUBLISH_ATTEMPT_TIMEOUT", value: "0s"},
+		{name: "negative Redis DB", key: "BKCRAB_FAIR_QUEUE_REDIS_DB", value: "-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(tt.key, tt.value)
+			if err := LoadEnv().FairQueue.Validate("mysql"); err == nil {
+				t.Fatalf("invalid %s=%q silently fell back to defaults", tt.key, tt.value)
+			}
+		})
+	}
+}
+
+func TestFairQueueEnvSecretsAreScrubbed(t *testing.T) {
+	const rabbitURL = "amqp://user:rabbit-secret@rabbitmq:5672/"
+	const redisPassword = "redis-secret"
+	t.Setenv("BKCRAB_FAIR_QUEUE_RABBITMQ_URL", rabbitURL)
+	t.Setenv("BKCRAB_FAIR_QUEUE_REDIS_PASSWORD", redisPassword)
+
+	var output bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&output, nil))
+	logger.Info("fair queue config", "config", LoadEnv().FairQueue)
+	if strings.Contains(output.String(), rabbitURL) || strings.Contains(output.String(), redisPassword) {
+		t.Fatalf("fair queue credential leaked through slog: %s", output.String())
+	}
+
+	ScrubBootSecrets()
+	if value := os.Getenv("BKCRAB_FAIR_QUEUE_RABBITMQ_URL"); value != "" {
+		t.Fatalf("RabbitMQ bootstrap URL was not scrubbed: %q", value)
+	}
+	if value := os.Getenv("BKCRAB_FAIR_QUEUE_REDIS_PASSWORD"); value != "" {
+		t.Fatalf("Redis bootstrap password was not scrubbed: %q", value)
+	}
+}
 
 func TestRAGCfgDefaults(t *testing.T) {
 	var cfg Config

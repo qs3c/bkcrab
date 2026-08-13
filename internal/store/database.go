@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +23,115 @@ import (
 type DBStore struct {
 	db      *sql.DB
 	dialect string // "mysql"、"postgres" 或 "sqlite"
+
+	fairQueueSafetyMu       sync.RWMutex
+	fairQueueSafetySnapshot FairQueueConnectionSafetySnapshot
+	fairQueueSafetyFailed   bool
+	fairQueueSafetyNotified bool
+	fairQueueSafetyObserver func()
+}
+
+// FairQueueWriterIdentity is the public, non-sensitive identity of the
+// authoritative MySQL writer. The source UUID, database, and physical
+// connection ID remain confined to the connection-verification code.
+type FairQueueWriterIdentity struct {
+	Fingerprint string
+}
+
+// FairQueueSessionAffinityState describes the last conclusive physical
+// connection identity check. Dependency availability is reported separately;
+// an ordinary dependency error therefore does not manufacture an affinity
+// result.
+type FairQueueSessionAffinityState string
+
+const (
+	FairQueueSessionAffinityUnknown  FairQueueSessionAffinityState = "unknown"
+	FairQueueSessionAffinityVerified FairQueueSessionAffinityState = "verified"
+	FairQueueSessionAffinityMismatch FairQueueSessionAffinityState = "mismatch"
+)
+
+// FairQueueConnectionSafetySnapshot contains only health-safe connection
+// identity facts. A zero LastSuccessfulVerifiedAt means that this store has not
+// yet completed a successful same-session verification.
+type FairQueueConnectionSafetySnapshot struct {
+	LastSuccessfulVerifiedAt time.Time
+	SessionAffinity          FairQueueSessionAffinityState
+}
+
+// ReadFairQueueConnectionSafetySnapshot returns a race-free copy of the most
+// recent connection identity safety result.
+func (d *DBStore) ReadFairQueueConnectionSafetySnapshot() FairQueueConnectionSafetySnapshot {
+	if d == nil {
+		return FairQueueConnectionSafetySnapshot{SessionAffinity: FairQueueSessionAffinityUnknown}
+	}
+	d.fairQueueSafetyMu.RLock()
+	snapshot := d.fairQueueSafetySnapshot
+	d.fairQueueSafetyMu.RUnlock()
+	if snapshot.SessionAffinity == "" {
+		snapshot.SessionAffinity = FairQueueSessionAffinityUnknown
+	}
+	return snapshot
+}
+
+// SetFairQueueSafetyFailureObserver installs the process-level fail-closed
+// callback for the first pinned writer/session mismatch. The recent-state
+// snapshot above remains recoverable for diagnostics, while this independent
+// latch can never be cleared during the DBStore lifetime. The callback runs
+// synchronously and outside the store mutex so it may close runtime gates.
+func (d *DBStore) SetFairQueueSafetyFailureObserver(observer func()) {
+	if d == nil {
+		return
+	}
+	var notify func()
+	d.fairQueueSafetyMu.Lock()
+	d.fairQueueSafetyObserver = observer
+	if d.fairQueueSafetyFailed && !d.fairQueueSafetyNotified && observer != nil {
+		d.fairQueueSafetyNotified = true
+		notify = observer
+	}
+	d.fairQueueSafetyMu.Unlock()
+	if notify != nil {
+		notify()
+	}
+}
+
+func (d *DBStore) recordFairQueueConnectionVerified(verifiedAt time.Time) {
+	if verifiedAt.IsZero() {
+		verifiedAt = time.Now()
+	}
+	d.recordFairQueueConnectionSafetyOutcome(verifiedAt, FairQueueSessionAffinityVerified)
+}
+
+func (d *DBStore) recordFairQueueConnectionMismatch() {
+	d.recordFairQueueConnectionSafetyOutcome(time.Time{}, FairQueueSessionAffinityMismatch)
+}
+
+func (d *DBStore) recordFairQueueConnectionSafetyOutcome(
+	verifiedAt time.Time,
+	state FairQueueSessionAffinityState,
+) {
+	if d == nil {
+		return
+	}
+	var notify func()
+	d.fairQueueSafetyMu.Lock()
+	if verifiedAt = verifiedAt.UTC(); !verifiedAt.IsZero() &&
+		(d.fairQueueSafetySnapshot.LastSuccessfulVerifiedAt.IsZero() ||
+			verifiedAt.After(d.fairQueueSafetySnapshot.LastSuccessfulVerifiedAt)) {
+		d.fairQueueSafetySnapshot.LastSuccessfulVerifiedAt = verifiedAt
+	}
+	d.fairQueueSafetySnapshot.SessionAffinity = state
+	if state == FairQueueSessionAffinityMismatch {
+		d.fairQueueSafetyFailed = true
+		if !d.fairQueueSafetyNotified && d.fairQueueSafetyObserver != nil {
+			d.fairQueueSafetyNotified = true
+			notify = d.fairQueueSafetyObserver
+		}
+	}
+	d.fairQueueSafetyMu.Unlock()
+	if notify != nil {
+		notify()
+	}
 }
 
 // NewDBStore 创建一个数据库支持的 store。
@@ -116,16 +227,19 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 		migrationSQL = mysqlMigrationSQL()
 	}
 	for _, stmt := range migrationSQL {
-		// Existing installations do not have the lease columns until the expand
-		// phase below. Keep the statement in the canonical DDL list for schema
-		// inspection, but create it from migrateRAGIndexTaskSchema after ALTERs.
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(stmt)),
-			"create index if not exists idx_rag_index_tasks_runnable") {
+		// Existing installations do not have the lease/fair-queue columns until
+		// the expand phase below. Keep these statements in the canonical DDL list
+		// for fresh-schema inspection, but create them only after the additive
+		// ALTERs have landed.
+		if isDeferredRAGIndexTaskDDL(stmt) {
 			continue
 		}
 		if err := d.execDDL(ctx, stmt); err != nil {
 			return fmt.Errorf("migrate: %w\nSQL: %s", err, stmt)
 		}
+	}
+	if err := d.migrateImageGenerationBatchLimits(ctx); err != nil {
+		return fmt.Errorf("migrate image generation batch limits: %w", err)
 	}
 	if err := d.migrateRAGMultimodalSchema(ctx); err != nil {
 		return fmt.Errorf("migrate RAG multimodal schema: %w", err)
@@ -206,6 +320,39 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 		return fmt.Errorf("backfill legacy RAG generations: %w", err)
 	}
 	return nil
+}
+
+func (d *DBStore) migrateImageGenerationBatchLimits(ctx context.Context) error {
+	if d.dialect != mysqlDialect {
+		return nil
+	}
+	exists, err := d.tableExists(ctx, "image_generation_batches")
+	if err != nil || !exists {
+		return err
+	}
+	has, err := d.tableHasColumn(ctx, "image_generation_batches", "artifact_byte_limit")
+	if err != nil || has {
+		return err
+	}
+	_, err = d.db.ExecContext(ctx, `ALTER TABLE image_generation_batches
+		ADD COLUMN artifact_byte_limit BIGINT NOT NULL DEFAULT 134217728 AFTER requested_count`)
+	return err
+}
+
+func isDeferredRAGIndexTaskDDL(statement string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(statement))
+	for _, name := range []string{
+		"idx_rag_index_tasks_runnable",
+		"idx_rag_index_tasks_dispatch",
+		"idx_rag_index_tasks_expired",
+		"idx_rag_index_tasks_user_id",
+		"idx_rag_index_tasks_user_running",
+	} {
+		if strings.HasPrefix(normalized, "create index if not exists "+name) {
+			return true
+		}
+	}
+	return false
 }
 
 // migrateSessionsAddChatterUserID 将 chatter_user_id 列改装到
@@ -1461,6 +1608,9 @@ func (d *DBStore) backfillLegacyRAGVersionAssets(ctx context.Context, exec ragEx
 }
 
 func (d *DBStore) addRAGColumnIfMissing(ctx context.Context, table, column, ddl string) error {
+	if !validRAGDDLIdentifier(table) || !validRAGDDLIdentifier(column) {
+		return fmt.Errorf("store: invalid RAG migration identifier %q.%q", table, column)
+	}
 	has, err := d.tableHasColumn(ctx, table, column)
 	if err != nil {
 		return fmt.Errorf("inspect %s.%s: %w", table, column, err)
@@ -1475,41 +1625,242 @@ func (d *DBStore) addRAGColumnIfMissing(ctx context.Context, table, column, ddl 
 	return nil
 }
 
-func (d *DBStore) migrateRAGIndexTaskSchema(ctx context.Context) error {
-	hadDocVersion, err := d.tableHasColumn(ctx, "rag_index_tasks", "doc_version")
-	if err != nil {
-		return fmt.Errorf("inspect rag_index_tasks.doc_version: %w", err)
+func validRAGDDLIdentifier(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
 	}
-	columns := []struct {
-		name string
-		ddl  string
-	}{
+	for index := 0; index < len(value); index++ {
+		char := value[index]
+		if (char >= 'a' && char <= 'z') || char == '_' ||
+			(index > 0 && char >= '0' && char <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+type ragIndexTaskExpandColumn struct {
+	name string
+	ddl  string
+}
+
+func (d *DBStore) addRAGIndexTaskExpandColumns(ctx context.Context, table string) error {
+	columns := []ragIndexTaskExpandColumn{
 		{"doc_version", "BIGINT"},
+		{"user_id", "TEXT"},
+		{"dispatch_generation", "BIGINT NOT NULL DEFAULT 1"},
 		{"claim_generation", "BIGINT NOT NULL DEFAULT 0"},
+		{"dispatched_at", "TIMESTAMP"},
 		{"lease_owner", "TEXT NOT NULL DEFAULT ''"},
 		{"lease_until", "TIMESTAMP"},
 		{"heartbeat_at", "TIMESTAMP"},
 		{"next_run_at", "TIMESTAMP"},
 	}
 	if d.dialect == mysqlDialect {
-		columns[2].ddl = "VARCHAR(96) NOT NULL DEFAULT ''"
-		columns[3].ddl = "DATETIME(6)"
-		columns[4].ddl = "DATETIME(6)"
-		columns[5].ddl = "DATETIME(6)"
+		for index := range columns {
+			switch columns[index].name {
+			case "user_id":
+				columns[index].ddl = "VARCHAR(120)"
+			case "lease_owner":
+				columns[index].ddl = "VARCHAR(96) NOT NULL DEFAULT ''"
+			case "dispatched_at", "lease_until", "heartbeat_at", "next_run_at":
+				columns[index].ddl = "DATETIME(6)"
+			}
+		}
 	}
 	for _, column := range columns {
-		if err := d.addRAGColumnIfMissing(ctx, "rag_index_tasks", column.name, column.ddl); err != nil {
+		if err := d.addRAGColumnIfMissing(ctx, table, column.name, column.ddl); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (d *DBStore) migrateRAGIndexTaskSchema(ctx context.Context) error {
+	hadDocVersion, err := d.tableHasColumn(ctx, "rag_index_tasks", "doc_version")
+	if err != nil {
+		return fmt.Errorf("inspect rag_index_tasks.doc_version: %w", err)
+	}
+	if err := d.addRAGIndexTaskExpandColumns(ctx, "rag_index_tasks"); err != nil {
+		return err
 	}
 	// Contract/backfill is deliberately deferred until the runtime
 	// SnapshotBuilder is available. At this point legacy doc_version values may
 	// remain NULL and legacy tasks are never claimed by the new query path.
 	_ = hadDocVersion
-	return d.ensureRAGIndexTaskIndex(ctx, ragIndexContract{
-		name:    "idx_rag_index_tasks_runnable",
-		columns: []string{"status", "next_run_at", "lease_until", "created_at"},
-	})
+	for _, index := range ragIndexTaskExpandIndexContracts() {
+		if err := d.ensureRAGIndexTaskIndex(ctx, index); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const maxRAGFairQueueBackfillPageSize = 10_000
+
+// backfillRAGFairQueueTasksPage scans at most limit task IDs strictly after
+// afterID. nextID is always the last scanned ID; changed counts successful row
+// CASes. done is true only after a SELECT proves there is no next row, so a
+// nonempty full page is never guessed to be the final page.
+//
+// Every resolvable task gets the canonical KB owner, including terminal rows.
+// Only PENDING/RUNNING rows have generation state normalized: PENDING keeps
+// max(dispatch_generation, claim_generation+1) and clears its publish marker,
+// while RUNNING is reset to claim_generation and preserves the marker sealed by
+// a compatible legacy claim. Unresolvable
+// owners are left untouched for the contract readiness report to reject.
+//
+// All reads and CASes deliberately use exec. The caller may therefore pass an
+// expected-writer pinned *sql.Conn; this helper never falls back to d.db and
+// never starts a transaction that could silently select another connection.
+func (d *DBStore) backfillRAGFairQueueTasksPage(
+	ctx context.Context,
+	exec ragExecutor,
+	afterID int64,
+	limit int,
+) (nextID, changed int64, done bool, err error) {
+	if exec == nil {
+		return afterID, 0, false, errors.New("store: fair queue backfill executor is required")
+	}
+	if afterID < 0 {
+		return afterID, 0, false, errors.New("store: fair queue backfill cursor must not be negative")
+	}
+	if limit <= 0 || limit > maxRAGFairQueueBackfillPageSize {
+		return afterID, 0, false, fmt.Errorf("store: fair queue backfill page size must be between 1 and %d", maxRAGFairQueueBackfillPageSize)
+	}
+
+	nextID = afterID
+	for scanned := 0; scanned < limit; scanned++ {
+		var (
+			id                 int64
+			status             string
+			claimGeneration    int64
+			dispatchGeneration int64
+			currentUser        sql.NullString
+			dispatchedAt       sql.NullTime
+			ownerUser          sql.NullString
+		)
+		query := fmt.Sprintf(`SELECT t.id,t.status,t.claim_generation,t.dispatch_generation,
+			t.user_id,t.dispatched_at,kb.user_id
+			FROM rag_index_tasks t
+			LEFT JOIN rag_documents d ON d.id=t.doc_id
+			LEFT JOIN rag_kbs kb ON kb.id=d.kb_id
+			WHERE t.id>%s ORDER BY t.id LIMIT 1`, d.ph(1))
+		scanErr := exec.QueryRowContext(ctx, query, nextID).Scan(
+			&id, &status, &claimGeneration, &dispatchGeneration,
+			&currentUser, &dispatchedAt, &ownerUser,
+		)
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			return nextID, changed, true, nil
+		}
+		if scanErr != nil {
+			return nextID, changed, false, fmt.Errorf("scan fair queue backfill page after %d: %w", nextID, scanErr)
+		}
+		nextID = id
+
+		setClauses := make([]string, 0, 3)
+		args := make([]any, 0, 12)
+		addValue := func(column string, value any) {
+			args = append(args, value)
+			setClauses = append(setClauses, fmt.Sprintf("%s=%s", column, d.ph(len(args))))
+		}
+		ownerWillChange := ownerUser.Valid && ownerUser.String != "" &&
+			(!currentUser.Valid || currentUser.String != ownerUser.String)
+		if ownerWillChange {
+			addValue("user_id", ownerUser.String)
+		}
+
+		desiredGeneration := dispatchGeneration
+		switch status {
+		case "PENDING":
+			if claimGeneration == math.MaxInt64 || dispatchGeneration == math.MaxInt64 {
+				return nextID, changed, false, ErrRAGDispatchGenerationExhausted
+			}
+			if minimum := claimGeneration + 1; desiredGeneration < minimum {
+				desiredGeneration = minimum
+			}
+		case "RUNNING":
+			if claimGeneration == math.MaxInt64 || dispatchGeneration == math.MaxInt64 {
+				return nextID, changed, false, ErrRAGDispatchGenerationExhausted
+			}
+			desiredGeneration = claimGeneration
+		}
+		if desiredGeneration != dispatchGeneration {
+			addValue("dispatch_generation", desiredGeneration)
+		}
+		// A compatible legacy claim intentionally seals its RUNNING epoch with
+		// dispatched_at=DB_NOW. Contract readiness only requires RUNNING
+		// dispatch_generation=claim_generation, so preserve that marker. PENDING
+		// rows, on the other hand, must remain an unpublished obligation.
+		if status == "PENDING" && dispatchedAt.Valid {
+			setClauses = append(setClauses, "dispatched_at=NULL")
+		}
+		if len(setClauses) == 0 {
+			continue
+		}
+
+		// Guard the complete source snapshot. A concurrent claim/retry/repair or
+		// owner change makes this CAS a no-op; a later full pass safely retries it.
+		args = append(args, id)
+		where := []string{"id=" + d.ph(len(args))}
+		args = append(args, status)
+		where = append(where, "status="+d.ph(len(args)))
+		args = append(args, claimGeneration)
+		where = append(where, "claim_generation="+d.ph(len(args)))
+		args = append(args, dispatchGeneration)
+		where = append(where, "dispatch_generation="+d.ph(len(args)))
+
+		var currentUserArg any
+		if currentUser.Valid {
+			currentUserArg = currentUser.String
+		}
+		args = append(args, currentUserArg)
+		where = append(where, d.ragNullableSnapshotPredicate("user_id", len(args)))
+
+		var dispatchedAtArg any
+		if dispatchedAt.Valid {
+			dispatchedAtArg = dispatchedAt.Time
+		}
+		args = append(args, dispatchedAtArg)
+		where = append(where, d.ragNullableSnapshotPredicate("dispatched_at", len(args)))
+
+		if ownerWillChange {
+			args = append(args, ownerUser.String)
+			where = append(where, fmt.Sprintf(`EXISTS (SELECT 1 FROM rag_documents owner_doc
+				JOIN rag_kbs owner_kb ON owner_kb.id=owner_doc.kb_id
+				WHERE owner_doc.id=rag_index_tasks.doc_id AND owner_kb.user_id=%s)`, d.ph(len(args))))
+		}
+
+		result, updateErr := exec.ExecContext(ctx,
+			"UPDATE rag_index_tasks SET "+strings.Join(setClauses, ",")+" WHERE "+strings.Join(where, " AND "),
+			args...,
+		)
+		if updateErr != nil {
+			return nextID, changed, false, fmt.Errorf("backfill fair queue task %d: %w", id, updateErr)
+		}
+		affected, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return nextID, changed, false, fmt.Errorf("count fair queue backfill task %d: %w", id, rowsErr)
+		}
+		if affected > 1 {
+			return nextID, changed, false, fmt.Errorf("store: fair queue backfill task %d changed %d rows", id, affected)
+		}
+		changed += affected
+	}
+	return nextID, changed, false, nil
+}
+
+func (d *DBStore) ragNullableSnapshotPredicate(column string, argument int) string {
+	placeholder := d.ph(argument)
+	switch d.dialect {
+	case mysqlDialect:
+		return column + " <=> " + placeholder
+	case "postgres":
+		return column + " IS NOT DISTINCT FROM " + placeholder
+	default:
+		return column + " IS " + placeholder
+	}
 }
 
 func (d *DBStore) rebuildRAGIndexTasksSQLite(ctx context.Context) error {
@@ -1523,10 +1874,12 @@ func (d *DBStore) rebuildRAGIndexTasksSQLite(ctx context.Context) error {
 		`DROP TABLE IF EXISTS rag_index_tasks_phase_a_new`,
 		newDDL,
 		`INSERT INTO rag_index_tasks_phase_a_new
-			(id,doc_id,doc_version,status,retry_count,max_retry,claim_generation,
-			 lease_owner,lease_until,heartbeat_at,next_run_at,error_msg,created_at,started_at,finished_at)
-		 SELECT id,doc_id,doc_version,status,retry_count,max_retry,claim_generation,
-			 lease_owner,lease_until,heartbeat_at,next_run_at,error_msg,created_at,started_at,finished_at
+			(id,doc_id,doc_version,user_id,status,retry_count,max_retry,dispatch_generation,
+			 claim_generation,dispatched_at,lease_owner,lease_until,heartbeat_at,next_run_at,
+			 error_msg,created_at,started_at,finished_at)
+		 SELECT id,doc_id,doc_version,user_id,status,retry_count,max_retry,dispatch_generation,
+			 claim_generation,dispatched_at,lease_owner,lease_until,heartbeat_at,next_run_at,
+			 error_msg,created_at,started_at,finished_at
 		 FROM rag_index_tasks`,
 		`DROP TABLE rag_index_tasks`,
 		`ALTER TABLE rag_index_tasks_phase_a_new RENAME TO rag_index_tasks`,
@@ -1764,16 +2117,25 @@ func (d *DBStore) ensureRAGIndexTaskIndex(ctx context.Context, contract ragIndex
 }
 
 func (d *DBStore) ensureRAGIndexTaskIndexes(ctx context.Context) error {
-	indexes := []ragIndexContract{
-		{name: "idx_rag_index_tasks_runnable", columns: []string{"status", "next_run_at", "lease_until", "created_at"}},
-		{name: "uq_rag_index_tasks_doc_version", unique: true, columns: []string{"doc_id", "doc_version"}},
-	}
+	indexes := append(ragIndexTaskExpandIndexContracts(), ragIndexContract{
+		name: "uq_rag_index_tasks_doc_version", unique: true, columns: []string{"doc_id", "doc_version"},
+	})
 	for _, index := range indexes {
 		if err := d.ensureRAGIndexTaskIndex(ctx, index); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func ragIndexTaskExpandIndexContracts() []ragIndexContract {
+	return []ragIndexContract{
+		{name: "idx_rag_index_tasks_runnable", columns: []string{"status", "next_run_at", "lease_until", "created_at"}},
+		{name: "idx_rag_index_tasks_dispatch", columns: []string{"status", "dispatched_at", "next_run_at", "id"}},
+		{name: "idx_rag_index_tasks_expired", columns: []string{"status", "lease_until", "next_run_at", "id"}},
+		{name: "idx_rag_index_tasks_user_id", columns: []string{"user_id", "id"}},
+		{name: "idx_rag_index_tasks_user_running", columns: []string{"user_id", "status", "lease_until"}},
+	}
 }
 
 func (d *DBStore) ragColumnType(ctx context.Context, table, column string) (string, error) {
@@ -1946,6 +2308,22 @@ func (d *DBStore) migrationSQL() []string {
 		`CREATE TABLE IF NOT EXISTS schema_migration_markers (
 			name TEXT PRIMARY KEY,
 			completed_at TIMESTAMP NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS fairqueue_resource_operations (
+			resource TEXT PRIMARY KEY,
+			operation_id TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			phase TEXT NOT NULL,
+			current_writer_fingerprint TEXT NOT NULL,
+			original_writer_fingerprint TEXT NOT NULL DEFAULT '',
+			target_writer_fingerprint TEXT NOT NULL DEFAULT '',
+			repair_high_water TEXT,
+			repair_pass_complete BOOLEAN NOT NULL DEFAULT FALSE,
+			force_not_before TIMESTAMP,
+			force_delete_pass_complete BOOLEAN NOT NULL DEFAULT FALSE,
+			version BIGINT NOT NULL DEFAULT 1,
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL
 		)`,
 		// users 表保存第一方人类（role=super_admin/user）和
 		// 应用配置的最终用户（role=app_user）。后者由 api_key
@@ -2353,6 +2731,10 @@ func (d *DBStore) migrationSQL() []string {
 		d.ragIndexTasksTableSQL(),
 		`CREATE INDEX IF NOT EXISTS idx_rag_tasks_status ON rag_index_tasks (status, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_rag_index_tasks_runnable ON rag_index_tasks (status, next_run_at, lease_until, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_index_tasks_dispatch ON rag_index_tasks (status, dispatched_at, next_run_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_index_tasks_expired ON rag_index_tasks (status, lease_until, next_run_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_index_tasks_user_id ON rag_index_tasks (user_id, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_rag_index_tasks_user_running ON rag_index_tasks (user_id, status, lease_until)`,
 		d.ragDocumentVersionsTableSQL(),
 		d.ragAssetsTableSQL(),
 		`CREATE INDEX IF NOT EXISTS idx_rag_assets_doc ON rag_assets (doc_id)`,
@@ -2405,10 +2787,13 @@ func (d *DBStore) ragIndexTasksTableSQL() string {
 		id %s,
 		doc_id TEXT NOT NULL,
 		doc_version BIGINT NOT NULL,
+		user_id TEXT,
 		status TEXT NOT NULL DEFAULT 'PENDING',
 		retry_count INTEGER NOT NULL DEFAULT 0,
 		max_retry INTEGER NOT NULL DEFAULT 3,
+		dispatch_generation BIGINT NOT NULL DEFAULT 1,
 		claim_generation BIGINT NOT NULL DEFAULT 0,
+		dispatched_at TIMESTAMP,
 		lease_owner TEXT NOT NULL DEFAULT '',
 		lease_until TIMESTAMP,
 		heartbeat_at TIMESTAMP,

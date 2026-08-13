@@ -82,7 +82,10 @@ func TestProcessorStrictGatesAndSemanticKinds(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fake := &recordingEnricher{}
-			got, warnings := NewProcessor(fake).EnrichChunks(context.Background(), processChunks(), test.cfg, nil)
+			got, warnings, err := NewProcessor(fake).EnrichChunks(context.Background(), processChunks(), test.cfg, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if calls, _ := fake.snapshot(); len(calls) != 0 {
 				t.Fatalf("disabled gate made %d calls", len(calls))
 			}
@@ -94,10 +97,13 @@ func TestProcessorStrictGatesAndSemanticKinds(t *testing.T) {
 
 	fake := &recordingEnricher{}
 	sharedBudget := &vision.TaskDocumentAIBudget{}
-	got, warnings := NewProcessor(fake).EnrichChunks(context.Background(), processChunks(), ProcessConfig{
+	got, warnings, err := NewProcessor(fake).EnrichChunks(context.Background(), processChunks(), ProcessConfig{
 		SystemEnabled: true, TextModel: "text", KBEnabled: true, MaxBlocks: 10,
 		Finalize: finalize, Scope: CacheScope{UserID: "u", KBID: "kb", DocID: "doc"},
 	}, sharedBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
 	blocks, budgets := fake.snapshot()
 	if len(blocks) != 2 || len(warnings) != 0 {
 		t.Fatalf("table/code calls=%d warnings=%+v", len(blocks), warnings)
@@ -127,10 +133,13 @@ func TestProcessorSoftFailureAndBlockLimit(t *testing.T) {
 	t.Parallel()
 	fake := &recordingEnricher{err: errors.New("provider timeout")}
 	chunks := processChunks()
-	got, warnings := NewProcessor(fake).EnrichChunks(context.Background(), chunks, ProcessConfig{
+	got, warnings, err := NewProcessor(fake).EnrichChunks(context.Background(), chunks, ProcessConfig{
 		SystemEnabled: true, TextModel: "text", KBEnabled: true, MaxBlocks: 1,
 		Finalize: FinalizeConfig{ChunkSize: 256, MaxSearchContentBytes: 4096, CollectionMaxLength: 4096},
 	}, &vision.TaskDocumentAIBudget{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	calls, _ := fake.snapshot()
 	if len(calls) != 1 || len(warnings) != 2 {
 		t.Fatalf("calls=%d warnings=%+v", len(calls), warnings)
@@ -145,6 +154,28 @@ func TestProcessorSoftFailureAndBlockLimit(t *testing.T) {
 	if got[2].RawContent != chunks[2].RawContent || got[3].RawContent != chunks[3].RawContent ||
 		got[2].Enhancement != "" || got[3].Enhancement != "" {
 		t.Fatalf("soft failure damaged source: %+v", got)
+	}
+}
+
+func TestProcessorSafetyFailuresAreNotDegraded(t *testing.T) {
+	for _, safetyErr := range []error{
+		storepkg.ErrFairQueueWriterMismatch,
+		storepkg.ErrFairQueueUnsafeConnection,
+		storepkg.ErrRAGDocumentAILedgerCorrupt,
+	} {
+		t.Run(safetyErr.Error(), func(t *testing.T) {
+			fake := &recordingEnricher{err: safetyErr}
+			got, warnings, err := NewProcessor(fake).EnrichChunks(context.Background(), processChunks(), ProcessConfig{
+				SystemEnabled: true, TextModel: "text", KBEnabled: true, MaxBlocks: 10,
+				Finalize: FinalizeConfig{ChunkSize: 256, MaxSearchContentBytes: 4096, CollectionMaxLength: 4096},
+			}, &vision.TaskDocumentAIBudget{})
+			if !errors.Is(err, safetyErr) {
+				t.Fatalf("EnrichChunks() error=%v, want safety error %v", err, safetyErr)
+			}
+			if len(warnings) != 0 || got[2].Enhancement != "" || got[3].Enhancement != "" {
+				t.Fatalf("safety failure was degraded: warnings=%+v chunks=%+v", warnings, got)
+			}
+		})
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,13 +36,30 @@ import (
 
 type pipelineStore struct {
 	*store.DBStore
-	claimFn      func(context.Context, string, time.Duration) (*store.RAGIndexClaim, error)
-	heartbeatFn  func(context.Context, store.IndexFence, time.Duration) (bool, error)
-	supersedeFn  func(context.Context, store.IndexFence, *store.RAGDocumentVersionRecord) (*store.RAGIndexTaskRecord, bool, error)
-	activateFn   func(context.Context, store.IndexFence, store.RAGIndexActivation, time.Duration) (bool, error)
-	putChunksFn  func(context.Context, []store.RAGChunkRecord) error
-	checkFenceFn func(context.Context, store.IndexFence) (bool, error)
-	progressFn   func(context.Context, store.IndexFence, store.RAGIndexProgress) (bool, error)
+	claimFn             func(context.Context, string, time.Duration) (*store.RAGIndexClaim, error)
+	heartbeatFn         func(context.Context, store.IndexFence, time.Duration) (bool, error)
+	supersedeFn         func(context.Context, store.IndexFence, *store.RAGDocumentVersionRecord) (*store.RAGIndexTaskRecord, bool, error)
+	activateFn          func(context.Context, store.IndexFence, store.RAGIndexActivation, time.Duration) (bool, error)
+	acknowledgeFn       func(context.Context, store.IndexFence) (bool, error)
+	retryFn             func(context.Context, store.IndexFence, string, time.Duration) (bool, error)
+	failFn              func(context.Context, store.IndexFence, string) (bool, error)
+	putChunksFn         func(context.Context, []store.RAGChunkRecord) error
+	putChunkAssetsFn    func(context.Context, []store.RAGChunkAssetRecord) error
+	putChunksForIndexFn func(context.Context, store.IndexFence, []store.RAGChunkRecord) (bool, error)
+	beginObjectFn       func(context.Context, store.RAGObjectWriteRequest) (*store.RAGObjectWriteFence, error)
+	markObjectFn        func(context.Context, store.RAGObjectWriteFence) (bool, error)
+	getDocumentForIndex func(context.Context, store.IndexFence) (*store.RAGDocumentRecord, error)
+	createBudgetFn      func(context.Context, *store.RAGDocumentAITaskBudgetRecord) error
+	reserveUsageFn      func(context.Context, store.IndexFence, *store.RAGDocumentAIUsageRecord, store.RAGDocumentAILimits) (bool, error)
+	getUsageFn          func(context.Context, string) (*store.RAGDocumentAIUsageRecord, error)
+	markUsageFn         func(context.Context, string, store.IndexFence) (bool, error)
+	commitUsageFn       func(context.Context, string, int64, int64, int64, bool) (bool, error)
+	releaseUsageFn      func(context.Context, string) (bool, error)
+	registerCacheFn     func(context.Context, store.RAGCacheObjectRecord) error
+	registerCacheFairFn func(context.Context, store.IndexFence, store.RAGCacheObjectRecord) error
+	checkFenceFn        func(context.Context, store.IndexFence) (bool, error)
+	progressFn          func(context.Context, store.IndexFence, store.RAGIndexProgress) (bool, error)
+	reconcileFn         func(context.Context, time.Time, time.Time, int) (int, error)
 }
 
 func (s *pipelineStore) PutRAGChunks(ctx context.Context, chunks []store.RAGChunkRecord) error {
@@ -49,6 +67,145 @@ func (s *pipelineStore) PutRAGChunks(ctx context.Context, chunks []store.RAGChun
 		return s.putChunksFn(ctx, chunks)
 	}
 	return s.DBStore.PutRAGChunks(ctx, chunks)
+}
+
+func (s *pipelineStore) PutRAGChunkAssets(
+	ctx context.Context,
+	mappings []store.RAGChunkAssetRecord,
+) error {
+	if s.putChunkAssetsFn != nil {
+		return s.putChunkAssetsFn(ctx, mappings)
+	}
+	return s.DBStore.PutRAGChunkAssets(ctx, mappings)
+}
+
+func (s *pipelineStore) BeginRAGObjectWrite(
+	ctx context.Context,
+	request store.RAGObjectWriteRequest,
+) (*store.RAGObjectWriteFence, error) {
+	if s.beginObjectFn != nil {
+		return s.beginObjectFn(ctx, request)
+	}
+	return s.DBStore.BeginRAGObjectWrite(ctx, request)
+}
+
+func (s *pipelineStore) MarkRAGObjectWriteReady(
+	ctx context.Context,
+	fence store.RAGObjectWriteFence,
+) (bool, error) {
+	if s.markObjectFn != nil {
+		return s.markObjectFn(ctx, fence)
+	}
+	return s.DBStore.MarkRAGObjectWriteReady(ctx, fence)
+}
+
+func (s *pipelineStore) PutRAGChunksForIndex(
+	ctx context.Context,
+	fence store.IndexFence,
+	chunks []store.RAGChunkRecord,
+) (bool, error) {
+	if s.putChunksForIndexFn != nil {
+		return s.putChunksForIndexFn(ctx, fence, chunks)
+	}
+	return s.DBStore.PutRAGChunksForIndex(ctx, fence, chunks)
+}
+
+func (s *pipelineStore) GetRAGDocumentForIndex(
+	ctx context.Context,
+	fence store.IndexFence,
+) (*store.RAGDocumentRecord, error) {
+	if s.getDocumentForIndex != nil {
+		return s.getDocumentForIndex(ctx, fence)
+	}
+	return s.DBStore.GetRAGDocumentForIndex(ctx, fence)
+}
+
+func (s *pipelineStore) CreateRAGDocumentAITaskBudget(
+	ctx context.Context,
+	budget *store.RAGDocumentAITaskBudgetRecord,
+) error {
+	if s.createBudgetFn != nil {
+		return s.createBudgetFn(ctx, budget)
+	}
+	return s.DBStore.CreateRAGDocumentAITaskBudget(ctx, budget)
+}
+
+func (s *pipelineStore) ReserveRAGDocumentAIUsage(
+	ctx context.Context,
+	fence store.IndexFence,
+	usage *store.RAGDocumentAIUsageRecord,
+	limits store.RAGDocumentAILimits,
+) (bool, error) {
+	if s.reserveUsageFn != nil {
+		return s.reserveUsageFn(ctx, fence, usage, limits)
+	}
+	return s.DBStore.ReserveRAGDocumentAIUsage(ctx, fence, usage, limits)
+}
+
+func (s *pipelineStore) GetRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+) (*store.RAGDocumentAIUsageRecord, error) {
+	if s.getUsageFn != nil {
+		return s.getUsageFn(ctx, idempotencyKey)
+	}
+	return s.DBStore.GetRAGDocumentAIUsage(ctx, idempotencyKey)
+}
+
+func (s *pipelineStore) MarkSentRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+	fence store.IndexFence,
+) (bool, error) {
+	if s.markUsageFn != nil {
+		return s.markUsageFn(ctx, idempotencyKey, fence)
+	}
+	return s.DBStore.MarkSentRAGDocumentAIUsage(ctx, idempotencyKey, fence)
+}
+
+func (s *pipelineStore) CommitRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+	inputTokens, outputTokens, costMicroUSD int64,
+	estimated bool,
+) (bool, error) {
+	if s.commitUsageFn != nil {
+		return s.commitUsageFn(ctx, idempotencyKey, inputTokens, outputTokens, costMicroUSD, estimated)
+	}
+	return s.DBStore.CommitRAGDocumentAIUsage(
+		ctx, idempotencyKey, inputTokens, outputTokens, costMicroUSD, estimated,
+	)
+}
+
+func (s *pipelineStore) ReleaseRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+) (bool, error) {
+	if s.releaseUsageFn != nil {
+		return s.releaseUsageFn(ctx, idempotencyKey)
+	}
+	return s.DBStore.ReleaseRAGDocumentAIUsage(ctx, idempotencyKey)
+}
+
+func (s *pipelineStore) RegisterRAGCacheObject(
+	ctx context.Context,
+	record store.RAGCacheObjectRecord,
+) error {
+	if s.registerCacheFn != nil {
+		return s.registerCacheFn(ctx, record)
+	}
+	return s.DBStore.RegisterRAGCacheObject(ctx, record)
+}
+
+func (s *pipelineStore) RegisterRAGCacheObjectForIndex(
+	ctx context.Context,
+	fence store.IndexFence,
+	record store.RAGCacheObjectRecord,
+) error {
+	if s.registerCacheFairFn != nil {
+		return s.registerCacheFairFn(ctx, fence, record)
+	}
+	return s.DBStore.RegisterRAGCacheObjectForIndex(ctx, fence, record)
 }
 
 func (s *pipelineStore) CheckRAGIndexFence(ctx context.Context, fence store.IndexFence) (bool, error) {
@@ -81,6 +238,50 @@ func (s *pipelineStore) HeartbeatRAGIndexTask(ctx context.Context, fence store.I
 		return s.heartbeatFn(ctx, fence, lease)
 	}
 	return s.DBStore.HeartbeatRAGIndexTask(ctx, fence, lease)
+}
+
+func (s *pipelineStore) AcknowledgeRAGIndexTaskQuiesced(
+	ctx context.Context,
+	fence store.IndexFence,
+) (bool, error) {
+	if s.acknowledgeFn != nil {
+		return s.acknowledgeFn(ctx, fence)
+	}
+	return s.DBStore.AcknowledgeRAGIndexTaskQuiesced(ctx, fence)
+}
+
+func (s *pipelineStore) RetryRAGIndexTask(
+	ctx context.Context,
+	fence store.IndexFence,
+	message string,
+	delay time.Duration,
+) (bool, error) {
+	if s.retryFn != nil {
+		return s.retryFn(ctx, fence, message, delay)
+	}
+	return s.DBStore.RetryRAGIndexTask(ctx, fence, message, delay)
+}
+
+func (s *pipelineStore) FailRAGIndexTask(
+	ctx context.Context,
+	fence store.IndexFence,
+	message string,
+) (bool, error) {
+	if s.failFn != nil {
+		return s.failFn(ctx, fence, message)
+	}
+	return s.DBStore.FailRAGIndexTask(ctx, fence, message)
+}
+
+func (s *pipelineStore) ReconcileRAGDocumentAIUsage(
+	ctx context.Context,
+	reservedBefore, sentBefore time.Time,
+	limit int,
+) (int, error) {
+	if s.reconcileFn != nil {
+		return s.reconcileFn(ctx, reservedBefore, sentBefore, limit)
+	}
+	return s.DBStore.ReconcileRAGDocumentAIUsage(ctx, reservedBefore, sentBefore, limit)
 }
 
 func (s *pipelineStore) SupersedeRAGIndexTaskAndCreateVersion(
@@ -473,6 +674,1003 @@ func newPipelineHarness(t *testing.T) *pipelineHarness {
 	return &pipelineHarness{
 		service: service, store: st, objects: objectStore, vector: vec, embed: embedding,
 		kb: kb, events: events,
+	}
+}
+
+type recordingTaskNotifier struct {
+	calls chan int64
+	err   error
+}
+
+type pipelineFairStore struct {
+	FairStore
+	writer              string
+	getConfigFn         func(context.Context, string, string, string, string) (*store.ConfigRecord, error)
+	getLifecycleKBFn    func(context.Context, string) (*store.RAGKBRecord, error)
+	getLifecycleDocFn   func(context.Context, string) (*store.RAGDocumentRecord, error)
+	listLifecycleDocsFn func(context.Context, string) ([]store.RAGDocumentRecord, error)
+	getLifecycleUserFn  func(context.Context, string) (*store.UserRecord, error)
+	beginOriginalFn     func(context.Context, store.RAGObjectWriteRequest) (*store.RAGObjectWriteFence, error)
+	markOriginalFn      func(context.Context, store.RAGObjectWriteFence) (bool, error)
+	createBudgetFn      func(context.Context, store.IndexFence, *store.RAGDocumentAITaskBudgetRecord) error
+	reserveUsageFn      func(context.Context, store.IndexFence, *store.RAGDocumentAIUsageRecord, store.RAGDocumentAILimits) (bool, error)
+	getUsageFn          func(context.Context, string) (*store.RAGDocumentAIUsageRecord, error)
+	markUsageFn         func(context.Context, string, store.IndexFence) (bool, error)
+	commitUsageFn       func(context.Context, string, int64, int64, int64, bool) (bool, error)
+	releaseUsageFn      func(context.Context, string) (bool, error)
+	reconcileFn         func(context.Context, time.Time, time.Time, int) (int, error)
+}
+
+func (s *pipelineFairStore) ExpectedWriterFingerprint() string { return s.writer }
+
+func (s *pipelineFairStore) GetConfigByName(
+	ctx context.Context,
+	kind, userID, agentID, name string,
+) (*store.ConfigRecord, error) {
+	if s.getConfigFn == nil {
+		return nil, store.ErrNotFound
+	}
+	return s.getConfigFn(ctx, kind, userID, agentID, name)
+}
+
+func (s *pipelineFairStore) GetRAGKBForLifecycle(
+	ctx context.Context,
+	id string,
+) (*store.RAGKBRecord, error) {
+	return s.getLifecycleKBFn(ctx, id)
+}
+
+func (s *pipelineFairStore) GetRAGDocumentForLifecycle(
+	ctx context.Context,
+	id string,
+) (*store.RAGDocumentRecord, error) {
+	return s.getLifecycleDocFn(ctx, id)
+}
+
+func (s *pipelineFairStore) ListRAGDocumentsByKBForLifecycle(
+	ctx context.Context,
+	kbID string,
+) ([]store.RAGDocumentRecord, error) {
+	return s.listLifecycleDocsFn(ctx, kbID)
+}
+
+func (s *pipelineFairStore) GetUserForRAGLifecycle(
+	ctx context.Context,
+	id string,
+) (*store.UserRecord, error) {
+	return s.getLifecycleUserFn(ctx, id)
+}
+
+func (s *pipelineFairStore) BeginOriginalRAGObjectWrite(
+	ctx context.Context,
+	request store.RAGObjectWriteRequest,
+) (*store.RAGObjectWriteFence, error) {
+	return s.beginOriginalFn(ctx, request)
+}
+
+func (s *pipelineFairStore) MarkOriginalRAGObjectWriteReady(
+	ctx context.Context,
+	fence store.RAGObjectWriteFence,
+) (bool, error) {
+	return s.markOriginalFn(ctx, fence)
+}
+
+func (s *pipelineFairStore) CreateRAGDocumentAITaskBudgetForIndex(
+	ctx context.Context,
+	fence store.IndexFence,
+	budget *store.RAGDocumentAITaskBudgetRecord,
+) error {
+	return s.createBudgetFn(ctx, fence, budget)
+}
+
+func (s *pipelineFairStore) ReserveRAGDocumentAIUsage(
+	ctx context.Context,
+	fence store.IndexFence,
+	usage *store.RAGDocumentAIUsageRecord,
+	limits store.RAGDocumentAILimits,
+) (bool, error) {
+	return s.reserveUsageFn(ctx, fence, usage, limits)
+}
+
+func (s *pipelineFairStore) ReconcileRAGDocumentAIUsage(
+	ctx context.Context,
+	reservedBefore, sentBefore time.Time,
+	limit int,
+) (int, error) {
+	return s.reconcileFn(ctx, reservedBefore, sentBefore, limit)
+}
+
+func (s *pipelineFairStore) GetRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+) (*store.RAGDocumentAIUsageRecord, error) {
+	return s.getUsageFn(ctx, idempotencyKey)
+}
+
+func (s *pipelineFairStore) MarkSentRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+	fence store.IndexFence,
+) (bool, error) {
+	return s.markUsageFn(ctx, idempotencyKey, fence)
+}
+
+func (s *pipelineFairStore) CommitRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+	inputTokens, outputTokens, costMicroUSD int64,
+	estimated bool,
+) (bool, error) {
+	return s.commitUsageFn(ctx, idempotencyKey, inputTokens, outputTokens, costMicroUSD, estimated)
+}
+
+func (s *pipelineFairStore) ReleaseRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+) (bool, error) {
+	return s.releaseUsageFn(ctx, idempotencyKey)
+}
+
+type pipelineFairExecutionStore struct {
+	FairExecutionStore
+	publishAssetsFn func(context.Context, store.IndexFence, []store.RAGAssetRecord, []string) (bool, error)
+	publishAllFn    func(context.Context, store.IndexFence, []store.RAGAssetRecord, []string, []store.RAGAttachmentRecord, []string) (bool, error)
+}
+
+func (s *pipelineFairExecutionStore) PublishRAGAssetsForIndex(
+	ctx context.Context,
+	fence store.IndexFence,
+	assets []store.RAGAssetRecord,
+	assetIDs []string,
+) (bool, error) {
+	return s.publishAssetsFn(ctx, fence, assets, assetIDs)
+}
+
+func (s *pipelineFairExecutionStore) PublishRAGAssetsAndAttachmentsForIndex(
+	ctx context.Context,
+	fence store.IndexFence,
+	assets []store.RAGAssetRecord,
+	assetIDs []string,
+	attachments []store.RAGAttachmentRecord,
+	attachmentIDs []string,
+) (bool, error) {
+	return s.publishAllFn(ctx, fence, assets, assetIDs, attachments, attachmentIDs)
+}
+
+func (n *recordingTaskNotifier) TryDispatch(_ context.Context, taskID int64) error {
+	if n.calls != nil {
+		n.calls <- taskID
+	}
+	return n.err
+}
+
+func TestServiceStartWorkerModesKeepMaintenanceButOnlyLegacyClaims(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		mode       WorkerMode
+		wantClaims bool
+	}{
+		{name: "legacy", mode: WorkerModeLegacy, wantClaims: true},
+		{name: "paused", mode: WorkerModePaused},
+		{name: "fair", mode: WorkerModeFair},
+		{name: "unknown fails closed", mode: WorkerMode("unknown")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newPipelineHarness(t)
+			h.service.workerMode = test.mode
+			h.service.pollInterval = 5 * time.Millisecond
+			var claims atomic.Int64
+			var reconciles atomic.Int64
+			h.store.claimFn = func(context.Context, string, time.Duration) (*store.RAGIndexClaim, error) {
+				claims.Add(1)
+				return nil, nil
+			}
+			h.store.reconcileFn = func(context.Context, time.Time, time.Time, int) (int, error) {
+				reconciles.Add(1)
+				return 0, nil
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			h.service.Start(ctx)
+			defer cancel()
+			deadline := time.Now().Add(time.Second)
+			for reconciles.Load() == 0 && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			if reconciles.Load() == 0 {
+				t.Fatal("maintenance did not start")
+			}
+			if test.wantClaims {
+				for claims.Load() == 0 && time.Now().Before(deadline) {
+					time.Sleep(time.Millisecond)
+				}
+				if claims.Load() == 0 {
+					t.Fatal("legacy index worker did not claim")
+				}
+				return
+			}
+			time.Sleep(30 * time.Millisecond)
+			if got := claims.Load(); got != 0 {
+				t.Fatalf("mode %q started legacy claim loop: %d", test.mode, got)
+			}
+		})
+	}
+}
+
+func TestTaskNotificationFollowsWorkerMode(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		mode         WorkerMode
+		wantLocal    bool
+		wantDispatch bool
+	}{
+		{name: "legacy", mode: WorkerModeLegacy, wantLocal: true},
+		{name: "paused", mode: WorkerModePaused},
+		{name: "fair", mode: WorkerModeFair, wantDispatch: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newPipelineHarness(t)
+			h.service.workerMode = test.mode
+			h.service.tasks = make(chan int64, 1)
+			notifier := &recordingTaskNotifier{calls: make(chan int64, 1), err: errors.New("fast path unavailable")}
+			h.service.taskNotifier = notifier
+
+			h.service.notifyTask(context.Background(), 42)
+			select {
+			case taskID := <-h.service.tasks:
+				if !test.wantLocal || taskID != 42 {
+					t.Fatalf("unexpected local notification %d", taskID)
+				}
+			default:
+				if test.wantLocal {
+					t.Fatal("legacy task was not scheduled locally")
+				}
+			}
+			select {
+			case taskID := <-notifier.calls:
+				if !test.wantDispatch || taskID != 42 {
+					t.Fatalf("unexpected fair dispatch %d", taskID)
+				}
+			default:
+				if test.wantDispatch {
+					t.Fatal("fair task was not offered to dispatcher")
+				}
+			}
+		})
+	}
+}
+
+func TestFairEmbeddingConfigLookupUsesExpectedWriterFacade(t *testing.T) {
+	h := newPipelineHarness(t)
+	fingerprint := strings.Repeat("5", 64)
+	var legacyCalls atomic.Int64
+	var fairCalls atomic.Int64
+	h.service.workerMode = WorkerModeFair
+	h.service.userCfg = func(context.Context, string) (config.RAGEmbeddingCfg, bool) {
+		legacyCalls.Add(1)
+		return config.RAGEmbeddingCfg{
+			Endpoint: "https://wrong-writer.example/v1", Model: "wrong", Dims: 8,
+		}, true
+	}
+	h.service.fairStore = &pipelineFairStore{
+		writer: fingerprint,
+		getConfigFn: func(_ context.Context, kind, userID, agentID, name string) (*store.ConfigRecord, error) {
+			fairCalls.Add(1)
+			if kind != store.KindSetting || userID != "user-fair-config" || agentID != "" || name != "rag" {
+				t.Fatalf("config lookup=%q/%q/%q/%q", kind, userID, agentID, name)
+			}
+			return nil, store.ErrFairQueueWriterMismatch
+		},
+	}
+	_, err := h.service.embeddingConfigForKB(context.Background(), &store.RAGKBRecord{
+		ID: "kb-fair-config", UserID: "user-fair-config", EmbedProvider: "user",
+	})
+	if !errors.Is(err, store.ErrFairQueueWriterMismatch) {
+		t.Fatalf("pre-claim embeddingConfigForKB error=%v, want writer mismatch", err)
+	}
+	fence := store.IndexFence{
+		TaskID: 80, DocID: "doc_fair_config", DocVersion: 1, ClaimGeneration: 1,
+		LeaseOwner: "fair-worker", ExpectedWriterFingerprint: fingerprint,
+	}
+	_, err = h.service.embeddingConfigForKB(withFairIndexFence(context.Background(), fence), &store.RAGKBRecord{
+		ID: "kb-fair-config", UserID: "user-fair-config", EmbedProvider: "user",
+	})
+	if !errors.Is(err, store.ErrFairQueueWriterMismatch) {
+		t.Fatalf("embeddingConfigForKB error=%v, want writer mismatch", err)
+	}
+	if got := legacyCalls.Load(); got != 0 {
+		t.Fatalf("fair config lookup fell back to legacy pool %d times", got)
+	}
+	if got := fairCalls.Load(); got != 2 {
+		t.Fatalf("expected-writer config lookup calls=%d, want 2", got)
+	}
+	h.service.fairStore = &pipelineFairStore{
+		writer: fingerprint,
+		getConfigFn: func(context.Context, string, string, string, string) (*store.ConfigRecord, error) {
+			return &store.ConfigRecord{Data: map[string]any{"embedding": map[string]any{
+				"endpoint": "https://right-writer.example/v1", "model": "embed-right", "dims": 12,
+			}}}, nil
+		},
+	}
+	cfg, err := h.service.embeddingConfigForKB(withFairIndexFence(context.Background(), fence), &store.RAGKBRecord{
+		ID: "kb-fair-config", UserID: "user-fair-config", EmbedProvider: "user",
+	})
+	if err != nil || cfg.Endpoint != "https://right-writer.example/v1" || cfg.Model != "embed-right" || cfg.Dims != 12 {
+		t.Fatalf("pinned embedding config=%+v err=%v", cfg, err)
+	}
+	if got := legacyCalls.Load(); got != 0 {
+		t.Fatalf("successful fair config lookup used legacy pool %d times", got)
+	}
+}
+
+func TestFairLifecycleReadsUseExpectedWriterFacade(t *testing.T) {
+	h := newPipelineHarness(t)
+	var calls atomic.Int64
+	fair := &pipelineFairStore{
+		writer: strings.Repeat("6", 64),
+		getLifecycleKBFn: func(_ context.Context, id string) (*store.RAGKBRecord, error) {
+			calls.Add(1)
+			return &store.RAGKBRecord{ID: id, UserID: "fair-user", Name: "pinned-kb"}, nil
+		},
+		getLifecycleDocFn: func(_ context.Context, id string) (*store.RAGDocumentRecord, error) {
+			calls.Add(1)
+			return &store.RAGDocumentRecord{ID: id, KBID: h.kb.ID, FileName: "pinned.md"}, nil
+		},
+		listLifecycleDocsFn: func(_ context.Context, kbID string) ([]store.RAGDocumentRecord, error) {
+			calls.Add(1)
+			return []store.RAGDocumentRecord{{ID: "doc-pinned", KBID: kbID}}, nil
+		},
+		getLifecycleUserFn: func(_ context.Context, id string) (*store.UserRecord, error) {
+			calls.Add(1)
+			return &store.UserRecord{ID: id, Status: "active", DisplayName: "pinned-user"}, nil
+		},
+	}
+	wrapped := &modeAwareRAGStore{Store: h.store, mode: WorkerModeFair, fairStore: fair}
+	kb, err := wrapped.GetRAGKB(context.Background(), h.kb.ID)
+	if err != nil || kb.Name != "pinned-kb" {
+		t.Fatalf("pinned KB=%+v err=%v", kb, err)
+	}
+	doc, err := wrapped.GetRAGDocument(context.Background(), "doc-pinned")
+	if err != nil || doc.FileName != "pinned.md" {
+		t.Fatalf("pinned document=%+v err=%v", doc, err)
+	}
+	docs, err := wrapped.ListRAGDocumentsByKB(context.Background(), h.kb.ID)
+	if err != nil || len(docs) != 1 || docs[0].ID != "doc-pinned" {
+		t.Fatalf("pinned documents=%+v err=%v", docs, err)
+	}
+	user, err := wrapped.GetUser(context.Background(), "fair-user")
+	if err != nil || user.DisplayName != "pinned-user" {
+		t.Fatalf("pinned user=%+v err=%v", user, err)
+	}
+	if got := calls.Load(); got != 4 {
+		t.Fatalf("pinned lifecycle read calls=%d, want 4", got)
+	}
+
+	fair.getLifecycleKBFn = func(context.Context, string) (*store.RAGKBRecord, error) {
+		return nil, store.ErrFairQueueWriterMismatch
+	}
+	if record, err := wrapped.GetRAGKB(context.Background(), h.kb.ID); record != nil ||
+		!errors.Is(err, store.ErrFairQueueWriterMismatch) {
+		t.Fatalf("writer-switch KB=%+v err=%v", record, err)
+	}
+}
+
+func TestFairPipelineStagesChunksThroughAtomicFencedStore(t *testing.T) {
+	h := newPipelineHarness(t)
+	h.service.st = &modeAwareRAGStore{
+		Store: h.store, mode: WorkerModeFair, fairExecution: h.store,
+	}
+	fence := store.IndexFence{
+		TaskID: 71, DocID: "doc_fair_stage", DocVersion: 4, ClaimGeneration: 5,
+		LeaseOwner: "fair-worker", ExpectedWriterFingerprint: strings.Repeat("a", 64),
+	}
+	h.store.checkFenceFn = func(context.Context, store.IndexFence) (bool, error) {
+		return false, errors.New("fair staging used CheckFence TOCTOU")
+	}
+	h.store.putChunksFn = func(context.Context, []store.RAGChunkRecord) error {
+		return errors.New("fair staging used legacy pool mutation")
+	}
+	var fencedCalls atomic.Int64
+	h.store.putChunksForIndexFn = func(_ context.Context, got store.IndexFence, chunks []store.RAGChunkRecord) (bool, error) {
+		if got != fence || len(chunks) != 1 || chunks[0].DocID != fence.DocID || chunks[0].DocVersion != fence.DocVersion {
+			t.Fatalf("fenced stage got fence=%+v chunks=%+v", got, chunks)
+		}
+		fencedCalls.Add(1)
+		return true, nil
+	}
+
+	_, err := h.service.stageIndexVersion(
+		withFairIndexFence(context.Background(), fence), fence, h.kb.ID, fence.DocID,
+		[]split.Chunk{{Index: 0, RawContent: "source", SearchContent: "source", Tokens: 1}},
+		[][]float32{{1, 2, 3, 4}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fencedCalls.Load(); got != 1 {
+		t.Fatalf("fenced chunk writes=%d, want 1", got)
+	}
+}
+
+func TestFairExecutionWritesRejectMissingClaimContext(t *testing.T) {
+	h := newPipelineHarness(t)
+	var legacyCalls atomic.Int64
+	h.store.putChunksFn = func(context.Context, []store.RAGChunkRecord) error {
+		legacyCalls.Add(1)
+		return nil
+	}
+	h.store.putChunkAssetsFn = func(context.Context, []store.RAGChunkAssetRecord) error {
+		legacyCalls.Add(1)
+		return nil
+	}
+	h.store.registerCacheFn = func(context.Context, store.RAGCacheObjectRecord) error {
+		legacyCalls.Add(1)
+		return nil
+	}
+	h.store.beginObjectFn = func(_ context.Context, request store.RAGObjectWriteRequest) (*store.RAGObjectWriteFence, error) {
+		legacyCalls.Add(1)
+		return &store.RAGObjectWriteFence{ObjectKind: request.ObjectKind}, nil
+	}
+	h.store.markObjectFn = func(context.Context, store.RAGObjectWriteFence) (bool, error) {
+		legacyCalls.Add(1)
+		return true, nil
+	}
+	var fairLifecycleCalls atomic.Int64
+	fairStore := &pipelineFairStore{
+		writer: strings.Repeat("a", 64),
+		beginOriginalFn: func(_ context.Context, request store.RAGObjectWriteRequest) (*store.RAGObjectWriteFence, error) {
+			fairLifecycleCalls.Add(1)
+			return &store.RAGObjectWriteFence{ObjectKind: request.ObjectKind}, nil
+		},
+		markOriginalFn: func(context.Context, store.RAGObjectWriteFence) (bool, error) {
+			fairLifecycleCalls.Add(1)
+			return true, nil
+		},
+	}
+	wrapped := &modeAwareRAGStore{
+		Store: h.store, mode: WorkerModeFair, fairStore: fairStore, fairExecution: h.store,
+	}
+	ctx := context.Background()
+	assertFenceError := func(name string, err error) {
+		t.Helper()
+		if !errors.Is(err, store.ErrRAGDocumentVersionMismatch) {
+			t.Fatalf("%s error=%v, want missing fair claim fence", name, err)
+		}
+	}
+	assertFenceError("chunks", wrapped.PutRAGChunks(ctx, []store.RAGChunkRecord{{DocID: "doc"}}))
+	assertFenceError("chunk assets", wrapped.PutRAGChunkAssets(ctx, []store.RAGChunkAssetRecord{{DocID: "doc"}}))
+	assertFenceError("cache", wrapped.RegisterRAGCacheObject(ctx, store.RAGCacheObjectRecord{DocID: "doc"}))
+	_, err := wrapped.BeginRAGObjectWrite(ctx, store.RAGObjectWriteRequest{ObjectKind: store.RAGObjectKindAssetSource})
+	assertFenceError("asset object begin", err)
+	_, err = wrapped.MarkRAGObjectWriteReady(ctx, store.RAGObjectWriteFence{ObjectKind: store.RAGObjectKindAssetSource})
+	assertFenceError("asset object ready", err)
+	if got := legacyCalls.Load(); got != 0 {
+		t.Fatalf("missing fair claim context reached legacy pool %d times", got)
+	}
+
+	// Upload's original object staging precedes creation of a claim, so it uses
+	// the expected-writer-bound fair lifecycle facade rather than a claim fence.
+	original, err := wrapped.BeginRAGObjectWrite(ctx, store.RAGObjectWriteRequest{ObjectKind: store.RAGObjectKindOriginal})
+	if err != nil || original == nil {
+		t.Fatalf("original object begin=%+v,%v", original, err)
+	}
+	if ok, err := wrapped.MarkRAGObjectWriteReady(ctx, *original); err != nil || !ok {
+		t.Fatalf("original object ready=%v,%v", ok, err)
+	}
+	if got := legacyCalls.Load(); got != 0 {
+		t.Fatalf("fair original staging reached legacy pool %d times", got)
+	}
+	if got := fairLifecycleCalls.Load(); got != 2 {
+		t.Fatalf("fair original staging calls=%d, want 2", got)
+	}
+}
+
+func TestFairExecutionDocumentReadRejectsMismatchedRequestedID(t *testing.T) {
+	h := newPipelineHarness(t)
+	fence := store.IndexFence{
+		TaskID: 74, DocID: "doc_expected", DocVersion: 1, ClaimGeneration: 1,
+		LeaseOwner: "fair-worker", ExpectedWriterFingerprint: strings.Repeat("c", 64),
+	}
+	var calls atomic.Int64
+	h.store.getDocumentForIndex = func(context.Context, store.IndexFence) (*store.RAGDocumentRecord, error) {
+		calls.Add(1)
+		return &store.RAGDocumentRecord{ID: fence.DocID}, nil
+	}
+	wrapped := &modeAwareRAGStore{Store: h.store, mode: WorkerModeFair, fairExecution: h.store}
+	_, err := wrapped.GetRAGDocument(withFairIndexFence(context.Background(), fence), "doc_other")
+	if !errors.Is(err, store.ErrRAGDocumentVersionMismatch) {
+		t.Fatalf("GetRAGDocument error=%v, want identity mismatch", err)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("mismatched ID reached fair store %d times", got)
+	}
+}
+
+func TestFairExecutionPublishesAssetsThroughExplicitFencedSurface(t *testing.T) {
+	h := newPipelineHarness(t)
+	fence := store.IndexFence{
+		TaskID: 75, DocID: "doc_assets", DocVersion: 3, ClaimGeneration: 4,
+		LeaseOwner: "fair-worker", ExpectedWriterFingerprint: strings.Repeat("d", 64),
+	}
+	var assetCalls atomic.Int64
+	var allCalls atomic.Int64
+	fair := &pipelineFairExecutionStore{
+		publishAssetsFn: func(_ context.Context, got store.IndexFence, _ []store.RAGAssetRecord, ids []string) (bool, error) {
+			if got != fence || !reflect.DeepEqual(ids, []string{"asset-1"}) {
+				t.Fatalf("asset publish fence=%+v ids=%v", got, ids)
+			}
+			assetCalls.Add(1)
+			return true, nil
+		},
+		publishAllFn: func(_ context.Context, got store.IndexFence, _ []store.RAGAssetRecord, assetIDs []string, _ []store.RAGAttachmentRecord, attachmentIDs []string) (bool, error) {
+			if got != fence || !reflect.DeepEqual(assetIDs, []string{"asset-1"}) || !reflect.DeepEqual(attachmentIDs, []string{"attachment-1"}) {
+				t.Fatalf("combined publish fence=%+v assets=%v attachments=%v", got, assetIDs, attachmentIDs)
+			}
+			allCalls.Add(1)
+			return true, nil
+		},
+	}
+	wrapped := &modeAwareRAGStore{Store: h.store, mode: WorkerModeFair, fairExecution: fair}
+	ctx := withFairIndexFence(context.Background(), fence)
+	if ok, err := wrapped.PublishRAGAssetsForIndex(ctx, fence, nil, []string{"asset-1"}); err != nil || !ok {
+		t.Fatalf("PublishRAGAssetsForIndex=%v,%v", ok, err)
+	}
+	if ok, err := wrapped.PublishRAGAssetsAndAttachmentsForIndex(
+		ctx, fence, nil, []string{"asset-1"}, nil, []string{"attachment-1"},
+	); err != nil || !ok {
+		t.Fatalf("PublishRAGAssetsAndAttachmentsForIndex=%v,%v", ok, err)
+	}
+	if assetCalls.Load() != 1 || allCalls.Load() != 1 {
+		t.Fatalf("fenced publish calls assets=%d all=%d", assetCalls.Load(), allCalls.Load())
+	}
+}
+
+func TestFairExecutionCacheCatalogRoutesByClaimContext(t *testing.T) {
+	h := newPipelineHarness(t)
+	fence := store.IndexFence{
+		TaskID: 79, DocID: "doc_cache", DocVersion: 2, ClaimGeneration: 3,
+		LeaseOwner: "fair-worker", ExpectedWriterFingerprint: strings.Repeat("4", 64),
+	}
+	record := store.RAGCacheObjectRecord{DocID: fence.DocID}
+	var legacyCalls atomic.Int64
+	var fairCalls atomic.Int64
+	h.store.registerCacheFn = func(_ context.Context, got store.RAGCacheObjectRecord) error {
+		if got.DocID != record.DocID {
+			t.Fatalf("legacy cache record=%+v", got)
+		}
+		legacyCalls.Add(1)
+		return nil
+	}
+	h.store.registerCacheFairFn = func(_ context.Context, gotFence store.IndexFence, got store.RAGCacheObjectRecord) error {
+		if gotFence != fence || got.DocID != record.DocID {
+			t.Fatalf("fair cache fence=%+v record=%+v", gotFence, got)
+		}
+		fairCalls.Add(1)
+		return nil
+	}
+	catalog := NewFairExecutionCacheCatalog(h.store, h.store, WorkerModeFair)
+	if err := catalog.RegisterRAGCacheObject(context.Background(), record); !errors.Is(err, store.ErrRAGDocumentVersionMismatch) {
+		t.Fatalf("missing fair cache context error=%v", err)
+	}
+	if err := catalog.RegisterRAGCacheObject(withFairIndexFence(context.Background(), fence), record); err != nil {
+		t.Fatal(err)
+	}
+	if legacyCalls.Load() != 0 || fairCalls.Load() != 1 {
+		t.Fatalf("cache calls legacy=%d fair=%d", legacyCalls.Load(), fairCalls.Load())
+	}
+	legacyCatalog := NewFairExecutionCacheCatalog(h.store, h.store, WorkerModeLegacy)
+	if err := legacyCatalog.RegisterRAGCacheObject(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+
+	h.store.registerCacheFairFn = func(context.Context, store.IndexFence, store.RAGCacheObjectRecord) error {
+		return store.ErrFairQueueUnsafeConnection
+	}
+	if err := catalog.RegisterRAGCacheObject(
+		withFairIndexFence(context.Background(), fence), record,
+	); !errors.Is(err, store.ErrFairQueueUnsafeConnection) {
+		t.Fatalf("fair cache safety error=%v", err)
+	}
+	missingFair := NewFairExecutionCacheCatalog(h.store, nil, WorkerModeFair)
+	if err := missingFair.RegisterRAGCacheObject(
+		withFairIndexFence(context.Background(), fence), record,
+	); !errors.Is(err, store.ErrFairQueueMySQLRequired) {
+		t.Fatalf("missing fair cache error=%v", err)
+	}
+	if legacyCalls.Load() != 1 {
+		t.Fatalf("fair cache fallback used legacy catalog %d times", legacyCalls.Load())
+	}
+}
+
+func TestTaskDocumentAIBudgetRoutesLegacyAndFairCreates(t *testing.T) {
+	newClaim := func(fingerprint string) *store.RAGIndexClaim {
+		return &store.RAGIndexClaim{
+			Fence: store.IndexFence{
+				TaskID: 76, DocID: "doc_budget", DocVersion: 2, ClaimGeneration: 3,
+				LeaseOwner: "budget-worker", ExpectedWriterFingerprint: fingerprint,
+			},
+			Version: store.RAGDocumentVersionRecord{
+				MaxDocumentAIRequests: 10, MaxDocumentAITokens: 100,
+				MaxDocumentAICostMicroUSD: 100,
+			},
+		}
+	}
+	request := vision.AttemptRequest{
+		LogicalRequestKey: "budget-route", Operation: vision.OperationPage,
+		ProviderFingerprint: strings.Repeat("e", 64), Attempt: 1, InputTokens: 1,
+	}
+
+	t.Run("legacy unchanged", func(t *testing.T) {
+		h := newPipelineHarness(t)
+		var creates atomic.Int64
+		var reserves atomic.Int64
+		h.store.createBudgetFn = func(context.Context, *store.RAGDocumentAITaskBudgetRecord) error {
+			creates.Add(1)
+			return nil
+		}
+		h.store.reserveUsageFn = func(context.Context, store.IndexFence, *store.RAGDocumentAIUsageRecord, store.RAGDocumentAILimits) (bool, error) {
+			reserves.Add(1)
+			return true, nil
+		}
+		claim := newClaim("")
+		budget, err := h.service.newTaskDocumentAIBudget(claim, "u_pipeline")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := budget.Reserve(context.Background(), claim.Fence, request); err != nil {
+			t.Fatal(err)
+		}
+		if creates.Load() != 1 || reserves.Load() != 1 {
+			t.Fatalf("legacy budget calls create=%d reserve=%d", creates.Load(), reserves.Load())
+		}
+	})
+
+	t.Run("fair uses fenced facade", func(t *testing.T) {
+		h := newPipelineHarness(t)
+		fingerprint := strings.Repeat("f", 64)
+		claim := newClaim(fingerprint)
+		var creates atomic.Int64
+		var reserves atomic.Int64
+		fair := &pipelineFairStore{
+			writer: fingerprint,
+			createBudgetFn: func(_ context.Context, got store.IndexFence, record *store.RAGDocumentAITaskBudgetRecord) error {
+				if got != claim.Fence || record.TaskID != claim.Fence.TaskID || record.UserID != "u_pipeline" {
+					t.Fatalf("fair budget create fence=%+v record=%+v", got, record)
+				}
+				creates.Add(1)
+				return nil
+			},
+			reserveUsageFn: func(_ context.Context, got store.IndexFence, _ *store.RAGDocumentAIUsageRecord, _ store.RAGDocumentAILimits) (bool, error) {
+				if got != claim.Fence {
+					t.Fatalf("fair reserve fence=%+v", got)
+				}
+				reserves.Add(1)
+				return true, nil
+			},
+		}
+		h.service.st = &modeAwareRAGStore{
+			Store: h.store, mode: WorkerModeFair, fairStore: fair, fairExecution: h.store,
+		}
+		h.service.fairStore = fair
+		budget, err := h.service.newTaskDocumentAIBudget(claim, "u_pipeline")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := budget.Reserve(context.Background(), claim.Fence, request); err != nil {
+			t.Fatal(err)
+		}
+		if creates.Load() != 1 || reserves.Load() != 1 {
+			t.Fatalf("fair budget calls create=%d reserve=%d", creates.Load(), reserves.Load())
+		}
+	})
+
+	t.Run("fair ledger remains bound across root contexts", func(t *testing.T) {
+		h := newPipelineHarness(t)
+		fingerprint := strings.Repeat("0", 64)
+		claim := newClaim(fingerprint)
+		forbidLegacy := func(name string) {
+			t.Fatalf("fair budget called legacy %s", name)
+		}
+		h.store.createBudgetFn = func(context.Context, *store.RAGDocumentAITaskBudgetRecord) error {
+			forbidLegacy("create")
+			return nil
+		}
+		h.store.reserveUsageFn = func(context.Context, store.IndexFence, *store.RAGDocumentAIUsageRecord, store.RAGDocumentAILimits) (bool, error) {
+			forbidLegacy("reserve")
+			return false, nil
+		}
+		h.store.getUsageFn = func(context.Context, string) (*store.RAGDocumentAIUsageRecord, error) {
+			forbidLegacy("get")
+			return nil, nil
+		}
+		h.store.markUsageFn = func(context.Context, string, store.IndexFence) (bool, error) {
+			forbidLegacy("mark sent")
+			return false, nil
+		}
+		h.store.commitUsageFn = func(context.Context, string, int64, int64, int64, bool) (bool, error) {
+			forbidLegacy("commit")
+			return false, nil
+		}
+		h.store.releaseUsageFn = func(context.Context, string) (bool, error) {
+			forbidLegacy("release")
+			return false, nil
+		}
+		var reserveCalls atomic.Int64
+		var getCalls atomic.Int64
+		var markCalls atomic.Int64
+		var commitCalls atomic.Int64
+		var releaseCalls atomic.Int64
+		fair := &pipelineFairStore{
+			writer: fingerprint,
+			createBudgetFn: func(context.Context, store.IndexFence, *store.RAGDocumentAITaskBudgetRecord) error {
+				return nil
+			},
+			reserveUsageFn: func(context.Context, store.IndexFence, *store.RAGDocumentAIUsageRecord, store.RAGDocumentAILimits) (bool, error) {
+				return reserveCalls.Add(1) > 1, nil
+			},
+			getUsageFn: func(_ context.Context, key string) (*store.RAGDocumentAIUsageRecord, error) {
+				getCalls.Add(1)
+				return &store.RAGDocumentAIUsageRecord{IdempotencyKey: key, State: store.RAGDocumentAIUsageReserved}, nil
+			},
+			markUsageFn: func(context.Context, string, store.IndexFence) (bool, error) {
+				markCalls.Add(1)
+				return true, nil
+			},
+			commitUsageFn: func(context.Context, string, int64, int64, int64, bool) (bool, error) {
+				commitCalls.Add(1)
+				return true, nil
+			},
+			releaseUsageFn: func(context.Context, string) (bool, error) {
+				releaseCalls.Add(1)
+				return true, nil
+			},
+		}
+		h.service.st = &modeAwareRAGStore{
+			Store: h.store, mode: WorkerModeFair, fairStore: fair, fairExecution: h.store,
+		}
+		h.service.fairStore = fair
+		budget, err := h.service.newTaskDocumentAIBudget(claim, "u_pipeline")
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, err := budget.Reserve(context.Background(), claim.Fence, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := first.Release(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		secondRequest := request
+		secondRequest.LogicalRequestKey = "budget-route-second"
+		second, err := budget.Reserve(context.Background(), claim.Fence, secondRequest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := second.MarkSent(context.Background(), claim.Fence); err != nil {
+			t.Fatal(err)
+		}
+		if err := second.Commit(context.Background(), vision.Usage{InputTokens: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if reserveCalls.Load() != 2 || getCalls.Load() != 1 || markCalls.Load() != 1 ||
+			commitCalls.Load() != 1 || releaseCalls.Load() != 1 {
+			t.Fatalf("fair ledger calls reserve=%d get=%d mark=%d commit=%d release=%d",
+				reserveCalls.Load(), getCalls.Load(), markCalls.Load(), commitCalls.Load(), releaseCalls.Load())
+		}
+	})
+
+	for _, safetyErr := range []error{store.ErrFairQueueWriterMismatch, store.ErrFairQueueUnsafeConnection} {
+		t.Run(safetyErr.Error(), func(t *testing.T) {
+			h := newPipelineHarness(t)
+			fingerprint := strings.Repeat("1", 64)
+			claim := newClaim(fingerprint)
+			fair := &pipelineFairStore{
+				writer: fingerprint,
+				createBudgetFn: func(context.Context, store.IndexFence, *store.RAGDocumentAITaskBudgetRecord) error {
+					return safetyErr
+				},
+				reserveUsageFn: func(context.Context, store.IndexFence, *store.RAGDocumentAIUsageRecord, store.RAGDocumentAILimits) (bool, error) {
+					t.Fatal("reserve ran after fenced create failed")
+					return false, nil
+				},
+			}
+			h.service.st = &modeAwareRAGStore{
+				Store: h.store, mode: WorkerModeFair, fairStore: fair, fairExecution: h.store,
+			}
+			h.service.fairStore = fair
+			budget, err := h.service.newTaskDocumentAIBudget(claim, "u_pipeline")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := withFairIndexFence(context.Background(), claim.Fence)
+			if _, err := budget.Reserve(ctx, claim.Fence, request); !errors.Is(err, safetyErr) {
+				t.Fatalf("Reserve error=%v, want %v", err, safetyErr)
+			}
+		})
+	}
+}
+
+func TestDocumentAIReconcileUsesBoundFacadeOnlyInFairMode(t *testing.T) {
+	t.Run("fair", func(t *testing.T) {
+		h := newPipelineHarness(t)
+		fingerprint := strings.Repeat("2", 64)
+		fair := &pipelineFairStore{
+			writer: fingerprint,
+			reconcileFn: func(context.Context, time.Time, time.Time, int) (int, error) {
+				return 0, store.ErrFairQueueUnsafeConnection
+			},
+		}
+		wrapped := &modeAwareRAGStore{Store: h.store, mode: WorkerModeFair, fairStore: fair}
+		if _, err := wrapped.ReconcileRAGDocumentAIUsage(
+			context.Background(), time.Now(), time.Now(), 10,
+		); !errors.Is(err, store.ErrFairQueueUnsafeConnection) {
+			t.Fatalf("fair reconcile error=%v", err)
+		}
+	})
+
+	t.Run("legacy", func(t *testing.T) {
+		h := newPipelineHarness(t)
+		var legacyCalls atomic.Int64
+		h.store.reconcileFn = func(context.Context, time.Time, time.Time, int) (int, error) {
+			legacyCalls.Add(1)
+			return 7, nil
+		}
+		wrapped := &modeAwareRAGStore{Store: h.store, mode: WorkerModeLegacy}
+		count, err := wrapped.ReconcileRAGDocumentAIUsage(
+			context.Background(), time.Now(), time.Now(), 10,
+		)
+		if err != nil || count != 7 || legacyCalls.Load() != 1 {
+			t.Fatalf("legacy reconcile=%d,%v calls=%d", count, err, legacyCalls.Load())
+		}
+	})
+}
+
+func TestRunFairClaimPropagatesWriterMismatchWithoutRetry(t *testing.T) {
+	h := newPipelineHarness(t)
+	h.service.workerMode = WorkerModeFair
+	h.service.heartbeatInterval = time.Hour
+	fair := &pipelineFairStore{writer: strings.Repeat("b", 64)}
+	h.service.fairStore = fair
+	h.service.st = &modeAwareRAGStore{
+		Store: h.store, mode: WorkerModeFair, fairStore: fair, fairExecution: h.store,
+	}
+	h.store.getDocumentForIndex = func(context.Context, store.IndexFence) (*store.RAGDocumentRecord, error) {
+		return nil, store.ErrFairQueueWriterMismatch
+	}
+	h.store.acknowledgeFn = func(context.Context, store.IndexFence) (bool, error) { return true, nil }
+	var finalizes atomic.Int64
+	h.store.retryFn = func(context.Context, store.IndexFence, string, time.Duration) (bool, error) {
+		finalizes.Add(1)
+		return true, nil
+	}
+	h.store.failFn = func(context.Context, store.IndexFence, string) (bool, error) {
+		finalizes.Add(1)
+		return true, nil
+	}
+	claim := &store.RAGIndexClaim{
+		Fence: store.IndexFence{
+			TaskID: 72, DocID: "doc_writer_mismatch", DocVersion: 1, ClaimGeneration: 2,
+			LeaseOwner: "fair-worker", ExpectedWriterFingerprint: strings.Repeat("b", 64),
+		},
+		Task: store.RAGIndexTaskRecord{ID: 72, MaxRetry: 3},
+	}
+	if err := h.service.RunFairClaim(context.Background(), claim); !errors.Is(err, store.ErrFairQueueWriterMismatch) {
+		t.Fatalf("RunFairClaim error=%v, want writer mismatch", err)
+	}
+	if got := finalizes.Load(); got != 0 {
+		t.Fatalf("writer mismatch was persisted as ordinary retry/failure %d times", got)
+	}
+}
+
+func TestFinishFairClaimTreatsCanonicalCorruptionAsFatal(t *testing.T) {
+	for _, domainErr := range []error{
+		store.ErrRAGDocumentAILedgerCorrupt,
+		store.ErrRAGDocumentVersionConflict,
+		store.ErrRAGDocumentSourceConflict,
+	} {
+		t.Run(domainErr.Error(), func(t *testing.T) {
+			h := newPipelineHarness(t)
+			var finalizes atomic.Int64
+			h.store.retryFn = func(context.Context, store.IndexFence, string, time.Duration) (bool, error) {
+				finalizes.Add(1)
+				return true, nil
+			}
+			h.store.failFn = func(context.Context, store.IndexFence, string) (bool, error) {
+				finalizes.Add(1)
+				return true, nil
+			}
+			claim := &store.RAGIndexClaim{Fence: store.IndexFence{
+				TaskID: 79, DocID: "doc_canonical_corrupt", DocVersion: 1, ClaimGeneration: 1,
+				LeaseOwner: "fair-worker", ExpectedWriterFingerprint: strings.Repeat("4", 64),
+			}}
+			err := h.service.finishClaimFailure(context.Background(), claim, domainErr, false)
+			if !errors.Is(err, domainErr) {
+				t.Fatalf("finishClaimFailure error=%v, want %v", err, domainErr)
+			}
+			if got := finalizes.Load(); got != 0 {
+				t.Fatalf("canonical corruption was persisted as ordinary retry/failure %d times", got)
+			}
+		})
+	}
+}
+
+func TestRunFairClaimDoesNotNormalizeJoinedSafetyErrorAsFenceLoss(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parent-canceled-%t", canceled), func(t *testing.T) {
+			h := newPipelineHarness(t)
+			h.service.workerMode = WorkerModeFair
+			h.service.heartbeatInterval = time.Hour
+			fingerprint := strings.Repeat("3", 64)
+			fair := &pipelineFairStore{writer: fingerprint}
+			h.service.fairStore = fair
+			h.service.st = &modeAwareRAGStore{
+				Store: h.store, mode: WorkerModeFair, fairStore: fair, fairExecution: h.store,
+			}
+			h.store.getDocumentForIndex = func(context.Context, store.IndexFence) (*store.RAGDocumentRecord, error) {
+				return nil, errIndexFenceLost
+			}
+			h.store.acknowledgeFn = func(ctx context.Context, _ store.IndexFence) (bool, error) {
+				if err := ctx.Err(); err != nil {
+					return false, err
+				}
+				return false, store.ErrFairQueueUnsafeConnection
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			if canceled {
+				cancel()
+			} else {
+				defer cancel()
+			}
+			claim := &store.RAGIndexClaim{Fence: store.IndexFence{
+				TaskID: 78, DocID: "doc_joined_safety", DocVersion: 1, ClaimGeneration: 1,
+				LeaseOwner: "fair-worker", ExpectedWriterFingerprint: fingerprint,
+			}}
+			if err := h.service.RunFairClaim(ctx, claim); !errors.Is(err, store.ErrFairQueueUnsafeConnection) {
+				t.Fatalf("RunFairClaim error=%v, want unsafe connection", err)
+			}
+		})
+	}
+}
+
+func TestHeartbeatLoopReturnsSafetyErrorAndCancelsProviderContext(t *testing.T) {
+	h := newPipelineHarness(t)
+	h.service.heartbeatInterval = time.Millisecond
+	h.service.leaseDuration = time.Second
+	h.store.heartbeatFn = func(context.Context, store.IndexFence, time.Duration) (bool, error) {
+		return false, store.ErrFairQueueUnsafeConnection
+	}
+	workCtx, cancelWork := context.WithCancel(context.Background())
+	defer cancelWork()
+	var leaseLost atomic.Bool
+	err := h.service.heartbeatLoop(
+		context.Background(), store.IndexFence{TaskID: 73}, &leaseLost, cancelWork,
+	)
+	if !errors.Is(err, store.ErrFairQueueUnsafeConnection) {
+		t.Fatalf("heartbeat error=%v, want unsafe connection", err)
+	}
+	if !leaseLost.Load() {
+		t.Fatal("safety failure did not mark lease lost")
+	}
+	select {
+	case <-workCtx.Done():
+	default:
+		t.Fatal("safety failure did not cancel provider context")
+	}
+}
+
+func TestHeartbeatLoopDoesNotHideConcurrentSafetyErrorBehindCancellation(t *testing.T) {
+	h := newPipelineHarness(t)
+	h.service.heartbeatInterval = time.Millisecond
+	h.service.leaseDuration = time.Second
+	heartbeatCtx, cancelHeartbeat := context.WithCancel(context.Background())
+	h.store.heartbeatFn = func(context.Context, store.IndexFence, time.Duration) (bool, error) {
+		cancelHeartbeat()
+		return false, store.ErrFairQueueWriterMismatch
+	}
+	var leaseLost atomic.Bool
+	err := h.service.heartbeatLoop(heartbeatCtx, store.IndexFence{TaskID: 77}, &leaseLost, func() {})
+	if !errors.Is(err, store.ErrFairQueueWriterMismatch) {
+		t.Fatalf("heartbeat error=%v, want writer mismatch", err)
 	}
 }
 
@@ -1270,6 +2468,33 @@ func TestPipelineVersionProviderFingerprintMismatchSupersedesBeforeEndpoint(t *t
 	select {
 	case <-secondClaimBlocked:
 	case <-time.After(time.Second):
+	}
+}
+
+func TestPipelineProviderSupersedeRejectsMissingReplacement(t *testing.T) {
+	h := newPipelineHarness(t)
+	doc, _ := h.seedDocument(t, "provider_missing_replacement", "provider guard content", 1)
+	if _, err := h.store.DB().ExecContext(context.Background(),
+		`UPDATE rag_document_versions SET embedding_contract_fingerprint=? WHERE doc_id=? AND doc_version=?`,
+		strings.Repeat("0", 64), doc.ID, int64(1)); err != nil {
+		t.Fatal(err)
+	}
+	h.store.supersedeFn = func(
+		context.Context,
+		store.IndexFence,
+		*store.RAGDocumentVersionRecord,
+	) (*store.RAGIndexTaskRecord, bool, error) {
+		return nil, true, nil
+	}
+	claim, err := h.store.ClaimRAGIndexTask(context.Background(), "contract-worker", time.Minute)
+	if err != nil || claim == nil {
+		t.Fatalf("claim=%+v err=%v", claim, err)
+	}
+	if err := h.service.runClaim(context.Background(), claim); !errors.Is(err, store.ErrRAGDocumentVersionMismatch) {
+		t.Fatalf("runClaim error=%v, want authoritative replacement mismatch", err)
+	}
+	if h.embed.calls.Load() != 0 {
+		t.Fatalf("missing replacement made %d outbound embedding calls", h.embed.calls.Load())
 	}
 }
 

@@ -55,11 +55,19 @@ type CaseMetricResults struct {
 	CaseID  string                  `json:"caseId"`
 	Metrics map[string]MetricResult `json:"metrics"`
 }
+type EvaluatorUsage struct {
+	LLMInputTokens            int64   `json:"llmInputTokens"`
+	LLMOutputTokens           int64   `json:"llmOutputTokens"`
+	LLMEstimatedCostUSD       float64 `json:"llmEstimatedCostUsd"`
+	EmbeddingInputTokens      int64   `json:"embeddingInputTokens"`
+	EmbeddingEstimatedCostUSD float64 `json:"embeddingEstimatedCostUsd"`
+}
 type EvaluateResponse struct {
 	RequestID           string              `json:"requestId"`
 	RagasVersion        string              `json:"ragasVersion"`
 	MetricBundleVersion string              `json:"metricBundleVersion"`
 	Results             []CaseMetricResults `json:"results"`
+	Usage               EvaluatorUsage      `json:"usage"`
 }
 
 type RagasClient struct {
@@ -311,6 +319,7 @@ type wireEvaluateResponse struct {
 	RagasVersion        string                  `json:"ragasVersion"`
 	MetricBundleVersion string                  `json:"metricBundleVersion"`
 	Results             []wireCaseMetricResults `json:"results"`
+	Usage               *EvaluatorUsage         `json:"usage"`
 }
 
 func (c *RagasClient) validateEvaluateRequest(request *EvaluateRequest) error {
@@ -393,6 +402,11 @@ func validateWireResponse(request EvaluateRequest, wire wireEvaluateResponse) (E
 	if wire.RequestID != request.RequestID || wire.MetricBundleVersion != MetricBundleV1 || wire.RagasVersion != ExpectedRagasVersion {
 		return EvaluateResponse{}, errors.New("evaluator response contract mismatch")
 	}
+	if wire.Usage == nil || wire.Usage.LLMInputTokens < 0 || wire.Usage.LLMOutputTokens < 0 || wire.Usage.EmbeddingInputTokens < 0 ||
+		math.IsNaN(wire.Usage.LLMEstimatedCostUSD) || math.IsInf(wire.Usage.LLMEstimatedCostUSD, 0) || wire.Usage.LLMEstimatedCostUSD < 0 ||
+		math.IsNaN(wire.Usage.EmbeddingEstimatedCostUSD) || math.IsInf(wire.Usage.EmbeddingEstimatedCostUSD, 0) || wire.Usage.EmbeddingEstimatedCostUSD < 0 {
+		return EvaluateResponse{}, errors.New("evaluator response usage is invalid")
+	}
 	expectedCases := make(map[string]struct{}, len(request.Samples))
 	for _, sample := range request.Samples {
 		expectedCases[sample.CaseID] = struct{}{}
@@ -402,7 +416,7 @@ func validateWireResponse(request EvaluateRequest, wire wireEvaluateResponse) (E
 		expectedMetrics[metric] = struct{}{}
 	}
 	seenCases := make(map[string]struct{}, len(wire.Results))
-	response := EvaluateResponse{RequestID: wire.RequestID, RagasVersion: wire.RagasVersion, MetricBundleVersion: wire.MetricBundleVersion}
+	response := EvaluateResponse{RequestID: wire.RequestID, RagasVersion: wire.RagasVersion, MetricBundleVersion: wire.MetricBundleVersion, Usage: *wire.Usage}
 	for _, item := range wire.Results {
 		if _, ok := expectedCases[item.CaseID]; !ok {
 			return EvaluateResponse{}, fmt.Errorf("unknown response caseId %q", item.CaseID)

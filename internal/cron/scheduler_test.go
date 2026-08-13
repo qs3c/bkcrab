@@ -251,14 +251,15 @@ func TestProcessDueJobs_Cron(t *testing.T) {
 func TestNextCronOccurrence(t *testing.T) {
 	// Test "every 2 minutes" cron
 	now := time.Date(2026, 5, 6, 10, 3, 0, 0, time.UTC)
-	next := nextCronOccurrence("*/2 * * * *", now)
+	next := NextOccurrenceIn("*/2 * * * *", now, time.UTC)
 	if next.Minute() != 4 {
 		t.Errorf("expected minute=4, got %d (time=%v)", next.Minute(), next)
 	}
 
-	// Test "daily at 9:00"
+	// Keep the location explicit: nextCronOccurrence intentionally evaluates in
+	// time.Local, which can turn this UTC instant into an earlier local date.
 	now = time.Date(2026, 5, 6, 9, 1, 0, 0, time.UTC)
-	next = nextCronOccurrence("0 9 * * *", now)
+	next = NextOccurrenceIn("0 9 * * *", now, time.UTC)
 	if next.Day() != 7 || next.Hour() != 9 {
 		t.Errorf("expected next day 9:00, got %v", next)
 	}

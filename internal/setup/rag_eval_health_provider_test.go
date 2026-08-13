@@ -17,7 +17,7 @@ func TestRAGEvalCapabilitiesReadsFreshCachedHealth(t *testing.T) {
 	cfg.Evaluation.Sidecar.Endpoint = "http://rag-evaluator:8080"
 	server.SetRAGConfig(cfg)
 	server.SetRAGEvaluatorHealthSnapshot(config.RAGEvaluatorHealthSnapshot{
-		Healthy: true, ExpiresAt: time.Now().Add(time.Minute), ProtocolVersion: "rag-evaluator-v1",
+		Healthy: true, ExpiresAt: time.Now().Add(time.Minute), ProtocolVersion: "rag-evaluator-v2",
 	})
 
 	recorder := httptest.NewRecorder()

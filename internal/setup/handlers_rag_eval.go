@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -90,7 +91,7 @@ func decodeEvalJSON(w http.ResponseWriter, r *http.Request, max int64, target an
 		return false
 	}
 	var trailing any
-	if err := decoder.Decode(&trailing); err == nil {
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		writeEvalError(w, http.StatusBadRequest, "invalid_json", "request body contains trailing JSON")
 		return false
 	}
@@ -367,11 +368,6 @@ func (s *Server) handleListRAGEvalRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cursor, limit := evalListParams(r)
-	items, err := st.ListRuns(r.Context(), cursor, limit)
-	if err != nil {
-		writeEvalError(w, 500, "list_failed", "could not list runs")
-		return
-	}
 	status := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("status")))
 	if status != "" {
 		allowed := map[string]bool{store.RAGEvalRunQueued: true, store.RAGEvalRunRunning: true, store.RAGEvalRunSucceeded: true, store.RAGEvalRunFailed: true, store.RAGEvalRunCancelled: true, store.RAGEvalRunBudgetExceeded: true}
@@ -379,19 +375,44 @@ func (s *Server) handleListRAGEvalRuns(w http.ResponseWriter, r *http.Request) {
 			writeEvalError(w, 400, "invalid_filter", "unsupported run status filter")
 			return
 		}
-		filtered := items[:0]
-		for _, item := range items {
-			if item.Status == status {
-				filtered = append(filtered, item)
-			}
-		}
-		items = filtered
 	}
-	next := ""
-	if len(items) == limit {
-		next = items[len(items)-1].ID
+	items, next, err := listRAGEvalRunPage(r.Context(), cursor, limit, status, st.ListRuns)
+	if err != nil {
+		writeEvalError(w, 500, "list_failed", "could not list runs")
+		return
 	}
 	jsonResponse(w, 200, map[string]any{"items": items, "nextCursor": next})
+}
+
+func listRAGEvalRunPage(ctx context.Context, cursor string, limit int, status string, list func(context.Context, string, int) ([]store.RAGEvalRunRecord, error)) ([]store.RAGEvalRunRecord, string, error) {
+	items := make([]store.RAGEvalRunRecord, 0, limit)
+	scanCursor := cursor
+	batchLimit := limit
+	if status != "" {
+		batchLimit = 200
+	}
+	for len(items) < limit {
+		batch, err := list(ctx, scanCursor, batchLimit)
+		if err != nil {
+			return nil, "", err
+		}
+		if len(batch) == 0 {
+			return items, "", nil
+		}
+		for _, item := range batch {
+			scanCursor = item.ID
+			if status == "" || item.Status == status {
+				items = append(items, item)
+				if len(items) == limit {
+					return items, scanCursor, nil
+				}
+			}
+		}
+		if len(batch) < batchLimit {
+			return items, "", nil
+		}
+	}
+	return items, scanCursor, nil
 }
 
 func (s *Server) handleCreateRAGEvalRun(w http.ResponseWriter, r *http.Request) {
@@ -538,18 +559,19 @@ func (s *Server) handleListRAGEvalRunCases(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	cursor, limit := evalListParams(r)
-	items, err := st.ListCaseResults(r.Context(), r.PathValue("id"), cursor, limit)
-	if err != nil {
-		writeEvalError(w, 500, "list_failed", "could not list run cases")
-		return
-	}
 	status := r.URL.Query().Get("status")
 	if status != "" && status != store.RAGEvalCaseOK && status != store.RAGEvalCaseError {
 		writeEvalError(w, 400, "invalid_filter", "unsupported case status filter")
 		return
 	}
+	runID := r.PathValue("id")
+	items, next, err := listRAGEvalCasePage(r.Context(), runID, cursor, limit, status, st.ListCaseResults)
+	if err != nil {
+		writeEvalError(w, 500, "list_failed", "could not list run cases")
+		return
+	}
 	includeTraces := r.URL.Query().Get("includeTraces") == "true"
-	metricItems, metricErr := st.ListMetricResults(r.Context(), r.PathValue("id"), "", 200)
+	metricItems, metricErr := listRAGEvalMetricsForCases(r.Context(), runID, items, st.ListMetricResults)
 	if metricErr != nil {
 		writeEvalError(w, 500, "list_failed", "could not list case metrics")
 		return
@@ -565,9 +587,6 @@ func (s *Server) handleListRAGEvalRunCases(w http.ResponseWriter, r *http.Reques
 	}
 	out := make([]evalCaseDTO, 0, len(items))
 	for _, item := range items {
-		if status != "" && item.Status != status {
-			continue
-		}
 		dto := evalCaseDTO{CaseID: item.CaseID, Response: item.Response, Contexts: rawEvalJSON(item.ContextsJSON, "[]"), Citations: rawEvalJSON(item.CitationsJSON, "[]"), Status: item.Status, ErrorCode: item.ErrorCode, LatencyMS: item.LatencyMS, Usage: rawEvalJSON(item.UsageJSON, "{}"), Metrics: metricsByCase[item.CaseID]}
 		if includeTraces {
 			dto.SearchTrace = rawEvalJSON(item.SearchTraceJSON, "{}")
@@ -575,11 +594,73 @@ func (s *Server) handleListRAGEvalRunCases(w http.ResponseWriter, r *http.Reques
 		}
 		out = append(out, dto)
 	}
-	next := ""
-	if len(items) == limit {
-		next = items[len(items)-1].CaseID
-	}
 	jsonResponse(w, 200, map[string]any{"items": out, "nextCursor": next})
+}
+
+func listRAGEvalCasePage(ctx context.Context, runID, cursor string, limit int, status string, list func(context.Context, string, string, int) ([]store.RAGEvalCaseResultRecord, error)) ([]store.RAGEvalCaseResultRecord, string, error) {
+	items := make([]store.RAGEvalCaseResultRecord, 0, limit)
+	scanCursor := cursor
+	batchLimit := limit
+	if status != "" {
+		batchLimit = 200
+	}
+	for len(items) < limit {
+		batch, err := list(ctx, runID, scanCursor, batchLimit)
+		if err != nil {
+			return nil, "", err
+		}
+		if len(batch) == 0 {
+			return items, "", nil
+		}
+		for _, item := range batch {
+			scanCursor = item.CaseID
+			if status == "" || item.Status == status {
+				items = append(items, item)
+				if len(items) == limit {
+					return items, scanCursor, nil
+				}
+			}
+		}
+		if len(batch) < batchLimit {
+			return items, "", nil
+		}
+	}
+	return items, scanCursor, nil
+}
+
+func listRAGEvalMetricsForCases(ctx context.Context, runID string, cases []store.RAGEvalCaseResultRecord, list func(context.Context, string, string, int) ([]store.RAGEvalMetricResultRecord, error)) ([]store.RAGEvalMetricResultRecord, error) {
+	if len(cases) == 0 {
+		return nil, nil
+	}
+	wanted := make(map[string]struct{}, len(cases))
+	for _, item := range cases {
+		wanted[item.CaseID] = struct{}{}
+	}
+	lastCaseID := cases[len(cases)-1].CaseID
+	cursor := cases[0].CaseID + "::"
+	out := make([]store.RAGEvalMetricResultRecord, 0, len(cases))
+	for {
+		batch, err := list(ctx, runID, cursor, 200)
+		if err != nil {
+			return nil, err
+		}
+		if len(batch) == 0 {
+			return out, nil
+		}
+		for _, item := range batch {
+			if item.CaseID > lastCaseID {
+				return out, nil
+			}
+			if _, ok := wanted[item.CaseID]; ok {
+				out = append(out, item)
+			}
+		}
+		if len(batch) < 200 {
+			return out, nil
+		}
+		last := batch[len(batch)-1]
+		cursor = store.RAGEvalMetricCursor(last)
+	}
 }
 
 func (s *Server) handleCompareRAGEvalRuns(w http.ResponseWriter, r *http.Request) {

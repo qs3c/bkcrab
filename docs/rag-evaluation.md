@@ -35,6 +35,11 @@ RAG_EVALUATOR_LLM_MODEL=<judge model>
 RAG_EVALUATOR_EMBEDDING_ENDPOINT=https://approved-embedding.example/v1
 RAG_EVALUATOR_EMBEDDING_API_KEY=<embedding key>
 RAG_EVALUATOR_EMBEDDING_MODEL=<embedding model>
+RAG_EVAL_ANSWER_INPUT_COST_USD_PER_MILLION=<answer input price>
+RAG_EVAL_ANSWER_OUTPUT_COST_USD_PER_MILLION=<answer output price>
+RAG_EVALUATOR_LLM_INPUT_COST_USD_PER_MILLION=<judge input price>
+RAG_EVALUATOR_LLM_OUTPUT_COST_USD_PER_MILLION=<judge output price>
+RAG_EVALUATOR_EMBEDDING_COST_USD_PER_MILLION=<embedding input price>
 ```
 
 启动 RAG overlay 时显式启用 profile：

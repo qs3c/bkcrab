@@ -26,6 +26,7 @@ from .protocol import (
     EvaluateResponse,
 )
 from .settings import Settings
+from .usage import usage_scope
 
 
 class IdempotencyCache:
@@ -69,6 +70,7 @@ class IdempotencyCache:
 
 
 def create_app(settings: Settings, engine: MetricEngine | None = None) -> FastAPI:
+    settings.validate()
     metric_engine = engine or build_ragas_engine(settings)
     # Production startup imports every pinned Ragas collection metric. This is
     # an offline readiness check only: no LLM or embedding request is made.
@@ -128,16 +130,18 @@ def create_app(settings: Settings, engine: MetricEngine | None = None) -> FastAP
 
         try:
             results: list[CaseResult] = []
-            for sample in payload.samples:
-                scores = {
-                    metric: await metric_engine.evaluate(metric, sample)
-                    for metric in payload.metrics
-                }
-                results.append(CaseResult(caseId=sample.caseId, metrics=scores))
+            with usage_scope() as usage:
+                for sample in payload.samples:
+                    scores = {
+                        metric: await metric_engine.evaluate(metric, sample)
+                        for metric in payload.metrics
+                    }
+                    results.append(CaseResult(caseId=sample.caseId, metrics=scores))
             response = EvaluateResponse(
                 requestId=payload.requestId,
                 ragasVersion=version("ragas"),
                 results=results,
+                usage=usage.response(settings),
             )
             cache.finish(payload.requestId, body_hash, response)
             return response

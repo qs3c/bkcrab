@@ -194,7 +194,7 @@ func (s ExportService) loadMetricResults(ctx context.Context, runID string) ([]s
 		}
 		out = append(out, items...)
 		last := items[len(items)-1]
-		cursor = last.CaseID + ":" + last.MetricName
+		cursor = store.RAGEvalMetricCursor(last)
 	}
 	return out, nil
 }

@@ -370,40 +370,110 @@ func (d *DBStore) hasRAGDocumentAIOverrunTx(
 	return err == nil, err
 }
 
-// ReserveRAGDocumentAIUsage atomically reserves one request and its
-// conservative token/cost maxima. true means this call inserted a new
-// reservation. An exact duplicate returns false,nil without charging;
-// conflicting reuse of the idempotency key fails. Durable result-cache
-// existence is intentionally owned by the object cache, not inferred from a
-// settled usage row: a provider response may be charged even when persisting
-// its cache object failed or the worker crashed before doing so.
-func (d *DBStore) ReserveRAGDocumentAIUsage(
-	ctx context.Context,
+type ragDocumentAIFenceCheck func(context.Context, IndexFence) (bool, error)
+
+type ragDocumentAIUsageInsertError struct {
+	err error
+}
+
+func (e *ragDocumentAIUsageInsertError) Error() string { return e.err.Error() }
+func (e *ragDocumentAIUsageInsertError) Unwrap() error { return e.err }
+
+func validateRAGDocumentAIReservation(
 	fence IndexFence,
 	usage *RAGDocumentAIUsageRecord,
 	userLimits RAGDocumentAILimits,
-) (bool, error) {
+) (int64, error) {
 	if usage == nil || usage.IdempotencyKey == "" || usage.UserID == "" ||
 		usage.PeriodStartUTC.IsZero() || usage.EstimatedCostMicroUSD < 0 {
-		return false, errors.New("store: invalid RAG DocumentAI reservation")
+		return 0, errors.New("store: invalid RAG DocumentAI reservation")
 	}
 	reservedTokens, err := ragDocumentAITokenTotal(usage.ReservedInputTokens, usage.ReservedOutputTokens)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	if !ragDocumentAIUsageMatchesFence(usage, fence) {
-		return false, ErrRAGDocumentAIInvalidFence
+		return 0, ErrRAGDocumentAIInvalidFence
 	}
 	if userLimits.MaxRequests < 0 || userLimits.MaxTokens < 0 || userLimits.MaxCostMicroUSD < 0 {
-		return false, errors.New("store: invalid RAG DocumentAI user limits")
+		return 0, errors.New("store: invalid RAG DocumentAI user limits")
 	}
+	return reservedTokens, nil
+}
 
-	tx, err := d.beginRAGDocumentAIBudgetTx(ctx)
+func (d *DBStore) readRAGDocumentAITaskBudgetOn(
+	ctx context.Context,
+	exec ragExecutor,
+	taskID int64,
+) (*RAGDocumentAITaskBudgetRecord, error) {
+	budget, err := scanRAGDocumentAITaskBudget(exec.QueryRowContext(ctx, fmt.Sprintf(
+		`SELECT task_id, user_id, max_requests, max_tokens, max_cost_microusd,
+		 charged_requests, charged_tokens, charged_cost_microusd, updated_at
+		 FROM rag_document_ai_task_budgets WHERE task_id=%s`, d.ph(1)), taskID))
 	if err != nil {
-		return false, err
+		return nil, scanErr(err)
 	}
-	defer tx.Rollback()
-	dbNow, err := d.ragDBNow(ctx, tx.exec)
+	return budget, nil
+}
+
+func (d *DBStore) readRAGDocumentAIUserBudgetOn(
+	ctx context.Context,
+	exec ragExecutor,
+	userID string,
+	periodStartUTC time.Time,
+) (*RAGDocumentAIUserBudgetRecord, error) {
+	budget, err := scanRAGDocumentAIUserBudget(exec.QueryRowContext(ctx, fmt.Sprintf(
+		`SELECT user_id, period_start_utc, charged_requests, charged_tokens,
+		 charged_cost_microusd, updated_at FROM rag_document_ai_user_budgets
+		 WHERE user_id=%s AND period_start_utc=%s`, d.ph(1), d.ph(2)),
+		userID, ragPeriodDate(periodStartUTC)))
+	if err != nil {
+		return nil, scanErr(err)
+	}
+	return budget, nil
+}
+
+func (d *DBStore) readRAGDocumentAIUsageOn(
+	ctx context.Context,
+	exec ragExecutor,
+	idempotencyKey string,
+) (*RAGDocumentAIUsageRecord, error) {
+	usage, err := scanRAGDocumentAIUsage(exec.QueryRowContext(ctx, fmt.Sprintf(
+		`SELECT `+ragDocumentAIUsageColumns+` FROM rag_document_ai_usage
+		 WHERE idempotency_key=%s`, d.ph(1)), idempotencyKey))
+	if err != nil {
+		return nil, scanErr(err)
+	}
+	return usage, nil
+}
+
+func (d *DBStore) resolveRAGDocumentAIReserveInsertError(
+	ctx context.Context,
+	exec ragExecutor,
+	usage *RAGDocumentAIUsageRecord,
+	insertErr error,
+) (bool, error) {
+	existing, lookupErr := d.readRAGDocumentAIUsageOn(ctx, exec, usage.IdempotencyKey)
+	if lookupErr == nil {
+		if ragDocumentAIReservationsEqual(existing, usage) {
+			return false, nil
+		}
+		return false, ErrRAGDocumentAIUsageConflict
+	}
+	return false, insertErr
+}
+
+func (d *DBStore) reserveRAGDocumentAIUsageTx(
+	ctx context.Context,
+	exec ragExecutor,
+	fence IndexFence,
+	usage *RAGDocumentAIUsageRecord,
+	userLimits RAGDocumentAILimits,
+	reservedTokens int64,
+	checkFenceFirst bool,
+	checkFence ragDocumentAIFenceCheck,
+) (bool, error) {
+	dbNow, err := d.ragDBNow(ctx, exec)
 	if err != nil {
 		return false, err
 	}
@@ -411,14 +481,24 @@ func (d *DBStore) ReserveRAGDocumentAIUsage(
 	if ragPeriodDate(usage.PeriodStartUTC) != ragPeriodDate(currentPeriod) {
 		return false, errors.New("store: RAG DocumentAI period must be the current database UTC day")
 	}
-	if err := d.upsertRAGDocumentAIUserBudgetTx(ctx, tx.exec, usage.UserID, usage.PeriodStartUTC); err != nil {
+	currentFence := false
+	if checkFenceFirst {
+		currentFence, err = checkFence(ctx, fence)
+		if err != nil {
+			return false, err
+		}
+		if !currentFence {
+			return false, ErrRAGDocumentAIInvalidFence
+		}
+	}
+	if err := d.upsertRAGDocumentAIUserBudgetTx(ctx, exec, usage.UserID, usage.PeriodStartUTC); err != nil {
 		return false, err
 	}
-	userBudget, err := d.lockRAGDocumentAIUserBudgetTx(ctx, tx.exec, usage.UserID, usage.PeriodStartUTC)
+	userBudget, err := d.lockRAGDocumentAIUserBudgetTx(ctx, exec, usage.UserID, usage.PeriodStartUTC)
 	if err != nil {
 		return false, err
 	}
-	taskBudget, err := d.lockRAGDocumentAITaskBudgetTx(ctx, tx.exec, usage.TaskID)
+	taskBudget, err := d.lockRAGDocumentAITaskBudgetTx(ctx, exec, usage.TaskID)
 	if ragIsNoRows(err) {
 		return false, ErrNotFound
 	}
@@ -428,11 +508,13 @@ func (d *DBStore) ReserveRAGDocumentAIUsage(
 	if taskBudget.UserID != usage.UserID {
 		return false, ErrRAGDocumentAIUsageConflict
 	}
-	currentFence, err := d.currentRAGDocumentAIFenceTx(ctx, tx.exec, fence)
-	if err != nil {
-		return false, err
+	if !checkFenceFirst {
+		currentFence, err = checkFence(ctx, fence)
+		if err != nil {
+			return false, err
+		}
 	}
-	existing, err := d.lockRAGDocumentAIUsageTx(ctx, tx.exec, usage.IdempotencyKey)
+	existing, err := d.lockRAGDocumentAIUsageTx(ctx, exec, usage.IdempotencyKey)
 	if err == nil {
 		if !ragDocumentAIReservationsEqual(existing, usage) {
 			return false, ErrRAGDocumentAIUsageConflict
@@ -445,7 +527,7 @@ func (d *DBStore) ReserveRAGDocumentAIUsage(
 	if !currentFence {
 		return false, ErrRAGDocumentAIInvalidFence
 	}
-	overrun, err := d.hasRAGDocumentAIOverrunTx(ctx, tx.exec, usage)
+	overrun, err := d.hasRAGDocumentAIOverrunTx(ctx, exec, usage)
 	if err != nil {
 		return false, err
 	}
@@ -479,25 +561,58 @@ func (d *DBStore) ReserveRAGDocumentAIUsage(
 	}) {
 		return false, ErrRAGDocumentAIBudgetExceeded
 	}
-	if err := d.updateRAGDocumentAIChargesTx(ctx, tx.exec, userBudget, taskBudget,
+	if err := d.updateRAGDocumentAIChargesTx(ctx, exec, userBudget, taskBudget,
 		1, reservedTokens, usage.EstimatedCostMicroUSD); err != nil {
 		return false, err
 	}
-	if err := d.insertRAGDocumentAIUsageTx(ctx, tx.exec, usage); err != nil {
+	if err := d.insertRAGDocumentAIUsageTx(ctx, exec, usage); err != nil {
+		return false, &ragDocumentAIUsageInsertError{err: err}
+	}
+	return true, nil
+}
+
+// ReserveRAGDocumentAIUsage atomically reserves one request and its
+// conservative token/cost maxima. true means this call inserted a new
+// reservation. An exact duplicate returns false,nil without charging;
+// conflicting reuse of the idempotency key fails. Durable result-cache
+// existence is intentionally owned by the object cache, not inferred from a
+// settled usage row: a provider response may be charged even when persisting
+// its cache object failed or the worker crashed before doing so.
+func (d *DBStore) ReserveRAGDocumentAIUsage(
+	ctx context.Context,
+	fence IndexFence,
+	usage *RAGDocumentAIUsageRecord,
+	userLimits RAGDocumentAILimits,
+) (bool, error) {
+	if fence.ExpectedWriterFingerprint != "" {
+		return false, ErrFairQueueWriterMismatch
+	}
+	reservedTokens, err := validateRAGDocumentAIReservation(fence, usage, userLimits)
+	if err != nil {
+		return false, err
+	}
+
+	tx, err := d.beginRAGDocumentAIBudgetTx(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	created, err := d.reserveRAGDocumentAIUsageTx(ctx, tx.exec, fence, usage, userLimits,
+		reservedTokens, false, func(ctx context.Context, fence IndexFence) (bool, error) {
+			return d.currentRAGDocumentAIFenceTx(ctx, tx.exec, fence)
+		})
+	var insertErr *ragDocumentAIUsageInsertError
+	if errors.As(err, &insertErr) {
 		tx.Rollback()
-		existing, lookupErr := d.GetRAGDocumentAIUsage(ctx, usage.IdempotencyKey)
-		if lookupErr == nil {
-			if ragDocumentAIReservationsEqual(existing, usage) {
-				return false, nil
-			}
-			return false, ErrRAGDocumentAIUsageConflict
-		}
+		return d.resolveRAGDocumentAIReserveInsertError(ctx, d.db, usage, insertErr.err)
+	}
+	if err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
-	return true, nil
+	return created, nil
 }
 
 func (d *DBStore) updateRAGDocumentAIUsageStateTx(
@@ -516,17 +631,17 @@ func (d *DBStore) updateRAGDocumentAIUsageStateTx(
 
 func (d *DBStore) loadRAGDocumentAIBudgetLocks(
 	ctx context.Context,
-	tx *ragDocumentAIBudgetTx,
+	exec ragExecutor,
 	usage *RAGDocumentAIUsageRecord,
 ) (*RAGDocumentAIUserBudgetRecord, *RAGDocumentAITaskBudgetRecord, error) {
-	userBudget, err := d.lockRAGDocumentAIUserBudgetTx(ctx, tx.exec, usage.UserID, usage.PeriodStartUTC)
+	userBudget, err := d.lockRAGDocumentAIUserBudgetTx(ctx, exec, usage.UserID, usage.PeriodStartUTC)
 	if err != nil {
 		if ragIsNoRows(err) {
 			return nil, nil, fmt.Errorf("%w: missing user aggregate", ErrRAGDocumentAILedgerCorrupt)
 		}
 		return nil, nil, err
 	}
-	taskBudget, err := d.lockRAGDocumentAITaskBudgetTx(ctx, tx.exec, usage.TaskID)
+	taskBudget, err := d.lockRAGDocumentAITaskBudgetTx(ctx, exec, usage.TaskID)
 	if err != nil {
 		if ragIsNoRows(err) {
 			return nil, nil, fmt.Errorf("%w: missing task aggregate", ErrRAGDocumentAILedgerCorrupt)
@@ -551,35 +666,37 @@ func (d *DBStore) lockRAGDocumentAIIndexTaskIfPresent(
 	return err
 }
 
-// MarkSentRAGDocumentAIUsage is the final gate before network I/O. true is
-// returned only for the one RESERVED -> SENT transition that is authorized to
-// send. If the reservation's own fence is stale, it is released and refunded.
-func (d *DBStore) MarkSentRAGDocumentAIUsage(
+func (d *DBStore) markSentRAGDocumentAIUsageTx(
 	ctx context.Context,
+	exec ragExecutor,
+	preflight *RAGDocumentAIUsageRecord,
 	idempotencyKey string,
 	fence IndexFence,
+	checkFenceFirst bool,
+	checkFence ragDocumentAIFenceCheck,
 ) (bool, error) {
-	preflight, err := d.GetRAGDocumentAIUsage(ctx, idempotencyKey)
+	currentFence := false
+	var err error
+	if checkFenceFirst {
+		currentFence, err = checkFence(ctx, fence)
+		if err != nil {
+			return false, err
+		}
+		if !currentFence {
+			return false, ErrRAGDocumentAIInvalidFence
+		}
+	}
+	userBudget, taskBudget, err := d.loadRAGDocumentAIBudgetLocks(ctx, exec, preflight)
 	if err != nil {
 		return false, err
 	}
-	if !ragDocumentAIUsageMatchesFence(preflight, fence) {
-		return false, ErrRAGDocumentAIInvalidFence
+	if !checkFenceFirst {
+		currentFence, err = checkFence(ctx, fence)
+		if err != nil {
+			return false, err
+		}
 	}
-	tx, err := d.beginRAGDocumentAIBudgetTx(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	userBudget, taskBudget, err := d.loadRAGDocumentAIBudgetLocks(ctx, tx, preflight)
-	if err != nil {
-		return false, err
-	}
-	currentFence, err := d.currentRAGDocumentAIFenceTx(ctx, tx.exec, fence)
-	if err != nil {
-		return false, err
-	}
-	usage, err := d.lockRAGDocumentAIUsageTx(ctx, tx.exec, idempotencyKey)
+	usage, err := d.lockRAGDocumentAIUsageTx(ctx, exec, idempotencyKey)
 	if err != nil {
 		return false, scanErr(err)
 	}
@@ -594,11 +711,11 @@ func (d *DBStore) MarkSentRAGDocumentAIUsage(
 		if err != nil {
 			return false, ErrRAGDocumentAILedgerCorrupt
 		}
-		if err := d.updateRAGDocumentAIChargesTx(ctx, tx.exec, userBudget, taskBudget,
+		if err := d.updateRAGDocumentAIChargesTx(ctx, exec, userBudget, taskBudget,
 			-1, -reservedTokens, -usage.EstimatedCostMicroUSD); err != nil {
 			return false, err
 		}
-		updated, err := d.updateRAGDocumentAIUsageStateTx(ctx, tx.exec, idempotencyKey,
+		updated, err := d.updateRAGDocumentAIUsageStateTx(ctx, exec, idempotencyKey,
 			RAGDocumentAIUsageReserved, RAGDocumentAIUsageReleased)
 		if err != nil || !updated {
 			if err != nil {
@@ -606,10 +723,10 @@ func (d *DBStore) MarkSentRAGDocumentAIUsage(
 			}
 			return false, ErrRAGDocumentAILedgerCorrupt
 		}
-		return false, tx.Commit()
+		return false, nil
 	}
 
-	result, err := tx.exec.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_ai_usage SET
+	result, err := exec.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_ai_usage SET
 		state='SENT',sent_at=%s,updated_at=%s WHERE idempotency_key=%s AND state='RESERVED'`,
 		d.ragNowExpr(), d.ragNowExpr(), d.ph(1)), idempotencyKey)
 	if err != nil {
@@ -622,8 +739,94 @@ func (d *DBStore) MarkSentRAGDocumentAIUsage(
 		}
 		return false, ErrRAGDocumentAILedgerCorrupt
 	}
+	return true, nil
+}
+
+// MarkSentRAGDocumentAIUsage is the final gate before network I/O. true is
+// returned only for the one RESERVED -> SENT transition that is authorized to
+// send. If the reservation's own fence is stale, it is released and refunded.
+func (d *DBStore) MarkSentRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+	fence IndexFence,
+) (bool, error) {
+	if fence.ExpectedWriterFingerprint != "" {
+		return false, ErrFairQueueWriterMismatch
+	}
+	preflight, err := d.GetRAGDocumentAIUsage(ctx, idempotencyKey)
+	if err != nil {
+		return false, err
+	}
+	if !ragDocumentAIUsageMatchesFence(preflight, fence) {
+		return false, ErrRAGDocumentAIInvalidFence
+	}
+	tx, err := d.beginRAGDocumentAIBudgetTx(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	updated, err := d.markSentRAGDocumentAIUsageTx(ctx, tx.exec, preflight,
+		idempotencyKey, fence, false, func(ctx context.Context, fence IndexFence) (bool, error) {
+			return d.currentRAGDocumentAIFenceTx(ctx, tx.exec, fence)
+		})
+	if err != nil {
+		return false, err
+	}
 	if err := tx.Commit(); err != nil {
 		return false, err
+	}
+	return updated, nil
+}
+
+func (d *DBStore) releaseRAGDocumentAIUsageTx(
+	ctx context.Context,
+	exec ragExecutor,
+	preflight *RAGDocumentAIUsageRecord,
+	idempotencyKey string,
+	requireInvalidFence bool,
+	checkFence ragDocumentAIFenceCheck,
+) (bool, error) {
+	userBudget, taskBudget, err := d.loadRAGDocumentAIBudgetLocks(ctx, exec, preflight)
+	if err != nil {
+		return false, err
+	}
+	currentFence := false
+	if requireInvalidFence {
+		currentFence, err = checkFence(ctx, IndexFence{
+			TaskID: preflight.TaskID, DocID: preflight.DocID, DocVersion: preflight.DocVersion,
+			ClaimGeneration: preflight.ClaimGeneration, LeaseOwner: preflight.LeaseOwner,
+		})
+		if err != nil {
+			return false, err
+		}
+	} else if err := d.lockRAGDocumentAIIndexTaskIfPresent(ctx, exec, preflight.TaskID); err != nil {
+		return false, err
+	}
+	usage, err := d.lockRAGDocumentAIUsageTx(ctx, exec, idempotencyKey)
+	if err != nil {
+		return false, scanErr(err)
+	}
+	if usage.State != RAGDocumentAIUsageReserved {
+		return false, nil
+	}
+	if requireInvalidFence && currentFence {
+		return false, nil
+	}
+	reservedTokens, err := ragDocumentAITokenTotal(usage.ReservedInputTokens, usage.ReservedOutputTokens)
+	if err != nil {
+		return false, ErrRAGDocumentAILedgerCorrupt
+	}
+	if err := d.updateRAGDocumentAIChargesTx(ctx, exec, userBudget, taskBudget,
+		-1, -reservedTokens, -usage.EstimatedCostMicroUSD); err != nil {
+		return false, err
+	}
+	updated, err := d.updateRAGDocumentAIUsageStateTx(ctx, exec, idempotencyKey,
+		RAGDocumentAIUsageReserved, RAGDocumentAIUsageReleased)
+	if err != nil || !updated {
+		if err != nil {
+			return false, err
+		}
+		return false, ErrRAGDocumentAILedgerCorrupt
 	}
 	return true, nil
 }
@@ -642,52 +845,17 @@ func (d *DBStore) releaseRAGDocumentAIUsage(
 		return false, err
 	}
 	defer tx.Rollback()
-	userBudget, taskBudget, err := d.loadRAGDocumentAIBudgetLocks(ctx, tx, preflight)
-	if err != nil {
-		return false, err
-	}
-	currentFence := false
-	if requireInvalidFence {
-		currentFence, err = d.currentRAGDocumentAIFenceTx(ctx, tx.exec, IndexFence{
-			TaskID: preflight.TaskID, DocID: preflight.DocID, DocVersion: preflight.DocVersion,
-			ClaimGeneration: preflight.ClaimGeneration, LeaseOwner: preflight.LeaseOwner,
+	updated, err := d.releaseRAGDocumentAIUsageTx(ctx, tx.exec, preflight,
+		idempotencyKey, requireInvalidFence, func(ctx context.Context, fence IndexFence) (bool, error) {
+			return d.currentRAGDocumentAIFenceTx(ctx, tx.exec, fence)
 		})
-		if err != nil {
-			return false, err
-		}
-	} else if err := d.lockRAGDocumentAIIndexTaskIfPresent(ctx, tx.exec, preflight.TaskID); err != nil {
-		return false, err
-	}
-	usage, err := d.lockRAGDocumentAIUsageTx(ctx, tx.exec, idempotencyKey)
 	if err != nil {
-		return false, scanErr(err)
-	}
-	if usage.State != RAGDocumentAIUsageReserved {
-		return false, nil
-	}
-	if requireInvalidFence && currentFence {
-		return false, nil
-	}
-	reservedTokens, err := ragDocumentAITokenTotal(usage.ReservedInputTokens, usage.ReservedOutputTokens)
-	if err != nil {
-		return false, ErrRAGDocumentAILedgerCorrupt
-	}
-	if err := d.updateRAGDocumentAIChargesTx(ctx, tx.exec, userBudget, taskBudget,
-		-1, -reservedTokens, -usage.EstimatedCostMicroUSD); err != nil {
 		return false, err
-	}
-	updated, err := d.updateRAGDocumentAIUsageStateTx(ctx, tx.exec, idempotencyKey,
-		RAGDocumentAIUsageReserved, RAGDocumentAIUsageReleased)
-	if err != nil || !updated {
-		if err != nil {
-			return false, err
-		}
-		return false, ErrRAGDocumentAILedgerCorrupt
 	}
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
-	return true, nil
+	return updated, nil
 }
 
 // ReleaseRAGDocumentAIUsage refunds a reservation only while it is known not
@@ -702,8 +870,10 @@ func (d *DBStore) ReleaseRAGDocumentAIUsage(ctx context.Context, idempotencyKey 
 // validate the current IndexFence: a late response after reclaim still owns
 // and must settle this idempotency key. The expected SENT state makes retries
 // idempotent. estimated_cost_microusd becomes the latest actual/estimated cost.
-func (d *DBStore) CommitRAGDocumentAIUsage(
+func (d *DBStore) commitRAGDocumentAIUsageTx(
 	ctx context.Context,
+	exec ragExecutor,
+	preflight *RAGDocumentAIUsageRecord,
 	idempotencyKey string,
 	actualInputTokens, actualOutputTokens, actualCostMicroUSD int64,
 	usageEstimated bool,
@@ -712,23 +882,14 @@ func (d *DBStore) CommitRAGDocumentAIUsage(
 	if err != nil || actualCostMicroUSD < 0 {
 		return false, errors.New("store: invalid RAG DocumentAI settlement")
 	}
-	preflight, err := d.GetRAGDocumentAIUsage(ctx, idempotencyKey)
+	userBudget, taskBudget, err := d.loadRAGDocumentAIBudgetLocks(ctx, exec, preflight)
 	if err != nil {
 		return false, err
 	}
-	tx, err := d.beginRAGDocumentAIBudgetTx(ctx)
-	if err != nil {
+	if err := d.lockRAGDocumentAIIndexTaskIfPresent(ctx, exec, preflight.TaskID); err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
-	userBudget, taskBudget, err := d.loadRAGDocumentAIBudgetLocks(ctx, tx, preflight)
-	if err != nil {
-		return false, err
-	}
-	if err := d.lockRAGDocumentAIIndexTaskIfPresent(ctx, tx.exec, preflight.TaskID); err != nil {
-		return false, err
-	}
-	usage, err := d.lockRAGDocumentAIUsageTx(ctx, tx.exec, idempotencyKey)
+	usage, err := d.lockRAGDocumentAIUsageTx(ctx, exec, idempotencyKey)
 	if err != nil {
 		return false, scanErr(err)
 	}
@@ -739,7 +900,7 @@ func (d *DBStore) CommitRAGDocumentAIUsage(
 	if err != nil {
 		return false, ErrRAGDocumentAILedgerCorrupt
 	}
-	if err := d.updateRAGDocumentAIChargesTx(ctx, tx.exec, userBudget, taskBudget,
+	if err := d.updateRAGDocumentAIChargesTx(ctx, exec, userBudget, taskBudget,
 		0, actualTokens-reservedTokens, actualCostMicroUSD-usage.EstimatedCostMicroUSD); err != nil {
 		return false, err
 	}
@@ -749,7 +910,7 @@ func (d *DBStore) CommitRAGDocumentAIUsage(
 		actualCostMicroUSD > usage.EstimatedCostMicroUSD {
 		state = RAGDocumentAIUsageOverrun
 	}
-	result, err := tx.exec.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_ai_usage SET
+	result, err := exec.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_document_ai_usage SET
 		state=%s,actual_input_tokens=%s,actual_output_tokens=%s,estimated_cost_microusd=%s,
 		usage_estimated=%s,updated_at=%s WHERE idempotency_key=%s AND state='SENT'`,
 		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ragNowExpr(), d.ph(6)),
@@ -765,10 +926,36 @@ func (d *DBStore) CommitRAGDocumentAIUsage(
 		}
 		return false, ErrRAGDocumentAILedgerCorrupt
 	}
+	return true, nil
+}
+
+func (d *DBStore) CommitRAGDocumentAIUsage(
+	ctx context.Context,
+	idempotencyKey string,
+	actualInputTokens, actualOutputTokens, actualCostMicroUSD int64,
+	usageEstimated bool,
+) (bool, error) {
+	if _, err := ragDocumentAITokenTotal(actualInputTokens, actualOutputTokens); err != nil || actualCostMicroUSD < 0 {
+		return false, errors.New("store: invalid RAG DocumentAI settlement")
+	}
+	preflight, err := d.GetRAGDocumentAIUsage(ctx, idempotencyKey)
+	if err != nil {
+		return false, err
+	}
+	tx, err := d.beginRAGDocumentAIBudgetTx(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	updated, err := d.commitRAGDocumentAIUsageTx(ctx, tx.exec, preflight, idempotencyKey,
+		actualInputTokens, actualOutputTokens, actualCostMicroUSD, usageEstimated)
+	if err != nil {
+		return false, err
+	}
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
-	return true, nil
+	return updated, nil
 }
 
 // ReconcileRAGDocumentAIUsage releases expired, never-sent reservations and

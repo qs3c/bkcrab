@@ -63,6 +63,22 @@ func TestRAGEvaluationEnabledRequiresEndpoint(t *testing.T) {
 	}
 }
 
+func TestRAGEvaluationCostBudgetRequiresExplicitPrices(t *testing.T) {
+	cfg := RAGEvaluationCfg{Enabled: true, Sidecar: RAGEvaluatorCfg{Endpoint: "http://eval:8080"}}
+	cfg.ApplyDefaults()
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "token prices") {
+		t.Fatalf("missing token prices err=%v", err)
+	}
+	cfg.AnswerInputCostPerMUSD = 1
+	cfg.AnswerOutputCostPerMUSD = 2
+	cfg.Sidecar.LLMInputCostPerMUSD = 3
+	cfg.Sidecar.LLMOutputCostPerMUSD = 4
+	cfg.Sidecar.EmbeddingCostPerMUSD = 5
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRAGEvaluatorLogValueAndCapabilitiesHideSecret(t *testing.T) {
 	cfg := RAGEvaluationCfg{Enabled: true, Sidecar: RAGEvaluatorCfg{Endpoint: "http://eval:8080", APIKey: "top-secret"}}
 	cfg.ApplyDefaults()
@@ -171,6 +187,11 @@ func TestRAGEvaluationRejectsUnknownEnumsAndTrailingJSON(t *testing.T) {
 func TestRAGEvaluationLimitBoundaries(t *testing.T) {
 	valid := RAGEvaluationCfg{Enabled: true, Sidecar: RAGEvaluatorCfg{Endpoint: "http://rag-evaluator:8080"}}
 	valid.ApplyDefaults()
+	valid.AnswerInputCostPerMUSD = 1
+	valid.AnswerOutputCostPerMUSD = 1
+	valid.Sidecar.LLMInputCostPerMUSD = 1
+	valid.Sidecar.LLMOutputCostPerMUSD = 1
+	valid.Sidecar.EmbeddingCostPerMUSD = 1
 	valid.Sidecar.TimeoutMS = ragEvalMaxTimeoutMS
 	valid.WorkerConcurrency = ragEvalMaxWorkerConcurrency
 	valid.MaxBatchSize = ragEvalMaxBatchSize
@@ -226,6 +247,11 @@ func TestRAGEvaluationEnvironmentOverlayIsIsolated(t *testing.T) {
 	t.Setenv("BKCRAB_RAG_EVAL_EMBEDDING_MODEL", "judge-embedding")
 	t.Setenv("BKCRAB_RAG_EVAL_MAX_RUN_TOKENS", "123456")
 	t.Setenv("BKCRAB_RAG_EVAL_RUN_RETENTION_DAYS", "45")
+	t.Setenv("BKCRAB_RAG_EVAL_ANSWER_INPUT_COST_USD_PER_MILLION", "1")
+	t.Setenv("BKCRAB_RAG_EVAL_ANSWER_OUTPUT_COST_USD_PER_MILLION", "2")
+	t.Setenv("BKCRAB_RAG_EVAL_LLM_INPUT_COST_USD_PER_MILLION", "3")
+	t.Setenv("BKCRAB_RAG_EVAL_LLM_OUTPUT_COST_USD_PER_MILLION", "4")
+	t.Setenv("BKCRAB_RAG_EVAL_EMBEDDING_COST_USD_PER_MILLION", "5")
 
 	dst := RAGCfg{
 		Embedding: RAGEmbeddingCfg{Model: "production-embedding"},
@@ -235,7 +261,9 @@ func TestRAGEvaluationEnvironmentOverlayIsIsolated(t *testing.T) {
 	if !dst.Evaluation.Enabled || dst.Evaluation.Sidecar.Endpoint != "http://eval.internal:8080" ||
 		dst.Evaluation.Sidecar.APIKey != "eval-secret" || dst.Evaluation.Sidecar.LLMModel != "judge-model" ||
 		dst.Evaluation.Sidecar.EmbeddingModel != "judge-embedding" || dst.Evaluation.MaxRunTokens != 123456 ||
-		dst.Evaluation.RunRetentionDays != 45 {
+		dst.Evaluation.RunRetentionDays != 45 || dst.Evaluation.AnswerInputCostPerMUSD != 1 ||
+		dst.Evaluation.AnswerOutputCostPerMUSD != 2 || dst.Evaluation.Sidecar.LLMInputCostPerMUSD != 3 ||
+		dst.Evaluation.Sidecar.LLMOutputCostPerMUSD != 4 || dst.Evaluation.Sidecar.EmbeddingCostPerMUSD != 5 {
 		t.Fatalf("evaluation overlay mismatch: %+v", dst.Evaluation)
 	}
 	if dst.Embedding.Model != "production-embedding" || dst.Reranker.Model != "production-reranker" {

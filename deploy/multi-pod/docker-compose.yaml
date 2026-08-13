@@ -20,8 +20,6 @@
 #   6. 等待 10+ 分钟或编辑 IdleTTLSec             — 沙箱被驱逐，数据库完好
 #   7. 杀死 Pod A                                — B 继续服务所有状态
 
-version: "3.8"
-
 services:
   db:
     image: mysql:8.4
@@ -39,6 +37,36 @@ services:
       interval: 2s
       timeout: 1s
       retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--requirepass", "multi-pod-redis-only"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "multi-pod-redis-only", "--no-auth-warning", "ping"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: bkcrab
+      RABBITMQ_DEFAULT_PASS: multi-pod-rabbit-only
+      RABBITMQ_DEFAULT_VHOST: bkcrab
+    ports:
+      - "127.0.0.1:5672:5672"
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
 
   minio:
     image: minio/minio:latest
@@ -84,6 +112,32 @@ services:
       TZ: Asia/Shanghai
       BKCRAB_STORAGE_TYPE: mysql
       BKCRAB_STORAGE_DSN: "bkcrab:bkcrab@tcp(db:3306)/bkcrab?parseTime=true&loc=UTC&charset=utf8mb4"
+      BKCRAB_STORAGE_AUTO_MIGRATE: "true"
+      # Both processes resolve the same database-bound @@server_uuid writer
+      # fingerprint. Runtime worker IDs remain process-unique UUIDs.
+      BKCRAB_FAIR_QUEUE_ENABLED: "true"
+      BKCRAB_FAIR_QUEUE_REDIS_ADDR: redis:6379
+      BKCRAB_FAIR_QUEUE_REDIS_PASSWORD: multi-pod-redis-only
+      BKCRAB_FAIR_QUEUE_REDIS_MODE: standalone
+      BKCRAB_FAIR_QUEUE_RABBITMQ_URL: amqp://bkcrab:multi-pod-rabbit-only@rabbitmq:5672/bkcrab
+      BKCRAB_FAIR_QUEUE_EXCHANGE: bkcrab.fair.task
+      BKCRAB_FAIR_QUEUE_DEAD_LETTER_EXCHANGE: bkcrab.fair.dlx
+      BKCRAB_FAIR_QUEUE_KEY_PREFIX: "bkcrab-multi:"
+      BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY: single
+      BKCRAB_RAG_INDEX_WORKER_MODE: fair
+      BKCRAB_IMAGEGEN_BATCH_MODE: fair
+      BKCRAB_IMAGEGEN_MAX_IMAGES_PER_BATCH: "16"
+      BKCRAB_IMAGEGEN_MAX_IMAGES_PER_TASK: "4"
+      BKCRAB_IMAGEGEN_GLOBAL_CONCURRENCY: "4"
+      BKCRAB_IMAGEGEN_PER_USER_BASE_CONCURRENCY: "2"
+      BKCRAB_IMAGEGEN_PER_USER_BURST_CONCURRENCY: "4"
+      BKCRAB_IMAGEGEN_TASK_LEASE: 180s
+      BKCRAB_IMAGEGEN_TASK_HEARTBEAT: 30s
+      BKCRAB_IMAGEGEN_RESERVATION_TTL: 180s
+      BKCRAB_IMAGEGEN_RESERVATION_HEARTBEAT: 30s
+      BKCRAB_IMAGEGEN_PROVIDER_CALL_TIMEOUT: 120s
+      BKCRAB_IMAGEGEN_ARTIFACT_DOWNLOAD_TIMEOUT: 60s
+      BKCRAB_IMAGEGEN_PROVIDER_CONCURRENCY_DEFAULT: "4"
       BKCRAB_MODE: cloud
       BKCRAB_AUTH_TOKEN: dev-admin-token
       # 对象存储 → MinIO。这些键镜像了 config.ObjectStoreCfg。
@@ -98,6 +152,10 @@ services:
         condition: service_healthy
       minio-bootstrap:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     ports:
       - "18953:18953"
 
@@ -110,6 +168,30 @@ services:
       TZ: Asia/Shanghai
       BKCRAB_STORAGE_TYPE: mysql
       BKCRAB_STORAGE_DSN: "bkcrab:bkcrab@tcp(db:3306)/bkcrab?parseTime=true&loc=UTC&charset=utf8mb4"
+      BKCRAB_STORAGE_AUTO_MIGRATE: "true"
+      BKCRAB_FAIR_QUEUE_ENABLED: "true"
+      BKCRAB_FAIR_QUEUE_REDIS_ADDR: redis:6379
+      BKCRAB_FAIR_QUEUE_REDIS_PASSWORD: multi-pod-redis-only
+      BKCRAB_FAIR_QUEUE_REDIS_MODE: standalone
+      BKCRAB_FAIR_QUEUE_RABBITMQ_URL: amqp://bkcrab:multi-pod-rabbit-only@rabbitmq:5672/bkcrab
+      BKCRAB_FAIR_QUEUE_EXCHANGE: bkcrab.fair.task
+      BKCRAB_FAIR_QUEUE_DEAD_LETTER_EXCHANGE: bkcrab.fair.dlx
+      BKCRAB_FAIR_QUEUE_KEY_PREFIX: "bkcrab-multi:"
+      BKCRAB_FAIR_QUEUE_MYSQL_WRITER_TOPOLOGY: single
+      BKCRAB_RAG_INDEX_WORKER_MODE: fair
+      BKCRAB_IMAGEGEN_BATCH_MODE: fair
+      BKCRAB_IMAGEGEN_MAX_IMAGES_PER_BATCH: "16"
+      BKCRAB_IMAGEGEN_MAX_IMAGES_PER_TASK: "4"
+      BKCRAB_IMAGEGEN_GLOBAL_CONCURRENCY: "4"
+      BKCRAB_IMAGEGEN_PER_USER_BASE_CONCURRENCY: "2"
+      BKCRAB_IMAGEGEN_PER_USER_BURST_CONCURRENCY: "4"
+      BKCRAB_IMAGEGEN_TASK_LEASE: 180s
+      BKCRAB_IMAGEGEN_TASK_HEARTBEAT: 30s
+      BKCRAB_IMAGEGEN_RESERVATION_TTL: 180s
+      BKCRAB_IMAGEGEN_RESERVATION_HEARTBEAT: 30s
+      BKCRAB_IMAGEGEN_PROVIDER_CALL_TIMEOUT: 120s
+      BKCRAB_IMAGEGEN_ARTIFACT_DOWNLOAD_TIMEOUT: 60s
+      BKCRAB_IMAGEGEN_PROVIDER_CONCURRENCY_DEFAULT: "4"
       BKCRAB_MODE: cloud
       BKCRAB_AUTH_TOKEN: dev-admin-token
       BKCRAB_OBJECT_STORE_TYPE: minio
@@ -123,9 +205,15 @@ services:
         condition: service_healthy
       minio-bootstrap:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     ports:
       - "18954:18953"
 
 volumes:
   mysqldata:
   miniodata:
+  redisdata:
+  rabbitmqdata:

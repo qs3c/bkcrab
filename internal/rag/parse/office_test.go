@@ -15,6 +15,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
 	"github.com/qs3c/bkcrab/internal/rag/split"
 	"github.com/qs3c/bkcrab/internal/rag/vision"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 type officeFixture struct {
@@ -405,6 +406,30 @@ func TestOfficeAutoSingleImageFailureIsDegraded(t *testing.T) {
 	if len(parsed.Occurrences) != 2 || parsed.Occurrences[0].AltText == "" ||
 		!hasOfficeWarning(parsed.Warnings, "office_vision_image_failed") {
 		t.Fatalf("fallback/warnings=%+v / %+v", parsed.Occurrences, parsed.Warnings)
+	}
+}
+
+func TestOfficeVisionSafetyFailuresAreNotDegraded(t *testing.T) {
+	for _, safetyErr := range []error{
+		store.ErrFairQueueWriterMismatch,
+		store.ErrFairQueueUnsafeConnection,
+		store.ErrRAGDocumentAILedgerCorrupt,
+	} {
+		t.Run(safetyErr.Error(), func(t *testing.T) {
+			fixture := repeatedOfficeFixture(t, "docx")
+			parser := NewLocalParser(&officeFixtureExtractor{t: t, fixture: fixture}, 300)
+			parsed, err := parser.Parse(context.Background(), fakeOfficeSource("docx"), ParseOptions{
+				Mode:             config.ParseModeAuto,
+				ImageTranscriber: &recordingOfficeVision{err: safetyErr},
+				DocumentAIBudget: &vision.TaskDocumentAIBudget{},
+			})
+			if parsed != nil {
+				_ = parsed.Close()
+			}
+			if !errors.Is(err, safetyErr) {
+				t.Fatalf("Parse() error=%v, want safety error %v", err, safetyErr)
+			}
+		})
 	}
 }
 

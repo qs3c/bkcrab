@@ -477,3 +477,117 @@ rolling-worker migration.
    upload/reindex entry points. Do not roll back by restarting an old worker
    after contract; restore the database backup or deploy a compatible forward
    fix instead.
+
+### RAG fairqueue durable state and contract
+
+Fair scheduling extends `rag_index_tasks` without creating a generic job or
+outbox table. `user_id` is copied from the owning knowledge base and is
+immutable for the task lifetime. The expand release keeps it nullable so an
+older INSERT can omit it; the explicit contract command backfills ownership,
+checks generation invariants, and finally changes it to `NOT NULL`.
+
+`dispatch_generation` identifies the current logical Rabbit delivery.
+`dispatched_at` is written only after mandatory publish confirmation and only
+with the original candidate guard. A stale Mark CAS leaves the new canonical
+snapshot untouched. `PENDING + next_run_at<=DB_NOW + dispatched_at IS NULL`
+is a publish obligation. A due `PENDING` row with a marker is already broker
+backed. `RUNNING` is valid only with the matching positive
+`claim_generation`, owner, heartbeat, and unexpired lease. Retry clears the
+marker and advances the generation only when the next attempt becomes due.
+
+`fairqueue_resource_operations` contains at most one safety journal row per
+registered resource. It is not an outbox and never contains task or tenant
+payloads. `operation_id`, `kind`, `phase`, writer fingerprints, bounded repair
+cursor/progress, version, and timestamps form a compare-and-swap journal for
+`RABBIT_REPAIR`, `WRITER_REBIND`, and `FORCE_REBUILD`. `ACTIVE` and
+`READY_COMMITTED` are operator-owned; ordinary startup stays closed until the
+same operation reaches `COMPLETED` or Redis proves the exact matching terminal
+ID.
+
+Fair mode is MySQL-only and requires every claim, heartbeat, count, sweep, and
+finalization to resolve the same database-bound writer fingerprint on a pinned
+physical session. Do not configure multi-primary or tenant-sharded writers.
+After broker data loss, the fenced repair advances each obligation with
+`dispatch_generation=GREATEST(dispatch_generation,claim_generation)+1` and
+clears the marker. Merely setting `dispatched_at=NULL` is unsafe because a late
+pre-disaster delivery could still claim the same generation.
+
+Run `bkcrab admin fairqueue contract-migrate` first as a read-only aggregate
+check. Apply requires `--apply --confirm-all-writers-dual-write`; startup
+auto-migration never performs this contract. After contract, the rollback
+floor is the compatible expand/dual-write release—never restart a pre-expand
+binary against the contracted schema.
+
+## Image generation batch schema
+
+Durable image generation is MySQL-only and adds exactly two business tables.
+It reuses `fairqueue_resource_operations` for special recovery of the
+registered `image.generate` resource; that journal is not a task outbox and no
+image artifact, generic job, or tenant table is added. Image bytes live only in
+the configured workspace object store.
+
+### `image_generation_batches`
+
+One row is the durable, authorization-scoped request and aggregate result.
+Status and counters are recomputed transactionally from its tasks, so repeated
+terminal updates are idempotent.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `id` | `VARCHAR(120)` | Canonical `imgb_...` batch ID and primary key |
+| `user_id` | `VARCHAR(120)` | Canonical requesting user; paired with `agent_id` for status/cancel authorization |
+| `config_user_id` | `VARCHAR(120)` | User whose provider configuration is resolved |
+| `agent_owner_user_id` | `VARCHAR(120)` | Canonical owner of the selected agent configuration |
+| `agent_id` | `VARCHAR(120)` | Canonical agent identity; sessions do not change ownership |
+| `workspace_project_id` | `VARCHAR(120)` | Persisted artifact-origin project scope |
+| `workspace_session_id` | `VARCHAR(191)` | Persisted artifact-origin session scope |
+| `request_json` | `JSON` | Versioned normalized request; may contain prompts but never image bytes |
+| `provider_plan_json` | `JSON` | Versioned, reconstructable provider/model references without credentials, headers, URLs, or tokens |
+| `status` | `VARCHAR(32)` | `PENDING`, `RUNNING`, `DONE`, `PARTIAL`, `FAILED`, `CANCELING`, or `CANCELED` |
+| `requested_count` | `INTEGER` | Exact requested image count, 1–16 |
+| `succeeded_count` | `INTEGER` | Images committed by `DONE` tasks |
+| `failed_count` | `INTEGER` | Images belonging to `FAILED` tasks |
+| `canceled_count` | `INTEGER` | Images belonging to `CANCELED` tasks |
+| `cancel_requested` | `BOOLEAN` | Durable cancellation fence |
+| `error_msg` | `TEXT`, nullable | Bounded aggregate error summary |
+| `created_at`, `updated_at` | `DATETIME(6)` | Database-clock creation and last transition |
+| `started_at`, `finished_at` | `DATETIME(6)`, nullable | First execution and terminal timestamps |
+
+Owner, status, and workspace indexes support authorized reads, recovery, and
+artifact-origin lookup. A terminal batch remains readable; `PARTIAL` and
+`CANCELED` deliberately retain artifacts from already completed tasks.
+
+### `image_generation_tasks`
+
+The planner deterministically preserves item order and splits every item into
+chunks of at most four images. `(batch_id,item_index,chunk_index)` is unique;
+`sequence_id` is an auto-increment high-water cursor for bounded recovery.
+
+| Column group | Columns | Meaning |
+|---|---|---|
+| Identity/order | `id`, `sequence_id`, `batch_id`, `user_id`, `item_index`, `chunk_index`, `label` | Canonical task identity, owner, and deterministic result order |
+| Request | `prompt`, `size`, `requested_count`, `request_fingerprint` | Exact task input; count is 1–4 and fingerprint binds salvage to the request |
+| Lifecycle | `status`, `retry_count`, `max_retry` | `PENDING`, `RUNNING`, `DONE`, `FAILED`, or `CANCELED`, with bounded transient retries |
+| Dispatch fence | `dispatch_generation`, `dispatched_at` | Current logical delivery generation and confirmed Rabbit publish marker |
+| Claim fence | `claim_generation`, `lease_owner`, `lease_until`, `heartbeat_at` | MySQL-authoritative execution lease; a worker may mutate only with the complete current fence |
+| Retry timing | `next_run_at` | Database-clock eligibility for a delayed retry |
+| Result | `provider`, `model`, `manifest_key`, `artifacts_json` | Safe provider/model labels and persisted object metadata; never bytes, base64, or provider URLs |
+| Failure | `error_code`, `error_msg` | Bounded, sanitized terminal or retry error |
+| Timestamps | `created_at`, `started_at`, `finished_at`, `updated_at` | Database-clock lifecycle timestamps |
+
+`dispatch_generation` identifies the only Rabbit delivery currently allowed
+to claim. `dispatched_at` is set only after mandatory publish confirmation and
+only if the original generation-aware source guard still matches. A due
+`PENDING` task with `dispatched_at IS NULL` is a publish obligation; a marker
+means that generation is broker-backed. Claim copies
+`dispatch_generation` into `claim_generation`. Retry, expired rearm, poison
+repair, and broker-disaster repair advance with
+`GREATEST(dispatch_generation,claim_generation)+1` before clearing the marker,
+so an older delivery cannot reclaim or finalize the row.
+
+A valid `RUNNING` row has a positive matching generation, owner, heartbeat,
+and unexpired lease on the authoritative writer. Claim, heartbeat, capacity,
+sweep, and finalize share the `image.generate` resource lock and verify the
+writer fingerprint on the pinned MySQL connection. The artifact manifest is
+the external commit record; salvage is allowed only for the explicitly stored
+previous claim generation and matching request fingerprint.

@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/auth"
 	"github.com/qs3c/bkcrab/internal/channels"
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/fairqueue"
 	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
 	"github.com/qs3c/bkcrab/internal/rag"
 	rageval "github.com/qs3c/bkcrab/internal/rag/eval"
@@ -96,6 +98,8 @@ type Server struct {
 	ragEvalDatasets       *rageval.DatasetService
 	ragEvalAdmin          *rageval.AdminService
 	ragPolicyPromotion    *rag.PolicyPromotionService
+	fairHealthMu          sync.RWMutex
+	fairHealthProvider    FairQueueHealthProvider
 	startedAt             time.Time
 }
 
@@ -108,6 +112,13 @@ type RAGParserHealthProvider interface {
 
 type RAGEvaluatorHealthProvider interface {
 	RAGEvaluatorHealthSnapshot() config.RAGEvaluatorHealthSnapshot
+}
+
+// FairQueueHealthProvider exposes a cached, serialization-safe runtime
+// snapshot. Implementations must not perform dependency I/O on the request
+// path: readiness and admin health handlers are intentionally memory-only.
+type FairQueueHealthProvider interface {
+	FairQueueHealthSnapshot() fairqueue.HealthSnapshot
 }
 
 // NewServer 在指定端口上创建一个设置向导服务器。
@@ -257,6 +268,25 @@ func (s *Server) ragEvaluatorHealthSnapshot() config.RAGEvaluatorHealthSnapshot 
 	return snapshot
 }
 
+// SetFairQueueHealthProvider installs the cached fair-queue health source.
+// The provider itself owns synchronization for its snapshot; the Server lock
+// only protects replacing or reading the provider interface.
+func (s *Server) SetFairQueueHealthProvider(provider FairQueueHealthProvider) {
+	s.fairHealthMu.Lock()
+	s.fairHealthProvider = provider
+	s.fairHealthMu.Unlock()
+}
+
+func (s *Server) fairQueueHealthSnapshot() (fairqueue.HealthSnapshot, bool) {
+	s.fairHealthMu.RLock()
+	provider := s.fairHealthProvider
+	s.fairHealthMu.RUnlock()
+	if provider == nil {
+		return fairqueue.HealthSnapshot{}, false
+	}
+	return provider.FairQueueHealthSnapshot(), true
+}
+
 // SetAuth 安装认证解析器。必需的。
 func (s *Server) SetAuth(resolver *auth.Resolver) {
 	s.authResolver = resolver
@@ -365,14 +395,12 @@ func isRAGEvalAdminIdentity(identity auth.Identity) bool {
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 
-	// 健康检查探测（无需认证）。
-	healthz := func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	}
-	mux.HandleFunc("GET /healthz", healthz)
-	mux.HandleFunc("GET /livez", healthz)
-	mux.HandleFunc("GET /readyz", healthz)
+	// Compatibility, liveness and readiness deliberately have separate
+	// semantics. Dependency detail is available only on the protected admin
+	// endpoint registered below.
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /livez", s.handleLive)
+	mux.HandleFunc("GET /readyz", s.handleReady)
 
 	auth := s.authMiddleware
 	opt := s.optionalAuth
@@ -394,6 +422,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/admin/chats", admin(s.handleAdminChats))
 	s.registerRAGEvaluationRoutes(mux, evalAdmin)
 	s.registerRAGPolicyRoutes(mux, evalAdmin)
+	mux.HandleFunc("GET /api/admin/health/fairqueue", admin(s.handleFairQueueHealth))
 
 	// 按用户配置（system_settings + 作用域内的 providers/channels）。
 	mux.HandleFunc("GET /api/config", auth(s.handleGetConfig))
@@ -570,22 +599,41 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	srv := &http.Server{Addr: addr, Handler: mux}
 
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		srv.Shutdown(shutdownCtx)
-	}()
-
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("setup: listen %s: %w", addr, err)
 	}
 	slog.Info("web UI running", "url", fmt.Sprintf("http://localhost:%d", s.port))
-	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-		return err
+	return serveHTTPServer(ctx, srv, ln)
+}
+
+func serveHTTPServer(ctx context.Context, srv *http.Server, listener net.Listener) error {
+	if ctx == nil || srv == nil || listener == nil {
+		return errors.New("setup: HTTP lifecycle requires context, server, and listener")
 	}
-	return nil
+	serveFinished := make(chan struct{})
+	shutdownDone := make(chan error, 1)
+	go func() {
+		select {
+		case <-ctx.Done():
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			shutdownErr := srv.Shutdown(shutdownCtx)
+			cancel()
+			if shutdownErr != nil {
+				shutdownErr = errors.Join(shutdownErr, srv.Close())
+			}
+			shutdownDone <- shutdownErr
+		case <-serveFinished:
+			shutdownDone <- nil
+		}
+	}()
+	serveErr := srv.Serve(listener)
+	close(serveFinished)
+	shutdownErr := <-shutdownDone
+	if errors.Is(serveErr, http.ErrServerClosed) {
+		serveErr = nil
+	}
+	return errors.Join(serveErr, shutdownErr)
 }
 
 // spaHandler 使用 SPA 风格的回退机制提供嵌入式 Next.js UI 服务。
