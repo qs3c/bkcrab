@@ -51,5 +51,3 @@ function Distribution({ bins }: { bins: number[] }) {
   const max = Math.max(1, ...bins);
   return <div><p className="text-xs text-muted-foreground">分布 0–.25 / .25–.5 / .5–.75 / .75–1</p><div className="mt-1 flex h-6 items-end gap-1">{bins.map((count, index) => <div key={index} className="min-h-0.5 flex-1 rounded-sm bg-violet-500" style={{ height: `${Math.max(4, count / max * 100)}%` }} title={`${count}`} />)}</div></div>;
 }
-
-
