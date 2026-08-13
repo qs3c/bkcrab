@@ -278,6 +278,17 @@ def test_healthz_uses_runtime_limits_and_has_no_pdf_engine(tmp_path: Path) -> No
     assert response.json()["capabilities"]["pdf"]["enabled"] is False
 
 
+def test_healthz_advertises_the_selected_anydoc_contract(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    settings = Settings(**{**settings.__dict__, "office_engine": "anydoc"})
+    with TestClient(create_app(settings, pdf_engine=None)) as client:
+        response = client.get("/healthz")
+    assert response.status_code == 200
+    office = response.json()["capabilities"]["office"]
+    assert office["markitdownVersion"] == "0.1.8"
+    assert office["wrapperVersion"] == "office-anydoc-wrapper-v1"
+
+
 def test_health_rejects_an_unapproved_half_enabled_pdf_shape() -> None:
     value = make_health_document(
         service_version="test", max_input_bytes=1, max_output_bytes=1

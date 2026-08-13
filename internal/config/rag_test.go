@@ -220,8 +220,8 @@ func TestRAGAdvancedDefaultsAndSearchContentValidation(t *testing.T) {
 		cfg.DocumentAI.ResponseFormat != RAGDocumentAIResponseFormatJSONSchema {
 		t.Fatalf("DocumentAI defaults = %+v", cfg.DocumentAI)
 	}
-	if cfg.ParserSidecar.TimeoutMS != 600_000 {
-		t.Fatalf("parser sidecar timeout = %d, want 600000", cfg.ParserSidecar.TimeoutMS)
+	if cfg.ParserSidecar.TimeoutMS != 600_000 || cfg.ParserSidecar.Engine != "markitdown" {
+		t.Fatalf("parser sidecar defaults = %+v", cfg.ParserSidecar)
 	}
 	if cfg.Limits.MaxPagesPerDocument != 300 || cfg.Limits.MaxVisionPagesPerDocument != 100 ||
 		cfg.Limits.MaxVisionAssetsPerDocument != 100 || cfg.Limits.MaxAssetsPerDocument != 500 ||
@@ -250,6 +250,13 @@ func TestRAGAdvancedDefaultsAndSearchContentValidation(t *testing.T) {
 	cfg.DocumentAI.ResponseFormat = "unsupported"
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "responseFormat") {
 		t.Fatalf("unsupported DocumentAI response format validation error = %v", err)
+	}
+}
+
+func TestRAGRejectsUnknownParserSidecarEngine(t *testing.T) {
+	cfg := RAGCfg{ParserSidecar: RAGParserSidecarCfg{Engine: "unknown"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "parserSidecar.engine") {
+		t.Fatalf("validation error=%v", err)
 	}
 }
 
@@ -309,6 +316,7 @@ func TestRAGAdvancedEnvironmentOverlay(t *testing.T) {
 	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_ALLOWED_ENDPOINT_HOSTS", "document-ai.internal, backup.internal ")
 	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_ALLOW_PRIVATE_ENDPOINT", "true")
 	t.Setenv("BKCRAB_RAG_PARSER_ENDPOINT", "http://rag-parser:8080")
+	t.Setenv("BKCRAB_RAG_PARSER_ENGINE", "anydoc")
 	t.Setenv("BKCRAB_RAG_PARSER_TIMEOUT_MS", "500000")
 	t.Setenv("BKCRAB_RAG_LIMITS_MAX_PAGES_PER_DOCUMENT", "123")
 	t.Setenv("BKCRAB_RAG_LIMITS_MAX_SEARCH_CONTENT_BYTES", "60000")
@@ -337,7 +345,7 @@ func TestRAGAdvancedEnvironmentOverlay(t *testing.T) {
 			dst.DocumentAI.EnrichmentConcurrency, dst.DocumentAI.AllowPrivateEndpoint,
 			dst.DocumentAI.AllowedEndpointHosts)
 	}
-	if dst.ParserSidecar.Endpoint != "http://rag-parser:8080" || dst.ParserSidecar.TimeoutMS != 500000 {
+	if dst.ParserSidecar.Endpoint != "http://rag-parser:8080" || dst.ParserSidecar.Engine != "anydoc" || dst.ParserSidecar.TimeoutMS != 500000 {
 		t.Fatalf("parser sidecar env overlay = %+v", dst.ParserSidecar)
 	}
 	if dst.Limits.MaxPagesPerDocument != 123 || dst.Limits.MaxSearchContentBytes != 60000 {

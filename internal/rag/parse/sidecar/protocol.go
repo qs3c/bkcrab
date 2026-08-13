@@ -23,7 +23,38 @@ const (
 	MIMETypeMarkdown = "text/markdown; charset=utf-8"
 	MIMETypeJSON     = "application/json"
 	MIMETypeVSDX     = "application/vnd.ms-visio.drawing"
+
+	OfficeEngineMarkItDown = "markitdown"
+	OfficeEngineAnyDoc     = "anydoc"
+
+	ExpectedMarkItDownVersion = "0.1.6"
+	ExpectedAnyDocVersion     = "0.1.8"
+	ExpectedMarkItDownWrapper = "office-wrapper-v3"
+	ExpectedAnyDocWrapper     = "office-anydoc-wrapper-v1"
+	// ExpectedOfficeWrapper is retained for existing MarkItDown callers.
+	ExpectedOfficeWrapper = ExpectedMarkItDownWrapper
 )
+
+func OfficeParserDescriptor(engine string) (ParserDescriptor, error) {
+	switch strings.ToLower(strings.TrimSpace(engine)) {
+	case "", OfficeEngineMarkItDown:
+		return ParserDescriptor{Name: OfficeEngineMarkItDown, Version: ExpectedMarkItDownVersion, WrapperVersion: ExpectedMarkItDownWrapper}, nil
+	case OfficeEngineAnyDoc:
+		return ParserDescriptor{Name: OfficeEngineAnyDoc, Version: ExpectedAnyDocVersion, WrapperVersion: ExpectedAnyDocWrapper}, nil
+	default:
+		return ParserDescriptor{}, fmt.Errorf("unsupported Office parser engine %q", engine)
+	}
+}
+
+func supportedOfficeParser(parser ParserDescriptor) bool {
+	for _, engine := range []string{OfficeEngineMarkItDown, OfficeEngineAnyDoc} {
+		expected, _ := OfficeParserDescriptor(engine)
+		if parser == expected {
+			return true
+		}
+	}
+	return false
+}
 
 type BundleKind string
 
@@ -142,10 +173,12 @@ type HealthLimits struct {
 }
 
 type OfficeCapability struct {
-	Enabled           bool     `json:"enabled"`
-	Formats           []string `json:"formats"`
-	MarkItDownVersion string   `json:"markitdownVersion"`
-	WrapperVersion    string   `json:"wrapperVersion"`
+	Enabled bool     `json:"enabled"`
+	Formats []string `json:"formats"`
+	// MarkItDownVersion is the legacy rag-parser/v2 wire field. It carries
+	// the active Office converter version, including for the anydoc backend.
+	MarkItDownVersion string `json:"markitdownVersion"`
+	WrapperVersion    string `json:"wrapperVersion"`
 }
 
 type PDFCapability struct {
@@ -211,6 +244,7 @@ type DecodeLimits struct {
 type DecodeOptions struct {
 	ExpectedKind      BundleKind
 	ExpectedSource    SourceDescriptor
+	ExpectedParser    *ParserDescriptor
 	RequestedPages    []int
 	ExpectedPageUnits map[int]string
 	AllowedPageErrors map[string]struct{}
@@ -782,9 +816,11 @@ func ValidateManifest(manifest *Manifest, options DecodeOptions) error {
 		if manifest.Source.Format != "docx" && manifest.Source.Format != "pptx" && manifest.Source.Format != "xlsx" {
 			return invalidBundle("office source format %q is unsupported", manifest.Source.Format)
 		}
-		if manifest.Parser.Name != "markitdown" || manifest.Parser.Version != ExpectedMarkItDownVersion ||
-			manifest.Parser.WrapperVersion != ExpectedOfficeWrapper {
+		if !supportedOfficeParser(manifest.Parser) {
 			return invalidBundle("office parser identity/version is incompatible")
+		}
+		if options.ExpectedParser != nil && manifest.Parser != *options.ExpectedParser {
+			return invalidBundle("office parser identity/version does not match configured backend")
 		}
 		if len(manifest.Pages) != 0 || len(manifest.Units) == 0 {
 			return invalidBundle("office bundle requires units and forbids pages")

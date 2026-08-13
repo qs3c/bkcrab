@@ -26,10 +26,8 @@ import (
 )
 
 const (
-	ExpectedMarkItDownVersion = "0.1.6"
-	ExpectedOfficeWrapper     = "office-wrapper-v3"
-	expectedPDFEngine         = "pypdfium2"
-	expectedPDFEngineVersion  = "5.12.1"
+	expectedPDFEngine        = "pypdfium2"
+	expectedPDFEngineVersion = "5.12.1"
 
 	// These build-time gates are promoted only together with the Task 16
 	// checked-in three-format positioning goldens. Health compatibility alone
@@ -55,6 +53,7 @@ type ClientLimits struct {
 
 type ClientConfig struct {
 	Endpoint            string
+	OfficeEngine        string
 	Timeout             time.Duration
 	HealthTTL           time.Duration
 	HealthProbeInterval time.Duration
@@ -81,6 +80,7 @@ type Client struct {
 	tempDir             string
 	now                 func() time.Time
 	pdfLicenseApproved  bool
+	officeParser        ParserDescriptor
 	recorder            telemetry.Recorder
 
 	probeMu   sync.Mutex
@@ -136,6 +136,10 @@ func NewClient(clientConfig ClientConfig) (*Client, error) {
 	if clientConfig.Timeout <= 0 {
 		clientConfig.Timeout = 10 * time.Second
 	}
+	officeParser, err := OfficeParserDescriptor(clientConfig.OfficeEngine)
+	if err != nil {
+		return nil, err
+	}
 	if clientConfig.HealthTTL <= 0 {
 		clientConfig.HealthTTL = 30 * time.Second
 	}
@@ -163,7 +167,8 @@ func NewClient(clientConfig ClientConfig) (*Client, error) {
 		healthTTL: clientConfig.HealthTTL, healthProbeInterval: clientConfig.HealthProbeInterval,
 		limits: defaultClientLimits(clientConfig.Limits), tempDir: clientConfig.TempDir,
 		now: now, pdfLicenseApproved: clientConfig.PDFLicenseApproved,
-		recorder: clientConfig.Recorder,
+		officeParser: officeParser,
+		recorder:     clientConfig.Recorder,
 	}, nil
 }
 
@@ -261,8 +266,8 @@ func (c *Client) ProbeHealth(ctx context.Context) (config.RAGParserHealthSnapsho
 		return c.storeProbeFailure(now, err), err
 	}
 	officeCompatible := health.Capabilities.Office.Enabled &&
-		health.Capabilities.Office.MarkItDownVersion == ExpectedMarkItDownVersion &&
-		health.Capabilities.Office.WrapperVersion == ExpectedOfficeWrapper
+		health.Capabilities.Office.MarkItDownVersion == c.officeParser.Version &&
+		health.Capabilities.Office.WrapperVersion == c.officeParser.WrapperVersion
 	pdfCompatible := health.Capabilities.PDF.Enabled &&
 		health.Capabilities.PDF.Engine == expectedPDFEngine &&
 		health.Capabilities.PDF.EngineVersion == expectedPDFEngineVersion
@@ -345,8 +350,8 @@ func (c *Client) officeAvailable(format string) bool {
 	if !fresh || !health.Capabilities.Office.Enabled {
 		return false
 	}
-	if health.Capabilities.Office.MarkItDownVersion != ExpectedMarkItDownVersion ||
-		health.Capabilities.Office.WrapperVersion != ExpectedOfficeWrapper {
+	if health.Capabilities.Office.MarkItDownVersion != c.officeParser.Version ||
+		health.Capabilities.Office.WrapperVersion != c.officeParser.WrapperVersion {
 		return false
 	}
 	for _, candidate := range health.Capabilities.Office.Formats {
@@ -442,7 +447,7 @@ func (c *Client) ConvertOffice(ctx context.Context, source document.Source) (*Bu
 		return nil, err
 	}
 	return c.postBundle(ctx, "office-convert", "/v1/office/convert", url.Values{"format": {format}}, source,
-		DecodeOptions{ExpectedKind: BundleKindOfficeConvert})
+		DecodeOptions{ExpectedKind: BundleKindOfficeConvert, ExpectedParser: &c.officeParser})
 }
 
 func (c *Client) AnalyzePDF(ctx context.Context, source document.Source) (*BundleHandle, error) {

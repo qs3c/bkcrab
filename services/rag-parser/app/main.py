@@ -23,10 +23,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .office import (
     OFFICE_FORMATS,
-    MarkItDownConverter,
     OfficeError,
     OfficeLimits,
     build_office_bundle,
+    converter_descriptor,
+    office_converter,
+    office_converter_descriptor,
     preflight_ooxml,
 )
 from .pdf import (
@@ -117,6 +119,7 @@ class Settings:
     parse_timeout_seconds: int
     temp_root: Path | None
     office_limits: OfficeLimits
+    office_engine: str = "markitdown"
     pdf_limits: PDFLimits = field(default_factory=PDFLimits)
 
     @classmethod
@@ -142,6 +145,10 @@ class Settings:
         )
         temp_root_value = os.getenv("RAG_PARSER_TEMP_ROOT", "").strip()
         temp_root = Path(temp_root_value).resolve() if temp_root_value else None
+        office_engine = os.getenv("RAG_PARSER_OFFICE_ENGINE", "markitdown").strip().lower()
+        # Resolve the immutable descriptor here so invalid configuration fails
+        # before the service starts accepting traffic.
+        office_converter_descriptor(office_engine)
         return cls(
             service_version=os.getenv("RAG_PARSER_SERVICE_VERSION", "dev").strip() or "dev",
             max_input_bytes=max_input,
@@ -150,6 +157,7 @@ class Settings:
             max_bundle_entries=env_positive_int("RAG_PARSER_MAX_BUNDLE_ENTRIES", 1000),
             parse_timeout_seconds=parse_timeout_seconds,
             temp_root=temp_root,
+            office_engine=office_engine,
             office_limits=OfficeLimits(
                 max_archive_entries=env_positive_int(
                     "RAG_PARSER_MAX_OOXML_ENTRIES", 10000
@@ -191,6 +199,7 @@ class _ParserWork:
     source_size: int
     request_dir: Path
     source_format: str = ""
+    office_engine: str = "markitdown"
     office_limits: OfficeLimits | None = None
     pdf_limits: PDFLimits | None = None
     converter: object | None = None
@@ -298,7 +307,7 @@ def _build_parser_bundle(work: _ParserWork) -> Bundle:
         )
         active_converter = work.converter
         if active_converter is None:
-            active_converter = MarkItDownConverter()
+            active_converter = office_converter(work.office_engine)
         return build_office_bundle(
             original_source=work.source,
             sanitized_source=preflight.sanitized_path,
@@ -577,7 +586,7 @@ def _approved_pdf_engine_or_none() -> PDFEngine | None:
 
 def create_app(
     settings: Settings | None = None,
-    converter: MarkItDownConverter | None = None,
+    converter: object | None = None,
     pdf_engine: PDFEngine | None | object = _DEFAULT_PDF_ENGINE,
 ) -> FastAPI:
     runtime = settings or Settings.from_env()
@@ -587,6 +596,11 @@ def create_app(
     )
     if active_pdf_engine is not None and not isinstance(active_pdf_engine, PDFEngine):
         raise TypeError("pdf_engine must implement PDFEngine or be None")
+    office_descriptor = (
+        converter_descriptor(converter)
+        if converter is not None
+        else office_converter_descriptor(runtime.office_engine)
+    )
     app = FastAPI(
         title="bkcrab rag-parser",
         docs_url=None,
@@ -628,6 +642,7 @@ def create_app(
             service_version=runtime.service_version,
             max_input_bytes=runtime.max_input_bytes,
             max_output_bytes=runtime.max_output_bytes,
+            office_parser=office_descriptor,
             pdf_engine=active_pdf_engine.name if active_pdf_engine is not None else "",
             pdf_engine_version=(
                 active_pdf_engine.version if active_pdf_engine is not None else ""
@@ -670,6 +685,7 @@ def create_app(
                     source_size=source_size,
                     request_dir=request_dir,
                     source_format=source_format,
+                    office_engine=runtime.office_engine,
                     office_limits=runtime.office_limits,
                     converter=converter,
                 ),

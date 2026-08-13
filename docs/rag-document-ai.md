@@ -58,8 +58,48 @@ The local parser endpoint is configured separately:
 
 ```text
 BKCRAB_RAG_PARSER_ENDPOINT=http://rag-parser:8080
+BKCRAB_RAG_PARSER_ENGINE=markitdown
 BKCRAB_RAG_PARSER_TIMEOUT_MS=600000
 ```
+
+## Dual Office parser architecture
+
+The Docker RAG overlay runs two protocol-compatible parser services:
+
+| Service | Office converter | Selection values |
+|---|---|---|
+| `rag-parser` | Microsoft MarkItDown `0.1.6` | endpoint `http://rag-parser:8080`, engine `markitdown` |
+| `rag-parser-anydoc` | Firecrawl anydoc `0.1.8` | endpoint `http://rag-parser-anydoc:8080`, engine `anydoc` |
+
+MarkItDown and anydoc occupy only the Office-to-Markdown conversion slot. The
+surrounding sidecar architecture is shared: bounded multipart streaming,
+OOXML ZIP/XML/relationship preflight, removal of external and unsafe OLE
+relationships, request-scoped converter instrumentation, stable slide/sheet
+units, image and Visio extraction, occurrence IDs, Markdown/table validation,
+worker-process timeout enforcement, and deterministic `rag-parser/v2` tar
+bundles. PDF analyze/render continues to use the approved `pypdfium2` adapter
+in both services; scanned-page OCR remains the responsibility of the existing
+DocumentAI routing and fallback path rather than anydoc.
+
+anydoc does not emit MarkItDown's slide comments, so its wrapper injects
+unforgeable per-request slide boundary markers into the already-sanitized
+OOXML copy and removes them after conversion. Image/code hooks use the same
+mechanism. The original upload is never modified, and neither converter is
+allowed to fetch URLs.
+
+To switch the active backend in `deploy/docker/.env`, set both values as a
+pair and recreate only `bkcrab`; both parser containers may remain running:
+
+```text
+RAG_PARSER_ENDPOINT=http://rag-parser-anydoc:8080
+RAG_PARSER_ENGINE=anydoc
+```
+
+Switch back to `http://rag-parser:8080` plus `markitdown` for the baseline.
+Health compatibility and every Office bundle are checked against the selected
+engine's exact name/version/wrapper contract, so a mismatched pair is rejected.
+The engine also participates in the parse fingerprint, preventing cached
+MarkItDown artifacts from being mistaken for anydoc results during comparison.
 
 The parser receives only source bytes and an allowlisted format. It has no
 DocumentAI, embedding, object-store, or database credential. Deployment must
@@ -122,7 +162,8 @@ SQL/vector staging, and one fenced active-version switch. Progress stages are
 - Embedded Visio objects are accepted only as internal, allowlisted OLE
   embeddings paired with an EMF snapshot. The isolated sidecar converts that
   snapshot to a safe PNG, validates and preserves the non-macro VSDX package as
-  an occurrence-scoped attachment, and removes OLE parts before MarkItDown.
+  an occurrence-scoped attachment, and removes OLE parts before the selected
+  Office converter.
   VSDX downloads use separate owner/session authorization endpoints; object
   keys and source bytes never enter model prompts.
 - Table/code enrichment requires both gates and KB opt-in. Failure or exhausted

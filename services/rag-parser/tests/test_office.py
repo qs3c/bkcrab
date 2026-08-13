@@ -18,8 +18,11 @@ from PIL import Image
 
 from app.main import Settings, _ParserWork, _run_parser_operation, create_app
 from app.office import (
+    ANYDOC_VERSION,
+    ANYDOC_WRAPPER_VERSION,
     DOC_REL_NS,
     REL_NS,
+    AnyDocConverter,
     MarkItDownConverter,
     OfficeError,
     OfficeLimits,
@@ -183,6 +186,29 @@ def test_markitdown_wrapper_exposes_only_convert_stream(tmp_path: Path) -> None:
     converter = MarkItDownConverter(engine)
     assert converter.convert(source, "docx").startswith("# Converted")
     assert engine.calls == [(b"PK\x03\x04", ".docx")]
+
+
+def test_anydoc_wrapper_uses_only_the_preflighted_local_path(tmp_path: Path) -> None:
+    source = tmp_path / "input.docx"
+    source.write_bytes(b"PK\x03\x04payload")
+
+    class _AnyDocEngine:
+        ConvertError = ValueError
+
+        def __init__(self) -> None:
+            self.sources: list[Path] = []
+
+        def to_markdown(self, value: Path) -> str:
+            self.sources.append(value)
+            return "# anydoc\r\n"
+
+    engine = _AnyDocEngine()
+    converter = AnyDocConverter(engine)
+    assert converter.convert(source, "docx") == "# anydoc\n"
+    assert engine.sources == [source]
+    assert converter.name == "anydoc"
+    assert converter.version == ANYDOC_VERSION
+    assert converter.wrapper_version == ANYDOC_WRAPPER_VERSION
 
 
 def test_docx_visio_ole_emits_safe_preview_and_downloadable_vsdx(
@@ -626,6 +652,62 @@ def test_office_positioning_golden(
         assert all(warning.degraded for warning in bundle.manifest.warnings)
         assert [occurrence.order for occurrence in bundle.manifest.occurrences] == [0, 0]
 
+    bundle.close()
+    assert not request_dir.exists()
+
+
+@pytest.mark.parametrize("source_format", ["docx", "pptx", "xlsx"])
+def test_anydoc_preserves_the_shared_office_bundle_contract(
+    source_format: str, tmp_path: Path
+) -> None:
+    source = generate_office_golden(tmp_path / "fixtures")[source_format]
+    request_dir = tmp_path / f"request-anydoc-{source_format}"
+    request_dir.mkdir(mode=0o700)
+    preflight = preflight_ooxml(source, source_format, request_dir, _limits())
+    sha256, byte_size = _sha_size(source)
+    bundle = build_office_bundle(
+        original_source=source,
+        sanitized_source=preflight.sanitized_path,
+        source_format=source_format,
+        source_sha256=sha256,
+        source_size=byte_size,
+        request_dir=request_dir,
+        converter=AnyDocConverter(),
+        limits=_limits(),
+        preflight_warnings=preflight.warnings,
+    )
+
+    expected = OFFICE_GOLDEN[source_format]
+    markdown_by_unit = [
+        item.opener().read().decode("utf-8")
+        for item in bundle.payloads
+        if item.path.startswith("units/")
+    ]
+    combined_markdown = "\n".join(markdown_by_unit)
+    assert bundle.manifest.parser.name == "anydoc"
+    assert bundle.manifest.parser.version == ANYDOC_VERSION
+    assert bundle.manifest.parser.wrapper_version == ANYDOC_WRAPPER_VERSION
+    assert [unit.location.kind for unit in bundle.manifest.units] == expected["unitKinds"]
+    assert len(bundle.manifest.assets) == expected["assetCount"]
+    assert len(bundle.manifest.occurrences) == expected["occurrenceCount"]
+    required_fragment = (
+        "Office Golden" if source_format == "docx" else
+        "Presentation-order first slide" if source_format == "pptx" else
+        "## Summary"
+    )
+    assert required_fragment in combined_markdown
+    for occurrence in bundle.manifest.occurrences:
+        assert combined_markdown.count(f"rag-asset://{occurrence.id}") == 1
+    assert not re.search(r"BKCRAB(?:IMAGE|SHEET|SLIDE|CODE)", combined_markdown)
+    if source_format == "docx":
+        assert "```\nprint('alpha')\n```" in combined_markdown
+        assert "```\nSELECT * FROM docs;\n```" in combined_markdown
+    elif source_format == "pptx":
+        assert "Presentation-order first slide" in markdown_by_unit[0]
+        assert "Top text" in markdown_by_unit[1]
+        assert "> Remember the architecture caveat." in markdown_by_unit[1]
+    else:
+        assert "## Details" in combined_markdown
     bundle.close()
     assert not request_dir.exists()
 

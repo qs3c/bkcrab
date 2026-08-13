@@ -140,7 +140,9 @@ func (s *Service) buildVersionSnapshotAndBindingForPolicy(
 			return nil, config.RAGEmbeddingCfg{}, errors.New("pinned ingestion embedding contract is unavailable")
 		}
 	}
-	parserVersion, markItDownVersion := parseContractVersions(doc.FileType)
+	parserVersion, markItDownVersion := parseContractVersions(
+		doc.FileType, s.cfg.ParserSidecar.Engine,
+	)
 
 	parseFingerprint, err := document.ParseFingerprint(document.ParseFingerprintInput{
 		SourceSHA256:              sourceSHA256,
@@ -232,10 +234,14 @@ func (s *Service) buildVersionSnapshotAndBindingForPolicy(
 	}, embeddingCfg, nil
 }
 
-func parseContractVersions(fileType string) (parserVersion, markItDownVersion string) {
+func parseContractVersions(fileType string, officeEngines ...string) (parserVersion, markItDownVersion string) {
 	switch strings.TrimPrefix(strings.ToLower(strings.TrimSpace(fileType)), ".") {
 	case "docx", "pptx", "xlsx":
-		return parse.OfficeParserVersion, parse.OfficeMarkItDownVersion
+		engine := "markitdown"
+		if len(officeEngines) > 0 {
+			engine = officeEngines[0]
+		}
+		return parse.OfficeParserContract(engine)
 	default:
 		return parse.LocalParserVersion, "none"
 	}

@@ -65,3 +65,12 @@ def test_settings_round_canonical_timeout_up_to_parser_seconds(monkeypatch) -> N
     monkeypatch.setenv("BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS", "1501")
 
     assert Settings.from_env().parse_timeout_seconds == 2
+
+
+def test_settings_select_and_validate_office_engine(monkeypatch) -> None:
+    monkeypatch.setenv("RAG_PARSER_OFFICE_ENGINE", "ANYDOC")
+    assert Settings.from_env().office_engine == "anydoc"
+
+    monkeypatch.setenv("RAG_PARSER_OFFICE_ENGINE", "unknown")
+    with pytest.raises(RuntimeError, match="unsupported RAG parser Office engine"):
+        Settings.from_env()

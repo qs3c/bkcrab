@@ -187,6 +187,25 @@ func TestValidateManifestRejectsOfficeParserVersionDrift(t *testing.T) {
 	}
 }
 
+func TestValidateManifestAcceptsAnyDocOnlyForTheConfiguredBackend(t *testing.T) {
+	manifest := testOfficeManifest([]byte("ok"))
+	anydoc, err := OfficeParserDescriptor(OfficeEngineAnyDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Parser = anydoc
+	options := defaultDecodeOptions(manifest)
+	options.ExpectedParser = &anydoc
+	if err := ValidateManifest(&manifest, options); err != nil {
+		t.Fatalf("anydoc manifest rejected: %v", err)
+	}
+	markitdown, _ := OfficeParserDescriptor(OfficeEngineMarkItDown)
+	options.ExpectedParser = &markitdown
+	if err := ValidateManifest(&manifest, options); !errors.Is(err, ErrInvalidBundle) {
+		t.Fatalf("backend mismatch error=%v, want ErrInvalidBundle", err)
+	}
+}
+
 func TestValidateManifestAcceptsOccurrenceBoundVisioAttachment(t *testing.T) {
 	manifest := testOfficeManifest([]byte("![Visio](rag-asset://occ_visio)"))
 	manifest.Entries = append([]EntryDescriptor{

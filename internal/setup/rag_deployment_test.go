@@ -24,6 +24,7 @@ func TestRAGDeploymentComposeConstrainsParser(t *testing.T) {
 	}
 	services := deploymentMap(t, document["services"], "services")
 	parser := deploymentMap(t, services["rag-parser"], "services.rag-parser")
+	anydocParser := deploymentMap(t, services["rag-parser-anydoc"], "services.rag-parser-anydoc")
 	gateway := deploymentMap(t, services["bkcrab"], "services.bkcrab")
 
 	image := deploymentString(t, parser["image"], "services.rag-parser.image")
@@ -35,6 +36,16 @@ func TestRAGDeploymentComposeConstrainsParser(t *testing.T) {
 	}
 	if readOnly, ok := parser["read_only"].(bool); !ok || !readOnly {
 		t.Fatalf("rag-parser must have a read-only root filesystem")
+	}
+	anydocImage := deploymentString(t, anydocParser["image"], "services.rag-parser-anydoc.image")
+	if anydocImage == "" || strings.Contains(strings.ToLower(anydocImage), ":latest") || strings.Contains(strings.ToLower(anydocImage), ":dev") {
+		t.Fatalf("rag-parser-anydoc image must use a fixed production-safe version, got %q", anydocImage)
+	}
+	if user := deploymentString(t, anydocParser["user"], "services.rag-parser-anydoc.user"); user == "" || strings.HasPrefix(user, "0") {
+		t.Fatalf("rag-parser-anydoc must run as a non-root uid, got %q", user)
+	}
+	if readOnly, ok := anydocParser["read_only"].(bool); !ok || !readOnly {
+		t.Fatal("rag-parser-anydoc must have a read-only root filesystem")
 	}
 	deploymentRequireContains(t, raw,
 		"BKCRAB_RAG_LIMITS_MAX_FILE_MB",
@@ -50,6 +61,7 @@ func TestRAGDeploymentComposeConstrainsParser(t *testing.T) {
 	)
 
 	parserEnv := deploymentMap(t, parser["environment"], "services.rag-parser.environment")
+	anydocEnv := deploymentMap(t, anydocParser["environment"], "services.rag-parser-anydoc.environment")
 	for key, want := range map[string]string{
 		"RAG_PARSER_TEMP_ROOT": "/tmp",
 		"HOME":                 "/tmp",
@@ -60,6 +72,12 @@ func TestRAGDeploymentComposeConstrainsParser(t *testing.T) {
 			t.Fatalf("rag-parser %s = %q, want %q", key, got, want)
 		}
 	}
+	if got := deploymentString(t, parserEnv["RAG_PARSER_OFFICE_ENGINE"], "rag-parser engine"); got != "markitdown" {
+		t.Fatalf("rag-parser engine = %q", got)
+	}
+	if got := deploymentString(t, anydocEnv["RAG_PARSER_OFFICE_ENGINE"], "rag-parser-anydoc engine"); got != "anydoc" {
+		t.Fatalf("rag-parser-anydoc engine = %q", got)
+	}
 	// LibreOffice creates its local IPC pipe directly below /tmp. Mounting only
 	// the parser's child directory leaves /tmp on the read-only root filesystem.
 	if strings.Contains(string(raw), "/tmp/rag-parser:size=") {
@@ -68,15 +86,20 @@ func TestRAGDeploymentComposeConstrainsParser(t *testing.T) {
 	for _, forbidden := range []string{
 		"API_KEY", "SECRET", "PASSWORD", "OBJECT_STORE", "MINIO", "EMBEDDING", "DOCUMENT_AI", "VISION_MODEL",
 	} {
-		for key := range parserEnv {
-			if strings.Contains(strings.ToUpper(key), forbidden) {
-				t.Fatalf("rag-parser must not receive secret/provider/object-store variable %q", key)
+		for parserName, environment := range map[string]map[string]any{"rag-parser": parserEnv, "rag-parser-anydoc": anydocEnv} {
+			for key := range environment {
+				if strings.Contains(strings.ToUpper(key), forbidden) {
+					t.Fatalf("%s must not receive secret/provider/object-store variable %q", parserName, key)
+				}
 			}
 		}
 	}
 	gatewayEnv := deploymentMap(t, gateway["environment"], "services.bkcrab.environment")
-	if got := deploymentString(t, gatewayEnv["BKCRAB_RAG_PARSER_ENDPOINT"], "bkcrab parser endpoint"); got != "http://rag-parser:8080" {
+	if got := deploymentString(t, gatewayEnv["BKCRAB_RAG_PARSER_ENDPOINT"], "bkcrab parser endpoint"); got != "${RAG_PARSER_ENDPOINT:-http://rag-parser:8080}" {
 		t.Fatalf("bkcrab parser endpoint = %q", got)
+	}
+	if got := deploymentString(t, gatewayEnv["BKCRAB_RAG_PARSER_ENGINE"], "bkcrab parser engine"); got != "${RAG_PARSER_ENGINE:-markitdown}" {
+		t.Fatalf("bkcrab parser engine = %q", got)
 	}
 	if _, ok := gatewayEnv["BKCRAB_RAG_DOCUMENT_AI_API_KEY"]; !ok {
 		t.Fatal("DocumentAI secret must be injected into bkcrab")
@@ -88,6 +111,9 @@ func TestRAGDeploymentComposeConstrainsParser(t *testing.T) {
 	} {
 		if parserEnv[key] != gatewayEnv[key] {
 			t.Fatalf("parser and gateway %s must share one Compose value", key)
+		}
+		if anydocEnv[key] != gatewayEnv[key] {
+			t.Fatalf("anydoc parser and gateway %s must share one Compose value", key)
 		}
 	}
 	if parserEnv["RAG_PARSER_MAX_ENTRY_BYTES"] != gatewayEnv["BKCRAB_RAG_LIMITS_MAX_ASSET_BYTES"] {
@@ -122,6 +148,10 @@ func TestRAGDeploymentComposeConstrainsParser(t *testing.T) {
 	if got := deploymentString(t, parserDependency["condition"], "rag-parser dependency condition"); got != "service_healthy" {
 		t.Fatalf("bkcrab must wait for a healthy parser, got %q", got)
 	}
+	anydocDependency := deploymentMap(t, dependsOn["rag-parser-anydoc"], "bkcrab depends_on rag-parser-anydoc")
+	if got := deploymentString(t, anydocDependency["condition"], "rag-parser-anydoc dependency condition"); got != "service_healthy" {
+		t.Fatalf("bkcrab must wait for a healthy anydoc parser, got %q", got)
+	}
 
 	networks := deploymentMap(t, document["networks"], "networks")
 	parserNetwork := deploymentMap(t, networks["rag-parser-internal"], "networks.rag-parser-internal")
@@ -129,6 +159,7 @@ func TestRAGDeploymentComposeConstrainsParser(t *testing.T) {
 		t.Fatal("rag-parser network must be internal")
 	}
 	deploymentRequireStringListContains(t, parser["networks"], "rag-parser-internal")
+	deploymentRequireStringListContains(t, anydocParser["networks"], "rag-parser-internal")
 	deploymentRequireStringListContains(t, gateway["networks"], "default")
 	deploymentRequireStringListContains(t, gateway["networks"], "rag-parser-internal")
 }

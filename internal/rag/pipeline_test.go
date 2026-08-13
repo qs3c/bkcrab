@@ -1976,6 +1976,10 @@ func TestOfficeParseFingerprintContractIsFormatScoped(t *testing.T) {
 		!strings.Contains(officeParser, parse.OfficeWrapperVersion) {
 		t.Fatalf("Office parse contract=%q/%q", officeParser, markItDown)
 	}
+	anydocParser, anydocVersion := parseContractVersions("docx", "anydoc")
+	if anydocParser == officeParser || anydocVersion != parse.OfficeAnyDocVersion || !strings.Contains(anydocParser, "anydoc") {
+		t.Fatalf("anydoc parse contract=%q/%q", anydocParser, anydocVersion)
+	}
 	for _, format := range []string{"md", "txt", "pdf"} {
 		parserVersion, converterVersion := parseContractVersions(format)
 		if parserVersion != parse.LocalParserVersion || converterVersion != "none" {

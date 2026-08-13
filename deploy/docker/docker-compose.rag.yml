@@ -24,7 +24,10 @@ services:
       BKCRAB_RAG_ADVANCED_ENABLED: "${RAG_ADVANCED_ENABLED:-false}"
       BKCRAB_RAG_OFFICE_ENABLED: "${RAG_OFFICE_ENABLED:-false}"
       BKCRAB_RAG_ENRICHMENT_ENABLED: "${RAG_ENRICHMENT_ENABLED:-false}"
-      BKCRAB_RAG_PARSER_ENDPOINT: http://rag-parser:8080
+      # Keep both parser implementations running. Select the active one as a
+      # matched endpoint/engine pair; the Go client rejects mismatches.
+      BKCRAB_RAG_PARSER_ENDPOINT: "${RAG_PARSER_ENDPOINT:-http://rag-parser:8080}"
+      BKCRAB_RAG_PARSER_ENGINE: "${RAG_PARSER_ENGINE:-markitdown}"
       BKCRAB_RAG_PARSER_TIMEOUT_MS: "${RAG_PARSE_TIMEOUT_MS:-600000}"
       BKCRAB_RAG_EVAL_ENABLED: "${RAG_EVAL_ENABLED:-false}"
       BKCRAB_RAG_EVAL_ENDPOINT: "http://rag-evaluator:8080"
@@ -74,6 +77,8 @@ services:
         condition: service_healthy
       rag-parser:
         condition: service_healthy
+      rag-parser-anydoc:
+        condition: service_healthy
 
   rag-parser:
     build:
@@ -86,6 +91,7 @@ services:
     read_only: true
     environment:
       RAG_PARSER_SERVICE_VERSION: "${RAG_PARSER_SERVICE_VERSION:-0.1.0}"
+      RAG_PARSER_OFFICE_ENGINE: markitdown
       RAG_PARSER_PORT: "8080"
       RAG_PARSER_TEMP_ROOT: /tmp
       HOME: /tmp
@@ -170,6 +176,58 @@ services:
       interval: 15s
       timeout: 3s
       start_period: 15s
+      retries: 5
+
+  # Protocol-compatible alternative to rag-parser. It retains the same
+  # OOXML preflight, asset/occurrence extraction, PDF engine, quotas, and tar
+  # response contract; only the Office-to-Markdown converter is anydoc.
+  rag-parser-anydoc:
+    build:
+      context: ../../services/rag-parser
+      dockerfile: Dockerfile
+    image: "${RAG_PARSER_ANYDOC_IMAGE:-bkcrab/rag-parser-anydoc:0.1.0}"
+    restart: unless-stopped
+    init: true
+    user: "65532:65532"
+    read_only: true
+    environment:
+      RAG_PARSER_SERVICE_VERSION: "${RAG_PARSER_ANYDOC_SERVICE_VERSION:-0.1.0-anydoc}"
+      RAG_PARSER_OFFICE_ENGINE: anydoc
+      RAG_PARSER_PORT: "8080"
+      RAG_PARSER_TEMP_ROOT: /tmp
+      HOME: /tmp
+      TMPDIR: /tmp
+      XDG_CACHE_HOME: /tmp/cache
+      BKCRAB_RAG_LIMITS_MAX_FILE_MB: "${RAG_MAX_FILE_MB:-50}"
+      BKCRAB_RAG_LIMITS_MAX_EXTRACTED_BYTES: "${RAG_MAX_EXTRACTED_BYTES:-209715200}"
+      BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS: "${RAG_PARSE_TIMEOUT_MS:-600000}"
+      RAG_PARSER_MAX_ENTRY_BYTES: "${RAG_MAX_ASSET_BYTES:-20971520}"
+      RAG_PARSER_MAX_EXTRACTED_BYTES: "${RAG_MAX_EXTRACTED_BYTES:-209715200}"
+      RAG_PARSER_MAX_ASSET_BYTES: "${RAG_MAX_ASSET_BYTES:-20971520}"
+      RAG_PARSER_MAX_ASSETS: "${RAG_MAX_ASSETS_PER_DOCUMENT:-500}"
+      RAG_PARSER_MAX_IMAGE_PIXELS: "${RAG_MAX_IMAGE_PIXELS:-40000000}"
+      RAG_PARSER_MAX_PAGES: "${RAG_MAX_PAGES_PER_DOCUMENT:-300}"
+      RAG_PARSER_PDF_RENDER_DPI: "${RAG_PDF_RENDER_DPI:-180}"
+    tmpfs:
+      - "/tmp:size=${RAG_PARSER_TMPFS_SIZE_BYTES:-536870912},mode=0700,uid=65532,gid=65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    cpus: "${RAG_PARSER_ANYDOC_CPUS:-1.0}"
+    mem_limit: "${RAG_PARSER_ANYDOC_MEMORY_LIMIT:-1g}"
+    networks:
+      - rag-parser-internal
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"
+      interval: 15s
+      timeout: 3s
+      start_period: 10s
       retries: 5
 
   milvus-etcd:

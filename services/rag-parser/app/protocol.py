@@ -1066,11 +1066,17 @@ def make_health_document(
     service_version: str,
     max_input_bytes: int,
     max_output_bytes: int,
+    office_parser: ParserDescriptor | None = None,
     pdf_engine: str = "",
     pdf_engine_version: str = "",
 ) -> dict[str, Any]:
     if bool(pdf_engine) != bool(pdf_engine_version):
         raise RuntimeError("PDF engine name and version must be configured together")
+    parser = office_parser or ParserDescriptor(
+        "markitdown", "0.1.6", "office-wrapper-v3"
+    )
+    if not parser.name or not parser.version or not parser.wrapper_version:
+        raise RuntimeError("Office parser descriptor must be complete")
     value = {
         "protocolVersion": PROTOCOL_VERSION,
         "serviceVersion": service_version,
@@ -1082,8 +1088,12 @@ def make_health_document(
             "office": {
                 "enabled": True,
                 "formats": ["docx", "pptx", "xlsx"],
-                "markitdownVersion": "0.1.6",
-                "wrapperVersion": "office-wrapper-v3",
+                # Legacy v2 wire name retained for backward compatibility. It
+                # carries the active Office converter version for both
+                # MarkItDown and anydoc; the request bundle contains the full
+                # parser name/version/wrapper descriptor.
+                "markitdownVersion": parser.version,
+                "wrapperVersion": parser.wrapper_version,
             },
             "pdf": {
                 "enabled": bool(pdf_engine),

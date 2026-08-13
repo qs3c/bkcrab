@@ -321,6 +321,58 @@ func TestIncompatibleOfficeHealthCannotPublishAnAvailableConverter(t *testing.T)
 	}
 }
 
+func TestAnyDocClientRequiresAndDecodesTheAnyDocContract(t *testing.T) {
+	data := []byte("office")
+	source := testDocumentSource(data, "docx", func() io.ReadCloser {
+		return io.NopCloser(bytes.NewReader(data))
+	})
+	health := bytes.Replace(healthyResponse(t), []byte(`"markitdownVersion": "0.1.6"`), []byte(`"markitdownVersion": "0.1.8"`), 1)
+	health = bytes.Replace(health, []byte(`"wrapperVersion": "office-wrapper-v3"`), []byte(`"wrapperVersion": "office-anydoc-wrapper-v1"`), 1)
+	markdown := []byte("# Converted\n")
+	manifest := testOfficeManifest(markdown)
+	manifest.Source = SourceDescriptor{Format: source.Format, ByteSize: source.Size, SHA256: source.SHA256}
+	manifest.Parser, _ = OfficeParserDescriptor(OfficeEngineAnyDoc)
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := makeTestTar(t, manifestJSON, testTarEntry{
+		header: tar.Header{Name: "units/0001.md"}, body: markdown,
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/healthz":
+			_, _ = response.Write(health)
+		case "/v1/office/convert":
+			_, _ = io.Copy(io.Discard, request.Body)
+			response.Header().Set("Content-Type", "application/x-tar")
+			_, _ = response.Write(bundle)
+		default:
+			response.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientConfig{
+		Endpoint: server.URL, OfficeEngine: OfficeEngineAnyDoc, HealthTTL: time.Minute,
+		Limits: ClientLimits{MaxInputBytes: 1024, MaxOutputBytes: 1 << 20, MaxEntryBytes: 1 << 20, MaxEntries: 32},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := client.ProbeHealth(context.Background())
+	if err != nil || !snapshot.Office.Enabled {
+		t.Fatalf("anydoc health snapshot=%+v error=%v", snapshot, err)
+	}
+	handle, err := client.ConvertOffice(context.Background(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.Close()
+	if handle.Manifest.Parser.Name != OfficeEngineAnyDoc {
+		t.Fatalf("parser=%+v", handle.Manifest.Parser)
+	}
+}
+
 func TestHealthTTLAndProbeFailureAreCached(t *testing.T) {
 	var nowMu sync.Mutex
 	now := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)

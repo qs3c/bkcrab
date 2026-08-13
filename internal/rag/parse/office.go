@@ -20,6 +20,7 @@ import (
 
 const (
 	OfficeMarkItDownVersion = sidecar.ExpectedMarkItDownVersion
+	OfficeAnyDocVersion     = sidecar.ExpectedAnyDocVersion
 	OfficeWrapperVersion    = sidecar.ExpectedOfficeWrapper
 	// OfficeParserVersion covers the Go bundle mapper and the exact wrapper
 	// positioning contract. Bump it whenever either behavior changes.
@@ -29,6 +30,15 @@ const (
 	defaultMaxOfficeAssets = 500
 	defaultMaxAssetBytes   = int64(20 << 20)
 )
+
+func OfficeParserContract(engine string) (parserVersion, converterVersion string) {
+	switch strings.ToLower(strings.TrimSpace(engine)) {
+	case sidecar.OfficeEngineAnyDoc:
+		return "office-parser-v1+" + sidecar.ExpectedAnyDocWrapper, OfficeAnyDocVersion
+	default:
+		return OfficeParserVersion, OfficeMarkItDownVersion
+	}
+}
 
 var officeCellAnchorAltPattern = regexp.MustCompile(`^(单元格 [A-Z]+[1-9][0-9]*：)`)
 
@@ -165,7 +175,7 @@ func (p *LocalParser) parseOffice(
 		SchemaVersion: document.ParsedDocumentSchemaVersion,
 		Source:        source.Parsed(),
 		Parser: document.ParserInfo{
-			Name: "markitdown-office", Version: version,
+			Name: bundle.Manifest.Parser.Name + "-office", Version: version,
 			WrapperVersion: bundle.Manifest.Parser.WrapperVersion,
 		},
 		Units: units, Assets: assets, Attachments: attachments,

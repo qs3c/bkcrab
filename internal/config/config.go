@@ -1213,6 +1213,7 @@ const (
 
 type RAGParserSidecarCfg struct {
 	Endpoint  string `json:"endpoint,omitempty"`
+	Engine    string `json:"engine,omitempty"`
 	TimeoutMS int    `json:"timeoutMs,omitempty"`
 }
 
@@ -1364,6 +1365,11 @@ type RAGLimitsCfg struct {
 
 func (c *RAGCfg) ApplyDefaults() {
 	c.Evaluation.ApplyDefaults()
+	if strings.TrimSpace(c.ParserSidecar.Engine) == "" {
+		c.ParserSidecar.Engine = "markitdown"
+	} else {
+		c.ParserSidecar.Engine = strings.ToLower(strings.TrimSpace(c.ParserSidecar.Engine))
+	}
 	if c.Reranker.TimeoutMS <= 0 {
 		c.Reranker.TimeoutMS = 5000
 	}
@@ -1502,6 +1508,9 @@ func (c *RAGCfg) ApplyDefaults() {
 func (c RAGCfg) Validate() error {
 	if err := c.Evaluation.Validate(); err != nil {
 		return err
+	}
+	if c.ParserSidecar.Engine != "" && c.ParserSidecar.Engine != "markitdown" && c.ParserSidecar.Engine != "anydoc" {
+		return fmt.Errorf("rag.parserSidecar.engine %q is unsupported", c.ParserSidecar.Engine)
 	}
 	if c.DocumentAI.APIType != "" && c.DocumentAI.APIType != "openai-compatible" {
 		return fmt.Errorf("rag.documentAI.apiType %q is unsupported", c.DocumentAI.APIType)

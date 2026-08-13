@@ -286,6 +286,9 @@ func LoadEnv() *EnvConfig {
 	if v := os.Getenv("BKCRAB_RAG_PARSER_ENDPOINT"); v != "" {
 		cfg.RAG.ParserSidecar.Endpoint = v
 	}
+	if v := os.Getenv("BKCRAB_RAG_PARSER_ENGINE"); v != "" {
+		cfg.RAG.ParserSidecar.Engine = v
+	}
 	if v := positiveEnvInt("BKCRAB_RAG_PARSER_TIMEOUT_MS"); v > 0 {
 		cfg.RAG.ParserSidecar.TimeoutMS = v
 	}
@@ -888,6 +891,9 @@ func (e *EnvConfig) ApplySystemRAG(dst *RAGCfg) {
 	}
 	if e.RAG.ParserSidecar.Endpoint != "" {
 		dst.ParserSidecar.Endpoint = e.RAG.ParserSidecar.Endpoint
+	}
+	if e.RAG.ParserSidecar.Engine != "" {
+		dst.ParserSidecar.Engine = e.RAG.ParserSidecar.Engine
 	}
 	if e.RAG.ParserSidecar.TimeoutMS > 0 {
 		dst.ParserSidecar.TimeoutMS = e.RAG.ParserSidecar.TimeoutMS

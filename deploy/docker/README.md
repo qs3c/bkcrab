@@ -163,6 +163,39 @@ kubectl apply -f deploy/k8s/rag-parser.yaml
 kubectl apply -f deploy/k8s/rag-parser-networkpolicy.yaml
 ```
 
+## Selecting the Office parser backend
+
+The RAG overlay starts both `rag-parser` (MarkItDown) and
+`rag-parser-anydoc` (Firecrawl anydoc). MarkItDown remains the default. Select
+anydoc in `deploy/docker/.env` with the matched pair:
+
+```text
+RAG_PARSER_ENDPOINT=http://rag-parser-anydoc:8080
+RAG_PARSER_ENGINE=anydoc
+```
+
+For the baseline implementation use:
+
+```text
+RAG_PARSER_ENDPOINT=http://rag-parser:8080
+RAG_PARSER_ENGINE=markitdown
+```
+
+After changing only these values, recreate `bkcrab`; the two parser containers
+do not need to be stopped. Check both with:
+
+```bash
+docker compose \
+  --env-file deploy/docker/.env \
+  -f deploy/docker/docker-compose.yml \
+  -f deploy/docker/docker-compose.rag.yml \
+  ps rag-parser rag-parser-anydoc bkcrab
+```
+
+The configured engine is verified against health metadata and each returned
+bundle. A mismatched endpoint/engine pair is unavailable rather than silently
+using the wrong converter.
+
 `rag-parser-networkpolicy.yaml` 对 parser ingress/egress 默认拒绝，仅允许带
 `app=bkcrab` 标签的 Pod 访问 TCP/8080，parser egress 始终为空。如果集群
 已经用其它 NetworkPolicy 限制 BkCrab egress，还需额外增加一条

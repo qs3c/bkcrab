@@ -1192,8 +1192,9 @@ func newRAGParserClient(cfg config.RAGCfg) (*sidecar.Client, error) {
 		maxEntryBytes = cfg.Limits.MaxAssetBytes
 	}
 	return sidecar.NewClient(sidecar.ClientConfig{
-		Endpoint: cfg.ParserSidecar.Endpoint,
-		Timeout:  time.Duration(cfg.ParserSidecar.TimeoutMS) * time.Millisecond,
+		Endpoint:     cfg.ParserSidecar.Endpoint,
+		OfficeEngine: cfg.ParserSidecar.Engine,
+		Timeout:      time.Duration(cfg.ParserSidecar.TimeoutMS) * time.Millisecond,
 		Limits: sidecar.ClientLimits{
 			MaxInputBytes:     maxInputBytes,
 			MaxOutputBytes:    cfg.Limits.MaxExtractedBytes,
