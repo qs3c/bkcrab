@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -200,6 +201,12 @@ func TestRAGCapabilitiesUseCachedSnapshotAndKeepIndependentGates(t *testing.T) {
 		t.Fatalf("capabilities status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	var response struct {
+		DefaultParserEngine string `json:"defaultParserEngine"`
+		Parsers             []struct {
+			Engine              string   `json:"engine"`
+			Available           bool     `json:"available"`
+			SupportedExtensions []string `json:"supportedExtensions"`
+		} `json:"parsers"`
 		SupportedExtensions     []string         `json:"supportedExtensions"`
 		MaxFileBytes            int64            `json:"maxFileBytes"`
 		MaxFileBytesByExtension map[string]int64 `json:"maxFileBytesByExtension"`
@@ -231,6 +238,12 @@ func TestRAGCapabilitiesUseCachedSnapshotAndKeepIndependentGates(t *testing.T) {
 	wantExtensions := []string{".md", ".markdown", ".txt", ".pdf", ".docx", ".pptx", ".xlsx"}
 	if fmt.Sprint(response.SupportedExtensions) != fmt.Sprint(wantExtensions) {
 		t.Fatalf("supportedExtensions=%v want=%v", response.SupportedExtensions, wantExtensions)
+	}
+	if response.DefaultParserEngine != "markitdown" || len(response.Parsers) != 2 ||
+		response.Parsers[0].Engine != "markitdown" || !response.Parsers[0].Available ||
+		response.Parsers[1].Engine != "anydoc" || response.Parsers[1].Available ||
+		!slices.Contains(response.Parsers[1].SupportedExtensions, ".epub") {
+		t.Fatalf("parser capabilities=%+v", response.Parsers)
 	}
 	if response.MaxFileBytes != 50*1024*1024 || response.MaxFileBytesByExtension[".md"] != 50*1024*1024 ||
 		response.MaxFileBytesByExtension[".pdf"] != 10*1024*1024 ||

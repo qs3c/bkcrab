@@ -241,6 +241,7 @@ type RAGDocumentRecord struct {
 	KBID               string
 	FileName           string
 	FileType           string
+	ParserEngine       string
 	FileSize           int64
 	ObjectKey          string
 	Status             string
@@ -506,7 +507,7 @@ const ragKBColumns = `id, user_id, name, description, embed_provider, embed_mode
 	embed_dims, chunk_size, chunk_overlap, parse_mode, enrichment_enabled, status,
 	pinned_policy_version, active_generation_id, created_at, updated_at`
 
-const ragDocumentColumns = `id, kb_id, file_name, file_type, file_size, object_key,
+const ragDocumentColumns = `id, kb_id, file_name, file_type, parser_engine, file_size, object_key,
 	status, error_msg, chunk_count, token_count, version, source_sha256, active_version,
 	index_format_version, processing_stage, progress_current, progress_total, progress_unit,
 	degraded, warning_count, uploaded_at, indexed_at`
@@ -603,7 +604,7 @@ func scanRAGDocument(scanner ragScanner) (*RAGDocumentRecord, error) {
 	var doc RAGDocumentRecord
 	var indexedAt sql.NullTime
 	if err := scanner.Scan(
-		&doc.ID, &doc.KBID, &doc.FileName, &doc.FileType, &doc.FileSize,
+		&doc.ID, &doc.KBID, &doc.FileName, &doc.FileType, &doc.ParserEngine, &doc.FileSize,
 		&doc.ObjectKey, &doc.Status, &doc.ErrorMsg, &doc.ChunkCount,
 		&doc.TokenCount, &doc.Version, &doc.SourceSHA256, &doc.ActiveVersion,
 		&doc.IndexFormatVersion, &doc.ProcessingStage, &doc.ProgressCurrent,
@@ -1186,17 +1187,17 @@ func (d *DBStore) createRAGDocument(ctx context.Context, exec ragExecutor, doc *
 		doc.ProcessingStage = "queued"
 	}
 	_, err := exec.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_documents
-		(id, kb_id, file_name, file_type, file_size, object_key, status, error_msg,
+		(id, kb_id, file_name, file_type, parser_engine, file_size, object_key, status, error_msg,
 		 chunk_count, token_count, version, source_sha256, active_version,
 		 index_format_version, processing_stage, progress_current, progress_total,
 		 progress_unit, degraded, warning_count, uploaded_at, indexed_at)
 		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-		 %s, %s, %s, %s, %s, %s, %s, %s, %s)`,
+		 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)`,
 		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7),
 		d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13),
 		d.ph(14), d.ph(15), d.ph(16), d.ph(17), d.ph(18), d.ph(19),
-		d.ph(20), d.ph(21), d.ph(22)),
-		doc.ID, doc.KBID, doc.FileName, doc.FileType, doc.FileSize, doc.ObjectKey,
+		d.ph(20), d.ph(21), d.ph(22), d.ph(23)),
+		doc.ID, doc.KBID, doc.FileName, doc.FileType, doc.ParserEngine, doc.FileSize, doc.ObjectKey,
 		doc.Status, doc.ErrorMsg, doc.ChunkCount, doc.TokenCount, doc.Version,
 		doc.SourceSHA256, doc.ActiveVersion, doc.IndexFormatVersion,
 		doc.ProcessingStage, doc.ProgressCurrent, doc.ProgressTotal, doc.ProgressUnit,

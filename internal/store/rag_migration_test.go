@@ -140,6 +140,7 @@ func TestRAGMigrationFromLegacySchemaIsIdempotent(t *testing.T) {
 		"rag_documents": {
 			"source_sha256", "active_version", "index_format_version", "processing_stage",
 			"progress_current", "progress_total", "progress_unit", "degraded", "warning_count",
+			"parser_engine",
 		},
 	} {
 		for _, column := range columns {

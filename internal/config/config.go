@@ -1212,9 +1212,31 @@ const (
 )
 
 type RAGParserSidecarCfg struct {
-	Endpoint  string `json:"endpoint,omitempty"`
-	Engine    string `json:"engine,omitempty"`
-	TimeoutMS int    `json:"timeoutMs,omitempty"`
+	Endpoint           string `json:"endpoint,omitempty"`
+	Engine             string `json:"engine,omitempty"`
+	MarkItDownEndpoint string `json:"markitdownEndpoint,omitempty"`
+	AnyDocEndpoint     string `json:"anydocEndpoint,omitempty"`
+	TimeoutMS          int    `json:"timeoutMs,omitempty"`
+}
+
+// EndpointForEngine resolves one parser backend while preserving the legacy
+// Endpoint+Engine pair as the default-parser fallback.
+func (c RAGParserSidecarCfg) EndpointForEngine(engine string) string {
+	engine = strings.ToLower(strings.TrimSpace(engine))
+	switch engine {
+	case "markitdown":
+		if endpoint := strings.TrimSpace(c.MarkItDownEndpoint); endpoint != "" {
+			return endpoint
+		}
+	case "anydoc":
+		if endpoint := strings.TrimSpace(c.AnyDocEndpoint); endpoint != "" {
+			return endpoint
+		}
+	}
+	if engine == strings.ToLower(strings.TrimSpace(c.Engine)) {
+		return strings.TrimSpace(c.Endpoint)
+	}
+	return ""
 }
 
 // RAGParserHealthSnapshot is populated by a background TTL probe. Request
@@ -1369,6 +1391,9 @@ func (c *RAGCfg) ApplyDefaults() {
 		c.ParserSidecar.Engine = "markitdown"
 	} else {
 		c.ParserSidecar.Engine = strings.ToLower(strings.TrimSpace(c.ParserSidecar.Engine))
+	}
+	if strings.TrimSpace(c.ParserSidecar.Endpoint) == "" {
+		c.ParserSidecar.Endpoint = c.ParserSidecar.EndpointForEngine(c.ParserSidecar.Engine)
 	}
 	if c.Reranker.TimeoutMS <= 0 {
 		c.Reranker.TimeoutMS = 5000
@@ -1640,7 +1665,7 @@ func (c RAGCfg) advancedConfigured() (bool, string) {
 }
 
 func parserSnapshotReason(c RAGCfg, snapshot RAGParserHealthSnapshot) string {
-	if strings.TrimSpace(c.ParserSidecar.Endpoint) == "" {
+	if c.ParserSidecar.EndpointForEngine(c.ParserSidecar.Engine) == "" {
 		return "parser_sidecar_not_configured"
 	}
 	if !snapshot.Healthy || snapshot.CheckedAt.IsZero() {
@@ -1758,7 +1783,7 @@ func (c RAGCfg) RuntimeCapabilities(snapshot RAGParserHealthSnapshot) RAGRuntime
 		},
 		Office: RAGDetailedCapability{
 			Enabled:    c.Features.OfficeParsingEnabled,
-			Configured: c.Features.OfficeParsingEnabled && strings.TrimSpace(c.ParserSidecar.Endpoint) != "",
+			Configured: c.Features.OfficeParsingEnabled && c.ParserSidecar.EndpointForEngine(c.ParserSidecar.Engine) != "",
 			Healthy:    parserHealthy,
 			Available:  officeAvailable,
 			Reason:     officeReason,

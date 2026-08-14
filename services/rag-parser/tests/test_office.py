@@ -26,6 +26,7 @@ from app.office import (
     MarkItDownConverter,
     OfficeError,
     OfficeLimits,
+    build_anydoc_bundle,
     build_office_bundle,
     preflight_ooxml,
 )
@@ -207,6 +208,37 @@ def test_anydoc_wrapper_uses_only_the_preflighted_local_path(tmp_path: Path) -> 
     assert converter.convert(source, "docx") == "# anydoc\n"
     assert engine.sources == [source]
     assert converter.name == "anydoc"
+    assert converter.version == ANYDOC_VERSION
+    assert converter.wrapper_version == ANYDOC_WRAPPER_VERSION
+
+
+def test_anydoc_generic_csv_uses_the_shared_bundle_contract(tmp_path: Path) -> None:
+    request_dir = tmp_path / "request-anydoc-csv"
+    request_dir.mkdir()
+    source = request_dir / "source.csv"
+    source.write_text("name,value\nalpha,1\nbeta,2\n", encoding="utf-8")
+    sha256, size = _sha_size(source)
+    converter = AnyDocConverter()
+
+    bundle = build_anydoc_bundle(
+        original_source=source,
+        source_format="csv",
+        source_sha256=sha256,
+        source_size=size,
+        request_dir=request_dir,
+        converter=converter,
+    )
+
+    assert bundle.manifest.source.format == "csv"
+    assert bundle.manifest.parser.name == "anydoc"
+    assert bundle.manifest.parser.version == ANYDOC_VERSION
+    assert bundle.manifest.parser.wrapper_version == ANYDOC_WRAPPER_VERSION
+    assert len(bundle.manifest.units) == 1
+    assert bundle.manifest.units[0].location.kind == "document"
+    assert bundle.manifest.assets == ()
+    with bundle.payloads[0].opener() as handle:
+        markdown = handle.read().decode("utf-8")
+    assert "alpha" in markdown and "beta" in markdown
     assert converter.version == ANYDOC_VERSION
     assert converter.wrapper_version == ANYDOC_WRAPPER_VERSION
 

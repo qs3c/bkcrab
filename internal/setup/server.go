@@ -110,6 +110,10 @@ type RAGParserHealthProvider interface {
 	RAGParserHealthSnapshot() config.RAGParserHealthSnapshot
 }
 
+type RAGParserHealthMatrixProvider interface {
+	RAGParserHealthSnapshots() map[string]config.RAGParserHealthSnapshot
+}
+
 type RAGEvaluatorHealthProvider interface {
 	RAGEvaluatorHealthSnapshot() config.RAGEvaluatorHealthSnapshot
 }
@@ -236,6 +240,22 @@ func (s *Server) ragParserHealthSnapshot() config.RAGParserHealthSnapshot {
 	}
 	snapshot.Office.Formats = append([]string(nil), snapshot.Office.Formats...)
 	return snapshot
+}
+
+func (s *Server) ragParserHealthSnapshots() map[string]config.RAGParserHealthSnapshot {
+	s.ragHealthMu.RLock()
+	provider := s.ragHealthProvider
+	fallback := s.ragHealth
+	s.ragHealthMu.RUnlock()
+	if matrix, ok := provider.(RAGParserHealthMatrixProvider); ok {
+		return matrix.RAGParserHealthSnapshots()
+	}
+	engine := strings.ToLower(strings.TrimSpace(s.ragCfg.ParserSidecar.Engine))
+	if engine == "" {
+		engine = "markitdown"
+	}
+	fallback.Office.Formats = append([]string(nil), fallback.Office.Formats...)
+	return map[string]config.RAGParserHealthSnapshot{engine: fallback}
 }
 
 func (s *Server) SetRAGEvaluatorHealthSnapshot(snapshot config.RAGEvaluatorHealthSnapshot) {

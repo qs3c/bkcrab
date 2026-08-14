@@ -876,6 +876,21 @@ func TestUploadRecognizesButRejectsOfficeUntilConverterGate(t *testing.T) {
 	if accepted.FileType != "docx" {
 		t.Fatalf("accepted Office type=%q", accepted.FileType)
 	}
+
+	service.parserAvailable = func(engine string) bool { return engine == "anydoc" }
+	legacy, err := service.UploadDocumentWithParser(
+		ctx, "u1", kb.ID, "legacy.doc", "anydoc", strings.NewReader("legacy bytes"), 12,
+	)
+	if err != nil {
+		t.Fatalf("anydoc-only format was rejected: %v", err)
+	}
+	if legacy.FileType != "doc" || legacy.ParserEngine != "anydoc" {
+		t.Fatalf("anydoc document=%+v", legacy)
+	}
+	persisted, err := service.st.GetRAGDocument(ctx, legacy.ID)
+	if err != nil || persisted.ParserEngine != "anydoc" {
+		t.Fatalf("persisted anydoc selection=%+v error=%v", persisted, err)
+	}
 }
 
 func TestUploadReindexSearchAndDelete(t *testing.T) {

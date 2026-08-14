@@ -59,6 +59,8 @@ The local parser endpoint is configured separately:
 ```text
 BKCRAB_RAG_PARSER_ENDPOINT=http://rag-parser:8080
 BKCRAB_RAG_PARSER_ENGINE=markitdown
+BKCRAB_RAG_PARSER_MARKITDOWN_ENDPOINT=http://rag-parser:8080
+BKCRAB_RAG_PARSER_ANYDOC_ENDPOINT=http://rag-parser-anydoc:8080
 BKCRAB_RAG_PARSER_TIMEOUT_MS=600000
 ```
 
@@ -69,9 +71,14 @@ The Docker RAG overlay runs two protocol-compatible parser services:
 | Service | Office converter | Selection values |
 |---|---|---|
 | `rag-parser` | Microsoft MarkItDown `0.1.6` | endpoint `http://rag-parser:8080`, engine `markitdown` |
-| `rag-parser-anydoc` | Firecrawl anydoc `0.1.8` | endpoint `http://rag-parser-anydoc:8080`, engine `anydoc` |
+| `rag-parser-anydoc` | Firecrawl anydoc `0.1.9` | endpoint `http://rag-parser-anydoc:8080`, engine `anydoc` |
 
-MarkItDown and anydoc occupy only the Office-to-Markdown conversion slot. The
+MarkItDown supports DOCX/PPTX/XLSX. anydoc additionally accepts DOC/DOCM,
+PPT/PPS/POT/PPTM/PPSX/PPSM, XLS/XLSM/XLSB, ODT/ODS/ODP, RTF, EPUB, and CSV.
+For these additional formats the v2 wrapper currently emits one deterministic
+document unit; DOCX/PPTX/XLSX retain the richer slide/sheet/asset extraction.
+
+MarkItDown and anydoc occupy only the document-to-Markdown conversion slot. The
 surrounding sidecar architecture is shared: bounded multipart streaming,
 OOXML ZIP/XML/relationship preflight, removal of external and unsafe OLE
 relationships, request-scoped converter instrumentation, stable slide/sheet
@@ -87,15 +94,16 @@ OOXML copy and removes them after conversion. Image/code hooks use the same
 mechanism. The original upload is never modified, and neither converter is
 allowed to fetch URLs.
 
-To switch the active backend in `deploy/docker/.env`, set both values as a
-pair and recreate only `bkcrab`; both parser containers may remain running:
+The upload page selects the backend per document and stores that choice with
+the document, so a later reindex uses the same engine. `RAG_PARSER_ENGINE`
+only defines the default for legacy API clients that omit `parser` and for old
+rows created before parser selection was persisted:
 
 ```text
 RAG_PARSER_ENDPOINT=http://rag-parser-anydoc:8080
 RAG_PARSER_ENGINE=anydoc
 ```
 
-Switch back to `http://rag-parser:8080` plus `markitdown` for the baseline.
 Health compatibility and every Office bundle are checked against the selected
 engine's exact name/version/wrapper contract, so a mismatched pair is rejected.
 The engine also participates in the parse fingerprint, preventing cached

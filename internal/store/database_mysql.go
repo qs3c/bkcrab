@@ -439,6 +439,7 @@ func mysqlMigrationSQL() []string {
 			kb_id VARCHAR(120) NOT NULL,
 			file_name VARCHAR(255) NOT NULL,
 			file_type VARCHAR(32) NOT NULL,
+			parser_engine VARCHAR(24) NOT NULL DEFAULT '',
 			file_size BIGINT NOT NULL DEFAULT 0,
 			object_key TEXT NOT NULL,
 			status VARCHAR(32) NOT NULL DEFAULT 'PENDING',

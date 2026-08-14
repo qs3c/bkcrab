@@ -286,6 +286,12 @@ func LoadEnv() *EnvConfig {
 	if v := os.Getenv("BKCRAB_RAG_PARSER_ENDPOINT"); v != "" {
 		cfg.RAG.ParserSidecar.Endpoint = v
 	}
+	if v := os.Getenv("BKCRAB_RAG_PARSER_MARKITDOWN_ENDPOINT"); v != "" {
+		cfg.RAG.ParserSidecar.MarkItDownEndpoint = v
+	}
+	if v := os.Getenv("BKCRAB_RAG_PARSER_ANYDOC_ENDPOINT"); v != "" {
+		cfg.RAG.ParserSidecar.AnyDocEndpoint = v
+	}
 	if v := os.Getenv("BKCRAB_RAG_PARSER_ENGINE"); v != "" {
 		cfg.RAG.ParserSidecar.Engine = v
 	}

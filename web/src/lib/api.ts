@@ -1563,6 +1563,7 @@ export async function getAgentConfig(id: string): Promise<AgentFileConfig> {
 // RAG 知识库 API。后端以显式 camelCase DTO 返回；PascalCase fallback
 // 暂时保留，支持滚动升级期间仍在运行的旧实例。
 export type RAGParseMode = "standard" | "auto";
+export type RAGParserEngine = "markitdown" | "anydoc";
 
 export interface RAGCapabilityDetail {
   enabled: boolean;
@@ -1586,6 +1587,17 @@ export interface RAGEnrichmentCapability {
 }
 
 export interface RAGCapabilities {
+  defaultParserEngine: RAGParserEngine;
+  parsers: Array<{
+    engine: RAGParserEngine;
+    label: string;
+    configured: boolean;
+    healthy: boolean;
+    available: boolean;
+    reason: string;
+    supportedExtensions: string[];
+    maxFileBytesByExtension: Record<string, number>;
+  }>;
   supportedExtensions: string[];
   maxFileBytes: number;
   maxFileBytesByExtension: Record<string, number>;
@@ -1663,6 +1675,7 @@ export interface KnowledgeDocument {
   kbId: string;
   fileName: string;
   fileType: string;
+  parserEngine: RAGParserEngine;
   fileSize: number;
   status: string;
   errorMsg: string;
@@ -1761,6 +1774,7 @@ function normalizeKnowledgeDocument(row: KnowledgeBaseWire): KnowledgeDocument {
     kbId: wireValue(row, "kbId", "KBID", ""),
     fileName: wireValue(row, "fileName", "FileName", ""),
     fileType: wireValue(row, "fileType", "FileType", ""),
+    parserEngine: wireValue(row, "parserEngine", "ParserEngine", "markitdown"),
     fileSize: wireValue(row, "fileSize", "FileSize", 0),
     status: wireValue(row, "status", "Status", ""),
     errorMsg: wireValue(row, "errorMsg", "ErrorMsg", ""),
@@ -1877,8 +1891,10 @@ export async function listKnowledgeDocuments(
 export async function uploadKnowledgeDocument(
   kbId: string,
   file: File,
+  parserEngine: RAGParserEngine,
 ): Promise<KnowledgeDocument> {
   const body = new FormData();
+  body.append("parser", parserEngine);
   body.append("file", file, file.name);
   const row = await ragJSON<KnowledgeBaseWire>(
     `/api/rag/kbs/${encodeURIComponent(kbId)}/documents`,

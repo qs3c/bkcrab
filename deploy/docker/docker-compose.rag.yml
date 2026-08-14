@@ -24,10 +24,12 @@ services:
       BKCRAB_RAG_ADVANCED_ENABLED: "${RAG_ADVANCED_ENABLED:-false}"
       BKCRAB_RAG_OFFICE_ENABLED: "${RAG_OFFICE_ENABLED:-false}"
       BKCRAB_RAG_ENRICHMENT_ENABLED: "${RAG_ENRICHMENT_ENABLED:-false}"
-      # Keep both parser implementations running. Select the active one as a
-      # matched endpoint/engine pair; the Go client rejects mismatches.
+      # Keep both implementations addressable. Engine is only the default for
+      # legacy clients/documents; each new upload may select its own parser.
       BKCRAB_RAG_PARSER_ENDPOINT: "${RAG_PARSER_ENDPOINT:-http://rag-parser:8080}"
       BKCRAB_RAG_PARSER_ENGINE: "${RAG_PARSER_ENGINE:-markitdown}"
+      BKCRAB_RAG_PARSER_MARKITDOWN_ENDPOINT: "http://rag-parser:8080"
+      BKCRAB_RAG_PARSER_ANYDOC_ENDPOINT: "http://rag-parser-anydoc:8080"
       BKCRAB_RAG_PARSER_TIMEOUT_MS: "${RAG_PARSE_TIMEOUT_MS:-600000}"
       BKCRAB_RAG_EVAL_ENABLED: "${RAG_EVAL_ENABLED:-false}"
       BKCRAB_RAG_EVAL_ENDPOINT: "http://rag-evaluator:8080"
@@ -178,9 +180,9 @@ services:
       start_period: 15s
       retries: 5
 
-  # Protocol-compatible alternative to rag-parser. It retains the same
-  # OOXML preflight, asset/occurrence extraction, PDF engine, quotas, and tar
-  # response contract; only the Office-to-Markdown converter is anydoc.
+  # Protocol-compatible alternative to rag-parser. Core OOXML retains the
+  # rich preflight/assets path; additional anydoc formats use a deterministic
+  # document unit under the same PDF, quota, and tar response contract.
   rag-parser-anydoc:
     build:
       context: ../../services/rag-parser

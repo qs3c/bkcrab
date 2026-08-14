@@ -41,6 +41,7 @@ import {
   type KnowledgeDocument,
   type KnowledgeSearchHit,
   type RAGCapabilities,
+  type RAGParserEngine,
   type RAGParseMode,
   type RAGKBPolicyStatus,
 } from "@/lib/api";
@@ -225,6 +226,7 @@ export default function KnowledgePage() {
 
   const [uploading, setUploading] = React.useState(false);
   const [uploadProgress, setUploadProgress] = React.useState("");
+  const [uploadParserEngine, setUploadParserEngine] = React.useState<RAGParserEngine>("markitdown");
   const [dragging, setDragging] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -242,13 +244,13 @@ export default function KnowledgePage() {
   const policyWriteLocked = policySyncLocksWrites(policyStatus);
   const writeDisabled = readOnly || policyWriteLocked;
   const uploadExtensions = React.useMemo(
-    () => availableUploadExtensions(capabilities),
-    [capabilities],
+    () => availableUploadExtensions(capabilities, uploadParserEngine),
+    [capabilities, uploadParserEngine],
   );
   const uploadLimits = React.useMemo(() => {
     const groups = new Map<number, string[]>();
     for (const extension of uploadExtensions) {
-      const limit = uploadLimitForFile(`file${extension}`, capabilities);
+      const limit = uploadLimitForFile(`file${extension}`, capabilities, uploadParserEngine);
       if (limit <= 0) continue;
       const extensions = groups.get(limit) || [];
       extensions.push(extension.slice(1).toUpperCase());
@@ -257,7 +259,10 @@ export default function KnowledgePage() {
     return [...groups.entries()]
       .map(([limit, extensions]) => `${extensions.join("/")} ${formatBytes(limit)}`)
       .join("；");
-  }, [capabilities, uploadExtensions]);
+  }, [capabilities, uploadExtensions, uploadParserEngine]);
+  const selectedParserCapability = capabilities?.parsers?.find(
+    (parser) => parser.engine === uploadParserEngine,
+  );
   const autoAvailable = isAutoAvailable(capabilities);
 
   const selectKnowledgeBase = React.useCallback((nextID: string) => {
@@ -344,7 +349,10 @@ export default function KnowledgePage() {
   React.useEffect(() => {
     void loadKnowledgeBases();
     void getRAGCapabilities()
-      .then(setCapabilities)
+      .then((value) => {
+        setCapabilities(value);
+        setUploadParserEngine(value.defaultParserEngine || "markitdown");
+      })
       .catch((err) => {
         setCapabilities(null);
         setError(errorMessage(err, "读取 RAG 能力失败，上传与高级配置已停用"));
@@ -522,14 +530,14 @@ export default function KnowledgePage() {
   const uploadFiles = async (files: File[]) => {
     if (!selected || files.length === 0) return;
     if (policyWriteLocked) { setError("整库策略同步期间上传已锁定；旧索引仍继续回答。"); return; }
-    const invalid = files.find((file) => uploadLimitForFile(file.name, capabilities) <= 0);
+    const invalid = files.find((file) => uploadLimitForFile(file.name, capabilities, uploadParserEngine) <= 0);
     if (invalid) {
       setError(`${invalid.name} 的格式当前不可用；可上传 ${uploadExtensions.map((extension) => extension.slice(1).toUpperCase()).join("、") || "能力接口允许的格式"}`);
       return;
     }
-    const tooLarge = files.find((file) => file.size > uploadLimitForFile(file.name, capabilities));
+    const tooLarge = files.find((file) => file.size > uploadLimitForFile(file.name, capabilities, uploadParserEngine));
     if (tooLarge) {
-      setError(`${tooLarge.name} 超过该格式 ${formatBytes(uploadLimitForFile(tooLarge.name, capabilities))} 的大小限制`);
+      setError(`${tooLarge.name} 超过该格式 ${formatBytes(uploadLimitForFile(tooLarge.name, capabilities, uploadParserEngine))} 的大小限制`);
       return;
     }
     setUploading(true);
@@ -537,7 +545,7 @@ export default function KnowledgePage() {
     try {
       for (let index = 0; index < files.length; index += 1) {
         setUploadProgress(`正在上传 ${index + 1}/${files.length}：${files[index].name}`);
-        await uploadKnowledgeDocument(selected.id, files[index]);
+        await uploadKnowledgeDocument(selected.id, files[index], uploadParserEngine);
       }
       setUploadProgress("");
       await loadDocuments(selected.id);
@@ -779,6 +787,38 @@ export default function KnowledgePage() {
                   </CardAction>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  <div className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-sm font-medium">文档解析器</p>
+                      <p className="text-xs text-muted-foreground">
+                        解析器会随文档保存；重新索引仍使用本次选择。PDF 使用两者共享的原生/视觉解析路径。
+                      </p>
+                    </div>
+                    <div className="flex gap-2" role="group" aria-label="选择文档解析器">
+                      {(capabilities?.parsers || []).map((parser) => (
+                        <Button
+                          key={parser.engine}
+                          type="button"
+                          size="sm"
+                          variant={uploadParserEngine === parser.engine ? "default" : "outline"}
+                          disabled={uploading}
+                          onClick={() => {
+                            setUploadParserEngine(parser.engine);
+                            if (fileInputRef.current) fileInputRef.current.value = "";
+                          }}
+                          title={parser.available ? `${parser.label} 文档转换可用` : `${parser.label} 扩展格式暂不可用：${parser.reason}`}
+                        >
+                          {parser.label}
+                          {!parser.available && <span className="text-[10px] opacity-75">仅基础格式</span>}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                  {selectedParserCapability && !selectedParserCapability.available && (
+                    <Message tone="warning">
+                      {selectedParserCapability.label} 转换服务当前不可用，暂时只能上传 MD、Markdown、TXT 和 PDF。{selectedParserCapability.reason ? `原因：${selectedParserCapability.reason}` : ""}
+                    </Message>
+                  )}
                   {selected.parseMode === "auto" && capabilities && pdfAutoBehavior(selected.parseMode, capabilities) === "native-fallback" && (
                     <Message tone="warning">
                       PDF 视觉解析当前不可用；上传到此高级 RAG 知识库的 PDF 会使用原生文字解析并记录降级。{capabilities.pdfAuto.reason ? `原因：${capabilities.pdfAuto.reason}` : ""}
@@ -844,7 +884,7 @@ export default function KnowledgePage() {
                                     <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted"><FileText className="size-4" /></span>
                                     <span className="min-w-0">
                                       <span className="block max-w-[260px] truncate text-sm font-medium" title={doc.fileName}>{doc.fileName}</span>
-                                      <span className="text-xs text-muted-foreground">{formatBytes(doc.fileSize)} · v{doc.version}</span>
+                                      <span className="text-xs text-muted-foreground">{formatBytes(doc.fileSize)} · v{doc.version} · {doc.parserEngine === "anydoc" ? "anydoc" : "MarkItDown"}</span>
                                       <span className="block text-[11px] text-muted-foreground">
                                         {formatParseModeTransition(doc)}
                                       </span>

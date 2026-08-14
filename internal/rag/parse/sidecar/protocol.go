@@ -28,12 +28,47 @@ const (
 	OfficeEngineAnyDoc     = "anydoc"
 
 	ExpectedMarkItDownVersion = "0.1.6"
-	ExpectedAnyDocVersion     = "0.1.8"
+	ExpectedAnyDocVersion     = "0.1.9"
 	ExpectedMarkItDownWrapper = "office-wrapper-v3"
-	ExpectedAnyDocWrapper     = "office-anydoc-wrapper-v1"
+	ExpectedAnyDocWrapper     = "office-anydoc-wrapper-v2"
 	// ExpectedOfficeWrapper is retained for existing MarkItDown callers.
 	ExpectedOfficeWrapper = ExpectedMarkItDownWrapper
 )
+
+var (
+	markItDownOfficeFormats = []string{"docx", "pptx", "xlsx"}
+	anyDocOfficeFormats = []string{
+		"csv", "doc", "docm", "docx", "epub", "odp", "ods", "odt", "pot", "pps",
+		"ppsm", "ppsx", "ppt", "pptm", "pptx", "rtf", "xls", "xlsb", "xlsm", "xlsx",
+	}
+)
+
+func OfficeFormats(engine string) ([]string, error) {
+	var formats []string
+	switch strings.ToLower(strings.TrimSpace(engine)) {
+	case "", OfficeEngineMarkItDown:
+		formats = markItDownOfficeFormats
+	case OfficeEngineAnyDoc:
+		formats = anyDocOfficeFormats
+	default:
+		return nil, fmt.Errorf("unsupported Office parser engine %q", engine)
+	}
+	return append([]string(nil), formats...), nil
+}
+
+func OfficeFormatSupported(engine, format string) bool {
+	formats, err := OfficeFormats(engine)
+	if err != nil {
+		return false
+	}
+	normalized := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(format)), ".")
+	for _, candidate := range formats {
+		if candidate == normalized {
+			return true
+		}
+	}
+	return false
+}
 
 func OfficeParserDescriptor(engine string) (ParserDescriptor, error) {
 	switch strings.ToLower(strings.TrimSpace(engine)) {
@@ -813,7 +848,7 @@ func ValidateManifest(manifest *Manifest, options DecodeOptions) error {
 
 	switch manifest.BundleKind {
 	case BundleKindOfficeConvert:
-		if manifest.Source.Format != "docx" && manifest.Source.Format != "pptx" && manifest.Source.Format != "xlsx" {
+		if !OfficeFormatSupported(manifest.Parser.Name, manifest.Source.Format) {
 			return invalidBundle("office source format %q is unsupported", manifest.Source.Format)
 		}
 		if !supportedOfficeParser(manifest.Parser) {
@@ -1008,7 +1043,7 @@ func validateHealth(health *Health) error {
 	seen := make(map[string]struct{}, len(health.Capabilities.Office.Formats))
 	lastFormat := ""
 	for index, format := range health.Capabilities.Office.Formats {
-		if format != "docx" && format != "pptx" && format != "xlsx" {
+		if !OfficeFormatSupported(OfficeEngineAnyDoc, format) {
 			return invalidBundle("unknown office health format %q", format)
 		}
 		if _, duplicate := seen[format]; duplicate {

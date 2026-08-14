@@ -362,6 +362,13 @@ func (s *Service) claimAvailable(ctx context.Context) {
 // UploadDocument validates and persists an original document, its immutable
 // version snapshot, and its durable task in one relational transaction.
 func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName string, r io.Reader, size int64) (*store.RAGDocumentRecord, error) {
+	return s.UploadDocumentWithParser(ctx, ownerID, kbID, fileName, s.cfg.ParserSidecar.Engine, r, size)
+}
+
+// UploadDocumentWithParser pins the selected conversion engine to the source
+// document. Reindexing therefore reproduces the same parser contract instead
+// of silently following a later system-default change.
+func (s *Service) UploadDocumentWithParser(ctx context.Context, ownerID, kbID, fileName, parserEngine string, r io.Reader, size int64) (*store.RAGDocumentRecord, error) {
 	kbLock := s.kbMutex(kbID)
 	kbLock.RLock()
 	defer kbLock.RUnlock()
@@ -380,16 +387,29 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName st
 		return nil, errors.New("知识库正在删除中")
 	}
 	fileName = strings.TrimSpace(fileName)
-	if !parse.SupportedExt(fileName) {
-		return nil, fmt.Errorf("不支持的文件类型（支持 md/markdown/txt/pdf；Office 需能力可用）")
+	parserEngine = strings.ToLower(strings.TrimSpace(parserEngine))
+	if parserEngine == "" {
+		parserEngine = s.cfg.ParserSidecar.Engine
+	}
+	if parserEngine != "markitdown" && parserEngine != "anydoc" {
+		return nil, fmt.Errorf("不支持的文档解析器 %q", parserEngine)
+	}
+	if !parse.SupportedExtForParser(fileName, parserEngine) {
+		return nil, fmt.Errorf("解析器 %s 不支持该文件类型", parserEngine)
 	}
 	fileType := strings.TrimPrefix(strings.ToLower(filepath.Ext(fileName)), ".")
 	if fileType == "markdown" {
 		fileType = "md"
 	}
-	if fileType == "docx" || fileType == "pptx" || fileType == "xlsx" {
-		if s.officeAvailable == nil || !s.officeAvailable() {
-			return nil, errors.New("Office 文档解析能力当前不可用")
+	if fileType != "md" && fileType != "txt" && fileType != "pdf" {
+		available := false
+		if s.parserAvailable != nil {
+			available = s.parserAvailable(parserEngine)
+		} else if parserEngine == s.cfg.ParserSidecar.Engine && s.officeAvailable != nil {
+			available = s.officeAvailable()
+		}
+		if !available {
+			return nil, errors.New("文档转换能力当前不可用")
 		}
 	}
 	if size < 0 {
@@ -431,6 +451,7 @@ func (s *Service) UploadDocument(ctx context.Context, ownerID, kbID, fileName st
 		KBID:               kbID,
 		FileName:           filepath.Base(fileName),
 		FileType:           fileType,
+		ParserEngine:       parserEngine,
 		FileSize:           size,
 		ObjectKey:          key,
 		Status:             "PENDING",
@@ -1286,7 +1307,7 @@ func (s *Service) loadOrParseArtifact(
 		return nil, false, "", err
 	}
 	source := document.Source{
-		DocID: doc.ID, FileName: doc.FileName, Format: doc.FileType,
+		DocID: doc.ID, FileName: doc.FileName, Format: doc.FileType, ParserEngine: doc.ParserEngine,
 		Size: doc.FileSize, SHA256: version.SourceSHA256,
 		Open: func(openCtx context.Context) (io.ReadCloser, error) {
 			reader, openErr := s.obj.Get(openCtx, doc.ObjectKey)

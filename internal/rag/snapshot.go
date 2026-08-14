@@ -140,9 +140,11 @@ func (s *Service) buildVersionSnapshotAndBindingForPolicy(
 			return nil, config.RAGEmbeddingCfg{}, errors.New("pinned ingestion embedding contract is unavailable")
 		}
 	}
-	parserVersion, markItDownVersion := parseContractVersions(
-		doc.FileType, s.cfg.ParserSidecar.Engine,
-	)
+	parserEngine := documentParserEngine(doc.ParserEngine, s.cfg.ParserSidecar.Engine)
+	if parserEngine != "markitdown" && parserEngine != "anydoc" {
+		return nil, config.RAGEmbeddingCfg{}, fmt.Errorf("invalid document parser engine %q", parserEngine)
+	}
+	parserVersion, markItDownVersion := parseContractVersions(doc.FileType, parserEngine)
 
 	parseFingerprint, err := document.ParseFingerprint(document.ParseFingerprintInput{
 		SourceSHA256:              sourceSHA256,
@@ -235,8 +237,11 @@ func (s *Service) buildVersionSnapshotAndBindingForPolicy(
 }
 
 func parseContractVersions(fileType string, officeEngines ...string) (parserVersion, markItDownVersion string) {
-	switch strings.TrimPrefix(strings.ToLower(strings.TrimSpace(fileType)), ".") {
-	case "docx", "pptx", "xlsx":
+	format := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(fileType)), ".")
+	switch format {
+	case "csv", "doc", "docm", "docx", "epub", "odp", "ods", "odt",
+		"pot", "pps", "ppsm", "ppsx", "ppt", "pptm", "pptx", "rtf",
+		"xls", "xlsb", "xlsm", "xlsx":
 		engine := "markitdown"
 		if len(officeEngines) > 0 {
 			engine = officeEngines[0]
@@ -245,6 +250,17 @@ func parseContractVersions(fileType string, officeEngines ...string) (parserVers
 	default:
 		return parse.LocalParserVersion, "none"
 	}
+}
+
+func documentParserEngine(stored, fallback string) string {
+	engine := strings.ToLower(strings.TrimSpace(stored))
+	if engine == "" {
+		engine = strings.ToLower(strings.TrimSpace(fallback))
+	}
+	if engine == "" {
+		return "markitdown"
+	}
+	return engine
 }
 
 // embeddingContractFingerprintForKB identifies the secret-free embedding

@@ -66,3 +66,24 @@ func TestRAGParserClientConstructionDoesNotProbeAndBackgroundSnapshotPublishesOf
 		t.Fatalf("Office capability=%+v", state.Office)
 	}
 }
+
+func TestRAGParserPoolConstructsBothConfiguredEnginesWithoutProbing(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		calls.Add(1)
+	}))
+	defer server.Close()
+	cfg := config.RAGCfg{ParserSidecar: config.RAGParserSidecarCfg{
+		Engine: "markitdown", MarkItDownEndpoint: server.URL, AnyDocEndpoint: server.URL,
+	}}
+	pool, err := newRAGParserPool(cfg)
+	if err != nil || pool == nil {
+		t.Fatalf("pool=%v error=%v", pool, err)
+	}
+	if snapshots := pool.HealthSnapshots(); len(snapshots) != 2 {
+		t.Fatalf("health snapshots=%v", snapshots)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("pool construction made %d synchronous calls", calls.Load())
+	}
+}

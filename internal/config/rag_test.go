@@ -260,6 +260,23 @@ func TestRAGRejectsUnknownParserSidecarEngine(t *testing.T) {
 	}
 }
 
+func TestRAGParserSidecarResolvesPerEngineEndpoints(t *testing.T) {
+	cfg := RAGParserSidecarCfg{
+		Endpoint: "http://legacy-default:8080", Engine: "markitdown",
+		MarkItDownEndpoint: "http://markitdown:8080", AnyDocEndpoint: "http://anydoc:8080",
+	}
+	if got := cfg.EndpointForEngine("markitdown"); got != "http://markitdown:8080" {
+		t.Fatalf("markitdown endpoint=%q", got)
+	}
+	if got := cfg.EndpointForEngine("anydoc"); got != "http://anydoc:8080" {
+		t.Fatalf("anydoc endpoint=%q", got)
+	}
+	cfg.AnyDocEndpoint = ""
+	if got := cfg.EndpointForEngine("anydoc"); got != "" {
+		t.Fatalf("non-default engine inherited legacy endpoint %q", got)
+	}
+}
+
 func TestRAGMilvusFilterLimitCoversMaximumDocumentCardinality(t *testing.T) {
 	var cfg RAGCfg
 	cfg.ApplyDefaults()

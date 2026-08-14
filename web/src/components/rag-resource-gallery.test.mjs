@@ -87,6 +87,31 @@ test("derives upload extensions and per-extension limits from capabilities", () 
   assert.deepEqual(availableUploadExtensions(withOffice), capabilities.supportedExtensions);
 });
 
+test("switches upload whitelist and limits with the selected parser", () => {
+  const dualParser = {
+    ...capabilities,
+    defaultParserEngine: "markitdown",
+    parsers: [
+      {
+        engine: "markitdown",
+        available: true,
+        supportedExtensions: [".md", ".pdf", ".docx"],
+        maxFileBytesByExtension: { ".md": 50_000, ".pdf": 40_000, ".docx": 30_000 },
+      },
+      {
+        engine: "anydoc",
+        available: true,
+        supportedExtensions: [".md", ".pdf", ".doc", ".docx", ".epub", ".odt"],
+        maxFileBytesByExtension: { ".md": 50_000, ".pdf": 40_000, ".doc": 25_000, ".docx": 30_000, ".epub": 20_000, ".odt": 15_000 },
+      },
+    ],
+  };
+  assert.deepEqual(availableUploadExtensions(dualParser, "markitdown"), [".md", ".pdf", ".docx"]);
+  assert.deepEqual(availableUploadExtensions(dualParser, "anydoc"), [".md", ".pdf", ".doc", ".docx", ".epub", ".odt"]);
+  assert.equal(uploadLimitForFile("book.epub", dualParser, "markitdown"), 0);
+  assert.equal(uploadLimitForFile("book.epub", dualParser, "anydoc"), 20_000);
+});
+
 test("keeps auto and enrichment opt-ins fail-closed while always allowing disable", () => {
   assert.equal(isAutoAvailable(capabilities), true, "office vision can independently make auto available");
   assert.equal(pdfAutoBehavior("auto", capabilities), "native-fallback");

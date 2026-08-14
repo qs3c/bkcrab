@@ -77,6 +77,8 @@ func officeResponseTar(t *testing.T, source document.Source) []byte {
 
 func TestSourceMIMETypesMatchSidecarAllowlist(t *testing.T) {
 	tests := map[string]string{
+		"csv":  "text/csv",
+		"doc":  "application/msword",
 		"docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 		"pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 		"xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -87,8 +89,8 @@ func TestSourceMIMETypesMatchSidecarAllowlist(t *testing.T) {
 			t.Errorf("sourceMIMEType(%q)=%q, %v; want %q", format, actual, err, expected)
 		}
 	}
-	if _, err := sourceMIMEType("doc"); err == nil {
-		t.Fatal("legacy Office MIME unexpectedly accepted")
+	if _, err := sourceMIMEType("pages"); err == nil {
+		t.Fatal("unknown document MIME unexpectedly accepted")
 	}
 }
 
@@ -326,8 +328,9 @@ func TestAnyDocClientRequiresAndDecodesTheAnyDocContract(t *testing.T) {
 	source := testDocumentSource(data, "docx", func() io.ReadCloser {
 		return io.NopCloser(bytes.NewReader(data))
 	})
-	health := bytes.Replace(healthyResponse(t), []byte(`"markitdownVersion": "0.1.6"`), []byte(`"markitdownVersion": "0.1.8"`), 1)
-	health = bytes.Replace(health, []byte(`"wrapperVersion": "office-wrapper-v3"`), []byte(`"wrapperVersion": "office-anydoc-wrapper-v1"`), 1)
+	health := bytes.Replace(healthyResponse(t), []byte(`"markitdownVersion": "0.1.6"`), []byte(`"markitdownVersion": "0.1.9"`), 1)
+	health = bytes.Replace(health, []byte(`"wrapperVersion": "office-wrapper-v3"`), []byte(`"wrapperVersion": "office-anydoc-wrapper-v2"`), 1)
+	health = bytes.Replace(health, []byte(`"formats": ["docx", "pptx", "xlsx"]`), []byte(`"formats": ["csv", "doc", "docm", "docx", "epub", "odp", "ods", "odt", "pot", "pps", "ppsm", "ppsx", "ppt", "pptm", "pptx", "rtf", "xls", "xlsb", "xlsm", "xlsx"]`), 1)
 	markdown := []byte("# Converted\n")
 	manifest := testOfficeManifest(markdown)
 	manifest.Source = SourceDescriptor{Format: source.Format, ByteSize: source.Size, SHA256: source.SHA256}

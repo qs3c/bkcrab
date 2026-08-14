@@ -19,6 +19,13 @@ PDF_RENDER_BUNDLE_KIND = "pdf-render"
 MANIFEST_NAME = "manifest.json"
 MANIFEST_MAX_BYTES = 1024 * 1024
 TAR_BLOCK_SIZE = 512
+DOCUMENT_SOURCE_FORMATS = frozenset(
+    {
+        "csv", "doc", "docm", "docx", "epub", "odp", "ods", "odt", "pot",
+        "pps", "ppsm", "ppsx", "ppt", "pptm", "pptx", "rtf", "xls", "xlsb",
+        "xlsm", "xlsx",
+    }
+)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -725,7 +732,7 @@ class Manifest:
             self._validate_pdf()
 
     def _validate_office(self) -> None:
-        if self.source.format not in {"docx", "pptx", "xlsx"}:
+        if self.source.format not in DOCUMENT_SOURCE_FORMATS:
             _fail("invalid_office_manifest", "office-convert source format is unsupported")
         if self.pages:
             _fail("invalid_office_manifest", "office-convert pages must be empty")
@@ -845,7 +852,7 @@ def validate_health_document(value: Any) -> dict[str, Any]:
     )
     _boolean(office["enabled"], "health.capabilities.office.enabled")
     formats = [_string(item, "health.capabilities.office.formats[]") for item in _list(office["formats"], "health.capabilities.office.formats")]
-    if formats != sorted(set(formats)) or any(item not in {"docx", "pptx", "xlsx"} for item in formats):
+    if formats != sorted(set(formats)) or any(item not in DOCUMENT_SOURCE_FORMATS for item in formats):
         _fail("invalid_health", "Office formats must be unique, sorted, and allowlisted")
     _string(office["markitdownVersion"], "health.capabilities.office.markitdownVersion")
     _string(office["wrapperVersion"], "health.capabilities.office.wrapperVersion")
@@ -1067,6 +1074,7 @@ def make_health_document(
     max_input_bytes: int,
     max_output_bytes: int,
     office_parser: ParserDescriptor | None = None,
+    office_formats: tuple[str, ...] = ("docx", "pptx", "xlsx"),
     pdf_engine: str = "",
     pdf_engine_version: str = "",
 ) -> dict[str, Any]:
@@ -1087,7 +1095,7 @@ def make_health_document(
         "capabilities": {
             "office": {
                 "enabled": True,
-                "formats": ["docx", "pptx", "xlsx"],
+                "formats": sorted(set(office_formats)),
                 # Legacy v2 wire name retained for backward compatibility. It
                 # carries the active Office converter version for both
                 # MarkItDown and anydoc; the request bundle contains the full

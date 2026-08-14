@@ -40,6 +40,14 @@ func TestSupportedExtAndUnknownExtension(t *testing.T) {
 	if SupportedExt("a.exe") {
 		t.Fatal("unexpected support for .exe")
 	}
+	for _, name := range []string{"a.doc", "a.PPTM", "a.xlsb", "a.odt", "a.epub", "a.csv"} {
+		if !SupportedExtForParser(name, "anydoc") {
+			t.Errorf("SupportedExtForParser(%q, anydoc) = false", name)
+		}
+		if SupportedExtForParser(name, "markitdown") {
+			t.Errorf("SupportedExtForParser(%q, markitdown) = true", name)
+		}
+	}
 	if _, err := Parse(strings.NewReader("x"), "a.exe"); err == nil {
 		t.Fatal("unknown extension should fail")
 	}

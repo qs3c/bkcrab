@@ -8,6 +8,8 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+
+	"github.com/qs3c/bkcrab/internal/rag/parse/sidecar"
 )
 
 // Page contains text extracted from one source page.
@@ -38,12 +40,19 @@ var (
 
 // SupportedExt reports whether fileName has a supported extension.
 func SupportedExt(fileName string) bool {
+	return SupportedExtForParser(fileName, "markitdown")
+}
+
+// SupportedExtForParser applies the upload contract for a selected backend.
+// Markdown, text, and PDF use the shared local routes; all other formats must
+// be explicitly advertised by that Office/document converter.
+func SupportedExtForParser(fileName, parserEngine string) bool {
 	switch strings.ToLower(filepath.Ext(fileName)) {
-	case ".md", ".markdown", ".txt", ".pdf", ".docx", ".pptx", ".xlsx":
+	case ".md", ".markdown", ".txt", ".pdf":
 		return true
-	default:
-		return false
 	}
+	format := strings.TrimPrefix(strings.ToLower(filepath.Ext(fileName)), ".")
+	return sidecar.OfficeFormatSupported(parserEngine, format)
 }
 
 // Parse reads and extracts documents supported by the original parser.

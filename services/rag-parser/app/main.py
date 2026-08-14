@@ -25,10 +25,12 @@ from .office import (
     OFFICE_FORMATS,
     OfficeError,
     OfficeLimits,
+    build_anydoc_bundle,
     build_office_bundle,
     converter_descriptor,
     office_converter,
     office_converter_descriptor,
+    office_formats,
     preflight_ooxml,
 )
 from .pdf import (
@@ -67,8 +69,25 @@ _PROCESS_POLL_SECONDS = 0.025
 _PROCESS_EXIT_GRACE_SECONDS = 0.25
 _PROCESS_KILL_GRACE_SECONDS = 0.25
 _OFFICE_MIME_TYPES = {
+    "csv": "text/csv",
+    "doc": "application/msword",
+    "docm": "application/vnd.ms-word.document.macroenabled.12",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "epub": "application/epub+zip",
+    "odp": "application/vnd.oasis.opendocument.presentation",
+    "ods": "application/vnd.oasis.opendocument.spreadsheet",
+    "odt": "application/vnd.oasis.opendocument.text",
+    "pot": "application/vnd.ms-powerpoint",
+    "pps": "application/vnd.ms-powerpoint",
+    "ppsm": "application/vnd.ms-powerpoint.slideshow.macroenabled.12",
+    "ppsx": "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+    "ppt": "application/vnd.ms-powerpoint",
+    "pptm": "application/vnd.ms-powerpoint.presentation.macroenabled.12",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "rtf": "application/rtf",
+    "xls": "application/vnd.ms-excel",
+    "xlsb": "application/vnd.ms-excel.sheet.binary.macroenabled.12",
+    "xlsm": "application/vnd.ms-excel.sheet.macroenabled.12",
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
 
@@ -228,6 +247,8 @@ async def _save_upload(
     upload: UploadFile,
     destination: Path,
     max_input_bytes: int,
+    *,
+    require_ooxml: bool,
 ) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0
@@ -247,7 +268,9 @@ async def _save_upload(
                 )
             digest.update(chunk)
             output.write(chunk)
-    if size == 0 or bytes(prefix) != OOXML_MAGIC:
+    if size == 0:
+        raise OfficeError("empty_input", "Office input must not be empty")
+    if require_ooxml and bytes(prefix) != OOXML_MAGIC:
         raise OfficeError("invalid_ooxml_magic", "Office input must be an OOXML ZIP container")
     return digest.hexdigest(), size
 
@@ -299,15 +322,24 @@ def _build_parser_bundle(work: _ParserWork) -> Bundle:
     if work.operation == "office":
         if work.office_limits is None:
             raise RuntimeError("Office parser work is missing limits")
+        active_converter = work.converter
+        if active_converter is None:
+            active_converter = office_converter(work.office_engine)
+        if work.source_format not in OFFICE_FORMATS:
+            return build_anydoc_bundle(
+                original_source=work.source,
+                source_format=work.source_format,
+                source_sha256=work.source_sha256,
+                source_size=work.source_size,
+                request_dir=work.request_dir,
+                converter=active_converter,
+            )
         preflight = preflight_ooxml(
             work.source,
             work.source_format,
             work.request_dir,
             work.office_limits,
         )
-        active_converter = work.converter
-        if active_converter is None:
-            active_converter = office_converter(work.office_engine)
         return build_office_bundle(
             original_source=work.source,
             sanitized_source=preflight.sanitized_path,
@@ -643,6 +675,7 @@ def create_app(
             max_input_bytes=runtime.max_input_bytes,
             max_output_bytes=runtime.max_output_bytes,
             office_parser=office_descriptor,
+            office_formats=office_formats(office_descriptor.name),
             pdf_engine=active_pdf_engine.name if active_pdf_engine is not None else "",
             pdf_engine_version=(
                 active_pdf_engine.version if active_pdf_engine is not None else ""
@@ -653,12 +686,13 @@ def create_app(
     async def convert_office(
         request: Request,
         file: Annotated[UploadFile, File()],
-        format: Annotated[str, Query(pattern="^(docx|pptx|xlsx)$")],
+        format: Annotated[str, Query(min_length=2, max_length=8)],
     ) -> StreamingResponse:
         request_id = _request_id(request)
         started = time.monotonic()
         source_format = format.lower()
-        if source_format not in OFFICE_FORMATS:
+        supported_formats = office_formats(office_descriptor.name)
+        if source_format not in supported_formats:
             raise OfficeError("unsupported_format", "unsupported Office format", status_code=400)
         form_items = list((await request.form()).multi_items())
         if len(form_items) != 1 or form_items[0][0] != "file":
@@ -672,7 +706,11 @@ def create_app(
         original = request_dir / f"source.{source_format}"
         try:
             source_sha256, source_size = await _save_upload(
-                request, file, original, runtime.max_input_bytes
+                request,
+                file,
+                original,
+                runtime.max_input_bytes,
+                require_ooxml=source_format in OFFICE_FORMATS,
             )
             await file.close()
             bundle = await _run_parser_operation(

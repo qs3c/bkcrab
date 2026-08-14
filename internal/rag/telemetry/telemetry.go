@@ -150,7 +150,10 @@ type enumSet map[string]struct{}
 
 var (
 	allowedFormats = enumSet{
-		"md": {}, "markdown": {}, "txt": {}, "pdf": {}, "docx": {}, "pptx": {}, "xlsx": {},
+		"md": {}, "markdown": {}, "txt": {}, "pdf": {}, "csv": {},
+		"doc": {}, "docm": {}, "docx": {}, "epub": {}, "odp": {}, "ods": {}, "odt": {},
+		"pot": {}, "pps": {}, "ppsm": {}, "ppsx": {}, "ppt": {}, "pptm": {}, "pptx": {},
+		"rtf": {}, "xls": {}, "xlsb": {}, "xlsm": {}, "xlsx": {},
 	}
 	allowedParseModes = enumSet{"standard": {}, "auto": {}}
 	allowedOperations = enumSet{

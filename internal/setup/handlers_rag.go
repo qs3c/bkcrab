@@ -29,7 +29,16 @@ const (
 	ragChatMaxTitleRunes       = 60
 )
 
-var ragSupportedExtensions = []string{".md", ".markdown", ".txt", ".pdf", ".docx", ".pptx", ".xlsx"}
+var (
+	ragBaseExtensions       = []string{".md", ".markdown", ".txt", ".pdf"}
+	ragMarkItDownExtensions = []string{".docx", ".pptx", ".xlsx"}
+	ragAnyDocExtensions     = []string{
+		".csv", ".doc", ".docm", ".docx", ".epub", ".odp", ".ods", ".odt",
+		".pot", ".pps", ".ppsm", ".ppsx", ".ppt", ".pptm", ".pptx", ".rtf",
+		".xls", ".xlsb", ".xlsm", ".xlsx",
+	}
+	ragSupportedExtensions = append(append([]string(nil), ragBaseExtensions...), ragMarkItDownExtensions...)
+)
 
 type ragCapabilityDetailDTO struct {
 	Enabled    bool       `json:"enabled"`
@@ -53,6 +62,8 @@ type ragEnrichmentCapabilityDTO struct {
 }
 
 type ragCapabilitiesDTO struct {
+	DefaultParserEngine     string                     `json:"defaultParserEngine"`
+	Parsers                 []ragParserCapabilityDTO   `json:"parsers"`
 	SupportedExtensions     []string                   `json:"supportedExtensions"`
 	MaxFileBytes            int64                      `json:"maxFileBytes"`
 	MaxFileBytesByExtension map[string]int64           `json:"maxFileBytesByExtension"`
@@ -63,6 +74,17 @@ type ragCapabilitiesDTO struct {
 	OfficeVision            ragSimpleCapabilityDTO     `json:"officeVision"`
 	Enrichment              ragEnrichmentCapabilityDTO `json:"enrichment"`
 	DocumentAIBudget        ragDocumentAIBudgetDTO     `json:"documentAIBudget"`
+}
+
+type ragParserCapabilityDTO struct {
+	Engine                  string           `json:"engine"`
+	Label                   string           `json:"label"`
+	Configured              bool             `json:"configured"`
+	Healthy                 bool             `json:"healthy"`
+	Available               bool             `json:"available"`
+	Reason                  string           `json:"reason"`
+	SupportedExtensions     []string         `json:"supportedExtensions"`
+	MaxFileBytesByExtension map[string]int64 `json:"maxFileBytesByExtension"`
 }
 
 type ragDocumentAIBudgetDTO struct {
@@ -102,6 +124,7 @@ type ragDocumentResponseDTO struct {
 	KBID               string                 `json:"kbId"`
 	FileName           string                 `json:"fileName"`
 	FileType           string                 `json:"fileType"`
+	ParserEngine       string                 `json:"parserEngine"`
 	FileSize           int64                  `json:"fileSize"`
 	Status             string                 `json:"status"`
 	ErrorMsg           string                 `json:"errorMsg"`
@@ -165,6 +188,7 @@ func ragDocumentResponse(record *store.RAGDocumentRecord) ragDocumentResponseDTO
 	}
 	return ragDocumentResponseDTO{
 		ID: record.ID, KBID: record.KBID, FileName: record.FileName, FileType: record.FileType,
+		ParserEngine: record.ParserEngine,
 		FileSize: record.FileSize, Status: record.Status, ErrorMsg: record.ErrorMsg,
 		ChunkCount: record.ChunkCount, TokenCount: record.TokenCount, Version: record.Version,
 		ActiveVersion: record.ActiveVersion, IndexFormatVersion: record.IndexFormatVersion,
@@ -183,6 +207,12 @@ func (s *Server) ragDocumentResponseWithSnapshots(
 	dto := ragDocumentResponse(record)
 	if record == nil {
 		return dto, nil
+	}
+	if dto.ParserEngine == "" {
+		dto.ParserEngine = strings.ToLower(strings.TrimSpace(s.ragCfg.ParserSidecar.Engine))
+		if dto.ParserEngine == "" {
+			dto.ParserEngine = "markitdown"
+		}
 	}
 	targetMode := config.ParseModeStandard
 	if kb != nil && config.ParseMode(kb.ParseMode).Valid() {
@@ -269,15 +299,45 @@ func (s *Server) ragDocumentResponsesWithSnapshots(
 }
 
 func (s *Server) handleRAGCapabilities(w http.ResponseWriter, _ *http.Request) {
-	snapshot := s.ragParserHealthSnapshot()
-	state := s.ragCfg.RuntimeCapabilities(snapshot)
+	defaultEngine := strings.ToLower(strings.TrimSpace(s.ragCfg.ParserSidecar.Engine))
+	if defaultEngine == "" {
+		defaultEngine = "markitdown"
+	}
+	snapshots := s.ragParserHealthSnapshots()
+	snapshot := snapshots[defaultEngine]
+	defaultCfg := ragConfigForParser(s.ragCfg, defaultEngine)
+	state := defaultCfg.RuntimeCapabilities(snapshot)
 	maxFileBytes := int64(s.ragCfg.Limits.MaxFileMB) * 1024 * 1024
-	byExtension := make(map[string]int64, len(ragSupportedExtensions))
-	for _, extension := range ragSupportedExtensions {
-		byExtension[extension] = ragEffectiveFileLimit(s.ragCfg, snapshot, extension)
+	defaultExtensions := ragExtensionsForParser(defaultEngine)
+	byExtension := make(map[string]int64, len(defaultExtensions))
+	for _, extension := range defaultExtensions {
+		byExtension[extension] = ragEffectiveFileLimit(defaultCfg, snapshot, extension)
+	}
+	parsers := make([]ragParserCapabilityDTO, 0, 2)
+	for _, engine := range []string{"markitdown", "anydoc"} {
+		parserCfg := ragConfigForParser(s.ragCfg, engine)
+		parserSnapshot := snapshots[engine]
+		parserState := parserCfg.RuntimeCapabilities(parserSnapshot).Office
+		extensions := ragExtensionsForParser(engine)
+		limits := make(map[string]int64, len(extensions))
+		for _, extension := range extensions {
+			limits[extension] = ragEffectiveFileLimit(parserCfg, parserSnapshot, extension)
+		}
+		label := "MarkItDown"
+		if engine == "anydoc" {
+			label = "anydoc"
+		}
+		parsers = append(parsers, ragParserCapabilityDTO{
+			Engine: engine, Label: label, Configured: parserState.Configured,
+			Healthy: parserState.Healthy, Available: parserState.Available,
+			Reason: parserState.Reason, SupportedExtensions: extensions,
+			MaxFileBytesByExtension: limits,
+		})
 	}
 	response := ragCapabilitiesDTO{
-		SupportedExtensions:     append([]string(nil), ragSupportedExtensions...),
+		DefaultParserEngine:     defaultEngine,
+		Parsers:                 parsers,
+		SupportedExtensions:     defaultExtensions,
 		MaxFileBytes:            maxFileBytes,
 		MaxFileBytesByExtension: byExtension,
 		ParseModes:              []config.ParseMode{config.ParseModeStandard, config.ParseModeAuto},
@@ -306,10 +366,48 @@ func (s *Server) handleRAGCapabilities(w http.ResponseWriter, _ *http.Request) {
 	jsonResponse(w, http.StatusOK, response)
 }
 
+func ragConfigForParser(cfg config.RAGCfg, engine string) config.RAGCfg {
+	endpoint := cfg.ParserSidecar.EndpointForEngine(engine)
+	cfg.ParserSidecar.Engine = engine
+	cfg.ParserSidecar.Endpoint = endpoint
+	return cfg
+}
+
+func ragExtensionsForParser(engine string) []string {
+	extensions := append([]string(nil), ragBaseExtensions...)
+	switch strings.ToLower(strings.TrimSpace(engine)) {
+	case "anydoc":
+		return append(extensions, ragAnyDocExtensions...)
+	case "markitdown":
+		return append(extensions, ragMarkItDownExtensions...)
+	default:
+		return extensions
+	}
+}
+
+func ragParserSupportsExtension(engine, extension string) bool {
+	extension = strings.ToLower(strings.TrimSpace(extension))
+	for _, candidate := range ragExtensionsForParser(engine) {
+		if extension == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func ragBaseExtension(extension string) bool {
+	for _, candidate := range ragBaseExtensions {
+		if strings.EqualFold(extension, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 func ragEffectiveFileLimit(cfg config.RAGCfg, snapshot config.RAGParserHealthSnapshot, extension string) int64 {
 	limit := int64(cfg.Limits.MaxFileMB) * 1024 * 1024
-	switch strings.ToLower(extension) {
-	case ".pdf", ".docx", ".pptx", ".xlsx":
+	extension = strings.ToLower(extension)
+	if extension == ".pdf" || !ragBaseExtension(extension) {
 		// Only a fresh, protocol-compatible cached health value may narrow the
 		// main limit. Missing/stale health never triggers request-path probing.
 		if cfg.RuntimeCapabilities(snapshot).Office.Healthy && snapshot.MaxInputBytes > 0 && snapshot.MaxInputBytes < limit {
@@ -595,26 +693,40 @@ func (s *Server) handleUploadRAGDocument(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer file.Close()
+	parserEngine := strings.ToLower(strings.TrimSpace(r.FormValue("parser")))
+	if parserEngine == "" {
+		parserEngine = strings.ToLower(strings.TrimSpace(s.ragCfg.ParserSidecar.Engine))
+	}
+	if parserEngine != "markitdown" && parserEngine != "anydoc" {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "parser 必须是 markitdown 或 anydoc"})
+		return
+	}
 	extension := strings.ToLower(filepath.Ext(header.Filename))
-	snapshot := s.ragParserHealthSnapshot()
-	state := s.ragCfg.RuntimeCapabilities(snapshot)
-	switch extension {
-	case ".docx", ".pptx", ".xlsx":
+	if !ragParserSupportsExtension(parserEngine, extension) {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": fmt.Sprintf("%s 解析器不支持 %s 文件", parserEngine, extension),
+		})
+		return
+	}
+	snapshot := s.ragParserHealthSnapshots()[parserEngine]
+	parserCfg := ragConfigForParser(s.ragCfg, parserEngine)
+	state := parserCfg.RuntimeCapabilities(snapshot)
+	if !ragBaseExtension(extension) {
 		if !state.Office.Available {
 			jsonResponse(w, http.StatusServiceUnavailable, map[string]any{
-				"ok": false, "error": "Office 解析当前不可用: " + state.Office.Reason,
+				"ok": false, "error": parserEngine + " 文档解析当前不可用: " + state.Office.Reason,
 			})
 			return
 		}
 	}
 	configuredLimit := int64(s.ragCfg.Limits.MaxFileMB) * 1024 * 1024
-	if effectiveLimit := ragEffectiveFileLimit(s.ragCfg, snapshot, extension); effectiveLimit < configuredLimit && header.Size > effectiveLimit {
+	if effectiveLimit := ragEffectiveFileLimit(parserCfg, snapshot, extension); effectiveLimit < configuredLimit && header.Size > effectiveLimit {
 		jsonResponse(w, http.StatusRequestEntityTooLarge, map[string]any{
 			"ok": false, "error": fmt.Sprintf("上传文件超过当前格式大小限制（%d bytes）", effectiveLimit),
 		})
 		return
 	}
-	doc, err := s.rag.UploadDocument(r.Context(), ragOwnerID(identity), r.PathValue("id"), header.Filename, file, header.Size)
+	doc, err := s.rag.UploadDocumentWithParser(r.Context(), ragOwnerID(identity), r.PathValue("id"), header.Filename, parserEngine, file, header.Size)
 	if err != nil {
 		writeRAGError(w, err)
 		return

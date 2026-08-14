@@ -192,7 +192,7 @@ type Gateway struct {
 	usage              usage.Meter
 	ragSvc             *rag.Service
 	ragCfg             config.RAGCfg
-	ragParser          *sidecar.Client
+	ragParser          *sidecar.Pool
 	ragEvaluator       *rageval.RagasClient
 	ragEvalRunner      *rageval.Runner
 	ragEvalDatasets    *rageval.DatasetService
@@ -242,6 +242,14 @@ func (g *Gateway) RAGParserHealthSnapshot() config.RAGParserHealthSnapshot {
 		return config.RAGParserHealthSnapshot{}
 	}
 	return g.ragParser.HealthSnapshot()
+}
+
+// RAGParserHealthSnapshots exposes one cached snapshot per configured parser.
+func (g *Gateway) RAGParserHealthSnapshots() map[string]config.RAGParserHealthSnapshot {
+	if g == nil || g.ragParser == nil {
+		return map[string]config.RAGParserHealthSnapshot{}
+	}
+	return g.ragParser.HealthSnapshots()
 }
 
 // RAGEvaluatorHealthSnapshot returns only the last background-probed value.
@@ -429,12 +437,14 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 			}
 		}()
 	}
-	ragParserClient, parserErr := newRAGParserClient(ragCfg)
+	ragParserClient, parserErr := newRAGParserPool(ragCfg)
 	if parserErr != nil {
-		// The parser is optional infrastructure. A malformed or unavailable
-		// endpoint disables only sidecar-backed routes; base RAG still starts.
-		slog.Error("rag: parser sidecar configuration invalid; sidecar routes disabled", "error", parserErr)
-		ragParserClient = nil
+		if ragParserClient == nil {
+			// Parser infrastructure is optional; base RAG still starts.
+			slog.Error("rag: parser sidecar configuration invalid; sidecar routes disabled", "error", parserErr)
+		} else {
+			slog.Warn("rag: one parser sidecar configuration is invalid; other parser remains available", "error", parserErr)
+		}
 	}
 	var ragEvaluatorClient *rageval.RagasClient
 	if ragCfg.Evaluation.Enabled {
@@ -458,6 +468,9 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 			return false
 		}
 		return ragCfg.RuntimeCapabilities(ragParserClient.HealthSnapshot()).Office.Available
+	}
+	parserAvailable := func(engine string) bool {
+		return ragParserClient != nil && ragParserClient.ParserAvailable(engine, ragCfg)
 	}
 	documentParser := ragparse.NewLocalParser(
 		primitives, ragCfg.Limits.MaxPagesPerDocument, ragCfg.Limits.MaxExtractedBytes,
@@ -535,6 +548,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 				Parser:          documentParser,
 				Primitives:      primitives,
 				OfficeAvailable: officeAvailable,
+				ParserAvailable: parserAvailable,
 			})
 			legacySnapshotBuilder = func(
 				ctx context.Context,
@@ -587,6 +601,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					ImageVision:     imageVision,
 					Enricher:        textEnricher,
 					OfficeAvailable: officeAvailable,
+					ParserAvailable: parserAvailable,
 				}
 				applyRAGFairQueueServicePolicy(&serviceDeps, fairPlan, env.FairQueue.RAGIndex)
 				if ragFairQueue != nil {
@@ -1183,7 +1198,29 @@ func readSystemRAGCfg(st store.Store, env *config.EnvConfig) config.RAGCfg {
 
 func newRAGParserClient(cfg config.RAGCfg) (*sidecar.Client, error) {
 	cfg.ApplyDefaults()
-	if strings.TrimSpace(cfg.ParserSidecar.Endpoint) == "" {
+	return newRAGParserClientForEngine(cfg, cfg.ParserSidecar.Engine)
+}
+
+func newRAGParserPool(cfg config.RAGCfg) (*sidecar.Pool, error) {
+	cfg.ApplyDefaults()
+	clients := make(map[string]*sidecar.Client, 2)
+	var clientErrors []error
+	for _, engine := range []string{sidecar.OfficeEngineMarkItDown, sidecar.OfficeEngineAnyDoc} {
+		client, err := newRAGParserClientForEngine(cfg, engine)
+		if err != nil {
+			clientErrors = append(clientErrors, fmt.Errorf("%s parser: %w", engine, err))
+			continue
+		}
+		if client != nil {
+			clients[engine] = client
+		}
+	}
+	return sidecar.NewPool(cfg.ParserSidecar.Engine, clients), errors.Join(clientErrors...)
+}
+
+func newRAGParserClientForEngine(cfg config.RAGCfg, engine string) (*sidecar.Client, error) {
+	endpoint := cfg.ParserSidecar.EndpointForEngine(engine)
+	if strings.TrimSpace(endpoint) == "" {
 		return nil, nil
 	}
 	maxInputBytes := int64(cfg.Limits.MaxFileMB) * 1024 * 1024
@@ -1192,8 +1229,8 @@ func newRAGParserClient(cfg config.RAGCfg) (*sidecar.Client, error) {
 		maxEntryBytes = cfg.Limits.MaxAssetBytes
 	}
 	return sidecar.NewClient(sidecar.ClientConfig{
-		Endpoint:     cfg.ParserSidecar.Endpoint,
-		OfficeEngine: cfg.ParserSidecar.Engine,
+		Endpoint:     endpoint,
+		OfficeEngine: engine,
 		Timeout:      time.Duration(cfg.ParserSidecar.TimeoutMS) * time.Millisecond,
 		Limits: sidecar.ClientLimits{
 			MaxInputBytes:     maxInputBytes,

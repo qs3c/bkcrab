@@ -864,6 +864,9 @@ type Deps struct {
 	// OfficeAvailable reads the background-probed, three-golden-gated
 	// capability snapshot. Upload paths must not synchronously probe sidecar.
 	OfficeAvailable func() bool
+	// ParserAvailable is the per-engine equivalent used by dual-parser uploads.
+	// OfficeAvailable remains as a compatibility fallback for older callers.
+	ParserAvailable func(string) bool
 	Workers         int
 	WorkerMode      WorkerMode
 	Notifier        TaskNotifier
@@ -892,6 +895,7 @@ type Service struct {
 	tokenizer       enrich.Tokenizer
 	telemetry       telemetry.Recorder
 	officeAvailable func() bool
+	parserAvailable func(string) bool
 	tasks           chan int64
 	workerCount     int
 	workerID        string
@@ -1014,6 +1018,7 @@ func New(d Deps) *Service {
 		tokenizer:                       d.Tokenizer,
 		telemetry:                       recorder,
 		officeAvailable:                 d.OfficeAvailable,
+		parserAvailable:                 d.ParserAvailable,
 		tasks:                           make(chan int64, 256),
 		workerCount:                     d.Workers,
 		workerID:                        "rag-" + uuid.NewString(),

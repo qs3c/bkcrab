@@ -1,5 +1,6 @@
 export const MAX_RAG_GALLERY_RESOURCES = 6;
 
+const BASE_EXTENSIONS = new Set([".md", ".markdown", ".txt", ".pdf"]);
 const OFFICE_EXTENSIONS = new Set([".docx", ".pptx", ".xlsx"]);
 
 export interface RAGCapabilityLike {
@@ -8,6 +9,13 @@ export interface RAGCapabilityLike {
 }
 
 export interface RAGCapabilitiesLike {
+  defaultParserEngine?: string;
+  parsers?: readonly {
+    engine?: string;
+    available?: boolean;
+    supportedExtensions?: readonly string[];
+    maxFileBytesByExtension?: Readonly<Record<string, number>>;
+  }[];
   supportedExtensions?: readonly string[];
   maxFileBytes?: number;
   maxFileBytesByExtension?: Readonly<Record<string, number>>;
@@ -139,15 +147,22 @@ function normalizedExtension(value: string): string {
 
 export function availableUploadExtensions(
   capabilities: RAGCapabilitiesLike | null | undefined,
+  parserEngine?: string,
 ): string[] {
-  if (!capabilities || !Array.isArray(capabilities.supportedExtensions)) return [];
+  if (!capabilities) return [];
+  const selectedEngine = parserEngine || capabilities.defaultParserEngine;
+  const parser = capabilities.parsers?.find((candidate) => candidate.engine === selectedEngine);
+  const supported = parser?.supportedExtensions || capabilities.supportedExtensions;
+  if (!Array.isArray(supported)) return [];
   const result: string[] = [];
   const seen = new Set<string>();
-  for (const rawExtension of capabilities.supportedExtensions) {
+  for (const rawExtension of supported) {
     if (typeof rawExtension !== "string") continue;
     const extension = normalizedExtension(rawExtension);
     if (!extension || seen.has(extension)) continue;
-    if (OFFICE_EXTENSIONS.has(extension) && capabilities.office?.available !== true) continue;
+    if (parser) {
+      if (!BASE_EXTENSIONS.has(extension) && parser.available !== true) continue;
+    } else if (OFFICE_EXTENSIONS.has(extension) && capabilities.office?.available !== true) continue;
     seen.add(extension);
     result.push(extension);
   }
@@ -157,10 +172,13 @@ export function availableUploadExtensions(
 export function uploadLimitForFile(
   fileName: string,
   capabilities: RAGCapabilitiesLike | null | undefined,
+  parserEngine?: string,
 ): number {
   const extension = normalizedExtension(fileName);
-  if (!extension || !availableUploadExtensions(capabilities).includes(extension)) return 0;
-  const extensionLimits = capabilities?.maxFileBytesByExtension;
+  if (!extension || !availableUploadExtensions(capabilities, parserEngine).includes(extension)) return 0;
+  const selectedEngine = parserEngine || capabilities?.defaultParserEngine;
+  const parser = capabilities?.parsers?.find((candidate) => candidate.engine === selectedEngine);
+  const extensionLimits = parser?.maxFileBytesByExtension || capabilities?.maxFileBytesByExtension;
   let limit = extensionLimits?.[extension];
   if (!Number.isFinite(limit) || Number(limit) <= 0) {
     limit = capabilities?.maxFileBytes;

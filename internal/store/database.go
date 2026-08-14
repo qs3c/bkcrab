@@ -1480,6 +1480,7 @@ func (d *DBStore) migrateRAGMultimodalSchema(ctx context.Context) error {
 		{"progress_unit", "TEXT NOT NULL DEFAULT ''"},
 		{"degraded", "BOOLEAN NOT NULL DEFAULT FALSE"},
 		{"warning_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"parser_engine", "TEXT NOT NULL DEFAULT ''"},
 	}
 	if d.dialect == mysqlDialect {
 		kbColumns[0].ddl = "VARCHAR(16) NOT NULL DEFAULT 'standard'"
@@ -1488,6 +1489,7 @@ func (d *DBStore) migrateRAGMultimodalSchema(ctx context.Context) error {
 		documentColumns[0].ddl = "CHAR(64) NOT NULL DEFAULT ''"
 		documentColumns[3].ddl = "VARCHAR(24) NOT NULL DEFAULT 'queued'"
 		documentColumns[6].ddl = "VARCHAR(16) NOT NULL DEFAULT ''"
+		documentColumns[9].ddl = "VARCHAR(24) NOT NULL DEFAULT ''"
 	}
 	for _, column := range kbColumns {
 		if err := d.addRAGColumnIfMissing(ctx, "rag_kbs", column.name, column.ddl); err != nil {
@@ -2212,6 +2214,7 @@ func (d *DBStore) rebuildRAGDocumentsSQLiteWithBigInt(ctx context.Context) error
 			kb_id TEXT NOT NULL,
 			file_name TEXT NOT NULL,
 			file_type TEXT NOT NULL,
+			parser_engine TEXT NOT NULL DEFAULT '',
 			file_size BIGINT NOT NULL DEFAULT 0,
 			object_key TEXT NOT NULL,
 			status TEXT NOT NULL DEFAULT 'PENDING',
@@ -2232,10 +2235,10 @@ func (d *DBStore) rebuildRAGDocumentsSQLiteWithBigInt(ctx context.Context) error
 			indexed_at TIMESTAMP
 		)`,
 		`INSERT INTO rag_documents_phase_a_new
-			(id,kb_id,file_name,file_type,file_size,object_key,status,error_msg,chunk_count,token_count,
+			(id,kb_id,file_name,file_type,parser_engine,file_size,object_key,status,error_msg,chunk_count,token_count,
 			 version,source_sha256,active_version,index_format_version,processing_stage,progress_current,
 			 progress_total,progress_unit,degraded,warning_count,uploaded_at,indexed_at)
-		 SELECT id,kb_id,file_name,file_type,file_size,object_key,status,error_msg,chunk_count,token_count,
+		 SELECT id,kb_id,file_name,file_type,parser_engine,file_size,object_key,status,error_msg,chunk_count,token_count,
 			 version,source_sha256,active_version,index_format_version,processing_stage,progress_current,
 			 progress_total,progress_unit,degraded,warning_count,uploaded_at,indexed_at FROM rag_documents`,
 		`DROP TABLE rag_documents`,
@@ -2708,6 +2711,7 @@ func (d *DBStore) migrationSQL() []string {
 			kb_id TEXT NOT NULL,
 			file_name TEXT NOT NULL,
 			file_type TEXT NOT NULL,
+			parser_engine TEXT NOT NULL DEFAULT '',
 			file_size BIGINT NOT NULL DEFAULT 0,
 			object_key TEXT NOT NULL,
 			status TEXT NOT NULL DEFAULT 'PENDING',

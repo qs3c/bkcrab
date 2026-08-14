@@ -48,12 +48,13 @@ var safeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$`)
 // of a one-shot reader so retries and streaming sidecars never require an
 // unbounded in-memory copy.
 type Source struct {
-	DocID    string
-	FileName string
-	Format   string
-	Size     int64
-	SHA256   string
-	Open     func(context.Context) (io.ReadCloser, error)
+	DocID        string
+	FileName     string
+	Format       string
+	ParserEngine string
+	Size         int64
+	SHA256       string
+	Open         func(context.Context) (io.ReadCloser, error)
 }
 
 func (s Source) Parsed() ParsedSource {

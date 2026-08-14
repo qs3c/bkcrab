@@ -166,8 +166,9 @@ kubectl apply -f deploy/k8s/rag-parser-networkpolicy.yaml
 ## Selecting the Office parser backend
 
 The RAG overlay starts both `rag-parser` (MarkItDown) and
-`rag-parser-anydoc` (Firecrawl anydoc). MarkItDown remains the default. Select
-anydoc in `deploy/docker/.env` with the matched pair:
+`rag-parser-anydoc` (Firecrawl anydoc). The upload page selects an engine per
+document; the selection is persisted and reused for reindexing. MarkItDown
+remains the default for legacy clients. To change only that default:
 
 ```text
 RAG_PARSER_ENDPOINT=http://rag-parser-anydoc:8080
@@ -181,7 +182,8 @@ RAG_PARSER_ENDPOINT=http://rag-parser:8080
 RAG_PARSER_ENGINE=markitdown
 ```
 
-After changing only these values, recreate `bkcrab`; the two parser containers
+The gateway always receives both internal endpoints from the Compose overlay.
+After changing the legacy default, recreate `bkcrab`; the two parser containers
 do not need to be stopped. Check both with:
 
 ```bash

@@ -285,8 +285,13 @@ def test_healthz_advertises_the_selected_anydoc_contract(tmp_path: Path) -> None
         response = client.get("/healthz")
     assert response.status_code == 200
     office = response.json()["capabilities"]["office"]
-    assert office["markitdownVersion"] == "0.1.8"
-    assert office["wrapperVersion"] == "office-anydoc-wrapper-v1"
+    assert office["markitdownVersion"] == "0.1.9"
+    assert office["wrapperVersion"] == "office-anydoc-wrapper-v2"
+    assert office["formats"] == [
+        "csv", "doc", "docm", "docx", "epub", "odp", "ods", "odt", "pot",
+        "pps", "ppsm", "ppsx", "ppt", "pptm", "pptx", "rtf", "xls", "xlsb",
+        "xlsm", "xlsx",
+    ]
 
 
 def test_health_rejects_an_unapproved_half_enabled_pdf_shape() -> None:

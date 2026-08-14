@@ -267,7 +267,8 @@ func (c *Client) ProbeHealth(ctx context.Context) (config.RAGParserHealthSnapsho
 	}
 	officeCompatible := health.Capabilities.Office.Enabled &&
 		health.Capabilities.Office.MarkItDownVersion == c.officeParser.Version &&
-		health.Capabilities.Office.WrapperVersion == c.officeParser.WrapperVersion
+		health.Capabilities.Office.WrapperVersion == c.officeParser.WrapperVersion &&
+		healthFormatsMatchEngine(c.officeParser.Name, health.Capabilities.Office.Formats)
 	pdfCompatible := health.Capabilities.PDF.Enabled &&
 		health.Capabilities.PDF.Engine == expectedPDFEngine &&
 		health.Capabilities.PDF.EngineVersion == expectedPDFEngineVersion
@@ -299,6 +300,19 @@ func (c *Client) ProbeHealth(ctx context.Context) (config.RAGParserHealthSnapsho
 	c.health = cachedHealth{protocol: health, snapshot: snapshot}
 	c.healthMu.Unlock()
 	return snapshot, nil
+}
+
+func healthFormatsMatchEngine(engine string, advertised []string) bool {
+	expected, err := OfficeFormats(engine)
+	if err != nil || len(expected) != len(advertised) {
+		return false
+	}
+	for index := range expected {
+		if expected[index] != advertised[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Client) StartHealthProbe(ctx context.Context) {
@@ -383,10 +397,40 @@ func normalizeSourceFormat(source document.Source) string {
 
 func sourceMIMEType(format string) (string, error) {
 	switch format {
+	case "csv":
+		return "text/csv", nil
+	case "doc":
+		return "application/msword", nil
+	case "docm":
+		return "application/vnd.ms-word.document.macroenabled.12", nil
 	case "docx":
 		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document", nil
+	case "epub":
+		return "application/epub+zip", nil
+	case "odp":
+		return "application/vnd.oasis.opendocument.presentation", nil
+	case "ods":
+		return "application/vnd.oasis.opendocument.spreadsheet", nil
+	case "odt":
+		return "application/vnd.oasis.opendocument.text", nil
+	case "pot", "pps", "ppt":
+		return "application/vnd.ms-powerpoint", nil
+	case "ppsm":
+		return "application/vnd.ms-powerpoint.slideshow.macroenabled.12", nil
+	case "ppsx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.slideshow", nil
+	case "pptm":
+		return "application/vnd.ms-powerpoint.presentation.macroenabled.12", nil
 	case "pptx":
 		return "application/vnd.openxmlformats-officedocument.presentationml.presentation", nil
+	case "rtf":
+		return "application/rtf", nil
+	case "xls":
+		return "application/vnd.ms-excel", nil
+	case "xlsb":
+		return "application/vnd.ms-excel.sheet.binary.macroenabled.12", nil
+	case "xlsm":
+		return "application/vnd.ms-excel.sheet.macroenabled.12", nil
 	case "xlsx":
 		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", nil
 	case "pdf":
@@ -437,13 +481,14 @@ func (c *Client) validateSource(source document.Source, expectedFormats ...strin
 
 func (c *Client) ConvertOffice(ctx context.Context, source document.Source) (*BundleHandle, error) {
 	format := normalizeSourceFormat(source)
-	if format != "docx" && format != "pptx" && format != "xlsx" {
+	if !OfficeFormatSupported(c.officeParser.Name, format) {
 		return nil, fmt.Errorf("unsupported Office source format %q", source.Format)
 	}
 	if !c.officeAvailable(format) {
 		return nil, unavailable("office:"+format, "capability_unavailable")
 	}
-	if err := c.validateSource(source, "docx", "pptx", "xlsx"); err != nil {
+	formats, _ := OfficeFormats(c.officeParser.Name)
+	if err := c.validateSource(source, formats...); err != nil {
 		return nil, err
 	}
 	return c.postBundle(ctx, "office-convert", "/v1/office/convert", url.Values{"format": {format}}, source,

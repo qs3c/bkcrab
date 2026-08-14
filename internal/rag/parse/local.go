@@ -98,7 +98,9 @@ func (p *LocalParser) Parse(
 			})
 		}
 		return parsed, nil
-	case "docx", "pptx", "xlsx":
+	case "csv", "doc", "docm", "docx", "epub", "odp", "ods", "odt",
+		"pot", "pps", "ppsm", "ppsx", "ppt", "pptm", "pptx", "rtf",
+		"xls", "xlsb", "xlsm", "xlsx":
 		if p.Primitives == nil {
 			return nil, sidecar.ErrCapabilityUnavailable
 		}
