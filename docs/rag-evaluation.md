@@ -22,6 +22,9 @@ RAG 测评是默认关闭的超级管理员能力，用固定 corpus/cases 对 b
 
 默认 Compose 只把 evaluator 连接到 `rag-evaluator-internal`，因此不会直接访问互联网。推荐把获批的私有 judge/embedding 服务接入该 internal network；如必须访问外部供应商，应由部署者增加一个受审计、域名 allow-list、TLS 校验和请求日志脱敏的 egress proxy，再让 evaluator 只访问该 proxy。不要为解决出网问题把 evaluator 直接挂到所有业务网络或映射宿主端口。
 
+本机部署也可以把 judge endpoint 指向 bkcrab 的内部代理
+`http://bkcrab:18953/internal/rag-eval/judge/v1`。代理使用 evaluator 的内部令牌鉴权，按 run 的 `super_admin` owner 动态解析其当前默认模型；真实 provider endpoint/key 只留在 bkcrab 主进程，不复制到 evaluator。该代理支持 Ragas 所需的 OpenAI `tools/tool_calls` 结构化输出。
+
 ## Docker 启用
 
 在 `deploy/docker/.env` 中至少配置：
@@ -71,6 +74,8 @@ docker compose \
 主服务使用 `BKCRAB_RAG_EVAL_*` 引导变量；Compose 从较短的 `RAG_EVAL_*` / `RAG_EVALUATOR_*` 变量映射。关键限制包括：
 
 - worker concurrency：默认 1；
+- document/case/score concurrency：默认各 1，分别限制单次 run 的文档构建、回答和评分批次；
+- evaluator concurrency：默认 1，是 sidecar 内所有并发请求共享的全局 metric 槽位；
 - batch size：默认 16；
 - 单次运行样例：默认最多 1000；
 - 单次运行费用：默认最多 25 USD；
@@ -79,6 +84,10 @@ docker compose \
 - run/dataset/generation retention：分别默认 90/365/30 天。
 
 凭据不会进入 capabilities DTO、指纹、validation report 或结构化日志。回答模型与 evaluator judge/embedding 是三个明确角色，不能把 evaluator key 放入任务 payload。
+
+启用评测后，系统会按当前 ingestion/runtime、reranker 和 BkCrab 默认回答模型自动创建一个 immutable 的“系统默认全功能” Experiment Profile。相同指纹只创建一次，后续 run 直接复用；默认模型或策略变化会形成新的 Profile，而不是改写历史 Profile。管理员也可以在 `/admin/rag-evals` 创建用于 A/B 实验的额外 Profile，不需要每次 run 都创建。
+
+评测 Profile 的 `ingestion.parserEngine` 可固定为 `anydoc` 或 `markitdown`。管理页支持从已有 Profile 创建副本并用可用性探测后的按钮选择解析器；完整 Pipeline 会把解析器选择传给每个文档源。解析器选择同时进入 generation 与 parse artifact 指纹，因此两种解析器不会互相复用索引或解析缓存。运行进度记录 `parserEngine`、`generationDurationMs` 和 `generationReused`；比较解析耗时时应使用两个都未标记复用、且其它 Profile 字段完全相同的运行。
 
 ## 容量、费用与策略发布
 
@@ -113,6 +122,8 @@ Ragas 固定指标为 Context Precision、Context Recall、Faithfulness、Respon
 ## Eval shadow generation
 
 Full Pipeline 使用显式的 `owner/run/dataset-version/generation` target 调用生产共用的 parser、splitter、enrichment、embedding 和 vector 组件，不创建或伪造生产 KB。评测 collection 使用 `eval_…` 物理前缀，对象只写入 `rag-eval/generations/<generation-id>/`；删除也只能经过 eval 专用 drop 边界。
+
+shadow generation 由评测 runner 以 `RAG_EVAL_DOCUMENT_CONCURRENCY` 限流执行，不写入生产 `rag_index_tasks`，因此当前不会进入 `rag.index` 公平队列。owner、DocumentAI cache scope、回答调用和 Judge 请求仍归属于创建 run 的超级管理员。生产知识库上传/重建继续走 `rag.index` 公平队列；不要把这两套调度统计混为一谈。
 
 generation fingerprint 覆盖 corpus version、原件文件契约与 SHA-256、完整 ingestion profile、parser/tokenizer/splitter/artifact/vector/index contract。只有精确 fingerprint 的 READY generation 可复用；parse-only artifact 可在解析契约相同时跨 chunk/embedding generation 复用。BUILDING 由 SQL lease/fence 单飞，run 引用与 refcount 在同一事务绑定；过期且无活动引用、无保留 run 引用时，先 fenced 标记 DELETING，再清理 eval collection 和对象前缀。
 

@@ -16,7 +16,7 @@ import (
 )
 
 func ragasRequest(metrics ...string) EvaluateRequest {
-	return EvaluateRequest{RequestID: "request-1", Metrics: metrics, Samples: []EvaluationSample{{
+	return EvaluateRequest{OwnerID: "admin", RequestID: "request-1", Metrics: metrics, Samples: []EvaluationSample{{
 		CaseID: "case-1", UserInput: "question", RetrievedContexts: []string{"context"},
 		RetrievedContextIDs: []string{"chunk-1"}, Response: "answer", Reference: "reference",
 	}}}

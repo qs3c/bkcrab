@@ -273,6 +273,34 @@ func (g *Gateway) RAGEvaluationDatasetService() *rageval.DatasetService {
 	}
 	return g.ragEvalDatasets
 }
+
+// ResolveRAGEvaluationJudge keeps provider credentials in the main process.
+// The isolated evaluator supplies only the authenticated run owner and uses
+// the owner's current BkCrab default model through the internal proxy.
+func (g *Gateway) ResolveRAGEvaluationJudge(ctx context.Context, userID string) (rag.AnswerModel, string, error) {
+	if g == nil || g.store == nil || strings.TrimSpace(userID) == "" {
+		return nil, "", errors.New("evaluation judge owner is unavailable")
+	}
+	user, err := g.store.GetUser(ctx, userID)
+	if err != nil {
+		return nil, "", err
+	}
+	if user.Role != users.RoleSuperAdmin || user.Status != users.StatusActive {
+		return nil, "", errors.New("active super_admin evaluation owner is required")
+	}
+	cfg, err := assembleConfig(ctx, g.store, userID, "")
+	if err != nil {
+		return nil, "", fmt.Errorf("assemble evaluation judge config: %w", err)
+	}
+	config.LoadEnv().ApplyToConfig(cfg)
+	config.ApplyDefaults(cfg)
+	providerName, modelName := provider.SplitProviderModel(strings.TrimSpace(cfg.Agents.Defaults.Model))
+	providerCfg, ok := cfg.Providers[providerName]
+	if providerName == "" || modelName == "" || !ok || strings.TrimSpace(providerCfg.APIBase) == "" || strings.TrimSpace(providerCfg.APIKey) == "" {
+		return nil, "", errors.New("default evaluation judge provider is incomplete")
+	}
+	return provider.NewProvider(providerCfg.APIKey, providerCfg.APIBase, providerCfg.APIType), modelName, nil
+}
 func (g *Gateway) RAGPolicyPromotionService() *rag.PolicyPromotionService {
 	if g == nil {
 		return nil
@@ -735,12 +763,17 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	var ragEvalCleanup *rageval.CleanupCoordinator
 	var ragPolicyPromotion *rag.PolicyPromotionService
 	var ragPolicyRefresher *rag.RuntimePolicyRefresher
+	if ragCfg.Evaluation.Enabled {
+		if bootstrapErr := ensureDefaultRAGEvalProfile(context.Background(), st, ragCfg); bootstrapErr != nil {
+			slog.Error("rag eval: default profile bootstrap failed", "error", bootstrapErr)
+		}
+	}
 	if ragCfg.Evaluation.Enabled && ragSvc != nil && ragEvaluatorClient != nil {
 		generationBuilder, buildErr := rag.NewEvaluationGenerationBuilder(st, ragSvc, "eval-generation-"+uuid.NewString(), 45*time.Second, time.Duration(ragCfg.Evaluation.GenerationRetentionDays)*24*time.Hour)
 		if buildErr != nil {
 			slog.Error("rag eval: generation builder unavailable", "error", buildErr)
 		} else {
-			generationProvider := &rag.EvaluationRunnerGenerationProvider{Store: st, Builder: generationBuilder, Embedding: ragCfg.Embedding, Contract: rag.DefaultEvaluationGenerationContract()}
+			generationProvider := &rag.EvaluationRunnerGenerationProvider{Store: st, Builder: generationBuilder, Embedding: ragCfg.Embedding, Contract: rag.DefaultEvaluationGenerationContract(), DocumentConcurrency: ragCfg.Evaluation.DocumentConcurrency, DefaultParserEngine: ragCfg.ParserSidecar.Engine}
 			ragEvalRunner, buildErr = rageval.NewRunner(st, generationProvider, ragSvc, ragEvaluatorClient, ragCfg.Evaluation, "eval-runner-"+uuid.NewString())
 			if buildErr != nil {
 				slog.Error("rag eval: runner unavailable", "error", buildErr)
@@ -1351,6 +1384,65 @@ func userRAGAnswerModel(st store.Store) rag.AnswerModelResolver {
 		}
 		return provider.NewProvider(providerCfg.APIKey, providerCfg.APIBase, providerCfg.APIType), nil
 	}
+}
+
+func ensureDefaultRAGEvalProfile(ctx context.Context, st store.Store, ragCfg config.RAGCfg) error {
+	accounts, err := st.ListUsers(ctx)
+	if err != nil {
+		return err
+	}
+	ownerID := ""
+	for _, account := range accounts {
+		if account.Role == users.RoleSuperAdmin && account.Status == users.StatusActive {
+			ownerID = account.ID
+			break
+		}
+	}
+	if ownerID == "" {
+		return errors.New("default evaluation profile requires an active super_admin")
+	}
+	cfg, err := assembleConfig(ctx, st, ownerID, "")
+	if err != nil {
+		return err
+	}
+	config.LoadEnv().ApplyToConfig(cfg)
+	config.ApplyDefaults(cfg)
+	answerModel := strings.TrimSpace(cfg.Agents.Defaults.Model)
+	if answerModel == "" {
+		return errors.New("default evaluation profile requires the BkCrab default model")
+	}
+	ingestion := rag.DefaultIngestionPolicy(ragCfg)
+	ingestion.ParserEngine = strings.ToLower(strings.TrimSpace(ragCfg.ParserSidecar.Engine))
+	if ragCfg.Features.AdvancedParsingEnabled && strings.TrimSpace(ragCfg.DocumentAI.VisionModel) != "" {
+		ingestion.ParseMode = config.ParseModeAuto
+	}
+	ingestion.EnrichmentEnabled = ragCfg.Features.TextEnrichmentEnabled && strings.TrimSpace(ragCfg.DocumentAI.TextModel) != ""
+	profile := config.RAGEvalProfileData{
+		Ingestion:             ingestion,
+		Runtime:               rag.DefaultRuntimePolicy(ragCfg),
+		RewriteEnabled:        true,
+		HyDEEnabled:           true,
+		RerankerEnabled:       ragCfg.Reranker.Available(),
+		RerankerModel:         strings.TrimSpace(ragCfg.Reranker.Model),
+		RerankerTimeoutMS:     ragCfg.Reranker.TimeoutMS,
+		RerankerFailurePolicy: config.RAGRerankerFailClosed,
+		AnswerModel:           answerModel,
+	}
+	fingerprint, err := rageval.ProfileFingerprint(rageval.Profile{Name: "系统默认全功能", Data: profile})
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(profile)
+	if err != nil {
+		return err
+	}
+	record := &store.RAGEvalProfileRecord{ID: "rep_system_" + fingerprint[:24], Name: "系统默认全功能", ProfileJSON: string(raw), Fingerprint: fingerprint, CreatedBy: ownerID}
+	if _, err := st.GetRAGEvalProfile(ctx, record.ID); err == nil {
+		return nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	return st.CreateRAGEvalProfile(ctx, record)
 }
 
 func runtimePromotionEnvironment(st store.Store, ragCfg config.RAGCfg) func(context.Context, string) (rag.RuntimePromotionEnvironment, error) {

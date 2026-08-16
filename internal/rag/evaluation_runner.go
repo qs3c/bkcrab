@@ -22,10 +22,12 @@ import (
 // shadow-generation builder. It supports only the configured, credential-
 // resolved embedding binding; snapshots contain its secret-free fingerprint.
 type EvaluationRunnerGenerationProvider struct {
-	Store     store.Store
-	Builder   *EvaluationGenerationBuilder
-	Embedding config.RAGEmbeddingCfg
-	Contract  rageval.GenerationContract
+	Store               store.Store
+	Builder             *EvaluationGenerationBuilder
+	Embedding           config.RAGEmbeddingCfg
+	Contract            rageval.GenerationContract
+	DocumentConcurrency int
+	DefaultParserEngine string
 }
 
 func DefaultEvaluationGenerationContract() rageval.GenerationContract {
@@ -65,8 +67,12 @@ func (p *EvaluationRunnerGenerationProvider) Ensure(ctx context.Context, run *st
 	if contract.ParserProtocolVersion == "" {
 		contract = DefaultEvaluationGenerationContract()
 	}
+	ingestion := snapshot.Profile.Ingestion
+	if strings.TrimSpace(ingestion.ParserEngine) == "" {
+		ingestion.ParserEngine = strings.ToLower(strings.TrimSpace(p.DefaultParserEngine))
+	}
 	result, _, err := p.Builder.Build(ctx, EvaluationGenerationBuildRequest{OwnerID: run.CreatedBy, RunID: run.ID, DatasetVersion: &snapshot.DatasetVersion, Documents: documents,
-		Ingestion: snapshot.Profile.Ingestion, Contract: contract, Embedding: p.Embedding, EmbeddingContractFingerprint: snapshot.Profile.Ingestion.Embedding.ContractFingerprint})
+		DocumentConcurrency: p.DocumentConcurrency, Ingestion: ingestion, Contract: contract, Embedding: p.Embedding, EmbeddingContractFingerprint: ingestion.Embedding.ContractFingerprint})
 	return result, err
 }
 

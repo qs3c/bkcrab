@@ -59,7 +59,7 @@ func (p *Pool) ConvertOffice(ctx context.Context, source document.Source) (*Bund
 }
 
 func (p *Pool) AnalyzePDF(ctx context.Context, source document.Source) (*BundleHandle, error) {
-	client, err := p.client("")
+	client, err := p.client(source.ParserEngine)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +67,7 @@ func (p *Pool) AnalyzePDF(ctx context.Context, source document.Source) (*BundleH
 }
 
 func (p *Pool) RenderPDF(ctx context.Context, source document.Source, pages []int) (*BundleHandle, error) {
-	client, err := p.client("")
+	client, err := p.client(source.ParserEngine)
 	if err != nil {
 		return nil, err
 	}

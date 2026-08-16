@@ -247,7 +247,7 @@ func (d *DBStore) ListRAGEvalDatasetStagingCandidates(ctx context.Context, befor
 	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_eval_dataset_versions
 		WHERE status IN (%s,%s,%s) AND created_at<=%s ORDER BY created_at,id LIMIT %s`,
 		ragEvalDatasetVersionColumns, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)),
-		RAGEvalDatasetDraft, RAGEvalDatasetFailed, RAGEvalDatasetReady, before, limit)
+		RAGEvalDatasetDraft, RAGEvalDatasetFailed, RAGEvalDatasetReady, before.UTC(), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +268,7 @@ func (d *DBStore) ListRAGEvalDatasetGCCandidates(ctx context.Context, before tim
 	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT d.id FROM rag_eval_datasets d
 		WHERE d.deleted_at IS NOT NULL AND d.deleted_at<=%s AND NOT EXISTS (
 			SELECT 1 FROM rag_eval_dataset_versions v JOIN rag_eval_runs r ON r.dataset_version_id=v.id WHERE v.dataset_id=d.id
-		) ORDER BY d.deleted_at,d.id LIMIT %s`, d.ph(1), d.ph(2)), before, limit)
+		) ORDER BY d.deleted_at,d.id LIMIT %s`, d.ph(1), d.ph(2)), before.UTC(), limit)
 	if err != nil {
 		return nil, err
 	}

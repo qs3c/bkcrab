@@ -16,6 +16,7 @@ from .metrics import (
     MetricEngine,
     build_ragas_engine,
     collection_metric_types,
+    judge_owner_scope,
 )
 from .protocol import (
     ALLOWED_METRICS,
@@ -78,6 +79,7 @@ def create_app(settings: Settings, engine: MetricEngine | None = None) -> FastAP
         tuple(collection_metric_types()) if engine is None else tuple(sorted(ALLOWED_METRICS))
     )
     cache = IdempotencyCache(settings.idempotency_cache_entries)
+    evaluation_slots = asyncio.Semaphore(settings.evaluation_concurrency)
     app = FastAPI(title="bkcrab-rag-evaluator", docs_url=None, redoc_url=None)
 
     def authorize(authorization: str = Header(default="")) -> None:
@@ -108,7 +110,13 @@ def create_app(settings: Settings, engine: MetricEngine | None = None) -> FastAP
         }
 
     @app.post("/v1/evaluate", response_model=EvaluateResponse, dependencies=[Depends(authorize)])
-    async def evaluate(payload: EvaluateRequest) -> EvaluateResponse:
+    async def evaluate(
+        payload: EvaluateRequest,
+        x_bkcrab_eval_owner: str = Header(default=""),
+    ) -> EvaluateResponse:
+        owner_id = x_bkcrab_eval_owner.strip()
+        if not owner_id or len(owner_id) > 120:
+            raise HTTPException(status_code=400, detail="bounded evaluation owner is required")
         total_context_bytes = sum(
             len(context.encode("utf-8"))
             for sample in payload.samples
@@ -116,7 +124,7 @@ def create_app(settings: Settings, engine: MetricEngine | None = None) -> FastAP
         )
         if total_context_bytes > settings.max_total_context_bytes:
             raise HTTPException(status_code=422, detail="total context bytes exceeded")
-        canonical = payload.model_dump_json(exclude_none=False)
+        canonical = owner_id + "\x00" + payload.model_dump_json(exclude_none=False)
         body_hash = hashlib.sha256(canonical.encode()).hexdigest()
         try:
             owner, cached = cache.claim(payload.requestId, body_hash)
@@ -129,13 +137,24 @@ def create_app(settings: Settings, engine: MetricEngine | None = None) -> FastAP
             return await asyncio.wrap_future(cached)
 
         try:
-            results: list[CaseResult] = []
-            with usage_scope() as usage:
+            async def score(metric: str, sample):
+                async with evaluation_slots:
+                    return await metric_engine.evaluate(metric, sample)
+
+            with judge_owner_scope(owner_id), usage_scope() as usage:
+                pending = [
+                    score(metric, sample)
+                    for sample in payload.samples
+                    for metric in payload.metrics
+                ]
+                values = await asyncio.gather(*pending)
+                results: list[CaseResult] = []
+                cursor = 0
                 for sample in payload.samples:
-                    scores = {
-                        metric: await metric_engine.evaluate(metric, sample)
-                        for metric in payload.metrics
-                    }
+                    scores = {}
+                    for metric in payload.metrics:
+                        scores[metric] = values[cursor]
+                        cursor += 1
                     results.append(CaseResult(caseId=sample.caseId, metrics=scores))
             response = EvaluateResponse(
                 requestId=payload.requestId,

@@ -22,6 +22,9 @@ func TestRAGEvaluationDefaultsDisabled(t *testing.T) {
 	}
 	wantLimits := RAGEvaluationCfg{
 		WorkerConcurrency:       1,
+		DocumentConcurrency:     1,
+		CaseConcurrency:         1,
+		ScoreConcurrency:        1,
 		MaxBatchSize:            16,
 		MaxContextsPerSample:    20,
 		MaxContextBytes:         64 * 1024,
@@ -35,6 +38,9 @@ func TestRAGEvaluationDefaultsDisabled(t *testing.T) {
 		GenerationRetentionDays: 30,
 	}
 	if cfg.Evaluation.WorkerConcurrency != wantLimits.WorkerConcurrency ||
+		cfg.Evaluation.DocumentConcurrency != wantLimits.DocumentConcurrency ||
+		cfg.Evaluation.CaseConcurrency != wantLimits.CaseConcurrency ||
+		cfg.Evaluation.ScoreConcurrency != wantLimits.ScoreConcurrency ||
 		cfg.Evaluation.MaxContextsPerSample != wantLimits.MaxContextsPerSample ||
 		cfg.Evaluation.MaxContextBytes != wantLimits.MaxContextBytes ||
 		cfg.Evaluation.MaxRequestBytes != wantLimits.MaxRequestBytes ||
@@ -155,9 +161,11 @@ func TestRAGPolicyLegalBoundariesAndInvalidNumericValues(t *testing.T) {
 	}
 	validIngestion := RAGIngestionPolicyData{ChunkSize: 512, ChunkOverlap: 64, ParseMode: ParseModeStandard, Embedding: RAGPolicyEmbeddingData{ContractFingerprint: "x", Model: "embed", Dims: 1024}}
 	for name, mutate := range map[string]func(*RAGIngestionPolicyData){
-		"chunk":   func(p *RAGIngestionPolicyData) { p.ChunkSize = 127 },
-		"overlap": func(p *RAGIngestionPolicyData) { p.ChunkOverlap = p.ChunkSize },
-		"dims":    func(p *RAGIngestionPolicyData) { p.Embedding.Dims = 65_537 },
+		"chunk":         func(p *RAGIngestionPolicyData) { p.ChunkSize = 127 },
+		"overlap":       func(p *RAGIngestionPolicyData) { p.ChunkOverlap = p.ChunkSize },
+		"dims":          func(p *RAGIngestionPolicyData) { p.Embedding.Dims = 65_537 },
+		"parser engine": func(p *RAGIngestionPolicyData) { p.ParserEngine = "unknown" },
+		"parser casing": func(p *RAGIngestionPolicyData) { p.ParserEngine = "AnyDoc" },
 	} {
 		t.Run("ingestion "+name, func(t *testing.T) {
 			policy := validIngestion

@@ -19,7 +19,7 @@ def test_phase_h_shared_golden_bundle_evaluator_protocol_e2e():
 
     settings = replace(Settings.from_env(), api_key="")
     response = TestClient(create_app(settings, MetricEngine(score))).post(
-        "/v1/evaluate", json=bundle["evaluatorRequest"]
+        "/v1/evaluate", json=bundle["evaluatorRequest"], headers={"X-BkCrab-Eval-Owner": "admin"}
     )
     assert response.status_code == 200
     body = response.json()

@@ -24,6 +24,7 @@ class Settings:
     max_reason_chars: int
     metric_timeout_seconds: float
     idempotency_cache_entries: int
+    evaluation_concurrency: int
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -57,6 +58,9 @@ class Settings:
             idempotency_cache_entries=int(
                 os.getenv("RAG_EVALUATOR_IDEMPOTENCY_CACHE_ENTRIES", "1000")
             ),
+            evaluation_concurrency=int(
+                os.getenv("RAG_EVALUATOR_CONCURRENCY", "1")
+            ),
         )
 
     @property
@@ -82,3 +86,5 @@ class Settings:
             raise ValueError("evaluator token prices must be finite and non-negative")
         if self.judge_configured and any(value <= 0 for value in prices):
             raise ValueError("configured evaluator judge requires explicit positive token prices")
+        if self.evaluation_concurrency < 1 or self.evaluation_concurrency > 32:
+            raise ValueError("evaluator concurrency must be between 1 and 32")

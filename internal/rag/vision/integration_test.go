@@ -129,7 +129,7 @@ func integrationVisionConfig(t *testing.T) config.RAGDocumentAICfg {
 	return config.RAGDocumentAICfg{
 		APIType: apiType, Endpoint: endpoint,
 		APIKey:      strings.TrimSpace(os.Getenv("BKCRAB_RAG_DOCUMENT_AI_API_KEY")),
-		VisionModel: model, TimeoutMS: timeoutMS, VisionConcurrency: 1,
+		VisionModel: model, ResponseFormat: strings.TrimSpace(os.Getenv("BKCRAB_RAG_DOCUMENT_AI_RESPONSE_FORMAT")), TimeoutMS: timeoutMS, VisionConcurrency: 1,
 		VisionPromptVersion:  strings.TrimSpace(os.Getenv("BKCRAB_RAG_DOCUMENT_AI_VISION_PROMPT_VERSION")),
 		AllowedEndpointHosts: allowedHosts, AllowPrivateEndpoint: allowPrivate,
 	}

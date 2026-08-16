@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { createRAGEvalProfile, getRAGPolicies, promoteRAGIngestionPolicy, promoteRAGRuntimePolicy, rollbackRAGRuntimePolicy, type RAGEvalProfile, type RAGEvalRun, type RAGPolicyAuditDTO, type RAGPolicyRecordDTO } from "@/lib/api";
+import { createRAGEvalProfile, getRAGCapabilities, getRAGPolicies, promoteRAGIngestionPolicy, promoteRAGRuntimePolicy, rollbackRAGRuntimePolicy, type RAGCapabilities, type RAGEvalProfile, type RAGEvalRun, type RAGParserEngine, type RAGPolicyAuditDTO, type RAGPolicyRecordDTO } from "@/lib/api";
 import { promotionGateReasons } from "../result-state";
 
 const defaultProfile = JSON.stringify({
@@ -19,9 +19,24 @@ const defaultProfile = JSON.stringify({
 
 const runtimeWhitelist = ["topN", "candidateTopK", "minScore", "temperature", "maxTokens", "ragPromptBundleVersion"];
 
+function selectedParserEngine(value: string): RAGParserEngine | "" {
+  try {
+    const profile = JSON.parse(value) as { ingestion?: { parserEngine?: unknown } };
+    return profile.ingestion?.parserEngine === "anydoc" || profile.ingestion?.parserEngine === "markitdown" ? profile.ingestion.parserEngine : "";
+  } catch { return ""; }
+}
+
+function withParserEngine(value: string, parserEngine: RAGParserEngine): string {
+  const profile = JSON.parse(value) as { ingestion?: Record<string, unknown> };
+  profile.ingestion = { ...(profile.ingestion ?? {}), parserEngine };
+  return JSON.stringify(profile, null, 2);
+}
+
 export function ProfilePolicyPanel({ profiles, runs, onProfileChanged }: { profiles: RAGEvalProfile[]; runs: RAGEvalRun[]; onProfileChanged: () => Promise<void> }) {
   const [profileName, setProfileName] = useState("");
   const [profileJSON, setProfileJSON] = useState(defaultProfile);
+  const [sourceProfileId, setSourceProfileId] = useState("");
+  const [ragCapabilities, setRAGCapabilities] = useState<RAGCapabilities | null>(null);
   const [runId, setRunId] = useState("");
   const [profileId, setProfileId] = useState("");
   const [confirmationRunId, setConfirmationRunId] = useState("");
@@ -34,7 +49,12 @@ export function ProfilePolicyPanel({ profiles, runs, onProfileChanged }: { profi
   const reasons = promotionGateReasons({ runStatus: selectedRun?.status, runId, confirmationRunId, note });
 
   async function refreshPolicies() {
-    try { const policies = await getRAGPolicies(); setRuntime(policies.runtime?.active); setAudits([...(policies.runtime?.audit ?? []), ...(policies.ingestion?.audit ?? [])].sort((a, b) => String(b.CreatedAt).localeCompare(String(a.CreatedAt)))); }
+    try {
+      const [policies, capabilities] = await Promise.all([getRAGPolicies(), getRAGCapabilities()]);
+      setRuntime(policies.runtime?.active); setRAGCapabilities(capabilities);
+      setAudits([...(policies.runtime?.audit ?? []), ...(policies.ingestion?.audit ?? [])].sort((a, b) => String(b.CreatedAt).localeCompare(String(a.CreatedAt))));
+      setProfileJSON((current) => selectedParserEngine(current) ? current : withParserEngine(current, capabilities.defaultParserEngine));
+    }
     catch (err) { setError(err instanceof Error ? err.message : "读取策略失败"); }
   }
   useEffect(() => { const timer = window.setTimeout(() => void refreshPolicies(), 0); return () => window.clearTimeout(timer); }, []);
@@ -43,6 +63,20 @@ export function ProfilePolicyPanel({ profiles, runs, onProfileChanged }: { profi
     event.preventDefault();
     try { await createRAGEvalProfile(profileName.trim(), JSON.parse(profileJSON)); setProfileName(""); setError(""); await onProfileChanged(); }
     catch (err) { setError(err instanceof Error ? err.message : "保存 Profile 失败"); }
+  }
+
+  function loadProfile(id: string) {
+    setSourceProfileId(id);
+    const profile = profiles.find((item) => item.id === id);
+    if (!profile) return;
+    setProfileJSON(profile.profileJson);
+    setProfileName(`${profile.name} · 副本`);
+    setError("");
+  }
+
+  function chooseParser(parserEngine: RAGParserEngine) {
+    try { setProfileJSON((current) => withParserEngine(current, parserEngine)); setError(""); }
+    catch { setError("Profile JSON 无法解析，请先修复 JSON 后再选择解析器"); }
   }
 
   async function publish(kind: "runtime" | "ingestion") {
@@ -64,7 +98,12 @@ export function ProfilePolicyPanel({ profiles, runs, onProfileChanged }: { profi
   }
 
   return <div className="grid gap-6 xl:grid-cols-2">
-    <Card><CardHeader><CardTitle>实验 Profile</CardTitle><CardDescription>完整索引与在线参数均可编辑；版本保存后不可变。敏感凭据不属于 Profile。</CardDescription></CardHeader><CardContent><form className="space-y-3" onSubmit={saveProfile}><Label htmlFor="profile-name">名称</Label><Input id="profile-name" value={profileName} onChange={(event) => setProfileName(event.target.value)} /><Label htmlFor="profile-json">完整实验参数 JSON</Label><Textarea id="profile-json" className="min-h-96 font-mono text-xs" value={profileJSON} onChange={(event) => setProfileJSON(event.target.value)} /><Button disabled={!profileName.trim()}><Save className="mr-2 h-4 w-4" />保存不可变 Profile</Button></form></CardContent></Card>
+    <Card><CardHeader><CardTitle>实验 Profile</CardTitle><CardDescription>从已有 Profile 创建副本，分别固定 AnyDoc/MarkItDown；版本保存后不可变，运行结果会记录建库耗时。</CardDescription></CardHeader><CardContent><form className="space-y-3" onSubmit={saveProfile}>
+      <Label htmlFor="source-profile">基于已有 Profile</Label><select id="source-profile" className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={sourceProfileId} onChange={(event) => loadProfile(event.target.value)}><option value="">从空白模板创建</option>{profiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+      <Label>文档解析器</Label><div className="grid gap-2 sm:grid-cols-2">{ragCapabilities?.parsers.map((parser) => <Button key={parser.engine} type="button" variant={selectedParserEngine(profileJSON) === parser.engine ? "default" : "outline"} disabled={!parser.available} title={parser.reason || parser.supportedExtensions.join(", ")} onClick={() => chooseParser(parser.engine)}>{parser.label || parser.engine}{!parser.available ? "（不可用）" : ""}</Button>) ?? <p className="text-xs text-muted-foreground">正在读取解析器能力…</p>}</div>
+      <p className="text-xs text-muted-foreground">当前选择：{selectedParserEngine(profileJSON) || "未选择"}。不同解析器进入独立生成/解析缓存，便于公平比较耗时。</p>
+      <Label htmlFor="profile-name">名称</Label><Input id="profile-name" value={profileName} onChange={(event) => setProfileName(event.target.value)} /><Label htmlFor="profile-json">完整实验参数 JSON</Label><Textarea id="profile-json" className="min-h-96 font-mono text-xs" value={profileJSON} onChange={(event) => setProfileJSON(event.target.value)} /><Button disabled={!profileName.trim() || !selectedParserEngine(profileJSON)}><Save className="mr-2 h-4 w-4" />保存不可变 Profile</Button>
+    </form></CardContent></Card>
     <div className="space-y-6"><Card><CardHeader><CardTitle className="flex items-center gap-2"><ShieldCheck className="h-5 w-5" />策略发布门禁</CardTitle><CardDescription>发布面只允许白名单字段；未勾选的实验差异明确保持未发布。</CardDescription></CardHeader><CardContent className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2"><Field label="候选成功运行"><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={runId} onChange={(event) => { setRunId(event.target.value); const run = runs.find((item) => item.id === event.target.value); if (run) setProfileId(run.profileId); }}><option value="">请选择</option>{runs.map((item) => <option key={item.id} value={item.id}>{item.id} · {item.status}</option>)}</select></Field><Field label="独立 confirmation run"><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={confirmationRunId} onChange={(event) => setConfirmationRunId(event.target.value)}><option value="">请选择</option>{runs.filter((item) => item.status === "SUCCEEDED").map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select></Field></div>
       <Field label="Profile"><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={profileId} onChange={(event) => setProfileId(event.target.value)}><option value="">请选择</option>{profiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>

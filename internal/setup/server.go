@@ -97,6 +97,7 @@ type Server struct {
 	ragEvalRunner         *rageval.Runner
 	ragEvalDatasets       *rageval.DatasetService
 	ragEvalAdmin          *rageval.AdminService
+	ragEvalJudgeResolver  RAGEvalJudgeResolver
 	ragPolicyPromotion    *rag.PolicyPromotionService
 	fairHealthMu          sync.RWMutex
 	fairHealthProvider    FairQueueHealthProvider
@@ -274,6 +275,9 @@ func (s *Server) SetRAGEvaluationRunner(runner *rageval.Runner) { s.ragEvalRunne
 func (s *Server) SetRAGEvaluationDatasetService(service *rageval.DatasetService) {
 	s.ragEvalDatasets = service
 }
+func (s *Server) SetRAGEvaluationJudgeResolver(resolver RAGEvalJudgeResolver) {
+	s.ragEvalJudgeResolver = resolver
+}
 func (s *Server) SetRAGPolicyPromotionService(service *rag.PolicyPromotionService) {
 	s.ragPolicyPromotion = service
 }
@@ -421,6 +425,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /livez", s.handleLive)
 	mux.HandleFunc("GET /readyz", s.handleReady)
+	mux.HandleFunc("POST /internal/rag-eval/judge/v1/chat/completions", s.handleRAGEvalJudgeProxy)
 
 	auth := s.authMiddleware
 	opt := s.optionalAuth

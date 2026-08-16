@@ -46,6 +46,7 @@ type EvaluationSample struct {
 	ReferenceContexts   []string `json:"referenceContexts,omitempty"`
 }
 type EvaluateRequest struct {
+	OwnerID             string             `json:"-"`
 	RequestID           string             `json:"requestId"`
 	MetricBundleVersion string             `json:"metricBundleVersion"`
 	Metrics             []string           `json:"metrics"`
@@ -326,6 +327,9 @@ func (c *RagasClient) validateEvaluateRequest(request *EvaluateRequest) error {
 	if strings.TrimSpace(request.RequestID) == "" {
 		return errors.New("requestId is required")
 	}
+	if strings.TrimSpace(request.OwnerID) == "" || len(request.OwnerID) > 120 {
+		return errors.New("bounded evaluation owner is required")
+	}
 	if len(request.RequestID) > 255 {
 		return errors.New("requestId exceeds byte limit")
 	}
@@ -480,6 +484,7 @@ func (c *RagasClient) Evaluate(ctx context.Context, request EvaluateRequest) (re
 			return EvaluateResponse{}, requestErr
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-BkCrab-Eval-Owner", request.OwnerID)
 		if c.apiKey != "" {
 			req.Header.Set("Authorization", "Bearer "+c.apiKey)
 		}

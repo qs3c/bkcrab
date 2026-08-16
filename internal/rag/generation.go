@@ -163,12 +163,13 @@ type EvaluationPipelineDocument struct {
 }
 
 type EvaluationPipelineRequest struct {
-	Target           PipelineTarget
-	Documents        []EvaluationPipelineDocument
-	Ingestion        config.RAGIngestionPolicyData
-	Contract         rageval.GenerationContract
-	Embedding        config.RAGEmbeddingCfg
-	DocumentAIBudget *vision.TaskDocumentAIBudget
+	Target              PipelineTarget
+	Documents           []EvaluationPipelineDocument
+	DocumentConcurrency int
+	Ingestion           config.RAGIngestionPolicyData
+	Contract            rageval.GenerationContract
+	Embedding           config.RAGEmbeddingCfg
+	DocumentAIBudget    *vision.TaskDocumentAIBudget
 }
 
 type EvaluationPipelineResult struct {
@@ -216,14 +217,15 @@ func NewEvaluationGenerationBuilder(generationStore EvaluationGenerationStore, p
 }
 
 type EvaluationGenerationBuildRequest struct {
-	OwnerID          string
-	RunID            string
-	DatasetVersion   *store.RAGEvalDatasetVersionRecord
-	Documents        []store.RAGEvalCorpusDocumentRecord
-	Ingestion        config.RAGIngestionPolicyData
-	Contract         rageval.GenerationContract
-	Embedding        config.RAGEmbeddingCfg
-	DocumentAIBudget *vision.TaskDocumentAIBudget
+	OwnerID             string
+	RunID               string
+	DatasetVersion      *store.RAGEvalDatasetVersionRecord
+	Documents           []store.RAGEvalCorpusDocumentRecord
+	DocumentConcurrency int
+	Ingestion           config.RAGIngestionPolicyData
+	Contract            rageval.GenerationContract
+	Embedding           config.RAGEmbeddingCfg
+	DocumentAIBudget    *vision.TaskDocumentAIBudget
 	// EmbeddingContractFingerprint is returned by the trusted provider
 	// resolver together with Embedding; it is never derived from API input.
 	EmbeddingContractFingerprint string
@@ -325,7 +327,7 @@ func (b *EvaluationGenerationBuilder) Build(ctx context.Context, request Evaluat
 		}
 	}()
 	buildResult, buildErr := b.pipeline.BuildEvaluationGeneration(buildCtx, EvaluationPipelineRequest{
-		Target: target, Documents: pipelineDocuments, Ingestion: request.Ingestion,
+		Target: target, Documents: pipelineDocuments, DocumentConcurrency: request.DocumentConcurrency, Ingestion: request.Ingestion,
 		Contract: request.Contract, Embedding: request.Embedding, DocumentAIBudget: request.DocumentAIBudget,
 	})
 	cancelBuild()

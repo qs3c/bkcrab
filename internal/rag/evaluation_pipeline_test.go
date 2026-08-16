@@ -21,12 +21,14 @@ import (
 )
 
 type countingEvaluationParser struct {
-	inner parse.Parser
-	calls atomic.Int32
+	inner      parse.Parser
+	calls      atomic.Int32
+	lastEngine atomic.Value
 }
 
 func (p *countingEvaluationParser) Parse(ctx context.Context, source document.Source, options parse.ParseOptions) (*document.ParsedDocument, error) {
 	p.calls.Add(1)
+	p.lastEngine.Store(source.ParserEngine)
 	return p.inner.Parse(ctx, source, options)
 }
 
@@ -76,7 +78,8 @@ func TestRealEvaluationPipelineUsesIsolatedTargetAndParseArtifactReuse(t *testin
 		TokenizerVersion: "estimate-v1", SplitterVersion: "split-v1", ArtifactSchemaVersion: document.ParsedArtifactSchemaVersion,
 		VectorSchemaVersion: "vector-v1", IndexFormatVersion: 1}
 	policy := config.RAGIngestionPolicyData{Version: 1, ChunkSize: 128, ChunkOverlap: 16, ParseMode: config.ParseModeStandard,
-		Embedding: config.RAGPolicyEmbeddingData{ContractFingerprint: "contract", Model: "embed", Dims: 3}}
+		ParserEngine: "anydoc",
+		Embedding:    config.RAGPolicyEmbeddingData{ContractFingerprint: "contract", Model: "embed", Dims: 3}}
 	firstTarget, err := NewEvaluationPipelineTarget("admin", "run-one", "version-one", "reg_one")
 	if err != nil {
 		t.Fatal(err)
@@ -88,12 +91,21 @@ func TestRealEvaluationPipelineUsesIsolatedTargetAndParseArtifactReuse(t *testin
 	if err != nil || first.DocumentCount != 1 || first.ChunkCount < 1 || vectorStore.Count(firstTarget.CollectionKey) != int(first.ChunkCount) {
 		t.Fatalf("first build=%+v vectors=%d err=%v", first, vectorStore.Count(firstTarget.CollectionKey), err)
 	}
+	if parser.lastEngine.Load() != "anydoc" {
+		t.Fatalf("evaluation parser engine=%v, want anydoc", parser.lastEngine.Load())
+	}
 	secondTarget, _ := NewEvaluationPipelineTarget("admin", "run-two", "version-one", "reg_two")
 	request.Target = secondTarget
 	request.Ingestion.ChunkSize = 256
 	second, err := service.BuildEvaluationGeneration(context.Background(), request)
 	if err != nil || second.DocumentCount != 1 || parser.calls.Load() != 1 || !vectorStore.HasCollection(secondTarget.CollectionKey) {
 		t.Fatalf("artifact reuse build=%+v parserCalls=%d err=%v", second, parser.calls.Load(), err)
+	}
+	thirdTarget, _ := NewEvaluationPipelineTarget("admin", "run-three", "version-one", "reg_three")
+	request.Target = thirdTarget
+	request.Ingestion.ParserEngine = "markitdown"
+	if _, err := service.BuildEvaluationGeneration(context.Background(), request); err != nil || parser.calls.Load() != 2 || parser.lastEngine.Load() != "markitdown" {
+		t.Fatalf("parser selection did not isolate artifact: calls=%d engine=%v err=%v", parser.calls.Load(), parser.lastEngine.Load(), err)
 	}
 	if err := service.DropEvaluationGeneration(context.Background(), firstTarget); err != nil {
 		t.Fatal(err)

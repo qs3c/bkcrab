@@ -67,7 +67,7 @@ export default function RAGEvaluationsPage() {
     <div className="grid gap-4 md:grid-cols-3"><CapabilityCard title="功能开关" ok={capabilities?.enabled ?? false} detail={capabilities?.enabled ? "已启用" : "默认关闭"} /><CapabilityCard title="评分 Sidecar" ok={capabilities?.sidecarHealthy ?? false} detail={capabilities?.reason || "健康"} /><CapabilityCard title="指标包" ok={!!capabilities?.metricBundleVersion} detail={capabilities?.metricBundleVersion || "—"} /></div>
     <DatasetsPanel capabilities={capabilities} datasets={datasets} onChanged={refreshCatalog} />
     <RunWizard capabilities={capabilities} versions={versions} profiles={profiles} runs={runs} onCreated={refreshRuns} />
-    <RunList runs={runs} onChanged={refreshRuns} />
+    <RunList runs={runs} profiles={profiles} onChanged={refreshRuns} />
     <ResultsPanel runs={runs} />
     <ProfilePolicyPanel profiles={profiles} runs={runs} onProfileChanged={refreshCatalog} />
   </div>;

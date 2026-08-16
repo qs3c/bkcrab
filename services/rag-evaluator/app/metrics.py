@@ -3,13 +3,26 @@ from __future__ import annotations
 import asyncio
 import html
 import math
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from .protocol import MetricResult, Sample
 from .settings import Settings
 from .usage import record_embedding_response, record_llm_response
 
 ScoreFn = Callable[[str, Sample], Awaitable[float]]
+
+_judge_owner: ContextVar[str] = ContextVar("rag_eval_judge_owner", default="")
+
+
+@contextmanager
+def judge_owner_scope(owner_id: str) -> Iterator[None]:
+    token = _judge_owner.set(owner_id)
+    try:
+        yield
+    finally:
+        _judge_owner.reset(token)
 
 METRIC_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "context_precision": ("userInput", "reference", "retrievedContexts"),
@@ -118,6 +131,12 @@ def build_ragas_engine(settings: Settings) -> MetricEngine:
     raw_embedding_create = embedding_client.embeddings.create
 
     async def metered_llm_create(*args, **kwargs):
+        owner_id = _judge_owner.get()
+        if not owner_id:
+            raise RuntimeError("evaluation judge owner is unavailable")
+        headers = dict(kwargs.pop("extra_headers", {}) or {})
+        headers["X-BkCrab-Eval-Owner"] = owner_id
+        kwargs["extra_headers"] = headers
         response = await raw_llm_create(*args, **kwargs)
         record_llm_response(response)
         return response

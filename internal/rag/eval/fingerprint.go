@@ -104,11 +104,12 @@ func CorpusArtifactFingerprint(document GenerationDocumentFingerprint, policy co
 	return Fingerprint(struct {
 		Document       GenerationDocumentFingerprint  `json:"document"`
 		ParseMode      config.ParseMode               `json:"parseMode"`
+		SelectedParser string                         `json:"selectedParser"`
 		DocumentAI     config.RAGPolicyDocumentAIData `json:"documentAI"`
 		ParserProtocol string                         `json:"parserProtocolVersion"`
 		ParserEngine   string                         `json:"parserEngineVersion"`
 		ArtifactSchema int                            `json:"artifactSchemaVersion"`
-	}{document, policy.ParseMode, policy.DocumentAI, contract.ParserProtocolVersion, contract.ParserEngineVersion, contract.ArtifactSchemaVersion})
+	}{document, policy.ParseMode, policy.ParserEngine, policy.DocumentAI, contract.ParserProtocolVersion, contract.ParserEngineVersion, contract.ArtifactSchemaVersion})
 }
 
 func Fingerprint(value any) (string, error) {

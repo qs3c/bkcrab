@@ -68,6 +68,7 @@ func TestIngestionAndProfileFingerprintsValidateClosedInputs(t *testing.T) {
 func TestGenerationFingerprintChangesForEveryIndexContract(t *testing.T) {
 	policy := config.RAGIngestionPolicyData{
 		Version: 1, ChunkSize: 512, ChunkOverlap: 64, ParseMode: config.ParseModeStandard,
+		ParserEngine:      "anydoc",
 		DocumentAI:        config.RAGPolicyDocumentAIData{VisionModel: "vision", TextModel: "text", VisionPromptVersion: "vp1", EnrichmentPromptVersion: "ep1"},
 		EnrichmentEnabled: true,
 		Embedding:         config.RAGPolicyEmbeddingData{ContractFingerprint: "contract", Model: "embed", Dims: 1024},
@@ -93,6 +94,9 @@ func TestGenerationFingerprintChangesForEveryIndexContract(t *testing.T) {
 		},
 		"parse mode": func(p *config.RAGIngestionPolicyData, _ *GenerationContract, _ *[]GenerationDocumentFingerprint) {
 			p.ParseMode = config.ParseModeAuto
+		},
+		"selected parser": func(p *config.RAGIngestionPolicyData, _ *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			p.ParserEngine = "markitdown"
 		},
 		"vision prompt": func(p *config.RAGIngestionPolicyData, _ *GenerationContract, _ *[]GenerationDocumentFingerprint) {
 			p.DocumentAI.VisionPromptVersion = "vp2"
@@ -156,7 +160,8 @@ func TestGenerationFingerprintChangesForEveryIndexContract(t *testing.T) {
 func TestCorpusArtifactFingerprintIgnoresChunkAndEmbeddingOnlyChanges(t *testing.T) {
 	document := GenerationDocumentFingerprint{ID: "doc", FileName: "doc.md", MediaType: "text/markdown", SHA256: strings.Repeat("a", 64), SizeBytes: 10}
 	policy := config.RAGIngestionPolicyData{Version: 1, ChunkSize: 512, ChunkOverlap: 64, ParseMode: config.ParseModeStandard,
-		Embedding: config.RAGPolicyEmbeddingData{ContractFingerprint: "one", Model: "embed-one", Dims: 1024}}
+		ParserEngine: "anydoc",
+		Embedding:    config.RAGPolicyEmbeddingData{ContractFingerprint: "one", Model: "embed-one", Dims: 1024}}
 	contract := GenerationContract{ParserProtocolVersion: "protocol-v1", ParserEngineVersion: "engine-v1", TokenizerVersion: "token-v1", SplitterVersion: "split-v1", ArtifactSchemaVersion: 1, VectorSchemaVersion: "vector-v1", IndexFormatVersion: 1}
 	first, err := CorpusArtifactFingerprint(document, policy, contract)
 	if err != nil {
@@ -172,5 +177,11 @@ func TestCorpusArtifactFingerprintIgnoresChunkAndEmbeddingOnlyChanges(t *testing
 	third, err := CorpusArtifactFingerprint(document, policy, contract)
 	if err != nil || third == first {
 		t.Fatalf("parser change reused parse artifact: %q/%q err=%v", first, third, err)
+	}
+	contract.ParserEngineVersion = "engine-v1"
+	policy.ParserEngine = "markitdown"
+	fourth, err := CorpusArtifactFingerprint(document, policy, contract)
+	if err != nil || fourth == first {
+		t.Fatalf("selected parser reused parse artifact: %q/%q err=%v", first, fourth, err)
 	}
 }

@@ -55,6 +55,9 @@ type RAGEvaluationCfg struct {
 	Enabled                 bool                 `json:"enabled,omitempty"`
 	Sidecar                 RAGEvaluatorCfg      `json:"sidecar,omitempty"`
 	WorkerConcurrency       int                  `json:"workerConcurrency,omitempty"`
+	DocumentConcurrency     int                  `json:"documentConcurrency,omitempty"`
+	CaseConcurrency         int                  `json:"caseConcurrency,omitempty"`
+	ScoreConcurrency        int                  `json:"scoreConcurrency,omitempty"`
 	MaxBatchSize            int                  `json:"maxBatchSize,omitempty"`
 	MaxContextsPerSample    int                  `json:"maxContextsPerSample,omitempty"`
 	MaxContextBytes         int                  `json:"maxContextBytes,omitempty"`
@@ -150,6 +153,15 @@ func (c *RAGEvaluationCfg) ApplyDefaults() {
 	if c.WorkerConcurrency <= 0 {
 		c.WorkerConcurrency = 1
 	}
+	if c.DocumentConcurrency <= 0 {
+		c.DocumentConcurrency = 1
+	}
+	if c.CaseConcurrency <= 0 {
+		c.CaseConcurrency = 1
+	}
+	if c.ScoreConcurrency <= 0 {
+		c.ScoreConcurrency = 1
+	}
 	if c.MaxBatchSize <= 0 {
 		c.MaxBatchSize = 16
 	}
@@ -191,6 +203,9 @@ func (c RAGEvaluationCfg) Validate() error {
 	}
 	if c.Sidecar.TimeoutMS < 0 || c.Sidecar.TimeoutMS > ragEvalMaxTimeoutMS ||
 		c.WorkerConcurrency < 0 || c.WorkerConcurrency > ragEvalMaxWorkerConcurrency ||
+		c.DocumentConcurrency < 0 || c.DocumentConcurrency > ragEvalMaxWorkerConcurrency ||
+		c.CaseConcurrency < 0 || c.CaseConcurrency > ragEvalMaxWorkerConcurrency ||
+		c.ScoreConcurrency < 0 || c.ScoreConcurrency > ragEvalMaxWorkerConcurrency ||
 		c.MaxBatchSize < 0 || c.MaxBatchSize > ragEvalMaxBatchSize ||
 		c.MaxContextsPerSample < 0 || c.MaxContextsPerSample > ragEvalMaxContextsPerSample ||
 		c.MaxContextBytes < 0 || c.MaxContextBytes > ragEvalMaxContextBytes ||
@@ -290,6 +305,7 @@ type RAGIngestionPolicyData struct {
 	ChunkSize         int                     `json:"chunkSize"`
 	ChunkOverlap      int                     `json:"chunkOverlap"`
 	ParseMode         ParseMode               `json:"parseMode"`
+	ParserEngine      string                  `json:"parserEngine,omitempty"`
 	EnrichmentEnabled bool                    `json:"enrichmentEnabled"`
 	DocumentAI        RAGPolicyDocumentAIData `json:"documentAI"`
 	Embedding         RAGPolicyEmbeddingData  `json:"embedding"`
@@ -301,6 +317,13 @@ func (p RAGIngestionPolicyData) Validate() error {
 	}
 	if !p.ParseMode.Valid() {
 		return fmt.Errorf("invalid ingestion parseMode %q", p.ParseMode)
+	}
+	parserEngine := strings.ToLower(strings.TrimSpace(p.ParserEngine))
+	if parserEngine != "" && (parserEngine != "markitdown" && parserEngine != "anydoc") {
+		return fmt.Errorf("invalid ingestion parserEngine %q", p.ParserEngine)
+	}
+	if p.ParserEngine != "" && p.ParserEngine != parserEngine {
+		return fmt.Errorf("ingestion parserEngine must be canonical lowercase, got %q", p.ParserEngine)
 	}
 	if strings.TrimSpace(p.Embedding.ContractFingerprint) == "" || strings.TrimSpace(p.Embedding.Model) == "" || p.Embedding.Dims < 1 || p.Embedding.Dims > 65_536 {
 		return errors.New("invalid ingestion policy embedding contract")
@@ -348,6 +371,9 @@ type RAGEvaluationCapabilities struct {
 	Metrics              []string `json:"metrics"`
 	Importers            []string `json:"importers"`
 	MaxBatchSize         int      `json:"maxBatchSize"`
+	DocumentConcurrency  int      `json:"documentConcurrency"`
+	CaseConcurrency      int      `json:"caseConcurrency"`
+	ScoreConcurrency     int      `json:"scoreConcurrency"`
 	MaxRunCases          int      `json:"maxRunCases"`
 	MaxRunTokens         int64    `json:"maxRunTokens"`
 	MaxRunCostUSD        float64  `json:"maxRunCostUsd"`
@@ -362,7 +388,8 @@ func (c RAGEvaluationCfg) Capabilities(healthy bool, reason string) RAGEvaluatio
 		Enabled: c.Enabled, SidecarConfigured: strings.TrimSpace(c.Sidecar.Endpoint) != "",
 		SidecarHealthy: c.Enabled && healthy, Reason: reason, MetricBundleVersion: c.Sidecar.MetricBundleVersion,
 		Metrics:   []string{"context_precision", "context_recall", "faithfulness", "response_relevancy", "factual_correctness", "hit_at_k", "recall_at_k", "mrr", "ndcg", "citation_precision", "citation_coverage", "abstention_accuracy"},
-		Importers: []string{"canonical-json"}, MaxBatchSize: c.MaxBatchSize, MaxRunCases: c.MaxRunCases,
+		Importers: []string{"canonical-json"}, MaxBatchSize: c.MaxBatchSize,
+		DocumentConcurrency: c.DocumentConcurrency, CaseConcurrency: c.CaseConcurrency, ScoreConcurrency: c.ScoreConcurrency, MaxRunCases: c.MaxRunCases,
 		MaxRunTokens: c.MaxRunTokens, MaxRunCostUSD: c.MaxRunCostUSD, MaxRunDurationSec: c.MaxRunDurationSec,
 		MaxRequestBytes: c.MaxRequestBytes, MaxContextsPerSample: c.MaxContextsPerSample, MaxContextBytes: c.MaxContextBytes,
 	}

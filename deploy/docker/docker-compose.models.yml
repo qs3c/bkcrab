@@ -25,7 +25,7 @@ services:
       - --threads-batch
       - "2"
       - --parallel
-      - "1"
+      - "${RAG_EMBEDDING_PARALLEL:-1}"
       - --cache-ram
       - "0"
       - --host
@@ -38,6 +38,7 @@ services:
     ports:
       - "127.0.0.1:${RAG_EMBEDDING_PORT:-18080}:8080"
     mem_limit: 1800m
+    networks: [default, rag-evaluator-internal]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 10s
@@ -68,7 +69,7 @@ services:
       - --threads-batch
       - "2"
       - --parallel
-      - "1"
+      - "${RAG_RERANKER_PARALLEL:-1}"
       - --cache-ram
       - "0"
       - --host
@@ -87,3 +88,8 @@ services:
       start_period: 90s
       timeout: 5s
       retries: 12
+
+networks:
+  default: {}
+  rag-evaluator-internal:
+    internal: true

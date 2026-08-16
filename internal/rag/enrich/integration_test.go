@@ -34,6 +34,7 @@ func TestEnrichmentProviderIntegration(t *testing.T) {
 		Endpoint:                endpoint,
 		APIKey:                  strings.TrimSpace(os.Getenv("BKCRAB_RAG_DOCUMENT_AI_API_KEY")),
 		TextModel:               model,
+		ResponseFormat:          strings.TrimSpace(os.Getenv("BKCRAB_RAG_DOCUMENT_AI_RESPONSE_FORMAT")),
 		TimeoutMS:               120_000,
 		EnrichmentConcurrency:   1,
 		EnrichmentPromptVersion: "enrichment-integration-v1",

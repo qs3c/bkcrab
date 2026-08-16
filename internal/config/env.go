@@ -344,6 +344,15 @@ func LoadEnv() *EnvConfig {
 	if v := positiveEnvInt("BKCRAB_RAG_EVAL_WORKER_CONCURRENCY"); v > 0 {
 		cfg.RAG.Evaluation.WorkerConcurrency = v
 	}
+	if v := positiveEnvInt("BKCRAB_RAG_EVAL_DOCUMENT_CONCURRENCY"); v > 0 {
+		cfg.RAG.Evaluation.DocumentConcurrency = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_EVAL_CASE_CONCURRENCY"); v > 0 {
+		cfg.RAG.Evaluation.CaseConcurrency = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_EVAL_SCORE_CONCURRENCY"); v > 0 {
+		cfg.RAG.Evaluation.ScoreConcurrency = v
+	}
 	if v := positiveEnvInt("BKCRAB_RAG_EVAL_MAX_BATCH_SIZE"); v > 0 {
 		cfg.RAG.Evaluation.MaxBatchSize = v
 	}
@@ -948,6 +957,15 @@ func (e *EnvConfig) ApplySystemRAG(dst *RAGCfg) {
 	}
 	if e.RAG.Evaluation.WorkerConcurrency > 0 {
 		dst.Evaluation.WorkerConcurrency = e.RAG.Evaluation.WorkerConcurrency
+	}
+	if e.RAG.Evaluation.DocumentConcurrency > 0 {
+		dst.Evaluation.DocumentConcurrency = e.RAG.Evaluation.DocumentConcurrency
+	}
+	if e.RAG.Evaluation.CaseConcurrency > 0 {
+		dst.Evaluation.CaseConcurrency = e.RAG.Evaluation.CaseConcurrency
+	}
+	if e.RAG.Evaluation.ScoreConcurrency > 0 {
+		dst.Evaluation.ScoreConcurrency = e.RAG.Evaluation.ScoreConcurrency
 	}
 	if e.RAG.Evaluation.MaxBatchSize > 0 {
 		dst.Evaluation.MaxBatchSize = e.RAG.Evaluation.MaxBatchSize

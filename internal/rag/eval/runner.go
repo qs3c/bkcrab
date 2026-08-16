@@ -14,6 +14,7 @@ import (
 
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/store"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -106,12 +107,15 @@ type CreateRunRequest struct {
 }
 
 type Progress struct {
-	Total     int     `json:"total"`
-	Completed int     `json:"completed"`
-	Failed    int     `json:"failed"`
-	Scored    int     `json:"scored"`
-	Tokens    int64   `json:"tokens"`
-	CostUSD   float64 `json:"costUsd"`
+	Total                int     `json:"total"`
+	Completed            int     `json:"completed"`
+	Failed               int     `json:"failed"`
+	Scored               int     `json:"scored"`
+	Tokens               int64   `json:"tokens"`
+	CostUSD              float64 `json:"costUsd"`
+	ParserEngine         string  `json:"parserEngine,omitempty"`
+	GenerationDurationMS int64   `json:"generationDurationMs,omitempty"`
+	GenerationReused     bool    `json:"generationReused"`
 }
 
 type Runner struct {
@@ -320,10 +324,12 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 		ctx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
 	}
+	generationStarted := time.Now()
 	generation, err := r.generations.Ensure(ctx, run, snapshot)
 	if err != nil {
 		return r.finishFailure(fence, "generation_failed", err.Error())
 	}
+	generationDuration := time.Since(generationStarted)
 	defer func() {
 		if releaseErr := r.generations.Release(context.Background(), run.ID); retErr == nil && releaseErr != nil {
 			retErr = releaseErr
@@ -333,13 +339,15 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 	if err != nil {
 		return r.finishFailure(fence, "load_cases_failed", err.Error())
 	}
-	progress := Progress{Total: len(cases)}
+	progress := Progress{Total: len(cases), ParserEngine: snapshot.Profile.Ingestion.ParserEngine,
+		GenerationDurationMS: max(int64(1), generationDuration.Milliseconds()), GenerationReused: generation.OwnerRunID != "" && generation.OwnerRunID != run.ID}
 	if err = r.progress(ctx, fence, "answering", progress); err != nil {
 		return err
 	}
 	samples := make([]EvaluationSample, 0, len(cases))
 	caseByID := make(map[string]Case, len(cases))
-	for _, record := range cases {
+	caseConcurrency := max(1, r.cfg.CaseConcurrency)
+	for start := 0; start < len(cases); start += caseConcurrency {
 		if err = ctx.Err(); err != nil {
 			return r.finishContext(fence, run, err)
 		}
@@ -359,55 +367,36 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 			_ = r.progress(ctx, fence, "budget_exceeded", progress)
 			return r.finish(fence, store.RAGEvalRunBudgetExceeded, "budget_exceeded", "evaluation budget exceeded")
 		}
-		item, decodeErr := decodeCase(record)
-		if decodeErr != nil {
-			progress.Failed++
+		end := min(start+caseConcurrency, len(cases))
+		outcomes := make([]caseExecutionOutcome, end-start)
+		group, groupCtx := errgroup.WithContext(ctx)
+		group.SetLimit(caseConcurrency)
+		for index := start; index < end; index++ {
+			index := index
+			group.Go(func() error {
+				outcome, executeCaseErr := r.executeCase(groupCtx, fence, run, generation, snapshot.Profile, cases[index])
+				outcomes[index-start] = outcome
+				return executeCaseErr
+			})
+		}
+		if groupErr := group.Wait(); groupErr != nil {
+			if ctx.Err() != nil {
+				return r.finishContext(fence, run, ctx.Err())
+			}
+			return groupErr
+		}
+		for _, outcome := range outcomes {
 			progress.Completed++
-			continue
-		}
-		caseByID[item.ID] = item
-		existing, getErr := r.store.GetRAGEvalCaseResult(ctx, run.ID, item.ID)
-		if getErr == nil && existing.Status == store.RAGEvalCaseOK {
-			sample, sampleErr := sampleFromStored(item, existing)
-			if sampleErr == nil {
-				samples = append(samples, sample)
-				progress.Completed++
-				continue
+			if outcome.Failed {
+				progress.Failed++
 			}
-		} else if getErr != nil && !errors.Is(getErr, store.ErrNotFound) {
-			return getErr
-		}
-		started := time.Now()
-		result, executeErr := r.pipeline.Execute(ctx, CaseExecutionRequest{RunID: run.ID, OwnerID: run.CreatedBy, Generation: generation, Profile: snapshot.Profile, Case: item})
-		if result.Latency <= 0 {
-			result.Latency = time.Since(started)
-		}
-		stored := storedCaseResult(run.ID, item.ID, result, executeErr)
-		ok, putErr := r.store.PutRAGEvalCaseResult(ctx, fence, stored)
-		if putErr != nil {
-			return putErr
-		}
-		if !ok {
-			return ErrRunnerFenceLost
-		}
-		if executeErr != nil {
-			progress.Failed++
-		} else {
-			usage := result.Usage
-			if usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.EstimatedCostUSD > 0 || usage.ActualCostUSD > 0 {
-				ok, usageErr := r.store.RecordRAGEvalUsageFenced(ctx, fence, &store.RAGEvalUsageRecord{RunID: run.ID, CaseID: item.ID, Stage: usage.Stage, Provider: usage.Provider, Model: usage.Model,
-					InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, EstimatedCostUSD: usage.EstimatedCostUSD, ActualCostUSD: usage.ActualCostUSD, IdempotencyKey: run.ID + ":" + item.ID + ":answer"})
-				if usageErr != nil {
-					return usageErr
-				}
-				_ = ok
+			if outcome.Item.ID != "" {
+				caseByID[outcome.Item.ID] = outcome.Item
 			}
-			sample, sampleErr := sampleFromStored(item, &stored)
-			if sampleErr == nil {
-				samples = append(samples, sample)
+			if outcome.Sample != nil {
+				samples = append(samples, *outcome.Sample)
 			}
 		}
-		progress.Completed++
 		if err = r.progress(ctx, fence, "answering", progress); err != nil {
 			return err
 		}
@@ -418,7 +407,7 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 			return r.finish(fence, store.RAGEvalRunBudgetExceeded, "budget_exceeded", "evaluation budget exceeded")
 		}
 	}
-	if err = r.score(ctx, fence, run.ID, snapshot, samples, caseByID, &progress); err != nil {
+	if err = r.score(ctx, fence, run.ID, run.CreatedBy, snapshot, samples, caseByID, &progress); err != nil {
 		if errors.Is(err, ErrRunBudgetReached) {
 			_ = r.progress(ctx, fence, "budget_exceeded", progress)
 			return r.finish(fence, store.RAGEvalRunBudgetExceeded, "budget_exceeded", "evaluation budget exceeded")
@@ -430,6 +419,56 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 		return err
 	}
 	return r.finish(fence, store.RAGEvalRunSucceeded, "", "")
+}
+
+type caseExecutionOutcome struct {
+	Item   Case
+	Sample *EvaluationSample
+	Failed bool
+}
+
+func (r *Runner) executeCase(ctx context.Context, fence store.RAGEvalRunFence, run *store.RAGEvalRunRecord, generation *store.RAGEvalGenerationRecord, profile config.RAGEvalProfileData, record store.RAGEvalCaseRecord) (caseExecutionOutcome, error) {
+	item, err := decodeCase(record)
+	if err != nil {
+		return caseExecutionOutcome{Failed: true}, nil
+	}
+	existing, err := r.store.GetRAGEvalCaseResult(ctx, run.ID, item.ID)
+	if err == nil && existing.Status == store.RAGEvalCaseOK {
+		if sample, sampleErr := sampleFromStored(item, existing); sampleErr == nil {
+			return caseExecutionOutcome{Item: item, Sample: &sample}, nil
+		}
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return caseExecutionOutcome{}, err
+	}
+	started := time.Now()
+	result, executeErr := r.pipeline.Execute(ctx, CaseExecutionRequest{RunID: run.ID, OwnerID: run.CreatedBy, Generation: generation, Profile: profile, Case: item})
+	if result.Latency <= 0 {
+		result.Latency = time.Since(started)
+	}
+	stored := storedCaseResult(run.ID, item.ID, result, executeErr)
+	ok, err := r.store.PutRAGEvalCaseResult(ctx, fence, stored)
+	if err != nil {
+		return caseExecutionOutcome{}, err
+	}
+	if !ok {
+		return caseExecutionOutcome{}, ErrRunnerFenceLost
+	}
+	if executeErr != nil {
+		return caseExecutionOutcome{Item: item, Failed: true}, nil
+	}
+	usage := result.Usage
+	if usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.EstimatedCostUSD > 0 || usage.ActualCostUSD > 0 {
+		_, err = r.store.RecordRAGEvalUsageFenced(ctx, fence, &store.RAGEvalUsageRecord{RunID: run.ID, CaseID: item.ID, Stage: usage.Stage, Provider: usage.Provider, Model: usage.Model,
+			InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, EstimatedCostUSD: usage.EstimatedCostUSD, ActualCostUSD: usage.ActualCostUSD, IdempotencyKey: run.ID + ":" + item.ID + ":answer"})
+		if err != nil {
+			return caseExecutionOutcome{}, err
+		}
+	}
+	sample, err := sampleFromStored(item, &stored)
+	if err != nil {
+		return caseExecutionOutcome{Item: item}, nil
+	}
+	return caseExecutionOutcome{Item: item, Sample: &sample}, nil
 }
 
 func (r *Runner) loadCases(ctx context.Context, datasetID string, maxCases int) ([]store.RAGEvalCaseRecord, error) {
@@ -499,7 +538,7 @@ func sampleFromStored(item Case, result *store.RAGEvalCaseResultRecord) (Evaluat
 	return EvaluationSample{CaseID: item.ID, UserInput: item.UserInput, RetrievedContexts: contexts, RetrievedContextIDs: ids, Response: result.Response, Reference: item.Reference, ReferenceContexts: item.ReferenceContexts}, nil
 }
 
-func (r *Runner) score(ctx context.Context, fence store.RAGEvalRunFence, runID string, snapshot ExecutionSnapshot, samples []EvaluationSample, cases map[string]Case, progress *Progress) error {
+func (r *Runner) score(ctx context.Context, fence store.RAGEvalRunFence, runID, ownerID string, snapshot ExecutionSnapshot, samples []EvaluationSample, cases map[string]Case, progress *Progress) error {
 	requestedRagas := []string{}
 	deterministic := []string{}
 	for _, metric := range snapshot.Metrics {
@@ -519,23 +558,29 @@ func (r *Runner) score(ctx context.Context, fence store.RAGEvalRunFence, runID s
 			}
 		}
 	}
-	for start := 0; start < len(samples) && len(requestedRagas) > 0; start += r.cfg.MaxBatchSize {
-		end := min(start+r.cfg.MaxBatchSize, len(samples))
-		requestID := runID + ":" + fmt.Sprint(start)
-		response, err := r.scorer.Evaluate(ctx, EvaluateRequest{RequestID: requestID, MetricBundleVersion: snapshot.MetricBundleVersion, Metrics: requestedRagas, Samples: samples[start:end]})
-		if err != nil {
+	batchSize := max(1, r.cfg.MaxBatchSize)
+	scoreConcurrency := max(1, r.cfg.ScoreConcurrency)
+	batchCount := (len(samples) + batchSize - 1) / batchSize
+	for wave := 0; wave < batchCount && len(requestedRagas) > 0; wave += scoreConcurrency {
+		waveEnd := min(wave+scoreConcurrency, batchCount)
+		scored := make([]int, waveEnd-wave)
+		group, groupCtx := errgroup.WithContext(ctx)
+		group.SetLimit(scoreConcurrency)
+		for batchIndex := wave; batchIndex < waveEnd; batchIndex++ {
+			batchIndex := batchIndex
+			group.Go(func() error {
+				start := batchIndex * batchSize
+				end := min(start+batchSize, len(samples))
+				count, scoreErr := r.scoreBatch(groupCtx, fence, runID, ownerID, snapshot.MetricBundleVersion, requestedRagas, samples[start:end], start)
+				scored[batchIndex-wave] = count
+				return scoreErr
+			})
+		}
+		if err := group.Wait(); err != nil {
 			return err
 		}
-		if err := r.recordEvaluatorUsage(ctx, fence, requestID, response.Usage); err != nil {
-			return err
-		}
-		for _, item := range response.Results {
-			for metric, result := range item.Metrics {
-				if err := r.putMetric(ctx, fence, item.CaseID, metric, result); err != nil {
-					return err
-				}
-			}
-			progress.Scored++
+		for _, count := range scored {
+			progress.Scored += count
 		}
 		if err := r.progress(ctx, fence, "scoring", *progress); err != nil {
 			return err
@@ -547,6 +592,25 @@ func (r *Runner) score(ctx context.Context, fence store.RAGEvalRunFence, runID s
 		}
 	}
 	return nil
+}
+
+func (r *Runner) scoreBatch(ctx context.Context, fence store.RAGEvalRunFence, runID, ownerID, metricBundleVersion string, metrics []string, samples []EvaluationSample, offset int) (int, error) {
+	requestID := runID + ":" + fmt.Sprint(offset)
+	response, err := r.scorer.Evaluate(ctx, EvaluateRequest{OwnerID: ownerID, RequestID: requestID, MetricBundleVersion: metricBundleVersion, Metrics: metrics, Samples: samples})
+	if err != nil {
+		return 0, err
+	}
+	if err := r.recordEvaluatorUsage(ctx, fence, requestID, response.Usage); err != nil {
+		return 0, err
+	}
+	for _, item := range response.Results {
+		for metric, result := range item.Metrics {
+			if err := r.putMetric(ctx, fence, item.CaseID, metric, result); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return len(response.Results), nil
 }
 
 func (r *Runner) recordEvaluatorUsage(ctx context.Context, fence store.RAGEvalRunFence, requestID string, usage EvaluatorUsage) error {
