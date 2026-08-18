@@ -46,7 +46,7 @@ export function RunWizard({ capabilities, versions, profiles, runs, onCreated }:
     <div className="lg:col-span-2 rounded-md border bg-muted/30 p-4 text-sm"><p className="font-medium">运行前估算</p><div className="mt-2 grid gap-2 sm:grid-cols-4"><span>{estimate.documents} 文档</span><span>{estimate.cases} cases</span><span>约 {estimate.externalCalls} 次评分调用</span><span>费用上限 ${capabilities?.maxRunCostUsd?.toFixed(2) ?? "—"}</span></div><p className="mt-2 text-xs text-muted-foreground">预算上限：{capabilities?.maxRunTokens?.toLocaleString() ?? "—"} tokens / {capabilities?.maxRunDurationSec ?? "—"} 秒；实际费用取决于模型计价。</p><p className="mt-2 flex items-center gap-1 text-xs text-amber-600"><AlertTriangle className="h-3.5 w-3.5" />不可复现风险：{estimate.reproducibilityRisk}</p></div>
     {!capabilities?.sidecarHealthy && <p className="lg:col-span-2 text-sm text-amber-600">评分 Sidecar 不健康：{capabilities?.reason || "暂不可启动新运行"}</p>}
     {errors.submit && <p className="lg:col-span-2 text-sm text-destructive">{errors.submit}</p>}
-    <div className="lg:col-span-2"><Button disabled={busy || !capabilities?.enabled || !capabilities?.sidecarHealthy}><Play className="mr-2 h-4 w-4" />加入运行队列</Button></div>
+    <div className="lg:col-span-2"><Button type="submit" disabled={busy || !capabilities?.enabled || !capabilities?.sidecarHealthy}><Play className="mr-2 h-4 w-4" />加入运行队列</Button></div>
   </form></CardContent></Card>;
 }
 

@@ -55,12 +55,12 @@ type CaseExecutionRequest struct {
 }
 
 type CaseExecutionResult struct {
-	Response, ErrorCode, ErrorMessage string
-	Contexts, ContextIDs, Citations   []string
-	SearchTrace, AnswerTrace          any
-	Latency                           time.Duration
-	Usage                             Usage
-	Abstained                         bool
+	Response, ErrorCode, ErrorMessage            string
+	Contexts, ContextIDs, DocumentIDs, Citations []string
+	SearchTrace, AnswerTrace                     any
+	Latency                                      time.Duration
+	Usage                                        Usage
+	Abstained                                    bool
 }
 
 type Usage struct {
@@ -143,7 +143,7 @@ func allowedMetric(name string) bool {
 		return true
 	}
 	switch name {
-	case "hit_at_k", "recall_at_k", "mrr", "ndcg", "citation_precision", "citation_coverage", "abstention_accuracy":
+	case "hit_at_k", "recall_at_k", "mrr", "ndcg", "doc_hit_at_k", "doc_recall_at_k", "doc_mrr", "doc_ndcg", "citation_precision", "citation_coverage", "abstention_accuracy":
 		return true
 	default:
 		return false
@@ -339,7 +339,11 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 	if err != nil {
 		return r.finishFailure(fence, "load_cases_failed", err.Error())
 	}
-	progress := Progress{Total: len(cases), ParserEngine: snapshot.Profile.Ingestion.ParserEngine,
+	parserEngine := snapshot.Profile.Ingestion.ParserEngine
+	if snapshot.DatasetVersion.Track == store.RAGEvalTrackTextRAG {
+		parserEngine = "canonical-text (parser bypassed)"
+	}
+	progress := Progress{Total: len(cases), ParserEngine: parserEngine,
 		GenerationDurationMS: max(int64(1), generationDuration.Milliseconds()), GenerationReused: generation.OwnerRunID != "" && generation.OwnerRunID != run.ID}
 	if err = r.progress(ctx, fence, "answering", progress); err != nil {
 		return err
@@ -496,20 +500,25 @@ func decodeCase(record store.RAGEvalCaseRecord) (Case, error) {
 	if err := json.Unmarshal([]byte(record.ReferenceContextIDsJSON), &item.ReferenceContextIDs); err != nil {
 		return Case{}, err
 	}
+	if err := json.Unmarshal([]byte(record.ReferenceDocumentIDsJSON), &item.ReferenceDocumentIDs); err != nil {
+		return Case{}, err
+	}
+	if err := json.Unmarshal([]byte(record.HistoryJSON), &item.History); err != nil {
+		return Case{}, err
+	}
 	if err := json.Unmarshal([]byte(record.TagsJSON), &item.Tags); err != nil {
 		return Case{}, err
 	}
 	if err := json.Unmarshal([]byte(record.MetadataJSON), &item.Metadata); err != nil {
 		return Case{}, err
 	}
-	// Dataset history is intentionally excluded: evaluation answers have no
-	// conversation history and therefore cannot write ordinary chat records.
 	return item, nil
 }
 
 func storedCaseResult(runID, caseID string, result CaseExecutionResult, executeErr error) store.RAGEvalCaseResultRecord {
 	contexts, _ := json.Marshal(result.Contexts)
 	ids, _ := json.Marshal(result.ContextIDs)
+	documentIDs, _ := json.Marshal(result.DocumentIDs)
 	search, _ := json.Marshal(result.SearchTrace)
 	answer, _ := json.Marshal(result.AnswerTrace)
 	usage, _ := json.Marshal(result.Usage)
@@ -524,18 +533,21 @@ func storedCaseResult(runID, caseID string, result CaseExecutionResult, executeE
 			message = executeErr.Error()
 		}
 	}
-	return store.RAGEvalCaseResultRecord{RunID: runID, CaseID: caseID, Response: result.Response, ContextsJSON: string(contexts), CitationsJSON: string(ids), SearchTraceJSON: string(search), AnswerTraceJSON: string(answer), Status: status, ErrorCode: code, ErrorMessage: message, LatencyMS: result.Latency.Milliseconds(), UsageJSON: string(usage)}
+	return store.RAGEvalCaseResultRecord{RunID: runID, CaseID: caseID, Response: result.Response, ContextsJSON: string(contexts), CitationsJSON: string(ids), DocumentIDsJSON: string(documentIDs), SearchTraceJSON: string(search), AnswerTraceJSON: string(answer), Status: status, ErrorCode: code, ErrorMessage: message, LatencyMS: result.Latency.Milliseconds(), UsageJSON: string(usage)}
 }
 
 func sampleFromStored(item Case, result *store.RAGEvalCaseResultRecord) (EvaluationSample, error) {
-	var contexts, ids []string
+	var contexts, ids, documentIDs []string
 	if err := json.Unmarshal([]byte(result.ContextsJSON), &contexts); err != nil {
 		return EvaluationSample{}, err
 	}
 	if err := json.Unmarshal([]byte(result.CitationsJSON), &ids); err != nil {
 		return EvaluationSample{}, err
 	}
-	return EvaluationSample{CaseID: item.ID, UserInput: item.UserInput, RetrievedContexts: contexts, RetrievedContextIDs: ids, Response: result.Response, Reference: item.Reference, ReferenceContexts: item.ReferenceContexts}, nil
+	if err := json.Unmarshal([]byte(result.DocumentIDsJSON), &documentIDs); err != nil {
+		return EvaluationSample{}, err
+	}
+	return EvaluationSample{CaseID: item.ID, UserInput: item.UserInput, RetrievedContexts: contexts, RetrievedContextIDs: ids, RetrievedDocumentIDs: documentIDs, Response: result.Response, Reference: item.Reference, ReferenceContexts: item.ReferenceContexts}, nil
 }
 
 func (r *Runner) score(ctx context.Context, fence store.RAGEvalRunFence, runID, ownerID string, snapshot ExecutionSnapshot, samples []EvaluationSample, cases map[string]Case, progress *Progress) error {
@@ -549,7 +561,7 @@ func (r *Runner) score(ctx context.Context, fence store.RAGEvalRunFence, runID, 
 		}
 	}
 	for _, sample := range samples {
-		all := DeterministicMetrics(DeterministicInput{RetrievedContextIDs: sample.RetrievedContextIDs, ReferenceContextIDs: cases[sample.CaseID].ReferenceContextIDs, Response: sample.Response, ExpectedAbstention: cases[sample.CaseID].ExpectedAbstention, Abstained: strings.TrimSpace(sample.Response) == ""}, snapshot.Profile.Runtime.TopN)
+		all := DeterministicMetrics(DeterministicInput{RetrievedContextIDs: sample.RetrievedContextIDs, ReferenceContextIDs: cases[sample.CaseID].ReferenceContextIDs, RetrievedDocumentIDs: sample.RetrievedDocumentIDs, ReferenceDocumentIDs: cases[sample.CaseID].ReferenceDocumentIDs, Response: sample.Response, ExpectedAbstention: cases[sample.CaseID].ExpectedAbstention, Abstained: strings.TrimSpace(sample.Response) == ""}, snapshot.Profile.Runtime.TopN)
 		for _, metric := range deterministic {
 			if result, ok := all[metric]; ok {
 				if err := r.putMetric(ctx, fence, sample.CaseID, metric, result); err != nil {

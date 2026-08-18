@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"reflect"
 	"strings"
 	"unicode/utf8"
@@ -97,6 +98,36 @@ func ValidateDataset(dataset CanonicalDataset, limits ValidationLimits) Validati
 	}
 	validateString("name", dataset.Name, true, limits.MaxStringBytes)
 	validateString("description", dataset.Description, false, limits.MaxStringBytes)
+	track := dataset.Track
+	if track == "" {
+		track = DatasetTrackTextRAG
+	}
+	if !track.Valid() {
+		add(SeverityError, "track", "invalid_track", "track must be TEXT_RAG or PDF_E2E")
+	}
+	for field, value := range map[string]string{
+		"source.catalogId": dataset.Source.CatalogID, "source.url": dataset.Source.URL,
+		"source.revision": dataset.Source.Revision, "source.adapterId": dataset.Source.AdapterID,
+		"source.adapterVersion": dataset.Source.AdapterVersion, "source.split": dataset.Source.Split,
+		"source.license": dataset.Source.License,
+	} {
+		validateString(field, value, false, limits.MaxStringBytes)
+	}
+	if dataset.Source.SampleSize < 0 {
+		add(SeverityError, "source.sampleSize", "invalid_sample_size", "sample size must be non-negative")
+	}
+	if dataset.Source.URL != "" {
+		parsed, err := url.Parse(dataset.Source.URL)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			add(SeverityError, "source.url", "unsafe_source_url", "source URL must be a credential-free HTTPS URL without query or fragment")
+		}
+	}
+	if len(dataset.Source.EvidenceTypes) > limits.MaxItemsPerCase {
+		add(SeverityError, "source.evidenceTypes", "too_many_items", "evidence type filter exceeds item limit")
+	}
+	for index, value := range dataset.Source.EvidenceTypes {
+		validateString(fmt.Sprintf("source.evidenceTypes[%d]", index), value, true, limits.MaxIDBytes)
+	}
 	if len(dataset.Corpus) == 0 {
 		add(SeverityError, "corpus", "empty_corpus", "at least one corpus document is required")
 	}
@@ -130,13 +161,13 @@ func ValidateDataset(dataset CanonicalDataset, limits ValidationLimits) Validati
 		validateMetadata(&report, path+".metadata", document.Metadata, limits, add)
 	}
 	cases := make(map[string]struct{}, len(dataset.Cases))
-	reference, contexts, ids := 0, 0, 0
+	reference, contexts, ids, documentIDs := 0, 0, 0, 0
 	for i, item := range dataset.Cases {
 		path := fmt.Sprintf("cases[%d]", i)
 		validateString(path+".id", item.ID, true, limits.MaxIDBytes)
 		validateString(path+".user_input", item.UserInput, true, limits.MaxStringBytes)
 		validateString(path+".reference", item.Reference, false, limits.MaxStringBytes)
-		for field, values := range map[string][]string{"reference_contexts": item.ReferenceContexts, "reference_context_ids": item.ReferenceContextIDs, "history": item.History, "tags": item.Tags} {
+		for field, values := range map[string][]string{"reference_contexts": item.ReferenceContexts, "reference_context_ids": item.ReferenceContextIDs, "reference_document_ids": item.ReferenceDocumentIDs, "history": item.History, "tags": item.Tags} {
 			if len(values) > limits.MaxItemsPerCase {
 				add(SeverityError, path+"."+field, "too_many_items", "field exceeds item limit")
 			}
@@ -157,6 +188,9 @@ func ValidateDataset(dataset CanonicalDataset, limits ValidationLimits) Validati
 		if len(item.ReferenceContextIDs) > 0 {
 			ids++
 		}
+		if len(item.ReferenceDocumentIDs) > 0 {
+			documentIDs++
+		}
 		for _, ref := range item.ReferenceContextIDs {
 			docID := ref
 			if pos := strings.IndexByte(docID, '#'); pos >= 0 {
@@ -166,10 +200,15 @@ func ValidateDataset(dataset CanonicalDataset, limits ValidationLimits) Validati
 				add(SeverityError, path+".reference_context_ids", "dangling_reference", "referenced document does not exist")
 			}
 		}
+		for _, ref := range item.ReferenceDocumentIDs {
+			if _, exists := documents[ref]; !exists {
+				add(SeverityError, path+".reference_document_ids", "dangling_reference", "referenced document does not exist")
+			}
+		}
 		validateMetadata(&report, path+".metadata", item.Metadata, limits, add)
 	}
 	total := len(dataset.Cases)
-	report.Coverage = []MetricCoverage{{"context_recall", reference, total}, {"factual_correctness", reference, total}, {"context_precision", reference, total}, {"hit_at_k", ids, total}, {"recall_at_k", ids, total}, {"mrr", ids, total}, {"ndcg", ids, total}, {"reference_context_match", contexts, total}}
+	report.Coverage = []MetricCoverage{{"context_recall", reference, total}, {"factual_correctness", reference, total}, {"context_precision", reference, total}, {"hit_at_k", ids, total}, {"recall_at_k", ids, total}, {"mrr", ids, total}, {"ndcg", ids, total}, {"doc_hit_at_k", documentIDs, total}, {"doc_recall_at_k", documentIDs, total}, {"doc_mrr", documentIDs, total}, {"doc_ndcg", documentIDs, total}, {"reference_context_match", contexts, total}}
 	for _, coverage := range report.Coverage {
 		if coverage.Eligible < coverage.Total {
 			add(SeverityWarning, "cases", "metric_coverage", fmt.Sprintf("%s eligible for %d/%d cases", coverage.Metric, coverage.Eligible, coverage.Total))

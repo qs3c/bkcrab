@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const { denominatorSummary, directionalDelta, metricDistribution, promotionGateReasons, thresholdCurve } = await import(new URL("./result-state.ts", import.meta.url));
+const { denominatorSummary, directionalDelta, metricDistribution, promotionGateReasons, stageLatency, thresholdCurve } = await import(new URL("./result-state.ts", import.meta.url));
 
 test("metric summary always exposes scored, skipped, error and total denominators", () => {
   assert.equal(denominatorSummary({ count: 20, scoredCount: 15, skippedCount: 3, errorCount: 2, mean: .8 }), "15/20 已评分 · 3 skipped · 2 error");
@@ -24,6 +24,14 @@ test("distribution includes only successfully scored metric values", () => {
 test("threshold curve never treats missing relevance labels as false", () => {
   const curve = thresholdCurve([{ contexts: [{ rerankScore: .9 }, { rerankScore: .8, relevant: true }], usage: {}, metrics: [], latencyMs: 1 }]);
   assert.equal(curve.find((point) => point.threshold === .75).recall, 1);
+});
+
+test("stage latency reads persisted production search and answer traces", () => {
+  const cases = [10, 20, 100].map((value) => ({ contexts: [], usage: {}, metrics: [], latencyMs: value,
+    searchTrace: { trace: { retrievalDurationMs: value, rerankerDurationMs: value / 2 } }, answerTrace: { latencyMs: value * 2 } }));
+  assert.deepEqual(stageLatency(cases), {
+    retrieval: { p50: 20, p95: 100 }, reranker: { p50: 10, p95: 50 }, answer: { p50: 40, p95: 200 },
+  });
 });
 
 test("promotion requires success, independent confirmation and audit note", () => {

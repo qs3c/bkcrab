@@ -22,6 +22,11 @@ import (
 
 func (s *Server) registerRAGEvaluationRoutes(mux *http.ServeMux, gate func(http.HandlerFunc) http.HandlerFunc) {
 	mux.HandleFunc("GET /api/admin/rag-evals/capabilities", gate(s.handleRAGEvalCapabilities))
+	mux.HandleFunc("GET /api/admin/rag-evals/catalog", gate(s.handleRAGEvalCatalog))
+	mux.HandleFunc("GET /api/admin/rag-evals/catalog-imports", gate(s.handleListRAGEvalCatalogImports))
+	mux.HandleFunc("POST /api/admin/rag-evals/catalog-imports", gate(s.handleCreateRAGEvalCatalogImport))
+	mux.HandleFunc("GET /api/admin/rag-evals/catalog-imports/{id}", gate(s.handleGetRAGEvalCatalogImport))
+	mux.HandleFunc("POST /api/admin/rag-evals/catalog-imports/{id}/cancel", gate(s.handleCancelRAGEvalCatalogImport))
 	mux.HandleFunc("GET /api/admin/rag-evals/datasets", gate(s.handleListRAGEvalDatasets))
 	mux.HandleFunc("POST /api/admin/rag-evals/datasets", gate(s.handleCreateRAGEvalDataset))
 	mux.HandleFunc("GET /api/admin/rag-evals/datasets/{id}", gate(s.handleGetRAGEvalDataset))
@@ -119,6 +124,90 @@ func (s *Server) handleRAGEvalCapabilities(w http.ResponseWriter, _ *http.Reques
 		reason = "RAG evaluation is disabled"
 	}
 	jsonResponse(w, http.StatusOK, s.ragCfg.Evaluation.Capabilities(healthy, reason))
+}
+
+func (s *Server) handleRAGEvalCatalog(w http.ResponseWriter, _ *http.Request) {
+	jsonResponse(w, http.StatusOK, map[string]any{"items": eval.BuiltinCatalog()})
+}
+
+func (s *Server) evalCatalogImporter(w http.ResponseWriter) (*eval.CatalogImportRunner, bool) {
+	if s.ragEvalCatalog == nil {
+		writeEvalError(w, http.StatusServiceUnavailable, "catalog_import_unavailable", "evaluation catalog import service is unavailable")
+		return nil, false
+	}
+	return s.ragEvalCatalog, true
+}
+
+func (s *Server) handleCreateRAGEvalCatalogImport(w http.ResponseWriter, r *http.Request) {
+	if !s.ragCfg.Evaluation.Enabled {
+		writeEvalError(w, http.StatusServiceUnavailable, "eval_disabled", "RAG evaluation is disabled")
+		return
+	}
+	service, ok := s.evalCatalogImporter(w)
+	if !ok {
+		return
+	}
+	var request struct {
+		DatasetID string `json:"datasetId"`
+		eval.CatalogImportOptions
+	}
+	if !decodeEvalJSON(w, r, 64<<10, &request) {
+		return
+	}
+	record, err := service.Create(r.Context(), strings.TrimSpace(request.DatasetID), evalIdentity(r), request.CatalogImportOptions)
+	if err != nil {
+		writeEvalServiceError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusAccepted, record)
+}
+
+func (s *Server) handleListRAGEvalCatalogImports(w http.ResponseWriter, r *http.Request) {
+	service, ok := s.evalCatalogImporter(w)
+	if !ok {
+		return
+	}
+	cursor, limit := evalListParams(r)
+	items, err := service.List(r.Context(), cursor, limit)
+	if err != nil {
+		writeEvalError(w, http.StatusInternalServerError, "list_failed", "could not list catalog imports")
+		return
+	}
+	next := ""
+	if len(items) == limit {
+		next = items[len(items)-1].ID
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{"items": items, "nextCursor": next})
+}
+
+func (s *Server) handleGetRAGEvalCatalogImport(w http.ResponseWriter, r *http.Request) {
+	service, ok := s.evalCatalogImporter(w)
+	if !ok {
+		return
+	}
+	record, err := service.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeEvalServiceError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, record)
+}
+
+func (s *Server) handleCancelRAGEvalCatalogImport(w http.ResponseWriter, r *http.Request) {
+	service, ok := s.evalCatalogImporter(w)
+	if !ok {
+		return
+	}
+	changed, err := service.Cancel(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeEvalServiceError(w, err)
+		return
+	}
+	if !changed {
+		writeEvalError(w, http.StatusConflict, "not_cancellable", "catalog import is already terminal or cancellation was already requested")
+		return
+	}
+	jsonResponse(w, http.StatusAccepted, map[string]any{"ok": true})
 }
 
 func (s *Server) handleListRAGEvalDatasets(w http.ResponseWriter, r *http.Request) {
@@ -229,16 +318,17 @@ type inlineEvalDocument struct {
 }
 
 type evalDatasetVersionDTO struct {
-	ID, DatasetID, Status, SourceType, CorpusSHA256 string
-	Version, CaseCount, DocumentCount, TotalBytes   int64
-	CreatedBy                                       string
-	CreatedAt                                       time.Time
+	ID, DatasetID, Status, SourceType, Track, CorpusSHA256 string
+	Version, CaseCount, DocumentCount, TotalBytes          int64
+	SourceConfigJSON, SelectorFingerprint                  string
+	CreatedBy                                              string
+	CreatedAt                                              time.Time
 }
 
 func maskEvalDatasetVersions(items []store.RAGEvalDatasetVersionRecord) []evalDatasetVersionDTO {
 	out := make([]evalDatasetVersionDTO, 0, len(items))
 	for _, item := range items {
-		out = append(out, evalDatasetVersionDTO{ID: item.ID, DatasetID: item.DatasetID, Status: item.Status, SourceType: item.SourceType, CorpusSHA256: item.CorpusSHA256, Version: item.Version, CaseCount: item.CaseCount, DocumentCount: item.DocumentCount, TotalBytes: item.TotalBytes, CreatedBy: item.CreatedBy, CreatedAt: item.CreatedAt})
+		out = append(out, evalDatasetVersionDTO{ID: item.ID, DatasetID: item.DatasetID, Status: item.Status, SourceType: item.SourceType, Track: item.Track, SourceConfigJSON: item.SourceConfigJSON, SelectorFingerprint: item.SelectorFingerprint, CorpusSHA256: item.CorpusSHA256, Version: item.Version, CaseCount: item.CaseCount, DocumentCount: item.DocumentCount, TotalBytes: item.TotalBytes, CreatedBy: item.CreatedBy, CreatedAt: item.CreatedAt})
 	}
 	return out
 }

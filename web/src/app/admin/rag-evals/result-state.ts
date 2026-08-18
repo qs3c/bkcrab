@@ -16,8 +16,22 @@ export function directionalDelta(metric: string, absoluteDelta?: number): { impr
 export function latencyAndCost(cases: RAGEvalCaseResult[]) {
   const latencies = cases.map((item) => item.latencyMs).filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
   const costs = cases.map((item) => Number(item.usage?.actualCostUsd ?? item.usage?.estimatedCostUsd ?? 0)).filter(Number.isFinite);
-  const percentile = (values: number[], p: number) => values.length ? values[Math.min(values.length - 1, Math.floor((values.length - 1) * p))] : 0;
+  const percentile = (values: number[], p: number) => values.length ? values[Math.min(values.length - 1, Math.max(0, Math.ceil(values.length * p) - 1))] : 0;
   return { meanLatencyMs: latencies.length ? latencies.reduce((sum, value) => sum + value, 0) / latencies.length : 0, p95LatencyMs: percentile(latencies, .95), costUsd: costs.reduce((sum, value) => sum + value, 0) };
+}
+
+export function stageLatency(cases: RAGEvalCaseResult[]) {
+  const percentile = (values: number[], p: number) => {
+    const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+    return sorted.length ? sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * p) - 1))] : 0;
+  };
+  const values = (field: string) => cases.map((item) => Number(item.searchTrace?.trace?.[field] ?? 0));
+  const answer = cases.map((item) => Number(item.answerTrace?.latencyMs ?? 0));
+  return {
+    retrieval: { p50: percentile(values("retrievalDurationMs"), .5), p95: percentile(values("retrievalDurationMs"), .95) },
+    reranker: { p50: percentile(values("rerankerDurationMs"), .5), p95: percentile(values("rerankerDurationMs"), .95) },
+    answer: { p50: percentile(answer, .5), p95: percentile(answer, .95) },
+  };
 }
 
 export function metricDistribution(cases: RAGEvalCaseResult[], metric: string): number[] {

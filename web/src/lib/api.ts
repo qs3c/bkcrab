@@ -2633,12 +2633,46 @@ export interface RAGEvalDatasetVersion {
   DatasetID: string;
   Status: "DRAFT" | "VALIDATING" | "READY" | "FAILED";
   SourceType: string;
+  Track: "TEXT_RAG" | "PDF_E2E";
+  SourceConfigJSON: string;
+  SelectorFingerprint: string;
   CorpusSHA256: string;
   Version: number;
   CaseCount: number;
   DocumentCount: number;
   TotalBytes: number;
   CreatedAt: string;
+}
+
+export interface RAGEvalCatalogPreset {
+  id: string;
+  name: string;
+  description: string;
+  sourceUrl: string;
+  revision: string;
+  license: string;
+  adapterVersion: string;
+  tracks: Array<"TEXT_RAG" | "PDF_E2E">;
+  splits: string[];
+  evidenceTypes?: string[];
+  defaultSampleSize: number;
+  maxSampleSize: number;
+  defaultCorpusSize?: number;
+}
+
+export interface RAGEvalCatalogImport {
+  id: string;
+  datasetId: string;
+  targetVersion: number;
+  catalogId: string;
+  requestJson: string;
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  stage: string;
+  progressJson: string;
+  datasetVersionId?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  createdAt: string;
 }
 
 export interface RAGEvalProfile {
@@ -2689,6 +2723,8 @@ export interface RAGEvalCaseResult {
   errorCode?: string;
   latencyMs: number;
   usage: Record<string, unknown>;
+  searchTrace?: { trace?: Record<string, unknown>; hits?: unknown[] };
+  answerTrace?: Record<string, unknown>;
   metrics: Array<{ Name: string; Version: string; Status: string; Reason: string; Value?: number; Details?: Record<string, unknown> }>;
 }
 
@@ -2739,6 +2775,37 @@ function ragEvalIdempotencyKey(): string {
 
 export async function getRAGEvalCapabilities(): Promise<RAGEvalCapabilities> {
   return ragEvalJSON(await apiFetch("/api/admin/rag-evals/capabilities"));
+}
+
+export async function getRAGEvalCatalog(): Promise<RAGEvalCatalogPreset[]> {
+  const result = await ragEvalJSON<{ items: RAGEvalCatalogPreset[] }>(await apiFetch("/api/admin/rag-evals/catalog"));
+  return result.items ?? [];
+}
+
+export async function listRAGEvalCatalogImports(): Promise<RAGEvalCatalogImport[]> {
+  const result = await ragEvalJSON<{ items: RAGEvalCatalogImport[] }>(await apiFetch("/api/admin/rag-evals/catalog-imports?limit=100"));
+  return result.items ?? [];
+}
+
+export async function createRAGEvalCatalogImport(input: {
+  datasetId: string;
+  catalogId: string;
+  track: "TEXT_RAG" | "PDF_E2E";
+  split: string;
+  sampleSize: number;
+  seed: number;
+  evidenceTypes?: string[];
+  corpusLimit?: number;
+}): Promise<RAGEvalCatalogImport> {
+  return ragEvalJSON(await apiFetch("/api/admin/rag-evals/catalog-imports", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  }));
+}
+
+export async function cancelRAGEvalCatalogImport(id: string): Promise<void> {
+  await ragEvalJSON(await apiFetch(`/api/admin/rag-evals/catalog-imports/${encodeURIComponent(id)}/cancel`, { method: "POST" }));
 }
 
 export async function listRAGEvalDatasets(): Promise<RAGEvalDataset[]> {
@@ -2813,7 +2880,7 @@ export async function getRAGEvalRunAnalysis(id: string): Promise<{ run: RAGEvalR
 }
 
 export async function listRAGEvalRunCases(id: string): Promise<RAGEvalCaseResult[]> {
-  const result = await ragEvalJSON<{ items: RAGEvalCaseResult[] }>(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}/cases?limit=100`));
+  const result = await ragEvalJSON<{ items: RAGEvalCaseResult[] }>(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}/cases?limit=100&includeTraces=true`));
   return result.items ?? [];
 }
 

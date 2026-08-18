@@ -96,6 +96,7 @@ type Server struct {
 	ragEvalHealthProvider RAGEvaluatorHealthProvider
 	ragEvalRunner         *rageval.Runner
 	ragEvalDatasets       *rageval.DatasetService
+	ragEvalCatalog        *rageval.CatalogImportRunner
 	ragEvalAdmin          *rageval.AdminService
 	ragEvalJudgeResolver  RAGEvalJudgeResolver
 	ragPolicyPromotion    *rag.PolicyPromotionService
@@ -274,6 +275,9 @@ func (s *Server) SetRAGEvaluatorHealthProvider(provider RAGEvaluatorHealthProvid
 func (s *Server) SetRAGEvaluationRunner(runner *rageval.Runner) { s.ragEvalRunner = runner }
 func (s *Server) SetRAGEvaluationDatasetService(service *rageval.DatasetService) {
 	s.ragEvalDatasets = service
+}
+func (s *Server) SetRAGEvaluationCatalogImportRunner(runner *rageval.CatalogImportRunner) {
+	s.ragEvalCatalog = runner
 }
 func (s *Server) SetRAGEvaluationJudgeResolver(resolver RAGEvalJudgeResolver) {
 	s.ragEvalJudgeResolver = resolver

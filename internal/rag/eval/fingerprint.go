@@ -135,6 +135,13 @@ func DatasetFingerprint(dataset CanonicalDataset) (string, error) {
 		documents[i] = doc{item.ID, item.FileName, item.MediaType, item.SHA256, item.SizeBytes, canonicalFingerprintMetadata(item.Metadata)}
 	}
 	cases := append([]Case(nil), dataset.Cases...)
+	track := dataset.Track
+	if track == "" {
+		track = DatasetTrackTextRAG
+	}
+	source := dataset.Source
+	source.EvidenceTypes = append([]string(nil), source.EvidenceTypes...)
+	sort.Strings(source.EvidenceTypes)
 	for index := range cases {
 		cases[index].Metadata = canonicalFingerprintMetadata(cases[index].Metadata)
 		cases[index].Tags = append([]string(nil), cases[index].Tags...)
@@ -143,9 +150,11 @@ func DatasetFingerprint(dataset CanonicalDataset) (string, error) {
 	sort.Slice(documents, func(i, j int) bool { return documents[i].ID < documents[j].ID })
 	sort.Slice(cases, func(i, j int) bool { return cases[i].ID < cases[j].ID })
 	return Fingerprint(struct {
-		Corpus []doc  `json:"corpus"`
-		Cases  []Case `json:"cases"`
-	}{documents, cases})
+		Track  DatasetTrack  `json:"track"`
+		Source DatasetSource `json:"source"`
+		Corpus []doc         `json:"corpus"`
+		Cases  []Case        `json:"cases"`
+	}{track, source, documents, cases})
 }
 
 func IngestionFingerprint(policy config.RAGIngestionPolicyData) (string, error) {

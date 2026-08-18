@@ -170,6 +170,7 @@ type EvaluationPipelineRequest struct {
 	Contract            rageval.GenerationContract
 	Embedding           config.RAGEmbeddingCfg
 	DocumentAIBudget    *vision.TaskDocumentAIBudget
+	BypassParser        bool
 }
 
 type EvaluationPipelineResult struct {
@@ -226,6 +227,7 @@ type EvaluationGenerationBuildRequest struct {
 	Contract            rageval.GenerationContract
 	Embedding           config.RAGEmbeddingCfg
 	DocumentAIBudget    *vision.TaskDocumentAIBudget
+	BypassParser        bool
 	// EmbeddingContractFingerprint is returned by the trusted provider
 	// resolver together with Embedding; it is never derived from API input.
 	EmbeddingContractFingerprint string
@@ -254,11 +256,21 @@ func (b *EvaluationGenerationBuilder) Build(ctx context.Context, request Evaluat
 			ObjectKey: document.ObjectKey, SHA256: document.SHA256, SizeBytes: document.SizeBytes,
 		}
 	}
-	ingestionFingerprint, err := rageval.IngestionFingerprint(request.Ingestion)
+	effectiveIngestion := request.Ingestion
+	effectiveContract := request.Contract
+	if request.BypassParser {
+		effectiveIngestion.ParseMode = config.ParseModeStandard
+		effectiveIngestion.ParserEngine = ""
+		effectiveIngestion.DocumentAI.VisionModel = ""
+		effectiveIngestion.DocumentAI.VisionPromptVersion = ""
+		effectiveContract.ParserProtocolVersion = "canonical-text-v1"
+		effectiveContract.ParserEngineVersion = "canonical-text-v1"
+	}
+	ingestionFingerprint, err := rageval.IngestionFingerprint(effectiveIngestion)
 	if err != nil {
 		return nil, false, err
 	}
-	fingerprint, err := rageval.GenerationFingerprint(request.DatasetVersion.ID, request.DatasetVersion.CorpusSHA256, documentFingerprints, request.Ingestion, request.Contract)
+	fingerprint, err := rageval.GenerationFingerprint(request.DatasetVersion.ID, request.DatasetVersion.CorpusSHA256, documentFingerprints, effectiveIngestion, effectiveContract)
 	if err != nil {
 		return nil, false, err
 	}
@@ -276,7 +288,7 @@ func (b *EvaluationGenerationBuilder) Build(ctx context.Context, request Evaluat
 		RunID: request.RunID, DatasetVersionID: request.DatasetVersion.ID, Fingerprint: fingerprint,
 		CorpusFingerprint: request.DatasetVersion.CorpusSHA256, IngestionFingerprint: ingestionFingerprint,
 		NewGenerationID: generationID, CollectionKey: string(target.CollectionKey), ObjectPrefix: target.ObjectPrefix,
-		EmbeddingModel: request.Ingestion.Embedding.Model, EmbeddingDims: request.Ingestion.Embedding.Dims,
+		EmbeddingModel: effectiveIngestion.Embedding.Model, EmbeddingDims: effectiveIngestion.Embedding.Dims,
 		Worker: b.worker, Lease: b.lease, TTL: b.readyTTL,
 	})
 	if err != nil {
@@ -327,8 +339,8 @@ func (b *EvaluationGenerationBuilder) Build(ctx context.Context, request Evaluat
 		}
 	}()
 	buildResult, buildErr := b.pipeline.BuildEvaluationGeneration(buildCtx, EvaluationPipelineRequest{
-		Target: target, Documents: pipelineDocuments, DocumentConcurrency: request.DocumentConcurrency, Ingestion: request.Ingestion,
-		Contract: request.Contract, Embedding: request.Embedding, DocumentAIBudget: request.DocumentAIBudget,
+		Target: target, Documents: pipelineDocuments, DocumentConcurrency: request.DocumentConcurrency, Ingestion: effectiveIngestion,
+		Contract: effectiveContract, Embedding: request.Embedding, DocumentAIBudget: request.DocumentAIBudget, BypassParser: request.BypassParser,
 	})
 	cancelBuild()
 	<-heartbeatDone

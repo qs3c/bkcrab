@@ -385,11 +385,21 @@ type Store interface {
 	PurgeRAGEvalDataset(ctx context.Context, id string) (bool, error)
 	CreateRAGEvalDatasetVersion(ctx context.Context, record *RAGEvalDatasetVersionRecord) error
 	GetRAGEvalDatasetVersion(ctx context.Context, id string) (*RAGEvalDatasetVersionRecord, error)
+	GetRAGEvalDatasetVersionByNumber(ctx context.Context, datasetID string, version int64) (*RAGEvalDatasetVersionRecord, error)
 	TransitionRAGEvalDatasetVersion(ctx context.Context, id, from, to, reportJSON string) (bool, error)
 	PutRAGEvalCorpusDocument(ctx context.Context, record *RAGEvalCorpusDocumentRecord) error
 	ListRAGEvalCorpusDocuments(ctx context.Context, datasetVersionID, cursor string, limit int) ([]RAGEvalCorpusDocumentRecord, error)
 	PutRAGEvalCase(ctx context.Context, record *RAGEvalCaseRecord) error
 	ListRAGEvalCases(ctx context.Context, datasetVersionID, cursor string, limit int) ([]RAGEvalCaseRecord, error)
+	CreateRAGEvalCatalogImport(ctx context.Context, record *RAGEvalCatalogImportRecord) error
+	GetRAGEvalCatalogImport(ctx context.Context, id string) (*RAGEvalCatalogImportRecord, error)
+	ListRAGEvalCatalogImports(ctx context.Context, cursor string, limit int) ([]RAGEvalCatalogImportRecord, error)
+	ClaimRAGEvalCatalogImport(ctx context.Context, id, worker string, lease time.Duration) (*RAGEvalCatalogImportFence, bool, error)
+	ClaimNextRAGEvalCatalogImport(ctx context.Context, worker string, lease time.Duration) (*RAGEvalCatalogImportFence, bool, error)
+	HeartbeatRAGEvalCatalogImport(ctx context.Context, fence RAGEvalCatalogImportFence, lease time.Duration) (bool, error)
+	UpdateRAGEvalCatalogImport(ctx context.Context, fence RAGEvalCatalogImportFence, stage, progressJSON string) (bool, error)
+	RequestCancelRAGEvalCatalogImport(ctx context.Context, id string) (bool, error)
+	FinishRAGEvalCatalogImport(ctx context.Context, fence RAGEvalCatalogImportFence, status, datasetVersionID, errorCode, errorMessage string) (bool, error)
 	CreateRAGEvalProfile(ctx context.Context, record *RAGEvalProfileRecord) error
 	GetRAGEvalProfile(ctx context.Context, id string) (*RAGEvalProfileRecord, error)
 	ListRAGEvalProfiles(ctx context.Context, cursor string, limit int) ([]RAGEvalProfileRecord, error)

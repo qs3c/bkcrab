@@ -13,7 +13,7 @@ func TestRAGEvalMigrationAndDatasetLifecycle(t *testing.T) {
 	st := openTestDB(t)
 	defer st.Close()
 	ctx := context.Background()
-	for _, table := range []string{"rag_eval_datasets", "rag_eval_runs", "rag_runtime_policies", "rag_kb_index_generations"} {
+	for _, table := range []string{"rag_eval_datasets", "rag_eval_catalog_imports", "rag_eval_runs", "rag_runtime_policies", "rag_kb_index_generations"} {
 		var name string
 		if err := st.DB().QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name); err != nil {
 			t.Fatalf("missing %s: %v", table, err)

@@ -10,74 +10,21 @@ import (
 )
 
 type DeterministicInput struct {
-	RetrievedContextIDs []string
-	ReferenceContextIDs []string
-	Response            string
-	ExpectedAbstention  bool
-	Abstained           bool
+	RetrievedContextIDs  []string
+	ReferenceContextIDs  []string
+	RetrievedDocumentIDs []string
+	ReferenceDocumentIDs []string
+	Response             string
+	ExpectedAbstention   bool
+	Abstained            bool
 }
 
 func DeterministicMetrics(input DeterministicInput, k int) map[string]MetricResult {
-	if k <= 0 || k > len(input.RetrievedContextIDs) {
-		k = len(input.RetrievedContextIDs)
-	}
 	results := map[string]MetricResult{}
-	relevant := make(map[string]struct{}, len(input.ReferenceContextIDs))
-	for _, id := range input.ReferenceContextIDs {
-		if id = strings.TrimSpace(id); id != "" {
-			relevant[id] = struct{}{}
-		}
-	}
-	if len(relevant) == 0 {
-		for _, name := range []string{"hit_at_k", "recall_at_k", "mrr", "ndcg"} {
-			results[name] = MetricResult{Status: MetricSkippedMissingInput, Reason: "reference_context_ids is required"}
-		}
-	} else {
-		hits, first, dcg := 0, 0, 0.0
-		seen := map[string]struct{}{}
-		for i, id := range input.RetrievedContextIDs[:k] {
-			id = strings.TrimSpace(id)
-			if id == "" {
-				continue
-			}
-			if _, duplicate := seen[id]; duplicate {
-				continue
-			}
-			seen[id] = struct{}{}
-			if _, ok := relevant[id]; ok {
-				hits++
-				if first == 0 {
-					first = i + 1
-				}
-				dcg += 1 / math.Log2(float64(i+2))
-			}
-		}
-		hit := 0.0
-		if hits > 0 {
-			hit = 1
-		}
-		recall := float64(hits) / float64(len(relevant))
-		mrr := 0.0
-		if first > 0 {
-			mrr = 1 / float64(first)
-		}
-		idealCount := len(relevant)
-		if idealCount > k {
-			idealCount = k
-		}
-		idcg := 0.0
-		for i := 0; i < idealCount; i++ {
-			idcg += 1 / math.Log2(float64(i+2))
-		}
-		ndcg := 0.0
-		if idcg > 0 {
-			ndcg = dcg / idcg
-		}
-		results["hit_at_k"] = MetricResult{Status: MetricOK, Value: score(hit)}
-		results["recall_at_k"] = MetricResult{Status: MetricOK, Value: score(recall)}
-		results["mrr"] = MetricResult{Status: MetricOK, Value: score(mrr)}
-		results["ndcg"] = MetricResult{Status: MetricOK, Value: score(ndcg)}
-	}
+	mergeRankingMetrics(results, input.RetrievedContextIDs, input.ReferenceContextIDs, k,
+		[4]string{"hit_at_k", "recall_at_k", "mrr", "ndcg"}, "reference_context_ids is required")
+	mergeRankingMetrics(results, input.RetrievedDocumentIDs, input.ReferenceDocumentIDs, k,
+		[4]string{"doc_hit_at_k", "doc_recall_at_k", "doc_mrr", "doc_ndcg"}, "reference_document_ids is required")
 	precision, coverage := citationMetrics(input.Response, input.RetrievedContextIDs)
 	results["citation_precision"] = precision
 	results["citation_coverage"] = coverage
@@ -87,6 +34,68 @@ func DeterministicMetrics(input DeterministicInput, k int) map[string]MetricResu
 	}
 	results["abstention_accuracy"] = MetricResult{Status: MetricOK, Value: score(abstention)}
 	return results
+}
+
+func mergeRankingMetrics(results map[string]MetricResult, retrieved, references []string, k int, names [4]string, missingReason string) {
+	relevant := make(map[string]struct{}, len(references))
+	for _, id := range references {
+		if id = strings.TrimSpace(id); id != "" {
+			relevant[id] = struct{}{}
+		}
+	}
+	if len(relevant) == 0 {
+		for _, name := range names {
+			results[name] = MetricResult{Status: MetricSkippedMissingInput, Reason: missingReason}
+		}
+		return
+	}
+	if k <= 0 || k > len(retrieved) {
+		k = len(retrieved)
+	}
+	hits, first, dcg := 0, 0, 0.0
+	seen := map[string]struct{}{}
+	for i, id := range retrieved[:k] {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		if _, ok := relevant[id]; ok {
+			hits++
+			if first == 0 {
+				first = i + 1
+			}
+			dcg += 1 / math.Log2(float64(i+2))
+		}
+	}
+	hit := 0.0
+	if hits > 0 {
+		hit = 1
+	}
+	recall := float64(hits) / float64(len(relevant))
+	mrr := 0.0
+	if first > 0 {
+		mrr = 1 / float64(first)
+	}
+	idealCount := len(relevant)
+	if idealCount > k {
+		idealCount = k
+	}
+	idcg := 0.0
+	for i := 0; i < idealCount; i++ {
+		idcg += 1 / math.Log2(float64(i+2))
+	}
+	ndcg := 0.0
+	if idcg > 0 {
+		ndcg = dcg / idcg
+	}
+	results[names[0]] = MetricResult{Status: MetricOK, Value: score(hit)}
+	results[names[1]] = MetricResult{Status: MetricOK, Value: score(recall)}
+	results[names[2]] = MetricResult{Status: MetricOK, Value: score(mrr)}
+	results[names[3]] = MetricResult{Status: MetricOK, Value: score(ndcg)}
 }
 
 var citationPattern = regexp.MustCompile(`\[([0-9]+)\]`)

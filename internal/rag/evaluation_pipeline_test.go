@@ -107,6 +107,14 @@ func TestRealEvaluationPipelineUsesIsolatedTargetAndParseArtifactReuse(t *testin
 	if _, err := service.BuildEvaluationGeneration(context.Background(), request); err != nil || parser.calls.Load() != 2 || parser.lastEngine.Load() != "markitdown" {
 		t.Fatalf("parser selection did not isolate artifact: calls=%d engine=%v err=%v", parser.calls.Load(), parser.lastEngine.Load(), err)
 	}
+	textTarget, _ := NewEvaluationPipelineTarget("admin", "run-text", "version-one", "reg_text")
+	request.Target = textTarget
+	request.BypassParser = true
+	request.Contract.ParserProtocolVersion = "canonical-text-v1"
+	request.Contract.ParserEngineVersion = "canonical-text-v1"
+	if _, err := service.BuildEvaluationGeneration(context.Background(), request); err != nil || parser.calls.Load() != 2 || !vectorStore.HasCollection(textTarget.CollectionKey) {
+		t.Fatalf("canonical text track called parser: calls=%d err=%v", parser.calls.Load(), err)
+	}
 	if err := service.DropEvaluationGeneration(context.Background(), firstTarget); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +128,7 @@ func TestRealEvaluationPipelineUsesIsolatedTargetAndParseArtifactReuse(t *testin
 			t.Fatalf("unbounded/failed stage telemetry: %+v", event)
 		}
 	}
-	for _, operation := range []string{"eval_parser", "eval_embedding", "eval_milvus"} {
+	for _, operation := range []string{"eval_parser", "eval_text_normalize", "eval_embedding", "eval_milvus"} {
 		if !seen[operation] {
 			t.Fatalf("missing %s telemetry: %+v", operation, stageEvents)
 		}

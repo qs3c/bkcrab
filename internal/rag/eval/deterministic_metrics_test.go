@@ -21,6 +21,28 @@ func TestMetricStableContextIDsAndMissingAnnotation(t *testing.T) {
 	}
 }
 
+func TestDocumentMetricsCollapseDynamicChunksWithoutSectionMapping(t *testing.T) {
+	results := DeterministicMetrics(DeterministicInput{
+		RetrievedContextIDs:  []string{"doc-c:2", "doc-a:7", "doc-a:8", "doc-b:4"},
+		RetrievedDocumentIDs: []string{"doc-c", "doc-a", "doc-b"},
+		ReferenceDocumentIDs: []string{"doc-a", "doc-b"},
+	}, 3)
+	if got := *results["doc_hit_at_k"].Value; got != 1 {
+		t.Fatalf("doc hit@3=%v", got)
+	}
+	if got := *results["doc_recall_at_k"].Value; got != 1 {
+		t.Fatalf("doc recall@3=%v", got)
+	}
+	if got := *results["doc_mrr"].Value; got != .5 {
+		t.Fatalf("doc mrr=%v", got)
+	}
+	for _, metric := range []string{"hit_at_k", "recall_at_k", "mrr", "ndcg"} {
+		if results[metric].Status != MetricSkippedMissingInput {
+			t.Fatalf("chunk metric %s must skip without stable chunk qrels: %+v", metric, results[metric])
+		}
+	}
+}
+
 func TestCitationParserUsesOnlyBracketNumberContract(t *testing.T) {
 	results := DeterministicMetrics(DeterministicInput{
 		RetrievedContextIDs: []string{"chunk-a", "chunk-b"},

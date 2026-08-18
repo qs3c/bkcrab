@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
@@ -114,13 +115,22 @@ func (s *Service) BuildEvaluationGeneration(ctx context.Context, request Evaluat
 		return EvaluationPipelineResult{}, err
 	}
 	request.Ingestion.ParserEngine = strings.ToLower(strings.TrimSpace(request.Ingestion.ParserEngine))
-	if request.Ingestion.ParserEngine == "" {
-		request.Ingestion.ParserEngine = strings.ToLower(strings.TrimSpace(s.cfg.ParserSidecar.Engine))
-	}
-	if request.Ingestion.ParserEngine != "markitdown" && request.Ingestion.ParserEngine != "anydoc" {
-		return EvaluationPipelineResult{}, fmt.Errorf("evaluation parser engine %q is not supported", request.Ingestion.ParserEngine)
+	if !request.BypassParser {
+		if request.Ingestion.ParserEngine == "" {
+			request.Ingestion.ParserEngine = strings.ToLower(strings.TrimSpace(s.cfg.ParserSidecar.Engine))
+		}
+		if request.Ingestion.ParserEngine != "markitdown" && request.Ingestion.ParserEngine != "anydoc" {
+			return EvaluationPipelineResult{}, fmt.Errorf("evaluation parser engine %q is not supported", request.Ingestion.ParserEngine)
+		}
 	}
 	for _, sourceDocument := range request.Documents {
+		if request.BypassParser {
+			extension := strings.TrimPrefix(strings.ToLower(path.Ext(sourceDocument.FileName)), ".")
+			if extension != "md" && extension != "markdown" && extension != "txt" {
+				return EvaluationPipelineResult{}, fmt.Errorf("canonical text evaluation does not accept %s", sourceDocument.FileName)
+			}
+			continue
+		}
 		if !parse.SupportedExtForParser(sourceDocument.FileName, request.Ingestion.ParserEngine) {
 			return EvaluationPipelineResult{}, fmt.Errorf("evaluation parser %s does not support %s", request.Ingestion.ParserEngine, sourceDocument.FileName)
 		}
@@ -188,11 +198,15 @@ func (s *Service) buildEvaluationDocument(ctx context.Context, request Evaluatio
 	}
 	stageStarted := time.Now()
 	artifact, artifactErr := s.loadOrBuildEvaluationArtifact(ctx, request, sourceDocument)
+	operation := "eval_parser"
+	if request.BypassParser {
+		operation = "eval_text_normalize"
+	}
 	if artifactErr != nil {
-		telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, DocID: sourceDocument.ID, Operation: "eval_parser", Outcome: "error", Duration: time.Since(stageStarted)})
+		telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, DocID: sourceDocument.ID, Operation: operation, Outcome: "error", Duration: time.Since(stageStarted)})
 		return 0, artifactErr
 	}
-	telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, DocID: sourceDocument.ID, Operation: "eval_parser", Outcome: "ok", Duration: time.Since(stageStarted), ItemCount: 1})
+	telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, DocID: sourceDocument.ID, Operation: operation, Outcome: "ok", Duration: time.Since(stageStarted), ItemCount: 1})
 	chunks, _, artifactErr := s.buildSearchChunks(ctx, artifact, searchChunkBuildOptions{
 		ChunkSize: request.Ingestion.ChunkSize, ChunkOverlap: request.Ingestion.ChunkOverlap,
 		EnrichmentEnabled: request.Ingestion.EnrichmentEnabled, TextModel: request.Ingestion.DocumentAI.TextModel,
@@ -242,6 +256,10 @@ func (s *Service) buildEvaluationDocument(ctx context.Context, request Evaluatio
 }
 
 func (s *Service) loadOrBuildEvaluationArtifact(ctx context.Context, request EvaluationPipelineRequest, sourceDocument EvaluationPipelineDocument) (*document.ParsedArtifact, error) {
+	artifactLimit := s.cfg.Limits.MaxExtractedBytes
+	if artifactLimit <= 0 {
+		artifactLimit = 64 << 20
+	}
 	fingerprint, err := rageval.CorpusArtifactFingerprint(rageval.GenerationDocumentFingerprint{
 		ID: sourceDocument.ID, FileName: sourceDocument.FileName, MediaType: sourceDocument.MediaType,
 		SHA256: sourceDocument.SHA256, SizeBytes: sourceDocument.SizeBytes,
@@ -252,7 +270,7 @@ func (s *Service) loadOrBuildEvaluationArtifact(ctx context.Context, request Eva
 	artifactKey := path.Join("rag-eval", "artifacts", fingerprint+".json")
 	reader, err := s.obj.Get(ctx, artifactKey)
 	if err == nil {
-		artifact, decodeErr := document.DecodeArtifact(reader, int64(max(1, s.cfg.Limits.MaxExtractedBytes)))
+		artifact, decodeErr := document.DecodeArtifact(reader, int64(artifactLimit))
 		closeErr := reader.Close()
 		if decodeErr != nil || closeErr != nil {
 			return nil, errors.Join(decodeErr, closeErr)
@@ -273,6 +291,20 @@ func (s *Service) loadOrBuildEvaluationArtifact(ctx context.Context, request Eva
 		Open: func(openCtx context.Context) (io.ReadCloser, error) {
 			return s.obj.Get(openCtx, sourceDocument.ObjectKey)
 		},
+	}
+	if request.BypassParser {
+		artifact, err := s.buildCanonicalTextEvaluationArtifact(ctx, source, request.Contract.ParserEngineVersion)
+		if err != nil {
+			return nil, err
+		}
+		encoded, err := document.EncodeArtifact(artifact, int64(artifactLimit))
+		if err != nil {
+			return nil, err
+		}
+		if err := s.obj.Put(ctx, artifactKey, bytes.NewReader(encoded), int64(len(encoded)), "application/json"); err != nil {
+			return nil, fmt.Errorf("write canonical text evaluation artifact cache: %w", err)
+		}
+		return artifact, nil
 	}
 	parsed, err := s.parser.Parse(ctx, source, parse.ParseOptions{
 		Mode: request.Ingestion.ParseMode, ParserVersion: request.Contract.ParserEngineVersion,
@@ -297,12 +329,47 @@ func (s *Service) loadOrBuildEvaluationArtifact(ctx context.Context, request Eva
 	if err != nil {
 		return nil, err
 	}
-	encoded, err := document.EncodeArtifact(artifact, int64(max(1, s.cfg.Limits.MaxExtractedBytes)))
+	encoded, err := document.EncodeArtifact(artifact, int64(artifactLimit))
 	if err != nil {
 		return nil, err
 	}
 	if err := s.obj.Put(ctx, artifactKey, bytes.NewReader(encoded), int64(len(encoded)), "application/json"); err != nil {
 		return nil, fmt.Errorf("write evaluation artifact cache: %w", err)
+	}
+	return artifact, nil
+}
+
+func (s *Service) buildCanonicalTextEvaluationArtifact(ctx context.Context, source document.Source, version string) (*document.ParsedArtifact, error) {
+	reader, err := source.Open(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	limit := int64(s.cfg.Limits.MaxExtractedBytes)
+	if limit <= 0 {
+		limit = 64 << 20
+	}
+	raw, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, errors.New("canonical text evaluation document exceeds extracted byte limit")
+	}
+	if !utf8.Valid(raw) {
+		return nil, errors.New("canonical text evaluation document is not valid UTF-8")
+	}
+	text := strings.TrimPrefix(string(raw), "\ufeff")
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
+	if strings.TrimSpace(text) == "" {
+		return nil, errors.New("canonical text evaluation document is empty")
+	}
+	artifact := &document.ParsedArtifact{SchemaVersion: document.ParsedArtifactSchemaVersion, Source: source.Parsed(),
+		Parser: document.ParserInfo{Name: "canonical-text", Version: version},
+		Units:  []document.MarkdownUnit{{ID: "document-1", Location: document.SourceLocation{Kind: document.LocationDocument}, Markdown: text}},
+		Assets: []document.ArtifactAsset{}, Occurrences: []document.ArtifactOccurrence{}, Warnings: []document.ParseWarning{}}
+	if err := artifact.Validate(); err != nil {
+		return nil, err
 	}
 	return artifact, nil
 }

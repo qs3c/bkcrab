@@ -47,14 +47,16 @@ type fakeCasePipeline struct {
 	mu       sync.Mutex
 	calls    map[string]int
 	failures map[string]error
+	history  map[string][]string
 }
 
 func (p *fakeCasePipeline) Execute(_ context.Context, request CaseExecutionRequest) (CaseExecutionResult, error) {
 	p.mu.Lock()
 	p.calls[request.Case.ID]++
+	p.history[request.Case.ID] = append([]string(nil), request.Case.History...)
 	err := p.failures[request.Case.ID]
 	p.mu.Unlock()
-	result := CaseExecutionResult{Response: "answer [1]", Contexts: []string{"ctx"}, ContextIDs: []string{"doc:0"}, Citations: []string{"1"}, SearchTrace: map[string]any{"ok": true}, AnswerTrace: map[string]any{"mode": "evaluation"}, Latency: time.Millisecond, Usage: Usage{Stage: "answer", Provider: "fake", Model: "fake/model", InputTokens: 2, OutputTokens: 3}}
+	result := CaseExecutionResult{Response: "answer [1]", Contexts: []string{"ctx"}, ContextIDs: []string{"doc:0"}, DocumentIDs: []string{"doc"}, Citations: []string{"1"}, SearchTrace: map[string]any{"ok": true}, AnswerTrace: map[string]any{"mode": "evaluation"}, Latency: time.Millisecond, Usage: Usage{Stage: "answer", Provider: "fake", Model: "fake/model", InputTokens: 2, OutputTokens: 3}}
 	return result, err
 }
 
@@ -111,7 +113,7 @@ func runnerFixture(t *testing.T, caseCount int, scorer *fakeBatchScorer, failure
 		t.Fatal(err)
 	}
 	for i := 0; i < caseCount; i++ {
-		item := &store.RAGEvalCaseRecord{DatasetVersionID: version.ID, ExternalID: fmt.Sprintf("case-%d", i), UserInput: "question", ReferenceAnswer: "reference", ReferenceContextsJSON: `["ctx"]`, ReferenceContextIDsJSON: `["doc:0"]`, HistoryJSON: `["must-not-reach-answer"]`, TagsJSON: `["smoke"]`, MetadataJSON: `{}`}
+		item := &store.RAGEvalCaseRecord{DatasetVersionID: version.ID, ExternalID: fmt.Sprintf("case-%d", i), UserInput: "question", ReferenceAnswer: "reference", ReferenceContextsJSON: `["ctx"]`, ReferenceContextIDsJSON: `["doc:0"]`, ReferenceDocumentIDsJSON: `["doc"]`, HistoryJSON: `["earlier-user-question"]`, TagsJSON: `["smoke"]`, MetadataJSON: `{}`}
 		if err := st.PutRAGEvalCase(ctx, item); err != nil {
 			t.Fatal(err)
 		}
@@ -130,7 +132,7 @@ func runnerFixture(t *testing.T, caseCount int, scorer *fakeBatchScorer, failure
 	}
 	cfg := config.RAGEvaluationCfg{WorkerConcurrency: 2, MaxBatchSize: 2, MaxRunCases: 10, MaxRunTokens: 1000, MaxRunCostUSD: 10, MaxRunDurationSec: 60}
 	cfg.ApplyDefaults()
-	pipeline := &fakeCasePipeline{calls: map[string]int{}, failures: failures}
+	pipeline := &fakeCasePipeline{calls: map[string]int{}, failures: failures, history: map[string][]string{}}
 	generations := &fakeGenerationProvider{generation: store.RAGEvalGenerationRecord{ID: "generation", DatasetVersionID: version.ID, Status: store.RAGEvalGenerationReady}}
 	runner, err := NewRunner(st, generations, pipeline, scorer, cfg, "runner")
 	if err != nil {
@@ -179,6 +181,13 @@ func TestRunnerFreezesSnapshotAndPersistsPartialCaseFailure(t *testing.T) {
 	}
 	if generations.releases != 1 {
 		t.Fatalf("releases=%d", generations.releases)
+	}
+	pipeline.mu.Lock()
+	defer pipeline.mu.Unlock()
+	for caseID, history := range pipeline.history {
+		if len(history) != 1 || history[0] != "earlier-user-question" {
+			t.Fatalf("case %s history=%v", caseID, history)
+		}
 	}
 }
 

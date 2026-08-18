@@ -159,7 +159,7 @@ var (
 	allowedOperations = enumSet{
 		"vision_page": {}, "vision_page_repair": {}, "vision_image": {}, "vision_image_repair": {},
 		"enrichment": {}, "office-convert": {}, "pdf-analyze": {}, "pdf-render": {}, "usage_reconcile": {},
-		"eval_sidecar": {}, "eval_judge": {}, "eval_parser": {}, "eval_embedding": {}, "eval_milvus": {},
+		"eval_sidecar": {}, "eval_judge": {}, "eval_parser": {}, "eval_text_normalize": {}, "eval_embedding": {}, "eval_milvus": {},
 		"eval_reranker": {}, "eval_answer": {}, "eval_cleanup": {},
 	}
 	allowedTransitions = enumSet{

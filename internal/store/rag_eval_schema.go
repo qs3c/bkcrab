@@ -12,6 +12,7 @@ const mysqlRAGSchemaCollation = "utf8mb4_unicode_ci"
 var ragEvaluationSchemaTables = []string{
 	"rag_eval_datasets",
 	"rag_eval_dataset_versions",
+	"rag_eval_catalog_imports",
 	"rag_eval_corpus_documents",
 	"rag_eval_cases",
 	"rag_eval_profiles",
@@ -45,10 +46,18 @@ func (d *DBStore) migrateRAGEvaluationSchema(ctx context.Context) error {
 			created_at TIMESTAMP NOT NULL,updated_at TIMESTAMP NOT NULL,deleted_at TIMESTAMP NULL)`, id, text, id),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_eval_dataset_versions (
 			id %s PRIMARY KEY,dataset_id %s NOT NULL,version BIGINT NOT NULL,status VARCHAR(32) NOT NULL,
-			source_type VARCHAR(64) NOT NULL,manifest_object_key %s NOT NULL,corpus_sha256 VARCHAR(64) NOT NULL,
+			source_type VARCHAR(64) NOT NULL,track VARCHAR(32) NULL,source_config_json %s NULL,selector_fingerprint VARCHAR(64) NULL,
+			manifest_object_key %s NOT NULL,corpus_sha256 VARCHAR(64) NOT NULL,
 			case_count BIGINT NOT NULL DEFAULT 0,document_count BIGINT NOT NULL DEFAULT 0,total_bytes BIGINT NOT NULL DEFAULT 0,
 			validation_report_json %s NOT NULL,created_by %s NOT NULL,created_at TIMESTAMP NOT NULL,ready_at TIMESTAMP NULL,
-			UNIQUE(dataset_id,version))`, id, id, text, text, id),
+			UNIQUE(dataset_id,version))`, id, id, text, text, text, id),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_eval_catalog_imports (
+			id %s PRIMARY KEY,dataset_id %s NOT NULL,target_version BIGINT NOT NULL,catalog_id VARCHAR(128) NOT NULL,
+			request_json %s NOT NULL,status VARCHAR(32) NOT NULL,stage VARCHAR(64) NOT NULL,progress_json %s NOT NULL,
+			dataset_version_id %s NULL,error_code VARCHAR(128) NOT NULL,error_message %s NOT NULL,created_by %s NOT NULL,
+			created_at TIMESTAMP NOT NULL,started_at TIMESTAMP NULL,finished_at TIMESTAMP NULL,lease_owner VARCHAR(255) NOT NULL,
+			lease_until TIMESTAMP NULL,fence_token BIGINT NOT NULL DEFAULT 0,cancel_requested_at TIMESTAMP NULL,
+			UNIQUE(dataset_id,target_version))`, id, id, text, text, id, text, id),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_eval_corpus_documents (
 			id %s PRIMARY KEY,dataset_version_id %s NOT NULL,external_id VARCHAR(255) NOT NULL,file_name VARCHAR(512) NOT NULL,
 			media_type VARCHAR(255) NOT NULL,size_bytes BIGINT NOT NULL,sha256 VARCHAR(64) NOT NULL,object_key %s NOT NULL,
@@ -56,8 +65,8 @@ func (d *DBStore) migrateRAGEvaluationSchema(ctx context.Context) error {
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_eval_cases (
 			id %s PRIMARY KEY,dataset_version_id %s NOT NULL,external_id VARCHAR(255) NOT NULL,user_input %s NOT NULL,
 			reference_answer %s NOT NULL,reference_contexts_json %s NOT NULL,reference_context_ids_json %s NOT NULL,
-			history_json %s NOT NULL,expected_abstention %s NOT NULL,tags_json %s NOT NULL,metadata_json %s NOT NULL,
-			UNIQUE(dataset_version_id,external_id))`, id, id, text, text, text, text, text, boolean, text, text),
+			reference_document_ids_json %s NULL,history_json %s NOT NULL,expected_abstention %s NOT NULL,tags_json %s NOT NULL,metadata_json %s NOT NULL,
+			UNIQUE(dataset_version_id,external_id))`, id, id, text, text, text, text, text, text, boolean, text, text),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_eval_profiles (
 			id %s PRIMARY KEY,name VARCHAR(255) NOT NULL,profile_json %s NOT NULL,fingerprint VARCHAR(64) NOT NULL,
 			created_by %s NOT NULL,created_at TIMESTAMP NOT NULL)`, id, text, id),
@@ -79,9 +88,9 @@ func (d *DBStore) migrateRAGEvaluationSchema(ctx context.Context) error {
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_eval_generation_refs (
 			run_id %s PRIMARY KEY,generation_id %s NOT NULL,created_at TIMESTAMP NOT NULL,released_at TIMESTAMP NULL)`, id, id),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_eval_case_results (
-			run_id %s NOT NULL,case_id %s NOT NULL,response %s NOT NULL,contexts_json %s NOT NULL,citations_json %s NOT NULL,
+			run_id %s NOT NULL,case_id %s NOT NULL,response %s NOT NULL,contexts_json %s NOT NULL,citations_json %s NOT NULL,document_ids_json %s NULL,
 			search_trace_json %s NOT NULL,answer_trace_json %s NOT NULL,status VARCHAR(32) NOT NULL,error_code VARCHAR(128) NOT NULL,
-			error_message %s NOT NULL,latency_ms BIGINT NOT NULL,usage_json %s NOT NULL,PRIMARY KEY(run_id,case_id))`, id, id, text, text, text, text, text, text, text),
+			error_message %s NOT NULL,latency_ms BIGINT NOT NULL,usage_json %s NOT NULL,PRIMARY KEY(run_id,case_id))`, id, id, text, text, text, text, text, text, text, text),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_eval_metric_results (
 			run_id %s NOT NULL,case_id %s NOT NULL,metric_name VARCHAR(128) NOT NULL,metric_version VARCHAR(64) NOT NULL,
 			status VARCHAR(32) NOT NULL,value DOUBLE PRECISION NULL,reason %s NOT NULL,details_json %s NOT NULL,
@@ -135,6 +144,17 @@ func (d *DBStore) migrateRAGEvaluationSchema(ctx context.Context) error {
 	}
 	for _, column := range []struct{ name, ddl string }{{"pinned_policy_version", "BIGINT NULL"}, {"active_generation_id", id + " NULL"}} {
 		if err := d.addRAGColumnIfMissing(ctx, "rag_kbs", column.name, column.ddl); err != nil {
+			return err
+		}
+	}
+	for _, column := range []struct{ table, name, ddl string }{
+		{"rag_eval_dataset_versions", "track", "VARCHAR(32) NULL"},
+		{"rag_eval_dataset_versions", "source_config_json", text + " NULL"},
+		{"rag_eval_dataset_versions", "selector_fingerprint", "VARCHAR(64) NULL"},
+		{"rag_eval_cases", "reference_document_ids_json", text + " NULL"},
+		{"rag_eval_case_results", "document_ids_json", text + " NULL"},
+	} {
+		if err := d.addRAGColumnIfMissing(ctx, column.table, column.name, column.ddl); err != nil {
 			return err
 		}
 	}

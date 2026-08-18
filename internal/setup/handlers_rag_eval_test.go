@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/qs3c/bkcrab/internal/auth"
+	"github.com/qs3c/bkcrab/internal/rag/eval"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/users"
 )
@@ -36,6 +37,21 @@ func TestDecodeEvalJSONRejectsTrailingGarbage(t *testing.T) {
 	}
 	if !decodeEvalJSON(recorder, request, 1024, &target) || target.Name != "ok" {
 		t.Fatalf("valid JSON rejected: status=%d target=%+v", recorder.Code, target)
+	}
+}
+
+func TestDecodeCatalogImportJSONUsesFlatPublicContract(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest("POST", "/", strings.NewReader(`{"datasetId":"d1","catalogId":"next-tat-tatqa","track":"TEXT_RAG","split":"dev","sampleSize":25,"seed":42}`))
+	var target struct {
+		DatasetID string `json:"datasetId"`
+		eval.CatalogImportOptions
+	}
+	if !decodeEvalJSON(recorder, request, 4096, &target) {
+		t.Fatalf("flat catalog request rejected: %s", recorder.Body.String())
+	}
+	if target.DatasetID != "d1" || target.CatalogID != eval.CatalogTATQA || target.Track != eval.DatasetTrackTextRAG || target.SampleSize != 25 {
+		t.Fatalf("decoded catalog request=%+v", target)
 	}
 }
 

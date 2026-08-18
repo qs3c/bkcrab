@@ -56,13 +56,17 @@ type DatasetDocumentUpload struct {
 }
 
 type DatasetImportRequest struct {
-	DatasetID   string
-	Version     int64
-	CreatedBy   string
-	Manifest    io.Reader
-	Documents   []DatasetDocumentUpload
-	MaxManifest int64
-	MaxDocument int64
+	DatasetID           string
+	Version             int64
+	CreatedBy           string
+	SourceType          string
+	Track               DatasetTrack
+	Source              DatasetSource
+	SelectorFingerprint string
+	Manifest            io.Reader
+	Documents           []DatasetDocumentUpload
+	MaxManifest         int64
+	MaxDocument         int64
 }
 
 type DatasetImportResult struct {
@@ -199,6 +203,25 @@ func (s *DatasetService) ImportCanonical(ctx context.Context, request DatasetImp
 	if request.MaxDocument <= 0 {
 		request.MaxDocument = defaultDocumentBytes
 	}
+	if request.Track == "" {
+		request.Track = dataset.Track
+	}
+	if request.Track == "" {
+		request.Track = DatasetTrackTextRAG
+	}
+	if !request.Track.Valid() {
+		return result, errors.New("dataset track is invalid")
+	}
+	if datasetSourceEmpty(request.Source) {
+		request.Source = dataset.Source
+	}
+	if strings.TrimSpace(request.SourceType) == "" {
+		request.SourceType = CanonicalJSONSourceType
+	}
+	sourceConfigJSON, err := json.Marshal(request.Source)
+	if err != nil {
+		return result, err
+	}
 	if request.MaxDocument > maxDocumentBytes {
 		return result, errors.New("document limit exceeds service maximum")
 	}
@@ -239,7 +262,7 @@ func (s *DatasetService) ImportCanonical(ctx context.Context, request DatasetImp
 	reportJSON, _ := json.Marshal(report)
 	version := &store.RAGEvalDatasetVersionRecord{
 		ID: versionID, DatasetID: request.DatasetID, Version: request.Version,
-		Status: store.RAGEvalDatasetDraft, SourceType: CanonicalJSONSourceType,
+		Status: store.RAGEvalDatasetDraft, SourceType: request.SourceType, Track: string(request.Track), SourceConfigJSON: string(sourceConfigJSON), SelectorFingerprint: request.SelectorFingerprint,
 		ManifestObjectKey: manifestKey, CorpusSHA256: fingerprint,
 		CaseCount: int64(len(dataset.Cases)), DocumentCount: int64(len(dataset.Corpus)), TotalBytes: totalBytes,
 		ValidationReportJSON: string(reportJSON), CreatedBy: request.CreatedBy,
@@ -304,7 +327,7 @@ func (s *DatasetService) ImportCanonical(ctx context.Context, request DatasetImp
 		if err = s.store.PutRAGEvalCase(ctx, &store.RAGEvalCaseRecord{
 			DatasetVersionID: versionID, ExternalID: item.ID, UserInput: item.UserInput,
 			ReferenceAnswer: item.Reference, ReferenceContextsJSON: marshalStringArray(item.ReferenceContexts),
-			ReferenceContextIDsJSON: marshalStringArray(item.ReferenceContextIDs), HistoryJSON: marshalStringArray(item.History),
+			ReferenceContextIDsJSON: marshalStringArray(item.ReferenceContextIDs), ReferenceDocumentIDsJSON: marshalStringArray(item.ReferenceDocumentIDs), HistoryJSON: marshalStringArray(item.History),
 			ExpectedAbstention: item.ExpectedAbstention, TagsJSON: marshalStringArray(item.Tags), MetadataJSON: marshalMetadata(item.Metadata),
 		}); err != nil {
 			return failVersion(err)
@@ -346,6 +369,12 @@ func (s *DatasetService) ImportCanonical(ctx context.Context, request DatasetImp
 	cleanup = false
 	version.Status = store.RAGEvalDatasetReady
 	return result, nil
+}
+
+func datasetSourceEmpty(source DatasetSource) bool {
+	return source.CatalogID == "" && source.URL == "" && source.Revision == "" && source.AdapterID == "" &&
+		source.AdapterVersion == "" && source.Split == "" && source.SampleSize == 0 && source.Seed == 0 &&
+		len(source.EvidenceTypes) == 0 && source.License == ""
 }
 
 func (s *DatasetService) Preview(ctx context.Context, versionID, documentCursor, caseCursor string, limit int) (DatasetPreviewPage, error) {

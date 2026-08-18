@@ -13,6 +13,28 @@ const (
 	ExpectedRagasVersion             = "0.3.9"
 )
 
+type DatasetTrack string
+
+const (
+	DatasetTrackTextRAG DatasetTrack = "TEXT_RAG"
+	DatasetTrackPDFE2E  DatasetTrack = "PDF_E2E"
+)
+
+func (t DatasetTrack) Valid() bool { return t == DatasetTrackTextRAG || t == DatasetTrackPDFE2E }
+
+type DatasetSource struct {
+	CatalogID      string   `json:"catalogId,omitempty"`
+	URL            string   `json:"url,omitempty"`
+	Revision       string   `json:"revision,omitempty"`
+	AdapterID      string   `json:"adapterId,omitempty"`
+	AdapterVersion string   `json:"adapterVersion,omitempty"`
+	Split          string   `json:"split,omitempty"`
+	SampleSize     int      `json:"sampleSize,omitempty"`
+	Seed           int64    `json:"seed,omitempty"`
+	EvidenceTypes  []string `json:"evidenceTypes,omitempty"`
+	License        string   `json:"license,omitempty"`
+}
+
 type CorpusDocument struct {
 	ID        string         `json:"id"`
 	FileName  string         `json:"fileName"`
@@ -24,20 +46,23 @@ type CorpusDocument struct {
 }
 
 type Case struct {
-	ID                  string         `json:"id"`
-	UserInput           string         `json:"user_input"`
-	Reference           string         `json:"reference,omitempty"`
-	ReferenceContexts   []string       `json:"reference_contexts,omitempty"`
-	ReferenceContextIDs []string       `json:"reference_context_ids,omitempty"`
-	History             []string       `json:"history,omitempty"`
-	ExpectedAbstention  bool           `json:"expected_abstention"`
-	Tags                []string       `json:"tags,omitempty"`
-	Metadata            map[string]any `json:"metadata,omitempty"`
+	ID                   string         `json:"id"`
+	UserInput            string         `json:"user_input"`
+	Reference            string         `json:"reference,omitempty"`
+	ReferenceContexts    []string       `json:"reference_contexts,omitempty"`
+	ReferenceContextIDs  []string       `json:"reference_context_ids,omitempty"`
+	ReferenceDocumentIDs []string       `json:"reference_document_ids,omitempty"`
+	History              []string       `json:"history,omitempty"`
+	ExpectedAbstention   bool           `json:"expected_abstention"`
+	Tags                 []string       `json:"tags,omitempty"`
+	Metadata             map[string]any `json:"metadata,omitempty"`
 }
 
 type CanonicalDataset struct {
 	Name        string           `json:"name"`
 	Description string           `json:"description,omitempty"`
+	Track       DatasetTrack     `json:"track,omitempty"`
+	Source      DatasetSource    `json:"source,omitempty"`
 	Corpus      []CorpusDocument `json:"corpus"`
 	Cases       []Case           `json:"cases"`
 }

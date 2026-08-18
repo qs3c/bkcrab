@@ -36,6 +36,24 @@ func TestValidateDuplicateAndDanglingReferenceIDs(t *testing.T) {
 	}
 }
 
+func TestValidateDocumentQrelsAndCoverage(t *testing.T) {
+	dataset := validDataset()
+	dataset.Cases[0].ReferenceContextIDs = nil
+	dataset.Cases[0].ReferenceDocumentIDs = []string{"doc-1"}
+	report := ValidateDataset(dataset, DefaultValidationLimits())
+	if !report.Valid {
+		t.Fatalf("valid document qrels rejected: %+v", report)
+	}
+	coverage, ok := validationCoverage(report, "doc_mrr")
+	if !ok || coverage.Eligible != 1 || coverage.Total != 1 {
+		t.Fatalf("doc metric coverage=%+v found=%v", coverage, ok)
+	}
+	dataset.Cases[0].ReferenceDocumentIDs = []string{"missing"}
+	if report = ValidateDataset(dataset, DefaultValidationLimits()); report.Valid || !validationHasCode(report, "dangling_reference") {
+		t.Fatalf("dangling document qrel accepted: %+v", report)
+	}
+}
+
 func TestValidateMetadataLimitsAndInvalidUTF8(t *testing.T) {
 	dataset := validDataset()
 	dataset.Corpus[0].Metadata = map[string]any{"nested": map[string]any{"a": map[string]any{"b": "value"}}}

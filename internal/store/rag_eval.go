@@ -28,6 +28,8 @@ const (
 
 	RAGEvalRunModeFullPipeline = "FULL_PIPELINE"
 	RAGEvalRunModeOnlineOnly   = "ONLINE_ONLY"
+	RAGEvalTrackTextRAG        = "TEXT_RAG"
+	RAGEvalTrackPDFE2E         = "PDF_E2E"
 
 	RAGEvalCaseOK    = "ok"
 	RAGEvalCaseError = "error"
@@ -53,13 +55,39 @@ type RAGEvalDatasetRecord struct {
 	DeletedAt   sql.NullTime `json:"-"`
 }
 type RAGEvalDatasetVersionRecord struct {
-	ID, DatasetID                                       string
+	ID, DatasetID, Track                                string
 	Version                                             int64
 	Status, SourceType, ManifestObjectKey, CorpusSHA256 string
 	CaseCount, DocumentCount, TotalBytes                int64
-	ValidationReportJSON, CreatedBy                     string
+	ValidationReportJSON, SourceConfigJSON              string
+	SelectorFingerprint, CreatedBy                      string
 	CreatedAt                                           time.Time
 	ReadyAt                                             sql.NullTime
+}
+type RAGEvalCatalogImportRecord struct {
+	ID                string       `json:"id"`
+	DatasetID         string       `json:"datasetId"`
+	CatalogID         string       `json:"catalogId"`
+	RequestJSON       string       `json:"requestJson"`
+	Status            string       `json:"status"`
+	Stage             string       `json:"stage"`
+	ProgressJSON      string       `json:"progressJson"`
+	DatasetVersionID  string       `json:"datasetVersionId,omitempty"`
+	ErrorCode         string       `json:"errorCode,omitempty"`
+	ErrorMessage      string       `json:"errorMessage,omitempty"`
+	CreatedBy         string       `json:"createdBy"`
+	TargetVersion     int64        `json:"targetVersion"`
+	CreatedAt         time.Time    `json:"createdAt"`
+	StartedAt         sql.NullTime `json:"startedAt,omitempty"`
+	FinishedAt        sql.NullTime `json:"finishedAt,omitempty"`
+	LeaseUntil        sql.NullTime `json:"-"`
+	CancelRequestedAt sql.NullTime `json:"cancelRequestedAt,omitempty"`
+	LeaseOwner        string       `json:"-"`
+	FenceToken        int64        `json:"-"`
+}
+type RAGEvalCatalogImportFence struct {
+	ImportID, LeaseOwner string
+	FenceToken           int64
 }
 type RAGEvalProfileRecord struct {
 	ID          string    `json:"id"`
@@ -74,8 +102,8 @@ type RAGEvalCorpusDocumentRecord struct {
 	SizeBytes                                                                              int64
 }
 type RAGEvalCaseRecord struct {
-	ID, DatasetVersionID, ExternalID, UserInput, ReferenceAnswer, ReferenceContextsJSON, ReferenceContextIDsJSON, HistoryJSON, TagsJSON, MetadataJSON string
-	ExpectedAbstention                                                                                                                                bool
+	ID, DatasetVersionID, ExternalID, UserInput, ReferenceAnswer, ReferenceContextsJSON, ReferenceContextIDsJSON, ReferenceDocumentIDsJSON, HistoryJSON, TagsJSON, MetadataJSON string
+	ExpectedAbstention                                                                                                                                                          bool
 }
 type RAGEvalRunRecord struct {
 	ID                    string       `json:"id"`
@@ -106,8 +134,8 @@ type RAGEvalRunFence struct {
 	FenceToken        int64
 }
 type RAGEvalCaseResultRecord struct {
-	RunID, CaseID, Response, ContextsJSON, CitationsJSON, SearchTraceJSON, AnswerTraceJSON, Status, ErrorCode, ErrorMessage, UsageJSON string
-	LatencyMS                                                                                                                          int64
+	RunID, CaseID, Response, ContextsJSON, CitationsJSON, DocumentIDsJSON, SearchTraceJSON, AnswerTraceJSON, Status, ErrorCode, ErrorMessage, UsageJSON string
+	LatencyMS                                                                                                                                           int64
 }
 type RAGEvalMetricResultRecord struct {
 	RunID, CaseID, MetricName, MetricVersion, Status string
@@ -128,6 +156,10 @@ func validRAGEvalDatasetStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func validRAGEvalTrack(track string) bool {
+	return track == RAGEvalTrackTextRAG || track == RAGEvalTrackPDFE2E
 }
 
 func validRAGEvalRunStatus(status string) bool {
@@ -336,6 +368,12 @@ func (d *DBStore) CreateRAGEvalDatasetVersion(ctx context.Context, record *RAGEv
 	if record.ValidationReportJSON != "" && !json.Valid([]byte(record.ValidationReportJSON)) {
 		return errors.New("validation report JSON is invalid")
 	}
+	if record.Track == "" {
+		record.Track = RAGEvalTrackTextRAG
+	}
+	if !validRAGEvalTrack(record.Track) || !json.Valid([]byte(emptyJSON(record.SourceConfigJSON))) {
+		return errors.New("dataset version source contract is invalid")
+	}
 	if record.ID == "" {
 		record.ID = "rdv_" + uuid.NewString()
 	}
@@ -354,13 +392,13 @@ func (d *DBStore) CreateRAGEvalDatasetVersion(ctx context.Context, record *RAGEv
 	}
 	now := time.Now().UTC()
 	record.CreatedAt = now
-	_, err := d.db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_eval_dataset_versions(id,dataset_id,version,status,source_type,manifest_object_key,corpus_sha256,case_count,document_count,total_bytes,validation_report_json,created_by,created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13)), record.ID, record.DatasetID, record.Version, record.Status, record.SourceType, record.ManifestObjectKey, record.CorpusSHA256, record.CaseCount, record.DocumentCount, record.TotalBytes, emptyJSON(record.ValidationReportJSON), record.CreatedBy, now)
+	_, err := d.db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_eval_dataset_versions(id,dataset_id,version,status,source_type,track,source_config_json,selector_fingerprint,manifest_object_key,corpus_sha256,case_count,document_count,total_bytes,validation_report_json,created_by,created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14), d.ph(15), d.ph(16)), record.ID, record.DatasetID, record.Version, record.Status, record.SourceType, record.Track, emptyJSON(record.SourceConfigJSON), record.SelectorFingerprint, record.ManifestObjectKey, record.CorpusSHA256, record.CaseCount, record.DocumentCount, record.TotalBytes, emptyJSON(record.ValidationReportJSON), record.CreatedBy, now)
 	return err
 }
 
 func scanRAGEvalDatasetVersion(scanner interface{ Scan(...any) error }) (*RAGEvalDatasetVersionRecord, error) {
 	var item RAGEvalDatasetVersionRecord
-	err := scanner.Scan(&item.ID, &item.DatasetID, &item.Version, &item.Status, &item.SourceType, &item.ManifestObjectKey, &item.CorpusSHA256, &item.CaseCount, &item.DocumentCount, &item.TotalBytes, &item.ValidationReportJSON, &item.CreatedBy, &item.CreatedAt, &item.ReadyAt)
+	err := scanner.Scan(&item.ID, &item.DatasetID, &item.Version, &item.Status, &item.SourceType, &item.Track, &item.SourceConfigJSON, &item.SelectorFingerprint, &item.ManifestObjectKey, &item.CorpusSHA256, &item.CaseCount, &item.DocumentCount, &item.TotalBytes, &item.ValidationReportJSON, &item.CreatedBy, &item.CreatedAt, &item.ReadyAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -370,13 +408,20 @@ func scanRAGEvalDatasetVersion(scanner interface{ Scan(...any) error }) (*RAGEva
 	if !validRAGEvalDatasetStatus(item.Status) {
 		return nil, fmt.Errorf("invalid stored RAG evaluation dataset status %q", item.Status)
 	}
+	if !validRAGEvalTrack(item.Track) || !json.Valid([]byte(item.SourceConfigJSON)) {
+		return nil, errors.New("invalid stored RAG evaluation dataset source contract")
+	}
 	return &item, nil
 }
 
-const ragEvalDatasetVersionColumns = `id,dataset_id,version,status,source_type,manifest_object_key,corpus_sha256,case_count,document_count,total_bytes,validation_report_json,created_by,created_at,ready_at`
+const ragEvalDatasetVersionColumns = `id,dataset_id,version,status,source_type,COALESCE(track,'TEXT_RAG'),COALESCE(source_config_json,'{}'),COALESCE(selector_fingerprint,''),manifest_object_key,corpus_sha256,case_count,document_count,total_bytes,validation_report_json,created_by,created_at,ready_at`
 
 func (d *DBStore) GetRAGEvalDatasetVersion(ctx context.Context, id string) (*RAGEvalDatasetVersionRecord, error) {
 	return scanRAGEvalDatasetVersion(d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_eval_dataset_versions WHERE id=%s`, ragEvalDatasetVersionColumns, d.ph(1)), id))
+}
+
+func (d *DBStore) GetRAGEvalDatasetVersionByNumber(ctx context.Context, datasetID string, version int64) (*RAGEvalDatasetVersionRecord, error) {
+	return scanRAGEvalDatasetVersion(d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_eval_dataset_versions WHERE dataset_id=%s AND version=%s`, ragEvalDatasetVersionColumns, d.ph(1), d.ph(2)), datasetID, version))
 }
 
 func validDatasetTransition(from, to string) bool {
@@ -481,7 +526,7 @@ func (d *DBStore) PutRAGEvalCase(ctx context.Context, record *RAGEvalCaseRecord)
 	if record == nil || record.DatasetVersionID == "" || strings.TrimSpace(record.ExternalID) == "" || strings.TrimSpace(record.UserInput) == "" {
 		return errors.New("valid evaluation case is required")
 	}
-	for _, value := range []string{record.ReferenceContextsJSON, record.ReferenceContextIDsJSON, record.HistoryJSON, record.TagsJSON, record.MetadataJSON} {
+	for _, value := range []string{record.ReferenceContextsJSON, record.ReferenceContextIDsJSON, record.ReferenceDocumentIDsJSON, record.HistoryJSON, record.TagsJSON, record.MetadataJSON} {
 		if !json.Valid([]byte(emptyJSONArray(value))) {
 			return errors.New("evaluation case JSON is invalid")
 		}
@@ -494,13 +539,13 @@ func (d *DBStore) PutRAGEvalCase(ctx context.Context, record *RAGEvalCaseRecord)
 		return err
 	}
 	defer tx.Rollback()
-	query := fmt.Sprintf(`INSERT INTO rag_eval_cases(id,dataset_version_id,external_id,user_input,reference_answer,reference_contexts_json,reference_context_ids_json,history_json,expected_abstention,tags_json,metadata_json) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11))
+	query := fmt.Sprintf(`INSERT INTO rag_eval_cases(id,dataset_version_id,external_id,user_input,reference_answer,reference_contexts_json,reference_context_ids_json,reference_document_ids_json,history_json,expected_abstention,tags_json,metadata_json) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12))
 	if d.dialect == mysqlDialect {
-		query += ` ON DUPLICATE KEY UPDATE user_input=VALUES(user_input),reference_answer=VALUES(reference_answer),reference_contexts_json=VALUES(reference_contexts_json),reference_context_ids_json=VALUES(reference_context_ids_json),history_json=VALUES(history_json),expected_abstention=VALUES(expected_abstention),tags_json=VALUES(tags_json),metadata_json=VALUES(metadata_json)`
+		query += ` ON DUPLICATE KEY UPDATE user_input=VALUES(user_input),reference_answer=VALUES(reference_answer),reference_contexts_json=VALUES(reference_contexts_json),reference_context_ids_json=VALUES(reference_context_ids_json),reference_document_ids_json=VALUES(reference_document_ids_json),history_json=VALUES(history_json),expected_abstention=VALUES(expected_abstention),tags_json=VALUES(tags_json),metadata_json=VALUES(metadata_json)`
 	} else {
-		query += ` ON CONFLICT(dataset_version_id,external_id) DO UPDATE SET user_input=excluded.user_input,reference_answer=excluded.reference_answer,reference_contexts_json=excluded.reference_contexts_json,reference_context_ids_json=excluded.reference_context_ids_json,history_json=excluded.history_json,expected_abstention=excluded.expected_abstention,tags_json=excluded.tags_json,metadata_json=excluded.metadata_json`
+		query += ` ON CONFLICT(dataset_version_id,external_id) DO UPDATE SET user_input=excluded.user_input,reference_answer=excluded.reference_answer,reference_contexts_json=excluded.reference_contexts_json,reference_context_ids_json=excluded.reference_context_ids_json,reference_document_ids_json=excluded.reference_document_ids_json,history_json=excluded.history_json,expected_abstention=excluded.expected_abstention,tags_json=excluded.tags_json,metadata_json=excluded.metadata_json`
 	}
-	if _, err = tx.ExecContext(ctx, query, record.ID, record.DatasetVersionID, strings.TrimSpace(record.ExternalID), record.UserInput, record.ReferenceAnswer, emptyJSONArray(record.ReferenceContextsJSON), emptyJSONArray(record.ReferenceContextIDsJSON), emptyJSONArray(record.HistoryJSON), record.ExpectedAbstention, emptyJSONArray(record.TagsJSON), emptyJSON(record.MetadataJSON)); err != nil {
+	if _, err = tx.ExecContext(ctx, query, record.ID, record.DatasetVersionID, strings.TrimSpace(record.ExternalID), record.UserInput, record.ReferenceAnswer, emptyJSONArray(record.ReferenceContextsJSON), emptyJSONArray(record.ReferenceContextIDsJSON), emptyJSONArray(record.ReferenceDocumentIDsJSON), emptyJSONArray(record.HistoryJSON), record.ExpectedAbstention, emptyJSONArray(record.TagsJSON), emptyJSON(record.MetadataJSON)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -508,7 +553,7 @@ func (d *DBStore) PutRAGEvalCase(ctx context.Context, record *RAGEvalCaseRecord)
 
 func (d *DBStore) ListRAGEvalCases(ctx context.Context, datasetVersionID, cursor string, limit int) ([]RAGEvalCaseRecord, error) {
 	limit = boundedRAGEvalListLimit(limit)
-	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT id,dataset_version_id,external_id,user_input,reference_answer,reference_contexts_json,reference_context_ids_json,history_json,expected_abstention,tags_json,metadata_json FROM rag_eval_cases WHERE dataset_version_id=%s AND id>%s ORDER BY id LIMIT %s`, d.ph(1), d.ph(2), d.ph(3)), datasetVersionID, cursor, limit)
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT id,dataset_version_id,external_id,user_input,reference_answer,reference_contexts_json,reference_context_ids_json,COALESCE(reference_document_ids_json,'[]'),history_json,expected_abstention,tags_json,metadata_json FROM rag_eval_cases WHERE dataset_version_id=%s AND id>%s ORDER BY id LIMIT %s`, d.ph(1), d.ph(2), d.ph(3)), datasetVersionID, cursor, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -516,7 +561,7 @@ func (d *DBStore) ListRAGEvalCases(ctx context.Context, datasetVersionID, cursor
 	out := []RAGEvalCaseRecord{}
 	for rows.Next() {
 		var item RAGEvalCaseRecord
-		if err := rows.Scan(&item.ID, &item.DatasetVersionID, &item.ExternalID, &item.UserInput, &item.ReferenceAnswer, &item.ReferenceContextsJSON, &item.ReferenceContextIDsJSON, &item.HistoryJSON, &item.ExpectedAbstention, &item.TagsJSON, &item.MetadataJSON); err != nil {
+		if err := rows.Scan(&item.ID, &item.DatasetVersionID, &item.ExternalID, &item.UserInput, &item.ReferenceAnswer, &item.ReferenceContextsJSON, &item.ReferenceContextIDsJSON, &item.ReferenceDocumentIDsJSON, &item.HistoryJSON, &item.ExpectedAbstention, &item.TagsJSON, &item.MetadataJSON); err != nil {
 			return nil, err
 		}
 		out = append(out, item)
@@ -882,7 +927,7 @@ func (d *DBStore) PutRAGEvalCaseResult(ctx context.Context, fence RAGEvalRunFenc
 	if record.RunID != fence.RunID || record.CaseID == "" || record.LatencyMS < 0 || !validRAGEvalCaseStatus(record.Status) {
 		return false, errors.New("case result identity mismatch")
 	}
-	for _, value := range []string{record.ContextsJSON, record.CitationsJSON, record.SearchTraceJSON, record.AnswerTraceJSON, record.UsageJSON} {
+	for _, value := range []string{record.ContextsJSON, record.CitationsJSON, record.DocumentIDsJSON, record.SearchTraceJSON, record.AnswerTraceJSON, record.UsageJSON} {
 		if !json.Valid([]byte(emptyJSON(value))) {
 			return false, errors.New("case result JSON is invalid")
 		}
@@ -893,13 +938,13 @@ func (d *DBStore) PutRAGEvalCaseResult(ctx context.Context, fence RAGEvalRunFenc
 		return false, err
 	}
 	defer tx.Rollback()
-	query := fmt.Sprintf(`INSERT INTO rag_eval_case_results(run_id,case_id,response,contexts_json,citations_json,search_trace_json,answer_trace_json,status,error_code,error_message,latency_ms,usage_json) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12))
+	query := fmt.Sprintf(`INSERT INTO rag_eval_case_results(run_id,case_id,response,contexts_json,citations_json,document_ids_json,search_trace_json,answer_trace_json,status,error_code,error_message,latency_ms,usage_json) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13))
 	if d.dialect == mysqlDialect {
-		query += ` ON DUPLICATE KEY UPDATE response=VALUES(response),contexts_json=VALUES(contexts_json),citations_json=VALUES(citations_json),search_trace_json=VALUES(search_trace_json),answer_trace_json=VALUES(answer_trace_json),status=VALUES(status),error_code=VALUES(error_code),error_message=VALUES(error_message),latency_ms=VALUES(latency_ms),usage_json=VALUES(usage_json)`
+		query += ` ON DUPLICATE KEY UPDATE response=VALUES(response),contexts_json=VALUES(contexts_json),citations_json=VALUES(citations_json),document_ids_json=VALUES(document_ids_json),search_trace_json=VALUES(search_trace_json),answer_trace_json=VALUES(answer_trace_json),status=VALUES(status),error_code=VALUES(error_code),error_message=VALUES(error_message),latency_ms=VALUES(latency_ms),usage_json=VALUES(usage_json)`
 	} else {
-		query += ` ON CONFLICT(run_id,case_id) DO UPDATE SET response=excluded.response,contexts_json=excluded.contexts_json,citations_json=excluded.citations_json,search_trace_json=excluded.search_trace_json,answer_trace_json=excluded.answer_trace_json,status=excluded.status,error_code=excluded.error_code,error_message=excluded.error_message,latency_ms=excluded.latency_ms,usage_json=excluded.usage_json`
+		query += ` ON CONFLICT(run_id,case_id) DO UPDATE SET response=excluded.response,contexts_json=excluded.contexts_json,citations_json=excluded.citations_json,document_ids_json=excluded.document_ids_json,search_trace_json=excluded.search_trace_json,answer_trace_json=excluded.answer_trace_json,status=excluded.status,error_code=excluded.error_code,error_message=excluded.error_message,latency_ms=excluded.latency_ms,usage_json=excluded.usage_json`
 	}
-	if _, err = tx.ExecContext(ctx, query, record.RunID, record.CaseID, record.Response, emptyJSON(record.ContextsJSON), emptyJSON(record.CitationsJSON), emptyJSON(record.SearchTraceJSON), emptyJSON(record.AnswerTraceJSON), record.Status, record.ErrorCode, record.ErrorMessage, record.LatencyMS, emptyJSON(record.UsageJSON)); err != nil {
+	if _, err = tx.ExecContext(ctx, query, record.RunID, record.CaseID, record.Response, emptyJSON(record.ContextsJSON), emptyJSON(record.CitationsJSON), emptyJSON(record.DocumentIDsJSON), emptyJSON(record.SearchTraceJSON), emptyJSON(record.AnswerTraceJSON), record.Status, record.ErrorCode, record.ErrorMessage, record.LatencyMS, emptyJSON(record.UsageJSON)); err != nil {
 		return false, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -910,8 +955,8 @@ func (d *DBStore) PutRAGEvalCaseResult(ctx context.Context, fence RAGEvalRunFenc
 
 func (d *DBStore) GetRAGEvalCaseResult(ctx context.Context, runID, caseID string) (*RAGEvalCaseResultRecord, error) {
 	var item RAGEvalCaseResultRecord
-	err := d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT run_id,case_id,response,contexts_json,citations_json,search_trace_json,answer_trace_json,status,error_code,error_message,latency_ms,usage_json FROM rag_eval_case_results WHERE run_id=%s AND case_id=%s`, d.ph(1), d.ph(2)), runID, caseID).
-		Scan(&item.RunID, &item.CaseID, &item.Response, &item.ContextsJSON, &item.CitationsJSON, &item.SearchTraceJSON, &item.AnswerTraceJSON, &item.Status, &item.ErrorCode, &item.ErrorMessage, &item.LatencyMS, &item.UsageJSON)
+	err := d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT run_id,case_id,response,contexts_json,citations_json,COALESCE(document_ids_json,'[]'),search_trace_json,answer_trace_json,status,error_code,error_message,latency_ms,usage_json FROM rag_eval_case_results WHERE run_id=%s AND case_id=%s`, d.ph(1), d.ph(2)), runID, caseID).
+		Scan(&item.RunID, &item.CaseID, &item.Response, &item.ContextsJSON, &item.CitationsJSON, &item.DocumentIDsJSON, &item.SearchTraceJSON, &item.AnswerTraceJSON, &item.Status, &item.ErrorCode, &item.ErrorMessage, &item.LatencyMS, &item.UsageJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -920,7 +965,7 @@ func (d *DBStore) GetRAGEvalCaseResult(ctx context.Context, runID, caseID string
 
 func (d *DBStore) ListRAGEvalCaseResults(ctx context.Context, runID, cursor string, limit int) ([]RAGEvalCaseResultRecord, error) {
 	limit = boundedRAGEvalListLimit(limit)
-	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT run_id,case_id,response,contexts_json,citations_json,search_trace_json,answer_trace_json,status,error_code,error_message,latency_ms,usage_json FROM rag_eval_case_results WHERE run_id=%s AND case_id>%s ORDER BY case_id LIMIT %s`, d.ph(1), d.ph(2), d.ph(3)), runID, cursor, limit)
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT run_id,case_id,response,contexts_json,citations_json,COALESCE(document_ids_json,'[]'),search_trace_json,answer_trace_json,status,error_code,error_message,latency_ms,usage_json FROM rag_eval_case_results WHERE run_id=%s AND case_id>%s ORDER BY case_id LIMIT %s`, d.ph(1), d.ph(2), d.ph(3)), runID, cursor, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -928,7 +973,7 @@ func (d *DBStore) ListRAGEvalCaseResults(ctx context.Context, runID, cursor stri
 	out := []RAGEvalCaseResultRecord{}
 	for rows.Next() {
 		var item RAGEvalCaseResultRecord
-		if err := rows.Scan(&item.RunID, &item.CaseID, &item.Response, &item.ContextsJSON, &item.CitationsJSON, &item.SearchTraceJSON, &item.AnswerTraceJSON, &item.Status, &item.ErrorCode, &item.ErrorMessage, &item.LatencyMS, &item.UsageJSON); err != nil {
+		if err := rows.Scan(&item.RunID, &item.CaseID, &item.Response, &item.ContextsJSON, &item.CitationsJSON, &item.DocumentIDsJSON, &item.SearchTraceJSON, &item.AnswerTraceJSON, &item.Status, &item.ErrorCode, &item.ErrorMessage, &item.LatencyMS, &item.UsageJSON); err != nil {
 			return nil, err
 		}
 		out = append(out, item)

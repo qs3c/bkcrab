@@ -37,13 +37,14 @@ var RagasMetrics = func() map[string]struct{} {
 }()
 
 type EvaluationSample struct {
-	CaseID              string   `json:"caseId"`
-	UserInput           string   `json:"userInput"`
-	RetrievedContexts   []string `json:"retrievedContexts"`
-	RetrievedContextIDs []string `json:"retrievedContextIds,omitempty"`
-	Response            string   `json:"response"`
-	Reference           string   `json:"reference,omitempty"`
-	ReferenceContexts   []string `json:"referenceContexts,omitempty"`
+	CaseID               string   `json:"caseId"`
+	UserInput            string   `json:"userInput"`
+	RetrievedContexts    []string `json:"retrievedContexts"`
+	RetrievedContextIDs  []string `json:"retrievedContextIds,omitempty"`
+	RetrievedDocumentIDs []string `json:"-"`
+	Response             string   `json:"response"`
+	Reference            string   `json:"reference,omitempty"`
+	ReferenceContexts    []string `json:"referenceContexts,omitempty"`
 }
 type EvaluateRequest struct {
 	OwnerID             string             `json:"-"`

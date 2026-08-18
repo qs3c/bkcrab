@@ -196,6 +196,7 @@ type Gateway struct {
 	ragEvaluator       *rageval.RagasClient
 	ragEvalRunner      *rageval.Runner
 	ragEvalDatasets    *rageval.DatasetService
+	ragEvalCatalog     *rageval.CatalogImportRunner
 	ragEvalCleanup     *rageval.CleanupCoordinator
 	ragPolicyPromotion *rag.PolicyPromotionService
 	ragPolicyRefresher *rag.RuntimePolicyRefresher
@@ -272,6 +273,13 @@ func (g *Gateway) RAGEvaluationDatasetService() *rageval.DatasetService {
 		return nil
 	}
 	return g.ragEvalDatasets
+}
+
+func (g *Gateway) RAGEvaluationCatalogImportRunner() *rageval.CatalogImportRunner {
+	if g == nil {
+		return nil
+	}
+	return g.ragEvalCatalog
 }
 
 // ResolveRAGEvaluationJudge keeps provider credentials in the main process.
@@ -434,6 +442,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 
 	var ragSvc *rag.Service
 	var ragEvalDatasets *rageval.DatasetService
+	var ragEvalCatalog *rageval.CatalogImportRunner
 	var legacySnapshotBuilder store.RAGLegacyTaskSnapshotBuilder
 	ragCfg := readSystemRAGCfg(st, env)
 	if err := ragCfg.Validate(); err != nil {
@@ -522,6 +531,12 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 				ragEvalDatasets, objectErr = rageval.NewDatasetService(st, ragObjects)
 				if objectErr != nil {
 					slog.Error("rag eval: dataset import service unavailable", "error", objectErr)
+				} else {
+					ragEvalCatalog, objectErr = rageval.NewCatalogImportRunner(st, ragEvalDatasets, ragObjects, "eval-catalog-"+uuid.NewString(), 2)
+					if objectErr != nil {
+						slog.Error("rag eval: catalog import runner unavailable", "error", objectErr)
+						ragEvalCatalog = nil
+					}
 				}
 			}
 
@@ -827,6 +842,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		ragEvaluator:       ragEvaluatorClient,
 		ragEvalRunner:      ragEvalRunner,
 		ragEvalDatasets:    ragEvalDatasets,
+		ragEvalCatalog:     ragEvalCatalog,
 		ragEvalCleanup:     ragEvalCleanup,
 		ragPolicyPromotion: ragPolicyPromotion,
 		ragPolicyRefresher: ragPolicyRefresher,
@@ -1023,6 +1039,9 @@ func (g *Gateway) RunContext(ctx context.Context) error {
 	}
 	if g.ragEvalRunner != nil {
 		g.ragEvalRunner.Start(ctx)
+	}
+	if g.ragEvalCatalog != nil {
+		g.ragEvalCatalog.Start(ctx)
 	}
 	if g.ragEvalCleanup != nil {
 		g.ragEvalCleanup.Start(ctx)

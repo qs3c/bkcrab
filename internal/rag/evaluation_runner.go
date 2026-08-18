@@ -68,11 +68,13 @@ func (p *EvaluationRunnerGenerationProvider) Ensure(ctx context.Context, run *st
 		contract = DefaultEvaluationGenerationContract()
 	}
 	ingestion := snapshot.Profile.Ingestion
-	if strings.TrimSpace(ingestion.ParserEngine) == "" {
+	bypassParser := snapshot.DatasetVersion.Track == store.RAGEvalTrackTextRAG
+	if !bypassParser && strings.TrimSpace(ingestion.ParserEngine) == "" {
 		ingestion.ParserEngine = strings.ToLower(strings.TrimSpace(p.DefaultParserEngine))
 	}
 	result, _, err := p.Builder.Build(ctx, EvaluationGenerationBuildRequest{OwnerID: run.CreatedBy, RunID: run.ID, DatasetVersion: &snapshot.DatasetVersion, Documents: documents,
-		DocumentConcurrency: p.DocumentConcurrency, Ingestion: ingestion, Contract: contract, Embedding: p.Embedding, EmbeddingContractFingerprint: ingestion.Embedding.ContractFingerprint})
+		DocumentConcurrency: p.DocumentConcurrency, Ingestion: ingestion, Contract: contract, Embedding: p.Embedding,
+		EmbeddingContractFingerprint: ingestion.Embedding.ContractFingerprint, BypassParser: bypassParser})
 	return result, err
 }
 
@@ -87,7 +89,7 @@ func (p *EvaluationRunnerGenerationProvider) Release(ctx context.Context, runID 
 // chat/ordinary usage persistence hooks.
 func (s *Service) Execute(ctx context.Context, request rageval.CaseExecutionRequest) (rageval.CaseExecutionResult, error) {
 	started := time.Now()
-	hits, trace, err := s.SearchEvaluationWithOptions(ctx, request.OwnerID, request.Generation, request.Case.UserInput, request.Profile)
+	hits, trace, err := s.SearchEvaluationWithOptions(ctx, request.OwnerID, request.Generation, SearchContext{Query: request.Case.UserInput, History: request.Case.History}, request.Profile)
 	if err != nil {
 		return rageval.CaseExecutionResult{SearchTrace: trace, Latency: time.Since(started), ErrorCode: "search_error", ErrorMessage: err.Error()}, err
 	}
@@ -98,12 +100,18 @@ func (s *Service) Execute(ctx context.Context, request rageval.CaseExecutionRequ
 	if err != nil {
 		return rageval.CaseExecutionResult{SearchTrace: trace, Latency: time.Since(started), ErrorCode: "answer_model_unavailable", ErrorMessage: err.Error()}, err
 	}
-	answer, err := GenerateAnswer(ctx, model, AnswerRequest{Mode: AnswerModeEvaluation, Input: AnswerInput{KnowledgeBase: AnswerKnowledgeBase{ID: request.Generation.ID, Name: "evaluation"}, Question: request.Case.UserInput, Hits: hits}}, AnswerOptions{Model: request.Profile.AnswerModel, Temperature: request.Profile.Runtime.Temperature, MaxTokens: request.Profile.Runtime.MaxTokens, PromptBundleVersion: request.Profile.Runtime.RAGPromptBundleVersion, RuntimePolicyVersion: request.Profile.Runtime.Version})
+	answer, err := GenerateAnswer(ctx, model, AnswerRequest{Mode: AnswerModeEvaluation, Input: AnswerInput{KnowledgeBase: AnswerKnowledgeBase{ID: request.Generation.ID, Name: "evaluation"}, Question: request.Case.UserInput, History: request.Case.History, Hits: hits}}, AnswerOptions{Model: request.Profile.AnswerModel, Temperature: request.Profile.Runtime.Temperature, MaxTokens: request.Profile.Runtime.MaxTokens, PromptBundleVersion: request.Profile.Runtime.RAGPromptBundleVersion, RuntimePolicyVersion: request.Profile.Runtime.Version})
 	contexts := make([]string, len(hits))
 	ids := make([]string, len(hits))
+	documentIDs := make([]string, 0, len(hits))
+	seenDocuments := make(map[string]struct{}, len(hits))
 	for i, hit := range hits {
 		contexts[i] = hit.AnswerText()
 		ids[i] = fmt.Sprintf("%s:%d", hit.DocID, hit.ChunkIndex)
+		if _, seen := seenDocuments[hit.DocID]; !seen {
+			seenDocuments[hit.DocID] = struct{}{}
+			documentIDs = append(documentIDs, hit.DocID)
+		}
 	}
 	citations := make([]string, len(answer.Citations))
 	for i, citation := range answer.Citations {
@@ -114,7 +122,7 @@ func (s *Service) Execute(ctx context.Context, request rageval.CaseExecutionRequ
 	for index, hit := range hits {
 		savedHits[index] = evaluationTraceHit{ContextID: ids[index], RecallScore: hit.RecallScore, RerankScore: hit.RerankScore}
 	}
-	result := rageval.CaseExecutionResult{Response: answer.Response, Contexts: contexts, ContextIDs: ids, Citations: citations, SearchTrace: evaluationSearchTrace{Trace: trace, Hits: savedHits}, AnswerTrace: answer, Latency: time.Since(started),
+	result := rageval.CaseExecutionResult{Response: answer.Response, Contexts: contexts, ContextIDs: ids, DocumentIDs: documentIDs, Citations: citations, SearchTrace: evaluationSearchTrace{Trace: trace, Hits: savedHits}, AnswerTrace: answer, Latency: time.Since(started),
 		Usage: rageval.Usage{Stage: "answer", Provider: providerName, Model: modelName, InputTokens: int64(answer.Usage.InputTokens), OutputTokens: int64(answer.Usage.OutputTokens)}}
 	result.Usage.EstimatedCostUSD = (float64(result.Usage.InputTokens)*s.cfg.Evaluation.AnswerInputCostPerMUSD + float64(result.Usage.OutputTokens)*s.cfg.Evaluation.AnswerOutputCostPerMUSD) / 1_000_000
 	if err != nil {
@@ -137,7 +145,8 @@ type evaluationSearchTrace struct {
 // SearchEvaluationWithOptions shares query planning, embedding, Milvus hybrid
 // retrieval and reranking with Service search while accepting only a trusted
 // persisted evaluation generation.
-func (s *Service) SearchEvaluationWithOptions(ctx context.Context, ownerID string, generation *store.RAGEvalGenerationRecord, query string, profile config.RAGEvalProfileData) (hits []Hit, trace SearchTrace, err error) {
+func (s *Service) SearchEvaluationWithOptions(ctx context.Context, ownerID string, generation *store.RAGEvalGenerationRecord, input SearchContext, profile config.RAGEvalProfileData) (hits []Hit, trace SearchTrace, err error) {
+	query := strings.TrimSpace(input.Query)
 	generationID := "unavailable"
 	if generation != nil {
 		generationID = generation.ID
@@ -149,7 +158,7 @@ func (s *Service) SearchEvaluationWithOptions(ctx context.Context, ownerID strin
 	if s == nil || s.vec == nil || s.st == nil || generation == nil || generation.Status != store.RAGEvalGenerationReady {
 		return nil, trace, errors.New("READY evaluation generation is required")
 	}
-	if strings.TrimSpace(query) == "" {
+	if query == "" {
 		return nil, trace, errors.New("evaluation query is required")
 	}
 	if generation.EmbeddingModel != profile.Ingestion.Embedding.Model || generation.EmbeddingDims != int64(profile.Ingestion.Embedding.Dims) {
@@ -158,6 +167,7 @@ func (s *Service) SearchEvaluationWithOptions(ctx context.Context, ownerID strin
 	docs := map[string]store.RAGEvalCorpusDocumentRecord{}
 	active := map[string]int64{}
 	cursor := ""
+	hydrationStarted := time.Now()
 	for {
 		batch, err := s.st.ListRAGEvalCorpusDocuments(ctx, generation.DatasetVersionID, cursor, 200)
 		if err != nil {
@@ -172,9 +182,10 @@ func (s *Service) SearchEvaluationWithOptions(ctx context.Context, ownerID strin
 		}
 		cursor = batch[len(batch)-1].ID
 	}
+	trace.HydrationDurationMS = time.Since(hydrationStarted).Milliseconds()
 	plan := QueryPlan{RewrittenQuery: query, HypotheticalDocument: query}
 	if profile.RewriteEnabled || profile.HyDEEnabled {
-		plan = s.planQuery(ctx, trace.RetrievalID, ownerID, SearchContext{Query: query})
+		plan = s.planQuery(ctx, trace.RetrievalID, ownerID, SearchContext{Query: query, History: input.History})
 	}
 	if !profile.RewriteEnabled {
 		plan.RewrittenQuery = query
@@ -196,6 +207,7 @@ func (s *Service) SearchEvaluationWithOptions(ctx context.Context, ownerID strin
 	if plan.HypotheticalDocument != plan.RewrittenQuery {
 		texts = append(texts, plan.HypotheticalDocument)
 	}
+	retrievalStarted := time.Now()
 	vectors, err := embed.New(embeddingCfg.Endpoint, embeddingCfg.APIKey, embeddingCfg.Model, embeddingCfg.Dims).Embed(ctx, texts)
 	if err != nil {
 		return nil, trace, err
@@ -208,6 +220,7 @@ func (s *Service) SearchEvaluationWithOptions(ctx context.Context, ownerID strin
 	if err != nil {
 		return nil, trace, err
 	}
+	trace.RetrievalDurationMS = time.Since(retrievalStarted).Milliseconds()
 	hits = make([]Hit, 0, len(vectorHits))
 	for _, item := range vectorHits {
 		doc, ok := docs[item.DocID]
@@ -220,6 +233,7 @@ func (s *Service) SearchEvaluationWithOptions(ctx context.Context, ownerID strin
 	trace.CandidateCount = len(hits)
 	if profile.RerankerEnabled && s.reranker != nil && len(hits) > 0 {
 		reranked, stats, rankErr := s.rerankHitsWithStats(ctx, trace.RetrievalID, plan.RewrittenQuery, hits, profile.Runtime.TopN, profile.Runtime.MinScore)
+		trace.RerankerDurationMS = stats.durationMS
 		if rankErr == nil {
 			trace.RerankerAttempted = true
 			trace.RerankerSucceeded = true
