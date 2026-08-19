@@ -2,6 +2,24 @@ import type { RAGEvalAggregate, RAGEvalCaseResult } from "@/lib/api";
 
 const LOWER_IS_BETTER = new Set(["latency", "latency_ms", "cost", "cost_usd", "error_rate", "reranker_fallback_rate"]);
 
+export function caseMetrics(item: { metrics?: RAGEvalCaseResult["metrics"] | null }): RAGEvalCaseResult["metrics"] {
+  return Array.isArray(item.metrics) ? item.metrics : [];
+}
+
+export function caseFailureSummary(cases: RAGEvalCaseResult[]): Array<{ key: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const item of cases) {
+    if (item.status !== "error") continue;
+    const code = item.errorCode?.trim() || "case_error";
+    const message = item.errorMessage?.trim();
+    const key = message ? `${code}: ${message}` : code;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([key, count]) => ({ key, count }))
+    .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+}
+
 export function denominatorSummary(metric: RAGEvalAggregate): string {
   return `${metric.scoredCount}/${metric.count} 已评分 · ${metric.skippedCount} skipped · ${metric.errorCount} error`;
 }
@@ -37,7 +55,7 @@ export function stageLatency(cases: RAGEvalCaseResult[]) {
 export function metricDistribution(cases: RAGEvalCaseResult[], metric: string): number[] {
   const bins = [0, 0, 0, 0];
   for (const item of cases) {
-    const value = item.metrics.find((entry) => entry.Name === metric && entry.Status === "ok")?.Value;
+    const value = caseMetrics(item).find((entry) => entry.Name === metric && entry.Status === "ok")?.Value;
     if (value === undefined || !Number.isFinite(value)) continue;
     bins[Math.min(3, Math.max(0, Math.floor(value * 4)))]++;
   }

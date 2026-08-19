@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const { denominatorSummary, directionalDelta, metricDistribution, promotionGateReasons, stageLatency, thresholdCurve } = await import(new URL("./result-state.ts", import.meta.url));
+const { caseFailureSummary, caseMetrics, denominatorSummary, directionalDelta, metricDistribution, promotionGateReasons, stageLatency, thresholdCurve } = await import(new URL("./result-state.ts", import.meta.url));
 
 test("metric summary always exposes scored, skipped, error and total denominators", () => {
   assert.equal(denominatorSummary({ count: 20, scoredCount: 15, skippedCount: 3, errorCount: 2, mean: .8 }), "15/20 已评分 · 3 skipped · 2 error");
@@ -19,6 +19,15 @@ test("distribution includes only successfully scored metric values", () => {
     { Name: "faithfulness", Status: "error", Value: .9 },
   ] }];
   assert.deepEqual(metricDistribution(cases, "faithfulness"), [1, 0, 0, 0]);
+});
+
+test("missing metric collections remain renderable and case failures are summarized", () => {
+  const failed = { status: "error", errorCode: "search_error", errorMessage: "reranker timeout", contexts: [], usage: {}, latencyMs: 5000, metrics: null };
+  assert.deepEqual(caseMetrics(failed), []);
+  assert.deepEqual(metricDistribution([failed], "faithfulness"), [0, 0, 0, 0]);
+  assert.deepEqual(caseFailureSummary([failed, { ...failed, metrics: [] }]), [
+    { key: "search_error: reranker timeout", count: 2 },
+  ]);
 });
 
 test("threshold curve never treats missing relevance labels as false", () => {

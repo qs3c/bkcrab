@@ -2708,10 +2708,10 @@ export interface RAGEvalAggregate {
   scoredCount: number;
   skippedCount: number;
   errorCount: number;
-  mean?: number;
-  median?: number;
-  p50?: number;
-  p95?: number;
+  mean?: number | null;
+  median?: number | null;
+  p50?: number | null;
+  p95?: number | null;
 }
 
 export interface RAGEvalCaseResult {
@@ -2721,6 +2721,7 @@ export interface RAGEvalCaseResult {
   citations: unknown[];
   status: string;
   errorCode?: string;
+  errorMessage?: string;
   latencyMs: number;
   usage: Record<string, unknown>;
   searchTrace?: { trace?: Record<string, unknown>; hits?: unknown[] };
@@ -2880,8 +2881,27 @@ export async function getRAGEvalRunAnalysis(id: string): Promise<{ run: RAGEvalR
 }
 
 export async function listRAGEvalRunCases(id: string): Promise<RAGEvalCaseResult[]> {
-  const result = await ragEvalJSON<{ items: RAGEvalCaseResult[] }>(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}/cases?limit=100&includeTraces=true`));
-  return result.items ?? [];
+  const items: RAGEvalCaseResult[] = [];
+  const seenCursors = new Set<string>();
+  let cursor = "";
+  do {
+    const params = new URLSearchParams({ limit: "200", includeTraces: "true" });
+    if (cursor) params.set("cursor", cursor);
+    const result = await ragEvalJSON<{ items: RAGEvalCaseResult[]; nextCursor?: string }>(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}/cases?${params}`));
+    for (const item of result.items ?? []) {
+      items.push({
+        ...item,
+        contexts: Array.isArray(item.contexts) ? item.contexts : [],
+        citations: Array.isArray(item.citations) ? item.citations : [],
+        metrics: Array.isArray(item.metrics) ? item.metrics : [],
+      });
+    }
+    const next = result.nextCursor?.trim() ?? "";
+    if (!next || seenCursors.has(next)) break;
+    seenCursors.add(next);
+    cursor = next;
+  } while (cursor);
+  return items;
 }
 
 export async function compareRAGEvalRuns(candidateId: string, baselineId: string, metric: string): Promise<RAGEvalPairedDelta> {

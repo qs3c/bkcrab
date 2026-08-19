@@ -7,6 +7,94 @@ export interface RAGEvalRunDraft {
   metrics: string[];
 }
 
+export interface RAGEvalProfileSummary {
+  id: string;
+  name: string;
+  profileJson: string;
+  fingerprint: string;
+  createdAt: string;
+}
+
+export interface RAGEvalRunProgress {
+  total?: number;
+  completed?: number;
+  failed?: number;
+  scored?: number;
+  tokens?: number;
+  costUsd?: number;
+  parserEngine?: string;
+  generationDurationMs?: number;
+  generationReused?: boolean;
+  documentsTotal?: number;
+  documentsCompleted?: number;
+  chunksCompleted?: number;
+  lastActivityAt?: string;
+}
+
+function profileParserLabel(profileJson: string): string {
+  try {
+    const profile = JSON.parse(profileJson || "{}") as { ingestion?: { parserEngine?: string; parseMode?: string } };
+    const parser = profile.ingestion?.parserEngine?.trim().toLowerCase();
+    if (parser === "anydoc") return "AnyDoc";
+    if (parser === "markitdown") return "MarkItDown";
+    if (parser) return parser;
+    return profile.ingestion?.parseMode === "standard" ? "Standard" : "默认解析器";
+  } catch {
+    return "配置异常";
+  }
+}
+
+export function profileOptionLabel(profile: RAGEvalProfileSummary, profiles: RAGEvalProfileSummary[]): string {
+  const siblings = profiles.filter((item) => item.name === profile.name);
+  const parser = profileParserLabel(profile.profileJson);
+  if (siblings.length < 2) return `${profile.name} · ${parser}`;
+  const newest = siblings.reduce((current, item) => {
+    const byCreatedAt = item.createdAt.localeCompare(current.createdAt);
+    return byCreatedAt > 0 || (byCreatedAt === 0 && item.id > current.id) ? item : current;
+  });
+  const version = newest.id === profile.id ? "当前" : `历史 ${profile.createdAt.slice(0, 10) || profile.fingerprint.slice(0, 8)}`;
+  return `${profile.name} · ${parser} · ${version}`;
+}
+
+export function parseRAGEvalRunProgress(value: string): RAGEvalRunProgress {
+  try { return JSON.parse(value || "{}") as RAGEvalRunProgress; }
+  catch { return {}; }
+}
+
+export function runStageLabel(stage: string): string {
+  return ({
+    queued: "等待调度",
+    running: "任务已领取",
+    preparing_generation: "准备隔离索引",
+    preparing_index: "创建向量索引",
+    building_generation: "向量化并写入索引",
+    finalizing_generation: "固化索引版本",
+    reusing_generation: "复用已有索引",
+    answering: "执行检索与回答",
+    scoring: "计算测评指标",
+    scoring_retry: "评分重试中",
+    budget_exceeded: "已达到预算上限",
+    finished: "已完成",
+  } as Record<string, string>)[stage] ?? stage;
+}
+
+export function runProgressAmount(stage: string, progress: RAGEvalRunProgress): { current: number; total: number } | null {
+  if (["preparing_generation", "preparing_index", "building_generation", "finalizing_generation", "reusing_generation"].includes(stage)) {
+    const total = Number(progress.documentsTotal ?? 0);
+    return total > 0 ? { current: Math.min(total, Math.max(0, Number(progress.documentsCompleted ?? 0))), total } : null;
+  }
+  const total = Number(progress.total ?? 0);
+  if (total <= 0) return null;
+  const current = stage === "scoring" || stage === "scoring_retry" ? Number(progress.scored ?? 0) : Number(progress.completed ?? 0);
+  return { current: Math.min(total, Math.max(0, current)), total };
+}
+
+export function isRunProgressStalled(progress: RAGEvalRunProgress, now = Date.now(), thresholdMs = 120_000): boolean {
+  if (!progress.lastActivityAt) return false;
+  const lastActivity = Date.parse(progress.lastActivityAt);
+  return Number.isFinite(lastActivity) && now-lastActivity > thresholdMs;
+}
+
 export function canShowRAGEvalNavigation(input: {
   role?: string;
   authMethod?: string;

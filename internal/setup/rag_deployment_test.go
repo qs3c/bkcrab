@@ -164,6 +164,30 @@ func TestRAGDeploymentComposeConstrainsParser(t *testing.T) {
 	deploymentRequireStringListContains(t, gateway["networks"], "rag-parser-internal")
 }
 
+func TestRAGDeploymentRerankerSupportsEvaluationLoad(t *testing.T) {
+	root := deploymentRepoRoot(t)
+	ragCompose := deploymentRead(t, filepath.Join(root, "deploy", "docker", "docker-compose.rag.yml"))
+	modelCompose := deploymentRead(t, filepath.Join(root, "deploy", "docker", "docker-compose.models.yml"))
+	envExample := deploymentRead(t, filepath.Join(root, "deploy", "docker", ".env.example"))
+	var modelDocument map[string]any
+	if err := yaml.Unmarshal(modelCompose, &modelDocument); err != nil {
+		t.Fatalf("decode model compose overlay: %v", err)
+	}
+	modelServices := deploymentMap(t, modelDocument["services"], "services")
+	reranker := deploymentMap(t, modelServices["qwen3-reranker"], "services.qwen3-reranker")
+
+	deploymentRequireContains(t, ragCompose, `BKCRAB_RAG_RERANKER_TIMEOUT_MS: "${RAG_RERANKER_TIMEOUT_MS:-60000}"`)
+	deploymentRequireStringListContains(t, reranker["command"], `${RAG_RERANKER_BATCH_SIZE:-1024}`)
+	deploymentRequireStringListContains(t, reranker["command"], `${RAG_RERANKER_UBATCH_SIZE:-1024}`)
+	deploymentRequireStringListContains(t, reranker["command"], `${RAG_RERANKER_PARALLEL:-1}`)
+	deploymentRequireContains(t, envExample,
+		"RAG_RERANKER_TIMEOUT_MS=60000",
+		"RAG_RERANKER_BATCH_SIZE=1024",
+		"RAG_RERANKER_UBATCH_SIZE=1024",
+		"RAG_RERANKER_PARALLEL=1",
+	)
+}
+
 func TestRAGDeploymentKubernetesConstrainsParser(t *testing.T) {
 	root := deploymentRepoRoot(t)
 	parserManifest := deploymentRead(t, filepath.Join(root, "deploy", "k8s", "rag-parser.yaml"))

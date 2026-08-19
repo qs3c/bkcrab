@@ -618,17 +618,18 @@ func (s *Server) handleCancelRAGEvalRun(w http.ResponseWriter, r *http.Request) 
 }
 
 type evalCaseDTO struct {
-	CaseID      string          `json:"caseId"`
-	Response    string          `json:"response,omitempty"`
-	Contexts    json.RawMessage `json:"contexts"`
-	Citations   json.RawMessage `json:"citations"`
-	Status      string          `json:"status"`
-	ErrorCode   string          `json:"errorCode,omitempty"`
-	LatencyMS   int64           `json:"latencyMs"`
-	Usage       json.RawMessage `json:"usage"`
-	SearchTrace json.RawMessage `json:"searchTrace,omitempty"`
-	AnswerTrace json.RawMessage `json:"answerTrace,omitempty"`
-	Metrics     []evalMetricDTO `json:"metrics"`
+	CaseID       string          `json:"caseId"`
+	Response     string          `json:"response,omitempty"`
+	Contexts     json.RawMessage `json:"contexts"`
+	Citations    json.RawMessage `json:"citations"`
+	Status       string          `json:"status"`
+	ErrorCode    string          `json:"errorCode,omitempty"`
+	ErrorMessage string          `json:"errorMessage,omitempty"`
+	LatencyMS    int64           `json:"latencyMs"`
+	Usage        json.RawMessage `json:"usage"`
+	SearchTrace  json.RawMessage `json:"searchTrace,omitempty"`
+	AnswerTrace  json.RawMessage `json:"answerTrace,omitempty"`
+	Metrics      []evalMetricDTO `json:"metrics"`
 }
 
 type evalMetricDTO struct {
@@ -677,7 +678,11 @@ func (s *Server) handleListRAGEvalRunCases(w http.ResponseWriter, r *http.Reques
 	}
 	out := make([]evalCaseDTO, 0, len(items))
 	for _, item := range items {
-		dto := evalCaseDTO{CaseID: item.CaseID, Response: item.Response, Contexts: rawEvalJSON(item.ContextsJSON, "[]"), Citations: rawEvalJSON(item.CitationsJSON, "[]"), Status: item.Status, ErrorCode: item.ErrorCode, LatencyMS: item.LatencyMS, Usage: rawEvalJSON(item.UsageJSON, "{}"), Metrics: metricsByCase[item.CaseID]}
+		metrics := metricsByCase[item.CaseID]
+		if metrics == nil {
+			metrics = []evalMetricDTO{}
+		}
+		dto := evalCaseDTO{CaseID: item.CaseID, Response: item.Response, Contexts: rawEvalJSON(item.ContextsJSON, "[]"), Citations: rawEvalJSON(item.CitationsJSON, "[]"), Status: item.Status, ErrorCode: item.ErrorCode, ErrorMessage: item.ErrorMessage, LatencyMS: item.LatencyMS, Usage: rawEvalJSON(item.UsageJSON, "{}"), Metrics: metrics}
 		if includeTraces {
 			dto.SearchTrace = rawEvalJSON(item.SearchTraceJSON, "{}")
 			dto.AnswerTrace = rawEvalJSON(item.AnswerTraceJSON, "{}")

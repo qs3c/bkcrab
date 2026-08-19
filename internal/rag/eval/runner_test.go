@@ -22,7 +22,8 @@ type fakeGenerationProvider struct {
 }
 
 func TestProgressJSONKeepsIndependentCounters(t *testing.T) {
-	raw, err := json.Marshal(Progress{Total: 4, Completed: 3, Failed: 1, Scored: 2, Tokens: 9, CostUSD: 1.25})
+	raw, err := json.Marshal(Progress{Total: 4, Completed: 3, Failed: 1, Scored: 2, Tokens: 9, CostUSD: 1.25,
+		DocumentsTotal: 8, DocumentsCompleted: 5, ChunksCompleted: 13, LastActivityAt: "2026-08-18T16:10:00Z"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +31,8 @@ func TestProgressJSONKeepsIndependentCounters(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]float64{"total": 4, "completed": 3, "failed": 1, "scored": 2, "tokens": 9, "costUsd": 1.25}
+	want := map[string]float64{"total": 4, "completed": 3, "failed": 1, "scored": 2, "tokens": 9, "costUsd": 1.25,
+		"documentsTotal": 8, "documentsCompleted": 5, "chunksCompleted": 13}
 	for key, value := range want {
 		if got[key] != value {
 			t.Fatalf("progress %s=%v, want %v; json=%s", key, got[key], value, raw)
@@ -38,7 +40,13 @@ func TestProgressJSONKeepsIndependentCounters(t *testing.T) {
 	}
 }
 
-func (p *fakeGenerationProvider) Ensure(context.Context, *store.RAGEvalRunRecord, ExecutionSnapshot) (*store.RAGEvalGenerationRecord, error) {
+func (p *fakeGenerationProvider) Ensure(_ context.Context, _ *store.RAGEvalRunRecord, snapshot ExecutionSnapshot, report func(GenerationProgress) error) (*store.RAGEvalGenerationRecord, error) {
+	if report != nil {
+		if err := report(GenerationProgress{Stage: "building_generation", DocumentsCompleted: snapshot.DatasetVersion.DocumentCount,
+			DocumentsTotal: snapshot.DatasetVersion.DocumentCount, ChunksCompleted: p.generation.ChunkCount}); err != nil {
+			return nil, err
+		}
+	}
 	return &p.generation, nil
 }
 func (p *fakeGenerationProvider) Release(context.Context, string) error { p.releases++; return nil }
@@ -108,7 +116,8 @@ func runnerFixture(t *testing.T, caseCount int, scorer *fakeBatchScorer, failure
 	if err := st.CreateRAGEvalDataset(ctx, dataset); err != nil {
 		t.Fatal(err)
 	}
-	version := &store.RAGEvalDatasetVersionRecord{DatasetID: dataset.ID, Version: 1, SourceType: "canonical", CreatedBy: "admin", CaseCount: int64(caseCount), CorpusSHA256: strings.Repeat("a", 64)}
+	version := &store.RAGEvalDatasetVersionRecord{DatasetID: dataset.ID, Version: 1, SourceType: "canonical", Track: store.RAGEvalTrackTextRAG,
+		CreatedBy: "admin", CaseCount: int64(caseCount), DocumentCount: 1, CorpusSHA256: strings.Repeat("a", 64)}
 	if err := st.CreateRAGEvalDatasetVersion(ctx, version); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +142,8 @@ func runnerFixture(t *testing.T, caseCount int, scorer *fakeBatchScorer, failure
 	cfg := config.RAGEvaluationCfg{WorkerConcurrency: 2, MaxBatchSize: 2, MaxRunCases: 10, MaxRunTokens: 1000, MaxRunCostUSD: 10, MaxRunDurationSec: 60}
 	cfg.ApplyDefaults()
 	pipeline := &fakeCasePipeline{calls: map[string]int{}, failures: failures, history: map[string][]string{}}
-	generations := &fakeGenerationProvider{generation: store.RAGEvalGenerationRecord{ID: "generation", DatasetVersionID: version.ID, Status: store.RAGEvalGenerationReady}}
+	generations := &fakeGenerationProvider{generation: store.RAGEvalGenerationRecord{ID: "generation", DatasetVersionID: version.ID,
+		Status: store.RAGEvalGenerationReady, DocumentCount: 1, ChunkCount: 3}}
 	runner, err := NewRunner(st, generations, pipeline, scorer, cfg, "runner")
 	if err != nil {
 		t.Fatal(err)
@@ -160,6 +170,14 @@ func TestRunnerFreezesSnapshotAndPersistsPartialCaseFailure(t *testing.T) {
 	run, _ := st.GetRAGEvalRun(context.Background(), runID)
 	if run.Status != store.RAGEvalRunSucceeded {
 		t.Fatalf("status=%s", run.Status)
+	}
+	var progress Progress
+	if err := json.Unmarshal([]byte(run.ProgressJSON), &progress); err != nil {
+		t.Fatal(err)
+	}
+	if progress.DocumentsCompleted != 1 || progress.DocumentsTotal != 1 || progress.ChunksCompleted != 3 ||
+		progress.ParserEngine != "canonical-text (parser bypassed)" || progress.LastActivityAt == "" {
+		t.Fatalf("progress=%+v", progress)
 	}
 	var snapshot ExecutionSnapshot
 	if err := json.Unmarshal([]byte(run.ExecutionSnapshotJSON), &snapshot); err != nil {
@@ -188,6 +206,38 @@ func TestRunnerFreezesSnapshotAndPersistsPartialCaseFailure(t *testing.T) {
 		if len(history) != 1 || history[0] != "earlier-user-question" {
 			t.Fatalf("case %s history=%v", caseID, history)
 		}
+	}
+}
+
+func TestRunnerMarksAllCaseFailuresAsFailed(t *testing.T) {
+	runner, st, pipeline, _, runID := runnerFixture(t, 2, &fakeBatchScorer{}, map[string]error{})
+	run, err := st.GetRAGEvalRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	datasetCases, err := st.ListRAGEvalCases(context.Background(), run.DatasetVersionID, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range datasetCases {
+		pipeline.failures[item.ID] = errors.New("reranker unavailable")
+	}
+	if err = runner.Run(context.Background(), runID); err == nil {
+		t.Fatal("all-case failure must return a terminal error")
+	}
+	run, err = st.GetRAGEvalRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != store.RAGEvalRunFailed || run.ErrorCode != "all_cases_failed" {
+		t.Fatalf("status=%s code=%s", run.Status, run.ErrorCode)
+	}
+	var progress Progress
+	if err = json.Unmarshal([]byte(run.ProgressJSON), &progress); err != nil {
+		t.Fatal(err)
+	}
+	if progress.Completed != 2 || progress.Failed != 2 || progress.Scored != 0 {
+		t.Fatalf("progress=%+v", progress)
 	}
 }
 

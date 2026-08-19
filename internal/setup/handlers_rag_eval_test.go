@@ -132,6 +132,24 @@ func TestListRAGEvalMetricsForCasesReadsMoreThanTwoHundred(t *testing.T) {
 	}
 }
 
+func TestEvalCaseDTOEncodesEmptyMetricsAndErrorMessage(t *testing.T) {
+	encoded, err := json.Marshal(evalCaseDTO{CaseID: "case-1", Status: store.RAGEvalCaseError, ErrorCode: "search_error", ErrorMessage: "reranker timeout", Metrics: []evalMetricDTO{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err = json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	metrics, ok := decoded["metrics"].([]any)
+	if !ok || len(metrics) != 0 {
+		t.Fatalf("metrics must be an empty JSON array: %s", encoded)
+	}
+	if decoded["errorMessage"] != "reranker timeout" {
+		t.Fatalf("error message missing: %s", encoded)
+	}
+}
+
 func TestRAGEvalAdminIdentityMatrix(t *testing.T) {
 	tests := []struct {
 		name     string

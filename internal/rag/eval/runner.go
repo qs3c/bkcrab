@@ -43,8 +43,16 @@ type RunStore interface {
 }
 
 type GenerationProvider interface {
-	Ensure(context.Context, *store.RAGEvalRunRecord, ExecutionSnapshot) (*store.RAGEvalGenerationRecord, error)
+	Ensure(context.Context, *store.RAGEvalRunRecord, ExecutionSnapshot, func(GenerationProgress) error) (*store.RAGEvalGenerationRecord, error)
 	Release(context.Context, string) error
+}
+
+type GenerationProgress struct {
+	Stage              string
+	DocumentsCompleted int64
+	DocumentsTotal     int64
+	ChunksCompleted    int64
+	Reused             bool
 }
 
 type CaseExecutionRequest struct {
@@ -116,6 +124,10 @@ type Progress struct {
 	ParserEngine         string  `json:"parserEngine,omitempty"`
 	GenerationDurationMS int64   `json:"generationDurationMs,omitempty"`
 	GenerationReused     bool    `json:"generationReused"`
+	DocumentsTotal       int64   `json:"documentsTotal,omitempty"`
+	DocumentsCompleted   int64   `json:"documentsCompleted,omitempty"`
+	ChunksCompleted      int64   `json:"chunksCompleted,omitempty"`
+	LastActivityAt       string  `json:"lastActivityAt,omitempty"`
 }
 
 type Runner struct {
@@ -324,8 +336,34 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 		ctx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
 	}
+	parserEngine := snapshot.Profile.Ingestion.ParserEngine
+	if snapshot.DatasetVersion.Track == store.RAGEvalTrackTextRAG {
+		parserEngine = "canonical-text (parser bypassed)"
+	}
+	generationProgress := Progress{
+		Total:          int(snapshot.DatasetVersion.CaseCount),
+		ParserEngine:   parserEngine,
+		DocumentsTotal: snapshot.DatasetVersion.DocumentCount,
+	}
+	if err = r.progress(ctx, fence, "preparing_generation", generationProgress); err != nil {
+		return err
+	}
+	var generationProgressMu sync.Mutex
+	reportGeneration := func(update GenerationProgress) error {
+		generationProgressMu.Lock()
+		defer generationProgressMu.Unlock()
+		generationProgress.DocumentsTotal = max(generationProgress.DocumentsTotal, update.DocumentsTotal)
+		generationProgress.DocumentsCompleted = max(generationProgress.DocumentsCompleted, update.DocumentsCompleted)
+		generationProgress.ChunksCompleted = max(generationProgress.ChunksCompleted, update.ChunksCompleted)
+		generationProgress.GenerationReused = generationProgress.GenerationReused || update.Reused
+		stage := strings.TrimSpace(update.Stage)
+		if stage == "" {
+			stage = "building_generation"
+		}
+		return r.progress(ctx, fence, stage, generationProgress)
+	}
 	generationStarted := time.Now()
-	generation, err := r.generations.Ensure(ctx, run, snapshot)
+	generation, err := r.generations.Ensure(ctx, run, snapshot, reportGeneration)
 	if err != nil {
 		return r.finishFailure(fence, "generation_failed", err.Error())
 	}
@@ -339,12 +377,13 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 	if err != nil {
 		return r.finishFailure(fence, "load_cases_failed", err.Error())
 	}
-	parserEngine := snapshot.Profile.Ingestion.ParserEngine
-	if snapshot.DatasetVersion.Track == store.RAGEvalTrackTextRAG {
-		parserEngine = "canonical-text (parser bypassed)"
-	}
-	progress := Progress{Total: len(cases), ParserEngine: parserEngine,
-		GenerationDurationMS: max(int64(1), generationDuration.Milliseconds()), GenerationReused: generation.OwnerRunID != "" && generation.OwnerRunID != run.ID}
+	progress := generationProgress
+	progress.Total = len(cases)
+	progress.ParserEngine = parserEngine
+	progress.DocumentsCompleted = max(progress.DocumentsCompleted, generation.DocumentCount)
+	progress.ChunksCompleted = max(progress.ChunksCompleted, generation.ChunkCount)
+	progress.GenerationDurationMS = max(int64(1), generationDuration.Milliseconds())
+	progress.GenerationReused = progress.GenerationReused || generation.OwnerRunID != "" && generation.OwnerRunID != run.ID
 	if err = r.progress(ctx, fence, "answering", progress); err != nil {
 		return err
 	}
@@ -410,6 +449,9 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 			_ = r.progress(ctx, fence, "budget_exceeded", progress)
 			return r.finish(fence, store.RAGEvalRunBudgetExceeded, "budget_exceeded", "evaluation budget exceeded")
 		}
+	}
+	if progress.Completed > 0 && progress.Failed == progress.Completed {
+		return r.finishFailure(fence, "all_cases_failed", fmt.Sprintf("all %d evaluation cases failed", progress.Completed))
 	}
 	if err = r.score(ctx, fence, run.ID, run.CreatedBy, snapshot, samples, caseByID, &progress); err != nil {
 		if errors.Is(err, ErrRunBudgetReached) {
@@ -668,6 +710,7 @@ func (r *Runner) putMetric(ctx context.Context, fence store.RAGEvalRunFence, cas
 }
 
 func (r *Runner) progress(ctx context.Context, fence store.RAGEvalRunFence, stage string, progress Progress) error {
+	progress.LastActivityAt = time.Now().UTC().Format(time.RFC3339)
 	raw, _ := json.Marshal(progress)
 	ok, err := r.store.UpdateRAGEvalRunProgress(ctx, fence, stage, string(raw))
 	if err != nil {

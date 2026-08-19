@@ -36,7 +36,7 @@ func DefaultEvaluationGenerationContract() rageval.GenerationContract {
 		ArtifactSchemaVersion: document.ParsedArtifactSchemaVersion, VectorSchemaVersion: "vector-v1", IndexFormatVersion: 1}
 }
 
-func (p *EvaluationRunnerGenerationProvider) Ensure(ctx context.Context, run *store.RAGEvalRunRecord, snapshot rageval.ExecutionSnapshot) (*store.RAGEvalGenerationRecord, error) {
+func (p *EvaluationRunnerGenerationProvider) Ensure(ctx context.Context, run *store.RAGEvalRunRecord, snapshot rageval.ExecutionSnapshot, report func(rageval.GenerationProgress) error) (*store.RAGEvalGenerationRecord, error) {
 	if p == nil || p.Store == nil || p.Builder == nil || run == nil {
 		return nil, errors.New("evaluation generation provider is unavailable")
 	}
@@ -47,6 +47,12 @@ func (p *EvaluationRunnerGenerationProvider) Ensure(ctx context.Context, run *st
 		}
 		if generation.Status != store.RAGEvalGenerationReady || generation.DatasetVersionID != run.DatasetVersionID {
 			return nil, store.ErrRAGEvalGenerationConflict
+		}
+		if report != nil {
+			if err := report(rageval.GenerationProgress{Stage: "reusing_generation", DocumentsCompleted: generation.DocumentCount,
+				DocumentsTotal: snapshot.DatasetVersion.DocumentCount, ChunksCompleted: generation.ChunkCount, Reused: true}); err != nil {
+				return nil, err
+			}
 		}
 		return generation, nil
 	}
@@ -74,7 +80,14 @@ func (p *EvaluationRunnerGenerationProvider) Ensure(ctx context.Context, run *st
 	}
 	result, _, err := p.Builder.Build(ctx, EvaluationGenerationBuildRequest{OwnerID: run.CreatedBy, RunID: run.ID, DatasetVersion: &snapshot.DatasetVersion, Documents: documents,
 		DocumentConcurrency: p.DocumentConcurrency, Ingestion: ingestion, Contract: contract, Embedding: p.Embedding,
-		EmbeddingContractFingerprint: ingestion.Embedding.ContractFingerprint, BypassParser: bypassParser})
+		EmbeddingContractFingerprint: ingestion.Embedding.ContractFingerprint, BypassParser: bypassParser,
+		Progress: func(update EvaluationGenerationProgress) error {
+			if report == nil {
+				return nil
+			}
+			return report(rageval.GenerationProgress{Stage: update.Stage, DocumentsCompleted: update.DocumentsCompleted,
+				DocumentsTotal: update.DocumentsTotal, ChunksCompleted: update.ChunksCompleted, Reused: update.Reused})
+		}})
 	return result, err
 }
 

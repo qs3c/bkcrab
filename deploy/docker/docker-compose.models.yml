@@ -61,9 +61,9 @@ services:
       - --ctx-size
       - "4096"
       - --batch-size
-      - "512"
+      - "${RAG_RERANKER_BATCH_SIZE:-1024}"
       - --ubatch-size
-      - "512"
+      - "${RAG_RERANKER_UBATCH_SIZE:-1024}"
       - --threads
       - "2"
       - --threads-batch

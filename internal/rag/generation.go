@@ -162,6 +162,14 @@ type EvaluationPipelineDocument struct {
 	SizeBytes                                  int64
 }
 
+type EvaluationGenerationProgress struct {
+	Stage              string
+	DocumentsCompleted int64
+	DocumentsTotal     int64
+	ChunksCompleted    int64
+	Reused             bool
+}
+
 type EvaluationPipelineRequest struct {
 	Target              PipelineTarget
 	Documents           []EvaluationPipelineDocument
@@ -171,6 +179,7 @@ type EvaluationPipelineRequest struct {
 	Embedding           config.RAGEmbeddingCfg
 	DocumentAIBudget    *vision.TaskDocumentAIBudget
 	BypassParser        bool
+	Progress            func(EvaluationGenerationProgress) error
 }
 
 type EvaluationPipelineResult struct {
@@ -228,6 +237,7 @@ type EvaluationGenerationBuildRequest struct {
 	Embedding           config.RAGEmbeddingCfg
 	DocumentAIBudget    *vision.TaskDocumentAIBudget
 	BypassParser        bool
+	Progress            func(EvaluationGenerationProgress) error
 	// EmbeddingContractFingerprint is returned by the trusted provider
 	// resolver together with Embedding; it is never derived from API input.
 	EmbeddingContractFingerprint string
@@ -298,6 +308,13 @@ func (b *EvaluationGenerationBuilder) Build(ctx context.Context, request Evaluat
 		return nil, false, errors.New("evaluation generation acquire returned no generation")
 	}
 	if acquired.Reused {
+		if request.Progress != nil {
+			if err := request.Progress(EvaluationGenerationProgress{Stage: "reusing_generation", DocumentsCompleted: acquired.Generation.DocumentCount,
+				DocumentsTotal: request.DatasetVersion.DocumentCount, ChunksCompleted: acquired.Generation.ChunkCount, Reused: true}); err != nil {
+				_, _ = b.store.ReleaseRAGEvalGenerationForRun(context.Background(), request.RunID)
+				return acquired.Generation, true, err
+			}
+		}
 		return acquired.Generation, true, nil
 	}
 	if !acquired.Claimed || acquired.Fence == nil {
@@ -340,7 +357,8 @@ func (b *EvaluationGenerationBuilder) Build(ctx context.Context, request Evaluat
 	}()
 	buildResult, buildErr := b.pipeline.BuildEvaluationGeneration(buildCtx, EvaluationPipelineRequest{
 		Target: target, Documents: pipelineDocuments, DocumentConcurrency: request.DocumentConcurrency, Ingestion: effectiveIngestion,
-		Contract: effectiveContract, Embedding: request.Embedding, DocumentAIBudget: request.DocumentAIBudget, BypassParser: request.BypassParser,
+		Contract: effectiveContract, Embedding: request.Embedding, DocumentAIBudget: request.DocumentAIBudget,
+		BypassParser: request.BypassParser, Progress: request.Progress,
 	})
 	cancelBuild()
 	<-heartbeatDone

@@ -4,7 +4,12 @@ import assert from "node:assert/strict";
 const {
   canShowRAGEvalNavigation,
   estimateRunWork,
+  isRunProgressStalled,
   nextRunPollDelay,
+  parseRAGEvalRunProgress,
+  profileOptionLabel,
+  runProgressAmount,
+  runStageLabel,
   validateRunDraft,
   validationIssueMessages,
 } = await import(new URL("./rag-eval-state.ts", import.meta.url));
@@ -49,4 +54,21 @@ test("run estimate exposes workload and reproducibility risk", () => {
     externalCalls: 40,
     reproducibilityRisk: "外部模型与解析服务可能随时间漂移",
   });
+});
+
+test("duplicate immutable profiles are labeled by parser and recency", () => {
+  const profiles = [
+    { id: "old", name: "系统默认全功能", profileJson: JSON.stringify({ ingestion: { parseMode: "standard" } }), fingerprint: "a".repeat(64), createdAt: "2026-08-16T07:52:15Z" },
+    { id: "new", name: "系统默认全功能", profileJson: JSON.stringify({ ingestion: { parserEngine: "anydoc", parseMode: "auto" } }), fingerprint: "b".repeat(64), createdAt: "2026-08-16T09:04:45Z" },
+  ];
+  assert.equal(profileOptionLabel(profiles[0], profiles), "系统默认全功能 · Standard · 历史 2026-08-16");
+  assert.equal(profileOptionLabel(profiles[1], profiles), "系统默认全功能 · AnyDoc · 当前");
+});
+
+test("run progress exposes generation counts, translated stages and stalls", () => {
+  const progress = parseRAGEvalRunProgress(JSON.stringify({ documentsCompleted: 145, documentsTotal: 488, lastActivityAt: "2026-08-18T16:10:00Z" }));
+  assert.deepEqual(runProgressAmount("building_generation", progress), { current: 145, total: 488 });
+  assert.equal(runStageLabel("building_generation"), "向量化并写入索引");
+  assert.equal(isRunProgressStalled(progress, Date.parse("2026-08-18T16:11:59Z")), false);
+  assert.equal(isRunProgressStalled(progress, Date.parse("2026-08-18T16:12:01Z")), true);
 });

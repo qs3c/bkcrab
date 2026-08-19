@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -84,15 +85,30 @@ func TestRealEvaluationPipelineUsesIsolatedTargetAndParseArtifactReuse(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	var progressMu sync.Mutex
+	var generationProgress []EvaluationGenerationProgress
 	request := EvaluationPipelineRequest{Target: firstTarget, Ingestion: policy, Contract: contract,
 		Embedding: config.RAGEmbeddingCfg{Endpoint: embeddingServer.URL, Model: "embed", Dims: 3},
-		Documents: []EvaluationPipelineDocument{{ID: "doc", FileName: "one.md", MediaType: "text/markdown", ObjectKey: sourceKey, SHA256: sha, SizeBytes: int64(len(sourceText))}}}
+		Documents: []EvaluationPipelineDocument{{ID: "doc", FileName: "one.md", MediaType: "text/markdown", ObjectKey: sourceKey, SHA256: sha, SizeBytes: int64(len(sourceText))}},
+		Progress: func(update EvaluationGenerationProgress) error {
+			progressMu.Lock()
+			defer progressMu.Unlock()
+			generationProgress = append(generationProgress, update)
+			return nil
+		}}
 	first, err := service.BuildEvaluationGeneration(context.Background(), request)
 	if err != nil || first.DocumentCount != 1 || first.ChunkCount < 1 || vectorStore.Count(firstTarget.CollectionKey) != int(first.ChunkCount) {
 		t.Fatalf("first build=%+v vectors=%d err=%v", first, vectorStore.Count(firstTarget.CollectionKey), err)
 	}
 	if parser.lastEngine.Load() != "anydoc" {
 		t.Fatalf("evaluation parser engine=%v, want anydoc", parser.lastEngine.Load())
+	}
+	progressMu.Lock()
+	progressSnapshot := append([]EvaluationGenerationProgress(nil), generationProgress...)
+	progressMu.Unlock()
+	if len(progressSnapshot) < 3 || progressSnapshot[len(progressSnapshot)-1].Stage != "finalizing_generation" ||
+		progressSnapshot[len(progressSnapshot)-1].DocumentsCompleted != 1 || progressSnapshot[len(progressSnapshot)-1].ChunksCompleted < 1 {
+		t.Fatalf("generation progress=%+v", generationProgress)
 	}
 	secondTarget, _ := NewEvaluationPipelineTarget("admin", "run-two", "version-one", "reg_two")
 	request.Target = secondTarget

@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createRAGEvalRun, type RAGEvalCapabilities, type RAGEvalDatasetVersion, type RAGEvalProfile, type RAGEvalRun } from "@/lib/api";
-import { estimateRunWork, validateRunDraft, type RAGEvalRunDraft } from "../rag-eval-state";
+import { estimateRunWork, profileOptionLabel, validateRunDraft, type RAGEvalRunDraft } from "../rag-eval-state";
 
 const initial: RAGEvalRunDraft = { datasetVersionId: "", profileId: "", mode: "FULL_PIPELINE", baselineRunId: "", indexGenerationId: "", metrics: [] };
 
@@ -38,7 +38,7 @@ export function RunWizard({ capabilities, versions, profiles, runs, onCreated }:
 
   return <Card><CardHeader><CardTitle>新建测评运行</CardTitle><CardDescription>先固定数据版本、模式、候选参数与指标，再进入 durable queue。</CardDescription></CardHeader><CardContent><form className="grid gap-5 lg:grid-cols-2" onSubmit={submit}>
     <Field label="READY 数据版本" error={errors.datasetVersionId}><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.datasetVersionId} onChange={(event) => setDraft({ ...draft, datasetVersionId: event.target.value })}><option value="">请选择</option>{ready.map((item) => <option key={item.ID} value={item.ID}>v{item.Version} · {item.CaseCount} cases / {item.DocumentCount} docs</option>)}</select></Field>
-    <Field label="参数 Profile" error={errors.profileId}><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.profileId} onChange={(event) => setDraft({ ...draft, profileId: event.target.value })}><option value="">请选择</option>{profiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
+    <Field label="参数 Profile" error={errors.profileId}><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.profileId} onChange={(event) => setDraft({ ...draft, profileId: event.target.value })}><option value="">请选择</option>{profiles.map((item) => <option key={item.id} value={item.id}>{profileOptionLabel(item, profiles)}</option>)}</select></Field>
     <Field label="运行模式"><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.mode} onChange={(event) => setDraft({ ...draft, mode: event.target.value as RAGEvalRunDraft["mode"], indexGenerationId: "" })}><option value="FULL_PIPELINE">完整 Pipeline</option><option value="ONLINE_ONLY">仅在线 Pipeline</option></select></Field>
     <Field label="Baseline（可选）"><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.baselineRunId} onChange={(event) => setDraft({ ...draft, baselineRunId: event.target.value })}><option value="">无</option>{runs.filter((run) => run.status === "SUCCEEDED").map((run) => <option key={run.id} value={run.id}>{run.id}</option>)}</select></Field>
     {draft.mode === "ONLINE_ONLY" && <Field label="READY generation ID" error={errors.indexGenerationId}><Input value={draft.indexGenerationId} onChange={(event) => setDraft({ ...draft, indexGenerationId: event.target.value })} placeholder="rge_..." /></Field>}

@@ -150,6 +150,16 @@ func (s *Service) BuildEvaluationGeneration(ctx context.Context, request Evaluat
 		request.Ingestion.DocumentAI.TextModel != strings.TrimSpace(s.cfg.DocumentAI.TextModel)) {
 		return EvaluationPipelineResult{}, errors.New("evaluation enrichment model is not available in the resolved service contract")
 	}
+	reportProgress := func(stage string, documents, chunks int64) error {
+		if request.Progress == nil {
+			return nil
+		}
+		return request.Progress(EvaluationGenerationProgress{Stage: stage, DocumentsCompleted: documents,
+			DocumentsTotal: int64(len(request.Documents)), ChunksCompleted: chunks})
+	}
+	if err := reportProgress("preparing_index", 0, 0); err != nil {
+		return EvaluationPipelineResult{}, err
+	}
 	stageStarted := time.Now()
 	if err := s.vec.EnsureCollection(ctx, request.Target.CollectionKey, request.Ingestion.Embedding.Dims); err != nil {
 		telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, Operation: "eval_milvus", Outcome: "error", Duration: time.Since(stageStarted)})
@@ -168,15 +178,18 @@ func (s *Service) BuildEvaluationGeneration(ctx context.Context, request Evaluat
 			if err != nil {
 				return err
 			}
-			documentCount.Add(1)
-			chunkCount.Add(int64(chunks))
-			return nil
+			completed := documentCount.Add(1)
+			completedChunks := chunkCount.Add(int64(chunks))
+			return reportProgress("building_generation", completed, completedChunks)
 		})
 	}
 	if err := group.Wait(); err != nil {
 		return EvaluationPipelineResult{DocumentCount: documentCount.Load(), ChunkCount: chunkCount.Load()}, err
 	}
 	result := EvaluationPipelineResult{DocumentCount: documentCount.Load(), ChunkCount: chunkCount.Load()}
+	if err := reportProgress("finalizing_generation", result.DocumentCount, result.ChunkCount); err != nil {
+		return result, err
+	}
 	manifest, err := json.Marshal(struct {
 		GenerationID string `json:"generationId"`
 		Documents    int64  `json:"documents"`
