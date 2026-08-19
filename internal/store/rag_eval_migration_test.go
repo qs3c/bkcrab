@@ -10,21 +10,6 @@ import (
 	"github.com/google/uuid"
 )
 
-var ragEvalTask2Tables = []string{
-	"rag_eval_datasets",
-	"rag_eval_dataset_versions",
-	"rag_eval_corpus_documents",
-	"rag_eval_cases",
-	"rag_eval_profiles",
-	"rag_eval_runs",
-	"rag_eval_index_generations",
-	"rag_eval_generation_refs",
-	"rag_eval_case_results",
-	"rag_eval_metric_results",
-	"rag_eval_run_aggregates",
-	"rag_eval_usage",
-}
-
 func TestRAGEvalMigrationSQLite(t *testing.T) {
 	dsn := "file:" + filepath.Join(t.TempDir(), "rag-eval-migration.db") + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
 	runRAGEvalMigrationDialect(t, "sqlite", dsn)
@@ -73,13 +58,42 @@ func runRAGEvalMigrationDialect(t *testing.T, dialect, dsn string) {
 	if err != nil || generation.CollectionKey != kb.ID || len(documents) != 0 {
 		t.Fatalf("%s legacy generation=%+v documents=%+v err=%v", dialect, generation, documents, err)
 	}
-	for _, table := range ragEvalTask2Tables {
+	for _, table := range ragEvaluationSchemaTables {
 		exists, err := st.tableExists(ctx, table)
 		if err != nil {
 			t.Fatalf("inspect %s table %s: %v", dialect, table, err)
 		}
 		if !exists {
 			t.Errorf("%s migration did not create %s", dialect, table)
+		}
+	}
+	if dialect == mysqlDialect {
+		assertMySQLRAGSchemaCollations(t, st)
+		// Simulate a table created by the buggy migration under a different
+		// MySQL default, then prove a repeated migration repairs it.
+		if _, err := st.DB().ExecContext(ctx, `ALTER TABLE rag_policy_active_pointers
+			CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci`); err != nil {
+			t.Fatalf("introduce MySQL collation drift: %v", err)
+		}
+		if err := st.Migrate(ctx); err != nil {
+			t.Fatalf("repair MySQL collation drift: %v", err)
+		}
+		assertMySQLRAGSchemaCollations(t, st)
+	}
+}
+
+func assertMySQLRAGSchemaCollations(t *testing.T, st *DBStore) {
+	t.Helper()
+	ctx := context.Background()
+	for _, table := range ragEvaluationSchemaTables {
+		var collation string
+		if err := st.DB().QueryRowContext(ctx, `SELECT TABLE_COLLATION
+			FROM information_schema.tables
+			WHERE table_schema=DATABASE() AND table_name=?`, table).Scan(&collation); err != nil {
+			t.Fatalf("inspect MySQL table collation %s: %v", table, err)
+		}
+		if !strings.EqualFold(collation, mysqlRAGSchemaCollation) {
+			t.Errorf("MySQL table %s collation=%q, want %q", table, collation, mysqlRAGSchemaCollation)
 		}
 	}
 }

@@ -2,8 +2,34 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"strings"
 )
+
+const mysqlRAGSchemaCollation = "utf8mb4_unicode_ci"
+
+var ragEvaluationSchemaTables = []string{
+	"rag_eval_datasets",
+	"rag_eval_dataset_versions",
+	"rag_eval_corpus_documents",
+	"rag_eval_cases",
+	"rag_eval_profiles",
+	"rag_eval_runs",
+	"rag_eval_index_generations",
+	"rag_eval_generation_refs",
+	"rag_eval_case_results",
+	"rag_eval_metric_results",
+	"rag_eval_run_aggregates",
+	"rag_eval_usage",
+	"rag_ingestion_policies",
+	"rag_runtime_policies",
+	"rag_policy_active_pointers",
+	"rag_kb_index_generations",
+	"rag_kb_generation_documents",
+	"rag_kb_policy_sync_tasks",
+	"rag_policy_audit_log",
+}
 
 // migrateRAGEvaluationSchema is an additive expansion. It never backfills or
 // locks the large document/chunk tables and remains safe while the feature is
@@ -97,6 +123,12 @@ func (d *DBStore) migrateRAGEvaluationSchema(ctx context.Context) error {
 			action VARCHAR(32) NOT NULL,actor_id %s NOT NULL,source_eval_run_id %s NULL,target_kb_id %s NULL,note %s NOT NULL,created_at TIMESTAMP NOT NULL)`, id, id, id, id, text),
 	}
 	for _, statement := range statements {
+		if d.dialect == mysqlDialect {
+			// Do not inherit MySQL 8's server/database default (commonly
+			// utf8mb4_0900_ai_ci). These tables join legacy RAG identifiers,
+			// whose canonical collation is utf8mb4_unicode_ci.
+			statement += " ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE " + mysqlRAGSchemaCollation
+		}
 		if err := d.execDDL(ctx, statement); err != nil {
 			return err
 		}
@@ -104,6 +136,40 @@ func (d *DBStore) migrateRAGEvaluationSchema(ctx context.Context) error {
 	for _, column := range []struct{ name, ddl string }{{"pinned_policy_version", "BIGINT NULL"}, {"active_generation_id", id + " NULL"}} {
 		if err := d.addRAGColumnIfMissing(ctx, "rag_kbs", column.name, column.ddl); err != nil {
 			return err
+		}
+	}
+	if err := d.migrateMySQLRAGEvaluationCollations(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrateMySQLRAGEvaluationCollations repairs tables created before their
+// collation was made explicit. It inspects first so healthy installations do
+// not repeatedly rebuild or lock these tables on startup.
+func (d *DBStore) migrateMySQLRAGEvaluationCollations(ctx context.Context) error {
+	if d.dialect != mysqlDialect {
+		return nil
+	}
+	for _, table := range ragEvaluationSchemaTables {
+		if !validRAGDDLIdentifier(table) {
+			return fmt.Errorf("store: invalid RAG collation migration table %q", table)
+		}
+		var collation sql.NullString
+		err := d.db.QueryRowContext(ctx, `SELECT TABLE_COLLATION
+			FROM information_schema.tables
+			WHERE table_schema=DATABASE() AND table_name=?`, table).Scan(&collation)
+		if err != nil {
+			return fmt.Errorf("inspect %s collation: %w", table, err)
+		}
+		if collation.Valid && strings.EqualFold(collation.String, mysqlRAGSchemaCollation) {
+			continue
+		}
+		if _, err := d.db.ExecContext(ctx, fmt.Sprintf(
+			`ALTER TABLE %s CONVERT TO CHARACTER SET utf8mb4 COLLATE %s`,
+			table, mysqlRAGSchemaCollation,
+		)); err != nil {
+			return fmt.Errorf("convert %s collation to %s: %w", table, mysqlRAGSchemaCollation, err)
 		}
 	}
 	return nil
