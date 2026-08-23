@@ -109,7 +109,7 @@ func (OpenRAGBenchAdapter) Prepare(ctx context.Context, source CatalogSource, op
 	if options.Track == DatasetTrackPDFE2E {
 		selected, err = prepareOpenRAGPDFTrack(ctx, source, prepared, selected, qrels, options)
 	} else {
-		err = prepareOpenRAGTextTrack(ctx, source, prepared, selected, qrels)
+		selected, err = prepareOpenRAGTextTrack(ctx, source, prepared, selected, qrels, options)
 	}
 	if err != nil {
 		return nil, err
@@ -120,29 +120,52 @@ func (OpenRAGBenchAdapter) Prepare(ctx context.Context, source CatalogSource, op
 	return prepared, nil
 }
 
-func prepareOpenRAGTextTrack(ctx context.Context, source CatalogSource, prepared *PreparedCatalogDataset, cases []Case, qrels map[string]openRAGQrel) error {
+func prepareOpenRAGTextTrack(ctx context.Context, source CatalogSource, prepared *PreparedCatalogDataset, cases []Case, qrels map[string]openRAGQrel, options CatalogImportOptions) ([]Case, error) {
 	entries, err := source.List(ctx, "pdf/arxiv/corpus/")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	entriesByDocumentID := make(map[string]CatalogSourceEntry, len(entries))
+	availableDocumentIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Path, "pdf/arxiv/corpus/") || path.Ext(entry.Path) != ".json" {
+			continue
+		}
+		sourceDocumentID := strings.TrimSuffix(path.Base(entry.Path), ".json")
+		if sourceDocumentID == "" {
+			continue
+		}
+		entriesByDocumentID[sourceDocumentID] = entry
+		availableDocumentIDs = append(availableDocumentIDs, sourceDocumentID)
+	}
+	cases, documentIDs, err := selectOpenRAGCorpus(cases, availableDocumentIDs, options.CorpusLimit, options.Seed,
+		CatalogOpenRAGBench+"/text-positive-docs", CatalogOpenRAGBench+"/text-negative-docs")
+	if err != nil {
+		return nil, err
+	}
 	referenceSections := wantedOpenRAGSections(cases, qrels)
 	documentSections := make(map[string]map[int]string, len(referenceSections))
 	var sectionsMu sync.Mutex
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.SetLimit(8)
-	for _, entry := range entries {
-		entry := entry
-		if !strings.HasPrefix(entry.Path, "pdf/arxiv/corpus/") || path.Ext(entry.Path) != ".json" {
-			continue
+	for _, sourceDocumentID := range documentIDs {
+		entry, ok := entriesByDocumentID[sourceDocumentID]
+		if !ok {
+			return nil, fmt.Errorf("Open RAGBench text document is missing for %s", sourceDocumentID)
 		}
+		selectedEntry := entry
+		selectedSourceDocumentID := sourceDocumentID
 		group.Go(func() error {
 			var document openRAGCorpusDocument
-			if err := decodeCatalogJSON(groupCtx, source, entry.Path, 16<<20, &document); err != nil {
+			if err := decodeCatalogJSON(groupCtx, source, selectedEntry.Path, 16<<20, &document); err != nil {
 				return err
 			}
 			if strings.TrimSpace(document.ID) == "" {
-				document.ID = strings.TrimSuffix(path.Base(entry.Path), ".json")
+				document.ID = selectedSourceDocumentID
+			}
+			if strings.TrimSpace(document.ID) != selectedSourceDocumentID {
+				return fmt.Errorf("Open RAGBench text document ID mismatch for %s", selectedSourceDocumentID)
 			}
 			content, sections := renderOpenRAGDocument(document)
 			documentID := openRAGDocumentID(document.ID)
@@ -160,7 +183,7 @@ func prepareOpenRAGTextTrack(ctx context.Context, source CatalogSource, prepared
 		})
 	}
 	if err := group.Wait(); err != nil {
-		return err
+		return nil, err
 	}
 	prepared.SortDocuments()
 	for documentID, wanted := range referenceSections {
@@ -169,7 +192,7 @@ func prepareOpenRAGTextTrack(ctx context.Context, source CatalogSource, prepared
 		}
 	}
 	applyOpenRAGReferenceContexts(cases, qrels, referenceSections)
-	return nil
+	return cases, nil
 }
 
 func prepareOpenRAGPDFTrack(ctx context.Context, source CatalogSource, prepared *PreparedCatalogDataset, cases []Case, qrels map[string]openRAGQrel, options CatalogImportOptions) ([]Case, error) {
@@ -177,46 +200,15 @@ func prepareOpenRAGPDFTrack(ctx context.Context, source CatalogSource, prepared 
 	if err := decodeCatalogJSON(ctx, source, "pdf/arxiv/pdf_urls.json", 1<<20, &pdfURLs); err != nil {
 		return nil, err
 	}
-	positiveDocs := uniqueCaseSourceDocs(cases)
-	if len(positiveDocs) > options.CorpusLimit {
-		selectedDocs, err := StableSampleIDs(CatalogOpenRAGBench+"/pdf-positive-docs", positiveDocs, options.CorpusLimit, options.Seed)
-		if err != nil {
-			return nil, err
-		}
-		allowed := make(map[string]struct{}, len(selectedDocs))
-		for _, id := range selectedDocs {
-			allowed[id] = struct{}{}
-		}
-		filtered := cases[:0]
-		for _, item := range cases {
-			if _, ok := allowed[caseSourceDocID(item)]; ok {
-				filtered = append(filtered, item)
-			}
-		}
-		cases = filtered
-		positiveDocs = selectedDocs
+	availableDocumentIDs := make([]string, 0, len(pdfURLs))
+	for id := range pdfURLs {
+		availableDocumentIDs = append(availableDocumentIDs, id)
 	}
-	documentIDs := append([]string(nil), positiveDocs...)
-	if remaining := options.CorpusLimit - len(documentIDs); remaining > 0 {
-		positive := make(map[string]struct{}, len(positiveDocs))
-		for _, id := range positiveDocs {
-			positive[id] = struct{}{}
-		}
-		negatives := make([]string, 0, len(pdfURLs))
-		for id := range pdfURLs {
-			if _, isPositive := positive[id]; !isPositive {
-				negatives = append(negatives, id)
-			}
-		}
-		if len(negatives) > 0 {
-			selected, err := StableSampleIDs(CatalogOpenRAGBench+"/pdf-negative-docs", negatives, remaining, options.Seed)
-			if err != nil {
-				return nil, err
-			}
-			documentIDs = append(documentIDs, selected...)
-		}
+	cases, documentIDs, err := selectOpenRAGCorpus(cases, availableDocumentIDs, options.CorpusLimit, options.Seed,
+		CatalogOpenRAGBench+"/pdf-positive-docs", CatalogOpenRAGBench+"/pdf-negative-docs")
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(documentIDs)
 	pdfGroup, pdfCtx := errgroup.WithContext(ctx)
 	pdfGroup.SetLimit(4)
 	for _, sourceDocID := range documentIDs {
@@ -256,6 +248,63 @@ func prepareOpenRAGPDFTrack(ctx context.Context, source CatalogSource, prepared 
 	}
 	applyOpenRAGReferenceContexts(cases, qrels, referenceSections)
 	return cases, nil
+}
+
+func selectOpenRAGCorpus(cases []Case, availableDocumentIDs []string, corpusLimit int, seed int64, positiveNamespace, negativeNamespace string) ([]Case, []string, error) {
+	availableDocumentIDs = uniqueSortedStrings(availableDocumentIDs)
+	if corpusLimit < 1 || len(availableDocumentIDs) == 0 || strings.TrimSpace(positiveNamespace) == "" || strings.TrimSpace(negativeNamespace) == "" {
+		return nil, nil, errors.New("Open RAGBench corpus selection is invalid")
+	}
+	available := make(map[string]struct{}, len(availableDocumentIDs))
+	for _, id := range availableDocumentIDs {
+		available[id] = struct{}{}
+	}
+	positiveDocuments := uniqueCaseSourceDocs(cases)
+	for _, id := range positiveDocuments {
+		if _, ok := available[id]; !ok {
+			return nil, nil, fmt.Errorf("Open RAGBench positive document is missing for %s", id)
+		}
+	}
+	if len(positiveDocuments) > corpusLimit {
+		selected, err := StableSampleIDs(positiveNamespace, positiveDocuments, corpusLimit, seed)
+		if err != nil {
+			return nil, nil, err
+		}
+		allowed := make(map[string]struct{}, len(selected))
+		for _, id := range selected {
+			allowed[id] = struct{}{}
+		}
+		filtered := make([]Case, 0, len(cases))
+		for _, item := range cases {
+			if _, ok := allowed[caseSourceDocID(item)]; ok {
+				filtered = append(filtered, item)
+			}
+		}
+		cases = filtered
+		positiveDocuments = selected
+	}
+	documentIDs := append([]string(nil), positiveDocuments...)
+	if remaining := corpusLimit - len(documentIDs); remaining > 0 {
+		positive := make(map[string]struct{}, len(positiveDocuments))
+		for _, id := range positiveDocuments {
+			positive[id] = struct{}{}
+		}
+		negativeDocuments := make([]string, 0, len(availableDocumentIDs)-len(positiveDocuments))
+		for _, id := range availableDocumentIDs {
+			if _, ok := positive[id]; !ok {
+				negativeDocuments = append(negativeDocuments, id)
+			}
+		}
+		if len(negativeDocuments) > 0 {
+			selected, err := StableSampleIDs(negativeNamespace, negativeDocuments, remaining, seed)
+			if err != nil {
+				return nil, nil, err
+			}
+			documentIDs = append(documentIDs, selected...)
+		}
+	}
+	sort.Strings(documentIDs)
+	return cases, documentIDs, nil
 }
 
 func decodeCatalogJSON(ctx context.Context, source CatalogSource, logicalPath string, maxBytes int64, target any) error {

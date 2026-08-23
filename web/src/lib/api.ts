@@ -2613,6 +2613,7 @@ export interface RAGEvalCapabilities {
   maxRunCases: number;
   maxRunTokens: number;
   maxRunCostUsd: number;
+  costBudgetEnabled: boolean;
   maxRunDurationSec: number;
   maxRequestBytes: number;
   maxContextsPerSample: number;

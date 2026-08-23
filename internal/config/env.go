@@ -43,6 +43,7 @@ type EnvConfig struct {
 	ragDocumentAIAllowPrivateEndpointSet bool
 	ragDocumentAIAllowedEndpointHostsSet bool
 	ragEvaluationEnabledSet              bool
+	ragEvaluationCostBudgetDisabledSet   bool
 }
 
 type EnvGateway struct {
@@ -301,6 +302,10 @@ func LoadEnv() *EnvConfig {
 	if v, ok := lookupEnvBool("BKCRAB_RAG_EVAL_ENABLED"); ok {
 		cfg.RAG.Evaluation.Enabled = v
 		cfg.ragEvaluationEnabledSet = true
+	}
+	if v, ok := lookupEnvBool("BKCRAB_RAG_EVAL_COST_BUDGET_DISABLED"); ok {
+		cfg.RAG.Evaluation.CostBudgetDisabled = v
+		cfg.ragEvaluationCostBudgetDisabledSet = true
 	}
 	if v := os.Getenv("BKCRAB_RAG_EVAL_ENDPOINT"); v != "" {
 		cfg.RAG.Evaluation.Sidecar.Endpoint = v
@@ -915,6 +920,9 @@ func (e *EnvConfig) ApplySystemRAG(dst *RAGCfg) {
 	}
 	if e.ragEvaluationEnabledSet {
 		dst.Evaluation.Enabled = e.RAG.Evaluation.Enabled
+	}
+	if e.ragEvaluationCostBudgetDisabledSet {
+		dst.Evaluation.CostBudgetDisabled = e.RAG.Evaluation.CostBudgetDisabled
 	}
 	if e.RAG.Evaluation.Sidecar.Endpoint != "" {
 		dst.Evaluation.Sidecar.Endpoint = e.RAG.Evaluation.Sidecar.Endpoint

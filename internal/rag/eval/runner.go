@@ -225,10 +225,14 @@ func (r *Runner) CreateRun(ctx context.Context, request CreateRunRequest) (*stor
 			return nil, errors.New("online-only generation must be READY and belong to the dataset version")
 		}
 	}
+	maxRunCostUSD := r.cfg.MaxRunCostUSD
+	if r.cfg.CostBudgetDisabled {
+		maxRunCostUSD = 0
+	}
 	snapshot := ExecutionSnapshot{Version: 1, DatasetVersion: *dataset, Profile: profile,
 		ProfileFingerprint: profileRecord.Fingerprint, Metrics: metrics, MetricBundleVersion: MetricBundleV1,
 		IndexGenerationID: request.IndexGenerationID, CreatedAt: time.Now().UTC(), Budgets: RunBudgets{
-			MaxCases: r.cfg.MaxRunCases, MaxTokens: r.cfg.MaxRunTokens, MaxCostUSD: r.cfg.MaxRunCostUSD, MaxDurationSec: r.cfg.MaxRunDurationSec,
+			MaxCases: r.cfg.MaxRunCases, MaxTokens: r.cfg.MaxRunTokens, MaxCostUSD: maxRunCostUSD, MaxDurationSec: r.cfg.MaxRunDurationSec,
 		}}
 	snapshotJSON, _ := json.Marshal(snapshot)
 	metricsJSON, _ := json.Marshal(metrics)
@@ -307,6 +311,19 @@ func (r *Runner) runClaimed(parent context.Context, fence store.RAGEvalRunFence)
 					cancel()
 					return
 				}
+				current, err := r.store.GetRAGEvalRun(ctx, fence.RunID)
+				if err != nil {
+					select {
+					case leaseLost <- err:
+					default:
+					}
+					cancel()
+					return
+				}
+				if current.CancelRequestedAt.Valid {
+					cancel()
+					return
+				}
 			}
 		}
 	}()
@@ -326,9 +343,18 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 	if err != nil {
 		return err
 	}
+	if run.CancelRequestedAt.Valid {
+		return r.finish(fence, store.RAGEvalRunCancelled, "cancelled", "evaluation cancelled")
+	}
 	var snapshot ExecutionSnapshot
 	if err = json.Unmarshal([]byte(run.ExecutionSnapshotJSON), &snapshot); err != nil || snapshot.Version != 1 {
 		return r.finishFailure(fence, "invalid_snapshot", "invalid frozen execution snapshot")
+	}
+	// This deployment-level kill switch also protects already queued/running
+	// runs whose immutable snapshot was created while cost enforcement was on.
+	// Usage remains recorded and visible; only the cost-based stop is skipped.
+	if r.cfg.CostBudgetDisabled {
+		snapshot.Budgets.MaxCostUSD = 0
 	}
 	deadline := snapshot.CreatedAt.Add(time.Duration(snapshot.Budgets.MaxDurationSec) * time.Second)
 	if snapshot.Budgets.MaxDurationSec > 0 {
@@ -365,6 +391,9 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 	generationStarted := time.Now()
 	generation, err := r.generations.Ensure(ctx, run, snapshot, reportGeneration)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return r.finishContext(fence, run, ctxErr)
+		}
 		return r.finishFailure(fence, "generation_failed", err.Error())
 	}
 	generationDuration := time.Since(generationStarted)
@@ -375,6 +404,9 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 	}()
 	cases, err := r.loadCases(ctx, run.DatasetVersionID, snapshot.Budgets.MaxCases)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return r.finishContext(fence, run, ctxErr)
+		}
 		return r.finishFailure(fence, "load_cases_failed", err.Error())
 	}
 	progress := generationProgress
@@ -385,6 +417,9 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 	progress.GenerationDurationMS = max(int64(1), generationDuration.Milliseconds())
 	progress.GenerationReused = progress.GenerationReused || generation.OwnerRunID != "" && generation.OwnerRunID != run.ID
 	if err = r.progress(ctx, fence, "answering", progress); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return r.finishContext(fence, run, ctxErr)
+		}
 		return err
 	}
 	samples := make([]EvaluationSample, 0, len(cases))
@@ -441,6 +476,9 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 			}
 		}
 		if err = r.progress(ctx, fence, "answering", progress); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return r.finishContext(fence, run, ctxErr)
+			}
 			return err
 		}
 		if exceeded, budgetErr := r.refreshBudget(ctx, run.ID, snapshot.Budgets, &progress); budgetErr != nil {
@@ -457,6 +495,9 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 		if errors.Is(err, ErrRunBudgetReached) {
 			_ = r.progress(ctx, fence, "budget_exceeded", progress)
 			return r.finish(fence, store.RAGEvalRunBudgetExceeded, "budget_exceeded", "evaluation budget exceeded")
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return r.finishContext(fence, run, ctxErr)
 		}
 		// Pipeline results are already durable. Leave the run RUNNING so its
 		// expired lease can be reclaimed and scoring retried without answering
@@ -729,6 +770,9 @@ func (r *Runner) finishFailure(fence store.RAGEvalRunFence, code, message string
 	return errors.New(code)
 }
 func (r *Runner) finishContext(fence store.RAGEvalRunFence, run *store.RAGEvalRunRecord, err error) error {
+	if current, getErr := r.store.GetRAGEvalRun(context.Background(), run.ID); getErr == nil {
+		run = current
+	}
 	if run.CancelRequestedAt.Valid {
 		return r.finish(fence, store.RAGEvalRunCancelled, "cancelled", "evaluation cancelled")
 	}

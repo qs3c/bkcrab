@@ -21,6 +21,19 @@ type fakeGenerationProvider struct {
 	releases   int
 }
 
+type blockingGenerationProvider struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (p *blockingGenerationProvider) Ensure(ctx context.Context, _ *store.RAGEvalRunRecord, _ ExecutionSnapshot, _ func(GenerationProgress) error) (*store.RAGEvalGenerationRecord, error) {
+	p.once.Do(func() { close(p.started) })
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (*blockingGenerationProvider) Release(context.Context, string) error { return nil }
+
 func TestProgressJSONKeepsIndependentCounters(t *testing.T) {
 	raw, err := json.Marshal(Progress{Total: 4, Completed: 3, Failed: 1, Scored: 2, Tokens: 9, CostUSD: 1.25,
 		DocumentsTotal: 8, DocumentsCompleted: 5, ChunksCompleted: 13, LastActivityAt: "2026-08-18T16:10:00Z"})
@@ -325,4 +338,55 @@ func TestRunnerCancellationAndBudgetStopNewCases(t *testing.T) {
 			t.Fatalf("tokens=%d cost=%v err=%v", tokens, cost, err)
 		}
 	})
+	t.Run("deployment cost kill switch", func(t *testing.T) {
+		scorer := &fakeBatchScorer{usage: EvaluatorUsage{LLMInputTokens: 3, LLMOutputTokens: 2, LLMEstimatedCostUSD: .02}}
+		runner, st, _, _, runID := runnerFixture(t, 1, scorer, nil)
+		run, _ := st.GetRAGEvalRun(context.Background(), runID)
+		var snapshot ExecutionSnapshot
+		_ = json.Unmarshal([]byte(run.ExecutionSnapshotJSON), &snapshot)
+		snapshot.Budgets.MaxCostUSD = .01
+		raw, _ := json.Marshal(snapshot)
+		_, _ = st.DB().Exec(`UPDATE rag_eval_runs SET execution_snapshot_json=? WHERE id=?`, string(raw), runID)
+		runner.cfg.CostBudgetDisabled = true
+		if err := runner.Run(context.Background(), runID); err != nil {
+			t.Fatal(err)
+		}
+		run, _ = st.GetRAGEvalRun(context.Background(), runID)
+		if run.Status != store.RAGEvalRunSucceeded {
+			t.Fatalf("status=%s", run.Status)
+		}
+	})
+}
+
+func TestRunnerCancellationInterruptsGeneration(t *testing.T) {
+	runner, st, _, _, runID := runnerFixture(t, 1, &fakeBatchScorer{}, nil)
+	blocking := &blockingGenerationProvider{started: make(chan struct{})}
+	runner.generations = blocking
+	runner.lease = 90 * time.Millisecond
+
+	result := make(chan error, 1)
+	go func() { result <- runner.Run(context.Background(), runID) }()
+	select {
+	case <-blocking.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("generation did not start")
+	}
+	if ok, err := st.RequestCancelRAGEvalRun(context.Background(), runID); err != nil || !ok {
+		t.Fatalf("request cancellation: ok=%v error=%v", ok, err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("generation did not stop after cancellation")
+	}
+	run, err := st.GetRAGEvalRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != store.RAGEvalRunCancelled || !run.FinishedAt.Valid {
+		t.Fatalf("run status=%s finished=%v", run.Status, run.FinishedAt.Valid)
+	}
 }

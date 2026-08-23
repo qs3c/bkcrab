@@ -65,6 +65,7 @@ type RAGEvaluationCfg struct {
 	MaxRunCases             int                  `json:"maxRunCases,omitempty"`
 	MaxRunTokens            int64                `json:"maxRunTokens,omitempty"`
 	MaxRunCostUSD           float64              `json:"maxRunCostUSD,omitempty"`
+	CostBudgetDisabled      bool                 `json:"costBudgetDisabled,omitempty"`
 	AnswerInputCostPerMUSD  float64              `json:"answerInputCostPerMillionUsd,omitempty"`
 	AnswerOutputCostPerMUSD float64              `json:"answerOutputCostPerMillionUsd,omitempty"`
 	MaxRunDurationSec       int                  `json:"maxRunDurationSec,omitempty"`
@@ -227,7 +228,7 @@ func (c RAGEvaluationCfg) Validate() error {
 			return fmt.Errorf("rag.evaluation token prices must be finite and between 0 and %.0f USD per million tokens", ragEvalMaxRunCostUSD)
 		}
 	}
-	if c.Enabled && c.MaxRunCostUSD > 0 {
+	if c.Enabled && !c.CostBudgetDisabled && c.MaxRunCostUSD > 0 {
 		for _, price := range prices {
 			if price <= 0 {
 				return errors.New("rag.evaluation requires explicit positive answer, judge, and embedding token prices when maxRunCostUSD is enabled")
@@ -377,6 +378,7 @@ type RAGEvaluationCapabilities struct {
 	MaxRunCases          int      `json:"maxRunCases"`
 	MaxRunTokens         int64    `json:"maxRunTokens"`
 	MaxRunCostUSD        float64  `json:"maxRunCostUsd"`
+	CostBudgetEnabled    bool     `json:"costBudgetEnabled"`
 	MaxRunDurationSec    int      `json:"maxRunDurationSec"`
 	MaxRequestBytes      int64    `json:"maxRequestBytes"`
 	MaxContextsPerSample int      `json:"maxContextsPerSample"`
@@ -390,7 +392,7 @@ func (c RAGEvaluationCfg) Capabilities(healthy bool, reason string) RAGEvaluatio
 		Metrics:   []string{"context_precision", "context_recall", "faithfulness", "response_relevancy", "factual_correctness", "hit_at_k", "recall_at_k", "mrr", "ndcg", "citation_precision", "citation_coverage", "abstention_accuracy"},
 		Importers: []string{"canonical-json"}, MaxBatchSize: c.MaxBatchSize,
 		DocumentConcurrency: c.DocumentConcurrency, CaseConcurrency: c.CaseConcurrency, ScoreConcurrency: c.ScoreConcurrency, MaxRunCases: c.MaxRunCases,
-		MaxRunTokens: c.MaxRunTokens, MaxRunCostUSD: c.MaxRunCostUSD, MaxRunDurationSec: c.MaxRunDurationSec,
+		MaxRunTokens: c.MaxRunTokens, MaxRunCostUSD: c.MaxRunCostUSD, CostBudgetEnabled: !c.CostBudgetDisabled, MaxRunDurationSec: c.MaxRunDurationSec,
 		MaxRequestBytes: c.MaxRequestBytes, MaxContextsPerSample: c.MaxContextsPerSample, MaxContextBytes: c.MaxContextBytes,
 	}
 }

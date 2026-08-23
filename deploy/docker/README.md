@@ -71,11 +71,16 @@ Reranker 是可选增强。启用后，混合检索先保留全局候选 20 条�
 - `RAG_RERANKER_ENABLED`：是否启用；
 - `RAG_RERANKER_ENDPOINT`：llama.cpp/Jina 兼容基础 URL，例如 `http://qwen3-reranker:8080/v1`；
 - `RAG_RERANKER_API_KEY`、`RAG_RERANKER_MODEL`；
-- `RAG_RERANKER_TIMEOUT_MS`：Compose 默认 60000；本地 CPU reranker 需要覆盖候选队列的完整处理时间；
+- `RAG_RERANKER_TIMEOUT_MS`：Compose 默认 180000（3 分钟）；本地 CPU reranker 需要覆盖候选队列的完整处理时间；
 - `RAG_RERANKER_CANDIDATE_TOP_K`：默认 20；
 - `RAG_RERANKER_MIN_SCORE`：默认 0.5，取值范围 `(0,1]`。
 - `RAG_RERANKER_BATCH_SIZE`、`RAG_RERANKER_UBATCH_SIZE`：llama.cpp 物理批大小，默认 1024，避免较长 query/context 在 512 tokens 处直接失败；
 - `RAG_RERANKER_PARALLEL`：llama.cpp 并行槽位，默认 1；评测的 `RAG_EVAL_CASE_CONCURRENCY` 不应高于可用槽位。
+
+测评默认按 `RAG_EVAL_MAX_RUN_COST_USD` 中断超预算运行。设置
+`RAG_EVAL_COST_BUDGET_DISABLED=true` 可保留费用统计但关闭费用中断；Token、
+时长和样例数上限仍然生效。该开关是部署级 kill switch，也会作用于恢复执行的
+既有运行。
 
 仓库还提供 CPU-only 的 Qwen3 embedding/reranker 服务。模型分别放到 `${RAG_MODEL_ROOT}/embedding` 和 `${RAG_MODEL_ROOT}/reranker` 后，将模型文件名与 `docker-compose.models.yml` 中的路径保持一致，并把该文件加入同一次 Compose 启动：
 

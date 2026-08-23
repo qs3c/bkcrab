@@ -112,14 +112,21 @@ func (o *CatalogImportOptions) ApplyDefaults() error {
 	if o.SampleSize < 1 || o.SampleSize > preset.MaxSampleSize {
 		return fmt.Errorf("sample size must be between 1 and %d", preset.MaxSampleSize)
 	}
-	if o.CorpusLimit < 0 || (o.CatalogID != CatalogOpenRAGBench && o.CorpusLimit != 0) {
-		return errors.New("corpus limit is invalid")
-	}
-	if o.Track == DatasetTrackPDFE2E && o.CorpusLimit == 0 {
-		o.CorpusLimit = 50
-	}
-	if o.Track == DatasetTrackTextRAG && o.CatalogID == CatalogOpenRAGBench && o.CorpusLimit != 0 && o.CorpusLimit != preset.DefaultCorpusSize {
-		return errors.New("Open RAGBench text track requires the official complete corpus")
+	if o.CatalogID != CatalogOpenRAGBench {
+		if o.CorpusLimit != 0 {
+			return errors.New("corpus limit is invalid")
+		}
+	} else {
+		if o.CorpusLimit == 0 {
+			if o.Track == DatasetTrackPDFE2E {
+				o.CorpusLimit = 50
+			} else {
+				o.CorpusLimit = preset.DefaultCorpusSize
+			}
+		}
+		if o.CorpusLimit < 1 || o.CorpusLimit > preset.DefaultCorpusSize {
+			return fmt.Errorf("corpus limit must be between 1 and %d", preset.DefaultCorpusSize)
+		}
 	}
 	if len(o.EvidenceTypes) == 0 && o.CatalogID == CatalogOpenRAGBench {
 		o.EvidenceTypes = []string{"text"}

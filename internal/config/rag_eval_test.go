@@ -56,8 +56,8 @@ func TestRAGEvaluationDefaultsDisabled(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if capabilities := cfg.Evaluation.Capabilities(true, "disabled"); capabilities.SidecarHealthy {
-		t.Fatal("disabled evaluation reported a healthy sidecar")
+	if capabilities := cfg.Evaluation.Capabilities(true, "disabled"); capabilities.SidecarHealthy || !capabilities.CostBudgetEnabled {
+		t.Fatal("disabled evaluation reported invalid capabilities")
 	}
 }
 
@@ -254,6 +254,7 @@ func TestRAGEvaluationEnvironmentOverlayIsIsolated(t *testing.T) {
 	t.Setenv("BKCRAB_RAG_EVAL_LLM_MODEL", "judge-model")
 	t.Setenv("BKCRAB_RAG_EVAL_EMBEDDING_MODEL", "judge-embedding")
 	t.Setenv("BKCRAB_RAG_EVAL_MAX_RUN_TOKENS", "123456")
+	t.Setenv("BKCRAB_RAG_EVAL_COST_BUDGET_DISABLED", "true")
 	t.Setenv("BKCRAB_RAG_EVAL_RUN_RETENTION_DAYS", "45")
 	t.Setenv("BKCRAB_RAG_EVAL_ANSWER_INPUT_COST_USD_PER_MILLION", "1")
 	t.Setenv("BKCRAB_RAG_EVAL_ANSWER_OUTPUT_COST_USD_PER_MILLION", "2")
@@ -268,7 +269,7 @@ func TestRAGEvaluationEnvironmentOverlayIsIsolated(t *testing.T) {
 	LoadEnv().ApplySystemRAG(&dst)
 	if !dst.Evaluation.Enabled || dst.Evaluation.Sidecar.Endpoint != "http://eval.internal:8080" ||
 		dst.Evaluation.Sidecar.APIKey != "eval-secret" || dst.Evaluation.Sidecar.LLMModel != "judge-model" ||
-		dst.Evaluation.Sidecar.EmbeddingModel != "judge-embedding" || dst.Evaluation.MaxRunTokens != 123456 ||
+		dst.Evaluation.Sidecar.EmbeddingModel != "judge-embedding" || dst.Evaluation.MaxRunTokens != 123456 || !dst.Evaluation.CostBudgetDisabled ||
 		dst.Evaluation.RunRetentionDays != 45 || dst.Evaluation.AnswerInputCostPerMUSD != 1 ||
 		dst.Evaluation.AnswerOutputCostPerMUSD != 2 || dst.Evaluation.Sidecar.LLMInputCostPerMUSD != 3 ||
 		dst.Evaluation.Sidecar.LLMOutputCostPerMUSD != 4 || dst.Evaluation.Sidecar.EmbeddingCostPerMUSD != 5 {
