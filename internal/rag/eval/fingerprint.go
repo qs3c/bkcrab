@@ -55,6 +55,35 @@ func GenerationFingerprint(datasetVersionID, corpusFingerprint string, documents
 	if err := contract.Validate(); err != nil {
 		return "", err
 	}
+	documents, err := canonicalGenerationDocuments(documents)
+	if err != nil {
+		return "", err
+	}
+	return Fingerprint(struct {
+		DatasetVersionID string                          `json:"datasetVersionId"`
+		Corpus           string                          `json:"corpusFingerprint"`
+		Documents        []GenerationDocumentFingerprint `json:"documents"`
+		Ingestion        config.RAGIngestionPolicyData   `json:"ingestion"`
+		Contract         GenerationContract              `json:"contract"`
+	}{strings.TrimSpace(datasetVersionID), strings.TrimSpace(corpusFingerprint), documents, policy, contract})
+}
+
+// DocumentCorpusFingerprint identifies only the source documents that feed
+// parsing, chunking and embedding. Evaluation cases are deliberately absent,
+// allowing an existing physical index to serve another immutable question set
+// when the documents and generation contract are unchanged.
+func DocumentCorpusFingerprint(documents []GenerationDocumentFingerprint) (string, error) {
+	documents, err := canonicalGenerationDocuments(documents)
+	if err != nil {
+		return "", err
+	}
+	return Fingerprint(struct {
+		Version   int                             `json:"version"`
+		Documents []GenerationDocumentFingerprint `json:"documents"`
+	}{Version: 1, Documents: documents})
+}
+
+func canonicalGenerationDocuments(documents []GenerationDocumentFingerprint) ([]GenerationDocumentFingerprint, error) {
 	documents = append([]GenerationDocumentFingerprint(nil), documents...)
 	for index := range documents {
 		documents[index].ID = strings.TrimSpace(documents[index].ID)
@@ -64,22 +93,16 @@ func GenerationFingerprint(datasetVersionID, corpusFingerprint string, documents
 		decoded, err := hex.DecodeString(documents[index].SHA256)
 		if documents[index].ID == "" || documents[index].FileName == "" || strings.ContainsAny(documents[index].FileName, `/\\`) ||
 			documents[index].SizeBytes < 0 || err != nil || len(decoded) != sha256.Size {
-			return "", fmt.Errorf("invalid generation document fingerprint at index %d", index)
+			return nil, fmt.Errorf("invalid generation document fingerprint at index %d", index)
 		}
 	}
 	sort.Slice(documents, func(i, j int) bool { return documents[i].ID < documents[j].ID })
 	for index := 1; index < len(documents); index++ {
 		if documents[index-1].ID == documents[index].ID {
-			return "", fmt.Errorf("duplicate generation document %q", documents[index].ID)
+			return nil, fmt.Errorf("duplicate generation document %q", documents[index].ID)
 		}
 	}
-	return Fingerprint(struct {
-		DatasetVersionID string                          `json:"datasetVersionId"`
-		Corpus           string                          `json:"corpusFingerprint"`
-		Documents        []GenerationDocumentFingerprint `json:"documents"`
-		Ingestion        config.RAGIngestionPolicyData   `json:"ingestion"`
-		Contract         GenerationContract              `json:"contract"`
-	}{strings.TrimSpace(datasetVersionID), strings.TrimSpace(corpusFingerprint), documents, policy, contract})
+	return documents, nil
 }
 
 // CorpusArtifactFingerprint contains parse-only inputs. It can therefore be

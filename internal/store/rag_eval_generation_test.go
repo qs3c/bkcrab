@@ -146,6 +146,31 @@ func TestCreateOnlineRAGEvalRunAtomicallyAttachesReadyGeneration(t *testing.T) {
 	}
 }
 
+func TestAcquireRAGEvalGenerationReusesVerifiedPreferredGenerationAcrossVersions(t *testing.T) {
+	st := openTestDB(t)
+	defer st.Close()
+	ctx := context.Background()
+	firstVersion, firstRun := seedReadyEvalVersionAndRun(t, st, "preferred-first")
+	secondVersion, secondRun := seedReadyEvalVersionAndRun(t, st, "preferred-second")
+	first, err := st.AcquireRAGEvalGenerationForRun(ctx, evalGenerationAcquireRequest(firstRun.ID, firstVersion.ID, "fingerprint-first", "reg_preferred", "worker"))
+	if err != nil || first.Fence == nil {
+		t.Fatalf("first acquire=%+v err=%v", first, err)
+	}
+	if ready, err := st.MarkRAGEvalGenerationReady(ctx, *first.Fence, 488, 1550, time.Hour); err != nil || !ready {
+		t.Fatalf("ready=%v err=%v", ready, err)
+	}
+	request := evalGenerationAcquireRequest(secondRun.ID, secondVersion.ID, "different-version-fingerprint", "reg_unused", "worker-two")
+	request.PreferredGenerationID = first.Generation.ID
+	second, err := st.AcquireRAGEvalGenerationForRun(ctx, request)
+	if err != nil || !second.Reused || second.Generation.ID != first.Generation.ID {
+		t.Fatalf("cross-version reuse=%+v err=%v", second, err)
+	}
+	stored, err := st.GetRAGEvalRun(ctx, secondRun.ID)
+	if err != nil || stored.IndexGenerationID != first.Generation.ID {
+		t.Fatalf("stored run=%+v err=%v", stored, err)
+	}
+}
+
 func TestRAGEvalGenerationFailureNeverBecomesReady(t *testing.T) {
 	st := openTestDB(t)
 	defer st.Close()

@@ -197,6 +197,9 @@ type EvaluationGenerationPipeline interface {
 
 type EvaluationGenerationStore interface {
 	AcquireRAGEvalGenerationForRun(context.Context, store.RAGEvalGenerationAcquireRequest) (*store.RAGEvalGenerationAcquireResult, error)
+	GetRAGEvalDatasetVersion(context.Context, string) (*store.RAGEvalDatasetVersionRecord, error)
+	ListRAGEvalCorpusDocuments(context.Context, string, string, int) ([]store.RAGEvalCorpusDocumentRecord, error)
+	ListReusableRAGEvalGenerations(context.Context, string, string, int, int) ([]store.RAGEvalGenerationRecord, error)
 	HeartbeatRAGEvalGeneration(context.Context, store.RAGEvalGenerationFence, time.Duration) (bool, error)
 	MarkRAGEvalGenerationReady(context.Context, store.RAGEvalGenerationFence, int64, int64, time.Duration) (bool, error)
 	MarkRAGEvalGenerationFailed(context.Context, store.RAGEvalGenerationFence, string, string, time.Duration) (bool, error)
@@ -280,6 +283,10 @@ func (b *EvaluationGenerationBuilder) Build(ctx context.Context, request Evaluat
 	if err != nil {
 		return nil, false, err
 	}
+	documentCorpusFingerprint, err := rageval.DocumentCorpusFingerprint(documentFingerprints)
+	if err != nil {
+		return nil, false, err
+	}
 	fingerprint, err := rageval.GenerationFingerprint(request.DatasetVersion.ID, request.DatasetVersion.CorpusSHA256, documentFingerprints, effectiveIngestion, effectiveContract)
 	if err != nil {
 		return nil, false, err
@@ -289,6 +296,11 @@ func (b *EvaluationGenerationBuilder) Build(ctx context.Context, request Evaluat
 		strings.TrimSpace(request.EmbeddingContractFingerprint) != strings.TrimSpace(request.Ingestion.Embedding.ContractFingerprint) {
 		return nil, false, errors.New("resolved embedding binding does not match ingestion contract")
 	}
+	preferredGenerationID, err := b.findReusableGeneration(ctx, documentCorpusFingerprint,
+		ingestionFingerprint, effectiveIngestion, effectiveContract, request.Embedding.Model, request.Embedding.Dims)
+	if err != nil {
+		return nil, false, err
+	}
 	generationID := "reg_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	target, err := NewEvaluationPipelineTarget(request.OwnerID, request.RunID, request.DatasetVersion.ID, generationID)
 	if err != nil {
@@ -296,8 +308,9 @@ func (b *EvaluationGenerationBuilder) Build(ctx context.Context, request Evaluat
 	}
 	acquired, err := b.store.AcquireRAGEvalGenerationForRun(ctx, store.RAGEvalGenerationAcquireRequest{
 		RunID: request.RunID, DatasetVersionID: request.DatasetVersion.ID, Fingerprint: fingerprint,
-		CorpusFingerprint: request.DatasetVersion.CorpusSHA256, IngestionFingerprint: ingestionFingerprint,
-		NewGenerationID: generationID, CollectionKey: string(target.CollectionKey), ObjectPrefix: target.ObjectPrefix,
+		CorpusFingerprint: documentCorpusFingerprint, IngestionFingerprint: ingestionFingerprint,
+		NewGenerationID: generationID, PreferredGenerationID: preferredGenerationID,
+		CollectionKey: string(target.CollectionKey), ObjectPrefix: target.ObjectPrefix,
 		EmbeddingModel: effectiveIngestion.Embedding.Model, EmbeddingDims: effectiveIngestion.Embedding.Dims,
 		Worker: b.worker, Lease: b.lease, TTL: b.readyTTL,
 	})
@@ -382,6 +395,75 @@ func (b *EvaluationGenerationBuilder) Build(ctx context.Context, request Evaluat
 	acquired.Generation.DocumentCount = buildResult.DocumentCount
 	acquired.Generation.ChunkCount = buildResult.ChunkCount
 	return acquired.Generation, false, nil
+}
+
+func (b *EvaluationGenerationBuilder) findReusableGeneration(ctx context.Context, documentCorpusFingerprint,
+	ingestionFingerprint string, ingestion config.RAGIngestionPolicyData, contract rageval.GenerationContract,
+	embeddingModel string, embeddingDims int) (string, error) {
+	candidates, err := b.store.ListReusableRAGEvalGenerations(ctx, ingestionFingerprint, embeddingModel, embeddingDims, 20)
+	if err != nil {
+		return "", err
+	}
+	for _, candidate := range candidates {
+		if candidate.DocumentCount < 1 {
+			continue
+		}
+		version, versionErr := b.store.GetRAGEvalDatasetVersion(ctx, candidate.DatasetVersionID)
+		if versionErr != nil {
+			if errors.Is(versionErr, store.ErrNotFound) {
+				continue
+			}
+			return "", versionErr
+		}
+		documents, documentsErr := b.loadGenerationDocuments(ctx, candidate.DatasetVersionID, candidate.DocumentCount)
+		if documentsErr != nil {
+			return "", documentsErr
+		}
+		fingerprints := make([]rageval.GenerationDocumentFingerprint, len(documents))
+		for index, document := range documents {
+			fingerprints[index] = rageval.GenerationDocumentFingerprint{ID: document.ExternalID, FileName: document.FileName,
+				MediaType: document.MediaType, SHA256: document.SHA256, SizeBytes: document.SizeBytes}
+		}
+		candidateCorpus, fingerprintErr := rageval.DocumentCorpusFingerprint(fingerprints)
+		if fingerprintErr != nil || candidateCorpus != documentCorpusFingerprint {
+			continue
+		}
+		legacyFingerprint, fingerprintErr := rageval.GenerationFingerprint(version.ID, version.CorpusSHA256, fingerprints, ingestion, contract)
+		if fingerprintErr != nil || legacyFingerprint != candidate.Fingerprint {
+			continue
+		}
+		// Same-version exact reuse still takes this path; cross-version reuse is
+		// safe because the complete document and generation contracts matched.
+		return candidate.ID, nil
+	}
+	return "", nil
+}
+
+func (b *EvaluationGenerationBuilder) loadGenerationDocuments(ctx context.Context, datasetVersionID string, expected int64) ([]store.RAGEvalCorpusDocumentRecord, error) {
+	documents := []store.RAGEvalCorpusDocumentRecord{}
+	cursor := ""
+	for int64(len(documents)) <= expected {
+		batch, err := b.store.ListRAGEvalCorpusDocuments(ctx, datasetVersionID, cursor, 200)
+		if err != nil {
+			return nil, err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		// The keyset cursor must strictly advance. A store that ignores it would
+		// otherwise hand back the same page forever and grow documents without
+		// bound, so treat a stalled cursor as "cannot verify" and give up.
+		next := batch[len(batch)-1].ID
+		if next <= cursor {
+			return nil, nil
+		}
+		documents = append(documents, batch...)
+		cursor = next
+	}
+	if int64(len(documents)) != expected {
+		return nil, nil
+	}
+	return documents, nil
 }
 
 func (b *EvaluationGenerationBuilder) ReleaseRun(ctx context.Context, runID string) (bool, error) {

@@ -45,7 +45,10 @@ func (p *EvaluationRunnerGenerationProvider) Ensure(ctx context.Context, run *st
 		if err != nil {
 			return nil, err
 		}
-		if generation.Status != store.RAGEvalGenerationReady || generation.DatasetVersionID != run.DatasetVersionID {
+		// FULL_PIPELINE runs may intentionally attach a READY generation owned
+		// by another immutable dataset version after the builder proves that the
+		// complete document and generation contracts match.
+		if generation.Status != store.RAGEvalGenerationReady {
 			return nil, store.ErrRAGEvalGenerationConflict
 		}
 		if report != nil {

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 const {
   canShowRAGEvalNavigation,
+  compatibleBaselineRuns,
   estimateRunWork,
   isRunProgressStalled,
   nextRunPollDelay,
@@ -32,6 +33,17 @@ test("run form validates mode-specific generation and capability metrics", () =>
   }, ["faithfulness"]);
   assert.match(errors.indexGenerationId, /generation/);
   assert.match(errors.metrics, /不支持/);
+});
+
+test("baseline candidates keep only runs that are actually comparable", () => {
+  const draft = { datasetVersionId: "version-a", profileId: "profile", mode: "ONLINE_ONLY", baselineRunId: "", indexGenerationId: "generation-a", metrics: ["faithfulness"] };
+  const runs = [
+    { id: "match", datasetVersionId: "version-a", mode: "ONLINE_ONLY", indexGenerationId: "generation-a", status: "SUCCEEDED" },
+    { id: "other-generation", datasetVersionId: "version-a", mode: "ONLINE_ONLY", indexGenerationId: "generation-b", status: "SUCCEEDED" },
+    { id: "other-version", datasetVersionId: "version-b", mode: "ONLINE_ONLY", indexGenerationId: "generation-a", status: "SUCCEEDED" },
+    { id: "failed", datasetVersionId: "version-a", mode: "ONLINE_ONLY", indexGenerationId: "generation-a", status: "FAILED" },
+  ];
+  assert.deepEqual(compatibleBaselineRuns(runs, draft).map((item) => item.id), ["match"]);
 });
 
 test("validation errors preserve paths and warnings instead of flattening counts", () => {

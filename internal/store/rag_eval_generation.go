@@ -34,7 +34,8 @@ type RAGEvalGenerationFence struct {
 
 type RAGEvalGenerationAcquireRequest struct {
 	RunID, DatasetVersionID, Fingerprint, CorpusFingerprint, IngestionFingerprint string
-	NewGenerationID, CollectionKey, ObjectPrefix, EmbeddingModel, Worker          string
+	NewGenerationID, PreferredGenerationID, CollectionKey, ObjectPrefix           string
+	EmbeddingModel, Worker                                                        string
 	EmbeddingDims                                                                 int
 	Lease, TTL                                                                    time.Duration
 }
@@ -64,6 +65,35 @@ func (d *DBStore) GetRAGEvalGeneration(ctx context.Context, id string) (*RAGEval
 		return nil, ErrNotFound
 	}
 	return item, err
+}
+
+// ListReusableRAGEvalGenerations returns READY physical indexes whose
+// ingestion and embedding contracts match. The caller still verifies the
+// complete document set and legacy generation fingerprint before requesting a
+// cross-version attachment.
+func (d *DBStore) ListReusableRAGEvalGenerations(ctx context.Context, ingestionFingerprint, embeddingModel string, embeddingDims, limit int) ([]RAGEvalGenerationRecord, error) {
+	ingestionFingerprint, embeddingModel = strings.TrimSpace(ingestionFingerprint), strings.TrimSpace(embeddingModel)
+	if ingestionFingerprint == "" || embeddingModel == "" || embeddingDims < 1 {
+		return nil, errors.New("reusable generation contract is required")
+	}
+	limit = boundedRAGEvalListLimit(limit)
+	rows, err := d.db.QueryContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_eval_index_generations
+		WHERE status=%s AND ingestion_fingerprint=%s AND embedding_model=%s AND embedding_dims=%s AND expires_at>%s
+		ORDER BY ready_at DESC,id LIMIT %s`, ragEvalGenerationColumns, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6)),
+		RAGEvalGenerationReady, ingestionFingerprint, embeddingModel, embeddingDims, time.Now().UTC(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RAGEvalGenerationRecord{}
+	for rows.Next() {
+		item, scanErr := scanRAGEvalGeneration(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, *item)
+	}
+	return out, rows.Err()
 }
 
 // AttachReadyRAGEvalGenerationForRun binds an ONLINE_ONLY run to one explicit
@@ -165,8 +195,17 @@ func (d *DBStore) AcquireRAGEvalGenerationForRun(ctx context.Context, request RA
 	}
 
 	var generation *RAGEvalGenerationRecord
+	preferredGenerationID := strings.TrimSpace(request.PreferredGenerationID)
+	usingPreferred := false
 	if runGeneration.Valid {
 		generation, err = scanRAGEvalGeneration(tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_eval_index_generations WHERE id=%s`, ragEvalGenerationColumns, d.ph(1)), runGeneration.String))
+	} else if preferredGenerationID != "" {
+		query := fmt.Sprintf(`SELECT %s FROM rag_eval_index_generations WHERE id=%s`, ragEvalGenerationColumns, d.ph(1))
+		if d.dialect != "sqlite" {
+			query += " FOR UPDATE"
+		}
+		generation, err = scanRAGEvalGeneration(tx.QueryRowContext(ctx, query, preferredGenerationID))
+		usingPreferred = err == nil
 	} else {
 		query := fmt.Sprintf(`SELECT %s FROM rag_eval_index_generations WHERE fingerprint=%s`, ragEvalGenerationColumns, d.ph(1))
 		if d.dialect != "sqlite" {
@@ -178,6 +217,7 @@ func (d *DBStore) AcquireRAGEvalGenerationForRun(ctx context.Context, request RA
 		return nil, err
 	}
 	if errors.Is(err, sql.ErrNoRows) {
+		usingPreferred = false
 		candidate := &RAGEvalGenerationRecord{
 			ID: request.NewGenerationID, DatasetVersionID: request.DatasetVersionID, Fingerprint: request.Fingerprint,
 			CorpusFingerprint: request.CorpusFingerprint, IngestionFingerprint: request.IngestionFingerprint,
@@ -205,9 +245,26 @@ func (d *DBStore) AcquireRAGEvalGenerationForRun(ctx context.Context, request RA
 		if err != nil {
 			return nil, ErrRAGEvalGenerationConflict
 		}
-	} else if generation.DatasetVersionID != request.DatasetVersionID || generation.Fingerprint != request.Fingerprint ||
-		generation.EmbeddingModel != request.EmbeddingModel || generation.EmbeddingDims != int64(request.EmbeddingDims) {
-		return nil, ErrRAGEvalGenerationConflict
+	} else {
+		if generation.EmbeddingModel != request.EmbeddingModel || generation.EmbeddingDims != int64(request.EmbeddingDims) ||
+			generation.IngestionFingerprint != request.IngestionFingerprint {
+			return nil, ErrRAGEvalGenerationConflict
+		}
+		switch {
+		case runGeneration.Valid:
+			if generation.ID != runGeneration.String {
+				return nil, ErrRAGEvalGenerationConflict
+			}
+		case usingPreferred:
+			if generation.ID != preferredGenerationID || generation.Status != RAGEvalGenerationReady {
+				return nil, ErrRAGEvalGenerationConflict
+			}
+		default:
+			if generation.DatasetVersionID != request.DatasetVersionID || generation.Fingerprint != request.Fingerprint ||
+				generation.CorpusFingerprint != request.CorpusFingerprint {
+				return nil, ErrRAGEvalGenerationConflict
+			}
+		}
 	}
 
 	if err = d.attachRAGEvalGenerationRefTx(ctx, tx, request.RunID, generation.ID, now); err != nil {

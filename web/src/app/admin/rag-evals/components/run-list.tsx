@@ -1,11 +1,12 @@
 "use client";
 
-import { AlertTriangle } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cancelRAGEvalRun, type RAGEvalDatasetVersion, type RAGEvalProfile, type RAGEvalRun } from "@/lib/api";
+import { cancelRAGEvalRun, deleteRAGEvalRun, type RAGEvalDatasetVersion, type RAGEvalProfile, type RAGEvalRun } from "@/lib/api";
 import { isRunProgressStalled, parseRAGEvalRunProgress, runProgressAmount, runStageLabel, type RAGEvalRunProgress } from "../rag-eval-state";
 
 function profileParser(profile?: RAGEvalProfile): string {
@@ -45,7 +46,16 @@ function RunProgress({ run, progress }: { run: RAGEvalRun; progress: RAGEvalRunP
 }
 
 export function RunList({ runs, profiles, versions, onChanged }: { runs: RAGEvalRun[]; profiles: RAGEvalProfile[]; versions: RAGEvalDatasetVersion[]; onChanged: () => Promise<void> }) {
-  return <Card><CardHeader><CardTitle>运行队列</CardTitle><CardDescription>完整 Pipeline 会持续展示隔离建库、回答和评分进度；超过两分钟无新进展时会提示检查后台。</CardDescription></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>运行</TableHead><TableHead>模式</TableHead><TableHead>解析器/建库耗时</TableHead><TableHead>阶段/进度</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>
+  const [actionError, setActionError] = useState("");
+  const [deleting, setDeleting] = useState("");
+  async function remove(run: RAGEvalRun) {
+    if (!window.confirm(`删除已完成运行 ${run.id}？\n\n运行会先从列表隐藏；如果它仍被用作 Baseline，关联数据会延迟清理。`)) return;
+    setDeleting(run.id); setActionError("");
+    try { await deleteRAGEvalRun(run.id); await onChanged(); }
+    catch (err) { setActionError(err instanceof Error ? err.message : "删除运行失败"); }
+    finally { setDeleting(""); }
+  }
+  return <Card><CardHeader><CardTitle>运行队列</CardTitle><CardDescription>完整 Pipeline 会持续展示隔离建库、回答和评分进度；超过两分钟无新进展时会提示检查后台。</CardDescription></CardHeader><CardContent>{actionError && <p className="mb-3 text-sm text-destructive">{actionError}</p>}<Table><TableHeader><TableRow><TableHead>运行</TableHead><TableHead>模式</TableHead><TableHead>解析器/建库耗时</TableHead><TableHead>阶段/进度</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>
     {runs.length === 0 ? <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground">暂无运行</TableCell></TableRow> : runs.map((run) => {
       const progress = parseRAGEvalRunProgress(run.progressJson);
       const version = versions.find((item) => item.ID === run.datasetVersionId);
@@ -56,7 +66,9 @@ export function RunList({ runs, profiles, versions, onChanged }: { runs: RAGEval
         <TableCell><div className="font-mono text-xs">{parser}</div><div className="text-xs text-muted-foreground">{durationLabel(progress.generationDurationMs)}{progress.generationReused ? " · 已复用" : ""}</div></TableCell>
         <TableCell><RunProgress run={run} progress={progress} /></TableCell>
         <TableCell><Badge variant="outline">{run.status}</Badge></TableCell>
-        <TableCell className="text-right"><Button size="sm" variant="ghost" disabled={!['QUEUED','RUNNING'].includes(run.status)} onClick={() => void cancelRAGEvalRun(run.id).then(onChanged)}>取消</Button></TableCell>
+        <TableCell className="text-right">{['QUEUED','RUNNING'].includes(run.status)
+          ? <Button size="sm" variant="ghost" onClick={() => void cancelRAGEvalRun(run.id).then(onChanged)}>取消</Button>
+          : ['SUCCEEDED','FAILED','CANCELLED','BUDGET_EXCEEDED'].includes(run.status) && <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" disabled={deleting === run.id} onClick={() => void remove(run)}><Trash2 className="mr-1 h-3.5 w-3.5" />{deleting === run.id ? "删除中" : "删除"}</Button>}</TableCell>
       </TableRow>;
     })}
   </TableBody></Table></CardContent></Card>;

@@ -157,6 +157,27 @@ func TestGenerationFingerprintChangesForEveryIndexContract(t *testing.T) {
 	}
 }
 
+func TestDocumentCorpusFingerprintIgnoresQuestionSetIdentity(t *testing.T) {
+	documents := []GenerationDocumentFingerprint{
+		{ID: "doc-b", FileName: "b.md", MediaType: "text/markdown", SHA256: strings.Repeat("b", 64), SizeBytes: 20},
+		{ID: "doc-a", FileName: "a.md", MediaType: "text/markdown", SHA256: strings.Repeat("a", 64), SizeBytes: 10},
+	}
+	first, err := DocumentCorpusFingerprint(documents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reordered := []GenerationDocumentFingerprint{documents[1], documents[0]}
+	second, err := DocumentCorpusFingerprint(reordered)
+	if err != nil || second != first {
+		t.Fatalf("document ordering changed corpus fingerprint: %q/%q err=%v", first, second, err)
+	}
+	reordered[0].SHA256 = strings.Repeat("c", 64)
+	changed, err := DocumentCorpusFingerprint(reordered)
+	if err != nil || changed == first {
+		t.Fatalf("document content reused corpus fingerprint: %q/%q err=%v", first, changed, err)
+	}
+}
+
 func TestCorpusArtifactFingerprintIgnoresChunkAndEmbeddingOnlyChanges(t *testing.T) {
 	document := GenerationDocumentFingerprint{ID: "doc", FileName: "doc.md", MediaType: "text/markdown", SHA256: strings.Repeat("a", 64), SizeBytes: 10}
 	policy := config.RAGIngestionPolicyData{Version: 1, ChunkSize: 512, ChunkOverlap: 64, ParseMode: config.ParseModeStandard,

@@ -2695,6 +2695,7 @@ export interface RAGEvalRun {
   baselineRunId?: string;
   mode: "FULL_PIPELINE" | "ONLINE_ONLY";
   profileId: string;
+  indexGenerationId?: string;
   status: string;
   stage: string;
   progressJson: string;
@@ -2874,6 +2875,10 @@ export async function createRAGEvalRun(input: {
     headers: { "Content-Type": "application/json", "Idempotency-Key": ragEvalIdempotencyKey() },
     body: JSON.stringify(input),
   }));
+}
+
+export async function deleteRAGEvalRun(id: string): Promise<void> {
+  await ragEvalJSON(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}`, { method: "DELETE" }));
 }
 
 export async function getRAGEvalRunAnalysis(id: string): Promise<{ run: RAGEvalRun; aggregates: Record<string, RAGEvalAggregate> }> {

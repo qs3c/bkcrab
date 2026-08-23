@@ -15,6 +15,20 @@ export interface RAGEvalProfileSummary {
   createdAt: string;
 }
 
+export interface RAGEvalRunSummary {
+  id: string;
+  datasetVersionId: string;
+  mode: "FULL_PIPELINE" | "ONLINE_ONLY";
+  indexGenerationId?: string;
+  status: string;
+}
+
+export function compatibleBaselineRuns(runs: RAGEvalRunSummary[], draft: RAGEvalRunDraft): RAGEvalRunSummary[] {
+  if (!draft.datasetVersionId) return [];
+  return runs.filter((run) => run.status === "SUCCEEDED" && run.datasetVersionId === draft.datasetVersionId &&
+    run.mode === draft.mode && (draft.mode !== "ONLINE_ONLY" || run.indexGenerationId === draft.indexGenerationId));
+}
+
 export interface RAGEvalRunProgress {
   total?: number;
   completed?: number;

@@ -425,6 +425,7 @@ type Store interface {
 	RAGEvalUsageTotals(ctx context.Context, runID string) (int64, float64, error)
 	AcquireRAGEvalGenerationForRun(ctx context.Context, request RAGEvalGenerationAcquireRequest) (*RAGEvalGenerationAcquireResult, error)
 	GetRAGEvalGeneration(ctx context.Context, id string) (*RAGEvalGenerationRecord, error)
+	ListReusableRAGEvalGenerations(ctx context.Context, ingestionFingerprint, embeddingModel string, embeddingDims, limit int) ([]RAGEvalGenerationRecord, error)
 	AttachReadyRAGEvalGenerationForRun(ctx context.Context, runID, generationID string) (*RAGEvalGenerationRecord, error)
 	HeartbeatRAGEvalGeneration(ctx context.Context, fence RAGEvalGenerationFence, lease time.Duration) (bool, error)
 	MarkRAGEvalGenerationReady(ctx context.Context, fence RAGEvalGenerationFence, documentCount, chunkCount int64, ttl time.Duration) (bool, error)

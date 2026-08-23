@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -17,16 +18,28 @@ type fakeEvaluationGenerationStore struct {
 	mu            sync.Mutex
 	byFingerprint map[string]*store.RAGEvalGenerationRecord
 	refs          map[string]string
+	versions      map[string]*store.RAGEvalDatasetVersionRecord
+	documents     map[string][]store.RAGEvalCorpusDocumentRecord
 	gcFence       *store.RAGEvalGenerationFence
 }
 
 func newFakeEvaluationGenerationStore() *fakeEvaluationGenerationStore {
-	return &fakeEvaluationGenerationStore{byFingerprint: map[string]*store.RAGEvalGenerationRecord{}, refs: map[string]string{}}
+	return &fakeEvaluationGenerationStore{byFingerprint: map[string]*store.RAGEvalGenerationRecord{}, refs: map[string]string{},
+		versions: map[string]*store.RAGEvalDatasetVersionRecord{}, documents: map[string][]store.RAGEvalCorpusDocumentRecord{}}
 }
 
 func (s *fakeEvaluationGenerationStore) AcquireRAGEvalGenerationForRun(_ context.Context, request store.RAGEvalGenerationAcquireRequest) (*store.RAGEvalGenerationAcquireResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if request.PreferredGenerationID != "" {
+		for _, generation := range s.byFingerprint {
+			if generation.ID == request.PreferredGenerationID && generation.Status == store.RAGEvalGenerationReady {
+				s.refs[request.RunID] = generation.ID
+				generation.RefCount++
+				return &store.RAGEvalGenerationAcquireResult{Generation: generation, Reused: true}, nil
+			}
+		}
+	}
 	if generation := s.byFingerprint[request.Fingerprint]; generation != nil {
 		s.refs[request.RunID] = generation.ID
 		generation.RefCount++
@@ -46,6 +59,52 @@ func (s *fakeEvaluationGenerationStore) AcquireRAGEvalGenerationForRun(_ context
 	return &store.RAGEvalGenerationAcquireResult{Generation: generation, Claimed: true,
 		Fence: &store.RAGEvalGenerationFence{GenerationID: generation.ID, LeaseOwner: request.Worker,
 			CollectionKey: request.CollectionKey, ObjectPrefix: request.ObjectPrefix, FenceToken: 1}}, nil
+}
+func (s *fakeEvaluationGenerationStore) GetRAGEvalDatasetVersion(_ context.Context, id string) (*store.RAGEvalDatasetVersionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item := s.versions[id]
+	if item == nil {
+		return nil, store.ErrNotFound
+	}
+	copy := *item
+	return &copy, nil
+}
+
+// Mirrors the real keyset query: WHERE dataset_version_id=? AND id>? ORDER BY id LIMIT ?
+func (s *fakeEvaluationGenerationStore) ListRAGEvalCorpusDocuments(_ context.Context, datasetVersionID, cursor string, limit int) ([]store.RAGEvalCorpusDocumentRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	page := []store.RAGEvalCorpusDocumentRecord{}
+	for _, document := range s.documents[datasetVersionID] {
+		if document.ID > cursor {
+			page = append(page, document)
+		}
+	}
+	sort.Slice(page, func(i, j int) bool { return page[i].ID < page[j].ID })
+	if limit > 0 && len(page) > limit {
+		page = page[:limit]
+	}
+	return page, nil
+}
+func (s *fakeEvaluationGenerationStore) ListReusableRAGEvalGenerations(_ context.Context, ingestionFingerprint, embeddingModel string, embeddingDims, _ int) ([]store.RAGEvalGenerationRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []store.RAGEvalGenerationRecord{}
+	for _, generation := range s.byFingerprint {
+		if generation.Status == store.RAGEvalGenerationReady && generation.IngestionFingerprint == ingestionFingerprint &&
+			generation.EmbeddingModel == embeddingModel && generation.EmbeddingDims == int64(embeddingDims) {
+			out = append(out, *generation)
+		}
+	}
+	return out, nil
+}
+func (s *fakeEvaluationGenerationStore) seed(request EvaluationGenerationBuildRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	version := *request.DatasetVersion
+	s.versions[version.ID] = &version
+	s.documents[version.ID] = append([]store.RAGEvalCorpusDocumentRecord(nil), request.Documents...)
 }
 func (s *fakeEvaluationGenerationStore) HeartbeatRAGEvalGeneration(context.Context, store.RAGEvalGenerationFence, time.Duration) (bool, error) {
 	return true, nil
@@ -136,7 +195,7 @@ func evaluationGenerationFixture(runID string) EvaluationGenerationBuildRequest 
 	return EvaluationGenerationBuildRequest{
 		OwnerID: "admin", RunID: runID,
 		DatasetVersion:               &store.RAGEvalDatasetVersionRecord{ID: "rdv_one", Status: store.RAGEvalDatasetReady, CorpusSHA256: "corpus", DocumentCount: 1},
-		Documents:                    []store.RAGEvalCorpusDocumentRecord{{DatasetVersionID: "rdv_one", ExternalID: "doc-one", FileName: "one.md", ObjectKey: "rag-eval/datasets/d/versions/1/corpus/doc-one/one.md", SHA256: sha, SizeBytes: 12}},
+		Documents:                    []store.RAGEvalCorpusDocumentRecord{{ID: "rdc_one", DatasetVersionID: "rdv_one", ExternalID: "doc-one", FileName: "one.md", ObjectKey: "rag-eval/datasets/d/versions/1/corpus/doc-one/one.md", SHA256: sha, SizeBytes: 12}},
 		Ingestion:                    policy,
 		Contract:                     rageval.GenerationContract{ParserProtocolVersion: "parser-v1", ParserEngineVersion: "engine-v1", TokenizerVersion: "token-v1", SplitterVersion: "split-v1", ArtifactSchemaVersion: 1, VectorSchemaVersion: "vector-v1", IndexFormatVersion: 1},
 		Embedding:                    config.RAGEmbeddingCfg{Endpoint: "https://embedding.invalid/v1", Model: "embed", Dims: 3},
@@ -151,7 +210,9 @@ func TestEvaluationGenerationBuilderReusesExactFingerprintAndIsolatesTarget(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, reused, err := builder.Build(context.Background(), evaluationGenerationFixture("run-one"))
+	firstRequest := evaluationGenerationFixture("run-one")
+	generationStore.seed(firstRequest)
+	first, reused, err := builder.Build(context.Background(), firstRequest)
 	if err != nil || reused || first.Status != store.RAGEvalGenerationReady || pipeline.buildCalls != 1 {
 		t.Fatalf("first=%+v reused=%v builds=%d err=%v", first, reused, pipeline.buildCalls, err)
 	}
@@ -162,15 +223,30 @@ func TestEvaluationGenerationBuilderReusesExactFingerprintAndIsolatesTarget(t *t
 	if _, err := builder.ReleaseRun(context.Background(), "run-one"); err != nil {
 		t.Fatal(err)
 	}
-	second, reused, err := builder.Build(context.Background(), evaluationGenerationFixture("run-two"))
+	secondRequest := evaluationGenerationFixture("run-two")
+	generationStore.seed(secondRequest)
+	second, reused, err := builder.Build(context.Background(), secondRequest)
 	if err != nil || !reused || second.ID != first.ID || pipeline.buildCalls != 1 {
 		t.Fatalf("reuse=%+v reused=%v builds=%d err=%v", second, reused, pipeline.buildCalls, err)
 	}
 	changed := evaluationGenerationFixture("run-three")
+	generationStore.seed(changed)
 	changed.Ingestion.ChunkSize++
 	third, reused, err := builder.Build(context.Background(), changed)
 	if err != nil || reused || third.ID == first.ID || pipeline.buildCalls != 2 {
 		t.Fatalf("changed=%+v reused=%v builds=%d err=%v", third, reused, pipeline.buildCalls, err)
+	}
+	crossVersion := evaluationGenerationFixture("run-four")
+	crossVersion.DatasetVersion.ID = "rdv_two"
+	crossVersion.DatasetVersion.CorpusSHA256 = "different-question-set"
+	for index := range crossVersion.Documents {
+		crossVersion.Documents[index].ID = "rdc_two"
+		crossVersion.Documents[index].DatasetVersionID = crossVersion.DatasetVersion.ID
+	}
+	generationStore.seed(crossVersion)
+	fourth, reused, err := builder.Build(context.Background(), crossVersion)
+	if err != nil || !reused || fourth.ID != first.ID || pipeline.buildCalls != 2 {
+		t.Fatalf("cross-version=%+v reused=%v builds=%d err=%v", fourth, reused, pipeline.buildCalls, err)
 	}
 }
 
@@ -178,7 +254,9 @@ func TestEvaluationGenerationBuilderFailureAndEvalOnlyGC(t *testing.T) {
 	generationStore := newFakeEvaluationGenerationStore()
 	pipeline := &fakeEvaluationPipeline{fail: true}
 	builder, _ := NewEvaluationGenerationBuilder(generationStore, pipeline, "worker", 5*time.Second, time.Hour)
-	generation, reused, err := builder.Build(context.Background(), evaluationGenerationFixture("run-fail"))
+	request := evaluationGenerationFixture("run-fail")
+	generationStore.seed(request)
+	generation, reused, err := builder.Build(context.Background(), request)
 	if err == nil || reused || generation.Status != store.RAGEvalGenerationFailed {
 		t.Fatalf("failed generation=%+v reused=%v err=%v", generation, reused, err)
 	}
