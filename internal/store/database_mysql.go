@@ -410,6 +410,7 @@ func mysqlMigrationSQL() []string {
 			embed_dims INTEGER NOT NULL,
 			chunk_size INTEGER NOT NULL DEFAULT 512,
 			chunk_overlap INTEGER NOT NULL DEFAULT 64,
+			sparse_analyzer VARCHAR(24) NOT NULL DEFAULT 'chinese',
 			parse_mode VARCHAR(16) NOT NULL DEFAULT 'standard',
 			enrichment_enabled BOOLEAN NOT NULL DEFAULT FALSE,
 			status VARCHAR(32) NOT NULL DEFAULT 'active',

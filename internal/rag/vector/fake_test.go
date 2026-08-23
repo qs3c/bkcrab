@@ -55,6 +55,21 @@ func TestFakeCollectionKeysIsolateGenerationsAndDimensions(t *testing.T) {
 	}
 }
 
+func TestFakeCollectionRejectsSparseAnalyzerMutation(t *testing.T) {
+	ctx := context.Background()
+	fake := NewFake()
+	key := CollectionKey("analyzer_contract")
+	if err := fake.EnsureCollectionWithConfig(ctx, key, CollectionConfig{Dims: 4, SparseAnalyzer: SparseAnalyzerEnglish}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fake.EnsureCollectionWithConfig(ctx, key, CollectionConfig{Dims: 4, SparseAnalyzer: SparseAnalyzerEnglish}); err != nil {
+		t.Fatalf("same analyzer must be idempotent: %v", err)
+	}
+	if err := fake.EnsureCollectionWithConfig(ctx, key, CollectionConfig{Dims: 4, SparseAnalyzer: SparseAnalyzerChinese}); err == nil {
+		t.Fatal("existing collection accepted a different sparse analyzer")
+	}
+}
+
 func TestCollectionKeyPhysicalNamesAreBoundedAndLegacyCompatible(t *testing.T) {
 	legacy, err := LegacyCollectionKey("kb_existing-01")
 	if err != nil {

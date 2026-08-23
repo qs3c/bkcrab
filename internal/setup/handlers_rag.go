@@ -94,22 +94,23 @@ type ragDocumentAIBudgetDTO struct {
 }
 
 type ragKBResponseDTO struct {
-	ID                  string           `json:"id"`
-	UserID              string           `json:"userId"`
-	Name                string           `json:"name"`
-	Description         string           `json:"description"`
-	EmbedProvider       string           `json:"embedProvider"`
-	EmbedModel          string           `json:"embedModel"`
-	EmbedDims           int              `json:"embedDims"`
-	ChunkSize           int              `json:"chunkSize"`
-	ChunkOverlap        int              `json:"chunkOverlap"`
-	ParseMode           config.ParseMode `json:"parseMode"`
-	EnrichmentEnabled   bool             `json:"enrichmentEnabled"`
-	Status              string           `json:"status"`
-	PinnedPolicyVersion *int64           `json:"pinnedPolicyVersion,omitempty"`
-	ActiveGenerationID  string           `json:"activeGenerationId,omitempty"`
-	CreatedAt           time.Time        `json:"createdAt"`
-	UpdatedAt           time.Time        `json:"updatedAt"`
+	ID                  string                   `json:"id"`
+	UserID              string                   `json:"userId"`
+	Name                string                   `json:"name"`
+	Description         string                   `json:"description"`
+	EmbedProvider       string                   `json:"embedProvider"`
+	EmbedModel          string                   `json:"embedModel"`
+	EmbedDims           int                      `json:"embedDims"`
+	ChunkSize           int                      `json:"chunkSize"`
+	ChunkOverlap        int                      `json:"chunkOverlap"`
+	SparseAnalyzer      config.RAGSparseAnalyzer `json:"sparseAnalyzer"`
+	ParseMode           config.ParseMode         `json:"parseMode"`
+	EnrichmentEnabled   bool                     `json:"enrichmentEnabled"`
+	Status              string                   `json:"status"`
+	PinnedPolicyVersion *int64                   `json:"pinnedPolicyVersion,omitempty"`
+	ActiveGenerationID  string                   `json:"activeGenerationId,omitempty"`
+	CreatedAt           time.Time                `json:"createdAt"`
+	UpdatedAt           time.Time                `json:"updatedAt"`
 }
 
 type ragDocumentProgressDTO struct {
@@ -160,7 +161,8 @@ func ragKBResponse(record *store.RAGKBRecord) ragKBResponseDTO {
 		ID: record.ID, UserID: record.UserID, Name: record.Name, Description: record.Description,
 		EmbedProvider: record.EmbedProvider, EmbedModel: record.EmbedModel, EmbedDims: record.EmbedDims,
 		ChunkSize: record.ChunkSize, ChunkOverlap: record.ChunkOverlap,
-		ParseMode: config.ParseMode(record.ParseMode), EnrichmentEnabled: record.EnrichmentEnabled,
+		SparseAnalyzer: config.EffectiveRAGSparseAnalyzer(config.RAGSparseAnalyzer(record.SparseAnalyzer)),
+		ParseMode:      config.ParseMode(record.ParseMode), EnrichmentEnabled: record.EnrichmentEnabled,
 		Status:    record.Status,
 		CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
 	}
@@ -189,7 +191,7 @@ func ragDocumentResponse(record *store.RAGDocumentRecord) ragDocumentResponseDTO
 	return ragDocumentResponseDTO{
 		ID: record.ID, KBID: record.KBID, FileName: record.FileName, FileType: record.FileType,
 		ParserEngine: record.ParserEngine,
-		FileSize: record.FileSize, Status: record.Status, ErrorMsg: record.ErrorMsg,
+		FileSize:     record.FileSize, Status: record.Status, ErrorMsg: record.ErrorMsg,
 		ChunkCount: record.ChunkCount, TokenCount: record.TokenCount, Version: record.Version,
 		ActiveVersion: record.ActiveVersion, IndexFormatVersion: record.IndexFormatVersion,
 		Progress: ragDocumentProgressDTO{Stage: record.ProcessingStage, Current: record.ProgressCurrent,

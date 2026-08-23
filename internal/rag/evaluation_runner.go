@@ -134,10 +134,7 @@ func (s *Service) Execute(ctx context.Context, request rageval.CaseExecutionRequ
 		citations[i] = fmt.Sprint(citation.Number)
 	}
 	providerName, modelName := provider.SplitProviderModel(request.Profile.AnswerModel)
-	savedHits := make([]evaluationTraceHit, len(hits))
-	for index, hit := range hits {
-		savedHits[index] = evaluationTraceHit{ContextID: ids[index], RecallScore: hit.RecallScore, RerankScore: hit.RerankScore}
-	}
+	savedHits := evaluationSavedHits(trace, hits, request.Case.ReferenceDocumentIDs)
 	result := rageval.CaseExecutionResult{Response: answer.Response, Contexts: contexts, ContextIDs: ids, DocumentIDs: documentIDs, Citations: citations, SearchTrace: evaluationSearchTrace{Trace: trace, Hits: savedHits}, AnswerTrace: answer, Latency: time.Since(started),
 		Usage: rageval.Usage{Stage: "answer", Provider: providerName, Model: modelName, InputTokens: int64(answer.Usage.InputTokens), OutputTokens: int64(answer.Usage.OutputTokens)}}
 	result.Usage.EstimatedCostUSD = (float64(result.Usage.InputTokens)*s.cfg.Evaluation.AnswerInputCostPerMUSD + float64(result.Usage.OutputTokens)*s.cfg.Evaluation.AnswerOutputCostPerMUSD) / 1_000_000
@@ -149,13 +146,45 @@ func (s *Service) Execute(ctx context.Context, request rageval.CaseExecutionRequ
 }
 
 type evaluationTraceHit struct {
+	DocumentID  string   `json:"documentId"`
 	ContextID   string   `json:"contextId"`
 	RecallScore float64  `json:"recallScore"`
 	RerankScore *float64 `json:"rerankScore,omitempty"`
+	Selected    bool     `json:"selected"`
+	Relevant    *bool    `json:"relevant,omitempty"`
 }
 type evaluationSearchTrace struct {
 	Trace SearchTrace          `json:"trace"`
 	Hits  []evaluationTraceHit `json:"hits"`
+}
+
+func evaluationSavedHits(trace SearchTrace, hits []Hit, referenceDocumentIDs []string) []evaluationTraceHit {
+	references := make(map[string]struct{}, len(referenceDocumentIDs))
+	for _, id := range referenceDocumentIDs {
+		references[id] = struct{}{}
+	}
+	relevance := func(documentID string) *bool {
+		if len(references) == 0 {
+			return nil
+		}
+		_, relevant := references[documentID]
+		return &relevant
+	}
+	if len(trace.RerankCandidates) > 0 {
+		out := make([]evaluationTraceHit, 0, len(trace.RerankCandidates))
+		for _, candidate := range trace.RerankCandidates {
+			score := candidate.RerankScore
+			out = append(out, evaluationTraceHit{DocumentID: candidate.DocumentID, ContextID: candidate.ContextID,
+				RecallScore: candidate.RecallScore, RerankScore: &score, Selected: candidate.Selected, Relevant: relevance(candidate.DocumentID)})
+		}
+		return out
+	}
+	out := make([]evaluationTraceHit, 0, len(hits))
+	for _, hit := range hits {
+		out = append(out, evaluationTraceHit{DocumentID: hit.DocID, ContextID: fmt.Sprintf("%s:%d", hit.DocID, hit.ChunkIndex),
+			RecallScore: hit.RecallScore, RerankScore: hit.RerankScore, Selected: true, Relevant: relevance(hit.DocID)})
+	}
+	return out
 }
 
 // SearchEvaluationWithOptions shares query planning, embedding, Milvus hybrid
@@ -247,20 +276,27 @@ func (s *Service) SearchEvaluationWithOptions(ctx context.Context, ownerID strin
 	}
 	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
 	trace.CandidateCount = len(hits)
+	setRecallScoreRange(&trace, hits)
 	if profile.RerankerEnabled && s.reranker != nil && len(hits) > 0 {
+		trace.RerankerAttempted = true
 		reranked, stats, rankErr := s.rerankHitsWithStats(ctx, trace.RetrievalID, plan.RewrittenQuery, hits, profile.Runtime.TopN, profile.Runtime.MinScore)
 		trace.RerankerDurationMS = stats.durationMS
+		trace.RerankerRankedCount = stats.rankedCount
+		trace.RerankerFilteredCount = stats.filteredCount
+		trace.RerankScoreMin = stats.scoreMin
+		trace.RerankScoreMax = stats.scoreMax
+		trace.RerankCandidates = stats.candidates
 		if rankErr == nil {
-			trace.RerankerAttempted = true
 			trace.RerankerSucceeded = true
-			trace.RerankerRankedCount = stats.rankedCount
-			trace.RerankerFilteredCount = stats.filteredCount
 			trace.ReturnedCount = len(reranked)
 			return reranked, trace, nil
 		}
 		if profile.RerankerFailurePolicy == config.RAGRerankerFailClosed {
+			trace.RerankerFailureCode = "reranker_error"
+			trace.Degraded = true
 			return nil, trace, rankErr
 		}
+		trace.RerankerFailureCode = "reranker_error"
 		trace.RerankerFallback = true
 		trace.Degraded = true
 	}

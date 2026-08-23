@@ -70,7 +70,7 @@ func (s *Service) ensureProvisionedKBCollection(
 		collectionKey, err = s.resolveCollection(workCtx, kb.ID)
 	}
 	if err == nil {
-		err = s.vec.EnsureCollection(workCtx, collectionKey, kb.EmbedDims)
+		err = s.vec.EnsureCollectionWithConfig(workCtx, collectionKey, vector.CollectionConfig{Dims: kb.EmbedDims, SparseAnalyzer: kb.SparseAnalyzer})
 	}
 	close(stop)
 	<-done

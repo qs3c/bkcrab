@@ -90,7 +90,7 @@ func (s *Service) StartKBPolicySync(ctx context.Context, ownerID, kbID string, t
 		mapped = append(mapped, store.RAGGenerationDocumentRecord{DocID: doc.ID, DocVersion: next})
 		sourceBytes += doc.FileSize
 	}
-	generation := &store.RAGKBGenerationRecord{ID: generationID, KBID: kbID, PolicyVersion: targetPolicyVersion, CollectionKey: string(collectionKey), EmbeddingModel: policy.Embedding.Model, EmbeddingDims: policy.Embedding.Dims, CreatedBy: requestedBy}
+	generation := &store.RAGKBGenerationRecord{ID: generationID, KBID: kbID, PolicyVersion: targetPolicyVersion, CollectionKey: string(collectionKey), EmbeddingModel: policy.Embedding.Model, EmbeddingDims: policy.Embedding.Dims, SparseAnalyzer: string(config.EffectiveRAGSparseAnalyzer(policy.SparseAnalyzer)), CreatedBy: requestedBy}
 	if err = s.st.CreateRAGKBGeneration(ctx, generation, mapped); err != nil {
 		return nil, err
 	}
@@ -238,7 +238,7 @@ func (s *Service) runPolicySync(ctx context.Context, fence store.RAGPolicySyncFe
 	}
 	mapped, err := s.st.ListRAGKBGenerationDocuments(ctx, generation.ID)
 	if err == nil {
-		err = s.vec.EnsureCollection(ctx, collectionKey, policy.Embedding.Dims)
+		err = s.vec.EnsureCollectionWithConfig(ctx, collectionKey, vector.CollectionConfig{Dims: policy.Embedding.Dims, SparseAnalyzer: string(config.EffectiveRAGSparseAnalyzer(policy.SparseAnalyzer))})
 	}
 	var chunkCount int64
 	for index, mapping := range mapped {

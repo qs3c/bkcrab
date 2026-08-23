@@ -153,7 +153,7 @@ func TestRAGPolicyLegalBoundariesAndInvalidNumericValues(t *testing.T) {
 
 	for _, policy := range []RAGIngestionPolicyData{
 		{ChunkSize: 128, ChunkOverlap: 0, ParseMode: ParseModeStandard, Embedding: RAGPolicyEmbeddingData{ContractFingerprint: "x", Model: "embed", Dims: 1}},
-		{Version: math.MaxInt64, ChunkSize: 8192, ChunkOverlap: 8191, ParseMode: ParseModeAuto, Embedding: RAGPolicyEmbeddingData{ContractFingerprint: "x", Model: "embed", Dims: 65_536}},
+		{Version: math.MaxInt64, ChunkSize: 8192, ChunkOverlap: 8191, SparseAnalyzer: RAGSparseAnalyzerMultilingual, ParseMode: ParseModeAuto, Embedding: RAGPolicyEmbeddingData{ContractFingerprint: "x", Model: "embed", Dims: 65_536}},
 	} {
 		if err := policy.Validate(); err != nil {
 			t.Fatalf("legal ingestion boundary rejected: %+v: %v", policy, err)
@@ -161,11 +161,12 @@ func TestRAGPolicyLegalBoundariesAndInvalidNumericValues(t *testing.T) {
 	}
 	validIngestion := RAGIngestionPolicyData{ChunkSize: 512, ChunkOverlap: 64, ParseMode: ParseModeStandard, Embedding: RAGPolicyEmbeddingData{ContractFingerprint: "x", Model: "embed", Dims: 1024}}
 	for name, mutate := range map[string]func(*RAGIngestionPolicyData){
-		"chunk":         func(p *RAGIngestionPolicyData) { p.ChunkSize = 127 },
-		"overlap":       func(p *RAGIngestionPolicyData) { p.ChunkOverlap = p.ChunkSize },
-		"dims":          func(p *RAGIngestionPolicyData) { p.Embedding.Dims = 65_537 },
-		"parser engine": func(p *RAGIngestionPolicyData) { p.ParserEngine = "unknown" },
-		"parser casing": func(p *RAGIngestionPolicyData) { p.ParserEngine = "AnyDoc" },
+		"chunk":           func(p *RAGIngestionPolicyData) { p.ChunkSize = 127 },
+		"overlap":         func(p *RAGIngestionPolicyData) { p.ChunkOverlap = p.ChunkSize },
+		"dims":            func(p *RAGIngestionPolicyData) { p.Embedding.Dims = 65_537 },
+		"parser engine":   func(p *RAGIngestionPolicyData) { p.ParserEngine = "unknown" },
+		"parser casing":   func(p *RAGIngestionPolicyData) { p.ParserEngine = "AnyDoc" },
+		"sparse analyzer": func(p *RAGIngestionPolicyData) { p.SparseAnalyzer = "gibberish" },
 	} {
 		t.Run("ingestion "+name, func(t *testing.T) {
 			policy := validIngestion
@@ -181,6 +182,10 @@ func TestRAGEvaluationRejectsUnknownEnumsAndTrailingJSON(t *testing.T) {
 	badParseMode := []byte(`{"version":1,"chunkSize":512,"chunkOverlap":64,"parseMode":"mystery","enrichmentEnabled":false,"documentAI":{},"embedding":{"contractFingerprint":"sha256:x","model":"embed","dims":1024}}`)
 	if _, err := DecodeRAGIngestionPolicy(badParseMode); err == nil {
 		t.Fatal("unknown parse mode accepted")
+	}
+	badSparseAnalyzer := []byte(`{"version":1,"chunkSize":512,"chunkOverlap":64,"sparseAnalyzer":"gibberish","parseMode":"standard","enrichmentEnabled":false,"documentAI":{},"embedding":{"contractFingerprint":"sha256:x","model":"embed","dims":1024}}`)
+	if _, err := DecodeRAGIngestionPolicy(badSparseAnalyzer); err == nil {
+		t.Fatal("unknown sparse analyzer accepted")
 	}
 	badFailurePolicy := []byte(`{"ingestion":{"version":1,"chunkSize":512,"chunkOverlap":64,"parseMode":"standard","enrichmentEnabled":false,"documentAI":{},"embedding":{"contractFingerprint":"sha256:x","model":"embed","dims":1024}},"runtime":{"version":1,"topN":5,"candidateTopK":20,"minScore":0.5,"temperature":0.2,"maxTokens":4096,"ragPromptBundleVersion":"rag-answer-v1"},"rewriteEnabled":false,"hydeEnabled":false,"rerankerEnabled":true,"rerankerModel":"ranker","rerankerTimeoutMs":5000,"rerankerFailurePolicy":"ignore","answerModel":"answer"}`)
 	if _, err := DecodeRAGEvalProfile(badFailurePolicy); err == nil {

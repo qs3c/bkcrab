@@ -114,7 +114,7 @@ func (d *DBStore) migrateRAGEvaluationSchema(ctx context.Context) error {
 			policy_kind VARCHAR(32) PRIMARY KEY,active_version BIGINT NOT NULL,updated_at TIMESTAMP NOT NULL)`,
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS rag_kb_index_generations (
 			id %s PRIMARY KEY,kb_id %s NOT NULL,policy_version BIGINT NOT NULL,collection_key VARCHAR(255) NOT NULL UNIQUE,
-			embedding_model VARCHAR(255) NOT NULL,embedding_dims BIGINT NOT NULL,status VARCHAR(32) NOT NULL,document_count BIGINT NOT NULL DEFAULT 0,
+			embedding_model VARCHAR(255) NOT NULL,embedding_dims BIGINT NOT NULL,sparse_analyzer VARCHAR(24) NOT NULL DEFAULT 'chinese',status VARCHAR(32) NOT NULL,document_count BIGINT NOT NULL DEFAULT 0,
 			chunk_count BIGINT NOT NULL DEFAULT 0,error_code VARCHAR(128) NOT NULL,error_message %s NOT NULL,created_by %s NOT NULL,
 			created_at TIMESTAMP NOT NULL,activated_at TIMESTAMP NULL,retired_at TIMESTAMP NULL,rollback_until TIMESTAMP NULL,
 			lease_owner VARCHAR(255) NOT NULL,lease_until TIMESTAMP NULL,fence_token BIGINT NOT NULL DEFAULT 0)`, id, id, text, id),
@@ -153,6 +153,7 @@ func (d *DBStore) migrateRAGEvaluationSchema(ctx context.Context) error {
 		{"rag_eval_dataset_versions", "selector_fingerprint", "VARCHAR(64) NULL"},
 		{"rag_eval_cases", "reference_document_ids_json", text + " NULL"},
 		{"rag_eval_case_results", "document_ids_json", text + " NULL"},
+		{"rag_kb_index_generations", "sparse_analyzer", "VARCHAR(24) NOT NULL DEFAULT 'chinese'"},
 	} {
 		if err := d.addRAGColumnIfMissing(ctx, column.table, column.name, column.ddl); err != nil {
 			return err

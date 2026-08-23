@@ -17,6 +17,30 @@ import (
 // client DTOs must continue accepting logical KB IDs only.
 type CollectionKey string
 
+const (
+	SparseAnalyzerChinese      = "chinese"
+	SparseAnalyzerEnglish      = "english"
+	SparseAnalyzerMultilingual = "multilingual"
+)
+
+type CollectionConfig struct {
+	Dims           int
+	SparseAnalyzer string
+}
+
+func (c CollectionConfig) normalized() (CollectionConfig, error) {
+	if c.Dims <= 0 {
+		return CollectionConfig{}, errors.New("collection vector dimensions must be positive")
+	}
+	if c.SparseAnalyzer == "" {
+		c.SparseAnalyzer = SparseAnalyzerChinese
+	}
+	if c.SparseAnalyzer != SparseAnalyzerChinese && c.SparseAnalyzer != SparseAnalyzerEnglish && c.SparseAnalyzer != SparseAnalyzerMultilingual {
+		return CollectionConfig{}, fmt.Errorf("unsupported sparse analyzer %q", c.SparseAnalyzer)
+	}
+	return c, nil
+}
+
 func LegacyCollectionKey(kbID string) (CollectionKey, error) {
 	kbID = strings.TrimSpace(kbID)
 	if kbID == "" || len(kbID) > 255 {
@@ -123,7 +147,7 @@ type SearchQuery struct {
 
 // Store is the vector database surface needed by the RAG service.
 type Store interface {
-	EnsureCollection(ctx context.Context, collectionKey CollectionKey, dims int) error
+	EnsureCollectionWithConfig(ctx context.Context, collectionKey CollectionKey, cfg CollectionConfig) error
 	UpsertChunks(ctx context.Context, collectionKey CollectionKey, chunks []ChunkData) error
 	// DeleteDocVersion removes only the entities for the exact physical
 	// doc_version. Delayed cleanup must use this method so one retired version

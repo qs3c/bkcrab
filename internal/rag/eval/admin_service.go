@@ -22,6 +22,7 @@ type AdminStore interface {
 	ListRAGEvalProfiles(context.Context, string, int) ([]store.RAGEvalProfileRecord, error)
 	GetRAGEvalProfile(context.Context, string) (*store.RAGEvalProfileRecord, error)
 	ListRAGEvalRuns(context.Context, string, int) ([]store.RAGEvalRunRecord, error)
+	RAGEvalUsageTotals(context.Context, string) (int64, float64, error)
 	RequestCancelRAGEvalRun(context.Context, string) (bool, error)
 	TombstoneRAGEvalRun(context.Context, string) (bool, error)
 	ActiveRAGPolicy(context.Context, string) (*store.RAGPolicyRecord, error)
@@ -66,6 +67,9 @@ func (s *AdminService) GetRun(ctx context.Context, id string) (*store.RAGEvalRun
 }
 func (s *AdminService) ListRuns(ctx context.Context, cursor string, limit int) ([]store.RAGEvalRunRecord, error) {
 	return s.store.ListRAGEvalRuns(ctx, cursor, limit)
+}
+func (s *AdminService) UsageTotals(ctx context.Context, runID string) (int64, float64, error) {
+	return s.store.RAGEvalUsageTotals(ctx, runID)
 }
 func (s *AdminService) CancelRun(ctx context.Context, id string) (bool, error) {
 	return s.store.RequestCancelRAGEvalRun(ctx, id)

@@ -74,6 +74,7 @@ func (s *Service) GetKBIngestionPolicyStatus(ctx context.Context, ownerID, kbID 
 		pinned = config.RAGIngestionPolicyData{
 			Version: kb.PinnedPolicyVersion.Int64, ChunkSize: kb.ChunkSize,
 			ChunkOverlap: kb.ChunkOverlap, ParseMode: config.ParseMode(kb.ParseMode),
+			SparseAnalyzer:    config.RAGSparseAnalyzer(kb.SparseAnalyzer),
 			EnrichmentEnabled: kb.EnrichmentEnabled,
 			Embedding:         config.RAGPolicyEmbeddingData{ContractFingerprint: pinnedRecord.Fingerprint, Model: kb.EmbedModel, Dims: kb.EmbedDims},
 		}
@@ -94,7 +95,7 @@ func (s *Service) GetKBIngestionPolicyStatus(ctx context.Context, ownerID, kbID 
 	status := KBIngestionPolicyStatus{
 		PinnedVersion: kb.PinnedPolicyVersion.Int64, LatestVersion: latestRecord.Version,
 		Drift:                 kb.PinnedPolicyVersion.Int64 != latestRecord.Version,
-		FullCollectionRebuild: pinned.Embedding != latest.Embedding,
+		FullCollectionRebuild: pinned.Embedding != latest.Embedding || config.EffectiveRAGSparseAnalyzer(pinned.SparseAnalyzer) != config.EffectiveRAGSparseAnalyzer(latest.SparseAnalyzer),
 		Differences:           differences,
 		Estimate:              IngestionPolicyEstimate{DocumentCount: len(documents), SourceBytes: bytes, TemporaryBytesMax: bytes * 2},
 	}
@@ -121,6 +122,7 @@ func ingestionPolicyDifferences(from, to config.RAGIngestionPolicyData) []Ingest
 	}
 	add("chunkSize", from.ChunkSize, to.ChunkSize, from.ChunkSize != to.ChunkSize)
 	add("chunkOverlap", from.ChunkOverlap, to.ChunkOverlap, from.ChunkOverlap != to.ChunkOverlap)
+	add("sparseAnalyzer", config.EffectiveRAGSparseAnalyzer(from.SparseAnalyzer), config.EffectiveRAGSparseAnalyzer(to.SparseAnalyzer), config.EffectiveRAGSparseAnalyzer(from.SparseAnalyzer) != config.EffectiveRAGSparseAnalyzer(to.SparseAnalyzer))
 	add("parseMode", from.ParseMode, to.ParseMode, from.ParseMode != to.ParseMode)
 	add("enrichmentEnabled", from.EnrichmentEnabled, to.EnrichmentEnabled, from.EnrichmentEnabled != to.EnrichmentEnabled)
 	add("documentAI.visionModel", from.DocumentAI.VisionModel, to.DocumentAI.VisionModel, from.DocumentAI.VisionModel != to.DocumentAI.VisionModel)

@@ -44,8 +44,12 @@ func (s *searchUserLookupStore) GetUser(ctx context.Context, userID string) (*st
 }
 
 func (v *searchCountingVector) EnsureCollection(ctx context.Context, kbID vector.CollectionKey, dims int) error {
+	return v.EnsureCollectionWithConfig(ctx, kbID, vector.CollectionConfig{Dims: dims})
+}
+
+func (v *searchCountingVector) EnsureCollectionWithConfig(ctx context.Context, kbID vector.CollectionKey, cfg vector.CollectionConfig) error {
 	v.ensureCalls++
-	return v.Fake.EnsureCollection(ctx, kbID, dims)
+	return v.Fake.EnsureCollectionWithConfig(ctx, kbID, cfg)
 }
 
 func (v *searchCountingVector) HybridSearch(ctx context.Context, kbID vector.CollectionKey, query vector.SearchQuery, topK int) ([]vector.SearchHit, error) {
@@ -259,6 +263,10 @@ func TestRAGSearchTraceRecordsRerankSuccessAndMinScoreFiltering(t *testing.T) {
 	}
 	if trace.RerankScoreMin == nil || *trace.RerankScoreMin != 0.4 || trace.RerankScoreMax == nil || *trace.RerankScoreMax != 0.9 {
 		t.Fatalf("rerank score range = %+v", trace)
+	}
+	if len(trace.RerankCandidates) != 2 || trace.RerankCandidates[0].DocumentID != hits[0].DocID ||
+		trace.RerankCandidates[0].RerankScore != 0.9 || !trace.RerankCandidates[0].Selected || trace.RerankCandidates[1].Selected {
+		t.Fatalf("rerank candidates = %+v", trace.RerankCandidates)
 	}
 }
 

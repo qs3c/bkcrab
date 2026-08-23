@@ -58,7 +58,7 @@ type RAGPolicyAuditRecord struct {
 type RAGKBGenerationRecord struct {
 	ID, KBID                                          string
 	PolicyVersion                                     int64
-	CollectionKey, EmbeddingModel                     string
+	CollectionKey, EmbeddingModel, SparseAnalyzer     string
 	EmbeddingDims                                     int
 	Status                                            string
 	DocumentCount, ChunkCount                         int64
@@ -106,6 +106,7 @@ type legacyIngestionKBSnapshot struct {
 	EmbeddingDims     int    `json:"embeddingDims"`
 	ChunkSize         int    `json:"chunkSize"`
 	ChunkOverlap      int    `json:"chunkOverlap"`
+	SparseAnalyzer    string `json:"sparseAnalyzer"`
 	ParseMode         string `json:"parseMode"`
 	EnrichmentEnabled bool   `json:"enrichmentEnabled"`
 }
@@ -343,6 +344,9 @@ func (d *DBStore) CreateRAGKBGeneration(ctx context.Context, record *RAGKBGenera
 	if record == nil || strings.TrimSpace(record.KBID) == "" || record.PolicyVersion <= 0 || strings.TrimSpace(record.CollectionKey) == "" || strings.TrimSpace(record.EmbeddingModel) == "" || record.EmbeddingDims <= 0 || strings.TrimSpace(record.CreatedBy) == "" {
 		return errors.New("complete generation is required")
 	}
+	if record.SparseAnalyzer == "" {
+		record.SparseAnalyzer = "chinese"
+	}
 	if record.ID == "" {
 		record.ID = "rkg_" + uuid.NewString()
 	}
@@ -376,7 +380,7 @@ func (d *DBStore) CreateRAGKBGeneration(ctx context.Context, record *RAGKBGenera
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_kb_index_generations(id,kb_id,policy_version,collection_key,embedding_model,embedding_dims,status,document_count,chunk_count,error_code,error_message,created_by,created_at,lease_owner) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14)), record.ID, record.KBID, record.PolicyVersion, record.CollectionKey, record.EmbeddingModel, record.EmbeddingDims, record.Status, len(documents), 0, "", "", record.CreatedBy, record.CreatedAt, "")
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_kb_index_generations(id,kb_id,policy_version,collection_key,embedding_model,embedding_dims,sparse_analyzer,status,document_count,chunk_count,error_code,error_message,created_by,created_at,lease_owner) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14), d.ph(15)), record.ID, record.KBID, record.PolicyVersion, record.CollectionKey, record.EmbeddingModel, record.EmbeddingDims, record.SparseAnalyzer, record.Status, len(documents), 0, "", "", record.CreatedBy, record.CreatedAt, "")
 	if err != nil {
 		return err
 	}
@@ -391,7 +395,7 @@ func (d *DBStore) CreateRAGKBGeneration(ctx context.Context, record *RAGKBGenera
 
 func scanRAGKBGeneration(scanner interface{ Scan(...any) error }) (*RAGKBGenerationRecord, error) {
 	var item RAGKBGenerationRecord
-	err := scanner.Scan(&item.ID, &item.KBID, &item.PolicyVersion, &item.CollectionKey, &item.EmbeddingModel, &item.EmbeddingDims, &item.Status, &item.DocumentCount, &item.ChunkCount, &item.ErrorCode, &item.ErrorMessage, &item.CreatedBy, &item.CreatedAt, &item.ActivatedAt, &item.RetiredAt, &item.RollbackUntil, &item.LeaseOwner, &item.LeaseUntil, &item.FenceToken)
+	err := scanner.Scan(&item.ID, &item.KBID, &item.PolicyVersion, &item.CollectionKey, &item.EmbeddingModel, &item.EmbeddingDims, &item.SparseAnalyzer, &item.Status, &item.DocumentCount, &item.ChunkCount, &item.ErrorCode, &item.ErrorMessage, &item.CreatedBy, &item.CreatedAt, &item.ActivatedAt, &item.RetiredAt, &item.RollbackUntil, &item.LeaseOwner, &item.LeaseUntil, &item.FenceToken)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -404,7 +408,7 @@ func scanRAGKBGeneration(scanner interface{ Scan(...any) error }) (*RAGKBGenerat
 	return &item, nil
 }
 
-const ragKBGenerationColumns = `id,kb_id,policy_version,collection_key,embedding_model,embedding_dims,status,document_count,chunk_count,error_code,error_message,created_by,created_at,activated_at,retired_at,rollback_until,lease_owner,lease_until,fence_token`
+const ragKBGenerationColumns = `id,kb_id,policy_version,collection_key,embedding_model,embedding_dims,sparse_analyzer,status,document_count,chunk_count,error_code,error_message,created_by,created_at,activated_at,retired_at,rollback_until,lease_owner,lease_until,fence_token`
 
 func (d *DBStore) GetRAGKBGeneration(ctx context.Context, id string) (*RAGKBGenerationRecord, error) {
 	return scanRAGKBGeneration(d.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_kb_index_generations WHERE id=%s`, ragKBGenerationColumns, d.ph(1)), id))
@@ -515,7 +519,7 @@ func (d *DBStore) backfillLegacyRAGGeneration(ctx context.Context, kbID string) 
 		Source:        "legacy-backfill",
 		KB: legacyIngestionKBSnapshot{
 			ID: kb.ID, EmbeddingProvider: kb.EmbedProvider, EmbeddingModel: kb.EmbedModel,
-			EmbeddingDims: kb.EmbedDims, ChunkSize: kb.ChunkSize, ChunkOverlap: kb.ChunkOverlap,
+			EmbeddingDims: kb.EmbedDims, ChunkSize: kb.ChunkSize, ChunkOverlap: kb.ChunkOverlap, SparseAnalyzer: kb.SparseAnalyzer,
 			ParseMode: kb.ParseMode, EnrichmentEnabled: kb.EnrichmentEnabled,
 		},
 		Documents: documents,
@@ -539,7 +543,7 @@ func (d *DBStore) backfillLegacyRAGGeneration(ctx context.Context, kbID string) 
 	}
 	if err := d.insertLegacyGenerationTx(ctx, tx, &RAGKBGenerationRecord{
 		ID: generationID, KBID: kb.ID, PolicyVersion: policyVersion, CollectionKey: kb.ID,
-		EmbeddingModel: kb.EmbedModel, EmbeddingDims: kb.EmbedDims, Status: RAGGenerationActive,
+		EmbeddingModel: kb.EmbedModel, EmbeddingDims: kb.EmbedDims, SparseAnalyzer: kb.SparseAnalyzer, Status: RAGGenerationActive,
 		DocumentCount: int64(len(documents)), ChunkCount: chunkCount,
 		CreatedBy: "system:legacy-generation-backfill", CreatedAt: now,
 	}); err != nil {
@@ -642,20 +646,23 @@ func (d *DBStore) insertLegacyIngestionPolicyTx(ctx context.Context, tx *sql.Tx,
 }
 
 func (d *DBStore) insertLegacyGenerationTx(ctx context.Context, tx *sql.Tx, record *RAGKBGenerationRecord) error {
-	query := fmt.Sprintf(`INSERT INTO rag_kb_index_generations(id,kb_id,policy_version,collection_key,embedding_model,embedding_dims,status,document_count,chunk_count,error_code,error_message,created_by,created_at,activated_at,lease_owner,fence_token) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14), d.ph(15), d.ph(16))
+	if record.SparseAnalyzer == "" {
+		record.SparseAnalyzer = "chinese"
+	}
+	query := fmt.Sprintf(`INSERT INTO rag_kb_index_generations(id,kb_id,policy_version,collection_key,embedding_model,embedding_dims,sparse_analyzer,status,document_count,chunk_count,error_code,error_message,created_by,created_at,activated_at,lease_owner,fence_token) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14), d.ph(15), d.ph(16), d.ph(17))
 	if d.dialect == mysqlDialect {
 		query = strings.Replace(query, "INSERT INTO", "INSERT IGNORE INTO", 1)
 	} else {
 		query += " ON CONFLICT(id) DO NOTHING"
 	}
-	if _, err := tx.ExecContext(ctx, query, record.ID, record.KBID, record.PolicyVersion, record.CollectionKey, record.EmbeddingModel, record.EmbeddingDims, record.Status, record.DocumentCount, record.ChunkCount, "", "", record.CreatedBy, record.CreatedAt, record.CreatedAt, "", 0); err != nil {
+	if _, err := tx.ExecContext(ctx, query, record.ID, record.KBID, record.PolicyVersion, record.CollectionKey, record.EmbeddingModel, record.EmbeddingDims, record.SparseAnalyzer, record.Status, record.DocumentCount, record.ChunkCount, "", "", record.CreatedBy, record.CreatedAt, record.CreatedAt, "", 0); err != nil {
 		return err
 	}
 	stored, err := scanRAGKBGeneration(tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s FROM rag_kb_index_generations WHERE id=%s`, ragKBGenerationColumns, d.ph(1)), record.ID))
 	if err != nil {
 		return err
 	}
-	if stored.KBID != record.KBID || stored.PolicyVersion != record.PolicyVersion || stored.CollectionKey != record.CollectionKey || stored.EmbeddingModel != record.EmbeddingModel || stored.EmbeddingDims != record.EmbeddingDims || stored.Status != RAGGenerationActive || stored.DocumentCount != record.DocumentCount || stored.ChunkCount != record.ChunkCount {
+	if stored.KBID != record.KBID || stored.PolicyVersion != record.PolicyVersion || stored.CollectionKey != record.CollectionKey || stored.EmbeddingModel != record.EmbeddingModel || stored.EmbeddingDims != record.EmbeddingDims || stored.SparseAnalyzer != record.SparseAnalyzer || stored.Status != RAGGenerationActive || stored.DocumentCount != record.DocumentCount || stored.ChunkCount != record.ChunkCount {
 		return ErrRAGLegacyGenerationConflict
 	}
 	return nil
@@ -1305,7 +1312,7 @@ func (d *DBStore) ActivateRAGKBGeneration(ctx context.Context, fence RAGPolicySy
 	if changed, _ := result.RowsAffected(); changed != 1 {
 		return false, nil
 	}
-	result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kbs SET active_generation_id=%s,pinned_policy_version=%s,updated_at=%s WHERE id=%s AND ((active_generation_id IS NULL AND %s IS NULL) OR active_generation_id=%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6)), target.ID, target.PolicyVersion, now, fence.KBID, nullString(expectedActiveID), expectedActiveID)
+	result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kbs SET active_generation_id=%s,pinned_policy_version=%s,sparse_analyzer=%s,updated_at=%s WHERE id=%s AND ((active_generation_id IS NULL AND %s IS NULL) OR active_generation_id=%s)`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7)), target.ID, target.PolicyVersion, target.SparseAnalyzer, now, fence.KBID, nullString(expectedActiveID), expectedActiveID)
 	if err != nil {
 		return false, err
 	}
@@ -1346,10 +1353,10 @@ func (d *DBStore) RollbackRAGKBGeneration(ctx context.Context, kbID, targetRetir
 		return false, nil
 	}
 	now := time.Now().UTC()
-	var targetStatus string
+	var targetStatus, targetSparseAnalyzer string
 	var targetPolicy, targetDocumentCount int64
 	var rollbackUntil sql.NullTime
-	if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT status,policy_version,document_count,rollback_until FROM rag_kb_index_generations WHERE id=%s AND kb_id=%s`, d.ph(1), d.ph(2)), targetRetiredID, kbID).Scan(&targetStatus, &targetPolicy, &targetDocumentCount, &rollbackUntil); err != nil {
+	if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT status,policy_version,sparse_analyzer,document_count,rollback_until FROM rag_kb_index_generations WHERE id=%s AND kb_id=%s`, d.ph(1), d.ph(2)), targetRetiredID, kbID).Scan(&targetStatus, &targetPolicy, &targetSparseAnalyzer, &targetDocumentCount, &rollbackUntil); err != nil {
 		return false, scanErr(err)
 	}
 	if targetStatus != RAGGenerationRetired || !rollbackUntil.Valid || !rollbackUntil.Time.After(now) {
@@ -1381,7 +1388,7 @@ func (d *DBStore) RollbackRAGKBGeneration(ctx context.Context, kbID, targetRetir
 	if changed, _ := result.RowsAffected(); changed != 1 {
 		return false, nil
 	}
-	result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kbs SET active_generation_id=%s,pinned_policy_version=%s,updated_at=%s WHERE id=%s AND active_generation_id=%s`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)), targetRetiredID, targetPolicy, now, kbID, expectedActiveID)
+	result, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kbs SET active_generation_id=%s,pinned_policy_version=%s,sparse_analyzer=%s,updated_at=%s WHERE id=%s AND active_generation_id=%s`, d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6)), targetRetiredID, targetPolicy, targetSparseAnalyzer, now, kbID, expectedActiveID)
 	if err != nil {
 		return false, err
 	}

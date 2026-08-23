@@ -75,6 +75,10 @@ func (m *Milvus) Close(ctx context.Context) error {
 }
 
 func (m *Milvus) EnsureCollection(ctx context.Context, collectionKey CollectionKey, dims int) error {
+	return m.EnsureCollectionWithConfig(ctx, collectionKey, CollectionConfig{Dims: dims})
+}
+
+func (m *Milvus) EnsureCollectionWithConfig(ctx context.Context, collectionKey CollectionKey, cfg CollectionConfig) error {
 	kbID := collectionKey
 	if err := ctx.Err(); err != nil {
 		return err
@@ -82,8 +86,9 @@ func (m *Milvus) EnsureCollection(ctx context.Context, collectionKey CollectionK
 	if kbID == "" {
 		return fmt.Errorf("collection id 不能为空")
 	}
-	if dims <= 0 {
-		return fmt.Errorf("collection %s 的向量维度必须大于 0", kbID)
+	cfg, err := cfg.normalized()
+	if err != nil {
+		return fmt.Errorf("collection %s: %w", kbID, err)
 	}
 
 	m.ensureMu.Lock()
@@ -106,7 +111,7 @@ func (m *Milvus) EnsureCollection(ctx context.Context, collectionKey CollectionK
 		return nil
 	}
 
-	if err := m.client.CreateCollection(ctx, milvusclient.NewCreateCollectionOption(name, ragMilvusSchema(dims)).
+	if err := m.client.CreateCollection(ctx, milvusclient.NewCreateCollectionOption(name, ragMilvusSchema(cfg)).
 		WithConsistencyLevel(entity.ClStrong)); err != nil {
 		return fmt.Errorf("create milvus collection %s: %w", name, err)
 	}
@@ -466,7 +471,19 @@ func milvusInt64Field(result *milvusclient.ResultSet, field string, row int) (in
 	return value, nil
 }
 
-func ragMilvusSchema(dims int) *entity.Schema {
+func sparseAnalyzerParams(analyzer string) map[string]any {
+	switch analyzer {
+	case SparseAnalyzerEnglish:
+		return map[string]any{"type": "english"}
+	case SparseAnalyzerMultilingual:
+		return map[string]any{"tokenizer": "icu", "filter": []string{"lowercase", "asciifolding", "removepunct"}}
+	default:
+		return map[string]any{"type": "chinese"}
+	}
+}
+
+func ragMilvusSchema(cfg CollectionConfig) *entity.Schema {
+	cfg, _ = cfg.normalized()
 	return entity.NewSchema().WithDynamicFieldEnabled(false).
 		WithField(entity.NewField().WithName(milvusFieldID).
 			WithDataType(entity.FieldTypeVarChar).WithMaxLength(128).
@@ -484,11 +501,11 @@ func ragMilvusSchema(dims int) *entity.Schema {
 		WithField(entity.NewField().WithName(milvusFieldContent).
 			WithDataType(entity.FieldTypeVarChar).WithMaxLength(65535).
 			WithEnableAnalyzer(true).
-			WithAnalyzerParams(map[string]any{"type": "chinese"})).
+			WithAnalyzerParams(sparseAnalyzerParams(cfg.SparseAnalyzer))).
 		WithField(entity.NewField().WithName(milvusFieldSparse).
 			WithDataType(entity.FieldTypeSparseVector)).
 		WithField(entity.NewField().WithName(milvusFieldEmbedding).
-			WithDataType(entity.FieldTypeFloatVector).WithDim(int64(dims))).
+			WithDataType(entity.FieldTypeFloatVector).WithDim(int64(cfg.Dims))).
 		WithFunction(entity.NewFunction().
 			WithName("content_bm25").
 			WithInputFields(milvusFieldContent).

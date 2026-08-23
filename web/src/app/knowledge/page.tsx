@@ -754,11 +754,12 @@ export default function KnowledgePage() {
                     </Button>
                   </CardAction>
                 </CardHeader>
-                <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
+                <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-7">
                   <Metadata label="Embedding 模型" value={selected.embedModel} />
                   <Metadata label="向量维度" value={`${selected.embedDims} 维`} />
                   <Metadata label="分片长度" value={`${selected.chunkSize} tokens`} />
                   <Metadata label="重叠长度" value={`${selected.chunkOverlap} tokens`} />
+                  <Metadata label="Sparse 分词" value={selected.sparseAnalyzer === "english" ? "English" : selected.sparseAnalyzer === "multilingual" ? "中英混合" : "中文"} />
                   <Metadata label="解析模式" value={selected.parseMode === "auto" ? "高级 RAG" : "标准解析"} />
                   <Metadata label="表格/代码增强" value={selected.enrichmentEnabled ? "已开启" : "已关闭"} />
                 </CardContent>

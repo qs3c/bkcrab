@@ -221,6 +221,7 @@ type RAGKBRecord struct {
 	EmbedDims           int
 	ChunkSize           int
 	ChunkOverlap        int
+	SparseAnalyzer      string
 	ParseMode           string
 	EnrichmentEnabled   bool
 	Status              string
@@ -504,7 +505,7 @@ type RAGChatSessionRecord struct {
 }
 
 const ragKBColumns = `id, user_id, name, description, embed_provider, embed_model,
-	embed_dims, chunk_size, chunk_overlap, parse_mode, enrichment_enabled, status,
+	embed_dims, chunk_size, chunk_overlap, sparse_analyzer, parse_mode, enrichment_enabled, status,
 	pinned_policy_version, active_generation_id, created_at, updated_at`
 
 const ragDocumentColumns = `id, kb_id, file_name, file_type, parser_engine, file_size, object_key,
@@ -592,7 +593,7 @@ func scanRAGKB(scanner ragScanner) (*RAGKBRecord, error) {
 	if err := scanner.Scan(
 		&kb.ID, &kb.UserID, &kb.Name, &kb.Description, &kb.EmbedProvider,
 		&kb.EmbedModel, &kb.EmbedDims, &kb.ChunkSize, &kb.ChunkOverlap,
-		&kb.ParseMode, &kb.EnrichmentEnabled, &kb.Status, &kb.PinnedPolicyVersion,
+		&kb.SparseAnalyzer, &kb.ParseMode, &kb.EnrichmentEnabled, &kb.Status, &kb.PinnedPolicyVersion,
 		&kb.ActiveGenerationID, &kb.CreatedAt, &kb.UpdatedAt,
 	); err != nil {
 		return nil, err
@@ -843,6 +844,9 @@ func (d *DBStore) CreateRAGKB(ctx context.Context, kb *RAGKBRecord) error {
 	if kb.ParseMode == "" {
 		kb.ParseMode = RAGParseModeStandard
 	}
+	if kb.SparseAnalyzer == "" {
+		kb.SparseAnalyzer = "chinese"
+	}
 	kb.UpdatedAt = now
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -854,12 +858,12 @@ func (d *DBStore) CreateRAGKB(ctx context.Context, kb *RAGKBRecord) error {
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_kbs
 		(id, user_id, name, description, embed_provider, embed_model, embed_dims,
-		 chunk_size, chunk_overlap, parse_mode, enrichment_enabled, status, created_at, updated_at)
-		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)`,
+		 chunk_size, chunk_overlap, sparse_analyzer, parse_mode, enrichment_enabled, status, created_at, updated_at)
+		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)`,
 		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6),
-		d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14)),
+		d.ph(7), d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14), d.ph(15)),
 		kb.ID, kb.UserID, kb.Name, kb.Description, kb.EmbedProvider,
-		kb.EmbedModel, kb.EmbedDims, kb.ChunkSize, kb.ChunkOverlap, kb.ParseMode,
+		kb.EmbedModel, kb.EmbedDims, kb.ChunkSize, kb.ChunkOverlap, kb.SparseAnalyzer, kb.ParseMode,
 		kb.EnrichmentEnabled, kb.Status, kb.CreatedAt, kb.UpdatedAt); err != nil {
 		return err
 	}
@@ -913,11 +917,11 @@ func (d *DBStore) UpdateRAGKB(ctx context.Context, kb *RAGKBRecord) error {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, fmt.Sprintf(`UPDATE rag_kbs SET
-		name=%s, description=%s, chunk_size=%s, chunk_overlap=%s, parse_mode=%s,
+		name=%s, description=%s, chunk_size=%s, chunk_overlap=%s, sparse_analyzer=%s, parse_mode=%s,
 		enrichment_enabled=%s, updated_at=%s WHERE id=%s AND user_id=%s AND LOWER(status)='active'`,
-		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9)),
-		kb.Name, kb.Description, kb.ChunkSize, kb.ChunkOverlap, kb.ParseMode,
-		kb.EnrichmentEnabled, kb.UpdatedAt, kb.ID, locked.UserID)
+		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10)),
+		kb.Name, kb.Description, kb.ChunkSize, kb.ChunkOverlap, kb.SparseAnalyzer,
+		kb.ParseMode, kb.EnrichmentEnabled, kb.UpdatedAt, kb.ID, locked.UserID)
 	if err != nil {
 		return err
 	}

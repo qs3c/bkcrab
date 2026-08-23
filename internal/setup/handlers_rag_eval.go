@@ -569,7 +569,12 @@ func (s *Server) handleGetRAGEvalRun(w http.ResponseWriter, r *http.Request) {
 			aggregates[metric] = aggregate
 		}
 	}
-	jsonResponse(w, 200, map[string]any{"run": record, "aggregates": aggregates})
+	tokens, costUSD, err := st.UsageTotals(r.Context(), record.ID)
+	if err != nil {
+		writeEvalServiceError(w, err)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"run": record, "aggregates": aggregates, "usage": map[string]any{"tokens": tokens, "costUsd": costUSD}})
 }
 
 func (s *Server) handleDeleteRAGEvalRun(w http.ResponseWriter, r *http.Request) {

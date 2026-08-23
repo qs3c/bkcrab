@@ -59,6 +59,12 @@ func TestIngestionAndProfileFingerprintsValidateClosedInputs(t *testing.T) {
 	if err != nil || first != second {
 		t.Fatalf("ingestion fingerprint=%q/%q err=%v", first, second, err)
 	}
+	english := ingestion
+	english.SparseAnalyzer = config.RAGSparseAnalyzerEnglish
+	englishFingerprint, err := IngestionFingerprint(english)
+	if err != nil || englishFingerprint == first {
+		t.Fatalf("sparse analyzer did not change ingestion fingerprint: first=%q english=%q err=%v", first, englishFingerprint, err)
+	}
 	ingestion.Embedding.Dims = 0
 	if _, err := IngestionFingerprint(ingestion); err == nil {
 		t.Fatal("invalid ingestion policy was fingerprinted")
@@ -109,6 +115,9 @@ func TestGenerationFingerprintChangesForEveryIndexContract(t *testing.T) {
 		},
 		"chunk overlap": func(p *config.RAGIngestionPolicyData, _ *GenerationContract, _ *[]GenerationDocumentFingerprint) {
 			p.ChunkOverlap++
+		},
+		"sparse analyzer": func(p *config.RAGIngestionPolicyData, _ *GenerationContract, _ *[]GenerationDocumentFingerprint) {
+			p.SparseAnalyzer = config.RAGSparseAnalyzerEnglish
 		},
 		"embedding contract": func(p *config.RAGIngestionPolicyData, _ *GenerationContract, _ *[]GenerationDocumentFingerprint) {
 			p.Embedding.ContractFingerprint = "contract-2"

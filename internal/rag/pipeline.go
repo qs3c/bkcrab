@@ -161,7 +161,7 @@ func (s *Service) BuildEvaluationGeneration(ctx context.Context, request Evaluat
 		return EvaluationPipelineResult{}, err
 	}
 	stageStarted := time.Now()
-	if err := s.vec.EnsureCollection(ctx, request.Target.CollectionKey, request.Ingestion.Embedding.Dims); err != nil {
+	if err := s.vec.EnsureCollectionWithConfig(ctx, request.Target.CollectionKey, vector.CollectionConfig{Dims: request.Ingestion.Embedding.Dims, SparseAnalyzer: string(config.EffectiveRAGSparseAnalyzer(request.Ingestion.SparseAnalyzer))}); err != nil {
 		telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, Operation: "eval_milvus", Outcome: "error", Duration: time.Since(stageStarted)})
 		return EvaluationPipelineResult{}, fmt.Errorf("prepare evaluation collection: %w", err)
 	}
@@ -1635,7 +1635,11 @@ func (s *Service) embedChunks(
 	if err != nil {
 		return nil, 0, fmt.Errorf("resolve vector collection: %w", err)
 	}
-	if err := s.vec.EnsureCollection(ctx, collectionKey, version.EmbeddingDimensions); err != nil {
+	kb, err := s.st.GetRAGKB(ctx, kbID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("load knowledge-base analyzer: %w", err)
+	}
+	if err := s.vec.EnsureCollectionWithConfig(ctx, collectionKey, vector.CollectionConfig{Dims: version.EmbeddingDimensions, SparseAnalyzer: kb.SparseAnalyzer}); err != nil {
 		return nil, 0, fmt.Errorf("准备向量 collection: %w", err)
 	}
 	embedder := embed.New(binding.Endpoint, binding.APIKey,

@@ -73,7 +73,7 @@ func DefaultRuntimePolicy(cfg config.RAGCfg) config.RAGRuntimePolicyData {
 func DefaultIngestionPolicy(cfg config.RAGCfg) config.RAGIngestionPolicyData {
 	cfg.ApplyDefaults()
 	return config.RAGIngestionPolicyData{
-		Version: 1, ChunkSize: 512, ChunkOverlap: 64, ParseMode: config.ParseModeStandard,
+		Version: 1, ChunkSize: 512, ChunkOverlap: 64, SparseAnalyzer: config.RAGSparseAnalyzerChinese, ParseMode: config.ParseModeStandard,
 		DocumentAI: config.RAGPolicyDocumentAIData{
 			VisionModel:             strings.TrimSpace(cfg.DocumentAI.VisionModel),
 			TextModel:               strings.TrimSpace(cfg.DocumentAI.TextModel),

@@ -141,6 +141,18 @@ type SearchTrace struct {
 	RecallScoreMax        *float64                        `json:"recallScoreMax,omitempty"`
 	RerankScoreMin        *float64                        `json:"rerankScoreMin,omitempty"`
 	RerankScoreMax        *float64                        `json:"rerankScoreMax,omitempty"`
+	RerankCandidates      []RerankCandidateTrace          `json:"rerankCandidates,omitempty"`
+}
+
+// RerankCandidateTrace keeps the bounded, content-free candidate scores needed
+// to explain minScore filtering and to evaluate alternate thresholds later.
+// It deliberately stores identifiers and scores only, never document text.
+type RerankCandidateTrace struct {
+	DocumentID  string  `json:"documentId"`
+	ContextID   string  `json:"contextId"`
+	RecallScore float64 `json:"recallScore"`
+	RerankScore float64 `json:"rerankScore"`
+	Selected    bool    `json:"selected"`
 }
 
 type searchOptionsKey struct{}
@@ -399,7 +411,7 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 	}
 	results := make([]Hit, 0, len(targets)*candidateTopK)
 	for _, target := range targets {
-		if err := s.vec.EnsureCollection(ctx, target.collectionKey, target.kb.EmbedDims); err != nil {
+		if err := s.vec.EnsureCollectionWithConfig(ctx, target.collectionKey, vector.CollectionConfig{Dims: target.kb.EmbedDims, SparseAnalyzer: target.kb.SparseAnalyzer}); err != nil {
 			return nil, fmt.Errorf("准备检索 %s: %w", target.kb.Name, err)
 		}
 		vectorHits, err := s.vec.HybridSearch(ctx, target.collectionKey, vector.SearchQuery{
@@ -532,6 +544,7 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 			trace.RerankerFilteredCount = stats.filteredCount
 			trace.RerankScoreMin = stats.scoreMin
 			trace.RerankScoreMax = stats.scoreMax
+			trace.RerankCandidates = stats.candidates
 		}
 		if err == nil {
 			if trace != nil {
@@ -610,6 +623,7 @@ func resetSearchExecutionTrace(trace *SearchTrace) {
 	trace.RecallScoreMax = nil
 	trace.RerankScoreMin = nil
 	trace.RerankScoreMax = nil
+	trace.RerankCandidates = nil
 }
 
 func setRecallScoreRange(trace *SearchTrace, hits []Hit) {
@@ -653,6 +667,7 @@ type rerankStats struct {
 	filteredCount int
 	scoreMin      *float64
 	scoreMax      *float64
+	candidates    []RerankCandidateTrace
 }
 
 func (s *Service) rerankHitsWithStats(ctx context.Context, retrievalID, query string, candidates []Hit, topN int, minScore float64) ([]Hit, rerankStats, error) {
@@ -723,6 +738,17 @@ func (s *Service) rerankHitsWithStats(ctx context.Context, retrievalID, query st
 		filtered = append(filtered, hit)
 	}
 	stats.filteredCount = len(ranked) - len(filtered)
+	stats.candidates = make([]RerankCandidateTrace, 0, len(ranked))
+	for _, item := range ranked {
+		candidate := candidates[item.Index]
+		stats.candidates = append(stats.candidates, RerankCandidateTrace{
+			DocumentID:  candidate.DocID,
+			ContextID:   fmt.Sprintf("%s:%d", candidate.DocID, candidate.ChunkIndex),
+			RecallScore: candidate.RecallScore,
+			RerankScore: item.Score,
+			Selected:    item.Score >= minScore,
+		})
+	}
 	topScore := ranked[0].Score
 	lowestReturnedScore := float64(0)
 	if len(filtered) > 0 && filtered[len(filtered)-1].RerankScore != nil {

@@ -73,6 +73,9 @@ func (d *DBStore) BeginRAGKBProvisioning(
 	if kb.ParseMode == "" {
 		kb.ParseMode = RAGParseModeStandard
 	}
+	if kb.SparseAnalyzer == "" {
+		kb.SparseAnalyzer = "chinese"
+	}
 	kb.Status = RAGKBStatusProvisioning
 	const generation int64 = 1
 	leaseUntil := now.Add(leaseDuration)
@@ -82,14 +85,14 @@ func (d *DBStore) BeginRAGKBProvisioning(
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_kbs
 		(id, user_id, name, description, embed_provider, embed_model, embed_dims,
-		 chunk_size, chunk_overlap, parse_mode, enrichment_enabled, status,
+		 chunk_size, chunk_overlap, sparse_analyzer, parse_mode, enrichment_enabled, status,
 		 provisioning_generation, provisioning_lease_owner, provisioning_lease_until,
 		 pinned_policy_version, active_generation_id, created_at, updated_at)
-		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)`,
+		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)`,
 		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9),
-		d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14), d.ph(15), d.ph(16), d.ph(17), d.ph(18), d.ph(19)),
+		d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14), d.ph(15), d.ph(16), d.ph(17), d.ph(18), d.ph(19), d.ph(20)),
 		kb.ID, kb.UserID, kb.Name, kb.Description, kb.EmbedProvider, kb.EmbedModel,
-		kb.EmbedDims, kb.ChunkSize, kb.ChunkOverlap, kb.ParseMode, kb.EnrichmentEnabled,
+		kb.EmbedDims, kb.ChunkSize, kb.ChunkOverlap, kb.SparseAnalyzer, kb.ParseMode, kb.EnrichmentEnabled,
 		kb.Status, generation, leaseOwner, leaseUntil, nullableRAGPolicyVersion(kb.PinnedPolicyVersion),
 		nullString(kb.ActiveGenerationID.String), kb.CreatedAt, kb.UpdatedAt); err != nil {
 		return nil, err
@@ -97,13 +100,13 @@ func (d *DBStore) BeginRAGKBProvisioning(
 	if kb.PinnedPolicyVersion.Valid {
 		collectionKey := strings.TrimSpace(kb.ProvisioningCollectionKey)
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO rag_kb_index_generations
-			(id,kb_id,policy_version,collection_key,embedding_model,embedding_dims,status,
+			(id,kb_id,policy_version,collection_key,embedding_model,embedding_dims,sparse_analyzer,status,
 			 document_count,chunk_count,error_code,error_message,created_by,created_at,lease_owner)
-			VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`,
+			VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)`,
 			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7),
-			d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14)),
+			d.ph(8), d.ph(9), d.ph(10), d.ph(11), d.ph(12), d.ph(13), d.ph(14), d.ph(15)),
 			kb.ActiveGenerationID.String, kb.ID, kb.PinnedPolicyVersion.Int64, collectionKey,
-			kb.EmbedModel, kb.EmbedDims, RAGGenerationBuilding, 0, 0, "", "", kb.UserID,
+			kb.EmbedModel, kb.EmbedDims, kb.SparseAnalyzer, RAGGenerationBuilding, 0, 0, "", "", kb.UserID,
 			now, leaseOwner); err != nil {
 			return nil, err
 		}

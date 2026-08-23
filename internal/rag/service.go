@@ -1359,12 +1359,14 @@ func (s *Service) CreateKBWithOptions(
 		EmbedDims:         embedCfg.Dims,
 		ChunkSize:         chunkSize,
 		ChunkOverlap:      chunkOverlap,
+		SparseAnalyzer:    string(config.RAGSparseAnalyzerChinese),
 		ParseMode:         string(options.ParseMode),
 		EnrichmentEnabled: options.EnrichmentEnabled,
 		Status:            store.RAGKBStatusProvisioning,
 	}
 	if pinnedPolicy != nil {
 		kb.EmbedModel, kb.EmbedDims = pinnedPolicy.Embedding.Model, pinnedPolicy.Embedding.Dims
+		kb.SparseAnalyzer = string(config.EffectiveRAGSparseAnalyzer(pinnedPolicy.SparseAnalyzer))
 		generationID := "rkg_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 		collectionKey, keyErr := vector.GenerationCollectionKey(kb.ID, generationID)
 		if keyErr != nil {

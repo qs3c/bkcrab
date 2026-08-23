@@ -63,13 +63,18 @@ export function metricDistribution(cases: RAGEvalCaseResult[], metric: string): 
 }
 
 export function thresholdCurve(cases: RAGEvalCaseResult[]) {
-  const observations = cases.flatMap((item) => item.contexts ?? []).filter((value): value is Record<string, unknown> => !!value && typeof value === "object").map((value) => ({ score: Number(value.rerankScore), relevant: typeof value.relevant === "boolean" ? value.relevant : null })).filter((value) => Number.isFinite(value.score));
-  return [0, .25, .5, .75, 1].map((threshold) => {
+  const capturedCases = cases.filter((item) => Array.isArray(item.searchTrace?.trace?.rerankCandidates));
+  const observations = capturedCases.flatMap((item) => item.searchTrace?.hits ?? [])
+    .map((value) => ({ score: Number(value.rerankScore), relevant: typeof value.relevant === "boolean" ? value.relevant : null }))
+    .filter((value) => Number.isFinite(value.score));
+  const points = [0, .25, .5, .75, 1].map((threshold) => {
     const selected = observations.filter((item) => item.score >= threshold);
     const labeled = observations.filter((item) => item.relevant !== null);
+    const selectedLabeled = selected.filter((item) => item.relevant !== null);
     const tp = selected.filter((item) => item.relevant === true).length;
-    return { threshold, selected: selected.length, precision: selected.length ? tp / selected.length : null, recall: labeled.filter((item) => item.relevant === true).length ? tp / labeled.filter((item) => item.relevant === true).length : null };
+    return { threshold, selected: selected.length, precision: selectedLabeled.length ? tp / selectedLabeled.length : null, recall: labeled.filter((item) => item.relevant === true).length ? tp / labeled.filter((item) => item.relevant === true).length : null };
   });
+  return { points, capturedCases: capturedCases.length, totalCases: cases.length, observations: observations.length, labeledObservations: observations.filter((item) => item.relevant !== null).length };
 }
 
 export function promotionGateReasons(input: { runStatus?: string; confirmationRunId: string; runId: string; note: string }): string[] {

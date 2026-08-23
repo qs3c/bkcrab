@@ -30,9 +30,21 @@ test("missing metric collections remain renderable and case failures are summari
   ]);
 });
 
-test("threshold curve never treats missing relevance labels as false", () => {
-  const curve = thresholdCurve([{ contexts: [{ rerankScore: .9 }, { rerankScore: .8, relevant: true }], usage: {}, metrics: [], latencyMs: 1 }]);
-  assert.equal(curve.find((point) => point.threshold === .75).recall, 1);
+test("threshold curve uses captured reranker candidates and never treats missing relevance labels as false", () => {
+  const curve = thresholdCurve([{ contexts: ["plain context"], searchTrace: {
+    trace: { rerankCandidates: [{ contextId: "a" }, { contextId: "b" }] },
+    hits: [{ rerankScore: .9 }, { rerankScore: .8, relevant: true }],
+  }, usage: {}, metrics: [], latencyMs: 1 }]);
+  const point = curve.points.find((item) => item.threshold === .75);
+  assert.equal(point.recall, 1);
+  assert.equal(point.precision, 1);
+  assert.equal(curve.capturedCases, 1);
+});
+
+test("threshold curve reports no captured coverage for legacy traces", () => {
+  const curve = thresholdCurve([{ contexts: ["plain context"], searchTrace: { hits: [{ rerankScore: .9, relevant: true }] }, usage: {}, metrics: [], latencyMs: 1 }]);
+  assert.equal(curve.capturedCases, 0);
+  assert.equal(curve.observations, 0);
 });
 
 test("stage latency reads persisted production search and answer traces", () => {

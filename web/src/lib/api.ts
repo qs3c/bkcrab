@@ -1564,6 +1564,7 @@ export async function getAgentConfig(id: string): Promise<AgentFileConfig> {
 // 暂时保留，支持滚动升级期间仍在运行的旧实例。
 export type RAGParseMode = "standard" | "auto";
 export type RAGParserEngine = "markitdown" | "anydoc";
+export type RAGSparseAnalyzer = "chinese" | "english" | "multilingual";
 
 export interface RAGCapabilityDetail {
   enabled: boolean;
@@ -1661,6 +1662,7 @@ export interface KnowledgeBase {
   embedDims: number;
   chunkSize: number;
   chunkOverlap: number;
+  sparseAnalyzer: RAGSparseAnalyzer;
   parseMode: RAGParseMode;
   enrichmentEnabled: boolean;
   status: string;
@@ -1757,6 +1759,7 @@ function normalizeKnowledgeBase(row: KnowledgeBaseWire): KnowledgeBase {
     embedDims: wireValue(row, "embedDims", "EmbedDims", 0),
     chunkSize: wireValue(row, "chunkSize", "ChunkSize", 0),
     chunkOverlap: wireValue(row, "chunkOverlap", "ChunkOverlap", 0),
+    sparseAnalyzer: wireValue(row, "sparseAnalyzer", "SparseAnalyzer", "chinese"),
     parseMode: wireValue(row, "parseMode", "ParseMode", "standard"),
     enrichmentEnabled: wireValue(row, "enrichmentEnabled", "EnrichmentEnabled", false),
     status: wireValue(row, "status", "Status", ""),
@@ -2726,9 +2729,23 @@ export interface RAGEvalCaseResult {
   errorMessage?: string;
   latencyMs: number;
   usage: Record<string, unknown>;
-  searchTrace?: { trace?: Record<string, unknown>; hits?: unknown[] };
+  searchTrace?: { trace?: Record<string, unknown>; hits?: RAGEvalSearchTraceHit[] };
   answerTrace?: Record<string, unknown>;
   metrics: Array<{ Name: string; Version: string; Status: string; Reason: string; Value?: number; Details?: Record<string, unknown> }>;
+}
+
+export interface RAGEvalSearchTraceHit {
+  documentId?: string;
+  contextId?: string;
+  recallScore?: number;
+  rerankScore?: number;
+  selected?: boolean;
+  relevant?: boolean;
+}
+
+export interface RAGEvalUsageTotals {
+  tokens: number;
+  costUsd: number;
 }
 
 export interface RAGEvalPairedDelta {
@@ -2882,7 +2899,7 @@ export async function deleteRAGEvalRun(id: string): Promise<void> {
   await ragEvalJSON(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}`, { method: "DELETE" }));
 }
 
-export async function getRAGEvalRunAnalysis(id: string): Promise<{ run: RAGEvalRun; aggregates: Record<string, RAGEvalAggregate> }> {
+export async function getRAGEvalRunAnalysis(id: string): Promise<{ run: RAGEvalRun; aggregates: Record<string, RAGEvalAggregate>; usage: RAGEvalUsageTotals }> {
   return ragEvalJSON(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}`));
 }
 

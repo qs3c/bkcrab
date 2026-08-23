@@ -453,7 +453,11 @@ type cancelAfterEnsureVector struct {
 }
 
 func (v *cancelAfterEnsureVector) EnsureCollection(ctx context.Context, kbID vector.CollectionKey, dims int) error {
-	if err := v.Fake.EnsureCollection(ctx, kbID, dims); err != nil {
+	return v.EnsureCollectionWithConfig(ctx, kbID, vector.CollectionConfig{Dims: dims})
+}
+
+func (v *cancelAfterEnsureVector) EnsureCollectionWithConfig(ctx context.Context, kbID vector.CollectionKey, cfg vector.CollectionConfig) error {
+	if err := v.Fake.EnsureCollectionWithConfig(ctx, kbID, cfg); err != nil {
 		return err
 	}
 	v.created <- string(kbID)
@@ -478,7 +482,11 @@ type blockingProvisionVector struct {
 }
 
 func (v *blockingProvisionVector) EnsureCollection(ctx context.Context, kbID vector.CollectionKey, dims int) error {
-	if err := v.Fake.EnsureCollection(ctx, kbID, dims); err != nil {
+	return v.EnsureCollectionWithConfig(ctx, kbID, vector.CollectionConfig{Dims: dims})
+}
+
+func (v *blockingProvisionVector) EnsureCollectionWithConfig(ctx context.Context, kbID vector.CollectionKey, cfg vector.CollectionConfig) error {
+	if err := v.Fake.EnsureCollectionWithConfig(ctx, kbID, cfg); err != nil {
 		return err
 	}
 	v.started <- string(kbID)

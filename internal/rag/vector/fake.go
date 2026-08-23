@@ -24,9 +24,10 @@ type Fake struct {
 }
 
 type fakeCollection struct {
-	dims    int
-	entries map[fakeEntryKey]ChunkData
-	ops     []string
+	dims           int
+	sparseAnalyzer string
+	entries        map[fakeEntryKey]ChunkData
+	ops            []string
 }
 
 type fakeEntryKey struct {
@@ -47,14 +48,19 @@ func NewFake() *Fake {
 }
 
 func (f *Fake) EnsureCollection(ctx context.Context, collectionKey CollectionKey, dims int) error {
+	return f.EnsureCollectionWithConfig(ctx, collectionKey, CollectionConfig{Dims: dims})
+}
+
+func (f *Fake) EnsureCollectionWithConfig(ctx context.Context, collectionKey CollectionKey, cfg CollectionConfig) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if collectionKey == "" {
 		return fmt.Errorf("collection id 不能为空")
 	}
-	if dims <= 0 {
-		return fmt.Errorf("collection %s 的向量维度必须大于 0", collectionKey)
+	cfg, err := cfg.normalized()
+	if err != nil {
+		return fmt.Errorf("collection %s: %w", collectionKey, err)
 	}
 
 	f.mu.Lock()
@@ -63,14 +69,18 @@ func (f *Fake) EnsureCollection(ctx context.Context, collectionKey CollectionKey
 		f.collections = make(map[CollectionKey]*fakeCollection)
 	}
 	if existing, ok := f.collections[collectionKey]; ok {
-		if existing.dims != dims {
-			return fmt.Errorf("collection %s 已存在，维度为 %d，不能改为 %d", collectionKey, existing.dims, dims)
+		if existing.dims != cfg.Dims {
+			return fmt.Errorf("collection %s 已存在，维度为 %d，不能改为 %d", collectionKey, existing.dims, cfg.Dims)
+		}
+		if existing.sparseAnalyzer != cfg.SparseAnalyzer {
+			return fmt.Errorf("collection %s 已存在，sparse analyzer 为 %s，不能改为 %s", collectionKey, existing.sparseAnalyzer, cfg.SparseAnalyzer)
 		}
 		return nil
 	}
 	f.collections[collectionKey] = &fakeCollection{
-		dims:    dims,
-		entries: make(map[fakeEntryKey]ChunkData),
+		dims:           cfg.Dims,
+		sparseAnalyzer: cfg.SparseAnalyzer,
+		entries:        make(map[fakeEntryKey]ChunkData),
 	}
 	return nil
 }

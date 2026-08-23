@@ -92,6 +92,16 @@ func TestIngestionPolicyDiffMarksEmbeddingChangeAsFullCollectionRebuild(t *testi
 	}
 }
 
+func TestIngestionPolicyDiffIncludesSparseAnalyzer(t *testing.T) {
+	from := config.RAGIngestionPolicyData{SparseAnalyzer: config.RAGSparseAnalyzerChinese}
+	to := from
+	to.SparseAnalyzer = config.RAGSparseAnalyzerMultilingual
+	diffs := ingestionPolicyDifferences(from, to)
+	if len(diffs) != 1 || diffs[0].Field != "sparseAnalyzer" || diffs[0].From != config.RAGSparseAnalyzerChinese || diffs[0].To != config.RAGSparseAnalyzerMultilingual {
+		t.Fatalf("sparse analyzer diff=%+v", diffs)
+	}
+}
+
 func TestPolicySyncKeepsOldGenerationVisibleThenAtomicallyActivatesPinnedTarget(t *testing.T) {
 	embedding := newEmbeddingServer(t)
 	cfg := config.RAGCfg{Milvus: config.MilvusCfg{Address: "fake"}, Embedding: config.RAGEmbeddingCfg{Endpoint: embedding.URL, Model: "embed-test", Dims: 4}}
@@ -124,6 +134,7 @@ func TestPolicySyncKeepsOldGenerationVisibleThenAtomicallyActivatesPinnedTarget(
 
 	v2 := v1
 	v2.Version, v2.ChunkSize, v2.ChunkOverlap = 2, 128, 16
+	v2.SparseAnalyzer = config.RAGSparseAnalyzerEnglish
 	publishIngestionRevision(t, st, 1, v2)
 	task, err := service.StartKBPolicySync(context.Background(), "u1", kb.ID, 2)
 	if err != nil {
@@ -156,8 +167,12 @@ func TestPolicySyncKeepsOldGenerationVisibleThenAtomicallyActivatesPinnedTarget(
 		t.Fatalf("sync did not succeed: %+v err=%v", storedTask, err)
 	}
 	active, mapped, err := st.ResolveActiveRAGKBGeneration(context.Background(), kb.ID)
-	if err != nil || active.PolicyVersion != 2 || active.ID != task.TargetGenerationID || len(mapped) != 1 || mapped[0].DocVersion <= doc.ActiveVersion {
+	if err != nil || active.PolicyVersion != 2 || active.ID != task.TargetGenerationID || active.SparseAnalyzer != string(config.RAGSparseAnalyzerEnglish) || len(mapped) != 1 || mapped[0].DocVersion <= doc.ActiveVersion {
 		t.Fatalf("active=%+v mapped=%+v doc=%+v err=%v", active, mapped, doc, err)
+	}
+	activeKB, err := service.GetKB(context.Background(), "u1", kb.ID)
+	if err != nil || activeKB.SparseAnalyzer != string(config.RAGSparseAnalyzerEnglish) {
+		t.Fatalf("KB analyzer was not activated with generation: kb=%+v err=%v", activeKB, err)
 	}
 	status, err := service.GetKBIngestionPolicyStatus(context.Background(), "u1", kb.ID)
 	if err != nil || !status.Drift || status.PinnedVersion != 2 || status.LatestVersion != 3 {
@@ -183,7 +198,8 @@ func TestPolicySyncKeepsOldGenerationVisibleThenAtomicallyActivatesPinnedTarget(
 		t.Fatal(err)
 	}
 	rolledBack, _, err := st.ResolveActiveRAGKBGeneration(context.Background(), kb.ID)
-	if err != nil || rolledBack.ID != oldActive.ID || rolledBack.PolicyVersion != 1 {
+	rolledBackKB, kbErr := service.GetKB(context.Background(), "u1", kb.ID)
+	if err != nil || kbErr != nil || rolledBack.ID != oldActive.ID || rolledBack.PolicyVersion != 1 || rolledBackKB.SparseAnalyzer != string(config.RAGSparseAnalyzerChinese) {
 		t.Fatalf("rolled back=%+v err=%v", rolledBack, err)
 	}
 }

@@ -1133,14 +1133,52 @@ type RAGCfg struct {
 // expensive parsing mode.
 type ParseMode string
 
+// RAGSparseAnalyzer is the immutable Milvus BM25 tokenization contract for a
+// collection. Changing it requires a new collection; existing sparse vectors
+// cannot be reinterpreted in place.
+type RAGSparseAnalyzer string
+
 const (
 	ParseModeStandard ParseMode = "standard"
 	ParseModeAuto     ParseMode = "auto"
+
+	RAGSparseAnalyzerChinese      RAGSparseAnalyzer = "chinese"
+	RAGSparseAnalyzerEnglish      RAGSparseAnalyzer = "english"
+	RAGSparseAnalyzerMultilingual RAGSparseAnalyzer = "multilingual"
 
 	// RAGMilvusContentMaxLength mirrors the current Milvus content VarChar
 	// schema. Raising it requires an explicit collection schema migration.
 	RAGMilvusContentMaxLength = 65_535
 )
+
+func (a RAGSparseAnalyzer) Valid() bool {
+	return a == RAGSparseAnalyzerChinese || a == RAGSparseAnalyzerEnglish || a == RAGSparseAnalyzerMultilingual
+}
+
+// EffectiveRAGSparseAnalyzer preserves the legacy collection contract: every
+// policy written before this field existed used the Chinese analyzer.
+func EffectiveRAGSparseAnalyzer(value RAGSparseAnalyzer) RAGSparseAnalyzer {
+	if value == "" {
+		return RAGSparseAnalyzerChinese
+	}
+	return value
+}
+
+func (a *RAGSparseAnalyzer) UnmarshalJSON(data []byte) error {
+	if a == nil {
+		return errors.New("nil RAGSparseAnalyzer receiver")
+	}
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return fmt.Errorf("sparse analyzer must be a string: %w", err)
+	}
+	next := RAGSparseAnalyzer(value)
+	if !next.Valid() {
+		return fmt.Errorf("invalid sparse analyzer %q (want chinese, english or multilingual)", value)
+	}
+	*a = next
+	return nil
+}
 
 func (m ParseMode) Valid() bool {
 	return m == ParseModeStandard || m == ParseModeAuto

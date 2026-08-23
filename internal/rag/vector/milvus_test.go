@@ -12,7 +12,7 @@ import (
 )
 
 func TestMilvusSchemaContract(t *testing.T) {
-	schema := ragMilvusSchema(4)
+	schema := ragMilvusSchema(CollectionConfig{Dims: 4, SparseAnalyzer: SparseAnalyzerChinese})
 	fields := make(map[string]*entity.Field, len(schema.Fields))
 	for _, field := range schema.Fields {
 		fields[field.Name] = field
@@ -55,6 +55,32 @@ func TestMilvusSchemaContract(t *testing.T) {
 	if fn.Type != entity.FunctionTypeBM25 || len(fn.InputFieldNames) != 1 || fn.InputFieldNames[0] != milvusFieldContent ||
 		len(fn.OutputFieldNames) != 1 || fn.OutputFieldNames[0] != milvusFieldSparse {
 		t.Fatalf("BM25 function 配置错误: %+v", fn)
+	}
+}
+
+func TestMilvusSchemaSparseAnalyzers(t *testing.T) {
+	tests := []struct {
+		name     string
+		analyzer string
+		want     string
+	}{
+		{name: "chinese", analyzer: SparseAnalyzerChinese, want: `{"type":"chinese"}`},
+		{name: "english", analyzer: SparseAnalyzerEnglish, want: `{"type":"english"}`},
+		{name: "multilingual", analyzer: SparseAnalyzerMultilingual, want: `{"filter":["lowercase","asciifolding","removepunct"],"tokenizer":"icu"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schema := ragMilvusSchema(CollectionConfig{Dims: 4, SparseAnalyzer: tt.analyzer})
+			for _, field := range schema.Fields {
+				if field.Name == milvusFieldContent {
+					if got := field.TypeParams["analyzer_params"]; got != tt.want {
+						t.Fatalf("analyzer_params = %s, want %s", got, tt.want)
+					}
+					return
+				}
+			}
+			t.Fatal("content field not found")
+		})
 	}
 }
 

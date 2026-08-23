@@ -305,6 +305,7 @@ type RAGIngestionPolicyData struct {
 	Version           int64                   `json:"version"`
 	ChunkSize         int                     `json:"chunkSize"`
 	ChunkOverlap      int                     `json:"chunkOverlap"`
+	SparseAnalyzer    RAGSparseAnalyzer       `json:"sparseAnalyzer,omitempty"`
 	ParseMode         ParseMode               `json:"parseMode"`
 	ParserEngine      string                  `json:"parserEngine,omitempty"`
 	EnrichmentEnabled bool                    `json:"enrichmentEnabled"`
@@ -318,6 +319,9 @@ func (p RAGIngestionPolicyData) Validate() error {
 	}
 	if !p.ParseMode.Valid() {
 		return fmt.Errorf("invalid ingestion parseMode %q", p.ParseMode)
+	}
+	if !EffectiveRAGSparseAnalyzer(p.SparseAnalyzer).Valid() {
+		return fmt.Errorf("invalid ingestion sparseAnalyzer %q", p.SparseAnalyzer)
 	}
 	parserEngine := strings.ToLower(strings.TrimSpace(p.ParserEngine))
 	if parserEngine != "" && (parserEngine != "markitdown" && parserEngine != "anydoc") {

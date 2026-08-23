@@ -1462,6 +1462,7 @@ func (d *DBStore) migrateRAGMultimodalSchema(ctx context.Context) error {
 		ddl  string
 	}{
 		{"parse_mode", "TEXT NOT NULL DEFAULT 'standard'"},
+		{"sparse_analyzer", "TEXT NOT NULL DEFAULT 'chinese'"},
 		{"enrichment_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"},
 		{"provisioning_generation", "BIGINT NOT NULL DEFAULT 0"},
 		{"provisioning_lease_owner", "TEXT NOT NULL DEFAULT ''"},
@@ -1484,8 +1485,9 @@ func (d *DBStore) migrateRAGMultimodalSchema(ctx context.Context) error {
 	}
 	if d.dialect == mysqlDialect {
 		kbColumns[0].ddl = "VARCHAR(16) NOT NULL DEFAULT 'standard'"
-		kbColumns[3].ddl = "VARCHAR(96) NOT NULL DEFAULT ''"
-		kbColumns[4].ddl = "DATETIME(6)"
+		kbColumns[1].ddl = "VARCHAR(24) NOT NULL DEFAULT 'chinese'"
+		kbColumns[4].ddl = "VARCHAR(96) NOT NULL DEFAULT ''"
+		kbColumns[5].ddl = "DATETIME(6)"
 		documentColumns[0].ddl = "CHAR(64) NOT NULL DEFAULT ''"
 		documentColumns[3].ddl = "VARCHAR(24) NOT NULL DEFAULT 'queued'"
 		documentColumns[6].ddl = "VARCHAR(16) NOT NULL DEFAULT ''"
@@ -2683,6 +2685,7 @@ func (d *DBStore) migrationSQL() []string {
 			embed_dims INTEGER NOT NULL,
 			chunk_size INTEGER NOT NULL DEFAULT 512,
 			chunk_overlap INTEGER NOT NULL DEFAULT 64,
+			sparse_analyzer TEXT NOT NULL DEFAULT 'chinese',
 			parse_mode TEXT NOT NULL DEFAULT 'standard',
 			enrichment_enabled BOOLEAN NOT NULL DEFAULT FALSE,
 			status TEXT NOT NULL DEFAULT 'active',
