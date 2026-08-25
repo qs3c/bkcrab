@@ -2771,6 +2771,7 @@ export interface RAGPolicyRecordDTO {
 
 export interface RAGPolicyAuditDTO {
   ID: string;
+  PolicyKind: "runtime" | "ingestion";
   Action: string;
   ActorID: string;
   FromVersion: number;

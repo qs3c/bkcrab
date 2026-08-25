@@ -31,7 +31,12 @@ function defaultCorpusLimit(preset: RAGEvalCatalogPreset, track: "TEXT_RAG" | "P
   return preset.defaultCorpusSize || 50;
 }
 
-export function CatalogImportPanel({ datasets, maxRunCases, onChanged }: { datasets: RAGEvalDataset[]; maxRunCases: number; onChanged: () => Promise<void> }) {
+export function CatalogImportPanel({ datasets, maxRunCases, onChanged, onDatasetSelected }: {
+  datasets: RAGEvalDataset[];
+  maxRunCases: number;
+  onChanged: () => Promise<void>;
+  onDatasetSelected?: (id: string) => void;
+}) {
   const [catalog, setCatalog] = useState<RAGEvalCatalogPreset[]>([]);
   const [imports, setImports] = useState<RAGEvalCatalogImport[]>([]);
   const [catalogId, setCatalogId] = useState("");
@@ -47,6 +52,9 @@ export function CatalogImportPanel({ datasets, maxRunCases, onChanged }: { datas
   const previouslyActive = useRef(false);
   const preset = useMemo(() => catalog.find((item) => item.id === catalogId), [catalog, catalogId]);
   const active = imports.some((item) => item.status === "QUEUED" || item.status === "RUNNING");
+  const recentImports = useMemo(() => [...imports]
+    .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
+    .slice(0, 5), [imports]);
 
   const refreshImports = useCallback(async () => {
     try {
@@ -95,6 +103,7 @@ export function CatalogImportPanel({ datasets, maxRunCases, onChanged }: { datas
         const created = await createRAGEvalDataset(`${preset.name} · ${track}`, `${preset.description}；固定上游版本 ${preset.revision}`);
         datasetId = created.id;
         setTargetDataset(datasetId);
+        onDatasetSelected?.(datasetId);
         await onChanged();
       }
       await createRAGEvalCatalogImport({
@@ -131,11 +140,11 @@ export function CatalogImportPanel({ datasets, maxRunCases, onChanged }: { datas
         </div>
         {preset?.evidenceTypes && <div className="space-y-2"><Label>证据类型</Label><div className="flex flex-wrap gap-3">{preset.evidenceTypes.map((item) => <label key={item} className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={evidenceTypes.includes(item)} onChange={(event) => setEvidenceTypes((current) => event.target.checked ? [...current, item] : current.filter((value) => value !== item))} />{item}</label>)}</div></div>}
         {preset?.id === "vectara-open-ragbench" && <div className="space-y-2"><Label htmlFor="catalog-corpus-limit">{track === "PDF_E2E" ? "PDF 语料数" : "文本语料数"}</Label><Input id="catalog-corpus-limit" type="number" min={1} max={preset.defaultCorpusSize || 1000} value={corpusLimit} onChange={(event) => setCorpusLimit(Number(event.target.value))} /><p className="text-[11px] text-muted-foreground">优先保留样例对应的正例文档，其余按随机种子稳定补齐；文本轨设为 {preset.defaultCorpusSize || 1000} 才是官方完整主榜。</p></div>}
-        <div className="space-y-2"><Label>保存到</Label><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={targetDataset} onChange={(event) => setTargetDataset(event.target.value)}><option value="">自动新建逻辑数据集</option>{datasets.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>
+        <div className="space-y-2"><Label>保存到</Label><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={targetDataset} onChange={(event) => { setTargetDataset(event.target.value); if (event.target.value) onDatasetSelected?.(event.target.value); }}><option value="">自动新建逻辑数据集</option>{datasets.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>
         <Button type="submit" className="w-full" disabled={busy || !preset || sampleSize < 1 || (preset.id === "vectara-open-ragbench" && (evidenceTypes.length === 0 || corpusLimit < 1))}>{busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}后台准备数据集</Button>
       </form>
       {error && <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">{error}</div>}
-      {imports.length > 0 && <div className="space-y-2 border-t pt-4"><Label>最近准备任务</Label>{imports.slice(-8).reverse().map((job) => <div key={job.id} className="flex items-center justify-between gap-3 rounded-md border p-2 text-xs"><div className="min-w-0"><div className="flex items-center gap-2"><Badge variant="outline">{job.status}</Badge><span className="truncate">{catalog.find((item) => item.id === job.catalogId)?.name || job.catalogId} · v{job.targetVersion}</span></div><p className="mt-1 truncate text-muted-foreground">{job.errorMessage || importProgress(job)}</p></div>{(job.status === "QUEUED" || job.status === "RUNNING") && <Button size="icon" variant="ghost" onClick={() => void cancel(job.id)} title="取消"><X className="h-4 w-4" /></Button>}</div>)}</div>}
+      {recentImports.length > 0 && <div className="space-y-2 border-t pt-4"><div className="flex items-center justify-between gap-3"><Label>最近准备任务</Label><span className="text-[11px] text-muted-foreground">仅显示最近 5 条</span></div>{recentImports.map((job) => <div key={job.id} className="flex items-center justify-between gap-3 rounded-md border p-2 text-xs"><div className="min-w-0"><div className="flex items-center gap-2"><Badge variant="outline">{job.status}</Badge><span className="truncate">{catalog.find((item) => item.id === job.catalogId)?.name || job.catalogId} · v{job.targetVersion}</span></div><p className="mt-1 truncate text-muted-foreground">{job.errorMessage || importProgress(job)}</p></div>{(job.status === "QUEUED" || job.status === "RUNNING") && <Button size="icon" variant="ghost" onClick={() => void cancel(job.id)} title="取消"><X className="h-4 w-4" /></Button>}</div>)}</div>}
     </CardContent>
   </Card>;
 }
