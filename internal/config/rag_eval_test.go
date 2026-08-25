@@ -107,6 +107,16 @@ func TestRAGEvaluatorLogValueAndCapabilitiesHideSecret(t *testing.T) {
 	if strings.Contains(string(b), "top-secret") {
 		t.Fatalf("capabilities exposed secret: %s", b)
 	}
+	capabilities := cfg.Capabilities(true, "")
+	metricSet := make(map[string]struct{}, len(capabilities.Metrics))
+	for _, metric := range capabilities.Metrics {
+		metricSet[metric] = struct{}{}
+	}
+	for _, metric := range []string{"doc_hit_at_k", "doc_recall_at_k", "doc_mrr", "doc_ndcg"} {
+		if _, ok := metricSet[metric]; !ok {
+			t.Fatalf("capabilities omitted document metric %q: %v", metric, capabilities.Metrics)
+		}
+	}
 	_ = slog.AnyValue(cfg.Sidecar)
 }
 

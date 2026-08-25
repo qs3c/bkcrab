@@ -109,7 +109,7 @@ docker compose \
 
 Ragas 固定指标为 Context Precision、Context Recall、Faithfulness、Response Relevancy 和 Factual Correctness。Hit@K、Recall@K、MRR、nDCG、Citation Precision、Citation Coverage 与 Abstention Accuracy 在 Go 中确定性计算。
 
-确定性指标只比较持久化的 context ID，不以文本相似度替代 ground truth。引用一期只识别回答中的 `[n]`：越界编号计入 precision 的错误分母并记录 reason；coverage 是带至少一个有效 `[n]` 的非空句子数除以非空句子总数。无 reference context ID 时检索指标标记为 `skipped_missing_input`，不伪造 0 分。
+确定性 Chunk 指标只比较持久化的 context ID，不以文本相似度替代 ground truth。文档级 `doc_hit_at_k`、`doc_recall_at_k`、`doc_mrr`、`doc_ndcg` 比较 document ID，适合生产线与数据集分块策略不一致的场景。引用一期只识别回答中的 `[n]`：越界编号计入 precision 的错误分母并记录 reason；coverage 是带至少一个有效 `[n]` 的非空句子数除以非空句子总数。缺少对应 reference ID 时该级别的检索指标标记为 `skipped_missing_input`，不伪造 0 分。
 
 聚合输出 count、scored、skipped、error、mean、median/p50 与 p95。Baseline/Candidate 只对相同 case 的有效成对分数计算 delta，并明确列出缺失样例。
 

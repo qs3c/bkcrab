@@ -7,6 +7,90 @@ export interface RAGEvalRunDraft {
   metrics: string[];
 }
 
+export interface RAGEvalMetricOption {
+  id: string;
+  description: string;
+}
+
+export interface RAGEvalMetricGroup {
+  id: "document" | "chunk" | "answer" | "other";
+  label: string;
+  description: string;
+  metrics: RAGEvalMetricOption[];
+}
+
+const metricGroups: Array<Omit<RAGEvalMetricGroup, "metrics"> & { definitions: RAGEvalMetricOption[] }> = [
+  {
+    id: "document",
+    label: "文档级检索（自定义分块时推荐）",
+    description: "只比较文档 ID；即使生产线与数据集的 Chunk 切分不同，也能判断是否找对文档。",
+    definitions: [
+      { id: "doc_hit_at_k", description: "Top-K 是否至少包含一篇标准相关文档。" },
+      { id: "doc_recall_at_k", description: "Top-K 找回了多少标准相关文档。" },
+      { id: "doc_mrr", description: "第一篇标准相关文档在结果中出现得有多早。" },
+      { id: "doc_ndcg", description: "综合所有标准相关文档的召回情况和排序位置。" },
+    ],
+  },
+  {
+    id: "chunk",
+    label: "Chunk 级检索",
+    description: "比较 Context/Chunk ID；只适合数据集提供了与当前切分策略一致的稳定 Chunk ID 时使用。",
+    definitions: [
+      { id: "hit_at_k", description: "Top-K 是否至少包含一个标准相关 Chunk。" },
+      { id: "recall_at_k", description: "Top-K 找回了多少标准相关 Chunk。" },
+      { id: "mrr", description: "第一个标准相关 Chunk 在结果中出现得有多早。" },
+      { id: "ndcg", description: "综合所有标准相关 Chunk 的召回情况和排序位置。" },
+    ],
+  },
+  {
+    id: "answer",
+    label: "回答质量与引用",
+    description: "评估回答是否忠于检索材料、是否切题、是否正确，以及引用和拒答行为。",
+    definitions: [
+      { id: "context_precision", description: "返回 Context 中与标准答案相关内容的集中程度。" },
+      { id: "context_recall", description: "返回 Context 对标准答案所需信息的覆盖程度。" },
+      { id: "faithfulness", description: "回答中的陈述能否由返回 Context 支撑。" },
+      { id: "response_relevancy", description: "回答是否直接回应用户问题。" },
+      { id: "factual_correctness", description: "回答与数据集标准答案的事实一致程度。" },
+      { id: "citation_precision", description: "回答中的引用编号是否指向实际返回的 Context。" },
+      { id: "citation_coverage", description: "回答中的主要陈述是否带有有效引用。" },
+      { id: "abstention_accuracy", description: "应该拒答时是否拒答、不该拒答时是否正常回答。" },
+    ],
+  },
+];
+
+export function groupRAGEvalMetrics(availableMetrics: string[]): RAGEvalMetricGroup[] {
+  const available = new Set(availableMetrics);
+  const known = new Set(metricGroups.flatMap((group) => group.definitions.map((metric) => metric.id)));
+  const groups: RAGEvalMetricGroup[] = metricGroups.map((group) => ({
+    id: group.id,
+    label: group.label,
+    description: group.description,
+    metrics: group.definitions.filter((metric) => available.has(metric.id)),
+  })).filter((group) => group.metrics.length > 0);
+  const other = availableMetrics.filter((metric, index) => !known.has(metric) && availableMetrics.indexOf(metric) === index);
+  if (other.length > 0) {
+    groups.push({
+      id: "other",
+      label: "其他指标",
+      description: "当前服务额外提供的指标。",
+      metrics: other.map((id) => ({ id, description: id })),
+    });
+  }
+  return groups;
+}
+
+export function toggleRAGEvalMetricGroup(selectedMetrics: string[], groupMetrics: string[]): string[] {
+  const group = [...new Set(groupMetrics)];
+  if (group.length === 0) return [...selectedMetrics];
+  const selected = new Set(selectedMetrics);
+  if (group.every((metric) => selected.has(metric))) {
+    const groupSet = new Set(group);
+    return selectedMetrics.filter((metric) => !groupSet.has(metric));
+  }
+  return [...selectedMetrics, ...group.filter((metric) => !selected.has(metric))];
+}
+
 export interface RAGEvalProfileSummary {
   id: string;
   name: string;

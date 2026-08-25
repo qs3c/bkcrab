@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createRAGEvalRun, type RAGEvalCapabilities, type RAGEvalDatasetVersion, type RAGEvalProfile, type RAGEvalRun } from "@/lib/api";
-import { compatibleBaselineRuns, estimateRunWork, profileOptionLabel, validateRunDraft, type RAGEvalRunDraft } from "../rag-eval-state";
+import { compatibleBaselineRuns, estimateRunWork, groupRAGEvalMetrics, profileOptionLabel, toggleRAGEvalMetricGroup, validateRunDraft, type RAGEvalRunDraft } from "../rag-eval-state";
 
 const initial: RAGEvalRunDraft = { datasetVersionId: "", profileId: "", mode: "FULL_PIPELINE", baselineRunId: "", indexGenerationId: "", metrics: [] };
 
@@ -24,8 +24,10 @@ export function RunWizard({ capabilities, versions, profiles, runs, onCreated }:
   const ready = versions.filter((item) => item.Status === "READY");
   const selected = ready.find((item) => item.ID === draft.datasetVersionId);
   const estimate = useMemo(() => estimateRunWork(selected?.CaseCount ?? 0, selected?.DocumentCount ?? 0, draft.mode, draft.metrics.length), [selected, draft.mode, draft.metrics.length]);
+  const metricGroups = useMemo(() => groupRAGEvalMetrics(capabilities?.metrics ?? []), [capabilities?.metrics]);
 
   function toggleMetric(metric: string) { setDraft((value) => ({ ...value, metrics: value.metrics.includes(metric) ? value.metrics.filter((item) => item !== metric) : [...value.metrics, metric] })); }
+  function toggleMetricGroup(metrics: string[]) { setDraft((value) => ({ ...value, metrics: toggleRAGEvalMetricGroup(value.metrics, metrics) })); }
   async function submit(event: FormEvent) {
     event.preventDefault();
     const nextErrors = validateRunDraft(draft, capabilities?.metrics ?? []); setErrors(nextErrors);
@@ -42,7 +44,19 @@ export function RunWizard({ capabilities, versions, profiles, runs, onCreated }:
     <Field label="运行模式"><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.mode} onChange={(event) => setDraft({ ...draft, mode: event.target.value as RAGEvalRunDraft["mode"], indexGenerationId: "", baselineRunId: "" })}><option value="FULL_PIPELINE">完整 Pipeline</option><option value="ONLINE_ONLY">仅在线 Pipeline</option></select><p className="text-[11px] text-muted-foreground">{draft.mode === "ONLINE_ONLY" ? "复用指定的 READY 索引，只执行检索、回答与评分。" : "自动复用完全兼容的索引，否则重新建库，再执行检索、回答与评分。"}</p></Field>
     <Field label="Baseline（可选，对照运行）"><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.baselineRunId} onChange={(event) => setDraft({ ...draft, baselineRunId: event.target.value })}><option value="">无</option>{compatibleBaselineRuns(runs, draft).map((run) => <option key={run.id} value={run.id}>{run.id}</option>)}</select><p className="text-[11px] text-muted-foreground">只列出同一数据版本、同一模式且可逐 case 对比的成功运行。</p></Field>
     {draft.mode === "ONLINE_ONLY" && <Field label="READY generation ID" error={errors.indexGenerationId}><Input value={draft.indexGenerationId} onChange={(event) => setDraft({ ...draft, indexGenerationId: event.target.value })} placeholder="rge_..." /></Field>}
-    <div className="lg:col-span-2"><Label>指标（由 capabilities 驱动）</Label><div className="mt-2 flex flex-wrap gap-2">{(capabilities?.metrics ?? []).map((metric) => <Button key={metric} type="button" size="sm" variant={draft.metrics.includes(metric) ? "default" : "outline"} onClick={() => toggleMetric(metric)}>{metric}</Button>)}</div>{errors.metrics && <p className="mt-1 text-xs text-destructive">{errors.metrics}</p>}</div>
+    <div className="space-y-3 lg:col-span-2">
+      <div><Label>测评指标</Label><p className="mt-1 text-xs text-muted-foreground">自定义分块的数据集请优先选择文档级检索指标；没有稳定 Chunk ID 时，Chunk 级指标会被跳过。</p></div>
+      <div className="grid gap-3 lg:grid-cols-3">{metricGroups.map((group) => {
+        const metricIDs = group.metrics.map((metric) => metric.id);
+        const allSelected = metricIDs.every((metric) => draft.metrics.includes(metric));
+        return <section key={group.id} className="rounded-md border bg-muted/20 p-3">
+          <div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{group.label}</p><Button type="button" size="sm" variant="ghost" className="h-7 shrink-0 px-2 text-xs" aria-pressed={allSelected} onClick={() => toggleMetricGroup(metricIDs)}>{allSelected ? "取消本组" : "全选本组"}</Button></div>
+          <p className="mt-1 min-h-10 text-xs text-muted-foreground">{group.description}</p>
+          <div className="mt-3 flex flex-wrap gap-2">{group.metrics.map((metric) => <Button key={metric.id} type="button" size="sm" variant={draft.metrics.includes(metric.id) ? "default" : "outline"} aria-pressed={draft.metrics.includes(metric.id)} title={metric.description} onClick={() => toggleMetric(metric.id)}>{metric.id}</Button>)}</div>
+        </section>;
+      })}</div>
+      {errors.metrics && <p className="text-xs text-destructive">{errors.metrics}</p>}
+    </div>
     <div className="lg:col-span-2 rounded-md border bg-muted/30 p-4 text-sm"><p className="font-medium">运行前估算</p><div className="mt-2 grid gap-2 sm:grid-cols-4"><span>{estimate.documents} 文档</span><span>{estimate.cases} cases</span><span>约 {estimate.externalCalls} 次评分调用</span><span>{capabilities?.costBudgetEnabled === false ? "费用中断：已关闭" : `费用上限 $${capabilities?.maxRunCostUsd?.toFixed(2) ?? "—"}`}</span></div><p className="mt-2 text-xs text-muted-foreground">预算上限：{capabilities?.maxRunTokens?.toLocaleString() ?? "—"} tokens / {capabilities?.maxRunDurationSec ?? "—"} 秒；费用仍会统计，但不会在关闭费用中断时终止任务。</p><p className="mt-2 flex items-center gap-1 text-xs text-amber-600"><AlertTriangle className="h-3.5 w-3.5" />不可复现风险：{estimate.reproducibilityRisk}</p></div>
     {!capabilities?.sidecarHealthy && <p className="lg:col-span-2 text-sm text-amber-600">评分 Sidecar 不健康：{capabilities?.reason || "暂不可启动新运行"}</p>}
     {errors.submit && <p className="lg:col-span-2 text-sm text-destructive">{errors.submit}</p>}

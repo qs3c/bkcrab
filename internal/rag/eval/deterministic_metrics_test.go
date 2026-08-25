@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -40,6 +41,17 @@ func TestDocumentMetricsCollapseDynamicChunksWithoutSectionMapping(t *testing.T)
 		if results[metric].Status != MetricSkippedMissingInput {
 			t.Fatalf("chunk metric %s must skip without stable chunk qrels: %+v", metric, results[metric])
 		}
+	}
+}
+
+func TestNDCGAtKPenalizesUnreturnedRelevantDocuments(t *testing.T) {
+	results := DeterministicMetrics(DeterministicInput{
+		RetrievedDocumentIDs: []string{"doc-a"},
+		ReferenceDocumentIDs: []string{"doc-a", "doc-b"},
+	}, 3)
+	want := 1 / (1 + 1/math.Log2(3))
+	if got := *results["doc_ndcg"].Value; math.Abs(got-want) > 1e-12 {
+		t.Fatalf("doc nDCG@3=%v, want %v", got, want)
 	}
 }
 

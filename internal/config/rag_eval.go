@@ -393,7 +393,12 @@ func (c RAGEvaluationCfg) Capabilities(healthy bool, reason string) RAGEvaluatio
 	return RAGEvaluationCapabilities{
 		Enabled: c.Enabled, SidecarConfigured: strings.TrimSpace(c.Sidecar.Endpoint) != "",
 		SidecarHealthy: c.Enabled && healthy, Reason: reason, MetricBundleVersion: c.Sidecar.MetricBundleVersion,
-		Metrics:   []string{"context_precision", "context_recall", "faithfulness", "response_relevancy", "factual_correctness", "hit_at_k", "recall_at_k", "mrr", "ndcg", "citation_precision", "citation_coverage", "abstention_accuracy"},
+		Metrics: []string{
+			"context_precision", "context_recall", "faithfulness", "response_relevancy", "factual_correctness",
+			"hit_at_k", "recall_at_k", "mrr", "ndcg",
+			"doc_hit_at_k", "doc_recall_at_k", "doc_mrr", "doc_ndcg",
+			"citation_precision", "citation_coverage", "abstention_accuracy",
+		},
 		Importers: []string{"canonical-json"}, MaxBatchSize: c.MaxBatchSize,
 		DocumentConcurrency: c.DocumentConcurrency, CaseConcurrency: c.CaseConcurrency, ScoreConcurrency: c.ScoreConcurrency, MaxRunCases: c.MaxRunCases,
 		MaxRunTokens: c.MaxRunTokens, MaxRunCostUSD: c.MaxRunCostUSD, CostBudgetEnabled: !c.CostBudgetDisabled, MaxRunDurationSec: c.MaxRunDurationSec,

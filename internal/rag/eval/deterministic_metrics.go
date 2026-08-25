@@ -49,12 +49,15 @@ func mergeRankingMetrics(results map[string]MetricResult, retrieved, references 
 		}
 		return
 	}
-	if k <= 0 || k > len(retrieved) {
+	if k <= 0 {
 		k = len(retrieved)
 	}
+	// Keep the requested K for IDCG even when fewer results were returned;
+	// absent ranks have zero gain and must not make an incomplete list ideal.
+	retrievedLimit := min(k, len(retrieved))
 	hits, first, dcg := 0, 0, 0.0
 	seen := map[string]struct{}{}
-	for i, id := range retrieved[:k] {
+	for i, id := range retrieved[:retrievedLimit] {
 		id = strings.TrimSpace(id)
 		if id == "" {
 			continue

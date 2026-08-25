@@ -5,15 +5,42 @@ const {
   canShowRAGEvalNavigation,
   compatibleBaselineRuns,
   estimateRunWork,
+  groupRAGEvalMetrics,
   isRunProgressStalled,
   nextRunPollDelay,
   parseRAGEvalRunProgress,
   profileOptionLabel,
   runProgressAmount,
   runStageLabel,
+  toggleRAGEvalMetricGroup,
   validateRunDraft,
   validationIssueMessages,
 } = await import(new URL("./rag-eval-state.ts", import.meta.url));
+
+test("evaluation metrics are grouped by document, chunk and answer semantics", () => {
+  const groups = groupRAGEvalMetrics([
+    "faithfulness", "hit_at_k", "doc_hit_at_k", "doc_ndcg", "future_metric",
+  ]);
+  assert.deepEqual(groups.map((group) => group.id), ["document", "chunk", "answer", "other"]);
+  assert.deepEqual(groups[0].metrics.map((metric) => metric.id), ["doc_hit_at_k", "doc_ndcg"]);
+  assert.match(groups[0].description, /文档 ID/);
+  assert.deepEqual(groups[1].metrics.map((metric) => metric.id), ["hit_at_k"]);
+  assert.match(groups[1].description, /Chunk ID/);
+  assert.deepEqual(groups[2].metrics.map((metric) => metric.id), ["faithfulness"]);
+  assert.deepEqual(groups[3].metrics.map((metric) => metric.id), ["future_metric"]);
+});
+
+test("metric groups can be selected and cleared without disturbing other groups", () => {
+  const selected = toggleRAGEvalMetricGroup(["faithfulness", "doc_mrr"], [
+    "doc_hit_at_k", "doc_recall_at_k", "doc_mrr", "doc_ndcg",
+  ]);
+  assert.deepEqual(selected, [
+    "faithfulness", "doc_mrr", "doc_hit_at_k", "doc_recall_at_k", "doc_ndcg",
+  ]);
+  assert.deepEqual(toggleRAGEvalMetricGroup(selected, [
+    "doc_hit_at_k", "doc_recall_at_k", "doc_mrr", "doc_ndcg",
+  ]), ["faithfulness"]);
+});
 
 test("navigation is visible only to a writable super-admin browser session", () => {
   assert.equal(canShowRAGEvalNavigation({ role: "super_admin", authMethod: "session" }), true);
