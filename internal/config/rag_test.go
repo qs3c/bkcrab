@@ -195,7 +195,8 @@ func TestRAGCfgDefaults(t *testing.T) {
 		cfg.RAG.Limits.MaxKBsPerUser != 20 {
 		t.Fatalf("RAG default limits = %+v", cfg.RAG.Limits)
 	}
-	if cfg.RAG.Reranker.TimeoutMS != 5000 || cfg.RAG.Reranker.CandidateTopK != 20 ||
+	if cfg.RAG.Reranker.Protocol != RAGRerankerProtocolJina || cfg.RAG.Reranker.Concurrency != 1 ||
+		cfg.RAG.Reranker.TimeoutMS != 5000 || cfg.RAG.Reranker.CandidateTopK != 20 ||
 		cfg.RAG.Reranker.MinScore != 0.5 {
 		t.Fatalf("RAG reranker defaults = %+v", cfg.RAG.Reranker)
 	}
@@ -400,7 +401,7 @@ func TestRAGDocumentAISecretScrubAndLogging(t *testing.T) {
 
 func TestRAGCfgJSONAndAvailable(t *testing.T) {
 	var cfg Config
-	err := json.Unmarshal([]byte(`{"rag":{"milvus":{"address":"127.0.0.1:19530","username":"u","password":"p"},"embedding":{"endpoint":"http://embed/v1","apiKey":"secret","model":"embed-v3","dims":1024},"reranker":{"enabled":true,"endpoint":"http://rerank/v1","apiKey":"rank-secret","model":"qwen3-reranker","timeoutMs":3000,"candidateTopK":30,"minScore":0.6},"limits":{"maxFileMB":12}}}`), &cfg)
+	err := json.Unmarshal([]byte(`{"rag":{"milvus":{"address":"127.0.0.1:19530","username":"u","password":"p"},"embedding":{"endpoint":"http://embed/v1","apiKey":"secret","model":"embed-v3","dims":1024},"reranker":{"enabled":true,"protocol":"qwen3-generative","endpoint":"http://rerank/v1","apiKey":"rank-secret","model":"qwen3-reranker","timeoutMs":3000,"concurrency":2,"candidateTopK":30,"minScore":0.6},"limits":{"maxFileMB":12}}}`), &cfg)
 	if err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -408,7 +409,8 @@ func TestRAGCfgJSONAndAvailable(t *testing.T) {
 		t.Fatalf("complete RAG config reported unavailable: %+v", cfg.RAG)
 	}
 	if cfg.RAG.Milvus.Username != "u" || cfg.RAG.Embedding.APIKey != "secret" ||
-		cfg.RAG.Reranker.APIKey != "rank-secret" || cfg.RAG.Reranker.MinScore != 0.6 ||
+		cfg.RAG.Reranker.APIKey != "rank-secret" || cfg.RAG.Reranker.Protocol != RAGRerankerProtocolQwen3Generative ||
+		cfg.RAG.Reranker.Concurrency != 2 || cfg.RAG.Reranker.MinScore != 0.6 ||
 		!cfg.RAG.Reranker.Available() || cfg.RAG.Limits.MaxFileMB != 12 {
 		t.Fatalf("RAG JSON fields not decoded: %+v", cfg.RAG)
 	}
@@ -431,7 +433,9 @@ func TestRAGRerankerEnvironmentOverlay(t *testing.T) {
 	t.Setenv("BKCRAB_RAG_RERANKER_ENDPOINT", "http://ranker:8080/v1")
 	t.Setenv("BKCRAB_RAG_RERANKER_API_KEY", "rank-key")
 	t.Setenv("BKCRAB_RAG_RERANKER_MODEL", "qwen3-reranker")
+	t.Setenv("BKCRAB_RAG_RERANKER_PROTOCOL", "qwen3-generative")
 	t.Setenv("BKCRAB_RAG_RERANKER_TIMEOUT_MS", "7000")
+	t.Setenv("BKCRAB_RAG_RERANKER_CONCURRENCY", "2")
 	t.Setenv("BKCRAB_RAG_RERANKER_CANDIDATE_TOP_K", "25")
 	t.Setenv("BKCRAB_RAG_RERANKER_MIN_SCORE", "0.55")
 
@@ -440,9 +444,17 @@ func TestRAGRerankerEnvironmentOverlay(t *testing.T) {
 	env.ApplySystemRAG(&dst)
 	if dst.Reranker.Enabled || dst.Reranker.Endpoint != "http://ranker:8080/v1" ||
 		dst.Reranker.APIKey != "rank-key" || dst.Reranker.Model != "qwen3-reranker" ||
+		dst.Reranker.Protocol != RAGRerankerProtocolQwen3Generative || dst.Reranker.Concurrency != 2 ||
 		dst.Reranker.TimeoutMS != 7000 || dst.Reranker.CandidateTopK != 25 ||
 		dst.Reranker.MinScore != 0.55 {
 		t.Fatalf("reranker env overlay = %+v", dst.Reranker)
+	}
+}
+
+func TestRAGRerankerRejectsUnknownProtocol(t *testing.T) {
+	cfg := RAGCfg{Reranker: RAGRerankerCfg{Protocol: "mystery"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "rag.reranker.protocol") {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 

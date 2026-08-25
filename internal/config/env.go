@@ -212,8 +212,14 @@ func LoadEnv() *EnvConfig {
 	if v := os.Getenv("BKCRAB_RAG_RERANKER_MODEL"); v != "" {
 		cfg.RAG.Reranker.Model = v
 	}
+	if v := os.Getenv("BKCRAB_RAG_RERANKER_PROTOCOL"); v != "" {
+		cfg.RAG.Reranker.Protocol = RAGRerankerProtocol(v)
+	}
 	if v := positiveEnvInt("BKCRAB_RAG_RERANKER_TIMEOUT_MS"); v > 0 {
 		cfg.RAG.Reranker.TimeoutMS = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_RERANKER_CONCURRENCY"); v > 0 {
+		cfg.RAG.Reranker.Concurrency = v
 	}
 	if v := positiveEnvInt("BKCRAB_RAG_RERANKER_CANDIDATE_TOP_K"); v > 0 {
 		cfg.RAG.Reranker.CandidateTopK = v
@@ -846,8 +852,14 @@ func (e *EnvConfig) ApplySystemRAG(dst *RAGCfg) {
 	if e.RAG.Reranker.Model != "" {
 		dst.Reranker.Model = e.RAG.Reranker.Model
 	}
+	if e.RAG.Reranker.Protocol != "" {
+		dst.Reranker.Protocol = e.RAG.Reranker.Protocol
+	}
 	if e.RAG.Reranker.TimeoutMS > 0 {
 		dst.Reranker.TimeoutMS = e.RAG.Reranker.TimeoutMS
+	}
+	if e.RAG.Reranker.Concurrency > 0 {
+		dst.Reranker.Concurrency = e.RAG.Reranker.Concurrency
 	}
 	if e.RAG.Reranker.CandidateTopK > 0 {
 		dst.Reranker.CandidateTopK = e.RAG.Reranker.CandidateTopK

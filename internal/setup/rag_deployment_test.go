@@ -175,17 +175,34 @@ func TestRAGDeploymentRerankerSupportsEvaluationLoad(t *testing.T) {
 	}
 	modelServices := deploymentMap(t, modelDocument["services"], "services")
 	reranker := deploymentMap(t, modelServices["qwen3-reranker"], "services.qwen3-reranker")
+	modelGateway := deploymentMap(t, modelServices["bkcrab"], "services.bkcrab")
+	modelGatewayEnvironment := deploymentMap(t, modelGateway["environment"], "services.bkcrab.environment")
 
 	deploymentRequireContains(t, ragCompose, `BKCRAB_RAG_RERANKER_TIMEOUT_MS: "${RAG_RERANKER_TIMEOUT_MS:-180000}"`)
+	deploymentRequireContains(t, ragCompose, `BKCRAB_RAG_RERANKER_PROTOCOL: "${RAG_RERANKER_PROTOCOL:-jina}"`)
+	deploymentRequireContains(t, ragCompose, `BKCRAB_RAG_RERANKER_CONCURRENCY: "${RAG_RERANKER_CONCURRENCY:-${RAG_RERANKER_PARALLEL:-1}}"`)
 	deploymentRequireContains(t, ragCompose, `BKCRAB_RAG_EVAL_COST_BUDGET_DISABLED: "${RAG_EVAL_COST_BUDGET_DISABLED:-false}"`)
+	if got := deploymentString(t, modelGatewayEnvironment["BKCRAB_RAG_RERANKER_PROTOCOL"], "bundled reranker protocol"); got != "${RAG_RERANKER_PROTOCOL:-qwen3-generative}" {
+		t.Fatalf("bundled reranker protocol = %q", got)
+	}
+	if got := deploymentString(t, modelGatewayEnvironment["BKCRAB_RAG_RERANKER_CONCURRENCY"], "bundled reranker concurrency"); got != "${RAG_RERANKER_CONCURRENCY:-${RAG_RERANKER_PARALLEL:-1}}" {
+		t.Fatalf("bundled reranker concurrency = %q", got)
+	}
 	deploymentRequireStringListContains(t, reranker["command"], `${RAG_RERANKER_BATCH_SIZE:-1024}`)
 	deploymentRequireStringListContains(t, reranker["command"], `${RAG_RERANKER_UBATCH_SIZE:-1024}`)
-	deploymentRequireStringListContains(t, reranker["command"], `${RAG_RERANKER_PARALLEL:-1}`)
+	deploymentRequireStringListContains(t, reranker["command"], `${RAG_RERANKER_CONCURRENCY:-${RAG_RERANKER_PARALLEL:-1}}`)
+	for _, forbidden := range []string{"--reranking", "--embedding", "--pooling", "rank"} {
+		if deploymentStringListContains(reranker["command"], forbidden) {
+			t.Fatalf("generative Qwen3 reranker command must not contain %q", forbidden)
+		}
+	}
 	deploymentRequireContains(t, envExample,
 		"RAG_RERANKER_TIMEOUT_MS=180000",
+		"RAG_RERANKER_PROTOCOL=qwen3-generative",
+		"RAG_RERANKER_CONCURRENCY=1",
+		"RAG_RERANKER_PARALLEL=1",
 		"RAG_RERANKER_BATCH_SIZE=1024",
 		"RAG_RERANKER_UBATCH_SIZE=1024",
-		"RAG_RERANKER_PARALLEL=1",
 		"RAG_EVAL_COST_BUDGET_DISABLED=false",
 	)
 }
@@ -537,4 +554,17 @@ func deploymentRequireStringListContains(t *testing.T, value any, expected strin
 		}
 	}
 	t.Fatalf("network list %#v does not contain %q", items, expected)
+}
+
+func deploymentStringListContains(value any, expected string) bool {
+	items, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range items {
+		if item == expected {
+			return true
+		}
+	}
+	return false
 }

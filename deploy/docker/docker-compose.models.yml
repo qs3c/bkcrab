@@ -3,6 +3,14 @@
 name: bkcrab
 
 services:
+  # Selecting the bundled model also selects its actual generative protocol.
+  # This overlay is applied after docker-compose.rag.yml, so external Jina
+  # endpoints keep the generic overlay's default unless operators opt in.
+  bkcrab:
+    environment:
+      BKCRAB_RAG_RERANKER_PROTOCOL: "${RAG_RERANKER_PROTOCOL:-qwen3-generative}"
+      BKCRAB_RAG_RERANKER_CONCURRENCY: "${RAG_RERANKER_CONCURRENCY:-${RAG_RERANKER_PARALLEL:-1}}"
+
   qwen3-embedding:
     image: "${LLAMA_CPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9445}"
     restart: unless-stopped
@@ -54,10 +62,6 @@ services:
       - /models/Qwen3-Reranker-0.6B-Q4_K_M.gguf
       - --alias
       - qwen3-reranker
-      - --reranking
-      - --embedding
-      - --pooling
-      - rank
       - --ctx-size
       - "4096"
       - --batch-size
@@ -69,7 +73,7 @@ services:
       - --threads-batch
       - "2"
       - --parallel
-      - "${RAG_RERANKER_PARALLEL:-1}"
+      - "${RAG_RERANKER_CONCURRENCY:-${RAG_RERANKER_PARALLEL:-1}}"
       - --cache-ram
       - "0"
       - --host

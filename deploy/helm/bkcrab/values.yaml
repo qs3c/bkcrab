@@ -52,10 +52,12 @@ rag:
     dims: 0
   reranker:
     enabled: false
+    protocol: jina
     endpoint: ""
     apiKey: ""
     model: ""
     timeoutMS: 5000
+    concurrency: 1
     candidateTopK: 20
     minScore: 0.5
 

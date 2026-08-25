@@ -1368,18 +1368,34 @@ type RAGEmbeddingCfg struct {
 	Dims     int    `json:"dims,omitempty"`
 }
 
-// RAGRerankerCfg configures the optional second-stage semantic ranker. Endpoint
-// is either a base URL (the client appends /rerank) or a complete /rerank or
-// /reranking URL. The first implementation supports the Jina-compatible shape
-// exposed by llama.cpp's Qwen reranker service.
+type RAGRerankerProtocol string
+
+const (
+	// RAGRerankerProtocolJina is the conventional batched /rerank contract.
+	RAGRerankerProtocolJina RAGRerankerProtocol = "jina"
+	// RAGRerankerProtocolQwen3Generative uses Qwen3-Reranker's official
+	// generative yes/no contract through llama.cpp's native endpoints.
+	RAGRerankerProtocolQwen3Generative RAGRerankerProtocol = "qwen3-generative"
+)
+
+func (p RAGRerankerProtocol) Valid() bool {
+	return p == RAGRerankerProtocolJina || p == RAGRerankerProtocolQwen3Generative
+}
+
+// RAGRerankerCfg configures the optional second-stage semantic ranker. Jina
+// endpoints accept a whole candidate batch through /rerank. Qwen3's native
+// model is a causal language model: its adapter scores each document from the
+// first generated token's yes/no probabilities through /completion.
 type RAGRerankerCfg struct {
-	Enabled       bool    `json:"enabled,omitempty"`
-	Endpoint      string  `json:"endpoint,omitempty"`
-	APIKey        string  `json:"apiKey,omitempty"`
-	Model         string  `json:"model,omitempty"`
-	TimeoutMS     int     `json:"timeoutMs,omitempty"`
-	CandidateTopK int     `json:"candidateTopK,omitempty"`
-	MinScore      float64 `json:"minScore,omitempty"`
+	Enabled       bool                `json:"enabled,omitempty"`
+	Protocol      RAGRerankerProtocol `json:"protocol,omitempty"`
+	Endpoint      string              `json:"endpoint,omitempty"`
+	APIKey        string              `json:"apiKey,omitempty"`
+	Model         string              `json:"model,omitempty"`
+	TimeoutMS     int                 `json:"timeoutMs,omitempty"`
+	Concurrency   int                 `json:"concurrency,omitempty"`
+	CandidateTopK int                 `json:"candidateTopK,omitempty"`
+	MinScore      float64             `json:"minScore,omitempty"`
 }
 
 func (c RAGRerankerCfg) Available() bool {
@@ -1435,6 +1451,14 @@ func (c *RAGCfg) ApplyDefaults() {
 	}
 	if c.Reranker.TimeoutMS <= 0 {
 		c.Reranker.TimeoutMS = 5000
+	}
+	if strings.TrimSpace(string(c.Reranker.Protocol)) == "" {
+		c.Reranker.Protocol = RAGRerankerProtocolJina
+	} else {
+		c.Reranker.Protocol = RAGRerankerProtocol(strings.ToLower(strings.TrimSpace(string(c.Reranker.Protocol))))
+	}
+	if c.Reranker.Concurrency <= 0 {
+		c.Reranker.Concurrency = 1
 	}
 	if c.Reranker.CandidateTopK <= 0 {
 		c.Reranker.CandidateTopK = 20
@@ -1571,6 +1595,9 @@ func (c *RAGCfg) ApplyDefaults() {
 func (c RAGCfg) Validate() error {
 	if err := c.Evaluation.Validate(); err != nil {
 		return err
+	}
+	if c.Reranker.Protocol != "" && !c.Reranker.Protocol.Valid() {
+		return fmt.Errorf("rag.reranker.protocol %q is unsupported", c.Reranker.Protocol)
 	}
 	if c.ParserSidecar.Engine != "" && c.ParserSidecar.Engine != "markitdown" && c.ParserSidecar.Engine != "anydoc" {
 		return fmt.Errorf("rag.parserSidecar.engine %q is unsupported", c.ParserSidecar.Engine)

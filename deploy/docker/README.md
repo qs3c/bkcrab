@@ -69,13 +69,19 @@ DocumentAI 配置只进入 BkCrab。填写 `RAG_DOCUMENT_AI_ENDPOINT`、模型�
 Reranker 是可选增强。启用后，混合检索先保留全局候选 20 条，再精排到调用方要求的 TopN（默认 5）；只有精排成功时才应用 `RAG_RERANKER_MIN_SCORE`。服务超时、连接失败或响应非法时会自动退回 RRF 排序，不会用精排阈值过滤 RRF 分数。相关配置：
 
 - `RAG_RERANKER_ENABLED`：是否启用；
-- `RAG_RERANKER_ENDPOINT`：llama.cpp/Jina 兼容基础 URL，例如 `http://qwen3-reranker:8080/v1`；
+- `RAG_RERANKER_ENDPOINT`：reranker 基础 URL，例如 `http://qwen3-reranker:8080/v1`；
 - `RAG_RERANKER_API_KEY`、`RAG_RERANKER_MODEL`；
+- `RAG_RERANKER_PROTOCOL`：外部批量 `/rerank` 服务使用 `jina`；仓库内置 Qwen3 GGUF 使用 `qwen3-generative`，通过 llama.cpp 原生 `/tokenize` 与 `/completion` 按官方 yes/no 契约计算相关性；
 - `RAG_RERANKER_TIMEOUT_MS`：Compose 默认 180000（3 分钟）；本地 CPU reranker 需要覆盖候选队列的完整处理时间；
+- `RAG_RERANKER_CONCURRENCY`：客户端全局并发上限，同时作为内置 llama.cpp 的 `--parallel` 槽位数；默认 1。旧 `RAG_RERANKER_PARALLEL` 仍作为兼容回退，前者优先；
 - `RAG_RERANKER_CANDIDATE_TOP_K`：默认 20；
 - `RAG_RERANKER_MIN_SCORE`：默认 0.5，取值范围 `(0,1]`。
 - `RAG_RERANKER_BATCH_SIZE`、`RAG_RERANKER_UBATCH_SIZE`：llama.cpp 物理批大小，默认 1024，避免较长 query/context 在 512 tokens 处直接失败；
-- `RAG_RERANKER_PARALLEL`：llama.cpp 并行槽位，默认 1；评测的 `RAG_EVAL_CASE_CONCURRENCY` 不应高于可用槽位。
+
+Qwen3-Reranker GGUF 不是带分类 pooling head 的 CrossEncoder，因此不能用
+`--pooling rank` 暴露 `/v1/rerank`。适配器对每个候选只生成第一个标签位置，
+读取精确 `yes`、`no` token 的概率并归一化；相同的正向 logit bias 只保证这
+两个 token 出现在返回项中，不改变二者的相对分数。
 
 测评默认按 `RAG_EVAL_MAX_RUN_COST_USD` 中断超预算运行。设置
 `RAG_EVAL_COST_BUDGET_DISABLED=true` 可保留费用统计但关闭费用中断；Token、
@@ -93,7 +99,7 @@ docker compose \
   up -d --build
 ```
 
-此时推荐配置 `RAG_EMBEDDING_ENDPOINT=http://qwen3-embedding:8080/v1`、`RAG_EMBEDDING_MODEL=qwen3-embedding`，以及 `RAG_RERANKER_ENDPOINT=http://qwen3-reranker:8080/v1`、`RAG_RERANKER_MODEL=qwen3-reranker`。
+此时推荐配置 `RAG_EMBEDDING_ENDPOINT=http://qwen3-embedding:8080/v1`、`RAG_EMBEDDING_MODEL=qwen3-embedding`，以及 `RAG_RERANKER_ENDPOINT=http://qwen3-reranker:8080/v1`、`RAG_RERANKER_MODEL=qwen3-reranker`、`RAG_RERANKER_PROTOCOL=qwen3-generative`。
 
 随后同时传入基础文件和 RAG overlay：
 

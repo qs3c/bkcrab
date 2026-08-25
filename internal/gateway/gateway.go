@@ -615,12 +615,24 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 			} else {
 				var ranker ragrerank.Reranker
 				if ragCfg.Reranker.Available() {
-					client, rerankErr := ragrerank.NewHTTP(
-						ragCfg.Reranker.Endpoint,
-						ragCfg.Reranker.APIKey,
-						ragCfg.Reranker.Model,
-						time.Duration(ragCfg.Reranker.TimeoutMS)*time.Millisecond,
-					)
+					var client ragrerank.Reranker
+					var rerankErr error
+					switch ragCfg.Reranker.Protocol {
+					case config.RAGRerankerProtocolQwen3Generative:
+						client, rerankErr = ragrerank.NewQwen3HTTP(
+							ragCfg.Reranker.Endpoint,
+							ragCfg.Reranker.APIKey,
+							time.Duration(ragCfg.Reranker.TimeoutMS)*time.Millisecond,
+							ragCfg.Reranker.Concurrency,
+						)
+					default:
+						client, rerankErr = ragrerank.NewHTTP(
+							ragCfg.Reranker.Endpoint,
+							ragCfg.Reranker.APIKey,
+							ragCfg.Reranker.Model,
+							time.Duration(ragCfg.Reranker.TimeoutMS)*time.Millisecond,
+						)
+					}
 					if rerankErr != nil {
 						slog.Error("rag: reranker configuration invalid; continuing with RRF", "error", rerankErr)
 					} else {

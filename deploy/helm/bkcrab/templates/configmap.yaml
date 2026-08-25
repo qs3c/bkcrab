@@ -73,9 +73,11 @@ data:
   BKCRAB_RAG_EMBEDDING_MODEL: {{ .Values.rag.embedding.model | quote }}
   BKCRAB_RAG_EMBEDDING_DIMS: {{ .Values.rag.embedding.dims | quote }}
   BKCRAB_RAG_RERANKER_ENABLED: {{ .Values.rag.reranker.enabled | quote }}
+  BKCRAB_RAG_RERANKER_PROTOCOL: {{ .Values.rag.reranker.protocol | quote }}
   BKCRAB_RAG_RERANKER_ENDPOINT: {{ .Values.rag.reranker.endpoint | quote }}
   BKCRAB_RAG_RERANKER_MODEL: {{ .Values.rag.reranker.model | quote }}
   BKCRAB_RAG_RERANKER_TIMEOUT_MS: {{ .Values.rag.reranker.timeoutMS | quote }}
+  BKCRAB_RAG_RERANKER_CONCURRENCY: {{ .Values.rag.reranker.concurrency | quote }}
   BKCRAB_RAG_RERANKER_CANDIDATE_TOP_K: {{ .Values.rag.reranker.candidateTopK | quote }}
   BKCRAB_RAG_RERANKER_MIN_SCORE: {{ .Values.rag.reranker.minScore | quote }}
   BKCRAB_RAG_ADVANCED_ENABLED: {{ .Values.rag.advancedEnabled | quote }}
