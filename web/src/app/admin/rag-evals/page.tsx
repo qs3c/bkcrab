@@ -66,10 +66,11 @@ export default function RAGEvaluationsPage() {
     {error && <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
     <div className="grid gap-4 md:grid-cols-3"><CapabilityCard title="功能开关" ok={capabilities?.enabled ?? false} detail={capabilities?.enabled ? "已启用" : "默认关闭"} /><CapabilityCard title="评分 Sidecar" ok={capabilities?.sidecarHealthy ?? false} detail={capabilities?.reason || "健康"} /><CapabilityCard title="指标包" ok={!!capabilities?.metricBundleVersion} detail={capabilities?.metricBundleVersion || "—"} /></div>
     <DatasetsPanel capabilities={capabilities} datasets={datasets} onChanged={refreshCatalog} />
+    <ProfilePolicyPanel section="profile" profiles={profiles} runs={runs} onProfileChanged={refreshCatalog} />
     <RunWizard capabilities={capabilities} versions={versions} profiles={profiles} runs={runs} onCreated={refreshRuns} />
     <RunList runs={runs} profiles={profiles} versions={versions} onChanged={refreshRuns} />
     <ResultsPanel runs={runs} />
-    <ProfilePolicyPanel profiles={profiles} runs={runs} onProfileChanged={refreshCatalog} />
+    <ProfilePolicyPanel section="policy" profiles={profiles} runs={runs} onProfileChanged={refreshCatalog} />
   </div>;
 }
 

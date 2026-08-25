@@ -612,6 +612,40 @@ func (d *DBStore) GetRAGEvalProfile(ctx context.Context, id string) (*RAGEvalPro
 	return &item, err
 }
 
+// DeleteRAGEvalProfile removes an immutable profile only when no retained run
+// still refers to it. Tombstoned runs carry their own execution snapshot and do
+// not need the catalog entry to remain available.
+func (d *DBStore) DeleteRAGEvalProfile(ctx context.Context, id string) (bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false, errors.New("profile id is required")
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var references int
+	if err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM rag_eval_runs WHERE profile_id=%s AND deleted_at IS NULL`, d.ph(1)), id).Scan(&references); err != nil {
+		return false, err
+	}
+	if references != 0 {
+		return false, ErrRAGEvalReferenced
+	}
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM rag_eval_profiles WHERE id=%s`, d.ph(1)), id)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows == 0 {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (d *DBStore) CreateRAGEvalRun(ctx context.Context, record *RAGEvalRunRecord) error {
 	if record == nil || record.DatasetVersionID == "" || record.ProfileID == "" || !validRAGEvalRunMode(record.Mode) || strings.TrimSpace(record.CreatedBy) == "" {
 		return errors.New("valid dataset, profile, and mode are required")

@@ -403,6 +403,7 @@ type Store interface {
 	CreateRAGEvalProfile(ctx context.Context, record *RAGEvalProfileRecord) error
 	GetRAGEvalProfile(ctx context.Context, id string) (*RAGEvalProfileRecord, error)
 	ListRAGEvalProfiles(ctx context.Context, cursor string, limit int) ([]RAGEvalProfileRecord, error)
+	DeleteRAGEvalProfile(ctx context.Context, id string) (bool, error)
 	CreateRAGEvalRun(ctx context.Context, record *RAGEvalRunRecord) error
 	GetRAGEvalRun(ctx context.Context, id string) (*RAGEvalRunRecord, error)
 	ListRAGEvalRuns(ctx context.Context, cursor string, limit int) ([]RAGEvalRunRecord, error)

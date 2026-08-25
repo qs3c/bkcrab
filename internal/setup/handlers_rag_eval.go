@@ -36,6 +36,7 @@ func (s *Server) registerRAGEvaluationRoutes(mux *http.ServeMux, gate func(http.
 	mux.HandleFunc("GET /api/admin/rag-evals/dataset-versions/{id}/validation", gate(s.handleRAGEvalDatasetValidation))
 	mux.HandleFunc("GET /api/admin/rag-evals/profiles", gate(s.handleListRAGEvalProfiles))
 	mux.HandleFunc("POST /api/admin/rag-evals/profiles", gate(s.handleCreateRAGEvalProfile))
+	mux.HandleFunc("DELETE /api/admin/rag-evals/profiles/{id}", gate(s.handleDeleteRAGEvalProfile))
 	mux.HandleFunc("GET /api/admin/rag-evals/runs", gate(s.handleListRAGEvalRuns))
 	mux.HandleFunc("POST /api/admin/rag-evals/runs", gate(s.handleCreateRAGEvalRun))
 	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}", gate(s.handleGetRAGEvalRun))
@@ -450,6 +451,27 @@ func (s *Server) handleCreateRAGEvalProfile(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	jsonResponse(w, 201, record)
+}
+
+func (s *Server) handleDeleteRAGEvalProfile(w http.ResponseWriter, r *http.Request) {
+	service, ok := s.evalService(w)
+	if !ok {
+		return
+	}
+	changed, err := service.DeleteProfile(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrRAGEvalReferenced) {
+		writeEvalError(w, http.StatusConflict, "profile_in_use", "Profile 已被测评运行使用，请先删除相关运行")
+		return
+	}
+	if err != nil {
+		writeEvalServiceError(w, err)
+		return
+	}
+	if !changed {
+		writeEvalError(w, http.StatusNotFound, "not_found", "Profile 不存在或已删除")
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleListRAGEvalRuns(w http.ResponseWriter, r *http.Request) {

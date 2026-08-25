@@ -2876,6 +2876,10 @@ export async function createRAGEvalProfile(name: string, profile: unknown): Prom
   }));
 }
 
+export async function deleteRAGEvalProfile(id: string): Promise<void> {
+  await ragEvalJSON(await apiFetch(`/api/admin/rag-evals/profiles/${encodeURIComponent(id)}`, { method: "DELETE" }));
+}
+
 export async function listRAGEvalRuns(): Promise<RAGEvalRun[]> {
   const result = await ragEvalJSON<{ items: RAGEvalRun[] }>(await apiFetch("/api/admin/rag-evals/runs?limit=100"));
   return result.items ?? [];

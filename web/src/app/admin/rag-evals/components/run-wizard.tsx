@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,6 +25,16 @@ export function RunWizard({ capabilities, versions, profiles, runs, onCreated }:
   const selected = ready.find((item) => item.ID === draft.datasetVersionId);
   const estimate = useMemo(() => estimateRunWork(selected?.CaseCount ?? 0, selected?.DocumentCount ?? 0, draft.mode, draft.metrics.length), [selected, draft.mode, draft.metrics.length]);
   const metricGroups = useMemo(() => groupRAGEvalMetrics(capabilities?.metrics ?? []), [capabilities?.metrics]);
+  const orderedProfiles = useMemo(() => [...profiles].sort((left, right) => {
+    const byCreatedAt = right.createdAt.localeCompare(left.createdAt);
+    return byCreatedAt || right.id.localeCompare(left.id);
+  }), [profiles]);
+
+  useEffect(() => {
+    setDraft((value) => value.profileId && !profiles.some((profile) => profile.id === value.profileId)
+      ? { ...value, profileId: "", baselineRunId: "" }
+      : value);
+  }, [profiles]);
 
   function toggleMetric(metric: string) { setDraft((value) => ({ ...value, metrics: value.metrics.includes(metric) ? value.metrics.filter((item) => item !== metric) : [...value.metrics, metric] })); }
   function toggleMetricGroup(metrics: string[]) { setDraft((value) => ({ ...value, metrics: toggleRAGEvalMetricGroup(value.metrics, metrics) })); }
@@ -40,7 +50,7 @@ export function RunWizard({ capabilities, versions, profiles, runs, onCreated }:
 
   return <Card><CardHeader><CardTitle>新建测评运行</CardTitle><CardDescription>先固定数据版本、模式、候选参数与指标，再进入 durable queue。</CardDescription></CardHeader><CardContent><form className="grid gap-5 lg:grid-cols-2" onSubmit={submit}>
     <Field label="READY 数据版本" error={errors.datasetVersionId}><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.datasetVersionId} onChange={(event) => setDraft({ ...draft, datasetVersionId: event.target.value })}><option value="">请选择</option>{ready.map((item) => <option key={item.ID} value={item.ID}>v{item.Version} · {item.CaseCount} cases / {item.DocumentCount} docs</option>)}</select></Field>
-    <Field label="参数 Profile" error={errors.profileId}><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.profileId} onChange={(event) => setDraft({ ...draft, profileId: event.target.value })}><option value="">请选择</option>{profiles.map((item) => <option key={item.id} value={item.id}>{profileOptionLabel(item, profiles)}</option>)}</select></Field>
+    <Field label="参数 Profile" error={errors.profileId}><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.profileId} onChange={(event) => setDraft({ ...draft, profileId: event.target.value })}><option value="">请选择</option>{orderedProfiles.map((item) => <option key={item.id} value={item.id}>{profileOptionLabel(item, profiles)}</option>)}</select></Field>
     <Field label="运行模式"><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.mode} onChange={(event) => setDraft({ ...draft, mode: event.target.value as RAGEvalRunDraft["mode"], indexGenerationId: "", baselineRunId: "" })}><option value="FULL_PIPELINE">完整 Pipeline</option><option value="ONLINE_ONLY">仅在线 Pipeline</option></select><p className="text-[11px] text-muted-foreground">{draft.mode === "ONLINE_ONLY" ? "复用指定的 READY 索引，只执行检索、回答与评分。" : "自动复用完全兼容的索引，否则重新建库，再执行检索、回答与评分。"}</p></Field>
     <Field label="Baseline（可选，对照运行）"><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.baselineRunId} onChange={(event) => setDraft({ ...draft, baselineRunId: event.target.value })}><option value="">无</option>{compatibleBaselineRuns(runs, draft).map((run) => <option key={run.id} value={run.id}>{run.id}</option>)}</select><p className="text-[11px] text-muted-foreground">只列出同一数据版本、同一模式且可逐 case 对比的成功运行。</p></Field>
     {draft.mode === "ONLINE_ONLY" && <Field label="READY generation ID" error={errors.indexGenerationId}><Input value={draft.indexGenerationId} onChange={(event) => setDraft({ ...draft, indexGenerationId: event.target.value })} placeholder="rge_..." /></Field>}

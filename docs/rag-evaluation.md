@@ -87,7 +87,7 @@ docker compose \
 
 启用评测后，系统会按当前 ingestion/runtime、reranker 和 BkCrab 默认回答模型自动创建一个 immutable 的“系统默认全功能” Experiment Profile。相同指纹只创建一次，后续 run 直接复用；默认模型或策略变化会形成新的 Profile，而不是改写历史 Profile。管理员也可以在 `/admin/rag-evals` 创建用于 A/B 实验的额外 Profile，不需要每次 run 都创建。
 
-评测 Profile 的 `ingestion.parserEngine` 可固定为 `anydoc` 或 `markitdown`。管理页支持从已有 Profile 创建副本并用可用性探测后的按钮选择解析器；完整 Pipeline 会把解析器选择传给每个文档源。解析器选择同时进入 generation 与 parse artifact 指纹，因此两种解析器不会互相复用索引或解析缓存。运行进度记录 `parserEngine`、`generationDurationMs` 和 `generationReused`；比较解析耗时时应使用两个都未标记复用、且其它 Profile 字段完全相同的运行。
+评测 Profile 的 `ingestion.parserEngine` 可固定为 `anydoc` 或 `markitdown`。管理页支持从已有 Profile 创建副本并用可用性探测后的按钮选择解析器；未被保留测评运行引用的旧 Profile 可以删除，被引用的 Profile 必须先删除关联运行。完整 Pipeline 会把解析器选择传给每个文档源。解析器选择同时进入 generation 与 parse artifact 指纹，因此两种解析器不会互相复用索引或解析缓存。运行进度记录 `parserEngine`、`generationDurationMs` 和 `generationReused`；比较解析耗时时应使用两个都未标记复用、且其它 Profile 字段完全相同的运行。
 
 ## 容量、费用与策略发布
 

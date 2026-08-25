@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Database, Gauge, RotateCcw, Save, ShieldCheck } from "lucide-react";
+import { Database, Gauge, RotateCcw, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createRAGEvalProfile,
+  deleteRAGEvalProfile,
   getRAGCapabilities,
   getRAGPolicies,
   promoteRAGIngestionPolicy,
@@ -165,10 +166,11 @@ function runModeLabel(mode: RAGEvalRun["mode"]): string {
   return mode === "FULL_PIPELINE" ? "完整 Pipeline" : "仅在线复验";
 }
 
-export function ProfilePolicyPanel({ profiles, runs, onProfileChanged }: {
+export function ProfilePolicyPanel({ profiles, runs, onProfileChanged, section = "all" }: {
   profiles: RAGEvalProfile[];
   runs: RAGEvalRun[];
   onProfileChanged: () => Promise<void>;
+  section?: "profile" | "policy" | "all";
 }) {
   const [profileName, setProfileName] = useState("新实验 Profile");
   const [profileJSON, setProfileJSON] = useState(() => stringifyProfile(defaultProfile));
@@ -176,6 +178,7 @@ export function ProfilePolicyPanel({ profiles, runs, onProfileChanged }: {
   const [sourceProfileId, setSourceProfileId] = useState("");
   const [profileDirty, setProfileDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deletingProfileId, setDeletingProfileId] = useState("");
   const [ragCapabilities, setRAGCapabilities] = useState<RAGCapabilities | null>(null);
   const [publishKind, setPublishKind] = useState<"runtime" | "ingestion">("runtime");
   const [runId, setRunId] = useState("");
@@ -190,6 +193,12 @@ export function ProfilePolicyPanel({ profiles, runs, onProfileChanged }: {
   const [profileMessage, setProfileMessage] = useState("");
   const [policyMessage, setPolicyMessage] = useState("");
   const draft = useMemo(() => parseProfile(profileJSON), [profileJSON]);
+  const orderedProfiles = useMemo(() => [...profiles].sort((left, right) => {
+    const byCreatedAt = right.createdAt.localeCompare(left.createdAt);
+    return byCreatedAt || right.id.localeCompare(left.id);
+  }), [profiles]);
+  const sourceProfile = profiles.find((item) => item.id === sourceProfileId);
+  const sourceProfileRuns = runs.filter((item) => item.profileId === sourceProfileId);
   const selectedRun = runs.find((item) => item.id === runId);
   const selectedProfile = profiles.find((item) => item.id === selectedRun?.profileId);
 
@@ -310,6 +319,30 @@ export function ProfilePolicyPanel({ profiles, runs, onProfileChanged }: {
     }
   }
 
+  async function deleteSourceProfile() {
+    if (!sourceProfile || sourceProfileRuns.length > 0) return;
+    const createdAt = new Date(sourceProfile.createdAt);
+    const createdLabel = Number.isNaN(createdAt.getTime()) ? sourceProfile.createdAt : createdAt.toLocaleString("zh-CN", { hour12: false });
+    const systemNote = sourceProfile.id.startsWith("rep_system_") ? "\n这是系统自动生成的 Profile；如果它仍对应当前默认策略，服务重启时可能再次生成。" : "";
+    if (!window.confirm(`确认删除 Profile“${sourceProfile.name}”？\n创建时间：${createdLabel}\n\n删除后无法恢复。${systemNote}`)) return;
+    setDeletingProfileId(sourceProfile.id);
+    setProfileError("");
+    setProfileMessage("");
+    try {
+      await deleteRAGEvalProfile(sourceProfile.id);
+      setSourceProfileId("");
+      setProfileJSON(baseProfileJSON);
+      setProfileName("新实验 Profile");
+      setProfileDirty(false);
+      await onProfileChanged();
+      setProfileMessage(`Profile“${sourceProfile.name}”已删除。`);
+    } catch (err) {
+      setProfileError(err instanceof Error ? err.message : "删除 Profile 失败");
+    } finally {
+      setDeletingProfileId("");
+    }
+  }
+
   function choosePublishKind(kind: "runtime" | "ingestion") {
     setPublishKind(kind);
     setRunId("");
@@ -359,7 +392,7 @@ export function ProfilePolicyPanel({ profiles, runs, onProfileChanged }: {
   }
 
   return <div className="space-y-6">
-    <Card>
+    {section !== "policy" && <Card>
       <CardHeader>
         <CardTitle>实验 Profile</CardTitle>
         <CardDescription>直接用表单创建实验配置；不需要自己编写 JSON。保存后配置不可变，便于复现实验结果。</CardDescription>
@@ -368,10 +401,16 @@ export function ProfilePolicyPanel({ profiles, runs, onProfileChanged }: {
         <form className="space-y-6" onSubmit={saveProfile}>
           <div className="grid gap-4 lg:grid-cols-2">
             <Field label="基于已有配置">
-              <select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={sourceProfileId} onChange={(event) => loadProfile(event.target.value)}>
-                <option value="">系统当前默认</option>
-                {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profileOptionLabel(profile, profiles)}</option>)}
-              </select>
+              <div className="flex gap-2">
+                <select className="h-9 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm" value={sourceProfileId} onChange={(event) => loadProfile(event.target.value)}>
+                  <option value="">系统当前默认</option>
+                  {orderedProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profileOptionLabel(profile, profiles)}</option>)}
+                </select>
+                <Button type="button" variant="outline" className="shrink-0 text-destructive hover:text-destructive" disabled={!sourceProfile || sourceProfileRuns.length > 0 || deletingProfileId === sourceProfileId} onClick={() => void deleteSourceProfile()}>
+                  <Trash2 className="mr-1 h-4 w-4" />{deletingProfileId === sourceProfileId ? "删除中…" : "删除"}
+                </Button>
+              </div>
+              {sourceProfile && sourceProfileRuns.length > 0 && <p className="text-xs text-amber-700">这个 Profile 已被 {sourceProfileRuns.length} 个当前测评运行使用；请先删除相关运行。</p>}
             </Field>
             <Field label="实验名称"><Input value={profileName} onChange={(event) => { setProfileName(event.target.value); setProfileDirty(true); }} maxLength={255} /></Field>
           </div>
@@ -416,9 +455,9 @@ export function ProfilePolicyPanel({ profiles, runs, onProfileChanged }: {
           <Button type="submit" disabled={saving || !profileName.trim() || !draft || !selectedParserEngine(draft)}><Save className="mr-2 h-4 w-4" />{saving ? "保存中…" : "保存 Profile"}</Button>
         </form>
       </CardContent>
-    </Card>
+    </Card>}
 
-    <Card>
+    {section !== "profile" && <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2"><ShieldCheck className="h-5 w-5" />把测评结果发布到正式 RAG</CardTitle>
         <CardDescription>这是上线操作，不是运行测评。先选发布类型，页面只会展示与它相关的步骤。</CardDescription>
@@ -463,12 +502,12 @@ export function ProfilePolicyPanel({ profiles, runs, onProfileChanged }: {
         {policyMessage && <p className="text-sm text-emerald-600">{policyMessage}</p>}
         <Button type="button" disabled={reasons.length > 0} onClick={() => void publish()}>{publishKind === "runtime" ? "发布 Runtime（立即生效）" : "发布 Ingestion（新建库默认）"}</Button>
       </CardContent>
-    </Card>
+    </Card>}
 
-    <Card>
+    {section !== "profile" && <Card>
       <CardHeader><CardTitle>发布与回滚记录</CardTitle><CardDescription>当前 Runtime v{runtime?.Version ?? "—"} · Ingestion v{ingestion?.Version ?? "—"}。Runtime 可在这里全局回滚；Ingestion 不会自动改动已有知识库。</CardDescription></CardHeader>
       <CardContent className="space-y-2">{audits.length === 0 ? <p className="text-sm text-muted-foreground">暂无审计记录</p> : audits.map((audit) => <div key={audit.ID} className="flex items-center justify-between gap-3 rounded border p-3 text-sm"><div><Badge variant="outline">{audit.PolicyKind === "ingestion" ? "INGESTION" : "RUNTIME"}</Badge><Badge variant="outline" className="ml-2">{audit.Action}</Badge><span className="ml-2">v{audit.FromVersion} → v{audit.ToVersion}</span><p className="mt-1 text-xs text-muted-foreground">{audit.Note || "无备注"} · {audit.ActorID}</p></div>{audit.PolicyKind === "runtime" && audit.Action === "PUBLISH" && audit.FromVersion > 0 && runtime && <Button size="sm" variant="ghost" onClick={() => void rollback(audit.FromVersion)}><RotateCcw className="mr-1 h-4 w-4" />回滚</Button>}</div>)}</CardContent>
-    </Card>
+    </Card>}
   </div>;
 }
 

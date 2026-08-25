@@ -130,6 +130,38 @@ func TestRAGEvalDatasetGCBlocksReferencedVersion(t *testing.T) {
 	}
 }
 
+func TestRAGEvalProfileDeleteBlocksRetainedRun(t *testing.T) {
+	st := openTestDB(t)
+	defer st.Close()
+	ctx := context.Background()
+	profile := &RAGEvalProfileRecord{Name: "temporary", ProfileJSON: `{}`, Fingerprint: strings.Repeat("d", 64), CreatedBy: "admin"}
+	if err := st.CreateRAGEvalProfile(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	run := &RAGEvalRunRecord{DatasetVersionID: "version", ProfileID: profile.ID, Mode: RAGEvalRunModeFullPipeline, CreatedBy: "admin"}
+	if err := st.CreateRAGEvalRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := st.DeleteRAGEvalProfile(ctx, profile.ID); deleted || !errors.Is(err, ErrRAGEvalReferenced) {
+		t.Fatalf("referenced profile delete=%v err=%v", deleted, err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `UPDATE rag_eval_runs SET status=? WHERE id=?`, RAGEvalRunSucceeded, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := st.TombstoneRAGEvalRun(ctx, run.ID); err != nil || !changed {
+		t.Fatalf("tombstone run=%v err=%v", changed, err)
+	}
+	if deleted, err := st.DeleteRAGEvalProfile(ctx, profile.ID); err != nil || !deleted {
+		t.Fatalf("delete unreferenced profile=%v err=%v", deleted, err)
+	}
+	if _, err := st.GetRAGEvalProfile(ctx, profile.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted profile remains: %v", err)
+	}
+	if deleted, err := st.DeleteRAGEvalProfile(ctx, profile.ID); err != nil || deleted {
+		t.Fatalf("repeated delete=%v err=%v", deleted, err)
+	}
+}
+
 func TestRAGEvalDatasetStagingCandidatesAreTTLBounded(t *testing.T) {
 	st := openTestDB(t)
 	defer st.Close()
