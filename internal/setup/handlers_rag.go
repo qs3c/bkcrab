@@ -17,16 +17,17 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/rag"
+	"github.com/qs3c/bkcrab/internal/rag/dialogue"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/usage"
 )
 
 const (
-	ragChatMaxHistoryQuestions = rag.AnswerMaxHistoryQuestions
-	ragChatMaxHistoryRunes     = rag.AnswerMaxHistoryRunes
-	ragChatMaxQuestionRunes    = 8000
-	ragChatMaxSessionIDBytes   = 120
-	ragChatMaxTitleRunes       = 60
+	ragChatMaxHistoryTurns   = rag.AnswerMaxHistoryTurns
+	ragChatMaxHistoryRunes   = rag.AnswerMaxHistoryRunes
+	ragChatMaxQuestionRunes  = 8000
+	ragChatMaxSessionIDBytes = 120
+	ragChatMaxTitleRunes     = 60
 )
 
 var (
@@ -884,11 +885,7 @@ func (s *Server) handleRAGChat(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "读取知识库问答历史失败：" + err.Error()})
 		return
 	}
-	historyQuestions := make([]string, 0, len(persistedTurns))
-	for _, turn := range persistedTurns {
-		historyQuestions = append(historyQuestions, turn.Question)
-	}
-	history := normalizeRAGChatHistory(historyQuestions)
+	history := ragChatDialogueHistory(persistedTurns)
 	requestContext, runtimePolicy := s.rag.CaptureRuntimePolicy(r.Context())
 	r = r.WithContext(requestContext)
 	minScore := runtimePolicy.MinScore
@@ -1084,11 +1081,24 @@ func ragChatTitle(question string) string {
 	return strings.TrimSpace(string([]rune(title)[:ragChatMaxTitleRunes])) + "…"
 }
 
-func normalizeRAGChatHistory(history []string) []string {
+func normalizeRAGChatHistory(history []dialogue.Turn) []dialogue.Turn {
 	return rag.NormalizeAnswerHistory(history)
 }
 
-func buildRAGChatPrompt(kb *store.RAGKBRecord, question string, history []string, hits []rag.Hit) string {
+func ragChatDialogueHistory(turns []store.RAGChatTurnRecord) []dialogue.Turn {
+	history := make([]dialogue.Turn, 0, len(turns)*2)
+	for _, turn := range turns {
+		if userTurn := dialogue.NewTurn("user", turn.Question); userTurn.Valid() {
+			history = append(history, userTurn)
+		}
+		if assistantTurn := dialogue.NewTurn("assistant", turn.Answer); assistantTurn.Valid() {
+			history = append(history, assistantTurn)
+		}
+	}
+	return normalizeRAGChatHistory(history)
+}
+
+func buildRAGChatPrompt(kb *store.RAGKBRecord, question string, history []dialogue.Turn, hits []rag.Hit) string {
 	return rag.BuildAnswerPrompt(rag.AnswerInput{
 		KnowledgeBase: rag.AnswerKnowledgeBase{ID: kb.ID, Name: kb.Name, Description: kb.Description},
 		Question:      question, History: history, Hits: hits,

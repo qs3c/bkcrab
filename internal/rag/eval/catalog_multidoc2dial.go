@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/qs3c/bkcrab/internal/rag/dialogue"
 )
 
 const multiDoc2DialArchiveSHA256 = "f0c034c249663d7b3cb08b19cf2cc2c3d101372485be982621d4711931a1ce00"
@@ -134,18 +136,17 @@ func (MultiDoc2DialAdapter) Prepare(ctx context.Context, source CatalogSource, o
 	for _, domain := range domains {
 		dialogues := dialogueRoot.Dialogues[domain]
 		sort.Slice(dialogues, func(i, j int) bool { return dialogues[i].ID < dialogues[j].ID })
-		for _, dialogue := range dialogues {
-			userHistory := []string{}
+		for _, sourceDialogue := range dialogues {
+			historyByUserTurn := multiDoc2DialHistorySnapshots(sourceDialogue.Turns)
 			var current *multiDoc2DialTurn
-			var history []string
-			for turnIndex := range dialogue.Turns {
-				turn := dialogue.Turns[turnIndex]
+			var history []dialogue.Turn
+			for turnIndex := range sourceDialogue.Turns {
+				turn := sourceDialogue.Turns[turnIndex]
 				switch strings.ToLower(strings.TrimSpace(turn.Role)) {
 				case "user":
 					turnCopy := turn
 					current = &turnCopy
-					history = append([]string(nil), userHistory...)
-					userHistory = append(userHistory, strings.TrimSpace(turn.Utterance))
+					history = dialogue.Clone(historyByUserTurn[turn.TurnID])
 				case "agent":
 					if current == nil || strings.TrimSpace(current.Utterance) == "" || strings.TrimSpace(turn.Utterance) == "" {
 						continue
@@ -174,10 +175,10 @@ func (MultiDoc2DialAdapter) Prepare(ctx context.Context, source CatalogSource, o
 						sourceRefs = append(sourceRefs, map[string]string{"docId": reference.DocID, "spanId": reference.SpanID, "label": reference.Label})
 					}
 					sort.Strings(referenceDocumentIDs)
-					caseID := "mdd_" + dialogue.ID + "_" + strconv.Itoa(turn.TurnID)
+					caseID := "mdd_" + sourceDialogue.ID + "_" + strconv.Itoa(turn.TurnID)
 					cases = append(cases, Case{ID: caseID, UserInput: strings.TrimSpace(current.Utterance), Reference: strings.TrimSpace(turn.Utterance),
-						ReferenceContexts: referenceContexts, ReferenceDocumentIDs: referenceDocumentIDs, History: append([]string(nil), history...),
-						Tags: []string{domain, "multi_turn"}, Metadata: map[string]any{"domain": domain, "dialogueId": dialogue.ID,
+						ReferenceContexts: referenceContexts, ReferenceDocumentIDs: referenceDocumentIDs, History: dialogue.Clone(history),
+						Tags: []string{domain, "multi_turn"}, Metadata: map[string]any{"domain": domain, "dialogueId": sourceDialogue.ID,
 							"userTurnId": current.TurnID, "agentTurnId": turn.TurnID, "dialogAct": turn.DA, "sourceReferences": sourceRefs}})
 					current = nil
 				}
@@ -192,6 +193,26 @@ func (MultiDoc2DialAdapter) Prepare(ctx context.Context, source CatalogSource, o
 	prepared.Dataset.Cases = selected
 	prepared.Dataset.Source.SampleSize = len(selected)
 	return prepared, nil
+}
+
+// multiDoc2DialHistorySnapshots returns the complete gold dialogue preceding
+// each user turn. A case remains independently executable: its own snapshot
+// contains both prior user questions and the dataset's agent answers, while no
+// state is shared with any other selected case.
+func multiDoc2DialHistorySnapshots(turns []multiDoc2DialTurn) map[int][]dialogue.Turn {
+	history := make([]dialogue.Turn, 0, len(turns))
+	snapshots := make(map[int][]dialogue.Turn, len(turns)/2+1)
+	for _, sourceTurn := range turns {
+		role := dialogue.NormalizeRole(sourceTurn.Role)
+		if role == dialogue.RoleUser {
+			snapshots[sourceTurn.TurnID] = dialogue.Clone(history)
+		}
+		turn := dialogue.NewTurn(string(role), sourceTurn.Utterance)
+		if turn.Valid() {
+			history = append(history, turn)
+		}
+	}
+	return snapshots
 }
 
 func copyCatalogSourceToFile(ctx context.Context, source CatalogSource, logicalPath, target, expectedSHA string, maxBytes int64) error {

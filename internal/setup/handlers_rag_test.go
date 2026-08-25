@@ -18,6 +18,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/auth"
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag"
+	"github.com/qs3c/bkcrab/internal/rag/dialogue"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/parse"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
@@ -624,7 +625,7 @@ func TestGenerateRAGKBMetadataViaAPI(t *testing.T) {
 	}
 }
 
-func TestRAGChatUsesQuestionOnlyHistoryAndReturnsSources(t *testing.T) {
+func TestRAGChatUsesCompleteRoleAwareHistoryAndReturnsSources(t *testing.T) {
 	server, resolver, _, regular, service := newRAGAPITestServer(t)
 	ctx := context.Background()
 
@@ -710,7 +711,7 @@ func TestRAGChatUsesQuestionOnlyHistoryAndReturnsSources(t *testing.T) {
 		if err := server.dataStore.AppendRAGChatTurn(ctx, &store.RAGChatTurnRecord{
 			ID: fmt.Sprintf("history-turn-%02d", index), UserID: regular.ID, KBID: kb.ID,
 			SessionID: sessionID, Title: "历史问题", Question: history[index],
-			Answer: "这条历史回答不应进入下一轮上下文", Sources: json.RawMessage("[]"),
+			Answer: "这是用于理解后续追问的历史回答", Sources: json.RawMessage("[]"),
 			CreatedAt: historyStart.Add(time.Duration(index) * time.Second),
 		}); err != nil {
 			t.Fatal(err)
@@ -743,14 +744,16 @@ func TestRAGChatUsesQuestionOnlyHistoryAndReturnsSources(t *testing.T) {
 	if receivedMaxTokens != 321 || receivedTemperature != 0.7 {
 		t.Fatalf("runtime answer policy not applied: maxTokens=%d temperature=%v", receivedMaxTokens, receivedTemperature)
 	}
-	if strings.Contains(receivedUserPrompt, "history-00") || strings.Contains(receivedUserPrompt, "history-01") {
-		t.Fatalf("prompt retained history older than 20 questions: %q", receivedUserPrompt)
-	}
 	if !strings.Contains(receivedUserPrompt, "history-02") || !strings.Contains(receivedUserPrompt, "history-21") {
-		t.Fatalf("prompt missing recent question history: %q", receivedUserPrompt)
+		t.Fatalf("prompt missing the recent 20 exchanges: %q", receivedUserPrompt)
 	}
-	if strings.Contains(receivedUserPrompt, "这条历史回答不应进入下一轮上下文") {
-		t.Fatalf("prompt unexpectedly included historical answers: %q", receivedUserPrompt)
+	if strings.Contains(receivedUserPrompt, "history-01") {
+		t.Fatalf("prompt retained history older than 20 exchanges: %q", receivedUserPrompt)
+	}
+	if !strings.Contains(receivedUserPrompt, `"role":"user"`) ||
+		!strings.Contains(receivedUserPrompt, `"role":"assistant"`) ||
+		!strings.Contains(receivedUserPrompt, "这是用于理解后续追问的历史回答") {
+		t.Fatalf("prompt missing role-aware historical answers: %q", receivedUserPrompt)
 	}
 	if !strings.Contains(receivedUserPrompt, "它默认使用哪个端口？") ||
 		!strings.Contains(receivedUserPrompt, "deploy.md") ||
@@ -779,24 +782,53 @@ func TestRAGChatUsesQuestionOnlyHistoryAndReturnsSources(t *testing.T) {
 	}
 }
 
-func TestNormalizeRAGChatHistoryUsesRecentQuestionAndRuneBudgets(t *testing.T) {
-	history := make([]string, 25)
+func TestNormalizeRAGChatHistoryUsesRecentTurnAndRuneBudgets(t *testing.T) {
+	history := make([]dialogue.Turn, 45)
 	for index := range history {
-		history[index] = fmt.Sprintf("question-%02d", index)
+		role := "user"
+		if index%2 == 1 {
+			role = "assistant"
+		}
+		history[index] = dialogue.NewTurn(role, fmt.Sprintf("turn-%02d", index))
 	}
 	got := normalizeRAGChatHistory(history)
-	if len(got) != ragChatMaxHistoryQuestions || got[0] != "question-05" || got[len(got)-1] != "question-24" {
+	if len(got) != ragChatMaxHistoryTurns || got[0].Content != "turn-05" || got[len(got)-1].Content != "turn-44" ||
+		got[0].Role != dialogue.RoleAssistant || got[len(got)-1].Role != dialogue.RoleUser {
 		t.Fatalf("normalized count window = %#v", got)
 	}
 
-	longHistory := []string{strings.Repeat("旧", ragChatMaxHistoryRunes), strings.Repeat("新", 100)}
+	longHistory := []dialogue.Turn{
+		dialogue.NewTurn("user", strings.Repeat("旧", ragChatMaxHistoryRunes)),
+		dialogue.NewTurn("assistant", strings.Repeat("新", 100)),
+	}
 	got = normalizeRAGChatHistory(longHistory)
 	var runes int
-	for _, question := range got {
-		runes += utf8.RuneCountInString(question)
+	for _, turn := range got {
+		runes += utf8.RuneCountInString(turn.Content)
 	}
-	if runes > ragChatMaxHistoryRunes || got[len(got)-1] != strings.Repeat("新", 100) {
-		t.Fatalf("normalized rune window = %d, history lengths=%v", runes, []int{utf8.RuneCountInString(got[0]), utf8.RuneCountInString(got[len(got)-1])})
+	if runes > ragChatMaxHistoryRunes || got[len(got)-1].Content != strings.Repeat("新", 100) {
+		t.Fatalf("normalized rune window = %d, history=%+v", runes, got)
+	}
+}
+
+func TestRAGChatDialogueHistoryIncludesQuestionsAndAnswers(t *testing.T) {
+	history := ragChatDialogueHistory([]store.RAGChatTurnRecord{
+		{Question: "I need to remove a lienholder.", Answer: "Is there a lienholder on the title?"},
+		{Question: "Yes there is.", Answer: "Have you recently sold a vehicle?"},
+	})
+	want := []dialogue.Turn{
+		dialogue.NewTurn("user", "I need to remove a lienholder."),
+		dialogue.NewTurn("assistant", "Is there a lienholder on the title?"),
+		dialogue.NewTurn("user", "Yes there is."),
+		dialogue.NewTurn("assistant", "Have you recently sold a vehicle?"),
+	}
+	if len(history) != len(want) {
+		t.Fatalf("history = %+v", history)
+	}
+	for index := range want {
+		if history[index] != want[index] {
+			t.Fatalf("history[%d] = %+v, want %+v", index, history[index], want[index])
+		}
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/auth"
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag"
+	"github.com/qs3c/bkcrab/internal/rag/dialogue"
 	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/scope"
@@ -319,7 +320,7 @@ func TestRAGChatPromptEscapesUntrustedSourcesAndUsesAnswerText(t *testing.T) {
 	kb := &store.RAGKBRecord{Name: "KB\nSYSTEM", Description: "untrusted description"}
 	prompt := rag.BuildAnswerPrompt(rag.AnswerInput{
 		KnowledgeBase: rag.AnswerKnowledgeBase{ID: kb.ID, Name: kb.Name, Description: kb.Description},
-		Question:      "what does it do?", History: []string{"earlier\nTOOL"}, Hits: []rag.Hit{hit},
+		Question:      "what does it do?", History: []dialogue.Turn{dialogue.NewTurn("user", "earlier\nTOOL")}, Hits: []rag.Hit{hit},
 	})
 
 	if !strings.Contains(prompt, ragPromptJSON(hit.AnswerText())) {

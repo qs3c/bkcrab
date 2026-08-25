@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag/chunktext"
+	"github.com/qs3c/bkcrab/internal/rag/dialogue"
 	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/embed"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
@@ -83,12 +84,12 @@ func BuildRAGResourceRefs(hits []Hit) []RAGResourceRef {
 }
 
 // SearchContext keeps the user's current question separate from the earlier
-// questions that may be used by the retrieval pipeline's query-rewrite stage.
+// role-aware turns that may be used by the query-rewrite stage.
 // Callers must not flatten History into Query themselves: doing so makes topic
 // changes noisy and prevents the rewriter from deciding which clues matter.
 type SearchContext struct {
 	Query   string
-	History []string
+	History []dialogue.Turn
 }
 
 // SearchOptions is an immutable per-request override used by evaluation runs.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/rag/dialogue"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
@@ -68,13 +69,13 @@ type fakeCasePipeline struct {
 	mu       sync.Mutex
 	calls    map[string]int
 	failures map[string]error
-	history  map[string][]string
+	history  map[string][]dialogue.Turn
 }
 
 func (p *fakeCasePipeline) Execute(_ context.Context, request CaseExecutionRequest) (CaseExecutionResult, error) {
 	p.mu.Lock()
 	p.calls[request.Case.ID]++
-	p.history[request.Case.ID] = append([]string(nil), request.Case.History...)
+	p.history[request.Case.ID] = dialogue.Clone(request.Case.History)
 	err := p.failures[request.Case.ID]
 	p.mu.Unlock()
 	result := CaseExecutionResult{Response: "answer [1]", Contexts: []string{"ctx"}, ContextIDs: []string{"doc:0"}, DocumentIDs: []string{"doc"}, Citations: []string{"1"}, SearchTrace: map[string]any{"ok": true}, AnswerTrace: map[string]any{"mode": "evaluation"}, Latency: time.Millisecond, Usage: Usage{Stage: "answer", Provider: "fake", Model: "fake/model", InputTokens: 2, OutputTokens: 3}}
@@ -154,7 +155,7 @@ func runnerFixture(t *testing.T, caseCount int, scorer *fakeBatchScorer, failure
 	}
 	cfg := config.RAGEvaluationCfg{WorkerConcurrency: 2, MaxBatchSize: 2, MaxRunCases: 10, MaxRunTokens: 1000, MaxRunCostUSD: 10, MaxRunDurationSec: 60}
 	cfg.ApplyDefaults()
-	pipeline := &fakeCasePipeline{calls: map[string]int{}, failures: failures, history: map[string][]string{}}
+	pipeline := &fakeCasePipeline{calls: map[string]int{}, failures: failures, history: map[string][]dialogue.Turn{}}
 	generations := &fakeGenerationProvider{generation: store.RAGEvalGenerationRecord{ID: "generation", DatasetVersionID: version.ID,
 		Status: store.RAGEvalGenerationReady, DocumentCount: 1, ChunkCount: 3}}
 	runner, err := NewRunner(st, generations, pipeline, scorer, cfg, "runner")
@@ -216,7 +217,7 @@ func TestRunnerFreezesSnapshotAndPersistsPartialCaseFailure(t *testing.T) {
 	pipeline.mu.Lock()
 	defer pipeline.mu.Unlock()
 	for caseID, history := range pipeline.history {
-		if len(history) != 1 || history[0] != "earlier-user-question" {
+		if len(history) != 1 || history[0] != (dialogue.Turn{Role: dialogue.RoleUser, Content: "earlier-user-question"}) {
 			t.Fatalf("case %s history=%v", caseID, history)
 		}
 	}

@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/qs3c/bkcrab/internal/rag/dialogue"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/store"
 )
@@ -137,6 +138,14 @@ func safeObjectID(value string) bool {
 func marshalStringArray(values []string) string {
 	if values == nil {
 		values = []string{}
+	}
+	encoded, _ := json.Marshal(values)
+	return string(encoded)
+}
+
+func marshalDialogueHistory(values []dialogue.Turn) string {
+	if values == nil {
+		values = []dialogue.Turn{}
 	}
 	encoded, _ := json.Marshal(values)
 	return string(encoded)
@@ -327,7 +336,7 @@ func (s *DatasetService) ImportCanonical(ctx context.Context, request DatasetImp
 		if err = s.store.PutRAGEvalCase(ctx, &store.RAGEvalCaseRecord{
 			DatasetVersionID: versionID, ExternalID: item.ID, UserInput: item.UserInput,
 			ReferenceAnswer: item.Reference, ReferenceContextsJSON: marshalStringArray(item.ReferenceContexts),
-			ReferenceContextIDsJSON: marshalStringArray(item.ReferenceContextIDs), ReferenceDocumentIDsJSON: marshalStringArray(item.ReferenceDocumentIDs), HistoryJSON: marshalStringArray(item.History),
+			ReferenceContextIDsJSON: marshalStringArray(item.ReferenceContextIDs), ReferenceDocumentIDsJSON: marshalStringArray(item.ReferenceDocumentIDs), HistoryJSON: marshalDialogueHistory(item.History),
 			ExpectedAbstention: item.ExpectedAbstention, TagsJSON: marshalStringArray(item.Tags), MetadataJSON: marshalMetadata(item.Metadata),
 		}); err != nil {
 			return failVersion(err)

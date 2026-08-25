@@ -167,13 +167,23 @@ func ValidateDataset(dataset CanonicalDataset, limits ValidationLimits) Validati
 		validateString(path+".id", item.ID, true, limits.MaxIDBytes)
 		validateString(path+".user_input", item.UserInput, true, limits.MaxStringBytes)
 		validateString(path+".reference", item.Reference, false, limits.MaxStringBytes)
-		for field, values := range map[string][]string{"reference_contexts": item.ReferenceContexts, "reference_context_ids": item.ReferenceContextIDs, "reference_document_ids": item.ReferenceDocumentIDs, "history": item.History, "tags": item.Tags} {
+		for field, values := range map[string][]string{"reference_contexts": item.ReferenceContexts, "reference_context_ids": item.ReferenceContextIDs, "reference_document_ids": item.ReferenceDocumentIDs, "tags": item.Tags} {
 			if len(values) > limits.MaxItemsPerCase {
 				add(SeverityError, path+"."+field, "too_many_items", "field exceeds item limit")
 			}
 			for index, value := range values {
 				validateString(fmt.Sprintf("%s.%s[%d]", path, field, index), value, false, limits.MaxStringBytes)
 			}
+		}
+		if len(item.History) > limits.MaxItemsPerCase {
+			add(SeverityError, path+".history", "too_many_items", "field exceeds item limit")
+		}
+		for index, turn := range item.History {
+			turnPath := fmt.Sprintf("%s.history[%d]", path, index)
+			if !turn.Valid() {
+				add(SeverityError, turnPath, "invalid_dialogue_turn", "history turn requires user/assistant role and non-empty content")
+			}
+			validateString(turnPath+".content", turn.Content, true, limits.MaxStringBytes)
 		}
 		if _, exists := cases[item.ID]; exists {
 			add(SeverityError, path+".id", "duplicate_id", "case id must be unique")

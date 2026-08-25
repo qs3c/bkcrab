@@ -41,7 +41,7 @@ var builtinCatalog = []CatalogPreset{
 	{
 		ID: CatalogMultiDoc2Dial, Name: "MultiDoc2Dial", Description: "多文档、多轮指代检索与回答",
 		SourceURL: "https://huggingface.co/datasets/IBM/multidoc2dial", Revision: "1108a969d076f04c7367f0c2427d1c5d6d6bdaa0",
-		License: "Apache-2.0", AdapterVersion: "multidoc2dial-v1", Tracks: []DatasetTrack{DatasetTrackTextRAG},
+		License: "Apache-2.0", AdapterVersion: "multidoc2dial-v2", Tracks: []DatasetTrack{DatasetTrackTextRAG},
 		Splits: []string{"validation", "train", "test"}, DefaultSampleSize: 500, MaxSampleSize: 10_000,
 	},
 	{

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/rag/dialogue"
 )
 
 const (
@@ -46,16 +47,16 @@ type CorpusDocument struct {
 }
 
 type Case struct {
-	ID                   string         `json:"id"`
-	UserInput            string         `json:"user_input"`
-	Reference            string         `json:"reference,omitempty"`
-	ReferenceContexts    []string       `json:"reference_contexts,omitempty"`
-	ReferenceContextIDs  []string       `json:"reference_context_ids,omitempty"`
-	ReferenceDocumentIDs []string       `json:"reference_document_ids,omitempty"`
-	History              []string       `json:"history,omitempty"`
-	ExpectedAbstention   bool           `json:"expected_abstention"`
-	Tags                 []string       `json:"tags,omitempty"`
-	Metadata             map[string]any `json:"metadata,omitempty"`
+	ID                   string          `json:"id"`
+	UserInput            string          `json:"user_input"`
+	Reference            string          `json:"reference,omitempty"`
+	ReferenceContexts    []string        `json:"reference_contexts,omitempty"`
+	ReferenceContextIDs  []string        `json:"reference_context_ids,omitempty"`
+	ReferenceDocumentIDs []string        `json:"reference_document_ids,omitempty"`
+	History              []dialogue.Turn `json:"history,omitempty"`
+	ExpectedAbstention   bool            `json:"expected_abstention"`
+	Tags                 []string        `json:"tags,omitempty"`
+	Metadata             map[string]any  `json:"metadata,omitempty"`
 }
 
 type CanonicalDataset struct {

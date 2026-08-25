@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/rag/dialogue"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -30,8 +31,11 @@ func TestQueryPlanUsesQuestionHistoryAndSingleLLMCall(t *testing.T) {
 	}}
 
 	plan := service.planQuery(context.Background(), "retrieval-test", "u1", SearchContext{
-		Query:   "那 Windows 呢？",
-		History: []string{"如何安装 bkcrab？"},
+		Query: "那 Windows 呢？",
+		History: []dialogue.Turn{
+			dialogue.NewTurn("user", "如何安装 bkcrab？"),
+			dialogue.NewTurn("assistant", "Linux 可以使用安装脚本。"),
+		},
 	})
 	if calls.Load() != 1 {
 		t.Fatalf("planner calls = %d, want 1", calls.Load())
@@ -43,7 +47,7 @@ func TestQueryPlanUsesQuestionHistoryAndSingleLLMCall(t *testing.T) {
 	if !plan.Route.PlannerAttempted || !plan.Route.RewriteApplied || !plan.Route.HyDEApplied || plan.Route.Fallback {
 		t.Fatalf("query route metadata = %+v", plan.Route)
 	}
-	if !strings.Contains(gotSystem, "历史提问") || !strings.Contains(gotSystem, "口语化") {
+	if !strings.Contains(gotSystem, "对话历史") || !strings.Contains(gotSystem, "assistant") || !strings.Contains(gotSystem, "口语化") {
 		t.Fatalf("planner system prompt is missing rewrite requirements: %q", gotSystem)
 	}
 
@@ -52,17 +56,44 @@ func TestQueryPlanUsesQuestionHistoryAndSingleLLMCall(t *testing.T) {
 		t.Fatalf("planner user prompt = %q", gotUser)
 	}
 	var payload struct {
-		HistoryQuestions []string `json:"history_questions"`
-		CurrentQuery     string   `json:"current_query"`
+		HistoryTurns []dialogue.Turn `json:"history_turns"`
+		CurrentQuery string          `json:"current_query"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(gotUser, prefix)), &payload); err != nil {
 		t.Fatalf("decode planner input: %v", err)
 	}
-	if len(payload.HistoryQuestions) != 1 || payload.HistoryQuestions[0] != "如何安装 bkcrab？" {
-		t.Fatalf("planner history = %#v", payload.HistoryQuestions)
+	if len(payload.HistoryTurns) != 2 || payload.HistoryTurns[0].Role != dialogue.RoleUser ||
+		payload.HistoryTurns[1] != (dialogue.Turn{Role: dialogue.RoleAssistant, Content: "Linux 可以使用安装脚本。"}) {
+		t.Fatalf("planner history = %#v", payload.HistoryTurns)
 	}
 	if payload.CurrentQuery != "那 Windows 呢？" {
 		t.Fatalf("planner current query = %q", payload.CurrentQuery)
+	}
+}
+
+func TestQueryPlanFailureUsesRecentRoleAwareContext(t *testing.T) {
+	service := &Service{queryLLM: func(context.Context, string, string, string) (string, error) {
+		return "", errors.New("provider unavailable")
+	}}
+	plan := service.planQuery(context.Background(), "retrieval-test", "u1", SearchContext{
+		Query: "Yes I have",
+		History: []dialogue.Turn{
+			dialogue.NewTurn("user", "I need to remove a lienholder."),
+			dialogue.NewTurn("assistant", "Is there a lienholder on the title?"),
+			dialogue.NewTurn("user", "Yes there is"),
+			dialogue.NewTurn("assistant", "Have you recently sold a vehicle?"),
+		},
+	})
+	if !plan.Route.Fallback || plan.Route.FallbackReason != "provider_error" || !plan.Route.RewriteApplied {
+		t.Fatalf("fallback route = %+v", plan.Route)
+	}
+	for _, part := range []string{"Previous assistant: Have you recently sold a vehicle?", "Current user: Yes I have"} {
+		if !strings.Contains(plan.RewrittenQuery, part) {
+			t.Fatalf("contextual fallback %q does not contain %q", plan.RewrittenQuery, part)
+		}
+	}
+	if plan.HypotheticalDocument != plan.RewrittenQuery {
+		t.Fatalf("fallback HyDE must reuse contextual query: %+v", plan)
 	}
 }
 
@@ -208,7 +239,7 @@ func TestSearchRoutesRewriteToBM25AndDenseAndHyDEToDense(t *testing.T) {
 
 	if _, err := service.SearchWithContext(ctx, "u1", []string{first.ID, second.ID}, SearchContext{
 		Query:   "那 Windows 呢？",
-		History: []string{"如何安装 bkcrab？"},
+		History: []dialogue.Turn{dialogue.NewTurn("user", "如何安装 bkcrab？")},
 	}, 5); err != nil {
 		t.Fatal(err)
 	}
