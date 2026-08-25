@@ -17,7 +17,7 @@ func TestRAGEvaluationDefaultsDisabled(t *testing.T) {
 	if cfg.Evaluation.Enabled {
 		t.Fatal("evaluation must default to disabled")
 	}
-	if cfg.Evaluation.MaxBatchSize != 16 || cfg.Evaluation.Sidecar.MetricBundleVersion != "rag-core-v1" {
+	if cfg.Evaluation.MaxBatchSize != 2 || cfg.Evaluation.Sidecar.TimeoutMS != 240_000 || cfg.Evaluation.Sidecar.MetricBundleVersion != "rag-core-v1" {
 		t.Fatalf("unexpected defaults: %+v", cfg.Evaluation)
 	}
 	wantLimits := RAGEvaluationCfg{
@@ -25,7 +25,7 @@ func TestRAGEvaluationDefaultsDisabled(t *testing.T) {
 		DocumentConcurrency:     1,
 		CaseConcurrency:         1,
 		ScoreConcurrency:        1,
-		MaxBatchSize:            16,
+		MaxBatchSize:            2,
 		MaxContextsPerSample:    20,
 		MaxContextBytes:         64 * 1024,
 		MaxRequestBytes:         4 * 1024 * 1024,

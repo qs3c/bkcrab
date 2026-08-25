@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -38,6 +39,7 @@ type RunStore interface {
 	GetRAGEvalCaseResult(context.Context, string, string) (*store.RAGEvalCaseResultRecord, error)
 	PutRAGEvalCaseResult(context.Context, store.RAGEvalRunFence, store.RAGEvalCaseResultRecord) (bool, error)
 	PutRAGEvalMetricResult(context.Context, store.RAGEvalRunFence, store.RAGEvalMetricResultRecord) (bool, error)
+	ListRAGEvalMetricResults(context.Context, string, string, int) ([]store.RAGEvalMetricResultRecord, error)
 	RecordRAGEvalUsageFenced(context.Context, store.RAGEvalRunFence, *store.RAGEvalUsageRecord) (bool, error)
 	RAGEvalUsageTotals(context.Context, string) (int64, float64, error)
 }
@@ -499,6 +501,10 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return r.finishContext(fence, run, ctxErr)
 		}
+		if isPermanentEvaluatorError(err) {
+			_ = r.progress(ctx, fence, "scoring_failed", progress)
+			return r.finishFailure(fence, "evaluator_request_rejected", err.Error())
+		}
 		// Pipeline results are already durable. Leave the run RUNNING so its
 		// expired lease can be reclaimed and scoring retried without answering
 		// completed cases again.
@@ -643,6 +649,16 @@ func (r *Runner) score(ctx context.Context, fence store.RAGEvalRunFence, runID, 
 			deterministic = append(deterministic, metric)
 		}
 	}
+	coverage, err := r.loadMetricCoverage(ctx, runID, snapshot.MetricBundleVersion)
+	if err != nil {
+		return err
+	}
+	markComplete := func(caseID, metric string) {
+		if coverage[caseID] == nil {
+			coverage[caseID] = map[string]struct{}{}
+		}
+		coverage[caseID][metric] = struct{}{}
+	}
 	for _, sample := range samples {
 		all := DeterministicMetrics(DeterministicInput{RetrievedContextIDs: sample.RetrievedContextIDs, ReferenceContextIDs: cases[sample.CaseID].ReferenceContextIDs, RetrievedDocumentIDs: sample.RetrievedDocumentIDs, ReferenceDocumentIDs: cases[sample.CaseID].ReferenceDocumentIDs, Response: sample.Response, ExpectedAbstention: cases[sample.CaseID].ExpectedAbstention, Abstained: strings.TrimSpace(sample.Response) == ""}, snapshot.Profile.Runtime.TopN)
 		for _, metric := range deterministic {
@@ -650,35 +666,84 @@ func (r *Runner) score(ctx context.Context, fence store.RAGEvalRunFence, runID, 
 				if err := r.putMetric(ctx, fence, sample.CaseID, metric, result); err != nil {
 					return err
 				}
+				markComplete(sample.CaseID, metric)
 			}
 		}
 	}
+	progress.Scored = completedScoreCount(samples, snapshot.Metrics, coverage)
+	if err := r.progress(ctx, fence, "scoring", *progress); err != nil {
+		return err
+	}
+
 	batchSize := max(1, r.cfg.MaxBatchSize)
 	scoreConcurrency := max(1, r.cfg.ScoreConcurrency)
-	batchCount := (len(samples) + batchSize - 1) / batchSize
-	for wave := 0; wave < batchCount && len(requestedRagas) > 0; wave += scoreConcurrency {
-		waveEnd := min(wave+scoreConcurrency, batchCount)
+	type pendingGroup struct {
+		metrics []string
+		samples []EvaluationSample
+	}
+	groups := map[string]*pendingGroup{}
+	groupOrder := []string{}
+	for _, sample := range samples {
+		missing := make([]string, 0, len(requestedRagas))
+		for _, metric := range requestedRagas {
+			if _, ok := coverage[sample.CaseID][metric]; !ok {
+				missing = append(missing, metric)
+			}
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		key := strings.Join(missing, "\x00")
+		group := groups[key]
+		if group == nil {
+			group = &pendingGroup{metrics: missing}
+			groups[key] = group
+			groupOrder = append(groupOrder, key)
+		}
+		group.samples = append(group.samples, sample)
+	}
+	type pendingBatch struct {
+		metrics []string
+		samples []EvaluationSample
+	}
+	batches := []pendingBatch{}
+	for _, key := range groupOrder {
+		group := groups[key]
+		for start := 0; start < len(group.samples); start += batchSize {
+			end := min(start+batchSize, len(group.samples))
+			batches = append(batches, pendingBatch{metrics: group.metrics, samples: group.samples[start:end]})
+		}
+	}
+	for wave := 0; wave < len(batches); wave += scoreConcurrency {
+		waveEnd := min(wave+scoreConcurrency, len(batches))
 		scored := make([]int, waveEnd-wave)
 		group, groupCtx := errgroup.WithContext(ctx)
 		group.SetLimit(scoreConcurrency)
 		for batchIndex := wave; batchIndex < waveEnd; batchIndex++ {
 			batchIndex := batchIndex
 			group.Go(func() error {
-				start := batchIndex * batchSize
-				end := min(start+batchSize, len(samples))
-				count, scoreErr := r.scoreBatch(groupCtx, fence, runID, ownerID, snapshot.MetricBundleVersion, requestedRagas, samples[start:end], start)
+				batch := batches[batchIndex]
+				count, scoreErr := r.scoreBatch(groupCtx, fence, runID, ownerID, snapshot.MetricBundleVersion, batch.metrics, batch.samples)
 				scored[batchIndex-wave] = count
 				return scoreErr
 			})
 		}
-		if err := group.Wait(); err != nil {
-			return err
-		}
+		waveErr := group.Wait()
+		completed := 0
 		for _, count := range scored {
-			progress.Scored += count
+			completed += count
 		}
-		if err := r.progress(ctx, fence, "scoring", *progress); err != nil {
-			return err
+		if completed > 0 {
+			progress.Scored = min(len(samples), progress.Scored+completed)
+			if progressErr := r.progress(ctx, fence, "scoring", *progress); progressErr != nil {
+				if waveErr != nil {
+					return errors.Join(waveErr, progressErr)
+				}
+				return progressErr
+			}
+		}
+		if waveErr != nil {
+			return waveErr
 		}
 		if exceeded, budgetErr := r.refreshBudget(ctx, runID, snapshot.Budgets, progress); budgetErr != nil {
 			return budgetErr
@@ -689,9 +754,69 @@ func (r *Runner) score(ctx context.Context, fence store.RAGEvalRunFence, runID, 
 	return nil
 }
 
-func (r *Runner) scoreBatch(ctx context.Context, fence store.RAGEvalRunFence, runID, ownerID, metricBundleVersion string, metrics []string, samples []EvaluationSample, offset int) (int, error) {
-	requestID := runID + ":" + fmt.Sprint(offset)
-	response, err := r.scorer.Evaluate(ctx, EvaluateRequest{OwnerID: ownerID, RequestID: requestID, MetricBundleVersion: metricBundleVersion, Metrics: metrics, Samples: samples})
+func completedScoreCount(samples []EvaluationSample, metrics []string, coverage map[string]map[string]struct{}) int {
+	completed := 0
+	for _, sample := range samples {
+		all := true
+		for _, metric := range metrics {
+			if _, ok := coverage[sample.CaseID][metric]; !ok {
+				all = false
+				break
+			}
+		}
+		if all {
+			completed++
+		}
+	}
+	return completed
+}
+
+func (r *Runner) loadMetricCoverage(ctx context.Context, runID, metricBundleVersion string) (map[string]map[string]struct{}, error) {
+	coverage := map[string]map[string]struct{}{}
+	cursor := ""
+	for {
+		items, err := r.store.ListRAGEvalMetricResults(ctx, runID, cursor, 200)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			if item.MetricVersion != metricBundleVersion {
+				continue
+			}
+			if coverage[item.CaseID] == nil {
+				coverage[item.CaseID] = map[string]struct{}{}
+			}
+			coverage[item.CaseID][item.MetricName] = struct{}{}
+		}
+		if len(items) < 200 {
+			return coverage, nil
+		}
+		cursor = store.RAGEvalMetricCursor(items[len(items)-1])
+	}
+}
+
+func scoreRequestID(runID string, request EvaluateRequest) (string, error) {
+	request.RequestID = ""
+	body, err := json.Marshal(request)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	_, _ = hash.Write([]byte(request.OwnerID))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write(body)
+	sum := hash.Sum(nil)
+	return fmt.Sprintf("%s:score:%x", runID, sum[:16]), nil
+}
+
+func (r *Runner) scoreBatch(ctx context.Context, fence store.RAGEvalRunFence, runID, ownerID, metricBundleVersion string, metrics []string, samples []EvaluationSample) (int, error) {
+	request := EvaluateRequest{OwnerID: ownerID, MetricBundleVersion: metricBundleVersion, Metrics: metrics, Samples: samples}
+	requestID, err := scoreRequestID(runID, request)
+	if err != nil {
+		return 0, err
+	}
+	request.RequestID = requestID
+	response, err := r.scorer.Evaluate(ctx, request)
 	if err != nil {
 		return 0, err
 	}

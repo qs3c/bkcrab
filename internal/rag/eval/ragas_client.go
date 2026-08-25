@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -83,6 +84,44 @@ type RagasClient struct {
 	probeMu                                sync.Mutex
 	startOnce                              sync.Once
 	recorder                               telemetry.Recorder
+}
+
+type evaluatorHTTPError struct {
+	StatusCode int
+	Detail     string
+}
+
+func (e *evaluatorHTTPError) Error() string {
+	if e == nil {
+		return "evaluator request failed"
+	}
+	if e.Detail != "" {
+		return fmt.Sprintf("evaluator returned HTTP %d: %s", e.StatusCode, e.Detail)
+	}
+	return fmt.Sprintf("evaluator returned HTTP %d", e.StatusCode)
+}
+
+func isPermanentEvaluatorError(err error) bool {
+	var responseErr *evaluatorHTTPError
+	if !errors.As(err, &responseErr) {
+		return false
+	}
+	return responseErr.StatusCode >= 400 && responseErr.StatusCode < 500 &&
+		responseErr.StatusCode != http.StatusRequestTimeout && responseErr.StatusCode != http.StatusTooManyRequests
+}
+
+func evaluatorErrorDetail(body []byte) string {
+	var payload struct {
+		Detail string `json:"detail"`
+	}
+	if json.Unmarshal(body, &payload) == nil {
+		payload.Detail = strings.TrimSpace(payload.Detail)
+		if len(payload.Detail) > 1024 {
+			payload.Detail = payload.Detail[:1024]
+		}
+		return payload.Detail
+	}
+	return ""
 }
 
 func NewRagasClient(endpoint, apiKey string, timeout time.Duration, maxBatch, maxContexts, maxContextBytes int) (*RagasClient, error) {
@@ -493,13 +532,16 @@ func (c *RagasClient) Evaluate(ctx context.Context, request EvaluateRequest) (re
 		if err == nil {
 			break
 		}
-		if res != nil || ctx.Err() != nil || attempt == 1 {
+		var networkErr net.Error
+		if res != nil || ctx.Err() != nil || errors.As(err, &networkErr) && networkErr.Timeout() || attempt == 1 {
 			return EvaluateResponse{}, err
 		}
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return EvaluateResponse{}, fmt.Errorf("evaluator returned HTTP %d", res.StatusCode)
+		const maxErrorBytes = int64(4 << 10)
+		body, _ := io.ReadAll(io.LimitReader(res.Body, maxErrorBytes))
+		return EvaluateResponse{}, &evaluatorHTTPError{StatusCode: res.StatusCode, Detail: evaluatorErrorDetail(body)}
 	}
 	const maxResponseBytes = int64(8 << 20)
 	responseBody, err := io.ReadAll(io.LimitReader(res.Body, maxResponseBytes+1))

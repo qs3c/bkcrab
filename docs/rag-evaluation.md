@@ -76,7 +76,8 @@ docker compose \
 - worker concurrency：默认 1；
 - document/case/score concurrency：默认各 1，分别限制单次 run 的文档构建、回答和评分批次；
 - evaluator concurrency：默认 1，是 sidecar 内所有并发请求共享的全局 metric 槽位；
-- batch size：默认 16；
+- evaluator timeout：默认 240 秒；客户端超时不会自动重放，以免重复占用 judge；
+- batch size：默认 2；评分批次串行执行，避免大批次超过 judge 超时；
 - 单次运行样例：默认最多 1000；
 - 单次运行费用：默认最多 25 USD；
 - 请求体：默认最多 4 MiB；
@@ -92,6 +93,7 @@ docker compose \
 ## 容量、费用与策略发布
 
 - 创建 run 前按 cases、token 和配置上限给出预算；到达 case/token/cost/duration 任一上限后不再发起新的昂贵调用。
+- 评分请求使用内容寻址的幂等键；续跑会读取已持久化的 metric，只补齐缺失指标，并在每个成功批次后立即更新评分进度。
 - evaluator CPU、内存、pids、tmpfs、batch 和 context bytes 都有硬上限。扩容时优先保守提高单项限制并观察 p95/错误率，不要同时提高 concurrency、batch 和 context。
 - RuntimePolicy publish/rollback 只切换版本化指针，不重建向量；成本主要来自发布前 eval。
 - IngestionPolicy publish 只影响此后创建的新 KB，不会静默重建旧 KB。旧 KB 的 opt-in sync 会重新 parse/enrich/embed 并写一个完整新 collection，成本与整库大小相关；切换前查询仍使用旧 generation。

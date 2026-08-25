@@ -146,7 +146,7 @@ func (c RAGEvaluatorCfg) LogValue() slog.Value {
 
 func (c *RAGEvaluationCfg) ApplyDefaults() {
 	if c.Sidecar.TimeoutMS <= 0 {
-		c.Sidecar.TimeoutMS = 120_000
+		c.Sidecar.TimeoutMS = 240_000
 	}
 	if c.Sidecar.MetricBundleVersion == "" {
 		c.Sidecar.MetricBundleVersion = "rag-core-v1"
@@ -164,7 +164,7 @@ func (c *RAGEvaluationCfg) ApplyDefaults() {
 		c.ScoreConcurrency = 1
 	}
 	if c.MaxBatchSize <= 0 {
-		c.MaxBatchSize = 16
+		c.MaxBatchSize = 2
 	}
 	if c.MaxContextsPerSample <= 0 {
 		c.MaxContextsPerSample = 20

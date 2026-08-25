@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -87,6 +88,57 @@ type fakeBatchScorer struct {
 	failures int
 	calls    int
 	usage    EvaluatorUsage
+}
+
+type idempotentRetryScorer struct {
+	mu          sync.Mutex
+	bodies      map[string]string
+	caseCalls   map[string]int
+	requestIDs  []string
+	failCaseID  string
+	failedBatch bool
+}
+
+type permanentErrorScorer struct{}
+
+func (permanentErrorScorer) Evaluate(context.Context, EvaluateRequest) (EvaluateResponse, error) {
+	return EvaluateResponse{}, &evaluatorHTTPError{StatusCode: http.StatusConflict, Detail: "requestId body mismatch"}
+}
+
+func (s *idempotentRetryScorer) Evaluate(_ context.Context, request EvaluateRequest) (EvaluateResponse, error) {
+	s.mu.Lock()
+	body, _ := json.Marshal(request)
+	if previous, ok := s.bodies[request.RequestID]; ok && previous != string(body) {
+		s.mu.Unlock()
+		return EvaluateResponse{}, &evaluatorHTTPError{StatusCode: http.StatusConflict, Detail: "requestId body mismatch"}
+	}
+	s.requestIDs = append(s.requestIDs, request.RequestID)
+	shouldFail := !s.failedBatch
+	if shouldFail {
+		shouldFail = false
+		for _, sample := range request.Samples {
+			if sample.CaseID == s.failCaseID {
+				shouldFail = true
+				break
+			}
+		}
+	}
+	if shouldFail {
+		s.failedBatch = true
+		s.mu.Unlock()
+		// Let the sibling batch finish and persist before errgroup cancels it.
+		time.Sleep(50 * time.Millisecond)
+		return EvaluateResponse{}, errors.New("judge unavailable")
+	}
+	s.bodies[request.RequestID] = string(body)
+	response := EvaluateResponse{RequestID: request.RequestID, RagasVersion: ExpectedRagasVersion, MetricBundleVersion: MetricBundleV1}
+	for _, sample := range request.Samples {
+		s.caseCalls[sample.CaseID]++
+		value := .8
+		response.Results = append(response.Results, CaseMetricResults{CaseID: sample.CaseID, Metrics: map[string]MetricResult{"faithfulness": {Status: MetricOK, Value: &value}}})
+	}
+	s.mu.Unlock()
+	return response, nil
 }
 
 func (s *fakeBatchScorer) Evaluate(_ context.Context, request EvaluateRequest) (EvaluateResponse, error) {
@@ -279,6 +331,101 @@ func TestRunnerResumeScoringDoesNotRepeatAnswer(t *testing.T) {
 	}
 	if scorer.calls != 2 {
 		t.Fatalf("scorer calls=%d", scorer.calls)
+	}
+}
+
+func TestRunnerScoringRetrySkipsCompletedMetricsWhenCaseSetChanges(t *testing.T) {
+	runner, st, pipeline, _, runID := runnerFixture(t, 5, &fakeBatchScorer{}, map[string]error{})
+	run, err := st.GetRAGEvalRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases, err := st.ListRAGEvalCases(context.Background(), run.DatasetVersionID, "", 10)
+	if err != nil || len(cases) != 5 {
+		t.Fatalf("cases=%d err=%v", len(cases), err)
+	}
+	pipeline.failures[cases[1].ID] = errors.New("transient answer failure")
+	scorer := &idempotentRetryScorer{bodies: map[string]string{}, caseCalls: map[string]int{}, failCaseID: cases[0].ID}
+	runner.scorer = scorer
+	runner.cfg.ScoreConcurrency = 2
+	runner.lease = 80 * time.Millisecond
+
+	if err = runner.Run(context.Background(), runID); err == nil {
+		t.Fatal("first scoring attempt should fail")
+	}
+	run, err = st.GetRAGEvalRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstProgress Progress
+	if err = json.Unmarshal([]byte(run.ProgressJSON), &firstProgress); err != nil {
+		t.Fatal(err)
+	}
+	if firstProgress.Scored != 2 || run.Stage != "scoring_retry" {
+		t.Fatalf("partial progress=%+v stage=%s", firstProgress, run.Stage)
+	}
+	completedBeforeRetry := map[string]int{}
+	for caseID, calls := range scorer.caseCalls {
+		completedBeforeRetry[caseID] = calls
+	}
+	if len(completedBeforeRetry) != 2 {
+		t.Fatalf("completed first-wave cases=%v", completedBeforeRetry)
+	}
+
+	delete(pipeline.failures, cases[1].ID)
+	time.Sleep(100 * time.Millisecond)
+	if err = runner.Run(context.Background(), runID); err != nil {
+		t.Fatal(err)
+	}
+	run, err = st.GetRAGEvalRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finalProgress Progress
+	if err = json.Unmarshal([]byte(run.ProgressJSON), &finalProgress); err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != store.RAGEvalRunSucceeded || finalProgress.Scored != 5 {
+		t.Fatalf("run status=%s progress=%+v", run.Status, finalProgress)
+	}
+	for caseID := range completedBeforeRetry {
+		if scorer.caseCalls[caseID] != 1 {
+			t.Fatalf("completed case %s rescored %d times", caseID, scorer.caseCalls[caseID])
+		}
+	}
+	for _, requestID := range scorer.requestIDs {
+		if !strings.HasPrefix(requestID, runID+":score:") {
+			t.Fatalf("request id is not content-addressed: %s", requestID)
+		}
+	}
+	metrics, err := st.ListRAGEvalMetricResults(context.Background(), runID, "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	faithfulness := 0
+	for _, metric := range metrics {
+		if metric.MetricName == "faithfulness" {
+			faithfulness++
+		}
+	}
+	if faithfulness != 5 {
+		t.Fatalf("faithfulness results=%d", faithfulness)
+	}
+}
+
+func TestRunnerStopsRetryingPermanentEvaluatorRejection(t *testing.T) {
+	runner, st, _, _, runID := runnerFixture(t, 1, &fakeBatchScorer{}, nil)
+	runner.scorer = permanentErrorScorer{}
+
+	if err := runner.Run(context.Background(), runID); err == nil {
+		t.Fatal("permanent evaluator rejection must fail the run")
+	}
+	run, err := st.GetRAGEvalRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != store.RAGEvalRunFailed || run.Stage != "finished" || run.ErrorCode != "evaluator_request_rejected" {
+		t.Fatalf("status=%s stage=%s code=%s", run.Status, run.Stage, run.ErrorCode)
 	}
 }
 

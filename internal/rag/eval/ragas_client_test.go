@@ -68,7 +68,7 @@ func TestRagasTelemetryIsBoundedAndSeparatesSidecarFromJudge(t *testing.T) {
 }
 
 func TestRagasDoesNotRetryHTTPFailures(t *testing.T) {
-	for _, status := range []int{http.StatusBadRequest, http.StatusInternalServerError} {
+	for _, status := range []int{http.StatusBadRequest, http.StatusConflict, http.StatusInternalServerError} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			var calls atomic.Int32
 			client, server := clientForServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -80,7 +80,23 @@ func TestRagasDoesNotRetryHTTPFailures(t *testing.T) {
 			if err == nil || calls.Load() != 1 {
 				t.Fatalf("HTTP %d should fail without retry: calls=%d err=%v", status, calls.Load(), err)
 			}
+			if got := isPermanentEvaluatorError(err); got != (status < 500) {
+				t.Fatalf("HTTP %d permanent=%v err=%v", status, got, err)
+			}
 		})
+	}
+}
+
+func TestRagasConflictPreservesBoundedDetail(t *testing.T) {
+	client, server := clientForServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"detail":"requestId body mismatch"}`))
+	}), time.Second)
+	defer server.Close()
+	_, err := client.Evaluate(context.Background(), ragasRequest("faithfulness"))
+	if !isPermanentEvaluatorError(err) || !strings.Contains(err.Error(), "requestId body mismatch") {
+		t.Fatalf("conflict error=%v", err)
 	}
 }
 
@@ -113,12 +129,17 @@ func TestRagasRetriesOneSafeNetworkFailureWithSameRequest(t *testing.T) {
 
 func TestRagasTimeoutAndTruncatedResponse(t *testing.T) {
 	t.Run("timeout", func(t *testing.T) {
+		var calls atomic.Int32
 		client, server := clientForServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			calls.Add(1)
 			time.Sleep(100 * time.Millisecond)
 		}), 10*time.Millisecond)
 		defer server.Close()
 		if _, err := client.Evaluate(context.Background(), ragasRequest("faithfulness")); err == nil {
 			t.Fatal("timeout accepted")
+		}
+		if calls.Load() != 1 {
+			t.Fatalf("timed-out request retried %d times", calls.Load())
 		}
 	})
 	t.Run("truncated", func(t *testing.T) {
