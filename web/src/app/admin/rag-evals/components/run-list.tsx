@@ -1,13 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AlertTriangle, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cancelRAGEvalRun, deleteRAGEvalRun, type RAGEvalDataset, type RAGEvalDatasetVersion, type RAGEvalProfile, type RAGEvalRun } from "@/lib/api";
-import { isRunProgressStalled, parseRAGEvalRunProgress, runProgressAmount, runStageLabel, type RAGEvalRunProgress } from "../rag-eval-state";
+import { isRunProgressStalled, parseRAGEvalRunProgress, runProgressAmount, runStageLabel, sortRAGEvalRunsNewestFirst, type RAGEvalRunProgress } from "../rag-eval-state";
 
 function profileParser(profile?: RAGEvalProfile): string {
   try { return (JSON.parse(profile?.profileJson || "{}") as { ingestion?: { parserEngine?: string } }).ingestion?.parserEngine || "—"; }
@@ -57,6 +57,7 @@ function RunProgress({ run, progress }: { run: RAGEvalRun; progress: RAGEvalRunP
 export function RunList({ runs, datasets, profiles, versions, onChanged }: { runs: RAGEvalRun[]; datasets: RAGEvalDataset[]; profiles: RAGEvalProfile[]; versions: RAGEvalDatasetVersion[]; onChanged: () => Promise<void> }) {
   const [actionError, setActionError] = useState("");
   const [deleting, setDeleting] = useState("");
+  const orderedRuns = useMemo(() => sortRAGEvalRunsNewestFirst(runs), [runs]);
   async function remove(run: RAGEvalRun) {
     if (!window.confirm(`删除已完成运行 ${run.id}？\n\n运行会先从列表隐藏；如果它仍被用作 Baseline，关联数据会延迟清理。`)) return;
     setDeleting(run.id); setActionError("");
@@ -65,7 +66,7 @@ export function RunList({ runs, datasets, profiles, versions, onChanged }: { run
     finally { setDeleting(""); }
   }
   return <Card><CardHeader><CardTitle>运行队列</CardTitle><CardDescription>按测评集、数据规模和实验配置区分运行，并持续展示当前阶段与进度；超过两分钟无新进展时会提示检查后台。</CardDescription></CardHeader><CardContent>{actionError && <p className="mb-3 text-sm text-destructive">{actionError}</p>}<Table><TableHeader><TableRow><TableHead>测评</TableHead><TableHead>开始时间</TableHead><TableHead>实验配置</TableHead><TableHead>阶段/进度</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>
-    {runs.length === 0 ? <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground">暂无运行</TableCell></TableRow> : runs.map((run) => {
+    {orderedRuns.length === 0 ? <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground">暂无运行</TableCell></TableRow> : orderedRuns.map((run) => {
       const progress = parseRAGEvalRunProgress(run.progressJson);
       const version = versions.find((item) => item.ID === run.datasetVersionId);
       const dataset = datasets.find((item) => item.id === version?.DatasetID);

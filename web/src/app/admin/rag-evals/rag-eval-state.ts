@@ -34,6 +34,10 @@ export function describeRAGEvalDatasetVersion(version: {
   };
 }
 
+export function sortRAGEvalRunsNewestFirst<T extends { id: string; createdAt: string }>(runs: T[]): T[] {
+  return [...runs].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+}
+
 export interface RAGEvalMetricOption {
   id: string;
   description: string;

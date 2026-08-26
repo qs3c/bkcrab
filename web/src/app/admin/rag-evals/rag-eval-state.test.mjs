@@ -14,10 +14,21 @@ const {
   profileOptionLabel,
   runProgressAmount,
   runStageLabel,
+  sortRAGEvalRunsNewestFirst,
   toggleRAGEvalMetricGroup,
   validateRunDraft,
   validationIssueMessages,
 } = await import(new URL("./rag-eval-state.ts", import.meta.url));
+
+test("run queue sorts newest creation first with a stable id tie-breaker", () => {
+  const runs = [
+    { id: "rer_b", createdAt: "2026-08-25T20:13:40Z" },
+    { id: "rer_a", createdAt: "2026-08-26T10:55:46Z" },
+    { id: "rer_c", createdAt: "2026-08-26T10:55:46Z" },
+  ];
+  assert.deepEqual(sortRAGEvalRunsNewestFirst(runs).map((run) => run.id), ["rer_c", "rer_a", "rer_b"]);
+  assert.deepEqual(runs.map((run) => run.id), ["rer_b", "rer_a", "rer_c"]);
+});
 
 test("dataset version labels trust the frozen catalog source over a historically wrong logical dataset", () => {
   const source = describeRAGEvalDatasetVersion({
