@@ -2,11 +2,13 @@ package setup
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qs3c/bkcrab/internal/auth"
 	"github.com/qs3c/bkcrab/internal/rag/eval"
@@ -76,6 +78,26 @@ func TestListRAGEvalRunPageScansPastFilteredStoragePage(t *testing.T) {
 	items, next, err := listRAGEvalRunPage(context.Background(), "", 2, store.RAGEvalRunSucceeded, list)
 	if err != nil || len(items) != 2 || items[0].ID != "rer_201" || items[1].ID != "rer_202" || next != "rer_202" {
 		t.Fatalf("items=%+v next=%q err=%v", items, next, err)
+	}
+}
+
+func TestMaskedEvalRunExposesStartTimeAsTimestamp(t *testing.T) {
+	started := time.Date(2026, 8, 26, 14, 30, 0, 0, time.UTC)
+	items := maskEvalRuns([]store.RAGEvalRunRecord{{
+		ID: "rer_1234567890", DatasetVersionID: "version", Mode: store.RAGEvalRunModeFullPipeline,
+		ProfileID: "profile", Status: store.RAGEvalRunRunning, Stage: "answering", ProgressJSON: "{}",
+		CreatedAt: started.Add(-time.Minute), StartedAt: sql.NullTime{Time: started, Valid: true},
+	}})
+	encoded, err := json.Marshal(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded []map[string]any
+	if err = json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded[0]["startedAt"] != "2026-08-26T14:30:00Z" || decoded[0]["id"] != "rer_1234567890" {
+		t.Fatalf("masked run=%s", encoded)
 	}
 }
 

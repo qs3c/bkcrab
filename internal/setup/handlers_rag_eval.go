@@ -155,7 +155,7 @@ func (s *Server) handleCreateRAGEvalCatalogImport(w http.ResponseWriter, r *http
 	if !decodeEvalJSON(w, r, 64<<10, &request) {
 		return
 	}
-	record, err := service.Create(r.Context(), strings.TrimSpace(request.DatasetID), evalIdentity(r), request.CatalogImportOptions)
+	record, err := service.Create(r.Context(), evalIdentity(r), request.CatalogImportOptions)
 	if err != nil {
 		writeEvalServiceError(w, err)
 		return
@@ -493,7 +493,46 @@ func (s *Server) handleListRAGEvalRuns(w http.ResponseWriter, r *http.Request) {
 		writeEvalError(w, 500, "list_failed", "could not list runs")
 		return
 	}
-	jsonResponse(w, 200, map[string]any{"items": items, "nextCursor": next})
+	jsonResponse(w, 200, map[string]any{"items": maskEvalRuns(items), "nextCursor": next})
+}
+
+type evalRunDTO struct {
+	ID                string     `json:"id"`
+	DatasetVersionID  string     `json:"datasetVersionId"`
+	BaselineRunID     string     `json:"baselineRunId,omitempty"`
+	Mode              string     `json:"mode"`
+	ProfileID         string     `json:"profileId"`
+	Status            string     `json:"status"`
+	Stage             string     `json:"stage"`
+	ProgressJSON      string     `json:"progressJson"`
+	IndexGenerationID string     `json:"indexGenerationId,omitempty"`
+	ErrorCode         string     `json:"errorCode,omitempty"`
+	ErrorMessage      string     `json:"errorMessage,omitempty"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	StartedAt         *time.Time `json:"startedAt,omitempty"`
+	FinishedAt        *time.Time `json:"finishedAt,omitempty"`
+}
+
+func maskEvalRuns(items []store.RAGEvalRunRecord) []evalRunDTO {
+	out := make([]evalRunDTO, 0, len(items))
+	for _, item := range items {
+		masked := evalRunDTO{
+			ID: item.ID, DatasetVersionID: item.DatasetVersionID, BaselineRunID: item.BaselineRunID,
+			Mode: item.Mode, ProfileID: item.ProfileID, Status: item.Status, Stage: item.Stage,
+			ProgressJSON: item.ProgressJSON, IndexGenerationID: item.IndexGenerationID,
+			ErrorCode: item.ErrorCode, ErrorMessage: item.ErrorMessage, CreatedAt: item.CreatedAt,
+		}
+		if item.StartedAt.Valid {
+			started := item.StartedAt.Time
+			masked.StartedAt = &started
+		}
+		if item.FinishedAt.Valid {
+			finished := item.FinishedAt.Time
+			masked.FinishedAt = &finished
+		}
+		out = append(out, masked)
+	}
+	return out
 }
 
 func listRAGEvalRunPage(ctx context.Context, cursor string, limit int, status string, list func(context.Context, string, int) ([]store.RAGEvalRunRecord, error)) ([]store.RAGEvalRunRecord, string, error) {

@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cancelRAGEvalRun, deleteRAGEvalRun, type RAGEvalDatasetVersion, type RAGEvalProfile, type RAGEvalRun } from "@/lib/api";
+import { cancelRAGEvalRun, deleteRAGEvalRun, type RAGEvalDataset, type RAGEvalDatasetVersion, type RAGEvalProfile, type RAGEvalRun } from "@/lib/api";
 import { isRunProgressStalled, parseRAGEvalRunProgress, runProgressAmount, runStageLabel, type RAGEvalRunProgress } from "../rag-eval-state";
 
 function profileParser(profile?: RAGEvalProfile): string {
@@ -14,10 +14,19 @@ function profileParser(profile?: RAGEvalProfile): string {
   catch { return "—"; }
 }
 
-function durationLabel(milliseconds?: number): string {
-  if (milliseconds === undefined) return "建库计时中";
-  if (milliseconds < 1000) return `${milliseconds} ms`;
-  return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 2 : 1)} s`;
+function shortRunID(id: string): string {
+  return id.replace(/^rer_/, "").slice(0, 6) || id.slice(0, 6);
+}
+
+function datasetName(name?: string): string {
+  return name?.replace(/\s*·\s*(TEXT_RAG|PDF_E2E)\s*$/u, "").trim() || "未知测评集";
+}
+
+function dateTimeLabel(value?: string): string {
+  if (!value) return "等待开始";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "时间未知";
+  return parsed.toLocaleString("zh-CN", { hour12: false });
 }
 
 function activityLabel(value?: string): string {
@@ -45,7 +54,7 @@ function RunProgress({ run, progress }: { run: RAGEvalRun; progress: RAGEvalRunP
   </div>;
 }
 
-export function RunList({ runs, profiles, versions, onChanged }: { runs: RAGEvalRun[]; profiles: RAGEvalProfile[]; versions: RAGEvalDatasetVersion[]; onChanged: () => Promise<void> }) {
+export function RunList({ runs, datasets, profiles, versions, onChanged }: { runs: RAGEvalRun[]; datasets: RAGEvalDataset[]; profiles: RAGEvalProfile[]; versions: RAGEvalDatasetVersion[]; onChanged: () => Promise<void> }) {
   const [actionError, setActionError] = useState("");
   const [deleting, setDeleting] = useState("");
   async function remove(run: RAGEvalRun) {
@@ -55,15 +64,17 @@ export function RunList({ runs, profiles, versions, onChanged }: { runs: RAGEval
     catch (err) { setActionError(err instanceof Error ? err.message : "删除运行失败"); }
     finally { setDeleting(""); }
   }
-  return <Card><CardHeader><CardTitle>运行队列</CardTitle><CardDescription>完整 Pipeline 会持续展示隔离建库、回答和评分进度；超过两分钟无新进展时会提示检查后台。</CardDescription></CardHeader><CardContent>{actionError && <p className="mb-3 text-sm text-destructive">{actionError}</p>}<Table><TableHeader><TableRow><TableHead>运行</TableHead><TableHead>模式</TableHead><TableHead>解析器/建库耗时</TableHead><TableHead>阶段/进度</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>
+  return <Card><CardHeader><CardTitle>运行队列</CardTitle><CardDescription>按测评集、数据规模和实验配置区分运行，并持续展示当前阶段与进度；超过两分钟无新进展时会提示检查后台。</CardDescription></CardHeader><CardContent>{actionError && <p className="mb-3 text-sm text-destructive">{actionError}</p>}<Table><TableHeader><TableRow><TableHead>测评</TableHead><TableHead>开始时间</TableHead><TableHead>实验配置</TableHead><TableHead>阶段/进度</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>
     {runs.length === 0 ? <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground">暂无运行</TableCell></TableRow> : runs.map((run) => {
       const progress = parseRAGEvalRunProgress(run.progressJson);
       const version = versions.find((item) => item.ID === run.datasetVersionId);
+      const dataset = datasets.find((item) => item.id === version?.DatasetID);
+      const profile = profiles.find((item) => item.id === run.profileId);
       const parser = version?.Track === "TEXT_RAG" ? "canonical-text（绕过解析器）" : progress.parserEngine || profileParser(profiles.find((item) => item.id === run.profileId));
       return <TableRow key={run.id}>
-        <TableCell className="font-mono text-xs">{run.id}</TableCell>
-        <TableCell>{run.mode === "FULL_PIPELINE" ? "完整 Pipeline" : "仅在线"}</TableCell>
-        <TableCell><div className="font-mono text-xs">{parser}</div><div className="text-xs text-muted-foreground">{durationLabel(progress.generationDurationMs)}{progress.generationReused ? " · 已复用" : ""}</div></TableCell>
+        <TableCell><div className="min-w-44"><div className="font-medium">{datasetName(dataset?.name)}{version && <span className="ml-1 text-xs font-normal text-muted-foreground">v{version.Version}</span>}</div><div className="mt-1 text-xs text-muted-foreground">{version ? `${version.DocumentCount} 文档 · ${version.CaseCount} 样例` : "数据规模未知"} · <span className="font-mono" title={run.id}>ID {shortRunID(run.id)}</span></div></div></TableCell>
+        <TableCell className="whitespace-nowrap text-xs">{dateTimeLabel(run.startedAt)}</TableCell>
+        <TableCell><div className="max-w-52 truncate text-sm" title={profile?.name}>{profile?.name || "未知 Profile"}</div><div className="mt-1 text-xs text-muted-foreground"><span className="font-mono">{parser}</span>{progress.generationReused ? " · 索引已复用" : ""}</div></TableCell>
         <TableCell><RunProgress run={run} progress={progress} /></TableCell>
         <TableCell><Badge variant="outline">{run.status}</Badge></TableCell>
         <TableCell className="text-right">{['QUEUED','RUNNING'].includes(run.status)

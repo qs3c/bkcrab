@@ -13,7 +13,7 @@ export interface RAGEvalMetricOption {
 }
 
 export interface RAGEvalMetricGroup {
-  id: "document" | "chunk" | "answer" | "other";
+  id: "document" | "answer" | "other";
   label: string;
   description: string;
   metrics: RAGEvalMetricOption[];
@@ -29,17 +29,6 @@ const metricGroups: Array<Omit<RAGEvalMetricGroup, "metrics"> & { definitions: R
       { id: "doc_recall_at_k", description: "Top-K 找回了多少标准相关文档。" },
       { id: "doc_mrr", description: "第一篇标准相关文档在结果中出现得有多早。" },
       { id: "doc_ndcg", description: "综合所有标准相关文档的召回情况和排序位置。" },
-    ],
-  },
-  {
-    id: "chunk",
-    label: "Chunk 级检索",
-    description: "比较 Context/Chunk ID；只适合数据集提供了与当前切分策略一致的稳定 Chunk ID 时使用。",
-    definitions: [
-      { id: "hit_at_k", description: "Top-K 是否至少包含一个标准相关 Chunk。" },
-      { id: "recall_at_k", description: "Top-K 找回了多少标准相关 Chunk。" },
-      { id: "mrr", description: "第一个标准相关 Chunk 在结果中出现得有多早。" },
-      { id: "ndcg", description: "综合所有标准相关 Chunk 的召回情况和排序位置。" },
     ],
   },
   {
@@ -59,9 +48,11 @@ const metricGroups: Array<Omit<RAGEvalMetricGroup, "metrics"> & { definitions: R
   },
 ];
 
+const hiddenMetrics = new Set(["hit_at_k", "recall_at_k", "mrr", "ndcg"]);
+
 export function groupRAGEvalMetrics(availableMetrics: string[]): RAGEvalMetricGroup[] {
   const available = new Set(availableMetrics);
-  const known = new Set(metricGroups.flatMap((group) => group.definitions.map((metric) => metric.id)));
+  const known = new Set([...metricGroups.flatMap((group) => group.definitions.map((metric) => metric.id)), ...hiddenMetrics]);
   const groups: RAGEvalMetricGroup[] = metricGroups.map((group) => ({
     id: group.id,
     label: group.label,

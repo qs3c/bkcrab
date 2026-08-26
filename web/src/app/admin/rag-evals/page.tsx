@@ -68,7 +68,7 @@ export default function RAGEvaluationsPage() {
     <DatasetsPanel capabilities={capabilities} datasets={datasets} onChanged={refreshCatalog} />
     <ProfilePolicyPanel section="profile" profiles={profiles} runs={runs} onProfileChanged={refreshCatalog} />
     <RunWizard capabilities={capabilities} versions={versions} profiles={profiles} runs={runs} onCreated={refreshRuns} />
-    <RunList runs={runs} profiles={profiles} versions={versions} onChanged={refreshRuns} />
+    <RunList runs={runs} datasets={datasets} profiles={profiles} versions={versions} onChanged={refreshRuns} />
     <ResultsPanel runs={runs} />
     <ProfilePolicyPanel section="policy" profiles={profiles} runs={runs} onProfileChanged={refreshCatalog} />
   </div>;

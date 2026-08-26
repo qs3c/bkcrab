@@ -69,7 +69,7 @@ func (MultiDoc2DialAdapter) Prepare(ctx context.Context, source CatalogSource, o
 	preset, _ := CatalogPresetByID(options.CatalogID)
 	prepared, err := newPreparedCatalogDataset(preset.Name, options.Track, DatasetSource{
 		CatalogID: preset.ID, URL: preset.SourceURL, Revision: preset.Revision, AdapterID: preset.ID,
-		AdapterVersion: preset.AdapterVersion, Split: options.Split, SampleSize: options.SampleSize, Seed: options.Seed, License: preset.License,
+		AdapterVersion: preset.AdapterVersion, Split: options.Split, SampleSize: options.SampleSize, CorpusSize: options.CorpusLimit, Seed: options.Seed, License: preset.License,
 	})
 	if err != nil {
 		return nil, err
@@ -107,6 +107,9 @@ func (MultiDoc2DialAdapter) Prepare(ctx context.Context, source CatalogSource, o
 	}
 	documentsBySource := map[string]multiDoc2DialDocument{}
 	documentIDs := map[string]string{}
+	sourceIDsByDocument := map[string]string{}
+	documentDomains := map[string]string{}
+	availableDocumentIDs := make([]string, 0, 488)
 	domains := make([]string, 0, len(documentRoot.Documents))
 	for domain := range documentRoot.Documents {
 		domains = append(domains, domain)
@@ -121,15 +124,11 @@ func (MultiDoc2DialAdapter) Prepare(ctx context.Context, source CatalogSource, o
 		for _, sourceID := range sourceIDs {
 			document := documentRoot.Documents[domain][sourceID]
 			id := catalogDocumentID("mdd", sourceID)
-			fileName := id + ".md"
-			content := "# " + strings.TrimSpace(document.Title) + "\n\n" + strings.TrimSpace(document.Text) + "\n"
-			if err = prepared.AddDocument(id, fileName, "text/markdown", strings.NewReader(content), map[string]any{
-				"sourceDocId": sourceID, "domain": domain, "title": document.Title,
-			}); err != nil {
-				return nil, err
-			}
 			documentIDs[sourceID] = id
+			sourceIDsByDocument[id] = sourceID
+			documentDomains[sourceID] = domain
 			documentsBySource[sourceID] = document
+			availableDocumentIDs = append(availableDocumentIDs, id)
 		}
 	}
 	cases := make([]Case, 0, 5_000)
@@ -188,6 +187,25 @@ func (MultiDoc2DialAdapter) Prepare(ctx context.Context, source CatalogSource, o
 	selected, err := selectCatalogCases(preset.ID+"@"+preset.Revision+"/"+options.Split, cases, options.SampleSize, options.Seed)
 	if err != nil {
 		return nil, err
+	}
+	selected, selectedDocumentIDs, err := selectCatalogCorpus(selected, availableDocumentIDs, options.CorpusLimit, options.Seed,
+		preset.ID+"/"+options.Split+"/positive-docs", preset.ID+"/"+options.Split+"/negative-docs",
+		func(item Case) []string { return item.ReferenceDocumentIDs })
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range selectedDocumentIDs {
+		sourceID := sourceIDsByDocument[id]
+		document, ok := documentsBySource[sourceID]
+		if !ok {
+			return nil, fmt.Errorf("MultiDoc2Dial document is missing for %s", id)
+		}
+		content := "# " + strings.TrimSpace(document.Title) + "\n\n" + strings.TrimSpace(document.Text) + "\n"
+		if err = prepared.AddDocument(id, id+".md", "text/markdown", strings.NewReader(content), map[string]any{
+			"sourceDocId": sourceID, "domain": documentDomains[sourceID], "title": document.Title,
+		}); err != nil {
+			return nil, err
+		}
 	}
 	prepared.Dataset.Description = preset.Description
 	prepared.Dataset.Cases = selected

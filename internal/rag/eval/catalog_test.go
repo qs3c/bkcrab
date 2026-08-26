@@ -1,8 +1,12 @@
 package eval
 
 import (
+	"context"
 	"reflect"
 	"testing"
+
+	"github.com/qs3c/bkcrab/internal/rag/objects"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 func TestBuiltinCatalogContainsOnlyRAGDatasets(t *testing.T) {
@@ -61,6 +65,18 @@ func TestCatalogOptionsKeepTextAndPDFTracksSeparate(t *testing.T) {
 	if err := tooLarge.ApplyDefaults(); err == nil {
 		t.Fatal("Open RAGBench accepted an oversized corpus limit")
 	}
+	multiDoc := CatalogImportOptions{CatalogID: CatalogMultiDoc2Dial, Split: "validation", SampleSize: 20}
+	if err := multiDoc.ApplyDefaults(); err != nil || multiDoc.CorpusLimit != 488 {
+		t.Fatalf("MultiDoc2Dial defaults=%+v error=%v", multiDoc, err)
+	}
+	tatqa := CatalogImportOptions{CatalogID: CatalogTATQA, Split: "dev", SampleSize: 20, CorpusLimit: 100}
+	if err := tatqa.ApplyDefaults(); err != nil || tatqa.CorpusLimit != 100 {
+		t.Fatalf("TAT-QA subset=%+v error=%v", tatqa, err)
+	}
+	tooLargeTATQA := CatalogImportOptions{CatalogID: CatalogTATQA, Split: "dev", SampleSize: 20, CorpusLimit: 275}
+	if err := tooLargeTATQA.ApplyDefaults(); err == nil {
+		t.Fatal("TAT-QA accepted a corpus larger than its dev split")
+	}
 }
 
 func TestSelectOpenRAGCorpusKeepsPositivesAndSamplesNegatives(t *testing.T) {
@@ -95,5 +111,42 @@ func TestSelectOpenRAGCorpusKeepsPositivesAndSamplesNegatives(t *testing.T) {
 		if caseSourceDocID(item) != filteredDocuments[0] {
 			t.Fatalf("case %s references excluded document %s", item.ID, caseSourceDocID(item))
 		}
+	}
+}
+
+func TestCatalogImportAutomaticallyReusesOldestLogicalDataset(t *testing.T) {
+	ctx := context.Background()
+	st := runnerDB(t)
+	objectStore := objects.NewLocalFS(t.TempDir())
+	datasets, err := NewDatasetService(st, objectStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := NewCatalogImportRunner(st, datasets, objectStore, "catalog-test", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := &store.RAGEvalDatasetRecord{ID: "rds_a_legacy", Name: "TAT-QA · TEXT_RAG", CreatedBy: "admin"}
+	duplicate := &store.RAGEvalDatasetRecord{ID: "rds_b_duplicate", Name: "TAT-QA · TEXT_RAG", CreatedBy: "admin"}
+	if err = st.CreateRAGEvalDataset(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateRAGEvalDataset(ctx, duplicate); err != nil {
+		t.Fatal(err)
+	}
+	first, err := runner.Create(ctx, "admin", CatalogImportOptions{CatalogID: CatalogTATQA, Split: "dev", SampleSize: 10, CorpusLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := runner.Create(ctx, "admin", CatalogImportOptions{CatalogID: CatalogTATQA, Split: "train", SampleSize: 10, CorpusLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.DatasetID != legacy.ID || second.DatasetID != legacy.ID {
+		t.Fatalf("imports were not grouped under the oldest logical dataset: %s, %s", first.DatasetID, second.DatasetID)
+	}
+	items, err := st.ListRAGEvalDatasets(ctx, "", 20)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("automatic classification created another duplicate: items=%+v err=%v", items, err)
 	}
 }

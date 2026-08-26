@@ -58,7 +58,7 @@ func (OpenRAGBenchAdapter) Prepare(ctx context.Context, source CatalogSource, op
 	prepared, err := newPreparedCatalogDataset(preset.Name, options.Track, DatasetSource{
 		CatalogID: preset.ID, URL: preset.SourceURL, Revision: preset.Revision, AdapterID: preset.ID,
 		AdapterVersion: preset.AdapterVersion, Split: options.Split, SampleSize: options.SampleSize, Seed: options.Seed,
-		EvidenceTypes: append([]string(nil), options.EvidenceTypes...), License: preset.License,
+		CorpusSize: options.CorpusLimit, EvidenceTypes: append([]string(nil), options.EvidenceTypes...), License: preset.License,
 	})
 	if err != nil {
 		return nil, err
@@ -251,60 +251,8 @@ func prepareOpenRAGPDFTrack(ctx context.Context, source CatalogSource, prepared 
 }
 
 func selectOpenRAGCorpus(cases []Case, availableDocumentIDs []string, corpusLimit int, seed int64, positiveNamespace, negativeNamespace string) ([]Case, []string, error) {
-	availableDocumentIDs = uniqueSortedStrings(availableDocumentIDs)
-	if corpusLimit < 1 || len(availableDocumentIDs) == 0 || strings.TrimSpace(positiveNamespace) == "" || strings.TrimSpace(negativeNamespace) == "" {
-		return nil, nil, errors.New("Open RAGBench corpus selection is invalid")
-	}
-	available := make(map[string]struct{}, len(availableDocumentIDs))
-	for _, id := range availableDocumentIDs {
-		available[id] = struct{}{}
-	}
-	positiveDocuments := uniqueCaseSourceDocs(cases)
-	for _, id := range positiveDocuments {
-		if _, ok := available[id]; !ok {
-			return nil, nil, fmt.Errorf("Open RAGBench positive document is missing for %s", id)
-		}
-	}
-	if len(positiveDocuments) > corpusLimit {
-		selected, err := StableSampleIDs(positiveNamespace, positiveDocuments, corpusLimit, seed)
-		if err != nil {
-			return nil, nil, err
-		}
-		allowed := make(map[string]struct{}, len(selected))
-		for _, id := range selected {
-			allowed[id] = struct{}{}
-		}
-		filtered := make([]Case, 0, len(cases))
-		for _, item := range cases {
-			if _, ok := allowed[caseSourceDocID(item)]; ok {
-				filtered = append(filtered, item)
-			}
-		}
-		cases = filtered
-		positiveDocuments = selected
-	}
-	documentIDs := append([]string(nil), positiveDocuments...)
-	if remaining := corpusLimit - len(documentIDs); remaining > 0 {
-		positive := make(map[string]struct{}, len(positiveDocuments))
-		for _, id := range positiveDocuments {
-			positive[id] = struct{}{}
-		}
-		negativeDocuments := make([]string, 0, len(availableDocumentIDs)-len(positiveDocuments))
-		for _, id := range availableDocumentIDs {
-			if _, ok := positive[id]; !ok {
-				negativeDocuments = append(negativeDocuments, id)
-			}
-		}
-		if len(negativeDocuments) > 0 {
-			selected, err := StableSampleIDs(negativeNamespace, negativeDocuments, remaining, seed)
-			if err != nil {
-				return nil, nil, err
-			}
-			documentIDs = append(documentIDs, selected...)
-		}
-	}
-	sort.Strings(documentIDs)
-	return cases, documentIDs, nil
+	return selectCatalogCorpus(cases, availableDocumentIDs, corpusLimit, seed, positiveNamespace, negativeNamespace,
+		func(item Case) []string { return []string{caseSourceDocID(item)} })
 }
 
 func decodeCatalogJSON(ctx context.Context, source CatalogSource, logicalPath string, maxBytes int64, target any) error {

@@ -31,6 +31,7 @@ type DatasetSource struct {
 	AdapterVersion string   `json:"adapterVersion,omitempty"`
 	Split          string   `json:"split,omitempty"`
 	SampleSize     int      `json:"sampleSize,omitempty"`
+	CorpusSize     int      `json:"corpusSize,omitempty"`
 	Seed           int64    `json:"seed,omitempty"`
 	EvidenceTypes  []string `json:"evidenceTypes,omitempty"`
 	License        string   `json:"license,omitempty"`

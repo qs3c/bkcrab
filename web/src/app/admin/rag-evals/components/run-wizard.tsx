@@ -55,8 +55,8 @@ export function RunWizard({ capabilities, versions, profiles, runs, onCreated }:
     <Field label="Baseline（可选，对照运行）"><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.baselineRunId} onChange={(event) => setDraft({ ...draft, baselineRunId: event.target.value })}><option value="">无</option>{compatibleBaselineRuns(runs, draft).map((run) => <option key={run.id} value={run.id}>{run.id}</option>)}</select><p className="text-[11px] text-muted-foreground">只列出同一数据版本、同一模式且可逐 case 对比的成功运行。</p></Field>
     {draft.mode === "ONLINE_ONLY" && <Field label="READY generation ID" error={errors.indexGenerationId}><Input value={draft.indexGenerationId} onChange={(event) => setDraft({ ...draft, indexGenerationId: event.target.value })} placeholder="rge_..." /></Field>}
     <div className="space-y-3 lg:col-span-2">
-      <div><Label>测评指标</Label><p className="mt-1 text-xs text-muted-foreground">自定义分块的数据集请优先选择文档级检索指标；没有稳定 Chunk ID 时，Chunk 级指标会被跳过。</p></div>
-      <div className="grid gap-3 lg:grid-cols-3">{metricGroups.map((group) => {
+      <div><Label>测评指标</Label><p className="mt-1 text-xs text-muted-foreground">检索效果统一使用不受分块策略影响的文档级指标，并结合回答质量与引用指标评估最终结果。</p></div>
+      <div className="grid gap-3 lg:grid-cols-2">{metricGroups.map((group) => {
         const metricIDs = group.metrics.map((metric) => metric.id);
         const allSelected = metricIDs.every((metric) => draft.metrics.includes(metric));
         return <section key={group.id} className="rounded-md border bg-muted/20 p-3">

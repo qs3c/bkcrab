@@ -35,6 +35,7 @@ type CatalogPreset struct {
 	DefaultSampleSize int            `json:"defaultSampleSize"`
 	MaxSampleSize     int            `json:"maxSampleSize"`
 	DefaultCorpusSize int            `json:"defaultCorpusSize,omitempty"`
+	CorpusSizes       map[string]int `json:"corpusSizes,omitempty"`
 }
 
 var builtinCatalog = []CatalogPreset{
@@ -42,20 +43,22 @@ var builtinCatalog = []CatalogPreset{
 		ID: CatalogMultiDoc2Dial, Name: "MultiDoc2Dial", Description: "多文档、多轮指代检索与回答",
 		SourceURL: "https://huggingface.co/datasets/IBM/multidoc2dial", Revision: "1108a969d076f04c7367f0c2427d1c5d6d6bdaa0",
 		License: "Apache-2.0", AdapterVersion: "multidoc2dial-v2", Tracks: []DatasetTrack{DatasetTrackTextRAG},
-		Splits: []string{"validation", "train", "test"}, DefaultSampleSize: 500, MaxSampleSize: 10_000,
+		Splits: []string{"validation", "train", "test"}, DefaultSampleSize: 500, MaxSampleSize: 10_000, DefaultCorpusSize: 488,
+		CorpusSizes: map[string]int{"validation": 488, "train": 488, "test": 488},
 	},
 	{
 		ID: CatalogTATQA, Name: "TAT-QA", Description: "段落、表格与数值问答",
 		SourceURL: "https://huggingface.co/datasets/next-tat/TAT-QA", Revision: "c96247f5077eac447f63527fd3dcfdc58bb56d6a",
 		License: "CC-BY-4.0", AdapterVersion: "tatqa-v1", Tracks: []DatasetTrack{DatasetTrackTextRAG},
-		Splits: []string{"dev", "train", "test_gold"}, DefaultSampleSize: 1_000, MaxSampleSize: 20_000,
+		Splits: []string{"dev", "train", "test_gold"}, DefaultSampleSize: 1_000, MaxSampleSize: 20_000, DefaultCorpusSize: 2_207,
+		CorpusSizes: map[string]int{"dev": 274, "train": 2_207, "test_gold": 277},
 	},
 	{
 		ID: CatalogOpenRAGBench, Name: "Open RAGBench（Vectara）", Description: "预处理文本主轨与原始 PDF 端到端补充轨",
 		SourceURL: "https://huggingface.co/datasets/vectara/open_ragbench", Revision: "63f6b052ff83508b08e242db42263ee708815c26",
 		License: "CC-BY-NC-4.0", AdapterVersion: "open-ragbench-arxiv-v1", Tracks: []DatasetTrack{DatasetTrackTextRAG, DatasetTrackPDFE2E},
 		Splits: []string{"arxiv"}, EvidenceTypes: []string{"text", "text-table", "text-image", "text-table-image"},
-		DefaultSampleSize: 300, MaxSampleSize: 3_045, DefaultCorpusSize: 1_000,
+		DefaultSampleSize: 300, MaxSampleSize: 3_045, DefaultCorpusSize: 1_000, CorpusSizes: map[string]int{"arxiv": 1_000},
 	},
 }
 
@@ -66,6 +69,10 @@ func BuiltinCatalog() []CatalogPreset {
 		out[index].Tracks = append([]DatasetTrack(nil), item.Tracks...)
 		out[index].Splits = append([]string(nil), item.Splits...)
 		out[index].EvidenceTypes = append([]string(nil), item.EvidenceTypes...)
+		out[index].CorpusSizes = make(map[string]int, len(item.CorpusSizes))
+		for split, size := range item.CorpusSizes {
+			out[index].CorpusSizes[split] = size
+		}
 	}
 	return out
 }
@@ -112,21 +119,21 @@ func (o *CatalogImportOptions) ApplyDefaults() error {
 	if o.SampleSize < 1 || o.SampleSize > preset.MaxSampleSize {
 		return fmt.Errorf("sample size must be between 1 and %d", preset.MaxSampleSize)
 	}
-	if o.CatalogID != CatalogOpenRAGBench {
-		if o.CorpusLimit != 0 {
-			return errors.New("corpus limit is invalid")
+	corpusSize := preset.DefaultCorpusSize
+	if splitSize := preset.CorpusSizes[o.Split]; splitSize > 0 {
+		corpusSize = splitSize
+	}
+	if corpusSize < 1 {
+		return errors.New("dataset corpus size is invalid")
+	}
+	if o.CorpusLimit == 0 {
+		o.CorpusLimit = corpusSize
+		if o.CatalogID == CatalogOpenRAGBench && o.Track == DatasetTrackPDFE2E {
+			o.CorpusLimit = min(50, corpusSize)
 		}
-	} else {
-		if o.CorpusLimit == 0 {
-			if o.Track == DatasetTrackPDFE2E {
-				o.CorpusLimit = 50
-			} else {
-				o.CorpusLimit = preset.DefaultCorpusSize
-			}
-		}
-		if o.CorpusLimit < 1 || o.CorpusLimit > preset.DefaultCorpusSize {
-			return fmt.Errorf("corpus limit must be between 1 and %d", preset.DefaultCorpusSize)
-		}
+	}
+	if o.CorpusLimit < 1 || o.CorpusLimit > corpusSize {
+		return fmt.Errorf("corpus limit must be between 1 and %d", corpusSize)
 	}
 	if len(o.EvidenceTypes) == 0 && o.CatalogID == CatalogOpenRAGBench {
 		o.EvidenceTypes = []string{"text"}
@@ -211,6 +218,80 @@ func StableSampleIDs(namespace string, ids []string, sampleSize int, seed int64)
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// selectCatalogCorpus keeps every document referenced by the selected cases
+// whenever the requested corpus size permits it, then fills the remaining
+// slots with a stable seeded sample of negative documents. If the positive
+// document set alone exceeds the limit, cases referencing excluded documents
+// are removed so the frozen dataset never points at a document it did not
+// import.
+func selectCatalogCorpus(cases []Case, availableDocumentIDs []string, corpusLimit int, seed int64, positiveNamespace, negativeNamespace string, references func(Case) []string) ([]Case, []string, error) {
+	availableDocumentIDs = uniqueSortedStrings(availableDocumentIDs)
+	if corpusLimit < 1 || len(availableDocumentIDs) == 0 || strings.TrimSpace(positiveNamespace) == "" || strings.TrimSpace(negativeNamespace) == "" || references == nil {
+		return nil, nil, errors.New("catalog corpus selection is invalid")
+	}
+	available := make(map[string]struct{}, len(availableDocumentIDs))
+	for _, id := range availableDocumentIDs {
+		available[id] = struct{}{}
+	}
+	positiveDocuments := make([]string, 0, len(cases))
+	for _, item := range cases {
+		for _, id := range uniqueSortedStrings(references(item)) {
+			if _, ok := available[id]; !ok {
+				return nil, nil, fmt.Errorf("catalog positive document is missing for %s", id)
+			}
+			positiveDocuments = append(positiveDocuments, id)
+		}
+	}
+	positiveDocuments = uniqueSortedStrings(positiveDocuments)
+	if len(positiveDocuments) > corpusLimit {
+		selected, err := StableSampleIDs(positiveNamespace, positiveDocuments, corpusLimit, seed)
+		if err != nil {
+			return nil, nil, err
+		}
+		allowed := make(map[string]struct{}, len(selected))
+		for _, id := range selected {
+			allowed[id] = struct{}{}
+		}
+		filtered := make([]Case, 0, len(cases))
+		for _, item := range cases {
+			keep := true
+			for _, id := range uniqueSortedStrings(references(item)) {
+				if _, ok := allowed[id]; !ok {
+					keep = false
+					break
+				}
+			}
+			if keep {
+				filtered = append(filtered, item)
+			}
+		}
+		cases = filtered
+		positiveDocuments = selected
+	}
+	documentIDs := append([]string(nil), positiveDocuments...)
+	if remaining := corpusLimit - len(documentIDs); remaining > 0 {
+		positive := make(map[string]struct{}, len(positiveDocuments))
+		for _, id := range positiveDocuments {
+			positive[id] = struct{}{}
+		}
+		negativeDocuments := make([]string, 0, len(availableDocumentIDs)-len(positiveDocuments))
+		for _, id := range availableDocumentIDs {
+			if _, ok := positive[id]; !ok {
+				negativeDocuments = append(negativeDocuments, id)
+			}
+		}
+		if len(negativeDocuments) > 0 {
+			selected, err := StableSampleIDs(negativeNamespace, negativeDocuments, remaining, seed)
+			if err != nil {
+				return nil, nil, err
+			}
+			documentIDs = append(documentIDs, selected...)
+		}
+	}
+	sort.Strings(documentIDs)
+	return cases, documentIDs, nil
 }
 
 type CatalogSourceEntry struct {

@@ -2662,6 +2662,7 @@ export interface RAGEvalCatalogPreset {
   defaultSampleSize: number;
   maxSampleSize: number;
   defaultCorpusSize?: number;
+  corpusSizes?: Record<string, number>;
 }
 
 export interface RAGEvalCatalogImport {
@@ -2706,6 +2707,8 @@ export interface RAGEvalRun {
   errorCode?: string;
   errorMessage?: string;
   createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
 }
 
 export interface RAGEvalAggregate {
@@ -2809,7 +2812,6 @@ export async function listRAGEvalCatalogImports(): Promise<RAGEvalCatalogImport[
 }
 
 export async function createRAGEvalCatalogImport(input: {
-  datasetId: string;
   catalogId: string;
   track: "TEXT_RAG" | "PDF_E2E";
   split: string;

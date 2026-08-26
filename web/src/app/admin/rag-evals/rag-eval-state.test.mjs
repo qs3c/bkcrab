@@ -18,17 +18,15 @@ const {
   validationIssueMessages,
 } = await import(new URL("./rag-eval-state.ts", import.meta.url));
 
-test("evaluation metrics are grouped by document, chunk and answer semantics", () => {
+test("evaluation metrics omit chunk-only metrics and group document and answer semantics", () => {
   const groups = groupRAGEvalMetrics([
     "faithfulness", "hit_at_k", "doc_hit_at_k", "doc_ndcg", "future_metric",
   ]);
-  assert.deepEqual(groups.map((group) => group.id), ["document", "chunk", "answer", "other"]);
+  assert.deepEqual(groups.map((group) => group.id), ["document", "answer", "other"]);
   assert.deepEqual(groups[0].metrics.map((metric) => metric.id), ["doc_hit_at_k", "doc_ndcg"]);
   assert.match(groups[0].description, /文档 ID/);
-  assert.deepEqual(groups[1].metrics.map((metric) => metric.id), ["hit_at_k"]);
-  assert.match(groups[1].description, /Chunk ID/);
-  assert.deepEqual(groups[2].metrics.map((metric) => metric.id), ["faithfulness"]);
-  assert.deepEqual(groups[3].metrics.map((metric) => metric.id), ["future_metric"]);
+  assert.deepEqual(groups[1].metrics.map((metric) => metric.id), ["faithfulness"]);
+  assert.deepEqual(groups[2].metrics.map((metric) => metric.id), ["future_metric"]);
 });
 
 test("metric groups can be selected and cleared without disturbing other groups", () => {
