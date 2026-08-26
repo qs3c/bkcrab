@@ -24,7 +24,7 @@ import {
   type RAGPolicyRecordDTO,
   type RAGSparseAnalyzer,
 } from "@/lib/api";
-import { profileOptionLabel } from "../rag-eval-state";
+import { isProfileDeletionPending, profileOptionLabel } from "../rag-eval-state";
 import { promotionGateReasons } from "../result-state";
 
 interface IngestionDraft {
@@ -199,6 +199,7 @@ export function ProfilePolicyPanel({ profiles, runs, onProfileChanged, section =
   }), [profiles]);
   const sourceProfile = profiles.find((item) => item.id === sourceProfileId);
   const sourceProfileRuns = runs.filter((item) => item.profileId === sourceProfileId);
+  const profileDeletionPending = isProfileDeletionPending(deletingProfileId, sourceProfileId);
   const selectedRun = runs.find((item) => item.id === runId);
   const selectedProfile = profiles.find((item) => item.id === selectedRun?.profileId);
 
@@ -406,8 +407,8 @@ export function ProfilePolicyPanel({ profiles, runs, onProfileChanged, section =
                   <option value="">系统当前默认</option>
                   {orderedProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profileOptionLabel(profile, profiles)}</option>)}
                 </select>
-                <Button type="button" variant="outline" className="shrink-0 text-destructive hover:text-destructive" disabled={!sourceProfile || sourceProfileRuns.length > 0 || deletingProfileId === sourceProfileId} onClick={() => void deleteSourceProfile()}>
-                  <Trash2 className="mr-1 h-4 w-4" />{deletingProfileId === sourceProfileId ? "删除中…" : "删除"}
+                <Button type="button" variant="outline" className="shrink-0 text-destructive hover:text-destructive" disabled={!sourceProfile || sourceProfileRuns.length > 0 || profileDeletionPending} onClick={() => void deleteSourceProfile()}>
+                  <Trash2 className="mr-1 h-4 w-4" />{profileDeletionPending ? "删除中…" : "删除"}
                 </Button>
               </div>
               {sourceProfile && sourceProfileRuns.length > 0 && <p className="text-xs text-amber-700">这个 Profile 已被 {sourceProfileRuns.length} 个当前测评运行使用；请先删除相关运行。</p>}

@@ -154,6 +154,10 @@ export function profileOptionLabel(profile: RAGEvalProfileSummary, profiles: RAG
   return `${profile.name} · ${parser} · ${version}`;
 }
 
+export function isProfileDeletionPending(deletingProfileId: string, sourceProfileId: string): boolean {
+  return deletingProfileId !== "" && deletingProfileId === sourceProfileId;
+}
+
 export function parseRAGEvalRunProgress(value: string): RAGEvalRunProgress {
   try { return JSON.parse(value || "{}") as RAGEvalRunProgress; }
   catch { return {}; }

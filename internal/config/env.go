@@ -924,6 +924,12 @@ func (e *EnvConfig) ApplySystemRAG(dst *RAGCfg) {
 	if e.RAG.ParserSidecar.Endpoint != "" {
 		dst.ParserSidecar.Endpoint = e.RAG.ParserSidecar.Endpoint
 	}
+	if e.RAG.ParserSidecar.MarkItDownEndpoint != "" {
+		dst.ParserSidecar.MarkItDownEndpoint = e.RAG.ParserSidecar.MarkItDownEndpoint
+	}
+	if e.RAG.ParserSidecar.AnyDocEndpoint != "" {
+		dst.ParserSidecar.AnyDocEndpoint = e.RAG.ParserSidecar.AnyDocEndpoint
+	}
 	if e.RAG.ParserSidecar.Engine != "" {
 		dst.ParserSidecar.Engine = e.RAG.ParserSidecar.Engine
 	}

@@ -7,6 +7,7 @@ const {
   estimateRunWork,
   groupRAGEvalMetrics,
   isRunProgressStalled,
+  isProfileDeletionPending,
   nextRunPollDelay,
   parseRAGEvalRunProgress,
   profileOptionLabel,
@@ -102,6 +103,12 @@ test("duplicate immutable profiles are labeled by parser and recency", () => {
   ];
   assert.equal(profileOptionLabel(profiles[0], profiles), "系统默认全功能 · Standard · 历史 2026-08-16");
   assert.equal(profileOptionLabel(profiles[1], profiles), "系统默认全功能 · AnyDoc · 当前");
+});
+
+test("system default profile is never mistaken for an active deletion", () => {
+  assert.equal(isProfileDeletionPending("", ""), false);
+  assert.equal(isProfileDeletionPending("profile-1", "profile-1"), true);
+  assert.equal(isProfileDeletionPending("profile-1", "profile-2"), false);
 });
 
 test("run progress exposes generation counts, translated stages and stalls", () => {
