@@ -6,13 +6,20 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { createRAGEvalRun, type RAGEvalCapabilities, type RAGEvalDatasetVersion, type RAGEvalProfile, type RAGEvalRun } from "@/lib/api";
-import { compatibleBaselineRuns, estimateRunWork, groupRAGEvalMetrics, profileOptionLabel, toggleRAGEvalMetricGroup, validateRunDraft, type RAGEvalRunDraft } from "../rag-eval-state";
+import { createRAGEvalRun, type RAGEvalCapabilities, type RAGEvalDataset, type RAGEvalDatasetVersion, type RAGEvalProfile, type RAGEvalRun } from "@/lib/api";
+import { compatibleBaselineRuns, describeRAGEvalDatasetVersion, estimateRunWork, groupRAGEvalMetrics, profileOptionLabel, toggleRAGEvalMetricGroup, validateRunDraft, type RAGEvalRunDraft } from "../rag-eval-state";
 
 const initial: RAGEvalRunDraft = { datasetVersionId: "", profileId: "", mode: "FULL_PIPELINE", baselineRunId: "", indexGenerationId: "", metrics: [] };
 
-export function RunWizard({ capabilities, versions, profiles, runs, onCreated }: {
+function versionCreatedAtLabel(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "时间未知";
+  return parsed.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+export function RunWizard({ capabilities, datasets, versions, profiles, runs, onCreated }: {
   capabilities: RAGEvalCapabilities | null;
+  datasets: RAGEvalDataset[];
   versions: RAGEvalDatasetVersion[];
   profiles: RAGEvalProfile[];
   runs: RAGEvalRun[];
@@ -22,6 +29,25 @@ export function RunWizard({ capabilities, versions, profiles, runs, onCreated }:
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const ready = versions.filter((item) => item.Status === "READY");
+  const readyGroups = useMemo(() => {
+    const grouped = new Map<string, { key: string; name: string; latest: string; versions: RAGEvalDatasetVersion[] }>();
+    for (const version of versions) {
+      if (version.Status !== "READY") continue;
+      const dataset = datasets.find((item) => item.id === version.DatasetID);
+      const source = describeRAGEvalDatasetVersion(version, dataset);
+      const current = grouped.get(source.key);
+      if (current) {
+        current.versions.push(version);
+        if (version.CreatedAt > current.latest) current.latest = version.CreatedAt;
+      } else {
+        grouped.set(source.key, { key: source.key, name: source.name, latest: version.CreatedAt, versions: [version] });
+      }
+    }
+    return [...grouped.values()].map((group) => ({
+      ...group,
+      versions: group.versions.sort((left, right) => right.CreatedAt.localeCompare(left.CreatedAt) || right.Version - left.Version),
+    })).sort((left, right) => right.latest.localeCompare(left.latest) || left.name.localeCompare(right.name, "zh-CN"));
+  }, [datasets, versions]);
   const selected = ready.find((item) => item.ID === draft.datasetVersionId);
   const estimate = useMemo(() => estimateRunWork(selected?.CaseCount ?? 0, selected?.DocumentCount ?? 0, draft.mode, draft.metrics.length), [selected, draft.mode, draft.metrics.length]);
   const metricGroups = useMemo(() => groupRAGEvalMetrics(capabilities?.metrics ?? []), [capabilities?.metrics]);
@@ -49,7 +75,7 @@ export function RunWizard({ capabilities, versions, profiles, runs, onCreated }:
   }
 
   return <Card><CardHeader><CardTitle>新建测评运行</CardTitle><CardDescription>先固定数据版本、模式、候选参数与指标，再进入 durable queue。</CardDescription></CardHeader><CardContent><form className="grid gap-5 lg:grid-cols-2" onSubmit={submit}>
-    <Field label="READY 数据版本" error={errors.datasetVersionId}><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.datasetVersionId} onChange={(event) => setDraft({ ...draft, datasetVersionId: event.target.value })}><option value="">请选择</option>{ready.map((item) => <option key={item.ID} value={item.ID}>v{item.Version} · {item.CaseCount} cases / {item.DocumentCount} docs</option>)}</select></Field>
+    <Field label="READY 测评集 / 数据版本" error={errors.datasetVersionId}><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.datasetVersionId} onChange={(event) => setDraft({ ...draft, datasetVersionId: event.target.value })}><option value="">请选择测评集和版本</option>{readyGroups.map((group) => <optgroup key={group.key} label={`${group.name} · ${group.versions.length} 个 READY 版本`}>{group.versions.map((item) => { const source = describeRAGEvalDatasetVersion(item, datasets.find((dataset) => dataset.id === item.DatasetID)); return <option key={item.ID} value={item.ID}>{source.name} · {source.split ? `${source.split} · ` : ""}{source.track} · v{item.Version} · {item.DocumentCount} 文档 / {item.CaseCount} 样例 · {versionCreatedAtLabel(item.CreatedAt)}</option>; })}</optgroup>)}</select><p className="text-[11px] text-muted-foreground">按版本冻结的真实数据来源分组；最新准备完成的测评集排在最前面。</p></Field>
     <Field label="参数 Profile" error={errors.profileId}><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.profileId} onChange={(event) => setDraft({ ...draft, profileId: event.target.value })}><option value="">请选择</option>{orderedProfiles.map((item) => <option key={item.id} value={item.id}>{profileOptionLabel(item, profiles)}</option>)}</select></Field>
     <Field label="运行模式"><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.mode} onChange={(event) => setDraft({ ...draft, mode: event.target.value as RAGEvalRunDraft["mode"], indexGenerationId: "", baselineRunId: "" })}><option value="FULL_PIPELINE">完整 Pipeline</option><option value="ONLINE_ONLY">仅在线 Pipeline</option></select><p className="text-[11px] text-muted-foreground">{draft.mode === "ONLINE_ONLY" ? "复用指定的 READY 索引，只执行检索、回答与评分。" : "自动复用完全兼容的索引，否则重新建库，再执行检索、回答与评分。"}</p></Field>
     <Field label="Baseline（可选，对照运行）"><select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={draft.baselineRunId} onChange={(event) => setDraft({ ...draft, baselineRunId: event.target.value })}><option value="">无</option>{compatibleBaselineRuns(runs, draft).map((run) => <option key={run.id} value={run.id}>{run.id}</option>)}</select><p className="text-[11px] text-muted-foreground">只列出同一数据版本、同一模式且可逐 case 对比的成功运行。</p></Field>

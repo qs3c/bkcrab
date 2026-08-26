@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 const {
   canShowRAGEvalNavigation,
   compatibleBaselineRuns,
+  describeRAGEvalDatasetVersion,
   estimateRunWork,
   groupRAGEvalMetrics,
   isRunProgressStalled,
@@ -17,6 +18,20 @@ const {
   validateRunDraft,
   validationIssueMessages,
 } = await import(new URL("./rag-eval-state.ts", import.meta.url));
+
+test("dataset version labels trust the frozen catalog source over a historically wrong logical dataset", () => {
+  const source = describeRAGEvalDatasetVersion({
+    DatasetID: "tatqa-logical-dataset",
+    SourceConfigJSON: JSON.stringify({ catalogId: "vectara-open-ragbench", split: "arxiv" }),
+    Track: "TEXT_RAG",
+  }, { name: "TAT-QA · TEXT_RAG" });
+  assert.deepEqual(source, {
+    key: "vectara-open-ragbench",
+    name: "Open RAGBench（Vectara）",
+    split: "arxiv",
+    track: "文本 RAG",
+  });
+});
 
 test("evaluation metrics omit chunk-only metrics and group document and answer semantics", () => {
   const groups = groupRAGEvalMetrics([

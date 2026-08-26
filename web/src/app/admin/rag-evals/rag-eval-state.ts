@@ -7,6 +7,33 @@ export interface RAGEvalRunDraft {
   metrics: string[];
 }
 
+const builtinCatalogLabels: Record<string, string> = {
+  "ibm-multidoc2dial": "MultiDoc2Dial",
+  "next-tat-tatqa": "TAT-QA",
+  "vectara-open-ragbench": "Open RAGBench（Vectara）",
+};
+
+export function describeRAGEvalDatasetVersion(version: {
+  DatasetID: string;
+  SourceConfigJSON: string;
+  Track: "TEXT_RAG" | "PDF_E2E";
+}, dataset?: { name: string }): { key: string; name: string; split?: string; track: string } {
+  let catalogId = "";
+  let split = "";
+  try {
+    const source = JSON.parse(version.SourceConfigJSON || "{}") as { catalogId?: string; split?: string };
+    catalogId = source.catalogId?.trim() || "";
+    split = source.split?.trim() || "";
+  } catch { /* fall back to the logical dataset for legacy/custom versions */ }
+  const logicalName = dataset?.name.replace(/\s*·\s*(TEXT_RAG|PDF_E2E)\s*$/u, "").trim();
+  return {
+    key: catalogId || version.DatasetID,
+    name: builtinCatalogLabels[catalogId] || logicalName || "自定义测评集",
+    split: split || undefined,
+    track: version.Track === "PDF_E2E" ? "PDF 端到端" : "文本 RAG",
+  };
+}
+
 export interface RAGEvalMetricOption {
   id: string;
   description: string;
