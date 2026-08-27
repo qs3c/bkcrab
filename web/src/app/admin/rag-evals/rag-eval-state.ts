@@ -148,6 +148,7 @@ export interface RAGEvalRunProgress {
   documentsTotal?: number;
   documentsCompleted?: number;
   chunksCompleted?: number;
+  evaluationStartedAt?: string;
   lastActivityAt?: string;
 }
 

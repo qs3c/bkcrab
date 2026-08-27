@@ -42,6 +42,7 @@ func (s *Server) registerRAGEvaluationRoutes(mux *http.ServeMux, gate func(http.
 	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}", gate(s.handleGetRAGEvalRun))
 	mux.HandleFunc("DELETE /api/admin/rag-evals/runs/{id}", gate(s.handleDeleteRAGEvalRun))
 	mux.HandleFunc("POST /api/admin/rag-evals/runs/{id}/cancel", gate(s.handleCancelRAGEvalRun))
+	mux.HandleFunc("POST /api/admin/rag-evals/runs/{id}/retry", gate(s.handleRetryRAGEvalRun))
 	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}/cases", gate(s.handleListRAGEvalRunCases))
 	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}/compare/{baselineId}", gate(s.handleCompareRAGEvalRuns))
 	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}/export", gate(s.handleExportRAGEvalRun))
@@ -681,6 +682,45 @@ func (s *Server) handleCancelRAGEvalRun(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	jsonResponse(w, 202, map[string]any{"ok": true})
+}
+
+func (s *Server) handleRetryRAGEvalRun(w http.ResponseWriter, r *http.Request) {
+	if !s.ragCfg.Evaluation.Enabled {
+		writeEvalError(w, http.StatusServiceUnavailable, "eval_disabled", "RAG evaluation is disabled")
+		return
+	}
+	if s.ragEvalRunner == nil {
+		writeEvalError(w, http.StatusServiceUnavailable, "runner_unavailable", "RAG evaluation runner is unavailable")
+		return
+	}
+	key, valid := evalIdempotencyKey(r)
+	if !valid {
+		writeEvalError(w, http.StatusBadRequest, "invalid_idempotency_key", "Idempotency-Key must contain 8 to 128 characters")
+		return
+	}
+	actor := evalIdentity(r)
+	newRunID := ""
+	if key != "" {
+		newRunID = evalDeterministicID("rer_", actor, key)
+	}
+	record, err := s.ragEvalRunner.RetryRun(r.Context(), r.PathValue("id"), newRunID, actor)
+	if err != nil {
+		if key != "" {
+			if st, ok := s.evalService(w); ok {
+				if existing, getErr := st.GetRun(r.Context(), newRunID); getErr == nil {
+					jsonResponse(w, http.StatusOK, existing)
+					return
+				}
+			}
+		}
+		if errors.Is(err, eval.ErrRunNotRetryable) {
+			writeEvalError(w, http.StatusConflict, "run_not_retryable", "only failed or budget-terminated runs can be retried")
+			return
+		}
+		writeEvalServiceError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusCreated, record)
 }
 
 type evalCaseDTO struct {

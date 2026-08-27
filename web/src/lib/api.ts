@@ -2960,3 +2960,10 @@ export async function cancelRAGEvalRun(id: string): Promise<void> {
     headers: { "Idempotency-Key": ragEvalIdempotencyKey() },
   }));
 }
+
+export async function retryRAGEvalRun(id: string): Promise<RAGEvalRun> {
+  return ragEvalJSON(await apiFetch(`/api/admin/rag-evals/runs/${encodeURIComponent(id)}/retry`, {
+    method: "POST",
+    headers: { "Idempotency-Key": ragEvalIdempotencyKey() },
+  }));
+}
