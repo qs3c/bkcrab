@@ -34,7 +34,9 @@ func (p *countingEvaluationParser) Parse(ctx context.Context, source document.So
 }
 
 func TestRealEvaluationPipelineUsesIsolatedTargetAndParseArtifactReuse(t *testing.T) {
+	var embeddingCalls atomic.Int32
 	embeddingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		embeddingCalls.Add(1)
 		var body struct {
 			Input []string `json:"input"`
 		}
@@ -109,6 +111,20 @@ func TestRealEvaluationPipelineUsesIsolatedTargetAndParseArtifactReuse(t *testin
 	if len(progressSnapshot) < 3 || progressSnapshot[len(progressSnapshot)-1].Stage != "finalizing_generation" ||
 		progressSnapshot[len(progressSnapshot)-1].DocumentsCompleted != 1 || progressSnapshot[len(progressSnapshot)-1].ChunksCompleted < 1 {
 		t.Fatalf("generation progress=%+v", generationProgress)
+	}
+	embeddingsAfterFirstBuild := embeddingCalls.Load()
+	resumed, err := service.BuildEvaluationGeneration(context.Background(), request)
+	if err != nil || resumed != first || embeddingCalls.Load() != embeddingsAfterFirstBuild {
+		t.Fatalf("complete generation retry rebuilt vectors: first=%+v resumed=%+v embeddings=%d->%d err=%v",
+			first, resumed, embeddingsAfterFirstBuild, embeddingCalls.Load(), err)
+	}
+	if err = vectorStore.DeleteDocVersion(context.Background(), firstTarget.CollectionKey, "doc", 1); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, err := service.BuildEvaluationGeneration(context.Background(), request)
+	if err != nil || rebuilt != first || embeddingCalls.Load() <= embeddingsAfterFirstBuild {
+		t.Fatalf("incomplete generation retry did not rebuild vectors: first=%+v rebuilt=%+v embeddings=%d->%d err=%v",
+			first, rebuilt, embeddingsAfterFirstBuild, embeddingCalls.Load(), err)
 	}
 	secondTarget, _ := NewEvaluationPipelineTarget("admin", "run-two", "version-one", "reg_two")
 	request.Target = secondTarget

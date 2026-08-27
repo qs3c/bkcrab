@@ -230,6 +230,15 @@ func (s *Service) buildEvaluationDocument(ctx context.Context, request Evaluatio
 	if artifactErr != nil {
 		return 0, fmt.Errorf("build evaluation document %s chunks: %w", sourceDocument.ID, artifactErr)
 	}
+	alreadyIndexed, artifactErr := s.evaluationDocumentAlreadyIndexed(ctx, request.Target.CollectionKey, sourceDocument.ID, len(chunks))
+	if artifactErr != nil {
+		return 0, fmt.Errorf("check evaluation document %s resume state: %w", sourceDocument.ID, artifactErr)
+	}
+	if alreadyIndexed {
+		telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, DocID: sourceDocument.ID,
+			Operation: "eval_index_resume", Outcome: "ok", ItemCount: len(chunks)})
+		return len(chunks), nil
+	}
 	texts := make([]string, len(chunks))
 	for index := range chunks {
 		texts[index] = chunks[index].SearchContent
@@ -266,6 +275,34 @@ func (s *Service) buildEvaluationDocument(ctx context.Context, request Evaluatio
 	}
 	telemetry.Emit(ctx, s.telemetry, telemetry.EventEvalStage, telemetry.Fields{RunID: request.Target.RunID, DocID: sourceDocument.ID, Operation: "eval_milvus", Outcome: "ok", Duration: time.Since(stageStarted), ItemCount: len(vectorChunks)})
 	return len(chunks), nil
+}
+
+// evaluationDocumentAlreadyIndexed verifies every deterministic chunk primary
+// key before skipping a document on generation retry. A document with even one
+// missing chunk is rebuilt and idempotently upserted in full, so a process
+// stopping halfway through a Milvus batch can never be mistaken for a complete
+// checkpoint.
+func (s *Service) evaluationDocumentAlreadyIndexed(ctx context.Context, collectionKey vector.CollectionKey, documentID string, chunkCount int) (bool, error) {
+	if chunkCount < 1 {
+		return false, nil
+	}
+	refs := make([]vector.ChunkRef, chunkCount)
+	for index := range refs {
+		refs[index] = vector.ChunkRef{DocID: documentID, Index: index, DocVersion: 1}
+	}
+	chunks, err := s.vec.GetChunks(ctx, collectionKey, refs)
+	if err != nil {
+		return false, err
+	}
+	if len(chunks) != len(refs) {
+		return false, nil
+	}
+	for index, chunk := range chunks {
+		if chunk.DocID != documentID || chunk.DocVersion != 1 || chunk.Index != index {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (s *Service) loadOrBuildEvaluationArtifact(ctx context.Context, request EvaluationPipelineRequest, sourceDocument EvaluationPipelineDocument) (*document.ParsedArtifact, error) {
