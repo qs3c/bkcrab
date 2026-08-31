@@ -32,6 +32,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/fairqueue"
 	imagegendomain "github.com/qs3c/bkcrab/internal/imagegen"
 	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
+	"github.com/qs3c/bkcrab/internal/parseeval"
 	"github.com/qs3c/bkcrab/internal/plugin"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/rag"
@@ -200,6 +201,8 @@ type Gateway struct {
 	ragEvalCleanup     *rageval.CleanupCoordinator
 	ragPolicyPromotion *rag.PolicyPromotionService
 	ragPolicyRefresher *rag.RuntimePolicyRefresher
+	parserEval         *parserEvaluationRuntime
+	parserEvalReason   string
 	ragFairQueue       *ragFairQueueAssembly
 	imageFairQueue     *imageFairQueueAssembly
 	fairQueueHealth    *ragFairQueueHealthState
@@ -280,6 +283,27 @@ func (g *Gateway) RAGEvaluationCatalogImportRunner() *rageval.CatalogImportRunne
 		return nil
 	}
 	return g.ragEvalCatalog
+}
+
+func (g *Gateway) ParserEvaluationService() *parseeval.Service {
+	if g == nil || g.parserEval == nil {
+		return nil
+	}
+	return g.parserEval.service
+}
+
+func (g *Gateway) ParserEvaluationRunner() *parseeval.Runner {
+	if g == nil || g.parserEval == nil {
+		return nil
+	}
+	return g.parserEval.runner
+}
+
+func (g *Gateway) ParserEvaluationCleanup() *parseeval.Cleanup {
+	if g == nil || g.parserEval == nil {
+		return nil
+	}
+	return g.parserEval.cleanup
 }
 
 // ResolveRAGEvaluationJudge keeps provider credentials in the main process.
@@ -441,6 +465,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	ws := wsInner
 
 	var ragSvc *rag.Service
+	var ragObjects ragobjects.Store
 	var ragEvalDatasets *rageval.DatasetService
 	var ragEvalCatalog *rageval.CatalogImportRunner
 	var legacySnapshotBuilder store.RAGLegacyTaskSnapshotBuilder
@@ -520,7 +545,8 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		)
 	}
 	if ragCfg.Available() {
-		ragObjects, objectErr := newRAGObjectStore(osCfg, homeDir)
+		var objectErr error
+		ragObjects, objectErr = newRAGObjectStore(osCfg, homeDir)
 		if objectErr != nil {
 			if fairPlan.StartFairClaimant {
 				return nil, fmt.Errorf("rag: original object store required by fair workers: %w", objectErr)
@@ -829,6 +855,18 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		}
 	}
 
+	parserEvalRuntime, parserEvalErr := buildParserEvaluationRuntime(env.ParserEvaluation, st, ragObjects, osCfg, homeDir)
+	parserEvalReason := ""
+	if parserEvalErr != nil {
+		parserEvalReason = "runtime_unavailable"
+		slog.Error("parser evaluation runtime unavailable", "error", parserEvalErr)
+		if parserEvalRuntime == nil {
+			parserEvalCfg := env.ParserEvaluation
+			parserEvalCfg.ApplyDefaults()
+			parserEvalRuntime = &parserEvaluationRuntime{config: parserEvalCfg}
+		}
+	}
+
 	g := &Gateway{
 		bus:         mb,
 		store:       st,
@@ -858,6 +896,8 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		ragEvalCleanup:     ragEvalCleanup,
 		ragPolicyPromotion: ragPolicyPromotion,
 		ragPolicyRefresher: ragPolicyRefresher,
+		parserEval:         parserEvalRuntime,
+		parserEvalReason:   parserEvalReason,
 		ragFairQueue:       ragFairQueue,
 		imageFairQueue:     imageFairQueue,
 		fairQueueHealth:    fairQueueHealth,
@@ -1049,6 +1089,14 @@ func (g *Gateway) RunContext(ctx context.Context) error {
 	if g.ragEvaluator != nil {
 		g.ragEvaluator.StartHealthProbe(ctx)
 	}
+	if g.parserEval != nil {
+		if g.parserEval.renderer != nil {
+			g.parserEval.renderer.StartHealthProbe(ctx)
+		}
+		if g.parserEval.parsers != nil {
+			g.parserEval.parsers.StartHealthProbe(ctx)
+		}
+	}
 	if g.ragEvalRunner != nil {
 		g.ragEvalRunner.Start(ctx)
 	}
@@ -1083,6 +1131,24 @@ func (g *Gateway) RunContext(ctx context.Context) error {
 	}()
 
 	var wg sync.WaitGroup
+	if g.parserEval != nil && g.parserEval.config.WorkerEnabled && g.parserEval.runner != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := g.parserEval.runner.Run(ctx); err != nil && ctx.Err() == nil {
+				slog.Error("parser evaluation runner stopped", "error", err)
+			}
+		}()
+	}
+	if g.parserEval != nil && g.parserEval.cleanup != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := g.parserEval.cleanup.Run(ctx, time.Hour); err != nil && ctx.Err() == nil {
+				slog.Error("parser evaluation cleanup stopped", "error", err)
+			}
+		}()
+	}
 	if dbStore, ok := g.store.(*store.DBStore); ok && g.fairQueueHealth != nil {
 		expectedWriter := ""
 		var onMismatch func(error)

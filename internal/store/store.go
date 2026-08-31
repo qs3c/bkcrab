@@ -448,6 +448,7 @@ type Store interface {
 	StartParserEvalRun(ctx context.Context, id, actor, snapshotJSON, progressJSON string) (bool, error)
 	ClaimParserEvalRun(ctx context.Context, worker string, now time.Time, lease time.Duration) (*ParserEvalLease, bool, error)
 	HeartbeatParserEvalRun(ctx context.Context, lease ParserEvalLease, now time.Time, duration time.Duration) (bool, error)
+	UpdateParserEvalRunProgress(ctx context.Context, lease ParserEvalLease, stage, progressJSON string, now time.Time) (bool, error)
 	PutParserEvalDocumentResults(ctx context.Context, lease ParserEvalLease, update ParserEvalDocumentUpdate) (bool, error)
 	FinishParserEvalRun(ctx context.Context, lease ParserEvalLease, finish ParserEvalRunFinish, now time.Time) (bool, error)
 	RequestCancelParserEvalRun(ctx context.Context, id string, now time.Time) (bool, error)
