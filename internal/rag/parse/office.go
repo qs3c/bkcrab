@@ -103,6 +103,9 @@ func (p *LocalParser) parseOffice(
 	if bundle == nil {
 		return nil, fmt.Errorf("%w: Office sidecar returned a nil bundle", ErrInvalidDocument)
 	}
+	if options.SidecarTimings != nil {
+		options.SidecarTimings(bundle.Timings)
+	}
 	transferred := false
 	defer func() {
 		if !transferred {

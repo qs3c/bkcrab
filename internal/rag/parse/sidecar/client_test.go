@@ -139,7 +139,9 @@ func TestClientStreamsMultipartAndDecodesOfficeBundle(t *testing.T) {
 			if err != nil || !bytes.Equal(received, data) {
 				t.Errorf("received source len=%d err=%v", len(received), err)
 			}
+			time.Sleep(25 * time.Millisecond)
 			response.Header().Set("Content-Type", "application/x-tar")
+			response.Header().Set("X-BkCrab-Parse-Duration-Ms", "5")
 			_, _ = response.Write(officeResponseTar(t, source))
 		default:
 			response.WriteHeader(http.StatusNotFound)
@@ -165,10 +167,38 @@ func TestClientStreamsMultipartAndDecodesOfficeBundle(t *testing.T) {
 	if handle.Manifest.BundleKind != BundleKindOfficeConvert || convertCalls.Load() != 1 {
 		t.Fatalf("kind=%q calls=%d", handle.Manifest.BundleKind, convertCalls.Load())
 	}
+	if handle.Timings.ParseDuration == nil || *handle.Timings.ParseDuration != 5*time.Millisecond || handle.Timings.EndToEndDuration < 20*time.Millisecond {
+		t.Fatalf("bundle timings=%+v", handle.Timings)
+	}
 	if !guard.closed.Load() || guard.largestRead.Load() > 64*1024 {
 		t.Fatalf("source close=%v largestRead=%d", guard.closed.Load(), guard.largestRead.Load())
 	}
 }
+
+func TestParseDurationHeaderIsOptionalAndBounded(t *testing.T) {
+	timeout := 10 * time.Second
+	for _, test := range []struct {
+		raw  string
+		want *time.Duration
+	}{
+		{raw: ""},
+		{raw: "-1"},
+		{raw: "+1"},
+		{raw: "1.5"},
+		{raw: "abc"},
+		{raw: "10001"},
+		{raw: "0", want: durationPointer(0)},
+		{raw: "42", want: durationPointer(42 * time.Millisecond)},
+		{raw: "10000", want: durationPointer(10 * time.Second)},
+	} {
+		got := parseDurationHeader(test.raw, timeout)
+		if test.want == nil && got != nil || test.want != nil && (got == nil || *got != *test.want) {
+			t.Errorf("parseDurationHeader(%q)=%v want=%v", test.raw, got, test.want)
+		}
+	}
+}
+
+func durationPointer(value time.Duration) *time.Duration { return &value }
 
 func TestPDFCapabilityUnavailableDoesNotDisableOffice(t *testing.T) {
 	data := []byte("office")

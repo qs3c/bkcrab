@@ -382,11 +382,18 @@ func DecodeArtifact(reader io.Reader, maxBytes int64) (*ParsedArtifact, error) {
 }
 
 func (a *ParsedArtifact) NormalizedMarkdown() string {
-	if a == nil || len(a.Units) == 0 {
+	if a == nil {
+		return ""
+	}
+	return JoinMarkdownUnits(a.Units)
+}
+
+func JoinMarkdownUnits(units []MarkdownUnit) string {
+	if len(units) == 0 {
 		return ""
 	}
 	var builder strings.Builder
-	for i, unit := range a.Units {
+	for i, unit := range units {
 		if i > 0 {
 			builder.WriteString("\n\n")
 		}

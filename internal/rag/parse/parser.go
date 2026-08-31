@@ -24,6 +24,7 @@ type ParseOptions struct {
 	DocumentAIBudget *vision.TaskDocumentAIBudget
 	VisionScope      vision.CacheScope
 	Progress         ParseProgressFunc
+	SidecarTimings   func(sidecar.BundleTimings)
 }
 
 // ParseProgress is deliberately parser-local. Pipeline code can translate it

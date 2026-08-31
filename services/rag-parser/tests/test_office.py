@@ -1216,6 +1216,7 @@ def test_endpoint_streams_manifest_first_and_cleans_request_directory(tmp_path: 
         )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/x-tar")
+    assert response.headers["x-bkcrab-parse-duration-ms"].isdigit()
     with zipfile.ZipFile(source):
         pass
     import tarfile
@@ -1227,6 +1228,40 @@ def test_endpoint_streams_manifest_first_and_cleans_request_directory(tmp_path: 
         manifest = Manifest.from_dict(json.load(archive.extractfile("manifest.json")))
         assert manifest.source.format == "docx"
     assert list(runtime_temp.iterdir()) == []
+
+
+def test_parse_duration_excludes_ooxml_preflight_and_includes_bundle_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.main as parser_main
+
+    source = generate_all(tmp_path / "fixture-source")["docx"]
+    runtime_temp = tmp_path / "runtime-temp"
+    runtime_temp.mkdir()
+    original_preflight = parser_main.preflight_ooxml
+    original_validate = parser_main.validate_bundle_for_stream
+
+    def delayed_preflight(*args, **kwargs):
+        time.sleep(0.15)
+        return original_preflight(*args, **kwargs)
+
+    def delayed_validate(*args, **kwargs):
+        time.sleep(0.10)
+        return original_validate(*args, **kwargs)
+
+    monkeypatch.setattr(parser_main, "preflight_ooxml", delayed_preflight)
+    monkeypatch.setattr(parser_main, "validate_bundle_for_stream", delayed_validate)
+    started = time.monotonic()
+    with TestClient(create_app(_settings(runtime_temp), _FakeConverter())) as client:
+        response = client.post(
+            "/v1/office/convert?format=docx",
+            files={"file": ("input.docx", source.read_bytes(), MIME_TYPES["docx"])},
+        )
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    parse_ms = int(response.headers["x-bkcrab-parse-duration-ms"])
+    assert response.status_code == 200
+    assert parse_ms >= 90
+    assert elapsed_ms - parse_ms >= 120
 
 
 def test_office_timeout_terminates_worker_and_cleans_request_directory(

@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/rag/document"
@@ -38,11 +39,39 @@ type officeFixtureExtractor struct {
 	t       *testing.T
 	fixture officeFixture
 	calls   int
+	timings sidecar.BundleTimings
 }
 
 func (f *officeFixtureExtractor) ConvertOffice(ctx context.Context, source document.Source) (*sidecar.BundleHandle, error) {
 	f.calls++
-	return buildOfficeHandle(f.t, ctx, source, f.fixture)
+	handle, err := buildOfficeHandle(f.t, ctx, source, f.fixture)
+	if handle != nil {
+		handle.Timings = f.timings
+	}
+	return handle, err
+}
+
+func TestOfficeParserReportsSidecarTimings(t *testing.T) {
+	parseDuration := 25 * time.Millisecond
+	extractor := &officeFixtureExtractor{
+		t: t, fixture: officeFixture{markdown: "# Parsed\n"},
+		timings: sidecar.BundleTimings{ParseDuration: &parseDuration, EndToEndDuration: 40 * time.Millisecond},
+	}
+	parser := NewLocalParser(extractor, 300)
+	var received sidecar.BundleTimings
+	parsed, err := parser.Parse(context.Background(), fakeOfficeSource("docx"), ParseOptions{
+		Mode: config.ParseModeStandard,
+		SidecarTimings: func(value sidecar.BundleTimings) {
+			received = value
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parsed.Close()
+	if received.ParseDuration == nil || *received.ParseDuration != parseDuration || received.EndToEndDuration != 40*time.Millisecond {
+		t.Fatalf("timings=%+v", received)
+	}
 }
 
 func (*officeFixtureExtractor) AnalyzePDF(context.Context, document.Source) (*sidecar.BundleHandle, error) {

@@ -64,6 +64,25 @@ func TestParsedArtifactJSONRoundTripExcludesSensitiveMaterial(t *testing.T) {
 	}
 }
 
+func TestJoinMarkdownUnitsPreservesExactUnitContent(t *testing.T) {
+	units := []MarkdownUnit{
+		{Markdown: "  first\n"},
+		{Markdown: "\nsecond  "},
+		{Markdown: ""},
+	}
+	want := "  first\n\n\n\nsecond  \n\n"
+	if got := JoinMarkdownUnits(units); got != want {
+		t.Fatalf("joined markdown=%q want=%q", got, want)
+	}
+	artifact := &ParsedArtifact{Units: units}
+	if got := artifact.NormalizedMarkdown(); got != want {
+		t.Fatalf("artifact normalized markdown=%q want=%q", got, want)
+	}
+	if JoinMarkdownUnits(nil) != "" || (*ParsedArtifact)(nil).NormalizedMarkdown() != "" {
+		t.Fatal("empty markdown join must be empty")
+	}
+}
+
 func TestArtifactValidateRejectsDanglingAndNonCanonicalAssets(t *testing.T) {
 	artifact := validArtifact(t)
 	if err := artifact.Validate(); err != nil {

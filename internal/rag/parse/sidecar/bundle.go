@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 	"unicode/utf8"
 )
 
@@ -24,6 +25,7 @@ const defaultMaxManifestBytes int64 = 1 << 20
 // to ParsedDocument should transfer Close as the document cleanup function.
 type BundleHandle struct {
 	Manifest Manifest
+	Timings  BundleTimings
 
 	root     string
 	entries  map[string]string
@@ -31,6 +33,11 @@ type BundleHandle struct {
 	closed   bool
 	once     sync.Once
 	closeErr error
+}
+
+type BundleTimings struct {
+	ParseDuration    *time.Duration
+	EndToEndDuration time.Duration
 }
 
 func (h *BundleHandle) OpenEntry(ctx context.Context, entryPath string) (io.ReadCloser, error) {

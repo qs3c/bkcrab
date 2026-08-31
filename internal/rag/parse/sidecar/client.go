@@ -615,7 +615,32 @@ func (c *Client) postBundle(
 	}
 	decodeOptions.Limits = c.decodeLimits()
 	decodeOptions.TempDir = c.tempDir
-	return DecodeBundle(ctx, response.Body, decodeOptions)
+	parseDuration := parseDurationHeader(response.Header.Get("X-BkCrab-Parse-Duration-Ms"), c.timeout)
+	bundle, err = DecodeBundle(ctx, response.Body, decodeOptions)
+	if err != nil {
+		return nil, err
+	}
+	bundle.Timings = BundleTimings{
+		ParseDuration: parseDuration, EndToEndDuration: time.Since(started),
+	}
+	return bundle, nil
+}
+
+func parseDurationHeader(raw string, clientTimeout time.Duration) *time.Duration {
+	if raw == "" || len(raw) > 18 || clientTimeout <= 0 {
+		return nil
+	}
+	for _, character := range raw {
+		if character < '0' || character > '9' {
+			return nil
+		}
+	}
+	milliseconds, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || milliseconds > clientTimeout.Milliseconds() || milliseconds > int64(^uint64(0)>>1)/int64(time.Millisecond) {
+		return nil
+	}
+	duration := time.Duration(milliseconds) * time.Millisecond
+	return &duration
 }
 
 func sidecarTelemetryErrorCode(err error) string {

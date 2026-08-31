@@ -49,6 +49,7 @@ from .protocol import (
     Bundle,
     BundleLimits,
     Manifest,
+    ManifestWarning,
     PayloadEntry,
     ProtocolError,
     env_positive_int,
@@ -224,6 +225,8 @@ class _ParserWork:
     converter: object | None = None
     pdf_engine: object | None = None
     requested_pages: tuple[int, ...] = ()
+    sanitized_source: Path | None = None
+    preflight_warnings: tuple[ManifestWarning, ...] = ()
 
 
 def _request_id(request: Request) -> str:
@@ -334,22 +337,27 @@ def _build_parser_bundle(work: _ParserWork) -> Bundle:
                 request_dir=work.request_dir,
                 converter=active_converter,
             )
-        preflight = preflight_ooxml(
-            work.source,
-            work.source_format,
-            work.request_dir,
-            work.office_limits,
-        )
+        sanitized_source = work.sanitized_source
+        preflight_warnings = work.preflight_warnings
+        if sanitized_source is None:
+            preflight = preflight_ooxml(
+                work.source,
+                work.source_format,
+                work.request_dir,
+                work.office_limits,
+            )
+            sanitized_source = preflight.sanitized_path
+            preflight_warnings = preflight.warnings
         return build_office_bundle(
             original_source=work.source,
-            sanitized_source=preflight.sanitized_path,
+            sanitized_source=sanitized_source,
             source_format=work.source_format,
             source_sha256=work.source_sha256,
             source_size=work.source_size,
             request_dir=work.request_dir,
             converter=active_converter,
             limits=work.office_limits,
-            preflight_warnings=preflight.warnings,
+            preflight_warnings=preflight_warnings,
         )
 
     if work.pdf_limits is None or not isinstance(work.pdf_engine, PDFEngine):
@@ -713,6 +721,19 @@ def create_app(
                 require_ooxml=source_format in OFFICE_FORMATS,
             )
             await file.close()
+            sanitized_source = None
+            preflight_warnings: tuple[ManifestWarning, ...] = ()
+            if source_format in OFFICE_FORMATS:
+                preflight = await asyncio.to_thread(
+                    preflight_ooxml,
+                    original,
+                    source_format,
+                    request_dir,
+                    runtime.office_limits,
+                )
+                sanitized_source = preflight.sanitized_path
+                preflight_warnings = preflight.warnings
+            parse_started = time.monotonic()
             bundle = await _run_parser_operation(
                 request,
                 runtime.parse_timeout_seconds,
@@ -726,6 +747,8 @@ def create_app(
                     office_engine=runtime.office_engine,
                     office_limits=runtime.office_limits,
                     converter=converter,
+                    sanitized_source=sanitized_source,
+                    preflight_warnings=preflight_warnings,
                 ),
                 OfficeError("parse_timeout", "Office conversion timed out", 504),
             )
@@ -755,6 +778,7 @@ def create_app(
         except BaseException:
             bundle.close()
             raise
+        parse_duration_ms = max(0, int((time.monotonic() - parse_started) * 1000))
         return StreamingResponse(
             stream_tar(bundle, limits),
             media_type="application/x-tar",
@@ -762,6 +786,7 @@ def create_app(
                 "Content-Disposition": "attachment; filename=rag-parser-bundle.tar",
                 "X-Request-ID": request_id,
                 "X-Content-Type-Options": "nosniff",
+                "X-BkCrab-Parse-Duration-Ms": str(parse_duration_ms),
             },
         )
 
