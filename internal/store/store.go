@@ -435,6 +435,26 @@ type Store interface {
 	ClaimRAGEvalGenerationGC(ctx context.Context, before time.Time, worker string, lease time.Duration) (*RAGEvalGenerationFence, bool, error)
 	FinishRAGEvalGenerationGC(ctx context.Context, fence RAGEvalGenerationFence) (bool, error)
 
+	// --- Document parser evaluation (separate from RAG evaluation) ---
+	CreateParserEvalRun(ctx context.Context, record *ParserEvalRunRecord) error
+	GetParserEvalRun(ctx context.Context, id string) (*ParserEvalRunRecord, error)
+	ListParserEvalRuns(ctx context.Context, cursor string, limit int) ([]ParserEvalRunRecord, error)
+	ReserveParserEvalDocument(ctx context.Context, record *ParserEvalDocumentRecord, maxFiles int, maxBytes int64) error
+	CompleteParserEvalDocumentUpload(ctx context.Context, runID, documentID, sourceObjectKey string) (bool, error)
+	AbortParserEvalDocumentUpload(ctx context.Context, runID, documentID string) (bool, error)
+	DeleteParserEvalDraftDocument(ctx context.Context, runID, documentID string) (bool, error)
+	GetParserEvalDocument(ctx context.Context, runID, documentID string) (*ParserEvalDocumentRecord, error)
+	ListParserEvalDocuments(ctx context.Context, runID string) ([]ParserEvalDocumentRecord, error)
+	StartParserEvalRun(ctx context.Context, id, actor, snapshotJSON, progressJSON string) (bool, error)
+	ClaimParserEvalRun(ctx context.Context, worker string, now time.Time, lease time.Duration) (*ParserEvalLease, bool, error)
+	HeartbeatParserEvalRun(ctx context.Context, lease ParserEvalLease, now time.Time, duration time.Duration) (bool, error)
+	PutParserEvalDocumentResults(ctx context.Context, lease ParserEvalLease, update ParserEvalDocumentUpdate) (bool, error)
+	FinishParserEvalRun(ctx context.Context, lease ParserEvalLease, finish ParserEvalRunFinish, now time.Time) (bool, error)
+	RequestCancelParserEvalRun(ctx context.Context, id string, now time.Time) (bool, error)
+	RequeueParserEvalFailures(ctx context.Context, id string, now time.Time) (bool, error)
+	ListExpiredParserEvalRuns(ctx context.Context, now time.Time, limit int) ([]ParserEvalRunRecord, error)
+	PurgeParserEvalRun(ctx context.Context, id string) (bool, error)
+
 	// --- RAG policies, immutable index generations, and policy sync ---
 	CreateRAGPolicy(ctx context.Context, record *RAGPolicyRecord) error
 	ActivateRAGPolicy(ctx context.Context, kind string, expected, current int64, actor, sourceRun, note, action string) (bool, error)
