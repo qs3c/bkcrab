@@ -18,14 +18,15 @@ const RAGLegacyTaskMigrationModeOfflineV1 = "offline-v1"
 // 显式名称）设置。systemd unit、docker-compose、k8s deployment env 是
 // 规范的设置位置。
 type EnvConfig struct {
-	Gateway       EnvGateway
-	Storage       EnvStorage
-	Sandbox       EnvSandbox
-	MCPGateway    EnvMCPGateway
-	Log           EnvLog
-	RAG           RAGCfg
-	FairQueue     FairQueueCfg
-	ImagegenBatch ImagegenBatchCfg
+	Gateway          EnvGateway
+	Storage          EnvStorage
+	Sandbox          EnvSandbox
+	MCPGateway       EnvMCPGateway
+	Log              EnvLog
+	RAG              RAGCfg
+	ParserEvaluation ParserEvaluationCfg
+	FairQueue        FairQueueCfg
+	ImagegenBatch    ImagegenBatchCfg
 
 	// RAGLegacyTaskMigrationMode is a deployment-only acknowledgement for the
 	// offline legacy index-task backfill. It is intentionally separate from
@@ -44,6 +45,7 @@ type EnvConfig struct {
 	ragDocumentAIAllowedEndpointHostsSet bool
 	ragEvaluationEnabledSet              bool
 	ragEvaluationCostBudgetDisabledSet   bool
+	parserEvaluationConfigured           bool
 }
 
 type EnvGateway struct {
@@ -87,9 +89,10 @@ func LoadEnv() *EnvConfig {
 	cfg := &EnvConfig{
 		// MySQL 默认必需。AutoMigrate 创建全新 schema，但仍需 DSN，
 		// 且启动时绝不回退到 SQLite。
-		Storage:       EnvStorage{Type: "mysql", AutoMigrate: true},
-		FairQueue:     DefaultFairQueueCfg(),
-		ImagegenBatch: DefaultImagegenBatchCfg(),
+		Storage:          EnvStorage{Type: "mysql", AutoMigrate: true},
+		FairQueue:        DefaultFairQueueCfg(),
+		ImagegenBatch:    DefaultImagegenBatchCfg(),
+		ParserEvaluation: DefaultParserEvaluationCfg(),
 		MCPGateway: EnvMCPGateway{
 			Enabled:       true,
 			Image:         "ghcr.io/lucky-aeon/mcp-gateway:latest",
@@ -98,6 +101,7 @@ func LoadEnv() *EnvConfig {
 			IdleTTLSec:    1800,
 		},
 	}
+	cfg.parserEvaluationConfigured = true
 
 	if v := os.Getenv("BKCRAB_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {
@@ -174,6 +178,52 @@ func LoadEnv() *EnvConfig {
 
 	if v := os.Getenv("BKCRAB_LOG_LEVEL"); v != "" {
 		cfg.Log.Level = v
+	}
+	if v, ok := lookupEnvBool("BKCRAB_PARSER_EVAL_ENABLED"); ok {
+		cfg.ParserEvaluation.Enabled = v
+	}
+	if v, ok := lookupEnvBool("BKCRAB_PARSER_EVAL_WORKER_ENABLED"); ok {
+		cfg.ParserEvaluation.WorkerEnabled = v
+		cfg.ParserEvaluation.workerEnabledSet = true
+	}
+	if v := strings.TrimSpace(os.Getenv("BKCRAB_PARSER_EVAL_RENDERER_ENDPOINT")); v != "" {
+		cfg.ParserEvaluation.RendererEndpoint = v
+	}
+	if v := strings.TrimSpace(os.Getenv("BKCRAB_PARSER_EVAL_MARKITDOWN_ENDPOINT")); v != "" {
+		cfg.ParserEvaluation.MarkItDownEndpoint = v
+	}
+	if v := strings.TrimSpace(os.Getenv("BKCRAB_PARSER_EVAL_ANYDOC_ENDPOINT")); v != "" {
+		cfg.ParserEvaluation.AnyDocEndpoint = v
+	}
+	if v := positiveEnvInt("BKCRAB_PARSER_EVAL_RENDER_TIMEOUT_MS"); v > 0 {
+		cfg.ParserEvaluation.RenderTimeoutMS = v
+	}
+	if v := positiveEnvInt("BKCRAB_PARSER_EVAL_PARSE_TIMEOUT_MS"); v > 0 {
+		cfg.ParserEvaluation.ParseTimeoutMS = v
+	}
+	if v := positiveEnvInt("BKCRAB_PARSER_EVAL_JUDGE_TIMEOUT_MS"); v > 0 {
+		cfg.ParserEvaluation.JudgeTimeoutMS = v
+	}
+	if v := positiveEnvInt64("BKCRAB_PARSER_EVAL_MAX_FILE_BYTES"); v > 0 {
+		cfg.ParserEvaluation.MaxFileBytes = v
+	}
+	if v := positiveEnvInt("BKCRAB_PARSER_EVAL_MAX_FILES"); v > 0 {
+		cfg.ParserEvaluation.MaxFiles = v
+	}
+	if v := positiveEnvInt64("BKCRAB_PARSER_EVAL_MAX_BATCH_BYTES"); v > 0 {
+		cfg.ParserEvaluation.MaxBatchBytes = v
+	}
+	if v := positiveEnvInt("BKCRAB_PARSER_EVAL_RETENTION_DAYS"); v > 0 {
+		cfg.ParserEvaluation.RetentionDays = v
+	}
+	if v := positiveEnvInt("BKCRAB_PARSER_EVAL_MAX_PAGES"); v > 0 {
+		cfg.ParserEvaluation.MaxPages = v
+	}
+	if v := positiveEnvInt("BKCRAB_PARSER_EVAL_RENDER_DPI"); v > 0 {
+		cfg.ParserEvaluation.RenderDPI = v
+	}
+	if v := positiveEnvInt("BKCRAB_PARSER_EVAL_MARKDOWN_JUDGE_CHARS"); v > 0 {
+		cfg.ParserEvaluation.MarkdownJudgeChars = v
 	}
 	applyFairQueueEnv(&cfg.FairQueue)
 	applyImagegenBatchEnv(&cfg.ImagegenBatch)
@@ -1159,6 +1209,9 @@ func (e *EnvConfig) ApplyToConfig(cfg *Config) {
 		if e.Sandbox.BoxlitePrefix != "" {
 			cfg.Sandbox.BoxlitePrefix = e.Sandbox.BoxlitePrefix
 		}
+	}
+	if e.parserEvaluationConfigured || e.ParserEvaluation != (ParserEvaluationCfg{}) {
+		cfg.ParserEvaluation = e.ParserEvaluation
 	}
 	applyObjectStoreEnv(cfg)
 }

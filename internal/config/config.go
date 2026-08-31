@@ -695,28 +695,29 @@ func (c SkillLifecycleCfg) IsEnabled() bool {
 // 数据库（system_settings、providers、channels、agents）组装此结构；
 // 调用方从不会将其序列化回写——数据库表是持久化的真实来源。
 type Config struct {
-	Providers     map[string]ProviderConfig  `json:"providers"`
-	Agents        AgentsConfig               `json:"agents"`
-	Channels      map[string]ChannelConfig   `json:"channels"`
-	Bindings      []Binding                  `json:"bindings,omitempty"`
-	Teams         map[string]TeamEntry       `json:"teams,omitempty"`
-	MCPServers    map[string]MCPServerConfig `json:"mcpServers,omitempty"`
-	CronJobs      []CronJob                  `json:"cronJobs,omitempty"`
-	Heartbeat     HeartbeatCfg               `json:"heartbeat,omitempty"`
-	Storage       StorageCfg                 `json:"storage,omitempty"`
-	Sandbox       SandboxCfg                 `json:"sandbox,omitempty"`
-	ToolProviders map[string]ToolProviderCfg `json:"toolProviders,omitempty"`
-	Tools         map[string]ToolCategoryCfg `json:"tools,omitempty"`
-	ObjectStore   ObjectStoreCfg             `json:"objectStore,omitempty"`
-	Hooks         HooksCfg                   `json:"hooks,omitempty"`
-	Plugins       PluginsCfg                 `json:"plugins,omitempty"`
-	Gateway       GatewayCfg                 `json:"gateway,omitempty"`
-	TaskQueue     TaskQueueCfg               `json:"taskQueue,omitempty"`
-	Skills        SkillsCfg                  `json:"skills,omitempty"`
-	RAG           RAGCfg                     `json:"rag,omitempty"`
-	Memory        MemoryCfg                  `json:"memory,omitempty"`
-	Privacy       PrivacyCfg                 `json:"privacy,omitempty"`
-	SkillsLearner SkillsLearnerCfg           `json:"skillsLearner,omitempty"`
+	Providers        map[string]ProviderConfig  `json:"providers"`
+	Agents           AgentsConfig               `json:"agents"`
+	Channels         map[string]ChannelConfig   `json:"channels"`
+	Bindings         []Binding                  `json:"bindings,omitempty"`
+	Teams            map[string]TeamEntry       `json:"teams,omitempty"`
+	MCPServers       map[string]MCPServerConfig `json:"mcpServers,omitempty"`
+	CronJobs         []CronJob                  `json:"cronJobs,omitempty"`
+	Heartbeat        HeartbeatCfg               `json:"heartbeat,omitempty"`
+	Storage          StorageCfg                 `json:"storage,omitempty"`
+	Sandbox          SandboxCfg                 `json:"sandbox,omitempty"`
+	ToolProviders    map[string]ToolProviderCfg `json:"toolProviders,omitempty"`
+	Tools            map[string]ToolCategoryCfg `json:"tools,omitempty"`
+	ObjectStore      ObjectStoreCfg             `json:"objectStore,omitempty"`
+	Hooks            HooksCfg                   `json:"hooks,omitempty"`
+	Plugins          PluginsCfg                 `json:"plugins,omitempty"`
+	Gateway          GatewayCfg                 `json:"gateway,omitempty"`
+	TaskQueue        TaskQueueCfg               `json:"taskQueue,omitempty"`
+	Skills           SkillsCfg                  `json:"skills,omitempty"`
+	RAG              RAGCfg                     `json:"rag,omitempty"`
+	ParserEvaluation ParserEvaluationCfg        `json:"parserEvaluation,omitempty"`
+	Memory           MemoryCfg                  `json:"memory,omitempty"`
+	Privacy          PrivacyCfg                 `json:"privacy,omitempty"`
+	SkillsLearner    SkillsLearnerCfg           `json:"skillsLearner,omitempty"`
 }
 
 // ModelCost 保存模型的定价信息。
@@ -2018,6 +2019,7 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Agents.Defaults.MaxToolIterations = 200
 	}
 	cfg.RAG.ApplyDefaults()
+	cfg.ParserEvaluation.ApplyDefaults()
 }
 
 // MergedAgentConfig 合并默认值与 agent 条目以生成完全解析的 agent 配置。
