@@ -78,6 +78,13 @@ func TestParserEvalStartLeaseFenceRetryAndPurge(t *testing.T) {
 	if alive, err := st.HeartbeatParserEvalRun(ctx, *lease1, now.Add(10*time.Second), time.Minute); err != nil || !alive {
 		t.Fatalf("heartbeat=%v err=%v", alive, err)
 	}
+	if updated, err := st.UpdateParserEvalRunProgress(ctx, *lease1, ParserEvalRunStageParsing, `{"documentsTotal":1,"documentsCompleted":0,"currentDocumentId":"ped_lifecycle"}`, now.Add(11*time.Second)); err != nil || !updated {
+		t.Fatalf("update progress=%v err=%v", updated, err)
+	}
+	progressed, err := st.GetParserEvalRun(ctx, run.ID)
+	if err != nil || progressed.Stage != ParserEvalRunStageParsing || !strings.Contains(progressed.ProgressJSON, `"currentDocumentId":"ped_lifecycle"`) {
+		t.Fatalf("progressed run=%+v err=%v", progressed, err)
+	}
 	lease2, ok, err := st.ClaimParserEvalRun(ctx, "worker-2", now.Add(2*time.Minute), time.Minute)
 	if err != nil || !ok || lease2.FenceToken != 2 {
 		t.Fatalf("claim2=%+v ok=%v err=%v", lease2, ok, err)

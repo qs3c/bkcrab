@@ -549,6 +549,23 @@ func (d *DBStore) HeartbeatParserEvalRun(ctx context.Context, lease ParserEvalLe
 	return rows == 1, err
 }
 
+func (d *DBStore) UpdateParserEvalRunProgress(ctx context.Context, lease ParserEvalLease, stage, progressJSON string, now time.Time) (bool, error) {
+	if !validParserEvalRunStage(stage) || !validParserEvalJSON(progressJSON) {
+		return false, errors.New("invalid parser evaluation progress")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	result, err := d.db.ExecContext(ctx, fmt.Sprintf(`UPDATE parser_eval_runs SET stage=%s,progress_json=%s,updated_at=%s WHERE id=%s AND status=%s AND lease_owner=%s AND fence_token=%s AND lease_until>%s`,
+		d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8)),
+		stage, progressJSON, now, lease.RunID, ParserEvalRunRunning, lease.LeaseOwner, lease.FenceToken, now)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows == 1, err
+}
+
 func parserEvalSlotSucceeded(raw string) bool {
 	var status struct {
 		Status string `json:"status"`

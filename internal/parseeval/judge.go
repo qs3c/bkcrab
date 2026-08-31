@@ -39,6 +39,7 @@ type JudgeInput struct {
 	Pages      []JudgePage
 	MarkItDown string
 	AnyDoc     string
+	Existing   *JudgeResult
 }
 
 type BlindJudge struct {
@@ -52,6 +53,19 @@ func (j BlindJudge) Evaluate(ctx context.Context, input JudgeInput) JudgeResult 
 	pages, err := validateJudgeInput(input)
 	if err != nil {
 		return failedJudgeResult("invalid_judge_input", err.Error())
+	}
+	first := JudgeSlot{Order: JudgeMarkItDownA, Status: StepPending}
+	second := JudgeSlot{Order: JudgeAnyDocA, Status: StepPending}
+	if input.Existing != nil {
+		if err := input.Existing.Validate(); err != nil {
+			return failedJudgeResult("invalid_existing_judge_result", err.Error())
+		}
+		if input.Existing.MarkItDownA.Successful() {
+			first = input.Existing.MarkItDownA
+		}
+		if input.Existing.AnyDocA.Successful() {
+			second = input.Existing.AnyDocA
+		}
 	}
 	if j.Resolve == nil {
 		return failedJudgeResult("judge_resolver_unavailable", "judge resolver is not configured")
@@ -71,8 +85,12 @@ func (j BlindJudge) Evaluate(ctx context.Context, input JudgeInput) JudgeResult 
 	markitdown := truncateRunes(input.MarkItDown, limit)
 	anydoc := truncateRunes(input.AnyDoc, limit)
 
-	first := j.evaluateSlot(ctx, model, input.Binding, pages, JudgeMarkItDownA, markitdown, anydoc)
-	second := j.evaluateSlot(ctx, model, input.Binding, pages, JudgeAnyDocA, anydoc, markitdown)
+	if !first.Successful() {
+		first = j.evaluateSlot(ctx, model, input.Binding, pages, JudgeMarkItDownA, markitdown, anydoc)
+	}
+	if !second.Successful() {
+		second = j.evaluateSlot(ctx, model, input.Binding, pages, JudgeAnyDocA, anydoc, markitdown)
+	}
 	result := JudgeResult{
 		Status:      StepFailed,
 		MarkItDownA: first,

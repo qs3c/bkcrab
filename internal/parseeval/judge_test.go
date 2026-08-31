@@ -240,3 +240,20 @@ func TestBlindJudgeHandlesCallFailureInvalidBindingAndTimeout(t *testing.T) {
 		}
 	})
 }
+
+func TestBlindJudgeReusesSuccessfulExistingSlot(t *testing.T) {
+	model := &fakeJudgeModel{responses: []*provider.Response{{Content: validJudgeJSON}}}
+	writes := []JudgeOrder{}
+	judge := BlindJudge{Resolve: func(context.Context, string, JudgeBindingSnapshot) (JudgeModel, error) { return model, nil }, WriteRaw: testRawWriter(t, &writes), Timeout: time.Second}
+	artifact := StoredArtifact{ObjectKey: "parser-eval/runs/run/documents/doc/judge/markitdown-a.json", SHA256: strings.Repeat("d", 64), MediaType: "application/json", ByteSize: 10}
+	existing := JudgeResult{
+		Status:      StepFailed,
+		MarkItDownA: JudgeSlot{Order: JudgeMarkItDownA, Status: StepSucceeded, Verdict: BlindVerdict{A: BlindScores{5, 5, 5, 5}, B: BlindScores{1, 1, 1, 1}, Winner: PositionWinnerA, Reason: "valid"}, Raw: artifact},
+		AnyDocA:     JudgeSlot{Order: JudgeAnyDocA, Status: StepFailed, Error: ErrorDetail{Code: "judge_call_failed", Message: "failed"}},
+		Error:       ErrorDetail{Code: "judge_incomplete", Message: "failed"},
+	}
+	result := judge.Evaluate(context.Background(), JudgeInput{Binding: testJudgeBinding(), Pages: []JudgePage{{Page: 1, PNG: []byte("png")}}, MarkItDown: "a", AnyDoc: "b", Existing: &existing})
+	if result.Status != StepSucceeded || len(model.Calls()) != 1 || len(writes) != 1 || writes[0] != JudgeAnyDocA {
+		t.Fatalf("resume result=%+v calls=%d writes=%v", result, len(model.Calls()), writes)
+	}
+}
