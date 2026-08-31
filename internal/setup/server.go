@@ -20,6 +20,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/fairqueue"
 	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
+	"github.com/qs3c/bkcrab/internal/parseeval"
 	"github.com/qs3c/bkcrab/internal/rag"
 	rageval "github.com/qs3c/bkcrab/internal/rag/eval"
 	"github.com/qs3c/bkcrab/internal/session"
@@ -100,6 +101,9 @@ type Server struct {
 	ragEvalAdmin          *rageval.AdminService
 	ragEvalJudgeResolver  RAGEvalJudgeResolver
 	ragPolicyPromotion    *rag.PolicyPromotionService
+	parserEvalService     *parseeval.Service
+	parserEvalCleanup     *parseeval.Cleanup
+	parserEvalCaps        ParserEvaluationCapabilitiesProvider
 	fairHealthMu          sync.RWMutex
 	fairHealthProvider    FairQueueHealthProvider
 	startedAt             time.Time
@@ -118,6 +122,10 @@ type RAGParserHealthMatrixProvider interface {
 
 type RAGEvaluatorHealthProvider interface {
 	RAGEvaluatorHealthSnapshot() config.RAGEvaluatorHealthSnapshot
+}
+
+type ParserEvaluationCapabilitiesProvider interface {
+	ParserEvaluationCapabilities(context.Context, string) (parseeval.Capabilities, error)
 }
 
 // FairQueueHealthProvider exposes a cached, serialization-safe runtime
@@ -281,6 +289,18 @@ func (s *Server) SetRAGEvaluationCatalogImportRunner(runner *rageval.CatalogImpo
 }
 func (s *Server) SetRAGEvaluationJudgeResolver(resolver RAGEvalJudgeResolver) {
 	s.ragEvalJudgeResolver = resolver
+}
+
+func (s *Server) SetParserEvaluationService(service *parseeval.Service) {
+	s.parserEvalService = service
+}
+
+func (s *Server) SetParserEvaluationCleanup(cleanup *parseeval.Cleanup) {
+	s.parserEvalCleanup = cleanup
+}
+
+func (s *Server) SetParserEvaluationCapabilitiesProvider(provider ParserEvaluationCapabilitiesProvider) {
+	s.parserEvalCaps = provider
 }
 func (s *Server) SetRAGPolicyPromotionService(service *rag.PolicyPromotionService) {
 	s.ragPolicyPromotion = service
@@ -450,6 +470,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("PUT /api/admin/registration", admin(s.handleSetRegistration))
 	mux.HandleFunc("GET /api/admin/chats", admin(s.handleAdminChats))
 	s.registerRAGEvaluationRoutes(mux, evalAdmin)
+	s.registerParserEvaluationRoutes(mux, evalAdmin)
 	s.registerRAGPolicyRoutes(mux, evalAdmin)
 	mux.HandleFunc("GET /api/admin/health/fairqueue", admin(s.handleFairQueueHealth))
 

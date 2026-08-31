@@ -48,6 +48,14 @@ type parserEvalStore interface {
 	GetParserEvalDocument(context.Context, string, string) (*store.ParserEvalDocumentRecord, error)
 }
 
+type parserEvalLifecycleStore interface {
+	ListParserEvalRuns(context.Context, string, int) ([]store.ParserEvalRunRecord, error)
+	ListParserEvalDocuments(context.Context, string) ([]store.ParserEvalDocumentRecord, error)
+	StartParserEvalRun(context.Context, string, string, string, string) (bool, error)
+	RequestCancelParserEvalRun(context.Context, string, time.Time) (bool, error)
+	RequeueParserEvalFailures(context.Context, string, time.Time) (bool, error)
+}
+
 type Service struct {
 	store   parserEvalStore
 	objects objects.Store
@@ -64,6 +72,194 @@ func NewService(database parserEvalStore, objectStore objects.Store, cfg config.
 		return nil, err
 	}
 	return &Service{store: database, objects: objectStore, config: cfg, now: func() time.Time { return time.Now().UTC() }}, nil
+}
+
+func (s *Service) Limits() config.ParserEvaluationCfg { return s.config }
+
+type RunWithDocuments struct {
+	Run       store.ParserEvalRunRecord
+	Documents []store.ParserEvalDocumentRecord
+}
+
+func (s *Service) ListRuns(ctx context.Context, actor, cursor string, limit int) ([]store.ParserEvalRunRecord, error) {
+	if err := validateActor(actor); err != nil {
+		return nil, err
+	}
+	lifecycle, ok := s.store.(parserEvalLifecycleStore)
+	if !ok {
+		return nil, errors.New("parser evaluation lifecycle store is unavailable")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	visible := make([]store.ParserEvalRunRecord, 0, limit)
+	scanCursor := cursor
+	for len(visible) < limit {
+		runs, err := lifecycle.ListParserEvalRuns(ctx, scanCursor, 200)
+		if err != nil {
+			return nil, err
+		}
+		for _, run := range runs {
+			scanCursor = run.ID
+			if run.CreatedBy == actor {
+				visible = append(visible, run)
+				if len(visible) == limit {
+					return visible, nil
+				}
+			}
+		}
+		if len(runs) < 200 {
+			break
+		}
+	}
+	return visible, nil
+}
+
+func (s *Service) GetRun(ctx context.Context, runID, actor string) (*RunWithDocuments, error) {
+	if err := validateActor(actor); err != nil {
+		return nil, err
+	}
+	run, err := s.store.GetParserEvalRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run.CreatedBy != actor {
+		return nil, ErrForbidden
+	}
+	lifecycle, ok := s.store.(parserEvalLifecycleStore)
+	if !ok {
+		return nil, errors.New("parser evaluation lifecycle store is unavailable")
+	}
+	documents, err := lifecycle.ListParserEvalDocuments(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	return &RunWithDocuments{Run: *run, Documents: documents}, nil
+}
+
+func (s *Service) StartRun(ctx context.Context, runID, actor string, snapshot ExecutionSnapshot) (*store.ParserEvalRunRecord, error) {
+	if err := validateActor(actor); err != nil {
+		return nil, err
+	}
+	if err := snapshot.Validate(); err != nil {
+		return nil, err
+	}
+	if snapshot.CreatedBy != actor || snapshot.JudgePromptVersion != JudgePromptVersion || snapshot.MaxPages != s.config.MaxPages ||
+		snapshot.RenderDPI != s.config.RenderDPI || snapshot.MarkdownJudgeChars != s.config.MarkdownJudgeChars || snapshot.ParserConcurrency != 1 {
+		return nil, errors.New("execution snapshot does not match the parser evaluation contract")
+	}
+	run, err := s.store.GetParserEvalRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run.CreatedBy != actor {
+		return nil, ErrForbidden
+	}
+	if run.Status != store.ParserEvalRunDraft {
+		current, decodeErr := DecodeClosedJSON[ExecutionSnapshot]([]byte(run.ExecutionSnapshotJSON), MaxSnapshotJSONBytes, func(value *ExecutionSnapshot) error { return value.Validate() })
+		if decodeErr == nil && current == snapshot && (run.Status == store.ParserEvalRunQueued || run.Status == store.ParserEvalRunRunning) {
+			return run, nil
+		}
+		return nil, ErrImmutable
+	}
+	selection, err := DecodeClosedJSON[DraftSelection]([]byte(run.ExecutionSnapshotJSON), MaxSnapshotJSONBytes, func(value *DraftSelection) error { return value.Validate() })
+	if err != nil || selection.JudgeModelBindingID != snapshot.Judge.ID {
+		return nil, errors.New("selected judge model does not match the draft")
+	}
+	lifecycle, ok := s.store.(parserEvalLifecycleStore)
+	if !ok {
+		return nil, errors.New("parser evaluation lifecycle store is unavailable")
+	}
+	documents, err := lifecycle.ListParserEvalDocuments(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	snapshotJSON, err := EncodeBoundedJSON(snapshot, MaxSnapshotJSONBytes)
+	if err != nil {
+		return nil, err
+	}
+	progressJSON, err := EncodeBoundedJSON(RunProgress{DocumentsTotal: len(documents)}, MaxSnapshotJSONBytes)
+	if err != nil {
+		return nil, err
+	}
+	started, err := lifecycle.StartParserEvalRun(ctx, runID, actor, snapshotJSON, progressJSON)
+	if err != nil {
+		return nil, err
+	}
+	if !started {
+		return nil, ErrImmutable
+	}
+	return s.store.GetParserEvalRun(ctx, runID)
+}
+
+func (s *Service) CancelRun(ctx context.Context, runID, actor string) (*store.ParserEvalRunRecord, error) {
+	run, err := s.ownedRun(ctx, runID, actor)
+	if err != nil {
+		return nil, err
+	}
+	if run.CancelRequestedAt.Valid {
+		return run, nil
+	}
+	if RunStatus(run.Status).Terminal() {
+		if run.Status == store.ParserEvalRunCancelled {
+			return run, nil
+		}
+		return nil, ErrImmutable
+	}
+	lifecycle, ok := s.store.(parserEvalLifecycleStore)
+	if !ok {
+		return nil, errors.New("parser evaluation lifecycle store is unavailable")
+	}
+	changed, err := lifecycle.RequestCancelParserEvalRun(ctx, runID, s.now())
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		return nil, ErrImmutable
+	}
+	return s.store.GetParserEvalRun(ctx, runID)
+}
+
+func (s *Service) RetryRun(ctx context.Context, runID, actor string) (*store.ParserEvalRunRecord, error) {
+	run, err := s.ownedRun(ctx, runID, actor)
+	if err != nil {
+		return nil, err
+	}
+	if run.Status == store.ParserEvalRunQueued || run.Status == store.ParserEvalRunRunning {
+		return run, nil
+	}
+	if run.Status != store.ParserEvalRunPartial && run.Status != store.ParserEvalRunFailed {
+		return nil, ErrImmutable
+	}
+	lifecycle, ok := s.store.(parserEvalLifecycleStore)
+	if !ok {
+		return nil, errors.New("parser evaluation lifecycle store is unavailable")
+	}
+	changed, err := lifecycle.RequeueParserEvalFailures(ctx, runID, s.now())
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		return nil, ErrImmutable
+	}
+	return s.store.GetParserEvalRun(ctx, runID)
+}
+
+func (s *Service) ownedRun(ctx context.Context, runID, actor string) (*store.ParserEvalRunRecord, error) {
+	if err := validateActor(actor); err != nil {
+		return nil, err
+	}
+	run, err := s.store.GetParserEvalRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run.CreatedBy != actor {
+		return nil, ErrForbidden
+	}
+	return run, nil
 }
 
 type DraftSelection struct {
