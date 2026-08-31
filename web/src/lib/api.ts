@@ -2958,3 +2958,364 @@ export async function cancelRAGEvalRun(id: string): Promise<void> {
     headers: { "Idempotency-Key": ragEvalIdempotencyKey() },
   }));
 }
+
+// ---------- 超级管理员：文档解析测评 ----------
+
+export type ParserEvalEngine = "markitdown" | "anydoc";
+export type ParserEvalRunStatus = "DRAFT" | "QUEUED" | "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED" | "CANCELLED";
+export type ParserEvalStepStatus = "PENDING" | "SUCCEEDED" | "FAILED" | "SKIPPED";
+
+export interface ParserEvalHealth {
+  healthy: boolean;
+  reason?: string;
+  checkedAt?: string;
+  expiresAt?: string;
+}
+
+export interface ParserEvalParserDescriptor {
+  name: string;
+  version: string;
+  wrapperVersion: string;
+}
+
+export interface ParserEvalRendererDescriptor {
+  protocolVersion: string;
+  serviceVersion: string;
+  libreOfficeVersion: string;
+  pyMuPDFVersion: string;
+}
+
+export interface ParserEvalJudgeBinding {
+  id: string;
+  provider: string;
+  model: string;
+  fingerprint: string;
+  modelDisplayName: string;
+  pricingKnown: boolean;
+  inputCostPerMillion: number;
+  outputCostPerMillion: number;
+}
+
+export interface ParserEvalCapabilities {
+  enabled: boolean;
+  available: boolean;
+  reason?: string;
+  workerEnabled: boolean;
+  supportedFormats: Array<"docx" | "pptx" | "xlsx">;
+  maxFiles: number;
+  maxFileBytes: number;
+  maxBatchBytes: number;
+  maxPages: number;
+  renderDPI: number;
+  markdownJudgeChars: number;
+  scoringDimensions: string[];
+  renderer: { health: ParserEvalHealth; descriptor: ParserEvalRendererDescriptor };
+  parsers: Array<{ engine: ParserEvalEngine; health: ParserEvalHealth; descriptor: ParserEvalParserDescriptor }>;
+  judgeModelBindings: ParserEvalJudgeBinding[];
+}
+
+export interface ParserEvalErrorDetail {
+  code?: string;
+  message?: string;
+}
+
+export interface ParserEvalStructureStats {
+  version?: string;
+  characters?: number;
+  headings?: number;
+  tableDataRows?: number;
+  listItems?: number;
+  links?: number;
+  imageOrAssetMarkers?: number;
+  footnoteDefinitions?: number;
+  parserWarnings?: number;
+}
+
+export interface ParserEvalParseResult {
+  status: ParserEvalStepStatus;
+  descriptor?: ParserEvalParserDescriptor;
+  order?: number;
+  parseDurationMs?: number;
+  endToEndDurationMs?: number;
+  markdown?: { sha256?: string; mediaType?: string; byteSize?: number };
+  stats?: ParserEvalStructureStats;
+  warnings?: Array<{ code: string; message: string; degraded: boolean }>;
+  error?: ParserEvalErrorDetail;
+}
+
+export interface ParserEvalQualityScore {
+  completeness: number;
+  structure: number;
+  formatting: number;
+  cleanliness: number;
+  total: number;
+}
+
+export interface ParserEvalJudgeSlot {
+  order?: "markitdown-a" | "anydoc-a";
+  status: ParserEvalStepStatus;
+  verdict?: {
+    a: { completeness: number; structure: number; formatting: number; cleanliness: number };
+    b: { completeness: number; structure: number; formatting: number; cleanliness: number };
+    winner: "A" | "B" | "tie";
+    reason: string;
+  };
+  durationMs?: number;
+  usage?: ParserEvalTokenUsage;
+  estimatedCostUsd?: number;
+  error?: ParserEvalErrorDetail;
+}
+
+export interface ParserEvalJudgeResult {
+  status: ParserEvalStepStatus;
+  markitdownA?: ParserEvalJudgeSlot;
+  anydocA?: ParserEvalJudgeSlot;
+  markitdownScore?: ParserEvalQualityScore;
+  anydocScore?: ParserEvalQualityScore;
+  winner?: "markitdown" | "anydoc" | "tie";
+  usage?: ParserEvalTokenUsage;
+  estimatedCostUsd?: number;
+  error?: ParserEvalErrorDetail;
+}
+
+export interface ParserEvalTruthResult {
+  status: ParserEvalStepStatus;
+  totalPages?: number;
+  coveredPages?: number;
+  renderDurationMs?: number;
+  pages?: Array<{ page: number; width: number; height: number; artifact?: { sha256?: string; mediaType?: string; byteSize?: number } }>;
+  error?: ParserEvalErrorDetail;
+}
+
+export interface ParserEvalTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+export interface ParserEvalDurationAggregate {
+  samples: number;
+  medianMs?: number;
+  p95Ms?: number;
+}
+
+export interface ParserEvalParserAggregate {
+  documents: number;
+  successes: number;
+  successRate: number;
+  parse: ParserEvalDurationAggregate;
+  endToEnd: ParserEvalDurationAggregate;
+  quality?: ParserEvalQualityScore;
+}
+
+export interface ParserEvalSummary {
+  markitdown?: ParserEvalParserAggregate;
+  anydoc?: ParserEvalParserAggregate;
+  formats?: Array<{
+    format: "docx" | "pptx" | "xlsx";
+    documents: number;
+    markitdown: ParserEvalParserAggregate;
+    anydoc: ParserEvalParserAggregate;
+    quality?: { markitdown: ParserEvalQualityScore; anydoc: ParserEvalQualityScore };
+  }>;
+  macroQuality?: { markitdown: ParserEvalQualityScore; anydoc: ParserEvalQualityScore };
+  wins?: { markitdown: number; anydoc: number; ties: number; failures: number };
+  usage?: ParserEvalTokenUsage;
+  estimatedCostUsd?: number;
+}
+
+export interface ParserEvalExecutionSnapshot {
+  judgeModelBindingId?: string;
+  markitdown?: ParserEvalParserDescriptor;
+  anydoc?: ParserEvalParserDescriptor;
+  renderer?: ParserEvalRendererDescriptor;
+  judge?: ParserEvalJudgeBinding;
+  renderDPI?: number;
+  maxPages?: number;
+  markdownJudgeChars?: number;
+  judgePromptVersion?: string;
+  appVersion?: string;
+  createdBy?: string;
+  parserConcurrency?: number;
+}
+
+export interface ParserEvalRun {
+  id: string;
+  status: ParserEvalRunStatus;
+  stage: string;
+  progress: { documentsTotal?: number; documentsCompleted?: number; currentDocumentId?: string };
+  executionSnapshot: ParserEvalExecutionSnapshot;
+  summary: ParserEvalSummary;
+  createdBy: string;
+  errorCode?: string;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  expiresAt: string;
+  cancelRequestedAt?: string;
+}
+
+export interface ParserEvalDocument {
+  id: string;
+  runId: string;
+  ordinal: number;
+  fileName: string;
+  format: "docx" | "pptx" | "xlsx";
+  mediaType: string;
+  sizeBytes: number;
+  sha256: string;
+  status: string;
+  stage: string;
+  truth: ParserEvalTruthResult;
+  markitdown: ParserEvalParseResult;
+  anydoc: ParserEvalParseResult;
+  judge: ParserEvalJudgeResult;
+  errorCode?: string;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ParserEvalRunDetail {
+  run: ParserEvalRun;
+  documents: ParserEvalDocument[];
+  summary: ParserEvalSummary;
+}
+
+async function parserEvalJSON<T>(response: Response): Promise<T> {
+  const payload = await response.json().catch(() => ({})) as { data?: T; error?: { message?: string } | string };
+  if (!response.ok) {
+    const error = payload.error;
+    const message = typeof error === "string" ? error : error?.message;
+    throw new Error(message || `解析测评请求失败 (${response.status})`);
+  }
+  return payload.data as T;
+}
+
+function parserEvalFetch(url: string, init?: RequestInit): Promise<Response> {
+  // 解析测评只允许浏览器 session。这里故意不注入 localStorage Bearer token，
+  // 避免 admin API key 覆盖 cookie 后被严格数据面门控拒绝。
+  return fetch(url, { credentials: "same-origin", ...init });
+}
+
+export function parserEvalIdempotencyKey(): string {
+  const random = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `parser-eval-ui-${random}`;
+}
+
+export async function getParserEvalCapabilities(): Promise<ParserEvalCapabilities> {
+  return parserEvalJSON(await parserEvalFetch("/api/admin/parser-evals/capabilities"));
+}
+
+export async function listParserEvalRuns(cursor = ""): Promise<{ items: ParserEvalRun[]; nextCursor: string }> {
+  const params = new URLSearchParams({ limit: "50" });
+  if (cursor) params.set("cursor", cursor);
+  return parserEvalJSON(await parserEvalFetch(`/api/admin/parser-evals/runs?${params}`));
+}
+
+export async function createParserEvalRun(judgeModelBindingId: string, idempotencyKey: string): Promise<ParserEvalRun> {
+  return parserEvalJSON(await parserEvalFetch("/api/admin/parser-evals/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ judgeModelBindingId }),
+  }));
+}
+
+export async function getParserEvalRun(id: string): Promise<ParserEvalRunDetail> {
+  return parserEvalJSON(await parserEvalFetch(`/api/admin/parser-evals/runs/${encodeURIComponent(id)}`));
+}
+
+export async function removeParserEvalDocument(runId: string, documentId: string): Promise<void> {
+  await parserEvalJSON(await parserEvalFetch(`/api/admin/parser-evals/runs/${encodeURIComponent(runId)}/documents/${encodeURIComponent(documentId)}`, { method: "DELETE" }));
+}
+
+export async function startParserEvalRun(id: string, idempotencyKey: string): Promise<ParserEvalRun> {
+  return parserEvalJSON(await parserEvalFetch(`/api/admin/parser-evals/runs/${encodeURIComponent(id)}/start`, {
+    method: "POST", headers: { "Idempotency-Key": idempotencyKey },
+  }));
+}
+
+export async function cancelParserEvalRun(id: string, idempotencyKey: string): Promise<ParserEvalRun> {
+  return parserEvalJSON(await parserEvalFetch(`/api/admin/parser-evals/runs/${encodeURIComponent(id)}/cancel`, {
+    method: "POST", headers: { "Idempotency-Key": idempotencyKey },
+  }));
+}
+
+export async function retryParserEvalRun(id: string, idempotencyKey: string): Promise<ParserEvalRun> {
+  return parserEvalJSON(await parserEvalFetch(`/api/admin/parser-evals/runs/${encodeURIComponent(id)}/retry`, {
+    method: "POST", headers: { "Idempotency-Key": idempotencyKey },
+  }));
+}
+
+export async function deleteParserEvalRun(id: string): Promise<void> {
+  await parserEvalJSON(await parserEvalFetch(`/api/admin/parser-evals/runs/${encodeURIComponent(id)}`, { method: "DELETE" }));
+}
+
+export function parserEvalArtifactURL(
+  runId: string,
+  documentId: string,
+  kind: "source" | "truth-page" | "markdown" | "judge-raw",
+  parameter?: { page?: number; engine?: ParserEvalEngine; order?: "markitdown-a" | "anydoc-a" },
+): string {
+  const base = `/api/admin/parser-evals/runs/${encodeURIComponent(runId)}/documents/${encodeURIComponent(documentId)}/artifacts/${kind}`;
+  const params = new URLSearchParams();
+  if (parameter?.page !== undefined) params.set("page", String(parameter.page));
+  if (parameter?.engine) params.set("engine", parameter.engine);
+  if (parameter?.order) params.set("order", parameter.order);
+  const query = params.toString();
+  return query ? `${base}?${query}` : base;
+}
+
+export async function getParserEvalArtifactText(url: string): Promise<string> {
+  const response = await parserEvalFetch(url);
+  if (!response.ok) {
+    await parserEvalJSON(response);
+  }
+  return response.text();
+}
+
+export function uploadParserEvalDocument(
+  runId: string,
+  file: File,
+  idempotencyKey: string,
+  onProgress?: (percent: number) => void,
+  signal?: AbortSignal,
+): Promise<ParserEvalDocument> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", `/api/admin/parser-evals/runs/${encodeURIComponent(runId)}/documents`);
+    request.withCredentials = true;
+    request.setRequestHeader("Idempotency-Key", idempotencyKey);
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress?.(Math.round(event.loaded / event.total * 100));
+    };
+    request.onerror = () => reject(new Error("上传解析测评文档失败"));
+    request.onabort = () => reject(new DOMException("上传已取消", "AbortError"));
+    request.onload = () => {
+      let payload: { data?: ParserEvalDocument; error?: { message?: string } | string } = {};
+      try { payload = JSON.parse(request.responseText || "{}") as typeof payload; } catch { /* closed server response */ }
+      if (request.status < 200 || request.status >= 300) {
+        const error = payload.error;
+        reject(new Error((typeof error === "string" ? error : error?.message) || `上传失败 (${request.status})`));
+        return;
+      }
+      if (!payload.data) {
+        reject(new Error("上传响应缺少文档信息"));
+        return;
+      }
+      onProgress?.(100);
+      resolve(payload.data);
+    };
+    const abort = () => request.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    request.addEventListener("loadend", () => signal?.removeEventListener("abort", abort));
+    const form = new FormData();
+    form.append("file", file, file.name);
+    request.send(form);
+  });
+}

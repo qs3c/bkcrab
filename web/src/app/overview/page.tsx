@@ -22,6 +22,7 @@ import {
   Users,
   MessagesSquare,
   FlaskConical,
+  ScanText,
 } from "lucide-react";
 
 export default function OverviewPage() {
@@ -183,12 +184,20 @@ export default function OverviewPage() {
 {/* 配置 — 仅管理员可见的已配置 LLM 模型
            和已接入工具服务商摘要。非管理员不可见。 */}
       {showRAGEval && (
+        <div className="grid gap-4 md:grid-cols-2">
         <Link href="/admin/rag-evals/" className="block rounded-lg border border-border bg-card p-5 transition-colors hover:bg-muted/40">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-violet-500/10"><FlaskConical className="h-4 w-4 text-violet-500" /></div>
             <div><h3 className="font-medium">RAG 测评</h3><p className="text-sm text-muted-foreground">管理黄金数据集、实验运行和策略发布</p></div>
           </div>
         </Link>
+        <Link href="/admin/parser-evals/" className="block rounded-lg border border-border bg-card p-5 transition-colors hover:bg-muted/40">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-cyan-500/10"><ScanText className="h-4 w-4 text-cyan-500" /></div>
+            <div><h3 className="font-medium">解析测评</h3><p className="text-sm text-muted-foreground">比较 Office 文档解析器的延迟、质量与证据</p></div>
+          </div>
+        </Link>
+        </div>
       )}
 
       {isAdmin && (

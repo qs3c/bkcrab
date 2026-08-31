@@ -40,8 +40,10 @@ const {
 
 const {
   AgentMarkdownImage,
+  ParserEvalMarkdown,
   RAGAnswerMarkdown,
   RAGPlainText,
+  safeParserEvalMarkdownURL,
 } = await import(new URL("./rag-safe-render.ts", import.meta.url));
 
 const capabilities = {
@@ -553,6 +555,32 @@ test("RAG answer renderer drops raw HTML, dangerous links, and implicit image re
   assert.match(rendered, /href="https:\/\/example\.com\/docs"/);
   assert.match(rendered, /target="_blank"/);
   assert.match(rendered, /rel="noopener noreferrer"/);
+});
+
+test("parser evaluation Markdown is inert and never loads parser-controlled images or remote links", () => {
+  const rendered = renderToStaticMarkup(React.createElement(
+    ParserEvalMarkdown,
+    null,
+    [
+      '<img src="https://attacker.invalid/raw.png">',
+      '<script>alert("raw")</script>',
+      "![remote](https://attacker.invalid/tracker.png)",
+      "![relative](/api/private/image.png)",
+      "[remote link](https://example.com/docs)",
+      "[relative link](/safe/local)",
+      "| A | B |\n| - | - |\n| 1 | 2 |",
+    ].join("\n\n"),
+  ));
+
+  assert.doesNotMatch(rendered, /<(?:img|script)\b/i);
+  assert.doesNotMatch(rendered, /attacker\.invalid|href="https:/i);
+  assert.match(rendered, /解析结果中的图片占位符：remote/);
+  assert.match(rendered, /解析结果中的图片占位符：relative/);
+  assert.match(rendered, /<a>remote link<\/a>/);
+  assert.match(rendered, /href="\/safe\/local"/);
+  assert.match(rendered, /<table>/);
+  assert.equal(safeParserEvalMarkdownURL("data:text/html,boom"), "");
+  assert.equal(safeParserEvalMarkdownURL("//evil.example/a"), "");
 });
 
 test("agent Markdown renderer cannot initiate external image requests", () => {

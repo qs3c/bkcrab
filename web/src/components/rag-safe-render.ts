@@ -86,10 +86,51 @@ function IgnoredRAGMarkdownImage({ alt, node }: MarkdownImageProps) {
   );
 }
 
+function IgnoredParserEvalMarkdownImage({ alt, node }: MarkdownImageProps) {
+  void node;
+  return createElement(
+    "span",
+    { className: "text-muted-foreground" },
+    `[解析结果中的图片占位符${alt ? `：${alt}` : ""}]`,
+  );
+}
+
+function ParserEvalMarkdownAnchor({ href, children, node, ...rest }: MarkdownAnchorProps) {
+  void node;
+  const safeHref = safeParserEvalMarkdownURL(href ?? "");
+  return createElement("a", { ...rest, href: safeHref || undefined }, children);
+}
+
 const RAG_MARKDOWN_COMPONENTS: NonNullable<MarkdownProps["components"]> = {
   a: RAGMarkdownAnchor,
   img: IgnoredRAGMarkdownImage,
 };
+
+const PARSER_EVAL_MARKDOWN_COMPONENTS: NonNullable<MarkdownProps["components"]> = {
+  a: ParserEvalMarkdownAnchor,
+  img: IgnoredParserEvalMarkdownImage,
+};
+
+export function safeParserEvalMarkdownURL(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || /[\u0000-\u001f\u007f]/.test(trimmed)) return "";
+  if (trimmed.startsWith("//") || trimmed.startsWith("\\") || trimmed.startsWith("/\\")) return "";
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return "";
+  return trimmed;
+}
+
+export function ParserEvalMarkdown({ children }: { children: string }) {
+  return createElement(
+    ReactMarkdown,
+    {
+      remarkPlugins: [remarkGfm],
+      components: PARSER_EVAL_MARKDOWN_COMPONENTS,
+      urlTransform: safeParserEvalMarkdownURL,
+      skipHtml: true,
+    },
+    children,
+  );
+}
 
 export function RAGAnswerMarkdown({
   children,

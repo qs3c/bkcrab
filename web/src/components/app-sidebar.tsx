@@ -30,6 +30,7 @@ import {
   LayoutDashboardIcon,
   MessagesSquareIcon,
   PlusIcon,
+  ScanTextIcon,
   SettingsIcon,
   SparklesIcon,
   UsersIcon,
@@ -91,6 +92,7 @@ const ADMIN_AGENT_GROUP: NavItem[] = [
   { title: "模型", url: "/models/", icon: BrainIcon },
   { title: "知识库", url: "/knowledge/", icon: DatabaseIcon },
   { title: "RAG 测评", url: "/admin/rag-evals/", icon: FlaskConicalIcon },
+  { title: "解析测评", url: "/admin/parser-evals/", icon: ScanTextIcon },
   { title: "MCP", url: "/mcp/", icon: CableIcon },
   { title: "技能", url: "/skills/", icon: SparklesIcon },
   { title: "工具", url: "/tools/", icon: WrenchIcon },
@@ -272,7 +274,8 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 
   const isAdmin = status?.isAdmin ?? false;
   const showRAGEval = canShowRAGEvalNavigation({ role: me?.user?.role, authMethod: me?.authMethod, readOnly: me?.readOnly });
-  const adminAgentItems = showRAGEval ? ADMIN_AGENT_GROUP : ADMIN_AGENT_GROUP.filter((item) => item.url !== "/admin/rag-evals/");
+  const strictEvalURLs = new Set(["/admin/rag-evals/", "/admin/parser-evals/"]);
+  const adminAgentItems = showRAGEval ? ADMIN_AGENT_GROUP : ADMIN_AGENT_GROUP.filter((item) => !strictEvalURLs.has(item.url ?? ""));
   // quotaLocked = 调用者的 agent_quota=0（仅管理员分配，
   // 典型的单智能体客户模式）。智能体切换器标题被锁定
   // （静态标签，无"管理智能体"下拉），但 /agents 页面本身
