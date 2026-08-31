@@ -7,13 +7,44 @@ export interface RAGEvalRunDraft {
   metrics: string[];
 }
 
+const builtinCatalogLabels: Record<string, string> = {
+  "ibm-multidoc2dial": "MultiDoc2Dial",
+  "next-tat-tatqa": "TAT-QA",
+  "vectara-open-ragbench": "Open RAGBench（Vectara）",
+};
+
+export function describeRAGEvalDatasetVersion(version: {
+  DatasetID: string;
+  SourceConfigJSON: string;
+  Track: "TEXT_RAG" | "PDF_E2E";
+}, dataset?: { name: string }): { key: string; name: string; split?: string; track: string } {
+  let catalogId = "";
+  let split = "";
+  try {
+    const source = JSON.parse(version.SourceConfigJSON || "{}") as { catalogId?: string; split?: string };
+    catalogId = source.catalogId?.trim() || "";
+    split = source.split?.trim() || "";
+  } catch { /* fall back to the logical dataset for legacy/custom versions */ }
+  const logicalName = dataset?.name.replace(/\s*·\s*(TEXT_RAG|PDF_E2E)\s*$/u, "").trim();
+  return {
+    key: catalogId || version.DatasetID,
+    name: builtinCatalogLabels[catalogId] || logicalName || "自定义测评集",
+    split: split || undefined,
+    track: version.Track === "PDF_E2E" ? "PDF 端到端" : "文本 RAG",
+  };
+}
+
+export function sortRAGEvalRunsNewestFirst<T extends { id: string; createdAt: string }>(runs: T[]): T[] {
+  return [...runs].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+}
+
 export interface RAGEvalMetricOption {
   id: string;
   description: string;
 }
 
 export interface RAGEvalMetricGroup {
-  id: "document" | "chunk" | "answer" | "other";
+  id: "document" | "answer" | "other";
   label: string;
   description: string;
   metrics: RAGEvalMetricOption[];
@@ -29,17 +60,6 @@ const metricGroups: Array<Omit<RAGEvalMetricGroup, "metrics"> & { definitions: R
       { id: "doc_recall_at_k", description: "Top-K 找回了多少标准相关文档。" },
       { id: "doc_mrr", description: "第一篇标准相关文档在结果中出现得有多早。" },
       { id: "doc_ndcg", description: "综合所有标准相关文档的召回情况和排序位置。" },
-    ],
-  },
-  {
-    id: "chunk",
-    label: "Chunk 级检索",
-    description: "比较 Context/Chunk ID；只适合数据集提供了与当前切分策略一致的稳定 Chunk ID 时使用。",
-    definitions: [
-      { id: "hit_at_k", description: "Top-K 是否至少包含一个标准相关 Chunk。" },
-      { id: "recall_at_k", description: "Top-K 找回了多少标准相关 Chunk。" },
-      { id: "mrr", description: "第一个标准相关 Chunk 在结果中出现得有多早。" },
-      { id: "ndcg", description: "综合所有标准相关 Chunk 的召回情况和排序位置。" },
     ],
   },
   {
@@ -59,9 +79,11 @@ const metricGroups: Array<Omit<RAGEvalMetricGroup, "metrics"> & { definitions: R
   },
 ];
 
+const hiddenMetrics = new Set(["hit_at_k", "recall_at_k", "mrr", "ndcg"]);
+
 export function groupRAGEvalMetrics(availableMetrics: string[]): RAGEvalMetricGroup[] {
   const available = new Set(availableMetrics);
-  const known = new Set(metricGroups.flatMap((group) => group.definitions.map((metric) => metric.id)));
+  const known = new Set([...metricGroups.flatMap((group) => group.definitions.map((metric) => metric.id)), ...hiddenMetrics]);
   const groups: RAGEvalMetricGroup[] = metricGroups.map((group) => ({
     id: group.id,
     label: group.label,
@@ -126,6 +148,7 @@ export interface RAGEvalRunProgress {
   documentsTotal?: number;
   documentsCompleted?: number;
   chunksCompleted?: number;
+  evaluationStartedAt?: string;
   lastActivityAt?: string;
 }
 
@@ -152,6 +175,10 @@ export function profileOptionLabel(profile: RAGEvalProfileSummary, profiles: RAG
   });
   const version = newest.id === profile.id ? "当前" : `历史 ${profile.createdAt.slice(0, 10) || profile.fingerprint.slice(0, 8)}`;
   return `${profile.name} · ${parser} · ${version}`;
+}
+
+export function isProfileDeletionPending(deletingProfileId: string, sourceProfileId: string): boolean {
+  return deletingProfileId !== "" && deletingProfileId === sourceProfileId;
 }
 
 export function parseRAGEvalRunProgress(value: string): RAGEvalRunProgress {

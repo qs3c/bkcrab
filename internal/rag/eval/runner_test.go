@@ -38,7 +38,8 @@ func (*blockingGenerationProvider) Release(context.Context, string) error { retu
 
 func TestProgressJSONKeepsIndependentCounters(t *testing.T) {
 	raw, err := json.Marshal(Progress{Total: 4, Completed: 3, Failed: 1, Scored: 2, Tokens: 9, CostUSD: 1.25,
-		DocumentsTotal: 8, DocumentsCompleted: 5, ChunksCompleted: 13, LastActivityAt: "2026-08-18T16:10:00Z"})
+		DocumentsTotal: 8, DocumentsCompleted: 5, ChunksCompleted: 13,
+		EvaluationStartedAt: "2026-08-18T15:10:00Z", LastActivityAt: "2026-08-18T16:10:00Z"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,6 +53,107 @@ func TestProgressJSONKeepsIndependentCounters(t *testing.T) {
 		if got[key] != value {
 			t.Fatalf("progress %s=%v, want %v; json=%s", key, got[key], value, raw)
 		}
+	}
+}
+
+func TestRunnerDurationBudgetExcludesGenerationPreparationAndSurvivesRetry(t *testing.T) {
+	t.Run("run creation time does not consume the online evaluation budget", func(t *testing.T) {
+		runner, st, _, _, runID := runnerFixture(t, 1, &fakeBatchScorer{}, nil)
+		run, err := st.GetRAGEvalRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var snapshot ExecutionSnapshot
+		if err = json.Unmarshal([]byte(run.ExecutionSnapshotJSON), &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		snapshot.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+		snapshot.Budgets.MaxDurationSec = 1
+		raw, _ := json.Marshal(snapshot)
+		if _, err = st.DB().Exec(`UPDATE rag_eval_runs SET execution_snapshot_json=? WHERE id=?`, string(raw), runID); err != nil {
+			t.Fatal(err)
+		}
+
+		if err = runner.Run(context.Background(), runID); err != nil {
+			t.Fatal(err)
+		}
+		run, err = st.GetRAGEvalRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var progress Progress
+		if err = json.Unmarshal([]byte(run.ProgressJSON), &progress); err != nil {
+			t.Fatal(err)
+		}
+		if run.Status != store.RAGEvalRunSucceeded || progress.EvaluationStartedAt == "" {
+			t.Fatalf("status=%s progress=%+v", run.Status, progress)
+		}
+	})
+
+	t.Run("persisted online evaluation start still enforces the budget after retry", func(t *testing.T) {
+		runner, st, pipeline, _, runID := runnerFixture(t, 1, &fakeBatchScorer{}, nil)
+		run, err := st.GetRAGEvalRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var snapshot ExecutionSnapshot
+		if err = json.Unmarshal([]byte(run.ExecutionSnapshotJSON), &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		snapshot.Budgets.MaxDurationSec = 1
+		snapshotRaw, _ := json.Marshal(snapshot)
+		progressRaw, _ := json.Marshal(Progress{EvaluationStartedAt: time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)})
+		if _, err = st.DB().Exec(`UPDATE rag_eval_runs SET execution_snapshot_json=?,progress_json=? WHERE id=?`, string(snapshotRaw), string(progressRaw), runID); err != nil {
+			t.Fatal(err)
+		}
+
+		if err = runner.Run(context.Background(), runID); err != nil {
+			t.Fatal(err)
+		}
+		run, err = st.GetRAGEvalRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run.Status != store.RAGEvalRunBudgetExceeded || run.ErrorCode != "duration_budget_exceeded" {
+			t.Fatalf("status=%s code=%s", run.Status, run.ErrorCode)
+		}
+		if len(pipeline.calls) != 0 {
+			t.Fatalf("expired retry executed %d cases", len(pipeline.calls))
+		}
+	})
+}
+
+func TestRunnerRetryCreatesFreshQueuedRun(t *testing.T) {
+	runner, st, _, _, sourceRunID := runnerFixture(t, 1, &fakeBatchScorer{}, nil)
+	source, err := st.GetRAGEvalRun(context.Background(), sourceRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.DB().Exec(`UPDATE rag_eval_runs SET status=?,stage='finished',error_code='duration_budget_exceeded',finished_at=? WHERE id=?`,
+		store.RAGEvalRunBudgetExceeded, time.Now().UTC(), sourceRunID); err != nil {
+		t.Fatal(err)
+	}
+
+	retried, err := runner.RetryRun(context.Background(), sourceRunID, "rer_retry", "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.ID != "rer_retry" || retried.Status != store.RAGEvalRunQueued || retried.DatasetVersionID != source.DatasetVersionID ||
+		retried.ProfileID != source.ProfileID || retried.Mode != source.Mode {
+		t.Fatalf("retried run=%+v", retried)
+	}
+	var sourceSnapshot, retrySnapshot ExecutionSnapshot
+	if err = json.Unmarshal([]byte(source.ExecutionSnapshotJSON), &sourceSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal([]byte(retried.ExecutionSnapshotJSON), &retrySnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !retrySnapshot.CreatedAt.After(sourceSnapshot.CreatedAt) || retrySnapshot.Budgets.MaxDurationSec != runner.cfg.MaxRunDurationSec {
+		t.Fatalf("source snapshot=%+v retry snapshot=%+v", sourceSnapshot, retrySnapshot)
+	}
+	if _, err = runner.RetryRun(context.Background(), retried.ID, "rer_invalid", "admin"); !errors.Is(err, ErrRunNotRetryable) {
+		t.Fatalf("queued retry error=%v", err)
 	}
 }
 

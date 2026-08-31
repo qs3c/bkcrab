@@ -4,30 +4,55 @@ import assert from "node:assert/strict";
 const {
   canShowRAGEvalNavigation,
   compatibleBaselineRuns,
+  describeRAGEvalDatasetVersion,
   estimateRunWork,
   groupRAGEvalMetrics,
   isRunProgressStalled,
+  isProfileDeletionPending,
   nextRunPollDelay,
   parseRAGEvalRunProgress,
   profileOptionLabel,
   runProgressAmount,
   runStageLabel,
+  sortRAGEvalRunsNewestFirst,
   toggleRAGEvalMetricGroup,
   validateRunDraft,
   validationIssueMessages,
 } = await import(new URL("./rag-eval-state.ts", import.meta.url));
 
-test("evaluation metrics are grouped by document, chunk and answer semantics", () => {
+test("run queue sorts newest creation first with a stable id tie-breaker", () => {
+  const runs = [
+    { id: "rer_b", createdAt: "2026-08-25T20:13:40Z" },
+    { id: "rer_a", createdAt: "2026-08-26T10:55:46Z" },
+    { id: "rer_c", createdAt: "2026-08-26T10:55:46Z" },
+  ];
+  assert.deepEqual(sortRAGEvalRunsNewestFirst(runs).map((run) => run.id), ["rer_c", "rer_a", "rer_b"]);
+  assert.deepEqual(runs.map((run) => run.id), ["rer_b", "rer_a", "rer_c"]);
+});
+
+test("dataset version labels trust the frozen catalog source over a historically wrong logical dataset", () => {
+  const source = describeRAGEvalDatasetVersion({
+    DatasetID: "tatqa-logical-dataset",
+    SourceConfigJSON: JSON.stringify({ catalogId: "vectara-open-ragbench", split: "arxiv" }),
+    Track: "TEXT_RAG",
+  }, { name: "TAT-QA · TEXT_RAG" });
+  assert.deepEqual(source, {
+    key: "vectara-open-ragbench",
+    name: "Open RAGBench（Vectara）",
+    split: "arxiv",
+    track: "文本 RAG",
+  });
+});
+
+test("evaluation metrics omit chunk-only metrics and group document and answer semantics", () => {
   const groups = groupRAGEvalMetrics([
     "faithfulness", "hit_at_k", "doc_hit_at_k", "doc_ndcg", "future_metric",
   ]);
-  assert.deepEqual(groups.map((group) => group.id), ["document", "chunk", "answer", "other"]);
+  assert.deepEqual(groups.map((group) => group.id), ["document", "answer", "other"]);
   assert.deepEqual(groups[0].metrics.map((metric) => metric.id), ["doc_hit_at_k", "doc_ndcg"]);
   assert.match(groups[0].description, /文档 ID/);
-  assert.deepEqual(groups[1].metrics.map((metric) => metric.id), ["hit_at_k"]);
-  assert.match(groups[1].description, /Chunk ID/);
-  assert.deepEqual(groups[2].metrics.map((metric) => metric.id), ["faithfulness"]);
-  assert.deepEqual(groups[3].metrics.map((metric) => metric.id), ["future_metric"]);
+  assert.deepEqual(groups[1].metrics.map((metric) => metric.id), ["faithfulness"]);
+  assert.deepEqual(groups[2].metrics.map((metric) => metric.id), ["future_metric"]);
 });
 
 test("metric groups can be selected and cleared without disturbing other groups", () => {
@@ -102,6 +127,12 @@ test("duplicate immutable profiles are labeled by parser and recency", () => {
   ];
   assert.equal(profileOptionLabel(profiles[0], profiles), "系统默认全功能 · Standard · 历史 2026-08-16");
   assert.equal(profileOptionLabel(profiles[1], profiles), "系统默认全功能 · AnyDoc · 当前");
+});
+
+test("system default profile is never mistaken for an active deletion", () => {
+  assert.equal(isProfileDeletionPending("", ""), false);
+  assert.equal(isProfileDeletionPending("profile-1", "profile-1"), true);
+  assert.equal(isProfileDeletionPending("profile-1", "profile-2"), false);
 });
 
 test("run progress exposes generation counts, translated stages and stalls", () => {

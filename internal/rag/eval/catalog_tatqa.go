@@ -46,6 +46,11 @@ type tatQAContext struct {
 	Questions  []tatQAQuestion  `json:"questions"`
 }
 
+type tatQAPreparedDocument struct {
+	content  string
+	metadata map[string]any
+}
+
 func (TATQAAdapter) Prepare(ctx context.Context, source CatalogSource, options CatalogImportOptions) (_ *PreparedCatalogDataset, retErr error) {
 	if source == nil {
 		return nil, errors.New("catalog source is required")
@@ -59,7 +64,7 @@ func (TATQAAdapter) Prepare(ctx context.Context, source CatalogSource, options C
 	preset, _ := CatalogPresetByID(options.CatalogID)
 	prepared, err := newPreparedCatalogDataset(preset.Name, options.Track, DatasetSource{
 		CatalogID: preset.ID, URL: preset.SourceURL, Revision: preset.Revision, AdapterID: preset.ID,
-		AdapterVersion: preset.AdapterVersion, Split: options.Split, SampleSize: options.SampleSize, Seed: options.Seed, License: preset.License,
+		AdapterVersion: preset.AdapterVersion, Split: options.Split, SampleSize: options.SampleSize, CorpusSize: options.CorpusLimit, Seed: options.Seed, License: preset.License,
 	})
 	if err != nil {
 		return nil, err
@@ -89,6 +94,8 @@ func (TATQAAdapter) Prepare(ctx context.Context, source CatalogSource, options C
 		return nil, errors.New("TAT-QA source contains trailing JSON")
 	}
 	cases := make([]Case, 0, 20_000)
+	documents := make(map[string]tatQAPreparedDocument, len(contexts))
+	availableDocumentIDs := make([]string, 0, len(contexts))
 	for contextIndex, item := range contexts {
 		sort.SliceStable(item.Paragraphs, func(i, j int) bool { return item.Paragraphs[i].Order < item.Paragraphs[j].Order })
 		tableMarkdown := renderMarkdownTable(item.Table.Rows)
@@ -111,11 +118,11 @@ func (TATQAAdapter) Prepare(ctx context.Context, source CatalogSource, options C
 			sourceID = fmt.Sprintf("%s-context-%d", options.Split, contextIndex)
 		}
 		documentID := catalogDocumentID("tat", sourceID)
-		if err = prepared.AddDocument(documentID, documentID+".md", "text/markdown", markdownBytes("TAT-QA financial context", body.String()), map[string]any{
-			"sourceContextId": sourceID, "split": options.Split, "tableUid": item.Table.UID,
-		}); err != nil {
-			return nil, err
+		documents[documentID] = tatQAPreparedDocument{
+			content:  "# TAT-QA financial context\n\n" + strings.TrimSpace(body.String()) + "\n",
+			metadata: map[string]any{"sourceContextId": sourceID, "split": options.Split, "tableUid": item.Table.UID},
 		}
+		availableDocumentIDs = append(availableDocumentIDs, documentID)
 		for _, question := range item.Questions {
 			if strings.TrimSpace(question.UID) == "" || strings.TrimSpace(question.Question) == "" {
 				continue
@@ -149,6 +156,21 @@ func (TATQAAdapter) Prepare(ctx context.Context, source CatalogSource, options C
 	selected, err := selectCatalogCases(preset.ID+"@"+preset.Revision+"/"+options.Split, cases, options.SampleSize, options.Seed)
 	if err != nil {
 		return nil, err
+	}
+	selected, selectedDocumentIDs, err := selectCatalogCorpus(selected, availableDocumentIDs, options.CorpusLimit, options.Seed,
+		preset.ID+"/"+options.Split+"/positive-docs", preset.ID+"/"+options.Split+"/negative-docs",
+		func(item Case) []string { return item.ReferenceDocumentIDs })
+	if err != nil {
+		return nil, err
+	}
+	for _, documentID := range selectedDocumentIDs {
+		document, ok := documents[documentID]
+		if !ok {
+			return nil, fmt.Errorf("TAT-QA document is missing for %s", documentID)
+		}
+		if err = prepared.AddDocument(documentID, documentID+".md", "text/markdown", strings.NewReader(document.content), document.metadata); err != nil {
+			return nil, err
+		}
 	}
 	prepared.Dataset.Description = preset.Description
 	prepared.Dataset.Cases = selected

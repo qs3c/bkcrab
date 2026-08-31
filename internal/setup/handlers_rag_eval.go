@@ -42,6 +42,7 @@ func (s *Server) registerRAGEvaluationRoutes(mux *http.ServeMux, gate func(http.
 	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}", gate(s.handleGetRAGEvalRun))
 	mux.HandleFunc("DELETE /api/admin/rag-evals/runs/{id}", gate(s.handleDeleteRAGEvalRun))
 	mux.HandleFunc("POST /api/admin/rag-evals/runs/{id}/cancel", gate(s.handleCancelRAGEvalRun))
+	mux.HandleFunc("POST /api/admin/rag-evals/runs/{id}/retry", gate(s.handleRetryRAGEvalRun))
 	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}/cases", gate(s.handleListRAGEvalRunCases))
 	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}/compare/{baselineId}", gate(s.handleCompareRAGEvalRuns))
 	mux.HandleFunc("GET /api/admin/rag-evals/runs/{id}/export", gate(s.handleExportRAGEvalRun))
@@ -155,7 +156,7 @@ func (s *Server) handleCreateRAGEvalCatalogImport(w http.ResponseWriter, r *http
 	if !decodeEvalJSON(w, r, 64<<10, &request) {
 		return
 	}
-	record, err := service.Create(r.Context(), strings.TrimSpace(request.DatasetID), evalIdentity(r), request.CatalogImportOptions)
+	record, err := service.Create(r.Context(), evalIdentity(r), request.CatalogImportOptions)
 	if err != nil {
 		writeEvalServiceError(w, err)
 		return
@@ -493,7 +494,46 @@ func (s *Server) handleListRAGEvalRuns(w http.ResponseWriter, r *http.Request) {
 		writeEvalError(w, 500, "list_failed", "could not list runs")
 		return
 	}
-	jsonResponse(w, 200, map[string]any{"items": items, "nextCursor": next})
+	jsonResponse(w, 200, map[string]any{"items": maskEvalRuns(items), "nextCursor": next})
+}
+
+type evalRunDTO struct {
+	ID                string     `json:"id"`
+	DatasetVersionID  string     `json:"datasetVersionId"`
+	BaselineRunID     string     `json:"baselineRunId,omitempty"`
+	Mode              string     `json:"mode"`
+	ProfileID         string     `json:"profileId"`
+	Status            string     `json:"status"`
+	Stage             string     `json:"stage"`
+	ProgressJSON      string     `json:"progressJson"`
+	IndexGenerationID string     `json:"indexGenerationId,omitempty"`
+	ErrorCode         string     `json:"errorCode,omitempty"`
+	ErrorMessage      string     `json:"errorMessage,omitempty"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	StartedAt         *time.Time `json:"startedAt,omitempty"`
+	FinishedAt        *time.Time `json:"finishedAt,omitempty"`
+}
+
+func maskEvalRuns(items []store.RAGEvalRunRecord) []evalRunDTO {
+	out := make([]evalRunDTO, 0, len(items))
+	for _, item := range items {
+		masked := evalRunDTO{
+			ID: item.ID, DatasetVersionID: item.DatasetVersionID, BaselineRunID: item.BaselineRunID,
+			Mode: item.Mode, ProfileID: item.ProfileID, Status: item.Status, Stage: item.Stage,
+			ProgressJSON: item.ProgressJSON, IndexGenerationID: item.IndexGenerationID,
+			ErrorCode: item.ErrorCode, ErrorMessage: item.ErrorMessage, CreatedAt: item.CreatedAt,
+		}
+		if item.StartedAt.Valid {
+			started := item.StartedAt.Time
+			masked.StartedAt = &started
+		}
+		if item.FinishedAt.Valid {
+			finished := item.FinishedAt.Time
+			masked.FinishedAt = &finished
+		}
+		out = append(out, masked)
+	}
+	return out
 }
 
 func listRAGEvalRunPage(ctx context.Context, cursor string, limit int, status string, list func(context.Context, string, int) ([]store.RAGEvalRunRecord, error)) ([]store.RAGEvalRunRecord, string, error) {
@@ -642,6 +682,45 @@ func (s *Server) handleCancelRAGEvalRun(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	jsonResponse(w, 202, map[string]any{"ok": true})
+}
+
+func (s *Server) handleRetryRAGEvalRun(w http.ResponseWriter, r *http.Request) {
+	if !s.ragCfg.Evaluation.Enabled {
+		writeEvalError(w, http.StatusServiceUnavailable, "eval_disabled", "RAG evaluation is disabled")
+		return
+	}
+	if s.ragEvalRunner == nil {
+		writeEvalError(w, http.StatusServiceUnavailable, "runner_unavailable", "RAG evaluation runner is unavailable")
+		return
+	}
+	key, valid := evalIdempotencyKey(r)
+	if !valid {
+		writeEvalError(w, http.StatusBadRequest, "invalid_idempotency_key", "Idempotency-Key must contain 8 to 128 characters")
+		return
+	}
+	actor := evalIdentity(r)
+	newRunID := ""
+	if key != "" {
+		newRunID = evalDeterministicID("rer_", actor, key)
+	}
+	record, err := s.ragEvalRunner.RetryRun(r.Context(), r.PathValue("id"), newRunID, actor)
+	if err != nil {
+		if key != "" {
+			if st, ok := s.evalService(w); ok {
+				if existing, getErr := st.GetRun(r.Context(), newRunID); getErr == nil {
+					jsonResponse(w, http.StatusOK, existing)
+					return
+				}
+			}
+		}
+		if errors.Is(err, eval.ErrRunNotRetryable) {
+			writeEvalError(w, http.StatusConflict, "run_not_retryable", "only failed or budget-terminated runs can be retried")
+			return
+		}
+		writeEvalServiceError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusCreated, record)
 }
 
 type evalCaseDTO struct {

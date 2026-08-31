@@ -21,6 +21,7 @@ import (
 var (
 	ErrRunnerFenceLost  = errors.New("evaluation runner lease lost")
 	ErrRunBudgetReached = errors.New("evaluation run budget reached")
+	ErrRunNotRetryable  = errors.New("evaluation run is not retryable")
 )
 
 type RunStore interface {
@@ -114,6 +115,7 @@ type CreateRunRequest struct {
 	ID, DatasetVersionID, BaselineRunID, ProfileID, IndexGenerationID, CreatedBy string
 	Mode                                                                         RunMode
 	Metrics                                                                      []string
+	minimumCreatedAt                                                             time.Time
 }
 
 type Progress struct {
@@ -129,6 +131,7 @@ type Progress struct {
 	DocumentsTotal       int64   `json:"documentsTotal,omitempty"`
 	DocumentsCompleted   int64   `json:"documentsCompleted,omitempty"`
 	ChunksCompleted      int64   `json:"chunksCompleted,omitempty"`
+	EvaluationStartedAt  string  `json:"evaluationStartedAt,omitempty"`
 	LastActivityAt       string  `json:"lastActivityAt,omitempty"`
 }
 
@@ -231,9 +234,13 @@ func (r *Runner) CreateRun(ctx context.Context, request CreateRunRequest) (*stor
 	if r.cfg.CostBudgetDisabled {
 		maxRunCostUSD = 0
 	}
+	createdAt := time.Now().UTC()
+	if !request.minimumCreatedAt.IsZero() && !createdAt.After(request.minimumCreatedAt) {
+		createdAt = request.minimumCreatedAt.Add(time.Nanosecond)
+	}
 	snapshot := ExecutionSnapshot{Version: 1, DatasetVersion: *dataset, Profile: profile,
 		ProfileFingerprint: profileRecord.Fingerprint, Metrics: metrics, MetricBundleVersion: MetricBundleV1,
-		IndexGenerationID: request.IndexGenerationID, CreatedAt: time.Now().UTC(), Budgets: RunBudgets{
+		IndexGenerationID: request.IndexGenerationID, CreatedAt: createdAt, Budgets: RunBudgets{
 			MaxCases: r.cfg.MaxRunCases, MaxTokens: r.cfg.MaxRunTokens, MaxCostUSD: maxRunCostUSD, MaxDurationSec: r.cfg.MaxRunDurationSec,
 		}}
 	snapshotJSON, _ := json.Marshal(snapshot)
@@ -244,6 +251,37 @@ func (r *Runner) CreateRun(ctx context.Context, request CreateRunRequest) (*stor
 		return nil, err
 	}
 	return record, nil
+}
+
+// RetryRun creates a fresh queued run from a failed or budget-terminated
+// immutable run. Dataset, profile, mode, baseline and requested metrics are
+// preserved, while execution limits are frozen again from the current
+// deployment configuration.
+func (r *Runner) RetryRun(ctx context.Context, sourceRunID, newRunID, actor string) (*store.RAGEvalRunRecord, error) {
+	source, err := r.store.GetRAGEvalRun(ctx, strings.TrimSpace(sourceRunID))
+	if err != nil {
+		return nil, err
+	}
+	if source.Status != store.RAGEvalRunFailed && source.Status != store.RAGEvalRunBudgetExceeded {
+		return nil, ErrRunNotRetryable
+	}
+	var metrics []string
+	if err = json.Unmarshal([]byte(source.RequestedMetricsJSON), &metrics); err != nil {
+		return nil, errors.New("source run metrics are invalid")
+	}
+	var sourceSnapshot ExecutionSnapshot
+	if err = json.Unmarshal([]byte(source.ExecutionSnapshotJSON), &sourceSnapshot); err != nil {
+		return nil, errors.New("source run snapshot is invalid")
+	}
+	indexGenerationID := ""
+	if source.Mode == store.RAGEvalRunModeOnlineOnly {
+		indexGenerationID = source.IndexGenerationID
+	}
+	return r.CreateRun(ctx, CreateRunRequest{
+		ID: newRunID, DatasetVersionID: source.DatasetVersionID, BaselineRunID: source.BaselineRunID,
+		Mode: RunMode(source.Mode), ProfileID: source.ProfileID, IndexGenerationID: indexGenerationID,
+		Metrics: metrics, CreatedBy: strings.TrimSpace(actor), minimumCreatedAt: sourceSnapshot.CreatedAt,
+	})
 }
 
 func (r *Runner) Start(ctx context.Context) {
@@ -358,20 +396,17 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 	if r.cfg.CostBudgetDisabled {
 		snapshot.Budgets.MaxCostUSD = 0
 	}
-	deadline := snapshot.CreatedAt.Add(time.Duration(snapshot.Budgets.MaxDurationSec) * time.Second)
-	if snapshot.Budgets.MaxDurationSec > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, deadline)
-		defer cancel()
-	}
+	var persistedProgress Progress
+	_ = json.Unmarshal([]byte(run.ProgressJSON), &persistedProgress)
 	parserEngine := snapshot.Profile.Ingestion.ParserEngine
 	if snapshot.DatasetVersion.Track == store.RAGEvalTrackTextRAG {
 		parserEngine = "canonical-text (parser bypassed)"
 	}
 	generationProgress := Progress{
-		Total:          int(snapshot.DatasetVersion.CaseCount),
-		ParserEngine:   parserEngine,
-		DocumentsTotal: snapshot.DatasetVersion.DocumentCount,
+		Total:               int(snapshot.DatasetVersion.CaseCount),
+		ParserEngine:        parserEngine,
+		DocumentsTotal:      snapshot.DatasetVersion.DocumentCount,
+		EvaluationStartedAt: persistedProgress.EvaluationStartedAt,
 	}
 	if err = r.progress(ctx, fence, "preparing_generation", generationProgress); err != nil {
 		return err
@@ -418,6 +453,18 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 	progress.ChunksCompleted = max(progress.ChunksCompleted, generation.ChunkCount)
 	progress.GenerationDurationMS = max(int64(1), generationDuration.Milliseconds())
 	progress.GenerationReused = progress.GenerationReused || generation.OwnerRunID != "" && generation.OwnerRunID != run.ID
+	if progress.EvaluationStartedAt == "" {
+		progress.EvaluationStartedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if snapshot.Budgets.MaxDurationSec > 0 {
+		evaluationStartedAt, parseErr := time.Parse(time.RFC3339Nano, progress.EvaluationStartedAt)
+		if parseErr != nil {
+			return r.finishFailure(fence, "invalid_progress", "invalid evaluation duration budget start")
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, evaluationStartedAt.Add(time.Duration(snapshot.Budgets.MaxDurationSec)*time.Second))
+		defer cancel()
+	}
 	if err = r.progress(ctx, fence, "answering", progress); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return r.finishContext(fence, run, ctxErr)

@@ -334,6 +334,8 @@ func TestRAGAdvancedEnvironmentOverlay(t *testing.T) {
 	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_ALLOWED_ENDPOINT_HOSTS", "document-ai.internal, backup.internal ")
 	t.Setenv("BKCRAB_RAG_DOCUMENT_AI_ALLOW_PRIVATE_ENDPOINT", "true")
 	t.Setenv("BKCRAB_RAG_PARSER_ENDPOINT", "http://rag-parser:8080")
+	t.Setenv("BKCRAB_RAG_PARSER_MARKITDOWN_ENDPOINT", "http://markitdown:8080")
+	t.Setenv("BKCRAB_RAG_PARSER_ANYDOC_ENDPOINT", "http://anydoc:8080")
 	t.Setenv("BKCRAB_RAG_PARSER_ENGINE", "anydoc")
 	t.Setenv("BKCRAB_RAG_PARSER_TIMEOUT_MS", "500000")
 	t.Setenv("BKCRAB_RAG_LIMITS_MAX_PAGES_PER_DOCUMENT", "123")
@@ -363,7 +365,10 @@ func TestRAGAdvancedEnvironmentOverlay(t *testing.T) {
 			dst.DocumentAI.EnrichmentConcurrency, dst.DocumentAI.AllowPrivateEndpoint,
 			dst.DocumentAI.AllowedEndpointHosts)
 	}
-	if dst.ParserSidecar.Endpoint != "http://rag-parser:8080" || dst.ParserSidecar.Engine != "anydoc" || dst.ParserSidecar.TimeoutMS != 500000 {
+	if dst.ParserSidecar.Endpoint != "http://rag-parser:8080" ||
+		dst.ParserSidecar.MarkItDownEndpoint != "http://markitdown:8080" ||
+		dst.ParserSidecar.AnyDocEndpoint != "http://anydoc:8080" ||
+		dst.ParserSidecar.Engine != "anydoc" || dst.ParserSidecar.TimeoutMS != 500000 {
 		t.Fatalf("parser sidecar env overlay = %+v", dst.ParserSidecar)
 	}
 	if dst.Limits.MaxPagesPerDocument != 123 || dst.Limits.MaxSearchContentBytes != 60000 {

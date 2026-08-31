@@ -26,10 +26,21 @@ const (
 	catalogCachePrefix = "rag-eval/catalog-cache/v1"
 	defaultCatalogFile = int64(32 << 20)
 	maxCatalogPDF      = int64(128 << 20)
+	tatQAMirrorBaseURL = "https://hf-mirror.com"
 )
 
 var openRAGCorpusPath = regexp.MustCompile(`^pdf/arxiv/corpus/[A-Za-z0-9._-]+\.json$`)
 var catalogDownloadGroup singleflight.Group
+
+// TAT-QA is fetched through a geographically reachable mirror, but every
+// accepted byte is still bound to the immutable upstream revision by a hash
+// captured from the official Hugging Face files. The mirror is transport, not
+// trust.
+var tatQAFileSHA256 = map[string]string{
+	"tatqa_dataset_dev.json":       "7ccea93f242ba6af13a302edafa0f910df50c36834a3ca255c77a8732c57eec3",
+	"tatqa_dataset_train.json":     "c7bf8eb0c757e57ef3db6c6146dd7e487100dac1e37e66a349813ddc4187cd65",
+	"tatqa_dataset_test_gold.json": "15763f73a9839009d148d35ab3371f78fc6dc67bbdd95547bcd3ecb550f52a08",
+}
 
 // CatalogHTTPSource is the only network reader used by built-in evaluation
 // dataset adapters. It pins every Hugging Face request to the catalog commit,
@@ -129,13 +140,11 @@ func (s *CatalogHTTPSource) resolve(logicalPath string) (string, int64, string, 
 		}
 		return "https://doc2dial.github.io/multidoc2dial/file/multidoc2dial.zip", 16 << 20, multiDoc2DialArchiveSHA256, nil
 	case CatalogTATQA:
-		allowed := map[string]struct{}{
-			"tatqa_dataset_dev.json": {}, "tatqa_dataset_train.json": {}, "tatqa_dataset_test_gold.json": {},
-		}
-		if _, ok := allowed[logicalPath]; !ok {
+		expectedSHA, ok := tatQAFileSHA256[logicalPath]
+		if !ok {
 			return "", 0, "", errors.New("TAT-QA path is not allow-listed")
 		}
-		return s.huggingFaceResolveURL(logicalPath), defaultCatalogFile, "", nil
+		return fmt.Sprintf("%s/datasets/next-tat/TAT-QA/resolve/%s/%s", tatQAMirrorBaseURL, s.preset.Revision, logicalPath), defaultCatalogFile, expectedSHA, nil
 	case CatalogOpenRAGBench:
 		allowed := logicalPath == "pdf/arxiv/queries.json" || logicalPath == "pdf/arxiv/answers.json" || logicalPath == "pdf/arxiv/qrels.json" || logicalPath == "pdf/arxiv/pdf_urls.json" || openRAGCorpusPath.MatchString(logicalPath)
 		if !allowed {
@@ -253,7 +262,7 @@ func validateCatalogRemoteURL(parsed *url.URL) error {
 	}
 	host := strings.ToLower(parsed.Hostname())
 	switch host {
-	case "huggingface.co", "cdn-lfs.hf.co", "cdn-lfs-us-1.hf.co", "doc2dial.github.io", "arxiv.org", "export.arxiv.org":
+	case "huggingface.co", "cdn-lfs.hf.co", "cdn-lfs-us-1.hf.co", "us.aws.cdn.hf.co", "hf-mirror.com", "doc2dial.github.io", "arxiv.org", "export.arxiv.org":
 		return nil
 	default:
 		return errors.New("catalog remote host is not allow-listed")

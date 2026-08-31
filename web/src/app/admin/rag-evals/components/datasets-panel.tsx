@@ -1,22 +1,27 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, FileCheck2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   getRAGEvalDataset,
-  getRAGEvalDatasetValidation,
   type RAGEvalCapabilities,
   type RAGEvalDataset,
   type RAGEvalDatasetVersion,
-  type RAGEvalValidationReport,
 } from "@/lib/api";
-import { validationIssueMessages } from "../rag-eval-state";
 import { CatalogImportPanel } from "./catalog-import-panel";
+
+function logicalDatasetName(name: string): string {
+  return name.replace(/\s*·\s*(TEXT_RAG|PDF_E2E)\s*$/u, "").trim();
+}
+
+function createdAtLabel(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  return parsed.toLocaleString("zh-CN", { hour12: false });
+}
 
 export function DatasetsPanel({ capabilities, datasets, onChanged }: {
   capabilities: RAGEvalCapabilities | null;
@@ -25,49 +30,49 @@ export function DatasetsPanel({ capabilities, datasets, onChanged }: {
 }) {
   const [selected, setSelected] = useState("");
   const [versions, setVersions] = useState<RAGEvalDatasetVersion[]>([]);
-  const [report, setReport] = useState<RAGEvalValidationReport | null>(null);
   const [error, setError] = useState("");
-  const issues = useMemo(() => validationIssueMessages(report), [report]);
+  const datasetGroups = useMemo(() => {
+    const grouped = new Map<string, { key: string; label: string; ids: string[] }>();
+    for (const dataset of datasets) {
+      const label = logicalDatasetName(dataset.name);
+      const current = grouped.get(label);
+      if (current) current.ids.push(dataset.id);
+      else grouped.set(label, { key: label, label, ids: [dataset.id] });
+    }
+    return [...grouped.values()];
+  }, [datasets]);
 
-  const loadDataset = useCallback(async (id: string) => {
-    setSelected(id);
-    setReport(null);
-    if (!id) {
+  const loadDataset = useCallback(async (keyOrID: string) => {
+    const group = datasetGroups.find((item) => item.key === keyOrID || item.ids.includes(keyOrID));
+    setSelected(group?.key || keyOrID);
+    const ids = group?.ids || (keyOrID ? [keyOrID] : []);
+    if (ids.length === 0) {
       setVersions([]);
       return;
     }
     try {
-      const detail = await getRAGEvalDataset(id);
-      setVersions(detail.versions ?? []);
+      const details = await Promise.all(ids.map((id) => getRAGEvalDataset(id)));
+      setVersions(details.flatMap((detail) => detail.versions ?? []).sort((left, right) =>
+        right.CreatedAt.localeCompare(left.CreatedAt) || right.Version - left.Version));
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载数据集版本失败");
     }
-  }, []);
+  }, [datasetGroups]);
 
   useEffect(() => {
-    if (selected || datasets.length === 0) return;
-    const timer = window.setTimeout(() => void loadDataset(datasets[0].id), 0);
+    if (datasetGroups.length === 0 || datasetGroups.some((group) => group.key === selected)) return;
+    const timer = window.setTimeout(() => void loadDataset(datasetGroups[0].key), 0);
     return () => window.clearTimeout(timer);
-  }, [datasets, loadDataset, selected]);
+  }, [datasetGroups, loadDataset, selected]);
 
   const handleCatalogChanged = useCallback(async () => {
     await onChanged();
     if (selected) await loadDataset(selected);
   }, [loadDataset, onChanged, selected]);
 
-  async function inspectValidation(versionId: string) {
-    try {
-      setReport((await getRAGEvalDatasetValidation(versionId)).report);
-      setError("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "读取校验报告失败");
-    }
-  }
-
   return <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(380px,0.65fr)]">
     <CatalogImportPanel
-      datasets={datasets}
       maxRunCases={capabilities?.maxRunCases || 0}
       onChanged={handleCatalogChanged}
       onDatasetSelected={(id) => void loadDataset(id)}
@@ -83,29 +88,25 @@ export function DatasetsPanel({ capabilities, datasets, onChanged }: {
           <div className="space-y-2">
             <Label htmlFor="prepared-dataset">查看数据集</Label>
             <select id="prepared-dataset" className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={selected} onChange={(event) => void loadDataset(event.target.value)}>
-              {datasets.length === 0 && <option value="">尚无已准备数据集</option>}
-              {datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}
+              {datasetGroups.length === 0 && <option value="">尚无已准备数据集</option>}
+              {datasetGroups.map((group) => <option key={group.key} value={group.key}>{group.label}</option>)}
             </select>
           </div>
           <div className="overflow-x-auto">
             <Table>
-              <TableHeader><TableRow><TableHead>版本</TableHead><TableHead>状态</TableHead><TableHead>文档 / 样例</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
+              <TableHeader><TableRow><TableHead>版本</TableHead><TableHead>状态</TableHead><TableHead>文档 / 样例</TableHead><TableHead className="text-right">创建时间</TableHead></TableRow></TableHeader>
               <TableBody>
                 {versions.length === 0 ? <TableRow><TableCell colSpan={4} className="py-8 text-center text-muted-foreground">{selected ? "这个数据集还没有准备好的版本" : "先在左侧准备数据集"}</TableCell></TableRow> : versions.map((version) => <TableRow key={version.ID}>
                   <TableCell className="font-medium">v{version.Version}</TableCell>
                   <TableCell><Badge variant="outline">{version.Status}</Badge></TableCell>
                   <TableCell>{version.DocumentCount} / {version.CaseCount}</TableCell>
-                  <TableCell className="text-right"><Button size="sm" variant="ghost" onClick={() => void inspectValidation(version.ID)}><FileCheck2 className="mr-1 h-4 w-4" />校验</Button></TableCell>
+                  <TableCell className="whitespace-nowrap text-right text-xs text-muted-foreground">{createdAtLabel(version.CreatedAt)}</TableCell>
                 </TableRow>)}
               </TableBody>
             </Table>
           </div>
         </CardContent>
       </Card>
-      {report && <Card>
-        <CardHeader><CardTitle className="flex items-center gap-2">{report.valid === false ? <AlertTriangle className="h-5 w-5 text-amber-500" /> : <FileCheck2 className="h-5 w-5 text-emerald-500" />}校验报告</CardTitle></CardHeader>
-        <CardContent>{issues.length === 0 ? <p className="text-sm text-muted-foreground">未发现错误或警告。</p> : <ul className="space-y-2 text-sm">{issues.map((issue, index) => <li key={`${issue}-${index}`} className="rounded bg-muted p-2 font-mono text-xs">{issue}</li>)}</ul>}</CardContent>
-      </Card>}
     </div>
   </div>;
 }

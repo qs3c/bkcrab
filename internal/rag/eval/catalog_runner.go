@@ -2,10 +2,13 @@ package eval
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +23,9 @@ import (
 var ErrCatalogImportFenceLost = errors.New("evaluation catalog import lease lost")
 
 type CatalogImportStore interface {
+	CreateRAGEvalDataset(context.Context, *store.RAGEvalDatasetRecord) error
+	GetRAGEvalDataset(context.Context, string) (*store.RAGEvalDatasetRecord, error)
+	ListRAGEvalDatasets(context.Context, string, int) ([]store.RAGEvalDatasetRecord, error)
 	CreateRAGEvalCatalogImport(context.Context, *store.RAGEvalCatalogImportRecord) error
 	GetRAGEvalCatalogImport(context.Context, string) (*store.RAGEvalCatalogImportRecord, error)
 	ListRAGEvalCatalogImports(context.Context, string, int) ([]store.RAGEvalCatalogImportRecord, error)
@@ -57,11 +63,15 @@ func NewCatalogImportRunner(st CatalogImportStore, datasets *DatasetService, obj
 		workers: workers, lease: 45 * time.Second, poll: time.Second}, nil
 }
 
-func (r *CatalogImportRunner) Create(ctx context.Context, datasetID, createdBy string, options CatalogImportOptions) (*store.RAGEvalCatalogImportRecord, error) {
-	if strings.TrimSpace(datasetID) == "" || strings.TrimSpace(createdBy) == "" {
-		return nil, errors.New("dataset and creator are required")
+func (r *CatalogImportRunner) Create(ctx context.Context, createdBy string, options CatalogImportOptions) (*store.RAGEvalCatalogImportRecord, error) {
+	if strings.TrimSpace(createdBy) == "" {
+		return nil, errors.New("creator is required")
 	}
 	if err := options.ApplyDefaults(); err != nil {
+		return nil, err
+	}
+	datasetID, err := r.ensureCatalogDataset(ctx, createdBy, options)
+	if err != nil {
 		return nil, err
 	}
 	raw, err := json.Marshal(options)
@@ -74,6 +84,60 @@ func (r *CatalogImportRunner) Create(ctx context.Context, datasetID, createdBy s
 		return nil, err
 	}
 	return record, nil
+}
+
+// ensureCatalogDataset classifies every built-in import under one logical
+// dataset per catalog. It recognizes the previous "name · track" convention
+// so existing installations keep using their oldest dataset instead of
+// creating another duplicate. New installations use a deterministic ID,
+// which also closes the concurrent-create race.
+func (r *CatalogImportRunner) ensureCatalogDataset(ctx context.Context, createdBy string, options CatalogImportOptions) (string, error) {
+	preset, ok := CatalogPresetByID(options.CatalogID)
+	if !ok {
+		return "", errors.New("unknown built-in evaluation dataset")
+	}
+	aliases := map[string]struct{}{preset.Name: {}}
+	for _, track := range preset.Tracks {
+		aliases[preset.Name+" · "+string(track)] = struct{}{}
+	}
+	candidates := make([]store.RAGEvalDatasetRecord, 0, 2)
+	cursor := ""
+	for {
+		items, err := r.store.ListRAGEvalDatasets(ctx, cursor, 200)
+		if err != nil {
+			return "", err
+		}
+		for _, item := range items {
+			if _, matches := aliases[strings.TrimSpace(item.Name)]; matches {
+				candidates = append(candidates, item)
+			}
+		}
+		if len(items) < 200 {
+			break
+		}
+		cursor = items[len(items)-1].ID
+	}
+	if len(candidates) > 0 {
+		sort.Slice(candidates, func(i, j int) bool {
+			if candidates[i].CreatedAt.Equal(candidates[j].CreatedAt) {
+				return candidates[i].ID < candidates[j].ID
+			}
+			return candidates[i].CreatedAt.Before(candidates[j].CreatedAt)
+		})
+		return candidates[0].ID, nil
+	}
+	digest := sha256.Sum256([]byte("builtin-catalog\x00" + preset.ID))
+	dataset := &store.RAGEvalDatasetRecord{
+		ID: "rds_catalog_" + hex.EncodeToString(digest[:16]), Name: preset.Name,
+		Description: preset.Description + "；系统按内置数据集自动归类", CreatedBy: createdBy,
+	}
+	if err := r.store.CreateRAGEvalDataset(ctx, dataset); err == nil {
+		return dataset.ID, nil
+	}
+	if existing, err := r.store.GetRAGEvalDataset(ctx, dataset.ID); err == nil {
+		return existing.ID, nil
+	}
+	return "", errors.New("could not create the catalog logical dataset")
 }
 
 func (r *CatalogImportRunner) Get(ctx context.Context, id string) (*store.RAGEvalCatalogImportRecord, error) {
