@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -134,6 +135,8 @@ func (r *Runner) RunOnce(ctx context.Context) (bool, error) {
 	if err != nil || !claimed {
 		return claimed, err
 	}
+	started := time.Now()
+	slog.Info("parser evaluation run claimed", "run_id", lease.RunID)
 	workCtx, cancelWork := context.WithCancelCause(ctx)
 	stopHeartbeat := r.superviseLease(workCtx, cancelWork, *lease)
 	defer stopHeartbeat()
@@ -193,6 +196,12 @@ func (r *Runner) RunOnce(ctx context.Context) (bool, error) {
 	if !ok {
 		return true, ErrRunnerFenceLost
 	}
+	slog.Info("parser evaluation run completed",
+		"run_id", lease.RunID,
+		"status", status,
+		"documents", len(documents),
+		"duration_ms", time.Since(started).Milliseconds(),
+	)
 	return true, nil
 }
 
@@ -321,6 +330,13 @@ func (r *Runner) processDocument(ctx context.Context, lease store.ParserEvalLeas
 	if err := r.putDocument(ctx, lease, &record, store.ParserEvalDocumentUpdate{DocumentID: record.ID, Status: status, Stage: store.ParserEvalDocumentStageScoring, ErrorCode: code, ErrorMessage: message}); err != nil {
 		return record, err
 	}
+	slog.Info("parser evaluation document completed",
+		"run_id", lease.RunID,
+		"document_id", record.ID,
+		"format", record.Format,
+		"status", status,
+		"error_code", code,
+	)
 	return record, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/qs3c/bkcrab/internal/rag/objects"
@@ -94,6 +95,7 @@ func (c *Cleanup) deleteTerminal(ctx context.Context, run store.ParserEvalRunRec
 	if !deleted {
 		return store.ErrNotFound
 	}
+	slog.Info("parser evaluation run deleted", "run_id", run.ID, "status", run.Status)
 	return nil
 }
 

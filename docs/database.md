@@ -27,6 +27,32 @@ bkcrab-migrate-storage \
   --replace
 ```
 
+## Document parser evaluation schema
+
+Document parser evaluation is independent from the RAG ingestion and benchmark
+schemas. It adds exactly two relational tables; attempts, judge slots, usage,
+and aggregates remain bounded closed JSON values in those rows. Original Office
+files, rendered page PNGs, complete Markdown, and raw judge JSON are stored under
+the existing object store's `parser-evals/` namespace.
+
+| Table | Purpose |
+|---|---|
+| `parser_eval_runs` | One task, its frozen execution snapshot, lease/cancellation state, progress, and aggregate summary |
+| `parser_eval_documents` | One uploaded document and its renderer, MarkItDown, AnyDoc, and blind-judge result slots |
+
+`parser_eval_runs` groups identity/ownership (`id`, `created_by`), lifecycle
+(`status`, `stage`, timestamps, expiry and cancellation), recoverable execution
+fencing (`lease_owner`, `lease_until`, `fence_token`), and bounded JSON
+(`progress_json`, `execution_snapshot_json`, `summary_json`).
+
+`parser_eval_documents` groups identity/source metadata (`id`, `run_id`,
+`ordinal`, file identity, digest and source object key), lifecycle, four bounded
+JSON result slots (`truth_json`, `markitdown_result_json`,
+`anydoc_result_json`, `judge_result_json`), and bounded failure details.
+`(run_id, ordinal)` is unique. Aggregates are recomputed from document rows, so
+there is no third summary table. Relationships and object-first cleanup are
+coordinated by the application.
+
 ## RAG schema
 
 RAG keeps ownership metadata, source-document state, and durable indexing tasks

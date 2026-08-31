@@ -6,6 +6,7 @@ services:
       - default
       - rag-parser-internal
       - rag-evaluator-internal
+      - parser-eval-internal
     environment:
       BKCRAB_RAG_MILVUS_ADDRESS: milvus-standalone:19530
       BKCRAB_RAG_MILVUS_USERNAME: "${MILVUS_USERNAME:-}"
@@ -80,6 +81,24 @@ services:
       BKCRAB_RAG_LIMITS_MAX_IMAGE_PIXELS: "${RAG_MAX_IMAGE_PIXELS:-40000000}"
       BKCRAB_RAG_LIMITS_PDF_RENDER_DPI: "${RAG_PDF_RENDER_DPI:-180}"
       BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS: "${RAG_PARSE_TIMEOUT_MS:-600000}"
+      # Independent super-admin document parser evaluation. The profile is
+      # optional and no depends_on edge is added, so leaving it disabled never
+      # blocks the main gateway.
+      BKCRAB_PARSER_EVAL_ENABLED: "${PARSER_EVAL_ENABLED:-false}"
+      BKCRAB_PARSER_EVAL_WORKER_ENABLED: "${PARSER_EVAL_WORKER_ENABLED:-true}"
+      BKCRAB_PARSER_EVAL_RENDERER_ENDPOINT: "http://parser-eval-renderer:8080"
+      BKCRAB_PARSER_EVAL_MARKITDOWN_ENDPOINT: "http://parser-eval-markitdown:8080"
+      BKCRAB_PARSER_EVAL_ANYDOC_ENDPOINT: "http://parser-eval-anydoc:8080"
+      BKCRAB_PARSER_EVAL_RENDER_TIMEOUT_MS: "${PARSER_EVAL_RENDER_TIMEOUT_MS:-600000}"
+      BKCRAB_PARSER_EVAL_PARSE_TIMEOUT_MS: "${PARSER_EVAL_PARSE_TIMEOUT_MS:-600000}"
+      BKCRAB_PARSER_EVAL_JUDGE_TIMEOUT_MS: "${PARSER_EVAL_JUDGE_TIMEOUT_MS:-240000}"
+      BKCRAB_PARSER_EVAL_MAX_FILE_BYTES: "${PARSER_EVAL_MAX_FILE_BYTES:-52428800}"
+      BKCRAB_PARSER_EVAL_MAX_FILES: "${PARSER_EVAL_MAX_FILES:-50}"
+      BKCRAB_PARSER_EVAL_MAX_BATCH_BYTES: "${PARSER_EVAL_MAX_BATCH_BYTES:-524288000}"
+      BKCRAB_PARSER_EVAL_RETENTION_DAYS: "${PARSER_EVAL_RETENTION_DAYS:-90}"
+      BKCRAB_PARSER_EVAL_MAX_PAGES: "${PARSER_EVAL_MAX_PAGES:-6}"
+      BKCRAB_PARSER_EVAL_RENDER_DPI: "${PARSER_EVAL_RENDER_DPI:-100}"
+      BKCRAB_PARSER_EVAL_MARKDOWN_JUDGE_CHARS: "${PARSER_EVAL_MARKDOWN_JUDGE_CHARS:-40000}"
     depends_on:
       milvus-standalone:
         condition: service_healthy
@@ -87,6 +106,115 @@ services:
         condition: service_healthy
       rag-parser-anydoc:
         condition: service_healthy
+
+  parser-eval-renderer:
+    profiles: ["parser-evaluation"]
+    build:
+      context: ../../services/parser-eval-renderer
+      dockerfile: Dockerfile
+    image: "${PARSER_EVAL_RENDERER_IMAGE:-bkcrab/parser-eval-renderer:0.1.0}"
+    restart: unless-stopped
+    init: true
+    user: "65532:65532"
+    read_only: true
+    environment:
+      PARSER_EVAL_RENDERER_SERVICE_VERSION: "${PARSER_EVAL_RENDERER_SERVICE_VERSION:-0.1.0}"
+      PARSER_EVAL_RENDER_TIMEOUT_MS: "${PARSER_EVAL_RENDER_TIMEOUT_MS:-600000}"
+      PARSER_EVAL_MAX_FILE_BYTES: "${PARSER_EVAL_MAX_FILE_BYTES:-52428800}"
+      PARSER_EVAL_MAX_PAGES: "${PARSER_EVAL_MAX_PAGES:-6}"
+      PARSER_EVAL_RENDER_DPI: "${PARSER_EVAL_RENDER_DPI:-100}"
+      PARSER_EVAL_RENDERER_TEMP_ROOT: /tmp
+      HOME: /tmp
+      TMPDIR: /tmp
+      XDG_CACHE_HOME: /tmp/cache
+    tmpfs:
+      - "/tmp:size=${PARSER_EVAL_RENDERER_TMPFS_SIZE_BYTES:-805306368},mode=0700,uid=65532,gid=65532"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    cpus: "${PARSER_EVAL_RENDERER_CPUS:-1.0}"
+    mem_limit: "${PARSER_EVAL_RENDERER_MEMORY_LIMIT:-1g}"
+    networks: [parser-eval-internal]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"]
+      interval: 15s
+      timeout: 3s
+      start_period: 20s
+      retries: 5
+
+  parser-eval-markitdown:
+    profiles: ["parser-evaluation"]
+    build:
+      context: ../../services/rag-parser
+      dockerfile: Dockerfile
+    image: "${PARSER_EVAL_MARKITDOWN_IMAGE:-bkcrab/parser-eval-markitdown:0.1.0}"
+    restart: unless-stopped
+    init: true
+    user: "65532:65532"
+    read_only: true
+    environment:
+      RAG_PARSER_SERVICE_VERSION: "${PARSER_EVAL_MARKITDOWN_SERVICE_VERSION:-0.1.0-parser-eval}"
+      RAG_PARSER_OFFICE_ENGINE: markitdown
+      RAG_PARSER_PORT: "8080"
+      RAG_PARSER_TEMP_ROOT: /tmp
+      HOME: /tmp
+      TMPDIR: /tmp
+      XDG_CACHE_HOME: /tmp/cache
+      BKCRAB_RAG_LIMITS_MAX_FILE_MB: "${PARSER_EVAL_MAX_FILE_MB:-50}"
+      BKCRAB_RAG_LIMITS_MAX_EXTRACTED_BYTES: "${PARSER_EVAL_PARSER_MAX_EXTRACTED_BYTES:-209715200}"
+      BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS: "${PARSER_EVAL_PARSE_TIMEOUT_MS:-600000}"
+      RAG_PARSER_MAX_EXTRACTED_BYTES: "${PARSER_EVAL_PARSER_MAX_EXTRACTED_BYTES:-209715200}"
+    tmpfs:
+      - "/tmp:size=${PARSER_EVAL_PARSER_TMPFS_SIZE_BYTES:-536870912},mode=0700,uid=65532,gid=65532"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    cpus: "${PARSER_EVAL_PARSER_CPUS:-1.0}"
+    mem_limit: "${PARSER_EVAL_PARSER_MEMORY_LIMIT:-1g}"
+    networks: [parser-eval-internal]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"]
+      interval: 15s
+      timeout: 3s
+      start_period: 10s
+      retries: 5
+
+  parser-eval-anydoc:
+    profiles: ["parser-evaluation"]
+    build:
+      context: ../../services/rag-parser
+      dockerfile: Dockerfile
+    image: "${PARSER_EVAL_ANYDOC_IMAGE:-bkcrab/parser-eval-anydoc:0.1.0}"
+    restart: unless-stopped
+    init: true
+    user: "65532:65532"
+    read_only: true
+    environment:
+      RAG_PARSER_SERVICE_VERSION: "${PARSER_EVAL_ANYDOC_SERVICE_VERSION:-0.1.0-parser-eval-anydoc}"
+      RAG_PARSER_OFFICE_ENGINE: anydoc
+      RAG_PARSER_PORT: "8080"
+      RAG_PARSER_TEMP_ROOT: /tmp
+      HOME: /tmp
+      TMPDIR: /tmp
+      XDG_CACHE_HOME: /tmp/cache
+      BKCRAB_RAG_LIMITS_MAX_FILE_MB: "${PARSER_EVAL_MAX_FILE_MB:-50}"
+      BKCRAB_RAG_LIMITS_MAX_EXTRACTED_BYTES: "${PARSER_EVAL_PARSER_MAX_EXTRACTED_BYTES:-209715200}"
+      BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS: "${PARSER_EVAL_PARSE_TIMEOUT_MS:-600000}"
+      RAG_PARSER_MAX_EXTRACTED_BYTES: "${PARSER_EVAL_PARSER_MAX_EXTRACTED_BYTES:-209715200}"
+    tmpfs:
+      - "/tmp:size=${PARSER_EVAL_PARSER_TMPFS_SIZE_BYTES:-536870912},mode=0700,uid=65532,gid=65532"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    cpus: "${PARSER_EVAL_PARSER_CPUS:-1.0}"
+    mem_limit: "${PARSER_EVAL_PARSER_MEMORY_LIMIT:-1g}"
+    networks: [parser-eval-internal]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"]
+      interval: 15s
+      timeout: 3s
+      start_period: 10s
+      retries: 5
 
   rag-parser:
     build:
@@ -298,4 +426,6 @@ networks:
   rag-parser-internal:
     internal: true
   rag-evaluator-internal:
+    internal: true
+  parser-eval-internal:
     internal: true

@@ -1,0 +1,12 @@
+# Test-only localhost bindings for the opt-in parser-evaluation profile.
+# Production uses no published sidecar ports.
+services:
+  parser-eval-renderer:
+    ports:
+      - "127.0.0.1:${PARSER_EVAL_RENDERER_TEST_PORT:-18081}:8080"
+  parser-eval-markitdown:
+    ports:
+      - "127.0.0.1:${PARSER_EVAL_MARKITDOWN_TEST_PORT:-18082}:8080"
+  parser-eval-anydoc:
+    ports:
+      - "127.0.0.1:${PARSER_EVAL_ANYDOC_TEST_PORT:-18083}:8080"
