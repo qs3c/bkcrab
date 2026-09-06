@@ -1020,7 +1020,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return
 	}
-	turnCtx, finish, err := ag.ReserveWebTurn(r.Context(), req.SessionID)
+	turnCtx, finish, err := ag.ReserveWebTurn(r.Context(), req.SessionID, req.ProjectID)
 	if err != nil {
 		jsonResponse(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
@@ -1045,8 +1045,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 // handleChatSteer 将一个消息缓冲到正在进行的轮次中。
 // 它不会打开流或发出事件 — 正在运行的轮次（由先前的 /api/chat/stream POST 启动）
 // 在工具轮次之间折叠该消息并在其现有的 SSE 上发出 "steer" 事件。
-// 当有活跃轮次时返回 200 {"buffered":true}；没有运行时返回 409 {"buffered":false}，
-// 以便客户端回退到普通的 /api/chat/stream 发送。
+// 200 means buffered. A 409 includes state: only idle permits normal-send fallback;
+// stopping/finishing still own the session and the client must keep the draft.
 func (s *Server) handleChatSteer(w http.ResponseWriter, r *http.Request) {
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1066,11 +1066,12 @@ func (s *Server) handleChatSteer(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "empty message"})
 		return
 	}
-	if ag.SteerWeb(req.SessionID, req.ProjectID, req.Message) {
-		jsonResponse(w, http.StatusOK, map[string]any{"buffered": true})
-		return
+	result := ag.SteerWeb(req.SessionID, req.Message)
+	status := http.StatusConflict
+	if result.Buffered {
+		status = http.StatusOK
 	}
-	jsonResponse(w, http.StatusConflict, map[string]any{"buffered": false})
+	jsonResponse(w, status, result)
 }
 
 // agentTurnTimeout 是客户端连接断开后允许 agent goroutine 运行的上限。
@@ -1104,7 +1105,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	// The worker owns cancellation: disconnecting only drops this subscription.
 	deadlineCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), agentTurnTimeout)
-	agentCtx, finish, err := ag.ReserveWebTurn(deadlineCtx, req.SessionID)
+	agentCtx, finish, err := ag.ReserveWebTurn(deadlineCtx, req.SessionID, req.ProjectID)
 	if err != nil {
 		cancel()
 		jsonResponse(w, http.StatusConflict, map[string]any{"error": err.Error()})

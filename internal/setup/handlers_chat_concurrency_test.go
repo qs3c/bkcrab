@@ -11,9 +11,55 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qs3c/bkcrab/internal/agent"
 	"github.com/qs3c/bkcrab/internal/api"
 	"github.com/qs3c/bkcrab/internal/provider"
 )
+
+func TestChatSteerUsesReservationState(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, _, user := newAuthTestServer(t, ctx)
+	manager := newChatHistoryTestManager(t, user.ID)
+	s.SetUserResolver(&chatHistoryResolver{spaces: map[string]*api.UserSpaceView{
+		user.ID: {UserID: user.ID, Agents: manager},
+	}})
+	ag := manager.AgentByID("ctx-agent")
+	_, finish, err := ag.ReserveWebTurn(ctx, "A", "original-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finish()
+	steer := func(wantStatus int, wantState agent.TurnState) {
+		t.Helper()
+		r := authTestRequest(t, ctx, resolver, http.MethodPost, "/api/chat/steer", user.ID)
+		r.Body = io.NopCloser(strings.NewReader(`{"agentId":"ctx-agent","sessionId":"A","projectId":"different-project","message":"adjust"}`))
+		rr := httptest.NewRecorder()
+		s.authMiddleware(s.handleChatSteer)(rr, r)
+		var result agent.SteerResult
+		if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if rr.Code != wantStatus || result.State != wantState || result.Buffered != (wantStatus == http.StatusOK) {
+			t.Fatalf("status=%d result=%+v", rr.Code, result)
+		}
+	}
+	// No HandleMessage/Session initialization is needed to accept steering.
+	steer(http.StatusOK, agent.TurnStarting)
+	ag.StopWebTurn("A")
+	steer(http.StatusConflict, agent.TurnStopping)
+	rr := httptest.NewRecorder()
+	r := authTestRequest(t, ctx, resolver, http.MethodGet, "/api/chat/status?agentId=ctx-agent&sessionId=A", user.ID)
+	s.authMiddleware(s.handleChatStatus)(rr, r)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"active":true`) || !strings.Contains(rr.Body.String(), `"state":"stopping"`) {
+		t.Fatalf("status while stopping: %s", rr.Body.String())
+	}
+	finish()
+	steer(http.StatusConflict, agent.TurnIdle)
+	history, _ := json.Marshal(ag.WebChatHistory("A"))
+	if strings.Count(string(history), `"content":"adjust"`) != 1 {
+		t.Fatalf("accepted startup steer was lost or duplicated: %s", history)
+	}
+}
 
 type blockingChatProvider struct {
 	started chan context.Context

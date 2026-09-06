@@ -624,44 +624,20 @@ func (a *Agent) HandleWebChatStream(ctx context.Context, sessionId, projectIDHin
 	return a.HandleMessage(ctx, msg)
 }
 
-// SteerWeb 缓冲飞行中网络转向的转向消息
-// 给定的会话。如果回合处于活动状态且消息已发送，则返回 true
-// 缓冲（运行循环会将其折叠在工具轮之间并且
-// 在现有 SSE 上发出“转向”事件），如果没有转弯则为 false
-// running — 在这种情况下，调用者应该返回到正常发送。
-// 会话解析完全镜像 HandleWebChatStream，因此我们可以登陆
-// 运行回合所持有的相同 *session.Session 指针。
-func (a *Agent) SteerWeb(sessionId, projectIDHint, text string) bool {
-	if sessionId == "" {
-		sessionId = "web-ui"
-	}
-	channel, accountID, chatID, projectID := a.recoverWebTriple(sessionId)
-	if projectID == "" {
-		projectID = projectIDHint
-	}
-	sess := a.sessions.Get(channel, accountID, chatID, projectID)
-	return sess.PushSteerIfActive(provider.Message{
-		Role:      "user",
-		Content:   text,
-		Timestamp: time.Now().UnixMilli(),
+// SteerWeb uses the same reservation as ordinary submission and stop. Project
+// scope belongs to the reserved turn; a steering request cannot rebind it.
+func (a *Agent) SteerWeb(sessionId, text string) SteerResult {
+	return a.pushTurnSteer(a.webTurnAddress(sessionId), provider.Message{
+		Role: "user", Content: text, Timestamp: time.Now().UnixMilli(),
 	})
 }
 
-// SteerInbound 缓冲由以下命令控制的飞行中转向消息
-// 入站消息的（频道、帐户 ID、聊天 ID、项目 ID）—
-// 相同的字段 HandleMessage 解析会话（不是
-// 任务队列的每个代理帐户ID），因此指针与正在运行的
-// 转动。 `text` 是提交路径将具有的已格式化正文
-// 已交付（例如组“\[name\]:”前缀）。没有时返回 false
-// turn 处于活动状态，因此调用者会退回到 taskQueue.Submit。
+// SteerInbound buffers into the active turn, or lets the gateway queue a new
+// message when the turn is idle, stopping or finishing.
 func (a *Agent) SteerInbound(msg bus.InboundMessage, text string) bool {
-	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
-	return sess.PushSteerIfActive(provider.Message{
-		Role:      "user",
-		Content:   text,
-		Metadata:  senderMetadata(msg),
-		Timestamp: time.Now().UnixMilli(),
-	})
+	return a.pushTurnSteer(turnAddress{msg.Channel, msg.AccountID, msg.ChatID}, provider.Message{
+		Role: "user", Content: text, Metadata: senderMetadata(msg), Timestamp: time.Now().UnixMilli(),
+	}).Buffered
 }
 
 // recoveryWebTriple 映射一个 URL `?session=` 标记（可以是
@@ -1970,13 +1946,9 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 	// 上面永远不会到达 AppendSessionMessage / SaveSession 和
 	// chatter_user_id 列保持为空。
 	sess.SetChatter(chatterUID)
-	// 计划起草期间的指导：计划模式没有需要消耗的 ReAct 循环
-	// 进入，所以中间吃水的转向停在历史中并回答
-	// 用户的下一个回合——与计划模式合同相匹配
-	// （审查计划，然后回复执行）。
-	sess.BeginTurn()
-	defer a.flushLeftoverSteer(sess)
-	defer padOrphanToolResults(sess)
+	// Plan mode consumes startup steering. Instructions arriving during its single
+	// model call are persisted by the reservation cleanup for the next turn.
+	a.bindTurnSession(ctx, sess)
 
 	// 镜像常规路径的用户消息构造，实现多模式
 	// + IM-bridge 有效负载 (PhotoURL / PhotoURLs) 登陆会话
@@ -2011,6 +1983,7 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 		messages = append(messages, provider.Message{Role: "system", Content: catalog})
 	}
 	messages = append(messages, sess.GetMessages()...)
+	messages = a.appendSteer(ctx, sess, messages, a.drainTurnSteer(ctx, false))
 	if a.piiScrubEnabled {
 		messages = privacy.ScrubMessages(messages)
 	}
@@ -2054,25 +2027,6 @@ func (a *Agent) appendSteer(ctx context.Context, sess *session.Session, messages
 		slog.Info("steer message folded into running turn", "agent", a.name)
 	}
 	return messages
-}
-
-// lushLeftoverSteer 处理回合结束比赛：接受的转向
-// PushSteerIfActive 在循环最后一次排水之后但在转弯之前
-// 声明完成（实际上只有最大迭代综合调用，
-// 一个错误的转弯，或者一个亚毫秒的窗口——回合之间和
-// 预制排水沟覆盖每条正常路径）。它一直被历史所铭记
-// 这样它就不会丢失并适应下一回合的上下文；我们故意
-// 不要为其重新运行隐藏回合（保持简单+避免
-// 递归重新调度的 IM 无回复不对称性）。
-func (a *Agent) flushLeftoverSteer(sess *session.Session) {
-	leftover := sess.EndTurn()
-	for _, m := range leftover {
-		sess.Append(m)
-	}
-	if len(leftover) > 0 {
-		slog.Warn("steer arrived at end of turn; parked in history for the next turn",
-			"agent", a.name, "count", len(leftover))
-	}
 }
 
 // HandleMessage 通过 ReAct 循环处理入站消息。
@@ -2183,24 +2137,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 路由规则的Registry.systemFileUserID。
 	reg.SetChatterUserID(chatterUID)
 
-	// 转向：标记飞行中的转弯，以便在运行中到达的消息
-	// 缓冲到会话中（在下面的工具迭代之间耗尽）
-	// 而不是开始单独的回合。冲洗剩余转向停泊任何
-	// 在回合结束比赛中失利的转向成为历史。挂号的
-	// 在 padOrphanToolResults 之前，因此它最后运行（延迟是后进先出） -
-	// 孤儿填充首先解决了历史问题。
-	sess.BeginTurn()
-	defer a.flushLeftoverSteer(sess)
-
-	// 客户端中止转弯的安全网：如果循环退出时带有
-	// tool_use 从未附加其匹配的 tool_result （
-	// 当一个长时间运行的执行程序正在运行时，用户单击了“停止”，
-	// SDK没有返回任何响应等），填充孤儿，这样
-	// 会话历史记录保持格式良好。如果没有这个，该工具将保持
-	// 呈现为历史上永远旋转的“奔跑”条目
-	// 重建并且下一回合的 API 调用从 Anthropic 获得 400
-	// 对于孤立的 tool_use id。
-	defer padOrphanToolResults(sess)
+	a.bindTurnSession(ctx, sess)
 
 	// 重置每转刀具故障跟踪。 web_fetch（以及任何
 	// 选择加入的未来工具）咨询注册表
@@ -2285,6 +2222,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 
 	// 反应循环
 	for i := 0; i < a.maxToolIterations; i++ {
+		messages = a.appendSteer(ctx, sess, messages, a.drainTurnSteer(ctx, false))
 		slog.Info("agent loop iteration",
 			"agent", a.name,
 			"iteration", i+1,
@@ -2378,7 +2316,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			// 在我们宣布回合结束之前，回合之间的资金会耗尽。
 			// 将其折叠起来并继续前进而不是返回，所以
 			// 用户的飞行中指令不会推迟到新的回合。
-			if steer := sess.DrainSteer(); len(steer) > 0 {
+			if steer := a.drainTurnSteer(ctx, true); len(steer) > 0 {
 				// 将刚刚生成的答案带入下一次 LLM 通话
 				// 仅当它有文本时。无文本、无工具调用
 				// 助理消息对 Anthropic 来说无效
@@ -2626,7 +2564,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		// 转向：此工具运行时到达的消息是
 		// 折叠在这里，在轮次之间，所以下一个法学硕士电话可以看到他们
 		// 并且可以改变路线。
-		if steer := sess.DrainSteer(); len(steer) > 0 {
+		if steer := a.drainTurnSteer(ctx, false); len(steer) > 0 {
 			messages = a.appendSteer(ctx, sess, messages, steer)
 		}
 	}
@@ -2636,6 +2574,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 微移告诉模型合成它所拥有的内容。取代了
 	// 只返回预设警告的旧行为，这让用户
 	// 在整个迭代预算被烧毁后，可交付成果为零。
+	messages = a.appendSteer(ctx, sess, messages, a.drainTurnSteer(ctx, false))
 	finalMessages := append(messages, capReachedNudge(a.maxToolIterations))
 	if a.piiScrubEnabled {
 		finalMessages = privacy.ScrubMessages(finalMessages)
@@ -3270,15 +3209,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	// 路由规则的Registry.systemFileUserID。
 	reg.SetChatterUserID(chatterUID)
 
-	// 与 HandleMessage 相同的 orphan-tool_use 安全网。流媒体路径
-	// 以前缺少这个，所以循环检测（它附加了一个助手
-	// tool_use + 系统警告并在不运行工具的情况下中断）和
-	// sess.Append(assistantMsg) 和工具之间的任何其他过早退出
-	// 结果在会话中追加左侧孤立的 tool_use id。下一个
-	// Turn 的 API 请求——尤其是针​​对 Anthropic-compat 端点
-	// 就像 DeepSeek 的 /anthropic — 然后找到了 400 个带有“tool_use id”的
-	// 紧接着“之后没有 tool_result 块”。
-	defer padOrphanToolResults(sess)
+	a.bindTurnSession(ctx, sess)
 
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeSystemPrompt, UserID: a.ownerUserID})
 	chatterMem := a.memory.WithUserID(chatterUID)
@@ -3320,6 +3251,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 	// ReAct 循环 - 使用 Chat 进行工具迭代
 	for i := 0; i < a.maxToolIterations; i++ {
+		messages = a.appendSteer(ctx, sess, messages, a.drainTurnSteer(ctx, false))
 		hookMessages, hcBefore := a.runBeforeModelCallHooks(ctx, messages, msg)
 		messages = hookMessages
 
@@ -3358,6 +3290,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			}
 			finalMetadata = ragResources.merge(finalMetadata)
 			finalMetadata = imageArtifacts.merge(finalMetadata)
+			messages = a.appendSteer(ctx, sess, messages, a.drainTurnSteer(ctx, false))
 			sr, err := a.provider.ChatStream(ctx, providerRequestMessages(messages), finalTools, a.model, a.maxTokens, a.temperature)
 			if err != nil {
 				slog.Error("LLM stream failed, falling back", "agent", a.name, "error", err)
@@ -3527,6 +3460,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.InboundMessage, messages []provider.Message, sess *session.Session, toolCallCount int, chatterMem *Memory, anchor *turnAnchor, ragResources *turnRAGResources, imageArtifacts *turnImageArtifacts, finish func()) *provider.StreamReader {
 	capMeta := ragResources.merge(iterationCapMetadata(a.maxToolIterations))
 	capMeta = imageArtifacts.merge(capMeta)
+	messages = a.appendSteer(ctx, sess, messages, a.drainTurnSteer(ctx, false))
 	finalMessages := append(messages, capReachedNudge(a.maxToolIterations))
 	sr, err := a.provider.ChatStream(ctx, providerRequestMessages(finalMessages), nil, a.model, a.maxTokens, a.temperature)
 	if err != nil {

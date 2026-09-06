@@ -3,6 +3,8 @@ package setup
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/qs3c/bkcrab/internal/agent"
 )
 
 // Stopping is explicit; losing a POST/SSE connection does not stop its worker.
@@ -26,5 +28,6 @@ func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return
 	}
-	jsonResponse(w, http.StatusOK, map[string]any{"active": ag.WebTurnActive(r.URL.Query().Get("sessionId"))})
+	state := ag.WebTurnState(r.URL.Query().Get("sessionId"))
+	jsonResponse(w, http.StatusOK, map[string]any{"active": state != agent.TurnIdle, "state": state})
 }

@@ -16,17 +16,17 @@ import (
 
 func TestTurnControlIsolatesSessionsAndHoldsReservationAfterStop(t *testing.T) {
 	a := &Agent{sessions: session.NewManager(t.TempDir())}
-	ctxA, finishA, err := a.ReserveWebTurn(context.Background(), "A")
+	ctxA, finishA, err := a.ReserveWebTurn(context.Background(), "A", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer finishA()
-	ctxB, finishB, err := a.ReserveWebTurn(context.Background(), "B")
+	ctxB, finishB, err := a.ReserveWebTurn(context.Background(), "B", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer finishB()
-	if _, _, err := a.ReserveWebTurn(context.Background(), "A"); !errors.Is(err, ErrTurnActive) {
+	if _, _, err := a.ReserveWebTurn(context.Background(), "A", ""); !errors.Is(err, ErrTurnActive) {
 		t.Fatalf("duplicate: %v", err)
 	}
 	// The worker uses the reservation instead of deadlocking on itself.
@@ -41,14 +41,14 @@ func TestTurnControlIsolatesSessionsAndHoldsReservationAfterStop(t *testing.T) {
 	if ctxB.Err() != nil {
 		t.Fatal("stopping A canceled B")
 	}
-	if _, _, err := a.ReserveWebTurn(context.Background(), "A"); !errors.Is(err, ErrTurnActive) {
+	if _, _, err := a.ReserveWebTurn(context.Background(), "A", ""); !errors.Is(err, ErrTurnActive) {
 		t.Fatal("released before worker completed")
 	}
 	finishA()
 	if a.WebTurnActive("A") {
 		t.Fatal("A still active")
 	}
-	_, nextFinish, err := a.ReserveWebTurn(context.Background(), "A")
+	_, nextFinish, err := a.ReserveWebTurn(context.Background(), "A", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestStreamTurnReservationLastsUntilFinalPersistence(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			reader := a.HandleMessageStream(ctx, bus.InboundMessage{Channel: "web", ChatID: "A", Text: "hello"})
-			if _, _, err := a.ReserveWebTurn(ctx, "A"); !errors.Is(err, ErrTurnActive) {
+			if _, _, err := a.ReserveWebTurn(ctx, "A", ""); !errors.Is(err, ErrTurnActive) {
 				t.Fatalf("stream no longer owns turn: %v", err)
 			}
 			p.chunks <- provider.StreamChunk{Content: "persisted final", Done: true}

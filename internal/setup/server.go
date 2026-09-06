@@ -34,14 +34,14 @@ import (
 // AgentHandle 是 Web UI 与运行中的 agent 通信的接口。
 type AgentHandle interface {
 	Name() string
-	ReserveWebTurn(context.Context, string) (context.Context, func(), error)
+	ReserveWebTurn(context.Context, string, string) (context.Context, func(), error)
 	StopWebTurn(string) bool
 	WebTurnActive(string) bool
+	WebTurnState(string) agent.TurnState
 	HandleWebChat(ctx context.Context, sessionId, projectIdHint, userID, text string, imageURLs []string, params map[string]any) string
 	HandleWebChatStream(ctx context.Context, sessionId, projectIdHint, userID, text string, imageURLs []string, params map[string]any, events chan<- agent.ChatEvent) string
-	// SteerWeb 将消息缓冲到该会话正在进行的轮次中；
-	// 当没有正在运行的轮次时返回 false（调用者回退到普通发送）。
-	SteerWeb(sessionId, projectIDHint, text string) bool
+	// SteerWeb reports idle separately from a turn that is stopping or finishing.
+	SteerWeb(sessionId, text string) agent.SteerResult
 	WebChatHistory(sessionId string) []map[string]any
 	WebChatSessions() []session.WebSession
 	DeleteWebChatSession(sessionId string) error

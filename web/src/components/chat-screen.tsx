@@ -5,7 +5,7 @@ import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { getAgent, getChatHistoryWithCursor, getChatSessions, getChatStatus, getChatTodo, getMe, listAgentFiles, listProjects, renameChatSession, revealAgentWorkspace, sendChatStream, steerChat, stopChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type ContextUsage, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile } from "@/lib/api";
+import { ChatTurnBusyError, getAgent, getChatHistoryWithCursor, getChatSessions, getChatStatus, getChatTodo, getMe, listAgentFiles, listProjects, renameChatSession, revealAgentWorkspace, sendChatStream, steerChat, stopChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type ContextUsage, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile } from "@/lib/api";
 import { buildAgentFileUrl as fileUrl, findProducedFileAttachmentIndex, getChatHistoryRenderState, isInternalWorkspaceFile, splitToolTurnForRender, workspaceMarkdownFilePath } from "@/components/chat-screen-state";
 import { createChatTodoLoader } from "@/components/chat-todo-state";
 import { RAGResourceGallery } from "@/components/rag-resource-gallery";
@@ -1414,10 +1414,11 @@ export function ChatScreen() {
     // 发送总意味着"我想看看接下来发生什么"——即使用户上滚阅读
     // 早期对话内容也重新固定到底部。
     stickToBottomRef.current = true;
+    const userMessageId = `u-${Date.now()}`;
     setMessages((prev) => [
       ...prev,
       {
-        id: `u-${Date.now()}`,
+        id: userMessageId,
         role: "user",
         content: text, // 气泡仅显示文本；附件在上方单独渲染
         timestamp: Date.now(),
@@ -1781,6 +1782,15 @@ export function ChatScreen() {
       // 不应再附加令人困惑的失败气泡。
       if (!isForeground()) {
         // 后台轮次出错/中止：不向用户当前正在看的另一个会话注入停止/错误气泡。
+      } else if (err instanceof ChatTurnBusyError) {
+        // Another tab can reserve the session between an idle steer response and
+        // this POST. Keep the rejected submission available for an explicit retry.
+        setInput((current) => current ? `${text}\n${current}` : text);
+        setAttachments((current) => [...filesToUpload, ...current]);
+        setMessages((prev) => [
+          ...prev.filter((m) => m.id !== userMessageId),
+          { id: `e-${Date.now()}`, role: "agent", content: err.message, timestamp: Date.now() },
+        ]);
       } else if (isAbort) {
 // 解决当前工具组中所有进行中的工具，使它们停止旋转。
           // 服务端的 padOrphanToolResults 会写入匹配记录；此处只是保持
@@ -1859,13 +1869,14 @@ export function ChatScreen() {
   }, [selectedAgent, sessionId]);
 
   // handleSteer 在轮次流式传输期间触发：将消息缓冲到正在进行的轮次中
-  // （智能体在工具轮次之间折叠它并在现有 SSE 上流出"steer"回显）。在 409
-  // （无活跃轮次——轮次刚结束）时回退到普通发送，不会丢失任何内容。
+  // （智能体在工具轮次之间折叠它并在现有 SSE 上流出"steer"回显）。只有服务端
+  // 明确返回 idle 才回退到普通发送；停止/收尾时保留输入，等待用户重试。
   const handleSteer = useCallback(async () => {
     const text = input.trim();
     // 仅在 handleKeyDown 的 `if (sending)` 分支中调用；在一次渲染中
     // React 状态是快照一致的，因此 `sending` 在此处必然为 true。
     if (!text || !selectedAgent || !sending) return;
+    const viewAtSteer = currentViewRef.current;
     setInput("");
     const optimisticId = `s-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     setMessages((prev) => [
@@ -1876,12 +1887,15 @@ export function ChatScreen() {
     try {
       ok = await steerChat(selectedAgent, sessionId, text, urlProjectId);
     } catch (err) {
+      if (currentViewRef.current !== viewAtSteer) return;
+      setInput((current) => current ? `${text}\n${current}` : text);
       setMessages((prev) => [
         ...prev.filter((m) => m.id !== optimisticId),
         { id: `e-${Date.now()}`, role: "agent", content: `调整指令失败：${err instanceof Error ? err.message : "未知错误"}`, timestamp: Date.now() },
       ]);
       return;
     }
+    if (currentViewRef.current !== viewAtSteer) return;
     if (!ok) {
       setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
       await handleSend(text, true);

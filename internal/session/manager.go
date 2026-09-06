@@ -44,13 +44,6 @@ type Session struct {
 	// 当调用方未绑定对话参与者时为空 —— 写入将列留为 ''，读取方回退到 user_id。
 	chatterUserID string
 
-	// 转向：turnDepth 统计此会话中正在进行的 HandleMessage 轮次数
-	//（计数器而非布尔值，因此重入/重叠的轮次不会使活跃标志挂起）。
-	// steerBuf 保存在轮次中间到达的用户消息；正在运行的 ReAct 循环
-	// 在工具迭代之间从中取出消息。两者都由 mu 保护。getByKey 从不触碰这些，
-	// 因此 Manager.Get 重新加载（会覆盖 Messages）不会破坏待处理的转向。
-	turnDepth int
-	steerBuf  []provider.Message
 }
 
 // SessionKey 返回此 Session 绑定的不透明 session_key。
@@ -458,58 +451,6 @@ func (s *Session) GetMessages() []provider.Message {
 	msgs := make([]provider.Message, len(s.Messages))
 	copy(msgs, s.Messages)
 	return msgs
-}
-
-// BeginTurn 将会话的 HandleMessage 轮次标记为正在进行中。
-// 与 EndTurn 配对使用。只有当至少一个轮次活跃时才接受转向消息。
-func (s *Session) BeginTurn() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.turnDepth++
-}
-
-// EndTurn 将一轮标记为完成。当最后一个进行中的轮次结束时，
-// 它返回仍缓冲的任何转向消息（轮次结束竞争：在循环最终取出后推入的消息）。
-// 调用方将剩余消息重新分派为新的一轮。
-func (s *Session) EndTurn() []provider.Message {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.turnDepth > 0 {
-		s.turnDepth--
-	}
-	if s.turnDepth > 0 || len(s.steerBuf) == 0 {
-		return nil
-	}
-	leftover := s.steerBuf
-	s.steerBuf = nil
-	return leftover
-}
-
-// PushSteerIfActive 仅当轮次当前正在进行中时缓冲转向消息。
-// 当没有活跃轮次时返回 false，因此调用方可以回退到将消息作为
-// 正常的新轮次分派。返回值是唯一的真相来源 —— 故意不设单独的
-// "正在运行"探测以避免竞争。
-func (s *Session) PushSteerIfActive(msg provider.Message) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.turnDepth == 0 {
-		return false
-	}
-	s.steerBuf = append(s.steerBuf, msg)
-	return true
-}
-
-// DrainSteer 原子地返回并清除缓冲的转向消息。
-// 正在运行的循环在工具迭代之间调用此方法。
-func (s *Session) DrainSteer() []provider.Message {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.steerBuf) == 0 {
-		return nil
-	}
-	drained := s.steerBuf
-	s.steerBuf = nil
-	return drained
 }
 
 // UnconsolidatedCount 返回自上次合并以来的消息数量。

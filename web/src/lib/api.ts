@@ -1069,10 +1069,15 @@ export async function sendChat(agentId: string, sessionId: string, message: stri
   return res.json();
 }
 
-// steerChat 将消息缓冲到会话中正在进行的轮次中。
-// 当服务器将其合并到正在运行的轮次时返回 true（200），
-// 当没有活跃轮次时返回 false（409）— 调用者应回退到
-// 正常的 sendChatStream。仅在意外/传输错误时抛出异常。
+export class ChatTurnBusyError extends Error {
+  constructor() {
+    super("当前会话仍在运行或收尾，请稍后重试；消息已保留在输入框。");
+    this.name = "ChatTurnBusyError";
+  }
+}
+
+// Only an explicit idle response permits normal-send fallback. A turn that is
+// stopping/finishing still owns the session; callers must retain the draft.
 export async function steerChat(
   agentId: string,
   sessionId: string,
@@ -1089,10 +1094,15 @@ export async function steerChat(
       message,
     }),
   });
-  if (res.status === 409) return false;
+  if (res.status === 409) {
+    const data = await res.json().catch(() => ({}));
+    if (data?.state === "idle") return false;
+    throw new ChatTurnBusyError();
+  }
   if (!res.ok) throw new Error(`steer failed: ${res.status}`);
   const data = await res.json().catch(() => ({}));
-  return data?.buffered === true;
+  if (data?.buffered === true) return true;
+  throw new Error("steer failed: missing buffered acknowledgement");
 }
 
 export interface ToolResultMetadata {
@@ -1205,6 +1215,7 @@ export async function sendChatStream(
     signal,
   });
   if (!res.ok) {
+    if (res.status === 409) throw new ChatTurnBusyError();
     let msg = `stream failed: ${res.status}`;
     try {
       const data = await res.json();
