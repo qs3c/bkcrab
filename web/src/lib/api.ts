@@ -793,6 +793,7 @@ export async function getChatHistory(agentId: string, sessionId: string): Promis
 // /api/chat/subscribe?since=N，以便新刷新的页面能拾取
 // 服务器上仍在流式传输的进行中回合。
 export interface ChatHistoryResult {
+  active: boolean;
   history: ChatHistoryMessage[];
   latestEventSeq: number; // -1 表示尚未记录任何事件
   contextUsage: ContextUsage | null;
@@ -826,14 +827,14 @@ function parseContextUsage(value: unknown): ContextUsage | null {
 
 export async function getChatHistoryWithCursor(agentId: string, sessionId: string): Promise<ChatHistoryResult> {
   const res = await apiFetch(`/api/chat/history?agentId=${encodeURIComponent(agentId)}&sessionId=${encodeURIComponent(sessionId)}`);
-  if (!res.ok) return { history: [], latestEventSeq: -1, contextUsage: null };
+  if (!res.ok) return { history: [], latestEventSeq: -1, contextUsage: null, active: false };
   const data = await res.json();
   const history: ChatHistoryMessage[] = Array.isArray(data?.history)
     ? data.history
     : Array.isArray(data) ? data : [];
   const seqRaw = data?.latestEventSeq;
   const latestEventSeq = typeof seqRaw === "number" ? seqRaw : -1;
-  return { history, latestEventSeq, contextUsage: parseContextUsage(data?.contextUsage) };
+  return { history, latestEventSeq, contextUsage: parseContextUsage(data?.contextUsage), active: data?.active === true };
 }
 
 export interface ChatSessionEntry {
@@ -1115,6 +1116,7 @@ export interface ToolResultMetadata {
 
 export interface ChatStreamEvent {
   type:
+    | "turn_start"
     | "content"
     | "content_delta"
     | "tool_call"
@@ -3327,4 +3329,19 @@ export function uploadParserEvalDocument(
     form.append("file", file, file.name);
     request.send(form);
   });
+}
+
+export async function stopChat(agentId: string, sessionId: string): Promise<void> {
+  const res = await apiFetch("/api/chat/stop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agentId, sessionId }),
+  });
+  if (!res.ok) throw new Error(`停止失败：${res.status}`);
+}
+
+export async function getChatStatus(agentId: string, sessionId: string): Promise<boolean> {
+  const res = await apiFetch(`/api/chat/status?agentId=${encodeURIComponent(agentId)}&sessionId=${encodeURIComponent(sessionId)}`);
+  if (!res.ok) throw new Error(`获取运行状态失败：${res.status}`);
+  return (await res.json()).active === true;
 }

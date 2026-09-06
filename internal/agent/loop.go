@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/codeany-ai/open-agent-sdk-go/costtracker"
@@ -36,6 +37,7 @@ import (
 
 // Agent 是 ReAct 代理循环。
 type Agent struct {
+	turns                turnControl
 	name                 string
 	provider             provider.Provider
 	registry             *tools.Registry
@@ -107,7 +109,7 @@ type Agent struct {
 	workspaceStore workspace.Store
 	skillsLearner  *SkillsLearner
 	lifecycleCfg   config.SkillLifecycleCfg
-	turnCount      int
+	turnCount      atomic.Int64
 	engine         *sdkEngine
 	costTracker    *costtracker.Tracker
 	agentID        string
@@ -2075,6 +2077,12 @@ func (a *Agent) flushLeftoverSteer(sess *session.Session) {
 
 // HandleMessage 通过 ReAct 循环处理入站消息。
 func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) string {
+	ctx, finish, err := a.messageTurn(ctx, msg)
+	if err != nil {
+		return err.Error()
+	}
+	defer finish()
+	emitEvent(ctx, ChatEvent{Type: "turn_start"})
 	// 首先检查斜杠命令。空回复意味着“已处理但是
 	// 故意保持沉默” - /goal foo 和 /goalresume 都失败了
 	// 到作为响应的流延续，所以
@@ -2986,7 +2994,7 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 	if chatterMem == nil {
 		chatterMem = a.memory
 	}
-	a.turnCount++
+	turnCount := int(a.turnCount.Add(1))
 
 	// 在 FTS 中索引用户/助理消息。跳过运行时注入
 	// 消息（例如 goal_context 延续）——它们是合成的
@@ -3007,7 +3015,7 @@ func (a *Agent) runPostTurn(ctx context.Context, msg bus.InboundMessage, message
 		AgentName:      a.name,
 		Point:          PostTurn,
 		Messages:       messages,
-		TurnCount:      a.turnCount,
+		TurnCount:      turnCount,
 		ToolCallCount:  toolCallCount,
 		Workspace:      a.homePath,
 		UserID:         a.ownerUserID,
@@ -3210,6 +3218,16 @@ func (a *Agent) runSkillBatchExtraction(base context.Context, batchID, sessionKe
 // 用于最终响应的 StreamReader。工具调用迭代使用非流式聊天；
 // 最终文本响应使用 ChatStream 进行真正的 SSE 流式传输。
 func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage) *provider.StreamReader {
+	ctx, finish, err := a.messageTurn(ctx, msg)
+	if err != nil {
+		return a.stringStream(err.Error())
+	}
+	releaseOnReturn := true
+	defer func() {
+		if releaseOnReturn {
+			finish()
+		}
+	}()
 	emergencyRetried := false
 
 	// 重用 HandleMessage 中的设置逻辑。空回复是“已处理
@@ -3361,8 +3379,10 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			capturedFinalMetadata := finalMetadata
 			outCh := make(chan provider.StreamChunk, 64)
 			outReader := provider.NewStreamReader(outCh)
+			releaseOnReturn = false
 			go func() {
 				defer close(outCh)
+				defer finish()
 				var full strings.Builder
 				var thinking, thinkingSig string
 				var rawAssistant json.RawMessage
@@ -3495,7 +3515,8 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	}
 
 	slog.Warn("max tool iterations reached — streaming forced final delivery", "agent", a.name, "max", a.maxToolIterations)
-	return a.streamFinalDeliveryAfterCap(ctx, msg, messages, sess, totalToolCalls, chatterMem, anchor, ragResources, imageArtifacts)
+	releaseOnReturn = false
+	return a.streamFinalDeliveryAfterCap(ctx, msg, messages, sess, totalToolCalls, chatterMem, anchor, ragResources, imageArtifacts, finish)
 }
 
 // StreamFinalDeliveryAfterCap 使用工具运行一个额外的 ChatStream
@@ -3503,7 +3524,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 // 使用迭代上限元数据，以便聊天 UI 可以标记气泡。
 // 返回的 StreamReader 与正常的”最终
 // 上面的响应”分支，因此调用者不需要特殊情况。
-func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.InboundMessage, messages []provider.Message, sess *session.Session, toolCallCount int, chatterMem *Memory, anchor *turnAnchor, ragResources *turnRAGResources, imageArtifacts *turnImageArtifacts) *provider.StreamReader {
+func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.InboundMessage, messages []provider.Message, sess *session.Session, toolCallCount int, chatterMem *Memory, anchor *turnAnchor, ragResources *turnRAGResources, imageArtifacts *turnImageArtifacts, finish func()) *provider.StreamReader {
 	capMeta := ragResources.merge(iterationCapMetadata(a.maxToolIterations))
 	capMeta = imageArtifacts.merge(capMeta)
 	finalMessages := append(messages, capReachedNudge(a.maxToolIterations))
@@ -3516,6 +3537,7 @@ func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.
 		sess.Append(fallbackMsg)
 		emitEvent(ctx, assistantContentEvent(fallback, capMeta))
 		a.runPostTurn(ctx, inboundMsg, append(messages, fallbackMsg), toolCallCount, chatterMem, anchor)
+		finish()
 		return a.stringStream(fallback)
 	}
 
@@ -3523,6 +3545,7 @@ func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.
 	outReader := provider.NewStreamReader(outCh)
 	go func() {
 		defer close(outCh)
+		defer finish()
 		var full strings.Builder
 		var thinking, thinkingSig string
 		var rawAssistant json.RawMessage

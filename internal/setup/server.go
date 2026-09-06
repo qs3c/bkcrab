@@ -34,6 +34,9 @@ import (
 // AgentHandle 是 Web UI 与运行中的 agent 通信的接口。
 type AgentHandle interface {
 	Name() string
+	ReserveWebTurn(context.Context, string) (context.Context, func(), error)
+	StopWebTurn(string) bool
+	WebTurnActive(string) bool
 	HandleWebChat(ctx context.Context, sessionId, projectIdHint, userID, text string, imageURLs []string, params map[string]any) string
 	HandleWebChatStream(ctx context.Context, sessionId, projectIdHint, userID, text string, imageURLs []string, params map[string]any, events chan<- agent.ChatEvent) string
 	// SteerWeb 将消息缓冲到该会话正在进行的轮次中；
@@ -83,6 +86,7 @@ type Server struct {
 	mcpRuntime     *mcpruntime.Service
 	// chatEvents 将实时的 agent 聊天事件分发到跨浏览器标签页的已订阅 SSE 客户端。
 	// 首次使用时延迟初始化，以便没有显式连接它的旧调用者仍然可以工作。
+	chatEventsMu          sync.Mutex
 	chatEvents            *agent.EventHub
 	usage                 usage.Meter
 	rag                   *rag.Service
@@ -355,6 +359,8 @@ func (s *Server) SetMCPRuntime(runtime *mcpruntime.Service) {
 // chatEventHub 返回延迟初始化的 hub。集中化使得每个聊天处理程序访问同一个实例 —
 // 如果没有这个，流式处理程序的 hub 发布将永远无法到达订阅处理程序。
 func (s *Server) chatEventHub() *agent.EventHub {
+	s.chatEventsMu.Lock()
+	defer s.chatEventsMu.Unlock()
 	if s.chatEvents == nil {
 		s.chatEvents = agent.NewEventHub()
 	}
@@ -482,6 +488,8 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/chat", auth(s.handleChat))
 	mux.HandleFunc("POST /api/chat/stream", auth(s.handleChatStream))
 	mux.HandleFunc("POST /api/chat/steer", auth(s.handleChatSteer))
+	mux.HandleFunc("POST /api/chat/stop", auth(s.handleChatStop))
+	mux.HandleFunc("GET /api/chat/status", auth(s.handleChatStatus))
 	mux.HandleFunc("GET /api/chat/history", auth(s.handleChatHistory))
 	mux.HandleFunc("GET /api/chat/todo", auth(s.handleChatTodo))
 	mux.HandleFunc("GET /api/chat/sessions", auth(s.handleChatSessions))

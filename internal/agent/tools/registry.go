@@ -134,10 +134,8 @@ type Registry struct {
 	// 通过 SetSessionID 进行代理循环；空值回落到
 	// 代理共享范围（管理员上传、固定装置、测试）。
 	sessionID string
-	// projectID 设置后，会覆盖基于 sessionID 的范围，因此所有
-	// 工具调用位于workspaces/<agent>/projects/<pid>/中。那是
-	// “项目”的全部价值：笔记/文件在整个过程中持续存在
-	// 项目的聊天。与 sessionID 一起设置每回合。
+	// projectID 与 sessionID 共同定位 projects/<pid>/<sid>/。
+	// 同项目会话可访问项目文件，但默认写入仍各自隔离。
 	projectID string
 	// messageChannel + messageChatID 命名聊天的总线地址
 	// 目前正在飞行中。通过bindSession so工具设置每回合
@@ -533,10 +531,8 @@ func (r *Registry) SetCallerIsAdmin(v bool) {
 	r.callerIsAdmin = v
 }
 
-// SetProjectID 确定注册表工作区的范围。存储对项目的调用
-// 文件夹非空时，优先于会话范围，因此所有
-// 项目内的聊天共享文件。与顶部的 SetSessionID 配对
-// 每个回合。
+// SetProjectID 与 SetSessionID 配对设置当前会话的项目工作区。
+// sessionID 非空时，默认文件路径位于项目内的会话子目录。
 func (r *Registry) SetProjectID(projectID string) {
 	r.projectID = projectID
 }
@@ -973,7 +969,7 @@ func (r *Registry) SetExecutor(ex sandbox.Executor) {
 }
 
 func (r *Registry) registerBuiltins() {
-	registerExec(r)
+	registerExecFull(r, nil, r.envProvider, r.skillDirs)
 	registerFile(r)
 	registerMemory(r)
 	registerSkillManage(r)

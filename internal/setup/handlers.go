@@ -1020,6 +1020,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return
 	}
+	turnCtx, finish, err := ag.ReserveWebTurn(r.Context(), req.SessionID)
+	if err != nil {
+		jsonResponse(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	}
+	defer finish()
+	r = r.WithContext(turnCtx)
 	atts := req.allAttachments()
 	msgText := req.Message
 	if !req.preMaterialized() {
@@ -1095,6 +1102,21 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
+	// The worker owns cancellation: disconnecting only drops this subscription.
+	deadlineCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), agentTurnTimeout)
+	agentCtx, finish, err := ag.ReserveWebTurn(deadlineCtx, req.SessionID)
+	if err != nil {
+		cancel()
+		jsonResponse(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	}
+	workerStarted := false
+	defer func() {
+		if !workerStarted {
+			finish()
+			cancel()
+		}
+	}()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -1119,19 +1141,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	sub, unsubscribe := hub.Subscribe(uid, agentID, req.SessionID)
 	defer unsubscribe()
 
-	// 从请求中分离 agent 的 ctx：当浏览器标签页断开连接（刷新、关闭、网络抖动）时，
-	// 我们希望 agent 继续运行，以便其已付费的 LLM 调用完成并且回复记录在 session_events 中。
-	// 15 分钟的上限是唯一可以杀死它的因素。
-	agentCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), agentTurnTimeout)
-	// cancel 活在 handler 上，而不是 agent goroutine 上：当斜杠命令
-	// 排队一个延续时，我们在 HandleMessage 返回之后保持 SSE 打开，
-	// 而内部作用域的 cancel 会在延续的事件到达此 handler 的安全网检查之前拆除 agentCtx。
-	defer cancel()
 	agentCtx = agent.ContextWithStream(agentCtx, nil, s.dataStore, hub, uid, agentID, req.SessionID)
 
 	agentDone := make(chan struct{})
+	workerStarted = true
 	go func() {
 		defer close(agentDone)
+		defer cancel()
+		defer finish()
 		// events 参数保持为 nil — emitEvent 现在通过上面附加的
 		// streamCtx 扇出（persist + hub）。此 handler 不再需要旧的通道路径。
 		_ = ag.HandleWebChatStream(agentCtx, req.SessionID, req.ProjectID, uid, msgText, imageURLs, req.Params, nil)
@@ -1142,6 +1159,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	keepalive := time.NewTicker(30 * time.Second)
 	defer keepalive.Stop()
 
+	// Also bound waiting for a slash-command continuation after the first worker exits.
+	waitLimit := time.NewTimer(agentTurnTimeout)
+	defer waitLimit.Stop()
 	clientGone := r.Context().Done()
 	// turnPending 在斜杠命令 handler 报告它通过 bus.Inbound 排队了
 	// 一个延续（`turn_pending` 事件）时打开。
@@ -1186,12 +1206,12 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			if turnPending {
 				// HandleMessage 在排队一个延续后静默返回。
 				// 不要关闭；等待延续的 `done` 事件通过 hub。
-				// agentCtx.Done()（15 分钟超时）如果它永远不到达则是上限。
+				// 等待计时器（45 分钟超时）如果它永远不到达则是上限。
 				agentDone = nil
 				continue
 			}
 			return
-		case <-agentCtx.Done():
+		case <-waitLimit.C:
 			// 上面 turnPending 路径的安全网：
 			// 即使没有 `done` 事件到达，也在 agent 上下文硬超时时退出。
 			return
@@ -1539,6 +1559,7 @@ func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := map[string]any{
 		"history":      ag.WebChatHistory(sessionID),
+		"active":       ag.WebTurnActive(sessionID),
 		"contextUsage": ag.ContextUsageBaseline(),
 	}
 	// latestEventSeq 是 /api/chat/subscribe 的恢复游标 —

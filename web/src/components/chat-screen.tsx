@@ -5,8 +5,9 @@ import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { getAgent, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, listAgentFiles, listProjects, renameChatSession, revealAgentWorkspace, sendChatStream, steerChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type ContextUsage, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile } from "@/lib/api";
+import { getAgent, getChatHistoryWithCursor, getChatSessions, getChatStatus, getChatTodo, getMe, listAgentFiles, listProjects, renameChatSession, revealAgentWorkspace, sendChatStream, steerChat, stopChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type ContextUsage, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile } from "@/lib/api";
 import { buildAgentFileUrl as fileUrl, findProducedFileAttachmentIndex, getChatHistoryRenderState, isInternalWorkspaceFile, splitToolTurnForRender, workspaceMarkdownFilePath } from "@/components/chat-screen-state";
+import { createChatTodoLoader } from "@/components/chat-todo-state";
 import { RAGResourceGallery } from "@/components/rag-resource-gallery";
 import { buildAgentSessionAssetURL, buildAgentSessionAttachmentURL, normalizeRAGResources } from "@/components/rag-resource-gallery-state";
 import { AgentMarkdownImage } from "@/components/rag-safe-render";
@@ -547,14 +548,14 @@ export function ChatScreen() {
   // activeSessionsRef 是供异步流回调读取最新值的镜像，避免闭包陈旧。
   const [activeSessions, setActiveSessions] = useState<Set<string>>(() => new Set());
   const activeSessionsRef = useRef<Set<string>>(activeSessions);
+  const activityVersionRef = useRef(new Map<string, number>());
   const markActive = useCallback((sid: string, on: boolean) => {
-    setActiveSessions((prev) => {
-      const next = new Set(prev);
-      if (on) next.add(sid);
-      else next.delete(sid);
-      activeSessionsRef.current = next;
-      return next;
-    });
+    activityVersionRef.current.set(sid, (activityVersionRef.current.get(sid) || 0) + 1);
+    const next = new Set(activeSessionsRef.current);
+    if (on) next.add(sid);
+    else next.delete(sid);
+    activeSessionsRef.current = next;
+    setActiveSessions(next);
   }, []);
   // 当前显示会话是否有进行中轮次。所有现有 UI（发送/停止按钮、输入框禁用
   // 态、TodoPanel active、isLiveTurn、停止/转向逻辑等）继续读它，因此自动
@@ -567,6 +568,14 @@ export function ChatScreen() {
   // 涉及 todo.md 的 write_file/edit_file 事件及挂载时重新获取。
   // 空的 `items` 隐藏面板。
   const [todoItems, setTodoItems] = useState<TodoItem[]>([]);
+  const todoLoaderRef = useRef<ReturnType<typeof createChatTodoLoader<TodoItem>> | null>(null);
+  useEffect(() => {
+    setTodoItems([]);
+    const loader = createChatTodoLoader(selectedAgent, sessionId, getChatTodo, setTodoItems);
+    todoLoaderRef.current = loader;
+    void loader.refresh(selectedAgent, sessionId);
+    return () => { loader.dispose(); };
+  }, [selectedAgent, sessionId]);
   // 当前活跃 delegate_task 运行的最近 subagent_progress 事件。
   // 当子智能体报告 phase="done" 或发送轮次关闭时清除，因此不会跨轮次
   // 残留。一次只运行一个子智能体（delegate_task 以串行方式注册），
@@ -646,9 +655,31 @@ export function ChatScreen() {
   // 切到别的会话）的 POST 流回调据此判断自己是否仍是前台会话——不是则停止
   // 写入共享视图状态，避免污染用户正在看的另一个会话。
   const currentSessionIdRef = useRef(sessionId);
+  const currentViewRef = useRef({ agentId: selectedAgent, sessionId });
   useEffect(() => {
     currentSessionIdRef.current = sessionId;
-  }, [sessionId]);
+    currentViewRef.current = { agentId: selectedAgent, sessionId };
+  }, [selectedAgent, sessionId]);
+
+  useEffect(() => {
+    if (!sending) return;
+    let disposed = false;
+    let pending = false;
+    const timer = window.setInterval(async () => {
+      if (pending || abortsRef.current.has(sessionId)) return;
+      pending = true;
+      const version = activityVersionRef.current.get(sessionId);
+      try {
+        const active = await getChatStatus(selectedAgent, sessionId);
+        if (!disposed && !abortsRef.current.has(sessionId) && activityVersionRef.current.get(sessionId) === version) {
+          markActive(sessionId, active);
+          if (!active) void todoLoaderRef.current?.refresh(selectedAgent, sessionId);
+        }
+      } catch { /* Preserve running state until the server is reachable. */ }
+      finally { pending = false; }
+    }, 3000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [selectedAgent, sessionId, sending, markActive]);
 
   // 控制 EventSource 效果的门：保存其历史已被获取且 subscribeSinceRef
   // 现在准确的 sessionId。没有这个门，SSE 效果（声明更早因此先运行）
@@ -813,13 +844,16 @@ export function ChatScreen() {
     const since = subscribeSinceRef.current;
     const url = `/api/chat/subscribe?agentId=${encodeURIComponent(selectedAgent)}&sessionId=${encodeURIComponent(sessionId)}&since=${since}`;
     const es = new EventSource(url, { withCredentials: true });
+    let disposed = false;
     es.onmessage = (ev) => {
+      if (disposed) return;
       let data: {
         seq?: number;
         type?: string;
         text?: string;
         data?: {
           content?: string;
+          name?: string;
           message?: string;
           metadata?: ToolResultMetadata;
           // 子智能体进度字段
@@ -838,6 +872,7 @@ export function ChatScreen() {
       } catch {
         return;
       }
+      todoLoaderRef.current?.onEvent(selectedAgent, sessionId, data);
       // 形态 A：ChatStreamEvent（进行中轮次的增量）。
       if (typeof data.type === "string") {
         const seq = typeof data.seq === "number" ? data.seq : -1;
@@ -851,6 +886,11 @@ export function ChatScreen() {
           if (seq >= 0) maxSeqRef.current = seq;
         };
         switch (data.type) {
+          case "turn_start": {
+            claim();
+            markActive(sessionId, true);
+            break;
+          }
           case "content": {
             const content = data.data?.content || "";
             const meta = data.data?.metadata;
@@ -950,6 +990,7 @@ export function ChatScreen() {
           }
           case "done": {
             claim();
+            markActive(sessionId, false);
             if (data.data?.usage) setContextUsage(data.data.usage);
             setCompacting(false);
             // 防御性清理——content 事件应已封口流式气泡，但在 content 事件
@@ -965,6 +1006,7 @@ export function ChatScreen() {
               transientBubbleIdRef.current = null;
               getChatHistoryWithCursor(selectedAgent, sessionId)
                 .then(({ history, latestEventSeq, contextUsage }) => {
+                  if (disposed) return;
                   if (latestEventSeq > maxSeqRef.current) maxSeqRef.current = latestEventSeq;
                   subscribeSinceRef.current = latestEventSeq;
                   setContextUsage(contextUsage);
@@ -1006,9 +1048,10 @@ export function ChatScreen() {
       // 持续的 404（会话已删除、智能体不存在）会不断重试但无害。
     };
     return () => {
+      disposed = true;
       es.close();
     };
-  }, [selectedAgent, sessionId, loadedSessionId]);
+  }, [selectedAgent, sessionId, loadedSessionId, markActive]);
 
   // 当 URL 在底层变化时响应式切换 sessionId。
   // 三个 URL 转换涉及，均由同一分支逻辑处理：
@@ -1123,6 +1166,7 @@ export function ChatScreen() {
     maxSeqRef.current = -1;
     subscribeSinceRef.current = -1;
     transientBubbleIdRef.current = null;
+    streamingMsgIdRef.current = null;
 // 关闭此 sessionId 的 SSE 门；历史获取落地且 subscribeSinceRef
       // 设置为真实游标后重新开启。
     setLoadedSessionId(null);
@@ -1133,15 +1177,11 @@ export function ChatScreen() {
       // 正在进行的 delegate_task 需要跟踪。
     setSubagentProgress(null);
     setContextUsage((usage) => zeroContextUsage(usage));
-// 与历史获取一同刷新 todo.md。我们不让其余加载等待它——
-      // 404（尚无 todo.md）是空白会话的正常情况。
-    getChatTodo(selectedAgent, sessionId)
-      .then((todo) => setTodoItems(todo.items))
-      .catch(() => setTodoItems([]));
     let aborted = false;
     getChatHistoryWithCursor(selectedAgent, sessionId)
-      .then(async ({ history, latestEventSeq, contextUsage }) => {
+      .then(async ({ history, latestEventSeq, contextUsage, active }) => {
         if (aborted) return;
+        markActive(sessionId, active || abortsRef.current.has(sessionId));
         if (latestEventSeq > maxSeqRef.current) maxSeqRef.current = latestEventSeq;
         subscribeSinceRef.current = latestEventSeq;
         setContextUsage(contextUsage);
@@ -1191,7 +1231,7 @@ export function ChatScreen() {
     return () => {
       aborted = true;
     };
-  }, [selectedAgent, sessionId]);
+  }, [selectedAgent, sessionId, markActive]);
 
   useEffect(() => {
     if (!stickToBottomRef.current) return;
@@ -1250,6 +1290,7 @@ export function ChatScreen() {
     // sid 固定为本次发送的会话。用于按会话标记活跃/中止，并让后台轮次
     // （用户中途切走）的流回调据此停止写入前台视图。
     const sid = sessionId;
+    const viewAtSend = currentViewRef.current;
     // 允许仅发送附件（无文本），但至少需要一个。
     if (
       (!text && attachments.length === 0) ||
@@ -1392,14 +1433,14 @@ export function ChatScreen() {
     // 即保持，不在切回时让 POST 回调重新接管渲染。
     let wentBackground = false;
     const isForeground = () => {
-      if (currentSessionIdRef.current !== sid) wentBackground = true;
+      if (currentViewRef.current !== viewAtSend) wentBackground = true;
       return !wentBackground;
     };
 
     // 在轮次前快照工作区，以便在 `done` 时对比并附加新创建/修改的文件
     // （PDF、图片等）到最终回复。即发即弃；如果快照失败，我们只是不在此
     // 轮次中显示文件。以 `路径 → 大小|修改时间` 为键。
-    const preTurnFilesPromise = listAgentFiles(selectedAgent)
+    const preTurnFilesPromise = listAgentFiles(selectedAgent, sid)
       .then((items) => {
         const m = new Map<string, string>();
         for (const f of items) m.set(f.path, `${f.size}|${f.modTime}`);
@@ -1435,6 +1476,7 @@ export function ChatScreen() {
         // 去重游标 maxSeqRef / 流式气泡 ref——这些都属于当前显示的会话。
         // 服务端继续持久化事件；用户切回时由历史重载 + SSE 重放渲染。
         if (!isForeground()) return;
+        todoLoaderRef.current?.onEvent(selectedAgent, sid, evt);
         // 去重 /api/chat/subscribe SSE，两者服务端订阅同一 chat-events hub。
         // 先到达的路径渲染；另一方跳过。seq < 0 表示此事件持久化失败——
         // 在此回退并接受可能的双重渲染，而非完全丢弃事件。
@@ -1443,6 +1485,10 @@ export function ChatScreen() {
           maxSeqRef.current = evt.seq;
         }
         switch (evt.type) {
+          case "turn_start": {
+            markActive(sid, true);
+            break;
+          }
           case "content_delta": {
             // 来自提供者的增量 token 块。追加到进行中的助手气泡——在
             // 一轮（及工具组拆分后）的首个增量时创建。最终的 `content`
@@ -1584,23 +1630,6 @@ export function ChatScreen() {
                 }
               } catch { /* 忽略错误参数 */ }
             }
-            // 当文件变更工具刚刚操作了 todo.md 时刷新待办面板。
-            // 我们检查参数而非在每个 tool_result 上轮询，
-            // 使网络开销与实际更新成正比（50 次 web_search 的长任务
-            // 不会触发 50 次重新获取）。
-            if (tc && (tc.name === "write_file" || tc.name === "edit_file" || tc.name === "apply_patch")) {
-              try {
-                const args = JSON.parse(tc.arguments);
-                const path: string =
-                  (typeof args?.path === "string" ? args.path : "") ||
-                  (typeof args?.file_path === "string" ? args.file_path : "");
-                if (path && /(^|\/)todo\.md$/i.test(path)) {
-                  getChatTodo(selectedAgent, sessionId)
-                    .then((todo) => setTodoItems(todo.items))
-                    .catch(() => {});
-                }
-              } catch { /* 忽略错误参数 */ }
-            }
             const groupId = curGroupId;
             const calls = [...curCalls];
             setMessages((prev) => {
@@ -1657,6 +1686,7 @@ export function ChatScreen() {
             break;
           }
           case "done": {
+            markActive(sid, false);
             // 轮次结束。后端仍附带本轮的上下文占用（usage）作为兜底更新。
             // 并行的 /api/chat/subscribe 路径也会
             // 收到同一个带 seq 的 done 事件，但上方的 seq 去重确保只处理一次。
@@ -1669,7 +1699,7 @@ export function ChatScreen() {
       // 将工作区与轮次前快照对比，以便 *exec* 产出的文件（如保存 PDF 的
       // Python 脚本）也能显示——`turnFiles` 仅捕获具有相对、非身份路径的
       // write_file 工具调用，大多数真实流程都被遗漏。按路径合并两个来源。
-      const postTurnFiles = await listAgentFiles(selectedAgent).catch(() => []);
+      const postTurnFiles = await listAgentFiles(selectedAgent, sid).catch(() => []);
       const preSnap = await preTurnFilesPromise;
       const diffFiles: ProducedFile[] = [];
       for (const f of postTurnFiles) {
@@ -1795,8 +1825,14 @@ export function ChatScreen() {
         });
       }
     } finally {
-      abortsRef.current.delete(sid);
-      markActive(sid, false);
+      if (abortsRef.current.get(sid) === abortController) {
+        abortsRef.current.delete(sid);
+        // A transport error does not imply that the detached worker stopped.
+        const version = activityVersionRef.current.get(sid);
+        void getChatStatus(selectedAgent, sid).then((active) => {
+          if (currentViewRef.current.agentId === selectedAgent && !abortsRef.current.has(sid) && activityVersionRef.current.get(sid) === version) markActive(sid, active);
+        }).catch(() => {});
+      }
       // 前台 UI 清理只在本轮属于当前显示会话时执行；后台轮次结束不应抹掉
       // 用户正在看的另一个会话的子智能体进度/压缩横杠/输入焦点。
       // 双重保险：子智能体的 done 事件在正常路径上清除这些状态，但若网络
@@ -1809,10 +1845,18 @@ export function ChatScreen() {
     }
   }, [input, attachments, selectedAgent, sessionId, loadSessions, pathname, router, urlProjectId, planMode, markActive, isUploadingAttachments]);
 
-  const handleStop = useCallback(() => {
-    // 停止当前显示会话的进行中轮次（后台会话的轮次保持运行）。
-    abortsRef.current.get(currentSessionIdRef.current)?.abort();
-  }, []);
+  const handleStop = useCallback(async () => {
+    const sid = sessionId;
+    const controller = abortsRef.current.get(sid);
+    try {
+      await stopChat(selectedAgent, sid);
+      controller?.abort();
+    } catch (err) {
+      if (currentSessionIdRef.current === sid) {
+        setMessages((prev) => [...prev, { id: `stop-${Date.now()}`, role: "agent", content: String(err), timestamp: Date.now() }]);
+      }
+    }
+  }, [selectedAgent, sessionId]);
 
   // handleSteer 在轮次流式传输期间触发：将消息缓冲到正在进行的轮次中
   // （智能体在工具轮次之间折叠它并在现有 SSE 上流出"steer"回显）。在 409

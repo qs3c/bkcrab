@@ -375,7 +375,7 @@ func (r *Registry) rootForPath(path string) string {
 	if !strings.ContainsRune(clean, filepath.Separator) && systemFiles[clean] {
 		return r.systemRoot
 	}
-	return r.userRoot
+	return r.scopedUserRoot()
 }
 
 func registerFile(r *Registry) {

@@ -168,6 +168,10 @@ func newShellManager() *shellManager {
 // 传播给孩子——ctx在回合结束时死亡并且需要
 // 每个后台进程都有它。
 func (m *shellManager) Start(command string, env []string) (*bashSession, error) {
+	return m.StartInDir(command, env, "")
+}
+
+func (m *shellManager) StartInDir(command string, env []string, dir string) (*bashSession, error) {
 	if command == "" {
 		return nil, errors.New("command is required")
 	}
@@ -187,6 +191,7 @@ func (m *shellManager) Start(command string, env []string) (*bashSession, error)
 	// 是在自然退出之前终止它的唯一路径。
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Dir = dir
 	// 失败关闭：如果调用者没有传递显式环境，则构建一个
 	// 擦掉了一个而不是让 Go 默认为裸 os.Environ()
 	// 继承——这条路径就是守护进程秘密到达聊天回复的方式。

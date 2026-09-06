@@ -103,20 +103,25 @@ func TestHandleChatHistoryReturnsZeroContextUsageForNewSession(t *testing.T) {
 	}
 }
 
-func newChatHistoryTestManager(t *testing.T, userID string) *agent.Manager {
+func newChatHistoryTestManager(t *testing.T, userID string, providers ...provider.Provider) *agent.Manager {
 	t.Helper()
 
 	root := t.TempDir()
 	t.Setenv("BKCRAB_HOME", root)
+	var prov provider.Provider = chatHistoryNoopProvider{}
+	if len(providers) > 0 {
+		prov = providers[0]
+	}
 	manager, err := agent.NewManager([]config.ResolvedAgent{{
-		ID:            "ctx-agent",
-		UserID:        userID,
-		Home:          filepath.Join(root, "agents", "ctx-agent"),
-		Workspace:     filepath.Join(root, "workspace", "ctx-agent"),
-		Model:         "fake/model",
-		MaxTokens:     100,
-		ContextWindow: 64000,
-	}}, chatHistoryNoopProvider{}, nil, agent.WithUserID(userID))
+		ID:                "ctx-agent",
+		UserID:            userID,
+		Home:              filepath.Join(root, "agents", "ctx-agent"),
+		Workspace:         filepath.Join(root, "workspace", "ctx-agent"),
+		Model:             "fake/model",
+		MaxTokens:         100,
+		ContextWindow:     64000,
+		MaxToolIterations: 2,
+	}}, prov, nil, agent.WithUserID(userID))
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

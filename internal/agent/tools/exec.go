@@ -169,7 +169,11 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 				skillEnv = resolveSkillEnv(args.Command, envProvider, skillDirs)
 			}
 			sessEnv := buildSubprocessEnv(skillEnv)
-			s, err := r.shellMgr.Start(command, sessEnv)
+			workdir, err := r.prepareHostWorkdir()
+			if err != nil {
+				return "", err
+			}
+			s, err := r.shellMgr.StartInDir(command, sessEnv, workdir)
 			if err != nil {
 				return "", err
 			}
@@ -192,7 +196,12 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 			return "", fmt.Errorf("sandbox required but no executor available — check that the sandbox backend (docker / e2b) is reachable and the configured image (%q) can start", sbCfgImage(sbCfg))
 		}
 
+		workdir, err := r.prepareHostWorkdir()
+		if err != nil {
+			return "", err
+		}
 		cmd := exec.CommandContext(execCtx, "sh", "-c", command)
+		cmd.Dir = workdir
 
 		// 始终显式设置 cmd.Env。默认的 Go 行为是
 		// 继承父级的完整环境，这会泄露守护进程的秘密

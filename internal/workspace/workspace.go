@@ -27,13 +27,13 @@ import (
 // 命名空间（存储桶前缀、目录树等）。
 //
 // projectID 和 sessionID 共同命名一次聊天的 workspace 文件夹。
-// 两者都设置时 projectID 优先：项目内的每个会话共享同一个文件夹，
-// 这正是项目的全部价值（笔记/文件在项目的聊天之间持久化）。
+// 项目内的会话也分别写入自己的子目录，避免并发任务互相覆盖。
 // 磁盘上：
 //
-//	projectID="", sessionID=""   → <root>/<agentID>/<path>
-//	projectID="", sessionID="x"  → <root>/<agentID>/sessions/x/<path>
-//	projectID="p", *             → <root>/<agentID>/projects/p/<path>
+//	projectID="", sessionID=""    → <root>/<agentID>/<path>
+//	projectID="", sessionID="x"   → <root>/<agentID>/sessions/x/<path>
+//	projectID="p", sessionID=""   → <root>/<agentID>/projects/p/<path>
+//	projectID="p", sessionID="x"  → <root>/<agentID>/projects/p/x/<path>
 //
 // 两者都为空时 List 返回代理下的所有对象，无论项目/会话——
 // 由管理员文件浏览器使用。指定作用域时 List 仅返回该子树。
@@ -72,7 +72,7 @@ type ObjectInfo struct {
 // 常见错误。实现在添加上下文时应使用 fmt.Errorf("%w: ...") 包装这些错误，
 // 以便调用者仍能通过 errors.Is() 匹配。
 var (
-	ErrNotFound                = errors.New("workspace: object not found")
-	ErrSignedURLUnsupported    = errors.New("workspace: signed URLs not supported by this backend")
-	ErrMoveDestinationExists   = errors.New("workspace: move destination already exists")
+	ErrNotFound              = errors.New("workspace: object not found")
+	ErrSignedURLUnsupported  = errors.New("workspace: signed URLs not supported by this backend")
+	ErrMoveDestinationExists = errors.New("workspace: move destination already exists")
 )
