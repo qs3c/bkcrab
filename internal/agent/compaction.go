@@ -5,10 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/qs3c/bkcrab/internal/provider"
 )
@@ -44,7 +41,6 @@ const (
 
 type CompactOptions struct {
 	Mode              CompactMode
-	Workspace         string
 	Provider          provider.Provider
 	Model             string
 	ContextWindow     int
@@ -59,10 +55,14 @@ type CompactOptions struct {
 	OverheadMessages   []provider.Message
 	ToolDefs           []provider.Tool
 	SummaryMaxRetries  int
-	ArchiveStore       contextArchiveStore
-	ArchiveUserID      string
-	ArchiveAgentID     string
-	ArchiveSessionKey  string
+	// ToolRefStore + Recall* 三元组让裁剪出来的摘要能带上 msg_ref,即该工具
+	// 消息在 session_messages 里的 seq。模型之后凭这个 seq 调
+	// recall_tool_result 取回原文。三个字段任一为空就只是不标注 msg_ref,
+	// 压缩本身不受影响(文件模式没有归档表,走的就是这条路)。
+	ToolRefStore     toolRefStore
+	RecallUserID     string
+	RecallAgentID    string
+	RecallSessionKey string
 	// Ctx is the context passed to Provider.Chat for the summarizer LLM call.
 	// Callers thread the turn's context here so the summary inherits its
 	// request-scoped values (chatter user id, trace) and deadline. It must be
@@ -117,15 +117,12 @@ func EstimateRequestTokens(messages []provider.Message, tools []provider.Tool) i
 type CompactResult struct {
 	Messages []provider.Message
 	Pruned   bool
-	LogFile  string
 }
 
-// CompactMessages keeps the original API and delegates to the options-based
-// implementation with proactive defaults.
-func CompactMessages(messages []provider.Message, workspace string, prov provider.Provider, model string) (*CompactResult, error) {
+// CompactMessages delegates to the options-based implementation with proactive defaults.
+func CompactMessages(messages []provider.Message, prov provider.Provider, model string) (*CompactResult, error) {
 	return CompactMessagesWithOptions(messages, CompactOptions{
 		Mode:              CompactModeProactive,
-		Workspace:         workspace,
 		Provider:          prov,
 		Model:             model,
 		ContextWindow:     DefaultContextWindow,
@@ -288,30 +285,25 @@ func emergencyCompactMessages(messages []provider.Message, opts CompactOptions, 
 		"message_count", len(messages),
 	)
 
-	logFile, err := writeHistoryLog(messages, opts.Workspace)
-	if err != nil {
-		slog.Warn("failed to write emergency history log", "error", err)
-	}
-
 	sanitized, sanitizedChanged := sanitizeToolPairsWithChange(messages)
 	if len(sanitized) == 0 {
-		return &CompactResult{Messages: messages, Pruned: false, LogFile: logFile}
+		return &CompactResult{Messages: messages, Pruned: false}
 	}
 	if len(sanitized) == 1 {
-		return &CompactResult{Messages: sanitized, Pruned: sanitizedChanged, LogFile: logFile}
+		return &CompactResult{Messages: sanitized, Pruned: sanitizedChanged}
 	}
 
 	pruned, prunedChanged := pruneOldToolResultsWithChange(sanitized, opts)
 	changed := sanitizedChanged || prunedChanged
 	cutoff := emergencyCompactionTailStart(pruned, opts)
 	if cutoff <= 0 {
-		return &CompactResult{Messages: pruned, Pruned: changed, LogFile: logFile}
+		return &CompactResult{Messages: pruned, Pruned: changed}
 	}
 
 	compressed, err := compressOlderMessages(pruned, opts)
 	if err != nil {
 		slog.Warn("emergency compression failed, using pruned messages", "error", err)
-		return &CompactResult{Messages: pruned, Pruned: changed, LogFile: logFile}
+		return &CompactResult{Messages: pruned, Pruned: changed}
 	}
 	compressed, _ = sanitizeToolPairsWithChange(compressed)
 
@@ -323,7 +315,6 @@ func emergencyCompactMessages(messages []provider.Message, opts CompactOptions, 
 	return &CompactResult{
 		Messages: compressed,
 		Pruned:   true,
-		LogFile:  logFile,
 	}
 }
 
@@ -348,11 +339,6 @@ func compactMessagesTriggered(messages []provider.Message, opts CompactOptions, 
 		opts.OnTriggered()
 	}
 
-	logFile, err := writeHistoryLog(messages, opts.Workspace)
-	if err != nil {
-		slog.Warn("failed to write history log", "error", err)
-	}
-
 	sanitized, sanitizedChanged := sanitizeToolPairsWithChange(messages)
 	pruned, prunedChanged := pruneOldToolResultsWithChange(sanitized, opts)
 	changed := sanitizedChanged || prunedChanged
@@ -364,7 +350,6 @@ func compactMessagesTriggered(messages []provider.Message, opts CompactOptions, 
 		return &CompactResult{
 			Messages: pruned,
 			Pruned:   changed,
-			LogFile:  logFile,
 		}, nil
 	}
 
@@ -373,7 +358,6 @@ func compactMessagesTriggered(messages []provider.Message, opts CompactOptions, 
 		return &CompactResult{
 			Messages: pruned,
 			Pruned:   changed,
-			LogFile:  logFile,
 		}, nil
 	}
 
@@ -383,7 +367,6 @@ func compactMessagesTriggered(messages []provider.Message, opts CompactOptions, 
 		return &CompactResult{
 			Messages: pruned,
 			Pruned:   changed,
-			LogFile:  logFile,
 		}, nil
 	}
 	compressed, _ = sanitizeToolPairsWithChange(compressed)
@@ -397,7 +380,6 @@ func compactMessagesTriggered(messages []provider.Message, opts CompactOptions, 
 	return &CompactResult{
 		Messages: compressed,
 		Pruned:   true,
-		LogFile:  logFile,
 	}, nil
 }
 
@@ -534,15 +516,21 @@ func pruneOldToolResultsWithChange(messages []provider.Message, optList ...Compa
 	result := make([]provider.Message, len(messages))
 	copy(result, messages)
 
+	// 一次压缩最多建一次索引,而不是每条消息查一次库;并且推迟到真的遇上
+	// 第一条要裁的工具结果才查——压缩被触发不代表一定有东西要裁。
+	var seqIndex toolSeqIndex
+	indexed := false
+
 	changed := false
 	for i := 0; i < cutoff; i++ {
 		if result[i].Role == "tool" && len(result[i].Content) > toolResultPruneThresholdBytes {
-			info := infoByIndex[i]
-			archiveID, err := archiveToolResult(opts, result[i], info)
-			if err != nil {
-				slog.Warn("failed to archive compacted tool result", "error", err)
+			if !indexed {
+				seqIndex = buildToolSeqIndex(opts)
+				indexed = true
 			}
-			result[i] = summarizeToolResultWithInfo(result[i], info, archiveID)
+			info := infoByIndex[i]
+			result[i] = summarizeToolResultWithInfo(
+				result[i], info, seqIndex.seqFor(result[i], opts))
 			changed = true
 		}
 	}
@@ -686,31 +674,4 @@ func snippetForFallback(text string) string {
 
 func runeCount(s string) int {
 	return len([]rune(s))
-}
-
-// writeHistoryLog writes full message history to a JSONL log.
-func writeHistoryLog(messages []provider.Message, workspace string) (string, error) {
-	logDir := filepath.Join(workspace, "memory", "logs")
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		return "", fmt.Errorf("create log dir: %w", err)
-	}
-
-	timestamp := time.Now().Format("20060102_150405")
-	logFile := filepath.Join(logDir, fmt.Sprintf("history_%s.jsonl", timestamp))
-
-	f, err := os.Create(logFile)
-	if err != nil {
-		return "", fmt.Errorf("create log file: %w", err)
-	}
-	defer f.Close()
-
-	enc := json.NewEncoder(f)
-	for _, m := range messages {
-		if err := enc.Encode(m); err != nil {
-			return logFile, fmt.Errorf("encode message: %w", err)
-		}
-	}
-
-	slog.Info("wrote history log", "file", logFile, "messages", len(messages))
-	return logFile, nil
 }

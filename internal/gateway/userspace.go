@@ -52,9 +52,8 @@ func loadAgentSkillEntries(ctx context.Context, st store.Store, userID string) (
 	return out, nil
 }
 
-// ensureAgentHome 幂等地创建代理的本地文件系统布局。只有 `skills/`（文件系统物化的 SKILL.md 包）
-// 和 `memory/`（压缩将历史 JSONL 转储到此用于审计/恢复）存在于磁盘上；
-// 身份文件、会话消息和 MEMORY.md 都在数据库中。
+// ensureAgentHome 幂等地创建代理目录和本地物化的 skills/。
+// 身份文件、会话消息和 MEMORY.md 都在数据库中；压缩不再写历史存档文件。
 func ensureAgentHome(rc config.ResolvedAgent) {
 	if rc.Home == "" {
 		return
@@ -62,7 +61,6 @@ func ensureAgentHome(rc config.ResolvedAgent) {
 	for _, dir := range []string{
 		rc.Home,
 		filepath.Join(rc.Home, "skills"),
-		filepath.Join(rc.Home, "memory", "logs"),
 	} {
 		_ = os.MkdirAll(dir, 0o755)
 	}

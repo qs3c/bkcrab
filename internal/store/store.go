@@ -151,6 +151,24 @@ type Store interface {
 	LoadTurnMessages(ctx context.Context, userID, agentID string, refs []TurnRef) ([]TurnGroup, error)
 	ListSessionMessages(ctx context.Context, userID, agentID, sessionKey string) ([]SessionMessage, error)
 
+	// --- 工具消息回溯（压缩裁剪后按 seq 取回原文）---
+	//
+	// 压缩把大的 tool result 换成一行摘要,摘要里带该行在 session_messages
+	// 里的 seq;模型之后凭这个 seq 调 recall_tool_result 取回原文。两个方法都
+	// 只读 role='tool' 的行——上下文里被裁掉的只有工具结果,把 user/assistant
+	// 也开放出去等于给模型一条绕过压缩边界重放整段历史的路。
+	//
+	// seq 是每会话从 0 开始的计数器(见 AppendSessionMessage 的
+	// COALESCE(MAX(seq),-1)+1 子查询按三元组分组),不是全局 id:同一个 seq
+	// 在几千个会话里同时存在。三元组由调用方从当轮上下文注入,所以 seq 单独
+	// 一个值不构成跨会话/跨用户的寻址能力。
+	//
+	// chatterUserID 非空时额外约束行的聊天者归属,用于群聊/共享 agent 下
+	// 隔离同一会话内不同发言人的工具输出;空表示不施加该约束
+	// (单人会话,或调用方就是 agent 拥有者)。
+	ListSessionToolRefs(ctx context.Context, userID, agentID, sessionKey, chatterUserID string) ([]ToolMsgRef, error)
+	GetSessionToolMessage(ctx context.Context, userID, agentID, sessionKey, chatterUserID string, seq int64) (*SessionToolMessage, error)
+
 	// --- Durable image generation batches (MySQL authoritative only) ---
 	CreateImageGenerationBatch(ctx context.Context, request CreateImageGenerationBatchRequest) (*ImageGenerationBatchRecord, []ImageGenerationTaskRecord, error)
 	GetImageGenerationBatchForPrincipal(ctx context.Context, userID, agentID, batchID string) (*ImageGenerationBatchRecord, error)
@@ -178,14 +196,6 @@ type Store interface {
 	FinishImageGenerationTaskRetry(ctx context.Context, fence ImageGenerationFence, errorCode string, nextRun time.Time) (bool, error)
 	FinishImageGenerationTaskFailed(ctx context.Context, fence ImageGenerationFence, errorCode string) (bool, error)
 	FinishImageGenerationTaskCanceled(ctx context.Context, fence ImageGenerationFence) (bool, error)
-
-	// --- Context archives ---
-	//
-	// ContextArchiveRecord stores original tool results removed from the LLM
-	// working set by compaction. Summaries keep the opaque id; the model can
-	// retrieve the exact original by id through the scoped tool.
-	SaveContextArchive(ctx context.Context, rec *ContextArchiveRecord) error
-	GetContextArchive(ctx context.Context, agentID, sessionKey, id string) (*ContextArchiveRecord, error)
 
 	// --- 聊天事件（进行中的流式增量，持久化用于恢复）---
 	//
@@ -665,20 +675,27 @@ type SessionMessage struct {
 	Origin string `json:"origin,omitempty"`
 }
 
-// ContextArchiveRecord is the durable body behind a compacted tool-result
-// summary. Lookup is scoped by (agent_id, session_key, id); user_id is kept for
-// audit and cleanup but is not required for retrieval.
-type ContextArchiveRecord struct {
-	ID            string    `json:"id"`
-	UserID        string    `json:"userId,omitempty"`
-	AgentID       string    `json:"agentId,omitempty"`
-	SessionKey    string    `json:"sessionKey,omitempty"`
-	ToolCallID    string    `json:"toolCallId,omitempty"`
-	ToolName      string    `json:"toolName,omitempty"`
-	Content       string    `json:"content"`
-	ContentBytes  int       `json:"contentBytes"`
-	ContentSHA256 string    `json:"contentSha256,omitempty"`
-	CreatedAt     time.Time `json:"createdAt"`
+// ToolMsgRef 是归档里一条工具消息的轻量索引项——刻意不含 content,
+// 这样压缩前建 tool_call_id → seq 对照表时不会把整个会话的工具输出
+// 拉进内存。Chars 是 SQL length() 的结果:MySQL 按字节、SQLite/PG 按
+// 字符,差异只影响展示,不参与任何判定。
+type ToolMsgRef struct {
+	Seq        int64     `json:"seq"`
+	ToolCallID string    `json:"toolCallId,omitempty"`
+	Name       string    `json:"name,omitempty"`
+	Chars      int64     `json:"chars"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
+
+// SessionToolMessage 是按 seq 取回的单条工具消息原文。
+// 与 SessionMessage 分开是因为回溯只关心 (seq, 工具身份, 原文),
+// 不需要 content_parts / raw_assistant / thinking 那些列。
+type SessionToolMessage struct {
+	Seq        int64     `json:"seq"`
+	ToolCallID string    `json:"toolCallId,omitempty"`
+	Name       string    `json:"name,omitempty"`
+	Content    string    `json:"content"`
+	CreatedAt  time.Time `json:"createdAt"`
 }
 
 // SessionEventRecord 是 session_events 表中的一行——agent 在一轮中发出的

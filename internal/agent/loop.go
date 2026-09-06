@@ -369,7 +369,6 @@ func newAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *
 	// 如下），因此其出站端闭包可以读取 agent.splitReplies
 	// 在发送时。 registerBuiltins 已在 NewRegistry 中传递
 	// 标记占位符； tools.RegisterMessage 取代了它。
-	tools.RegisterMemorySearch(registry, rc.Home)
 	tools.RegisterWebFetch(registry)
 
 	// 加载具有 OpenClaw 兼容性的技能。我们无法从 OSS 中获取水分
@@ -1008,7 +1007,6 @@ func (a *Agent) buildRequestOverhead(systemPrompt string, msg bus.InboundMessage
 func (a *Agent) compactionOptions(mode CompactMode, overhead []provider.Message, toolDefs []provider.Tool, sessionKey string) CompactOptions {
 	return CompactOptions{
 		Mode:              mode,
-		Workspace:         a.homePath,
 		Provider:          providerWithoutMessageMetadata(a.provider),
 		Model:             a.model,
 		ContextWindow:     a.contextWindow,
@@ -1017,10 +1015,10 @@ func (a *Agent) compactionOptions(mode CompactMode, overhead []provider.Message,
 		ToolDefs:          toolDefs,
 		MinTailTurns:      MinimumTailTurns,
 		SummaryMaxRetries: DefaultSummaryMaxRetries,
-		ArchiveStore:      a.dataStore,
-		ArchiveUserID:     a.ownerUserID,
-		ArchiveAgentID:    a.name,
-		ArchiveSessionKey: sessionKey,
+		ToolRefStore:      a.dataStore,
+		RecallUserID:      a.ownerUserID,
+		RecallAgentID:     a.name,
+		RecallSessionKey:  sessionKey,
 	}
 }
 
@@ -2171,7 +2169,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 标识符）；目标工具需要持久的 session.Session.SessionKey
 	// 寻址 agent_goals 中的行。
 	reg.SetGoalSessionKey(sess.SessionKey())
-	reg.SetContextArchiveSessionKey(sess.SessionKey())
+	reg.SetRecallSessionKey(sess.SessionKey())
 	// 每用户文件写入（USER.md / MEMORY.md）需要登陆
 	// 每回合喋喋不休的行，而不是 UserSpace 所有者 — 请参阅
 	// 路由规则的Registry.systemFileUserID。
@@ -2235,7 +2233,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		// 用压缩版本替换会话消息
 		sess.ReplaceMessages(compactResult.Messages)
 		sessionMsgs = compactResult.Messages
-		slog.Info("context compacted", "agent", a.name, "log_file", compactResult.LogFile)
+		slog.Info("context compacted", "agent", a.name)
 	}
 
 	messages := compactionRequestMessages(sessionMsgs, overheadMessages)
@@ -3248,7 +3246,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	}
 	reg.SetCallerIsAdmin(a.isAdminChatter(msg))
 	reg.SetGoalSessionKey(sess.SessionKey())
-	reg.SetContextArchiveSessionKey(sess.SessionKey())
+	reg.SetRecallSessionKey(sess.SessionKey())
 	// 每用户文件写入（USER.md / MEMORY.md）需要登陆
 	// 每回合喋喋不休的行，而不是 UserSpace 所有者 — 请参阅
 	// 路由规则的Registry.systemFileUserID。
@@ -3701,15 +3699,6 @@ func (a *Agent) RegisteredTools() []tools.ToolInfo {
 // 只允许刺探聊天者不应该看到的东西。应用补丁
 // 也已经过时了（多文件批处理是代理模式的领域）。
 //
-// 同样值得注意的是：“memory_search”。它扫描
-// <workspace>/memory/logs/*.jsonl，聊天机器人模式从不写入 —
-// 因此该工具总是返回“未找到匹配的条目”并且
-// 模型将其解读为“我对你没有记忆”，从而覆盖了
-// 它应该信任的提示 MEMORY.md 部分。删除它
-// 强制模型依赖 USER.md / MEMORY.md 部分
-// 渲染成系统提示符，这是唯一的持久化
-// 聊天机器人模式实际上暴露了路径。
-//
 // 值得注意的是“消息”工具的缺失。主要回复通过以下方式发出
 // LLM 的正常“内容”通道（网关的任务回调变成
 // 自动进入 OutboundMessage）和多气泡输出
@@ -3729,7 +3718,7 @@ var chatbotBuiltinAllowlist = []string{
 	"tts",
 	"memory",
 	"rag_search",
-	"retrieve_compacted_tool_result",
+	"recall_tool_result",
 	// set_timezone 保持“他们的当地时间”适合聊天（问候语，
 	// "晚安" timing) — chatbots need it as much as full agents do.
 	"set_timezone",

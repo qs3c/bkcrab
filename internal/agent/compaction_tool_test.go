@@ -261,7 +261,7 @@ func TestPruneOldToolResultsKeepsResultsAtTwoThousandBytes(t *testing.T) {
 	}
 }
 
-func TestPruneOldToolResultsArchivesOriginalAndKeepsHeadTailSnippets(t *testing.T) {
+func TestPruneOldToolResultsTagsMsgRefAndKeepsHeadTailSnippets(t *testing.T) {
 	contentLines := []string{
 		"Exit code: 0",
 		"Output:",
@@ -274,7 +274,9 @@ func TestPruneOldToolResultsArchivesOriginalAndKeepsHeadTailSnippets(t *testing.
 	}
 	contentLines = append(contentLines, "tail one", "tail two", "tail three")
 	content := strings.Join(contentLines, "\n")
-	archiveStore := &recordingContextArchiveStore{}
+	refStore := &fakeToolRefStore{refs: []store.ToolMsgRef{
+		{Seq: 41, ToolCallID: "call_archive", Name: "exec", Chars: int64(len(content))},
+	}}
 	msgs := append([]provider.Message{
 		{
 			Role: "assistant",
@@ -297,32 +299,27 @@ func TestPruneOldToolResultsArchivesOriginalAndKeepsHeadTailSnippets(t *testing.
 	}, compactionFillerMessages(PruneTurnAge)...)
 
 	got, changed := pruneOldToolResultsWithChange(msgs, CompactOptions{
-		ArchiveStore:      archiveStore,
-		ArchiveUserID:     "user-a",
-		ArchiveAgentID:    "agent-a",
-		ArchiveSessionKey: "session-a",
+		ToolRefStore:     refStore,
+		RecallUserID:     "user-a",
+		RecallAgentID:    "agent-a",
+		RecallSessionKey: "session-a",
 	})
 	if !changed {
 		t.Fatal("expected old tool result to be summarized")
 	}
-	if len(archiveStore.records) != 1 {
-		t.Fatalf("archive record count = %d, want 1", len(archiveStore.records))
+	// 索引查询必须带全三元组:seq 只在会话内有意义,少任何一个都会
+	// 把别的会话的门牌号写进本会话的摘要。
+	if refStore.calls != 1 {
+		t.Fatalf("tool ref index queries = %d, want exactly 1 per compaction", refStore.calls)
 	}
-	rec := archiveStore.records[0]
-	if rec.Content != content {
-		t.Fatalf("archived content changed: got %q want %q", rec.Content, content)
-	}
-	if rec.AgentID != "agent-a" || rec.SessionKey != "session-a" || rec.ToolCallID != "call_archive" || rec.ToolName != "exec" {
-		t.Fatalf("archive scope/metadata mismatch: %+v", rec)
-	}
-	if rec.ID == "" {
-		t.Fatal("archive id was empty")
+	if refStore.userID != "user-a" || refStore.agentID != "agent-a" || refStore.sessionKey != "session-a" {
+		t.Fatalf("index query scope mismatch: %+v", refStore)
 	}
 
 	summary := got[1].Content
 	assertContainsAll(t, summary,
-		"archive_id: "+rec.ID,
-		"retrieve_compacted_tool_result",
+		"msg_ref: 41",
+		"recall_tool_result",
 		"output_head:",
 		"Exit code: 0",
 		"Output:",
@@ -579,15 +576,55 @@ func mustJSON(t *testing.T, v any) string {
 	return string(b)
 }
 
-type recordingContextArchiveStore struct {
-	records []store.ContextArchiveRecord
+type fakeToolRefStore struct {
+	refs       []store.ToolMsgRef
+	calls      int
+	userID     string
+	agentID    string
+	sessionKey string
 }
 
-func (s *recordingContextArchiveStore) SaveContextArchive(ctx context.Context, rec *store.ContextArchiveRecord) error {
-	if rec != nil {
-		s.records = append(s.records, *rec)
+func (s *fakeToolRefStore) ListSessionToolRefs(ctx context.Context, userID, agentID, sessionKey, chatterUserID string) ([]store.ToolMsgRef, error) {
+	s.calls++
+	s.userID, s.agentID, s.sessionKey = userID, agentID, sessionKey
+	return s.refs, nil
+}
+
+func (s *fakeToolRefStore) GetSessionToolMessage(ctx context.Context, userID, agentID, sessionKey, chatterUserID string, seq int64) (*store.SessionToolMessage, error) {
+	return nil, store.ErrNotFound
+}
+
+// TestPruneOldToolResultsOmitsMsgRefWhenSeqUnknown 锁住降级行为:查不到
+// seq 时摘要宁可不写 msg_ref,也不能给模型一个调用会失败的 ref。
+func TestPruneOldToolResultsOmitsMsgRefWhenSeqUnknown(t *testing.T) {
+	content := strings.Repeat("filler line with enough text to exceed the prune threshold\n", 60)
+	msgs := append([]provider.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []provider.ToolCall{
+				{ID: "call_missing", Function: provider.FunctionCall{Name: "exec", Arguments: `{"command":"ls"}`}},
+			},
+		},
+		{Role: "tool", ToolCallID: "call_missing", Name: "exec", Content: content},
+	}, compactionFillerMessages(PruneTurnAge)...)
+
+	// 索引里没有 call_missing —— 模拟归档行还没落库 / 查询失败。
+	got, changed := pruneOldToolResultsWithChange(msgs, CompactOptions{
+		ToolRefStore:     &fakeToolRefStore{},
+		RecallUserID:     "user-a",
+		RecallAgentID:    "agent-a",
+		RecallSessionKey: "session-a",
+	})
+	if !changed {
+		t.Fatal("expected old tool result to be summarized")
 	}
-	return nil
+	summary := got[1].Content
+	if strings.Contains(summary, "msg_ref") || strings.Contains(summary, "recall_tool_result") {
+		t.Fatalf("summary advertised an unusable ref: %q", summary)
+	}
+	if !strings.Contains(summary, "[Tool Result Summary]") {
+		t.Fatalf("summary was not produced: %q", summary)
+	}
 }
 
 func TestCompactionKeepsDynamicTailNearTargetTokens(t *testing.T) {

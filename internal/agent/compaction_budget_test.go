@@ -32,7 +32,6 @@ func TestProactiveCompactionUsesPercentOfContextWindow(t *testing.T) {
 
 	opts := CompactOptions{
 		Mode:            CompactModeProactive,
-		Workspace:       t.TempDir(),
 		Model:           "fake-model",
 		ContextWindow:   1200,
 		MaxOutputTokens: 400,
@@ -89,7 +88,6 @@ func TestCompactWithProgressEmitsEventsForEmergencyCompaction(t *testing.T) {
 	a := &Agent{}
 	out, err := a.compactWithProgress(ctx, msgs, CompactOptions{
 		Mode:            CompactModeEmergency,
-		Workspace:       t.TempDir(),
 		ContextWindow:   1200,
 		MaxOutputTokens: 400,
 	})
@@ -138,7 +136,6 @@ func TestCompactWithProgressEmitsEstimatedUsageAfterCompaction(t *testing.T) {
 	}
 	out, err := a.compactWithProgress(ctx, msgs, CompactOptions{
 		Mode:            CompactModeEmergency,
-		Workspace:       t.TempDir(),
 		ContextWindow:   1200,
 		MaxOutputTokens: 400,
 	})
@@ -196,7 +193,6 @@ func TestTriggeredCompactionDoesNotClaimPrunedWhenHistoryCannotChange(t *testing
 	f := &countingSummarizer{}
 	out, err := CompactMessagesWithOptions(msgs, CompactOptions{
 		Mode:             CompactModeProactive,
-		Workspace:        t.TempDir(),
 		Provider:         f,
 		Model:            "fake-model",
 		ContextWindow:    2000,
@@ -264,7 +260,6 @@ func TestProactiveCompactionIncludesRequestOverheadAndToolDefs(t *testing.T) {
 	f := &countingSummarizer{}
 	out, err := CompactMessagesWithOptions(msgs, CompactOptions{
 		Mode:             CompactModeProactive,
-		Workspace:        t.TempDir(),
 		Provider:         f,
 		Model:            "fake-model",
 		ContextWindow:    4600,
