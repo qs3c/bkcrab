@@ -119,10 +119,16 @@ type Registry struct {
 	// 它用于否则会落在 userRoot 下的路径。身份文件
 	// (systemRoot) 保留在文件系统上，因为运行时上下文
 	// 构建器仍然通过单独的小状态存储读取它们。
-	workspaceStore           workspace.Store
-	agentID                  string
-	contextArchiveStore      ContextArchiveStore
-	contextArchiveSessionKey string
+	workspaceStore  workspace.Store
+	agentID         string
+	toolRecallStore ToolRecallStore
+	// recallSessionKey 是本回合会话的持久 session_key,回溯工具用它把查询
+	// 钉在当前会话上。这是 recall_tool_result 越界防护的支点之一:模型只能
+	// 传 seq,而 seq 是每会话从 0 开始的计数器,离开这个 key 就没有意义。
+	//
+	// 每回合状态——必须设在 ForTurn() 的副本上,不能设在 agent 共享的
+	// registry 上,否则并发回合会互相覆盖,把两个聊天者的会话串起来。
+	recallSessionKey string
 	// sessionID 范围工作空间。存储读/写，以便并发会话
 	// 同一代理的不会在 `report.md` 等上发生碰撞。每回合设置为
 	// 通过 SetSessionID 进行代理循环；空值回落到
@@ -320,8 +326,12 @@ func (s legacySystemFileStore) MutateWorkspaceFile(ctx context.Context, agentID,
 	return append([]byte(nil), next...), nil
 }
 
-type ContextArchiveStore interface {
-	GetContextArchive(ctx context.Context, agentID, sessionKey, id string) (*store.ContextArchiveRecord, error)
+// ToolRecallStore 是 recall_tool_result 的只读后端。两个方法都只读
+// session_messages 里 role='tool' 的行,且三元组由调用方注入——见
+// store.Store 上这两个方法的说明。
+type ToolRecallStore interface {
+	ListSessionToolRefs(ctx context.Context, userID, agentID, sessionKey, chatterUserID string) ([]store.ToolMsgRef, error)
+	GetSessionToolMessage(ctx context.Context, userID, agentID, sessionKey, chatterUserID string, seq int64) (*store.SessionToolMessage, error)
 }
 
 // SetWorkspaceStore 在注册表上安装工作区存储。文件工具
@@ -333,8 +343,9 @@ func (r *Registry) SetWorkspaceStore(ws workspace.Store, agentID string) {
 	r.agentID = agentID
 }
 
-func (r *Registry) SetContextArchiveStore(st ContextArchiveStore, agentID ...string) {
-	r.contextArchiveStore = st
+// SetToolRecallStore 在 agent 启动时安装数据库工具消息查询后端。
+func (r *Registry) SetToolRecallStore(st ToolRecallStore, agentID ...string) {
+	r.toolRecallStore = st
 	if len(agentID) > 0 && agentID[0] != "" {
 		r.agentID = agentID[0]
 	}
@@ -500,8 +511,11 @@ func (r *Registry) SetSessionID(sessionID string) {
 	r.sessionID = sessionID
 }
 
-func (r *Registry) SetContextArchiveSessionKey(sessionKey string) {
-	r.contextArchiveSessionKey = sessionKey
+// SetRecallSessionKey 绑定本回合的 session_key，recall_tool_result 据此
+// 把数据库查询限定在当前会话。
+// 由 agent 循环每回合在 ForTurn() 的副本上调用。
+func (r *Registry) SetRecallSessionKey(sessionKey string) {
+	r.recallSessionKey = sessionKey
 }
 
 // SetCallerIsAdmin 记录本轮的喋喋不休是否是
@@ -623,22 +637,22 @@ func (r *Registry) onForTurn(fn func(*Registry)) {
 func (r *Registry) ForTurn() *Registry {
 	rt := &Registry{
 		// —— 不可变 / agent 级依赖：按值或按指针共享 ——
-		systemRoot:          r.systemRoot,
-		userRoot:            r.userRoot,
-		sandboxRoot:         r.sandboxRoot,
-		workspaceStore:      r.workspaceStore,
-		agentID:             r.agentID,
-		contextArchiveStore: r.contextArchiveStore,
-		systemFileStore:     r.systemFileStore,
-		userID:              r.userID,
-		agentOwnerUserID:    r.agentOwnerUserID,
-		userSkillsRoot:      r.userSkillsRoot,
-		sandboxRequired:     r.sandboxRequired,
-		envProvider:         r.envProvider,
-		skillDirs:           r.skillDirs,
-		managedMemoryCfg:    r.managedMemoryCfg,
-		skillManager:        r.skillManager,
-		skillLedger:         r.skillLedger,
+		systemRoot:       r.systemRoot,
+		userRoot:         r.userRoot,
+		sandboxRoot:      r.sandboxRoot,
+		workspaceStore:   r.workspaceStore,
+		agentID:          r.agentID,
+		toolRecallStore:  r.toolRecallStore,
+		systemFileStore:  r.systemFileStore,
+		userID:           r.userID,
+		agentOwnerUserID: r.agentOwnerUserID,
+		userSkillsRoot:   r.userSkillsRoot,
+		sandboxRequired:  r.sandboxRequired,
+		envProvider:      r.envProvider,
+		skillDirs:        r.skillDirs,
+		managedMemoryCfg: r.managedMemoryCfg,
+		skillManager:     r.skillManager,
+		skillLedger:      r.skillLedger,
 		// 后台 shell 比单个回合存活更久——按指针共享，回合间一致。
 		shellMgr: r.shellMgr,
 		// —— 每回合独立：fresh map（避免与父/兄弟回合争用），fresh 失败追踪 ——
@@ -647,7 +661,7 @@ func (r *Registry) ForTurn() *Registry {
 		turnFails: nil,
 		// —— 每回合状态字段留零值，由 bindSession 重新绑定 ——
 		// sessionID / projectID / executor / chatterUserID / goalSessionKey /
-		// contextArchiveSessionKey / messageChannel / messageChatID / callerIsAdmin。
+		// recallSessionKey / messageChannel / messageChatID / callerIsAdmin。
 	}
 	// 先继承父 registry 的非内置工具（子代理、各 chain、load_skill、MCP/插件、
 	// 以及 goal/cron 的旧绑定）——绝大多数只用不可变依赖，跨回合安全。
@@ -967,7 +981,7 @@ func (r *Registry) registerBuiltins() {
 	registerBashOutput(r)
 	registerKillShell(r)
 	registerMessage(r)
-	registerContextArchive(r)
+	registerToolRecall(r)
 }
 
 // StartTurn 重置每转工具调用状态。由代理循环调用

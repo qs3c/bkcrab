@@ -77,6 +77,39 @@ func TestMySQLStoreIntegration(t *testing.T) {
 	if err != nil || len(messages) != 1 {
 		t.Fatalf("list session messages: messages=%#v err=%v", messages, err)
 	}
+
+	// 工具消息回溯:sqlite 覆盖了语义,这里覆盖方言。length() 和
+	// COALESCE(NULLIF(...)) 在 MySQL 上的行为只有连着真库才验得到,而 MySQL
+	// 才是生产库——漏了这段,越界防护的那条 WHERE 可能只在测试里成立。
+	if err := st.AppendSessionMessage(
+		store.WithChatterUserID(ctx, userID), userID, agentID, sessionKey, store.SessionMessage{
+			Role:       "tool",
+			ToolCallID: "call_mysql",
+			Name:       "exec",
+			Content:    "mysql tool output",
+		}); err != nil {
+		t.Fatalf("append tool message: %v", err)
+	}
+	toolRefs, err := st.ListSessionToolRefs(ctx, userID, agentID, sessionKey, "")
+	if err != nil || len(toolRefs) != 1 {
+		t.Fatalf("list session tool refs: refs=%#v err=%v", toolRefs, err)
+	}
+	if toolRefs[0].Seq != 1 || toolRefs[0].ToolCallID != "call_mysql" || toolRefs[0].Chars == 0 {
+		t.Fatalf("tool ref mismatch: %#v", toolRefs[0])
+	}
+	recalled, err := st.GetSessionToolMessage(ctx, userID, agentID, sessionKey, userID, toolRefs[0].Seq)
+	if err != nil || recalled.Content != "mysql tool output" {
+		t.Fatalf("get session tool message: rec=%#v err=%v", recalled, err)
+	}
+	// seq 0 是那条 role='user' 的消息——回溯必须够不到它。
+	if _, err := st.GetSessionToolMessage(ctx, userID, agentID, sessionKey, "", 0); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("non-tool row was reachable on MySQL: err=%v", err)
+	}
+	// 别人的聊天者身份也够不到。
+	if _, err := st.GetSessionToolMessage(
+		ctx, userID, agentID, sessionKey, "someone-else", toolRefs[0].Seq); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("chatter filter did not apply on MySQL: err=%v", err)
+	}
 	seq, err := st.AppendSessionEvent(ctx, userID, agentID, sessionKey, "content", []byte(`{"text":"ok"}`))
 	if err != nil || seq != 0 {
 		t.Fatalf("append session event: seq=%d err=%v", seq, err)

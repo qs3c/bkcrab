@@ -2487,20 +2487,6 @@ func (d *DBStore) migrationSQL() []string {
 				chatter_user_id TEXT NOT NULL DEFAULT '',
 				PRIMARY KEY (user_id, agent_id, session_key, seq)
 			)`,
-		`CREATE TABLE IF NOT EXISTS context_archives (
-			user_id TEXT NOT NULL DEFAULT '',
-			agent_id TEXT NOT NULL,
-			session_key TEXT NOT NULL,
-			id TEXT NOT NULL,
-			tool_call_id TEXT NOT NULL DEFAULT '',
-			tool_name TEXT NOT NULL DEFAULT '',
-			content TEXT NOT NULL DEFAULT '',
-			content_bytes INTEGER NOT NULL DEFAULT 0,
-			content_sha256 TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY (agent_id, session_key, id)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_context_archives_user ON context_archives (user_id, agent_id, session_key)`,
 		// agent_files 保存 agent 自己的文件：SOUL.md, IDENTITY.md,
 		// MEMORY.md, AGENTS.md, BOOTSTRAP.md 等。
 		//
@@ -3197,7 +3183,7 @@ func (d *DBStore) DeleteUser(ctx context.Context, id string) error {
 	}
 	rows.Close()
 	for _, aid := range ownedAgents {
-		for _, t := range []string{"agent_files", "sessions", "session_messages", "session_events", "context_archives", "cron_jobs"} {
+		for _, t := range []string{"agent_files", "sessions", "session_messages", "session_events", "cron_jobs"} {
 			if _, err := tx.ExecContext(ctx,
 				fmt.Sprintf("DELETE FROM %s WHERE agent_id = %s", t, d.ph(1)), aid); err != nil {
 				return err
@@ -3217,7 +3203,7 @@ func (d *DBStore) DeleteUser(ctx context.Context, id string) error {
 		return err
 	}
 	// 非 agent 范围的每用户状态（agent_files 现在仅为 agent 所有）。
-	for _, t := range []string{"web_sessions", "apikeys", "sessions", "session_messages", "session_events", "context_archives", "rag_chat_turns"} {
+	for _, t := range []string{"web_sessions", "apikeys", "sessions", "session_messages", "session_events", "rag_chat_turns"} {
 		if _, err := tx.ExecContext(ctx,
 			fmt.Sprintf("DELETE FROM %s WHERE user_id = %s", t, d.ph(1)), id); err != nil {
 			return err
@@ -3503,7 +3489,7 @@ func (d *DBStore) DeleteAgent(ctx context.Context, agentID string) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, t := range []string{"agent_files", "sessions", "session_messages", "session_events", "context_archives", "cron_jobs"} {
+	for _, t := range []string{"agent_files", "sessions", "session_messages", "session_events", "cron_jobs"} {
 		if _, err := tx.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE agent_id = %s`, t, d.ph(1)), agentID); err != nil {
 			return err
@@ -3732,112 +3718,11 @@ func (d *DBStore) DeleteSession(ctx context.Context, userID, agentID, sessionKey
 			return err
 		}
 	}
-	if _, err := d.db.ExecContext(ctx,
-		fmt.Sprintf(`DELETE FROM context_archives WHERE agent_id = %s AND session_key = %s`,
-			d.ph(1), d.ph(2)),
-		agentID, sessionKey); err != nil {
-		return err
-	}
 	_, err := d.db.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM sessions WHERE user_id = %s AND agent_id = %s AND session_key = %s`,
 			d.ph(1), d.ph(2), d.ph(3)),
 		userID, agentID, sessionKey)
 	return err
-}
-
-func (d *DBStore) SaveContextArchive(ctx context.Context, rec *ContextArchiveRecord) error {
-	if rec == nil {
-		return errors.New("store: SaveContextArchive requires record")
-	}
-	if rec.ID == "" {
-		return errors.New("store: SaveContextArchive requires id")
-	}
-	if rec.AgentID == "" {
-		return errors.New("store: SaveContextArchive requires agent_id")
-	}
-	if rec.SessionKey == "" {
-		return errors.New("store: SaveContextArchive requires session_key")
-	}
-	if rec.ContentBytes == 0 && rec.Content != "" {
-		rec.ContentBytes = len([]byte(rec.Content))
-	}
-	if rec.ContentSHA256 == "" {
-		sum := sha256.Sum256([]byte(rec.Content))
-		rec.ContentSHA256 = hex.EncodeToString(sum[:])
-	}
-	if rec.CreatedAt.IsZero() {
-		rec.CreatedAt = time.Now().UTC()
-	}
-
-	args := []any{
-		rec.ID,
-		rec.UserID,
-		rec.AgentID,
-		rec.SessionKey,
-		rec.ToolCallID,
-		rec.ToolName,
-		rec.Content,
-		rec.ContentBytes,
-		rec.ContentSHA256,
-		rec.CreatedAt,
-	}
-	if d.dialect == mysqlDialect {
-		_, err := d.db.ExecContext(ctx,
-			`INSERT INTO context_archives
-				(id, user_id, agent_id, session_key, tool_call_id, tool_name, content, content_bytes, content_sha256, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-				ON DUPLICATE KEY UPDATE
-				  user_id=VALUES(user_id),
-				  tool_call_id=VALUES(tool_call_id),
-				  tool_name=VALUES(tool_name),
-				  content=VALUES(content),
-				  content_bytes=VALUES(content_bytes),
-				  content_sha256=VALUES(content_sha256),
-				  created_at=VALUES(created_at)`,
-			args...)
-		return err
-	}
-
-	_, err := d.db.ExecContext(ctx,
-		fmt.Sprintf(`INSERT INTO context_archives
-			(id, user_id, agent_id, session_key, tool_call_id, tool_name, content, content_bytes, content_sha256, created_at)
-			VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-			ON CONFLICT (agent_id, session_key, id) DO UPDATE SET
-			  user_id=excluded.user_id,
-			  tool_call_id=excluded.tool_call_id,
-			  tool_name=excluded.tool_name,
-			  content=excluded.content,
-			  content_bytes=excluded.content_bytes,
-			  content_sha256=excluded.content_sha256,
-			  created_at=excluded.created_at`,
-			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5), d.ph(6), d.ph(7), d.ph(8), d.ph(9), d.ph(10)),
-		args...)
-	return err
-}
-
-func (d *DBStore) GetContextArchive(ctx context.Context, agentID, sessionKey, id string) (*ContextArchiveRecord, error) {
-	row := d.db.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT id, user_id, agent_id, session_key, tool_call_id, tool_name, content, content_bytes, content_sha256, created_at
-			FROM context_archives
-			WHERE agent_id = %s AND session_key = %s AND id = %s`,
-			d.ph(1), d.ph(2), d.ph(3)),
-		agentID, sessionKey, id)
-	var rec ContextArchiveRecord
-	if err := row.Scan(
-		&rec.ID,
-		&rec.UserID,
-		&rec.AgentID,
-		&rec.SessionKey,
-		&rec.ToolCallID,
-		&rec.ToolName,
-		&rec.Content,
-		&rec.ContentBytes,
-		&rec.ContentSHA256,
-		&rec.CreatedAt,
-	); err != nil {
-		return nil, scanErr(err)
-	}
-	return &rec, nil
 }
 
 // AppendSessionMessage 将一条消息写入每会话存档。
@@ -4091,6 +3976,80 @@ func (d *DBStore) ListSessionMessages(ctx context.Context, userID, agentID, sess
 		return nil, err
 	}
 	return out, nil
+}
+
+// toolRecallScope 拼出两个回溯查询共用的 WHERE。
+//
+// 三元组 + role='tool' 是字面量,不经过任何调用方参数——模型能影响的只有
+// seq。这就是"越界不可能"的落点:签名里没有能表达另一张表 / 另一个条件的
+// 位置,role 也不可协商。
+//
+// chatterUserID 非空时追加聊天者约束。用 COALESCE(NULLIF(...)) 而不是
+// 「OR chatter_user_id 为空串」:后者会让所有历史空值行对每个聊天者可见,
+// 等于把隔离打穿。空值回落到 user_id,与 session_messages 上的既有读取约定
+// 一致(见该表 chatter_user_id 列的注释)。
+func (d *DBStore) toolRecallScope(userID, agentID, sessionKey, chatterUserID string, next int) (string, []any, int) {
+	where := fmt.Sprintf(
+		`user_id = %s AND agent_id = %s AND session_key = %s AND role = 'tool'`,
+		d.ph(next), d.ph(next+1), d.ph(next+2))
+	args := []any{userID, agentID, sessionKey}
+	next += 3
+	if chatterUserID != "" {
+		where += fmt.Sprintf(
+			` AND COALESCE(NULLIF(chatter_user_id, ''), user_id) = %s`, d.ph(next))
+		args = append(args, chatterUserID)
+		next++
+	}
+	return where, args, next
+}
+
+// ListSessionToolRefs 见接口文档。不 SELECT content —— 这是压缩热路径上
+// 每次触发跑一次的查询,把 LONGTEXT 拉回来会让压缩本身变成内存尖峰。
+func (d *DBStore) ListSessionToolRefs(ctx context.Context, userID, agentID, sessionKey, chatterUserID string) ([]ToolMsgRef, error) {
+	if userID == "" || agentID == "" || sessionKey == "" {
+		return nil, errors.New("store: ListSessionToolRefs requires user_id, agent_id, session_key")
+	}
+	where, args, _ := d.toolRecallScope(userID, agentID, sessionKey, chatterUserID, 1)
+	rows, err := d.db.QueryContext(ctx,
+		fmt.Sprintf(`SELECT seq, tool_call_id, name, length(content), created_at
+			FROM session_messages
+			WHERE %s
+			ORDER BY seq ASC`, where),
+		args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ToolMsgRef
+	for rows.Next() {
+		var ref ToolMsgRef
+		if err := rows.Scan(&ref.Seq, &ref.ToolCallID, &ref.Name, &ref.Chars, &ref.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, ref)
+	}
+	return out, rows.Err()
+}
+
+// GetSessionToolMessage 见接口文档。未命中返回 ErrNotFound——调用方据此
+// 区分"这个 seq 不属于本会话"和"数据库出错",两者对模型的提示不同。
+func (d *DBStore) GetSessionToolMessage(ctx context.Context, userID, agentID, sessionKey, chatterUserID string, seq int64) (*SessionToolMessage, error) {
+	if userID == "" || agentID == "" || sessionKey == "" {
+		return nil, errors.New("store: GetSessionToolMessage requires user_id, agent_id, session_key")
+	}
+	where, args, next := d.toolRecallScope(userID, agentID, sessionKey, chatterUserID, 1)
+	where += fmt.Sprintf(` AND seq = %s`, d.ph(next))
+	args = append(args, seq)
+	row := d.db.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT seq, tool_call_id, name, content, created_at
+			FROM session_messages
+			WHERE %s`, where),
+		args...)
+	var rec SessionToolMessage
+	if err := row.Scan(&rec.Seq, &rec.ToolCallID, &rec.Name, &rec.Content, &rec.CreatedAt); err != nil {
+		return nil, scanErr(err)
+	}
+	return &rec, nil
 }
 
 func (d *DBStore) RenameSession(ctx context.Context, userID, agentID, sessionKey, title string) error {

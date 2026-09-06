@@ -1,5 +1,7 @@
 # 上下文压缩模式实现计划
 
+> 历史方案说明：当前实现已移除压缩文件存档及其工作区路径参数，工具原文统一从数据库读取。见 [工具结果回溯](../../tool-result-recall.md)。
+
 > **给 agentic workers 的要求:** 执行本计划时必须使用 `superpowers:subagent-driven-development`，推荐；或使用 `superpowers:executing-plans`。步骤使用复选框格式，便于逐项推进和复核。
 
 **目标:** 为 BkCrab 增加三类上下文压缩流程：预判性压缩、手动 `/compact` 检查点压缩、上下文超限后的紧急压缩；同时移除对 `memory_log` 的 tool result 占位依赖，并在 LLM 总结失败时降级到非 LLM 压缩。
@@ -1506,4 +1508,3 @@ git commit -m "test: cover context compaction modes"
 
 - 推荐使用 Subagent-Driven：按 Task 1 到 Task 8 逐个执行，每个 task 后主 agent 做 review。
 - 也可以使用 Inline Execution：当前会话按计划逐项执行，并在关键任务后做 checkpoint。
-

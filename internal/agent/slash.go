@@ -101,7 +101,7 @@ func (a *Agent) handleSlashCommand(ctx context.Context, msg bus.InboundMessage) 
 		if len(args) > 0 {
 			fmt.Sscanf(args[0], "%d", &days)
 		}
-		return a.slashInsights(msg, days)
+		return a.slashInsights(ctx, msg, days)
 
 	case "/personality":
 		if len(args) == 0 {
@@ -259,11 +259,11 @@ func (a *Agent) slashCompact(ctx context.Context, msg bus.InboundMessage, focus 
 	opts.Focus = focus
 	if a.registry != nil {
 		// 用回合私有副本，避免在共享 a.registry 上就地改写每回合状态——
-		// /compact 与其它会话的回合可能并发。归档本身已由 opts.ArchiveSessionKey
-		// （= sess.SessionKey()）作用域化；这里设 archive key 仅为与回合路径对齐，
-		// DefinitionsForMode 只是读取工具清单。
+		// /compact 与其它会话的回合可能并发。摘要标注的 msg_ref 已由
+		// opts.RecallSessionKey（= sess.SessionKey()）作用域化；这里设 recall key
+		// 仅为与回合路径对齐，DefinitionsForMode 只是读取工具清单。
 		reg := a.registry.ForTurn()
-		reg.SetContextArchiveSessionKey(sess.SessionKey())
+		reg.SetRecallSessionKey(sess.SessionKey())
 		opts.ToolDefs = reg.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 	}
 	result, err := a.compactWithProgress(ctx, sessionMsgs, opts)
@@ -351,27 +351,34 @@ func (a *Agent) slashUsage(msg bus.InboundMessage) slashResult {
 	return slashResult{handled: true, reply: reply}
 }
 
-func (a *Agent) slashInsights(msg bus.InboundMessage, days int) slashResult {
-	logDir := filepath.Join(a.homePath, "memory", "logs")
+func (a *Agent) slashInsights(ctx context.Context, msg bus.InboundMessage, days int) slashResult {
 	cutoff := time.Now().AddDate(0, 0, -days)
-
-	files, _ := filepath.Glob(filepath.Join(logDir, "*.jsonl"))
-	totalFiles, recentFiles := 0, 0
-	for _, f := range files {
-		totalFiles++
-		info, err := os.Stat(f)
-		if err == nil && info.ModTime().After(cutoff) {
-			recentFiles++
+	historyStats := "Tool history:    unavailable"
+	if a.dataStore != nil {
+		sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
+		chatter := a.chatterUserID(msg)
+		if chatter == a.ownerUserID {
+			chatter = ""
+		}
+		refs, err := a.dataStore.ListSessionToolRefs(ctx, a.ownerUserID, a.name, sess.SessionKey(), chatter)
+		if err == nil {
+			recent := 0
+			for _, ref := range refs {
+				if ref.CreatedAt.After(cutoff) {
+					recent++
+				}
+			}
+			historyStats = fmt.Sprintf("Tool results:    %d in this session, %d recent", len(refs), recent)
 		}
 	}
 
 	reply := fmt.Sprintf("🔍 Insights (last %d days)\n"+
 		"─────────────────────────\n"+
-		"Log files:       %d total, %d recent\n"+
+		"%s\n"+
 		"Memory file:     %s\n"+
 		"Workspace:       %s\n\n"+
 		"Tip: Use /status for session info, /usage for token stats.",
-		days, totalFiles, recentFiles,
+		days, historyStats,
 		func() string {
 			info, err := os.Stat(filepath.Join(a.homePath, "MEMORY.md"))
 			if err != nil {

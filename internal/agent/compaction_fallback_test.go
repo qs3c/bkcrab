@@ -92,7 +92,6 @@ func TestEmergencyCompactionUsesReactiveSummary(t *testing.T) {
 
 	out, err := CompactMessagesWithOptions(msgs, CompactOptions{
 		Mode:            CompactModeEmergency,
-		Workspace:       t.TempDir(),
 		Provider:        f,
 		Model:           "fake-model",
 		ContextWindow:   120,
@@ -158,7 +157,6 @@ func TestEmergencyCompactionPrunesShortHistory(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := CompactMessagesWithOptions(tc.msgs, CompactOptions{
 				Mode:            CompactModeEmergency,
-				Workspace:       t.TempDir(),
 				ContextWindow:   120,
 				MaxOutputTokens: 20,
 			})

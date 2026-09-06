@@ -124,7 +124,6 @@ func TestManualCompactionRunsBelowProactiveThreshold(t *testing.T) {
 
 	out, err := CompactMessagesWithOptions(msgs, CompactOptions{
 		Mode:              CompactModeManual,
-		Workspace:         t.TempDir(),
 		Provider:          f,
 		Model:             "fake-model",
 		ContextWindow:     1000000,
@@ -157,7 +156,6 @@ func TestEmergencyCompactionUsesReactiveSummaryAndPercentTail(t *testing.T) {
 	f := &fakeSummarizer{}
 	out, err := CompactMessagesWithOptions(msgs, CompactOptions{
 		Mode:            CompactModeEmergency,
-		Workspace:       t.TempDir(),
 		Provider:        f,
 		Model:           "fake-model",
 		ContextWindow:   1000000,
@@ -199,7 +197,6 @@ func TestEmergencyCompactionFallsBackToDeterministicSummaryWithPercentTail(t *te
 	f := &failingSummarizer{}
 	out, err := CompactMessagesWithOptions(msgs, CompactOptions{
 		Mode:            CompactModeEmergency,
-		Workspace:       t.TempDir(),
 		Provider:        f,
 		Model:           "fake-model",
 		ContextWindow:   1000000,
@@ -239,7 +236,6 @@ func TestEmergencyCompactionSummarizesSingleHugeTurnWithoutTail(t *testing.T) {
 	f := &fakeSummarizer{}
 	out, err := CompactMessagesWithOptions(msgs, CompactOptions{
 		Mode:            CompactModeEmergency,
-		Workspace:       t.TempDir(),
 		Provider:        f,
 		Model:           "fake-model",
 		ContextWindow:   1000000,

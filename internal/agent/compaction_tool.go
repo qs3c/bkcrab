@@ -215,19 +215,14 @@ func rawAssistantToolCallInfos(raw json.RawMessage) []provider.ToolCall {
 	return msg.ToolCalls
 }
 
-func summarizeToolResult(msg provider.Message, lookup map[string]toolCallInfo) provider.Message {
-	return summarizeToolResultWithInfo(msg, lookup[msg.ToolCallID])
-}
-
-func summarizeToolResultWithInfo(msg provider.Message, info toolCallInfo, archiveIDs ...string) provider.Message {
+// summarizeToolResultWithInfo 把一条工具结果换成摘要。msgRef 是该消息在
+// session_messages 里的 seq,unknownToolSeq 表示查不到——那种情况摘要不写
+// 回溯提示,免得给模型一个用不了的 ref。
+func summarizeToolResultWithInfo(msg provider.Message, info toolCallInfo, msgRef int64) provider.Message {
 	if info.Name == "" {
 		info.Name = msg.Name
 	}
-	archiveID := ""
-	if len(archiveIDs) > 0 {
-		archiveID = archiveIDs[0]
-	}
-	msg.Content = formatToolSummary(info, msg.Content, archiveID)
+	msg.Content = formatToolSummary(info, msg.Content, msgRef)
 	msg.Metadata = nil
 	return msg
 }
@@ -306,7 +301,7 @@ func truncateToolArgValue(s string, originalRunes int) string {
 	return fmt.Sprintf("%s [truncated, chars=%d]", string(runes), originalRunes)
 }
 
-func formatToolSummary(info toolCallInfo, content string, archiveID string) string {
+func formatToolSummary(info toolCallInfo, content string, msgRef int64) string {
 	toolName := info.Name
 	if toolName == "" {
 		toolName = "unknown"
@@ -315,9 +310,9 @@ func formatToolSummary(info toolCallInfo, content string, archiveID string) stri
 	var lines []string
 	lines = append(lines, "[Tool Result Summary]")
 	lines = append(lines, "tool: "+toolName)
-	if archiveID != "" {
-		lines = append(lines, "archive_id: "+archiveID)
-		lines = append(lines, fmt.Sprintf(`retrieval: call retrieve_compacted_tool_result with {"id":%q} to inspect the full original result.`, archiveID))
+	if msgRef != unknownToolSeq {
+		lines = append(lines, fmt.Sprintf("msg_ref: %d", msgRef))
+		lines = append(lines, fmt.Sprintf(`retrieval: call recall_tool_result with {"ref":%d} to read the full original output (supports offset/limit/grep).`, msgRef))
 	}
 
 	switch toolKind(toolName) {

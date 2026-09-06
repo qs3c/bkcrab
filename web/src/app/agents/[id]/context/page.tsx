@@ -200,8 +200,7 @@ export default function AgentContextPage() {
             <code className="text-[10px]">image_gen</code>,{" "}
             <code className="text-[10px]">tts</code>,{" "}
             <code className="text-[10px]">write_file</code>,{" "}
-            <code className="text-[10px]">edit_file</code> — 后两个工具让大模型在了解聊天者后将信息持久化到 USER.md / MEMORY.md。记忆内容来自系统提示词中内嵌的 USER.md / MEMORY.md 段落，不提供{" "}
-            <code className="text-[10px]">memory_search</code> 备用检索通道（聊天机器人模式不会写入它所扫描的日志，结果为空并会干扰模型）。主回复以纯文本输出，多气泡回复通过内联分隔标记实现。适合陪伴、角色扮演和客服机器人。
+            <code className="text-[10px]">edit_file</code> — 后两个工具让大模型在了解聊天者后将信息持久化到 USER.md / MEMORY.md。记忆内容来自系统提示词中内嵌的 USER.md / MEMORY.md 段落。主回复以纯文本输出，多气泡回复通过内联分隔标记实现。适合陪伴、角色扮演和客服机器人。
           </div>
           <div>
             <strong>自定义</strong> — 仅包含日期锚点和启动文件，不提供内置工具。你可以通过 SOUL.md / IDENTITY.md 完整编写系统提示词，并通过插件提供工具。
