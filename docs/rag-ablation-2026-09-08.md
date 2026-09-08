@@ -109,6 +109,14 @@ Planner 与内部 judge 解析当前 owner 的默认模型，并非完全由 imm
 
 修复前不存在通过连接测试的已配置替代模型。后续请求头对照已证明原 DeepSeek 和 Kimi 可通过补齐会话头恢复 HTTP 200，详见 [provider 排查与修复记录](provider-opencode-go-2026-09-08.md)。用户已授权修复、提交推送、重新部署并继续测试；因此保留原默认模型和四组 Profile，部署后先验证真实调用，再恢复消融。Planner/judge 仍依赖 owner 默认模型，实验期间保持不变。
 
+## 修复后恢复执行
+
+provider 修复 `73c45fd` 已提交推送并部署到本机主服务，健康检查及 DeepSeek 连接、Planner、回答、judge 工具调用复验通过。详见 [部署与真实调用记录](provider-opencode-go-2026-09-08.md)。
+
+正式新 A 组：`rer_6079b384a5999588eca5994615d413f8`，2026-09-08 16:10:15 UTC 启动。保留原 50 题、12 项指标、`FULL_PIPELINE` 和 DeepSeek 模型，绑定历史全开基线。确认 `generationReused=true`、generation `reg_13014a14cc8c4bca8989692e69ca10d7`、准备耗时 19 ms。首批 2 题均成功；完整评分与另外三组尚未完成，不据此下消融结论。
+
+执行顺序 A → B → C → D，每次仅运行一组，维持 case concurrency=2。A 同时用于检查历史基线到当前模型服务的漂移，B/C/D 以新 A 为主要对照。若遇系统性 provider 错误、索引复用不符或预算耗尽，应暂停后续组并记录原因，不能把失败当作提速。
+
 ## 本地材料
 
 - 只读投影导出：`.tmp/rag-ablation-20260908/baseline.jsonl`。

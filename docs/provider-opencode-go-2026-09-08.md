@@ -70,6 +70,18 @@ Agent 绑定持久 session；RAG chat 绑定 owner/知识库/session；评测 Pl
 - `go test -race ./internal/provider`，包含同一个 provider 的并发会话隔离。
 - 请求级测试覆盖两种协议的 Chat/ChatStream、连接测试、目标域名限制、会话稳定与隔离；调用链测试覆盖 Agent 多轮、Planner/回答和 judge 重试。
 
-以上属于代码回归验证。部署后的真实连接、RAG 回答及 judge 恢复结果另行记录。保留原 DeepSeek 模型执行实验，不因本次修复更换默认供应商/模型。GPT 5.6 Luna 的上游 500 尚未定位。
+## 部署与真实调用复验
+
+修复提交 `73c45fd` 已推送至 `origin/main`。按项目 Dockerfile 完整构建前端和 Go 二进制，部署 `bkcrab/bkcrab:73c45fd`；服务报告 `local-73c45fd / commit 73c45fd`，`/readyz` 与容器健康检查通过。沿用原五份 Compose 配置，仅替换 BkCrab 主服务；数据库、索引、模型与评分 sidecar 保持运行。旧主服务镜像保留为 `bkcrab/bkcrab:before-provider-session-20260908`。
+
+本机 Docker 缺少 Buildx，构建时从 Docker 官方发布下载 v0.37.0 至 `/tmp/bkcrab-build-docker`，核对官方 SHA-256 后临时使用，没有修改项目 Dockerfile。
+
+部署后的真实验证：
+
+- 模型页面连接测试：DeepSeek V4 Flash 与 Kimi K3 均显示“已连接”；GPT 5.6 Luna 仍返回上游 HTTP 500。
+- 新全开测评 `rer_6079b384a5999588eca5994615d413f8` 的前两题均 `ok`，Planner 未回退，reranker 成功，且实际生成回答。两题 Planner 8.76/10.31 秒、reranker 39.44/65.56 秒、检索加回答 52.90/88.74 秒。这里只证明调用链恢复，不能代表完整质量结果。
+- 使用现有内部服务认证调用已部署 judge 代理，固定算术样例及 `Assessment` schema 返回 HTTP 200、`finish_reason=tool_calls`，参数 `correct=true`，耗时 9.78 秒，387 tokens。这验证了真实 provider 与工具调用路径；完整 Ragas 评分仍由正式测评执行。
+
+保留原 DeepSeek 模型执行实验，不因本次修复更换默认供应商/模型。GPT 5.6 Luna 的上游 500 尚未定位。
 
 本地诊断脚本及脱敏结果：`.tmp/rag-ablation-20260908/probe_provider_headers.py`、`.tmp/rag-ablation-20260908/provider-header-probe.json`。该目录被 git 忽略。
