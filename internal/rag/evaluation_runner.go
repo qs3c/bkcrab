@@ -104,6 +104,7 @@ func (p *EvaluationRunnerGenerationProvider) Release(ctx context.Context, runID 
 // target is an explicit isolated evaluation generation and answer mode rejects
 // chat/ordinary usage persistence hooks.
 func (s *Service) Execute(ctx context.Context, request rageval.CaseExecutionRequest) (rageval.CaseExecutionResult, error) {
+	ctx = provider.WithSession(ctx, "rag-eval", request.OwnerID, request.RunID, request.Case.ID)
 	started := time.Now()
 	hits, trace, err := s.SearchEvaluationWithOptions(ctx, request.OwnerID, request.Generation, SearchContext{Query: request.Case.UserInput, History: request.Case.History}, request.Profile)
 	if err != nil {

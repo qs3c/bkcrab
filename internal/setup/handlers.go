@@ -786,6 +786,7 @@ func (s *Server) handleTestStoredProvider(w http.ResponseWriter, r *http.Request
 // 在这里仅检查 2xx 会在运行时稍后 404 的 URL 报告为绿色。
 // 因此在请求之后，我们还要求响应看起来像一个真正的 Messages / ChatCompletion 对象。
 func runProviderTest(ctx context.Context, req testProviderRequest) map[string]any {
+	ctx = provider.EnsureSession(ctx)
 	base := provider.NormalizeAPIBase(req.APIBase, req.APIType)
 	var testURL string
 	var body io.Reader
@@ -819,6 +820,7 @@ func runProviderTest(ctx context.Context, req testProviderRequest) map[string]an
 	} else {
 		httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
 	}
+	provider.ApplyRequestMetadata(httpReq)
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {

@@ -338,6 +338,7 @@ func (p *AnthropicProvider) buildRequest(ctx context.Context, messages []Message
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", p.apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	ApplyRequestMetadata(httpReq)
 	return httpReq, nil
 }
 

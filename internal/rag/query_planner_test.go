@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/rag/dialogue"
 	"github.com/qs3c/bkcrab/internal/rag/objects"
 	"github.com/qs3c/bkcrab/internal/rag/vector"
@@ -21,8 +22,12 @@ import (
 func TestQueryPlanUsesQuestionHistoryAndSingleLLMCall(t *testing.T) {
 	var calls atomic.Int32
 	var gotSystem, gotUser string
-	service := &Service{queryLLM: func(_ context.Context, userID, systemPrompt, userPrompt string) (string, error) {
+	ctx := provider.WithSession(context.Background(), "rag-eval", "u1", "run", "case")
+	service := &Service{queryLLM: func(callCtx context.Context, userID, systemPrompt, userPrompt string) (string, error) {
 		calls.Add(1)
+		if provider.SessionIDFromContext(callCtx) != provider.SessionIDFromContext(ctx) {
+			t.Fatal("planner timeout context lost the enclosing evaluation session")
+		}
 		if userID != "u1" {
 			t.Fatalf("planner user = %q, want u1", userID)
 		}
@@ -30,7 +35,7 @@ func TestQueryPlanUsesQuestionHistoryAndSingleLLMCall(t *testing.T) {
 		return `{"rewritten_query":"Windows 系统如何安装 bkcrab？","hypothetical_document":"在 Windows 系统中安装 bkcrab 时，需要准备 Docker 环境。"}`, nil
 	}}
 
-	plan := service.planQuery(context.Background(), "retrieval-test", "u1", SearchContext{
+	plan := service.planQuery(ctx, "retrieval-test", "u1", SearchContext{
 		Query: "那 Windows 呢？",
 		History: []dialogue.Turn{
 			dialogue.NewTurn("user", "如何安装 bkcrab？"),

@@ -110,6 +110,11 @@ func (a *Agent) messageTurn(ctx context.Context, msg bus.InboundMessage) (contex
 	a.turns.mu.Lock()
 	turn.chatterUserID = a.chatterUserID(msg)
 	a.turns.mu.Unlock()
+	if a.sessions != nil {
+		ctx = provider.WithSession(ctx, "agent", a.ownerUserID, a.name, a.resolveSessionKey(msg))
+	} else {
+		ctx = provider.WithSession(ctx, "agent", a.ownerUserID, a.name, msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
+	}
 	return ctx, finish, nil
 }
 

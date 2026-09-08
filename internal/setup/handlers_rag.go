@@ -880,6 +880,7 @@ func (s *Server) handleRAGChat(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
+	r = r.WithContext(provider.WithSession(r.Context(), "rag-chat", identity.EffectiveUserID(), kb.ID, sessionID))
 	persistedTurns, err := s.dataStore.ListRAGChatTurns(r.Context(), identity.EffectiveUserID(), kb.ID, sessionID)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "读取知识库问答历史失败：" + err.Error()})

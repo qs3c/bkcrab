@@ -84,7 +84,12 @@ func (s *Server) handleRAGEvalJudgeProxy(w http.ResponseWriter, r *http.Request)
 	if request.Temperature != nil {
 		temperature = *request.Temperature
 	}
-	response, err := model.Chat(r.Context(), request.Messages, request.Tools, resolvedModel, maxTokens, temperature)
+	// A judge completion is stateless. Scope its session to the authenticated
+	// owner and canonical scoring request, so identical retries reuse routing
+	// without grouping unrelated owners or scoring prompts together.
+	scoringRequest, _ := json.Marshal(request)
+	ctx := provider.WithSession(r.Context(), "rag-eval-judge", ownerID, string(scoringRequest))
+	response, err := model.Chat(ctx, request.Messages, request.Tools, resolvedModel, maxTokens, temperature)
 	if err != nil || response == nil {
 		http.Error(w, "judge provider request failed", http.StatusBadGateway)
 		return

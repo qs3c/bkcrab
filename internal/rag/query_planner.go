@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/rag/dialogue"
 )
 
@@ -70,6 +71,7 @@ type QueryRouteMetadata struct {
 // for follow-ups even when the configured default LLM is missing, slow, or
 // temporarily down.
 func (s *Service) planQuery(ctx context.Context, retrievalID, userID string, input SearchContext) QueryPlan {
+	ctx = provider.EnsureSession(ctx)
 	started := time.Now()
 	originalQuery := strings.TrimSpace(input.Query)
 	history := plannerHistory(input.History)

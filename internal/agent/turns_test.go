@@ -74,6 +74,34 @@ func TestTurnControlWaitIsCancelable(t *testing.T) {
 	}
 }
 
+func TestMessageTurnProviderSessionPersistsAcrossTurns(t *testing.T) {
+	a := &Agent{ownerUserID: "owner", name: "agent", sessions: session.NewManager(t.TempDir())}
+	msg := bus.InboundMessage{Channel: "web", ChatID: "A"}
+	first, finish, err := a.messageTurn(context.Background(), msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID := provider.SessionIDFromContext(first)
+	finish()
+	second, finish, err := a.messageTurn(context.Background(), msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstID == "" || provider.SessionIDFromContext(second) != firstID {
+		t.Fatal("conversation session changed between turns")
+	}
+	finish()
+	msg.ChatID = "B"
+	other, finish, err := a.messageTurn(context.Background(), msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finish()
+	if provider.SessionIDFromContext(other) == firstID {
+		t.Fatal("different chats shared a provider session")
+	}
+}
+
 func TestEventHubConcurrentPublishAndUnsubscribe(t *testing.T) {
 	hub := NewEventHub()
 	done := make(chan struct{})
