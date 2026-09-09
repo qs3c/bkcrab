@@ -139,6 +139,21 @@ A 已于 2026-09-08 17:10:08 UTC 结束（本机时间 9 月 8 日 12:10:08）�
 
 修复将 `RAG_EVALUATOR_LLM_MAX_TOKENS` 配置化，默认 8192，并保持 run 总预算 200 万 tokens / 6 小时。真实 Ragas/Instructor 到 HTTP 的离线测试确认该设置确实进入请求；完整评分服务回归 35 passed、1 个显式联网 smoke skipped。本次上述真实样例诊断已单独执行。新四组统一采用 8192；部署时增加可选 `docker-compose.rag-serial-eval.yml` 将 run worker 限制为 1，允许一次提交四组，由持久队列顺序接续。
 
+### 修复后四组持久队列（2026-09-09）
+
+修复提交 `3cbc66a` 已推送并部署为评分镜像 `bkcrab/rag-evaluator:3cbc66a`（同时使用现有 `0.1.0` 本地标签），旧镜像保留为 `bkcrab/rag-evaluator:before-judge-budget-20260909`。主服务仍运行已修复会话头的 `73c45fd` 二进制，仅把 run worker 配置改为 1；case/score 并发与模型服务保持原设置。两服务健康检查通过，主服务成功识别评分协议。部署后经真实 `/v1/evaluate` 复验同一公开失败样例，faithfulness `ok`，耗时 34.76 秒、LLM 输出 3877 tokens，说明请求确实突破原先 1024 上限。
+
+| 组 | 新 Run ID | 入队后的检查 |
+| --- | --- | --- |
+| A 全开 | `rer_74edcb129e6a9a252f5c4fdc6c8b0969` | RUNNING；2/50 回答成功，0 错误；原 generation 已复用，准备 19 ms |
+| B 关闭 Planner | `rer_992d50417cb34dab71da4024e0ef4007` | QUEUED；rewrite=false、hyde=false、reranker=true |
+| C 关闭 Reranker | `rer_b2eb9facbdb6e3cbfb1b79fcd66f9b94` | QUEUED；rewrite=true、hyde=true、reranker=false |
+| D 两者关闭 | `rer_8db2c5d1cd82d94d79f58e8f6a29cbb1` | QUEUED；三个开关均 false |
+
+四组均冻结同一数据版本、原 Profile 和全部 12 项指标。B/C/D 尚未开始，generation 需要在各自启动后核对。原 A 和修复前失败 C 保留为诊断记录，不替代新四组。
+
+因创建时新 A 尚未成功，平台不允许将它设为其它运行的 `baselineRunId`。为使四组能够一次进入持久串行队列，新四组均未预绑定旧基线；完成后按同 case ID 对新 A/B/C/D 做配对分析，或调用现有 run compare 接口明确指定新 A。不能把旧 A 的残缺评分与新 judge 设置混作主要对照。持久队列负责逐组执行，不依赖 Codex 定时唤醒；当前尚无完整新消融结论。
+
 ## 本地材料
 
 - 只读投影导出：`.tmp/rag-ablation-20260908/baseline.jsonl`。
