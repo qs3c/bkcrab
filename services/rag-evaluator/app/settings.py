@@ -25,6 +25,7 @@ class Settings:
     metric_timeout_seconds: float
     idempotency_cache_entries: int
     evaluation_concurrency: int
+    llm_max_tokens: int = 8192
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -36,6 +37,7 @@ class Settings:
             llm_endpoint=os.getenv("RAG_EVALUATOR_LLM_ENDPOINT", ""),
             llm_api_key=os.getenv("RAG_EVALUATOR_LLM_API_KEY", ""),
             llm_model=os.getenv("RAG_EVALUATOR_LLM_MODEL", ""),
+            llm_max_tokens=int(os.getenv("RAG_EVALUATOR_LLM_MAX_TOKENS", "8192")),
             embedding_endpoint=os.getenv("RAG_EVALUATOR_EMBEDDING_ENDPOINT", ""),
             embedding_api_key=os.getenv("RAG_EVALUATOR_EMBEDDING_API_KEY", ""),
             embedding_model=os.getenv("RAG_EVALUATOR_EMBEDDING_MODEL", ""),
@@ -88,3 +90,5 @@ class Settings:
             raise ValueError("configured evaluator judge requires explicit positive token prices")
         if self.evaluation_concurrency < 1 or self.evaluation_concurrency > 32:
             raise ValueError("evaluator concurrency must be between 1 and 32")
+        if self.llm_max_tokens < 1 or self.llm_max_tokens > 131_072:
+            raise ValueError("evaluator LLM max tokens must be between 1 and 131072")

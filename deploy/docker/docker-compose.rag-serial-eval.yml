@@ -1,0 +1,6 @@
+# Optional overlay for sequential benchmark runs. Keep case concurrency and
+# model service limits from the existing deployment so run latencies compare.
+services:
+  bkcrab:
+    environment:
+      BKCRAB_RAG_EVAL_WORKER_CONCURRENCY: "1"

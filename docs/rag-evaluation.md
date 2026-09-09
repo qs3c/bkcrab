@@ -77,6 +77,7 @@ docker compose \
 - document/case/score concurrency：默认各 1，分别限制单次 run 的文档构建、回答和评分批次；
 - evaluator concurrency：默认 1，是 sidecar 内所有并发请求共享的全局 metric 槽位；
 - evaluator timeout：默认 240 秒；客户端超时不会自动重放，以免重复占用 judge；
+- judge 输出预算：`RAG_EVALUATOR_LLM_MAX_TOKENS`，默认 8192，范围 1–131072；覆盖 Ragas 默认的 1024，避免推理模型或长结构化评分输出被截断。此值与回答模型 `maxTokens`、run 总 token 预算分别生效；四组消融应统一该设置，并在实验记录中记录实际值；
 - batch size：默认 2；评分批次串行执行，避免大批次超过 judge 超时；
 - 单次运行样例：默认最多 1000；
 - 单次运行费用：默认最多 25 USD；
@@ -85,6 +86,8 @@ docker compose \
 - run/dataset/generation retention：分别默认 90/365/30 天。
 
 凭据不会进入 capabilities DTO、指纹、validation report 或结构化日志。回答模型与 evaluator judge/embedding 是三个明确角色，不能把 evaluator key 放入任务 payload。
+
+需要把多组测评一次加入 durable queue 并依次执行时，在已有 Compose 文件列表末尾追加 `docker-compose.rag-serial-eval.yml`。它只把测评 run worker 数设为 1，保留现有 case/score 并发和模型服务参数。应在没有运行中的测评时应用；移除该覆盖文件会恢复原配置的 run worker 数。调整 judge 输出预算后，旧错误评分不自动改写，应创建新的统一配置运行。
 
 启用评测后，系统会按当前 ingestion/runtime、reranker 和 BkCrab 默认回答模型自动创建一个 immutable 的“系统默认全功能” Experiment Profile。相同指纹只创建一次，后续 run 直接复用；默认模型或策略变化会形成新的 Profile，而不是改写历史 Profile。管理员也可以在 `/admin/rag-evals` 创建用于 A/B 实验的额外 Profile，不需要每次 run 都创建。
 

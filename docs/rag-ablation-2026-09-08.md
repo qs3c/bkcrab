@@ -113,9 +113,31 @@ Planner 与内部 judge 解析当前 owner 的默认模型，并非完全由 imm
 
 provider 修复 `73c45fd` 已提交推送并部署到本机主服务，健康检查及 DeepSeek 连接、Planner、回答、judge 工具调用复验通过。详见 [部署与真实调用记录](provider-opencode-go-2026-09-08.md)。
 
-正式新 A 组：`rer_6079b384a5999588eca5994615d413f8`，2026-09-08 16:10:15 UTC 启动。保留原 50 题、12 项指标、`FULL_PIPELINE` 和 DeepSeek 模型，绑定历史全开基线。确认 `generationReused=true`、generation `reg_13014a14cc8c4bca8989692e69ca10d7`、准备耗时 19 ms。首批 2 题均成功；完整评分与另外三组尚未完成，不据此下消融结论。
+正式新 A 组：`rer_6079b384a5999588eca5994615d413f8`，2026-09-08 16:10:15 UTC 启动。保留原 50 题、12 项指标、`FULL_PIPELINE` 和 DeepSeek 模型，绑定历史全开基线。确认 `generationReused=true`、generation `reg_13014a14cc8c4bca8989692e69ca10d7`、准备耗时 19 ms。
 
 执行顺序 A → B → C → D，每次仅运行一组，维持 case concurrency=2。A 同时用于检查历史基线到当前模型服务的漂移，B/C/D 以新 A 为主要对照。若遇系统性 provider 错误、索引复用不符或预算耗尽，应暂停后续组并记录原因，不能把失败当作提速。
+
+### 2026-09-09 04:42 UTC 跟进
+
+A 已于 2026-09-08 17:10:08 UTC 结束（本机时间 9 月 8 日 12:10:08），耗时约 59 分 53 秒。服务显示 `SUCCEEDED`，但只表示运行执行完毕，不表示每题或每项评分成功。上轮未建立后台自动接续，B/D 尚未创建运行，C 只有修复前取消的失败运行；没有四组结果。
+
+- 回答：49/50 成功；1 题 `empty_response`，回答输出计量 4094 tokens、预算 4096。新运行未出现 `MissingSessionID`。
+- Planner：11/50 回退；reranker：50/50 成功。
+- 全部 50 题的 Planner 平均 7.82 秒，reranker 平均 48.12 秒，检索平均 56.41 秒。尚无新消融组，不能由此推断质量收益。
+
+| judge 指标 | 有效评分 | 错误 | 有效样本均值 |
+| --- | ---: | ---: | ---: |
+| Context Precision | 47 | 2 | 0.8944 |
+| Context Recall | 47 | 2 | 0.9149 |
+| Faithfulness | 19 | 30 | 0.8717 |
+| Response Relevancy | 49 | 0 | 0.8664 |
+| Factual Correctness | 23 | 26 | 0.2965 |
+
+评分分母缺失严重，不能将这些均值直接用于质量结论。60 条评分错误中，58 条为结构化工具调用缺失，2 条为 JSON 输出中途截断；59 条记录的 completion tokens 为 1024，另 1 条为 1026。运行中 Ragas 0.3.9 的 `InstructorModelArgs.max_tokens` 默认为 1024，而 sidecar 的 `llm_factory` 未显式覆盖，提供了输出预算不足的强线索。另发现 judge 代理未保留上游 finish reason，不能根据其返回的 `stop` 排除截断。
+
+已限定到原公开 Open RAGBench/arxiv 两题、相同内部 judge 代理，完成 1024/8192 token 小范围对照；没有改写既有评分记录。第一题在 1024 下 faithfulness 再次失败；改为 8192 后，同题 faithfulness=0.7778（30.68 秒）、factual correctness=0.4（35.56 秒），第二题 faithfulness=1.0（14.38 秒），三项均成功。该对照支持增大 judge 输出预算，但不保证所有复杂样例都能在该预算与超时内完成。
+
+修复将 `RAG_EVALUATOR_LLM_MAX_TOKENS` 配置化，默认 8192，并保持 run 总预算 200 万 tokens / 6 小时。真实 Ragas/Instructor 到 HTTP 的离线测试确认该设置确实进入请求；完整评分服务回归 35 passed、1 个显式联网 smoke skipped。本次上述真实样例诊断已单独执行。新四组统一采用 8192；部署时增加可选 `docker-compose.rag-serial-eval.yml` 将 run worker 限制为 1，允许一次提交四组，由持久队列顺序接续。
 
 ## 本地材料
 

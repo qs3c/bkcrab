@@ -148,7 +148,15 @@ def build_ragas_engine(settings: Settings) -> MetricEngine:
 
     llm_client.chat.completions.create = metered_llm_create
     embedding_client.embeddings.create = metered_embedding_create
-    llm = llm_factory(settings.llm_model, provider="openai", client=llm_client)
+    # Ragas defaults to 1024, which can truncate reasoning or structured judge
+    # output before it contains a complete tool call. Keep this independent
+    # from the answer model budget and the run's total token limit.
+    llm = llm_factory(
+        settings.llm_model,
+        provider="openai",
+        client=llm_client,
+        max_tokens=settings.llm_max_tokens,
+    )
     embeddings = embedding_factory(
         "openai", model=settings.embedding_model, client=embedding_client, interface="modern"
     )
