@@ -1,0 +1,2156 @@
+{
+  "method": "candidate minus base; valid within-case intersection; 10000 paired reference-document-group bootstrap draws; pointwise percentile 95% intervals, no multiple-comparison correction; errors are missing, never zero; not an equivalence test",
+  "inputSHA256": {
+    "export": "4d3f01c5677b917fefb43bbb71e9e60a4b7051d9b98adba50d0470a564c0bf5d",
+    "supplement": "044af491df21bb12cdae57c2dba9dcef2f97a6211e6edacb099241a77f4b6f22"
+  },
+  "supplementCompletedAt": "2026-09-09T14:01:45.487822+00:00",
+  "supplementCases": 48,
+  "supplementSeconds": 2870.927,
+  "supplementTokens": 1267070,
+  "referenceDocumentGroups": 48,
+  "summaries": {
+    "A": {
+      "runId": "rer_74edcb129e6a9a252f5c4fdc6c8b0969",
+      "datasetDisplayName": "Open RAGBench（Vectara） · TEXT_RAG",
+      "source": {
+        "catalogId": "vectara-open-ragbench",
+        "url": "https://huggingface.co/datasets/vectara/open_ragbench",
+        "revision": "63f6b052ff83508b08e242db42263ee708815c26",
+        "adapterId": "vectara-open-ragbench",
+        "adapterVersion": "open-ragbench-arxiv-v1",
+        "split": "arxiv",
+        "sampleSize": 50,
+        "corpusSize": 200,
+        "seed": 42,
+        "evidenceTypes": [
+          "text"
+        ],
+        "license": "CC-BY-NC-4.0"
+      },
+      "datasetVersionId": "rdv_c4fa198f-af95-4798-8d15-bc28efd81762",
+      "generationId": "reg_13014a14cc8c4bca8989692e69ca10d7",
+      "generationDatasetVersionId": "rdv_c4fa198f-af95-4798-8d15-bc28efd81762",
+      "profile": {
+        "ingestion": {
+          "version": 1,
+          "chunkSize": 512,
+          "chunkOverlap": 64,
+          "sparseAnalyzer": "english",
+          "parseMode": "standard",
+          "parserEngine": "anydoc",
+          "enrichmentEnabled": false,
+          "documentAI": {
+            "visionPromptVersion": "vision-v3",
+            "enrichmentPromptVersion": "enrichment-v1"
+          },
+          "embedding": {
+            "contractFingerprint": "54874b26d11710a01c4bcbd46cc45a03d2bef42c43932c43293e1dc5d95a7d09",
+            "model": "qwen3-embedding",
+            "dims": 1024
+          }
+        },
+        "runtime": {
+          "version": 1,
+          "topN": 5,
+          "candidateTopK": 20,
+          "minScore": 0.5,
+          "temperature": 0.2,
+          "maxTokens": 4096,
+          "ragPromptBundleVersion": "rag-answer-v1"
+        },
+        "rewriteEnabled": true,
+        "hydeEnabled": true,
+        "rerankerEnabled": true,
+        "rerankerModel": "qwen3-reranker",
+        "rerankerTimeoutMs": 180000,
+        "rerankerFailurePolicy": "fail_closed",
+        "answerModel": "opencode-go/deepseek-v4-flash"
+      },
+      "caseCount": 50,
+      "documentCount": 200,
+      "status": "BUDGET_EXCEEDED",
+      "caseStatuses": {
+        "ok": 50
+      },
+      "stagesMs": {
+        "plannerDurationMs": {
+          "n": 50,
+          "mean": 7431.16,
+          "p50": 7040.0,
+          "p95": 12860.299999999992
+        },
+        "rerankerDurationMs": {
+          "n": 50,
+          "mean": 46990.74,
+          "p50": 44307.5,
+          "p95": 83667.45
+        },
+        "retrievalDurationMs": {
+          "n": 50,
+          "mean": 486.9,
+          "p50": 463.5,
+          "p95": 1016.5
+        },
+        "hydrationDurationMs": {
+          "n": 50,
+          "mean": 2.2,
+          "p50": 2.0,
+          "p95": 3.0
+        },
+        "durationMs": {
+          "n": 50,
+          "mean": 54912.56,
+          "p50": 51717.5,
+          "p95": 92625.5
+        },
+        "caseLatencyMs": {
+          "n": 50,
+          "mean": 65362,
+          "p50": 62372.0,
+          "p95": 102710.24999999999
+        }
+      },
+      "traceCoverage": 50,
+      "plannerFallbackCases": 13,
+      "rerankerSucceededCases": 50,
+      "emptyContextCases": 0,
+      "caseLabels": {
+        "history": 0,
+        "expectedAbstention": 0,
+        "chunkGold": 0
+      },
+      "savedTopNFilter": {
+        "ranked": 250,
+        "removed": 17,
+        "affectedCases": 7,
+        "removedFromGoldDocuments": 9,
+        "removedFromOtherDocuments": 8,
+        "removedWithoutLabels": 0
+      },
+      "metrics": {
+        "abstention_accuracy": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "citation_coverage": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.6292152958152958,
+          "p50": 0.6333333333333333,
+          "p95": 1.0
+        },
+        "citation_precision": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.991,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "context_precision": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.9029999999545444,
+          "p50": 0.9999999999,
+          "p95": 0.99999999998
+        },
+        "context_recall": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.87,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_hit_at_k": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_mrr": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_ndcg": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_recall_at_k": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "factual_correctness": {
+          "count": 50,
+          "statuses": {
+            "ok": 47,
+            "error": 3
+          },
+          "n": 47,
+          "mean": 0.2723404255319149,
+          "p50": 0.29,
+          "p95": 0.7609999999999995
+        },
+        "faithfulness": {
+          "count": 50,
+          "statuses": {
+            "ok": 41,
+            "error": 9
+          },
+          "n": 41,
+          "mean": 0.9206349206349206,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "response_relevancy": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.8416054869537792,
+          "p50": 0.8809230034609783,
+          "p95": 0.9687387120026546
+        }
+      },
+      "successfulCaseLatencyMs": {
+        "n": 50,
+        "mean": 65362,
+        "p50": 62372.0,
+        "p95": 102710.24999999999
+      },
+      "metricErrors": {
+        "missing_tool_calls": 12
+      }
+    },
+    "B": {
+      "runId": "rer_992d50417cb34dab71da4024e0ef4007",
+      "datasetDisplayName": "Open RAGBench（Vectara） · TEXT_RAG",
+      "source": {
+        "catalogId": "vectara-open-ragbench",
+        "url": "https://huggingface.co/datasets/vectara/open_ragbench",
+        "revision": "63f6b052ff83508b08e242db42263ee708815c26",
+        "adapterId": "vectara-open-ragbench",
+        "adapterVersion": "open-ragbench-arxiv-v1",
+        "split": "arxiv",
+        "sampleSize": 50,
+        "corpusSize": 200,
+        "seed": 42,
+        "evidenceTypes": [
+          "text"
+        ],
+        "license": "CC-BY-NC-4.0"
+      },
+      "datasetVersionId": "rdv_c4fa198f-af95-4798-8d15-bc28efd81762",
+      "generationId": "reg_13014a14cc8c4bca8989692e69ca10d7",
+      "generationDatasetVersionId": "rdv_c4fa198f-af95-4798-8d15-bc28efd81762",
+      "profile": {
+        "ingestion": {
+          "version": 1,
+          "chunkSize": 512,
+          "chunkOverlap": 64,
+          "sparseAnalyzer": "english",
+          "parseMode": "standard",
+          "parserEngine": "anydoc",
+          "enrichmentEnabled": false,
+          "documentAI": {
+            "visionPromptVersion": "vision-v3",
+            "enrichmentPromptVersion": "enrichment-v1"
+          },
+          "embedding": {
+            "contractFingerprint": "54874b26d11710a01c4bcbd46cc45a03d2bef42c43932c43293e1dc5d95a7d09",
+            "model": "qwen3-embedding",
+            "dims": 1024
+          }
+        },
+        "runtime": {
+          "version": 1,
+          "topN": 5,
+          "candidateTopK": 20,
+          "minScore": 0.5,
+          "temperature": 0.2,
+          "maxTokens": 4096,
+          "ragPromptBundleVersion": "rag-answer-v1"
+        },
+        "rewriteEnabled": false,
+        "hydeEnabled": false,
+        "rerankerEnabled": true,
+        "rerankerModel": "qwen3-reranker",
+        "rerankerTimeoutMs": 180000,
+        "rerankerFailurePolicy": "fail_closed",
+        "answerModel": "opencode-go/deepseek-v4-flash"
+      },
+      "caseCount": 50,
+      "documentCount": 200,
+      "status": "SUCCEEDED",
+      "caseStatuses": {
+        "ok": 50
+      },
+      "stagesMs": {
+        "plannerDurationMs": {
+          "n": 50,
+          "mean": 0,
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "rerankerDurationMs": {
+          "n": 50,
+          "mean": 46451,
+          "p50": 45798.0,
+          "p95": 80580.34999999999
+        },
+        "retrievalDurationMs": {
+          "n": 50,
+          "mean": 175.06,
+          "p50": 192.5,
+          "p95": 244.55
+        },
+        "hydrationDurationMs": {
+          "n": 50,
+          "mean": 1.72,
+          "p50": 2.0,
+          "p95": 2.549999999999997
+        },
+        "durationMs": {
+          "n": 50,
+          "mean": 46628.82,
+          "p50": 45982.5,
+          "p95": 80840.94999999998
+        },
+        "caseLatencyMs": {
+          "n": 50,
+          "mean": 55803.1,
+          "p50": 54887.5,
+          "p95": 94773.5
+        }
+      },
+      "traceCoverage": 50,
+      "plannerFallbackCases": 0,
+      "rerankerSucceededCases": 50,
+      "emptyContextCases": 0,
+      "caseLabels": {
+        "history": 0,
+        "expectedAbstention": 0,
+        "chunkGold": 0
+      },
+      "savedTopNFilter": {
+        "ranked": 250,
+        "removed": 17,
+        "affectedCases": 6,
+        "removedFromGoldDocuments": 7,
+        "removedFromOtherDocuments": 10,
+        "removedWithoutLabels": 0
+      },
+      "metrics": {
+        "abstention_accuracy": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "citation_coverage": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.5814700577200577,
+          "p50": 0.6181818181818182,
+          "p95": 1.0
+        },
+        "citation_precision": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.9914285714285714,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "context_precision": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.8918888888411148,
+          "p50": 0.9999999999,
+          "p95": 0.99999999998
+        },
+        "context_recall": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.9,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_hit_at_k": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_mrr": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_ndcg": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_recall_at_k": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "factual_correctness": {
+          "count": 50,
+          "statuses": {
+            "ok": 48,
+            "error": 2
+          },
+          "n": 48,
+          "mean": 0.25895833333333335,
+          "p50": 0.25,
+          "p95": 0.7219999999999999
+        },
+        "faithfulness": {
+          "count": 50,
+          "statuses": {
+            "ok": 46,
+            "error": 4
+          },
+          "n": 46,
+          "mean": 0.9272633486612253,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "response_relevancy": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.8391686529147068,
+          "p50": 0.8523488765803533,
+          "p95": 0.9840419316186332
+        }
+      },
+      "successfulCaseLatencyMs": {
+        "n": 50,
+        "mean": 55803.1,
+        "p50": 54887.5,
+        "p95": 94773.5
+      },
+      "metricErrors": {
+        "missing_tool_calls": 6
+      }
+    },
+    "C": {
+      "runId": "rer_b2eb9facbdb6e3cbfb1b79fcd66f9b94",
+      "datasetDisplayName": "Open RAGBench（Vectara） · TEXT_RAG",
+      "source": {
+        "catalogId": "vectara-open-ragbench",
+        "url": "https://huggingface.co/datasets/vectara/open_ragbench",
+        "revision": "63f6b052ff83508b08e242db42263ee708815c26",
+        "adapterId": "vectara-open-ragbench",
+        "adapterVersion": "open-ragbench-arxiv-v1",
+        "split": "arxiv",
+        "sampleSize": 50,
+        "corpusSize": 200,
+        "seed": 42,
+        "evidenceTypes": [
+          "text"
+        ],
+        "license": "CC-BY-NC-4.0"
+      },
+      "datasetVersionId": "rdv_c4fa198f-af95-4798-8d15-bc28efd81762",
+      "generationId": "reg_13014a14cc8c4bca8989692e69ca10d7",
+      "generationDatasetVersionId": "rdv_c4fa198f-af95-4798-8d15-bc28efd81762",
+      "profile": {
+        "ingestion": {
+          "version": 1,
+          "chunkSize": 512,
+          "chunkOverlap": 64,
+          "sparseAnalyzer": "english",
+          "parseMode": "standard",
+          "parserEngine": "anydoc",
+          "enrichmentEnabled": false,
+          "documentAI": {
+            "visionPromptVersion": "vision-v3",
+            "enrichmentPromptVersion": "enrichment-v1"
+          },
+          "embedding": {
+            "contractFingerprint": "54874b26d11710a01c4bcbd46cc45a03d2bef42c43932c43293e1dc5d95a7d09",
+            "model": "qwen3-embedding",
+            "dims": 1024
+          }
+        },
+        "runtime": {
+          "version": 1,
+          "topN": 5,
+          "candidateTopK": 20,
+          "minScore": 0.5,
+          "temperature": 0.2,
+          "maxTokens": 4096,
+          "ragPromptBundleVersion": "rag-answer-v1"
+        },
+        "rewriteEnabled": true,
+        "hydeEnabled": true,
+        "rerankerEnabled": false,
+        "rerankerModel": "qwen3-reranker",
+        "rerankerTimeoutMs": 180000,
+        "rerankerFailurePolicy": "fail_closed",
+        "answerModel": "opencode-go/deepseek-v4-flash"
+      },
+      "caseCount": 50,
+      "documentCount": 200,
+      "status": "SUCCEEDED",
+      "caseStatuses": {
+        "ok": 49,
+        "error": 1
+      },
+      "stagesMs": {
+        "plannerDurationMs": {
+          "n": 50,
+          "mean": 6485.3,
+          "p50": 6546.5,
+          "p95": 10067.75
+        },
+        "rerankerDurationMs": {
+          "n": 50,
+          "mean": 0,
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "retrievalDurationMs": {
+          "n": 50,
+          "mean": 369.08,
+          "p50": 403.5,
+          "p95": 673.4499999999998
+        },
+        "hydrationDurationMs": {
+          "n": 50,
+          "mean": 1.9,
+          "p50": 2.0,
+          "p95": 3.0
+        },
+        "durationMs": {
+          "n": 50,
+          "mean": 6857.38,
+          "p50": 6678.5,
+          "p95": 10184.95
+        },
+        "caseLatencyMs": {
+          "n": 50,
+          "mean": 17065.1,
+          "p50": 15408.0,
+          "p95": 33284.65
+        }
+      },
+      "traceCoverage": 50,
+      "plannerFallbackCases": 16,
+      "rerankerSucceededCases": 0,
+      "emptyContextCases": 0,
+      "caseLabels": {
+        "history": 0,
+        "expectedAbstention": 0,
+        "chunkGold": 0
+      },
+      "savedTopNFilter": {
+        "ranked": 0,
+        "removed": 0,
+        "affectedCases": 0,
+        "removedFromGoldDocuments": 0,
+        "removedFromOtherDocuments": 0,
+        "removedWithoutLabels": 0
+      },
+      "metrics": {
+        "abstention_accuracy": {
+          "count": 49,
+          "statuses": {
+            "ok": 49
+          },
+          "n": 49,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "citation_coverage": {
+          "count": 49,
+          "statuses": {
+            "ok": 49
+          },
+          "n": 49,
+          "mean": 0.6040885322003032,
+          "p50": 0.625,
+          "p95": 1.0
+        },
+        "citation_precision": {
+          "count": 49,
+          "statuses": {
+            "ok": 49
+          },
+          "n": 49,
+          "mean": 0.9959183673469387,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "context_precision": {
+          "count": 49,
+          "statuses": {
+            "ok": 49
+          },
+          "n": 49,
+          "mean": 0.7925736961037099,
+          "p50": 0.8874999999778125,
+          "p95": 0.99999999998
+        },
+        "context_recall": {
+          "count": 49,
+          "statuses": {
+            "ok": 49
+          },
+          "n": 49,
+          "mean": 0.9081632653061225,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_hit_at_k": {
+          "count": 49,
+          "statuses": {
+            "ok": 49
+          },
+          "n": 49,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_mrr": {
+          "count": 49,
+          "statuses": {
+            "ok": 49
+          },
+          "n": 49,
+          "mean": 0.9897959183673469,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_ndcg": {
+          "count": 49,
+          "statuses": {
+            "ok": 49
+          },
+          "n": 49,
+          "mean": 0.9924679541545195,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_recall_at_k": {
+          "count": 49,
+          "statuses": {
+            "ok": 49
+          },
+          "n": 49,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "factual_correctness": {
+          "count": 49,
+          "statuses": {
+            "ok": 47,
+            "error": 2
+          },
+          "n": 47,
+          "mean": 0.28702127659574467,
+          "p50": 0.22,
+          "p95": 0.67
+        },
+        "faithfulness": {
+          "count": 49,
+          "statuses": {
+            "ok": 48,
+            "error": 1
+          },
+          "n": 48,
+          "mean": 0.9074446097883598,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "response_relevancy": {
+          "count": 49,
+          "statuses": {
+            "ok": 49
+          },
+          "n": 49,
+          "mean": 0.8371885511862134,
+          "p50": 0.86818781378707,
+          "p95": 0.9808630663027199
+        }
+      },
+      "successfulCaseLatencyMs": {
+        "n": 49,
+        "mean": 16526.26530612245,
+        "p50": 15336.0,
+        "p95": 32619.59999999999
+      },
+      "metricErrors": {
+        "missing_tool_calls": 3
+      }
+    },
+    "D": {
+      "runId": "rer_8db2c5d1cd82d94d79f58e8f6a29cbb1",
+      "datasetDisplayName": "Open RAGBench（Vectara） · TEXT_RAG",
+      "source": {
+        "catalogId": "vectara-open-ragbench",
+        "url": "https://huggingface.co/datasets/vectara/open_ragbench",
+        "revision": "63f6b052ff83508b08e242db42263ee708815c26",
+        "adapterId": "vectara-open-ragbench",
+        "adapterVersion": "open-ragbench-arxiv-v1",
+        "split": "arxiv",
+        "sampleSize": 50,
+        "corpusSize": 200,
+        "seed": 42,
+        "evidenceTypes": [
+          "text"
+        ],
+        "license": "CC-BY-NC-4.0"
+      },
+      "datasetVersionId": "rdv_c4fa198f-af95-4798-8d15-bc28efd81762",
+      "generationId": "reg_13014a14cc8c4bca8989692e69ca10d7",
+      "generationDatasetVersionId": "rdv_c4fa198f-af95-4798-8d15-bc28efd81762",
+      "profile": {
+        "ingestion": {
+          "version": 1,
+          "chunkSize": 512,
+          "chunkOverlap": 64,
+          "sparseAnalyzer": "english",
+          "parseMode": "standard",
+          "parserEngine": "anydoc",
+          "enrichmentEnabled": false,
+          "documentAI": {
+            "visionPromptVersion": "vision-v3",
+            "enrichmentPromptVersion": "enrichment-v1"
+          },
+          "embedding": {
+            "contractFingerprint": "54874b26d11710a01c4bcbd46cc45a03d2bef42c43932c43293e1dc5d95a7d09",
+            "model": "qwen3-embedding",
+            "dims": 1024
+          }
+        },
+        "runtime": {
+          "version": 1,
+          "topN": 5,
+          "candidateTopK": 20,
+          "minScore": 0.5,
+          "temperature": 0.2,
+          "maxTokens": 4096,
+          "ragPromptBundleVersion": "rag-answer-v1"
+        },
+        "rewriteEnabled": false,
+        "hydeEnabled": false,
+        "rerankerEnabled": false,
+        "rerankerModel": "qwen3-reranker",
+        "rerankerTimeoutMs": 180000,
+        "rerankerFailurePolicy": "fail_closed",
+        "answerModel": "opencode-go/deepseek-v4-flash"
+      },
+      "caseCount": 50,
+      "documentCount": 200,
+      "status": "SUCCEEDED",
+      "caseStatuses": {
+        "ok": 50
+      },
+      "stagesMs": {
+        "plannerDurationMs": {
+          "n": 50,
+          "mean": 0,
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "rerankerDurationMs": {
+          "n": 50,
+          "mean": 0,
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "retrievalDurationMs": {
+          "n": 50,
+          "mean": 173.48,
+          "p50": 193.0,
+          "p95": 243.39999999999998
+        },
+        "hydrationDurationMs": {
+          "n": 50,
+          "mean": 2,
+          "p50": 2.0,
+          "p95": 3.549999999999997
+        },
+        "durationMs": {
+          "n": 50,
+          "mean": 176.12,
+          "p50": 195.0,
+          "p95": 245.95
+        },
+        "caseLatencyMs": {
+          "n": 50,
+          "mean": 9468.6,
+          "p50": 8154.5,
+          "p95": 18058.149999999994
+        }
+      },
+      "traceCoverage": 50,
+      "plannerFallbackCases": 0,
+      "rerankerSucceededCases": 0,
+      "emptyContextCases": 0,
+      "caseLabels": {
+        "history": 0,
+        "expectedAbstention": 0,
+        "chunkGold": 0
+      },
+      "savedTopNFilter": {
+        "ranked": 0,
+        "removed": 0,
+        "affectedCases": 0,
+        "removedFromGoldDocuments": 0,
+        "removedFromOtherDocuments": 0,
+        "removedWithoutLabels": 0
+      },
+      "metrics": {
+        "abstention_accuracy": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "citation_coverage": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.5974139194139194,
+          "p50": 0.5166666666666666,
+          "p95": 1.0
+        },
+        "citation_precision": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "context_precision": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.7831944444028484,
+          "p50": 0.94999999997625,
+          "p95": 0.999999999975
+        },
+        "context_recall": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.85,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_hit_at_k": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_mrr": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.9733333333333334,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_ndcg": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.98,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "doc_recall_at_k": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 1.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "factual_correctness": {
+          "count": 50,
+          "statuses": {
+            "error": 3,
+            "ok": 47
+          },
+          "n": 47,
+          "mean": 0.2751063829787234,
+          "p50": 0.2,
+          "p95": 0.67
+        },
+        "faithfulness": {
+          "count": 50,
+          "statuses": {
+            "ok": 45,
+            "error": 5
+          },
+          "n": 45,
+          "mean": 0.8988549721883056,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "response_relevancy": {
+          "count": 50,
+          "statuses": {
+            "ok": 50
+          },
+          "n": 50,
+          "mean": 0.8091964859955871,
+          "p50": 0.8685029631838443,
+          "p95": 0.9785330504578147
+        }
+      },
+      "successfulCaseLatencyMs": {
+        "n": 50,
+        "mean": 9468.6,
+        "p50": 8154.5,
+        "p95": 18058.149999999994
+      },
+      "metricErrors": {
+        "missing_tool_calls": 7,
+        "timeout": 1
+      }
+    }
+  },
+  "comparisons": {
+    "B-A": {
+      "abstention_accuracy": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 50
+      },
+      "citation_coverage": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.6292152958152958,
+        "candidateMean": 0.5814700577200577,
+        "delta": -0.047745238095238104,
+        "ci95": [
+          -0.1293098066899087,
+          0.03374722861050981
+        ],
+        "higher": 16,
+        "lower": 29,
+        "equal": 5
+      },
+      "citation_precision": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.991,
+        "candidateMean": 0.9914285714285714,
+        "delta": 0.00042857142857142703,
+        "ci95": [
+          -0.013556851311953359,
+          0.015
+        ],
+        "higher": 1,
+        "lower": 1,
+        "equal": 48
+      },
+      "context_precision": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.9029999999545444,
+        "candidateMean": 0.8918888888411148,
+        "delta": -0.011111111113429628,
+        "ci95": [
+          -0.03935338050519357,
+          0.015079365075522301
+        ],
+        "higher": 6,
+        "lower": 7,
+        "equal": 37
+      },
+      "context_recall": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.87,
+        "candidateMean": 0.9,
+        "delta": 0.03,
+        "ci95": [
+          -0.010416666666666666,
+          0.08333333333333333
+        ],
+        "higher": 3,
+        "lower": 1,
+        "equal": 46
+      },
+      "doc_hit_at_k": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 50
+      },
+      "doc_mrr": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 50
+      },
+      "doc_ndcg": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 50
+      },
+      "doc_recall_at_k": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 50
+      },
+      "factual_correctness": {
+        "n": 45,
+        "referenceDocumentGroups": 45,
+        "baseMean": 0.266,
+        "candidateMean": 0.25622222222222224,
+        "delta": -0.00977777777777778,
+        "ci95": [
+          -0.07777777777777778,
+          0.0642277777777777
+        ],
+        "higher": 9,
+        "lower": 15,
+        "equal": 21
+      },
+      "faithfulness": {
+        "n": 40,
+        "referenceDocumentGroups": 39,
+        "baseMean": 0.9297619047619048,
+        "candidateMean": 0.9169342463092464,
+        "delta": -0.012827658452658448,
+        "ci95": [
+          -0.09784304370842832,
+          0.06342682780182779
+        ],
+        "higher": 9,
+        "lower": 11,
+        "equal": 20
+      },
+      "response_relevancy": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.8416054869537792,
+        "candidateMean": 0.8391686529147068,
+        "delta": -0.002436834039072435,
+        "ci95": [
+          -0.05252599822039011,
+          0.049208611889782
+        ],
+        "higher": 24,
+        "lower": 25,
+        "equal": 1
+      },
+      "plannerDurationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 7431.16,
+        "candidateMean": 0,
+        "delta": -7431.16,
+        "ci95": [
+          -8465.574457908164,
+          -6495.006708333333
+        ],
+        "higher": 0,
+        "lower": 50,
+        "equal": 0
+      },
+      "rerankerDurationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 46990.74,
+        "candidateMean": 46451,
+        "delta": -539.74,
+        "ci95": [
+          -5826.928146258503,
+          4408.5031874999995
+        ],
+        "higher": 22,
+        "lower": 28,
+        "equal": 0
+      },
+      "durationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 54912.56,
+        "candidateMean": 46628.82,
+        "delta": -8283.74,
+        "ci95": [
+          -13592.017010204083,
+          -3013.6896428571426
+        ],
+        "higher": 10,
+        "lower": 40,
+        "equal": 0
+      },
+      "successfulCaseLatencyMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 65362,
+        "candidateMean": 55803.1,
+        "delta": -9558.9,
+        "ci95": [
+          -15276.6355,
+          -3996.0156836734714
+        ],
+        "higher": 13,
+        "lower": 37,
+        "equal": 0
+      }
+    },
+    "C-A": {
+      "abstention_accuracy": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 49
+      },
+      "citation_coverage": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 0.6284509821244515,
+        "candidateMean": 0.6040885322003032,
+        "delta": -0.024362449924148297,
+        "ci95": [
+          -0.11054070268491781,
+          0.06115209712464007
+        ],
+        "higher": 18,
+        "lower": 22,
+        "equal": 9
+      },
+      "citation_precision": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 0.9908163265306122,
+        "candidateMean": 0.9959183673469387,
+        "delta": 0.00510204081632653,
+        "ci95": [
+          -0.008333333333333331,
+          0.020833333333333332
+        ],
+        "higher": 2,
+        "lower": 1,
+        "equal": 46
+      },
+      "context_precision": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 0.9010204081189229,
+        "candidateMean": 0.7925736961037099,
+        "delta": -0.10844671201521305,
+        "ci95": [
+          -0.1829790852420407,
+          -0.038803087209935465
+        ],
+        "higher": 9,
+        "lower": 24,
+        "equal": 16
+      },
+      "context_recall": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 0.8673469387755102,
+        "candidateMean": 0.9081632653061225,
+        "delta": 0.04081632653061224,
+        "ci95": [
+          -0.030612244897959183,
+          0.11702127659574468
+        ],
+        "higher": 4,
+        "lower": 1,
+        "equal": 44
+      },
+      "doc_hit_at_k": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 49
+      },
+      "doc_mrr": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 1.0,
+        "candidateMean": 0.9897959183673469,
+        "delta": -0.01020408163265306,
+        "ci95": [
+          -0.031914893617021274,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 1,
+        "equal": 48
+      },
+      "doc_ndcg": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 1.0,
+        "candidateMean": 0.9924679541545195,
+        "delta": -0.007532045845480461,
+        "ci95": [
+          -0.023557675303949525,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 1,
+        "equal": 48
+      },
+      "doc_recall_at_k": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 49
+      },
+      "factual_correctness": {
+        "n": 45,
+        "referenceDocumentGroups": 44,
+        "baseMean": 0.28444444444444444,
+        "candidateMean": 0.28044444444444444,
+        "delta": -0.003999999999999998,
+        "ci95": [
+          -0.09045984848484849,
+          0.08022234848484848
+        ],
+        "higher": 17,
+        "lower": 17,
+        "equal": 11
+      },
+      "faithfulness": {
+        "n": 40,
+        "referenceDocumentGroups": 39,
+        "baseMean": 0.9186507936507936,
+        "candidateMean": 0.9051785714285714,
+        "delta": -0.013472222222222215,
+        "ci95": [
+          -0.08612152777777776,
+          0.05413864087301587
+        ],
+        "higher": 10,
+        "lower": 9,
+        "equal": 21
+      },
+      "response_relevancy": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 0.8408618476602874,
+        "candidateMean": 0.8371885511862134,
+        "delta": -0.003673296474073961,
+        "ci95": [
+          -0.06090697114370125,
+          0.052687520010720995
+        ],
+        "higher": 24,
+        "lower": 25,
+        "equal": 0
+      },
+      "plannerDurationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 7431.16,
+        "candidateMean": 6485.3,
+        "delta": -945.86,
+        "ci95": [
+          -2163.8964375,
+          260.04722448979464
+        ],
+        "higher": 16,
+        "lower": 34,
+        "equal": 0
+      },
+      "rerankerDurationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 46990.74,
+        "candidateMean": 0,
+        "delta": -46990.74,
+        "ci95": [
+          -52671.26658163265,
+          -41202.80663265307
+        ],
+        "higher": 0,
+        "lower": 50,
+        "equal": 0
+      },
+      "durationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 54912.56,
+        "candidateMean": 6857.38,
+        "delta": -48055.18,
+        "ci95": [
+          -54120.96341176471,
+          -41920.587775510205
+        ],
+        "higher": 0,
+        "lower": 50,
+        "equal": 0
+      },
+      "successfulCaseLatencyMs": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 64746.06122448979,
+        "candidateMean": 16526.26530612245,
+        "delta": -48219.795918367345,
+        "ci95": [
+          -54688.452,
+          -41457.8234375
+        ],
+        "higher": 1,
+        "lower": 48,
+        "equal": 0
+      }
+    },
+    "D-A": {
+      "abstention_accuracy": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 50
+      },
+      "citation_coverage": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.6292152958152958,
+        "candidateMean": 0.5974139194139194,
+        "delta": -0.031801376401376404,
+        "ci95": [
+          -0.12361283358798064,
+          0.058018651133447036
+        ],
+        "higher": 24,
+        "lower": 19,
+        "equal": 7
+      },
+      "citation_precision": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.991,
+        "candidateMean": 1.0,
+        "delta": 0.009,
+        "ci95": [
+          0.0,
+          0.023
+        ],
+        "higher": 2,
+        "lower": 0,
+        "equal": 48
+      },
+      "context_precision": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.9029999999545444,
+        "candidateMean": 0.7831944444028484,
+        "delta": -0.11980555555169606,
+        "ci95": [
+          -0.2062507233748993,
+          -0.04275599128291585
+        ],
+        "higher": 10,
+        "lower": 23,
+        "equal": 17
+      },
+      "context_recall": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.87,
+        "candidateMean": 0.85,
+        "delta": -0.02,
+        "ci95": [
+          -0.12,
+          0.0784313725490196
+        ],
+        "higher": 4,
+        "lower": 4,
+        "equal": 42
+      },
+      "doc_hit_at_k": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 50
+      },
+      "doc_mrr": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 0.9733333333333334,
+        "delta": -0.02666666666666667,
+        "ci95": [
+          -0.06802721088435375,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 2,
+        "equal": 48
+      },
+      "doc_ndcg": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 0.98,
+        "delta": -0.02,
+        "ci95": [
+          -0.05102040816326531,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 2,
+        "equal": 48
+      },
+      "doc_recall_at_k": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 50
+      },
+      "factual_correctness": {
+        "n": 44,
+        "referenceDocumentGroups": 43,
+        "baseMean": 0.2656818181818182,
+        "candidateMean": 0.28250000000000003,
+        "delta": 0.01681818181818182,
+        "ci95": [
+          -0.06255813953488372,
+          0.0922740486257928
+        ],
+        "higher": 17,
+        "lower": 11,
+        "equal": 16
+      },
+      "faithfulness": {
+        "n": 39,
+        "referenceDocumentGroups": 38,
+        "baseMean": 0.9165649165649166,
+        "candidateMean": 0.901303966688582,
+        "delta": -0.015260949876334492,
+        "ci95": [
+          -0.06538461538461539,
+          0.03521512113617376
+        ],
+        "higher": 8,
+        "lower": 12,
+        "equal": 19
+      },
+      "response_relevancy": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.8416054869537792,
+        "candidateMean": 0.8091964859955871,
+        "delta": -0.032409000958192075,
+        "ci95": [
+          -0.108625228150084,
+          0.034325291611960324
+        ],
+        "higher": 25,
+        "lower": 25,
+        "equal": 0
+      },
+      "plannerDurationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 7431.16,
+        "candidateMean": 0,
+        "delta": -7431.16,
+        "ci95": [
+          -8443.905432172869,
+          -6484.763039638932
+        ],
+        "higher": 0,
+        "lower": 50,
+        "equal": 0
+      },
+      "rerankerDurationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 46990.74,
+        "candidateMean": 0,
+        "delta": -46990.74,
+        "ci95": [
+          -52642.433249999995,
+          -41502.79895833334
+        ],
+        "higher": 0,
+        "lower": 50,
+        "equal": 0
+      },
+      "durationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 54912.56,
+        "candidateMean": 176.12,
+        "delta": -54736.44,
+        "ci95": [
+          -60886.38828846154,
+          -48570.40716911765
+        ],
+        "higher": 0,
+        "lower": 50,
+        "equal": 0
+      },
+      "successfulCaseLatencyMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 65362,
+        "candidateMean": 9468.6,
+        "delta": -55893.4,
+        "ci95": [
+          -61878.271721813726,
+          -49918.39801923077
+        ],
+        "higher": 0,
+        "lower": 50,
+        "equal": 0
+      }
+    },
+    "D-B": {
+      "abstention_accuracy": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 50
+      },
+      "citation_coverage": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.5814700577200577,
+        "candidateMean": 0.5974139194139194,
+        "delta": 0.0159438616938617,
+        "ci95": [
+          -0.060692624071530296,
+          0.09537496235312858
+        ],
+        "higher": 21,
+        "lower": 21,
+        "equal": 8
+      },
+      "citation_precision": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.9914285714285714,
+        "candidateMean": 1.0,
+        "delta": 0.008571428571428572,
+        "ci95": [
+          0.0,
+          0.026785714285714288
+        ],
+        "higher": 1,
+        "lower": 0,
+        "equal": 49
+      },
+      "context_precision": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.8918888888411148,
+        "candidateMean": 0.7831944444028484,
+        "delta": -0.10869444443826644,
+        "ci95": [
+          -0.19466775597614366,
+          -0.02788402777348316
+        ],
+        "higher": 10,
+        "lower": 22,
+        "equal": 18
+      },
+      "context_recall": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.9,
+        "candidateMean": 0.85,
+        "delta": -0.05,
+        "ci95": [
+          -0.14583333333333334,
+          0.04
+        ],
+        "higher": 3,
+        "lower": 5,
+        "equal": 42
+      },
+      "doc_hit_at_k": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 50
+      },
+      "doc_mrr": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 0.9733333333333334,
+        "delta": -0.02666666666666667,
+        "ci95": [
+          -0.06802721088435375,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 2,
+        "equal": 48
+      },
+      "doc_ndcg": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 0.98,
+        "delta": -0.02,
+        "ci95": [
+          -0.05102040816326531,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 2,
+        "equal": 48
+      },
+      "doc_recall_at_k": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 50
+      },
+      "factual_correctness": {
+        "n": 45,
+        "referenceDocumentGroups": 44,
+        "baseMean": 0.25133333333333335,
+        "candidateMean": 0.26555555555555554,
+        "delta": 0.014222222222222223,
+        "ci95": [
+          -0.07522727272727273,
+          0.10318379446640313
+        ],
+        "higher": 18,
+        "lower": 11,
+        "equal": 16
+      },
+      "faithfulness": {
+        "n": 42,
+        "referenceDocumentGroups": 41,
+        "baseMean": 0.920336048533723,
+        "candidateMean": 0.9007006221291936,
+        "delta": -0.019635426404529397,
+        "ci95": [
+          -0.08596435124367931,
+          0.05267390255018698
+        ],
+        "higher": 11,
+        "lower": 15,
+        "equal": 16
+      },
+      "response_relevancy": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0.8391686529147068,
+        "candidateMean": 0.8091964859955871,
+        "delta": -0.029972166919119636,
+        "ci95": [
+          -0.11237128521376072,
+          0.03918138005856866
+        ],
+        "higher": 26,
+        "lower": 24,
+        "equal": 0
+      },
+      "plannerDurationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0,
+        "candidateMean": 0,
+        "delta": 0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 50
+      },
+      "rerankerDurationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 46451,
+        "candidateMean": 0,
+        "delta": -46451,
+        "ci95": [
+          -52255.39327168368,
+          -40752.934
+        ],
+        "higher": 0,
+        "lower": 50,
+        "equal": 0
+      },
+      "durationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 46628.82,
+        "candidateMean": 176.12,
+        "delta": -46452.7,
+        "ci95": [
+          -52364.39007142858,
+          -40573.623250000004
+        ],
+        "higher": 0,
+        "lower": 50,
+        "equal": 0
+      },
+      "successfulCaseLatencyMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 55803.1,
+        "candidateMean": 9468.6,
+        "delta": -46334.5,
+        "ci95": [
+          -52277.74920588235,
+          -40506.61456582633
+        ],
+        "higher": 0,
+        "lower": 50,
+        "equal": 0
+      }
+    },
+    "D-C": {
+      "abstention_accuracy": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 49
+      },
+      "citation_coverage": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 0.6040885322003032,
+        "candidateMean": 0.6045039994019585,
+        "delta": 0.00041546720165536855,
+        "ci95": [
+          -0.08679722275534227,
+          0.08919209418217981
+        ],
+        "higher": 20,
+        "lower": 20,
+        "equal": 9
+      },
+      "citation_precision": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 0.9959183673469387,
+        "candidateMean": 1.0,
+        "delta": 0.004081632653061224,
+        "ci95": [
+          0.0,
+          0.012765957446808508
+        ],
+        "higher": 1,
+        "lower": 0,
+        "equal": 48
+      },
+      "context_precision": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 0.7925736961037099,
+        "candidateMean": 0.7787698412294372,
+        "delta": -0.01380385487427272,
+        "ci95": [
+          -0.0597505970396236,
+          0.032341476523654974
+        ],
+        "higher": 15,
+        "lower": 14,
+        "equal": 20
+      },
+      "context_recall": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 0.9081632653061225,
+        "candidateMean": 0.8469387755102041,
+        "delta": -0.061224489795918366,
+        "ci95": [
+          -0.13725490196078433,
+          0.0
+        ],
+        "higher": 1,
+        "lower": 4,
+        "equal": 44
+      },
+      "doc_hit_at_k": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 49
+      },
+      "doc_mrr": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 0.9897959183673469,
+        "candidateMean": 0.9727891156462585,
+        "delta": -0.017006802721088437,
+        "ci95": [
+          -0.04861111111111111,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 2,
+        "equal": 47
+      },
+      "doc_ndcg": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 0.9924679541545195,
+        "candidateMean": 0.9795918367346939,
+        "delta": -0.012876117419825662,
+        "ci95": [
+          -0.036705406398810723,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 2,
+        "equal": 47
+      },
+      "doc_recall_at_k": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 1.0,
+        "candidateMean": 1.0,
+        "delta": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 49
+      },
+      "factual_correctness": {
+        "n": 44,
+        "referenceDocumentGroups": 43,
+        "baseMean": 0.2927272727272727,
+        "candidateMean": 0.29,
+        "delta": -0.0027272727272727323,
+        "ci95": [
+          -0.06750436046511628,
+          0.060227272727272727
+        ],
+        "higher": 14,
+        "lower": 13,
+        "equal": 17
+      },
+      "faithfulness": {
+        "n": 43,
+        "referenceDocumentGroups": 42,
+        "baseMean": 0.9077565522332964,
+        "candidateMean": 0.8952579720021581,
+        "delta": -0.012498580231138378,
+        "ci95": [
+          -0.06846140495486427,
+          0.04484853316326528
+        ],
+        "higher": 12,
+        "lower": 13,
+        "equal": 18
+      },
+      "response_relevancy": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 0.8371885511862134,
+        "candidateMean": 0.8067513220929757,
+        "delta": -0.030437229093237685,
+        "ci95": [
+          -0.08348409606362629,
+          0.011225184849863968
+        ],
+        "higher": 24,
+        "lower": 24,
+        "equal": 1
+      },
+      "plannerDurationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 6485.3,
+        "candidateMean": 0,
+        "delta": -6485.3,
+        "ci95": [
+          -7067.885204081632,
+          -5935.460572562358
+        ],
+        "higher": 0,
+        "lower": 50,
+        "equal": 0
+      },
+      "rerankerDurationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 0,
+        "candidateMean": 0,
+        "delta": 0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "higher": 0,
+        "lower": 0,
+        "equal": 50
+      },
+      "durationMs": {
+        "n": 50,
+        "referenceDocumentGroups": 48,
+        "baseMean": 6857.38,
+        "candidateMean": 176.12,
+        "delta": -6681.26,
+        "ci95": [
+          -7234.791326530612,
+          -6133.497303921568
+        ],
+        "higher": 0,
+        "lower": 50,
+        "equal": 0
+      },
+      "successfulCaseLatencyMs": {
+        "n": 49,
+        "referenceDocumentGroups": 47,
+        "baseMean": 16526.26530612245,
+        "candidateMean": 8894.489795918367,
+        "delta": -7631.775510204082,
+        "ci95": [
+          -9731.315104166668,
+          -5849.557274509804
+        ],
+        "higher": 5,
+        "lower": 44,
+        "equal": 0
+      }
+    }
+  }
+}
