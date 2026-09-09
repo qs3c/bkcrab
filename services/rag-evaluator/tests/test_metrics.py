@@ -61,6 +61,25 @@ def test_metric_timeout_is_local_to_one_metric():
     assert result.reason == "metric timeout"
 
 
+@pytest.mark.parametrize("message", ["错误信息" * 1000, "𝛼≤β " * 1000, "x" * 2047 + "错"])
+@pytest.mark.parametrize("limit", [0, 1, 80, 2048, 4096])
+def test_non_ascii_metric_errors_fit_consumer_byte_limit(message, limit):
+    async def score(metric, _sample):
+        if metric == "faithfulness":
+            raise RuntimeError(message)
+        return 0.75
+
+    engine = MetricEngine(score, reason_limit=limit)
+    failed = asyncio.run(engine.evaluate("faithfulness", sample()))
+    passed = asyncio.run(engine.evaluate("response_relevancy", sample()))
+    assert failed.status == "error"
+    assert len(failed.reason.encode("utf-8")) <= min(limit, 2048)
+    assert " ".join(message.split()).startswith(failed.reason)
+    assert "\ufffd" not in failed.reason
+    assert passed.status == "ok"
+    assert passed.value == 0.75
+
+
 def test_context_prompt_injection_is_wrapped_as_untrusted_data():
     captured = []
 

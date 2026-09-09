@@ -156,6 +156,38 @@ A 已于 2026-09-08 17:10:08 UTC 结束（本机时间 9 月 8 日 12:10:08）�
 
 ## 本地材料
 
+### 2026-09-09 13:14 UTC 实际完成情况与 A 组补评分
+
+持久队列已执行完四组的检索和回答。四组均实际复用同一 generation，开关与预设一致。
+
+| 组 | 平台状态 | 回答成功 | 五项 LLM 指标已处理题数 | 完成时间 UTC |
+| --- | --- | ---: | ---: | --- |
+| A 全开 | BUDGET_EXCEEDED | 50/50 | 2/50 | 10:54:06 |
+| B 关闭 Planner | SUCCEEDED | 50/50 | 50/50 | 06:31:29 |
+| C 关闭 Reranker | SUCCEEDED | 49/50 | 49/49 | 07:12:55 |
+| D 两者关闭 | SUCCEEDED | 50/50 | 50/50 | 07:54:06 |
+
+C 有 1 题 `empty_response`。B/C/D 的“已处理”包含单指标错误，不等于每项有效评分均齐全：Faithfulness 有效数为 46/48/45，Factual Correctness 为 48/47/47。错误不能计作零分。A 的 50 份原始回答、检索 trace 和每题 7 项确定性指标均已持久化；最后进度显示 0 是租约恢复时重置展示进度，不能据此判定结果丢失。
+
+A 卡住的直接日志是 `metric "factual_correctness": metric reason exceeds byte limit`。评分服务 `_safe_reason` 按 Python 字符数截断至 2048，而 Go 消费方限制 UTF-8 字节数为 2048；多字节错误文字使整个评分批次无法入库。主服务将该响应校验错误当作可恢复错误，反复获取同一幂等缓存结果，最后触发原运行的 6 小时时长上限。此时不是 provider 的 MissingSessionID 再次发生。
+
+修复将错误信息按 UTF-8 字节截断并丢弃末尾不完整码点，保持评分算法、模型与输出预算不变。完整评分服务回归 **50 passed, 1 gated real-provider smoke skipped**。修复镜像 `bkcrab/rag-evaluator:reason-byte-fix` 已部署到现用 `0.1.0` 标签；旧镜像保留为 `before-reason-byte-20260909`。主服务未重启。
+
+为避免重新生成答案，启动 `scripts/rag-ablation/supplement_public_a.py`：只读投影指定公开 Open RAGBench/arxiv 版本和 A 组保存的回答、contexts、reference，只补缺失的 48 题。沿用原本机内部 judge、8192 输出预算和 Ragas 0.3.9，每次一题、最多 200 万 tokens / 3 小时；结果逐题 fsync 到 `.tmp/rag-ablation-20260908/a-supplement.jsonl`，可续跑且不重复已记录题目（包括单指标错误）。**补评分独立于平台运行记录，未修改数据库或把 A 标成成功。** 主服务的协议错误重试策略尚未修改，未来应单独完善错误分类与进度恢复。
+
+补评分完成后需将原 A 的 2 题 LLM 分数与补充记录合并，再按 case ID 对四组做有效交集的配对比较，注明有效分母、失败率和置信区间。当前尚不能提供完整 A 对照下的质量结论。
+
+检索计时已齐全，以下每组均为同 50 题的实际 trace；检索耗时不含回答和 judge：
+
+| 组 | Planner 均值（秒） | Reranker 均值（秒） | 检索均值（秒） | 检索 P95（秒） |
+| --- | ---: | ---: | ---: | ---: |
+| A 全开 | 7.43 | 46.99 | 54.91 | 92.63 |
+| B 关闭 Planner | 0 | 46.45 | 46.63 | 80.84 |
+| C 关闭 Reranker | 6.49 | 0 | 6.86 | 10.18 |
+| D 两者关闭 | 0 | 0 | 0.18 | 0.25 |
+
+计时支持 Reranker 是主要延迟来源；是否值得该成本仍需完成质量比较。A/C 的 Planner 回退分别为 13/50 和 16/50，不能把开启 Planner 等同于每题改写/HyDE 都成功。
+
 - 只读投影导出：`.tmp/rag-ablation-20260908/baseline.jsonl`。
 - 聚合结果：`.tmp/rag-ablation-20260908/summary.json`。
 - 取消状态与错误记录：`.tmp/rag-ablation-20260908/failure.jsonl`。

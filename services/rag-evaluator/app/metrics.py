@@ -48,7 +48,9 @@ def missing_input(metric: str, sample: Sample) -> str | None:
 
 def _safe_reason(value: object, limit: int) -> str:
     text = " ".join(str(value).split())
-    return text[: max(0, min(limit, 2048))]
+    # The Go consumer caps UTF-8 bytes, not Python characters. Do not split a
+    # multibyte code point or let one long exception invalidate sibling scores.
+    return text.encode("utf-8")[: max(0, min(limit, 2048))].decode("utf-8", errors="ignore")
 
 
 def _protect_contexts(sample: Sample) -> Sample:
