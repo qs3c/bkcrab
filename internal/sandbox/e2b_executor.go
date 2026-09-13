@@ -188,15 +188,16 @@ func (e *E2BExecutor) Hydrate(ctx context.Context) error {
 			continue
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() {
+			name := entry.Name()
+			root, ok := skillDirectory(dir, name)
+			if !ok {
 				continue
 			}
-			name := entry.Name()
 			if seen[name] {
 				continue
 			}
 			seen[name] = true
-			n, err := bundle.addLocalDir(filepath.Join(dir, name), "skills/"+name)
+			n, err := bundle.addLocalDir(root, "skills/"+name)
 			if err != nil {
 				slog.Warn("e2b hydrate: skill tar", "skill", name, "error", err)
 				continue
@@ -341,6 +342,11 @@ func (b *tarBundle) addBytes(name string, data []byte, mode int64, modTime time.
 // 根目录为 sandboxPrefix。符号链接/套接字等被跳过——
 // 技能包应该是普通文件。
 func (b *tarBundle) addLocalDir(localRoot, sandboxPrefix string) (int, error) {
+	resolved, resolveErr := filepath.EvalSymlinks(localRoot)
+	if resolveErr != nil {
+		return 0, resolveErr
+	}
+	localRoot = resolved
 	count := 0
 	err := filepath.Walk(localRoot, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -834,13 +840,22 @@ func (p *E2BExecutorPool) Get(ctx context.Context, agentID, projectID, sessionID
 	defer p.mu.Unlock()
 	key := poolKey(agentID, projectID, sessionID)
 	if ex, ok := p.executors[key]; ok {
-		return ex, nil
+		if !skillViewChanged(ctx, ex.skillDirs) {
+			return ex, nil
+		}
+		if err := preserveSkillSwitchWorkspace(ctx, ex, p.workspace, agentID, projectID, sessionID); err != nil {
+			return nil, err
+		}
+		if err := ex.Close(); err != nil {
+			return nil, err
+		}
+		delete(p.executors, key)
 	}
 	ex, err := newE2BExecutor(ctx, p.apiKey, p.template, p.timeout)
 	if err != nil {
 		return nil, err
 	}
-	ex.SetHydrationSources(skillDirsForAgent(p.home, agentID), p.workspace, agentID, projectID, sessionID)
+	ex.SetHydrationSources(requestedSkillDirs(ctx, skillDirsForAgent(p.home, agentID)), p.workspace, agentID, projectID, sessionID)
 	if err := ex.Hydrate(ctx); err != nil {
 		// Hydrate 是将 /workspace 的拥有者更改为 exec 运行所基于的
 		// 非 root `user` 账户的步骤；没有它，代理对 /workspace 的每次写入

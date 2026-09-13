@@ -68,6 +68,9 @@ func makeLoadSkill(skillDirs []string, recorder skillLoadRecorder, agentID strin
 			data, err := os.ReadFile(skillPath)
 			if err == nil {
 				skillDir, _ := filepath.Abs(filepath.Join(dir, args.Name))
+				if resolved, err := filepath.EvalSymlinks(skillDir); err == nil {
+					skillDir = resolved
+				}
 				rawContent := string(data)
 				content := strings.ReplaceAll(rawContent, "{baseDir}", skillDir)
 				recordSkillLoad(ctx, recorder, agentID, args.Name, store.HashSkillContent(rawContent), args.InvokedByUser, halfLifeLoads, explicitGain)

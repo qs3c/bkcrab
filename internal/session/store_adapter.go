@@ -24,9 +24,22 @@ func NewStoreAdapter(st store.Store, userID string) *StoreAdapter {
 }
 
 func (a *StoreAdapter) GetSession(ctx context.Context, agentID, sessionKey string) ([]provider.Message, error) {
+	msgs, _, err := a.GetSessionVersion(ctx, agentID, sessionKey)
+	return msgs, err
+}
+func (a *StoreAdapter) GetSessionVersion(ctx context.Context, agentID, sessionKey string) ([]provider.Message, int64, error) {
+
 	rec, err := a.st.GetSession(ctx, a.userID, agentID, sessionKey)
 	if err != nil || rec == nil {
-		return nil, err
+		if errors.Is(err, store.ErrNotFound) {
+			if source, ok := a.st.(interface {
+				SessionRevision(context.Context, string, string, string) (int64, error)
+			}); ok {
+				revision, e := source.SessionRevision(ctx, a.userID, agentID, sessionKey)
+				return nil, revision, e
+			}
+		}
+		return nil, 0, err
 	}
 	msgs := make([]provider.Message, len(rec.Messages))
 	for i, m := range rec.Messages {
@@ -39,6 +52,7 @@ func (a *StoreAdapter) GetSession(ctx context.Context, agentID, sessionKey strin
 			Thinking:     m.Thinking,
 			RawAssistant: m.RawAssistant,
 			Origin:       m.Origin,
+			Timestamp:    m.Timestamp.UnixMilli(),
 		}
 		// ToolCalls / ContentParts 以 interface{} 存储，因此
 		// JSON 往返后会变成 []interface{} / map 嵌套。
@@ -62,10 +76,18 @@ func (a *StoreAdapter) GetSession(ctx context.Context, agentID, sessionKey strin
 			}
 		}
 	}
-	return msgs, nil
+	return msgs, rec.Revision, nil
 }
 
 func (a *StoreAdapter) SaveSession(ctx context.Context, agentID, sessionKey, channel, accountID, chatID, projectID string, messages []provider.Message) error {
+	_, err := a.saveSessionVersion(ctx, agentID, sessionKey, channel, accountID, chatID, projectID, messages)
+	return err
+}
+func (a *StoreAdapter) SaveSessionVersion(ctx context.Context, agentID, sessionKey, channel, accountID, chatID, projectID string, messages []provider.Message, revision int64) (int64, error) {
+	return a.saveSessionVersion(store.WithExpectedSessionRevision(ctx, revision), agentID, sessionKey, channel, accountID, chatID, projectID, messages)
+}
+func (a *StoreAdapter) saveSessionVersion(ctx context.Context, agentID, sessionKey, channel, accountID, chatID, projectID string, messages []provider.Message) (int64, error) {
+
 	rec := &store.SessionRecord{
 		Channel:   channel,
 		AccountID: accountID,
@@ -77,7 +99,8 @@ func (a *StoreAdapter) SaveSession(ctx context.Context, agentID, sessionKey, cha
 	for i, m := range messages {
 		rec.Messages[i] = sessionMessageFromProvider(m)
 	}
-	return a.st.SaveSession(ctx, a.userID, agentID, sessionKey, rec)
+	err := a.st.SaveSession(ctx, a.userID, agentID, sessionKey, rec)
+	return rec.Revision, err
 }
 
 // ResolveActiveSessionKey 转发到存储层。session.Manager 使用它

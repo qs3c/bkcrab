@@ -1955,6 +1955,9 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 	// 历史就像他们在非计划转弯时一样。
 	userMsg := buildUserMessage(msg)
 	sess.Append(userMsg)
+	if err := sess.PersistenceError(); err != nil {
+		return a.persistenceFailure(ctx, err)
+	}
 
 	if a.provider == nil {
 		noProviderMsg := "Agent is not configured with a usable LLM provider. Check that cfg.Providers contains the prefix referenced by model `" + a.model + "`."
@@ -1984,6 +1987,9 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 	}
 	messages = append(messages, sess.GetMessages()...)
 	messages = a.appendSteer(ctx, sess, messages, a.drainTurnSteer(ctx, false))
+	if err := sess.PersistenceError(); err != nil {
+		return a.persistenceFailure(ctx, err)
+	}
 	if a.piiScrubEnabled {
 		messages = privacy.ScrubMessages(messages)
 	}
@@ -2007,6 +2013,9 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 		Timestamp:    time.Now().UnixMilli(),
 		RawAssistant: resp.RawAssistant,
 	})
+	if err := sess.PersistenceError(); err != nil {
+		return a.persistenceFailure(ctx, err)
+	}
 	emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{
 		"content":  resp.Content,
 		"metadata": planMeta,
@@ -2019,6 +2028,7 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 // 保存到会话中，添加到实时 LLM 消息片中，并且
 // 作为“转向”事件回显，因此 Web UI 将其呈现为用户气泡
 // （坚持 → 后期加入回填 + seq-dedup 免费工作）。
+
 func (a *Agent) appendSteer(ctx context.Context, sess *session.Session, messages []provider.Message, steer []provider.Message) []provider.Message {
 	for _, sm := range steer {
 		sess.Append(sm)
@@ -2103,6 +2113,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	slog.Info("turn: refreshing skills",
 		"agent", a.name, "channel", msg.Channel, "chat_id", msg.ChatID, "user", chatterUID)
 	skillDirs, skillsSummary := a.refreshSkillsFromStore(chatterUID)
+	if _, published := a.workspaceStore.(interface{ FrozenSkillDirs([]string) []string }); published {
+		ctx = sandbox.WithSkillDirs(ctx, skillDirs)
+	}
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
 	// 将chatter 绑定到sess 上。 Session.ctx() 构建自己的
 	// context.Background-rooted ctx 用于存储调用，因此
@@ -2149,8 +2162,8 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 挂钩：BeforeSystemPrompt
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeSystemPrompt, UserID: a.ownerUserID})
 
-	chatterMem := a.memory.WithUserID(chatterUID)
-	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, skillsSummary)
+	promptBuilder, chatterMem := a.promptInputs(chatterUID)
+	systemPrompt := promptBuilder.BuildSystemPromptAs(chatterUID, chatterMem, skillsSummary)
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 
 	// 挂钩：AfterSystemPrompt
@@ -2222,7 +2235,13 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 
 	// 反应循环
 	for i := 0; i < a.maxToolIterations; i++ {
+		if err := sess.PersistenceError(); err != nil {
+			return a.persistenceFailure(ctx, err)
+		}
 		messages = a.appendSteer(ctx, sess, messages, a.drainTurnSteer(ctx, false))
+		if err := sess.PersistenceError(); err != nil {
+			return a.persistenceFailure(ctx, err)
+		}
 		slog.Info("agent loop iteration",
 			"agent", a.name,
 			"iteration", i+1,
@@ -2308,6 +2327,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			asst.Metadata = ragResources.merge(asst.Metadata)
 			asst.Metadata = imageArtifacts.merge(asst.Metadata)
 			sess.Append(asst)
+			if err := sess.PersistenceError(); err != nil {
+				return a.persistenceFailure(ctx, err)
+			}
 			emitEvent(ctx, assistantContentEvent(resp.Content, asst.Metadata))
 			if resp.Content != "" {
 				replyParts = append(replyParts, resp.Content)
@@ -2326,6 +2348,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 					messages = append(messages, asst)
 				}
 				messages = a.appendSteer(ctx, sess, messages, steer)
+				if err := sess.PersistenceError(); err != nil {
+					return a.persistenceFailure(ctx, err)
+				}
 				continue
 			}
 			emitEvent(ctx, ChatEvent{Type: "done", Data: map[string]any{"usage": a.contextUsageData(lastUsage, messages, toolDefs)}})
@@ -2357,6 +2382,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			RawAssistant: resp.RawAssistant,
 		}
 		sess.Append(assistantMsg)
+		if err := sess.PersistenceError(); err != nil {
+			return a.persistenceFailure(ctx, err)
+		}
 		messages = append(messages, assistantMsg)
 
 		// 循环检测：执行前检查
@@ -2566,15 +2594,24 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		// 并且可以改变路线。
 		if steer := a.drainTurnSteer(ctx, false); len(steer) > 0 {
 			messages = a.appendSteer(ctx, sess, messages, steer)
+			if err := sess.PersistenceError(); err != nil {
+				return a.persistenceFailure(ctx, err)
+			}
 		}
 	}
 
+	if err := sess.PersistenceError(); err != nil {
+		return a.persistenceFailure(ctx, err)
+	}
 	slog.Warn("max tool iterations reached — forcing final delivery", "agent", a.name, "max", a.maxToolIterations)
 	// 强制最终交付：又一个法学硕士通话，工具被禁用，并且
 	// 微移告诉模型合成它所拥有的内容。取代了
 	// 只返回预设警告的旧行为，这让用户
 	// 在整个迭代预算被烧毁后，可交付成果为零。
 	messages = a.appendSteer(ctx, sess, messages, a.drainTurnSteer(ctx, false))
+	if err := sess.PersistenceError(); err != nil {
+		return a.persistenceFailure(ctx, err)
+	}
 	finalMessages := append(messages, capReachedNudge(a.maxToolIterations))
 	if a.piiScrubEnabled {
 		finalMessages = privacy.ScrubMessages(finalMessages)
@@ -2604,6 +2641,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		Timestamp: time.Now().UnixMilli(),
 	}
 	sess.Append(finalMsg)
+	if err := sess.PersistenceError(); err != nil {
+		return a.persistenceFailure(ctx, err)
+	}
 	emitEvent(ctx, assistantContentEvent(finalContent, capMeta))
 	if finalContent != "" {
 		replyParts = append(replyParts, finalContent)
@@ -2619,6 +2659,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 // 如果没有AllowSplit，则在调度时将标记折叠为换行符
 // 时间，因此用户仍然可以看到一条消息中的每个片段，而不是
 // 放弃除最后一个以外的所有内容。
+
 func joinReplyParts(parts []string) string {
 	out := parts[:0:0]
 	for _, p := range parts {
@@ -3189,6 +3230,9 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	slog.Info("turn: refreshing skills",
 		"agent", a.name, "channel", msg.Channel, "chat_id", msg.ChatID, "user", chatterUID)
 	skillDirs, skillsSummary := a.refreshSkillsFromStore(chatterUID)
+	if _, published := a.workspaceStore.(interface{ FrozenSkillDirs([]string) []string }); published {
+		ctx = sandbox.WithSkillDirs(ctx, skillDirs)
+	}
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
 	// 将chatter绑定到sess上，使其ctx()嵌入WithChatterUserID
 	// 对于 DBStore 会话写入 — Session.ctx() 从其重建 ctx
@@ -3212,8 +3256,8 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	a.bindTurnSession(ctx, sess)
 
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeSystemPrompt, UserID: a.ownerUserID})
-	chatterMem := a.memory.WithUserID(chatterUID)
-	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, skillsSummary)
+	promptBuilder, chatterMem := a.promptInputs(chatterUID)
+	systemPrompt := promptBuilder.BuildSystemPromptAs(chatterUID, chatterMem, skillsSummary)
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterSystemPrompt, UserID: a.ownerUserID})
 
@@ -3251,7 +3295,13 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 	// ReAct 循环 - 使用 Chat 进行工具迭代
 	for i := 0; i < a.maxToolIterations; i++ {
+		if err := sess.PersistenceError(); err != nil {
+			return a.stringStream(a.persistenceFailure(ctx, err))
+		}
 		messages = a.appendSteer(ctx, sess, messages, a.drainTurnSteer(ctx, false))
+		if err := sess.PersistenceError(); err != nil {
+			return a.stringStream(a.persistenceFailure(ctx, err))
+		}
 		hookMessages, hcBefore := a.runBeforeModelCallHooks(ctx, messages, msg)
 		messages = hookMessages
 
@@ -3291,11 +3341,17 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			finalMetadata = ragResources.merge(finalMetadata)
 			finalMetadata = imageArtifacts.merge(finalMetadata)
 			messages = a.appendSteer(ctx, sess, messages, a.drainTurnSteer(ctx, false))
+			if err := sess.PersistenceError(); err != nil {
+				return a.stringStream(a.persistenceFailure(ctx, err))
+			}
 			sr, err := a.provider.ChatStream(ctx, providerRequestMessages(messages), finalTools, a.model, a.maxTokens, a.temperature)
 			if err != nil {
 				slog.Error("LLM stream failed, falling back", "agent", a.name, "error", err)
 				fallbackMsg := provider.Message{Role: "assistant", Content: resp.Content, Metadata: finalMetadata, Timestamp: time.Now().UnixMilli()}
 				sess.Append(fallbackMsg)
+				if err := sess.PersistenceError(); err != nil {
+					return a.stringStream(a.persistenceFailure(ctx, err))
+				}
 				emitAssistantMetadataEvent(ctx, finalMetadata)
 				a.runPostTurn(ctx, msg, append(messages, fallbackMsg), totalToolCalls, chatterMem, anchor)
 				return a.stringStream(resp.Content)
@@ -3369,6 +3425,10 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 					}
 				}
 				sess.Append(msg)
+				if err := sess.PersistenceError(); err != nil {
+					a.persistenceFailure(ctx, err)
+					return
+				}
 				emitAssistantMetadataEvent(ctx, msg.Metadata)
 				// 现在助理消息是 Fire PostTurn
 				// 坚持下来了。自动持久 (memory.go) 落后
@@ -3389,6 +3449,9 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			RawAssistant: resp.RawAssistant,
 		}
 		sess.Append(assistantMsg)
+		if err := sess.PersistenceError(); err != nil {
+			return a.stringStream(a.persistenceFailure(ctx, err))
+		}
 		messages = append(messages, assistantMsg)
 
 		// 环路检测
@@ -3457,10 +3520,15 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 // 使用迭代上限元数据，以便聊天 UI 可以标记气泡。
 // 返回的 StreamReader 与正常的”最终
 // 上面的响应”分支，因此调用者不需要特殊情况。
+
 func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.InboundMessage, messages []provider.Message, sess *session.Session, toolCallCount int, chatterMem *Memory, anchor *turnAnchor, ragResources *turnRAGResources, imageArtifacts *turnImageArtifacts, finish func()) *provider.StreamReader {
 	capMeta := ragResources.merge(iterationCapMetadata(a.maxToolIterations))
 	capMeta = imageArtifacts.merge(capMeta)
 	messages = a.appendSteer(ctx, sess, messages, a.drainTurnSteer(ctx, false))
+	if err := sess.PersistenceError(); err != nil {
+		finish()
+		return a.stringStream(a.persistenceFailure(ctx, err))
+	}
 	finalMessages := append(messages, capReachedNudge(a.maxToolIterations))
 	sr, err := a.provider.ChatStream(ctx, providerRequestMessages(finalMessages), nil, a.model, a.maxTokens, a.temperature)
 	if err != nil {
@@ -3469,6 +3537,10 @@ func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.
 		fallback := fmt.Sprintf("I've reached the maximum number of tool iterations (%d) and couldn't synthesize a final response. The work above represents what I gathered before hitting the limit.", a.maxToolIterations)
 		fallbackMsg := provider.Message{Role: "assistant", Content: fallback, Metadata: capMeta, Timestamp: time.Now().UnixMilli()}
 		sess.Append(fallbackMsg)
+		if err := sess.PersistenceError(); err != nil {
+			finish()
+			return a.stringStream(a.persistenceFailure(ctx, err))
+		}
 		emitEvent(ctx, assistantContentEvent(fallback, capMeta))
 		a.runPostTurn(ctx, inboundMsg, append(messages, fallbackMsg), toolCallCount, chatterMem, anchor)
 		finish()
@@ -3536,6 +3608,10 @@ func (a *Agent) streamFinalDeliveryAfterCap(ctx context.Context, inboundMsg bus.
 			}
 		}
 		sess.Append(finalMsg)
+		if err := sess.PersistenceError(); err != nil {
+			a.persistenceFailure(ctx, err)
+			return
+		}
 		// 带外内容事件，因此 SSE 订阅者 + chat_events
 		// 存档带有已达到上限的标志 - 块本身没有
 		// 有一个元数据字段，所以我们在这里发布一次。
@@ -3560,6 +3636,7 @@ var sandboxMetadataBuiltins = map[string]struct{}{
 // extractToolMeta preserves the legacy sandbox marker only for the exact
 // trusted builtins that produce it. Arbitrary builtin, MCP, plugin, and
 // rag_search text is data even when it begins with the same bytes.
+
 func extractToolMeta(reg *tools.Registry, toolName, result string) (string, map[string]any) {
 	_, allowed := sandboxMetadataBuiltins[toolName]
 	if allowed && reg != nil && reg.HasBuiltin(toolName) && strings.HasPrefix(result, tools.MetaSandboxPrefix) {
@@ -3900,4 +3977,12 @@ func (a *Agent) sendMediaFiles(msg bus.InboundMessage, mediaPaths []string) {
 	default:
 		slog.Warn("outbound channel full, dropping media message", "agent", a.name)
 	}
+}
+
+func (a *Agent) persistenceFailure(ctx context.Context, err error) string {
+	slog.Error("session persistence failed", "agent", a.name, "error", err)
+	message := "The conversation could not be saved. Please reload before continuing."
+	emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": message}})
+	emitEvent(ctx, ChatEvent{Type: "done"})
+	return message
 }

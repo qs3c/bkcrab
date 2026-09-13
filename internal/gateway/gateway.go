@@ -46,6 +46,7 @@ import (
 	ragvision "github.com/qs3c/bkcrab/internal/rag/vision"
 	"github.com/qs3c/bkcrab/internal/sandbox"
 	"github.com/qs3c/bkcrab/internal/scope"
+	"github.com/qs3c/bkcrab/internal/skills"
 	"github.com/qs3c/bkcrab/internal/store"
 	"github.com/qs3c/bkcrab/internal/taskqueue"
 	"github.com/qs3c/bkcrab/internal/toolproviders"
@@ -429,6 +430,25 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
 
+	built := false
+	defer func() {
+		if !built {
+			_ = st.Close()
+		}
+	}()
+	if err := env.ContextCache.Validate(); err != nil {
+		return nil, err
+	}
+	if env.ContextCache.Enabled {
+		db, ok := st.(*store.DBStore)
+		if !ok {
+			return nil, fmt.Errorf("context cache requires SQL store")
+		}
+		if err := db.EnableContextCache(env.ContextCache.Config()); err != nil {
+			return nil, err
+		}
+	}
+
 	// 挂接第 3 层代理配置（每个代理的覆盖）以从数据库读取。
 	config.AgentFileConfigLoader = makeStoreFirstAgentFileLoader(st)
 
@@ -461,6 +481,15 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	var meter usage.Meter = usage.NewMemMeter()
 	if dbs, ok := st.(*store.DBStore); ok {
 		meter = usage.NewSQLMeter(dbs.DB(), dbs.Dialect())
+	}
+	if db, ok := st.(*store.DBStore); ok {
+		published, err := db.HasSkillPublications(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("inspect skill publications: %w", err)
+		}
+		if env.ContextCache.Enabled || published {
+			wsInner = skills.NewPublishedStore(wsInner, db)
+		}
 	}
 	ws := wsInner
 
@@ -1024,6 +1053,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 
 	fairQueueOwned = false
 	imageFairOwned = false
+	built = true
 	return g, nil
 }
 
@@ -1083,6 +1113,33 @@ func (g *Gateway) RunContext(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("gateway: nil run context")
 	}
+	if db, ok := g.store.(*store.DBStore); ok {
+		defer db.StopContextCache()
+	}
+	if publisher, ok := g.workspace.(interface{ ReconcileLocalSkills(context.Context) error }); ok {
+		workerCtx, stop := context.WithCancel(ctx)
+		done := make(chan struct{})
+		defer func() { stop(); <-done }()
+		go func() {
+			defer close(done)
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-workerCtx.Done():
+					return
+				case <-ticker.C:
+					reconcileCtx, cancel := context.WithTimeout(workerCtx, 25*time.Second)
+					err := publisher.ReconcileLocalSkills(reconcileCtx)
+					cancel()
+					if err != nil && ctx.Err() == nil {
+						slog.Warn("skill reconciliation failed", "error", err)
+					}
+				}
+			}
+		}()
+	}
+
 	if g.ragParser != nil {
 		g.ragParser.StartHealthProbe(ctx)
 	}

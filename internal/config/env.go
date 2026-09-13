@@ -18,6 +18,7 @@ const RAGLegacyTaskMigrationModeOfflineV1 = "offline-v1"
 // 显式名称）设置。systemd unit、docker-compose、k8s deployment env 是
 // 规范的设置位置。
 type EnvConfig struct {
+	ContextCache     EnvContextCache
 	Gateway          EnvGateway
 	Storage          EnvStorage
 	Sandbox          EnvSandbox
@@ -543,6 +544,7 @@ func LoadEnv() *EnvConfig {
 	if v := positiveEnvInt("BKCRAB_RAG_LIMITS_PARSE_TIMEOUT_MS"); v > 0 {
 		cfg.RAG.Limits.ParseTimeoutMS = v
 	}
+	cfg.ContextCache = loadContextCacheEnv()
 	return cfg
 }
 
@@ -852,6 +854,7 @@ var bootSecretEnvKeys = []string{
 	"BKCRAB_RAG_EVAL_API_KEY",
 	"BKCRAB_FAIR_QUEUE_RABBITMQ_URL",
 	"BKCRAB_FAIR_QUEUE_REDIS_PASSWORD",
+	"BKCRAB_CONTEXT_CACHE_REDIS_PASSWORD",
 }
 
 func ScrubBootSecrets() {

@@ -49,6 +49,13 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	skillPath := filepath.Join(homeDir, "skills", name)
+	if p, ok := s.workspaceStore.(*skills.PublishedStore); ok {
+		if err := p.DeletePublishedSkill(r.Context(), skills.GlobalSkillOwner, name); err != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+	}
+
 	if err := os.RemoveAll(skillPath); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -106,7 +113,7 @@ func scanSkillsDir(dir string) []map[string]any {
 	}
 	var out []map[string]any
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if strings.HasPrefix(entry.Name(), ".") || (!entry.IsDir() && entry.Type()&os.ModeSymlink == 0) {
 			continue
 		}
 		name := entry.Name()
@@ -168,6 +175,13 @@ func (s *Server) handleDeleteAgentSkill(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	skillPath := filepath.Join(homePath, "skills", name)
+	if p, ok := s.workspaceStore.(*skills.PublishedStore); ok {
+		if err := p.DeletePublishedSkill(r.Context(), id, name); err != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+	}
+
 	if err := os.RemoveAll(skillPath); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return

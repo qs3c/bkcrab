@@ -654,6 +654,7 @@ type MCPGatewayRuntimeRecord struct {
 // 永远不会被 UPDATE 覆盖——会话的归属地在创建后不会移动。
 // 多个会话行可以共享相同的三元组；IM 路由的活动会话通过 max(updated_at) 解析。
 type SessionRecord struct {
+	Revision  int64  `json:"revision"`
 	Channel   string `json:"channel,omitempty"`
 	AccountID string `json:"accountId,omitempty"`
 	ChatID    string `json:"chatId,omitempty"`

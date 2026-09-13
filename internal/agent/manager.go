@@ -249,6 +249,9 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		// 这个，没有处理原始上传的 Pod 永远不会
 		// 看到一个新技能。
 		ag.workspaceStore = m.opts.workspaceStore
+		if ag.skillsLearner != nil {
+			ag.skillsLearner.Manager().SetPublisher(m.opts.workspaceStore, rc.ID)
+		}
 		ag.agentID = rc.ID
 		// 现在，workspaceStore 已联网，请刷新技能 — 最初的
 		// NewAgent pass 仅加载文件系统，缺少任何内容

@@ -61,6 +61,12 @@ func buildKey(skillName, relPath string) string {
 // （os.Lstat 过滤器排除它们以避免重复目标）。每次安装后调用是安全的；
 // 现有键会被覆盖。
 func SyncSkillUp(ctx context.Context, ws workspace.Store, owner, skillName, rootDir string) error {
+	if p, ok := ws.(interface {
+		PublishSkill(context.Context, string, string, string) error
+	}); ok {
+		return p.PublishSkill(ctx, owner, skillName, rootDir)
+	}
+
 	if ws == nil {
 		return nil // 未配置对象存储 — 无需镜像
 	}
@@ -123,6 +129,12 @@ func SyncSkillUp(ctx context.Context, ws workspace.Store, owner, skillName, root
 // 因此已存在于远程的技能被视为权威远程（不重新上传，不覆盖）。
 // 没有 SKILL.md 的半安装目录会被跳过，以避免在安装过程中上传部分状态。
 func MirrorSkillsUp(ctx context.Context, ws workspace.Store, owner, rootDir string) error {
+	if p, ok := ws.(interface {
+		MirrorPublishedSkills(context.Context, string, string) error
+	}); ok {
+		return p.MirrorPublishedSkills(ctx, owner, rootDir)
+	}
+
 	if ws == nil || owner == "" {
 		return nil
 	}
@@ -171,6 +183,12 @@ func MirrorSkillsUp(ctx context.Context, ws workspace.Store, owner, rootDir stri
 // DeleteSkillUp 删除 <owner>/skills/<skillName>/ 下的所有对象。
 // 缺失的键会被容忍。
 func DeleteSkillUp(ctx context.Context, ws workspace.Store, owner, skillName string) error {
+	if p, ok := ws.(interface {
+		DeletePublishedSkill(context.Context, string, string) error
+	}); ok {
+		return p.DeletePublishedSkill(ctx, owner, skillName)
+	}
+
 	if ws == nil {
 		return nil
 	}
@@ -213,6 +231,12 @@ func DeleteSkillUp(ctx context.Context, ws workspace.Store, owner, skillName str
 // 幸存的技能内的文件级差异（远程从捆绑包中删除了一个文件）不会被协调；
 // 技能在安装时被整体替换，因此实践中不应发生逐文件漂移。
 func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir string, keepLocal ...string) error {
+	if p, ok := ws.(interface {
+		HydratePublishedSkills(context.Context, string, string, ...string) error
+	}); ok {
+		return p.HydratePublishedSkills(ctx, owner, rootDir, keepLocal...)
+	}
+
 	if ws == nil {
 		return nil
 	}
@@ -313,6 +337,12 @@ func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir s
 // 唯一技能文件夹名称。用于管理 UI 可以显示 Agent 拥有的所有技能，
 // 即使此 Pod 尚未将其水合。
 func ListRemoteSkillNames(ctx context.Context, ws workspace.Store, owner string) ([]string, error) {
+	if p, ok := ws.(interface {
+		PublishedSkillNames(context.Context, string) ([]string, error)
+	}); ok {
+		return p.PublishedSkillNames(ctx, owner)
+	}
+
 	if ws == nil {
 		return nil, nil
 	}

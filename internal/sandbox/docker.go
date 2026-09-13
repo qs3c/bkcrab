@@ -184,7 +184,8 @@ func (s *DockerSandbox) Create() error {
 			continue
 		}
 		for _, e := range entries {
-			if !e.IsDir() {
+			host, ok := skillDirectory(dir, e.Name())
+			if !ok {
 				continue
 			}
 			// 按容器路径去重。较早的目录优先（按代理先于全局），
@@ -193,7 +194,6 @@ func (s *DockerSandbox) Create() error {
 				continue
 			}
 			mounted[e.Name()] = true
-			host := filepath.Join(dir, e.Name())
 			args = append(args, "-v", fmt.Sprintf("%s:/skills/%s:ro", host, e.Name()))
 		}
 	}

@@ -61,7 +61,7 @@ type sandboxScope struct {
 }
 
 // NewLifecyclePool 使用空闲跟踪包装内部池。idleTTL=0 禁用驱逐
-//（所有内容保持活动）；sweep=0 使用合理的默认值。
+// （所有内容保持活动）；sweep=0 使用合理的默认值。
 func NewLifecyclePool(inner ExecutorPool, idleTTL, sweep time.Duration) *LifecyclePool {
 	if sweep <= 0 {
 		sweep = 30 * time.Second
@@ -209,11 +209,12 @@ func (p *LifecyclePool) syncSnapshot(ctx context.Context, sc sandboxScope, ex Ex
 }
 
 // Get 返回一个延迟代理：其上的工具调用将按需从内部池获取底层执行器
-//（如果需要则创建新的沙箱）并更新最后使用的时间戳。
+// （如果需要则创建新的沙箱）并更新最后使用的时间戳。
 //
 // 契约匹配 ExecutorPool.Get，因此 LifecyclePool 是一个即插即用的包装器。
 func (p *LifecyclePool) Get(ctx context.Context, agentID, projectID, sessionID string) (Executor, error) {
-	return &lazyExecutor{pool: p, scope: sandboxScope{agentID: agentID, projectID: projectID, sessionID: sessionID}}, nil
+	dirs, pinned := ctx.Value(skillDirsKey{}).([]string)
+	return &lazyExecutor{pool: p, skillDirs: dirs, pinnedSkills: pinned, scope: sandboxScope{agentID: agentID, projectID: projectID, sessionID: sessionID}}, nil
 }
 
 // Release 转发到内部池并删除 lastUsed 条目。对于显式拆除（代理删除）
@@ -284,12 +285,21 @@ func (p *LifecyclePool) getInner(ctx context.Context, sc sandboxScope) (Executor
 // 它 (a) 刷新空闲计时器，并且 (b) 如果这是自上次驱逐以来的第一次调用，
 // 则延迟创建真正的沙箱。
 type lazyExecutor struct {
-	pool  *LifecyclePool
-	scope sandboxScope
+	pool         *LifecyclePool
+	scope        sandboxScope
+	skillDirs    []string
+	pinnedSkills bool
+}
+
+func (l *lazyExecutor) getInner(ctx context.Context) (Executor, error) {
+	if l.pinnedSkills {
+		ctx = WithSkillDirs(ctx, l.skillDirs)
+	}
+	return l.pool.getInner(ctx, l.scope)
 }
 
 func (l *lazyExecutor) Exec(ctx context.Context, command string, timeout time.Duration) (string, error) {
-	ex, err := l.pool.getInner(ctx, l.scope)
+	ex, err := l.getInner(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -309,7 +319,7 @@ func (l *lazyExecutor) Exec(ctx context.Context, command string, timeout time.Du
 }
 
 func (l *lazyExecutor) ReadFile(ctx context.Context, path string) (string, error) {
-	ex, err := l.pool.getInner(ctx, l.scope)
+	ex, err := l.getInner(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -317,7 +327,7 @@ func (l *lazyExecutor) ReadFile(ctx context.Context, path string) (string, error
 }
 
 func (l *lazyExecutor) WriteFile(ctx context.Context, path, content string) (string, error) {
-	ex, err := l.pool.getInner(ctx, l.scope)
+	ex, err := l.getInner(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -364,7 +374,7 @@ func (p *LifecyclePool) mirrorSandboxWrite(ctx context.Context, sc sandboxScope,
 }
 
 func (l *lazyExecutor) ListDir(ctx context.Context, path string) (string, error) {
-	ex, err := l.pool.getInner(ctx, l.scope)
+	ex, err := l.getInner(ctx)
 	if err != nil {
 		return "", err
 	}

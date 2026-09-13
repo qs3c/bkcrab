@@ -17,7 +17,8 @@ import (
 // DockerExecutor 包装 DockerSandbox 以实现 Executor。
 // 容器将用户的工作区挂载到 /workspace，所有工具调用作为 docker exec 命令转发。
 type DockerExecutor struct {
-	sb *DockerSandbox
+	sb        *DockerSandbox
+	skillDirs []string
 }
 
 // NewDockerExecutor 创建一个由 Docker 容器支持的沙箱 Executor。
@@ -235,7 +236,13 @@ func (p *DockerExecutorPool) Get(ctx context.Context, agentID, projectID, sessio
 
 	key := poolKey(agentID, projectID, sessionID)
 	if ex, ok := p.executors[key]; ok {
-		return ex, nil
+		if !skillViewChanged(ctx, ex.skillDirs) {
+			return ex, nil
+		}
+		if err := ex.Close(); err != nil {
+			return nil, err
+		}
+		delete(p.executors, key)
 	}
 
 	// 绑定挂载布局。项目聊天挂载项目根目录（因此兄弟会话显示在 /workspace 下）
@@ -277,7 +284,8 @@ func (p *DockerExecutorPool) Get(ctx context.Context, agentID, projectID, sessio
 	if workdir != "" {
 		sb.SetWorkdir(workdir)
 	}
-	sb.SetSkillDirs(skillDirsForAgent(p.workspaceRoot, agentID))
+	dirs := requestedSkillDirs(ctx, skillDirsForAgent(p.workspaceRoot, agentID))
+	sb.SetSkillDirs(dirs)
 	// 将聊天者的按用户技能主机目录绑定挂载到沙箱中 `npx skills add -g -y`
 	// 写入的路径，因此代理在聊天中安装的任何技能都会落到主机磁盘上，
 	// 并对下一次 LoadSkills 扫描可见。UserID 通过 ctx 流入
@@ -297,7 +305,7 @@ func (p *DockerExecutorPool) Get(ctx context.Context, agentID, projectID, sessio
 	if err := sb.Create(); err != nil {
 		return nil, fmt.Errorf("create docker sandbox: %w", err)
 	}
-	ex := &DockerExecutor{sb: sb}
+	ex := &DockerExecutor{sb: sb, skillDirs: dirs}
 	p.executors[key] = ex
 	return ex, nil
 }

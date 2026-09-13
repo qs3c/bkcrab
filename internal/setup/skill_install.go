@@ -60,6 +60,17 @@ func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	visibleTarget := targetDir
+	if _, ok := s.workspaceStore.(*skills.PublishedStore); ok {
+		stage, stageErr := os.MkdirTemp("", "bkcrab-skill-install-")
+		if stageErr != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": stageErr.Error()})
+			return
+		}
+		defer os.RemoveAll(stage)
+		targetDir = stage
+	}
+
 	result, err := runInstall(req.Source, req.Name, req.Repo, targetDir)
 	if err != nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"ok": false, "error": err.Error()})
@@ -74,9 +85,26 @@ func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 			owner = skills.GlobalSkillOwner
 		}
 		if uerr := skills.SyncSkillUp(r.Context(), s.workspaceStore, owner, result.Name, targetDir); uerr != nil {
+			if _, ok := s.workspaceStore.(*skills.PublishedStore); ok {
+				jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": uerr.Error()})
+				return
+			}
+
 			slog.Warn("failed to mirror skill to object store",
 				"owner", owner, "skill", result.Name, "error", uerr)
 		}
+	}
+
+	if p, ok := s.workspaceStore.(*skills.PublishedStore); ok {
+		owner := req.Agent
+		if owner == "" {
+			owner = skills.GlobalSkillOwner
+		}
+		if err := p.HydratePublishedSkills(r.Context(), owner, visibleTarget); err != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		result.InstalledAt = filepath.Join(visibleTarget, result.Name)
 	}
 
 	if req.Agent != "" {
@@ -147,7 +175,7 @@ func resolveInstallTarget(r *http.Request, agentID string) (string, error) {
 }
 
 // runInstall 分发到正确的技能后端。当 source 为空时，先尝试 skills.sh 再尝试 clawhub
-//（skill-creator 是聊天级别的回退方式，不是注册表 — 当两个源都未命中时，agent 工具会提供它）。
+// （skill-creator 是聊天级别的回退方式，不是注册表 — 当两个源都未命中时，agent 工具会提供它）。
 func runInstall(source, name, repo, targetDir string) (*skills.Result, error) {
 	switch source {
 	case "github":
@@ -284,6 +312,17 @@ func (s *Server) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	visibleTarget := targetDir
+	if _, ok := s.workspaceStore.(*skills.PublishedStore); ok {
+		stage, stageErr := os.MkdirTemp("", "bkcrab-skill-install-")
+		if stageErr != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": stageErr.Error()})
+			return
+		}
+		defer os.RemoveAll(stage)
+		targetDir = stage
+	}
+
 	skillDir := filepath.Join(targetDir, skillName)
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
@@ -368,10 +407,27 @@ func (s *Server) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 			owner = skills.GlobalSkillOwner
 		}
 		if uerr := skills.SyncSkillUp(r.Context(), s.workspaceStore, owner, skillName, targetDir); uerr != nil {
+			if _, ok := s.workspaceStore.(*skills.PublishedStore); ok {
+				jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": uerr.Error()})
+				return
+			}
+
 			slog.Warn("failed to mirror uploaded skill to object store",
 				"owner", owner, "skill", skillName, "error", uerr)
 		}
 	}
+	if p, ok := s.workspaceStore.(*skills.PublishedStore); ok {
+		owner := agentID
+		if owner == "" {
+			owner = skills.GlobalSkillOwner
+		}
+		if err := p.HydratePublishedSkills(r.Context(), owner, visibleTarget); err != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		skillDir = filepath.Join(visibleTarget, skillName)
+	}
+
 	if agentID != "" {
 		if ag := s.resolveAgent(r, agentID); ag != nil {
 			ag.ReloadWorkspaceFiles()

@@ -1,8 +1,10 @@
 package skills
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"github.com/qs3c/bkcrab/internal/workspace"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -45,8 +47,10 @@ func normalizeManagerConfig(cfg ManagerConfig) ManagerConfig {
 }
 
 type Manager struct {
-	root   string
-	config ManagerConfig
+	publisher workspace.Store
+	owner     string
+	root      string
+	config    ManagerConfig
 }
 
 func NewManager(root string, cfg ManagerConfig) *Manager {
@@ -185,6 +189,12 @@ func (m *Manager) write(slug, content string, mustExist bool) error {
 		return fmt.Errorf("skill %q already exists", slug)
 	}
 
+	if p, ok := m.publisher.(interface {
+		WritePublishedSkillFile(context.Context, string, string, string, string, []byte) error
+	}); ok {
+		return p.WritePublishedSkillFile(context.Background(), m.owner, m.root, slug, "SKILL.md", []byte(content))
+	}
+
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create skill dir: %w", err)
@@ -211,6 +221,9 @@ func (m *Manager) write(slug, content string, mustExist bool) error {
 		return err
 	}
 	cleanup = false
+	if m.publisher != nil {
+		return SyncSkillUp(context.Background(), m.publisher, m.owner, slug, m.root)
+	}
 	return nil
 }
 
@@ -233,6 +246,11 @@ func (m *Manager) Delete(slug string) error {
 	if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err != nil {
 		return fmt.Errorf("skill %q does not exist", slug)
 	}
+	if m.publisher != nil {
+		if err := DeleteSkillUp(context.Background(), m.publisher, m.owner, slug); err != nil {
+			return err
+		}
+	}
 	return os.RemoveAll(dir)
 }
 
@@ -252,7 +270,7 @@ func (m *Manager) List() []SkillListItem {
 	}
 	var out []SkillListItem
 	for _, e := range entries {
-		if !e.IsDir() {
+		if strings.HasPrefix(e.Name(), ".") || (!e.IsDir() && e.Type()&os.ModeSymlink == 0) {
 			continue
 		}
 		slug := e.Name()
@@ -269,3 +287,6 @@ func (m *Manager) List() []SkillListItem {
 	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
 	return out
 }
+
+// SetPublisher is configured before the manager is exposed to turns.
+func (m *Manager) SetPublisher(ws workspace.Store, owner string) { m.publisher = ws; m.owner = owner }

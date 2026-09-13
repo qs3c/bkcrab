@@ -317,6 +317,18 @@ func (r *Registry) writeSkillToHost(ctx context.Context, path, content string) (
 	if isGlobalSkillsPath(full) {
 		return "", errGlobalSkillsDirWrite
 	}
+	if p, ok := r.workspaceStore.(interface {
+		WritePublishedSkillFile(context.Context, string, string, string, string, []byte) error
+	}); ok {
+		rel := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(path)), "skills/")
+		parts := strings.SplitN(rel, "/", 2)
+		if len(parts) != 2 {
+			return "", fmt.Errorf("invalid skill file path")
+		}
+		err := p.WritePublishedSkillFile(ctx, r.skillStoreOwner(), filepath.Join(root, "skills"), parts[0], parts[1], []byte(content))
+		return full, err
+	}
+
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return "", fmt.Errorf("create directory: %w", err)
 	}

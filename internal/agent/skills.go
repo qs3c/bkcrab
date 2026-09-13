@@ -101,11 +101,12 @@ type SkillRequires struct {
 
 // SkillsLoader 从多层发现并合并技能，具有 OpenClaw 兼容性。
 type SkillsLoader struct {
-	homeDir   string
-	agentDir  string
-	teamDir   string
-	skillsCfg config.SkillsConfig
-	globalCfg config.SkillsCfg
+	turnSkillDirs []string
+	homeDir       string
+	agentDir      string
+	teamDir       string
+	skillsCfg     config.SkillsConfig
+	globalCfg     config.SkillsCfg
 	// workspaceStore 是可选的：设置后，LoadSkills 在扫描文件系统之前
 	// 会从对象存储中水合全局和代理技能目录。没有这个，一个技能在 Pod 的
 	// UserSpace 被缓存后上传到存储中，对该 Pod 是不可见的，直到重启
@@ -167,7 +168,7 @@ func (sl *SkillsLoader) WithUserID(userID string) *SkillsLoader {
 func (sl *SkillsLoader) LoadSkills() []Skill {
 	// 将对象存储中的技能镜像到本地文件系统，使上传到 OSS（或在另一个
 	// 副本上安装）的技能在此轮次可见——而不是在下次 Pod 重启后。廉价的
-	// 幂等水合；存储按对象执行"大小匹配则跳过"。
+	// 幂等水合；发布后端按 manifest/hash 校验，legacy 后端保留原同步方式。
 	if sl.workspaceStore != nil {
 		ctx := context.Background()
 		managedDir := bkcrabManagedDir()
@@ -200,6 +201,26 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 		}
 	}
 
+	// Freeze once after hydration, before parsing. Summary and executable
+	// directories must describe the same version even if another turn publishes.
+	sl.turnSkillDirs = nil
+	frozen := make(map[string]string)
+	if p, ok := sl.workspaceStore.(interface{ FrozenSkillDirs([]string) []string }); ok {
+		raw := sl.allSkillDirs()
+		for i := range raw {
+			raw[i] = expandPath(raw[i])
+		}
+		sl.turnSkillDirs = p.FrozenSkillDirs(raw)
+		for i, root := range raw {
+			frozen[root] = sl.turnSkillDirs[i]
+		}
+	}
+	discover := func(dir, layer string) map[string]Skill {
+		if pinned, ok := frozen[expandPath(dir)]; ok {
+			dir = pinned
+		}
+		return discoverSkillsEnhanced(dir, layer)
+	}
 	skillsMap := make(map[string]Skill)
 
 	disabled := make(map[string]bool, len(sl.skillsCfg.Disabled))
@@ -216,7 +237,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 	// 第 4 层（最低）：来自配置的额外目录
 	for _, dir := range sl.globalCfg.Load.ExtraDirs {
 		dir = expandPath(dir)
-		for name, skill := range discoverSkillsEnhanced(dir, "extra") {
+		for name, skill := range discover(dir, "extra") {
 			if !disabled[name] {
 				skillsMap[name] = skill
 			}
@@ -225,7 +246,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 
 	// 第 3 层：托管技能（~/.bkcrab/skills/）
 	managedDir := bkcrabManagedDir()
-	for name, skill := range discoverSkillsEnhanced(managedDir, "managed") {
+	for name, skill := range discover(managedDir, "managed") {
 		if !disabled[name] {
 			skillsMap[name] = skill
 		}
@@ -233,7 +254,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 
 	// 第 2 层：用户安装（~/.bkcrab/skills/）
 	userDir := filepath.Join(sl.homeDir, "skills")
-	for name, skill := range discoverSkillsEnhanced(userDir, "user") {
+	for name, skill := range discover(userDir, "user") {
 		if !disabled[name] {
 			skillsMap[name] = skill
 		}
@@ -242,7 +263,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 	// 第 1.5 层：团队技能
 	if sl.teamDir != "" {
 		teamSkillsDir := filepath.Join(sl.teamDir, "skills")
-		for name, skill := range discoverSkillsEnhanced(teamSkillsDir, "team") {
+		for name, skill := range discover(teamSkillsDir, "team") {
 			if !disabled[name] {
 				skillsMap[name] = skill
 			}
@@ -253,7 +274,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 	// 位于代理（所有者策划的）之下，使代理的官方技能可以覆盖用户的
 	// 同名工具，但位于团队/主机之上，使用户自己的技能始终优先于通用安装。
 	if userDir := sl.userSkillsDir(); userDir != "" {
-		for name, skill := range discoverSkillsEnhanced(userDir, "personal") {
+		for name, skill := range discover(userDir, "personal") {
 			if !disabled[name] {
 				skillsMap[name] = skill
 			}
@@ -262,7 +283,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 
 	// 第 1 层（最高）：代理工作空间技能
 	agentSkillsDir := filepath.Join(sl.agentDir, "skills")
-	for name, skill := range discoverSkillsEnhanced(agentSkillsDir, "agent") {
+	for name, skill := range discover(agentSkillsDir, "agent") {
 		if !disabled[name] {
 			skillsMap[name] = skill
 		}
@@ -483,7 +504,14 @@ func (sl *SkillsLoader) SkillEnvVars(skillName string) map[string]string {
 
 // AllSkillDirs 按优先级顺序返回所有技能目录。
 func (sl *SkillsLoader) AllSkillDirs() []string {
-	return sl.allSkillDirs()
+	if sl.turnSkillDirs != nil {
+		return append([]string(nil), sl.turnSkillDirs...)
+	}
+	dirs := sl.allSkillDirs()
+	if p, ok := sl.workspaceStore.(interface{ FrozenSkillDirs([]string) []string }); ok {
+		return p.FrozenSkillDirs(dirs)
+	}
+	return dirs
 }
 
 func (sl *SkillsLoader) allSkillDirs() []string {
@@ -532,7 +560,7 @@ func userSkillsRootDir(userID string) string {
 // discoverSkillsEnhanced 扫描目录中带有 SKILL.md 的技能子目录，
 // 解析 frontmatter 并应用门控。它故意不为默认技能在内存中保留完整的
 // SKILL.md 内容；模型通过 load_skill 按需加载该内容。
-func discoverSkillsEnhanced(dir string, layer string) map[string]Skill {
+func discoverSkillsUncached(dir string, layer string) map[string]Skill {
 	result := make(map[string]Skill)
 
 	entries, err := os.ReadDir(dir)
@@ -541,7 +569,7 @@ func discoverSkillsEnhanced(dir string, layer string) map[string]Skill {
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if strings.HasPrefix(entry.Name(), ".") || (!entry.IsDir() && entry.Type()&os.ModeSymlink == 0) {
 			continue
 		}
 		skillDir := filepath.Join(dir, entry.Name())
@@ -552,6 +580,9 @@ func discoverSkillsEnhanced(dir string, layer string) map[string]Skill {
 		}
 
 		absDir, _ := filepath.Abs(skillDir)
+		if resolved, err := filepath.EvalSymlinks(absDir); err == nil {
+			absDir = resolved
+		}
 
 		// 解析 frontmatter
 		fm := parseFrontmatterFromBytes(data)

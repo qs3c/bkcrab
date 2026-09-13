@@ -20,6 +20,8 @@ import (
 // Session 保存 (channel, accountID, chatID) 三元组内一个对话线程的消息历史。
 // session_key 是每个会话的不透明 ID；三元组标识对话"在哪里"。
 type Session struct {
+	revision         int64
+	persistenceErr   error
 	mu               sync.Mutex
 	Messages         []provider.Message
 	LastConsolidated int // index of last consolidated message
@@ -43,7 +45,6 @@ type Session struct {
 	// session_messages.chatter_user_id / session_events.chatter_user_id）。
 	// 当调用方未绑定对话参与者时为空 —— 写入将列留为 ''，读取方回退到 user_id。
 	chatterUserID string
-
 }
 
 // SessionKey 返回此 Session 绑定的不透明 session_key。
@@ -55,7 +56,7 @@ func (s *Session) SessionKey() string { return s.sessionKey }
 // 当未设置用户时回退到 context.Background()；存储层随后默认为 config.DefaultUserID。
 //
 // 同时嵌入每轮对话的 chatter（如果已设置），使 DBStore 会话写入
-//（sessions.chatter_user_id / session_messages.chatter_user_id /
+// （sessions.chatter_user_id / session_messages.chatter_user_id /
 // session_events.chatter_user_id）可以记录实际的对话参与者。
 // user_id 保持 = UserSpace 拥有者；chatter 是附加维度。
 // 两个标签是独立的 —— 空的 chatter 只是将列留为 ""。
@@ -185,8 +186,8 @@ func generateSessionKey() string {
 //
 // 新行生成策略：
 //   - web：session_key == chatID。Web 的 chatID *就是*每个对话的标识符
-//    （前端每次 "+New chat" 生成一个），因此使其等于 session_key 可保持
-//    URL `?session=` 令牌在刷新间稳定 —— 不会出现"第一条消息后 URL 变化"的意外。
+//     （前端每次 "+New chat" 生成一个），因此使其等于 session_key 可保持
+//     URL `?session=` 令牌在刷新间稳定 —— 不会出现"第一条消息后 URL 变化"的意外。
 //   - 其他所有地方：生成不透明的 `s-<unix_ms>-<rand>`。IM 通道在多个会话中
 //     重复使用同一个 chatID（用户的 openid / chat_id），因此 session_key 必须独立，
 //     以便 `/new` 可以生成并列行。
@@ -222,7 +223,7 @@ func (m *Manager) Get(channel, accountID, chatID, projectID string) *Session {
 }
 
 // GetByKey 通过 session_key 加载特定会话。当调用方已经持有键时使用
-//（例如从 URL `?session=…` 获取 Web 历史记录），希望绕过活跃会话查找。
+// （例如从 URL `?session=…` 获取 Web 历史记录），希望绕过活跃会话查找。
 func (m *Manager) GetByKey(sessionKey string) *Session {
 	return m.getByKey(sessionKey, "", "", "", "")
 }
@@ -320,11 +321,13 @@ func (m *Manager) getByKey(key, channel, accountID, chatID, projectID string) *S
 
 	if s, ok := m.sessions[key]; ok {
 		if m.store != nil {
-			if msgs, err := m.store.GetSession(m.ctx(), m.agentID, key); err == nil {
-				s.mu.Lock()
-				s.Messages = msgs
-				s.mu.Unlock()
+			msgs, revision, err := m.loadWorkingSet(key)
+			s.mu.Lock()
+			s.persistenceErr = err
+			if err == nil {
+				s.Messages, s.revision = msgs, revision
 			}
+			s.mu.Unlock()
 		}
 		// 在通过 GetByKey 或早期无提示路径创建的缓存条目上延迟绑定
 		// 三元组 + 项目。一旦标记，持久化行上的 project_id 即被视为权威 ——
@@ -358,9 +361,11 @@ func (m *Manager) getByKey(key, channel, accountID, chatID, projectID string) *S
 
 	// 如果可用，从存储（数据库）加载，否则从文件加载
 	if m.store != nil {
-		msgs, err := m.store.GetSession(m.ctx(), m.agentID, key)
-		if err == nil && len(msgs) > 0 {
+		msgs, revision, err := m.loadWorkingSet(key)
+		s.persistenceErr = err
+		if err == nil {
 			s.Messages = msgs
+			s.revision = revision
 		}
 	} else {
 		s.load()
@@ -397,7 +402,7 @@ func (s *Session) AppendTurnAnchor(msg provider.Message) (int64, error) {
 
 // appendLocked 是 Append / AppendTurnAnchor 的唯一内存写路径:加锁、补时间戳、
 // 追加到工作集,再持久化。anchor=true 时归档行写 turn_status='running' 并返回其
-// seq;anchor=false 走普通归档(turn_status 默认 '')。无持久化 store 时只落盘文件、
+// seq;anchor=false 走普通归档(turn_status 默认 ”)。无持久化 store 时只落盘文件、
 // 返回 (-1, nil)。收敛在一处,避免两个入口对内存路径产生分叉。
 func (s *Session) appendLocked(msg provider.Message, anchor bool) (int64, error) {
 	s.mu.Lock()
@@ -414,7 +419,9 @@ func (s *Session) appendLocked(msg provider.Message, anchor bool) (int64, error)
 		s.appendToFile(msg)
 		return -1, nil
 	}
-	s.store.SaveSession(s.ctx(), s.agentID, s.sessionKey, s.channel, s.accountID, s.chatID, s.projectID, s.Messages)
+	if err := s.saveWorkingSetLocked(); err != nil {
+		return -1, err
+	}
 	if anchor {
 		return s.store.AppendTurnAnchor(s.ctx(), s.agentID, s.sessionKey, msg)
 	}
@@ -426,7 +433,7 @@ func (s *Session) appendLocked(msg provider.Message, anchor bool) (int64, error)
 
 // ArchivedMessages 返回此会话的完整仅追加历史。
 // 当未配置存储或归档为空时回退到内存中的工作集
-//（例如基于文件的模式，或归档表存在之前创建的会话）。
+// （例如基于文件的模式，或归档表存在之前创建的会话）。
 func (s *Session) ArchivedMessages() []provider.Message {
 	s.mu.Lock()
 	store := s.store
@@ -478,7 +485,7 @@ func (s *Session) ReplaceMessages(msgs []provider.Message) {
 	s.LastConsolidated = 0
 
 	if s.store != nil {
-		s.store.SaveSession(s.ctx(), s.agentID, s.sessionKey, s.channel, s.accountID, s.chatID, s.projectID, s.Messages)
+		s.saveWorkingSetLocked()
 	} else {
 		s.rewriteFile()
 	}
@@ -491,7 +498,12 @@ func (s *Session) Clear() {
 	s.Messages = nil
 	s.LastConsolidated = 0
 	if s.store != nil {
-		s.store.DeleteSession(s.ctx(), s.agentID, s.sessionKey)
+		s.persistenceErr = s.store.DeleteSession(s.ctx(), s.agentID, s.sessionKey)
+		if s.persistenceErr == nil {
+			if st, ok := s.store.(versionedStore); ok {
+				_, s.revision, s.persistenceErr = st.GetSessionVersion(s.ctx(), s.agentID, s.sessionKey)
+			}
+		}
 	} else {
 		os.Remove(s.filePath)
 	}
@@ -821,11 +833,19 @@ func (s *Session) Undo() bool {
 	if s.snapshot == nil {
 		return false
 	}
+	previous := s.Messages
 	s.Messages = make([]provider.Message, len(s.snapshot))
 	copy(s.Messages, s.snapshot)
+	if s.store != nil {
+		if err := s.saveWorkingSetLocked(); err != nil {
+			s.Messages = previous
+			return false
+		}
+	} else {
+		s.rewriteFile()
+	}
 	s.snapshot = nil
 	s.LastConsolidated = 0
-	s.rewriteFile()
 	return true
 }
 

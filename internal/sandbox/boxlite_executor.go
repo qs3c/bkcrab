@@ -233,15 +233,16 @@ func (e *BoxliteExecutor) Hydrate(ctx context.Context) error {
 			continue
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() {
+			name := entry.Name()
+			root, ok := skillDirectory(dir, name)
+			if !ok {
 				continue
 			}
-			name := entry.Name()
 			if seen[name] {
 				continue
 			}
 			seen[name] = true
-			n, err := bundle.addLocalDir(filepath.Join(dir, name), "skills/"+name)
+			n, err := bundle.addLocalDir(root, "skills/"+name)
 			if err != nil {
 				slog.Warn("boxlite hydrate: skill tar", "skill", name, "error", err)
 				continue
@@ -397,6 +398,11 @@ func (b *plainTarBundle) ensureDir(name string) error {
 }
 
 func (b *plainTarBundle) addLocalDir(localRoot, prefix string) (int, error) {
+	resolved, resolveErr := filepath.EvalSymlinks(localRoot)
+	if resolveErr != nil {
+		return 0, resolveErr
+	}
+	localRoot = resolved
 	count := 0
 	err := filepath.Walk(localRoot, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -732,7 +738,7 @@ func (e *BoxliteExecutor) IsRemoteWorkspace() {}
 
 // SnapshotWorkspace 通过 Files API 将 /workspace 作为 tar 下载，
 // 并返回 LifecyclePool 需要将沙箱端写入镜像回持久化 workspace.Store 的
-//（路径 → 字节）映射。
+// （路径 → 字节）映射。
 func (e *BoxliteExecutor) SnapshotWorkspace(ctx context.Context) (map[string][]byte, error) {
 	dlCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -875,13 +881,22 @@ func (p *BoxliteExecutorPool) Get(ctx context.Context, agentID, projectID, sessi
 	defer p.mu.Unlock()
 	key := poolKey(agentID, projectID, sessionID)
 	if ex, ok := p.executors[key]; ok {
-		return ex, nil
+		if !skillViewChanged(ctx, ex.skillDirs) {
+			return ex, nil
+		}
+		if err := preserveSkillSwitchWorkspace(ctx, ex, p.workspace, agentID, projectID, sessionID); err != nil {
+			return nil, err
+		}
+		if err := ex.Close(); err != nil {
+			return nil, err
+		}
+		delete(p.executors, key)
 	}
 	ex, err := newBoxliteExecutor(ctx, p.baseURL, p.prefix, p.clientID, p.apiKey, p.image, p.timeout)
 	if err != nil {
 		return nil, err
 	}
-	ex.SetHydrationSources(skillDirsForAgent(p.home, agentID), p.workspace, agentID, projectID, sessionID)
+	ex.SetHydrationSources(requestedSkillDirs(ctx, skillDirsForAgent(p.home, agentID)), p.workspace, agentID, projectID, sessionID)
 	if err := ex.Hydrate(ctx); err != nil {
 		_ = ex.Close()
 		return nil, fmt.Errorf("boxlite hydrate: %w", err)
