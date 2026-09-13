@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"github.com/qs3c/bkcrab/internal/contextcache"
 )
 
 // SkillUsageRow is one (agent, learner skill) lifecycle ledger row.
@@ -66,6 +68,7 @@ func (d *DBStore) currentSkillSeq(ctx context.Context, q queryer, agentID string
 
 // UpsertSkillUsage creates or refreshes the learner skill ledger row.
 func (d *DBStore) UpsertSkillUsage(ctx context.Context, agentID, slug, contentHash string, firstCreate bool) error {
+	defer d.contextCache.Changing(ctx, contextcache.Key("skill-usage", agentID))()
 	if agentID == "" || slug == "" {
 		return nil
 	}
@@ -108,6 +111,7 @@ func (d *DBStore) UpsertSkillUsage(ctx context.Context, agentID, slug, contentHa
 
 // RecordSkillLoad records one successful load_skill hit for a learner skill.
 func (d *DBStore) RecordSkillLoad(ctx context.Context, agentID, slug, diskHash string, invokedByUser bool, halfLifeLoads, explicitGain int) (*SkillUsageRow, error) {
+	defer d.contextCache.Changing(ctx, contextcache.Key("skill-usage", agentID))()
 	if agentID == "" || slug == "" {
 		return nil, nil
 	}
@@ -180,7 +184,7 @@ func (d *DBStore) RecordSkillLoad(ctx context.Context, agentID, slug, diskHash s
 }
 
 // ListSkillUsage returns every learner skill ledger row for an agent.
-func (d *DBStore) ListSkillUsage(ctx context.Context, agentID string) ([]SkillUsageRow, error) {
+func (d *DBStore) listSkillUsage(ctx context.Context, agentID string) ([]SkillUsageRow, error) {
 	rows, err := d.db.QueryContext(ctx,
 		fmt.Sprintf(`SELECT slug, origin, activity, last_load_seq, total_loads,
 			explicit_uses, created_seq, edited_seq, content_hash
@@ -203,8 +207,13 @@ func (d *DBStore) ListSkillUsage(ctx context.Context, agentID string) ([]SkillUs
 
 // DeleteSkillUsage deletes the ledger row paired with a deleted skill directory.
 func (d *DBStore) DeleteSkillUsage(ctx context.Context, agentID, slug string) error {
+	defer d.contextCache.Changing(ctx, contextcache.Key("skill-usage", agentID))()
 	_, err := d.db.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM skill_usage WHERE agent_id=%s AND slug=%s`, d.ph(1), d.ph(2)),
 		agentID, slug)
 	return err
+}
+
+func (d *DBStore) ListSkillUsage(ctx context.Context, agentID string) ([]SkillUsageRow, error) {
+	return contextcache.Read(ctx, d.contextCache, contextcache.Key("skill-usage", agentID), func() ([]SkillUsageRow, error) { return d.listSkillUsage(ctx, agentID) })
 }

@@ -2,10 +2,12 @@ package skills
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,6 +63,7 @@ func buildKey(skillName, relPath string) string {
 // （os.Lstat 过滤器排除它们以避免重复目标）。每次安装后调用是安全的；
 // 现有键会被覆盖。
 func SyncSkillUp(ctx context.Context, ws workspace.Store, owner, skillName, rootDir string) error {
+	defer workspace.ChangingSkills(ctx, ws, owner)()
 	if ws == nil {
 		return nil // 未配置对象存储 — 无需镜像
 	}
@@ -171,6 +174,7 @@ func MirrorSkillsUp(ctx context.Context, ws workspace.Store, owner, rootDir stri
 // DeleteSkillUp 删除 <owner>/skills/<skillName>/ 下的所有对象。
 // 缺失的键会被容忍。
 func DeleteSkillUp(ctx context.Context, ws workspace.Store, owner, skillName string) error {
+	defer workspace.ChangingSkills(ctx, ws, owner)()
 	if ws == nil {
 		return nil
 	}
@@ -201,7 +205,7 @@ func DeleteSkillUp(ctx context.Context, ws workspace.Store, owner, skillName str
 // <rootDir>/，以便 SkillsLoader（文件系统扫描器）看到与对象存储相同的技能集合。
 //
 // 双向协调：
-//  1. 对于每个远程键，创建/覆盖本地文件（大小匹配时跳过 — 廉价的重入防护）。
+//  1. 对于每个远程键，创建/覆盖本地文件（远程身份和本地大小均匹配时跳过）。
 //  2. 对于每个没有远程键的本地顶级技能目录，将其删除。
 //     这就是将删除操作从 Pod A 传播到 Pod B 的方式。
 //
@@ -220,6 +224,14 @@ func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir s
 	if err != nil {
 		return fmt.Errorf("list object store skills for %s: %w", owner, err)
 	}
+	// This sidecar records remote identity, not just size. Local-only skill
+	// directories remain untouched when the remote bucket is empty.
+	statePath := filepath.Join(rootDir, ".bkcrab-hydration.json")
+	previous := map[string]string{}
+	if data, err := os.ReadFile(statePath); err == nil {
+		_ = json.Unmarshal(data, &previous)
+	}
+	current := map[string]string{}
 	prefix := skillsKeyPrefix + "/"
 
 	// 远程视图：存储中存在哪些技能名称目录。
@@ -235,14 +247,14 @@ func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir s
 			remoteSkills[rest[:slash]] = true
 		}
 
+		if !filepath.IsLocal(filepath.FromSlash(rest)) {
+			return fmt.Errorf("invalid remote skill path %q", rest)
+		}
 		target := filepath.Join(rootDir, filepath.FromSlash(rest))
-		if existing, statErr := os.Stat(target); statErr == nil && !existing.IsDir() {
-			// 相同大小 → 已水合。我们在每次安装时覆盖远程键，
-			// 因此内容变化时大小也会变化；真正的校验和匹配需要额外的 HEAD/ETag，
-			// 对于静态技能包来说很少值得这样做。
-			if o.Size >= 0 && existing.Size() == o.Size {
-				continue
-			}
+		identity := fmt.Sprintf("%s:%d:%d", o.ETag, o.Size, o.ModTime.UnixNano())
+		current[o.Path] = identity
+		if existing, err := os.Stat(target); err == nil && !existing.IsDir() && previous[o.Path] == identity && existing.Size() == o.Size {
+			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", filepath.Dir(target), err)
@@ -254,7 +266,7 @@ func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir s
 			}
 			return fmt.Errorf("get %s: %w", o.Path, err)
 		}
-		f, err := os.Create(target)
+		f, err := os.CreateTemp(filepath.Dir(target), ".hydrate-*")
 		if err != nil {
 			rc.Close()
 			return fmt.Errorf("create %s: %w", target, err)
@@ -264,8 +276,16 @@ func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir s
 			rc.Close()
 			return fmt.Errorf("copy %s: %w", target, err)
 		}
-		f.Close()
+		closeErr := f.Close()
 		rc.Close()
+		if closeErr != nil {
+			os.Remove(f.Name())
+			return closeErr
+		}
+		if err := os.Rename(f.Name(), target); err != nil {
+			os.Remove(f.Name())
+			return err
+		}
 		fetched++
 	}
 
@@ -285,13 +305,25 @@ func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir s
 		keep[name] = true
 	}
 	removed := 0
-	if entries, err := os.ReadDir(rootDir); err == nil && len(remoteSkills) > 0 {
+	if entries, err := os.ReadDir(rootDir); err == nil && (len(remoteSkills) > 0 || len(previous) > 0) {
 		for _, e := range entries {
 			if !e.IsDir() {
 				continue
 			}
 			if remoteSkills[e.Name()] || keep[e.Name()] {
 				continue
+			}
+			if len(remoteSkills) == 0 {
+				wasRemote := false
+				for p := range previous {
+					if strings.HasPrefix(p, skillsKeyPrefix+"/"+e.Name()+"/") {
+						wasRemote = true
+						break
+					}
+				}
+				if !wasRemote {
+					continue
+				}
 			}
 			if err := os.RemoveAll(filepath.Join(rootDir, e.Name())); err != nil {
 				slog.Warn("failed to prune stale local skill",
@@ -300,6 +332,33 @@ func HydrateSkillsDown(ctx context.Context, ws workspace.Store, owner, rootDir s
 			}
 			removed++
 		}
+	}
+
+	if maps.Equal(previous, current) {
+		return nil
+	}
+	// Atomic replacement prevents a concurrent reader seeing half-written JSON.
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(current)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(rootDir, ".hydration-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), statePath); err != nil {
+		return err
 	}
 
 	if fetched > 0 || removed > 0 {

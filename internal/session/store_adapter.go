@@ -30,38 +30,9 @@ func (a *StoreAdapter) GetSession(ctx context.Context, agentID, sessionKey strin
 	}
 	msgs := make([]provider.Message, len(rec.Messages))
 	for i, m := range rec.Messages {
-		msgs[i] = provider.Message{
-			Role:         m.Role,
-			Content:      m.Content,
-			ToolCallID:   m.ToolCallID,
-			Name:         m.Name,
-			Metadata:     m.Metadata,
-			Thinking:     m.Thinking,
-			RawAssistant: m.RawAssistant,
-			Origin:       m.Origin,
-		}
-		// ToolCalls / ContentParts 以 interface{} 存储，因此
-		// JSON 往返后会变成 []interface{} / map 嵌套。
-		// 重新序列化 + 反序列化以恢复类型化切片 —— 不这样做的话，
-		// 刷新的历史记录会丢失工具组气泡，并且下一次提供者调用会发送
-		// 无内容的多模态用户轮次（ContentParts 丢失 → Content "" → API 拒绝）。
-		if m.ToolCalls != nil {
-			if raw, err := json.Marshal(m.ToolCalls); err == nil {
-				var tcs []provider.ToolCall
-				if json.Unmarshal(raw, &tcs) == nil {
-					msgs[i].ToolCalls = tcs
-				}
-			}
-		}
-		if m.ContentParts != nil {
-			if raw, err := json.Marshal(m.ContentParts); err == nil {
-				var parts []provider.ContentPart
-				if json.Unmarshal(raw, &parts) == nil {
-					msgs[i].ContentParts = parts
-				}
-			}
-		}
+		msgs[i] = providerMessageFromStored(m)
 	}
+
 	return msgs, nil
 }
 
@@ -152,13 +123,17 @@ func (a *StoreAdapter) ListMessages(ctx context.Context, agentID, sessionKey str
 // 该格式同时存储在 sessions.messages（作为 JSON 数组元素）和
 // session_messages（作为行）中。单一转换点，确保两条路径不会偏离。
 func sessionMessageFromProvider(m provider.Message) store.SessionMessage {
+	ts := time.Now()
+	if m.Timestamp != 0 {
+		ts = time.UnixMilli(m.Timestamp)
+	}
 	out := store.SessionMessage{
 		Role:         m.Role,
 		Content:      m.Content,
 		ToolCallID:   m.ToolCallID,
 		Name:         m.Name,
 		Metadata:     m.Metadata,
-		Timestamp:    time.Now(),
+		Timestamp:    ts,
 		Thinking:     m.Thinking,
 		RawAssistant: m.RawAssistant,
 		Origin:       m.Origin,
@@ -186,6 +161,9 @@ func providerMessageFromStored(m store.SessionMessage) provider.Message {
 		Thinking:     m.Thinking,
 		RawAssistant: m.RawAssistant,
 		Origin:       m.Origin,
+	}
+	if !m.Timestamp.IsZero() {
+		out.Timestamp = m.Timestamp.UnixMilli()
 	}
 	if m.ToolCalls != nil {
 		if raw, err := json.Marshal(m.ToolCalls); err == nil {

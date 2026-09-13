@@ -5,6 +5,7 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,7 +44,6 @@ type Session struct {
 	// session_messages.chatter_user_id / session_events.chatter_user_id）。
 	// 当调用方未绑定对话参与者时为空 —— 写入将列留为 ''，读取方回退到 user_id。
 	chatterUserID string
-
 }
 
 // SessionKey 返回此 Session 绑定的不透明 session_key。
@@ -55,7 +55,7 @@ func (s *Session) SessionKey() string { return s.sessionKey }
 // 当未设置用户时回退到 context.Background()；存储层随后默认为 config.DefaultUserID。
 //
 // 同时嵌入每轮对话的 chatter（如果已设置），使 DBStore 会话写入
-//（sessions.chatter_user_id / session_messages.chatter_user_id /
+// （sessions.chatter_user_id / session_messages.chatter_user_id /
 // session_events.chatter_user_id）可以记录实际的对话参与者。
 // user_id 保持 = UserSpace 拥有者；chatter 是附加维度。
 // 两个标签是独立的 —— 空的 chatter 只是将列留为 ""。
@@ -185,8 +185,8 @@ func generateSessionKey() string {
 //
 // 新行生成策略：
 //   - web：session_key == chatID。Web 的 chatID *就是*每个对话的标识符
-//    （前端每次 "+New chat" 生成一个），因此使其等于 session_key 可保持
-//    URL `?session=` 令牌在刷新间稳定 —— 不会出现"第一条消息后 URL 变化"的意外。
+//     （前端每次 "+New chat" 生成一个），因此使其等于 session_key 可保持
+//     URL `?session=` 令牌在刷新间稳定 —— 不会出现"第一条消息后 URL 变化"的意外。
 //   - 其他所有地方：生成不透明的 `s-<unix_ms>-<rand>`。IM 通道在多个会话中
 //     重复使用同一个 chatID（用户的 openid / chat_id），因此 session_key 必须独立，
 //     以便 `/new` 可以生成并列行。
@@ -222,7 +222,7 @@ func (m *Manager) Get(channel, accountID, chatID, projectID string) *Session {
 }
 
 // GetByKey 通过 session_key 加载特定会话。当调用方已经持有键时使用
-//（例如从 URL `?session=…` 获取 Web 历史记录），希望绕过活跃会话查找。
+// （例如从 URL `?session=…` 获取 Web 历史记录），希望绕过活跃会话查找。
 func (m *Manager) GetByKey(sessionKey string) *Session {
 	return m.getByKey(sessionKey, "", "", "", "")
 }
@@ -320,7 +320,7 @@ func (m *Manager) getByKey(key, channel, accountID, chatID, projectID string) *S
 
 	if s, ok := m.sessions[key]; ok {
 		if m.store != nil {
-			if msgs, err := m.store.GetSession(m.ctx(), m.agentID, key); err == nil {
+			if msgs, err := m.store.GetSession(m.ctx(), m.agentID, key); err == nil || errors.Is(err, store.ErrNotFound) {
 				s.mu.Lock()
 				s.Messages = msgs
 				s.mu.Unlock()
@@ -384,7 +384,9 @@ func (m *Manager) getByKey(key, channel, accountID, chatID, projectID string) *S
 func (s *Session) Key() string { return s.sessionKey }
 
 func (s *Session) Append(msg provider.Message) {
-	_, _ = s.appendLocked(msg, false)
+	if _, err := s.appendLocked(msg, false); err != nil {
+		fmt.Fprintf(os.Stderr, "session append error: %v\n", err)
+	}
 }
 
 // AppendTurnAnchor 与 Append 等价地把消息加入内存工作集并 SaveSession,但归档行
@@ -397,7 +399,7 @@ func (s *Session) AppendTurnAnchor(msg provider.Message) (int64, error) {
 
 // appendLocked 是 Append / AppendTurnAnchor 的唯一内存写路径:加锁、补时间戳、
 // 追加到工作集,再持久化。anchor=true 时归档行写 turn_status='running' 并返回其
-// seq;anchor=false 走普通归档(turn_status 默认 '')。无持久化 store 时只落盘文件、
+// seq;anchor=false 走普通归档(turn_status 默认 ”)。无持久化 store 时只落盘文件、
 // 返回 (-1, nil)。收敛在一处,避免两个入口对内存路径产生分叉。
 func (s *Session) appendLocked(msg provider.Message, anchor bool) (int64, error) {
 	s.mu.Lock()
@@ -414,19 +416,20 @@ func (s *Session) appendLocked(msg provider.Message, anchor bool) (int64, error)
 		s.appendToFile(msg)
 		return -1, nil
 	}
-	s.store.SaveSession(s.ctx(), s.agentID, s.sessionKey, s.channel, s.accountID, s.chatID, s.projectID, s.Messages)
+	saveErr := s.store.SaveSession(s.ctx(), s.agentID, s.sessionKey, s.channel, s.accountID, s.chatID, s.projectID, s.Messages)
 	if anchor {
-		return s.store.AppendTurnAnchor(s.ctx(), s.agentID, s.sessionKey, msg)
+		seq, err := s.store.AppendTurnAnchor(s.ctx(), s.agentID, s.sessionKey, msg)
+		return seq, errors.Join(saveErr, err)
 	}
 	if err := s.store.AppendMessage(s.ctx(), s.agentID, s.sessionKey, msg); err != nil {
 		fmt.Fprintf(os.Stderr, "session archive append error: %v\n", err)
 	}
-	return -1, nil
+	return -1, saveErr
 }
 
 // ArchivedMessages 返回此会话的完整仅追加历史。
 // 当未配置存储或归档为空时回退到内存中的工作集
-//（例如基于文件的模式，或归档表存在之前创建的会话）。
+// （例如基于文件的模式，或归档表存在之前创建的会话）。
 func (s *Session) ArchivedMessages() []provider.Message {
 	s.mu.Lock()
 	store := s.store
@@ -478,7 +481,9 @@ func (s *Session) ReplaceMessages(msgs []provider.Message) {
 	s.LastConsolidated = 0
 
 	if s.store != nil {
-		s.store.SaveSession(s.ctx(), s.agentID, s.sessionKey, s.channel, s.accountID, s.chatID, s.projectID, s.Messages)
+		if err := s.store.SaveSession(s.ctx(), s.agentID, s.sessionKey, s.channel, s.accountID, s.chatID, s.projectID, s.Messages); err != nil {
+			fmt.Fprintf(os.Stderr, "session save error: %v\n", err)
+		}
 	} else {
 		s.rewriteFile()
 	}
@@ -821,11 +826,19 @@ func (s *Session) Undo() bool {
 	if s.snapshot == nil {
 		return false
 	}
+	if s.store != nil {
+		if err := s.store.SaveSession(s.ctx(), s.agentID, s.sessionKey, s.channel, s.accountID, s.chatID, s.projectID, s.snapshot); err != nil {
+			fmt.Fprintf(os.Stderr, "session undo save error: %v\n", err)
+			return false
+		}
+	}
 	s.Messages = make([]provider.Message, len(s.snapshot))
 	copy(s.Messages, s.snapshot)
 	s.snapshot = nil
 	s.LastConsolidated = 0
-	s.rewriteFile()
+	if s.store == nil {
+		s.rewriteFile()
+	}
 	return true
 }
 

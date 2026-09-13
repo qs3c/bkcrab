@@ -167,7 +167,7 @@ func (sl *SkillsLoader) WithUserID(userID string) *SkillsLoader {
 func (sl *SkillsLoader) LoadSkills() []Skill {
 	// 将对象存储中的技能镜像到本地文件系统，使上传到 OSS（或在另一个
 	// 副本上安装）的技能在此轮次可见——而不是在下次 Pod 重启后。廉价的
-	// 幂等水合；存储按对象执行"大小匹配则跳过"。
+	// 幂等水合；存储按对象身份与大小判断是否需要下载。
 	if sl.workspaceStore != nil {
 		ctx := context.Background()
 		managedDir := bkcrabManagedDir()

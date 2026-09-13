@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+
+	"github.com/qs3c/bkcrab/internal/contextcache"
 )
 
 // New 创建一个Store实例。MySQL是运行时默认选项，需要显式提供
@@ -50,6 +52,11 @@ func New(cfg *StorageConfig, homeDir string) (Store, error) {
 				db.Close()
 				return nil, fmt.Errorf("migrate: %w", err)
 			}
+		}
+		db.contextCache, err = contextcache.FromEnv(string(cfg.Type) + ":" + dsn)
+		if err != nil {
+			db.Close()
+			return nil, err
 		}
 		return db, nil
 	default:

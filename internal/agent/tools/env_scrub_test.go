@@ -13,6 +13,7 @@ func TestIsSensitiveEnvKey(t *testing.T) {
 	}{
 		// Operator-only prefixes — the screenshot incident.
 		{"BKCRAB_STORAGE_DSN", true},
+		{"BKCRAB_CONTEXT_CACHE_REDIS_URL", true},
 		{"BKCRAB_OBJECT_STORE_ACCESSKEY", true},
 		{"BKCRAB_OBJECT_STORE_SECRETKEY", true},
 		{"BKCRAB_OBJECT_STORE_BUCKET", true},

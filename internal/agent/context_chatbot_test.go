@@ -77,6 +77,29 @@ func newChatbotBuilder(store *fakeMemoryStore) *ContextBuilder {
 	return cb
 }
 
+func TestPromptMemorySnapshotIsTurnAndUserScoped(t *testing.T) {
+	st := newFakeMemoryStore()
+	st.put(testAgentID, chatterUID, "USER.md", "visitor profile")
+	st.put(testAgentID, chatterUID, "MEMORY.md", "old memory")
+	st.put(testAgentID, ownerUID, "USER.md", "owner profile")
+	cb := newChatbotBuilder(st)
+	snapshot := cb.memory.WithUserID(chatterUID).Snapshot()
+	st.put(testAgentID, chatterUID, "MEMORY.md", "new memory")
+	if snapshot.LoadMemory() != "old memory" {
+		t.Fatal("turn snapshot changed")
+	}
+	if cb.memory.WithUserID(chatterUID).Snapshot().LoadMemory() != "new memory" {
+		t.Fatal("snapshot escaped its turn")
+	}
+	if snapshot.WithUserID(ownerUID).LoadUserFile() != "owner profile" {
+		t.Fatal("snapshot leaked across users")
+	}
+	prompt := cb.BuildSystemPromptAs(chatterUID, snapshot, "")
+	if !strings.Contains(prompt, "visitor profile") || !strings.Contains(prompt, "old memory") || strings.Contains(prompt, "owner profile") {
+		t.Fatal("prompt ignored its user snapshot")
+	}
+}
+
 func TestChatbotPrompt_EmptyChatter(t *testing.T) {
 	store := newFakeMemoryStore()
 	// SOUL.md owner-keyed; chatter inherits via overlay.

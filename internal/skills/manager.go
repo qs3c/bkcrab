@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,11 +10,14 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/qs3c/bkcrab/internal/privacy"
+
+	"github.com/qs3c/bkcrab/internal/workspace"
 )
 
 type ManagerConfig struct {
@@ -45,12 +49,20 @@ func normalizeManagerConfig(cfg ManagerConfig) ManagerConfig {
 }
 
 type Manager struct {
-	root   string
-	config ManagerConfig
+	objectStore workspace.Store
+	owner       string
+	root        string
+	config      ManagerConfig
 }
 
 func NewManager(root string, cfg ManagerConfig) *Manager {
 	return &Manager{root: root, config: normalizeManagerConfig(cfg)}
+}
+
+// SetObjectStore is wired before the manager is used. All skill_manage,
+// learner and cleanup writes share the same publication path.
+func (m *Manager) SetObjectStore(ws workspace.Store, owner string) {
+	m.objectStore, m.owner = ws, owner
 }
 
 var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
@@ -211,6 +223,13 @@ func (m *Manager) write(slug, content string, mustExist bool) error {
 		return err
 	}
 	cleanup = false
+	if m.objectStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := SyncSkillUp(ctx, m.objectStore, m.owner, slug, m.root); err != nil {
+			return fmt.Errorf("skill saved locally but publication failed: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -232,6 +251,13 @@ func (m *Manager) Delete(slug string) error {
 	dir := filepath.Join(m.root, slug)
 	if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err != nil {
 		return fmt.Errorf("skill %q does not exist", slug)
+	}
+	if m.objectStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := DeleteSkillUp(ctx, m.objectStore, m.owner, slug); err != nil {
+			return err
+		}
 	}
 	return os.RemoveAll(dir)
 }

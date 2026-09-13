@@ -13,6 +13,7 @@ import (
 // 阅读其中任何一个。
 var sensitiveEnvPrefixes = []string{
 	"BKCRAB_STORAGE_",
+	"BKCRAB_CONTEXT_CACHE_",
 	"BKCRAB_OBJECT_STORE_",
 	"BKCRAB_RAG_",
 	"BKCRAB_SANDBOX_BOXLITE_",

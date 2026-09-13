@@ -35,6 +35,7 @@ type MemoryStore interface {
 }
 
 type Memory struct {
+	snapshot  *memorySnapshot
 	workspace string
 	store     MemoryStore
 	userID    string
@@ -43,6 +44,18 @@ type Memory struct {
 
 func NewMemory(workspace string) *Memory {
 	return &Memory{workspace: workspace}
+}
+
+// Snapshot reads user data once for this turn; never retain it on the shared Agent.
+type memorySnapshot struct{ user, memory string }
+
+func (m *Memory) Snapshot() *Memory {
+	if m == nil {
+		return nil
+	}
+	out := *m
+	out.snapshot = &memorySnapshot{user: m.LoadUserFile(), memory: m.LoadMemory()}
+	return &out
 }
 
 // NewMemoryWithStoreForUser 是用户作用域的构造函数。userID 必须是从
@@ -69,6 +82,7 @@ func (m *Memory) WithUserID(uid string) *Memory {
 	}
 	out := *m
 	out.userID = uid
+	out.snapshot = nil
 	return &out
 }
 
@@ -92,6 +106,9 @@ func (m *Memory) memoryPath() string {
 // 给任何其行尚不存在的非所有者聊天者。FS 读取仅在无存储的旧版单用户
 // 安装上触发。
 func (m *Memory) LoadMemory() string {
+	if m.snapshot != nil {
+		return m.snapshot.memory
+	}
 	if m.store != nil {
 		content, err := m.store.GetMemory(m.ctx(), m.agentID, m.userID)
 		if err == nil {
@@ -112,6 +129,9 @@ func (m *Memory) LoadMemory() string {
 // 存储时跳过磁盘回退，以避免将所有者的工作空间副本泄漏给没有自己行的
 // 聊天者。
 func (m *Memory) LoadUserFile() string {
+	if m.snapshot != nil {
+		return m.snapshot.user
+	}
 	if m.store != nil {
 		data, err := m.store.GetWorkspaceFileExact(m.ctx(), m.agentID, m.userID, "USER.md")
 		if err == nil {

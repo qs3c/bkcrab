@@ -15,14 +15,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	_ "github.com/lib/pq"  // PostgreSQL 驱动程序
+	_ "github.com/lib/pq" // PostgreSQL 驱动程序
+	"github.com/qs3c/bkcrab/internal/contextcache"
 	_ "modernc.org/sqlite" // SQLite 驱动程序（纯 Go）
 )
 
 // DBStore 使用 SQL 数据库实现 Store。
 type DBStore struct {
-	db      *sql.DB
-	dialect string // "mysql"、"postgres" 或 "sqlite"
+	contextCache *contextcache.Cache
+	db           *sql.DB
+	dialect      string // "mysql"、"postgres" 或 "sqlite"
 
 	fairQueueSafetyMu       sync.RWMutex
 	fairQueueSafetySnapshot FairQueueConnectionSafetySnapshot
@@ -3044,7 +3046,7 @@ func (d *DBStore) ragDocumentAIUsageTableSQL() string {
 }
 
 func (d *DBStore) Close() error {
-	return d.db.Close()
+	return errors.Join(d.contextCache.Close(), d.db.Close())
 }
 
 // ph 返回适用于当前方言的正确占位符。
@@ -3160,6 +3162,7 @@ func (d *DBStore) MarkUserDeleting(ctx context.Context, id string) (*UserRecord,
 }
 
 func (d *DBStore) DeleteUser(ctx context.Context, id string) error {
+	defer d.contextCache.ChangingAll(ctx)()
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -3441,6 +3444,7 @@ func (d *DBStore) GetAgent(ctx context.Context, agentID string) (*AgentRecord, e
 }
 
 func (d *DBStore) SaveAgent(ctx context.Context, agent *AgentRecord) error {
+	defer d.contextCache.Changing(ctx, contextcache.Key("file-owner", agent.ID))()
 	if agent.ID == "" {
 		return errors.New("store: agent.id is required")
 	}
@@ -3484,6 +3488,8 @@ func (d *DBStore) SaveAgent(ctx context.Context, agent *AgentRecord) error {
 }
 
 func (d *DBStore) DeleteAgent(ctx context.Context, agentID string) error {
+	defer d.contextCache.ChangingAll(ctx)()
+	defer d.contextCache.Changing(ctx, contextcache.Key("file-owner", agentID))()
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -3540,7 +3546,7 @@ func scanAgents(rows *sql.Rows) ([]AgentRecord, error) {
 
 // --- Sessions ---
 
-func (d *DBStore) GetSession(ctx context.Context, userID, agentID, sessionKey string) (*SessionRecord, error) {
+func (d *DBStore) getSession(ctx context.Context, userID, agentID, sessionKey string) (*SessionRecord, error) {
 	row := d.db.QueryRowContext(ctx,
 		fmt.Sprintf(`SELECT messages, channel, account_id, chat_id, project_id, updated_at FROM sessions WHERE user_id = %s AND agent_id = %s AND session_key = %s`,
 			d.ph(1), d.ph(2), d.ph(3)),
@@ -3550,14 +3556,16 @@ func (d *DBStore) GetSession(ctx context.Context, userID, agentID, sessionKey st
 	if err := row.Scan(&msgsStr, &rec.Channel, &rec.AccountID, &rec.ChatID, &rec.ProjectID, &rec.UpdatedAt); err != nil {
 		return nil, scanErr(err)
 	}
-	json.Unmarshal([]byte(msgsStr), &rec.Messages)
+	if err := json.Unmarshal([]byte(msgsStr), &rec.Messages); err != nil {
+		return nil, fmt.Errorf("decode session messages: %w", err)
+	}
 	return &rec, nil
 }
 
 // SaveSession 对会话行进行 upsert。Channel / AccountID / ChatID /
 // ProjectID 仅在 INSERT 时写入；ON CONFLICT 分支故意保留现有值，
 // 以便不知道三元组的回调（例如压缩调用 ReplaceMessages）不会意外清除它。
-func (d *DBStore) SaveSession(ctx context.Context, userID, agentID, sessionKey string, session *SessionRecord) error {
+func (d *DBStore) saveSession(ctx context.Context, userID, agentID, sessionKey string, session *SessionRecord) error {
 	if userID == "" {
 		return errors.New("store: SaveSession requires user_id")
 	}
@@ -3710,6 +3718,7 @@ func (d *DBStore) ResolveActiveSessionKey(ctx context.Context, userID, agentID, 
 }
 
 func (d *DBStore) DeleteSession(ctx context.Context, userID, agentID, sessionKey string) error {
+	defer d.contextCache.Changing(ctx, sessionCacheKey(userID, agentID, sessionKey))()
 	for _, t := range []string{"session_messages", "session_events"} {
 		if _, err := d.db.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE user_id = %s AND agent_id = %s AND session_key = %s`,
@@ -4053,6 +4062,7 @@ func (d *DBStore) GetSessionToolMessage(ctx context.Context, userID, agentID, se
 }
 
 func (d *DBStore) RenameSession(ctx context.Context, userID, agentID, sessionKey, title string) error {
+	defer d.contextCache.Changing(ctx, sessionCacheKey(userID, agentID, sessionKey))()
 	_, err := d.db.ExecContext(ctx,
 		fmt.Sprintf(`UPDATE sessions SET title = %s WHERE user_id = %s AND agent_id = %s AND session_key = %s`,
 			d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
@@ -4064,6 +4074,7 @@ func (d *DBStore) RenameSession(ctx context.Context, userID, agentID, sessionKey
 // （拖出到"Chats"）。调用方必须已经迁移了工作区文件并验证了 projectID
 // （当非空时）是用户在此 agent 下拥有的真实项目——此方法仅影响 sessions 行。
 func (d *DBStore) MoveSession(ctx context.Context, userID, agentID, sessionKey, projectID string) error {
+	defer d.contextCache.Changing(ctx, sessionCacheKey(userID, agentID, sessionKey))()
 	_, err := d.db.ExecContext(ctx,
 		fmt.Sprintf(`UPDATE sessions SET project_id = %s WHERE user_id = %s AND agent_id = %s AND session_key = %s`,
 			d.ph(1), d.ph(2), d.ph(3), d.ph(4)),
@@ -4086,7 +4097,7 @@ func (d *DBStore) MoveSession(ctx context.Context, userID, agentID, sessionKey, 
 
 // GetAgentFile 返回 (agent_id, filename) 的文件，优先使用调用方自己的行，
 // 回退到 agent 拥有者的行。userID 是必需的。
-func (d *DBStore) GetAgentFile(ctx context.Context, agentID, userID, filename string) ([]byte, error) {
+func (d *DBStore) getAgentFile(ctx context.Context, agentID, userID, filename string) ([]byte, error) {
 	if agentID == "" {
 		return nil, errors.New("store: GetAgentFile requires agent_id")
 	}
@@ -4115,7 +4126,7 @@ func (d *DBStore) GetAgentFile(ctx context.Context, agentID, userID, filename st
 // GetAgentFileExact 绕过拥有者回退覆盖层，仅返回 (agent_id, user_id, filename)
 // 行，或 ErrNotFound。当调用方明确需要知道*他们自己的*覆盖行是否存在时使用
 // （例如 Customize 页面区分"你已创建覆盖"与"你正在查看拥有者的内容"）。
-func (d *DBStore) GetAgentFileExact(ctx context.Context, agentID, userID, filename string) ([]byte, error) {
+func (d *DBStore) getAgentFileExact(ctx context.Context, agentID, userID, filename string) ([]byte, error) {
 	if agentID == "" {
 		return nil, errors.New("store: GetAgentFileExact requires agent_id")
 	}
@@ -4138,6 +4149,7 @@ func (d *DBStore) GetAgentFileExact(ctx context.Context, agentID, userID, filena
 // userID 是必需的——每次写入都是每用户的。如果你想要 agent 的一个共享默认值，
 // 请使用 <agent_home>/<name> 处的本地 FS 文件。
 func (d *DBStore) SaveAgentFile(ctx context.Context, agentID, userID, filename string, data []byte) error {
+	defer d.contextCache.Changing(ctx, fileCacheKey(agentID, userID, filename))()
 	if agentID == "" {
 		return errors.New("store: SaveAgentFile requires agent_id")
 	}
@@ -4173,6 +4185,7 @@ func (d *DBStore) SaveAgentFile(ctx context.Context, agentID, userID, filename s
 // MutateAgentFile atomically transforms the exact (agent_id, user_id, filename)
 // row. It never uses owner fallback.
 func (d *DBStore) MutateAgentFile(ctx context.Context, agentID, userID, filename string, fn AgentFileMutator) ([]byte, error) {
+	defer d.contextCache.Changing(ctx, fileCacheKey(agentID, userID, filename))()
 	if agentID == "" {
 		return nil, errors.New("store: MutateAgentFile requires agent_id")
 	}
@@ -4303,6 +4316,7 @@ func cloneAgentFileBytes(in []byte) []byte {
 }
 
 func (d *DBStore) DeleteAgentFile(ctx context.Context, agentID, userID, filename string) error {
+	defer d.contextCache.Changing(ctx, fileCacheKey(agentID, userID, filename))()
 	if agentID == "" {
 		return errors.New("store: DeleteAgentFile requires agent_id")
 	}

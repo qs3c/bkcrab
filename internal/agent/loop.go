@@ -2149,7 +2149,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// 挂钩：BeforeSystemPrompt
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeSystemPrompt, UserID: a.ownerUserID})
 
-	chatterMem := a.memory.WithUserID(chatterUID)
+	chatterMem := a.memory.WithUserID(chatterUID).Snapshot()
 	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, skillsSummary)
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 
@@ -3212,7 +3212,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	a.bindTurnSession(ctx, sess)
 
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeSystemPrompt, UserID: a.ownerUserID})
-	chatterMem := a.memory.WithUserID(chatterUID)
+	chatterMem := a.memory.WithUserID(chatterUID).Snapshot()
 	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, skillsSummary)
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterSystemPrompt, UserID: a.ownerUserID})

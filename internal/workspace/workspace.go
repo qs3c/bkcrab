@@ -63,6 +63,7 @@ type Store interface {
 
 // ObjectInfo 描述一个已存储的对象。特定后端未知的字段为零值。
 type ObjectInfo struct {
+	ETag        string    // Content identity where available; detects equal-size edits.
 	Path        string    // agent-relative
 	Size        int64     // bytes, -1 when unknown
 	ContentType string    // e.g. "image/png"

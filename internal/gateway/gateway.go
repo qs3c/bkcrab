@@ -463,6 +463,9 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		meter = usage.NewSQLMeter(dbs.DB(), dbs.Dialect())
 	}
 	ws := wsInner
+	if dbs, ok := st.(*store.DBStore); ok {
+		ws = workspace.WithCache(ws, dbs.ContextCache(), fmt.Sprintf("%s:%s:%s:%s", osCfg.Type, osCfg.S3.Endpoint, osCfg.S3.Bucket, osCfg.S3.Prefix))
+	}
 
 	var ragSvc *rag.Service
 	var ragObjects ragobjects.Store

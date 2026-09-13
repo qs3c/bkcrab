@@ -182,9 +182,9 @@ type GroupContext struct {
 
 // ContextBuilder组装系统提示符和运行时上下文。
 type ContextBuilder struct {
-	home          string // agent's home: SOUL.md, IDENTITY.md,内存,会话
-	workspace     string // 代理创建面向用户的文件的工作目录
-	memory *Memory
+	home      string // agent's home: SOUL.md, IDENTITY.md,内存,会话
+	workspace string // 代理创建面向用户的文件的工作目录
+	memory    *Memory
 	// skillsSummary 是构造期（NewContextBuilder / ReloadWorkspaceFiles）烘焙进来的
 	// 技能摘要，仅用作 owner 默认路径（BuildSystemPrompt）的回退。每回合按聊天者
 	// 解析的摘要由 BuildSystemPromptAs 的 skillsSummary 参数逐次传入，绝不写回此
@@ -717,7 +717,12 @@ Then in your final reply, write: ![](/workspace/output.png)`
 		if name == "USER.md" {
 			uid = chatterUID
 		}
-		content := cb.loadFileForUser(name, uid)
+		var content string
+		if name == "USER.md" && chatterMem != nil {
+			content = chatterMem.LoadUserFile()
+		} else {
+			content = cb.loadFileForUser(name, uid)
+		}
 		if name == "USER.md" {
 			// 每个聊天者的个人资料 - 包装在 XML 样式的标签中，以便模型
 			// 将内容视为权威参考数据，而不是

@@ -31,13 +31,13 @@ type S3 struct {
 // S3Config 包含 NewS3 所需的配置项。字段命名遵循 bkcrab.json
 // 约定，以便通过 encoding/json 干净地往返。
 type S3Config struct {
-	Endpoint  string `json:"endpoint"`            // e.g. "s3.amazonaws.com", "<acct>.r2.cloudflarestorage.com"
-	Region    string `json:"region,omitempty"`    // AWS region; "" for R2/MinIO
-	Bucket    string `json:"bucket"`              // target bucket
-	Prefix    string `json:"prefix,omitempty"`    // key prefix; useful for multi-env share
+	Endpoint  string `json:"endpoint"`         // e.g. "s3.amazonaws.com", "<acct>.r2.cloudflarestorage.com"
+	Region    string `json:"region,omitempty"` // AWS region; "" for R2/MinIO
+	Bucket    string `json:"bucket"`           // target bucket
+	Prefix    string `json:"prefix,omitempty"` // key prefix; useful for multi-env share
 	AccessKey string `json:"accessKey"`
 	SecretKey string `json:"secretKey"`
-	UseSSL    bool   `json:"useSSL"`              // default false — most managed services enforce SSL anyway
+	UseSSL    bool   `json:"useSSL"` // default false — most managed services enforce SSL anyway
 }
 
 // NewS3 构建 S3 Store。返回包装的错误而不是 panic，
@@ -79,12 +79,12 @@ func (s *S3) key(agentID, projectID, sessionID, p string) string {
 	case sessionID != "":
 		parts = append(parts, "sessions", sessionID)
 	}
-	parts = append(parts, path.Clean("/"+p)[1:])
+	parts = append(parts, path.Clean("/" + p)[1:])
 	return strings.Join(parts, "/")
 }
 
 // scopePrefix 返回列表前缀。两者都为空时列出整个代理子树
-//（管理员文件浏览器）；设置 project/session 时缩小范围。
+// （管理员文件浏览器）；设置 project/session 时缩小范围。
 func (s *S3) scopePrefix(agentID, projectID, sessionID string) string {
 	parts := []string{}
 	if s.prefix != "" {
@@ -135,6 +135,7 @@ func (s *S3) Stat(ctx context.Context, agentID, projectID, sessionID, p string) 
 		return nil, mapS3Err(err)
 	}
 	return &ObjectInfo{
+		ETag:        info.ETag,
 		Path:        p,
 		Size:        info.Size,
 		ContentType: info.ContentType,
@@ -158,6 +159,7 @@ func (s *S3) List(ctx context.Context, agentID, projectID, sessionID string) ([]
 			ctype = mime.TypeByExtension(filepath.Ext(rel))
 		}
 		out = append(out, ObjectInfo{
+			ETag:        obj.ETag,
 			Path:        rel,
 			Size:        obj.Size,
 			ContentType: ctype,
@@ -183,7 +185,7 @@ func (s *S3) Delete(ctx context.Context, agentID, projectID, sessionID, p string
 //
 // 非原子操作：循环中途崩溃会导致源/目标处于部分迁移状态。
 // 调用者应将 Move 视为尽力而为，并通过重新运行来修复
-//（幂等——第二次调用发现源缺失时干净退出）。
+// （幂等——第二次调用发现源缺失时干净退出）。
 func (s *S3) Move(ctx context.Context, agentID, fromProjectID, fromSessionID, toProjectID, toSessionID string) error {
 	srcPrefix := s.scopePrefix(agentID, fromProjectID, fromSessionID)
 	dstPrefix := s.scopePrefix(agentID, toProjectID, toSessionID)
