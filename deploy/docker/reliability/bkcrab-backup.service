@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up BkCrab database and files
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/bkcrab/backup.sh
+TimeoutStartSec=1h
+Nice=10
+IOSchedulingClass=idle
