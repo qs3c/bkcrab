@@ -53,6 +53,14 @@ Inspect `journalctl -u bkcrab-watchdog.service`, `systemctl list-timers bkcrab-w
 
 ## Backup and rollback
 
+The installed `bkcrab-backup.timer` runs an online database/file backup at 03:30
+Asia/Shanghai, retains three completed sets in `/srv/bkcrab-backups`, and refuses
+to start with less than 10 GiB free. The files include MinIO, application data,
+the quota workspace and deployment secrets, so the directory is root-only.
+This online backup is not atomic across the database and concurrent file writes.
+Off-host replication is not configured; server loss still requires an off-host
+copy. Verify a maintenance-window restore before relying on these backups.
+
 Before deploying, retain the old gateway image tag, database dump, source commit, effective Compose file list, and named volumes. For a consistent full backup, use a maintenance window: stop gateway and other writers, take a transactional MySQL dump, copy MinIO data through its supported backup workflow, and archive the mounted workspace tree (including `.quota.json`), then resume. Keep an off-host copy and test restoration; files on this server do not protect against server/disk loss.
 
 To roll back after new writes, stop gateway/DinD and watchdog, copy new workspace/user data back to their original named-volume subtrees, remove the reliability overlay, and start the previous image with its original overlays. Keep the bounded filesystems until restoration has been verified. Do not delete filesystem images while mounted. Returning to the old deployment removes the new resource/quota protections.

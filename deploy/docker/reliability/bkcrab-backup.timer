@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily BkCrab backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Shanghai
+Persistent=true
+
+[Install]
+WantedBy=timers.target
