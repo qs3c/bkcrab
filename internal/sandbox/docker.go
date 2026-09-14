@@ -15,10 +15,11 @@ import (
 
 // Policy 保存沙箱容器的资源/网络约束。
 type Policy struct {
-	MaxCPU    string // 例如 "2"
-	MaxMemory string // 例如 "512m"
-	MaxPIDs   int
-	NetMode   string // "none"、"host"、"bridge"
+	ProtectQuota bool
+	MaxCPU       string // 例如 "2"
+	MaxMemory    string // 例如 "512m"
+	MaxPIDs      int
+	NetMode      string // "none"、"host"、"bridge"
 }
 
 // DockerSandbox 管理单个 Docker 容器以进行沙箱化执行。
@@ -121,6 +122,22 @@ func (s *DockerSandbox) Create() error {
 	}
 	if s.poolOwner != "" {
 		args = append(args, "--label", "bkcrab.pool="+s.poolOwner)
+	}
+	if s.policy.ProtectQuota {
+		profile, err := os.CreateTemp("", "bkcrab-seccomp-*.json")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(profile.Name())
+		_, writeErr := profile.Write(quotaSeccomp)
+		closeErr := profile.Close()
+		if writeErr != nil {
+			return writeErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		args = append(args, "--security-opt", "seccomp="+profile.Name())
 	}
 
 	// 继承主机的 HTTP(S)_PROXY 配置，以便沙箱内的 curl/pip/npm/git
@@ -239,7 +256,9 @@ func (s *DockerSandbox) Create() error {
 
 	args = append(args, s.image, "tail", "-f", "/dev/null")
 
-	cmd := exec.Command("docker", args...)
+	createCtx, createCancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer createCancel()
+	cmd := exec.CommandContext(createCtx, "docker", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -251,8 +270,11 @@ func (s *DockerSandbox) Create() error {
 	s.containerID = strings.TrimSpace(stdout.String())
 
 	// Start the container
-	startCmd := exec.Command("docker", "start", s.containerID)
+	startCmd := exec.CommandContext(createCtx, "docker", "start", s.containerID)
 	if out, err := startCmd.CombinedOutput(); err != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cleanupCancel()
+		_, _ = exec.CommandContext(cleanupCtx, "docker", "rm", "-f", s.containerID).CombinedOutput()
 		return fmt.Errorf("docker start: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 
@@ -338,7 +360,9 @@ func (s *DockerSandbox) Close() error {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", "rm", "-f", s.containerID)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("remove sandbox: %s: %w", out, err)
+		if !strings.Contains(string(out), "No such container") {
+			return fmt.Errorf("remove sandbox: %s: %w", out, err)
+		}
 	}
 	s.containerID = ""
 	return nil
