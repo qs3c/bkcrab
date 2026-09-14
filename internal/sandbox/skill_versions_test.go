@@ -156,6 +156,26 @@ func TestPublishedSkillDockerSwitch(t *testing.T) {
 	if out, err := ex2.(*DockerExecutor).sb.Exec(ctx2, "cat /skills/demo/SKILL.md; cat /workspace/keep", "/workspace"); err != nil || out != "newsaved\n" {
 		t.Fatalf("second exec %q %v", out, err)
 	}
+	// The admission/lifecycle wrapper must forward changes even with a warm executor.
+	lifecycle := NewLifecyclePool(pool, 0, 0)
+	lifecycle.SetLimits(Limits{MaxContainers: 1, MaxPerUser: 1})
+	lifecycle.Start()
+	defer lifecycle.CloseAll()
+	for _, step := range []struct {
+		ctx  context.Context
+		want string
+	}{{ctx2, "new"}, {ctx1, "old"}, {ctx2, "new"}} {
+		handle, err := lifecycle.Get(step.ctx, "test", "", "session")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := handle.ReadFile(context.Background(), "/skills/demo/SKILL.md"); err != nil || got != step.want {
+			t.Fatalf("lifecycle skill switch: %q %v", got, err)
+		}
+		if got, err := handle.ReadFile(context.Background(), "/workspace/keep"); err != nil || got != "saved\n" {
+			t.Fatalf("lifecycle lost workspace: %q %v", got, err)
+		}
+	}
 }
 
 type skillSwitchRemote struct {
@@ -194,5 +214,41 @@ func TestPublishedSkillSwitchPreservesSameLength(t *testing.T) {
 	ex.snapshotErr = nil
 	if err := preserveSkillSwitchWorkspace(ctx, ex, nil, "a", "", "s"); err == nil {
 		t.Fatal("missing durable store allowed switch")
+	}
+}
+
+func TestPublishedSkillLifecycleNextTurn(t *testing.T) {
+	inner := &skillContextPool{fakePool: newFakePool()}
+	pool := NewLifecyclePool(inner, 0, 0)
+	pool.SetLimits(Limits{MaxContainers: 1, MaxPerUser: 1})
+	pool.Start()
+	defer pool.CloseAll()
+	ctx := context.Background()
+	old, _ := pool.Get(WithSkillDirs(ctx, []string{"/v1"}), "a", "", "s")
+	if _, err := old.ReadFile(ctx, "test"); err != nil {
+		t.Fatal(err)
+	}
+	next, _ := pool.Get(WithSkillDirs(ctx, []string{"/v2"}), "a", "", "s")
+	if _, err := next.ReadFile(ctx, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if len(inner.seen) != 1 || inner.seen[0] != "/v2" {
+		t.Fatalf("cached lifecycle executor ignored next turn: %v", inner.seen)
+	}
+	if _, err := old.ReadFile(ctx, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if inner.seen[0] != "/v1" {
+		t.Fatal("old turn lost its pinned view")
+	}
+	empty, _ := pool.Get(WithSkillDirs(ctx, nil), "a", "", "s")
+	if _, err := empty.ReadFile(ctx, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if len(inner.seen) != 0 {
+		t.Fatal("deleting final skill did not refresh existing sandbox")
+	}
+	if len(pool.entries) != 1 {
+		t.Fatal("skill switch consumed an extra admission slot")
 	}
 }

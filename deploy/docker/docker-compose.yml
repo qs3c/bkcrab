@@ -25,6 +25,13 @@ services:
       BKCRAB_STORAGE_TYPE: mysql
       BKCRAB_STORAGE_DSN: "bkcrab:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in deploy/docker/.env}@tcp(mysql:3306)/bkcrab?parseTime=true&loc=UTC&charset=utf8mb4"
       BKCRAB_STORAGE_AUTO_MIGRATE: "true"
+      BKCRAB_CONTEXT_CACHE_ENABLED: "${BKCRAB_CONTEXT_CACHE_ENABLED:-false}"
+      BKCRAB_CONTEXT_CACHE_REDIS_ADDR: "${BKCRAB_CONTEXT_CACHE_REDIS_ADDR:-}"
+      BKCRAB_CONTEXT_CACHE_REDIS_PASSWORD: "${BKCRAB_CONTEXT_CACHE_REDIS_PASSWORD:-}"
+      BKCRAB_CONTEXT_CACHE_REDIS_DB: "${BKCRAB_CONTEXT_CACHE_REDIS_DB:-0}"
+      BKCRAB_CONTEXT_CACHE_PREFIX: "${BKCRAB_CONTEXT_CACHE_PREFIX:-bkcrab:agentctx:v1:}"
+      BKCRAB_CONTEXT_CACHE_TTL_SECONDS: "${BKCRAB_CONTEXT_CACHE_TTL_SECONDS:-1800}"
+      BKCRAB_CONTEXT_CACHE_TIMEOUT_MS: "${BKCRAB_CONTEXT_CACHE_TIMEOUT_MS:-200}"
       # Keep legacy claimant as the development default. A fair rollout must
       # first deploy every replica with workerMode=paused, drain it, and only
       # then change both values to true/fair in a second deployment.

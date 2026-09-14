@@ -487,29 +487,8 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	if sandboxLimits.WorkspaceBytes > 0 {
-		ws = workspace.NewQuotaStore(ws, sandboxLimits.WorkspaceBytes, sandboxLimits.WorkspaceFiles,
-			func(ctx context.Context, id string) (string, error) {
-				a, err := st.GetAgent(ctx, id)
-				if err != nil {
-					return "", err
-				}
-				if a == nil || a.UserID == "" {
-					return "", fmt.Errorf("workspace agent has no owner")
-				}
-				return a.UserID, nil
-			}, func(ctx context.Context, user string) ([]string, error) {
-				rows, err := st.ListAgents(ctx, user)
-				if err != nil {
-					return nil, err
-				}
-				ids := make([]string, 0, len(rows))
-				for _, a := range rows {
-					ids = append(ids, a.ID)
-				}
-				return ids, nil
-			})
-	}
+	ws = withWorkspaceQuota(st, ws, sandboxLimits)
+
 	if db, ok := st.(*store.DBStore); ok {
 		published, err := db.HasSkillPublications(context.Background())
 		if err != nil {

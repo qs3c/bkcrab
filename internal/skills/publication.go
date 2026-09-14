@@ -518,3 +518,11 @@ func (s *PublishedStore) ReconcileLocalSkills(ctx context.Context) error {
 	}
 	return nil
 }
+
+// Preserve local hydration through the publication wrapper.
+func (s *PublishedStore) LocalScopeDir(a, p, session string) (string, bool) {
+	if local, ok := s.Store.(workspace.LocalScoper); ok {
+		return local.LocalScopeDir(a, p, session)
+	}
+	return "", false
+}

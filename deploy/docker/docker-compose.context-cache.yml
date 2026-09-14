@@ -1,0 +1,24 @@
+# Disposable context cache, isolated from scheduling Redis memory and eviction.
+services:
+  bkcrab:
+    environment:
+      BKCRAB_CONTEXT_CACHE_ENABLED: "true"
+      BKCRAB_CONTEXT_CACHE_REDIS_ADDR: context-cache-redis:6379
+      BKCRAB_CONTEXT_CACHE_TTL_SECONDS: "1800"
+    depends_on:
+      context-cache-redis:
+        condition: service_healthy
+  context-cache-redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: [redis-server, --maxmemory, 256mb, --maxmemory-policy, allkeys-lru, --save, "", --appendonly, "no"]
+    mem_limit: 384m
+    cpus: 0.5
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
