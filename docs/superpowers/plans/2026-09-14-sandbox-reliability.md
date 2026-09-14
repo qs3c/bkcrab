@@ -16,27 +16,27 @@
 
 ## Task 1: Resource limits and admission
 
-- [ ] Add deployment-only sandbox limit parsing and pass limits into Docker creation and lifecycle admission.
-- [ ] Test global/user reservation, cancellation and failure cleanup in internal/sandbox/admission_test.go.
-- [ ] Protect live tool calls from eviction and preserve user context in lifecycle.go; test long calls.
-- [ ] Run `go test ./internal/sandbox ./internal/config`.
+- [x] Add deployment-only sandbox limit parsing and pass limits into Docker creation and lifecycle admission.
+- [x] Test global/user reservation, cancellation and failure cleanup in internal/sandbox/admission_test.go.
+- [x] Protect live tool calls from eviction and preserve user context in lifecycle.go; test long calls.
+- [x] Run `go test ./internal/sandbox ./internal/config`.
 
 ## Task 2: Streaming persistence
 
-- [ ] Add Docker streaming sync and hydration capabilities using io.Reader, scoped file paths and bounded buffers.
-- [ ] Test large-file round trip, changed same-size data and symlink handling.
-- [ ] Call synchronization after Docker execution and before eviction; preserve local files on restore.
-- [ ] Run `go test ./internal/sandbox` and compile gateway.
+- [x] Add Docker streaming sync and hydration capabilities using io.Reader, scoped file paths and bounded buffers.
+- [x] Test large-file round trip, changed same-size data and symlink handling.
+- [x] Call synchronization after Docker execution and before eviction; preserve local files on restore.
+- [x] Run `go test ./internal/sandbox` and compile gateway.
 
 ## Task 3: Host recovery
 
-- [ ] Add watchdog Python script, unit tests, systemd service/timer; check /livez independently of /readyz.
-- [ ] Add configurable Compose resource budgets and log rotation, document install and backup restore.
-- [ ] Validate Python tests and Compose config without printing secrets.
+- [x] Add watchdog Python script, unit tests, systemd service/timer; check /livez independently of /readyz.
+- [x] Add configurable Compose resource budgets and log rotation, document install and backup restore.
+- [x] Validate Python tests and Compose config without printing secrets.
 
 ## Task 4: Deployment
 
-- [ ] Recover Tailscale; inspect filesystem quota support and server budgets.
-- [ ] Implement/enable supported hard disk quotas after preserving existing data.
-- [ ] Commit and push reviewed changes; pull on server; stop existing service before replacement.
-- [ ] Verify resource flags, queue behavior, readiness and watchdog operation; record any remaining blockers honestly.
+- [x] Recover Tailscale; inspect filesystem quota support and server budgets.
+- [x] Implement/enable supported hard disk quotas after preserving existing data.
+- [x] Commit and push reviewed changes; pull on server; stop existing service before replacement.
+- [x] Verify resource flags, queue behavior, readiness and watchdog operation; record any remaining blockers honestly.
