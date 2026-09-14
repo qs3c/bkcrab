@@ -18,6 +18,9 @@ import (
 
 var ErrSuperseded = errors.New("cache fill superseded by a newer generation")
 
+// DefaultTTL bounds cache residency; it does not limit a turn's lifetime.
+const DefaultTTL = 30 * time.Minute
+
 type Config struct {
 	Addr     string
 	Password string
@@ -55,7 +58,7 @@ func New(cfg Config) (*Cache, error) {
 		cfg.Prefix = "bkcrab:agentctx:v1:"
 	}
 	if cfg.TTL == 0 {
-		cfg.TTL = 10 * time.Minute
+		cfg.TTL = DefaultTTL
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 200 * time.Millisecond

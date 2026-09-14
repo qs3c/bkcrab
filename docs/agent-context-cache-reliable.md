@@ -1,12 +1,12 @@
 # Agent 上下文共享缓存（可靠通知实现）
 
-本实现位于 `codex/agent-context-cache-reliable`，从 main 的 `1a765d1` 独立开发，与 `codex/agent-context-cache` 是候选方案关系。默认关闭 Redis 加速，未更改现有服务部署。
+提供可恢复的共享上下文缓存、会话版本校验和版本化技能发布。Redis 加速默认关闭，启用后默认保留缓存 30 分钟。
 
 ## 行为
 
 - MD/USER/MEMORY：精确作用域缓存；受控写入后立即失效。owner fallback 分开读取精确记录，不缓存混合身份。一次回合的系统提示和附加提醒共用资料快照。
 - 会话：Redis 命中返回完整工作集；miss 回源 `sessions.messages`，不重放完整归档。写入先提交 SQL，再从已提交数据同步 Redis。消息正文、工具调用、多模态字段、元数据、原始助手响应及时间戳都保留。
-- 会话并发：会话管理器携带持久化 revision；过期的写入被拒绝，停止继续请求模型/执行工具，要求重新加载。它不自动重放工具，也不替代跨实例执行调度。
+- 会话并发：缓存返回不存在时，回源取得同一状态下的工作集与 revision（包括删除后的 tombstone），避免把新会话的 revision 赋给空消息。仅修改标题不会推进工作集 revision；消息或上下文字段变化仍推进版本。会话管理器携带持久化 revision；过期的写入被拒绝，停止继续请求模型/执行工具，要求重新加载。它不自动重放工具，也不替代跨实例执行调度。
 - 技能：完整文件树上传为按 SHA-256 寻址的对象，再提交数据库中的 manifest。切换发布记录后失效清单缓存；本地按版本下载并校验 hash，通过原子 symlink 切换。技能摘要、load_skill 与沙箱使用同一回合固定的版本视图。
 - 沙箱：识别已发布技能的 symlink；相同版本复用实例，下一回合版本变化时重建实例。Docker 工作区通过原挂载保留；云沙箱切换前完整保存工作区，保存失败不销毁原实例。重建会重置进程、浏览器及 shell 内存状态；独立会话不受影响。
 - 技能生命周期状态：Redis 缓存 `ListSkillUsage` 的结果；写入/加载统计/删除触发通知。配置开关和环境门控仍使用当前配置，不长期缓存可变门控结果。
@@ -29,7 +29,7 @@ Redis 单个 hash 包含随机 epoch、固定宽度 revision 和 payload。失�
 ## 技能发布与外部修改
 
 - 安装/ZIP 上传先写临时目录，上传完整包后发布；失败不会发布半个包。
-- `skill_manage`、技能学习器和技能清理器经 Manager 发布；文件工具对已发布文件采用副本编辑，避免覆盖旧版本。
+- `skill_manage`、技能学习器和技能清理器经 Manager 发布；主机和沙箱的 `write_file` / `edit_file` 对 `skills/<slug>/...` 采用副本编辑并发布，避免覆盖旧版本；直接写入已发布版本或其绝对路径会被拒绝，并提示使用相对技能路径发布。受控发布成功后，健康实例的下一个 turn 会看到新增或更新的技能，不需要等待 30 分钟 TTL；已运行的 turn 保持原有技能视图。
 - legacy `skills/<slug>/...` 对象首次读取时导入。导入只创建不存在的发布记录，不能覆盖并发发布的新包；`_initialized` 标记避免每回合重新 LIST。
 - 无需另建“上传中”任务：提交 manifest 前的上传失败/崩溃只留下未引用 blob；旧版本继续可用。客户端可重试，完整上传内容按 hash 复用。这与原计划中的发布任务表不同，但具有相同的“不暴露半成品”边界。
 - Gateway 每 30 秒对已注册本地技能根目录进行后台内容校验，发现外部修改或新目录后发布；未完整写完 SKILL.md 的目录延后处理。任意 exec 外部编辑不承诺立即可见，也不承诺对恶意直接改写版本目录的操作保持历史字节不变。
@@ -44,13 +44,13 @@ BKCRAB_CONTEXT_CACHE_REDIS_ADDR=redis:6379
 BKCRAB_CONTEXT_CACHE_REDIS_PASSWORD=...
 BKCRAB_CONTEXT_CACHE_REDIS_DB=0
 BKCRAB_CONTEXT_CACHE_PREFIX=bkcrab:agentctx:v1:
-BKCRAB_CONTEXT_CACHE_TTL_SECONDS=600
+BKCRAB_CONTEXT_CACHE_TTL_SECONDS=1800
 BKCRAB_CONTEXT_CACHE_TIMEOUT_MS=200
 ```
 
-默认关闭；TTL 默认 600 秒，超时默认 200 毫秒。读取不会延长 TTL，因此不会因持续活跃而永久保留漏失效的数据。连接参数和开关与 fair queue 独立；缓存前缀必须位于 `bkcrab:agentctx:` 下。凭证不写入日志或本说明。
+默认关闭；TTL 默认 1800 秒（30 分钟），超时默认 200 毫秒。读取不会延长 TTL，因此不会因持续活跃而永久保留漏失效的数据。连接参数和开关与 fair queue 独立；缓存前缀必须位于 `bkcrab:agentctx:` 下。凭证不写入日志或本说明。
 
-生产先运行数据库迁移；关闭 AutoMigrate 的部署须提前部署 DDL，启用缓存时会检查表。新版本会话持久化依赖版本表，不能跳过迁移。迁移账户需要创建表、索引及 TRIGGER（PostgreSQL 还需函数）权限；运行账户需要源表与通知表读写权限。MySQL 8.4 和 SQLite 有实际执行验证；PostgreSQL 生成对应触发器/函数，但本次未用 PostgreSQL 实例做集成验证。
+生产先运行数据库迁移；关闭 AutoMigrate 的部署须提前部署 DDL，启用缓存时会检查表。新版本会话持久化依赖版本表，不能跳过迁移。此次修复还会将 sessions 的 UPDATE 触发器升级到 v2：先创建新触发器，再移除旧触发器；已有数据库也需要执行迁移。迁移账户需要创建表、索引及 TRIGGER（PostgreSQL 还需函数）权限；运行账户需要源表与通知表读写权限。MySQL 8.4 和 SQLite 有实际执行验证；PostgreSQL 生成对应触发器/函数，但本次未用 PostgreSQL 实例做集成验证。
 
 不要对现有调度 Redis 执行 FLUSHDB/FLUSHALL，也不要为了缓存将共享实例改成可能淘汰调度 key 的策略。缓存与调度可使用独立 Redis 实例；仅分逻辑 DB 不隔离内存和淘汰。
 
@@ -75,9 +75,15 @@ go test -race ./internal/store ./internal/contextcache ./internal/skills ./inter
 
 尚未进行生产流量压测或端到端延迟对比，因此不承诺具体性能提升百分比。已确认收益是热读路径不再反复读取这些源数据；可靠通知和版本控制增加了持久化写入成本。
 
-## 本分支验证记录
+## 验证记录
 
 - 全仓库 `go test ./... -run '^$'`：编译通过（不代表全仓库测试都执行）。
 - store/session/contextcache/skills/config/agent/agent-tools/gateway/setup 的包内完整测试通过；sandbox 完整测试通过。
 - 隔离 Redis 7.4 + MySQL 8.4 上的跨实例、故障补偿和并发测试通过 `-race`；SQLite 路径也有执行验证。
 - Docker 使用本地 redis:7.4-alpine 测试镜像，验证真实容器的旧/新技能只读挂载、同版本复用及工作区保留。测试通过 `BKCRAB_CACHE_TEST_DOCKER_IMAGE` 显式开启；生产沙箱镜像、E2B/Boxlite 云端未做端到端验证。
+
+## 合并前修复验证
+
+回归测试覆盖：陈旧负缓存与并发创建不会丢失已有消息；不存在/删除后的会话快照拒绝后到的冲突写入，清空后并发重建的消息仍保留；活动回合改标题后仍可保存回答；旧触发器升级及重复迁移；主机和沙箱编辑技能不改变旧视图，发布失败不切换；跨实例在热缓存尚未过期时发布新增技能，下一个 turn 的摘要与执行目录均刷新；初始技能目录不存在时也会固定空视图，首次新增不会泄漏到旧 turn。
+
+TTL 是 Redis 缓存保留时间，不限制 turn 时长。当前 turn 已固定的技能版本不会因 Redis 过期被清除；正常发布通过失效通知即时推进下一回合的可见版本。

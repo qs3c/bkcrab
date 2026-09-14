@@ -143,3 +143,25 @@ func TestPublicationRejectsTraversalManifest(t *testing.T) {
 		t.Fatal("unsafe manifest accepted")
 	}
 }
+
+func TestPublicationFirstSkillWaitsForNextTurn(t *testing.T) {
+	ctx := context.Background()
+	db := &publicationDB{rows: map[string]map[string]store.SkillPublication{}}
+	p := NewPublishedStore(workspace.NewLocalFS(t.TempDir()), db)
+	root := filepath.Join(t.TempDir(), "skills")
+	if err := p.HydratePublishedSkills(ctx, "a", root); err != nil {
+		t.Fatal(err)
+	}
+	oldView := p.FrozenSkillDirs([]string{root})[0]
+	if err := p.WritePublishedSkillFile(ctx, "a", root, "first", "SKILL.md", []byte("first skill")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(oldView, "first", "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatal("first skill leaked into old empty turn", err)
+	}
+	newView := p.FrozenSkillDirs([]string{root})[0]
+	data, err := os.ReadFile(filepath.Join(newView, "first", "SKILL.md"))
+	if err != nil || string(data) != "first skill" || newView == oldView {
+		t.Fatalf("next turn did not get first skill: %q %v", data, err)
+	}
+}

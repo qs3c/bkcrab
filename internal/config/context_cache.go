@@ -22,7 +22,7 @@ type EnvContextCache struct {
 }
 
 func loadContextCacheEnv() EnvContextCache {
-	c := EnvContextCache{RedisAddr: os.Getenv("BKCRAB_CONTEXT_CACHE_REDIS_ADDR"), RedisPassword: os.Getenv("BKCRAB_CONTEXT_CACHE_REDIS_PASSWORD"), Prefix: os.Getenv("BKCRAB_CONTEXT_CACHE_PREFIX"), TTLSeconds: 600, TimeoutMS: 200}
+	c := EnvContextCache{RedisAddr: os.Getenv("BKCRAB_CONTEXT_CACHE_REDIS_ADDR"), RedisPassword: os.Getenv("BKCRAB_CONTEXT_CACHE_REDIS_PASSWORD"), Prefix: os.Getenv("BKCRAB_CONTEXT_CACHE_PREFIX"), TTLSeconds: int(contextcache.DefaultTTL / time.Second), TimeoutMS: 200}
 	if s := os.Getenv("BKCRAB_CONTEXT_CACHE_ENABLED"); s != "" {
 		v, e := strconv.ParseBool(s)
 		c.Enabled = v

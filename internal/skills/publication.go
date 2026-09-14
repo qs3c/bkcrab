@@ -402,10 +402,12 @@ func (s *PublishedStore) FrozenSkillDirs(dirs []string) []string {
 	out := make([]string, 0, len(dirs))
 	for _, root := range dirs {
 		entries, err := os.ReadDir(root)
-		if err != nil {
+		if err != nil && !os.IsNotExist(err) {
 			out = append(out, root)
 			continue
 		}
+		// Pin an empty view even before the first skill directory exists. Keeping
+		// the live root here would expose a first publication inside this turn.
 		targets := map[string]string{}
 		for _, e := range entries {
 			if strings.HasPrefix(e.Name(), ".") {

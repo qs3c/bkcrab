@@ -3584,10 +3584,16 @@ func (d *DBStore) SaveSession(ctx context.Context, userID, agentID, sessionKey s
 		if err != nil {
 			return err
 		}
+		// A no-op upsert need not advance the trigger revision. Read the actual
+		// version while still holding the write lock rather than guessing +1.
+		var committedRevision int64
+		if err = tx.QueryRowContext(ctx, fmt.Sprintf("SELECT revision FROM context_cache_changes WHERE kind='session' AND s1=%s AND s2=%s AND s3=%s", d.ph(1), d.ph(2), d.ph(3)), userID, agentID, sessionKey).Scan(&committedRevision); err != nil {
+			return err
+		}
 		if err = tx.Commit(); err != nil {
 			return err
 		}
-		session.Revision = revision + 1
+		session.Revision = committedRevision
 		return nil
 	}
 

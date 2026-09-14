@@ -501,7 +501,9 @@ func (s *Session) Clear() {
 		s.persistenceErr = s.store.DeleteSession(s.ctx(), s.agentID, s.sessionKey)
 		if s.persistenceErr == nil {
 			if st, ok := s.store.(versionedStore); ok {
-				_, s.revision, s.persistenceErr = st.GetSessionVersion(s.ctx(), s.agentID, s.sessionKey)
+				// Another worker can recreate the session after deletion. Keep its
+				// messages with its revision rather than attaching that version to nil.
+				s.Messages, s.revision, s.persistenceErr = st.GetSessionVersion(s.ctx(), s.agentID, s.sessionKey)
 			}
 		}
 	} else {

@@ -30,15 +30,16 @@ func (a *StoreAdapter) GetSession(ctx context.Context, agentID, sessionKey strin
 func (a *StoreAdapter) GetSessionVersion(ctx context.Context, agentID, sessionKey string) ([]provider.Message, int64, error) {
 
 	rec, err := a.st.GetSession(ctx, a.userID, agentID, sessionKey)
-	if err != nil || rec == nil {
-		if errors.Is(err, store.ErrNotFound) {
-			if source, ok := a.st.(interface {
-				SessionRevision(context.Context, string, string, string) (int64, error)
-			}); ok {
-				revision, e := source.SessionRevision(ctx, a.userID, agentID, sessionKey)
-				return nil, revision, e
-			}
+	if errors.Is(err, store.ErrNotFound) {
+		if source, ok := a.st.(interface {
+			GetSessionAfterMiss(context.Context, string, string, string) (*store.SessionRecord, error)
+		}); ok {
+			// A cached absence must not inherit the revision of a row created
+			// since that absence was observed. Reload the workset with its version.
+			rec, err = source.GetSessionAfterMiss(ctx, a.userID, agentID, sessionKey)
 		}
+	}
+	if err != nil || rec == nil {
 		return nil, 0, err
 	}
 	msgs := make([]provider.Message, len(rec.Messages))

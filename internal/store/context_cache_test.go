@@ -201,3 +201,101 @@ func TestContextCacheSkillPublicationInvalidation(t *testing.T) {
 		t.Fatal("publication deletion stale", err)
 	}
 }
+
+func TestContextCacheSessionTitleTriggerUpgrade(t *testing.T) {
+	a, b := cacheStores(t)
+	ctx := context.Background()
+	id := uuid.NewString()
+	// Recreate the candidate's original trigger, then exercise the upgrade twice.
+	if _, err := a.db.ExecContext(ctx, "DROP TRIGGER ctxcache_sessions_update_v2"); err != nil {
+		t.Fatal(err)
+	}
+	stmt := "INSERT INTO context_cache_changes(kind,s1,s2,s3,revision,applied) VALUES ('session',NEW.user_id,NEW.agent_id,NEW.session_key,1,0)"
+	if a.dialect == mysqlDialect {
+		stmt += " ON DUPLICATE KEY UPDATE revision=revision+1,dirty=TRUE"
+		stmt = "CREATE TRIGGER ctxcache_sessions_update AFTER UPDATE ON sessions FOR EACH ROW " + stmt
+	} else {
+		stmt += " ON CONFLICT(kind,s1,s2,s3) DO UPDATE SET revision=context_cache_changes.revision+1,dirty=TRUE"
+		stmt = "CREATE TRIGGER ctxcache_sessions_update AFTER UPDATE ON sessions BEGIN " + stmt + "; END"
+	}
+	if _, err := a.db.ExecContext(ctx, stmt); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := a.migrateContextCache(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec := &SessionRecord{Messages: []SessionMessage{{Role: "user", Content: "question"}}}
+	if err := a.SaveSession(ctx, "u", id, id, rec); err != nil {
+		t.Fatal(err)
+	}
+	original := rec.Revision
+	for _, title := range []string{"renamed", "renamed"} {
+		if err := b.RenameSession(ctx, "u", id, id, title); err != nil {
+			t.Fatal(err)
+		}
+		revision, err := a.SessionRevision(ctx, "u", id, id)
+		if err != nil || revision != original {
+			t.Fatalf("title changed workset revision: %d -> %d (%v)", original, revision, err)
+		}
+	}
+	rec.Messages = append(rec.Messages, SessionMessage{Role: "assistant", Content: "answer"})
+	if err := a.SaveSession(WithExpectedSessionRevision(ctx, original), "u", id, id, rec); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := b.GetSession(ctx, "u", id, id)
+	if err != nil || persisted.Revision != rec.Revision || len(persisted.Messages) != 2 {
+		t.Fatalf("inconsistent saved revision/workset: %+v %v", persisted, err)
+	}
+	if err := b.SaveSession(WithExpectedSessionRevision(ctx, original), "u", id, id, &SessionRecord{}); !errors.Is(err, ErrSessionConflict) {
+		t.Fatalf("real stale writer accepted: %v", err)
+	}
+	// Case-only JSON edits must advance the revision even under a MySQL
+	// case-insensitive table collation and without changing updated_at.
+	query := fmt.Sprintf("UPDATE sessions SET messages=%s WHERE user_id=%s AND agent_id=%s AND session_key=%s", a.ph(1), a.ph(2), a.ph(3), a.ph(4))
+	for _, content := range []string{`[{"role":"user","content":"UPPER"}]`, `[{"role":"user","content":"upper"}]`} {
+		before, err := a.SessionRevision(ctx, "u", id, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = a.db.ExecContext(ctx, query, content, "u", id, id); err != nil {
+			t.Fatal(err)
+		}
+		after, err := a.SessionRevision(ctx, "u", id, id)
+		if err != nil || after != before+1 {
+			t.Fatalf("case-sensitive edit not versioned: %d -> %d (%v)", before, after, err)
+		}
+	}
+}
+
+func TestContextCacheMissingWorksetReloadsSource(t *testing.T) {
+	a, b := cacheStores(t)
+	ctx := context.Background()
+	id := uuid.NewString()
+	// Stop reconciliation so a healthy reader can retain a stale negative entry
+	// while a writer loses its Redis connection. Only these private clients stop.
+	for _, d := range []*DBStore{a, b} {
+		d.contextCache.cancel()
+		<-d.contextCache.done
+	}
+	b.reconcileContextCache(ctx) // Cancellation may have interrupted an in-flight worker.
+	for i := 0; i < 2; i++ {
+		if _, err := b.GetSession(ctx, "u", id, id); !errors.Is(err, ErrNotFound) {
+			t.Fatal(err)
+		}
+	}
+	if err := a.contextCache.backend.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SaveSession(ctx, "u", id, id, &SessionRecord{Messages: []SessionMessage{{Role: "user", Content: "created during partition"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.GetSession(ctx, "u", id, id); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected stale negative cache before reload: %v", err)
+	}
+	rec, err := b.GetSessionAfterMiss(ctx, "u", id, id)
+	if err != nil || len(rec.Messages) != 1 || rec.Messages[0].Content != "created during partition" {
+		t.Fatalf("miss adopted wrong workset: %+v %v", rec, err)
+	}
+}

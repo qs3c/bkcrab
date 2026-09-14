@@ -610,6 +610,49 @@ func makeReadFile(r *Registry) ToolFunc {
 	}
 }
 
+// Published version paths are read-only to file tools, even when a model uses
+// an absolute path returned by load_skill. Relative skills/<slug>/... writes use
+// the copy-and-publish route; direct host writes must not bypass it.
+func (r *Registry) validatePublishedSkillWrite(path string) error {
+	if _, ok := r.workspaceStore.(interface {
+		WritePublishedSkillFile(context.Context, string, string, string, string, []byte) error
+	}); !ok {
+		return nil
+	}
+	clean := filepath.Clean(path)
+	protected := func(p string) bool {
+		p = filepath.ToSlash(p)
+		return strings.Contains(p, "/skills/.versions/") || strings.Contains(p, "/skills/.views/")
+	}
+	if r.isSkillPath(clean) {
+		slug := strings.Split(strings.TrimPrefix(filepath.ToSlash(clean), "skills/"), "/")[0]
+		if !strings.HasPrefix(slug, ".") {
+			return nil
+		}
+	} else {
+		if !filepath.IsAbs(clean) {
+			return nil
+		}
+		// Resolve the closest existing parent as well, to catch new files written
+		// through a visible skill symlink into an older version directory.
+		for p := clean; ; p = filepath.Dir(p) {
+			if protected(p) {
+				break
+			}
+			if resolved, err := filepath.EvalSymlinks(p); err == nil {
+				if !protected(resolved) {
+					return nil
+				}
+				break
+			}
+			if filepath.Dir(p) == p {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("published skill versions are read-only; use skills/<name>/<file> to publish an edit")
+}
+
 func makeWriteFile(r *Registry) ToolFunc {
 	return func(ctx context.Context, rawArgs json.RawMessage) (string, error) {
 		var args writeFileArgs
@@ -618,6 +661,9 @@ func makeWriteFile(r *Registry) ToolFunc {
 		}
 		if err := validateFileTargetPath(args.Path); err != nil {
 			return "", fmt.Errorf("write_file: %w", err)
+		}
+		if err := r.validatePublishedSkillWrite(args.Path); err != nil {
+			return "", err
 		}
 
 		if r.managedMemoryFileBlocked(args.Path) {
@@ -703,6 +749,38 @@ func makeWriteFile(r *Registry) ToolFunc {
 	}
 }
 
+// Skill edits share write_file's publication path. Writing through the visible
+// symlink would mutate an immutable package still used by another turn.
+func (r *Registry) editSkillOnHost(ctx context.Context, args editFileArgs) (string, error) {
+	root := r.skillRoot()
+	if root == "" {
+		return "", fmt.Errorf("edit_file: no skills root configured for path %q", args.Path)
+	}
+	full, err := resolvePathSandboxed(root, r.effectiveSandboxRoot(root), args.Path)
+	if err != nil {
+		return "", err
+	}
+	if isGlobalSkillsPath(full) {
+		return "", errGlobalSkillsDirWrite
+	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return "", fmt.Errorf("read skill file: %w", err)
+	}
+	if looksBinary(data) {
+		return binaryRefusal(args.Path, len(data)), nil
+	}
+	updated, count, err := applyEdit(args.Path, string(data), args.OldString, args.NewString, args.ReplaceAll)
+	if err != nil {
+		return "", err
+	}
+	full, err = r.writeSkillToHost(ctx, args.Path, updated)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Edited %s (%d replacement(s))", full, count), nil
+}
+
 func makeEditFile(r *Registry) ToolFunc {
 	return func(ctx context.Context, rawArgs json.RawMessage) (string, error) {
 		var args editFileArgs
@@ -711,6 +789,9 @@ func makeEditFile(r *Registry) ToolFunc {
 		}
 		if err := validateFileTargetPath(args.Path); err != nil {
 			return "", fmt.Errorf("edit_file: %w", err)
+		}
+		if err := r.validatePublishedSkillWrite(args.Path); err != nil {
+			return "", err
 		}
 
 		if r.managedMemoryFileBlocked(args.Path) {
@@ -777,6 +858,10 @@ func makeEditFile(r *Registry) ToolFunc {
 				_ = os.WriteFile(disk, []byte(updated), 0o644)
 			}
 			return fmt.Sprintf("Edited %s (%d replacement(s))", name, count), nil
+		}
+
+		if r.isSkillPath(args.Path) && r.skillRoot() != "" {
+			return r.editSkillOnHost(ctx, args)
 		}
 
 		root := r.rootForPath(args.Path)
@@ -1034,6 +1119,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		if err := validateFileTargetPath(args.Path); err != nil {
 			return "", fmt.Errorf("write_file: %w", err)
 		}
+		if err := r.validatePublishedSkillWrite(args.Path); err != nil {
+			return "", err
+		}
 		if r.managedMemoryFileBlocked(args.Path) {
 			return ManagedMemoryFileRefusal, nil
 		}
@@ -1174,6 +1262,9 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		if err := validateFileTargetPath(args.Path); err != nil {
 			return "", fmt.Errorf("edit_file: %w", err)
 		}
+		if err := r.validatePublishedSkillWrite(args.Path); err != nil {
+			return "", err
+		}
 		if r.managedMemoryFileBlocked(args.Path) {
 			return ManagedMemoryFileRefusal, nil
 		}
@@ -1245,12 +1336,7 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 			// 镜像）仍然是可编辑的。
 			return editSandboxRMW()
 		case RouteSkillStore:
-			// 今天，技能文件没有就地编辑语义；落下
-			// 到沙箱 RMW，它可以读取 /skills/<name>/...
-			// 从只读挂载并写入（写入将失败
-			// 如果挂载是 RO，则在 FS 层；这是正确的错误
-			// 到模型表面）。
-			return editSandboxRMW()
+			return r.editSkillOnHost(ctx, args)
 		case RouteHostFS:
 			full, ok := hostHomePath(args.Path)
 			if !ok {

@@ -43,3 +43,27 @@ func expectedSessionRevision(ctx context.Context) (int64, bool) {
 func (d *DBStore) SessionRevision(ctx context.Context, u, a, k string) (int64, error) {
 	return d.cacheRevision(ctx, cacheScope{"session", u, a, k})
 }
+
+// GetSessionAfterMiss bypasses negative cache entries. An absent workset and its
+// tombstone revision must describe the same source state, or a concurrent create
+// could lend its revision to an empty workset and authorize a destructive save.
+func (d *DBStore) GetSessionAfterMiss(ctx context.Context, u, a, k string) (*SessionRecord, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		before, err := d.SessionRevision(ctx, u, a, k)
+		if err != nil {
+			return nil, err
+		}
+		rec, err := d.getSessionUncached(ctx, u, a, k)
+		if !errors.Is(err, ErrNotFound) {
+			return rec, err // Existing rows include the revision in the same SELECT.
+		}
+		after, err := d.SessionRevision(ctx, u, a, k)
+		if err != nil {
+			return nil, err
+		}
+		if before == after {
+			return &SessionRecord{Revision: after}, nil
+		}
+	}
+	return nil, ErrSessionConflict
+}

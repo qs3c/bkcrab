@@ -65,6 +65,27 @@ func (d *DBStore) migrateContextCache(ctx context.Context) error {
 			}
 			vals := fmt.Sprintf("'%s',%s,%s,%s", s.kind, expr(s.a), expr(s.b), expr(s.c))
 			name := "ctxcache_" + s.table + "_" + strings.ToLower(event)
+			condition := ""
+			if s.table == "sessions" && event == "UPDATE" {
+				// Titles are display metadata, absent from SessionRecord. Changing
+				// only the title must not invalidate an active turn's write version.
+				// Version the trigger so existing installations receive this fix.
+				name += "_v2"
+				var equal []string
+				for _, col := range []string{"user_id", "agent_id", "session_key", "messages", "channel", "account_id", "chat_id", "project_id", "updated_at", "chatter_user_id"} {
+					op := " IS "
+					if d.dialect == mysqlDialect {
+						// Session JSON is case-sensitive even when the table uses a
+						// case-insensitive MySQL collation.
+						equal = append(equal, "CAST(NEW."+col+" AS BINARY) <=> CAST(OLD."+col+" AS BINARY)")
+						continue
+					} else if d.dialect == "postgres" {
+						op = " IS NOT DISTINCT FROM "
+					}
+					equal = append(equal, "NEW."+col+op+"OLD."+col)
+				}
+				condition = "NOT (" + strings.Join(equal, " AND ") + ")"
+			}
 			stmt := "INSERT INTO context_cache_changes(kind,s1,s2,s3,revision,applied) VALUES (" + vals + ",1,0)"
 			if d.dialect == mysqlDialect {
 				stmt += " ON DUPLICATE KEY UPDATE revision=revision+1,dirty=TRUE"
@@ -75,11 +96,18 @@ func (d *DBStore) migrateContextCache(ctx context.Context) error {
 				if count > 0 {
 					continue
 				}
+				if condition != "" {
+					stmt = "BEGIN IF " + condition + " THEN " + stmt + "; END IF; END"
+				}
 				stmt = "CREATE TRIGGER " + name + " AFTER " + event + " ON " + s.table + " FOR EACH ROW " + stmt
 			} else {
 				stmt += " ON CONFLICT(kind,s1,s2,s3) DO UPDATE SET revision=context_cache_changes.revision+1,dirty=TRUE"
 				if d.dialect == "postgres" {
-					fn := "CREATE OR REPLACE FUNCTION " + name + "_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN " + stmt + "; RETURN " + ref + "; END; $$"
+					body := stmt + ";"
+					if condition != "" {
+						body = "IF " + condition + " THEN " + body + " END IF;"
+					}
+					fn := "CREATE OR REPLACE FUNCTION " + name + "_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN " + body + " RETURN " + ref + "; END; $$"
 					if _, err := d.db.ExecContext(ctx, fn); err != nil {
 						return err
 					}
@@ -92,7 +120,11 @@ func (d *DBStore) migrateContextCache(ctx context.Context) error {
 					}
 					stmt = "CREATE TRIGGER " + name + " AFTER " + event + " ON " + s.table + " FOR EACH ROW EXECUTE FUNCTION " + name + "_fn()"
 				} else {
-					stmt = "CREATE TRIGGER IF NOT EXISTS " + name + " AFTER " + event + " ON " + s.table + " BEGIN " + stmt + "; END"
+					when := ""
+					if condition != "" {
+						when = " WHEN " + condition
+					}
+					stmt = "CREATE TRIGGER IF NOT EXISTS " + name + " AFTER " + event + " ON " + s.table + when + " BEGIN " + stmt + "; END"
 				}
 			}
 			if _, err := d.db.ExecContext(ctx, stmt); err != nil {
@@ -100,5 +132,12 @@ func (d *DBStore) migrateContextCache(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
+	// Install the replacement before removing the old trigger: a retry after a
+	// migration interruption cannot leave source writes without notifications.
+	drop := "DROP TRIGGER IF EXISTS ctxcache_sessions_update"
+	if d.dialect == "postgres" {
+		drop += " ON sessions"
+	}
+	_, err := d.db.ExecContext(ctx, drop)
+	return err
 }
