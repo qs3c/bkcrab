@@ -87,3 +87,9 @@ go test -race ./internal/store ./internal/contextcache ./internal/skills ./inter
 回归测试覆盖：陈旧负缓存与并发创建不会丢失已有消息；不存在/删除后的会话快照拒绝后到的冲突写入，清空后并发重建的消息仍保留；活动回合改标题后仍可保存回答；旧触发器升级及重复迁移；主机和沙箱编辑技能不改变旧视图，发布失败不切换；跨实例在热缓存尚未过期时发布新增技能，下一个 turn 的摘要与执行目录均刷新；初始技能目录不存在时也会固定空视图，首次新增不会泄漏到旧 turn。
 
 TTL 是 Redis 缓存保留时间，不限制 turn 时长。当前 turn 已固定的技能版本不会因 Redis 过期被清除；正常发布通过失效通知即时推进下一回合的可见版本。
+
+## 单机部署整合补充
+
+`docker-compose.context-cache.yml` 可启用独立 Redis 缓存实例（30 分钟 TTL、256 MiB 缓存上限），与调度 Redis 的淘汰空间隔离。技能发布器位于配额包装器外层，文件上传经过配额检查；每用户技能对象与其 Agent 工作区合并计量，全局技能使用单独的受限作用域。生命周期准入包装器在已有执行器上也会检查回合技能版本，换版不额外占用名额。
+
+开启二进制日志的 MySQL 可能在普通账号创建触发器时报 1419；部署时应先用具备相应权限的迁移账号安装触发器，应用仍以普通账号运行。本次未修改全局 log_bin_trust_function_creators，也未给应用账号增加 SUPER 权限。详见 [部署记录](deployments/2026-09-14-context-cache-reliable.md) 与 [面试讲解稿](agent-context-cache-interview.md)。
