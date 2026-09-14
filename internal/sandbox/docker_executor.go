@@ -17,7 +17,8 @@ import (
 // DockerExecutor 包装 DockerSandbox 以实现 Executor。
 // 容器将用户的工作区挂载到 /workspace，所有工具调用作为 docker exec 命令转发。
 type DockerExecutor struct {
-	sb *DockerSandbox
+	sb     *DockerSandbox
+	synced map[string]string // successful content hashes; owned by lifecycle operation
 }
 
 // NewDockerExecutor 创建一个由 Docker 容器支持的沙箱 Executor。
@@ -32,6 +33,9 @@ func NewDockerExecutor(image, workspace string, policy *Policy) (*DockerExecutor
 }
 
 func (d *DockerExecutor) Exec(ctx context.Context, command string, timeout time.Duration) (string, error) {
+	if err := d.sb.ensureRunning(ctx); err != nil {
+		return "", err
+	}
 	execCtx := ctx
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -83,7 +87,11 @@ func (d *DockerExecutor) Exec(ctx context.Context, command string, timeout time.
 	}()
 	defer close(done)
 
-	out, err := d.sb.Exec(execCtx, wrapped, "/workspace")
+	workdir := d.sb.workdir
+	if workdir == "" {
+		workdir = "/workspace"
+	}
+	out, err := d.sb.Exec(execCtx, wrapped, workdir)
 	// 正常退出时，goroutine 从未触发——我们自己清理标记文件。
 	// 超时情况下，goroutine 已经删除了它。
 	if execCtx.Err() == nil {
@@ -104,10 +112,16 @@ func randomExecMarker() string {
 }
 
 func (d *DockerExecutor) ReadFile(ctx context.Context, path string) (string, error) {
+	if err := d.sb.ensureRunning(ctx); err != nil {
+		return "", err
+	}
 	return d.sb.Exec(ctx, fmt.Sprintf("cat %s", shellQuote(path)), "/workspace")
 }
 
 func (d *DockerExecutor) WriteFile(ctx context.Context, path, content string) (string, error) {
+	if err := d.sb.ensureRunning(ctx); err != nil {
+		return "", err
+	}
 	// 通过 stdin 而不是 argv 传输内容。Heredoc-in-argv（先前的实现）
 	// 将字节切片到 docker-exec 命令行中，当内容包含 NULL 字节时，
 	// 立即失败并报错 "fork/exec: invalid argument"——
@@ -123,6 +137,9 @@ func (d *DockerExecutor) WriteFile(ctx context.Context, path, content string) (s
 }
 
 func (d *DockerExecutor) ListDir(ctx context.Context, path string) (string, error) {
+	if err := d.sb.ensureRunning(ctx); err != nil {
+		return "", err
+	}
 	return d.sb.Exec(ctx, fmt.Sprintf("ls -la %s", shellQuote(path)), "/workspace")
 }
 
@@ -183,6 +200,8 @@ func shellQuote(s string) string {
 
 // DockerExecutorPool 管理每个（代理、会话）的 DockerExecutor 实例。
 type DockerExecutorPool struct {
+	limits    Limits
+	owner     func(context.Context, string) (string, error)
 	mu        sync.Mutex
 	executors map[string]*DockerExecutor // key = poolKey(agentID, sessionID)
 	image     string
@@ -237,6 +256,9 @@ func (p *DockerExecutorPool) Get(ctx context.Context, agentID, projectID, sessio
 	if ex, ok := p.executors[key]; ok {
 		return ex, nil
 	}
+	if err := p.prepareQuota(ctx, agentID); err != nil {
+		return nil, err
+	}
 
 	// 绑定挂载布局。项目聊天挂载项目根目录（因此兄弟会话显示在 /workspace 下）
 	// 并将 cwd 设置到自己的子目录中，因此相对写入默认为聊天的文件，
@@ -274,6 +296,7 @@ func (p *DockerExecutorPool) Get(ctx context.Context, agentID, projectID, sessio
 	// 连接技能挂载。通过 NewDockerExecutor 构建会在尚未告知技能目录的
 	// 沙箱上立即调用 Create。
 	sb := NewDockerSandbox(p.image, workspace, p.policy)
+	sb.poolOwner = ownerLabel(p.workspaceRoot)
 	if workdir != "" {
 		sb.SetWorkdir(workdir)
 	}
@@ -307,8 +330,11 @@ func (p *DockerExecutorPool) Release(agentID, projectID, sessionID string) error
 	defer p.mu.Unlock()
 	key := poolKey(agentID, projectID, sessionID)
 	if ex, ok := p.executors[key]; ok {
+		if err := ex.Close(); err != nil {
+			return err
+		}
 		delete(p.executors, key)
-		return ex.Close()
+		return nil
 	}
 	return nil
 }

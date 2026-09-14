@@ -1,0 +1,69 @@
+# Linux single-server overlay. Install/mount the dedicated filesystem first.
+services:
+  bkcrab:
+    depends_on:
+      quota-image-init:
+        condition: service_completed_successfully
+    mem_limit: ${BKCRAB_GATEWAY_MEMORY:-2g}
+    cpus: ${BKCRAB_GATEWAY_CPUS:-2}
+    stop_grace_period: 90s
+    volumes:
+      - type: bind
+        source: /srv/bkcrab-storage/workspaces
+        target: /data/.bkcrab/workspaces
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/bkcrab-storage/workspaces/.users
+        target: /data/.bkcrab/users
+        bind:
+          create_host_path: false
+    environment:
+      BKCRAB_SANDBOX_MAX_CONTAINERS: ${BKCRAB_SANDBOX_MAX_CONTAINERS:-4}
+      BKCRAB_SANDBOX_MAX_PER_USER: ${BKCRAB_SANDBOX_MAX_PER_USER:-2}
+      BKCRAB_SANDBOX_MAX_QUEUED: ${BKCRAB_SANDBOX_MAX_QUEUED:-32}
+      BKCRAB_SANDBOX_QUEUE_TIMEOUT: ${BKCRAB_SANDBOX_QUEUE_TIMEOUT:-60s}
+      BKCRAB_SANDBOX_CPUS: ${BKCRAB_SANDBOX_CPUS:-1}
+      BKCRAB_SANDBOX_MEMORY: ${BKCRAB_SANDBOX_MEMORY:-2g}
+      BKCRAB_SANDBOX_PIDS: ${BKCRAB_SANDBOX_PIDS:-256}
+      BKCRAB_SANDBOX_QUOTA_IMAGE: bkcrab/workspace-quota:local
+      BKCRAB_WORKSPACE_USER_BYTES: ${BKCRAB_WORKSPACE_USER_BYTES:-10737418240}
+      BKCRAB_WORKSPACE_USER_FILES: ${BKCRAB_WORKSPACE_USER_FILES:-100000}
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+  quota-image-init:
+    build:
+      context: ./quota
+    image: bkcrab/workspace-quota:local
+    restart: "no"
+    depends_on:
+      sandbox-docker:
+        condition: service_healthy
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - docker --host unix:///var/run/docker.sock image save bkcrab/workspace-quota:local | docker --host tcp://sandbox-docker:2375 image load
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+  sandbox-docker:
+    mem_limit: ${BKCRAB_DIND_MEMORY:-9g}
+    cpus: ${BKCRAB_DIND_CPUS:-6}
+    volumes:
+      - type: bind
+        source: /srv/bkcrab-storage/docker
+        target: /var/lib/docker
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/bkcrab-storage/workspaces
+        target: /data/.bkcrab/workspaces
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/bkcrab-storage/workspaces/.users
+        target: /data/.bkcrab/users
+        bind:
+          create_host_path: false
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}

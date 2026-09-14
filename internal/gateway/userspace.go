@@ -85,9 +85,13 @@ func globalSkillsDirPath() (string, error) {
 // 延迟注入的代理（super_admin 聊天、app 模式访问）然后使用启用沙箱但没有执行器的 exec 运行，
 // 并向用户显示"sandbox required but no executor available"。将池提升到网关作用域
 // 使借用路径成为每个 UserSpace 的默认配置。
-func buildSystemSandboxPool(cfg config.SandboxCfg, ws workspace.Store) sandbox.ExecutorPool {
+func buildSystemSandboxPool(cfg config.SandboxCfg, ws workspace.Store, st store.Store) (sandbox.ExecutorPool, error) {
 	if !cfg.Enabled {
-		return nil
+		return nil, nil
+	}
+	limits, err := sandbox.LoadLimits()
+	if err != nil {
+		return nil, err
 	}
 	var inner sandbox.ExecutorPool
 	home, _ := config.HomeDir()
@@ -134,8 +138,24 @@ func buildSystemSandboxPool(cfg config.SandboxCfg, ws workspace.Store) sandbox.E
 		if image == "" {
 			image = cfg.Image
 		}
-		policy := &sandbox.Policy{NetMode: cfg.Network}
-		inner = sandbox.NewDockerExecutorPool(image, home, policy)
+		policy := &sandbox.Policy{NetMode: cfg.Network, MaxCPU: limits.CPU, MaxMemory: limits.Memory, MaxPIDs: limits.PIDs}
+		dockerPool := sandbox.NewDockerExecutorPool(image, home, policy)
+		if limits.MaxContainers > 0 {
+			if err := dockerPool.Recover(context.Background()); err != nil {
+				return nil, err
+			}
+		}
+		dockerPool.ConfigureQuota(limits, func(ctx context.Context, agentID string) (string, error) {
+			agent, err := st.GetAgent(ctx, agentID)
+			if err != nil {
+				return "", err
+			}
+			if agent == nil || agent.UserID == "" {
+				return "", fmt.Errorf("agent has no quota owner")
+			}
+			return agent.UserID, nil
+		})
+		inner = dockerPool
 		slog.Info("system sandbox executor pool created",
 			"backend", "docker", "network", cfg.Network)
 	}
@@ -144,13 +164,14 @@ func buildSystemSandboxPool(cfg config.SandboxCfg, ws workspace.Store) sandbox.E
 		idle = 10 * time.Minute
 	}
 	lp := sandbox.NewLifecyclePool(inner, idle, 30*time.Second)
+	lp.SetLimits(limits)
 	if ws != nil {
 		lp.SetWorkspace(ws)
 	}
 	lp.Start()
 	slog.Info("system sandbox lifecycle pool enabled",
 		"idleTTL", idle, "hydrate", ws != nil)
-	return lp
+	return lp, nil
 }
 
 // attachSandboxToAgents 将网关的共享沙箱池挂接到 `agentMgr` 中的每个代理。

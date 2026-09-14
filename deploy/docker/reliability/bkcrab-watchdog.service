@@ -1,0 +1,8 @@
+[Unit]
+Description=Check BkCrab gateway liveness
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/bkcrab/watchdog.py
+TimeoutStartSec=120

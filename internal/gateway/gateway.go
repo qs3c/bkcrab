@@ -466,6 +466,33 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	if dbs, ok := st.(*store.DBStore); ok {
 		ws = workspace.WithCache(ws, dbs.ContextCache(), fmt.Sprintf("%s:%s:%s:%s", osCfg.Type, osCfg.S3.Endpoint, osCfg.S3.Bucket, osCfg.S3.Prefix))
 	}
+	sandboxLimits, err := sandbox.LoadLimits()
+	if err != nil {
+		return nil, err
+	}
+	if sandboxLimits.WorkspaceBytes > 0 {
+		ws = workspace.NewQuotaStore(ws, sandboxLimits.WorkspaceBytes, sandboxLimits.WorkspaceFiles,
+			func(ctx context.Context, id string) (string, error) {
+				a, err := st.GetAgent(ctx, id)
+				if err != nil {
+					return "", err
+				}
+				if a == nil || a.UserID == "" {
+					return "", fmt.Errorf("workspace agent has no owner")
+				}
+				return a.UserID, nil
+			}, func(ctx context.Context, user string) ([]string, error) {
+				rows, err := st.ListAgents(ctx, user)
+				if err != nil {
+					return nil, err
+				}
+				ids := make([]string, 0, len(rows))
+				for _, a := range rows {
+					ids = append(ids, a.ID)
+				}
+				return ids, nil
+			})
+	}
 
 	var ragSvc *rag.Service
 	var ragObjects ragobjects.Store
@@ -777,7 +804,10 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	// 其 `app_user` UserSpace 自身不拥有任何代理）需要这个 — 没有系统级池，
 	// 每个用户的构建器为这些空间产生 nil，代理的 exec 工具拒绝运行并显示
 	// "sandbox required but no executor available"。
-	systemSandboxPool := buildSystemSandboxPool(readSystemSandboxCfg(st), ws)
+	systemSandboxPool, err := buildSystemSandboxPool(readSystemSandboxCfg(st), ws, st)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox limits: %w", err)
+	}
 	mcpRuntime := mcpruntime.NewService(mcpruntime.Options{
 		Store:     st,
 		Resources: st,
