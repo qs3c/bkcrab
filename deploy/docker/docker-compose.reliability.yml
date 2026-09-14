@@ -46,9 +46,11 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
   sandbox-docker:
+    entrypoint: [/bin/sh, /usr/local/bin/bkcrab-dind-entrypoint.sh]
     mem_limit: ${BKCRAB_DIND_MEMORY:-9g}
     cpus: ${BKCRAB_DIND_CPUS:-6}
     volumes:
+      - ./reliability/dind-entrypoint.sh:/usr/local/bin/bkcrab-dind-entrypoint.sh:ro
       - type: bind
         source: /srv/bkcrab-storage/docker
         target: /var/lib/docker
