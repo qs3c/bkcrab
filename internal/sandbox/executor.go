@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"github.com/qs3c/bkcrab/internal/workspace"
 	"time"
 )
 
@@ -54,14 +55,21 @@ type ExecutorPool interface {
 // 大文件/二进制文件按原样返回。
 //
 // 不是基础 Executor 接口的一部分，因为并非每个后端都可以廉价地枚举其工作区
-//（例如 E2B 需要额外的 API 调用）；调用者应进行类型断言并在缺失时优雅跳过。
+// （例如 E2B 需要额外的 API 调用）；调用者应进行类型断言并在缺失时优雅跳过。
 type WorkspaceSnapshotter interface {
 	SnapshotWorkspace(ctx context.Context) (map[string][]byte, error)
 }
 
+type WorkspaceStreamer interface {
+	SyncWorkspace(context.Context, workspace.Store, string, string, string) error
+}
+type WorkspaceHydrator interface {
+	HydrateWorkspace(context.Context, workspace.Store, string, string, string) error
+}
+
 // RemoteWorkspace 标记其 /workspace 不与主机文件系统共享（无绑定挂载）的执行器。
 // 实现者需要在每次成功执行后进行显式同步——否则技能在沙箱内写入的文件
-//（例如 image-tool 的 /workspace/gen_xxx.webp）永远无法对主机的
+// （例如 image-tool 的 /workspace/gen_xxx.webp）永远无法对主机的
 // workspace.Store 可见，UI 呈现它们时会出问题。
 // Docker 不实现此接口（其 /workspace 是绑定挂载，exec 返回时文件已在主机上）；
 // E2B 实现它。
@@ -71,9 +79,9 @@ type RemoteWorkspace interface {
 
 // PoolConfig 保存创建沙箱池的配置。
 type PoolConfig struct {
-	Backend   string // "docker"、"e2b"（未来）
-	Image     string // 容器镜像（用于 docker 后端）
-	Policy    *Policy
+	Backend string // "docker"、"e2b"（未来）
+	Image   string // 容器镜像（用于 docker 后端）
+	Policy  *Policy
 	// E2B 特定字段（未来）
 	E2BTemplate string
 	E2BAPIKey   string

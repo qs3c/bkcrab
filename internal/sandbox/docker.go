@@ -10,18 +10,21 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Policy 保存沙箱容器的资源/网络约束。
 type Policy struct {
 	MaxCPU    string // 例如 "2"
 	MaxMemory string // 例如 "512m"
+	MaxPIDs   int
 	NetMode   string // "none"、"host"、"bridge"
 }
 
 // DockerSandbox 管理单个 Docker 容器以进行沙箱化执行。
 type DockerSandbox struct {
 	containerID string
+	poolOwner   string
 	image       string
 	workspace   string
 	// workdir 是容器的起始工作目录。空时默认为 /workspace。
@@ -115,6 +118,9 @@ func (s *DockerSandbox) Create() error {
 		"create",
 		"--interactive",
 		"--label", "bkcrab=sandbox",
+	}
+	if s.poolOwner != "" {
+		args = append(args, "--label", "bkcrab.pool="+s.poolOwner)
 	}
 
 	// 继承主机的 HTTP(S)_PROXY 配置，以便沙箱内的 curl/pip/npm/git
@@ -217,6 +223,9 @@ func (s *DockerSandbox) Create() error {
 	if s.policy.MaxMemory != "" {
 		args = append(args, "--memory", s.policy.MaxMemory)
 	}
+	if s.policy.MaxPIDs > 0 {
+		args = append(args, "--pids-limit", fmt.Sprint(s.policy.MaxPIDs))
+	}
 
 	// Network mode
 	if s.policy.NetMode != "" {
@@ -270,8 +279,11 @@ func (s *DockerSandbox) Exec(ctx context.Context, command string, workdir string
 	args = append(args, id, "sh", "-c", command)
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
-	output, err := cmd.CombinedOutput()
-	result := string(output)
+	var output commandOutput
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+	result := output.String()
 	if err != nil {
 		return fmt.Sprintf("%s\nError: %s", result, err.Error()), err
 	}
@@ -302,8 +314,11 @@ func (s *DockerSandbox) ExecWithStdin(ctx context.Context, command string, workd
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Stdin = stdin
-	output, err := cmd.CombinedOutput()
-	result := string(output)
+	var output commandOutput
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+	result := output.String()
 	if err != nil {
 		return fmt.Sprintf("%s\nError: %s", result, err.Error()), err
 	}
@@ -319,8 +334,12 @@ func (s *DockerSandbox) Close() error {
 		return nil
 	}
 
-	cmd := exec.Command("docker", "rm", "-f", s.containerID)
-	cmd.CombinedOutput() // best effort
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "rm", "-f", s.containerID)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("remove sandbox: %s: %w", out, err)
+	}
 	s.containerID = ""
 	return nil
 }

@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -58,7 +59,7 @@ func preserveSkillSwitchWorkspace(ctx context.Context, ex Executor, ws workspace
 		return fmt.Errorf("snapshot before skill switch: %w", err)
 	}
 	for path, data := range files {
-		if err := ws.Put(ctx, agentID, projectID, sessionID, path, bytesReader(data), int64(len(data)), ""); err != nil {
+		if err := ws.Put(ctx, agentID, projectID, sessionID, path, bytes.NewReader(data), int64(len(data)), ""); err != nil {
 			return fmt.Errorf("preserve workspace before skill switch: %w", err)
 		}
 	}
