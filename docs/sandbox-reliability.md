@@ -26,6 +26,11 @@ Capacity is reserved before creation. Calls on one sandbox are serialized. Activ
 
 ## Persistence
 
+The reliability overlay blocks the DinD management port from inner sandbox
+interfaces; only the outer Compose network can manage it. It also blocks the
+filesystem ioctls that container root could use to change project IDs or clear
+quota inheritance, while retaining Docker's default seccomp restrictions.
+
 Docker uploads files after mutating tools and before eviction. Sync uses bounded buffers, includes `.git`, compares file contents, skips symbolic links and special files, and reports upload failure while preserving local files. Restore streams missing files and does not overwrite newer local files with stale MinIO objects. Sync has a 30-second budget per operation; a large first upload can require subsequent attempts. This is not a transactional filesystem snapshot. Files deleted only by shell are not automatically deleted from MinIO and can reappear on a later restore; use the workspace deletion API when deleting persisted artifacts.
 
 ## Install and migrate
