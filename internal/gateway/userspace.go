@@ -138,7 +138,7 @@ func buildSystemSandboxPool(cfg config.SandboxCfg, ws workspace.Store, st store.
 		if image == "" {
 			image = cfg.Image
 		}
-		policy := &sandbox.Policy{NetMode: cfg.Network, MaxCPU: limits.CPU, MaxMemory: limits.Memory, MaxPIDs: limits.PIDs}
+		policy := &sandbox.Policy{NetMode: cfg.Network, MaxCPU: limits.CPU, MaxMemory: limits.Memory, MaxPIDs: limits.PIDs, ProtectQuota: limits.QuotaImage != ""}
 		dockerPool := sandbox.NewDockerExecutorPool(image, home, policy)
 		if limits.MaxContainers > 0 {
 			if err := dockerPool.Recover(context.Background()); err != nil {
