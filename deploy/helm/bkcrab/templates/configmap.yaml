@@ -1,12 +1,12 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  BKCRAB_METRICS_ENABLED: {{ .Values.metrics.enabled | quote }}
-  BKCRAB_METRICS_ADDR: {{ printf ":%v" .Values.metrics.port | quote }}
   name: {{ include "bkcrab.fullname" . }}-config
   labels:
     {{- include "bkcrab.labels" . | nindent 4 }}
 data:
+  BKCRAB_METRICS_ENABLED: {{ .Values.metrics.enabled | quote }}
+  BKCRAB_METRICS_ADDR: {{ printf ":%v" .Values.metrics.port | quote }}
   BKCRAB_PORT: {{ .Values.gateway.port | quote }}
   BKCRAB_BIND: "all"
   BKCRAB_STORAGE_TYPE: {{ include "bkcrab.storageType" . | quote }}
