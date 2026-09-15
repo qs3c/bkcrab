@@ -27,6 +27,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/observability"
 	ragassets "github.com/qs3c/bkcrab/internal/rag/assets"
 	"github.com/qs3c/bkcrab/internal/rag/document"
 	"github.com/qs3c/bkcrab/internal/rag/embed"
@@ -844,6 +845,11 @@ func (s *Service) runClaim(parent context.Context, claim *store.RAGIndexClaim) (
 	if claim == nil {
 		return nil
 	}
+	metrics := observability.Current()
+	metrics.RecordQueueWait("rag.index", claim.Task.CreatedAt, claim.Task.RetryCount)
+	finish := metrics.Begin("rag", "index", "call")
+	defer func() { finish(resultErr) }()
+
 	defer func() {
 		ackCtx := parent
 		if claim.Fence.ExpectedWriterFingerprint != "" {

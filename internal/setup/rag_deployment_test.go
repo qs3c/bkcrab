@@ -401,7 +401,9 @@ func TestRAGFairQueueDeploymentComposeWiresDurableDependencies(t *testing.T) {
 		`BKCRAB_FAIR_QUEUE_ENABLED: "${FAIR_QUEUE_ENABLED:-false}"`,
 		`BKCRAB_RAG_INDEX_WORKER_MODE: "${RAG_INDEX_WORKER_MODE:-legacy}"`,
 	)
-	for _, forbidden := range []string{"REDIS_PASSWORD", "RABBITMQ_PASSWORD", "redis:", "rabbitmq:"} {
+	// Match the fairqueue variables themselves; the optional context-cache
+	// variable BKCRAB_CONTEXT_CACHE_REDIS_PASSWORD is a separate dependency.
+	for _, forbidden := range []string{"${REDIS_PASSWORD", "${RABBITMQ_PASSWORD", "redis:", "rabbitmq:"} {
 		if bytes.Contains(base, []byte(forbidden)) {
 			t.Fatalf("base Compose must not require optional fairqueue dependency %q", forbidden)
 		}

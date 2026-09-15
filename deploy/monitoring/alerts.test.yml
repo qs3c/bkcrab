@@ -1,0 +1,168 @@
+rule_files:
+- alerts.yml
+evaluation_interval: 1m
+tests:
+- name: sustained failures fire
+  interval: 1m
+  input_series:
+  - series: up{job="bkcrab",instance="fixture:18954"}
+    values: 0+0x20
+  - series: bkcrab_http_requests_total{job="bkcrab",instance="fixture:18954",route="GET
+      /api/test",status="200",mode="request",method="GET"}
+    values: 0+80x20
+  - series: bkcrab_http_requests_total{job="bkcrab",instance="fixture:18954",route="GET
+      /api/test",status="500",mode="request",method="GET"}
+    values: 0+20x20
+  - series: bkcrab_http_request_duration_seconds_bucket{job="bkcrab",instance="fixture:18954",route="GET
+      /api/test",mode="request",le="2"}
+    values: 0+0x20
+  - series: bkcrab_http_request_duration_seconds_bucket{job="bkcrab",instance="fixture:18954",route="GET
+      /api/test",mode="request",le="5"}
+    values: 0+100x20
+  - series: bkcrab_http_request_duration_seconds_bucket{job="bkcrab",instance="fixture:18954",route="GET
+      /api/test",mode="request",le="+Inf"}
+    values: 0+100x20
+  - series: bkcrab_http_request_duration_seconds_count{job="bkcrab",instance="fixture:18954",route="GET
+      /api/test",mode="request"}
+    values: 0+100x20
+  - series: bkcrab_operations_total{job="bkcrab",instance="fixture:18954",component="llm",operation="openai",mode="stream",outcome="ok"}
+    values: 0+8x20
+  - series: bkcrab_operations_total{job="bkcrab",instance="fixture:18954",component="llm",operation="openai",mode="stream",outcome="error"}
+    values: 0+2x20
+  - &id001
+    series: bkcrab_fairqueue_sample{job="bkcrab",instance="fixture:18954",resource="rag.index",signal="rabbit.ready_depth",kind=""}
+    values: 150+0x20
+  - series: bkcrab_fairqueue_sample_timestamp_seconds{job="bkcrab",instance="fixture:18954",resource="rag.index",signal="rabbit.ready_depth",kind=""}
+    values: 0+60x20
+  - series: bkcrab_fairqueue_dependency_up{job="bkcrab",instance="fixture:18954",resource="rag.index",dependency="redis"}
+    values: 0+0x20
+  - series: bkcrab_fairqueue_healthy{job="bkcrab",instance="fixture:18954",resource="rag.index"}
+    values: 0+0x20
+  - series: bkcrab_http_requests_total{job="bkcrab",instance="fixture:18954",method="GET",route="GET
+      /readyz",mode="request",status="200"}
+    values: 0+10000x20
+  alert_rule_test:
+  - eval_time: 12m
+    alertname: BkcrabInstanceDown
+    exp_alerts:
+    - exp_labels:
+        job: bkcrab
+        instance: fixture:18954
+        severity: critical
+      exp_annotations:
+        summary: Bkcrab 实例无法采集
+        description: 检查目标实例、指标监听地址、网络与启动日志。
+  - eval_time: 12m
+    alertname: BkcrabHTTPHighErrorRate
+    exp_alerts:
+    - exp_labels:
+        job: bkcrab
+        instance: fixture:18954
+        severity: warning
+      exp_annotations:
+        summary: Bkcrab HTTP 5xx 错误率持续超过 5%
+        description: 按路由查看错误，结合实例日志定位；过去 5 分钟至少 20 次请求才触发。
+  - eval_time: 12m
+    alertname: BkcrabHTTPSlow
+    exp_alerts:
+    - exp_labels:
+        job: bkcrab
+        instance: fixture:18954
+        severity: warning
+      exp_annotations:
+        summary: Bkcrab 普通请求 P95 持续超过 2 秒
+        description: 该规则排除聊天、SSE、WebSocket、静态文件和健康检查；检查 SQL 连接池及依赖。
+  - eval_time: 12m
+    alertname: BkcrabOperationErrors
+    exp_alerts:
+    - exp_labels:
+        job: bkcrab
+        instance: fixture:18954
+        severity: warning
+        component: llm
+      exp_annotations:
+        summary: Bkcrab 业务操作失败率持续超过 10%
+        description: 在模型/工具/RAG 面板定位出错操作；主动取消单独统计，不计入该错误率。
+  - eval_time: 12m
+    alertname: BkcrabQueueBacklog
+    exp_alerts:
+    - exp_labels:
+        job: bkcrab
+        severity: warning
+        resource: rag.index
+      exp_annotations:
+        summary: Bkcrab 就绪队列持续积压
+        description: 检查调度门、运行中任务和执行耗时；共享队列按 max 聚合，陈旧采样不参与判断。
+  - eval_time: 12m
+    alertname: BkcrabQueueDependencyDown
+    exp_alerts:
+    - exp_labels:
+        job: bkcrab
+        instance: fixture:18954
+        severity: critical
+        resource: rag.index
+        dependency: redis
+      exp_annotations:
+        summary: Bkcrab 公平队列依赖异常
+        description: 检查 MySQL、Redis、RabbitMQ 与恢复状态；使用受保护的 fairqueue 健康接口查看细节。
+  - eval_time: 12m
+    alertname: BkcrabQueueUnhealthy
+    exp_alerts:
+    - exp_labels:
+        job: bkcrab
+        instance: fixture:18954
+        severity: warning
+        resource: rag.index
+      exp_annotations:
+        summary: Bkcrab 公平队列持续未就绪
+        description: 检查恢复、调度门与工作循环；计划维护或 paused 模式可暂时静默此告警。
+- name: low volume streams stale samples and disabled resources stay quiet
+  interval: 1m
+  input_series:
+  - series: bkcrab_http_requests_total{job="bkcrab",instance="fixture:18954",route="GET
+      /api/test",status="200",mode="request",method="GET"}
+    values: 0+0.1x20
+  - series: bkcrab_http_requests_total{job="bkcrab",instance="fixture:18954",route="GET
+      /api/test",status="500",mode="request",method="GET"}
+    values: 0+0.1x20
+  - series: bkcrab_http_request_duration_seconds_bucket{job="bkcrab",instance="fixture:18954",route="GET
+      /api/test",mode="stream",le="2"}
+    values: 0+0x20
+  - series: bkcrab_http_request_duration_seconds_bucket{job="bkcrab",instance="fixture:18954",route="GET
+      /api/test",mode="stream",le="5"}
+    values: 0+100x20
+  - series: bkcrab_http_request_duration_seconds_bucket{job="bkcrab",instance="fixture:18954",route="GET
+      /api/test",mode="stream",le="+Inf"}
+    values: 0+100x20
+  - series: bkcrab_http_request_duration_seconds_count{job="bkcrab",instance="fixture:18954",route="GET
+      /api/test",mode="stream"}
+    values: 0+100x20
+  - series: bkcrab_operations_total{job="bkcrab",instance="fixture:18954",component="llm",operation="openai",mode="stream",outcome="ok"}
+    values: 0+0.1x20
+  - series: bkcrab_operations_total{job="bkcrab",instance="fixture:18954",component="llm",operation="openai",mode="stream",outcome="error"}
+    values: 0+0.1x20
+  - *id001
+  - series: bkcrab_fairqueue_sample_timestamp_seconds{job="bkcrab",instance="fixture:18954",resource="rag.index",signal="rabbit.ready_depth",kind=""}
+    values: 0+0x20
+  alert_rule_test:
+  - eval_time: 12m
+    alertname: BkcrabInstanceDown
+    exp_alerts: []
+  - eval_time: 12m
+    alertname: BkcrabHTTPHighErrorRate
+    exp_alerts: []
+  - eval_time: 12m
+    alertname: BkcrabHTTPSlow
+    exp_alerts: []
+  - eval_time: 12m
+    alertname: BkcrabOperationErrors
+    exp_alerts: []
+  - eval_time: 12m
+    alertname: BkcrabQueueBacklog
+    exp_alerts: []
+  - eval_time: 12m
+    alertname: BkcrabQueueDependencyDown
+    exp_alerts: []
+  - eval_time: 12m
+    alertname: BkcrabQueueUnhealthy
+    exp_alerts: []

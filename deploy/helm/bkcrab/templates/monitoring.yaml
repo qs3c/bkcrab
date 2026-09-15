@@ -1,0 +1,61 @@
+{{- if and (or .Values.metrics.serviceMonitor.enabled .Values.metrics.prometheusRule.enabled) (not .Values.metrics.enabled) }}
+{{- fail "metrics.enabled must be true for ServiceMonitor or PrometheusRule" }}
+{{- end }}
+{{- if .Values.metrics.enabled }}
+{{- if or (lt (int .Values.metrics.port) 1) (gt (int .Values.metrics.port) 65535) (eq (int .Values.metrics.port) (int .Values.gateway.port)) }}
+{{- fail "metrics.port must be 1..65535 and differ from gateway.port" }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bkcrab.fullname" . }}-metrics
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+    bkcrab-metrics: {{ include "bkcrab.fullname" . | quote }}
+    metrics-job: bkcrab
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ include "bkcrab.fullname" . }}-gateway
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+{{- if .Values.metrics.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "bkcrab.fullname" . }}
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  jobLabel: metrics-job
+  selector:
+    matchLabels:
+      bkcrab-metrics: {{ include "bkcrab.fullname" . | quote }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+  sampleLimit: 50000
+{{- end }}
+{{- if .Values.metrics.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "bkcrab.fullname" . }}
+  labels:
+    {{- include "bkcrab.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- .Files.Get "files/monitoring-alerts.yml" | nindent 2 }}
+{{- end }}
+{{- end }}

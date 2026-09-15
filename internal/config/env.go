@@ -18,6 +18,7 @@ const RAGLegacyTaskMigrationModeOfflineV1 = "offline-v1"
 // 显式名称）设置。systemd unit、docker-compose、k8s deployment env 是
 // 规范的设置位置。
 type EnvConfig struct {
+	Metrics          EnvMetrics
 	ContextCache     EnvContextCache
 	Gateway          EnvGateway
 	Storage          EnvStorage
@@ -545,6 +546,7 @@ func LoadEnv() *EnvConfig {
 		cfg.RAG.Limits.ParseTimeoutMS = v
 	}
 	cfg.ContextCache = loadContextCacheEnv()
+	cfg.Metrics = loadMetricsEnv()
 	return cfg
 }
 

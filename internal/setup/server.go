@@ -20,6 +20,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/fairqueue"
 	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
+	"github.com/qs3c/bkcrab/internal/observability"
 	"github.com/qs3c/bkcrab/internal/parseeval"
 	"github.com/qs3c/bkcrab/internal/rag"
 	rageval "github.com/qs3c/bkcrab/internal/rag/eval"
@@ -655,7 +656,7 @@ func (s *Server) Run(ctx context.Context) error {
 	} else {
 		addr = fmt.Sprintf("127.0.0.1:%d", s.port)
 	}
-	srv := &http.Server{Addr: addr, Handler: mux}
+	srv := &http.Server{Addr: addr, Handler: observability.Current().Middleware(mux)}
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {

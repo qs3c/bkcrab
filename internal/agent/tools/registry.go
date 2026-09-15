@@ -12,6 +12,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/buildinfo"
 	"github.com/qs3c/bkcrab/internal/imagegen"
 	"github.com/qs3c/bkcrab/internal/memory"
+	"github.com/qs3c/bkcrab/internal/observability"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/sandbox"
 	"github.com/qs3c/bkcrab/internal/skills"
@@ -922,7 +923,15 @@ func (r *Registry) Execute(ctx context.Context, name string, args string) (strin
 // ExecuteResult executes a tool through the same validator-wrapped path as
 // GetResultFunc. It intentionally does not add Execute's legacy error suffix;
 // callers that need the typed result decide how to render errors.
-func (r *Registry) ExecuteResult(ctx context.Context, name string, args string) (ToolResult, error) {
+func (r *Registry) ExecuteResult(ctx context.Context, name string, args string) (result ToolResult, err error) {
+	finish := observability.Current().Begin("tool", observability.ToolOperation(name), "call")
+	defer func() {
+		if p := recover(); p != nil {
+			finish(fmt.Errorf("tool panic"))
+			panic(p)
+		}
+		finish(err)
+	}()
 	fn := r.GetResultFunc(name)
 	if fn == nil {
 		return ToolResult{}, fmt.Errorf("unknown tool: %s", name)

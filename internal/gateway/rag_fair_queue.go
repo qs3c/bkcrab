@@ -653,7 +653,7 @@ func buildRAGFairQueueAssembly(
 	}
 	runner := &ragFairQueueRunnerProxy{}
 	resourceConfig := makeRAGFairQueueResourceConfig(env.FairQueue.RAGIndex)
-	fairTelemetry := ragtelemetry.NewFairQueueSink(ragtelemetry.NewSlogRecorder(nil))
+	fairTelemetry := newFairQueueTelemetry(ragtelemetry.NewFairQueueSink(ragtelemetry.NewSlogRecorder(nil)))
 	adapter, err := rag.NewRAGFairQueueAdapter(
 		fairStore, runner, adminSource, journalStore,
 		rag.RAGFairQueueAdapterOptions{

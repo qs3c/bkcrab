@@ -110,7 +110,7 @@ func buildImageFairQueueAssembly(ctx context.Context, env *config.EnvConfig, st 
 	}
 
 	resourceConfig := imagegendomain.ImageFairQueueResourceConfig(env.ImagegenBatch)
-	telemetry := fairqueue.NopTelemetrySink()
+	telemetry := newFairQueueTelemetry(fairqueue.NopTelemetrySink())
 	limiterClient := redis.NewClient(&redis.Options{Addr: env.FairQueue.RedisAddr, Password: env.FairQueue.RedisPassword, DB: env.FairQueue.RedisDB})
 	closeLimiter := true
 	defer func() {

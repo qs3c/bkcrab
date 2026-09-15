@@ -10,6 +10,9 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/qs3c/bkcrab/internal/observability"
 )
 
 // AnthropicProvider 为 Anthropic Messages API 实现 Provider 接口。
@@ -162,12 +165,12 @@ func toAnthropicMessages(msgs []Message) (string, []anthropicMessage) {
 				})
 			}
 			for _, tc := range m.ToolCalls {
-			// Anthropic 拒绝其输入不是 JSON 对象的 tool_use 块——
-			// `Arguments` 可能以 ""（模型流式传输了带有空输入且从未触发
-			// input_json_delta 事件的 tool_use）、`null` 或
-			// 像字符串这样的裸值的形式出现。将所有情况强制转换为
-			// 空对象，以便历史消息成功重放。真实输入保持不变地往返。
-			input := parseToolInput(tc.Function.Arguments)
+				// Anthropic 拒绝其输入不是 JSON 对象的 tool_use 块——
+				// `Arguments` 可能以 ""（模型流式传输了带有空输入且从未触发
+				// input_json_delta 事件的 tool_use）、`null` 或
+				// 像字符串这样的裸值的形式出现。将所有情况强制转换为
+				// 空对象，以便历史消息成功重放。真实输入保持不变地往返。
+				input := parseToolInput(tc.Function.Arguments)
 				blocks = append(blocks, map[string]interface{}{
 					"type":  "tool_use",
 					"id":    tc.ID,
@@ -267,7 +270,7 @@ func parseToolInput(raw string) interface{} {
 
 // thinkingBlockFor 返回助手消息先前思考的内容块映射，
 // 如果没有要重放的内容则返回 nil。扩展思考模型
-//（真正的 Anthropic、DeepSeek 的 /anthropic 兼容模式）
+// （真正的 Anthropic、DeepSeek 的 /anthropic 兼容模式）
 // 在丢弃先前的 `content[].thinking` 时会拒绝下一轮，
 // 因此我们原样回显它。
 func thinkingBlockFor(m Message) map[string]interface{} {
@@ -396,7 +399,23 @@ type anthropicMessageDelta struct {
 	Usage anthropicUsage `json:"usage"`
 }
 
-func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools []Tool, model string, maxTokens int, temperature float64) (*Response, error) {
+func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools []Tool, model string, maxTokens int, temperature float64) (result *Response, callErr error) {
+	metrics := observability.Current()
+	finish := metrics.Begin("llm", "anthropic", "buffered")
+	completed := false
+	defer func() {
+		metricErr := callErr
+		if metricErr == nil && !completed {
+			metricErr = ctx.Err()
+			if metricErr == nil {
+				metricErr = io.ErrUnexpectedEOF
+			}
+		}
+		finish(metricErr)
+		if result != nil {
+			metrics.RecordTokens("anthropic", result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CacheReadTokens, result.Usage.CacheCreationTokens)
+		}
+	}()
 	httpReq, err := p.buildRequest(ctx, messages, tools, model, maxTokens, temperature, true)
 	if err != nil {
 		return nil, err
@@ -413,10 +432,18 @@ func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	return p.parseSSE(resp.Body)
+	return p.parseSSEWithCompletion(resp.Body, &completed)
 }
 
-func (p *AnthropicProvider) ChatStream(ctx context.Context, messages []Message, tools []Tool, model string, maxTokens int, temperature float64) (*StreamReader, error) {
+func (p *AnthropicProvider) ChatStream(ctx context.Context, messages []Message, tools []Tool, model string, maxTokens int, temperature float64) (result *StreamReader, callErr error) {
+	metrics := observability.Current()
+	started := time.Now()
+	finish := metrics.Begin("llm", "anthropic", "stream")
+	defer func() {
+		if callErr != nil {
+			finish(callErr)
+		}
+	}()
 	httpReq, err := p.buildRequest(ctx, messages, tools, model, maxTokens, temperature, true)
 	if err != nil {
 		return nil, err
@@ -435,10 +462,23 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, messages []Message, 
 
 	ch := make(chan StreamChunk, 64)
 	reader := NewStreamReader(ch)
+	var usage Usage
+	completed, firstText := false, false
 
 	go func() {
 		defer resp.Body.Close()
 		defer close(ch)
+		defer func() {
+			err := reader.Err()
+			if err == nil && !completed {
+				err = ctx.Err()
+				if err == nil {
+					err = io.ErrUnexpectedEOF
+				}
+			}
+			finish(err)
+			metrics.RecordTokens("anthropic", usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.CacheCreationTokens)
+		}()
 
 		scanner := bufio.NewScanner(resp.Body)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -452,7 +492,6 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, messages []Message, 
 			signature string
 		}
 		blocks := make(map[int]*blockState)
-		var usage Usage
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -490,6 +529,12 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, messages []Message, 
 					if cbs.ContentBlock.Text != "" {
 						select {
 						case ch <- StreamChunk{Content: cbs.ContentBlock.Text}:
+							if !firstText && cbs.ContentBlock.Text != "" {
+								firstText = true
+								if metrics != nil {
+									metrics.FirstText.WithLabelValues("anthropic").Observe(time.Since(started).Seconds())
+								}
+							}
 						case <-ctx.Done():
 							return
 						}
@@ -504,6 +549,12 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, messages []Message, 
 						if cbd.Delta.Text != "" {
 							select {
 							case ch <- StreamChunk{Content: cbd.Delta.Text}:
+								if !firstText && cbd.Delta.Text != "" {
+									firstText = true
+									if metrics != nil {
+										metrics.FirstText.WithLabelValues("anthropic").Observe(time.Since(started).Seconds())
+									}
+								}
 							case <-ctx.Done():
 								return
 							}
@@ -524,6 +575,7 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, messages []Message, 
 				}
 
 			case "message_stop":
+				completed = true
 				var toolCalls []ToolCall
 				var thinkingText, thinkingSig string
 				for i := 0; i < len(blocks); i++ {
@@ -573,6 +625,11 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, messages []Message, 
 }
 
 func (p *AnthropicProvider) parseSSE(body io.Reader) (*Response, error) {
+	return p.parseSSEWithCompletion(body, nil)
+}
+
+// The completion flag is only for metrics; legacy parse return behavior is preserved.
+func (p *AnthropicProvider) parseSSEWithCompletion(body io.Reader, completed *bool) (*Response, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -650,6 +707,9 @@ func (p *AnthropicProvider) parseSSE(body io.Reader) (*Response, error) {
 			}
 
 		case "message_stop":
+			if completed != nil {
+				*completed = true
+			}
 			// 完成
 		}
 	}

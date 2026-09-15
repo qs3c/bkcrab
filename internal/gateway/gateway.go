@@ -701,6 +701,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					}
 				}
 				serviceDeps := rag.Deps{
+					Telemetry:       newRAGTelemetry(),
 					Store:           st,
 					Vector:          vecStore,
 					Objects:         ragObjects,

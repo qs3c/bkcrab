@@ -1,5 +1,7 @@
 # Docker Compose 部署
 
+Prometheus / Grafana 监控：参见 [监控部署与排障说明](../../docs/monitoring.md)，在现有部署命令追加 `docker-compose.monitoring.yml` 即可启用指标采集、自动面板和告警规则。
+
 `docker-compose.yml` 是基础部署，包含 BkCrab、MySQL、MinIO 和 agent 沙箱。RAG 是可选能力；启用时再叠加 `docker-compose.rag.yml`。该 overlay 新增 Milvus Standalone 和 etcd，并复用基础部署已有的 MinIO。公平队列依赖位于独立的 `docker-compose.fairqueue.yml`；该共享 overlay 不会自动启用 RAG 或 imagegen，资源模式由各自 rollout 独立决定。
 
 ## 基础部署

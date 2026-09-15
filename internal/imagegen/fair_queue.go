@@ -13,6 +13,7 @@ import (
 
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/fairqueue"
+	"github.com/qs3c/bkcrab/internal/observability"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
@@ -452,6 +453,7 @@ func (p *imagePreparedTask) Run(ctx context.Context) error {
 	if p == nil || p.adapter == nil || p.claim == nil {
 		return fairqueue.ErrAuthoritativeStateCorrupt
 	}
+	observability.Current().RecordQueueWait("image.generate", p.claim.Task.CreatedAt, p.claim.Task.RetryCount)
 	return p.adapter.runClaim(ctx, p.claim)
 }
 

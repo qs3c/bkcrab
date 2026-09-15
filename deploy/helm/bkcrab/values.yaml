@@ -260,3 +260,17 @@ ingress:
 extraEnv: {}
   # BKCRAB_LOG_LEVEL: "info"
   # BKCRAB_DAEMON_IDLE_TIMEOUT_SECONDS: "300"
+
+# Independent, internal-only scrape endpoint. No Operator CRDs required by default.
+metrics:
+  enabled: false
+  port: 18954
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    scrapeTimeout: 10s
+    # Match your Prometheus Operator's serviceMonitorSelector (e.g. release: kube-prometheus-stack).
+    additionalLabels: {}
+  prometheusRule:
+    enabled: false
+    additionalLabels: {}

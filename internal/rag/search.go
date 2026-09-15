@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/qs3c/bkcrab/internal/config"
+	"github.com/qs3c/bkcrab/internal/observability"
 	"github.com/qs3c/bkcrab/internal/rag/chunktext"
 	"github.com/qs3c/bkcrab/internal/rag/dialogue"
 	"github.com/qs3c/bkcrab/internal/rag/document"
@@ -241,7 +242,9 @@ func (s *Service) Search(ctx context.Context, ownerID string, kbIDs []string, qu
 // current query and creates a hypothetical document. The rewrite drives both
 // BM25 and one dense route; HyDE drives a second dense route. If planning fails
 // or omits HyDE, the identical dense inputs are deduplicated.
-func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs []string, input SearchContext, topN int) ([]Hit, error) {
+func (s *Service) SearchWithContext(ctx context.Context, ownerID string, kbIDs []string, input SearchContext, topN int) (hits []Hit, err error) {
+	finish := observability.Current().Begin("rag", "search", "call")
+	defer func() { finish(err) }()
 	ctx, _ = s.CaptureRuntimePolicy(ctx)
 	return s.searchWithContext(ctx, ownerID, kbIDs, input, topN, false)
 }

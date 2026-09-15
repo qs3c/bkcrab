@@ -10,6 +10,9 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/qs3c/bkcrab/internal/observability"
 )
 
 // OpenAIProvider 为 OpenAI 兼容 API 实现 Provider 接口。
@@ -270,7 +273,23 @@ func (p *OpenAIProvider) buildRequest(ctx context.Context, messages []Message, t
 	return httpReq, nil
 }
 
-func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []Tool, model string, maxTokens int, temperature float64) (*Response, error) {
+func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []Tool, model string, maxTokens int, temperature float64) (result *Response, callErr error) {
+	metrics := observability.Current()
+	finish := metrics.Begin("llm", "openai", "buffered")
+	completed := false
+	defer func() {
+		metricErr := callErr
+		if metricErr == nil && !completed {
+			metricErr = ctx.Err()
+			if metricErr == nil {
+				metricErr = io.ErrUnexpectedEOF
+			}
+		}
+		finish(metricErr)
+		if result != nil {
+			metrics.RecordTokens("openai", result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CacheReadTokens, result.Usage.CacheCreationTokens)
+		}
+	}()
 	httpReq, err := p.buildRequest(ctx, messages, tools, model, maxTokens, temperature, true)
 	if err != nil {
 		return nil, err
@@ -287,11 +306,19 @@ func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	return p.parseSSE(resp.Body)
+	return p.parseSSEWithCompletion(resp.Body, &completed)
 }
 
 // ChatStream 返回一个 StreamReader，在数据块从 LLM 到达时产生它们。
-func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, tools []Tool, model string, maxTokens int, temperature float64) (*StreamReader, error) {
+func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, tools []Tool, model string, maxTokens int, temperature float64) (result *StreamReader, callErr error) {
+	metrics := observability.Current()
+	started := time.Now()
+	finish := metrics.Begin("llm", "openai", "stream")
+	defer func() {
+		if callErr != nil {
+			finish(callErr)
+		}
+	}()
 	httpReq, err := p.buildRequest(ctx, messages, tools, model, maxTokens, temperature, true)
 	if err != nil {
 		return nil, err
@@ -310,17 +337,29 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, too
 
 	ch := make(chan StreamChunk, 64)
 	reader := NewStreamReader(ch)
+	var usage Usage
+	completed, firstText := false, false
 
 	go func() {
 		defer resp.Body.Close()
 		defer close(ch)
+		defer func() {
+			err := reader.Err()
+			if err == nil && !completed {
+				err = ctx.Err()
+				if err == nil {
+					err = io.ErrUnexpectedEOF
+				}
+			}
+			finish(err)
+			metrics.RecordTokens("openai", usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.CacheCreationTokens)
+		}()
 
 		scanner := bufio.NewScanner(resp.Body)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 		toolCalls := make(map[int]*ToolCall)
 		var contentBuilder, reasoningBuilder strings.Builder
-		var usage Usage
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -329,6 +368,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, too
 			}
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
+				completed = true
 				// 发送包含累积的工具调用和完整 RawAssistant 的最终数据块。
 				// DeepSeek 思考模式要求 reasoning_content 在下一轮中往返
 				//（否则 API 会以 400 拒绝），因此我们在此处序列化
@@ -423,6 +463,12 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, too
 				contentBuilder.WriteString(delta.Content)
 				select {
 				case ch <- StreamChunk{Content: delta.Content}:
+					if !firstText && delta.Content != "" {
+						firstText = true
+						if metrics != nil {
+							metrics.FirstText.WithLabelValues("openai").Observe(time.Since(started).Seconds())
+						}
+					}
 				case <-ctx.Done():
 					return
 				}
@@ -438,6 +484,11 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, too
 }
 
 func (p *OpenAIProvider) parseSSE(reader io.Reader) (*Response, error) {
+	return p.parseSSEWithCompletion(reader, nil)
+}
+
+// The completion flag is only for metrics; legacy parse return behavior is preserved.
+func (p *OpenAIProvider) parseSSEWithCompletion(reader io.Reader, completed *bool) (*Response, error) {
 	scanner := bufio.NewScanner(reader)
 	// 增加缓冲区大小以处理大型 SSE 数据块
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -454,6 +505,9 @@ func (p *OpenAIProvider) parseSSE(reader io.Reader) (*Response, error) {
 		}
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
+			if completed != nil {
+				*completed = true
+			}
 			break
 		}
 

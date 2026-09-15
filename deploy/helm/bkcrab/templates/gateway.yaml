@@ -38,6 +38,10 @@ spec:
         image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:
+        {{- if .Values.metrics.enabled }}
+        - containerPort: {{ .Values.metrics.port }}
+          name: metrics
+        {{- end }}
         - containerPort: {{ .Values.gateway.port }}
           name: http
         envFrom:

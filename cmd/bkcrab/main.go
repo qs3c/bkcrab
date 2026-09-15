@@ -19,6 +19,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/daemon"
 	"github.com/qs3c/bkcrab/internal/gateway"
+	"github.com/qs3c/bkcrab/internal/observability"
 	"github.com/qs3c/bkcrab/internal/setup"
 	"github.com/qs3c/bkcrab/internal/store"
 )
@@ -127,6 +128,36 @@ func runGateway(port int) error {
 	})))
 
 	env := config.LoadEnv()
+	if err := env.Metrics.Validate(); err != nil {
+		return err
+	}
+	processCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var metricsFailure chan error
+	if env.Metrics.Enabled {
+		metrics := observability.New()
+		observability.SetDefault(metrics)
+		defer observability.SetDefault(nil)
+		metricsServer, err := metrics.StartServer(env.Metrics.Addr)
+		if err != nil {
+			return fmt.Errorf("start metrics: %w", err)
+		}
+		defer metricsServer.Close()
+		metricsFailure = make(chan error, 1)
+		go func() {
+			select {
+			case err := <-metricsServer.Errors:
+				if err == nil {
+					err = errors.New("metrics server stopped unexpectedly")
+				}
+				metricsFailure <- err
+				stop()
+			case <-processCtx.Done():
+				metricsFailure <- nil
+			}
+		}()
+		slog.Info("metrics endpoint enabled", "addr", env.Metrics.Addr)
+	}
 	if env.Gateway.Port > 0 {
 		port = env.Gateway.Port
 	}
@@ -142,6 +173,8 @@ func runGateway(port int) error {
 	if err != nil {
 		return fmt.Errorf("create gateway: %w", err)
 	}
+
+	gw.RegisterOperationalCollectors(observability.Current())
 
 	// 从进程环境中移除包含凭据的环境变量，因为启动配置已读取完毕。
 	// 关闭 /proc/<pid>/environ 路径，否则拥有 shell 的 LLM 可能利用该路径
@@ -209,9 +242,12 @@ func runGateway(port int) error {
 		go openBrowser(url)
 	}
 
-	processCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	return runGatewayProcesses(processCtx, webSrv.Run, gw.RunContext)
+	err = runGatewayProcesses(processCtx, webSrv.Run, gw.RunContext)
+	stop()
+	if metricsFailure != nil {
+		err = errors.Join(err, <-metricsFailure)
+	}
+	return err
 }
 
 type gatewayProcessResult struct {

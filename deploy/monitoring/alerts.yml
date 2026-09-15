@@ -1,0 +1,70 @@
+groups:
+  - name: bkcrab
+    rules:
+      - alert: BkcrabInstanceDown
+        expr: up{job="bkcrab"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Bkcrab 实例无法采集"
+          description: "检查目标实例、指标监听地址、网络与启动日志。"
+      - alert: BkcrabHTTPHighErrorRate
+        expr: >-
+          (sum by (job, instance) (rate(bkcrab_http_requests_total{job="bkcrab",route!~"static|GET /healthz|GET /livez|GET /readyz",status=~"5.."}[5m]))
+          / sum by (job, instance) (rate(bkcrab_http_requests_total{job="bkcrab",route!~"static|GET /healthz|GET /livez|GET /readyz"}[5m])) > 0.05)
+          and (sum by (job, instance) (increase(bkcrab_http_requests_total{job="bkcrab",route!~"static|GET /healthz|GET /livez|GET /readyz"}[5m])) >= 20)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bkcrab HTTP 5xx 错误率持续超过 5%"
+          description: "按路由查看错误，结合实例日志定位；过去 5 分钟至少 20 次请求才触发。"
+      - alert: BkcrabHTTPSlow
+        expr: >-
+          (histogram_quantile(0.95, sum by (job, instance, le) (rate(bkcrab_http_request_duration_seconds_bucket{job="bkcrab",mode="request",route!~"static|GET /healthz|GET /livez|GET /readyz"}[5m]))) > 2)
+          and (sum by (job, instance) (increase(bkcrab_http_request_duration_seconds_count{job="bkcrab",mode="request",route!~"static|GET /healthz|GET /livez|GET /readyz"}[5m])) >= 20)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bkcrab 普通请求 P95 持续超过 2 秒"
+          description: "该规则排除聊天、SSE、WebSocket、静态文件和健康检查；检查 SQL 连接池及依赖。"
+      - alert: BkcrabOperationErrors
+        expr: >-
+          (sum by (job, instance, component) (rate(bkcrab_operations_total{job="bkcrab",outcome=~"error|timeout"}[5m]))
+          / sum by (job, instance, component) (rate(bkcrab_operations_total{job="bkcrab"}[5m])) > 0.1)
+          and (sum by (job, instance, component) (increase(bkcrab_operations_total{job="bkcrab"}[5m])) >= 10)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bkcrab 业务操作失败率持续超过 10%"
+          description: "在模型/工具/RAG 面板定位出错操作；主动取消单独统计，不计入该错误率。"
+      - alert: BkcrabQueueBacklog
+        expr: >-
+          max by (job, resource) (bkcrab_fairqueue_sample{job="bkcrab",signal="rabbit.ready_depth"}
+          and on (job, instance, resource, signal, kind)
+          (time() - bkcrab_fairqueue_sample_timestamp_seconds{job="bkcrab",signal="rabbit.ready_depth"} < 120)) > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bkcrab 就绪队列持续积压"
+          description: "检查调度门、运行中任务和执行耗时；共享队列按 max 聚合，陈旧采样不参与判断。"
+      - alert: BkcrabQueueDependencyDown
+        expr: bkcrab_fairqueue_dependency_up{job="bkcrab"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Bkcrab 公平队列依赖异常"
+          description: "检查 MySQL、Redis、RabbitMQ 与恢复状态；使用受保护的 fairqueue 健康接口查看细节。"
+      - alert: BkcrabQueueUnhealthy
+        expr: bkcrab_fairqueue_healthy{job="bkcrab"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bkcrab 公平队列持续未就绪"
+          description: "检查恢复、调度门与工作循环；计划维护或 paused 模式可暂时静默此告警。"
