@@ -43,7 +43,7 @@ BKCRAB_CONTEXT_CACHE_ENABLED=true
 BKCRAB_CONTEXT_CACHE_REDIS_ADDR=redis:6379
 BKCRAB_CONTEXT_CACHE_REDIS_PASSWORD=...
 BKCRAB_CONTEXT_CACHE_REDIS_DB=0
-BKCRAB_CONTEXT_CACHE_PREFIX=bkcrab:agentctx:v2:
+BKCRAB_CONTEXT_CACHE_PREFIX=bkcrab:agentctx:v3:
 BKCRAB_CONTEXT_CACHE_TTL_SECONDS=1800
 BKCRAB_CONTEXT_CACHE_TIMEOUT_MS=200
 ```
@@ -52,9 +52,11 @@ BKCRAB_CONTEXT_CACHE_TIMEOUT_MS=200
 
 ### Redis Insight 中的 key
 
-默认格式为 `bkcrab:agentctx:v2:<kind>:<sha256>`，kind 为 `session`（会话工作集）、`file`（身份/记忆文件）、`skillcatalog`（技能发布清单）、`skillstate`（技能生命周期）或 `agent`（所有者查找）。健康探针单独使用 `bkcrab:agentctx:v2:health`。摘要仍由完整 `[kind, s1, s2, s3]` JSON 数组计算，避免分隔符歧义，用户/会话标识不会直接出现在 key 中；摘要不是正文 hash，也不是加密保护。Hash 内的 `epoch`、`revision`、`payload` 以及失效协议不变。可以用 `bkcrab:agentctx:v2:session:*` 等模式筛选，不能仅凭大小判断缓存类型。
+默认格式为 `bkcrab:agentctx:v3:<kind>:<sha256>`，kind 为 `session`（会话工作集）、`file`（身份/记忆文件）、`skillcatalog`（技能发布清单）、`skillstate`（技能生命周期）或 `agent`（所有者查找）。文件增加文件名层，如 `bkcrab:agentctx:v3:file:USER.md:<sha256>`；文件名使用 URL query escaping，冒号、斜杠和百分号分别编码为 `%3A`、`%2F`、`%25`，空格编码为 `+`，避免引入额外层级。技能清单增加作用域层：`skillcatalog:global:<sha256>` 对应 `_global`，`skillcatalog:user:<sha256>` 对应 `_user_<uid>`，`skillcatalog:agent:<sha256>` 对应 Agent 所有者。每个清单是该作用域的技能集合，不是单个技能；`_initialized` 是已完成导入检查的内部标记，不计为实际技能。
 
-从 v1 升级需统一停止旧版缓存读写实例，再启动使用同一 v2 前缀的新版本；不要让不同 key 格式或命名空间的实例并行消费同一 SQL outbox，因为已确认的通知不会自动在另一个命名空间重放。显式设置过 `BKCRAB_CONTEXT_CACHE_PREFIX` 的环境需同步更新。新版本冷读回源，不复用 v1 内容，旧 key 自然到期即可。回滚也必须先停止新版实例并使用一个未用过的回滚前缀，或在确认无旧进程后仅清理目标上下文缓存命名空间；不能直接重用可能陈旧的 v1 缓存，更不能清空调度 Redis。
+健康探针单独使用 `bkcrab:agentctx:v3:health`。摘要仍由完整 `[kind, s1, s2, s3]` JSON 数组计算，避免分隔符歧义，用户/会话标识不会直接出现在 key 中；摘要不是正文 hash，也不是加密保护。Hash 内的 `epoch`、`revision`、`payload` 以及失效协议不变。可以用 `bkcrab:agentctx:v3:file:MEMORY.md:*` 等模式筛选，不能仅凭大小判断缓存类型。`Found:false, Value:null` 表示缓存了该作用域下文件不存在的查询结果；正常写入会失效这个负缓存。
+
+从 v1/v2 升级需统一停止旧版缓存读写实例，再启动使用同一 v3 前缀的新版本；不要让不同 key 格式或命名空间的实例并行消费同一 SQL outbox，因为已确认的通知不会自动在另一个命名空间重放。显式设置过 `BKCRAB_CONTEXT_CACHE_PREFIX` 的环境需同步更新。新版本冷读回源，不复用旧版内容，旧 key 自然到期即可。回滚也必须先停止新版实例并使用一个未用过的回滚前缀，或在确认无旧进程后仅清理目标上下文缓存命名空间；不能直接重用可能陈旧的旧版缓存，更不能清空调度 Redis。
 
 生产先运行数据库迁移；关闭 AutoMigrate 的部署须提前部署 DDL，启用缓存时会检查表。新版本会话持久化依赖版本表，不能跳过迁移。此次修复还会将 sessions 的 UPDATE 触发器升级到 v2：先创建新触发器，再移除旧触发器；已有数据库也需要执行迁移。迁移账户需要创建表、索引及 TRIGGER（PostgreSQL 还需函数）权限；运行账户需要源表与通知表读写权限。MySQL 8.4 和 SQLite 有实际执行验证；PostgreSQL 生成对应触发器/函数，但本次未用 PostgreSQL 实例做集成验证。
 

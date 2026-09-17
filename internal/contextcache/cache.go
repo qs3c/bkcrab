@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -55,7 +57,7 @@ func New(cfg Config) (*Cache, error) {
 		return nil, err
 	}
 	if cfg.Prefix == "" {
-		cfg.Prefix = "bkcrab:agentctx:v2:"
+		cfg.Prefix = "bkcrab:agentctx:v3:"
 	}
 	if cfg.TTL == 0 {
 		cfg.TTL = DefaultTTL
@@ -76,6 +78,22 @@ func Key(parts ...string) string {
 	b, _ := json.Marshal(parts)
 	s := sha256.Sum256(b)
 	digest := hex.EncodeToString(s[:])
+	if len(parts) == 4 {
+		switch parts[0] {
+		case "file":
+			// Escape filenames so colons, slashes and whitespace cannot introduce
+			// extra key hierarchy. The digest still identifies the complete scope.
+			return "file:" + url.QueryEscape(parts[3]) + ":" + digest
+		case "skillcatalog":
+			layer := "agent"
+			if parts[1] == "_global" {
+				layer = "global"
+			} else if strings.HasPrefix(parts[1], "_user_") {
+				layer = "user"
+			}
+			return "skillcatalog:" + layer + ":" + digest
+		}
+	}
 	if len(parts) > 0 {
 		return parts[0] + ":" + digest
 	}
