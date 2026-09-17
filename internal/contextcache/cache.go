@@ -55,7 +55,7 @@ func New(cfg Config) (*Cache, error) {
 		return nil, err
 	}
 	if cfg.Prefix == "" {
-		cfg.Prefix = "bkcrab:agentctx:v1:"
+		cfg.Prefix = "bkcrab:agentctx:v2:"
 	}
 	if cfg.TTL == 0 {
 		cfg.TTL = DefaultTTL
@@ -66,10 +66,20 @@ func New(cfg Config) (*Cache, error) {
 	return &Cache{cfg: cfg, client: redis.NewClient(&redis.Options{Addr: cfg.Addr, Password: cfg.Password, DB: cfg.DB, DialTimeout: cfg.Timeout, ReadTimeout: cfg.Timeout, WriteTimeout: cfg.Timeout, MaxRetries: -1, ContextTimeoutEnabled: true})}, nil
 }
 func (c *Cache) Close() error { return c.client.Close() }
+
+// Key exposes the resource kind for inspection while hashing the complete JSON
+// tuple to avoid exposing raw scope identifiers or delimiter ambiguity. Health has no scope.
 func Key(parts ...string) string {
+	if len(parts) == 1 && parts[0] == "health" {
+		return "health"
+	}
 	b, _ := json.Marshal(parts)
 	s := sha256.Sum256(b)
-	return hex.EncodeToString(s[:])
+	digest := hex.EncodeToString(s[:])
+	if len(parts) > 0 {
+		return parts[0] + ":" + digest
+	}
+	return digest
 }
 func (c *Cache) key(k string) string { return c.cfg.Prefix + k }
 func (c *Cache) call(ctx context.Context, script *redis.Script, k string, args ...any) (any, error) {
