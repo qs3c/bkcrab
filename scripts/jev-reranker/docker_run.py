@@ -31,6 +31,7 @@ if not sys.stdin.isatty():
             env['OPENROUTER_API_KEY'] = credential
             keys.append('OPENROUTER_API_KEY')
 cmd = ['docker', 'run', '-d', '--name', name, '--network', 'bkcrab_default',
+       '--user', f'{os.getuid()}:{os.getgid()}',
        '--cpus', '1', '--memory', '768m', '--read-only', '--cap-drop', 'ALL',
        '--security-opt', 'no-new-privileges', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
        '--mount', f'type=bind,src={root},dst=/experiment', '--workdir', '/experiment']
