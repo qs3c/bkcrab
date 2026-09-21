@@ -19,6 +19,7 @@ data=json.loads((root/'combined.json').read_text(encoding='utf-8'))
 smoke=records(root/'official-direct-smoke-v3-scores.jsonl')
 assert len(smoke)==15, 'all five questions and three arms must finish smoke first'
 assert all(v['status']=='ok' for row in smoke for v in row['response']['results'][0]['metrics'].values()), 'judge smoke has failed metrics; full scoring not started'
+print(json.dumps({'stage':'smoke-validated','samples':len(smoke),'metrics':sum(len(row['response']['results'][0]['metrics']) for row in smoke)}),flush=True)
 expected={(s['id'],a) for s in data['cases'] if s['split']=='test' for a in ['qwen3','jev','rrf']}
 deadline=time.monotonic()+4*3600
 while True:
