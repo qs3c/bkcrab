@@ -16,14 +16,25 @@ import time
 
 import openai
 
+OriginalAsyncOpenAI = openai.AsyncOpenAI
 
-class StructuredJudgeClient(openai.AsyncOpenAI):
+
+class StructuredJudgeClient(OriginalAsyncOpenAI):
     def __init__(self, *args, **kwargs):
         kwargs['max_retries'] = 0
         super().__init__(*args, **kwargs)
-        if str(self.base_url).rstrip('/') != 'https://api.deepseek.com/v1':
-            return  # The embedding client remains local and unchanged.
-        create = self.chat.completions.create
+        official = str(self.base_url).rstrip('/') == 'https://api.deepseek.com/v1'
+
+        # Ragas' synchronous helpers can execute async clients in different
+        # event loops. Do not reuse loop-bound HTTP connections across calls.
+        async def fresh_embedding(*args, **kwargs):
+            async with OriginalAsyncOpenAI(api_key=self.api_key, base_url=self.base_url,
+                                          max_retries=0, timeout=60) as fresh:
+                return await fresh.embeddings.create(*args, **kwargs)
+
+        if not official:
+            self.embeddings.create = fresh_embedding
+            return
 
         async def structured_create(*args, **kwargs):
             extra = dict(kwargs.get('extra_body') or {})
@@ -35,7 +46,9 @@ class StructuredJudgeClient(openai.AsyncOpenAI):
             begin = time.monotonic()
             tool_names = [t.get('function', {}).get('name') for t in kwargs.get('tools', [])]
             try:
-                result = await create(*args, **kwargs)
+                async with OriginalAsyncOpenAI(api_key=self.api_key, base_url=self.base_url,
+                                              max_retries=0, timeout=90) as fresh:
+                    result = await fresh.chat.completions.create(*args, **kwargs)
                 print(json.dumps({'judgeCall': tool_names, 'ms': round((time.monotonic()-begin)*1000),
                                   'actualModel': result.model, 'status': 'ok'}), flush=True)
                 return result
@@ -92,7 +105,7 @@ async def main():
                 retrievedContexts=[candidates[i]['hit']['content'] for i in answer['contextIds']])
             contract={'sample':sample.model_dump(),'metrics':metrics,'judge':'deepseek-v4-flash',
                       'endpoint':settings.llm_endpoint,'thinking':'disabled','maxTokens':settings.llm_max_tokens,
-                      'ragas':version('ragas'),'transport':'official-direct-v1'}
+                      'ragas':version('ragas'),'transport':'official-direct-fresh-client-v2'}
             request_id='jev-direct:'+hashlib.sha256(json.dumps(contract,sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:48]
             if request_id in done:
                 continue
