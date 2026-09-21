@@ -29,6 +29,9 @@ cmd=['docker','run','-d','--name',name,'--network','bkcrab_default','--user',f'{
      '--tmpfs','/tmp:rw,noexec,nosuid,size=128m','--mount',f'type=bind,src={root},dst=/experiment',
      '--mount',f'type=bind,src={Path(__file__).parent.resolve()},dst=/bench-scripts,readonly',
      '--workdir','/app','--env','PYTHONPATH=/app','--env','PYTHONDONTWRITEBYTECODE=1']
+gateway=json.loads(subprocess.check_output(['docker','inspect','bkcrab-bkcrab-1']))[0]
+for dns in gateway['HostConfig'].get('Dns') or []:
+    cmd+=['--dns',dns]
 for key in passed:cmd+=['--env',key]
 cmd+=['--entrypoint','python',item['Image'],'-u','/bench-scripts/direct_evaluate.py',*sys.argv[3:]]
 subprocess.run(cmd,env=env,check=True)

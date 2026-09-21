@@ -32,7 +32,18 @@ class StructuredJudgeClient(openai.AsyncOpenAI):
             headers = dict(kwargs.get('extra_headers') or {})
             headers.pop('X-BkCrab-Eval-Owner', None)
             kwargs['extra_headers'] = headers
-            return await create(*args, **kwargs)
+            begin = time.monotonic()
+            tool_names = [t.get('function', {}).get('name') for t in kwargs.get('tools', [])]
+            try:
+                result = await create(*args, **kwargs)
+                print(json.dumps({'judgeCall': tool_names, 'ms': round((time.monotonic()-begin)*1000),
+                                  'actualModel': result.model, 'status': 'ok'}), flush=True)
+                return result
+            except Exception as exc:
+                print(json.dumps({'judgeCall': tool_names, 'ms': round((time.monotonic()-begin)*1000),
+                                  'status': 'error', 'errorType': type(exc).__name__,
+                                  'cause': type(exc.__cause__).__name__}), flush=True)
+                raise
 
         self.chat.completions.create = structured_create
 
