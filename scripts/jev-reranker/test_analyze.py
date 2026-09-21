@@ -21,6 +21,18 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual(result['pairs'],2)
         self.assertEqual(result['clusters'],1)
         self.assertAlmostEqual(result['difference'],.1)
+        self.assertAlmostEqual(result['leftMean'], .15)
+        self.assertAlmostEqual(result['rightMean'], .25)
+
+    def test_usage_matches_language_and_excludes_warmups(self):
+        case = {'id':'en','split':'test','group':'g','candidates':[]}
+        rows = [{'phase':phase,'arm':'jev','caseId':case_id,'repeat':1,
+                 'status':'error','durationMs':1,'error':'test',
+                 'calls':[{'costUSD':cost,'model':'jev'}]}
+                for case_id,phase,cost in [('en','test',.01),('zh','test',.02),('en','warmup',.03)]]
+        usage = analyze({'cases':[case]},rows,[],[])['jevUsage']
+        self.assertAlmostEqual(usage['reportedCostUSD'], .01)
+        self.assertEqual(usage['attemptedCalls'], 1)
 
 
 if __name__ == '__main__':

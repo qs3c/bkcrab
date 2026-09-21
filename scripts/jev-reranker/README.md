@@ -69,6 +69,18 @@ hours, and a $4 peak/cache-miss cost estimate with a $0.50 per-sample reserve.
 Costs use current official rates, without treating caching/off-peak estimates
 as exact billing. Existing failed proxy and transport probes remain separate.
 
+The formal judge stopped after 204 samples at the 6M token guard. The remaining
+44 samples were resumed with a 9M token guard while retaining the $4 cost guard:
+
+```text
+python scripts/jev-reranker/direct_judge_docker.py <root> jev-bench-official-formal-judge-resume /experiment/combined.json /experiment/official-formal-answers.jsonl /experiment/official-formal-scores.jsonl --token-budget 9000000 --cost-budget-usd 4
+```
+
+The same output retains prior rows and skips their request IDs. Metric-level
+errors remain missing; resuming does not overwrite or select a better score.
+Run the language-specific `analyze.py` commands after the resumed job exits.
+See the [results and limitations](../../docs/jev-reranker-experiment-results-2026-09-21.md).
+
 ## Interpretation
 
 - Warmups are excluded from formal latency. Report success-only latency and
@@ -81,6 +93,12 @@ as exact billing. Existing failed proxy and transport probes remain separate.
   latency. Judge time is excluded from the user-facing latency.
 - The API is experimental. Retain actual returned Jev model IDs and split
   results if the provider changes versions.
+- `factual_correctness` receives response/reference, not the question or
+  retrieved evidence. CMRC's short fragment references produced zero scores
+  for visibly matching answers. Preserve these raw scores, but do not call
+  them question-answer accuracy or use them alone to approve a replacement.
+- Language-specific Jev usage excludes other languages and warmups. Paired
+  quality output includes both means on the same overlapping case set.
 
 ## Checks
 

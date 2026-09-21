@@ -31,13 +31,15 @@ def paired_cluster_ci(left, right, groups, iterations=10000):
         clusters[groups[case]].append(right[case]-left[case])
     values = list(clusters.values())
     if not values:
-        return {'pairs': 0, 'clusters': 0, 'difference': None, 'ci95': None}
+        return {'pairs': 0, 'clusters': 0, 'leftMean': None, 'rightMean': None, 'difference': None, 'ci95': None}
     rng = random.Random(20260921)
     boot = []
     for _ in range(iterations):
         selected = [v for _ in values for v in rng.choice(values)]
         boot.append(statistics.mean(selected))
     return {'pairs': len(ids), 'clusters': len(values),
+            'leftMean': statistics.mean(left[i] for i in ids),
+            'rightMean': statistics.mean(right[i] for i in ids),
             'difference': statistics.mean([v for vs in values for v in vs]),
             'ci95': [percentile(boot, .025), percentile(boot, .975)]}
 
@@ -55,6 +57,9 @@ def analyze(data, ranks, answers, scores):
     costs = []
     models = collections.Counter()
     for r in ranks:
+        # Language-specific totals must exclude other cases and warmups.
+        if r.get('phase') != 'test' or r['caseId'] not in cases:
+            continue
         for call in r.get('calls') or []:
             costs.append(call['costUSD'])
             if call['model']:
