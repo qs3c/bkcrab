@@ -46,6 +46,29 @@ generator. It does not migrate the database or start application workers.
 Capture container logs and image IDs before removing only the experiment's
 own stopped containers. Preserve append-only raw records and manifests.
 
+### Official DeepSeek continuation (2026-09-21)
+
+The experiment owner's default now resolves `deepseek-official/deepseek-v4-flash`
+from the normal provider store. The API serves that legacy ID as `deepseek-flash`
+(V4.1). Credentials are never included here. Answer runs must explicitly pass
+`-answer-model deepseek-official/deepseek-v4-flash`.
+
+`direct_judge_docker.py` launches a separate instance of the existing evaluator
+image, with the same local embedding service and Ragas metric implementation.
+It preserves forced tool selection, uses non-thinking structured judging, and
+uses fresh HTTP clients because Ragas' sync helpers can cross event loops.
+It also inherits the gateway's DNS configuration. This avoids changing the
+running application's judge proxy or evaluator service.
+
+After all 15 smoke samples have every metric scored successfully,
+`continue_quality.py DIRECTORY` waits for the current first ranking round,
+freezes it, generates answers, scores them, and writes language-specific
+summaries after the three ranking rounds finish. This is one bounded job.
+Answers are limited to 1.5M reported tokens; judge scoring to 6M tokens, five
+hours, and a $4 peak/cache-miss cost estimate with a $0.50 per-sample reserve.
+Costs use current official rates, without treating caching/off-peak estimates
+as exact billing. Existing failed proxy and transport probes remain separate.
+
 ## Interpretation
 
 - Warmups are excluded from formal latency. Report success-only latency and

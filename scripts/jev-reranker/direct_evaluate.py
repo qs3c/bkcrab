@@ -79,6 +79,7 @@ async def main():
     p.add_argument('output', type=Path)
     p.add_argument('--limit', type=int, default=0)
     p.add_argument('--token-budget', type=int, default=4000000)
+    p.add_argument('--cost-budget-usd', type=float, default=4)
     a = p.parse_args()
     settings = Settings.from_env()
     assert settings.llm_endpoint.rstrip('/') == 'https://api.deepseek.com/v1'
@@ -88,6 +89,7 @@ async def main():
     prior = read_rows(a.output)
     done = {r['requestId'] for r in prior}
     total = sum(r.get('tokens',0) for r in prior)
+    cost = sum(r['response']['usage']['llmEstimatedCostUsd'] for r in prior)
     metrics = ['context_precision','context_recall','factual_correctness','faithfulness','response_relevancy']
     completed = 0
     started = time.monotonic()
@@ -109,7 +111,9 @@ async def main():
             request_id='jev-direct:'+hashlib.sha256(json.dumps(contract,sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:48]
             if request_id in done:
                 continue
-            if total >= a.token_budget or time.monotonic()-started>5*3600:
+            # Leave a conservative reserve for a whole multi-call sample.
+            # Prices are peak cache-miss estimates, not actual billed amounts.
+            if total >= a.token_budget or cost + .5 > a.cost_budget_usd or time.monotonic()-started>5*3600:
                 raise RuntimeError('scoring budget reached')
             begin=time.monotonic()
             with judge_owner_scope('public-jevrerank-experiment'),usage_scope() as meter:
@@ -119,6 +123,7 @@ async def main():
                 results=[CaseResult(caseId=sample.caseId,metrics=dict(zip(metrics,values)))],usage=usage)
             tokens=usage.llmInputTokens+usage.llmOutputTokens+usage.embeddingInputTokens
             total+=tokens
+            cost+=usage.llmEstimatedCostUsd
             row={'caseId':case['id'],'arm':answer['arm'],'requestId':request_id,'status':'ok',
                  'tokens':tokens,'durationMs':round((time.monotonic()-begin)*1000),'response':result.model_dump(),
                  'judgeContract':{k:v for k,v in contract.items() if k not in ['sample','metrics']}}
