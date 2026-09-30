@@ -64,4 +64,6 @@ OpenIM 会自行在基础 URL 后追加 `callbackAfterSendSingleMsgCommand` 或 
 6. 在入站数据已保存、worker 尚未完成交接时重启 bkcrab，验证待处理记录能够恢复。不要据此推断模型执行阶段的崩溃也已覆盖。
 7. 本地自动化检查：`go test ./internal/channels ./internal/store ./internal/gateway ./internal/setup`；在 `web` 运行 `npx tsc --noEmit`。
 
-核对过的 OpenIM Server 源码版本：`175a7bb0673eca18e9d1b10bff4f728da6b1b513`。实际部署版本需要按上述清单再联调。
+核对过的 OpenIM Server 源码版本：`175a7bb0673eca18e9d1b10bff4f728da6b1b513`。
+
+2026-09-30 已在 OpenIM Server `v3.8.3-patch.12`、Chat `v1.8.4-patch.2` 和 MySQL 存储的 bkcrab 上完成单聊联调：真实后置回调进入 bkcrab，智能体生成回复，OpenIM WebSocket 收到对应回复；错误回调密钥返回 401。运行时 `cmd/bkcrab` 的 `apiResolver` 必须转发 `DispatchOpenIMWebhook`，仅在 Gateway 实现该方法会使 HTTP 入口返回 503。此联调未覆盖群聊、多机器人及故障恢复验收项。

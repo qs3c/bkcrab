@@ -57,3 +57,11 @@ Execution note: the referenced execution sub-skills are not installed in this wo
 - Both failures reproduced using a Go source overlay restoring the affected store migration / agent loop files from HEAD. No unrelated fixes were applied.
 - MySQL/PostgreSQL integration and a real OpenIM server were not validated. The user confirmed OpenIM is not deployed and requested completing bkcrab integration first. No server deployment, push, or live restart was performed.
 
+## Deployment validation — 2026-09-30
+
+- Deployed the integration to the user's Docker-based bkcrab with MySQL, alongside OpenIM Server v3.8.3-patch.12 and Chat v1.8.4-patch.2.
+- Fixed the missing `apiResolver.DispatchOpenIMWebhook` production forwarding method discovered during live validation; added a CLI adapter regression test.
+- Passed OpenIM/ChannelInbox targeted tests across channels, gateway, setup and store; passed the CLI forwarding regression and frontend TypeScript check.
+- Passed real single-chat callback → agent reply → OpenIM WebSocket roundtrip, plus rejection of an invalid callback key (401). Group chat and PostgreSQL remain unverified.
+- Retained the previous Docker image and a private snapshot of agent/channel configuration for rollback. Runtime credentials and webhook secrets remain on the server, outside Git.
+
