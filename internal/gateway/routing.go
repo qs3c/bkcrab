@@ -221,7 +221,7 @@ func (g *Gateway) routeGroup(ctx context.Context, msg bus.InboundMessage) {
 				triggerMsg.Text = fmt.Sprintf("\\[%s\\]: %s", msg.SenderName, msg.Text)
 				triggerMsg.IsBotMessage = false
 				if !g.trySteer(target, triggerMsg, triggerMsg.Text) {
-					g.taskQueue.Submit(target.Name(), chatKey(triggerMsg.Channel, triggerMsg.AccountID, triggerMsg.ChatID), triggerMsg, g.accountIDForAgent(space, target.Name(), triggerMsg.Channel))
+					g.taskQueue.Submit(target.Name(), chatKey(triggerMsg.Channel, triggerMsg.AccountID, triggerMsg.ChatID), triggerMsg, g.replyAccountID(space, target.Name(), triggerMsg))
 				}
 			}
 		}
@@ -238,7 +238,7 @@ func (g *Gateway) routeGroup(ctx context.Context, msg bus.InboundMessage) {
 				"user", msg.OwnerUserID, "channel", msg.Channel,
 				"chat_id", msg.ChatID, "agent", target.Name())
 			if !g.trySteer(target, msg, groupSteerText(msg)) {
-				g.taskQueue.Submit(target.Name(), chatKey(msg.Channel, msg.AccountID, msg.ChatID), msg, g.accountIDForAgent(space, target.Name(), msg.Channel))
+				g.taskQueue.Submit(target.Name(), chatKey(msg.Channel, msg.AccountID, msg.ChatID), msg, g.replyAccountID(space, target.Name(), msg))
 			}
 			return
 		}
@@ -256,13 +256,20 @@ func (g *Gateway) routeGroup(ctx context.Context, msg bus.InboundMessage) {
 			}
 		}
 		if !g.trySteer(target, msg, groupSteerText(msg)) {
-			g.taskQueue.Submit(target.Name(), chatKey(msg.Channel, msg.AccountID, msg.ChatID), msg, g.accountIDForAgent(space, target.Name(), msg.Channel))
+			g.taskQueue.Submit(target.Name(), chatKey(msg.Channel, msg.AccountID, msg.ChatID), msg, g.replyAccountID(space, target.Name(), msg))
 		}
 	default:
 		for _, ag := range boundAgents {
 			ag.InjectGroupMessage(ctx, msg)
 		}
 	}
+}
+
+func (g *Gateway) replyAccountID(space *UserSpace, agentID string, msg bus.InboundMessage) string {
+	if msg.Channel == "openim" {
+		return msg.AccountID
+	}
+	return g.accountIDForAgent(space, agentID, msg.Channel)
 }
 
 func (g *Gateway) matchAgent(ctx context.Context, space *UserSpace, msg bus.InboundMessage) *agent.Agent {

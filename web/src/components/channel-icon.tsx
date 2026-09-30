@@ -1,3 +1,5 @@
+import { MessageCircle } from "lucide-react";
+
 // 品牌资源路径已复制到 /public/channels/。与仪表板的渠道页面使用
 // 同一套，使侧边栏 / 聊天列表和连接对话框共享统一的视觉标识。
 const ASSETS: Record<string, string> = {
@@ -24,6 +26,7 @@ export function ChannelIcon({
   channel?: string;
   className?: string;
 }) {
+  if (channel === "openim") return <MessageCircle className={className} aria-label="OpenIM" />;
   const src = channel ? ASSETS[channel] : undefined;
   if (!src) return null;
   const extra = channel === "wechat" ? "scale-150" : "";
@@ -40,6 +43,8 @@ export function ChannelIcon({
 // channelLabel 返回适合工具提示的人类可读名称。
 export function channelLabel(channel?: string): string {
   switch (channel) {
+    case "openim":
+      return "OpenIM";
     case "telegram":
       return "Telegram";
     case "wechat":

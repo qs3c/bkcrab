@@ -166,13 +166,17 @@ func flattenChannelRows(rows []store.ConfigRecord, source string, _, _ string, f
 				continue
 			}
 			tok := acct.BotToken
+			botUsername := accountID
+			if rec.Name == "openim" && acct.OpenIM != nil {
+				botUsername = acct.OpenIM.BotUserID
+			}
 			if tok == "" {
 				tok = cc.BotToken
 			}
 			out = append(out, channelOut{
 				Type:        rec.Name,
 				AccountID:   accountID,
-				BotUsername: accountID,
+				BotUsername: botUsername,
 				BotToken:    maskAPIKey(tok),
 				Enabled:     rec.Enabled,
 				UpdatedAt:   rec.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),

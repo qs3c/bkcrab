@@ -1787,7 +1787,7 @@ func renderChannelHints(msg bus.InboundMessage, splitEnabled bool) string {
 // 地方——在那里分裂不会增加任何东西。
 func isIMChannel(channel string) bool {
 	switch channel {
-	case "wechat", "telegram", "discord", "slack", "line", "feishu":
+	case "wechat", "telegram", "discord", "slack", "line", "feishu", "openim":
 		return true
 	}
 	return false

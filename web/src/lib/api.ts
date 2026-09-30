@@ -2454,6 +2454,25 @@ export async function pollAgentWeChatLoginStatus(
   return res.json();
 }
 
+export interface OpenIMConnection {
+  apiUrl: string;
+  adminUserId: string;
+  adminSecret: string;
+  botUserId: string;
+  allowedGroupIds: string[];
+}
+
+export async function connectAgentOpenIM(agentId: string, config: OpenIMConnection): Promise<{
+  ok: boolean; accountId?: string; botName?: string; webhookUrl?: string; error?: string;
+}> {
+  const res = await apiFetch(`/api/agents/${encodeURIComponent(agentId)}/channels/openim`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+  return res.json();
+}
+
 export async function connectAgentLINE(
   agentId: string,
   channelToken: string,

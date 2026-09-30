@@ -35,6 +35,13 @@ type dedupEntry struct {
 // 共享存储（Redis/DB 在 (channel, accountID, messageID) 上唯一）是适当的修复方式 —
 // 这超出了本函数的作用域。
 func (g *Gateway) isDuplicate(msg bus.InboundMessage) bool {
+	// OpenIM has stable IDs in both DM and group callbacks. Keep accounts and
+	// conversations isolated; identical text can represent distinct messages.
+	if msg.Channel == "openim" && msg.MessageID != "" {
+		key := fmt.Sprintf("openim:%s:%s:%s", msg.AccountID, msg.ChatID, msg.MessageID)
+		_, loaded := g.dedup.LoadOrStore(key, dedupEntry{seenAt: time.Now()})
+		return loaded
+	}
 	if msg.PeerKind == "group" {
 		key := fmt.Sprintf("group:%s:%s:%s:%x", msg.Channel, msg.ChatID, msg.UserID, hashString(msg.Text))
 		_, loaded := g.dedup.LoadOrStore(key, dedupEntry{seenAt: time.Now()})

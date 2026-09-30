@@ -49,6 +49,7 @@ import {
 } from "@/lib/api";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
+import { OpenIMConnectDialog } from "@/components/openim-connect-dialog";
 
 // 渠道页面：按智能体配置 IM 机器人绑定。目录中每种渠道类型对应一张卡片——
 // 已连接的类型显示机器人信息和断开按钮，未连接的显示连接按钮。
@@ -57,6 +58,12 @@ import { useAgentName } from "@/hooks/use-agent-name";
 // 多机器人管理时，卡片可展开为列表。
 
 const CATALOG: { type: string; label: string; description: string; available: boolean }[] = [
+  {
+    type: "openim",
+    label: "OpenIM",
+    description: "连接自建 OpenIM 机器人，支持单聊和允许群内的 @ 回复。",
+    available: true,
+  },
   {
     type: "telegram",
     label: "Telegram",
@@ -111,6 +118,7 @@ export default function AgentChannelsPage() {
   const [lineOpen, setLineOpen] = useState(false);
   const [wechatOpen, setWechatOpen] = useState(false);
   const [feishuOpen, setFeishuOpen] = useState(false);
+  const [openimOpen, setOpenimOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<AgentChannel | null>(null);
 
   const loadChannels = useCallback(async (requestedAgentId = agentId) => {
@@ -238,12 +246,21 @@ export default function AgentChannelsPage() {
                   else if (entry.type === "line") setLineOpen(true);
                   else if (entry.type === "wechat") setWechatOpen(true);
                   else if (entry.type === "feishu") setFeishuOpen(true);
+                  else if (entry.type === "openim") setOpenimOpen(true);
                 }}
               />
             );
           })}
         </div>
       )}
+
+      {openimOpen && <OpenIMConnectDialog
+        key={agentId}
+        open={openimOpen}
+        onOpenChange={setOpenimOpen}
+        agentId={agentId}
+        onConnected={refresh}
+      />}
 
       <ConnectTelegramDialog
         open={telegramOpen}

@@ -1008,7 +1008,9 @@ type ChannelConfig struct {
 }
 
 type AccountConfig struct {
-	BotToken string `json:"botToken,omitempty"`
+	// OpenIM keeps the server-specific credentials and routing policy explicit.
+	OpenIM   *OpenIMConfig `json:"openim,omitempty"`
+	BotToken string        `json:"botToken,omitempty"`
 	// BaseURL 是某些适配器使用的每账号 API 基地址，其上游不是固定主机名
 	// （例如微信 iLink 在 QR 确认时发放区域特定 baseurl）。对于
 	// Telegram/Discord/Slack 为空——它们都访问固定端点。
@@ -1026,6 +1028,14 @@ type AccountConfig struct {
 	// 适配器会忽略它。为 true 时，验证/加密密钥未使用（WS 连接通过
 	// appID/appSecret 认证），且不需要公共可达 URL。
 	UseLongConn bool `json:"useLongConn,omitempty"`
+}
+
+type OpenIMConfig struct {
+	APIURL          string   `json:"apiUrl"`
+	AdminUserID     string   `json:"adminUserId"`
+	AdminSecret     string   `json:"adminSecret"`
+	BotUserID       string   `json:"botUserId"`
+	AllowedGroupIDs []string `json:"allowedGroupIds,omitempty"`
 }
 
 type Binding struct {

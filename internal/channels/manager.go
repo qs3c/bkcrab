@@ -79,13 +79,16 @@ func (m *Manager) Register(ch Channel) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := channelKey(ch.Name(), ch.AccountID())
+	if old, ok := m.channels[key].(interface{ Stop() }); ok {
+		old.Stop()
+	}
 	m.channels[key] = ch
 }
 
 // RegisterSingleton 类似 Register，但标记渠道需要跨进程领导选举。
 // 每个 (channel, accountID) 在同一时间只有一个副本的 Start 运行；
 // 对等方在 Leaser 上等待，直到活跃持有者死亡。用于轮询/持久连接适配器
-//（Telegram 长轮询、微信 iLink 长轮询、Discord WS、Slack Socket Mode、
+// （Telegram 长轮询、微信 iLink 长轮询、Discord WS、Slack Socket Mode、
 // 飞书长连接）——任何在两个进程同时与同一上游协议对话时会导致入站消息
 // 重复的适配器。
 func (m *Manager) RegisterSingleton(ch Channel) {
@@ -101,7 +104,7 @@ func (m *Manager) RegisterSingleton(ch Channel) {
 // Telegram bot 无需进程重启即可开始接收更新。
 //
 // 在 Start 之前调用也是安全的——该情况下回退为普通 Register
-//（Start 会像任何其他条目一样拾取它）。
+// （Start 会像任何其他条目一样拾取它）。
 func (m *Manager) RegisterAndStart(ch Channel) {
 	m.registerAndStart(ch, false)
 }
@@ -116,6 +119,9 @@ func (m *Manager) RegisterSingletonAndStart(ch Channel) {
 func (m *Manager) registerAndStart(ch Channel, singleton bool) {
 	m.mu.Lock()
 	key := channelKey(ch.Name(), ch.AccountID())
+	if old, ok := m.channels[key].(interface{ Stop() }); ok {
+		old.Stop()
+	}
 	m.channels[key] = ch
 	if singleton {
 		m.singleton[key] = struct{}{}
@@ -139,14 +145,17 @@ func (m *Manager) registerAndStart(ch Channel, singleton bool) {
 	}()
 }
 
-// Unregister 从路由表中移除渠道。渠道自身的 Start goroutine 不会在此处
-// 被取消——它会在根 ctx 结束时退出。目前这只是停止出站路由；
+// Unregister 从路由表中移除渠道，并停止实现 Stop() 的适配器（例如 OpenIM）。
+// 其他渠道自身的 Start goroutine 会在根 ctx 结束时退出，目前只停止出站路由；
 // bot 适配器的轮询循环不会被触碰（Telegram 的 GetUpdatesChan 无法
 // 在不拆除整个管理器的情况下中途取消）。对从 UI 删除来说足够了：
 // 下次进程重启时干净启动，绑定从数据库消失，因此入站消息不再路由到 agent。
 func (m *Manager) Unregister(channelType, accountID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if old, ok := m.channels[channelKey(channelType, accountID)].(interface{ Stop() }); ok {
+		old.Stop()
+	}
 	delete(m.channels, channelKey(channelType, accountID))
 }
 
@@ -306,6 +315,20 @@ func (m *Manager) Get(channel, accountID string) Channel {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.channels[channelKey(channel, accountID)]
+}
+
+// Channels returns a snapshot; callers must not hold the manager lock while
+// performing network or database work.
+func (m *Manager) Channels(channel string) []Channel {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []Channel
+	for _, ch := range m.channels {
+		if ch.Name() == channel {
+			result = append(result, ch)
+		}
+	}
+	return result
 }
 
 func channelKey(channel, accountID string) string {

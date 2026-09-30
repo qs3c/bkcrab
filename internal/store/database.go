@@ -2765,6 +2765,8 @@ func (d *DBStore) migrationSQL() []string {
 		// 两个云副本都将长轮询上游服务器，用户将收到每个回复两次。
 		// 租约持有者定期续约；崩溃时租约过期，另一个实例接管。
 		// 参见 channels.Manager 和 channels.runWithLease。
+		channelInboxTableSQL(d.dialect),
+		`CREATE INDEX IF NOT EXISTS idx_channel_inbox_pending ON channel_inbox (account_id, done_ms, available_ms)`,
 		`CREATE TABLE IF NOT EXISTS channel_leases (
 			channel TEXT NOT NULL,
 			account_id TEXT NOT NULL,

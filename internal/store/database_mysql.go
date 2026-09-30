@@ -699,6 +699,7 @@ func mysqlMigrationSQL() []string {
 			KEY idx_rag_document_ai_usage_user_period (user_id, period_start_utc, provider_fingerprint),
 			KEY idx_rag_document_ai_usage_task_logical (task_id, logical_request_key)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		channelInboxTableSQL(mysqlDialect),
 		`CREATE TABLE IF NOT EXISTS channel_leases (
 			channel VARCHAR(64) NOT NULL,
 			account_id VARCHAR(191) NOT NULL,

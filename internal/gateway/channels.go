@@ -14,7 +14,7 @@ import (
 )
 
 // storeLeaser 适配 store.Store 到 channels.Leaser。方法名称不同
-//（channels 侧是 Acquire/Renew/Release，store 侧是 ...ChannelLease）
+// （channels 侧是 Acquire/Renew/Release，store 侧是 ...ChannelLease）
 // 以便 store 可以扩展其他租约类型而无需重命名。放在这里而不是 store 包中，
 // 以保持 store 接口与 IM 无关。
 type storeLeaser struct{ st store.Store }
@@ -34,7 +34,7 @@ func (s storeLeaser) Release(ctx context.Context, channel, accountID, holderID s
 // 反向查找以找到所有者的方式 — 保持其稳定（例如 bot token 的尾部、app id）。
 //
 // `hot` 控制 bot 适配器的轮询 goroutine 是否立即启动。启动时注册使用 Register
-//（Manager.Start 一次性扇出所有内容）；仪表盘变更使用 RegisterAndStart，
+// （Manager.Start 一次性扇出所有内容）；仪表盘变更使用 RegisterAndStart，
 // 以便新保存的 bot 无需重启进程即可开始接收更新。
 func registerChannelInstance(rec store.ConfigRecord, mb *bus.MessageBus, chanMgr *channels.Manager, st store.Store, hot bool) error {
 	cc := decodeChannelConfig(rec)
@@ -51,6 +51,25 @@ func registerChannelInstance(rec store.ConfigRecord, mb *bus.MessageBus, chanMgr
 		return registerWeChatChannels(rec, cc, mb, chanMgr, st, hot)
 	case "feishu":
 		return registerFeishuChannels(cc, mb, chanMgr, hot)
+	case "openim":
+		inbox, ok := st.(store.ChannelInbox)
+		if !ok {
+			return errors.New("openim: store does not support durable channel ingress")
+		}
+		for accountID, acct := range cc.Accounts {
+			if acct.OpenIM == nil {
+				return errors.New("openim: account configuration required")
+			}
+			ch, err := channels.NewOpenIM(*acct.OpenIM, mb, inbox)
+			if err != nil {
+				return err
+			}
+			if ch.AccountID() != accountID {
+				return errors.New("openim: account ID does not match instance and bot")
+			}
+			ch.SetBinding(rec.UserID, rec.AgentID)
+			register(chanMgr, ch, hot)
+		}
 	}
 	return nil
 }
@@ -245,7 +264,7 @@ func registerWeChatChannels(rec store.ConfigRecord, chCfg config.ChannelConfig, 
 // 因此 HTTP 请求 ctx 不可用 — 使用新的后台 ctx。
 //
 // 幂等的：GetConfig 查找返回 ErrNotFound 意味着行已经不存在
-//（仪表盘断开连接，或兄弟账号的清理先清空了该行）— 那是成功，不是错误。
+// （仪表盘断开连接，或兄弟账号的清理先清空了该行）— 那是成功，不是错误。
 func purgeWeChatAccount(st store.Store, rowID, deadAccount string) error {
 	ctx := context.Background()
 	rec, err := st.GetConfig(ctx, rowID)

@@ -552,6 +552,8 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/agents/{id}/channels/wechat/login/status", auth(s.handleAgentWeChatLoginStatus))
 	mux.HandleFunc("POST /api/agents/{id}/channels/line", auth(s.handleConnectAgentLINE))
 	mux.HandleFunc("POST /api/agents/{id}/channels/feishu", auth(s.handleConnectAgentFeishu))
+	mux.HandleFunc("POST /api/agents/{id}/channels/openim", auth(s.handleConnectAgentOpenIM))
+	mux.HandleFunc("POST /api/openim/webhook/{instanceId}/{secret}/{command}", s.handleOpenIMWebhook)
 	mux.HandleFunc("DELETE /api/agents/{id}/channels/{type}/{accountId}", auth(s.handleDisconnectAgentChannel))
 
 	// 飞书事件 webhook。无需认证 — 飞书不带 bkcrab bearer token 直接发送到此端点。
