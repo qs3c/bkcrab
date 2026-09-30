@@ -81,6 +81,10 @@ func (a *apiResolver) DispatchLINEWebhook(accountID string, body []byte, signatu
 	return a.gw.DispatchLINEWebhook(accountID, body, signature)
 }
 
+func (a *apiResolver) DispatchOpenIMWebhook(ctx context.Context, instance, secret, command string, body []byte) (int, error) {
+	return a.gw.DispatchOpenIMWebhook(ctx, instance, secret, command, body)
+}
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "bkcrab",
