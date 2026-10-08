@@ -46,10 +46,10 @@ Files: deployment runbook and validation notes; private operational scripts kept
 
 - [x] Restore OpenIM Docker networking and confirm all application processes healthy.
 - [x] Import friendship for user `2305090317` and `bkcrab_assistant`, verify both directions.
-- [ ] Review diff, commit only task files, push main. Build an isolated remote checkout of the exact commit.
-- [ ] Snapshot the running bkcrab container configuration privately. Recreate only bkcrab with the new image, preserving mounts, environment, ports and networks; keep a stopped rollback container.
-- [ ] Configure `wsUrl` through the authenticated channel API while preserving the agent and callback.
-- [ ] Verify online status beyond a heartbeat interval, exact read notification, bot reply and disconnect/reconnect. Do not acknowledge historical user messages as part of the probe.
-- [ ] Record results and rollback instructions, report outcome to user.
+- [x] Review diff, commit only task files, push main. Build an isolated remote checkout of the exact commit.
+- [x] Snapshot the running bkcrab container configuration privately. Recreate only bkcrab with the new image, preserving mounts, environment, ports and networks; keep a stopped rollback container.
+- [x] Configure `wsUrl` through the authenticated channel API while preserving the agent and callback.
+- [x] Verify online status beyond a heartbeat interval, exact read notification, bot reply and disconnect/reconnect. Do not acknowledge historical user messages as part of the probe.
+- [x] Record results and rollback instructions, report outcome to user.
 
 Self-review: all three requested behaviors are covered. Existing webhook ingress, bot identity and binding remain stable. No subagents or upstream source changes are needed.

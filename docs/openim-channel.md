@@ -79,3 +79,7 @@ OpenIM 会自行在基础 URL 后追加 `callbackAfterSendSingleMsgCommand` 或 
 核对过的 OpenIM Server 源码版本：`175a7bb0673eca18e9d1b10bff4f728da6b1b513`。
 
 2026-09-30 已在 OpenIM Server `v3.8.3-patch.12`、Chat `v1.8.4-patch.2` 和 MySQL 存储的 bkcrab 上完成单聊联调：真实后置回调进入 bkcrab，智能体生成回复，OpenIM WebSocket 收到对应回复；错误回调密钥返回 401。运行时 `cmd/bkcrab` 的 `apiResolver` 必须转发 `DispatchOpenIMWebhook`，仅在 Gateway 实现该方法会使 HTTP 入口返回 503。此联调未覆盖群聊、多机器人及故障恢复验收项。
+
+2026-10-08 已部署 `a888fab`：通过管理员导入并验证指定用户与机器人的双向好友关系；机器人使用平台 7 保持在线超过 40 秒；独立测试账号收到 `2200` 已读通知，其中 `seqs` 仅包含本次输入的序号，随后收到匹配的智能体回复。单元测试覆盖连接中断重连、上下文取消后重启、永久停止、租约等待期间停止、精确已读、分页查找及错误目标过滤。渠道、网关、setup、config 包测试与前端 TypeScript 检查通过。
+
+此次服务器原源码目录存在其他未提交工作，构建采用已推送提交的独立归档目录。部署保存了原容器运行配置，并只替换 bkcrab；原环境变量、挂载、端口和网络保持不变。重启 bkcrab 后验证了新的认证连接、健康状态及持续在线。私有快照、回滚说明和验证结果保存在 OpenIM 部署目录的 `deployment-tools/presence-20261008/`，其中包含凭据的文件不应提交到 Git。
