@@ -26,6 +26,15 @@ func NormalizeOpenIMConfig(c config.OpenIMConfig) (config.OpenIMConfig, error) {
 	}
 	u.Host = strings.ToLower(u.Host)
 	c.APIURL = strings.TrimRight(u.String(), "/")
+	c.WSURL = strings.TrimSpace(c.WSURL)
+	if c.WSURL != "" {
+		ws, err := url.Parse(c.WSURL)
+		if err != nil || ws == nil || (ws.Scheme != "ws" && ws.Scheme != "wss") || ws.Hostname() == "" || ws.User != nil || ws.RawQuery != "" || ws.Fragment != "" {
+			return c, errors.New("openim: wsUrl must be a ws(s) URL without credentials, query or fragment")
+		}
+		ws.Host = strings.ToLower(ws.Host)
+		c.WSURL = ws.String()
+	}
 	c.AdminUserID = strings.TrimSpace(c.AdminUserID)
 	c.BotUserID = strings.TrimSpace(c.BotUserID)
 	if c.AdminUserID == "" || c.AdminSecret == "" || c.BotUserID == "" {

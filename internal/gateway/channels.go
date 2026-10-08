@@ -68,7 +68,7 @@ func registerChannelInstance(rec store.ConfigRecord, mb *bus.MessageBus, chanMgr
 				return errors.New("openim: account ID does not match instance and bot")
 			}
 			ch.SetBinding(rec.UserID, rec.AgentID)
-			register(chanMgr, ch, hot)
+			registerSingleton(chanMgr, ch, hot)
 		}
 	}
 	return nil

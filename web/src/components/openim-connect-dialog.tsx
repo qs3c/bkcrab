@@ -14,6 +14,7 @@ export function OpenIMConnectDialog({ open, onOpenChange, agentId, onConnected }
 }) {
   // The parent mounts a fresh form on each opening so credentials do not linger.
   const [apiUrl, setApiUrl] = useState("");
+  const [wsUrl, setWsUrl] = useState("");
   const [adminUserId, setAdminUserId] = useState("imAdmin");
   const [adminSecret, setAdminSecret] = useState("");
   const [botUserId, setBotUserId] = useState("");
@@ -29,6 +30,7 @@ export function OpenIMConnectDialog({ open, onOpenChange, agentId, onConnected }
     try {
       const result = await connectAgentOpenIM(agentId, {
         apiUrl: apiUrl.trim(), adminUserId: adminUserId.trim(), adminSecret,
+        wsUrl: wsUrl.trim(),
         botUserId: botUserId.trim(), allowedGroupIds: groups.split(/[\s,，]+/).filter(Boolean),
       });
       if (!result.ok || !result.webhookUrl) throw new Error(result.error || "连接失败");
@@ -59,6 +61,7 @@ export function OpenIMConnectDialog({ open, onOpenChange, agentId, onConnected }
         <DialogFooter><Button onClick={() => onOpenChange(false)}>完成</Button></DialogFooter>
       </div> : <form onSubmit={connect} className="space-y-4">
         <div className="space-y-2"><Label htmlFor="openim-url">OpenIM API 地址</Label><Input id="openim-url" type="url" required value={apiUrl} onChange={e => setApiUrl(e.target.value)} placeholder="http://openim-server:10002" /><p className="text-xs text-muted-foreground">填写 bkcrab 容器能够访问的 API 地址；同一实例请始终使用相同地址。</p></div>
+        <div className="space-y-2"><Label htmlFor="openim-ws">WebSocket 地址（可选）</Label><Input id="openim-ws" type="url" value={wsUrl} onChange={e => setWsUrl(e.target.value)} placeholder="ws://openim-server:10001" /><p className="text-xs text-muted-foreground">用于维持机器人在线状态，需能从 bkcrab 容器访问。留空仍可收发消息，但显示离线。</p></div>
         <div className="space-y-2"><Label htmlFor="openim-admin">管理员用户 ID</Label><Input id="openim-admin" required value={adminUserId} onChange={e => setAdminUserId(e.target.value)} /></div>
         <div className="space-y-2"><Label htmlFor="openim-secret">OpenIM 服务端 secret</Label><Input id="openim-secret" type="password" autoComplete="new-password" required value={adminSecret} onChange={e => setAdminSecret(e.target.value)} /><p className="text-xs text-muted-foreground">用于后端获取管理员 token。同一实例的绑定应使用相同管理员凭据。</p></div>
         <div className="space-y-2"><Label htmlFor="openim-bot">机器人用户 ID</Label><Input id="openim-bot" required value={botUserId} onChange={e => setBotUserId(e.target.value)} placeholder="bkcrab_assistant" /></div>

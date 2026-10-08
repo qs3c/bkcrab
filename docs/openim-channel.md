@@ -6,7 +6,7 @@
 
 1. 在 OpenIM 注册一个普通用户，例如 `bkcrab_assistant`，设置昵称和头像。管理员账号与机器人账号分开。
 2. 用户按当前 OpenIM 好友策略添加机器人；需要群聊时，将机器人加入对应群。连接操作只验证已有账号，不会自动注册、加好友或入群。
-3. 准备 OpenIM API 地址、管理员 userID、服务端 secret、机器人 userID，以及可选群 ID 列表。机器人、聊天用户和群 ID 当前限制为 64 字节以内。
+3. 准备 OpenIM API 地址、管理员 userID、服务端 secret、机器人 userID，以及可选 WebSocket 地址和群 ID 列表。机器人、聊天用户和群 ID 当前限制为 64 字节以内。
 4. 在 bkcrab 的「智能体 → 渠道 → OpenIM」填写信息，点击「验证并连接」。凭据会用于 `/auth/get_admin_token` 和 `/user/get_users_info` 验证，保存后热加载，无需重启 bkcrab。
 
 同一个用户在同一个智能体上只能绑定一个 OpenIM 机器人，与现有 channel 配置表约束一致。需要替换时先断开；同一 OpenIM 实例可在不同智能体上绑定多个机器人。所有绑定应使用完全一致的 API 基地址和管理员凭据。不同 DNS 别名会被视作不同实例。
@@ -33,7 +33,19 @@ OpenIM 会自行在基础 URL 后追加 `callbackAfterSendSingleMsgCommand` 或 
 
 同一 OpenIM 实例只有一个回调基础地址，多机器人共用它。将所有机器人的 userID 合并进单聊 attentionIds，将目标群合并进群聊 attentionIds；bkcrab 内部仍按接收机器人、群允许列表和 @ 列表过滤。OpenIM 已有其他业务回调时，不能直接覆盖其地址，应在现有业务回调服务或反向代理按回调命令分发到 bkcrab，其余回调继续交给原服务。
 
-配置需要按实际 OpenIM Docker/Compose 部署方式重新加载相关服务。本次代码实现不包含对运行中 OpenIM 或 bkcrab 的重启。
+配置需要按实际 OpenIM Docker/Compose 部署方式重新加载相关服务。
+
+## 好友、在线和已读
+
+机器人不会自动批准好友申请。管理员可使用 OpenIM `/friend/import_friend`，传入 `ownerUserID` 和 `friendUserIDs`，建立双向好友关系；用 `/friend/is_friend` 验证双方状态。此操作应只针对获准添加的用户。
+
+配置 `wsUrl`（例如 `ws://openim-server:10001` 或反向代理的 `wss://im.example.com/gateway`）后，bkcrab 会以机器人用户、Linux 平台 7 登录，维持真实心跳并在掉线后重连；token 在到期前刷新。地址留空时继续使用原有 webhook 收发消息，机器人会显示离线。WS 连接不再次投递消息，入站仍只走回调。不要用同一机器人账号的 Linux 平台登录另一客户端，以免互相踢下线。
+
+共享存储的部署使用渠道租约，单个机器人只有一个活跃在线连接。删除绑定、停止进程或丢失租约会关闭连接；重新获得租约后恢复。`wsUrl` 不参与账号 ID 和回调密钥计算，添加该配置无需替换回调。
+
+单聊文字消息在智能体开始处理时发送已读回执；被成功合并到正在执行的轮次时也会确认。bkcrab 先按消息 ID、发送者、接收者和会话类型查找真实序号，再调用 `/msg/mark_msgs_as_read`，只提交该条序号。不会在接收回调时将整段会话标为已读，群聊和内部定时任务也不发送此回执。
+
+已读为尽力确认：总调用期限五秒，持久化尚未完成时短暂重试；搜索检查第一页和最近五页（每页 100 条）。超出查找窗口或上游故障时保留未读，不阻止回复，也不自动回补历史已读。用户的旧消息可能仍显示未读，请用新消息验证。
 
 ## Docker 网络与凭据
 

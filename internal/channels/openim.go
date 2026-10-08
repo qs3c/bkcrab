@@ -53,6 +53,7 @@ func (o *OpenIM) BotUsername() string     { return o.cfg.BotUserID }
 func (o *OpenIM) InstanceID() string      { return OpenIMInstanceID(o.cfg) }
 func (o *OpenIM) WebhookSecret() string   { return OpenIMWebhookSecret(o.cfg) }
 func (o *OpenIM) Stop()                   { o.stopOnce.Do(func() { close(o.stop) }) }
+func (o *OpenIM) Done() <-chan struct{}   { return o.stop }
 func (o *OpenIM) SendTyping(string) error { return nil }
 
 // SetBinding scopes pending ingress to its owner and agent. A bot attached to
@@ -75,6 +76,20 @@ func (o *OpenIM) Start(ctx context.Context) error {
 	if o.inbox == nil || o.bus == nil {
 		return errors.New("openim: durable inbox and message bus required")
 	}
+	select {
+	case <-o.stop:
+		return nil
+	default:
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if o.cfg.WSURL != "" {
+			o.runPresence(ctx)
+		}
+	}()
+	defer func() { cancel(); <-done }()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	lastPrune := time.Time{}

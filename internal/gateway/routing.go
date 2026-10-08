@@ -159,10 +159,11 @@ func (g *Gateway) resolveChatter(ctx context.Context, ownerID string, msg bus.In
 // trySteer 将 msg 转入目标当前正在进行的轮次，而不是排队单独的轮次。`text` 是 Submit 路径会传递的主体。
 // 当消息被合并到正在运行的轮次中时返回 true — 调用者随后不得再 Submit。
 // false 表示没有活跃的轮次；回退到 taskQueue.Submit。
-func (g *Gateway) trySteer(target *agent.Agent, msg bus.InboundMessage, text string) bool {
+func (g *Gateway) trySteer(ctx context.Context, target *agent.Agent, msg bus.InboundMessage, text string) bool {
 	if target == nil || !target.SteerInbound(msg, text) {
 		return false
 	}
+	g.chanMgr.MarkRead(ctx, msg)
 	slog.Info("message steered into in-flight turn",
 		"agent", target.Name(), "channel", msg.Channel, "chat_id", msg.ChatID)
 	return true
@@ -193,7 +194,7 @@ func (g *Gateway) routeDM(ctx context.Context, msg bus.InboundMessage) {
 	slog.Info("routing DM",
 		"user", msg.OwnerUserID, "channel", msg.Channel,
 		"chat_id", msg.ChatID, "agent", ag.Name())
-	if g.trySteer(ag, msg, msg.Text) {
+	if g.trySteer(ctx, ag, msg, msg.Text) {
 		return
 	}
 	g.taskQueue.Submit(ag.Name(), chatKey(msg.Channel, msg.AccountID, msg.ChatID), msg, msg.AccountID)
@@ -220,7 +221,7 @@ func (g *Gateway) routeGroup(ctx context.Context, msg bus.InboundMessage) {
 				triggerMsg := msg
 				triggerMsg.Text = fmt.Sprintf("\\[%s\\]: %s", msg.SenderName, msg.Text)
 				triggerMsg.IsBotMessage = false
-				if !g.trySteer(target, triggerMsg, triggerMsg.Text) {
+				if !g.trySteer(ctx, target, triggerMsg, triggerMsg.Text) {
 					g.taskQueue.Submit(target.Name(), chatKey(triggerMsg.Channel, triggerMsg.AccountID, triggerMsg.ChatID), triggerMsg, g.replyAccountID(space, target.Name(), triggerMsg))
 				}
 			}
@@ -237,7 +238,7 @@ func (g *Gateway) routeGroup(ctx context.Context, msg bus.InboundMessage) {
 			slog.Info("routing group mention",
 				"user", msg.OwnerUserID, "channel", msg.Channel,
 				"chat_id", msg.ChatID, "agent", target.Name())
-			if !g.trySteer(target, msg, groupSteerText(msg)) {
+			if !g.trySteer(ctx, target, msg, groupSteerText(msg)) {
 				g.taskQueue.Submit(target.Name(), chatKey(msg.Channel, msg.AccountID, msg.ChatID), msg, g.replyAccountID(space, target.Name(), msg))
 			}
 			return
@@ -255,7 +256,7 @@ func (g *Gateway) routeGroup(ctx context.Context, msg bus.InboundMessage) {
 				ag.InjectGroupMessage(ctx, msg)
 			}
 		}
-		if !g.trySteer(target, msg, groupSteerText(msg)) {
+		if !g.trySteer(ctx, target, msg, groupSteerText(msg)) {
 			g.taskQueue.Submit(target.Name(), chatKey(msg.Channel, msg.AccountID, msg.ChatID), msg, g.replyAccountID(space, target.Name(), msg))
 		}
 	default:

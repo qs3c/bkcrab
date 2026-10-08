@@ -57,6 +57,19 @@ func (NopLeaser) Release(context.Context, string, string, string) error { return
 // 它必须在同一进程的续约之间保持稳定，否则 RenewChannelLease 会在每次
 // tick 上返回 false。
 func runWithLease(ctx context.Context, ch Channel, leaser Leaser, holderID string) {
+	// A removed adapter must also leave the lease wait/retry loop permanently.
+	if stoppable, ok := ch.(interface{ Done() <-chan struct{} }); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		go func() {
+			select {
+			case <-stoppable.Done():
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
 	chName := ch.Name()
 	accountID := ch.AccountID()
 	logCtx := []any{"channel", chName, "account", accountID, "holder", holderID}
@@ -150,8 +163,8 @@ func renewUntilLost(ctx context.Context, leaser Leaser, channel, accountID, hold
 				ok, err := leaser.Renew(ctx, channel, accountID, holderID, leaseTTL)
 				if err != nil {
 					// 瞬态 DB 错误：记录并继续尝试。租约在 leaseTTL 内没有成功续约会过期
-				// ——届时对等方窃取，我们的下一次 Renew 返回 ok=false，进入下面的
-				// 退出分支。
+					// ——届时对等方窃取，我们的下一次 Renew 返回 ok=false，进入下面的
+					// 退出分支。
 					slog.Warn("channel lease renew error",
 						"channel", channel, "account", accountID, "error", err)
 					continue

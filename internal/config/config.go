@@ -1032,6 +1032,7 @@ type AccountConfig struct {
 
 type OpenIMConfig struct {
 	APIURL          string   `json:"apiUrl"`
+	WSURL           string   `json:"wsUrl,omitempty"`
 	AdminUserID     string   `json:"adminUserId"`
 	AdminSecret     string   `json:"adminSecret"`
 	BotUserID       string   `json:"botUserId"`

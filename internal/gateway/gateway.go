@@ -994,6 +994,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 			}
 		}
 
+		chanMgr.MarkRead(ctx, task.Message)
 		reply := ag.HandleMessage(ctx, task.Message)
 		close(typingDone)
 		// 从代理的回复中提取 `![alt](workspace/relative/path)` markdown 图片引用，

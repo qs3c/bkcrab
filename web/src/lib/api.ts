@@ -2456,6 +2456,7 @@ export async function pollAgentWeChatLoginStatus(
 
 export interface OpenIMConnection {
   apiUrl: string;
+  wsUrl?: string;
   adminUserId: string;
   adminSecret: string;
   botUserId: string;
