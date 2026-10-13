@@ -4,7 +4,45 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/qs3c/bkcrab/internal/provider"
 )
+
+// TestMaybeRecoverToolCallsPreservesThinking pins the other half of the
+// django__django-14122__kpsnf5L failure. Recovery clears RawAssistant because
+// the leaked-XML turn carried no usable structured message; the provider then
+// rebuilds the wire message from the persisted fields. If recovery also
+// dropped the reasoning text, DeepSeek thinking mode rejects the next request
+// with `The reasoning_content in the thinking mode must be passed back to the
+// API.` The recovered call must keep Thinking so the serializer can re-emit it.
+func TestMaybeRecoverToolCallsPreservesThinking(t *testing.T) {
+	a := &Agent{name: "eval", model: "deepseek-flash"}
+	resp := &provider.Response{
+		Content: "Let me inspect the field.\n\n<invoke name=\"exec\">" +
+			"<parameter name=\"command\" string=\"true\">grep -rn _meta_ordering django</parameter>" +
+			"</invoke>",
+		Thinking:     "The GROUP BY clause wrongly includes Meta.ordering fields.",
+		RawAssistant: json.RawMessage(`{"role":"assistant","content":"stale leaked XML"}`),
+	}
+
+	a.maybeRecoverToolCalls(resp)
+
+	if !resp.HasToolCalls() {
+		t.Fatalf("expected a recovered tool call, got none (content=%q)", resp.Content)
+	}
+	if resp.ToolCalls[0].Function.Name != "exec" {
+		t.Errorf("recovered tool = %q, want exec", resp.ToolCalls[0].Function.Name)
+	}
+	if resp.Thinking != "The GROUP BY clause wrongly includes Meta.ordering fields." {
+		t.Errorf("recovery dropped Thinking: got %q", resp.Thinking)
+	}
+	if len(resp.RawAssistant) != 0 {
+		t.Errorf("recovery must clear the stale RawAssistant, still have %s", resp.RawAssistant)
+	}
+	if strings.Contains(resp.Content, "<invoke") {
+		t.Errorf("residual content still carries recovered XML: %q", resp.Content)
+	}
+}
 
 func TestRecoverToolCallsFromContent(t *testing.T) {
 	for _, tc := range []struct {

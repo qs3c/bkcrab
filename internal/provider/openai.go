@@ -122,6 +122,15 @@ func toAPIMessages(msgs []Message) []json.RawMessage {
 		if !orphanAssistant[i] {
 			am.ToolCalls = m.ToolCalls
 		}
+		// DeepSeek 思考模式：每个助手消息都必须回显 `reasoning_content`，
+		// 否则下一次请求会以 400 失败：
+		// `The reasoning_content in the thinking mode must be passed back
+		// to the API.` 带 RawAssistant 的消息在上面已经逐字节携带了它；
+		// 这条重建路径（从泄露的 XML 中恢复的工具调用、旧会话、
+		// 精简回退）以前会丢掉它，因为 Message.Thinking 从未被映射。
+		if m.Role == "assistant" {
+			am.ReasoningContent = m.Thinking
+		}
 		if len(m.ContentParts) > 0 {
 			am.Content, _ = json.Marshal(m.ContentParts)
 		} else {
