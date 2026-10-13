@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -200,8 +199,6 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 		if err != nil {
 			return "", err
 		}
-		cmd := exec.CommandContext(execCtx, "sh", "-c", command)
-		cmd.Dir = workdir
 
 		// 始终显式设置 cmd.Env。默认的 Go 行为是
 		// 继承父级的完整环境，这会泄露守护进程的秘密
@@ -211,9 +208,7 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 		if envProvider != nil && skillDirs != nil {
 			skillEnv = resolveSkillEnv(args.Command, envProvider, skillDirs)
 		}
-		cmd.Env = buildSubprocessEnv(skillEnv)
-
-		output, err := cmd.CombinedOutput()
+		output, err := runForegroundShell(execCtx, command, workdir, buildSubprocessEnv(skillEnv))
 
 		result := string(output)
 		if err != nil {
@@ -374,7 +369,6 @@ func registerHostExec(r *Registry, envProvider SkillEnvProvider, skillDirs []str
 			if args.Stdin != "" {
 				command = fmt.Sprintf("(cat <<'__FCSTDIN__'\n%s\n__FCSTDIN__\n) | %s", args.Stdin, args.Command)
 			}
-			cmd := exec.CommandContext(execCtx, "sh", "-c", command)
 			// host_exec 是操作员的逃生舱口——即便如此，擦洗
 			// 来自继承的环境的守护进程秘密。操作员
 			// 很少需要从主机访问 BKCRAB_STORAGE_DSN
@@ -383,8 +377,7 @@ func registerHostExec(r *Registry, envProvider SkillEnvProvider, skillDirs []str
 			if envProvider != nil && skillDirs != nil {
 				skillEnv = resolveSkillEnv(args.Command, envProvider, skillDirs)
 			}
-			cmd.Env = buildSubprocessEnv(skillEnv)
-			out, err := cmd.CombinedOutput()
+			out, err := runForegroundShell(execCtx, command, "", buildSubprocessEnv(skillEnv))
 			result := string(out)
 			if err != nil {
 				return fmt.Sprintf("%s\nError: %s", result, err.Error()), err
