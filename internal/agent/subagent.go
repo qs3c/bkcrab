@@ -99,8 +99,7 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 	}
 	var lastSig sig
 	consecutiveCount := 0
-	allFailedRounds := 0
-	const failedRoundsLimit = 3
+	var failures failureReminder
 
 	for i := 0; i < maxIterations; i++ {
 		slog.Info("subagent iteration",
@@ -120,22 +119,7 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 			"phase":     "thinking",
 		}})
 
-		callTools := toolDefs
-		llmMsgs := messages
-		if allFailedRounds >= failedRoundsLimit {
-			slog.Warn("subagent disabling tools after consecutive failed rounds",
-				"agent", a.name, "failed_rounds", allFailedRounds)
-			callTools = nil
-			llmMsgs = append(llmMsgs, provider.Message{
-				Role: "system",
-				Content: fmt.Sprintf(
-					"The last %d rounds of tool calls all failed (HTTP 4xx/5xx or empty results). Stop calling tools and produce the deliverable from what you already gathered, with explicit gaps marked.",
-					allFailedRounds,
-				),
-			})
-		}
-
-		resp, err := a.provider.Chat(ctx, llmMsgs, callTools, a.model, a.maxTokens, a.temperature)
+		resp, err := a.provider.Chat(ctx, messages, toolDefs, a.model, a.maxTokens, a.temperature)
 		if err != nil {
 			// 如果 ctx 本身已过期，父调用者有比流中间
 			// "context deadline exceeded" 更有用的框架——显式
@@ -203,7 +187,7 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 		// ——后者在并发会话下没有绑定本回合上下文。ctx 未携带时回退到 a.registry。
 		reg := a.turnRegistry(ctx)
 		results := a.engine.executeToolsConcurrently(ctx, reg, resp.ToolCalls, a.workspacePath)
-		roundAllFailed := true
+		roundAllFailed := len(results) > 0
 		for idx, r := range results {
 			tc := resp.ToolCalls[idx]
 			resultContent, _ := extractToolMeta(reg, r.toolName, r.result)
@@ -217,10 +201,8 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 				Name:       r.toolName,
 			})
 		}
-		if roundAllFailed {
-			allFailedRounds++
-		} else {
-			allFailedRounds = 0
+		if failures.observe(roundAllFailed) {
+			messages = append(messages, toolFailureReminder())
 		}
 	}
 

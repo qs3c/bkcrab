@@ -2204,15 +2204,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	var lastSig toolCallSig
 	consecutiveCount := 0
 	totalToolCalls := 0
-	// allFailedRounds 是连续回合的计数，其中每个
-	// 工具结果作为 4xx/5xx HTTP 错误或执行程序返回
-	// 错误。这抓住了“模型旋转了五个猜测
-	// 所有 404" 模式的 URL 都会进行循环检测（关键是
-	// 相同的参数）未命中。经过三轮这样的回合后，我们会丢弃工具
-	// 从下一个 LLM 调用开始，模型被迫生成文本
-	// 直接进行，而不是花费更多的时间去追逐无效的 URL。
-	allFailedRounds := 0
-	const failedRoundsLimit = 3
+	var failures failureReminder
 	emergencyRetried := false
 	toolsDisabledByLoop := false
 	loopGuardTool := ""
@@ -2260,35 +2252,16 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			emitEvent(ctx, ChatEvent{Type: "done"})
 			return noProviderMsg
 		}
-		// 经过足够多的连续回合后，所有工具都回来了
-		// 作为 4xx/5xx，从下一次调用中删除工具，以便模型为
-		// 被迫用它所拥有的内容产生一个文本答案。这
-		// 请求之上的系统消息做出约束
-		// 明确，因此模型不会抱歉地悬而未决。
+		// 普通失败只提醒；重复调用保护才进入禁用工具的最终回答阶段。
 		callTools := toolDefs
-		var requestAppend []provider.Message
 		if toolsDisabledByLoop {
 			callTools = nil
-		} else if allFailedRounds >= failedRoundsLimit {
-			slog.Warn("disabling tools after consecutive failed rounds",
-				"agent", a.name, "failed_rounds", allFailedRounds)
-			callTools = nil
-			requestAppend = append(requestAppend, provider.Message{
-				Role: "system",
-				Content: fmt.Sprintf(
-					"The last %d rounds of tool calls all failed (HTTP errors or empty results). Stop calling tools and answer the user directly with what you know — explain that authoritative sources weren't reachable and provide your best-effort response based on training knowledge, clearly marked as unverified.",
-					allFailedRounds,
-				),
-			})
 		}
 		resp, updatedMessages, retried, err := a.callLLMWithEmergencyRetry(ctx, sess, overheadMessages, toolDefs, messages, callTools, emergencyRetried, func(request []provider.Message, tools []provider.Tool) (*provider.Response, error) {
 			// PII 清理：在发送给 LLM 之前编辑敏感数据
 			llmMessages := request
 			if a.piiScrubEnabled {
 				llmMessages = privacy.ScrubMessages(request)
-			}
-			if len(requestAppend) > 0 {
-				llmMessages = append(llmMessages, requestAppend...)
 			}
 			dumpLLMRequest(a.name, a.model, llmMessages, tools)
 			return a.streamChatToResponse(ctx, llmMessages, tools)
@@ -2312,12 +2285,8 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		if usageInputTokens(resp.Usage) > 0 {
 			lastUsage = resp.Usage
 		}
-		usageMessages := messages
-		if len(requestAppend) > 0 {
-			usageMessages = append(append([]provider.Message(nil), messages...), requestAppend...)
-		}
-		a.emitContextUsage(ctx, resp.Usage, usageMessages, callTools)
-		a.maybeRecoverToolCalls(resp)
+		a.emitContextUsage(ctx, resp.Usage, messages, callTools)
+		a.prepareToolResponse(resp, len(callTools) > 0)
 
 		if !resp.HasToolCalls() {
 			asst := provider.Message{Role: "assistant", Content: resp.Content, Thinking: resp.Thinking, Timestamp: time.Now().UnixMilli(), RawAssistant: resp.RawAssistant}
@@ -2496,9 +2465,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			results = padded
 		}
 
-		// 回合级故障检测：是否每个结果都返回
-		// 作为 4xx/5xx HTTP 错误或执行程序错误？跟踪到这里所以
-		// 下一次迭代可以决定是否丢弃工具。
+		// 记录本轮是否全部失败，用于提醒调整方法，不据此禁用工具。
 		roundAllFailed := len(results) > 0
 		// 处理结果
 		for idx, r := range results {
@@ -2538,9 +2505,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			// 注册表.PriorFailure / web_fetch）。
 			thisFailed := isFailedToolResult(r.err, resultContent)
 			if thisFailed {
-				summary := r.err.Error()
-				if summary == "" || summary == "<nil>" {
-					summary = firstNonEmptyLine(resultContent)
+				summary := firstNonEmptyLine(resultContent)
+				if r.err != nil {
+					summary = r.err.Error()
 				}
 				reg.RecordToolFailure(r.toolName, tc.Function.Arguments, summary)
 			} else {
@@ -2579,14 +2546,11 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			}
 			emitEvent(ctx, ChatEvent{Type: "tool_result", Data: evt})
 		}
-		// 现在更新连续失败回合计数
-		// 本轮结果已处理。单次无故障
-		// 重置它 - 模型刚刚获得有用的信息，给它空间
-		// 使用它。
-		if roundAllFailed {
-			allFailedRounds++
-		} else {
-			allFailedRounds = 0
+		if failures.observe(roundAllFailed) {
+			reminder := toolFailureReminder()
+			sess.Append(reminder)
+			messages = append(messages, reminder)
+			slog.Info("consecutive tool failures: reminded to change approach", "agent", a.name)
 		}
 
 		// 转向：此工具运行时到达的消息是
@@ -2678,8 +2642,8 @@ func joinReplyParts(parts []string) string {
 
 // isFailedToolResult 是代理循环对于“此工具
 // 返回没有任何有用的信息”。使用两者来填充每回合失败
-// 地图（以便可以预先拒绝稍后的相同呼叫）并开车
-// 连续失败的回合短路。我们刻意留下来
+// 地图（以便可以预先拒绝稍后的相同呼叫）并触发
+// 连续失败提醒。我们刻意留下来
 // 保守 — 对于许多 shell 命令来说，空的 exec 输出是合法的 —
 // 并且仅标记高信号模式：工具错误、HTTP 4xx/5xx、
 // 或者我们的包装器附加到的“[分析上面的错误...]”信封
@@ -3292,6 +3256,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	loopGuardTool := ""
 	ragResources := newTurnRAGResources(msg.Channel)
 	imageArtifacts := newTurnImageArtifacts()
+	var failures failureReminder
 
 	// ReAct 循环 - 使用 Chat 进行工具迭代
 	for i := 0; i < a.maxToolIterations; i++ {
@@ -3326,7 +3291,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			return a.stringStream("Sorry, I encountered an error processing your request.")
 		}
 		a.meterTokens(ctx, sess.Key(), resp.Usage)
-		a.maybeRecoverToolCalls(resp)
+		a.prepareToolResponse(resp, len(callTools) > 0)
 
 		if !resp.HasToolCalls() {
 			// 最终响应 - 使用流媒体
@@ -3488,12 +3453,16 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		// 通过SDK引擎同时执行工具
 		results := a.engine.executeToolsConcurrently(ctx, reg, resp.ToolCalls, a.workspacePath)
 		totalToolCalls += len(results)
+		roundAllFailed := len(results) > 0
 
 		for idx, r := range results {
 			tc := resp.ToolCalls[idx]
 			ragResources.add(r.toolName, r.err, r.metadata)
 			imageArtifacts.add(r.toolName, r.err, r.metadata)
 			resultContent, meta := extractToolMeta(reg, r.toolName, r.result)
+			if !isFailedToolResult(r.err, resultContent) {
+				roundAllFailed = false
+			}
 			a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterToolCall, ToolName: r.toolName, ToolResult: resultContent, Error: r.err, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID, GoalSessionKey: reg.GoalSessionKey(), IsPlanMode: isPlanMode(msg.Params), Source: msg.Source})
 
 			if r.err != nil {
@@ -3507,6 +3476,11 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			toolMsg := provider.Message{Role: "tool", Content: resultContent, ToolCallID: tc.ID, Name: r.toolName, Metadata: meta}
 			sess.Append(toolMsg)
 			messages = append(messages, toolMsg)
+		}
+		if failures.observe(roundAllFailed) {
+			reminder := toolFailureReminder()
+			sess.Append(reminder)
+			messages = append(messages, reminder)
 		}
 	}
 
