@@ -119,6 +119,10 @@ func toAPIMessages(msgs []Message) []json.RawMessage {
 			ToolCallID: m.ToolCallID,
 			Name:       m.Name,
 		}
+		// 工具恢复会清空过时的 RawAssistant，重建时仍须回传思考内容。
+		if m.Role == "assistant" {
+			am.ReasoningContent = m.Thinking
+		}
 		if !orphanAssistant[i] {
 			am.ToolCalls = m.ToolCalls
 		}
