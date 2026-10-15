@@ -51,14 +51,14 @@ func TestTaskWorkspaceAllScopesUseTaskRoot(t *testing.T) {
 
 func TestEvidenceRedactsAndPreservesJSON(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.jsonl")
-	sink, err := newEvidence(path, "test-api-key")
+	sink, err := newEvidence(path, "test-api-key", "test-search-key")
 	if err != nil {
 		t.Fatal(err)
 	}
-	sink.write("test", map[string]string{"value": "test-api-key"})
+	sink.write("test", map[string]string{"value": "test-api-key test-search-key"})
 	sink.file.Close()
 	data, _ := os.ReadFile(path)
-	if strings.Contains(string(data), "test-api-key") || !json.Valid(data) {
+	if strings.Contains(string(data), "test-api-key") || strings.Contains(string(data), "test-search-key") || !json.Valid(data) {
 		t.Fatalf("bad evidence %s", data)
 	}
 }

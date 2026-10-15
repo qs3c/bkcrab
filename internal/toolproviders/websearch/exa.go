@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/qs3c/bkcrab/internal/toolproviders"
@@ -34,12 +35,20 @@ func (e *Exa) Execute(ctx context.Context, req toolproviders.Request) (toolprovi
 		mode = "auto"
 	}
 	body := map[string]any{
-		"query":      a.Query,
-		"numResults": a.Count,
-		"type":       mode,
+		"query":    a.Query,
+		"type":     mode,
+		"contents": map[string]any{"highlights": true},
+	}
+	// Preserve the tool's explicit count control; otherwise use Exa's default.
+	if _, explicit := req.Args["count"]; explicit {
+		body["numResults"] = a.Count
 	}
 	buf, _ := json.Marshal(body)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.exa.ai/search", bytes.NewReader(buf))
+	endpoint := "https://api.exa.ai/search"
+	if req.Config.Endpoint != "" {
+		endpoint = req.Config.Endpoint
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
 	if err != nil {
 		return toolproviders.Response{}, err
 	}
@@ -56,9 +65,9 @@ func (e *Exa) Execute(ctx context.Context, req toolproviders.Request) (toolprovi
 	}
 	var out struct {
 		Results []struct {
-			Title string `json:"title"`
-			URL   string `json:"url"`
-			Text  string `json:"text"`
+			Title      string   `json:"title"`
+			URL        string   `json:"url"`
+			Highlights []string `json:"highlights"`
 		} `json:"results"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -66,17 +75,10 @@ func (e *Exa) Execute(ctx context.Context, req toolproviders.Request) (toolprovi
 	}
 	items := make([]resultItem, 0, len(out.Results))
 	for _, r := range out.Results {
-		items = append(items, resultItem{Title: r.Title, URL: r.URL, Snippet: truncate(r.Text, 280)})
+		items = append(items, resultItem{Title: r.Title, URL: r.URL, Snippet: strings.Join(r.Highlights, "\n")})
 	}
 	if len(items) == 0 {
 		return toolproviders.Response{}, toolproviders.ErrNoResults
 	}
 	return toolproviders.Response{Text: render(a.Query, items)}, nil
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-1] + "…"
 }

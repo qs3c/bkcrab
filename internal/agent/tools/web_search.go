@@ -42,7 +42,7 @@ func RegisterWebSearchChain(r *Registry, chain *toolproviders.Chain) {
 			},
 			"count": map[string]interface{}{
 				"type":        "integer",
-				"description": "Number of results to return (default 5, max 20)",
+				"description": "Number of results to return (optional, max 20; backend default when omitted)",
 			},
 		},
 		"required": []string{"query"},

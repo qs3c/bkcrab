@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -32,6 +33,7 @@ func main() {
 
 func run() error {
 	var work, home, out, prompt, model, endpoint, keyEnv string
+	var searchProvider, searchEndpoint, searchKeyFile string
 	var maxTokens, window, iterations int
 	var timeout time.Duration
 	flag.StringVar(&work, "workspace", "", "absolute task workspace")
@@ -41,11 +43,26 @@ func run() error {
 	flag.StringVar(&model, "model", "", "provider model id")
 	flag.StringVar(&endpoint, "api-base", "", "OpenAI-compatible API base")
 	flag.StringVar(&keyEnv, "api-key-env", "EVAL_MODEL_API_KEY", "credential environment variable")
+	flag.StringVar(&searchProvider, "web-search-provider", "", "optional search backend: exa, brave or searxng")
+	flag.StringVar(&searchEndpoint, "web-search-endpoint", "", "SearxNG base URL")
+	flag.StringVar(&searchKeyFile, "web-search-key-file", "", "private search credential file (never written to evidence)")
 	flag.IntVar(&maxTokens, "max-tokens", 8192, "maximum output tokens per call")
 	flag.IntVar(&window, "context-window", 131072, "context capacity, recorded explicitly")
 	flag.IntVar(&iterations, "max-iterations", 100, "tool iteration limit")
 	flag.DurationVar(&timeout, "timeout", 20*time.Minute, "whole task wall-clock limit")
 	flag.Parse()
+	searchKey := ""
+	if searchKeyFile != "" {
+		data, err := os.ReadFile(searchKeyFile)
+		if err != nil {
+			return fmt.Errorf("read search credential: %w", err)
+		}
+		searchKey = strings.TrimSpace(string(data))
+	}
+	search, err := searchChain(searchProvider, searchEndpoint, searchKey)
+	if err != nil {
+		return err
+	}
 	for _, p := range []string{work, home, out, prompt} {
 		if !filepath.IsAbs(p) {
 			return errors.New("workspace, home, output and prompt-file must be absolute")
@@ -77,7 +94,7 @@ func run() error {
 	if key == "" {
 		return fmt.Errorf("missing credential environment variable %s", keyEnv)
 	}
-	sink, err := newEvidence(filepath.Join(out, "events.jsonl"), key)
+	sink, err := newEvidence(filepath.Join(out, "events.jsonl"), key, searchKey)
 	if err != nil {
 		return err
 	}
@@ -92,6 +109,8 @@ func run() error {
 		return err
 	}
 	defer manager.CloseAll()
+	manager.DefaultAgent().RegisterWebSearchChain(search)
+	sink.write("web_search_config", map[string]any{"enabled": search != nil, "provider": searchProvider, "endpoint": searchEndpoint})
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	ctx, deadline := context.WithTimeout(ctx, timeout)
@@ -136,16 +155,16 @@ func run() error {
 type evidence struct {
 	mu           sync.Mutex
 	file         *os.File
-	secret       string
+	secrets      []string
 	seq          int64
 	err          error
 	failed       bool
 	iterationCap bool
 }
 
-func newEvidence(path, secret string) (*evidence, error) {
+func newEvidence(path string, secrets ...string) (*evidence, error) {
 	f, e := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	return &evidence{file: f, secret: secret}, e
+	return &evidence{file: f, secrets: secrets}, e
 }
 func (s *evidence) write(kind string, data any) {
 	s.mu.Lock()
@@ -153,7 +172,9 @@ func (s *evidence) write(kind string, data any) {
 	s.seq++
 	b, e := json.Marshal(map[string]any{"seq": s.seq, "time": time.Now().UTC(), "type": kind, "data": data})
 	if e == nil {
-		b = redact(b, s.secret)
+		for _, secret := range s.secrets {
+			b = redact(b, secret)
+		}
 		_, e = s.file.Write(append(b, '\n'))
 	}
 	if e != nil {
