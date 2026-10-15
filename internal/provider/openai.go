@@ -299,7 +299,7 @@ func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 		return nil, err
 	}
 
-	resp, err := p.client.Do(httpReq)
+	resp, err := doLLMRequest(p.client, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("send request: %w", err)
 	}
@@ -328,7 +328,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, too
 		return nil, err
 	}
 
-	resp, err := p.client.Do(httpReq)
+	resp, err := doLLMRequest(p.client, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("send request: %w", err)
 	}

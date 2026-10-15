@@ -421,7 +421,7 @@ func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message, tools 
 		return nil, err
 	}
 
-	resp, err := p.client.Do(httpReq)
+	resp, err := doLLMRequest(p.client, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("send request: %w", err)
 	}
@@ -449,7 +449,7 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, messages []Message, 
 		return nil, err
 	}
 
-	resp, err := p.client.Do(httpReq)
+	resp, err := doLLMRequest(p.client, httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("send request: %w", err)
 	}
