@@ -227,7 +227,7 @@ func main() {
 	owner := flag.String("owner", "u_447a2f8f07032ad989d7", "existing dataset owner")
 	run := flag.String("source-run", "rer_8db2c5d1cd82d94d79f58e8f6a29cbb1", "source profile")
 	armList := flag.String("arms", "qwen3,jev,rrf", "rank arms")
-	batch := flag.Int("jev-batch", 5, "candidates per decision")
+	batch := flag.Int("jev-batch", 20, "candidates per decision (1-20; subject to request size limits)")
 	slots := flag.Int("jev-concurrency", 2, "Jev HTTP concurrency")
 	model := flag.String("jev-model", "typesafe/jev-1.13", "decision model")
 	budget := flag.Float64("jev-budget", 5, "conservative dollars per output file")
@@ -266,6 +266,7 @@ func main() {
 		}
 	}
 	manifest := map[string]any{"inputHash": inputHash, "mode": *mode, "arms": arms, "batch": *batch, "slots": *slots, "model": *model, "instruction": rerank.JevRelevanceInstruction, "budget": *budget, "repeats": *repeats, "warmups": *warmups, "limit": *limit, "split": *split, "answerModel": *answerModel, "answerMaxTokens": *maxTokens, "answerTokenBudget": *answerBudget}
+	manifest["jevMaxRequestBytes"] = rerank.JevMaxRequestBytes
 	if *mode == "answer" {
 		b, e := os.ReadFile(*ranks)
 		must(e)
@@ -289,7 +290,7 @@ func main() {
 		reserved := 0.0
 		for _, r := range previous {
 			for range r.Calls {
-				reserved += 32100 * .042 / 1e6
+				reserved += float64(rerank.JevMaxRequestBytes+4096) * .042 / 1e6
 			}
 		}
 		j, err := rerank.NewJevHTTP("https://openrouter.ai/api/alpha/decisions", os.Getenv("OPENROUTER_API_KEY"), *model, 60*time.Second, *slots, *batch, *budget-reserved)

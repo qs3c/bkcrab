@@ -31,7 +31,10 @@ import (
 	"github.com/qs3c/bkcrab/internal/cron"
 	"github.com/qs3c/bkcrab/internal/fairqueue"
 	imagegendomain "github.com/qs3c/bkcrab/internal/imagegen"
+	"github.com/qs3c/bkcrab/internal/jev"
+	"github.com/qs3c/bkcrab/internal/jeveval"
 	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
+	"github.com/qs3c/bkcrab/internal/memory"
 	"github.com/qs3c/bkcrab/internal/parseeval"
 	"github.com/qs3c/bkcrab/internal/plugin"
 	"github.com/qs3c/bkcrab/internal/provider"
@@ -209,6 +212,7 @@ type Gateway struct {
 	fairQueueHealth    *ragFairQueueHealthState
 	imagegenResolver   imagegendomain.ProviderPlanResolver
 	envCfg             *config.EnvConfig
+	jevClient          *jev.Client
 	// chatEvents 设置后，允许总线触发的 web 轮次（cron/目标延续/心跳/子代理）
 	// 通过用户输入的 POST /api/chat 轮次使用的同一个 SSE hub 流式传输。
 	// 安全地为 nil：未设置时保留传统的 bus.Outbound → WebChannel 异步气泡路径。
@@ -334,6 +338,13 @@ func (g *Gateway) ResolveRAGEvaluationJudge(ctx context.Context, userID string) 
 	}
 	return provider.NewProvider(providerCfg.APIKey, providerCfg.APIBase, providerCfg.APIType), modelName, nil
 }
+func (g *Gateway) RAGEvaluationJev() *jeveval.Service {
+	if g.jevClient == nil {
+		return nil
+	}
+	return &jeveval.Service{Client: g.jevClient, Model: g.envCfg.Jev.Model}
+}
+
 func (g *Gateway) RAGPolicyPromotionService() *rag.PolicyPromotionService {
 	if g == nil {
 		return nil
@@ -417,6 +428,10 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	fairPlan, err := planRAGFairQueue(env.FairQueue, env.Storage.Type)
 	if err != nil {
 		return nil, err
+	}
+	jevClient, err := env.Jev.NewClient()
+	if err != nil {
+		return nil, fmt.Errorf("Jev configuration: %w", err)
 	}
 	mb := bus.New()
 
@@ -543,6 +558,12 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 			slog.Warn("rag: one parser sidecar configuration is invalid; other parser remains available", "error", parserErr)
 		}
 	}
+	if ragCfg.Evaluation.Sidecar.MetricBundleVersion != "rag-core-v1" && ragCfg.Evaluation.Enabled {
+		if jevClient == nil {
+			return nil, errors.New("Jev evaluation bundle requires BKCRAB_JEV_ENABLED")
+		}
+		ragCfg.Evaluation.Sidecar.JevModel = env.Jev.Model
+	}
 	var ragEvaluatorClient *rageval.RagasClient
 	if ragCfg.Evaluation.Enabled {
 		ragEvaluatorClient, err = rageval.NewRagasClient(
@@ -554,6 +575,8 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		if err != nil {
 			slog.Error("rag: evaluator sidecar configuration invalid; evaluation unavailable", "error", err)
 			ragEvaluatorClient = nil
+		} else {
+			ragEvaluatorClient.ConfigureBundle(ragCfg.Evaluation.Sidecar.MetricBundleVersion, ragCfg.Evaluation.Sidecar.JevModel)
 		}
 	}
 	var primitives ragparse.PrimitiveExtractor
@@ -679,6 +702,11 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 					var client ragrerank.Reranker
 					var rerankErr error
 					switch ragCfg.Reranker.Protocol {
+					case config.RAGRerankerProtocolJev:
+						if jevClient == nil {
+							return nil, errors.New("Jev reranker requires BKCRAB_JEV_ENABLED")
+						}
+						client, rerankErr = ragrerank.NewProductionJev(jevClient, env.Jev.Model, ragCfg.Reranker.JevBatchSize, time.Duration(ragCfg.Reranker.TimeoutMS)*time.Millisecond)
 					case config.RAGRerankerProtocolQwen3Generative:
 						client, rerankErr = ragrerank.NewQwen3HTTP(
 							ragCfg.Reranker.Endpoint,
@@ -942,7 +970,9 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		fairQueueHealth:    fairQueueHealth,
 		imagegenResolver:   imagegenResolver,
 		envCfg:             env,
+		jevClient:          jevClient,
 	}
+	g.users.memoryGuard = memory.NewJevGuard(jevClient, env.Jev.MemoryGuardMode)
 
 	if webhookSrv != nil {
 		webhookSrv.SetHandler(&webhookAgentHandler{gateway: g})

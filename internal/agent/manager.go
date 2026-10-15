@@ -10,6 +10,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/bus"
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/mcp"
+	"github.com/qs3c/bkcrab/internal/memory"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/session"
 	"github.com/qs3c/bkcrab/internal/store"
@@ -53,6 +54,7 @@ func (f MCPManagerFactoryFunc) NewMCPManager(ctx context.Context, rc config.Reso
 }
 
 type managerOpts struct {
+	memoryGuard      memory.Guard
 	sessionStore     session.SessionStore
 	memoryStore      MemoryStore
 	workspaceStore   workspace.Store
@@ -68,6 +70,8 @@ type managerOpts struct {
 func WithSessionStore(st session.SessionStore) ManagerOption {
 	return func(o *managerOpts) { o.sessionStore = st }
 }
+
+func WithMemoryGuard(g memory.Guard) ManagerOption { return func(o *managerOpts) { o.memoryGuard = g } }
 
 func WithMemoryStore(st MemoryStore) ManagerOption {
 	return func(o *managerOpts) { o.memoryStore = st }
@@ -198,6 +202,8 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 	// 到达沙箱的原因。
 	agProv := providerForAgent(rc, prov)
 	ag := newAgentWithSkillsCfg(rc, agProv, mb, homeDir, m.opts.globalSkillsCfg, m.opts.mcpFactory)
+	ag.memoryGuard = m.opts.memoryGuard
+	ag.registry.SetMemoryGuard(m.opts.memoryGuard)
 	// 技能学习者 + 生命周期:生产路径此前从不装配(learner 配置历史上只接在
 	// 无人调用的 NewAgentWithFullCfg 上)。在此构造,使下方 dataStore 块能接上
 	// ledger、runPostTurn 的 cadence 提取与生命周期过滤/清理在生产真正生效。

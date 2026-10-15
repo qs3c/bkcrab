@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
+from .jev import JevJudge, decision_audit_scope, hybrid_metrics
 from .protocol import MetricResult, Sample
 from .settings import Settings
 from .usage import record_embedding_response, record_llm_response
@@ -76,6 +77,13 @@ class MetricEngine:
         self._reason_limit = max(0, min(reason_limit, 2048))
 
     async def evaluate(self, metric: str, sample: Sample) -> MetricResult:
+        with decision_audit_scope() as audit:
+            result = await self._evaluate(metric, sample)
+            if audit:
+                result.details = {"jevDecisions": audit}
+            return result
+
+    async def _evaluate(self, metric: str, sample: Sample) -> MetricResult:
         if reason := missing_input(metric, sample):
             return MetricResult(status="skipped_missing_input", reason=reason)
         if self._score_fn is None:
@@ -172,6 +180,10 @@ def build_ragas_engine(settings: Settings) -> MetricEngine:
         ),
         "factual_correctness": metric_types["factual_correctness"](llm=llm),
     }
+
+    if settings.metric_bundle_version != "rag-core-v1":
+        metrics = hybrid_metrics(metrics, JevJudge(settings, _judge_owner.get), llm,
+                                 settings.metric_bundle_version)
 
     async def score_metric(name: str, sample: Sample) -> float:
         values = {

@@ -78,6 +78,7 @@ type Store interface {
 }
 
 type Options struct {
+	Guard   Guard
 	Store   Store
 	Root    string
 	AgentID string
@@ -86,6 +87,7 @@ type Options struct {
 }
 
 type Manager struct {
+	guard   Guard
 	store   Store
 	root    string
 	agentID string
@@ -103,6 +105,7 @@ var pathLocks sync.Map
 func NewManager(opts Options) *Manager {
 	return &Manager{
 		store:   opts.Store,
+		guard:   opts.Guard,
 		root:    opts.Root,
 		agentID: opts.AgentID,
 		userID:  opts.UserID,
@@ -159,8 +162,37 @@ func (m *Manager) Apply(ctx context.Context, target Target, ops []Operation) Res
 		return listResult(target, entries, m.config, "listed entries")
 	}
 
+	// Review the entire proposed target outside database/file mutation locks.
+	// Compare the exact snapshot on commit when enforcement is active.
+	var reviewed []byte
+	enforceFence := false
+	hasWrite := false
+	for _, op := range ops {
+		hasWrite = hasWrite || op.Action == ActionAdd || op.Action == ActionReplace
+	}
+	if m.guard != nil && hasWrite {
+		snapshot, loadErr := m.load(ctx, target)
+		if loadErr != nil {
+			return failureResult(target, nil, m.config, "memory review could not load current content")
+		}
+		entries, _ := parseEntries(target, snapshot)
+		entries = safeEntriesForList(target, entries)
+		proposed, preview := applyOperations(target, entries, ops, m.config)
+		if !preview.Success {
+			return preview
+		}
+		decision := m.guard.Review(ctx, target, cloneEntries(proposed))
+		if decision.Enforced && !decision.Allowed {
+			return failureResult(target, entries, m.config, "memory semantic review did not approve write: "+decision.Action)
+		}
+		enforceFence = decision.Enforced
+		reviewed = append([]byte(nil), snapshot...)
+	}
 	var opResult Result
 	mutate := func(current []byte, exists bool) ([]byte, bool, error) {
+		if enforceFence && !bytes.Equal(current, reviewed) {
+			return current, false, errors.New("memory changed during semantic review; retry the operation")
+		}
 		parsed, _ := parseEntries(target, current)
 		entries := safeEntriesForList(target, parsed)
 		if dropped := len(parsed) - len(entries); dropped > 0 {

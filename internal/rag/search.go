@@ -198,6 +198,9 @@ func (s *Service) SearchWithOptions(ctx context.Context, ownerID string, kbIDs [
 	if options.MinScore != nil {
 		minScore = *options.MinScore
 	}
+	if options.MinScore == nil && s.cfg.Reranker.DisableScoreFilter != nil && *s.cfg.Reranker.DisableScoreFilter {
+		minScore = 0
+	}
 	rewrite, hyde := true, true
 	if options.Rewrite != nil {
 		rewrite = *options.Rewrite
@@ -537,6 +540,8 @@ func (s *Service) searchWithContext(ctx context.Context, ownerID string, kbIDs [
 		minScore := runtimePolicy.MinScore
 		if hasOptions && options.MinScore != nil {
 			minScore = *options.MinScore
+		} else if s.cfg.Reranker.DisableScoreFilter != nil && *s.cfg.Reranker.DisableScoreFilter {
+			minScore = 0
 		}
 		if trace != nil {
 			trace.RerankerAttempted = true
@@ -657,7 +662,11 @@ func (s *Service) hydrateSearchHits(ctx context.Context, hits []Hit, trace *Sear
 // service or response error is returned to SearchWithContext, which falls back
 // to the untouched RRF ordering without applying this threshold.
 func (s *Service) rerankHits(ctx context.Context, retrievalID, query string, candidates []Hit, topN int) ([]Hit, error) {
-	return s.rerankHitsWithMinScore(ctx, retrievalID, query, candidates, topN, s.cfg.Reranker.MinScore)
+	minScore := s.cfg.Reranker.MinScore
+	if s.cfg.Reranker.DisableScoreFilter != nil && *s.cfg.Reranker.DisableScoreFilter {
+		minScore = 0
+	}
+	return s.rerankHitsWithMinScore(ctx, retrievalID, query, candidates, topN, minScore)
 }
 
 func (s *Service) rerankHitsWithMinScore(ctx context.Context, retrievalID, query string, candidates []Hit, topN int, minScore float64) ([]Hit, error) {

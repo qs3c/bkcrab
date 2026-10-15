@@ -919,3 +919,17 @@ func TestHydrateHitAssetsPreservesDistinctAttachmentsForSharedPreview(t *testing
 		t.Fatalf("resource refs collapsed distinct Visio sources: %+v", resources)
 	}
 }
+
+func TestJevScoreFilterDisableKeepsExplicitEvaluationThreshold(t *testing.T) {
+	disabled := true
+	s := &Service{cfg: config.RAGCfg{Reranker: config.RAGRerankerCfg{MinScore: .5, DisableScoreFilter: &disabled}}, reranker: &stubReranker{results: []rerank.Result{{Index: 0, Score: .1}}}}
+	candidates := []Hit{{Content: "evidence"}}
+	hits, err := s.rerankHits(context.Background(), "test", "q", candidates, 1)
+	if err != nil || len(hits) != 1 {
+		t.Fatalf("disable filter failed %v %v", hits, err)
+	}
+	hits, err = s.rerankHitsWithMinScore(context.Background(), "test", "q", candidates, 1, .5)
+	if err != nil || len(hits) != 0 {
+		t.Fatal("explicit evaluation threshold ignored")
+	}
+}

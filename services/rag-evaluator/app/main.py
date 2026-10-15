@@ -20,7 +20,6 @@ from .metrics import (
 )
 from .protocol import (
     ALLOWED_METRICS,
-    METRIC_BUNDLE_VERSION,
     PROTOCOL_VERSION,
     CaseResult,
     EvaluateRequest,
@@ -103,7 +102,8 @@ def create_app(settings: Settings, engine: MetricEngine | None = None) -> FastAP
             "serviceVersion": settings.service_version,
             "protocolVersion": PROTOCOL_VERSION,
             "ragasVersion": version("ragas"),
-            "metricBundleVersion": METRIC_BUNDLE_VERSION,
+            "metricBundleVersion": settings.metric_bundle_version,
+            **({"jevModel": settings.jev_model} if settings.metric_bundle_version != "rag-core-v1" else {}),
             "judgeConfigured": settings.judge_configured,
             "metricsInitialized": len(initialized_metrics) == len(ALLOWED_METRICS),
             "metricRequiredFields": METRIC_REQUIRED_FIELDS,
@@ -114,6 +114,11 @@ def create_app(settings: Settings, engine: MetricEngine | None = None) -> FastAP
         payload: EvaluateRequest,
         x_bkcrab_eval_owner: str = Header(default=""),
     ) -> EvaluateResponse:
+        if payload.metricBundleVersion != settings.metric_bundle_version:
+            raise HTTPException(status_code=409, detail="evaluator metric bundle mismatch")
+        expected_jev = settings.jev_model if settings.metric_bundle_version != "rag-core-v1" else ""
+        if payload.jevModel != expected_jev:
+            raise HTTPException(status_code=409, detail="evaluator Jev model mismatch")
         owner_id = x_bkcrab_eval_owner.strip()
         if not owner_id or len(owner_id) > 120:
             raise HTTPException(status_code=400, detail="bounded evaluation owner is required")
@@ -159,6 +164,7 @@ def create_app(settings: Settings, engine: MetricEngine | None = None) -> FastAP
             response = EvaluateResponse(
                 requestId=payload.requestId,
                 ragasVersion=version("ragas"),
+                metricBundleVersion=settings.metric_bundle_version,
                 results=results,
                 usage=usage.response(settings),
             )

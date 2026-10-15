@@ -86,6 +86,7 @@ func makeMemoryTool(r *Registry) ToolFunc {
 			AgentID: r.agentID,
 			UserID:  r.systemFileUserID(filename),
 			Config:  r.managedMemoryCfg,
+			Guard:   r.memoryGuard,
 		})
 
 		result := manager.Apply(ctx, target, ops)

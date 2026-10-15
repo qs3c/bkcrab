@@ -217,6 +217,7 @@ func runGateway(port int) error {
 	webSrv.SetRAGEvaluationDatasetService(gw.RAGEvaluationDatasetService())
 	webSrv.SetRAGEvaluationCatalogImportRunner(gw.RAGEvaluationCatalogImportRunner())
 	webSrv.SetRAGEvaluationJudgeResolver(gw.ResolveRAGEvaluationJudge)
+	webSrv.SetRAGEvaluationJev(gw.RAGEvaluationJev())
 	webSrv.SetParserEvaluationService(gw.ParserEvaluationService())
 	webSrv.SetParserEvaluationCleanup(gw.ParserEvaluationCleanup())
 	webSrv.SetParserEvaluationCapabilitiesProvider(gw)

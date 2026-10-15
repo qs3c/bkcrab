@@ -85,6 +85,60 @@ func TestJevRejectsInvalidAnswersAndDoesNotRetry(t *testing.T) {
 	}
 }
 
+func TestJevTop20SingleRequestAndSizeGuard(t *testing.T) {
+	var requests atomic.Int32
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		var req struct {
+			State struct {
+				Passages map[string]string `json:"passages"`
+			} `json:"state"`
+			Questions map[string]struct {
+				Type         string `json:"type"`
+				Instructions string `json:"instructions"`
+			} `json:"questions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+		}
+		if len(req.State.Passages) != 20 || len(req.Questions) != 20 {
+			t.Errorf("passages=%d questions=%d", len(req.State.Passages), len(req.Questions))
+		}
+		answers := map[string]any{}
+		for i := 0; i < 20; i++ {
+			id := fmt.Sprintf("d%d", i)
+			q := req.Questions[id]
+			if q.Type != "noul" || !strings.Contains(q.Instructions, "`passages."+id+"`") || req.State.Passages[id] != strings.Repeat("x", 1500) {
+				t.Errorf("incorrect mapping or truncated passage: %s", id)
+			}
+			answers[id] = map[string]any{"type": "noul", "noul": float64(i) / 20}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"model": "jev-test", "answers": answers})
+	}))
+	defer s.Close()
+	c, err := NewJevHTTP(s.URL, "secret", "m", time.Second, 2, 20, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs := make([]string, 20)
+	for i := range docs {
+		docs[i] = strings.Repeat("x", 1500)
+	}
+	r, calls, err := c.RankDetailed(context.Background(), "query", docs, 5)
+	if err != nil || len(r) != 5 || len(calls) != 1 || requests.Load() != 1 {
+		t.Fatalf("results=%v calls=%d requests=%d err=%v", r, len(calls), requests.Load(), err)
+	}
+	for i, result := range r {
+		if result.Index != 19-i {
+			t.Errorf("rank %d: got index %d", i, result.Index)
+		}
+	}
+	docs[0] = strings.Repeat("x", JevMaxRequestBytes)
+	if _, err := c.Rerank(context.Background(), "query", docs, 5); err == nil || !strings.Contains(err.Error(), "64KB") || requests.Load() != 1 {
+		t.Fatalf("oversized request: err=%v requests=%d", err, requests.Load())
+	}
+}
+
 func TestJevBudgetAndCancellation(t *testing.T) {
 	var n atomic.Int32
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

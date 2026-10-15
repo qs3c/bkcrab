@@ -19,6 +19,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/channels"
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/fairqueue"
+	"github.com/qs3c/bkcrab/internal/jeveval"
 	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
 	"github.com/qs3c/bkcrab/internal/observability"
 	"github.com/qs3c/bkcrab/internal/parseeval"
@@ -105,6 +106,7 @@ type Server struct {
 	ragEvalCatalog        *rageval.CatalogImportRunner
 	ragEvalAdmin          *rageval.AdminService
 	ragEvalJudgeResolver  RAGEvalJudgeResolver
+	ragEvalJev            *jeveval.Service
 	ragPolicyPromotion    *rag.PolicyPromotionService
 	parserEvalService     *parseeval.Service
 	parserEvalCleanup     *parseeval.Cleanup
@@ -457,6 +459,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /livez", s.handleLive)
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("POST /internal/rag-eval/judge/v1/chat/completions", s.handleRAGEvalJudgeProxy)
+	mux.HandleFunc("POST /internal/rag-eval/jev", s.handleRAGEvalJev)
 
 	auth := s.authMiddleware
 	opt := s.optionalAuth

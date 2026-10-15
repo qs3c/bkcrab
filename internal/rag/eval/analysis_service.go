@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/qs3c/bkcrab/internal/store"
@@ -50,6 +51,12 @@ func (s AnalysisService) CompareRunMetric(ctx context.Context, baselineID, candi
 	}
 	if err = ValidateComparableRuns(runComparisonIdentity(baselineRun), runComparisonIdentity(candidateRun)); err != nil {
 		return PairedDelta{}, err
+	}
+	if _, judged := RagasMetrics[metricName]; judged {
+		var a, b ExecutionSnapshot
+		if json.Unmarshal([]byte(baselineRun.ExecutionSnapshotJSON), &a) != nil || json.Unmarshal([]byte(candidateRun.ExecutionSnapshotJSON), &b) != nil || a.MetricBundleVersion != b.MetricBundleVersion || a.JevModel != b.JevModel {
+			return PairedDelta{}, errors.New("judge metric comparison requires the same evaluator bundle and model")
+		}
 	}
 	baseline, err := s.metricResults(ctx, baselineID, metricName)
 	if err != nil {

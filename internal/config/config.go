@@ -1384,13 +1384,14 @@ type RAGRerankerProtocol string
 const (
 	// RAGRerankerProtocolJina is the conventional batched /rerank contract.
 	RAGRerankerProtocolJina RAGRerankerProtocol = "jina"
+	RAGRerankerProtocolJev  RAGRerankerProtocol = "jev"
 	// RAGRerankerProtocolQwen3Generative uses Qwen3-Reranker's official
 	// generative yes/no contract through llama.cpp's native endpoints.
 	RAGRerankerProtocolQwen3Generative RAGRerankerProtocol = "qwen3-generative"
 )
 
 func (p RAGRerankerProtocol) Valid() bool {
-	return p == RAGRerankerProtocolJina || p == RAGRerankerProtocolQwen3Generative
+	return p == RAGRerankerProtocolJina || p == RAGRerankerProtocolQwen3Generative || p == RAGRerankerProtocolJev
 }
 
 // RAGRerankerCfg configures the optional second-stage semantic ranker. Jina
@@ -1398,19 +1399,21 @@ func (p RAGRerankerProtocol) Valid() bool {
 // model is a causal language model: its adapter scores each document from the
 // first generated token's yes/no probabilities through /completion.
 type RAGRerankerCfg struct {
-	Enabled       bool                `json:"enabled,omitempty"`
-	Protocol      RAGRerankerProtocol `json:"protocol,omitempty"`
-	Endpoint      string              `json:"endpoint,omitempty"`
-	APIKey        string              `json:"apiKey,omitempty"`
-	Model         string              `json:"model,omitempty"`
-	TimeoutMS     int                 `json:"timeoutMs,omitempty"`
-	Concurrency   int                 `json:"concurrency,omitempty"`
-	CandidateTopK int                 `json:"candidateTopK,omitempty"`
-	MinScore      float64             `json:"minScore,omitempty"`
+	JevBatchSize       int                 `json:"jevBatchSize,omitempty"`
+	DisableScoreFilter *bool               `json:"disableScoreFilter,omitempty"`
+	Enabled            bool                `json:"enabled,omitempty"`
+	Protocol           RAGRerankerProtocol `json:"protocol,omitempty"`
+	Endpoint           string              `json:"endpoint,omitempty"`
+	APIKey             string              `json:"apiKey,omitempty"`
+	Model              string              `json:"model,omitempty"`
+	TimeoutMS          int                 `json:"timeoutMs,omitempty"`
+	Concurrency        int                 `json:"concurrency,omitempty"`
+	CandidateTopK      int                 `json:"candidateTopK,omitempty"`
+	MinScore           float64             `json:"minScore,omitempty"`
 }
 
 func (c RAGRerankerCfg) Available() bool {
-	return c.Enabled && strings.TrimSpace(c.Endpoint) != ""
+	return c.Enabled && (c.Protocol == RAGRerankerProtocolJev || strings.TrimSpace(c.Endpoint) != "")
 }
 
 type RAGLimitsCfg struct {
@@ -1459,6 +1462,9 @@ func (c *RAGCfg) ApplyDefaults() {
 	}
 	if strings.TrimSpace(c.ParserSidecar.Endpoint) == "" {
 		c.ParserSidecar.Endpoint = c.ParserSidecar.EndpointForEngine(c.ParserSidecar.Engine)
+	}
+	if c.Reranker.JevBatchSize == 0 {
+		c.Reranker.JevBatchSize = 20
 	}
 	if c.Reranker.TimeoutMS <= 0 {
 		c.Reranker.TimeoutMS = 5000
@@ -1604,6 +1610,9 @@ func (c *RAGCfg) ApplyDefaults() {
 }
 
 func (c RAGCfg) Validate() error {
+	if c.Reranker.JevBatchSize < 0 || c.Reranker.JevBatchSize > 20 {
+		return fmt.Errorf("invalid Jev rerank batch size")
+	}
 	if err := c.Evaluation.Validate(); err != nil {
 		return err
 	}

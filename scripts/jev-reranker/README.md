@@ -4,7 +4,27 @@ This is an isolated experiment, not a production routing switch. The Go runner
 reuses bkcrab's evaluation retrieval, Qwen3 client, answer prompt, and answer
 generator. It does not migrate the database or start application workers.
 
-## Reproduction
+## Current batch default (2026-10-06)
+
+New runs default to `-jev-batch 20`: one request containing 20 passages and
+20 independently addressed `noul` questions for a Top20 case. The HTTP
+concurrency cap remains 2; a single Top20 case needs only one request.
+This is a configuration change, not a measured improvement over batch 5.
+
+The adapter accepts batch sizes 1-20 and applies a local 64,000-byte JSON
+body guard. This is not a token counter or an API question-count limit.
+The provider also enforces its context limits. Oversized requests fail
+without truncation or automatic splitting; use a smaller explicit batch
+when needed. The size guard is recorded in new manifests. Use a new output
+file for the new configuration; do not append to historical runs.
+
+TypeSafe documents 64k tokens for state plus all questions and 32k for state
+plus the longest question; OpenRouter lists a 32,000-token context for our
+`typesafe/jev-1.13` route. Channel limits must be checked before live runs:
+[TypeSafe models](https://docs.typesafe.ai/models),
+[OpenRouter Jev](https://openrouter.ai/typesafe/jev-1.13).
+
+## Historical experiment reproduction (2026-09-21)
 
 1. Build `cmd/rag-rerank-bench` for Linux amd64 with `CGO_ENABLED=0`; record its
    SHA-256 and source commit. Put the binary in a private experiment directory
@@ -25,7 +45,7 @@ generator. It does not migrate the database or start application workers.
    `-jev-batch 1 -jev-concurrency 4` and `-jev-batch 5 -jev-concurrency 2` in
    separate outputs. Freeze a configuration before inspecting formal outcomes.
 6. Run `-mode rank -input combined.json -output formal-ranks.jsonl -repeats 3
-   -warmups 5`. Cases are serial, arm order uses seed 20260921, both rerankers
+   -warmups 5 -jev-batch 5 -jev-concurrency 2`. Cases are serial, arm order uses seed 20260921, both rerankers
    score the entire candidate set, and there is no score filter or fallback.
 7. After a successful answer/judge smoke, run `-mode answer -input combined.json
    -ranks formal-ranks.jsonl -output formal-answers.jsonl`. This uses only

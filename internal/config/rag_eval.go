@@ -84,6 +84,7 @@ type RAGPromotionGatesCfg struct {
 }
 
 type RAGEvaluatorCfg struct {
+	JevModel             string  `json:"jevModel,omitempty"`
 	Endpoint             string  `json:"endpoint,omitempty"`
 	APIKey               string  `json:"-"`
 	TimeoutMS            int     `json:"timeoutMs,omitempty"`
@@ -243,7 +244,7 @@ func (c RAGEvaluationCfg) Validate() error {
 			return errors.New("rag.evaluation.promotionGates contains an invalid quality threshold")
 		}
 	}
-	if v := strings.TrimSpace(c.Sidecar.MetricBundleVersion); v != "" && v != "rag-core-v1" {
+	if v := strings.TrimSpace(c.Sidecar.MetricBundleVersion); v != "" && !ValidMetricBundle(v) {
 		return fmt.Errorf("rag.evaluation.sidecar.metricBundleVersion %q is unsupported", v)
 	}
 	return nil
@@ -404,4 +405,9 @@ func (c RAGEvaluationCfg) Capabilities(healthy bool, reason string) RAGEvaluatio
 		MaxRunTokens: c.MaxRunTokens, MaxRunCostUSD: c.MaxRunCostUSD, CostBudgetEnabled: !c.CostBudgetDisabled, MaxRunDurationSec: c.MaxRunDurationSec,
 		MaxRequestBytes: c.MaxRequestBytes, MaxContextsPerSample: c.MaxContextsPerSample, MaxContextBytes: c.MaxContextBytes,
 	}
+}
+
+// ValidMetricBundle identifies explicitly versioned scoring implementations.
+func ValidMetricBundle(v string) bool {
+	return v == "rag-core-v1" || v == "rag-jev-precision-v1" || v == "rag-jev-hybrid-v1"
 }

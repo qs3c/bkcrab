@@ -14,6 +14,11 @@ class UsageMeter:
     llm_input_tokens: int = 0
     llm_output_tokens: int = 0
     embedding_tokens: int = 0
+    jev_input_tokens: int = 0
+    jev_output_tokens: int = 0
+    jev_cost: float = 0
+    jev_model: str = ""
+    jev_unknown: bool = False
 
     def response(self, settings: Settings) -> EvaluationUsage:
         llm_cost = (
@@ -24,6 +29,8 @@ class UsageMeter:
             self.embedding_tokens * settings.embedding_cost_per_million_usd
         ) / 1_000_000
         return EvaluationUsage(
+            jevInputTokens=self.jev_input_tokens, jevOutputTokens=self.jev_output_tokens,
+            jevEstimatedCostUsd=self.jev_cost, jevModel=self.jev_model, jevUsageUnknown=self.jev_unknown,
             llmInputTokens=self.llm_input_tokens,
             llmOutputTokens=self.llm_output_tokens,
             llmEstimatedCostUsd=llm_cost,
@@ -63,3 +70,14 @@ def record_embedding_response(response: object) -> None:
     if prompt_tokens is None:
         prompt_tokens = getattr(usage, "total_tokens", 0)
     meter.embedding_tokens += max(0, int(prompt_tokens or 0))
+
+
+def record_jev_response(usage: dict, model: str) -> None:
+    meter = _current_meter.get()
+    if meter is None:
+        return
+    meter.jev_input_tokens += usage.get("inputTokens", 0)
+    meter.jev_output_tokens += usage.get("outputTokens", 0)
+    meter.jev_cost += usage.get("estimatedCostUsd", 0)
+    meter.jev_model = model
+    meter.jev_unknown |= bool(usage.get("unknown"))

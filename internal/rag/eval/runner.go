@@ -100,6 +100,7 @@ type RunBudgets struct {
 }
 
 type ExecutionSnapshot struct {
+	JevModel            string                            `json:"jevModel,omitempty"`
 	Version             int                               `json:"version"`
 	DatasetVersion      store.RAGEvalDatasetVersionRecord `json:"datasetVersion"`
 	Profile             config.RAGEvalProfileData         `json:"profile"`
@@ -239,7 +240,7 @@ func (r *Runner) CreateRun(ctx context.Context, request CreateRunRequest) (*stor
 		createdAt = request.minimumCreatedAt.Add(time.Nanosecond)
 	}
 	snapshot := ExecutionSnapshot{Version: 1, DatasetVersion: *dataset, Profile: profile,
-		ProfileFingerprint: profileRecord.Fingerprint, Metrics: metrics, MetricBundleVersion: MetricBundleV1,
+		ProfileFingerprint: profileRecord.Fingerprint, Metrics: metrics, MetricBundleVersion: evaluatorBundle(r.cfg), JevModel: r.cfg.Sidecar.JevModel,
 		IndexGenerationID: request.IndexGenerationID, CreatedAt: createdAt, Budgets: RunBudgets{
 			MaxCases: r.cfg.MaxRunCases, MaxTokens: r.cfg.MaxRunTokens, MaxCostUSD: maxRunCostUSD, MaxDurationSec: r.cfg.MaxRunDurationSec,
 		}}
@@ -389,6 +390,9 @@ func (r *Runner) execute(ctx context.Context, fence store.RAGEvalRunFence) (retE
 	var snapshot ExecutionSnapshot
 	if err = json.Unmarshal([]byte(run.ExecutionSnapshotJSON), &snapshot); err != nil || snapshot.Version != 1 {
 		return r.finishFailure(fence, "invalid_snapshot", "invalid frozen execution snapshot")
+	}
+	if snapshot.MetricBundleVersion != evaluatorBundle(r.cfg) || snapshot.JevModel != r.cfg.Sidecar.JevModel {
+		return r.finishFailure(fence, "evaluator_changed", "frozen evaluator bundle/model differs from configured evaluator")
 	}
 	// This deployment-level kill switch also protects already queued/running
 	// runs whose immutable snapshot was created while cost enforcement was on.
@@ -710,7 +714,7 @@ func (r *Runner) score(ctx context.Context, fence store.RAGEvalRunFence, runID, 
 		all := DeterministicMetrics(DeterministicInput{RetrievedContextIDs: sample.RetrievedContextIDs, ReferenceContextIDs: cases[sample.CaseID].ReferenceContextIDs, RetrievedDocumentIDs: sample.RetrievedDocumentIDs, ReferenceDocumentIDs: cases[sample.CaseID].ReferenceDocumentIDs, Response: sample.Response, ExpectedAbstention: cases[sample.CaseID].ExpectedAbstention, Abstained: strings.TrimSpace(sample.Response) == ""}, snapshot.Profile.Runtime.TopN)
 		for _, metric := range deterministic {
 			if result, ok := all[metric]; ok {
-				if err := r.putMetric(ctx, fence, sample.CaseID, metric, result); err != nil {
+				if err := r.putMetric(ctx, fence, sample.CaseID, metric, snapshot.MetricBundleVersion, result); err != nil {
 					return err
 				}
 				markComplete(sample.CaseID, metric)
@@ -770,7 +774,7 @@ func (r *Runner) score(ctx context.Context, fence store.RAGEvalRunFence, runID, 
 			batchIndex := batchIndex
 			group.Go(func() error {
 				batch := batches[batchIndex]
-				count, scoreErr := r.scoreBatch(groupCtx, fence, runID, ownerID, snapshot.MetricBundleVersion, batch.metrics, batch.samples)
+				count, scoreErr := r.scoreBatch(groupCtx, fence, runID, ownerID, snapshot.MetricBundleVersion, snapshot.JevModel, batch.metrics, batch.samples)
 				scored[batchIndex-wave] = count
 				return scoreErr
 			})
@@ -856,8 +860,8 @@ func scoreRequestID(runID string, request EvaluateRequest) (string, error) {
 	return fmt.Sprintf("%s:score:%x", runID, sum[:16]), nil
 }
 
-func (r *Runner) scoreBatch(ctx context.Context, fence store.RAGEvalRunFence, runID, ownerID, metricBundleVersion string, metrics []string, samples []EvaluationSample) (int, error) {
-	request := EvaluateRequest{OwnerID: ownerID, MetricBundleVersion: metricBundleVersion, Metrics: metrics, Samples: samples}
+func (r *Runner) scoreBatch(ctx context.Context, fence store.RAGEvalRunFence, runID, ownerID, metricBundleVersion, jevModel string, metrics []string, samples []EvaluationSample) (int, error) {
+	request := EvaluateRequest{JevModel: jevModel, OwnerID: ownerID, MetricBundleVersion: metricBundleVersion, Metrics: metrics, Samples: samples}
 	requestID, err := scoreRequestID(runID, request)
 	if err != nil {
 		return 0, err
@@ -872,7 +876,7 @@ func (r *Runner) scoreBatch(ctx context.Context, fence store.RAGEvalRunFence, ru
 	}
 	for _, item := range response.Results {
 		for metric, result := range item.Metrics {
-			if err := r.putMetric(ctx, fence, item.CaseID, metric, result); err != nil {
+			if err := r.putMetric(ctx, fence, item.CaseID, metric, metricBundleVersion, result); err != nil {
 				return 0, err
 			}
 		}
@@ -882,6 +886,7 @@ func (r *Runner) scoreBatch(ctx context.Context, fence store.RAGEvalRunFence, ru
 
 func (r *Runner) recordEvaluatorUsage(ctx context.Context, fence store.RAGEvalRunFence, requestID string, usage EvaluatorUsage) error {
 	records := []store.RAGEvalUsageRecord{
+		{RunID: fence.RunID, Stage: "judge_jev", Provider: "typesafe", Model: usage.JevModel, InputTokens: usage.JevInputTokens, OutputTokens: usage.JevOutputTokens, EstimatedCostUSD: usage.JevEstimatedCostUSD, IdempotencyKey: requestID + ":jev"},
 		{RunID: fence.RunID, Stage: "judge", Provider: r.cfg.Sidecar.LLMProvider, Model: r.cfg.Sidecar.LLMModel, InputTokens: usage.LLMInputTokens, OutputTokens: usage.LLMOutputTokens, EstimatedCostUSD: usage.LLMEstimatedCostUSD, IdempotencyKey: requestID + ":judge"},
 		{RunID: fence.RunID, Stage: "judge_embedding", Provider: r.cfg.Sidecar.EmbeddingProvider, Model: r.cfg.Sidecar.EmbeddingModel, InputTokens: usage.EmbeddingInputTokens, EstimatedCostUSD: usage.EmbeddingEstimatedCostUSD, IdempotencyKey: requestID + ":embedding"},
 	}
@@ -906,13 +911,13 @@ func (r *Runner) refreshBudget(ctx context.Context, runID string, budgets RunBud
 	return (budgets.MaxTokens > 0 && tokens >= budgets.MaxTokens) || (budgets.MaxCostUSD > 0 && cost >= budgets.MaxCostUSD), nil
 }
 
-func (r *Runner) putMetric(ctx context.Context, fence store.RAGEvalRunFence, caseID, metric string, result MetricResult) error {
+func (r *Runner) putMetric(ctx context.Context, fence store.RAGEvalRunFence, caseID, metric, metricVersion string, result MetricResult) error {
 	details, _ := json.Marshal(result.Details)
 	value := sql.NullFloat64{}
 	if result.Value != nil {
 		value = sql.NullFloat64{Float64: *result.Value, Valid: true}
 	}
-	ok, err := r.store.PutRAGEvalMetricResult(ctx, fence, store.RAGEvalMetricResultRecord{RunID: fence.RunID, CaseID: caseID, MetricName: metric, MetricVersion: MetricBundleV1, Status: string(result.Status), Value: value, Reason: result.Reason, DetailsJSON: string(details)})
+	ok, err := r.store.PutRAGEvalMetricResult(ctx, fence, store.RAGEvalMetricResultRecord{RunID: fence.RunID, CaseID: caseID, MetricName: metric, MetricVersion: metricVersion, Status: string(result.Status), Value: value, Reason: result.Reason, DetailsJSON: string(details)})
 	if err != nil {
 		return err
 	}
@@ -967,3 +972,10 @@ func (r *Runner) finish(fence store.RAGEvalRunFence, status, code, message strin
 // Public mode aliases keep HTTP and callers from depending on store strings.
 func FullPipelineMode() RunMode { return RunModeFull }
 func OnlineOnlyMode() RunMode   { return RunModeOnlineOnly }
+
+func evaluatorBundle(c config.RAGEvaluationCfg) string {
+	if c.Sidecar.MetricBundleVersion == "" {
+		return MetricBundleV1
+	}
+	return c.Sidecar.MetricBundleVersion
+}

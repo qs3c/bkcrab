@@ -26,10 +26,18 @@ class Settings:
     idempotency_cache_entries: int
     evaluation_concurrency: int
     llm_max_tokens: int = 8192
+    metric_bundle_version: str = "rag-core-v1"
+    jev_endpoint: str = ""
+    jev_model: str = "jev-1.13.0"
+    jev_max_request_cost_usd: float = 0.01
 
     @classmethod
     def from_env(cls) -> Settings:
         return cls(
+            metric_bundle_version=os.getenv("RAG_EVALUATOR_METRIC_BUNDLE_VERSION", "rag-core-v1"),
+            jev_endpoint=os.getenv("RAG_EVALUATOR_JEV_ENDPOINT", ""),
+            jev_model=os.getenv("RAG_EVALUATOR_JEV_MODEL", "jev-1.13.0"),
+            jev_max_request_cost_usd=float(os.getenv("RAG_EVALUATOR_JEV_MAX_REQUEST_COST_USD", "0.01")),
             service_version=os.getenv("RAG_EVALUATOR_SERVICE_VERSION", "0.1.0"),
             port=int(os.getenv("RAG_EVALUATOR_PORT", "8080")),
             api_key=os.getenv("RAG_EVALUATOR_API_KEY", ""),
@@ -79,6 +87,13 @@ class Settings:
         )
 
     def validate(self) -> None:
+        if self.metric_bundle_version not in {"rag-core-v1", "rag-jev-precision-v1", "rag-jev-hybrid-v1"}:
+            raise ValueError("unsupported evaluator metric bundle")
+        if self.metric_bundle_version != "rag-core-v1":
+            if not self.jev_endpoint or not self.api_key or not self.jev_model or any(v in self.jev_model for v in ("latest", "preview")):
+                raise ValueError("Jev bundle requires internal endpoint, authentication, and pinned model")
+            if not math.isfinite(self.jev_max_request_cost_usd) or self.jev_max_request_cost_usd <= 0:
+                raise ValueError("invalid Jev request cost limit")
         prices = (
             self.llm_input_cost_per_million_usd,
             self.llm_output_cost_per_million_usd,

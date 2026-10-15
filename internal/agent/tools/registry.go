@@ -250,6 +250,7 @@ type Registry struct {
 	shellMgr *shellManager
 
 	managedMemoryCfg memory.Config
+	memoryGuard      memory.Guard
 
 	// skillManager / skillLedger 是 skill_manage 工具的依赖:learner 的
 	// agent 级技能管理器与生命周期账本。经 SetSkillManage 装配;账本在
@@ -367,6 +368,8 @@ func (r *Registry) SetSystemFileStore(s systemFileStoreBase, agentID string) {
 		r.agentID = agentID
 	}
 }
+
+func (r *Registry) SetMemoryGuard(g memory.Guard) { r.memoryGuard = g }
 
 func (r *Registry) SetManagedMemoryConfig(cfg memory.Config) {
 	defaults := memory.DefaultConfig()
@@ -648,6 +651,7 @@ func (r *Registry) ForTurn() *Registry {
 		envProvider:      r.envProvider,
 		skillDirs:        r.skillDirs,
 		managedMemoryCfg: r.managedMemoryCfg,
+		memoryGuard:      r.memoryGuard,
 		skillManager:     r.skillManager,
 		skillLedger:      r.skillLedger,
 		// 后台 shell 比单个回合存活更久——按指针共享，回合间一致。

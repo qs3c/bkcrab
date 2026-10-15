@@ -48,6 +48,7 @@ type EvaluationSample struct {
 	ReferenceContexts    []string `json:"referenceContexts,omitempty"`
 }
 type EvaluateRequest struct {
+	JevModel            string             `json:"jevModel,omitempty"`
 	OwnerID             string             `json:"-"`
 	RequestID           string             `json:"requestId"`
 	MetricBundleVersion string             `json:"metricBundleVersion"`
@@ -59,6 +60,11 @@ type CaseMetricResults struct {
 	Metrics map[string]MetricResult `json:"metrics"`
 }
 type EvaluatorUsage struct {
+	JevInputTokens            int64   `json:"jevInputTokens,omitempty"`
+	JevOutputTokens           int64   `json:"jevOutputTokens,omitempty"`
+	JevEstimatedCostUSD       float64 `json:"jevEstimatedCostUsd,omitempty"`
+	JevModel                  string  `json:"jevModel,omitempty"`
+	JevUsageUnknown           bool    `json:"jevUsageUnknown,omitempty"`
 	LLMInputTokens            int64   `json:"llmInputTokens"`
 	LLMOutputTokens           int64   `json:"llmOutputTokens"`
 	LLMEstimatedCostUSD       float64 `json:"llmEstimatedCostUsd"`
@@ -74,6 +80,7 @@ type EvaluateResponse struct {
 }
 
 type RagasClient struct {
+	metricBundle, jevModel                 string
 	endpoint, apiKey                       string
 	maxBatch, maxContexts, maxContextBytes int
 	client                                 *http.Client
@@ -154,6 +161,7 @@ func (c *RagasClient) SetRecorder(recorder telemetry.Recorder) {
 }
 
 type evaluatorHealth struct {
+	JevModel             string              `json:"jevModel,omitempty"`
 	OK                   bool                `json:"ok"`
 	ServiceVersion       string              `json:"serviceVersion"`
 	ProtocolVersion      string              `json:"protocolVersion"`
@@ -249,7 +257,7 @@ func (c *RagasClient) ProbeHealth(ctx context.Context) (config.RAGEvaluatorHealt
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err = decoder.Decode(&health); err != nil || !health.OK || !health.MetricsInitialized ||
-		health.ProtocolVersion != ExpectedEvaluatorProtocolVersion || health.MetricBundleVersion != MetricBundleV1 ||
+		health.ProtocolVersion != ExpectedEvaluatorProtocolVersion || health.MetricBundleVersion != c.bundle() || health.JevModel != c.jevModel ||
 		health.RagasVersion != ExpectedRagasVersion || !requiredFieldsCompatible(health.MetricRequiredFields) {
 		if err == nil {
 			err = errors.New("incompatible evaluator health response")
@@ -296,9 +304,10 @@ func (c *RagasClient) probeHealthWithTimeout(ctx context.Context) {
 }
 
 type wireMetricResult struct {
-	Status MetricStatus `json:"status"`
-	Value  *float64     `json:"value"`
-	Reason string       `json:"reason"`
+	Details map[string]any `json:"details,omitempty"`
+	Status  MetricStatus   `json:"status"`
+	Value   *float64       `json:"value"`
+	Reason  string         `json:"reason"`
 }
 
 type wireCaseMetricResults struct {
@@ -373,10 +382,13 @@ func (c *RagasClient) validateEvaluateRequest(request *EvaluateRequest) error {
 	if len(request.RequestID) > 255 {
 		return errors.New("requestId exceeds byte limit")
 	}
-	if request.MetricBundleVersion != "" && request.MetricBundleVersion != MetricBundleV1 {
+	if request.MetricBundleVersion != "" && request.MetricBundleVersion != c.bundle() {
 		return errors.New("unsupported metric bundle")
 	}
-	request.MetricBundleVersion = MetricBundleV1
+	request.MetricBundleVersion = c.bundle()
+	if request.JevModel != c.jevModel {
+		return errors.New("evaluator Jev model mismatch")
+	}
 	if len(request.Metrics) == 0 || len(request.Metrics) > len(RagasMetrics) {
 		return errors.New("invalid metric count")
 	}
@@ -439,14 +451,18 @@ func validateWireMetric(result wireMetricResult) (MetricResult, error) {
 	default:
 		return MetricResult{}, fmt.Errorf("unknown metric status %q", result.Status)
 	}
-	return MetricResult{Status: result.Status, Value: result.Value, Reason: result.Reason}, nil
+	details, err := json.Marshal(result.Details)
+	if err != nil || len(details) > 65536 {
+		return MetricResult{}, errors.New("metric details exceed limit")
+	}
+	return MetricResult{Status: result.Status, Value: result.Value, Reason: result.Reason, Details: result.Details}, nil
 }
 
 func validateWireResponse(request EvaluateRequest, wire wireEvaluateResponse) (EvaluateResponse, error) {
-	if wire.RequestID != request.RequestID || wire.MetricBundleVersion != MetricBundleV1 || wire.RagasVersion != ExpectedRagasVersion {
+	if wire.RequestID != request.RequestID || wire.MetricBundleVersion != request.MetricBundleVersion || wire.RagasVersion != ExpectedRagasVersion {
 		return EvaluateResponse{}, errors.New("evaluator response contract mismatch")
 	}
-	if wire.Usage == nil || wire.Usage.LLMInputTokens < 0 || wire.Usage.LLMOutputTokens < 0 || wire.Usage.EmbeddingInputTokens < 0 ||
+	if wire.Usage == nil || wire.Usage.JevInputTokens < 0 || wire.Usage.JevOutputTokens < 0 || math.IsNaN(wire.Usage.JevEstimatedCostUSD) || math.IsInf(wire.Usage.JevEstimatedCostUSD, 0) || wire.Usage.JevEstimatedCostUSD < 0 || len(wire.Usage.JevModel) > 255 || wire.Usage.LLMInputTokens < 0 || wire.Usage.LLMOutputTokens < 0 || wire.Usage.EmbeddingInputTokens < 0 ||
 		math.IsNaN(wire.Usage.LLMEstimatedCostUSD) || math.IsInf(wire.Usage.LLMEstimatedCostUSD, 0) || wire.Usage.LLMEstimatedCostUSD < 0 ||
 		math.IsNaN(wire.Usage.EmbeddingEstimatedCostUSD) || math.IsInf(wire.Usage.EmbeddingEstimatedCostUSD, 0) || wire.Usage.EmbeddingEstimatedCostUSD < 0 {
 		return EvaluateResponse{}, errors.New("evaluator response usage is invalid")
@@ -562,4 +578,15 @@ func (c *RagasClient) Evaluate(ctx context.Context, request EvaluateRequest) (re
 		return EvaluateResponse{}, errors.New("evaluator response contains trailing JSON")
 	}
 	return validateWireResponse(request, wire)
+}
+
+// ConfigureBundle is startup-only, before health probing or scoring starts.
+func (c *RagasClient) ConfigureBundle(bundle, model string) {
+	c.metricBundle, c.jevModel = bundle, model
+}
+func (c *RagasClient) bundle() string {
+	if c.metricBundle == "" {
+		return MetricBundleV1
+	}
+	return c.metricBundle
 }

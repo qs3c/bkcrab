@@ -294,6 +294,11 @@ func (s *PolicyPromotionService) loadSuccessfulRun(ctx context.Context, runID, p
 	if err = jsonUnmarshal([]byte(run.ExecutionSnapshotJSON), &snapshot); err != nil || snapshot.Version != 1 {
 		return nil, rageval.ExecutionSnapshot{}, errors.New("run execution snapshot is invalid")
 	}
+	// Existing promotion thresholds were established for the original judges.
+	// New judge bundles need separate calibration before they can publish policy.
+	if snapshot.MetricBundleVersion != "" && snapshot.MetricBundleVersion != rageval.MetricBundleV1 {
+		return nil, rageval.ExecutionSnapshot{}, errors.New("promotion requires rag-core-v1; Jev evaluation thresholds are not calibrated for promotion")
+	}
 	return run, snapshot, nil
 }
 func canonicalRuntimeFields(fields []string) ([]string, error) {

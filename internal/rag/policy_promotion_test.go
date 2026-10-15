@@ -65,6 +65,28 @@ func promotionStore(t *testing.T) (*store.DBStore, *RuntimePolicySnapshot, strin
 
 func nowUTC() time.Time { return time.Now().UTC() }
 
+func TestPromotionRejectsUncalibratedJevJudge(t *testing.T) {
+	st, snapshot, runID := promotionStore(t)
+	run, err := st.GetRAGEvalRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var execution rageval.ExecutionSnapshot
+	if err = json.Unmarshal([]byte(run.ExecutionSnapshotJSON), &execution); err != nil {
+		t.Fatal(err)
+	}
+	execution.MetricBundleVersion = "rag-jev-hybrid-v1"
+	raw, _ := json.Marshal(execution)
+	if _, err = st.DB().Exec(`UPDATE rag_eval_runs SET execution_snapshot_json=? WHERE id=?`, string(raw), runID); err != nil {
+		t.Fatal(err)
+	}
+	service := &PolicyPromotionService{Store: st, Snapshot: snapshot, Gates: PromotionGates{MinimumMetricMean: map[string]float64{"faithfulness": .8}, MinimumScoredCases: 1}}
+	_, err = service.PromoteRuntime(context.Background(), RuntimePromotionRequest{RunID: runID, ProfileID: "profile", ConfirmationRunID: runID, ActorID: "admin", Fields: []string{"minScore"}})
+	if err == nil || !strings.Contains(err.Error(), "not calibrated") || snapshot.Current().Version != 1 {
+		t.Fatalf("uncalibrated scores promoted policy: %v", err)
+	}
+}
+
 func TestRuntimePromotionGatesWhitelistCASRefreshAndRollback(t *testing.T) {
 	st, snapshot, runID := promotionStore(t)
 	service := &PolicyPromotionService{Store: st, Snapshot: snapshot, Gates: PromotionGates{MinimumMetricMean: map[string]float64{"faithfulness": .8}, MinimumScoredCases: 1, MaximumP95LatencyMS: 100}, Environment: RuntimePromotionEnvironment{RewriteEnabled: true, HyDEEnabled: true, RerankerEnabled: true, AnswerModel: "provider/model"}}

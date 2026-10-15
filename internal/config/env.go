@@ -18,6 +18,7 @@ const RAGLegacyTaskMigrationModeOfflineV1 = "offline-v1"
 // 显式名称）设置。systemd unit、docker-compose、k8s deployment env 是
 // 规范的设置位置。
 type EnvConfig struct {
+	Jev              JevCfg
 	Metrics          EnvMetrics
 	ContextCache     EnvContextCache
 	Gateway          EnvGateway
@@ -89,6 +90,7 @@ type EnvLog struct {
 // 部署时设置是部署清单（systemd / docker-compose / k8s env）的一部分。
 func LoadEnv() *EnvConfig {
 	cfg := &EnvConfig{
+		Jev: loadJevEnv(),
 		// MySQL 默认必需。AutoMigrate 创建全新 schema，但仍需 DSN，
 		// 且启动时绝不回退到 SQLite。
 		Storage:          EnvStorage{Type: "mysql", AutoMigrate: true},
@@ -260,6 +262,13 @@ func LoadEnv() *EnvConfig {
 	}
 	if v := os.Getenv("BKCRAB_RAG_RERANKER_API_KEY"); v != "" {
 		cfg.RAG.Reranker.APIKey = v
+	}
+	if v := positiveEnvInt("BKCRAB_RAG_RERANKER_JEV_BATCH_SIZE"); v > 0 {
+		cfg.RAG.Reranker.JevBatchSize = v
+	}
+	if v, ok := os.LookupEnv("BKCRAB_RAG_RERANKER_DISABLE_SCORE_FILTER"); ok {
+		b := v == "true"
+		cfg.RAG.Reranker.DisableScoreFilter = &b
 	}
 	if v := os.Getenv("BKCRAB_RAG_RERANKER_MODEL"); v != "" {
 		cfg.RAG.Reranker.Model = v
@@ -852,6 +861,7 @@ var bootSecretEnvKeys = []string{
 	"BKCRAB_RAG_MILVUS_PASSWORD",
 	"BKCRAB_RAG_EMBEDDING_API_KEY",
 	"BKCRAB_RAG_RERANKER_API_KEY",
+	"BKCRAB_JEV_API_KEY",
 	"BKCRAB_RAG_DOCUMENT_AI_API_KEY",
 	"BKCRAB_RAG_EVAL_API_KEY",
 	"BKCRAB_FAIR_QUEUE_RABBITMQ_URL",
@@ -903,6 +913,13 @@ func (e *EnvConfig) ApplySystemRAG(dst *RAGCfg) {
 	}
 	if e.RAG.Reranker.APIKey != "" {
 		dst.Reranker.APIKey = e.RAG.Reranker.APIKey
+	}
+	if e.RAG.Reranker.JevBatchSize > 0 {
+		dst.Reranker.JevBatchSize = e.RAG.Reranker.JevBatchSize
+	}
+	if e.RAG.Reranker.DisableScoreFilter != nil {
+		v := *e.RAG.Reranker.DisableScoreFilter
+		dst.Reranker.DisableScoreFilter = &v
 	}
 	if e.RAG.Reranker.Model != "" {
 		dst.Reranker.Model = e.RAG.Reranker.Model

@@ -79,6 +79,7 @@ type Agent struct {
 	ftsStore        *store.FTSStore
 	piiScrubEnabled bool
 	memoryCfg       config.MemoryCfg
+	memoryGuard     memory.Guard
 	// splitReplies 是每个代理的多气泡切换。盖茨
 	// 通告 SplitMessageMarker 的每轮系统提示提示
 	// 到 LLM（参见 renderChannelHints）并盖章
@@ -3092,6 +3093,7 @@ func (a *Agent) finishTurnAndMaybeExtract(ctx context.Context, chatterMem *Memor
 			AgentID: a.name,
 			UserID:  chatterUID,
 			Config:  memory.DefaultConfig(),
+			Guard:   a.memoryGuard,
 		})
 		if err := AutoPersistMemory(extractCtx, mgr, a.provider, model, groups); err != nil {
 			slog.Warn("auto-persist: extraction failed, resetting batch", "agent", a.name, "extraction_id", extractionID, "error", err)

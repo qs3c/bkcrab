@@ -5,6 +5,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 METRIC_BUNDLE_VERSION = "rag-core-v1"
+METRIC_BUNDLES = {"rag-core-v1", "rag-jev-precision-v1", "rag-jev-hybrid-v1"}
+Bundle = Literal["rag-core-v1", "rag-jev-precision-v1", "rag-jev-hybrid-v1"]
 PROTOCOL_VERSION = "rag-evaluator-v2"
 ALLOWED_METRICS = frozenset(
     {"context_precision", "context_recall", "faithfulness", "response_relevancy", "factual_correctness"}
@@ -34,7 +36,8 @@ class Sample(BaseModel):
 class EvaluateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     requestId: str = Field(min_length=1, max_length=255)
-    metricBundleVersion: Literal["rag-core-v1"]
+    metricBundleVersion: Bundle
+    jevModel: str = Field(default="", max_length=255)
     metrics: list[str] = Field(min_length=1, max_length=5)
     samples: list[Sample] = Field(min_length=1, max_length=16)
 
@@ -55,6 +58,7 @@ class MetricResult(BaseModel):
     status: Literal["ok", "skipped_missing_input", "error"]
     value: float | None = Field(default=None, ge=0, le=1)
     reason: str = Field(default="", max_length=2048)
+    details: dict = Field(default_factory=dict, exclude_if=lambda v: not v)
 
 
 class CaseResult(BaseModel):
@@ -63,6 +67,13 @@ class CaseResult(BaseModel):
 
 
 class EvaluationUsage(BaseModel):
+    # Preserve the original v2 wire shape when no Jev call was made. Older Go
+    # clients reject unknown JSON fields even when their values are zero.
+    jevInputTokens: int = Field(default=0, ge=0, exclude_if=lambda v: v == 0)
+    jevOutputTokens: int = Field(default=0, ge=0, exclude_if=lambda v: v == 0)
+    jevEstimatedCostUsd: float = Field(default=0, ge=0, exclude_if=lambda v: v == 0)
+    jevModel: str = Field(default="", exclude_if=lambda v: not v)
+    jevUsageUnknown: bool = Field(default=False, exclude_if=lambda v: not v)
     llmInputTokens: int = Field(default=0, ge=0)
     llmOutputTokens: int = Field(default=0, ge=0)
     llmEstimatedCostUsd: float = Field(default=0, ge=0)
@@ -73,6 +84,6 @@ class EvaluationUsage(BaseModel):
 class EvaluateResponse(BaseModel):
     requestId: str
     ragasVersion: str
-    metricBundleVersion: Literal["rag-core-v1"] = METRIC_BUNDLE_VERSION
+    metricBundleVersion: Bundle = METRIC_BUNDLE_VERSION
     results: list[CaseResult]
     usage: EvaluationUsage = Field(default_factory=EvaluationUsage)

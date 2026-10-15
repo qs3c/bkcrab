@@ -16,6 +16,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/bus"
 	"github.com/qs3c/bkcrab/internal/config"
 	mcpruntime "github.com/qs3c/bkcrab/internal/mcp/runtime"
+	"github.com/qs3c/bkcrab/internal/memory"
 	"github.com/qs3c/bkcrab/internal/plugin"
 	"github.com/qs3c/bkcrab/internal/provider"
 	"github.com/qs3c/bkcrab/internal/sandbox"
@@ -607,7 +608,7 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 //
 // `systemSandboxPool` 是网关范围的池 — 由结果 UserSpace 借用，不拥有。
 // 当系统作用域禁用沙箱时传递 nil；在这种情况下代理将以仅路径文件根运行。
-func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, mcpRuntime *mcpruntime.Service, pluginMgr *plugin.Manager, ragService agent.RAGService, imageCfg config.ImagegenBatchCfg, imageBatches agenttools.ImagegenBatchService) (*UserSpace, error) {
+func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st store.Store, ws workspace.Store, meter usage.Meter, systemSandboxPool sandbox.ExecutorPool, mcpRuntime *mcpruntime.Service, pluginMgr *plugin.Manager, ragService agent.RAGService, imageCfg config.ImagegenBatchCfg, imageBatches agenttools.ImagegenBatchService, guards ...memory.Guard) (*UserSpace, error) {
 	if userID == "" {
 		return nil, fmt.Errorf("loadUserSpace: userID required")
 	}
@@ -748,6 +749,9 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 	if ragService != nil {
 		managerOpts = append(managerOpts, agent.WithRAGService(ragService))
 	}
+	if len(guards) > 0 {
+		managerOpts = append(managerOpts, agent.WithMemoryGuard(guards[0]))
+	}
 	agentMgr, err := agent.NewManager(resolved, prov, mb, managerOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create agent manager for user %q: %w", userID, err)
@@ -880,6 +884,7 @@ func providerKeyList(m map[string]config.ProviderConfig) []string {
 //
 // `systemSandboxPool` 作为借用的引用持有，并在加载时交给每个 UserSpace。网关拥有其生命周期。
 type userSpaceRegistry struct {
+	memoryGuard       memory.Guard
 	mu                sync.RWMutex
 	spaces            map[string]*userSpaceEntry
 	bus               *bus.MessageBus
@@ -943,7 +948,7 @@ func (r *userSpaceRegistry) getOrLoad(ctx context.Context, userID string) (*User
 		e.lastUsed = time.Now()
 		return e.space, nil
 	}
-	sp, err := loadUserSpace(ctx, userID, r.bus, r.store, r.workspace, r.meter, r.systemSandboxPool, r.mcpRuntime, r.pluginMgr, r.ragService, r.imageCfg, r.imageBatches)
+	sp, err := loadUserSpace(ctx, userID, r.bus, r.store, r.workspace, r.meter, r.systemSandboxPool, r.mcpRuntime, r.pluginMgr, r.ragService, r.imageCfg, r.imageBatches, r.memoryGuard)
 	if err != nil {
 		return nil, err
 	}
