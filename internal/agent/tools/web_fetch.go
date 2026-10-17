@@ -198,9 +198,6 @@ func RegisterWebFetchChain(r *Registry, chain *toolproviders.Chain) {
 		if err != nil {
 			return "", err
 		}
-		if err := reviewWebFetch(ctx, "content", args.URL, resp.Text); err != nil {
-			return "", err
-		}
 		return resp.Text, nil
 	})
 }
@@ -291,9 +288,6 @@ func webFetchTool(ctx context.Context, r *Registry, rawArgs json.RawMessage) (st
 		text = text[:maxLen] + "\n[...truncated]"
 	}
 
-	if err := reviewWebFetch(ctx, "content", resp.Request.URL.String(), text); err != nil {
-		return "", err
-	}
 	return text, nil
 }
 
