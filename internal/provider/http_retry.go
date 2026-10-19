@@ -71,9 +71,12 @@ func doLLMRequest(client *http.Client, request *http.Request) (*http.Response, e
 }
 
 func transientLLMError(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if err == nil || errors.Is(err, context.Canceled) {
 		return false
 	}
+	// net/http's response-header timeout also matches context.DeadlineExceeded.
+	// doLLMRequest checks the caller's actual context before classifying errors,
+	// so a transport timeout can retry without retrying an expired caller budget.
 	var dns *net.DNSError
 	if errors.As(err, &dns) {
 		return dns.IsTemporary || dns.IsTimeout
