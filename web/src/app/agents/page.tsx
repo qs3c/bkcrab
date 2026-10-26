@@ -83,9 +83,9 @@ function AgentAvatar({
   bust?: number; // 上传后递增的缓存破坏参数
   size?: number;
 }) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => { setFailed(false); }, [agent.avatarUrl, bust]);
-  if (!agent.avatarUrl || failed) {
+  const [failedUrl, setFailedUrl] = useState("");
+  const url = bust ? `${agent.avatarUrl}?v=${bust}` : agent.avatarUrl;
+  if (!agent.avatarUrl || failedUrl === url) {
     return (
       <div
         className="flex shrink-0 items-center justify-center rounded-xl bg-primary/10 dark:bg-primary/15 border border-primary/15"
@@ -95,7 +95,6 @@ function AgentAvatar({
       </div>
     );
   }
-  const url = bust ? `${agent.avatarUrl}?v=${bust}` : agent.avatarUrl;
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
@@ -103,7 +102,7 @@ function AgentAvatar({
       alt={agent.name || agent.id}
       className="shrink-0 rounded-xl object-cover"
       style={{ width: size, height: size }}
-      onError={() => setFailed(true)}
+      onError={() => setFailedUrl(url || "")}
     />
   );
 }
