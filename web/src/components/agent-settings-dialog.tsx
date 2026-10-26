@@ -139,7 +139,7 @@ export function AgentSettingsDialog({
       >
         <DialogTitle className="sr-only">设置</DialogTitle>
         <DialogDescription className="sr-only">管理智能体配置和个人偏好。</DialogDescription>
-        <aside aria-label="设置分类" className="flex min-w-0 gap-1 border-b bg-muted/40 p-3 pr-12 overflow-x-auto sm:flex-col sm:border-b-0 sm:border-r sm:pr-3 sm:overflow-y-auto">
+        <aside aria-label="设置分类" className="mr-10 flex min-w-0 gap-1 border-b bg-muted/40 p-3 overflow-x-auto sm:mr-0 sm:flex-col sm:border-b-0 sm:border-r sm:overflow-y-auto">
           {agentTabs.length > 0 && (
             <>
               <SectionLabel>智能体</SectionLabel>
