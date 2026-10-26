@@ -310,6 +310,15 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
   return fetch(url, { credentials: "same-origin", ...init, headers });
 }
 
+async function checkedJSON(res: Response) {
+  const data = await res.json().catch(() => { throw new Error("服务器返回了无效响应，请稍后重试。"); });
+  if (!res.ok || data?.ok === false || data?.error) {
+    const message = typeof data?.error === "string" ? data.error : "";
+    throw new Error(message || (res.status === 401 ? "登录已过期，请重新登录。" : `操作失败（${res.status}），请重试。`));
+  }
+  return data;
+}
+
 // 登录 + 登出 + 当前用户
 
 export interface MeResponse {
@@ -346,13 +355,14 @@ export async function login(loginField: string, password: string): Promise<MeRes
 }
 
 export async function logout(): Promise<void> {
-  await apiFetch("/api/logout", { method: "POST" });
+  const res = await apiFetch("/api/logout", { method: "POST" });
+  if (!res.ok) throw new Error("退出登录失败，请重试。");
   setAuthToken("");
 }
 
 export async function getMe(): Promise<MeResponse> {
-  const res = await apiFetch("/api/me");
-  return res.json();
+  const res = await apiFetch("/api/me", { signal: AbortSignal.timeout(15000) });
+  return res.status === 401 ? { ok: false } : checkedJSON(res);
 }
 
 export async function updateMe(req: { displayName: string; avatarUrl: string }) {
@@ -361,7 +371,7 @@ export async function updateMe(req: { displayName: string; avatarUrl: string }) 
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
   });
-  return res.json();
+  return checkedJSON(res);
 }
 
 export async function changeMyPassword(req: { oldPassword: string; newPassword: string }) {
@@ -370,7 +380,7 @@ export async function changeMyPassword(req: { oldPassword: string; newPassword: 
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
   });
-  return res.json();
+  return checkedJSON(res);
 }
 
 // 引导
@@ -636,8 +646,10 @@ export async function deleteScopedChannel(id: string) {
 
 // 状态
 export async function getStatus(): Promise<StatusResponse> {
-  const res = await apiFetch("/api/status");
-  return res.json();
+  const res = await apiFetch("/api/status", { signal: AbortSignal.timeout(15000) });
+  const status = await checkedJSON(res);
+  if (typeof status?.configured !== "boolean") throw new Error("服务器状态无效，请重试。");
+  return status;
 }
 
 // 提供者
@@ -794,6 +806,7 @@ export async function getChatHistory(agentId: string, sessionId: string): Promis
 // 服务器上仍在流式传输的进行中回合。
 export interface ChatHistoryResult {
   active: boolean;
+  lastError?: { seq: number; message: string };
   history: ChatHistoryMessage[];
   latestEventSeq: number; // -1 表示尚未记录任何事件
   contextUsage: ContextUsage | null;
@@ -827,14 +840,13 @@ function parseContextUsage(value: unknown): ContextUsage | null {
 
 export async function getChatHistoryWithCursor(agentId: string, sessionId: string): Promise<ChatHistoryResult> {
   const res = await apiFetch(`/api/chat/history?agentId=${encodeURIComponent(agentId)}&sessionId=${encodeURIComponent(sessionId)}`);
-  if (!res.ok) return { history: [], latestEventSeq: -1, contextUsage: null, active: false };
-  const data = await res.json();
+  const data = await checkedJSON(res);
   const history: ChatHistoryMessage[] = Array.isArray(data?.history)
     ? data.history
     : Array.isArray(data) ? data : [];
   const seqRaw = data?.latestEventSeq;
   const latestEventSeq = typeof seqRaw === "number" ? seqRaw : -1;
-  return { history, latestEventSeq, contextUsage: parseContextUsage(data?.contextUsage), active: data?.active === true };
+  return { history, latestEventSeq, contextUsage: parseContextUsage(data?.contextUsage), active: data?.active === true, lastError: data?.lastError };
 }
 
 export interface ChatSessionEntry {
@@ -1015,8 +1027,7 @@ export async function adminGetFairQueueHealth(): Promise<{ fairQueue: FairQueueH
 
 export async function getChatSessions(agentId: string): Promise<ChatSessionEntry[]> {
   const res = await apiFetch(`/api/chat/sessions?agentId=${encodeURIComponent(agentId)}`);
-  if (!res.ok) return [];
-  const data = await res.json();
+  const data = await checkedJSON(res);
   // 后端将列表包装为 { sessions: [...] }。也兼容原始数组
   // 格式，以防仍有较旧的部署。
   if (Array.isArray(data?.sessions)) return data.sessions;
@@ -1029,7 +1040,7 @@ export async function renameChatSession(agentId: string, sessionId: string, titl
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ agentId, title }),
   });
-  return res.json();
+  return checkedJSON(res);
 }
 
 export async function deleteChatSession(agentId: string, sessionId: string) {
@@ -1037,7 +1048,7 @@ export async function deleteChatSession(agentId: string, sessionId: string) {
     `/api/chat/sessions/${encodeURIComponent(sessionId)}?agentId=${encodeURIComponent(agentId)}`,
     { method: "DELETE" },
   );
-  return res.json();
+  return checkedJSON(res);
 }
 
 // moveChatSessionToProject 将聊天重新分配到项目（或当 projectId 为 ""
@@ -1394,7 +1405,7 @@ export async function createAgent(agent: Partial<AgentDetail>) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(agent),
   });
-  return res.json();
+  return checkedJSON(res);
 }
 
 export interface AgentSkillsConfig {
@@ -1526,7 +1537,7 @@ export async function updateAgent(id: string, agent: AgentUpdatePayload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(agent),
   });
-  return res.json();
+  return checkedJSON(res);
 }
 
 // HookPlugin 是 /api/plugins/hook 返回的元数据结构 —
@@ -2041,7 +2052,7 @@ export async function deleteAgent(id: string) {
   const res = await apiFetch(`/api/agents/${id}`, {
     method: "DELETE",
   });
-  return res.json();
+  return checkedJSON(res);
 }
 
 // 技能

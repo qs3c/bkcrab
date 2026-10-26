@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/session"
 	"github.com/qs3c/bkcrab/internal/store"
 )
 
@@ -61,4 +63,42 @@ func TestFinishTurnSurvivesCanceledRequestCtx(t *testing.T) {
 	if got != "done" {
 		t.Fatalf("turn status = %q; want done (锚点必须在请求 ctx 取消后仍翻成 done)", got)
 	}
+}
+
+func TestWebChatSessionsUsesLiveWorkerInsteadOfStaleAnchor(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.NewDBStore("sqlite", "file:"+t.TempDir()+"/status.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m := session.NewManagerWithStoreForUser(t.TempDir(), session.NewStoreAdapter(db, "u"), "u", "a")
+	sess := m.Get("web", "", "status", "")
+	seq, err := sess.AppendTurnAnchor(provider.Message{Role: "user", Content: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{name: "a", ownerUserID: "u", sessions: m}
+	check := func(want string) {
+		t.Helper()
+		rows := a.WebChatSessions()
+		if len(rows) != 1 || rows[0].LastTurnStatus != want {
+			t.Fatalf("want %s, got %+v", want, rows)
+		}
+	}
+	check("interrupted")
+	_, finish, err := a.acquireTurn(ctx, a.webTurnAddress(sess.Key()), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("running")
+	finish()
+	check("interrupted")
+	if err := db.FinishTurn(ctx, "u", "a", sess.Key(), seq, 0); err != nil {
+		t.Fatal(err)
+	}
+	check("done")
 }

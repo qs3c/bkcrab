@@ -1,5 +1,7 @@
 "use client";
 
+import { copyText } from "@/lib/user-feedback";
+
 import { useEffect, useState } from "react";
 import { Check, Copy, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -13,6 +15,7 @@ const RELEASES_URL = "https://github.com/qs3c/bkcrab/releases";
 export default function AboutSettingsPage() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState("");
 
   useEffect(() => {
     getStatus()
@@ -24,17 +27,17 @@ export default function AboutSettingsPage() {
 
   const copyCmd = async () => {
     try {
-      await navigator.clipboard.writeText(UPGRADE_CMD);
+      await copyText(UPGRADE_CMD);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* 剪贴板可能在非安全源上不可用 — 忽略 */
+    } catch { setCopyError("复制失败，请手动选择命令后复制。");
     }
   };
 
   return (
     <div className="space-y-6">
       <div>
+        {copyError && <p role="alert" className="text-sm text-destructive">{copyError}</p>}
         <h3 className="text-xl font-semibold tracking-tight">关于</h3>
         <p className="text-sm text-muted-foreground mt-1">
           网关版本和发行信息。

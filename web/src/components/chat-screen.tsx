@@ -17,6 +17,7 @@ import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { ExternalAnchor } from "@/components/markdown-link";
+import { copyText, chatFailureMessage } from "@/lib/user-feedback";
 
 // react-markdown 的默认 urlTransform 会过滤不在安全列表（http、https、
 // mailto、ircs、xmpp）中的协议——包括 `data:`。我们希望内联 base64 图片
@@ -177,6 +178,7 @@ interface ChatMessage {
   id: string;
   role: "user" | "agent" | "tool-group";
   content: string;
+  error?: boolean;
   timestamp: number;
   toolCalls?: { id: string; name: string; arguments: string; result?: string; metadata?: ToolResultMetadata }[];
   files?: ProducedFile[];
@@ -587,6 +589,9 @@ export function ChatScreen() {
     tools?: string[];
   }>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [operationNotice, setOperationNotice] = useState("");
+  const [historyError, setHistoryError] = useState("");
+  const [historyAttempt, setHistoryAttempt] = useState(0);
   // 后端历史响应与 usage/done 事件汇报的上下文占用。用于在输入框页脚渲染
   // 「已用上下文百分比」指示器。
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
@@ -725,7 +730,7 @@ export function ChatScreen() {
   useEffect(() => {
     if (!selectedAgent) return;
     let aborted = false;
-    getAgent(selectedAgent)
+    const refresh = () => getAgent(selectedAgent)
       .then((a) => {
         if (aborted) return;
         setAgentName(a?.name || a?.id || selectedAgent);
@@ -733,7 +738,10 @@ export function ChatScreen() {
       .catch(() => {
         if (!aborted) setAgentName(selectedAgent);
       });
+    void refresh();
+    window.addEventListener("bkcrab:agents-changed", refresh);
     return () => {
+      window.removeEventListener("bkcrab:agents-changed", refresh);
       aborted = true;
     };
   }, [selectedAgent]);
@@ -955,7 +963,7 @@ export function ChatScreen() {
             const msg = data.data?.message || "未知错误";
             setMessages((prev) => [
               ...prev,
-              { id: `e-${Date.now()}`, role: "agent", content: `Error: ${msg}`, timestamp: Date.now() },
+              { id: `e-${Date.now()}`, role: "agent", content: chatFailureMessage(msg), error: true, timestamp: Date.now() },
             ]);
             break;
           }
@@ -1005,12 +1013,14 @@ export function ChatScreen() {
             if (transientBubbleIdRef.current) {
               transientBubbleIdRef.current = null;
               getChatHistoryWithCursor(selectedAgent, sessionId)
-                .then(({ history, latestEventSeq, contextUsage }) => {
+                .then(({ history, latestEventSeq, contextUsage, lastError }) => {
                   if (disposed) return;
                   if (latestEventSeq > maxSeqRef.current) maxSeqRef.current = latestEventSeq;
                   subscribeSinceRef.current = latestEventSeq;
                   setContextUsage(contextUsage);
-                  setMessages(buildChatMessages(history));
+                  const restored = buildChatMessages(history);
+                  if (lastError) restored.push({ id: `error-${lastError.seq}`, role: "agent", content: chatFailureMessage(lastError.message), error: true, timestamp: 0 });
+                  setMessages(restored);
                 })
                 .catch(() => {});
             }
@@ -1104,9 +1114,12 @@ export function ChatScreen() {
     async (next: string) => {
       const trimmed = next.trim();
       if (!trimmed || !selectedAgent || trimmed === sessionTitle) return;
-      setSessionTitle(trimmed);
       try {
         await renameChatSession(selectedAgent, sessionId, trimmed);
+        setSessionTitle(trimmed);
+      } catch (err) {
+        setOperationNotice(err instanceof Error ? err.message : "标题保存失败，请重试。");
+        throw err;
       } finally {
         loadSessions(selectedAgent);
         // 通知全局侧边栏重新获取其聊天列表，使新标题无需整页刷新即可显示。
@@ -1132,7 +1145,7 @@ export function ChatScreen() {
       <div className="flex flex-1 items-center justify-between gap-2 min-w-0">
         <ChatHeaderTitle
           title={sessionTitle}
-          fallback={`Chat with ${agentName || selectedAgent}`}
+          fallback={agentName ? `与 ${agentName} 对话` : "新建对话"}
           onSave={handleRenameTitle}
         />
         <button
@@ -1170,6 +1183,8 @@ export function ChatScreen() {
 // 关闭此 sessionId 的 SSE 门；历史获取落地且 subscribeSinceRef
       // 设置为真实游标后重新开启。
     setLoadedSessionId(null);
+    setHistoryError("");
+    setOperationNotice("");
 // 会话变化时重置待办面板，使前一个聊天的清单不会在新数据获取到达之前
       // 短暂闪烁。
     setTodoItems([]);
@@ -1179,18 +1194,13 @@ export function ChatScreen() {
     setContextUsage((usage) => zeroContextUsage(usage));
     let aborted = false;
     getChatHistoryWithCursor(selectedAgent, sessionId)
-      .then(async ({ history, latestEventSeq, contextUsage, active }) => {
+      .then(async ({ history, latestEventSeq, contextUsage, active, lastError }) => {
         if (aborted) return;
         markActive(sessionId, active || abortsRef.current.has(sessionId));
         if (latestEventSeq > maxSeqRef.current) maxSeqRef.current = latestEventSeq;
         subscribeSinceRef.current = latestEventSeq;
         setContextUsage(contextUsage);
-        if (!history || history.length === 0) {
-          setMessages([]);
-          setLoadedSessionId(sessionId);
-          return;
-        }
-        const built = buildChatMessages(history);
+        const built = buildChatMessages(history || []);
         try {
           // listAgentFiles(agentId, sessionId) 让后端选择正确的前缀——项目聊天
           // 用 projects/<pid>/，松散聊天用 sessions/<chat>/——因此我们无需
@@ -1217,12 +1227,13 @@ export function ChatScreen() {
           }
         } catch { /* 列出失败 — 回退为无面板 */ }
         if (aborted) return;
+        if (lastError) built.push({ id: `error-${lastError.seq}`, role: "agent", content: chatFailureMessage(lastError.message), error: true, timestamp: 0 });
         setMessages(built);
         setLoadedSessionId(sessionId);
       })
       .catch(() => {
         if (aborted) return;
-        setMessages([]);
+        setHistoryError("对话记录加载失败，请重试。已有消息不会被删除。");
         // 历史获取失败——仍然打开 SSE 以接收实时事件，但使用 seq=0
         // 而非 -1，以便不会触发全量服务端重放作为副作用。
         subscribeSinceRef.current = 0;
@@ -1231,7 +1242,7 @@ export function ChatScreen() {
     return () => {
       aborted = true;
     };
-  }, [selectedAgent, sessionId, markActive]);
+  }, [selectedAgent, sessionId, markActive, historyAttempt]);
 
   useEffect(() => {
     if (!stickToBottomRef.current) return;
@@ -1671,7 +1682,7 @@ export function ChatScreen() {
             const msg = evt.data?.message || "未知错误";
             setMessages((prev) => [
               ...prev,
-              { id: `e-${Date.now()}`, role: "agent", content: `Error: ${msg}`, timestamp: Date.now() },
+              { id: `e-${Date.now()}`, role: "agent", content: chatFailureMessage(msg), error: true, timestamp: Date.now() },
             ]);
             setCompacting(false);
             break;
@@ -1828,7 +1839,8 @@ export function ChatScreen() {
             {
               id: `e-${Date.now()}`,
               role: "agent",
-              content: errMsg,
+              content: chatFailureMessage(errMsg),
+              error: true,
               timestamp: Date.now(),
             },
           ];
@@ -1978,10 +1990,14 @@ export function ChatScreen() {
     }
   };
 
-  const handleCopy = (msg: ChatMessage) => {
-    navigator.clipboard.writeText(msg.content);
-    setCopiedId(msg.id);
-    setTimeout(() => setCopiedId(null), 1500);
+  const handleCopy = async (msg: ChatMessage) => {
+    try {
+      await copyText(msg.content);
+      setCopiedId(msg.id);
+      setTimeout(() => setCopiedId(null), 1500);
+    } catch {
+      setOperationNotice("复制失败，请手动选择消息后复制。");
+    }
   };
 
 // handleRetry 将此消息内容填回输入框，以便用户在重新发送前确认/编辑。
@@ -2045,7 +2061,7 @@ export function ChatScreen() {
   const heroTitle = "我能为你做些什么？";
 
   return (
-    <div className="flex h-[calc(100vh-3rem)] flex-row">
+    <div className="flex h-[calc(100dvh-3rem)] min-w-0 flex-row">
       <div
         className={
           "flex flex-1 min-w-0 flex-col" +
@@ -2056,6 +2072,8 @@ export function ChatScreen() {
           (isEmpty ? " justify-center pb-12" : "")
         }
       >
+            {operationNotice && <p role="alert" className="rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{operationNotice}</p>}
+            {historyError && <div role="alert" className="rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{historyError}<Button variant="outline" size="sm" className="ml-2" onClick={() => setHistoryAttempt((n) => n + 1)}>重新加载</Button></div>}
       {/* 消息 */}
         <div
           ref={messagesScrollRef}
@@ -2277,7 +2295,7 @@ export function ChatScreen() {
                   className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                 >
                   <div
-                    className={`group relative max-w-[80%] ${
+                    className={`group relative min-w-0 max-w-[95%] sm:max-w-[80%] ${
                       msg.role === "user" ? "order-1" : ""
                     }`}
                   >
@@ -2299,10 +2317,11 @@ export function ChatScreen() {
                       </div>
                     )}
                     <div
+                      role={msg.error ? "alert" : undefined}
                       className={`rounded-2xl px-4 py-2.5 break-words ${
                         msg.role === "user"
                           ? "bg-primary/10 dark:bg-primary/15 text-foreground rounded-br-md"
-                          : "bg-muted rounded-bl-md"
+                          : msg.error ? "border border-destructive/30 bg-destructive/5 text-destructive rounded-bl-md" : "bg-muted rounded-bl-md"
                       }`}
                     >
                       {(() => {
@@ -2460,8 +2479,8 @@ export function ChatScreen() {
                           )}
                           <button
                             onClick={() => handleCopy(msg)}
-                            className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
-                            title="复制"
+                            className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 p-1.5 sm:p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
+                            title={copiedId === msg.id ? "已复制" : "复制"}
                           >
                             {copiedId === msg.id ? (
                               <Check className="h-3 w-3 text-emerald-500" />
@@ -2471,7 +2490,7 @@ export function ChatScreen() {
                           </button>
                           <button
                             onClick={() => handleRetry(msg)}
-                            className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
+                            className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 p-1.5 sm:p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
                             title="重新发送（回填到输入框）"
                           >
                             <RotateCcw className="h-3 w-3" />
@@ -2486,8 +2505,8 @@ export function ChatScreen() {
                           )}
                           <button
                             onClick={() => handleCopy(msg)}
-                            className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
-                            title="复制"
+                            className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 p-1.5 sm:p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
+                            title={copiedId === msg.id ? "已复制" : "复制"}
                           >
                             {copiedId === msg.id ? (
                               <Check className="h-3 w-3 text-emerald-500" />
@@ -2497,7 +2516,7 @@ export function ChatScreen() {
                           </button>
                           <button
                             onClick={() => setFilesSheetOpen(true)}
-                            className="opacity-0 group-hover:opacity-100 inline-flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-all"
+                            className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 inline-flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-all"
                             title="查看任务文件"
                           >
                             <FolderOpen className="h-3 w-3" />
@@ -3008,11 +3027,15 @@ function ChatHeaderTitle({ title, fallback, onSave }: ChatHeaderTitleProps) {
     if (editing) inputRef.current?.select();
   }, [editing]);
 
-  const commit = () => {
-    setEditing(false);
+  const savingRef = useRef(false);
+  const commit = async () => {
+    if (savingRef.current) return;
     const next = draft.trim();
-    if (!next || next === title) return;
-    onSave(next);
+    if (!next || next === title) { setEditing(false); return; }
+    savingRef.current = true;
+    try { await onSave(next); setEditing(false); }
+    catch { setEditing(true); }
+    finally { savingRef.current = false; }
   };
 
   if (editing) {

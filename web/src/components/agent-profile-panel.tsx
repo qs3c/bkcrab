@@ -9,6 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiFetch, getAgent, updateAgent, type AgentDetail } from "@/lib/api";
+import { copyText } from "@/lib/user-feedback";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 
 // AgentProfilePanel 是设置对话框中的"资料"标签页 —
@@ -50,7 +51,7 @@ export default function AgentProfilePanel() {
         setDescription(a.description || "");
         setIsPublic(!!a.isPublic);
       })
-      .catch(() => {})
+      .catch(() => setError("智能体资料加载失败，请重新打开设置。"))
       .finally(() => setLoading(false));
   }, [agentId]);
 
@@ -85,7 +86,8 @@ export default function AgentProfilePanel() {
   const uploadAvatar = async (file: File) => {
     const fd = new FormData();
     fd.append("file", file, "avatar.png");
-    await apiFetch(`/api/agents/${agentId}/files`, { method: "POST", body: fd });
+    const response = await apiFetch(`/api/agents/${agentId}/files`, { method: "POST", body: fd });
+    if (!response.ok) throw new Error("头像上传失败，资料已保存，请重新上传头像。");
     setAvatarBust(Date.now());
   };
 
@@ -108,27 +110,24 @@ export default function AgentProfilePanel() {
         return;
       }
       if (avatar) {
-        try {
-          await uploadAvatar(avatar);
-        } catch {
-// 非致命：文本字段已保存，仅头像上传失败。保留已保存脉冲，
-           // 让用户知道主要写入已成功；下次保存时可重试图片。
-        }
+        await uploadAvatar(avatar);
         setAvatar(null);
         if (avatarPreview) URL.revokeObjectURL(avatarPreview);
         setAvatarPreview(null);
       }
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
+      window.dispatchEvent(new Event("bkcrab:agents-changed"));
       refresh();
-    } finally {
+    } catch (err) { setError(err instanceof Error ? err.message : "保存失败，请重试。"); }
+    finally {
       setSaving(false);
     }
   };
 
   if (loading) {
     return (
-      <div className="p-6 max-w-3xl space-y-4">
+      <div className="p-4 sm:p-6 max-w-3xl space-y-4">
         <Skeleton className="h-8 w-32" />
         <Skeleton className="h-20 w-full" />
         <Skeleton className="h-12 w-full" />
@@ -139,7 +138,7 @@ export default function AgentProfilePanel() {
 
   if (!agent) {
     return (
-      <div className="p-6 max-w-3xl">
+      <div className="p-4 sm:p-6 max-w-3xl">
         <p className="text-sm text-muted-foreground">未找到智能体。</p>
       </div>
     );
@@ -152,8 +151,8 @@ export default function AgentProfilePanel() {
     `/api/agents/${agent.id}/files/avatar.png${avatarBust ? `?v=${avatarBust}` : ""}`;
 
   return (
-    <div className="p-6 max-w-3xl space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="p-4 sm:p-6 max-w-3xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">资料</h2>
           <p className="text-sm text-muted-foreground mt-1">
@@ -263,7 +262,7 @@ export default function AgentProfilePanel() {
           />
         </div>
         {isPublic && agent && (
-          <div className="flex gap-2">
+          <div className="flex min-w-0 gap-2">
             <Input
               readOnly
               value={
@@ -281,11 +280,11 @@ export default function AgentProfilePanel() {
                 if (!agent) return;
                 const url = `${window.location.origin}/agents/${agent.id}/chat/`;
                 try {
-                  await navigator.clipboard.writeText(url);
+                  await copyText(url);
                   setLinkCopied(true);
                   setTimeout(() => setLinkCopied(false), 2000);
                 } catch {
-                  // 剪贴板被阻止 — 用户仍可手动选中输入框
+                  setError("复制失败，请手动选择链接后复制。");
                 }
               }}
             >

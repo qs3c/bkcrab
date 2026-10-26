@@ -41,6 +41,7 @@ export default function AccountSettingsPage() {
           setAvatarUrl(m.user.avatarUrl || "");
         }
       })
+      .catch(() => setProfileError("账户信息加载失败，请重新打开设置。"))
       .finally(() => setLoading(false));
   }, []);
 
@@ -79,14 +80,13 @@ export default function AccountSettingsPage() {
   async function saveProfile() {
     setProfileSaving(true);
     setProfileError("");
-    const res = await updateMe({ displayName, avatarUrl });
-    setProfileSaving(false);
-    if (res?.error) {
-      setProfileError(res.error);
-      return;
-    }
-    setProfileSaved(true);
-    setTimeout(() => setProfileSaved(false), 2000);
+    try {
+      await updateMe({ displayName, avatarUrl });
+      setProfileSaved(true);
+      window.dispatchEvent(new Event("bkcrab:profile-changed"));
+      setTimeout(() => setProfileSaved(false), 2000);
+    } catch (err) { setProfileError(err instanceof Error ? err.message : "保存失败，请重试。"); }
+    finally { setProfileSaving(false); }
   }
 
   async function savePassword(e: React.FormEvent) {
@@ -96,24 +96,22 @@ export default function AccountSettingsPage() {
       setPwError("旧密码和新密码均为必填项");
       return;
     }
+    if (newPassword.length < 8) { setPwError("新密码至少需要 8 个字符"); return; }
     if (newPassword !== confirmPassword) {
       setPwError("新密码与确认密码不一致");
       return;
     }
     setPwSaving(true);
-    const res = await changeMyPassword({ oldPassword, newPassword });
-    setPwSaving(false);
-    if (res?.error) {
-      setPwError(res.error);
-      return;
-    }
-    setPwSaved(true);
-    // 强制使用新密码重新登录 — 同时清除本设备上的过期会话。
-    // 短暂延迟以便用户看到成功状态。
-    setTimeout(() => {
-      doLogout();
-      window.location.href = "/";
-    }, 800);
+    try {
+      await changeMyPassword({ oldPassword, newPassword });
+      setPwSaved(true);
+      setOldPassword(""); setNewPassword(""); setConfirmPassword("");
+      setTimeout(async () => {
+        try { await doLogout(); window.location.assign("/"); }
+        catch { setPwError("密码已修改，但退出登录失败，请手动退出后使用新密码登录。"); }
+      }, 800);
+    } catch (err) { setPwError(err instanceof Error ? err.message : "修改失败，请重试。"); }
+    finally { setPwSaving(false); }
   }
 
   if (loading) {
@@ -155,7 +153,7 @@ export default function AccountSettingsPage() {
                 onClick={() => setAvatarUrl("")}
                 aria-label="移除头像"
                 title="移除头像"
-                className="absolute -top-1 -right-1 hidden group-hover:flex items-center justify-center size-5 rounded-full bg-background border border-border text-muted-foreground hover:text-destructive hover:border-destructive transition shadow-sm"
+                className="absolute -top-1 -right-1 flex items-center justify-center size-5 rounded-full bg-background border border-border text-muted-foreground hover:text-destructive hover:border-destructive transition shadow-sm"
               >
                 <X className="size-3" />
               </button>
@@ -263,7 +261,7 @@ export default function AccountSettingsPage() {
             />
           </div>
         </div>
-        {pwError && <p className="text-sm text-destructive">{pwError}</p>}
+        {pwError && <p role="alert" className="text-sm text-destructive">{pwError}</p>}
         <div className="flex justify-end">
           <Button
             type="submit"

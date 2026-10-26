@@ -489,10 +489,11 @@ function CreateProjectDialog({
   const [name, setName] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState("");
 
   React.useEffect(() => {
     if (open) {
-      setName("");
+      setError(""); setName("");
       setDescription("");
     }
   }, [open]);
@@ -500,16 +501,18 @@ function CreateProjectDialog({
   const save = async () => {
     const n = name.trim();
     if (!n) return;
-    setSaving(true);
+    if (saving) return;
+    setSaving(true); setError("");
     try {
       const res = await createProject(agentId, {
         name: n,
         description: description.trim() || undefined,
       });
-      if ("error" in res && res.error) return;
+      if ("error" in res && res.error) throw new Error(res.error);
       onCreated();
       onOpenChange(false);
-    } finally {
+    } catch (err) { setError(err instanceof Error ? err.message : "保存失败，请重试。"); }
+    finally {
       setSaving(false);
     }
   };
@@ -545,6 +548,7 @@ function CreateProjectDialog({
             />
           </div>
         </div>
+        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
         <DialogFooter>
           <Button
             variant="outline"
@@ -576,9 +580,10 @@ function EditProjectDialog({
   const [name, setName] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState("");
 
   React.useEffect(() => {
-    setName(target?.name ?? "");
+    setError(""); setName(target?.name ?? "");
     setDescription(target?.description ?? "");
   }, [target]);
 
@@ -587,16 +592,18 @@ function EditProjectDialog({
   const save = async () => {
     const n = name.trim();
     if (!n) return;
-    setSaving(true);
+    if (saving) return;
+    setSaving(true); setError("");
     try {
       const res = await updateProject(agentId, target.id, {
         name: n,
         description: description.trim(),
       });
-      if ("error" in res && res.error) return;
+      if ("error" in res && res.error) throw new Error(res.error);
       onSaved();
       onClose();
-    } finally {
+    } catch (err) { setError(err instanceof Error ? err.message : "保存失败，请重试。"); }
+    finally {
       setSaving(false);
     }
   };
@@ -630,6 +637,7 @@ function EditProjectDialog({
             />
           </div>
         </div>
+        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={saving}>
             取消

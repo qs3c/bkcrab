@@ -18,7 +18,7 @@ import {
   Wand2Icon,
 } from "lucide-react";
 
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
 import AgentProfilePanel from "@/components/agent-profile-panel";
@@ -133,11 +133,13 @@ export function AgentSettingsDialog({
       <DialogContent
         className={cn(
           "p-0 gap-0 overflow-hidden",
-          "h-[85vh] w-[95vw] max-w-[1100px] sm:max-w-[1100px]",
-          "grid grid-cols-[220px_1fr] grid-rows-1",
+          "h-[85dvh] w-[95vw] max-w-[1100px] sm:max-w-[1100px]",
+          "grid grid-cols-1 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[190px_minmax(0,1fr)] sm:grid-rows-1",
         )}
       >
-        <aside className="flex flex-col gap-1 border-r bg-muted/40 p-3 overflow-y-auto">
+        <DialogTitle className="sr-only">设置</DialogTitle>
+        <DialogDescription className="sr-only">管理智能体配置和个人偏好。</DialogDescription>
+        <aside aria-label="设置分类" className="flex min-w-0 gap-1 border-b bg-muted/40 p-3 pr-12 overflow-x-auto sm:flex-col sm:border-b-0 sm:border-r sm:pr-3 sm:overflow-y-auto">
           {agentTabs.length > 0 && (
             <>
               <SectionLabel>智能体</SectionLabel>
@@ -163,7 +165,7 @@ export function AgentSettingsDialog({
             />
           ))}
         </aside>
-        <div className="overflow-y-auto">
+        <div className="min-w-0 overflow-auto">
           {tab === "profile" && <AgentProfilePanel />}
           {tab === "customize" && <AgentCustomizePage />}
           {tab === "models" &&
@@ -207,7 +209,7 @@ function SectionLabel({
   return (
     <div
       className={cn(
-        "px-2 pt-1 pb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground",
+        "hidden sm:block px-2 pt-1 pb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground",
         className,
       )}
     >
@@ -231,7 +233,7 @@ function TabButton({
       type="button"
       onClick={() => onSelect(tab.id)}
       className={cn(
-        "flex items-center gap-2 rounded-md px-2.5 py-2 text-sm text-left transition-colors",
+        "flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md px-2.5 py-2 text-sm text-left transition-colors",
         active
           ? "bg-accent text-accent-foreground font-medium"
           : "text-foreground/80 hover:bg-accent/50",

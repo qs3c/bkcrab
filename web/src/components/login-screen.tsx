@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useState } from "react";
 import { login as apiLogin, register, getStatus } from "@/lib/api";
 
@@ -35,6 +36,8 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
 
   function switchMode(next: "signin" | "signup") {
     setError("");
+    setPassword("");
+    setSignupConfirm("");
     setMode(next);
   }
 
@@ -96,11 +99,11 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
 
   if (mode === "signup") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 p-4">
+      <div className="flex min-h-svh items-center justify-center bg-background p-4">
         <div className="w-full max-w-sm space-y-6">
           <div className="text-center space-y-2">
-            <h1 className="text-2xl font-bold text-zinc-100">创建你的账户</h1>
-            <p className="text-sm text-zinc-500">注册后即可开始使用 BkCrab</p>
+            <h1 className="text-2xl font-bold text-foreground">创建你的账户</h1>
+            <p className="text-sm text-muted-foreground">注册后即可开始使用 BkCrab</p>
           </div>
           <form onSubmit={handleSignUp} className="space-y-4">
             <input
@@ -108,49 +111,53 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
               value={signupUsername}
               onChange={(e) => setSignupUsername(e.target.value)}
               placeholder="用户名"
+              aria-label="用户名"
               autoFocus
               autoComplete="username"
-              className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+              className="w-full rounded-lg border border-input bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
             />
             <input
               type="email"
               value={signupEmail}
               onChange={(e) => setSignupEmail(e.target.value)}
               placeholder="邮箱"
+              aria-label="邮箱"
               autoComplete="email"
-              className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+              className="w-full rounded-lg border border-input bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
             />
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="密码（至少 8 个字符）"
+              aria-label="密码（至少 8 个字符）"
               autoComplete="new-password"
-              className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+              className="w-full rounded-lg border border-input bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
             />
             <input
               type="password"
               value={signupConfirm}
               onChange={(e) => setSignupConfirm(e.target.value)}
               placeholder="确认密码"
+              aria-label="确认密码"
               autoComplete="new-password"
-              className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+              className="w-full rounded-lg border border-input bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
             />
-            {error && <p className="text-sm text-red-400">{error}</p>}
+            {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
             <button
               type="submit"
               disabled={loading || !signupUsername.trim() || !signupEmail.trim() || !password || !signupConfirm}
-              className="w-full rounded-lg bg-violet-600 px-4 py-3 text-sm font-medium text-white transition hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full rounded-lg bg-primary px-4 py-3 text-sm font-medium text-white transition hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading ? "正在创建账户..." : "创建账户"}
             </button>
           </form>
-          <p className="text-center text-sm text-zinc-500">
+          <p className="text-center text-sm text-muted-foreground">
             已有账户？{" "}
             <button
               type="button"
               onClick={() => switchMode("signin")}
-              className="text-violet-400 hover:text-violet-300"
+              className="text-primary hover:text-primary/80"
             >
               登录
             </button>
@@ -161,11 +168,12 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-950 p-4">
+    <div className="flex min-h-svh items-center justify-center bg-background p-4">
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center space-y-2">
-          <h1 className="text-2xl font-bold text-zinc-100">BkCrab</h1>
-          <p className="text-sm text-zinc-500">使用用户名或邮箱登录</p>
+          <Image src="/logo.png" alt="" width={48} height={48} className="mx-auto h-12 w-12 object-contain" />
+          <h1 className="text-2xl font-bold text-foreground">BkCrab</h1>
+          <p className="text-sm text-muted-foreground">使用用户名或邮箱登录</p>
         </div>
         <form onSubmit={handleSignIn} className="space-y-4">
           <input
@@ -173,34 +181,36 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
             value={loginField}
             onChange={(e) => setLoginField(e.target.value)}
             placeholder="用户名或邮箱"
+              aria-label="用户名或邮箱"
             autoFocus
             autoComplete="username"
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+            className="w-full rounded-lg border border-input bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
           />
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="密码"
+              aria-label="密码"
             autoComplete="current-password"
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+            className="w-full rounded-lg border border-input bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
           />
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <button
             type="submit"
             disabled={loading || !loginField.trim() || !password}
-            className="w-full rounded-lg bg-violet-600 px-4 py-3 text-sm font-medium text-white transition hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full rounded-lg bg-primary px-4 py-3 text-sm font-medium text-white transition hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? "正在登录..." : "登录"}
           </button>
         </form>
         {registrationOpen && (
-          <p className="text-center text-sm text-zinc-500">
+          <p className="text-center text-sm text-muted-foreground">
             还没有账户？{" "}
             <button
               type="button"
               onClick={() => switchMode("signup")}
-              className="text-violet-400 hover:text-violet-300"
+              className="text-primary hover:text-primary/80"
             >
               注册
             </button>

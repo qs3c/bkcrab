@@ -1377,7 +1377,17 @@ func (a *Agent) WebChatHistory(sessionId string) []map[string]any {
 
 // WebChatSessions 返回带有元数据的网络聊天会话列表。
 func (a *Agent) WebChatSessions() []session.WebSession {
-	return a.sessions.ListWebSessions()
+	rows := a.sessions.ListWebSessions()
+	for i := range rows {
+		if a.WebTurnActive(rows[i].ID) {
+			rows[i].LastTurnStatus = "running"
+		} else if rows[i].LastTurnStatus == "running" {
+			// Extraction anchors can remain running after provider failures or a
+			// restart. They are not evidence that a live worker still exists.
+			rows[i].LastTurnStatus = "interrupted"
+		}
+	}
+	return rows
 }
 
 // DeleteWebChatSession 通过 URL 删除聊天会话（任何频道）

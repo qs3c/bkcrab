@@ -48,6 +48,7 @@ export default function SignupPage() {
         return;
       }
       // 服务器已为我们设置了会话 cookie；跳转到应用。
+      window.dispatchEvent(new Event("bkcrab:authenticated"));
       router.replace("/overview/");
     } catch {
       setError("无法连接服务器");
@@ -57,7 +58,7 @@ export default function SignupPage() {
 
   if (open === null) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950">
+      <div className="flex min-h-svh items-center justify-center bg-background">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-violet-500" />
       </div>
     );
@@ -65,15 +66,15 @@ export default function SignupPage() {
 
   if (!open) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 p-4">
+      <div className="flex min-h-svh items-center justify-center bg-background p-4">
         <div className="w-full max-w-sm space-y-4 text-center">
-          <h1 className="text-2xl font-bold text-zinc-100">注册已关闭</h1>
-          <p className="text-sm text-zinc-500">
+          <h1 className="text-2xl font-bold text-foreground">注册已关闭</h1>
+          <p className="text-sm text-muted-foreground">
             当前无法创建新账户。请联系管理员开启注册，已有账户则可直接登录。
           </p>
           <Link
             href="/"
-            className="inline-block rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500"
+            className="inline-block rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/90"
           >
             返回登录
           </Link>
@@ -83,11 +84,11 @@ export default function SignupPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-950 p-4">
+    <div className="flex min-h-svh items-center justify-center bg-background p-4">
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center space-y-2">
-          <h1 className="text-2xl font-bold text-zinc-100">创建你的账户</h1>
-          <p className="text-sm text-zinc-500">注册后即可开始使用 BkCrab</p>
+          <h1 className="text-2xl font-bold text-foreground">创建你的账户</h1>
+          <p className="text-sm text-muted-foreground">注册后即可开始使用 BkCrab</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <input
@@ -95,46 +96,50 @@ export default function SignupPage() {
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             placeholder="用户名"
+              aria-label="用户名"
             autoFocus
             autoComplete="username"
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+            className="w-full rounded-lg border border-input bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
           />
           <input
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="邮箱"
+              aria-label="邮箱"
             autoComplete="email"
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+            className="w-full rounded-lg border border-input bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
           />
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="密码（至少 8 个字符）"
+              aria-label="密码（至少 8 个字符）"
             autoComplete="new-password"
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+            className="w-full rounded-lg border border-input bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
           />
           <input
             type="password"
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             placeholder="确认密码"
+              aria-label="确认密码"
             autoComplete="new-password"
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+            className="w-full rounded-lg border border-input bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
           />
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <button
             type="submit"
             disabled={loading || !username.trim() || !email.trim() || !password || !confirm}
-            className="w-full rounded-lg bg-violet-600 px-4 py-3 text-sm font-medium text-white transition hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full rounded-lg bg-primary px-4 py-3 text-sm font-medium text-white transition hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? "正在创建账户..." : "创建账户"}
           </button>
         </form>
-        <p className="text-center text-sm text-zinc-500">
+        <p className="text-center text-sm text-muted-foreground">
           已有账户？{" "}
-          <Link href="/" className="text-violet-400 hover:text-violet-300">
+          <Link href="/" className="text-primary hover:text-primary/80">
             登录
           </Link>
         </p>

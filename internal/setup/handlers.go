@@ -1580,6 +1580,9 @@ func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 				if usage := latestContextUsageFromEvents(rows); usage != nil {
 					resp["contextUsage"] = usage
 				}
+				if failure := latestTurnErrorFromEvents(rows); failure != nil {
+					resp["lastError"] = failure
+				}
 			} else if seq, err := s.dataStore.LatestSessionEventSeq(r.Context(), uid, ag.Name(), sessionID); err == nil {
 				resp["latestEventSeq"] = seq
 			}
@@ -1603,6 +1606,25 @@ func latestContextUsageFromEvents(rows []store.SessionEventRecord) map[string]an
 		}
 		if len(payload.Usage) > 0 {
 			return payload.Usage
+		}
+	}
+	return nil
+}
+
+// Failed replies live in the event log rather than the LLM conversation. Restore
+// the latest turn's failure without injecting server errors into model context.
+func latestTurnErrorFromEvents(rows []store.SessionEventRecord) map[string]any {
+	for i := len(rows) - 1; i >= 0; i-- {
+		switch rows[i].Type {
+		case "turn_start", "content", "content_delta":
+			return nil
+		case "error":
+			var payload struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(rows[i].Data, &payload) == nil && payload.Message != "" {
+				return map[string]any{"seq": rows[i].Seq, "message": payload.Message}
+			}
 		}
 	}
 	return nil

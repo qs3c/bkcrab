@@ -11,6 +11,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { AgentSwitcher, AgentSwitcherItem } from "@/components/team-switcher";
 import { NavMain, NavItem } from "@/components/nav-main";
@@ -57,7 +58,7 @@ import { canShowRAGEvalNavigation } from "@/app/admin/rag-evals/rag-eval-state";
 // 仍然显示平台导航
 function extractAgentId(pathname: string): string | null {
   const match = pathname.match(
-    /^\/agents\/([^/]+)\/(chat|customize|skills|models|knowledge|sessions|channels|chats|scheduler|project|mcp)/,
+    /^\/agents\/([^/]+)\/(chat|customize|skills|models|knowledge|sessions|channels|chats|scheduler|project|mcp|context|plugins|usage)/,
   );
   return match ? match[1] : null;
 }
@@ -141,6 +142,9 @@ const AGENT_NAV = (
 export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const { setOpenMobile } = useSidebar();
+  const search = searchParams.toString();
+  React.useEffect(() => { setOpenMobile(false); }, [pathname, search, setOpenMobile]);
   const activeAgentId = extractAgentId(pathname);
   const hasOpenSession = !!searchParams?.get("session");
 
@@ -169,13 +173,18 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 
   // 获取当前用户一次，以便底部栏显示其名称和角色。
   React.useEffect(() => {
-    getMe().then(setMe).catch(() => {});
+    const refresh = () => getMe().then(setMe).catch(() => {});
+    void refresh();
+    window.addEventListener("bkcrab:profile-changed", refresh);
+    return () => window.removeEventListener("bkcrab:profile-changed", refresh);
   }, []);
 
   // 智能体列表驱动侧边栏顶部的切换下拉框。
   React.useEffect(() => {
-    getAgents()
+    let disposed = false;
+    const refresh = () => getAgents()
       .then((list) => {
+        if (disposed) return;
         setAgents(list.map((a) => ({ id: a.id, name: a.name, model: a.model })));
         const roles: Record<string, "owner" | "viewer"> = {};
         for (const a of list) {
@@ -184,6 +193,9 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
         setAgentRoles(roles);
       })
       .catch(() => {});
+    void refresh();
+    window.addEventListener("bkcrab:agents-changed", refresh);
+    return () => { disposed = true; window.removeEventListener("bkcrab:agents-changed", refresh); };
   }, []);
 
   // 当活跃智能体不在调用者的自有列表中时 — 例如
@@ -224,24 +236,17 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
       setProjects([]);
       return;
     }
+    let disposed = false;
+    let requestVersion = 0;
+    setSessions([]); setProjects([]);
     const refetch = () => {
-      getChatSessions(activeAgentId)
-        .then((list) =>
-          setSessions(
-            list.map((s) => ({
-              id: s.id,
-              title: s.title || s.preview || s.id,
-              thumbnailUrl: s.thumbnailUrl,
-              channel: s.channel,
-              projectId: s.projectId,
-              lastTurnStatus: s.lastTurnStatus,
-            })),
-          ),
-        )
-        .catch(() => {});
-      listProjects(activeAgentId)
-        .then(setProjects)
-        .catch(() => {});
+      const version = ++requestVersion;
+      Promise.all([getChatSessions(activeAgentId), listProjects(activeAgentId)])
+        .then(([list, projectList]) => {
+          if (disposed || version !== requestVersion) return;
+          setSessions(list.map((s) => ({ id: s.id, title: s.title || s.preview || s.id, thumbnailUrl: s.thumbnailUrl, channel: s.channel, projectId: s.projectId, lastTurnStatus: s.lastTurnStatus })));
+          setProjects(projectList);
+        }).catch(() => {});
     };
     refetch();
     const iv = window.setInterval(refetch, 5000);
@@ -253,6 +258,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
     };
     window.addEventListener("bkcrab:sessions-changed", onChange);
     return () => {
+      disposed = true;
       window.clearInterval(iv);
       window.removeEventListener("bkcrab:sessions-changed", onChange);
     };

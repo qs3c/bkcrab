@@ -9,7 +9,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-import { CheckCircle2, LoaderCircle, MoreHorizontal } from "lucide-react";
+import { CheckCircle2, LoaderCircle, MoreHorizontal, CircleAlert } from "lucide-react";
 import { moveChatSessionToProject } from "@/lib/api";
 import { ChannelIcon, channelLabel } from "@/components/channel-icon";
 import { ChatRowActions } from "@/components/chat-row-actions";
@@ -260,6 +260,9 @@ export function SessionStatusIndicator({
         <span className="sr-only">已完成</span>
       </span>
     );
+  }
+  if (status === "interrupted") {
+    return <span className="inline-flex shrink-0 text-destructive" title="上次回复未完成" aria-label="上次回复未完成"><CircleAlert className="size-3.5" /></span>;
   }
   return null;
 }

@@ -1,5 +1,7 @@
 "use client";
 
+import { copyText } from "@/lib/user-feedback";
+
 import { useEffect, useState, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -293,10 +295,9 @@ export default function ChatPage() {
     }
   };
 
-  const handleCopy = (msg: ChatMessage) => {
-    navigator.clipboard.writeText(msg.content);
-    setCopiedId(msg.id);
-    setTimeout(() => setCopiedId(null), 1500);
+  const handleCopy = async (msg: ChatMessage) => {
+    try { await copyText(msg.content); setCopiedId(msg.id); setTimeout(() => setCopiedId(null), 1500); }
+    catch { setMessages((prev) => [...prev, { id: `copy-${Date.now()}`, role: "agent", content: "复制失败，请手动选择消息后复制。", timestamp: Date.now() }]); }
   };
 
   const handleNewChat = () => {

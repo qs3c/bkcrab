@@ -1,5 +1,6 @@
 "use client";
 
+import { requireSaved } from "@/lib/user-feedback";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -60,7 +61,7 @@ const PROVIDER_PRESETS: Record<
   openai: { apiBase: "https://api.openai.com/v1", apiType: "openai-chat", authType: "bearer-token", models: ["gpt-5.5"] },
   openrouter: { apiBase: "https://openrouter.ai/api/v1", apiType: "openai-chat", authType: "bearer-token", models: [] },
   anthropic: { apiBase: "https://api.anthropic.com", apiType: "anthropic-messages", authType: "api-key", models: ["claude-opus-4.7", "claude-sonnet-4.7", "claude-haiku-4.5"] },
-  deepseek: { apiBase: "https://api.deepseek.com", apiType: "openai-chat", authType: "bearer-token", models: ["deepseek-v4-pro", "deepseek-v4-flash"] },
+  deepseek: { apiBase: "https://api.deepseek.com", apiType: "openai-chat", authType: "bearer-token", models: ["deepseek-flash", "deepseek-v4-pro"] },
   ollama: { apiBase: "http://localhost:11434/v1", apiType: "openai-chat", authType: "bearer-token", models: [] },
   custom: { apiBase: "", apiType: "openai-chat", authType: "bearer-token", models: [] },
 };
@@ -141,6 +142,7 @@ export default function ModelsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
 
   // 调用者身份决定此页面读写的范围：
   //   - super_admin → 系统范围（所有用户共享）
@@ -294,7 +296,7 @@ export default function ModelsPage() {
     setFormApiKey("");
     setFormModels(presetModelRows("openai"));
     setModelTests({});
-    setDialogOpen(true);
+    setError(""); setDialogOpen(true);
   };
 
   const openEditDialog = (provider: ProviderEntry) => {
@@ -332,7 +334,7 @@ export default function ModelsPage() {
           )
         : {},
     );
-    setDialogOpen(true);
+    setError(""); setDialogOpen(true);
   };
 
   // 与 onboard 的 handleProviderChange 保持一致：从预设预填
@@ -467,10 +469,11 @@ export default function ModelsPage() {
       ? providers.find((p) => p.id === editingId)
       : undefined;
 
-    setSaving(true);
+    const previousModel = model;
+    setError(""); setSaving(true);
     try {
       if (editingRow) {
-        await updateProvider(editingRow.id, {
+        requireSaved(await updateProvider(editingRow.id, {
           apiBase: formApiBase,
           // 编辑时空密钥表示"保留现有值"；后端将空值/遮蔽哨兵值
           // 视为无操作。
@@ -478,9 +481,9 @@ export default function ModelsPage() {
           apiType: formApiType,
           authType: formAuthType,
           models: cleanedModels,
-        });
+        }));
       } else {
-        await createProvider({
+        requireSaved(await createProvider({
           scope: writeScope,
           scopeId: writeScopeId,
           name,
@@ -489,9 +492,13 @@ export default function ModelsPage() {
           apiType: formApiType,
           authType: formAuthType,
           models: cleanedModels,
-        });
+        }));
       }
       flashSaved();
+    } catch (err) {
+      setModel(previousModel);
+      setError(err instanceof Error ? err.message : "保存失败，请重试。");
+      return;
     } finally {
       setSaving(false);
     }
@@ -500,10 +507,15 @@ export default function ModelsPage() {
   };
 
   const handleDeleteProvider = async (row: ProviderEntry) => {
-    setSaving(true);
+    const previousModel = model;
+    setError(""); setSaving(true);
     try {
-      await deleteProvider(row.id);
+      requireSaved(await deleteProvider(row.id));
       flashSaved();
+    } catch (err) {
+      setModel(previousModel);
+      setError(err instanceof Error ? err.message : "保存失败，请重试。");
+      return;
     } finally {
       setSaving(false);
     }
@@ -515,11 +527,16 @@ export default function ModelsPage() {
   // `omitempty` 会从保存行中删除该键而不干扰兄弟字段，
   // 因此发送空值是安全的。
   const handleSaveAll = async () => {
-    setSaving(true);
+    const previousModel = model;
+    setError(""); setSaving(true);
     try {
-      await updateConfig({ agents: { defaults: { model: model.trim() } } });
+      requireSaved(await updateConfig({ agents: { defaults: { model: model.trim() } } }));
       flashSaved();
       await fetchConfig(isSuperAdmin, me?.id || "");
+    } catch (err) {
+      setModel(previousModel);
+      setError(err instanceof Error ? err.message : "保存失败，请重试。");
+      return;
     } finally {
       setSaving(false);
     }
@@ -528,12 +545,17 @@ export default function ModelsPage() {
   const handleDefaultModelChange = async (value: string) => {
     setModel(value);
     if (!value.trim()) return;
-    setSaving(true);
+    const previousModel = model;
+    setError(""); setSaving(true);
     try {
-      await updateConfig({ agents: { defaults: { model: value.trim() } } });
+      requireSaved(await updateConfig({ agents: { defaults: { model: value.trim() } } }));
       flashSaved();
       // 刷新以使"继承中/覆盖"标记反映新状态。
       await fetchConfig(isSuperAdmin, me?.id || "");
+    } catch (err) {
+      setModel(previousModel);
+      setError(err instanceof Error ? err.message : "保存失败，请重试。");
+      return;
     } finally {
       setSaving(false);
     }
@@ -544,11 +566,16 @@ export default function ModelsPage() {
   // 这在合并时仍会优先——因此我们发送 null/undefined，
   // 后端将其视为"删除行"。
   const handleClearOverride = async () => {
-    setSaving(true);
+    const previousModel = model;
+    setError(""); setSaving(true);
     try {
-      await updateConfig({ agents: { defaults: { model: "" } } });
+      requireSaved(await updateConfig({ agents: { defaults: { model: "" } } }));
       flashSaved();
       await fetchConfig(isSuperAdmin, me?.id || "");
+    } catch (err) {
+      setModel(previousModel);
+      setError(err instanceof Error ? err.message : "保存失败，请重试。");
+      return;
     } finally {
       setSaving(false);
     }
@@ -557,6 +584,7 @@ export default function ModelsPage() {
   if (loading) {
     return (
       <div className="p-6 space-y-6 max-w-5xl mx-auto">
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
         <Skeleton className="h-10 w-48" />
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {[1, 2, 3].map((i) => (
@@ -568,8 +596,9 @@ export default function ModelsPage() {
   }
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between">
+    <div className="p-4 sm:p-6 space-y-6 max-w-5xl mx-auto">
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">模型</h2>
           <p className="text-sm text-muted-foreground mt-1">
@@ -625,7 +654,7 @@ export default function ModelsPage() {
           : "system";
         return (
       <div className="rounded-lg border border-border bg-card p-5">
-        <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 gap-2 mb-3">
           <div className="flex items-center gap-2">
             <Cpu className="h-4 w-4 text-primary" />
             <h3 className="font-medium">
@@ -938,7 +967,7 @@ export default function ModelsPage() {
 
             {/* 模型部分 */}
             <div className="space-y-3 pt-2 border-t border-border">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <Label className="text-base">模型</Label>
                 <Button variant="outline" size="sm" onClick={handleAddModel}>
                   <Plus className="h-3 w-3 mr-1.5" />
@@ -956,7 +985,7 @@ export default function ModelsPage() {
                 const t = modelTests[idx];
                 return (
                 <div key={idx} className="rounded-lg border border-border bg-muted/30 p-4 space-y-3">
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-3 gap-2">
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="text-sm font-medium text-muted-foreground">
                         模型 {idx + 1}

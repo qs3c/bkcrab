@@ -1,4 +1,5 @@
 "use client";
+import { requireSaved } from "@/lib/user-feedback";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -66,7 +67,7 @@ const PROVIDER_PRESETS: Record<
   openai: { apiBase: "https://api.openai.com/v1", apiType: "openai-chat", authType: "bearer-token", models: ["gpt-5.5"] },
   openrouter: { apiBase: "https://openrouter.ai/api/v1", apiType: "openai-chat", authType: "bearer-token", models: [] },
   anthropic: { apiBase: "https://api.anthropic.com", apiType: "anthropic-messages", authType: "api-key", models: ["claude-opus-4.7", "claude-sonnet-4.7", "claude-haiku-4.5"] },
-  deepseek: { apiBase: "https://api.deepseek.com", apiType: "openai-chat", authType: "bearer-token", models: ["deepseek-v4-pro", "deepseek-v4-flash"] },
+  deepseek: { apiBase: "https://api.deepseek.com", apiType: "openai-chat", authType: "bearer-token", models: ["deepseek-flash", "deepseek-v4-pro"] },
   ollama: { apiBase: "http://localhost:11434/v1", apiType: "openai-chat", authType: "bearer-token", models: [] },
   custom: { apiBase: "", apiType: "openai-chat", authType: "bearer-token", models: [] },
 };
@@ -140,6 +141,7 @@ export default function AgentModelsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
 
   // 对话框状态——与管理员页面完全一致。
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -266,7 +268,7 @@ export default function AgentModelsPage() {
     setFormApiKey("");
     setFormModels(presetModelRows("openai"));
     setModelTests({});
-    setDialogOpen(true);
+    setError(""); setDialogOpen(true);
   };
 
   const openEditDialog = (provider: ProviderEntry) => {
@@ -297,7 +299,7 @@ export default function AgentModelsPage() {
           )
         : {},
     );
-    setDialogOpen(true);
+    setError(""); setDialogOpen(true);
   };
 
   // 预设切换被视为"给我该 Provider 的全新起点"——与覆盖
@@ -413,18 +415,19 @@ export default function AgentModelsPage() {
       ? providers.find((p) => p.id === editingId)
       : undefined;
 
-    setSaving(true);
+    const previousModel = model;
+    setError(""); setSaving(true);
     try {
       if (editingRow) {
-        await updateProvider(editingRow.id, {
+        requireSaved(await updateProvider(editingRow.id, {
           apiBase: formApiBase,
           apiKey: formApiKey || undefined,
           apiType: formApiType,
           authType: formAuthType,
           models: cleanedModels,
-        });
+        }));
       } else {
-        await createProvider({
+        requireSaved(await createProvider({
           scope: "agent",
           scopeId: agentId,
           name,
@@ -433,9 +436,13 @@ export default function AgentModelsPage() {
           apiType: formApiType,
           authType: formAuthType,
           models: cleanedModels,
-        });
+        }));
       }
       flashSaved();
+    } catch (err) {
+      setModel(previousModel);
+      setError(err instanceof Error ? err.message : "保存失败，请重试。");
+      return;
     } finally {
       setSaving(false);
     }
@@ -444,15 +451,20 @@ export default function AgentModelsPage() {
   };
 
   const handleDeleteProvider = async (row: ProviderEntry) => {
-    setSaving(true);
+    const previousModel = model;
+    setError(""); setSaving(true);
     try {
-      await deleteProvider(row.id);
+      requireSaved(await deleteProvider(row.id));
       // 如果当前模型来自此 Provider，覆盖现在悬空了——清除它
       // 以便智能体在运行时通过链回退。
       if (model.startsWith(`${row.name}/`)) {
         await updateAgent(agentId, { model: "" });
       }
       flashSaved();
+    } catch (err) {
+      setModel(previousModel);
+      setError(err instanceof Error ? err.message : "保存失败，请重试。");
+      return;
     } finally {
       setSaving(false);
     }
@@ -461,11 +473,16 @@ export default function AgentModelsPage() {
 
   const handleModelChange = async (value: string) => {
     setModel(value);
-    setSaving(true);
+    const previousModel = model;
+    setError(""); setSaving(true);
     try {
       // 空字符串表示"清除覆盖 → 继承系统默认值"。
       await updateAgent(agentId, { model: value });
       flashSaved();
+    } catch (err) {
+      setModel(previousModel);
+      setError(err instanceof Error ? err.message : "保存失败，请重试。");
+      return;
     } finally {
       setSaving(false);
     }
@@ -473,10 +490,15 @@ export default function AgentModelsPage() {
 
   const handleClearOverride = async () => {
     setModel("");
-    setSaving(true);
+    const previousModel = model;
+    setError(""); setSaving(true);
     try {
       await updateAgent(agentId, { model: "" });
       flashSaved();
+    } catch (err) {
+      setModel(previousModel);
+      setError(err instanceof Error ? err.message : "保存失败，请重试。");
+      return;
     } finally {
       setSaving(false);
     }
@@ -489,12 +511,14 @@ export default function AgentModelsPage() {
   const handleShareToggle = async (next: boolean) => {
     const prev = shareModelConfig;
     setShareModelConfig(next);
-    setSaving(true);
+    const previousModel = model;
+    setError(""); setSaving(true);
     try {
       await updateAgent(agentId, { shareModelConfig: next });
       flashSaved();
-    } catch {
-      setShareModelConfig(prev);
+    } catch (err) {
+      setShareModelConfig(prev); setModel(previousModel);
+      setError(err instanceof Error ? err.message : "保存失败，请重试。");
     } finally {
       setSaving(false);
     }
@@ -503,6 +527,7 @@ export default function AgentModelsPage() {
   if (loading) {
     return (
       <div className="p-6 space-y-6 max-w-5xl mx-auto">
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
         <Skeleton className="h-10 w-48" />
         <Skeleton className="h-32 w-full" />
         <Skeleton className="h-48 w-full" />
@@ -513,8 +538,9 @@ export default function AgentModelsPage() {
   const inheriting = !model.trim();
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between">
+    <div className="p-4 sm:p-6 space-y-6 max-w-5xl mx-auto">
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">模型</h2>
           <p className="text-sm text-muted-foreground mt-1">
@@ -567,7 +593,7 @@ export default function AgentModelsPage() {
 
       {/* 当前模型 */}
       <div className="rounded-lg border border-border bg-card p-5">
-        <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 gap-2 mb-3">
           <div className="flex items-center gap-2">
             <Cpu className="h-4 w-4 text-primary" />
             <h3 className="font-medium">当前模型</h3>
@@ -871,7 +897,7 @@ export default function AgentModelsPage() {
             </div>
 
             <div className="space-y-3 pt-2 border-t border-border">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <Label className="text-base">模型</Label>
                 <Button variant="outline" size="sm" onClick={handleAddModel}>
                   <Plus className="h-3 w-3 mr-1.5" />
@@ -889,7 +915,7 @@ export default function AgentModelsPage() {
                 const t = modelTests[idx];
                 return (
                 <div key={idx} className="rounded-lg border border-border bg-muted/30 p-4 space-y-3">
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-3 gap-2">
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="text-sm font-medium text-muted-foreground">
                         模型 {idx + 1}

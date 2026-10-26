@@ -1,5 +1,7 @@
 "use client";
 
+import { copyText } from "@/lib/user-feedback";
+
 import { useEffect, useState } from "react";
 import {
   listApikeys,
@@ -184,9 +186,10 @@ export default function ApikeysPage() {
 
   async function copyToken() {
     if (!showToken) return;
-    await navigator.clipboard.writeText(showToken.token);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    try {
+      await copyText(showToken.token); setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { setError("复制失败，请手动选择令牌后复制。"); }
   }
 
   function openCreateDialog() {

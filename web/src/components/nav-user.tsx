@@ -34,6 +34,8 @@ export function NavUser({
 }) {
   const { isMobile } = useSidebar();
   const { resolvedTheme, toggleTheme } = useTheme();
+  const [logoutError, setLogoutError] = React.useState("");
+  const [loggingOut, setLoggingOut] = React.useState(false);
 
   const initials = name.slice(0, 2).toUpperCase();
 
@@ -93,17 +95,26 @@ export function NavUser({
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              onClick={() => {
-                doLogout();
-                window.location.href = "/";
+              disabled={loggingOut}
+              onClick={async () => {
+                setLoggingOut(true);
+                setLogoutError("");
+                try {
+                  await doLogout();
+                  window.location.assign("/");
+                } catch {
+                  setLogoutError("退出登录失败，请重试。");
+                  setLoggingOut(false);
+                }
               }}
             >
               <LogOutIcon />
-              <span>退出登录</span>
+              <span>{loggingOut ? "正在退出…" : "退出登录"}</span>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </SidebarMenuItem>
+      {logoutError && <li role="alert" className="px-2 text-xs text-destructive">{logoutError}</li>}
     </SidebarMenu>
   );
 }

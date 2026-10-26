@@ -63,12 +63,15 @@ export function ChatRowActions({
   const { isMobile } = useSidebar();
   const [editOpen, setEditOpen] = React.useState(false);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
+  const [deleteError, setDeleteError] = React.useState("");
+  const [deleting, setDeleting] = React.useState(false);
 
   const onConfirmDelete = async () => {
-    setDeleteOpen(false);
+    if (deleting) return;
+    setDeleting(true); setDeleteError("");
     try {
       await deleteChatSession(agentId, session.id);
-    } finally {
+      setDeleteOpen(false);
       // 如果删除的会话当前已打开，则跳转回新聊天 URL，
       // 避免页面停留在过期的 ID 上。
       if (
@@ -78,7 +81,8 @@ export function ChatRowActions({
         router.replace(`/agents/${encodeURIComponent(agentId)}/chat/`);
       }
       onChanged();
-    }
+    } catch (err) { setDeleteError(err instanceof Error ? err.message : "删除失败，请重试。"); }
+    finally { setDeleting(false); }
   };
 
   // 触发器样式：SidebarMenuAction（用于扁平对话列表）接入
@@ -135,7 +139,7 @@ export function ChatRowActions({
         onSaved={onChanged}
       />
 
-      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+      <AlertDialog open={deleteOpen} onOpenChange={(open) => { if (!deleting) { setDeleteOpen(open); setDeleteError(""); } }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>删除对话</AlertDialogTitle>
@@ -143,10 +147,11 @@ export function ChatRowActions({
               删除 <strong>{session.title || session.id}</strong>？此对话的全部消息历史将被删除且无法恢复。
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {deleteError && <p role="alert" className="text-sm text-destructive">{deleteError}</p>}
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
             <AlertDialogAction
-              onClick={onConfirmDelete}
+              onClick={onConfirmDelete} disabled={deleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               删除
@@ -173,11 +178,12 @@ function EditTitleDialog({
 }) {
   const [draft, setDraft] = React.useState("");
   const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState("");
 
   // 每次对话框打开时重新填充草稿。否则编辑后取消再重新打开
   // 的用户会看到过期的草稿。
   React.useEffect(() => {
-    if (open) setDraft(session.title ?? "");
+    if (open) { setDraft(session.title ?? ""); setError(""); }
   }, [open, session.title]);
 
   const save = async () => {
@@ -186,14 +192,14 @@ function EditTitleDialog({
       onOpenChange(false);
       return;
     }
-    setSaving(true);
+    if (saving) return;
+    setSaving(true); setError("");
     try {
       await renameChatSession(agentId, session.id, next);
       onSaved();
-    } finally {
-      setSaving(false);
       onOpenChange(false);
-    }
+    } catch (err) { setError(err instanceof Error ? err.message : "保存失败，请重试。"); }
+    finally { setSaving(false); }
   };
 
   return (
@@ -220,6 +226,7 @@ function EditTitleDialog({
           }}
           placeholder="对话标题"
         />
+        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
         <DialogFooter>
           <Button
             variant="outline"

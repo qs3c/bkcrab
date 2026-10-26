@@ -17,6 +17,6 @@ export function login(token: string) {
   setAuthToken(token);
 }
 
-export function logout() {
-  void apiLogout();
+export async function logout() {
+  await apiLogout();
 }

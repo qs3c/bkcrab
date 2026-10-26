@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { copyText } from "@/lib/user-feedback";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -56,7 +57,7 @@ async function loadAgentRows(): Promise<{
 }> {
   // /api/agents 仅返回调用者拥有的智能体。其他用户拥有的
   // 公开智能体以单独链接显示——不会自动填充到仪表板列表。
-  const agents = await getAgents().catch(() => [] as AgentDetail[]);
+  const agents = await getAgents();
   const status = await getStatus().catch(() => null);
   const isAdmin = !!status?.isAdmin;
   if (!isAdmin) return { agents, otherAgents: [], isAdmin };
@@ -83,6 +84,7 @@ function AgentAvatar({
   size?: number;
 }) {
   const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [agent.avatarUrl, bust]);
   if (!agent.avatarUrl || failed) {
     return (
       <div
@@ -121,6 +123,7 @@ export default function AgentsPage() {
   const [editTarget, setEditTarget] = useState<AgentDetail | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [pageError, setPageError] = useState("");
 
   // 头像上传后递增，使 <img> 重新获取新文件。
   const [avatarBust, setAvatarBust] = useState<Record<string, number>>({});
@@ -173,12 +176,14 @@ export default function AgentsPage() {
 
   const fetchAgents = async () => {
     setLoading(true);
-    const rows = await loadAgentRows();
-    setAgents(rows.agents);
-    setOtherAgents(rows.otherAgents);
-    setIsAdmin(rows.isAdmin);
-    setLoading(false);
+    setPageError("");
+    try {
+      const rows = await loadAgentRows();
+      setAgents(rows.agents); setOtherAgents(rows.otherAgents); setIsAdmin(rows.isAdmin);
+    } catch { setPageError("智能体加载失败，请重试。"); }
+    finally { setLoading(false); }
   };
+  const broadcastAgents = () => window.dispatchEvent(new Event("bkcrab:agents-changed"));
 
   const ownedAgents = agents;
 
@@ -189,8 +194,9 @@ export default function AgentsPage() {
       setAgents(rows.agents);
       setOtherAgents(rows.otherAgents);
       setIsAdmin(rows.isAdmin);
-      setLoading(false);
-    });
+    }).catch(() => {
+      if (!cancelled) setPageError("智能体加载失败，请重试。");
+    }).finally(() => { if (!cancelled) setLoading(false); });
     return () => {
       cancelled = true;
     };
@@ -215,69 +221,45 @@ export default function AgentsPage() {
   async function uploadAvatar(agentID: string, file: File) {
     const fd = new FormData();
     fd.append("file", file, "avatar.png");
-    await apiFetch(`/api/agents/${agentID}/files`, { method: "POST", body: fd });
+    const response = await apiFetch(`/api/agents/${agentID}/files`, { method: "POST", body: fd });
+    if (!response.ok) throw new Error("头像上传失败");
     setAvatarBust((m) => ({ ...m, [agentID]: Date.now() }));
   }
 
   const handleCreate = async () => {
-    if (!newName.trim()) return;
-    setSaving(true);
-    setCreateError(null);
-    const resp = await createAgent({
-      name: newName.trim(),
-      description: newDescription.trim() || undefined,
-    });
-    if (resp && (resp.ok === false || resp.error)) {
-      setCreateError(resp.error || "创建智能体失败");
-      setSaving(false);
-      return;
-    }
-    const newId: string | undefined = resp?.agent?.id;
-    if (newId && newAvatar) {
-      try {
-        await uploadAvatar(newId, newAvatar);
-      } catch {
-        // 非致命——智能体已创建；头像可通过编辑重试
+    if (!newName.trim() || saving) return;
+    setSaving(true); setCreateError(null); setPageError("");
+    try {
+      const resp = await createAgent({ name: newName.trim(), description: newDescription.trim() || undefined });
+      let avatarFailed = false;
+      if (resp?.agent?.id && newAvatar) {
+        try { await uploadAvatar(resp.agent.id, newAvatar); }
+        catch { avatarFailed = true; }
       }
-    }
-    setSaving(false);
-    setCreateOpen(false);
-    resetCreateForm();
-    fetchAgents();
+      setCreateOpen(false); resetCreateForm(); broadcastAgents();
+      await fetchAgents();
+      if (avatarFailed) setPageError("智能体已创建，但头像上传失败。请通过编辑重新上传。");
+    } catch (err) { setCreateError(err instanceof Error ? err.message : "创建失败，请重试。"); }
+    finally { setSaving(false); }
   };
 
   const handleEdit = async () => {
-    if (!editTarget || !editName.trim()) return;
-    setSaving(true);
-    setEditError(null);
-    const resp = await updateAgent(editTarget.id, {
-      name: editName.trim(),
-      description: editDescription.trim(),
-      isPublic: editIsPublic,
-    });
-    if (resp && (resp.ok === false || resp.error)) {
-      setEditError(resp.error || "更新智能体失败");
-      setSaving(false);
-      return;
-    }
-    if (editAvatar) {
-      try {
-        await uploadAvatar(editTarget.id, editAvatar);
-      } catch {
-        // 非致命——文本字段已保存；用户可重试头像上传
-      }
-    }
-    setSaving(false);
-    setEditTarget(null);
-    resetEditForm();
-    fetchAgents();
+    if (!editTarget || !editName.trim() || saving) return;
+    setSaving(true); setEditError(null);
+    try {
+      await updateAgent(editTarget.id, { name: editName.trim(), description: editDescription.trim(), isPublic: editIsPublic });
+      if (editAvatar) await uploadAvatar(editTarget.id, editAvatar);
+      setEditTarget(null); resetEditForm(); broadcastAgents(); await fetchAgents();
+    } catch (err) { setEditError(err instanceof Error ? err.message : "保存失败，请重试。"); }
+    finally { setSaving(false); }
   };
 
   const handleDelete = async () => {
-    if (!deleteId) return;
-    await deleteAgent(deleteId);
-    setDeleteId(null);
-    fetchAgents();
+    if (!deleteId || saving) return;
+    setSaving(true); setPageError("");
+    try { await deleteAgent(deleteId); setDeleteId(null); broadcastAgents(); await fetchAgents(); }
+    catch (err) { setPageError(err instanceof Error ? err.message : "删除失败，请重试。"); }
+    finally { setSaving(false); }
   };
 
   return (
@@ -297,13 +279,14 @@ export default function AgentsPage() {
         )}
       </div>
 
+      {pageError && <div role="alert" className="rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{pageError}<Button variant="outline" size="sm" className="ml-2" onClick={fetchAgents}>重新加载</Button></div>}
       {loading ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {[1, 2, 3].map((i) => (
             <Skeleton key={i} className="h-48" />
           ))}
         </div>
-      ) : ownedAgents.length === 0 && otherAgents.length === 0 ? (
+      ) : ownedAgents.length === 0 && otherAgents.length === 0 && !pageError ? (
         <div className="rounded-lg border border-border bg-card">
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 mb-4">
@@ -682,11 +665,11 @@ export default function AgentsPage() {
                       if (!editTarget) return;
                       const url = `${window.location.origin}/agents/${editTarget.id}/chat/`;
                       try {
-                        await navigator.clipboard.writeText(url);
+                        await copyText(url);
                         setEditLinkCopied(true);
                         setTimeout(() => setEditLinkCopied(false), 2000);
                       } catch {
-                        // 剪贴板被阻止——用户仍可手动选择输入框
+                        setEditError("复制失败，请手动选择链接后复制。");
                       }
                     }}
                   >
@@ -720,7 +703,7 @@ export default function AgentsPage() {
       </Dialog>
 
       {/* 删除确认 */}
-      <AlertDialog open={!!deleteId} onOpenChange={() => setDeleteId(null)}>
+      <AlertDialog open={!!deleteId} onOpenChange={(open) => { if (!open && !saving) setDeleteId(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>删除智能体</AlertDialogTitle>
@@ -729,10 +712,11 @@ export default function AgentsPage() {
               此操作无法撤销。
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {pageError && <p role="alert" className="text-sm text-destructive">{pageError}</p>}
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel disabled={saving}>取消</AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleDelete}
+              onClick={handleDelete} disabled={saving}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               删除

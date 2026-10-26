@@ -14,6 +14,7 @@ import (
 	"github.com/qs3c/bkcrab/internal/auth"
 	"github.com/qs3c/bkcrab/internal/config"
 	"github.com/qs3c/bkcrab/internal/provider"
+	"github.com/qs3c/bkcrab/internal/store"
 )
 
 type chatHistoryNoopProvider struct{}
@@ -141,4 +142,39 @@ func requestChatHistory(t *testing.T, s *Server, resolver *auth.Resolver, userID
 		t.Fatalf("decode response: %v", err)
 	}
 	return body
+}
+
+func TestLatestTurnFailureSurvivesHistoryReload(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, _, user := newAuthTestServer(t, ctx)
+	manager := newChatHistoryTestManager(t, user.ID)
+	s.SetUserResolver(&chatHistoryResolver{spaces: map[string]*api.UserSpaceView{user.ID: {UserID: user.ID, Agents: manager}}})
+	for _, evt := range []struct{ kind, data string }{{"turn_start", "{}"}, {"error", `{"message":"Invalid credential"}`}, {"done", "{}"}} {
+		if _, err := s.dataStore.AppendSessionEvent(ctx, user.ID, "ctx-agent", "failed", evt.kind, []byte(evt.data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rr := httptest.NewRecorder()
+	s.authMiddleware(s.handleChatHistory)(rr, authTestRequest(t, ctx, resolver, http.MethodGet, "/api/chat/history?agentId=ctx-agent&sessionId=failed", user.ID))
+	var body struct {
+		LastError *struct {
+			Message string `json:"message"`
+			Seq     int64  `json:"seq"`
+		} `json:"lastError"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.LastError == nil || body.LastError.Message != "Invalid credential" || body.LastError.Seq < 0 {
+		t.Fatalf("lost failure: %s", rr.Body.String())
+	}
+}
+
+func TestOldTurnFailureDoesNotLeakIntoNewOrSuccessfulTurn(t *testing.T) {
+	for _, tail := range []string{"turn_start", "content", "content_delta"} {
+		rows := []store.SessionEventRecord{{Type: "error", Data: []byte(`{"message":"old"}`)}, {Type: tail, Data: []byte(`{}`)}}
+		if got := latestTurnErrorFromEvents(rows); got != nil {
+			t.Fatalf("%s restored stale error: %+v", tail, got)
+		}
+	}
 }

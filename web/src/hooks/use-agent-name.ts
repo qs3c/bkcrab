@@ -14,7 +14,7 @@ export function useAgentName(agentId: string): string {
   useEffect(() => {
     if (!agentId) return;
     let aborted = false;
-    getAgents()
+    const refresh = () => getAgents()
       .then((list) => {
         if (aborted) return;
         const me = list.find((a) => a.id === agentId);
@@ -23,7 +23,10 @@ export function useAgentName(agentId: string): string {
       .catch(() => {
         // 保留 id 作为回退名称
       });
+    void refresh();
+    window.addEventListener("bkcrab:agents-changed", refresh);
     return () => {
+      window.removeEventListener("bkcrab:agents-changed", refresh);
       aborted = true;
     };
   }, [agentId]);

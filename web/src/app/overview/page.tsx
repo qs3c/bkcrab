@@ -104,10 +104,11 @@ export default function OverviewPage() {
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">仪表盘</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          监控你的 BkCrab 网关
+          {isAdmin ? "监控你的 BkCrab 网关" : "选择一个智能体，开始你的第一段对话。"}
         </p>
       </div>
 
+      {!isAdmin && <Link href="/agents/" className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"><Bot className="size-4" />前往智能体，开始对话</Link>}
 {/* 统计卡片 — 智能体对所有人可见；用户 + 对话 +
            渠道为网关管理面板，仅管理员可见。 */}
       <div

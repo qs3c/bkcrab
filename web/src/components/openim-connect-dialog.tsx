@@ -1,5 +1,7 @@
 "use client";
 
+import { copyText } from "@/lib/user-feedback";
+
 import { useState } from "react";
 import { Loader2, Copy, Check } from "lucide-react";
 import { connectAgentOpenIM } from "@/lib/api";
@@ -53,7 +55,7 @@ export function OpenIMConnectDialog({ open, onOpenChange, agentId, onConnected }
         <p className="text-sm">凭据已验证并保存。请将以下配置合并到 OpenIM 的 <code>webhooks.yml</code>，并按部署方式重启相关服务以加载配置。</p>
         <pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap break-all">{yaml}</pre>
         <Button variant="outline" onClick={async () => {
-          try { await navigator.clipboard.writeText(yaml); setCopied(true); }
+          try { await copyText(yaml); setCopied(true); }
           catch { setError("复制失败，请手动选择并复制配置。"); }
         }}>{copied ? <Check /> : <Copy />}{copied ? "已复制" : "复制配置"}</Button>
         <p className="text-sm text-muted-foreground">回调地址含访问密钥，请妥善保管。地址必须能从 OpenIM 容器访问；需要时将地址中的域名和端口替换为内部服务地址，保留完整路径。</p>

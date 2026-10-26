@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
-import { getMe } from "@/lib/api";
+import { getMe, getStatus, type MeResponse } from "@/lib/api";
+import { Button } from "./ui/button";
 import { LoginScreen } from "./login-screen";
 
 interface AuthGuardProps {
@@ -36,8 +37,19 @@ function isAdminPath(pathname: string): boolean {
 export function AuthGuard({ children }: AuthGuardProps) {
   const router = useRouter();
   const pathname = usePathname();
+  const [identity, setIdentity] = useState<MeResponse["user"] | null>(null);
+  const [configured, setConfigured] = useState<boolean | null>(null);
   const [checked, setChecked] = useState(false);
-  const [authed, setAuthed] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const onSignup = /^\/signup\/?$/.test(pathname);
+  const onOnboard = /^\/onboard(?:\/|$)/.test(pathname);
+
+  useEffect(() => {
+    const refresh = () => { setChecked(false); setAttempt((n) => n + 1); };
+    window.addEventListener("bkcrab:authenticated", refresh);
+    return () => window.removeEventListener("bkcrab:authenticated", refresh);
+  }, []);
 
   useEffect(() => {
     let aborted = false;
@@ -46,17 +58,17 @@ export function AuthGuard({ children }: AuthGuardProps) {
         //   - 用户表为空 → /onboard
         //   - 用户存在，调用者有会话 → 渲染子组件
         //   - 用户存在，调用者无会话 → 显示 LoginScreen
-      let configured = false;
+      setUnavailable(false);
+      let configured: boolean;
       try {
-        const res = await fetch("/api/status", { credentials: "same-origin" });
-        if (res.ok) {
-          const status = await res.json();
-          configured = !!status.configured;
-        }
+        const status = await getStatus();
+        configured = status.configured;
       } catch {
-        // 服务器不可用 — 落入 LoginScreen
+        if (!aborted) setUnavailable(true);
+        return;
       }
       if (aborted) return;
+      setConfigured(configured);
 
       if (!configured) {
         const onOnboard = pathname === "/onboard" || pathname.startsWith("/onboard/");
@@ -64,7 +76,6 @@ export function AuthGuard({ children }: AuthGuardProps) {
           router.replace("/onboard/");
           return;
         }
-        setAuthed(true);
         setChecked(true);
         return;
       }
@@ -72,38 +83,48 @@ export function AuthGuard({ children }: AuthGuardProps) {
       // /signup 是管理员开放注册时的公开路由。允许其未认证渲染 ——
       // 页面本身会重新检查开关，如果管理员在页面加载和提交之间
       // 关闭了注册，会显示"注册已关闭"。
-      if (pathname === "/signup" || pathname.startsWith("/signup/")) {
-        setAuthed(true);
-        setChecked(true);
-        return;
-      }
-
       try {
         const me = await getMe();
+        if (aborted) return;
+        setIdentity(me.ok && me.user ? me.user : null);
         if (me.ok && me.user) {
-          if (isAdminPath(pathname) && me.user.role !== "super_admin") {
+          if (onOnboard || onSignup || (isAdminPath(pathname) && me.user.role !== "super_admin")) {
             router.replace("/overview/");
-            return;
           }
-          setAuthed(true);
         }
       } catch {
-        // 网络错误 — 落入 LoginScreen
+        if (!aborted) setUnavailable(true);
+        return;
       }
       if (!aborted) setChecked(true);
     })();
     return () => { aborted = true; };
-  }, [router, pathname]);
+  }, [router, pathname, attempt, onOnboard, onSignup]);
+
+  if (unavailable) {
+    return (
+      <div className="flex min-h-svh items-center justify-center bg-background p-6">
+        <div className="max-w-sm space-y-4 text-center" role="alert">
+          <h1 className="text-xl font-semibold">暂时无法连接服务器</h1>
+          <p className="text-sm text-muted-foreground">请检查网络后重试，你的账户和已有内容不会被重置。</p>
+          <Button onClick={() => setAttempt((n) => n + 1)}>重新连接</Button>
+        </div>
+      </div>
+    );
+  }
 
   if (!checked) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950">
+      <div className="flex min-h-svh items-center justify-center bg-background" role="status" aria-label="正在加载">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-violet-500" />
       </div>
     );
   }
-  if (!authed) {
-    return <LoginScreen onSuccess={() => setAuthed(true)} />;
+  if (configured === false) return onOnboard ? <>{children}</> : null;
+  if (!identity) {
+    if (onSignup) return <>{children}</>;
+    return <LoginScreen onSuccess={() => { setChecked(false); setAttempt((n) => n + 1); }} />;
   }
+  if (isAdminPath(pathname) && identity.role !== "super_admin") return null;
   return <>{children}</>;
 }

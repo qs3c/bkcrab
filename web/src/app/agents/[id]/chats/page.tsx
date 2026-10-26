@@ -68,19 +68,21 @@ export default function AgentChatsPage() {
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
   const [page, setPage] = useState(1);
   const [editTarget, setEditTarget] = useState<Session | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null);
 
   async function refresh() {
     if (!agentId) return;
-    setError("");
+    setError(""); setLoading(true);
     try {
       const list = await getChatSessions(agentId);
       setSessions(list);
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载对话失败");
-    }
+    } finally { setLoading(false); }
   }
   useEffect(() => {
     refresh();
@@ -135,7 +137,7 @@ export default function AgentChatsPage() {
         </Card>
       )}
 
-      {sorted.length === 0 ? (
+      {loading ? <p role="status" className="text-sm text-muted-foreground">正在加载对话…</p> : sorted.length === 0 && !error ? (
         <div className="rounded-lg border border-border bg-card">
           <div className="flex flex-col items-center justify-center py-16">
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 mb-4">
@@ -294,15 +296,19 @@ export default function AgentChatsPage() {
               ？此对话的全部消息历史将被删除且无法恢复。
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction
+            <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+            <AlertDialogAction disabled={deleting}
               onClick={async () => {
                 if (!deleteTarget || !agentId) return;
-                await deleteChatSession(agentId, deleteTarget.id);
-                setDeleteTarget(null);
-                refresh();
-                broadcastChange();
+                if (deleting) return;
+                setDeleting(true);
+                try {
+                  await deleteChatSession(agentId, deleteTarget.id);
+                  setDeleteTarget(null); refresh(); broadcastChange();
+                } catch (err) { setError(err instanceof Error ? err.message : "删除失败，请重试。"); }
+                finally { setDeleting(false); }
               }}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
@@ -335,9 +341,10 @@ function EditTitleDialog({
 }) {
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    setDraft(target?.title ?? target?.preview ?? "");
+    setError(""); setDraft(target?.title ?? target?.preview ?? "");
   }, [target]);
 
   if (!target) return null;
@@ -348,14 +355,13 @@ function EditTitleDialog({
       onClose();
       return;
     }
-    setSaving(true);
+    if (saving) return;
+    setSaving(true); setError("");
     try {
       await renameChatSession(agentId, target.id, next);
-      onSaved();
-    } finally {
-      setSaving(false);
-      onClose();
-    }
+      onSaved(); onClose();
+    } catch (err) { setError(err instanceof Error ? err.message : "保存失败，请重试。"); }
+    finally { setSaving(false); }
   };
 
   return (
@@ -381,6 +387,7 @@ function EditTitleDialog({
           }}
           placeholder="对话标题"
         />
+        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={saving}>
             取消
